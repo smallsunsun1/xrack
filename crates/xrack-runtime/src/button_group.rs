@@ -110,16 +110,16 @@ impl ButtonGroupOptions {
     }
 }
 
-/// Recheck a distributed radio option without evaluating other members.
+/// Recheck a distributed option without evaluating other members.
 #[doc(hidden)]
-pub fn try_prepare_radio_selection<E>(
+pub fn try_prepare_button_group_option<E>(
     node: &Node,
     group: &str,
     input: InputRoute<'_>,
     enabled: impl FnOnce() -> Result<bool, E>,
     value: impl FnOnce() -> Result<String, E>,
     current: impl FnOnce() -> Result<ButtonGroupSelection, E>,
-) -> Result<Option<(usize, String)>, E> {
+) -> Result<Option<(usize, String, bool)>, E> {
     let Some(member) = node
         .button_group
         .as_ref()
@@ -135,7 +135,44 @@ pub fn try_prepare_radio_selection<E>(
         return Ok(None);
     }
     let unchanged = current()?.matches(member.index, &value);
-    Ok((!unchanged && input.is_current()).then_some((member.index, value)))
+    Ok(input
+        .is_current()
+        .then_some((member.index, value, !unchanged)))
+}
+
+#[doc(hidden)]
+pub fn try_prepare_radio_selection<E>(
+    node: &Node,
+    group: &str,
+    input: InputRoute<'_>,
+    enabled: impl FnOnce() -> Result<bool, E>,
+    value: impl FnOnce() -> Result<String, E>,
+    current: impl FnOnce() -> Result<ButtonGroupSelection, E>,
+) -> Result<Option<(usize, String)>, E> {
+    Ok(
+        try_prepare_button_group_option(node, group, input, enabled, value, current)?
+            .and_then(|(index, value, changed)| changed.then_some((index, value))),
+    )
+}
+
+#[doc(hidden)]
+pub fn prepare_button_group_option(
+    node: &Node,
+    group: &str,
+    input: InputRoute<'_>,
+    enabled: impl FnOnce() -> bool,
+    value: impl FnOnce() -> String,
+    current: impl FnOnce() -> ButtonGroupSelection,
+) -> Option<(usize, String, bool)> {
+    try_prepare_button_group_option(
+        node,
+        group,
+        input,
+        || Ok::<_, std::convert::Infallible>(enabled()),
+        || Ok(value()),
+        || Ok(current()),
+    )
+    .unwrap_or_else(|error| match error {})
 }
 
 #[doc(hidden)]
@@ -162,6 +199,19 @@ pub fn radio_value(node: &Node) -> &str {
     node.text("value")
         .or_else(|| node.text("text"))
         .unwrap_or("")
+}
+
+fn push_button(node: &Node) -> bool {
+    matches!(node.kind, "Button" | "ToolButton" | "RoundButton")
+}
+
+#[doc(hidden)]
+pub fn is_exclusive_push_option(node: &Node) -> bool {
+    push_button(node)
+        && node
+            .button_group
+            .as_ref()
+            .is_some_and(|member| member.group.exclusive)
 }
 
 #[doc(hidden)]
@@ -255,9 +305,9 @@ fn bind_group(
             .ok()
             .filter(|&index| index < paths.len()),
         Some(ButtonGroupSelection::Value(value)) => paths.iter().position(|path| {
-            scene
-                .at_path(path)
-                .is_some_and(|node| node.kind == "RadioButton" && radio_value(node) == value)
+            scene.at_path(path).is_some_and(|node| {
+                (node.kind == "RadioButton" || push_button(node)) && radio_value(node) == value
+            })
         }),
         None => None,
     };
@@ -274,7 +324,9 @@ fn bind_group(
             .iter()
             .try_fold(&mut *scene, |node, &index| node.child_at_mut(index));
         let Some(member) = member.filter(|node| {
-            if group.exclusive {
+            if push_button(node) {
+                true
+            } else if group.exclusive {
                 node.kind == "RadioButton"
             } else {
                 matches!(node.kind, "CheckBox" | "Switch")
@@ -286,6 +338,9 @@ fn bind_group(
             group: group.clone(),
             index,
         });
+        if push_button(member) {
+            member.properties.insert("checkable", true.into());
+        }
         if group.exclusive {
             member
                 .properties

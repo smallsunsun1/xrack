@@ -7467,7 +7467,7 @@ fn tree_commands_reveal_ancestors_and_restore_current_to_a_visible_parent() {
     );
     assert_eq!(
         ui.node("node-status").text("text"),
-        Some("节点 103 · 深度 3 · 显示行 3")
+        Some("节点 103 · 深度 3 · 显示行 3 · 已选 0")
     );
     ui.click("collapse-all");
     assert_eq!(ui.component().get_current(), 1);

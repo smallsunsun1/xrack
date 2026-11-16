@@ -30,7 +30,12 @@ impl GlobalContext {
     }
 }
 
+#[cfg(all(feature = "live-reload", unix))]
+type TraceSlot = Rc<OnceCell<Rc<live_trace::Trace>>>;
+
 pub(crate) struct State {
+    #[cfg(all(feature = "live-reload", unix))]
+    trace: TraceSlot,
     pub(crate) binding_lifetime: ComponentLifetime,
     program: Program,
     pub(crate) globals: GlobalContext,
@@ -41,6 +46,7 @@ pub(crate) struct State {
     stacks: RefCell<BTreeMap<String, Rc<xrack_runtime::StackState>>>,
     timers: BTreeMap<String, xrack_runtime::TimerSlot>,
     focus: BTreeMap<String, xrack_runtime::FocusHandle>,
+    button_presses: BTreeMap<String, xrack_runtime::ButtonPressHandle>,
     hover: RefCell<BTreeMap<String, xrack_runtime::HoverHandle>>,
     gestures: gesture::Handles,
     pointers: RefCell<BTreeMap<String, xrack_runtime::PointerHandle>>,
@@ -50,6 +56,7 @@ pub(crate) struct State {
     pub(crate) secondary_windows: Option<secondary_window::State>,
     split_input: Cell<Option<xrack_runtime::SplitHandleInput>>,
     calendar_input: Cell<Option<xrack_runtime::CalendarCell>>,
+    section_input: RefCell<Option<xrack_runtime::ListSectionInput>>,
     calendars: RefCell<BTreeMap<String, Rc<calendar::State>>>,
     pickers: RefCell<BTreeMap<String, Rc<picker::State>>>,
     locale: xrack_runtime::LocaleBinding,
@@ -125,6 +132,7 @@ fn host_callback_arguments(args: &[Value]) -> Vec<Value> {
     args.iter()
         .map(|arg| match arg {
             Value::StringModel(model) => Value::StringList(model.snapshot_untracked()),
+            Value::IntModel(model) => Value::IntList(model.snapshot_untracked()),
             value => value.clone(),
         })
         .collect()
@@ -198,7 +206,9 @@ impl Program {
                 forwarded.insert(path, input);
                 continue;
             }
-            let endpoint = path.pop().expect("verified instance input endpoint");
+            let endpoint = path
+                .pop()
+                .ok_or_else(|| evaluation("empty instance input endpoint"))?;
             if !definition.properties.contains_key(&endpoint) && !controls.contains_key(&endpoint) {
                 return Err(Error::Invalid(format!(
                     "unknown input target {}.{}",
@@ -229,10 +239,16 @@ impl Program {
             (Some(_), Some(owner)) => owner.window.clone(),
             _ => Rc::default(),
         };
+        #[cfg(all(feature = "live-reload", unix))]
+        let trace = owner
+            .as_ref()
+            .map_or_else(TraceSlot::default, |owner| owner.trace.clone());
         let error = owner.map_or_else(Rc::default, |owner| owner.error.clone());
         let layout = viewport::Handles::new(definition, &keys);
         let instance = Instance(
             Rc::new(State {
+                #[cfg(all(feature = "live-reload", unix))]
+                trace,
                 binding_lifetime: ComponentLifetime::default(),
                 program: self.clone(),
                 globals,
@@ -243,6 +259,13 @@ impl Program {
                 stacks: RefCell::default(),
                 timers: definition
                     .timer_order
+                    .iter()
+                    .filter(|key| keys.contains(key.as_str()))
+                    .cloned()
+                    .map(|key| (key, Default::default()))
+                    .collect(),
+                button_presses: definition
+                    .button_press_targets
                     .iter()
                     .filter(|key| keys.contains(key.as_str()))
                     .cloned()
@@ -281,6 +304,7 @@ impl Program {
                 pointers: RefCell::default(),
                 split_input: Cell::default(),
                 calendar_input: Cell::default(),
+                section_input: RefCell::default(),
                 calendars: RefCell::default(),
                 pickers: RefCell::default(),
                 locale,
@@ -347,7 +371,9 @@ impl Program {
         }
         assert!(instance.0.children.set(children).is_ok());
         for (mut path, callback) in callbacks {
-            let member = path.pop().expect("verified callback endpoint");
+            let member = path
+                .pop()
+                .ok_or_else(|| evaluation("empty instance callback endpoint"))?;
             if !path.is_empty() {
                 return Err(evaluation(format!(
                     "unknown callback instance {}",
@@ -506,10 +532,29 @@ impl Element {
 }
 
 impl Instance {
+    #[cfg(all(feature = "live-reload", unix))]
+    pub(crate) fn trace(&self) -> Option<&Rc<live_trace::Trace>> {
+        self.0.trace.get()
+    }
+
+    #[cfg(all(feature = "live-reload", unix))]
+    pub(crate) fn attach_trace(&self, trace: Rc<live_trace::Trace>) {
+        let _ = self.0.trace.set(trace);
+    }
+
+    #[cfg(all(feature = "live-reload", unix))]
+    pub(crate) fn cached_property(&self, member: &Member) -> Option<Value> {
+        self.0.values.get(member)?.cached_value()
+    }
+
     pub(super) fn program(&self) -> &Program {
         &self.0.program
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "allocate_scope validates this definition before constructing an Instance"
+    )]
     pub(crate) fn definition(&self) -> &Definition {
         self.0.program.components[&self.0.name]
             .as_ref()
@@ -565,6 +610,10 @@ impl Instance {
             .row_parameter(name)
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "allocate_scope initializes children before publishing the instance"
+    )]
     pub(crate) fn children(&self) -> &BTreeMap<String, Instance> {
         self.0
             .children
@@ -1250,24 +1299,35 @@ impl Instance {
     }
 
     pub(crate) fn call(&self, member: &Member, arguments: Vec<Value>) -> Result<Option<Value>> {
+        self.call_at(member, arguments, None)
+    }
+
+    fn call_at(
+        &self,
+        member: &Member,
+        arguments: Vec<Value>,
+        _site: Option<&CallSite>,
+    ) -> Result<Option<Value>> {
         if let Some(name) = member.owner.strip_prefix("__global_") {
-            return self
-                .shared_global(name)?
-                .call(&Member::root(&member.name), arguments);
+            return self.shared_global(name)?.call_at(
+                &Member::root(&member.name),
+                arguments,
+                _site,
+            );
         }
         if let Some(child) = self.children().get(&member.owner) {
-            return child.call(&Member::root(&member.name), arguments);
+            return child.call_at(&Member::root(&member.name), arguments, _site);
         }
         if !self.0.callbacks.contains_key(member)
             && let Some(owner) = self.row_owner()
         {
-            return owner.call(member, arguments);
+            return owner.call_at(member, arguments, _site);
         }
         let function = self.definition().callbacks.get(member).ok_or_else(|| {
             evaluation(format!("unknown callback {}.{}", member.owner, member.name))
         })?;
         if let Some(target) = &function.alias {
-            return self.call(target, arguments);
+            return self.call_at(target, arguments, _site);
         }
         self.program().validate_callback_arguments(
             &member.name,
@@ -1275,12 +1335,28 @@ impl Instance {
             &arguments,
         )?;
         let slot = &self.0.callbacks[member];
-        let result = self.execute(function, &arguments, Some(slot))?;
-        self.program().validate_callback_result(
-            &member.name,
-            function.result.as_ref(),
-            result.as_ref(),
-        )?;
+        let execute = || {
+            let result = self.execute_body(function, &arguments, Some(slot))?;
+            self.program().validate_callback_result(
+                &member.name,
+                function.result.as_ref(),
+                result.as_ref(),
+            )?;
+            Ok(result)
+        };
+        #[cfg(all(feature = "live-reload", unix))]
+        let result = match self.trace() {
+            Some(trace) => trace.record(
+                &self.0.name,
+                function,
+                _site.and_then(|site| site.0.as_deref()),
+                &arguments,
+                execute,
+            )?,
+            None => execute()?,
+        };
+        #[cfg(not(all(feature = "live-reload", unix)))]
+        let result = execute()?;
         // A host handler can return its argument. Release the call's copies
         // before deciding whether the returned model is shared.
         drop(arguments);
@@ -1292,13 +1368,14 @@ impl Instance {
         target: &Member,
         operands: &[Expr],
         args: &[Value],
+        site: &CallSite,
     ) -> Result<Option<Value>> {
         // A later operand can call the host and edit a model read by an earlier operand.
         let arguments = operands
             .iter()
             .map(|operand| self.evaluate(operand, args).map(callback_value))
             .collect::<Result<Vec<_>>>()?;
-        self.call(target, arguments)
+        self.call_at(target, arguments, Some(site))
     }
 
     fn hover_handle(&self, element: &Element) -> xrack_runtime::HoverHandle {
@@ -1334,6 +1411,21 @@ impl Instance {
         args: &[Value],
         slot: Option<&CallbackSlot<CallbackBinding>>,
     ) -> Result<Option<Value>> {
+        #[cfg(all(feature = "live-reload", unix))]
+        if let Some(trace) = self.trace() {
+            return trace.record(&self.0.name, function, None, args, || {
+                self.execute_body(function, args, slot)
+            });
+        }
+        self.execute_body(function, args, slot)
+    }
+
+    fn execute_body(
+        &self,
+        function: &Function,
+        args: &[Value],
+        slot: Option<&CallbackSlot<CallbackBinding>>,
+    ) -> Result<Option<Value>> {
         if slot.is_none()
             && (args.len() != function.parameters.len()
                 || !args
@@ -1354,8 +1446,8 @@ impl Instance {
                 Statement::Assign(target, expression) => {
                     self.write(target, self.evaluate(expression, args)?)?;
                 }
-                Statement::Call(target, arguments) => {
-                    self.call_with_operands(target, arguments, args)?;
+                Statement::Call(target, arguments, site) => {
+                    self.call_with_operands(target, arguments, args, site)?;
                 }
                 Statement::Log {
                     level,
@@ -1383,7 +1475,10 @@ impl Instance {
                 }
                 Statement::SelectKey(target, key) => {
                     let key = self.int_argument(key, args)?;
-                    self.select_list_key(target, key)?;
+                    self.select_view_key(target, key)?;
+                }
+                Statement::SelectViewKeys(target, keys) => {
+                    self.replace_view_selection(target, self.evaluate(keys, args)?)?;
                 }
                 Statement::SelectSource(target, index, column) => {
                     let index = self.int_argument(index, args)?;
@@ -1570,7 +1665,13 @@ impl Instance {
             TreeQuery(target, query, key) => {
                 self.tree_query(target, *query, self.int_argument(key, args)?)
             }
+            SelectionKeys(target) => self.selected_view_keys(target),
             ListSelectionRead(owner) => self.selected_list_index(owner).map(Value::Int),
+            ListRowSelected(target, row) => {
+                let row = self.int_argument(row, args)?;
+                let (owner, view) = self.element_owner(target)?;
+                Ok(Value::Bool(owner.list_selection_info(view, row)?.1))
+            }
             ViewCount { owner, source } => self
                 .view_count(owner, *source)
                 .map(|count| Value::Int(count as i64)),
@@ -1580,6 +1681,13 @@ impl Instance {
                     .try_query(index, |index, direction| {
                         self.view_index(target, index, direction)
                     })
+                    .map(Value::Int)
+            }
+            ViewIndexForKey(target, key) => {
+                let key = self.int_argument(key, args)?;
+                let (owner, view) = self.element_owner(target)?;
+                owner
+                    .index_for_business_key(view, &owner.view_model(view)?, key)
                     .map(Value::Int)
             }
             TableRead(target, read) => self.table_read(target, *read),
@@ -1629,6 +1737,13 @@ impl Instance {
                 .get()
                 .map(|cell| parameter.read(cell))
                 .ok_or_else(|| evaluation("calendar cell parameter outside a DayCell")),
+            ListSectionParam(parameter) => self
+                .0
+                .section_input
+                .borrow()
+                .as_ref()
+                .map(|input| parameter.read(input))
+                .ok_or_else(|| evaluation("section parameter outside a SectionHeader")),
             Unary(operator, operand) => {
                 let value = self.evaluate(operand, args)?;
                 match (operator, value) {
@@ -1666,6 +1781,8 @@ impl Instance {
                 let count = match self.evaluate(input, args)? {
                     Value::StringList(rows) => rows.len(),
                     Value::StringModel(rows) => rows.len(),
+                    Value::IntList(rows) => rows.len(),
+                    Value::IntModel(rows) => rows.len(),
                     Value::RecordList(rows) => rows.model().len(),
                     _ => return Err(evaluation("model count requires a model")),
                 };
@@ -1687,6 +1804,12 @@ impl Instance {
                         .cloned()
                         .map(Value::String),
                     Value::StringModel(rows) => rows.row_at(index).map(Value::String),
+                    Value::IntList(rows) => usize::try_from(index)
+                        .ok()
+                        .and_then(|index| rows.get(index))
+                        .copied()
+                        .map(Value::Int),
+                    Value::IntModel(rows) => rows.row_at(index).map(Value::Int),
                     Value::RecordList(rows) => {
                         self.program().record_at(&rows, index)?.map(Value::Record)
                     }
@@ -1888,6 +2011,15 @@ impl Instance {
                     handle.has_focus()
                 }))
             }
+            ButtonPressed(target) => {
+                let (owner, element) = self.element_owner(target)?;
+                let handle = owner
+                    .0
+                    .button_presses
+                    .get(&element.key)
+                    .ok_or_else(|| evaluation("missing button press state"))?;
+                Ok(Value::Bool(handle.pressed()))
+            }
             RecordField(input, name) => {
                 let value = match self.evaluate(input, args)? {
                     Value::Record(record) => record.field(name).cloned(),
@@ -1946,6 +2078,13 @@ impl Instance {
                     italic: *italic,
                 }))
             }
+            IntArray(items) => Ok(Value::IntModel(
+                items
+                    .iter()
+                    .map(|item| self.int_argument(item, args))
+                    .collect::<Result<Vec<_>>>()?
+                    .into(),
+            )),
             Array(items) => Ok(Value::StringModel(xrack_runtime::VecModel::from(
                 self.arguments(items, args)?
                     .into_iter()
@@ -1955,8 +2094,8 @@ impl Instance {
                     })
                     .collect::<Result<Vec<_>>>()?,
             ))),
-            Call(target, arguments) => self
-                .call_with_operands(target, arguments, args)?
+            Call(target, arguments, site) => self
+                .call_with_operands(target, arguments, args, site)?
                 .ok_or_else(|| evaluation("expression callback must return a value")),
         }
     }
@@ -2144,6 +2283,17 @@ impl Instance {
         result
     }
 
+    pub(crate) fn render_section_header(
+        &self,
+        template: &Element,
+        input: xrack_runtime::ListSectionInput,
+    ) -> Result<Node> {
+        let previous = self.0.section_input.replace(Some(input));
+        let result = self.render_element(template);
+        self.0.section_input.replace(previous);
+        result
+    }
+
     pub(crate) fn stack_state(&self, element: &Element) -> Rc<xrack_runtime::StackState> {
         self.0
             .stacks
@@ -2279,7 +2429,6 @@ impl Instance {
             Visual::Builtin("TouchArea") => {
                 node.pointer_handle = Some(self.pointer_handle(element));
                 node.scroll_event_handler = element.handlers.contains_key("scroll-event");
-                node.press_and_hold_handler = element.handlers.contains_key("press-and-hold");
             }
             Visual::Builtin("HoverHandler") => node.hover_handle = Some(self.hover_handle(element)),
             Visual::Builtin("SwipeGestureHandler") => {
@@ -2290,8 +2439,16 @@ impl Instance {
             }
             _ => {}
         }
+        if matches!(element.visual, Visual::Builtin(_))
+            && element.handlers.contains_key("press-and-hold")
+        {
+            node.press_and_hold_handler = true;
+        }
         if let Some(handle) = self.0.focus.get(&element.key) {
             node.focus_handle = Some(handle.clone());
+        }
+        if let Some(handle) = self.0.button_presses.get(&element.key) {
+            node.button_press_handle = Some(handle.clone());
         }
         if let Some(target) = &element.initial_focus {
             node.initial_focus = Some(self.focus_handle(target)?);
@@ -2324,6 +2481,7 @@ impl Instance {
                 }
                 continue;
             }
+            xrack_runtime::update_profile::visual_binding(&element.id, name);
             let value = self.evaluate(&binding.expression, &[])?;
             if is_instance {
                 node.set_instance_layout_property(name, scene_value(value));
@@ -2576,11 +2734,9 @@ impl Instance {
         if node.kind == "SwipeView" {
             return self.render_swipe_pages(element, node);
         }
-        let option_repeat = if matches!(node.kind, "RadioGroup" | "TabBar") {
-            element.group_option_repeat()
-        } else {
-            None
-        };
+        let options = matches!(node.kind, "RadioGroup" | "TabBar");
+        let radio_blocks = node.kind == "RadioGroup"
+            && element.children.iter().any(|child| child.repeat.is_some());
         let active = match node.kind {
             "StackView" if node.is_visible() => node
                 .stack
@@ -2596,9 +2752,7 @@ impl Instance {
             _ => None,
         };
         for (index, child) in element.children.iter().enumerate() {
-            if index == 0
-                && let Some(repeat) = option_repeat
-            {
+            if options && let Some(repeat) = child.live_option_repeat() {
                 let state = self.repeat_state(child);
                 node.try_append_group_options(
                     || state.row_model(self, repeat),
@@ -2617,10 +2771,13 @@ impl Instance {
             let page = matches!(node.kind, "TabWidget" | "StackView");
             let child_node =
                 self.render_element_with_content(child, !page || Some(index) == active)?;
-            if matches!(node.kind, "RadioGroup" | "TabBar") && child.repeat.is_some() {
+            if options && child.repeat.is_some() {
                 node.children.extend(child_node.children.iter().cloned());
             } else {
                 node.children.push(child_node);
+            }
+            if radio_blocks {
+                node.record_radio_option_block();
             }
         }
         if node.kind == "RadioGroup" {
@@ -3020,10 +3177,21 @@ impl Instance {
                 None => Ok(false),
             };
         }
-        match self.definition().root.named_dispatch_target(id, event) {
-            Some(element) => self.dispatch_element(element, event, None, None),
-            None => Ok(false),
+        let Some(element) = self.definition().root.named_dispatch_target(id, event) else {
+            return Ok(false);
+        };
+        if event == "clicked"
+            && element.is_exclusive_push_option()
+            && let Some(path) = self.group_member_path(element)
+        {
+            let scene = self.render_shared();
+            return RoutedEvent::Dispatch(event)
+                .with_input(&scene, path, |input| {
+                    self.dispatch_element(element, event, scene.at_path(path), Some(input))
+                })
+                .unwrap_or(Ok(false));
         }
+        self.dispatch_element(element, event, None, None)
     }
 
     pub(crate) fn item_delegate_available(&self, element: &Element) -> Result<bool> {
@@ -3067,10 +3235,10 @@ impl Instance {
             return Ok(false);
         };
         if event == "clicked" {
-            if let Some(input) = input
-                && !input.try_available(|| self.check_group_member_enabled(element))?
+            if element.is_exclusive_push_option()
+                && let (Some(node), Some(input)) = (node, input)
             {
-                return Ok(false);
+                return self.activate_radio_option(element, node, input);
             }
             if matches!(kind, "Button" | "ToolButton" | "RoundButton")
                 && let Some(action) = &element.action
@@ -3079,7 +3247,17 @@ impl Instance {
             }
             match kind {
                 "GroupBox" => return self.toggle_group_box(element, input),
+                _ if xrack_syntax::builtins::push_button(kind)
+                    && element.control("checked").is_some() =>
+                {
+                    return self.activate_checkable_button(element, input);
+                }
                 _ if xrack_runtime::is_toggle(kind) => {
+                    if let Some(input) = input
+                        && !input.try_available(|| self.check_group_member_enabled(element))?
+                    {
+                        return Ok(false);
+                    }
                     return self.dispatch_toggle(element, node, input);
                 }
                 _ => {}
@@ -3274,7 +3452,10 @@ impl Instance {
             .bindings
             .iter()
             .find(|binding| binding.name == name)
-            .map(|binding| self.evaluate(&binding.expression, &[]))
+            .map(|binding| {
+                xrack_runtime::update_profile::visual_binding(&element.id, binding.name);
+                self.evaluate(&binding.expression, &[])
+            })
             .transpose()
     }
 
@@ -3341,13 +3522,27 @@ impl Instance {
         }
     }
 
-    fn select_list_key(&self, target: &str, key: i64) -> Result<()> {
+    fn select_view_key(&self, target: &str, key: i64) -> Result<()> {
         if key < 0 {
             return Ok(());
         }
         let (owner, view) = self.element_owner(target)?;
+        if view.tree.is_some() {
+            return owner.select_tree(view, xrack_runtime::TreeSelectionCommand::Key(key));
+        }
+        if view.table.is_some() {
+            return owner.select_table_key(view, key);
+        }
+        if view
+            .bindings
+            .iter()
+            .any(|binding| binding.name == "multi-select")
+        {
+            return owner
+                .programmatic_list_selection(view, xrack_runtime::ListSelectionCommand::Key(key));
+        }
         let model = owner.view_model(view)?;
-        let index = owner.list_index_for_key(view, &model, key)?;
+        let index = owner.index_for_business_key(view, &model, key)?;
         if index >= 0
             && owner.control_value(view, "current-key")? != Some(Value::Int(key))
             && owner.set_control_value(view, "current-key", Value::Int(key))?
@@ -3363,10 +3558,20 @@ impl Instance {
         };
         let (owner, view) = self.element_owner(target)?;
         if view.tree.is_some() {
-            return owner.select_tree_source(view, source);
+            return owner.select_tree(view, xrack_runtime::TreeSelectionCommand::Source(source));
         }
         if view.table.is_some() {
             return owner.select_table_source(view, source, column);
+        }
+        if view
+            .bindings
+            .iter()
+            .any(|binding| binding.name == "multi-select")
+        {
+            return owner.programmatic_list_selection(
+                view,
+                xrack_runtime::ListSelectionCommand::Source(source),
+            );
         }
         let model = owner.view_model(view)?;
         let Some(index) = xrack_runtime::try_prepare_source_selection(
@@ -3533,6 +3738,234 @@ impl Instance {
     }
 
     /// Retain errors for component methods that cannot return a Result.
+    fn apply_list_selection(
+        &self,
+        element: &Element,
+        node: &Node,
+        input: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        use xrack_runtime::{SelectionTarget, TableSelectionOptions};
+
+        let model = OnceCell::new();
+        let get_model = || -> Result<&crate::repeat::ViewModel> {
+            if model.get().is_none() {
+                let _ = model.set(self.view_model(element)?);
+            }
+            model
+                .get()
+                .ok_or_else(|| evaluation("list selection model is unavailable"))
+        };
+        let state = self.repeat_state(element);
+        let Some(change) = state.list_selection.try_apply_control(
+            node,
+            input,
+            || self.element_allows_routed_input(element, input),
+            || {
+                get_model()?
+                    .selection_rows()
+                    .ok_or_else(|| evaluation("list has no selection model"))
+            },
+            || {
+                Ok(TableSelectionOptions {
+                    target: SelectionTarget::Rows,
+                    multiple: self.binding_value(element, "multi-select")?
+                        == Some(Value::Bool(true)),
+                    order: Default::default(),
+                    drag_select: false,
+                })
+            },
+            || self.list_selection_index(element, get_model()?),
+        )?
+        else {
+            return Ok(false);
+        };
+        self.notify_list_selection(element, Some(node), get_model()?, change)
+    }
+
+    fn notify_list_selection(
+        &self,
+        element: &Element,
+        node: Option<&Node>,
+        model: &crate::repeat::ViewModel,
+        change: xrack_runtime::TableSelectionChange,
+    ) -> Result<bool> {
+        use xrack_runtime::TableSelectionEvent;
+        change.try_notify(false, |event| {
+            match event {
+                TableSelectionEvent::CurrentRowChanged(row) => {
+                    if let Some((property, value)) =
+                        self.list_selection_value(element, model, row as i64)
+                    {
+                        let updated = if let Some(node) = node {
+                            self.update_control(element, node, property, value)?
+                        } else {
+                            self.set_control_value(element, property, value)?
+                        };
+                        if updated {
+                            self.handler(element, "changed", &[Value::Int(row as i64)])?;
+                        }
+                    }
+                }
+                TableSelectionEvent::SelectionChanged(count) => {
+                    self.handler(element, "selection-changed", &[Value::Int(count as i64)])?;
+                }
+                TableSelectionEvent::CurrentCellChanged => {}
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn list_selection_info(&self, view: &Element, row: i64) -> Result<(i64, bool)> {
+        let model = OnceCell::new();
+        let read = || self.programmatic_list_model(view, &model);
+        let state = self.repeat_state(view);
+        xrack_runtime::TableSelection::try_list_info(
+            Some(&state.list_selection),
+            || Ok(Self::list_rows_or_empty(read()?)),
+            || self.list_selection_index(view, read()?),
+            || Ok(self.binding_value(view, "multi-select")? == Some(Value::Bool(true))),
+            row,
+        )
+    }
+
+    fn selected_view_keys(&self, target: &str) -> Result<Value> {
+        let (owner, view) = self.element_owner(target)?;
+        if view.tree.is_some() {
+            return owner.selected_tree_keys(view);
+        }
+        let field = view
+            .row_key_field
+            .clone()
+            .ok_or_else(|| evaluation("missing row key field"))?;
+        let state = owner.repeat_state(view);
+        let read_keys =
+            |rows: &xrack_runtime::TableRows<Model>, selection: &BTreeSet<_>| match rows.source() {
+                Model::Records(records) => {
+                    state
+                        .selection_keys()
+                        .keys_for_rows(records.model(), selection, move |row| {
+                            crate::repeat::list_key(row, &field)
+                        })
+                }
+                _ => Vec::new(),
+            };
+        let keys = if view.table.is_some() {
+            let rows = owner.view_model(view)?.table_rows()?;
+            let snapshot = owner.table_snapshot(view, &rows, state.table_state())?;
+            read_keys(&rows, snapshot.keys())
+        } else {
+            let model = OnceCell::new();
+            let read = || owner.programmatic_list_model(view, &model);
+            xrack_runtime::TableSelection::try_list_selected_keys(
+                Some(&state.list_selection),
+                || Ok(Self::list_rows_or_empty(read()?)),
+                || owner.list_selection_index(view, read()?),
+                || owner.table_flag(view, "multi-select", false),
+                read_keys,
+            )?
+        };
+        Ok(Value::IntModel(keys.into()))
+    }
+
+    fn replace_view_selection(&self, target: &str, keys: Value) -> Result<()> {
+        let keys = match keys {
+            Value::IntModel(model) => model.into_snapshot(),
+            Value::IntList(keys) => keys,
+            _ => return Err(evaluation("selection requires a list of int keys")),
+        };
+        let (owner, view) = self.element_owner(target)?;
+        if view.tree.is_some() {
+            return owner.replace_tree_selection(view, &keys);
+        }
+        let table = view.table.is_some();
+        let field = view
+            .row_key_field
+            .clone()
+            .ok_or_else(|| evaluation("missing row key field"))?;
+        let model = OnceCell::new();
+        let read = || owner.programmatic_list_model(view, &model);
+        let state = owner.repeat_state(view);
+        let selection = if table {
+            &state.table_state().selection
+        } else {
+            &state.list_selection
+        };
+        if let Some(change) = selection.try_replace_list_keys(
+            || Ok(Self::list_rows_or_empty(read()?)),
+            || {
+                if table {
+                    owner.current_row(view)
+                } else {
+                    owner.list_selection_index(view, read()?)
+                }
+            },
+            || {
+                Ok(owner.table_flag(view, "multi-select", false)?
+                    && (!table
+                        || owner.table_selection_target(view)?
+                            == xrack_runtime::SelectionTarget::Rows))
+            },
+            |rows| match rows.source() {
+                Model::Records(records) => {
+                    state
+                        .selection_keys()
+                        .resolve_keys(records.model(), &keys, move |row| {
+                            crate::repeat::list_key(row, &field)
+                        })
+                }
+                _ => None,
+            },
+        )? {
+            if table {
+                owner.notify_table_selection(view, state.table_state(), change, false)?;
+            } else {
+                owner.notify_list_selection(view, None, read()?, change)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn programmatic_list_selection(
+        &self,
+        view: &Element,
+        command: xrack_runtime::ListSelectionCommand,
+    ) -> Result<()> {
+        let model = OnceCell::new();
+        let read = || self.programmatic_list_model(view, &model);
+        let state = self.repeat_state(view);
+        if let Some(change) = state.list_selection.try_apply_list_command(
+            command,
+            || Ok(Self::list_rows_or_empty(read()?)),
+            || self.list_selection_index(view, read()?),
+            || Ok(self.binding_value(view, "multi-select")? == Some(Value::Bool(true))),
+            |rows, key| self.business_key_source_index(view, rows.source(), key),
+        )? {
+            self.notify_list_selection(view, None, read()?, change)?;
+        }
+        Ok(())
+    }
+
+    fn programmatic_list_model<'a>(
+        &self,
+        view: &Element,
+        model: &'a OnceCell<crate::repeat::ViewModel>,
+    ) -> Result<&'a crate::repeat::ViewModel> {
+        if model.get().is_none() {
+            let _ = model.set(self.view_model(view)?);
+        }
+        model
+            .get()
+            .ok_or_else(|| evaluation("list selection model is unavailable"))
+    }
+
+    fn list_rows_or_empty(
+        model: &crate::repeat::ViewModel,
+    ) -> xrack_runtime::TableRows<crate::repeat::Model> {
+        model.selection_rows().unwrap_or_else(|| {
+            xrack_runtime::TableRows::from_source(Rc::new(crate::repeat::Model::Count(0)))
+        })
+    }
+
     pub(crate) fn capture_result<T>(&self, result: Result<T>) -> Option<T> {
         match result {
             Ok(value) => Some(value),
@@ -4065,7 +4498,9 @@ impl Instance {
                 instance.handler(element, "changed", &[next])?;
                 Ok(true)
             })(),
-            ControlAction::ActivateRadioOption if node.kind == "RadioButton" => {
+            ControlAction::ActivateRadioOption
+                if node.kind == "RadioButton" || xrack_runtime::is_exclusive_push_option(node) =>
+            {
                 instance.activate_radio_option(element, node, input)
             }
             ControlAction::Select(index)
@@ -4095,13 +4530,22 @@ impl Instance {
                 };
                 instance.handler(element, event, &[]).map(|_| true)
             }
+            ControlAction::Select(_) | ControlAction::TableSelection(_)
+                if matches!(node.kind, "ListView" | "GridView" | "StandardListView")
+                    && (node.table_selection.is_some()
+                        || matches!(action, ControlAction::TableSelection(_))) =>
+            {
+                instance.apply_list_selection(element, node, input)
+            }
             ControlAction::Select(index) if element.is_list_view() => (|| {
                 let model = std::cell::OnceCell::new();
                 let get_model = || -> Result<&crate::repeat::ViewModel> {
                     if model.get().is_none() {
                         let _ = model.set(instance.view_model(element)?);
                     }
-                    Ok(model.get().unwrap())
+                    model
+                        .get()
+                        .ok_or_else(|| evaluation("list selection model is unavailable"))
                 };
                 let selected = xrack_runtime::try_prepare_index_selection(
                     index,
@@ -4440,6 +4884,7 @@ impl ValueType {
                 | (Self::Color, Value::Color(_))
                 | (Self::Brush, Value::Brush(_))
                 | (Self::String, Value::String(_))
+                | (Self::IntList, Value::IntList(_) | Value::IntModel(_))
                 | (
                     Self::StringList,
                     Value::StringList(_) | Value::StringModel(_)
@@ -4504,6 +4949,7 @@ fn image_asset(value: Value) -> Result<ImageAsset> {
 pub(crate) fn model_value(value: Value) -> Value {
     match value {
         Value::StringList(items) => Value::StringModel(xrack_runtime::VecModel::from(items)),
+        Value::IntList(items) => Value::IntModel(items.into()),
         value => value,
     }
 }
@@ -4512,6 +4958,7 @@ pub(crate) fn model_value(value: Value) -> Value {
 pub(super) fn callback_value(value: Value) -> Value {
     match value {
         Value::StringModel(model) => Value::StringModel(model.into_snapshot().into()),
+        Value::IntModel(model) => Value::IntModel(model.into_snapshot().into()),
         Value::RecordList(list) => {
             let (name, rows) = list.into_snapshot();
             Value::RecordList(RecordList::new(name, rows))
@@ -4526,6 +4973,7 @@ fn callback_parameter(value: &Value) -> Value {
     // copies the sampled values into the expression's own model.
     match value {
         Value::StringModel(model) => Value::StringModel(model.snapshot_untracked().into()),
+        Value::IntModel(model) => Value::IntModel(model.snapshot_untracked().into()),
         Value::RecordList(list) => Value::RecordList(RecordList::new(
             list.name(),
             list.model().snapshot_untracked(),
@@ -4538,6 +4986,7 @@ fn callback_parameter(value: &Value) -> Value {
 pub(crate) fn host_value(value: Value) -> Value {
     match value {
         Value::StringModel(model) => Value::StringList(model.into_snapshot()),
+        Value::IntModel(model) => Value::IntList(model.into_snapshot()),
         value => value,
     }
 }
@@ -4555,6 +5004,10 @@ fn binary(program: &Program, operator: BinaryOperator, lhs: Value, rhs: Value) -
     if matches!(operator, Equal | NotEqual) {
         let equal = match (lhs, rhs) {
             (StringModel(a), StringModel(b)) => a.values_eq_owned(b),
+            (IntModel(a), IntModel(b)) => a.values_eq_owned(b),
+            (IntModel(model), IntList(items)) | (IntList(items), IntModel(model)) => {
+                model.into_snapshot() == items
+            }
             (TouchPoints(a), TouchPoints(b)) => a.values_eq_owned(b),
             (StringModel(model), StringList(items)) | (StringList(items), StringModel(model)) => {
                 model.into_snapshot() == items

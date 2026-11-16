@@ -61,6 +61,7 @@ pub use calendar::{CalendarDay, CalendarGeometry, CalendarWeek};
 pub use choice::{ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry};
 use clip::ClipChain;
 pub use clip::{RoundedClip, corner_radii, normalize_radii};
+pub use delay_button::ButtonHoldEvent;
 pub use drag::{DragDispatch, DragUpdate};
 pub use edit::{EditAction, TextEdit, TextEditContext, TextPosition};
 pub use file_drop::{FileDragInput, FileDropScope};
@@ -84,7 +85,7 @@ pub use modal::{dialog_title_height, drawer_grip};
 pub use overscroll::OverscrollFrame;
 pub use page_indicator::{PageIndicatorGeometry, PageMarker};
 pub use password::PasswordMask;
-pub use pointer_events::{PointerDelivery, PointerSequence, pointer_click_follows};
+pub use pointer_events::{ButtonClick, PointerDelivery, PointerSequence, pointer_click_follows};
 pub use range::{ColorPlaneGeometry, DialGeometry, SliderGeometry};
 #[doc(hidden)]
 pub use row_layout::{RowLayoutCache, RowLayoutStats};
@@ -108,6 +109,7 @@ pub use transform::Affine;
 use transform::TransformSpace;
 pub use tree::TreeRowGeometry;
 pub use tumbler::{TumblerGeometry, TumblerRow, TumblerScroll};
+pub use view_cells::ListSectionHeader;
 use view_cells::ViewCells;
 pub use viewport::{LayoutObservers, ScrollDelivery, ViewportObservers};
 pub use visual_text::{VisualGrapheme, VisualTextLine};
@@ -192,7 +194,9 @@ pub struct LayoutNode {
     direction_override: Option<LayoutDirection>,
     pub(crate) content_bounds: Option<Box<Rect>>,
     pub scroll: Option<ScrollLayout>,
+    list_section_headers: Option<Box<[ListSectionHeader]>>,
     horizontal_scroll: Option<ScrollLayout>,
+    horizontal_scroll_reversed: bool,
     viewport_handle: Option<xrack_runtime::ViewportHandle>,
     nested_list: Option<xrack_runtime::ListRowRenderer>,
     missing_list_rows: bool,
@@ -283,6 +287,10 @@ impl<'a> WindowEffects<'a> {
 }
 
 impl LayoutNode {
+    pub fn list_section_headers(&self) -> &[ListSectionHeader] {
+        self.list_section_headers.as_deref().unwrap_or_default()
+    }
+
     /// The nearest explicit direction, including an inherited declaration.
     pub fn layout_direction_override(&self) -> Option<LayoutDirection> {
         self.direction_override
@@ -967,6 +975,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     .as_ref()
                     .map_or(viewport, |table| table.rows_area()),
             );
+            let clipped = view_cells::list_body_clip(clipped, layout.list_section_headers());
             let range = if let Some(scroll) = layout.scroll
                 && clipped.width > 0.0
                 && clipped.height > 0.0
@@ -1003,6 +1012,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             } else {
                 component.list_rows(&self.path, range)
             };
+            xrack_runtime::update_profile::rows(node.element_id(), delegates.len());
             let missing_list_rows = expects_rows && delegates.is_empty();
             node.children = delegates
                 .into_iter()
@@ -1040,17 +1050,6 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                         );
                     }
                     let current = selected == Some((list.first_row + slot) as i64);
-                    if matches!(node.kind, "ListView" | "GridView") && delegate.is_item_delegate() {
-                        delegate
-                            .properties
-                            .entry("highlighted")
-                            .or_insert(xrack_runtime::Value::Bool(current));
-                        if delegate.kind == "RadioButton" {
-                            delegate
-                                .properties
-                                .insert("checked", xrack_runtime::Value::Bool(current));
-                        }
-                    }
                     let grid = selection.filter(|view| view.target() != SelectionTarget::Rows);
                     if let (Some(view), Some(key)) = (grid, row.row_key) {
                         let columns = delegate.table_column_window.clone();
@@ -1076,6 +1075,17 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                             row.row_key.is_some_and(|key| view.keys().contains(&key))
                         })
                     };
+                    if matches!(node.kind, "ListView" | "GridView") && delegate.is_item_delegate() {
+                        delegate
+                            .properties
+                            .entry("highlighted")
+                            .or_insert(xrack_runtime::Value::Bool(is_selected));
+                        if delegate.kind == "RadioButton" {
+                            delegate
+                                .properties
+                                .insert("checked", xrack_runtime::Value::Bool(current));
+                        }
+                    }
                     row.properties
                         .insert("selected", xrack_runtime::Value::Bool(is_selected));
                     if (node.kind == "GridView"
@@ -1126,6 +1136,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             self.ancestor_shapes = shapes;
             self.space = space;
         }
+        self.populate_section_headers(node, layout);
         let columns = node.table_column_window.clone();
         for (index, (child, item)) in node
             .children
@@ -1142,6 +1153,41 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         self.layout_direction = previous_direction;
     }
 
+    fn populate_section_headers(&mut self, node: &Node, layout: &mut LayoutNode) {
+        let Some(renderer) = node
+            .list_section_renderer
+            .as_ref()
+            .filter(|_| layout.visible)
+        else {
+            return;
+        };
+        let clip = layout.clip_rect(layout.bounds);
+        let Some(headers) = layout.list_section_headers.as_deref_mut() else {
+            return;
+        };
+        let previous_space = std::mem::replace(&mut self.space, layout.space.clone());
+        let previous_shapes =
+            std::mem::replace(&mut self.ancestor_shapes, layout.ancestor_shapes.clone());
+        for header in headers {
+            let visible = clip.intersect(header.bounds);
+            if visible.width <= 0.0 || visible.height <= 0.0 {
+                continue;
+            }
+            let Some(node) = renderer.render(xrack_runtime::ListSectionInput {
+                label: header.label.clone(),
+                first_index: header.first_row as i64,
+                count: header.row_count as i64,
+                pinned: header.pinned,
+            }) else {
+                continue;
+            };
+            let item = self.place(&node, header.bounds, visible, true, layout.enabled, None);
+            header.content = Some(Box::new((node, item)));
+        }
+        self.space = previous_space;
+        self.ancestor_shapes = previous_shapes;
+    }
+
     fn place(
         &mut self,
         node: &Node,
@@ -1149,7 +1195,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         clip: Rect,
         parent_visible: bool,
         parent_enabled: bool,
-        row_children: Option<Vec<grid::CellPlacement>>,
+        row_children: Option<grid::RowPlacements>,
     ) -> LayoutNode {
         let outer_key = self.row_key;
         let outer_direction = self.layout_direction;
@@ -1237,9 +1283,16 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         clip: Rect,
         parent_visible: bool,
         parent_enabled: bool,
-        row_children: Option<Vec<grid::CellPlacement>>,
+        row_children: Option<grid::RowPlacements>,
     ) -> LayoutNode {
         let resolved_list_scroll = self.resolved_list_scroll.take();
+        let tree_parts = match &row_children {
+            Some(grid::RowPlacements::Tree {
+                geometry,
+                has_children,
+            }) => Some((*geometry, *has_children)),
+            _ => None,
+        };
         let font_size = self.text.font_size(node);
         let children_enabled = parent_enabled && node.enables_children();
         let enabled =
@@ -1328,7 +1381,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 direction_override: self.layout_direction,
                 content_bounds: None,
                 scroll: None,
+                list_section_headers: None,
                 horizontal_scroll: None,
+                horizontal_scroll_reversed: false,
                 viewport_handle: None,
                 nested_list: None,
                 missing_list_rows: false,
@@ -1364,6 +1419,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 bounds,
                 clip,
                 self.requested_scroll(node, Orientation::Horizontal),
+                self.layout_direction.unwrap_or_default(),
             )
             .map(Box::new)
         } else {
@@ -1441,7 +1497,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 direction_override: self.layout_direction,
                 content_bounds: None,
                 scroll: None,
+                list_section_headers: None,
                 horizontal_scroll: None,
+                horizontal_scroll_reversed: false,
                 viewport_handle: None,
                 nested_list: None,
                 missing_list_rows: false,
@@ -1473,8 +1531,16 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         }
         let mut scroll = None;
         let mut horizontal_scroll = None;
+        let mut list_section_headers = None;
+        let horizontal_scroll_reversed = matches!(node.kind, "ScrollView" | "Flickable")
+            && self.layout_direction == Some(LayoutDirection::RightToLeft);
         let (split, split_rects) = if visible && node.kind == "SplitView" {
-            let (geometry, rects) = SplitGeometry::new(node, bounds, self.text);
+            let (geometry, rects) = SplitGeometry::new(
+                node,
+                bounds,
+                self.layout_direction.unwrap_or_default(),
+                self.text,
+            );
             (Some(Box::new(geometry)), Some(rects))
         } else {
             (None, None)
@@ -1622,6 +1688,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             let axis = resolved_list_scroll
                 .unwrap_or_else(|| self.list_scroll(node, &cells, viewport.height, list.row_count));
             scroll = Some(axis);
+            list_section_headers = cells.headers(viewport, axis.offset, list.row_count);
             let panes = table.as_ref().and_then(|table| {
                 if table.row_header.width == 0.0 {
                     table.frozen_boundary()?;
@@ -1660,26 +1727,28 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                         bounds,
                         clip: None,
                         row_children: table.as_ref().zip(delegate).map(|(table, row)| {
-                            row.materialized_children()
-                                .filter_map(|(index, _)| {
-                                    let column = table.columns.get(index)?;
-                                    Some(grid::CellPlacement {
-                                        bounds: Rect::new(
-                                            column.x,
-                                            bounds.y,
-                                            column.width,
-                                            bounds.height,
-                                        ),
-                                        clip: panes.as_ref().map(|(frozen, scrolling)| {
-                                            if table.is_frozen(index) {
-                                                frozen.clone()
-                                            } else {
-                                                scrolling.clone()
-                                            }
-                                        }),
+                            grid::RowPlacements::Cells(
+                                row.materialized_children()
+                                    .filter_map(|(index, _)| {
+                                        let column = table.columns.get(index)?;
+                                        Some(grid::CellPlacement {
+                                            bounds: Rect::new(
+                                                column.x,
+                                                bounds.y,
+                                                column.width,
+                                                bounds.height,
+                                            ),
+                                            clip: panes.as_ref().map(|(frozen, scrolling)| {
+                                                if table.is_frozen(index) {
+                                                    frozen.clone()
+                                                } else {
+                                                    scrolling.clone()
+                                                }
+                                            }),
+                                        })
                                     })
-                                })
-                                .collect()
+                                    .collect(),
+                            )
                         }),
                     }
                 })
@@ -1717,13 +1786,30 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 })
                 .collect()
         } else if node.kind == "ListRow" {
-            let content = TreeRowGeometry::new(node, bounds).map_or(bounds, |tree| tree.content);
+            let direction = self.layout_direction.unwrap_or_default();
+            let tree = TreeRowGeometry::with_layout_direction(node, bounds, direction);
             node.children
                 .iter()
-                .map(|_| grid::Placement {
-                    bounds: content,
-                    clip: None,
-                    row_children: row_children.take(),
+                .map(|child| {
+                    if let Some(geometry) = tree
+                        && child.kind == "TreeRow"
+                        && child.control_part("TreeDisclosure").is_some()
+                    {
+                        grid::Placement {
+                            bounds,
+                            clip: None,
+                            row_children: Some(grid::RowPlacements::Tree {
+                                geometry,
+                                has_children: node.boolean("tree-has-children", false),
+                            }),
+                        }
+                    } else {
+                        grid::Placement {
+                            bounds: tree.map_or(bounds, |tree| tree.content),
+                            clip: None,
+                            row_children: row_children.take(),
+                        }
+                    }
                 })
                 .collect()
         } else if node.kind == "GridLayout" {
@@ -1749,11 +1835,23 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             }
             rects.into_iter().map(grid::Placement::plain).collect()
         } else if matches!(node.kind, "ScrollView" | "Flickable") {
-            let (rects, x, y) = self.scroll_view_children(node, bounds, enabled);
+            let (rects, x, y) =
+                self.scroll_view_children(node, bounds, enabled, horizontal_scroll_reversed);
             horizontal_scroll = Some(x);
             scroll = Some(y);
             rects.into_iter().map(grid::Placement::plain).collect()
-        } else if let Some(placements) = row_children {
+        } else if let Some((tree, _)) = tree_parts {
+            node.children
+                .iter()
+                .map(|child| {
+                    grid::Placement::plain(if child.kind == "TreeDisclosure" {
+                        tree.indicator
+                    } else {
+                        self.absolute_child(child, tree.content)
+                    })
+                })
+                .collect()
+        } else if let Some(grid::RowPlacements::Cells(placements)) = row_children {
             placements
                 .into_iter()
                 .map(|cell| grid::Placement {
@@ -1822,6 +1920,17 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 let clip = region
                     .as_ref()
                     .map_or(clip, |region| clip.intersect(region.clip));
+                let clip = view_cells::list_body_clip(
+                    clip,
+                    list_section_headers.as_deref().unwrap_or_default(),
+                );
+                let (clip, visible) = match tree_parts {
+                    Some((tree, has_children)) if child.kind == "TreeDisclosure" => {
+                        (clip.intersect(tree.indicator), visible && has_children)
+                    }
+                    Some((tree, _)) => (clip.intersect(tree.content), visible),
+                    None => (clip, visible),
+                };
                 let outer_shapes = placement
                     .clip
                     .as_ref()
@@ -1932,7 +2041,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .filter(|_| node.application_window)
                 .map(|page| Box::new(page.body)),
             scroll,
+            list_section_headers,
             horizontal_scroll,
+            horizontal_scroll_reversed,
             viewport_handle: node.viewport_handle.clone(),
             nested_list: node
                 .list_row_renderer
@@ -2042,7 +2153,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 |anchor| anchor.selection_changed(node),
             )
         {
-            return axis.revealing(cells.top(index) as f32, cells.height(index), height);
+            return cells.reveal(axis, index, height);
         }
         anchor
             .and_then(|anchor| anchor.restore(node, cells, requested.unwrap_or_default()))
@@ -2054,6 +2165,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         node: &Node,
         viewport: Rect,
         enabled: bool,
+        horizontal_reversed: bool,
     ) -> (Vec<Rect>, ScrollLayout, ScrollLayout) {
         // Keep percentage constraints tied to the viewport or explicit content size,
         // so an overflowing child cannot enlarge its own percentage reference.
@@ -2106,22 +2218,30 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .input
                 .zip(node.viewport_handle.as_ref())
                 .map_or(0.0, |(input, handle)| input.visual_overscroll(handle, axis));
-            let scroll = if axis == Orientation::Horizontal {
-                horizontal
+            let (scroll, logical_offset) = if axis == Orientation::Horizontal {
+                (
+                    horizontal,
+                    if horizontal_reversed { -offset } else { offset },
+                )
             } else {
-                vertical
+                (vertical, offset)
             };
             if scroll.max_offset > 0.0
-                && ((offset < 0.0 && scroll.offset == 0.0)
-                    || (offset > 0.0 && scroll.offset == scroll.max_offset))
+                && ((logical_offset < 0.0 && scroll.offset == 0.0)
+                    || (logical_offset > 0.0 && scroll.offset == scroll.max_offset))
             {
                 offset
             } else {
                 0.0
             }
         };
+        let physical_x = if horizontal_reversed {
+            horizontal.max_offset - horizontal.offset
+        } else {
+            horizontal.offset
+        };
         let origin = Point {
-            x: viewport.x - horizontal.offset - elastic_offset(Orientation::Horizontal),
+            x: viewport.x - physical_x - elastic_offset(Orientation::Horizontal),
             y: viewport.y - vertical.offset - elastic_offset(Orientation::Vertical),
         };
         let rects = node

@@ -84,6 +84,13 @@ impl ReloadableInstance {
         if !is_current() {
             return Ok(false);
         }
+        #[cfg(all(feature = "live-reload", unix))]
+        if let Some(trace) = self.current().trace() {
+            trace.reloaded();
+            next.attach_trace(trace.clone());
+        }
+        #[cfg(all(feature = "live-reload", unix))]
+        self.inspector().advance_generation();
         let previous = self.0.current.replace(next);
         self.0.replaced.set(true);
         drop(previous);
@@ -156,7 +163,7 @@ impl Component for ReloadableInstance {
     fn window_inspector(&self, scene: &Rc<Node>) -> Option<xrack_runtime::WindowInspector> {
         let inspector = self.inspector();
         if !inspector.attached() {
-            return None;
+            return inspector.observing().then(|| inspector.clone());
         }
         if !inspector.matches_scene(scene) {
             crate::live_inspect::sync_targets(&self.current(), scene, inspector);

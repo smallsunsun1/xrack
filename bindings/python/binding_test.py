@@ -65,6 +65,29 @@ class BindingTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertEqual(self.ui.get("query"), "XRack")
 
+    def test_int_lists_round_trip_through_values_and_callbacks(self) -> None:
+        source = """
+            export component App inherits Window {
+                in-out property <[int]> values: [1, 2];
+                out property <int> first: Model.at(root.values, 0, -1);
+                pure callback echo([int]) -> [int];
+                echo(keys) => { keys }
+            }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "int-lists.xr"
+            path.write_text(source, encoding="utf-8")
+            ui = xrack.load_file(path).create("App")
+        self.assertEqual(ui.get("values"), [1, 2])
+        ui.set("values", [7, -3])
+        self.assertEqual(ui.get("first"), 7)
+        self.assertEqual(ui.invoke("echo", [8, 9]), [8, 9])
+        self.assertEqual(ui.invoke("echo", []), [])
+        ui.set("values", [])
+        self.assertEqual(ui.get("first"), -1)
+        with self.assertRaises(TypeError):
+            ui.set("values", [True])
+
     def test_async_handler_requires_void_callback(self) -> None:
         async def label(value: str) -> str:
             return value

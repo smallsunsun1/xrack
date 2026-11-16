@@ -4,7 +4,7 @@
 
 ## 在 Cargo 项目中使用 XRack
 
-以下接入方式适用于 XRack `0.5.1`。`xrack` 提供组件、模型、桌面宿主及布局、渲染和资源模块，`xrack-build` 在 Cargo 的构建阶段编译 `.xr`。
+以下接入方式适用于 XRack `0.6.0`。`xrack` 提供组件、模型、桌面宿主及布局、渲染和资源模块，`xrack-build` 在 Cargo 的构建阶段编译 `.xr`。
 
 使用 Rust 1.99.1 或更新版本新建应用。
 
@@ -18,10 +18,10 @@ mkdir ui
 
 ```toml
 [dependencies]
-xrack = "=0.5.1"
+xrack = "=0.6.0"
 
 [build-dependencies]
-xrack-build = "=0.5.1"
+xrack-build = "=0.6.0"
 ```
 
 将界面保存为 `ui/app.xr`。
@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```toml
 [dependencies]
-xrack = { version = "=0.5.1", features = ["media"] }
+xrack = { version = "=0.6.0", features = ["media"] }
 ```
 
 媒体库随应用可执行文件携带。平台为 macOS arm64、Linux GNU arm64/x64 和 Windows MSVC arm64/x64。自建宿主调用 `xrack::install_media()` 注册后端。需要替换媒体库时，可将 `XRACK_MEDIA_LIBRARY` 指向兼容库的绝对路径。发布页附有对应的 FFmpeg 源码和构建配置。 [控件用法](controls.md#mediaplayer)

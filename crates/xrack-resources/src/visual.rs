@@ -198,6 +198,7 @@ pub fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, T
             .is_none()
             .then_some(("check-state", Type::CheckState))
     } else if element.attr("kind").is_ok_and(is_toggle)
+        || xrack_mlir::has_button_check_state(element)
         || matches!(
             element.attr("kind"),
             Ok("MenuItem" | "Action" | "DelayButton" | "GroupBox")

@@ -1,5 +1,5 @@
-use crate::Rect;
-use xrack_runtime::Node;
+use crate::{LayoutNode, Rect, place_in_direction};
+use xrack_runtime::{LayoutDirection, Node};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TreeRowGeometry {
@@ -9,6 +9,18 @@ pub struct TreeRowGeometry {
 
 impl TreeRowGeometry {
     pub fn new(node: &Node, bounds: Rect) -> Option<Self> {
+        Self::with_layout_direction(node, bounds, node.layout_direction().unwrap_or_default())
+    }
+
+    pub fn for_layout(node: &Node, layout: &LayoutNode) -> Option<Self> {
+        Self::with_layout_direction(node, layout.bounds, layout.layout_direction)
+    }
+
+    pub(crate) fn with_layout_direction(
+        node: &Node,
+        bounds: Rect,
+        direction: LayoutDirection,
+    ) -> Option<Self> {
         let depth = node.int("tree-depth")?.max(0) as f32;
         let indentation = node
             .length("tree-indentation")
@@ -24,6 +36,9 @@ impl TreeRowGeometry {
             (bounds.width - indent - indicator_width).max(0.0),
             bounds.height,
         );
-        Some(Self { indicator, content })
+        Some(Self {
+            indicator: place_in_direction(indicator, bounds, direction),
+            content: place_in_direction(content, bounds, direction),
+        })
     }
 }

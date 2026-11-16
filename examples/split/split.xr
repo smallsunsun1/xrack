@@ -18,6 +18,9 @@ component DetailSplit inherits SplitView {
 }
 
 export component SplitDemo inherits Window {
+    in-out property <bool> rtl: false;
+    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+
     title: "XRack · 分栏工作区";
     width: 760px;
     height: 420px;
@@ -75,6 +78,9 @@ export component SplitDemo inherits Window {
 }
 
 export component CustomSplitDemo inherits Window {
+    in-out property <bool> rtl: false;
+    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+
     title: "XRack · 自定义分隔条";
     width: 640px; height: 240px;
     in property <bool> show-center: true;
@@ -114,6 +120,9 @@ export component CustomSplitDemo inherits Window {
 }
 
 export component FillSplitDemo inherits Window {
+    in-out property <bool> rtl: false;
+    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+
     title: "XRack · 固定侧栏";
     width: 680px; height: 320px;
     background: #182331;
@@ -136,6 +145,10 @@ export component FillSplitDemo inherits Window {
                 clicked() => { work.restore-state(root.saved-layout); }
             }
             toggle := CheckBox { text: "显示编辑区"; checked <=> root.show-editor; }
+            direction := Button {
+                text: root.rtl ? "RTL · 切换方向" : "LTR · 切换方向";
+                clicked => { root.rtl = !root.rtl; }
+            }
         }
         work := SplitView {
             fill-pane: editor;

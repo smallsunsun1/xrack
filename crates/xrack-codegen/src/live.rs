@@ -117,6 +117,7 @@ fn value_variant(ty: &Type) -> Result<Ident, String> {
         Type::Float => "Float",
         Type::String => "String",
         Type::StringList => "StringList",
+        Type::IntList => "IntList",
         Type::Length => "Length",
         Type::Color => "Color",
         _ => {
@@ -149,7 +150,7 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
         let reset = format_ident!("reset_{name_rust}");
         methods.extend(quote! {
             pub fn #set(&mut self, value: #rust_type) {
-                self.__xr_component().current().set(#name, value.into()).unwrap();
+                self.__xr_component().current().set(#name, ::xrack_runtime::Value::#variant(value)).unwrap();
             }
 
             pub fn #reset(&mut self) {
@@ -157,18 +158,31 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
             }
         });
     }
-    if ty == Type::StringList {
+    if matches!(ty, Type::StringList | Type::IntList) {
         let model = format_ident!("model_{name_rust}");
+        let (item, access, value) = if ty == Type::IntList {
+            (
+                quote!(::core::primitive::i64),
+                quote!(int_model),
+                quote!(::xrack_runtime::Value::IntModel(model)),
+            )
+        } else {
+            (
+                quote!(::std::string::String),
+                quote!(string_model),
+                quote!(model.into()),
+            )
+        };
         methods.extend(quote! {
-            pub fn #model(&self) -> ::xrack_runtime::VecModel<::std::string::String> {
-                self.__xr_component().current().string_model(#name).unwrap()
+            pub fn #model(&self) -> ::xrack_runtime::VecModel<#item> {
+                self.__xr_component().current().#access(#name).unwrap()
             }
         });
         if writable {
             let bind = format_ident!("bind_model_{name_rust}");
             methods.extend(quote! {
-                pub fn #bind(&mut self, model: ::xrack_runtime::VecModel<::std::string::String>) {
-                    self.__xr_component().current().set(#name, model.into()).unwrap();
+                pub fn #bind(&mut self, model: ::xrack_runtime::VecModel<#item>) {
+                    self.__xr_component().current().set(#name, #value).unwrap();
                 }
             });
         }
@@ -202,7 +216,7 @@ fn callback_methods(callback: OperationRef<'_>) -> Result<TokenStream, String> {
         let variant = value_variant(ty)?;
         (
             quote!(::core::result::Result::Ok(::core::option::Option::Some(
-                value.into()
+                ::xrack_runtime::Value::#variant(value)
             ))),
             quote! {
                 match result {
@@ -249,7 +263,7 @@ fn callback_methods(callback: OperationRef<'_>) -> Result<TokenStream, String> {
 
         pub fn #invoke(&mut self #(, #args: #types)*) -> #returns {
             let result = self.__xr_component().current()
-                .invoke(#name, &[#(#args.into()),*]).unwrap();
+                .invoke(#name, &[#(::xrack_runtime::Value::#variants(#args)),*]).unwrap();
             #unpack
         }
     })

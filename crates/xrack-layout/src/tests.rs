@@ -470,6 +470,72 @@ fn elastic_drag_bubbles_first_and_rebounds_on_the_outer_viewport() {
 }
 
 #[test]
+fn rtl_flickable_keeps_the_physical_elastic_motion_and_reports_logical_overshoot() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{FlickBoundsBehavior, LayoutDirection, Orientation, ViewportHandle};
+
+    let handle = ViewportHandle::for_flickable(true);
+    let mut view = node("Flickable", "rtl");
+    view.viewport_handle = Some(handle.clone());
+    view.properties
+        .insert("layout-direction", LayoutDirection::RightToLeft.into());
+    view.properties.insert(
+        "bounds-behavior",
+        FlickBoundsBehavior::DragOverBounds.into(),
+    );
+    length(&mut view, "content-width", 480.0);
+    let mut mark = node("Rectangle", "mark");
+    length(&mut mark, "x", 400.0);
+    length(&mut mark, "width", 80.0);
+    view.children.push(mark);
+
+    let size = Size::new(160.0, 100.0);
+    let mut input = Interaction::default();
+    let frame = layout_with_input(&view, size, &mut Text, &input);
+    let x = frame.children[0].bounds.x;
+    assert_eq!(x, 80.0);
+    let start = Point { x: 90.0, y: 50.0 };
+    let end = Point { x: 40.0, y: 50.0 };
+    let now = Instant::now();
+    assert!(input.begin_scroll_gesture(&view, &frame, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&view, &frame, end, now + Duration::from_millis(20)));
+    assert!(handle.horizontal_overshoot().0 < 0.0);
+    let dragged = layout_with_input(&view, size, &mut Text, &input);
+    assert_eq!(
+        dragged.scroll_on(Orientation::Horizontal).unwrap().offset,
+        0.0
+    );
+    assert!(dragged.children[0].bounds.x < x);
+
+    input.end_scroll_gesture(&view, &dragged, end, now + Duration::from_millis(40));
+    assert!(handle.rebounding());
+    assert!(input.advance_scroll_motion(&view, &dragged, now + Duration::from_millis(250)));
+    assert_eq!(handle.horizontal_overshoot(), Length(0.0));
+    assert_eq!(
+        layout_with_input(&view, size, &mut Text, &input).children[0]
+            .bounds
+            .x,
+        x
+    );
+
+    let frame = layout_with_input(&view, size, &mut Text, &input);
+    assert!(input.begin_scroll_gesture(
+        &view,
+        &frame,
+        start,
+        now + Duration::from_millis(300),
+        ScrollGestureKind::Touch
+    ));
+    assert!(input.move_scroll_gesture(&view, &frame, end, now + Duration::from_millis(340)));
+    view.properties
+        .insert("layout-direction", LayoutDirection::LeftToRight.into());
+    let flipped = layout_with_input(&view, size, &mut Text, &input);
+    input.reconcile(&view, &flipped);
+    assert_eq!(handle.horizontal_overshoot(), Length(0.0));
+    assert_eq!(flipped.children[0].bounds.x, 400.0);
+}
+
+#[test]
 fn flick_only_overshoot_starts_at_the_inertial_boundary() {
     use std::time::{Duration, Instant};
     use xrack_runtime::{FlickBoundsBehavior, Orientation, ViewportHandle};
@@ -1719,6 +1785,92 @@ fn nested_scroll_views_pass_only_unconsumed_motion_to_the_parent() {
 }
 
 #[test]
+fn rtl_scroll_view_bubbles_physical_wheel_remainders_through_an_ltr_child() {
+    use xrack_runtime::{LayoutDirection, Orientation};
+
+    let mut outer = node("ScrollView", "outer");
+    let mut inner = node("ScrollView", "inner");
+    outer
+        .properties
+        .insert("layout-direction", LayoutDirection::RightToLeft.into());
+    inner
+        .properties
+        .insert("layout-direction", LayoutDirection::LeftToRight.into());
+    for (property, value) in [
+        ("x", 370.0),
+        ("width", 100.0),
+        ("height", 80.0),
+        ("content-width", 180.0),
+    ] {
+        length(&mut inner, property, value);
+    }
+    length(&mut outer, "content-width", 500.0);
+    outer.children.push(inner);
+    let size = Size::new(160.0, 120.0);
+    let render = |input: &Interaction| layout_with_input(&outer, size, &mut Text, input);
+    let mut input = Interaction::default();
+    let frame = render(&input);
+    assert_eq!(frame.children[0].bounds.x, 30.0);
+    assert!(input.accessibility_scroll_to(&frame, &[0], Orientation::Horizontal, 35.0));
+    let frame = render(&input);
+    input.pointer_move(&outer, &frame, Point { x: 90.0, y: 35.0 });
+    assert!(input.scroll_x(&frame, -120.0));
+    assert_eq!(input.horizontal_scroll_offsets().get(&[0][..]), Some(&0.0));
+    assert_eq!(input.horizontal_scroll_offsets().get(&[][..]), Some(&85.0));
+
+    let frame = render(&input);
+    assert_eq!(frame.children[0].bounds.x, 115.0);
+    input.pointer_move(&outer, &frame, Point { x: 135.0, y: 35.0 });
+    assert!(input.scroll_x(&frame, 100.0));
+    assert_eq!(input.horizontal_scroll_offsets().get(&[0][..]), Some(&80.0));
+    assert_eq!(input.horizontal_scroll_offsets().get(&[][..]), Some(&65.0));
+}
+
+#[test]
+fn reversing_a_scroll_view_during_a_thumb_drag_preserves_its_offset() {
+    use xrack_runtime::{LayoutDirection, Orientation};
+
+    let mut view = node("ScrollView", "canvas");
+    view.properties
+        .insert("layout-direction", LayoutDirection::RightToLeft.into());
+    length(&mut view, "content-width", 400.0);
+    let size = Size::new(200.0, 100.0);
+    let mut input = Interaction::default();
+    let frame = layout_with_input(&view, size, &mut Text, &input);
+    assert!(input.accessibility_scroll_to(&frame, &[], Orientation::Horizontal, 30.0));
+    let frame = layout_with_input(&view, size, &mut Text, &input);
+    let bar = frame.scroll_bars(&view).next().unwrap();
+    let start = Point {
+        x: bar.thumb.x + 12.0,
+        y: bar.thumb.y + 5.0,
+    };
+    input.pointer_move(&view, &frame, start);
+    assert!(matches!(
+        input.scroll_bar_press(&view, &frame),
+        Some(ScrollBarUpdate::Unchanged)
+    ));
+
+    view.properties
+        .insert("layout-direction", LayoutDirection::LeftToRight.into());
+    let frame = layout_with_input(&view, size, &mut Text, &input);
+    input.reconcile(&view, &frame);
+    input.pointer_move(
+        &view,
+        &frame,
+        Point {
+            x: start.x + 30.0,
+            y: start.y,
+        },
+    );
+    assert!(matches!(
+        input.scroll_bar_drag(&view, &frame),
+        Some(ScrollBarUpdate::Unchanged)
+    ));
+    input.release_scroll_bar(&view, &frame);
+    assert_eq!(input.horizontal_scroll_offsets().get(&[][..]), Some(&30.0));
+}
+
+#[test]
 fn accessibility_scroll_delivery_does_not_follow_a_replaced_viewport() {
     use xrack_runtime::{Orientation, ViewportHandle};
 
@@ -2862,4 +3014,49 @@ fn vertical_touch_on_a_switch_track_scrolls_the_viewport() {
     let release = input.end_scroll_gesture(&view, &frame, end, now + Duration::from_millis(60));
     assert!(release.control.is_none() && !release.tap);
     assert!(input.scroll_offsets().values().any(|offset| *offset > 0.0));
+}
+
+#[test]
+fn rtl_table_passes_unconsumed_horizontal_wheel_motion_to_its_ltr_parent() {
+    use xrack_runtime::{LayoutDirection, TableHeader};
+
+    let mut outer = node("ScrollView", "outer");
+    length(&mut outer, "content-width", 600.0);
+    let mut table = node("TableView", "table");
+    length(&mut table, "x", 140.0);
+    length(&mut table, "width", 220.0);
+    length(&mut table, "height", 110.0);
+    table
+        .properties
+        .insert("layout-direction", LayoutDirection::RightToLeft.into());
+    let columns = (0..2)
+        .map(|_| {
+            let mut column = Node::new("TableColumn", None);
+            length(&mut column, "width", 150.0);
+            column
+        })
+        .collect();
+    table.table_header = Some(Box::new(TableHeader {
+        columns,
+        sort: None,
+        column_widths: vec![],
+    }));
+    outer.children.push(table);
+    let viewport = Size::new(320.0, 140.0);
+    let mut input = Interaction::default();
+    let frame = layout_with_input(&outer, viewport, &mut Text, &input);
+    assert!(input.accessibility_scroll_to(&frame, &[], Orientation::Horizontal, 100.0));
+    let frame = layout_with_input(&outer, viewport, &mut Text, &input);
+    let table = frame.child_at(0).unwrap().bounds;
+    input.pointer_move(
+        &outer,
+        &frame,
+        Point {
+            x: table.x + 20.0,
+            y: table.y + 12.0,
+        },
+    );
+    assert!(input.scroll_x(&frame, -120.0));
+    assert_eq!(input.horizontal_scroll_offsets()[&[0][..]], 80.0);
+    assert_eq!(input.horizontal_scroll_offsets()[&[][..]], 60.0);
 }

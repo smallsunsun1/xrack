@@ -361,12 +361,20 @@ fn paint_only_updates_replace_the_scene_without_resolving_layout() {
     let mut cache = FrameCache::default();
     let (_, original) = prepare(&mut cache, scene(0x112233ff, 40.0), false);
     let recolored = scene(0x445566ff, 40.0);
-    let (painted, reused) = prepare(&mut cache, recolored.clone(), false);
-    assert!(Rc::ptr_eq(&painted, &recolored));
-    assert!(Rc::ptr_eq(&original, &reused));
+    let paint = xrack_runtime::update_profile::measure(|| {
+        let (painted, reused) = prepare(&mut cache, recolored.clone(), false);
+        assert!(Rc::ptr_eq(&painted, &recolored));
+        assert!(Rc::ptr_eq(&original, &reused));
+    })
+    .unwrap();
+    assert_eq!((paint.layout_runs, paint.layout_reuses), (0, 1));
     assert_eq!(resolves.get(), 1);
-    let (_, resized) = prepare(&mut cache, scene(0x445566ff, 80.0), false);
-    assert!(!Rc::ptr_eq(&original, &resized));
+    let resize = xrack_runtime::update_profile::measure(|| {
+        let (_, resized) = prepare(&mut cache, scene(0x445566ff, 80.0), false);
+        assert!(!Rc::ptr_eq(&original, &resized));
+    })
+    .unwrap();
+    assert_eq!((resize.layout_runs, resize.layout_reuses), (1, 0));
     assert_eq!(resolves.get(), 2);
 
     let mut materialized = FrameCache::default();
@@ -578,12 +586,19 @@ fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
     struct View {
         sizes: Option<Arc<[Option<f32>]>>,
         hide_middle: bool,
+        rtl: bool,
         edits: usize,
     }
 
     impl Component for View {
         fn render(&self) -> Node {
             let mut window = Node::new("Window", None);
+            if self.rtl {
+                window.properties.insert(
+                    "layout-direction",
+                    xrack_runtime::LayoutDirection::RightToLeft.into(),
+                );
+            }
             let mut view = Node::new("SplitView", Some("work"));
             view.properties.insert("width", Length(300.0).into());
             view.properties.insert("height", Length(100.0).into());
@@ -701,7 +716,15 @@ fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
     );
     assert_eq!(app.component.sizes.as_deref().unwrap()[0], Some(108.0));
 
-    frame(&mut app);
+    app.component.rtl = true;
+    let layout = frame(&mut app);
+    let mirrored = projection
+        .update(&app.scene, &layout, &app.input, 2.0, None)
+        .unwrap();
+    let (_, mirror_handle) = mirrored.nodes.iter().find(|(id, _)| *id == first).unwrap();
+    assert_eq!(mirror_handle.numeric_value(), Some(108.0));
+    assert_eq!(mirror_handle.controls(), &[navigation]);
+    assert!(mirror_handle.bounds().unwrap().x0 > splitter.bounds().unwrap().x0);
     app.accessibility_action(
         route.clone(),
         request(
@@ -1163,6 +1186,94 @@ fn native_touch_adapter_activates_taps_and_keeps_pans_out_of_click_dispatch() {
     );
     assert_eq!(app.component.0, 1);
     assert_eq!(app.input.scroll_offsets().get(&[][..]), Some(&0.0));
+}
+
+#[test]
+fn native_buttons_pair_mouse_and_touch_separately_after_both_clicks() {
+    use xrack_layout::{TextMeasurer, layout_with_input};
+    use xrack_runtime::Length;
+
+    #[derive(Default)]
+    struct View {
+        events: Vec<String>,
+    }
+
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut root = Node::new("Window", None);
+            let mut button = Node::new("Button", Some("button"));
+            button.properties.insert("width", Length(120.0).into());
+            button.properties.insert("height", Length(72.0).into());
+            root.children.push(button);
+            root
+        }
+
+        fn dispatch(&mut self, id: &str, event: &str) -> bool {
+            if id == "button" && matches!(event, "clicked" | "double-clicked") {
+                self.events.push(event.to_owned());
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
+    app.layout = Some(Rc::new(layout_with_input(
+        &app.scene,
+        Size::new(180.0, 120.0),
+        &mut Measure,
+        &app.input,
+    )));
+    let point = Point { x: 30.0, y: 40.0 };
+    let start = Instant::now();
+    let mouse = |app: &mut Application<View>, time| {
+        app.input
+            .pointer_move(&app.scene, app.layout.as_ref().unwrap(), point);
+        app.left_pointer(ElementState::Pressed, None);
+        app.left_pointer(
+            ElementState::Released,
+            Some(PointerClick {
+                touch_device: None,
+                point,
+                time,
+            }),
+        );
+    };
+    let touch = |app: &mut Application<View>, id, time| {
+        let device = DeviceId::dummy();
+        app.update_touch(device, id, TouchPhase::Started, point, time);
+        app.update_touch(
+            device,
+            id,
+            TouchPhase::Ended,
+            point,
+            time + Duration::from_millis(10),
+        );
+    };
+    mouse(&mut app, start);
+    mouse(&mut app, start + Duration::from_millis(100));
+    assert_eq!(
+        app.component.events,
+        ["clicked", "clicked", "double-clicked"]
+    );
+
+    app.component.events.clear();
+    touch(&mut app, 1, start + Duration::from_millis(200));
+    mouse(&mut app, start + Duration::from_millis(250));
+    touch(&mut app, 2, start + Duration::from_millis(300));
+    touch(&mut app, 3, start + Duration::from_millis(380));
+    assert_eq!(
+        app.component.events,
+        ["clicked", "clicked", "clicked", "clicked", "double-clicked"]
+    );
 }
 
 #[test]

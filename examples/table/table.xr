@@ -522,3 +522,151 @@ export component TableSortViewsDemo inherits Window {
         }
     }
 }
+
+export component DirectionalTableDemo inherits Window {
+    title: "XRack · 表格方向";
+    width: 520px; height: 300px;
+    background: #182331;
+    in-out property <bool> rtl: true;
+    in-out property <[InventoryRow]> inventory: [
+        InventoryRow { name: "路由器", units: 12, available: true, refreshed: Time { hour: 8 } },
+        InventoryRow { name: "交换机", units: 26, available: true, refreshed: Time { hour: 9 } },
+        InventoryRow { name: "网关", units: 7, available: false, refreshed: Time { hour: 10 } },
+    ];
+    out property <int> column: table.current-column;
+    out property <length> offset: table.content-x;
+
+    flip := Button {
+        x: 20px; y: 18px; width: 164px; height: 32px;
+        text: root.rtl ? "从右到左 · 切换" : "从左到右 · 切换";
+        clicked => { root.rtl = !root.rtl; }
+    }
+    reveal := Button {
+        x: 200px; y: 18px; width: 148px; height: 32px;
+        text: "定位到刷新时间";
+        clicked => { table.position-view-at-column(3, contain); }
+    }
+    Rectangle {
+        x: 20px; y: 62px; width: 480px; height: 218px;
+        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        table := StandardTableView {
+            width: 480px; height: 174px;
+            accessible-name: "库存表";
+            model: root.inventory;
+            selection-target: cells;
+            multi-select: true;
+            drag-select: true;
+            row-height: 34px;
+            row-header-width: 56px;
+            frozen-columns: 1;
+            movable-columns: true;
+            resizable-columns: true;
+            edit-on-typing: true;
+            edit-on-tab: true;
+            TableColumn { title: "设备"; field: "name"; width: 128px; min-width: 100px; max-width: 220px; }
+            TableColumn { title: "数量"; field: "units"; width: 120px; editable: true; }
+            TableColumn { title: "可用"; field: "available"; width: 106px; }
+            TableColumn { title: "刷新时间"; field: "refreshed"; width: 164px; }
+        }
+        status := Text {
+            x: 0px; y: 188px;
+            text: "当前逻辑列 " + root.column + " · 位移 " + (root.offset / 1px);
+        }
+    }
+}
+
+struct KeyedTableRecord {
+    id: int,
+    label: string,
+    shown: bool,
+}
+
+export component KeyedTableDemo inherits Window {
+    title: "XRack · 表格业务键选区";
+    width: 720px; height: 320px;
+    in-out property <[KeyedTableRecord]> records: [
+        KeyedTableRecord { id: 10, label: "规划", shown: true },
+        KeyedTableRecord { id: 20, label: "草稿", shown: false },
+        KeyedTableRecord { id: 30, label: "实现", shown: true },
+        KeyedTableRecord { id: 40, label: "审阅", shown: true },
+    ];
+    in-out property <string> query: "";
+    in-out property <int> current: -1;
+    in-out property <int> lookup-key: 20;
+    in-out property <SelectionTarget> mode: SelectionTarget.rows;
+    in-out property <bool> multiple: true;
+    out property <[int]> source-keys: source-table.selected-keys;
+    out property <[int]> target-keys: target-table.selected-keys;
+    out property <[int]> saved: [];
+    out property <int> target-count: target-table.selection-count;
+    out property <int> found-row: target-table.view-index-for-key(root.lookup-key);
+    out property <length> target-offset: target-table.content-y;
+
+    callback choose([int]);
+    choose(keys) => { source-table.select-keys(keys); }
+    callback transfer();
+    transfer => {
+        root.saved = source-table.selected-keys;
+        target-table.select-keys(root.saved);
+    }
+    callback restore();
+    restore => {
+        source-table.select-keys(root.saved);
+        target-table.select-keys(root.saved);
+    }
+    callback clear();
+    clear => { source-table.clear-selection(); target-table.clear-selection(); }
+    callback sort-by-id();
+    sort-by-id => { target-table.sort-by(0, true); }
+    callback select-target(int);
+    select-target(key) => { target-table.select-key(key); }
+    callback scroll-to-key(int);
+    scroll-to-key(key) => { target-table.position-view-at-key(key, ScrollAlignment.end); }
+    callback mark-cell();
+    mark-cell => { target-table.select-cell(0, 1); }
+    callback mark-column();
+    mark-column => { target-table.select-column(1); }
+
+    VerticalLayout {
+        padding: 18px; spacing: 10px;
+        HorizontalLayout {
+            spacing: 6px;
+            choose-keys := Button { text: "选中草稿和实现"; clicked => { root.choose([20, 30]); } }
+            transfer-keys := Button { text: "保存并同步"; clicked => { root.transfer(); } }
+            clear-keys := Button { text: "清空"; clicked => { root.clear(); } }
+            restore-keys := Button { text: "恢复"; clicked => { root.restore(); } }
+            sort-keys := Button { text: "按编号倒序"; clicked => { root.sort-by-id(); } }
+            scroll-key := Button { text: "滚到 40"; clicked => { root.scroll-to-key(40); } }
+        }
+        key-filter := SearchField { text <=> root.query; placeholder-text: "筛选右侧表格"; }
+        HorizontalLayout {
+            spacing: 12px;
+            height: 132px; max-height: 132px;
+            source-table := TableView {
+                accessible-name: "自定义表格 · 隐藏草稿";
+                row-key-field: "id"; row-visible-field: "shown";
+                multi-select: true; row-height: 36px;
+                TableColumn { title: "业务键"; width: 90px; }
+                TableColumn { title: "任务"; width: 170px; }
+                for row in root.records : TableRow {
+                    TableCell { text: "" + row.id; }
+                    TableCell { text: row.label; }
+                }
+            }
+            target-table := StandardTableView {
+                accessible-name: "可排序和筛选的标准表格";
+                model: root.records; row-key-field: "id"; row-height: 36px;
+                auto-sort: true; filter-field: "label"; filter-text: root.query;
+                multi-select: root.multiple; selection-target: root.mode;
+                current-row <=> root.current; follow-current: false;
+                TableColumn { title: "业务键"; field: "id"; width: 90px; sortable: true; }
+                TableColumn { title: "任务"; field: "label"; width: 170px; }
+            }
+        }
+        keyed-status := Label {
+            text: "左侧选中 " + Model.count(root.source-keys)
+                + " · 右侧选中 " + root.target-count + " · 键 " + root.lookup-key
+                + " 的显示行 " + root.found-row;
+        }
+    }
+}

@@ -10,6 +10,207 @@ fn analyze(source: &str) -> Result<ir::Module, String> {
 }
 
 #[test]
+fn repeat_button_properties_are_typed_and_restricted_to_push_buttons() {
+    for kind in ["Button", "ToolButton", "RoundButton"] {
+        let source = format!(
+            r#"
+            component App inherits Window {{
+                {kind} {{ auto-repeat: true; auto-repeat-delay: 200; auto-repeat-interval: 75; }}
+            }}
+        "#
+        );
+        let compiled = compile(&source, "button-repeat.xr").unwrap();
+        assert!(compiled.mlir.contains("name = \"auto-repeat-interval\""));
+        for (from, to) in [
+            ("auto-repeat: true", "auto-repeat: 1"),
+            ("auto-repeat-delay: 200", "auto-repeat-delay: 2px"),
+            ("auto-repeat-interval: 75", "auto-repeat-interval: false"),
+        ] {
+            assert!(compile(&source.replace(from, to), "button-repeat.xr").is_err());
+        }
+        let invalid = compiled
+            .mlir
+            .replace(&format!("kind = \"{kind}\""), "kind = \"CheckBox\"");
+        assert_ne!(invalid, compiled.mlir);
+        assert!(mlir::Module::parse(&invalid).is_err());
+    }
+}
+
+#[test]
+fn push_button_press_and_hold_is_a_typed_zero_argument_event() {
+    for kind in ["Button", "RoundButton", "ToolButton"] {
+        let source = format!(
+            r#"
+            component App inherits Window {{
+                in-out property <int> holds: 0;
+                target := {kind} {{
+                    press-and-hold-interval: 550;
+                    press-and-hold => {{ root.holds += 1; }}
+                }}
+            }}
+        "#
+        );
+        let compiled = compile(&source, "button-hold.xr").unwrap();
+        assert!(compiled.mlir.contains("name = \"press-and-hold-interval\""));
+        assert!(compiled.mlir.contains("name = \"press-and-hold\""));
+        assert!(compiled.rust.to_string().contains("press_and_hold_handler"));
+        for (from, to) in [
+            (
+                "press-and-hold-interval: 550",
+                "press-and-hold-interval: 550px",
+            ),
+            ("press-and-hold =>", "press-and-hold(key) =>"),
+        ] {
+            assert!(compile(&source.replace(from, to), "button-hold.xr").is_err());
+        }
+        let invalid = compiled
+            .mlir
+            .replace(&format!("kind = \"{kind}\""), "kind = \"CheckBox\"");
+        assert_ne!(invalid, compiled.mlir);
+        assert!(mlir::Module::parse(&invalid).is_err());
+    }
+}
+
+#[test]
+fn push_buttons_accept_zero_argument_double_click_handlers() {
+    for kind in ["Button", "RoundButton", "ToolButton"] {
+        let source = format!(
+            r#"
+            component App inherits Window {{
+                command := Action {{}}
+                target := {kind} {{ action: command; double-clicked => {{}} }}
+            }}
+        "#
+        );
+        let compiled = compile(&source, "button-double-click.xr").unwrap();
+        assert!(compiled.mlir.contains("name = \"double-clicked\""));
+        assert!(
+            compile(
+                &source.replace("double-clicked =>", "double-clicked(value) =>"),
+                "button-double-click.xr"
+            )
+            .is_err()
+        );
+        let invalid = compiled
+            .mlir
+            .replace(&format!("kind = \"{kind}\""), "kind = \"CheckBox\"");
+        assert_ne!(compiled.mlir, invalid);
+        assert!(mlir::Module::parse(&invalid).is_err());
+    }
+}
+
+#[test]
+fn push_button_pressed_is_a_typed_read_only_state_property() {
+    let source = r#"
+        component App inherits Window {
+            out property <bool> down: button.pressed;
+            button := Button {}
+        }
+    "#;
+    let compiled = compile(source, "pressed.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.button_pressed\""));
+    assert!(compiled.rust.to_string().contains("button_press_handle"));
+    for invalid in [
+        source.replace("Button {}", "Button { pressed: true; }"),
+        source.replace("Button {}", "Label {}"),
+    ] {
+        assert!(compile(&invalid, "pressed.xr").is_err());
+    }
+    let invalid = compiled
+        .mlir
+        .replace("kind = \"Button\"", "kind = \"Label\"");
+    assert!(mlir::Module::parse(&invalid).is_err());
+}
+
+#[test]
+fn push_button_groups_validate_membership_and_state_ownership() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <bool> checked: false;
+            modes := ButtonGroup { current-value: "list"; }
+            flags := ButtonGroup { exclusive: false; }
+            command := Action {}
+            ToolButton { group: modes; value: "list"; }
+            RoundButton { group: modes; value: "grid"; checkable: true; }
+            Button { group: flags; checked <=> root.checked; }
+        }
+    "#;
+    let compiled = compile(source, "button-groups.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.radio_group_ref\""));
+    assert!(compiled.mlir.contains("\"xr.check_group_ref\""));
+    for (from, to) in [
+        (
+            "group: modes; value: \"list\";",
+            "group: modes; checked: true;",
+        ),
+        (
+            "group: flags; checked <=> root.checked;",
+            "group: modes; checked <=> root.checked;",
+        ),
+        ("checkable: true;", "checkable: false;"),
+        (
+            "group: modes; value: \"list\";",
+            "group: modes; action: command;",
+        ),
+    ] {
+        assert!(compile(&source.replace(from, to), "button-groups.xr").is_err());
+    }
+}
+
+#[test]
+fn checkable_buttons_accept_boolean_bindings_and_zero_argument_toggle() {
+    for kind in ["Button", "ToolButton", "RoundButton"] {
+        let source = format!(
+            r#"
+            export component App inherits Window {{
+                in-out property <bool> pinned: false;
+                pin := {kind} {{ checkable: true; checked <=> root.pinned; toggled => {{}} }}
+            }}
+        "#
+        );
+        let compiled = compile(&source, "checkable-button.xr").unwrap();
+        assert!(compiled.mlir.contains("name = \"checked\""));
+        for (from, to) in [
+            ("checkable: true", "checkable: 1"),
+            ("toggled =>", "toggled(value) =>"),
+        ] {
+            assert!(compile(&source.replace(from, to), "checkable-button.xr").is_err());
+        }
+        let linked = source
+            .replace("pin :=", "command := Action {} pin :=")
+            .replace("checkable: true", "action: command");
+        assert!(compile(&linked, "checkable-button.xr").is_err());
+    }
+}
+
+#[test]
+fn push_button_lifecycle_handlers_use_zero_arguments_and_coexist_with_action() {
+    let source = r#"
+        component App inherits Window {
+            command := Action {}
+            button := ToolButton {
+                action: command;
+                pressed => {}
+                released => {}
+                canceled => {}
+            }
+        }
+    "#;
+    let compiled = compile(source, "button-lifecycle.xr").unwrap();
+    for event in ["pressed", "released", "canceled"] {
+        assert!(compiled.mlir.contains(&format!("name = \"{event}\"")));
+        assert!(
+            compile(
+                &source.replace(&format!("{event} =>"), &format!("{event}(arg) =>")),
+                "button-lifecycle.xr"
+            )
+            .is_err()
+        );
+    }
+    assert!(compiled.rust.to_string().contains("button_press_handle"));
+}
+
+#[test]
 fn scroll_controls_require_a_local_viewport_reference() {
     let source = r#"
         component App inherits Window {
@@ -5237,6 +5438,411 @@ fn tooltip_requires_one_attachment_and_exclusive_content() {
 }
 
 #[test]
+fn programmatic_list_selection_compiles_with_typed_queries_and_read_only_state() {
+    let source = r#"
+        component App inherits Window {
+            out property <int> count: list.selection-count;
+            out property <bool> found: list.is-row-selected(1);
+            callback choose();
+            choose => { list.select-row(1); list.toggle-row(0); list.select-all(); list.clear-selection(); }
+            list := StandardListView {
+                model: ["one", "two"];
+                multi-select: true;
+            }
+        }
+    "#;
+    let compiled = compile(source, "list-selection-api.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.list_row_selected\""));
+    assert!(compiled.mlir.contains("\"xr.table_selection_command\""));
+    assert!(compiled.mlir.contains("method = \"toggle-row\""));
+    let readonly = source.replace("multi-select: true", "selection-count: 2");
+    assert!(compile(&readonly, "list-selection-api.xr").is_err());
+    let bad_query = source.replace("is-row-selected(1)", "is-row-selected(true)");
+    assert!(compile(&bad_query, "list-selection-api.xr").is_err());
+    let pure = source.replace("callback choose();", "pure callback choose();");
+    assert!(compile(&pure, "list-selection-api.xr").is_err());
+}
+
+#[test]
+fn tree_selection_compiles_with_typed_queries_and_effects() {
+    let source = r#"
+        struct Branch { id: int, parent: int }
+        component App inherits Window {
+            in property <[Branch]> branches;
+            out property <int> count: tree.selection-count;
+            out property <bool> found: tree.is-key-selected(5) && tree.is-row-selected(0);
+            callback choose();
+            choose => {
+                tree.select-key(5);
+                tree.select-row(0);
+                tree.toggle-row(1);
+                tree.select-all();
+                tree.clear-selection();
+            }
+            tree := TreeView {
+                multi-select: true;
+                for row in root.branches : TreeRow { key: row.id; parent-key: row.parent; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "tree-selection.xr").unwrap();
+    for op in [
+        "\"xr.tree_query\"",
+        "\"xr.table_selection_read\"",
+        "\"xr.table_selection_command\"",
+        "\"xr.source_selection\"",
+    ] {
+        assert!(compiled.mlir.contains(op), "missing {op}");
+    }
+    for (from, to) in [
+        ("multi-select: true", "selection-count: 2"),
+        ("is-key-selected(5)", "is-key-selected(true)"),
+        ("tree.select-key(5)", "tree.select-column(5)"),
+        ("callback choose();", "pure callback choose();"),
+        ("multi-select: true", "multi-select: tree.has-selection"),
+    ] {
+        assert!(
+            compile(&source.replace(from, to), "tree-selection.xr").is_err(),
+            "{to}"
+        );
+    }
+    let invalid = compiled
+        .mlir
+        .replace("method = \"toggle-row\"", "method = \"select-column\"");
+    assert_ne!(invalid, compiled.mlir);
+    assert!(mlir::Module::parse(&invalid).is_err());
+}
+
+#[test]
+fn tree_batch_selection_uses_a_typed_integer_model() {
+    let source = r#"
+        struct Branch { id: int, parent: int }
+        export component App inherits Window {
+            in property <[Branch]> branches;
+            in property <[int]> keys: [9, 3];
+            out property <int> first: Model.at(tree.selected-keys, 0, -1);
+            callback choose();
+            choose => { tree.select-keys(root.keys); }
+            tree := TreeView {
+                multi-select: true;
+                for row in root.branches : TreeRow { key: row.id; parent-key: row.parent; }
+            }
+            for key in root.keys : Text { text: "" + key; }
+        }
+    "#;
+    let compiled = compile(source, "tree-key-batch.xr").unwrap();
+    for op in [
+        "!xr.intlist",
+        "\"xr.int_array\"",
+        "\"xr.tree_selection_keys\"",
+        "\"xr.model_at\"",
+    ] {
+        assert!(compiled.mlir.contains(op), "missing {op}");
+    }
+    for (from, to) in [
+        ("multi-select: true", "selected-keys: [9, 3]"),
+        (
+            "Model.at(tree.selected-keys, 0, -1)",
+            "Model.at(tree.selected-keys, 0, false)",
+        ),
+        ("select-keys(root.keys)", "select-keys(\"9\")"),
+        ("select-keys(root.keys)", "select-keys([9, \"3\"])"),
+        ("callback choose();", "pure callback choose();"),
+    ] {
+        assert!(
+            compile(&source.replace(from, to), "tree-key-batch.xr").is_err(),
+            "{to}"
+        );
+    }
+    let invalid = compiled
+        .mlir
+        .replace("method = \"select-keys\"", "method = \"select-key\"");
+    assert_ne!(invalid, compiled.mlir);
+    assert!(mlir::Module::parse(&invalid).is_err());
+}
+
+#[test]
+fn keyed_lists_share_typed_selection_snapshots_and_batch_commands() {
+    for (kind, rows) in [
+        (
+            "StandardListView",
+            "model: root.records; text-role: \"label\";",
+        ),
+        (
+            "ListView",
+            "for row in root.records : Text { text: row.label; }",
+        ),
+        (
+            "GridView",
+            "for row in root.records : Text { text: row.label; }",
+        ),
+    ] {
+        let source = format!(
+            r#"
+            struct ListKeyRow {{ id: int, label: string }}
+            export component App inherits Window {{
+                in property <[ListKeyRow]> records;
+                out property <[int]> saved: view.selected-keys;
+                callback restore();
+                restore => {{ view.select-keys(root.saved); }}
+                view := {kind} {{
+                    row-key-field: "id";
+                    {rows}
+                }}
+            }}
+        "#
+        );
+        let compiled = compile(&source, "list-key-batch.xr").unwrap();
+        assert!(compiled.mlir.contains("\"xr.list_selection_keys\""));
+        assert!(compiled.mlir.contains("method = \"select-keys\""));
+        let unkeyed = source.replace("row-key-field: \"id\";", "");
+        assert!(compile(&unkeyed, "list-key-batch.xr").is_err());
+        let invalid = compiled
+            .mlir
+            .replace("\"xr.list_selection_keys\"", "\"xr.tree_selection_keys\"");
+        assert!(mlir::Module::parse(&invalid).is_err());
+    }
+}
+
+#[test]
+fn keyed_tables_validate_role_and_projection_lookups() {
+    for (kind, rows) in [
+        (
+            "TableView",
+            "TableColumn {} for entry in root.items : TableRow { TableCell { text: entry.label; } }",
+        ),
+        (
+            "StandardTableView",
+            "model: root.items; TableColumn { field: \"label\"; }",
+        ),
+    ] {
+        let source = format!(
+            r#"
+            struct KeyedTableItem {{ id: int, label: string }}
+            export component App inherits Window {{
+                in property <[KeyedTableItem]> items;
+                out property <[int]> keys: grid.selected-keys;
+                out property <int> index: grid.view-index-for-key(123);
+                callback go();
+                go => {{
+                    grid.select-key(123);
+                    grid.select-keys([123, 42]);
+                    grid.position-view-at-key(42, ScrollAlignment.end);
+                }}
+                grid := {kind} {{ row-key-field: "id"; {rows} }}
+            }}
+        "#
+        );
+        let compiled = compile(&source, "keyed-table.xr").unwrap();
+        assert!(compiled.mlir.contains("\"xr.list_selection_keys\""));
+        assert!(compiled.mlir.contains("value = \"view-index-for-key\""));
+        assert!(compiled.mlir.contains("method = \"position-view-at-key\""));
+        assert!(
+            compile(
+                &source.replace("row-key-field: \"id\";", ""),
+                "keyed-table.xr"
+            )
+            .is_err()
+        );
+        assert!(
+            compile(
+                &source.replace("row-key-field: \"id\"", "row-key-field: \"label\""),
+                "keyed-table.xr"
+            )
+            .is_err()
+        );
+        let raw = compiled
+            .mlir
+            .replace("\"xr.list_selection_keys\"", "\"xr.tree_selection_keys\"");
+        assert_ne!(raw, compiled.mlir);
+        assert!(mlir::Module::parse(&raw).is_err());
+    }
+}
+
+#[test]
+fn live_integer_list_bindings_emit_explicit_runtime_values() {
+    let document = parse(
+        r#"
+        export component App inherits Window {
+            in-out property <[int]> numbers: [1, 2];
+            pure callback echo([int]) -> [int];
+            echo(keys) => { keys }
+        }
+    "#,
+    )
+    .unwrap();
+    let rust = xrack_compiler::generate_live_document(&document, "numbers.xr", None)
+        .unwrap()
+        .to_string();
+    assert!(rust.contains("Value :: IntList (value)"));
+    assert!(rust.contains("Value :: IntList (arg0)"));
+}
+
+#[test]
+fn virtual_lists_accept_typed_multi_selection_bindings_and_events() {
+    for kind in ["ListView", "GridView", "StandardListView"] {
+        let rows = if kind == "StandardListView" {
+            "model: [\"one\", \"two\"];"
+        } else {
+            "for item in [\"one\", \"two\"] : Text { text: item; }"
+        };
+        let source = format!(
+            r#"
+            component App inherits Window {{
+                out property <int> selected: 0;
+                view := {kind} {{
+                    {rows}
+                    multi-select: true;
+                    selection-changed(count) => {{ root.selected = count; }}
+                }}
+            }}
+        "#
+        );
+        let compiled = compile(&source, "list-multi.xr").unwrap();
+        assert!(compiled.mlir.contains("name = \"selection-changed\""));
+        assert!(compiled.mlir.contains("name = \"multi-select\""));
+        let invalid = source.replace("multi-select: true", "multi-select: 1");
+        assert!(compile(&invalid, "list-multi.xr").is_err());
+    }
+}
+
+#[test]
+fn list_typeahead_roles_validate_against_record_fields() {
+    let source = r#"
+        struct Entry { id: int, alias: string }
+        component App inherits Window {
+            property <[Entry]> rows;
+            property <string> field: "alias";
+            GridView {
+                typeahead-field: "alias";
+                typeahead-enabled: true;
+                for row in root.rows : Text { text: row.alias; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "typeahead.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"typeahead-field\""));
+    for (invalid, expected) in [
+        ("\"id\"", "string field"),
+        ("root.field", "constant string"),
+    ] {
+        let input = source.replace(
+            "typeahead-field: \"alias\"",
+            &format!("typeahead-field: {invalid}"),
+        );
+        let error = compile(&input, "typeahead.xr").err().unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(
+        &source.replace("typeahead-field: \"alias\"", "row-key-field: \"id\""),
+        "typeahead.xr",
+    );
+    let broken = raw.replace("name = \"row-key-field\"", "name = \"typeahead-field\"");
+    assert_ne!(raw, broken);
+    assert!(
+        mlir::process(&broken)
+            .unwrap_err()
+            .contains("typeahead-field")
+    );
+}
+
+#[test]
+fn list_sections_require_a_constant_string_record_field() {
+    let source = r#"
+        struct Entry { id: int, title: string, group: string }
+        component App inherits Window {
+            property <[Entry]> records;
+            property <string> dynamic: "group";
+            StandardListView {
+                model: root.records;
+                text-role: "title";
+                section-field: "group";
+                section-height: 26px;
+                sticky-section-headers: true;
+            }
+            ListView {
+                section-field: "group";
+                for row in root.records : Text { text: row.title; }
+            }
+        }
+    "#;
+    let valid = compile(source, "section-list.xr").unwrap();
+    assert!(valid.mlir.contains("name = \"section-field\""));
+    for (bad, expected) in [
+        ("section-field: \"id\"", "string field"),
+        ("section-field: \"missing\"", "string field"),
+        ("section-field: root.dynamic", "constant string"),
+    ] {
+        let broken = source.replace("section-field: \"group\"", bad);
+        let error = compile(&broken, "section-list.xr").err().unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let key_only = source.replace("section-field: \"group\"", "row-key-field: \"id\"");
+    let raw = lower(&key_only, "section-list.xr");
+    let invalid = raw.replace("name = \"row-key-field\"", "name = \"section-field\"");
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("section-field")
+    );
+}
+
+#[test]
+fn section_header_template_has_typed_parameters_and_a_sectioned_list_owner() {
+    let template = r#"SectionHeader {
+        background: section-pinned ? #815329 : #304565;
+        accessible-name: section-label;
+        Text { text: section-label + " " + section-first-index + " " + section-count; }
+    }"#;
+    let source = format!(
+        r#"
+        struct Entry {{ group: string, title: string }}
+        component App inherits Window {{
+            property <[Entry]> entries;
+            StandardListView {{
+                model: root.entries;
+                text-role: "title";
+                section-field: "group";
+                {template}
+            }}
+        }}
+        "#
+    );
+    let compiled = compile(&source, "section-header.xr").unwrap();
+    assert!(compiled.mlir.contains("kind = \"SectionHeader\""));
+    let invalid_type = compiled
+        .mlir
+        .replace("value = \"section-label\"", "value = \"section-count\"");
+    assert_ne!(compiled.mlir, invalid_type);
+    assert!(
+        mlir::Module::parse(&invalid_type)
+            .err()
+            .unwrap()
+            .contains("invalid SectionHeader parameter")
+    );
+    let missing_field = source.replace("section-field: \"group\";", "");
+    assert!(
+        compile(&missing_field, "section-header.xr")
+            .err()
+            .unwrap()
+            .contains("section-field")
+    );
+    let duplicate = source.replace(template, &format!("{template} {template}"));
+    assert!(
+        compile(&duplicate, "section-header.xr")
+            .err()
+            .unwrap()
+            .contains("at most one SectionHeader")
+    );
+    let outside = source.replace(
+        "property <[Entry]> entries;",
+        "property <[Entry]> entries; property <string> invalid: section-label;",
+    );
+    assert!(compile(&outside, "section-header.xr").is_err());
+}
+
+#[test]
 fn tree_view_roles_require_int_fields_from_a_record_model() {
     let source = r#"
         struct Entry { id: int, parent: int, label: string }
@@ -5273,6 +5879,62 @@ fn tree_view_roles_require_int_fields_from_a_record_model() {
         mlir::process(&malformed)
             .unwrap_err()
             .contains("TreeRow requires integer key and parent-key")
+    );
+}
+
+#[test]
+fn tree_disclosure_is_a_static_visual_part_of_a_tree_row() {
+    let part = r#"TreeDisclosure {
+        background: tree.is-expanded(row.id) ? #007d66 : #b15d1e;
+        Text { text: row.label; }
+    }"#;
+    let source = format!(
+        r#"
+        struct Entry {{ id: int, parent: int, label: string }}
+        component App inherits Window {{
+            property <[Entry]> rows;
+            tree := TreeView {{
+                for row in root.rows : TreeRow {{
+                    key: row.id;
+                    parent-key: row.parent;
+                    {part}
+                }}
+            }}
+        }}
+        "#
+    );
+    let compiled = compile(&source, "tree-disclosure.xr").unwrap();
+    assert!(compiled.mlir.contains("kind = \"TreeDisclosure\""));
+    assert!(compiled.mlir.contains("\"xr.tree_query\""));
+    for (replacement, message) in [
+        (format!("{part} TreeDisclosure {{}}"), "at most one"),
+        (format!("if true : {part}"), "requires a static child"),
+        ("TreeDisclosure { width: 80px; }".into(), "unknown property"),
+        (
+            "TreeDisclosure { TreeCell {} }".into(),
+            "visual elements and read-only bindings",
+        ),
+    ] {
+        let broken = source.replace(part, &replacement);
+        let error = compile(&broken, "tree-disclosure.xr").err().unwrap();
+        assert!(error.contains(message), "{error}");
+    }
+    let misplaced = "component App inherits Window { TreeDisclosure {} }";
+    assert!(
+        compile(misplaced, "tree-disclosure.xr")
+            .err()
+            .unwrap()
+            .contains("static child of TreeRow")
+    );
+
+    let invalid_mlir = compiled
+        .mlir
+        .replace("kind = \"Text\"", "kind = \"Button\"");
+    assert_ne!(compiled.mlir, invalid_mlir);
+    let error = mlir::Module::parse(&invalid_mlir).err().unwrap();
+    assert!(
+        error.contains("TreeDisclosure accepts visual elements"),
+        "{error}"
     );
 }
 
@@ -6056,18 +6718,32 @@ fn selection_groups_enforce_child_structure() {
             "repeated TabButton must be the only option",
         ),
         (
-            "RadioGroup { if true : RadioButton {} }",
-            "requires static RadioButton children",
-        ),
-        (
-            "RadioGroup { RadioButton {} for option in [\"a\"] : RadioButton { text: option; } }",
-            "repeated RadioButton must be the only option",
+            "RadioGroup { if true : Button {} }",
+            "requires RadioButton children",
         ),
     ] {
         let source = format!("component Demo inherits Window {{ {body} }}");
         let error = compile(&source, "groups.xr").err().unwrap();
         assert!(error.contains(expected), "{error}");
     }
+}
+
+#[test]
+fn radio_groups_accept_mixed_options_without_relaxing_tab_rules() {
+    let source = r#"
+        export component App inherits Window {
+            in property <bool> optional: false;
+            RadioGroup {
+                RadioButton { text: "Fixed"; }
+                if root.optional: RadioButton { text: "Extra"; }
+                for label in ["A","B"]: RadioButton { text: label; }
+                for number in 2: RadioButton { text: "Entry " + number; }
+            }
+        }
+    "#;
+    let result = compile(source, "mixed-options.xr").unwrap();
+    assert_eq!(result.mlir.matches("\"xr.repeat\"").count(), 2);
+    assert!(result.mlir.contains("\"xr.show_if\""));
 }
 
 #[test]

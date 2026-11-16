@@ -67,8 +67,16 @@ struct EditorState {
 }
 
 impl EditorSources {
+    fn lock(&self) -> std::sync::MutexGuard<'_, EditorState> {
+        // The lock only protects replacements of snapshots and diagnostics.
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub(crate) fn replace(&self, buffers: Buffers) {
-        let mut editor = self.0.state.lock().unwrap();
+        let mut editor = self.lock();
         if *editor.buffers != buffers {
             editor.buffers = Arc::new(buffers);
             self.0.changed.notify_one();
@@ -76,35 +84,35 @@ impl EditorSources {
     }
 
     fn snapshot(&self) -> Arc<Buffers> {
-        self.0.state.lock().unwrap().buffers.clone()
+        self.lock().buffers.clone()
     }
 
     fn wait(&self, seen: &Arc<Buffers>, interval: Duration) -> Arc<Buffers> {
-        let state = self.0.state.lock().unwrap();
+        let state = self.lock();
         let (state, _) = self
             .0
             .changed
             .wait_timeout_while(state, interval, |state| Arc::ptr_eq(seen, &state.buffers))
-            .unwrap();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.buffers.clone()
     }
 
     fn diagnostic(&self, diagnostic: Option<String>) {
-        self.0.state.lock().unwrap().diagnostic = diagnostic;
+        self.lock().diagnostic = diagnostic;
     }
 
     pub(crate) fn last_diagnostic(&self) -> Option<String> {
-        self.0.state.lock().unwrap().diagnostic.clone()
+        self.lock().diagnostic.clone()
     }
 
     #[cfg(unix)]
     pub(crate) fn source_versions(&self) -> crate::live_inspect::SourceVersions {
-        self.0.state.lock().unwrap().source_versions.clone()
+        self.lock().source_versions.clone()
     }
 
     #[cfg(unix)]
     fn set_source_versions(&self, versions: crate::live_inspect::SourceVersions) {
-        self.0.state.lock().unwrap().source_versions = versions;
+        self.lock().source_versions = versions;
     }
 }
 
@@ -157,7 +165,21 @@ impl<T: LiveUi> LiveComponent<T> {
         #[cfg(unix)]
         let attach_session = project.and_then(|project| {
             match attach::Session::open(project, &source, name, weak.clone(), editor.clone()) {
-                Ok(session) => Some(session),
+                Ok(session) => {
+                    let capture_values =
+                        env::var_os("XRACK_DEBUG_VALUES").is_some_and(|value| value == "1");
+                    component
+                        .current()
+                        .attach_trace(Rc::new(crate::live_trace::Trace::new(capture_values)));
+                    let enabled = |name| env::var_os(name).is_some_and(|value| value == "1");
+                    component.inspector().configure_observation(
+                        enabled("XRACK_RECORD_UI"),
+                        capture_values,
+                        enabled("XRACK_PROFILE_UI"),
+                        enabled("XRACK_CONTROL_UI"),
+                    );
+                    Some(session)
+                }
                 Err(error) => {
                     eprintln!("XRack inspection unavailable: {error}");
                     None
@@ -228,7 +250,11 @@ fn compile_with_command(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("{}: {error}", compiler.display()))?;
-    let sent = child.stdin.take().expect("piped input").write_all(&request);
+    let sent = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("live compiler stdin is unavailable"))
+        .and_then(|mut stdin| stdin.write_all(&request));
     let output = child
         .wait_with_output()
         .map_err(|error| error.to_string())?;
@@ -240,7 +266,9 @@ fn compile_with_command(
 }
 
 fn load(source: &Path, prepared: &PreparedUi) -> Result<Program, String> {
-    let module = xrack_mlir::Module::parse(&prepared.mlir)?;
+    // Textual MLIR is not trusted to supply layout/cache hints. Recompute them
+    // before loading so the interpreter and the runtime report use the same plan.
+    let module = xrack_mlir::Module::parse(&prepared.mlir)?.optimize()?;
     let translations =
         xrack_resources::resolve_translations(&module, source, None, &BTreeMap::new())?;
     let (program, _) =

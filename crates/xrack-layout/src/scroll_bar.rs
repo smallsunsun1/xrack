@@ -1,6 +1,6 @@
 use crate::{LayoutNode, Point, Rect, ScrollLayout};
 use std::collections::BTreeMap;
-use xrack_runtime::{Node, Orientation, ScrollBarPolicy, ScrollBarRange, Value};
+use xrack_runtime::{LayoutDirection, Node, Orientation, ScrollBarPolicy, ScrollBarRange, Value};
 
 /// An overlay scroll bar whose track and thumb use the viewport's logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -11,6 +11,7 @@ pub struct ScrollBarGeometry {
     pub scroll: ScrollLayout,
     pub page: f32,
     pub step: f32,
+    reversed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -79,14 +80,21 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode) {
         }
         let page = viewport.scroll_viewport(axis);
         let enabled = viewport.enabled;
+        let reversed = viewport.scroll_axis_reversed(axis);
         let item = path
             .iter()
             .try_fold(&mut *layout, |item, &index| item.child_at_mut(index))
             .expect("indexed scroll control path");
         let page = span(page, axis);
         if page > 0.0
-            && let Some(mut geometry) =
-                ScrollBarGeometry::new(axis, item.bounds, page, scroll, minimum_size(node))
+            && let Some(mut geometry) = ScrollBarGeometry::new(
+                axis,
+                item.bounds,
+                page,
+                scroll,
+                minimum_size(node),
+                reversed,
+            )
         {
             if let Some(step) = node.number("step-size") {
                 let extent = f64::from(page) + f64::from(scroll.max_offset);
@@ -138,12 +146,15 @@ impl LayoutNode {
         if !shows_bar(control_policy(node), scroll) {
             return None;
         }
+        let orientation = node.orientation();
         let mut geometry = ScrollBarGeometry::new(
-            node.orientation(),
+            orientation,
             self.bounds,
             range.size as f32,
             scroll,
             minimum_size(node),
+            orientation == Orientation::Horizontal
+                && self.layout_direction == LayoutDirection::RightToLeft,
         )?;
         geometry.step = range.step as f32;
         Some(geometry)
@@ -169,6 +180,7 @@ impl LayoutNode {
         let thickness = 10.0_f32
             .min(visible.width * 0.25)
             .min(visible.height * 0.25);
+        let mirrored = self.layout_direction == LayoutDirection::RightToLeft;
         let axes = [Orientation::Horizontal, Orientation::Vertical];
         let scrolls: [_; 2] = std::array::from_fn(|index| {
             self.scroll_on(axes[index])
@@ -191,7 +203,7 @@ impl LayoutNode {
             let (track, page) = match orientation {
                 Orientation::Horizontal => (
                     Rect::new(
-                        horizontal_visible.x,
+                        horizontal_visible.x + if mirrored { corner } else { 0.0 },
                         visible.y + visible.height - thickness,
                         horizontal_visible.width - corner,
                         thickness,
@@ -200,7 +212,11 @@ impl LayoutNode {
                 ),
                 Orientation::Vertical => (
                     Rect::new(
-                        visible.x + visible.width - thickness,
+                        if mirrored {
+                            visible.x
+                        } else {
+                            visible.x + visible.width - thickness
+                        },
                         visible.y,
                         thickness,
                         visible.height - corner,
@@ -208,7 +224,14 @@ impl LayoutNode {
                     viewport.height,
                 ),
             };
-            ScrollBarGeometry::new(orientation, track, page, scroll, None)
+            ScrollBarGeometry::new(
+                orientation,
+                track,
+                page,
+                scroll,
+                None,
+                self.scroll_axis_reversed(orientation),
+            )
         });
         bars.into_iter().flatten()
     }
@@ -223,6 +246,7 @@ impl ScrollBarGeometry {
         page: f32,
         scroll: ScrollLayout,
         minimum_size: Option<f32>,
+        reversed: bool,
     ) -> Option<Self> {
         let length = span(track, orientation);
         if length <= 2.0 || track.width <= 0.0 || track.height <= 0.0 {
@@ -234,9 +258,10 @@ impl ScrollBarGeometry {
             let thumb_length = (length * ratio as f32)
                 .max(minimum.max(1.0))
                 .min(length - 1.0);
+            let ratio = scroll.offset / scroll.max_offset;
             (
                 thumb_length,
-                (length - thumb_length) * (scroll.offset / scroll.max_offset),
+                (length - thumb_length) * if reversed { 1.0 - ratio } else { ratio },
             )
         } else {
             (length, 0.0)
@@ -252,7 +277,17 @@ impl ScrollBarGeometry {
             scroll,
             page,
             step: Self::STEP,
+            reversed,
         })
+    }
+
+    #[doc(hidden)]
+    pub fn reversed(self) -> bool {
+        self.reversed
+    }
+
+    pub(crate) fn logical_delta(self, delta: f32) -> f32 {
+        if self.reversed { -delta } else { delta }
     }
 
     pub fn scrollable(self) -> bool {
@@ -270,7 +305,12 @@ impl ScrollBarGeometry {
         let thumb = span(self.thumb, self.orientation);
         let travel = span(self.track, self.orientation) - thumb;
         let relative = coordinate(point, self.orientation) - origin(self.track, self.orientation);
-        f64::from((relative - grab * thumb) / travel).clamp(0.0, 1.0)
+        let fraction = f64::from((relative - grab * thumb) / travel).clamp(0.0, 1.0);
+        if self.reversed {
+            1.0 - fraction
+        } else {
+            fraction
+        }
     }
 
     pub(crate) fn page_toward(self, point: Point) -> f32 {
@@ -284,7 +324,7 @@ impl ScrollBarGeometry {
         } else {
             page
         };
-        (self.scroll.offset + delta).clamp(0.0, self.scroll.max_offset)
+        (self.scroll.offset + self.logical_delta(delta)).clamp(0.0, self.scroll.max_offset)
     }
 }
 

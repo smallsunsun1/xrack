@@ -11,12 +11,12 @@ use std::{
     time::{Duration, Instant},
 };
 use xrack_layout::{
-    ActivationKey, ChoiceKey, ControlInput, DragUpdate, EditAction, EditSource, FileDragInput,
-    FocusObservers, HoverObservers, Interaction, LayoutNode, LayoutObservers, MenuKey,
-    MenuShortcut, NavigationKey, Point, RangeInput, Rect, ScrollBarUpdate, ScrollGestureKind,
-    ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SplitResize, StackTransitions,
-    TableEditCommit, TableEditTarget, TablePasteDestination, TextAreaMotion, TextEditContext,
-    TumblerScroll, WheelAdjustment, WindowEffects,
+    ActivationKey, ButtonClick, ChoiceKey, ControlInput, DragUpdate, EditAction, EditSource,
+    FileDragInput, FocusObservers, HoverObservers, Interaction, LayoutNode, LayoutObservers,
+    MenuKey, MenuShortcut, NavigationKey, Point, RangeInput, Rect, ScrollBarUpdate,
+    ScrollGestureKind, ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SplitResize,
+    StackTransitions, TableEditCommit, TableEditTarget, TablePasteDestination, TextAreaMotion,
+    TextEditContext, TumblerScroll, WheelAdjustment, WindowEffects,
     scale_rotate_gestures::{self, TouchPhase},
 };
 use xrack_runtime::{
@@ -30,6 +30,7 @@ use xrack_runtime::{
 enum PointerCapture {
     Split,
     Delay,
+    ButtonHold,
     Range,
     ScrollGesture,
     ScrollBar { touch: bool },
@@ -94,6 +95,9 @@ pub struct PreviewScene {
     window_status: xrack_runtime::WindowStatus,
     renderer_needs_redraw: bool,
     pointer_capture: Option<PointerCapture>,
+    last_button_click: Option<ButtonClick<bool>>,
+    pending_button_double_click: Option<ButtonClick<bool>>,
+    pending_button_click: Option<xrack_layout::Target>,
     direct_pointers: Captures,
     scale_rotate: scale_rotate_gestures::Gestures<()>,
     drag_contact: Option<DragContact>,
@@ -142,6 +146,9 @@ impl PreviewScene {
             window_status,
             renderer_needs_redraw: false,
             pointer_capture: None,
+            last_button_click: None,
+            pending_button_double_click: None,
+            pending_button_click: None,
             direct_pointers: Captures::default(),
             scale_rotate: Default::default(),
             drag_contact: None,
@@ -243,10 +250,20 @@ impl PreviewScene {
         if self.shortcut_key(event) || self.menu_key(&event.key) || self.choice_key(event) {
             return true;
         }
+        if event.key == "F2"
+            && !event.repeat
+            && let Some((scene, layout)) = &self.frame
+            && self.input.begin_table_edit(scene, layout)
+        {
+            self.clipboard_edit = None;
+            self.reveal_editor_caret = true;
+            return true;
+        }
         if self.selection_key(event, true) {
             return true;
         }
         if event.key == "Escape" {
+            self.input.reset_list_typeahead();
             return !event.repeat && self.escape_focused();
         }
         if let Some(key) = activation
@@ -374,6 +391,12 @@ impl PreviewScene {
             && (self.tree_navigation_enabled() || self.split_navigation_enabled())
         {
             self.navigate_tree_or_split(key, shift);
+            return true;
+        }
+        if !event.repeat
+            && !(modifiers.control || modifiers.alt || modifiers.meta)
+            && self.list_typeahead_text(&event.text)
+        {
             return true;
         }
         if self.input.editor.is_none()
@@ -515,7 +538,17 @@ impl PreviewScene {
         }
         if pressed {
             self.input.key_press_with_scene(scene, key);
-        } else if let Some(target) = self.input.key_release_with_scene(scene, key) {
+            self.input
+                .begin_key_button_hold(scene, layout, key, Instant::now());
+        } else {
+            let target = self.input.key_release_with_scene(scene, key);
+            let lifecycle =
+                self.input
+                    .dispatch_button_press_events(&mut self.component, scene, layout);
+            let Some(target) = target else {
+                return true;
+            };
+            self.last_button_click = None;
             let input = self
                 .input
                 .dialog_button(scene, layout, &target)
@@ -523,6 +556,8 @@ impl PreviewScene {
                 .or_else(|| self.input.select_group_option(scene, layout, &target));
             if let Some(ControlInput { path, action }) = input {
                 self.component.control_at(scene, &path, action);
+            } else if lifecycle {
+                self.pending_button_click = Some(target);
             } else {
                 self.component.dispatch_at(scene, &target.path, "clicked");
             }
@@ -876,10 +911,26 @@ impl PreviewScene {
             return false;
         };
         let (ended, commit) = self.input.finish_text_composition(scene, id);
-        if commit && !text.is_empty() {
+        if commit && !text.is_empty() && !self.list_typeahead_text(text) {
             self.edit_from(EditAction::Insert(text), EditSource::Atomic);
         }
         ended
+    }
+
+    fn list_typeahead_text(&mut self, value: &str) -> bool {
+        let Some((scene, layout)) = &self.frame else {
+            return false;
+        };
+        let Some(ControlInput { path, action }) =
+            self.input
+                .list_typeahead(scene, layout, value, Instant::now())
+        else {
+            return false;
+        };
+        let _scroll = self.scroll.enter();
+        let _focus = self.focus.enter();
+        self.component.control_at(scene, &path, action);
+        true
     }
 
     pub fn cancel_text_composition(&mut self, id: u64) -> bool {
@@ -1286,6 +1337,7 @@ impl PreviewScene {
         if self.touch_scale_rotate(contact, point, phase)
             || self.finish_drag_contact(contact, point, canceled)
         {
+            self.last_button_click = None;
             self.discard_direct_contact(contact, point);
             return true;
         }
@@ -1297,14 +1349,19 @@ impl PreviewScene {
                 self.direct_pointers.clear_click();
             }
             return if canceled {
+                self.last_button_click = None;
                 self.cancel_widget_capture()
             } else {
                 self.release_pointer_with_modifiers(
                     point,
                     click && contact.event.button == PointerButton::Primary,
                     contact.event.modifiers,
+                    contact.event.is_touch,
                 )
             };
+        }
+        if contact.primary {
+            self.last_button_click = None;
         }
         if !canceled && contact.primary {
             self.move_pointer(point);
@@ -1622,23 +1679,33 @@ impl PreviewScene {
             return true;
         }
         self.input.pointer_move(scene, layout, point);
-        if !self
+        let hovered = self
             .input
             .hovered
             .as_ref()
-            .and_then(|target| scene.interactive_at_path(&target.path))
-            .is_some_and(|node| node.kind == "DelayButton" && !node.boolean("checked", false))
+            .and_then(|target| scene.interactive_at_path(&target.path));
+        let observed = hovered.is_some_and(|node| node.button_press_handle.is_some());
+        if !observed
+            && !hovered.is_some_and(|node| {
+                (node.kind == "DelayButton" && !node.boolean("checked", false))
+                    || (matches!(node.kind, "Button" | "ToolButton" | "RoundButton")
+                        && (node.boolean("auto-repeat", false) || node.press_and_hold_handler))
+            })
         {
             return cancelled;
         }
         self.input.pointer_press_in_scene(scene, layout);
-        self.input
-            .begin_pointer_delay(scene, layout, Instant::now());
-        if self.input.delay_deadline().is_none() {
-            self.input.cancel_press();
-            return cancelled;
-        }
-        self.pointer_capture = Some(PointerCapture::Delay);
+        let now = Instant::now();
+        self.input.begin_pointer_delay(scene, layout, now);
+        self.pointer_capture =
+            if self.input.begin_pointer_button_hold(scene, layout, now) || observed {
+                Some(PointerCapture::ButtonHold)
+            } else if self.input.delay_deadline().is_some() {
+                Some(PointerCapture::Delay)
+            } else {
+                self.input.cancel_press();
+                return cancelled;
+            };
         true
     }
 
@@ -1758,7 +1825,7 @@ impl PreviewScene {
                 }
                 true
             }
-            Some(PointerCapture::Delay) => {
+            Some(PointerCapture::Delay | PointerCapture::ButtonHold) => {
                 let Some((scene, layout)) = &self.frame else {
                     return false;
                 };
@@ -1777,7 +1844,7 @@ impl PreviewScene {
     }
 
     pub fn release_pointer(&mut self, point: Point, click: bool) -> bool {
-        self.release_pointer_with_modifiers(point, click, Default::default())
+        self.release_pointer_with_modifiers(point, click, Default::default(), false)
     }
 
     fn release_pointer_with_modifiers(
@@ -1785,7 +1852,9 @@ impl PreviewScene {
         point: Point,
         click: bool,
         modifiers: xrack_runtime::KeyModifiers,
+        touch: bool,
     ) -> bool {
+        let previous = self.last_button_click.take();
         if matches!(self.pointer_capture, Some(PointerCapture::ScrollGesture)) {
             self.pointer_capture = None;
             let Some((scene, layout)) = &self.frame else {
@@ -1799,7 +1868,7 @@ impl PreviewScene {
             if let Some(ControlInput { path, action }) = end.control {
                 self.component.control_at(scene, &path, action);
             } else if end.tap {
-                self.click_with_modifiers(point, modifiers);
+                self.click_with_modifiers(point, modifiers, touch, previous, true);
             }
             return true;
         }
@@ -1832,18 +1901,21 @@ impl PreviewScene {
             };
             if !committed {
                 if click {
-                    self.release_pressed_click(modifiers);
+                    self.release_pressed_click(modifiers, touch, previous, false);
                 } else {
                     self.input.cancel_press();
                 }
             }
             return true;
         }
-        if matches!(self.pointer_capture, Some(PointerCapture::TextSelection)) {
+        if matches!(
+            self.pointer_capture,
+            Some(PointerCapture::TextSelection | PointerCapture::ButtonHold)
+        ) {
             self.move_pointer(point);
             self.pointer_capture = None;
             if click {
-                self.release_pressed_click(modifiers);
+                self.release_pressed_click(modifiers, touch, previous, false);
             } else {
                 self.input.cancel_press();
             }
@@ -1864,7 +1936,7 @@ impl PreviewScene {
             return true;
         }
         if click {
-            self.click_with_modifiers(point, modifiers);
+            self.click_with_modifiers(point, modifiers, touch, previous, false);
         }
         click
     }
@@ -1909,6 +1981,9 @@ impl PreviewScene {
     }
 
     pub fn cancel_pointer(&mut self) -> bool {
+        self.last_button_click = None;
+        self.pending_button_double_click = None;
+        self.pending_button_click = None;
         let canceled = self.cancel_pointer_captures();
         let scale_rotate = self.scale_rotate.cancel();
         let drag = self.input.cancel_drag();
@@ -1959,6 +2034,7 @@ impl PreviewScene {
             Some(PointerCapture::ScrollBar { touch: false }) => self.input.finish_scroll_bar(),
             Some(
                 PointerCapture::Delay
+                | PointerCapture::ButtonHold
                 | PointerCapture::Range
                 | PointerCapture::TableSelection
                 | PointerCapture::TableResize
@@ -2137,6 +2213,11 @@ impl PreviewScene {
     }
 
     fn cancel_pointer_or_delay(&mut self) -> bool {
+        if self.input.button_hold_deadline().is_some() {
+            self.cancel_pointer();
+            self.input.cancel_press();
+            return true;
+        }
         if matches!(self.pointer_capture, Some(PointerCapture::Delay)) {
             self.input.cancel_delay();
             return true;
@@ -2171,10 +2252,18 @@ impl PreviewScene {
     }
 
     pub fn click(&mut self, point: Point) {
-        self.click_with_modifiers(point, Default::default());
+        let previous = self.last_button_click.take();
+        self.click_with_modifiers(point, Default::default(), false, previous, false);
     }
 
-    fn click_with_modifiers(&mut self, point: Point, modifiers: xrack_runtime::KeyModifiers) {
+    fn click_with_modifiers(
+        &mut self,
+        point: Point,
+        modifiers: xrack_runtime::KeyModifiers,
+        touch: bool,
+        previous: Option<ButtonClick<bool>>,
+        replay: bool,
+    ) {
         self.input.cancel_text_composition(None);
         let Some((scene, layout)) = &self.frame else {
             return;
@@ -2207,7 +2296,14 @@ impl PreviewScene {
         } else if self.input.dialog_pointer_press(layout) {
             self.input.dialog_pointer_release(scene, layout)
         } else {
-            self.input.pointer_press_in_scene(scene, layout);
+            let lifecycle = if replay {
+                self.input.replay_tap_in_scene(scene, layout);
+                false
+            } else {
+                self.input.pointer_press_in_scene(scene, layout);
+                self.input
+                    .dispatch_button_press_events(&mut self.component, scene, layout)
+            };
             let pressed = self.input.slider_press(scene, layout);
             if let Some(RangeInput { path, action }) = &pressed {
                 self.component.adjust_range_at(scene, path, *action);
@@ -2228,7 +2324,7 @@ impl PreviewScene {
                 self.clipboard_edit = None;
             }
             self.input.spin_press(scene, layout);
-            self.release_pressed_click(modifiers);
+            self.release_pressed_click(modifiers, touch, previous, lifecycle);
             return;
         };
         if let Some(input) = action {
@@ -2237,7 +2333,13 @@ impl PreviewScene {
         }
     }
 
-    fn release_pressed_click(&mut self, modifiers: xrack_runtime::KeyModifiers) {
+    fn release_pressed_click(
+        &mut self,
+        modifiers: xrack_runtime::KeyModifiers,
+        touch: bool,
+        previous: Option<ButtonClick<bool>>,
+        pressed_handler_ran: bool,
+    ) {
         let Some((scene, layout)) = &self.frame else {
             return;
         };
@@ -2253,7 +2355,11 @@ impl PreviewScene {
                     .table_header_release(scene, selection, modifiers.alt)
             })
             .or_else(|| {
-                let target = self.input.pointer_release_target()?;
+                let target = self.input.pointer_release_target();
+                let lifecycle =
+                    self.input
+                        .dispatch_button_press_events(&mut self.component, scene, layout);
+                let target = target?;
                 if let Some(node) = scene.interactive_at_path(&target.path)
                     && node.kind == "DelayButton"
                 {
@@ -2262,16 +2368,24 @@ impl PreviewScene {
                         action: xrack_runtime::ControlAction::DelayButton(false),
                     });
                 }
-                if let Some(selection) = self
+                if let Some(change) = self
                     .input
                     .list_item_delegate_selection(scene, layout, &target)
                     && let Some(row) = target.row_key
-                    && self
-                        .component
-                        .control_at(scene, &selection.path, selection.action)
                 {
-                    self.list_item_click = Some((selection.path, row));
-                    return None;
+                    let change = change.with_row_selection(scene, selection);
+                    let selection_only = selection != RowSelection::Replace
+                        && matches!(change.action, ControlAction::TableSelection(_));
+                    let changed = self
+                        .component
+                        .control_at(scene, &change.path, change.action);
+                    if selection_only {
+                        return None;
+                    }
+                    if changed {
+                        self.list_item_click = Some((change.path, row));
+                        return None;
+                    }
                 }
                 if let Some(update) = self
                     .input
@@ -2299,7 +2413,21 @@ impl PreviewScene {
                         .input
                         .open_choice_at_pointer(scene, layout, target.clone())
                 {
-                    self.component.dispatch_at(scene, &target.path, "clicked");
+                    if let Some(point) = self.input.pointer_position()
+                        && let Some(candidate) =
+                            ButtonClick::new(scene, &target, touch, (point, Instant::now()))
+                    {
+                        if previous.is_some_and(|previous| candidate.follows(&previous)) {
+                            self.pending_button_double_click = Some(candidate);
+                        } else {
+                            self.last_button_click = Some(candidate);
+                        }
+                    }
+                    if lifecycle || pressed_handler_ran {
+                        self.pending_button_click = Some(target);
+                    } else {
+                        self.component.dispatch_at(scene, &target.path, "clicked");
+                    }
                 }
                 action
             });
@@ -2438,6 +2566,7 @@ impl PreviewScene {
             .chain(self.media.deadline(now))
             .chain(self.timers.deadline())
             .chain(self.input.tooltip_deadline())
+            .chain(self.input.button_hold_deadline())
             .chain(self.direct_pointers.deadline())
             .chain(self.input.scroll_motion_deadline())
             .chain(self.input.table_touch_hold_deadline())
@@ -2579,6 +2708,27 @@ impl PreviewScene {
         let _scroll = self.scroll.enter();
         let _focus = self.focus.enter();
         let (mut scene, mut layout, mut width, mut height) = self.settle_frame(renderer, animated);
+        if self
+            .input
+            .dispatch_button_press_events(&mut self.component, &scene, &layout)
+        {
+            (scene, layout, width, height) = self.settle_frame(renderer, animated);
+        }
+        if let Some(target) = self.pending_button_click.take()
+            && self
+                .input
+                .accessibility_target(&scene, &layout, &target.path)
+                .as_ref()
+                == Some(&target)
+            && self.component.dispatch_at(&scene, &target.path, "clicked")
+        {
+            (scene, layout, width, height) = self.settle_frame(renderer, animated);
+        }
+        if let Some(click) = self.pending_button_double_click.take()
+            && click.deliver(&mut self.component, &self.input, &scene, &layout)
+        {
+            (scene, layout, width, height) = self.settle_frame(renderer, animated);
+        }
         if let Some((view, row)) = self.list_item_click.take()
             && let Some(target) = self
                 .input
@@ -2621,6 +2771,12 @@ impl PreviewScene {
                 self.input.advance_delay(&scene, &layout, now)
             {
                 self.component.control_at(&scene, &path, action);
+                (scene, layout, width, height) = self.settle_frame(renderer, animated);
+            }
+            if let Some((target, event)) = self.input.advance_button_hold(&scene, &layout, now) {
+                self.last_button_click = None;
+                self.component
+                    .dispatch_at(&scene, &target.path, event.handler());
                 (scene, layout, width, height) = self.settle_frame(renderer, animated);
             }
             for _ in 0..64 {
@@ -2701,12 +2857,15 @@ impl PreviewScene {
             }
         }
         let (scene, layout) = self.frame.as_ref().unwrap();
-        self.ime_area = renderer.text.editor_ime_area(
-            &mut self.input,
-            scene,
-            layout,
-            std::mem::take(&mut self.reveal_editor_caret),
-        );
+        self.ime_area = renderer
+            .text
+            .editor_ime_area(
+                &mut self.input,
+                scene,
+                layout,
+                std::mem::take(&mut self.reveal_editor_caret),
+            )
+            .or_else(|| self.input.list_typeahead_ime_area(scene, layout));
     }
 
     fn flush_pointer_carets(&mut self, renderer: &Renderer) -> bool {
@@ -2874,6 +3033,7 @@ impl PreviewScene {
             self.scale_rotate.reset();
             self.drag_contact = None;
             self.cancel_delay_key();
+            self.input.cancel_press();
             self.leave();
             self.input.dismiss_tooltip();
         }

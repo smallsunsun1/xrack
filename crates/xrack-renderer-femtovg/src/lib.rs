@@ -674,6 +674,35 @@ impl Renderer {
         } else {
             self.paint_children(node, layout, path, frame)?;
         }
+        for header in layout.list_section_headers() {
+            let clip = content.intersect(header.bounds);
+            if clip.width > 0.0 && clip.height > 0.0 {
+                self.paint_group(clip, 1.0, |renderer| {
+                    if let Some((visual, item)) = header.content() {
+                        renderer.paint(
+                            visual,
+                            item,
+                            &mut Vec::new(),
+                            PaintFrame {
+                                input: &Interaction::default(),
+                                transitions: None,
+                                ..frame
+                            },
+                            false,
+                        )
+                    } else {
+                        controls::list_section_header(
+                            &mut renderer.canvas,
+                            &renderer.text,
+                            frame.theme,
+                            node,
+                            header,
+                            layout.layout_direction,
+                        )
+                    }
+                })?;
+            }
+        }
         if layout
             .table
             .as_ref()
@@ -1606,6 +1635,7 @@ impl Renderer {
                 &mut self.canvas,
                 theme,
                 bounds,
+                layout.layout_direction,
                 !item_delegate && node.boolean("selected", false),
                 !item_delegate && input.is_hovered(path) && layout.enabled,
                 node.boolean("current", false)
@@ -1628,12 +1658,17 @@ impl Renderer {
                 }
             }
             if node.boolean("tree-has-children", false)
-                && let Some(tree) = TreeRowGeometry::new(node, bounds)
+                && node
+                    .children
+                    .first()
+                    .is_none_or(|row| row.control_part("TreeDisclosure").is_none())
+                && let Some(tree) = TreeRowGeometry::for_layout(node, layout)
             {
                 controls::tree_indicator(
                     &mut self.canvas,
                     theme,
                     tree.indicator,
+                    layout.layout_direction,
                     node.boolean("tree-expanded", false),
                     layout.enabled,
                 );
@@ -1648,6 +1683,7 @@ impl Renderer {
                 &mut self.canvas,
                 theme,
                 bounds,
+                layout.layout_direction,
                 cell_selected,
                 false,
                 cell_current,

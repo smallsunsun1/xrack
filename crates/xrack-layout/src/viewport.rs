@@ -165,6 +165,13 @@ impl UserScrollChange {
 }
 
 impl LayoutNode {
+    #[doc(hidden)]
+    pub fn scroll_axis_reversed(&self, axis: Orientation) -> bool {
+        axis == Orientation::Horizontal
+            && (self.horizontal_scroll_reversed
+                || self.table.as_ref().is_some_and(|table| table.mirrored()))
+    }
+
     pub(crate) fn scroll_viewport(&self, axis: Orientation) -> Rect {
         self.table
             .as_deref()
@@ -507,13 +514,14 @@ impl Interaction {
         if !node.list.is_some_and(|list| index < list.row_count) {
             return false;
         }
-        let cells = ViewCells::new(node, viewport(item).width);
+        let view = viewport(item);
+        let cells = ViewCells::new(node, view.width);
         self.position_axis(
             path,
             item,
             Orientation::Vertical,
-            cells.top(index) as f32,
-            cells.height(index),
+            (cells.top(index) as f32, cells.height(index)),
+            cells.leading_clearance(index, view.height),
             alignment,
         )
     }
@@ -528,20 +536,15 @@ impl Interaction {
         let Some((column, table)) = usize::try_from(column).ok().zip(item.table.as_ref()) else {
             return false;
         };
-        let Some(bounds) = table
-            .columns
-            .get(column)
-            .filter(|bounds| bounds.width > 0.0 && !table.is_frozen(column))
-        else {
+        let Some((start, width)) = table.column_scroll_extent(column) else {
             return false;
         };
-        let left = bounds.x + table.horizontal.offset - table.scrollable_body().x;
         self.position_axis(
             path,
             item,
             Orientation::Horizontal,
-            left,
-            bounds.width,
+            (start, width),
+            0.0,
             alignment,
         )
     }
@@ -551,8 +554,8 @@ impl Interaction {
         path: &[usize],
         item: &LayoutNode,
         axis: Orientation,
-        start: f32,
-        length: f32,
+        (start, length): (f32, f32),
+        leading: f32,
         alignment: ScrollAlignment,
     ) -> bool {
         let Some(scroll) = item.scroll_on(axis) else {
@@ -576,13 +579,13 @@ impl Interaction {
             return false;
         }
         let offset = position(
-            ScrollLayout::new(current, scroll.max_offset),
+            ScrollLayout::new(current + leading, scroll.max_offset + leading),
             start,
             length,
-            page,
+            page - leading,
             alignment,
         );
-        self.set_viewport_offset(path, item, axis, f64::from(offset))
+        self.set_viewport_offset(path, item, axis, f64::from(offset - leading))
     }
 }
 

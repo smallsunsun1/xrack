@@ -1,8 +1,9 @@
 use crate::{
     LayoutNode, Point, Rect, Size, SplitResize, TextMeasurer,
     linear::{self, Axis},
+    place_in_direction,
 };
-use xrack_runtime::{Node, Orientation};
+use xrack_runtime::{LayoutDirection, Node, Orientation};
 
 const RESIZE_EPSILON: f32 = 0.01;
 
@@ -63,6 +64,7 @@ impl SplitHandle {
 pub struct SplitGeometry {
     pub orientation: Orientation,
     pub handles: Vec<SplitHandle>,
+    pub(crate) mirrored: bool,
     hit_radius: Option<f32>,
     panes: Vec<Pane>,
     weight: f64,
@@ -81,9 +83,15 @@ impl SplitGeometry {
     pub(crate) fn new(
         node: &Node,
         bounds: Rect,
+        layout_direction: LayoutDirection,
         text: &mut impl TextMeasurer,
     ) -> (Self, Vec<Rect>) {
         let orientation = node.orientation();
+        let direction = if orientation == Orientation::Horizontal {
+            layout_direction
+        } else {
+            LayoutDirection::LeftToRight
+        };
         let (axis, cross) = match orientation {
             Orientation::Horizontal => (Axis::Horizontal, bounds.height),
             Orientation::Vertical => (Axis::Vertical, bounds.width),
@@ -201,15 +209,22 @@ impl SplitGeometry {
         let mut rects = vec![Rect::new(bounds.x, bounds.y, 0.0, 0.0); node.children.len()];
         let mut cursor = 0.0;
         let first_handle = node.split_pane_count();
+        let rect = |start, length| {
+            place_in_direction(
+                axis.rect(bounds, start, 0.0, length, cross),
+                bounds,
+                direction,
+            )
+        };
         for (index, pane) in panes.iter().enumerate() {
-            rects[pane.slot] = axis.rect(bounds, cursor, 0.0, pane.length, cross);
+            rects[pane.slot] = rect(cursor, pane.length);
             cursor += pane.length;
             if let Some(next) = panes.get(index + 1) {
                 let a = constraints[index];
                 let b = constraints[index + 1];
                 let slot = first_handle + pane.slot;
                 if let Some(handle_rect) = rects.get_mut(slot) {
-                    *handle_rect = axis.rect(bounds, cursor, 0.0, gap, cross);
+                    *handle_rect = rect(cursor, gap);
                     handles.push(SplitHandle {
                         slot,
                         bounds: *handle_rect,
@@ -226,6 +241,7 @@ impl SplitGeometry {
             Self {
                 orientation,
                 handles,
+                mirrored: direction == LayoutDirection::RightToLeft,
                 hit_radius: (hit_size > gap).then_some(hit_size * 0.5),
                 panes,
                 weight,
@@ -262,6 +278,11 @@ impl SplitGeometry {
             .filter(|handle| handle.adjustable() && distance(handle) <= radius)
             .min_by(|a, b| distance(a).total_cmp(&distance(b)))
             .map(|handle| handle.slot)
+    }
+
+    /// Convert screen-axis travel into a change of the leading pane's size.
+    pub(crate) fn logical_delta(&self, delta: f32) -> f32 {
+        if self.mirrored { -delta } else { delta }
     }
 
     pub(crate) fn resize(

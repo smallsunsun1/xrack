@@ -424,29 +424,69 @@ impl Builder<'_> {
         if node.kind == "SplitHandle" {
             return Vec::new();
         }
-        xrack_layout::child_reading_order(node)
-            .filter_map(|index| {
-                let (child, layout) = node.child_at(index).zip(item.child_at(index))?;
-                if is_window_overlay(child.kind)
-                    || child.kind == "CalendarCells"
-                    || child.is_control_part()
-                {
-                    return None;
-                }
-                path.push(index);
-                let mut id = self.visit(child, layout, path, row, view);
-                if let Some(content) = id
-                    && node.kind == "TableRow"
-                    && child.boolean("table-delegate-cell", false)
-                {
-                    id = self
-                        .table_delegate_cell(child, layout, path, row, content)
-                        .or(id);
-                }
-                path.pop();
-                id
-            })
-            .collect()
+        let mut headings = item.list_section_headers().iter().peekable();
+        let mut children = Vec::new();
+        for index in xrack_layout::child_reading_order(node) {
+            while let Some(heading) = headings.next_if(|heading| {
+                node.list
+                    .is_some_and(|list| heading.first_row <= list.first_row + index)
+            }) {
+                children.extend(self.list_section_heading(node, item, path, row, heading));
+            }
+            let Some((child, layout)) = node.child_at(index).zip(item.child_at(index)) else {
+                continue;
+            };
+            if is_window_overlay(child.kind)
+                || child.kind == "CalendarCells"
+                || child.is_control_part()
+            {
+                continue;
+            }
+            path.push(index);
+            let mut id = self.visit(child, layout, path, row, view);
+            if let Some(content) = id
+                && node.kind == "TableRow"
+                && child.boolean("table-delegate-cell", false)
+            {
+                id = self
+                    .table_delegate_cell(child, layout, path, row, content)
+                    .or(id);
+            }
+            path.pop();
+            children.extend(id);
+        }
+        for heading in headings {
+            children.extend(self.list_section_heading(node, item, path, row, heading));
+        }
+        children
+    }
+
+    fn list_section_heading(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &[usize],
+        row: Option<(RowKey, usize)>,
+        heading: &xrack_layout::ListSectionHeader,
+    ) -> Option<NodeId> {
+        let rect = layout.visible_window_bounds(heading.bounds.intersect(layout.bounds));
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return None;
+        }
+        let mut key = Key::element(node, path, row);
+        key.kind = "ListSectionHeading";
+        key.row_option = Some(heading.key);
+        let id = self.id(key);
+        let mut accessible = AccessibleNode::new(Role::Heading);
+        let label = heading
+            .content()
+            .and_then(|(node, _)| node.text("accessible-name"))
+            .filter(|label| !label.is_empty())
+            .unwrap_or(&heading.label);
+        accessible.set_label(label);
+        accessible.set_bounds(bounds(rect, self.scale));
+        self.nodes.push((id, accessible));
+        Some(id)
     }
 
     fn table_delegate_cell(
@@ -580,6 +620,11 @@ impl Builder<'_> {
         });
         let id = self.id(key);
         let mut accessible = AccessibleNode::new(role);
+        if matches!(node.kind, "StandardListView" | "ListView" | "GridView")
+            && node.table_selection.is_some()
+        {
+            accessible.set_multiselectable();
+        }
         if let Some(group) = self.attached_button_group(node, path, row) {
             accessible.set_member_of(group);
         }
@@ -946,6 +991,20 @@ impl Builder<'_> {
             }
             if supports_click(node.kind) {
                 accessible.add_action(Action::Click);
+            }
+            if role == Role::TreeItem {
+                let expanded = node.boolean("tree-expanded", false);
+                if self
+                    .input
+                    .tree_row_expansion(self.scene, self.layout, &target, !expanded)
+                    .is_some()
+                {
+                    accessible.add_action(if expanded {
+                        Action::Collapse
+                    } else {
+                        Action::Expand
+                    });
+                }
             }
             if let Some(swipe) = item.swipe_delegate.as_deref()
                 && (swipe.supports(SwipeSide::Left) || swipe.supports(SwipeSide::Right))
@@ -1667,6 +1726,9 @@ fn bounds(rect: Rect, scale: f64) -> accesskit::Rect {
 }
 
 fn role(node: &Node, view: Option<&str>) -> Role {
+    if xrack_runtime::is_exclusive_push_option(node) {
+        return Role::RadioButton;
+    }
     match node.kind {
         "Button" | "ToolButton" | "RoundButton" | "DelayButton" | "DialogButton" | "TouchArea"
         | "SwipeDelegate" => Role::Button,
@@ -1723,6 +1785,12 @@ fn role(node: &Node, view: Option<&str>) -> Role {
     }
 }
 
+fn mirrored_scroll(item: &LayoutNode) -> bool {
+    item.attached_scroll_geometry()
+        .is_some_and(|bar| bar.reversed())
+        || item.scroll_axis_reversed(Orientation::Horizontal)
+}
+
 fn scroll_actions(node: &mut AccessibleNode, item: &LayoutNode, scale: f64) {
     let scroll_on = |axis| {
         item.attached_scroll_geometry()
@@ -1733,13 +1801,18 @@ fn scroll_actions(node: &mut AccessibleNode, item: &LayoutNode, scale: f64) {
     if let Some(scroll) =
         scroll_on(Orientation::Horizontal).filter(|scroll| scroll.max_offset > 0.0)
     {
+        let offset = if mirrored_scroll(item) {
+            scroll.max_offset - scroll.offset
+        } else {
+            scroll.offset
+        };
         node.set_scroll_x_min(0.0);
         node.set_scroll_x_max(f64::from(scroll.max_offset) * scale);
-        node.set_scroll_x(f64::from(scroll.offset) * scale);
-        if scroll.offset > 0.0 {
+        node.set_scroll_x(f64::from(offset) * scale);
+        if offset > 0.0 {
             node.add_action(Action::ScrollLeft);
         }
-        if scroll.offset < scroll.max_offset {
+        if offset < scroll.max_offset {
             node.add_action(Action::ScrollRight);
         }
         node.add_action(Action::SetScrollOffset);
@@ -1769,6 +1842,7 @@ pub(crate) fn requested_scroll(
     if let Some(bar) = item.attached_scroll_geometry() {
         let index = usize::from(bar.orientation == Orientation::Vertical);
         let current = f64::from(bar.scroll.offset);
+        let sign = if bar.reversed() { -1.0 } else { 1.0 };
         let line = f64::from(bar.step);
         let step = if matches!(data, Some(ActionData::ScrollUnit(ScrollUnit::Item))) {
             line
@@ -1778,14 +1852,19 @@ pub(crate) fn requested_scroll(
         let value = match (action, data, bar.orientation) {
             (Action::SetValue, Some(ActionData::NumericValue(value)), _) => *value,
             (Action::SetScrollOffset, Some(ActionData::SetScrollOffset(point)), _) => {
-                [point.x, point.y][index] / scale
+                let offset = [point.x, point.y][index] / scale;
+                if bar.reversed() {
+                    f64::from(bar.scroll.max_offset) - offset
+                } else {
+                    offset
+                }
             }
             (Action::Increment, _, _) => current + line,
             (Action::Decrement, _, _) => current - line,
             (Action::ScrollLeft, _, Orientation::Horizontal)
-            | (Action::ScrollUp, _, Orientation::Vertical) => current - step,
+            | (Action::ScrollUp, _, Orientation::Vertical) => current - step * sign,
             (Action::ScrollRight, _, Orientation::Horizontal)
-            | (Action::ScrollDown, _, Orientation::Vertical) => current + step,
+            | (Action::ScrollDown, _, Orientation::Vertical) => current + step * sign,
             _ => return [None, None],
         };
         let mut offsets = [None, None];
@@ -1796,11 +1875,23 @@ pub(crate) fn requested_scroll(
     }
     if action == Action::SetScrollOffset {
         return match data {
-            Some(ActionData::SetScrollOffset(point)) => [point.x, point.y].map(|value| {
-                value
-                    .is_finite()
-                    .then(|| (value / scale).clamp(0.0, f64::from(f32::MAX)) as f32)
-            }),
+            Some(ActionData::SetScrollOffset(point)) => {
+                let offset = |value: f64| {
+                    value
+                        .is_finite()
+                        .then(|| (value / scale).clamp(0.0, f64::from(f32::MAX)) as f32)
+                };
+                let x = offset(point.x).map(|x| {
+                    if item.scroll_axis_reversed(Orientation::Horizontal)
+                        && let Some(scroll) = item.scroll_on(Orientation::Horizontal)
+                    {
+                        scroll.max_offset - x
+                    } else {
+                        x
+                    }
+                });
+                [x, offset(point.y)]
+            }
             _ => [None, None],
         };
     }
@@ -1833,6 +1924,11 @@ pub(crate) fn requested_scroll(
         (_, Orientation::Vertical) => viewport.height,
     };
     let mut offsets = [None, None];
+    let direction = if item.scroll_axis_reversed(axis) {
+        -direction
+    } else {
+        direction
+    };
     offsets[index] = Some((scroll.offset + direction * step).clamp(0.0, scroll.max_offset));
     offsets
 }
@@ -2162,6 +2258,40 @@ mod tests {
         assert!(round.supports_action(Action::Focus));
         assert!(round.supports_action(Action::Click));
         assert_eq!(update.nodes.len(), 2);
+    }
+
+    #[test]
+    fn checkable_push_buttons_keep_the_button_role_and_publish_their_state() {
+        let mut window = Node::new("Window", None);
+        for (index, kind) in ["Button", "ToolButton", "RoundButton"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut node = Node::new(kind, None);
+            node.properties.insert("text", kind.to_owned().into());
+            node.properties.insert("checkable", true.into());
+            node.properties.insert("checked", (index == 1).into());
+            length(&mut node, "y", index as f64 * 40.0);
+            length(&mut node, "width", 130.0);
+            length(&mut node, "height", 32.0);
+            window.children.push(node);
+        }
+        let input = Interaction::default();
+        let scene = Rc::new(window);
+        let layout = Rc::new(layout(&scene, Size::new(160.0, 140.0), &mut Text));
+        let update = Projection::default()
+            .update(&scene, &layout, &input, 1.0, None)
+            .unwrap();
+        for (kind, state) in [
+            ("Button", Toggled::False),
+            ("ToolButton", Toggled::True),
+            ("RoundButton", Toggled::False),
+        ] {
+            let (_, button) = named(&update, kind);
+            assert_eq!(button.role(), Role::Button);
+            assert_eq!(button.toggled(), Some(state));
+            assert!(button.supports_action(Action::Click));
+        }
     }
 
     #[test]
@@ -3076,6 +3206,319 @@ mod tests {
     }
 
     #[test]
+    fn section_headings_keep_order_and_identity_when_pinned() {
+        use xrack_runtime::{
+            Component, ListRowRenderer, ListSectionProjection, ListSectionRenderer,
+        };
+
+        struct View;
+        impl Component for View {
+            fn render(&self) -> Node {
+                unreachable!("the test supplies the base scene")
+            }
+
+            fn dispatch(&mut self, _: &str, _: &str) -> bool {
+                false
+            }
+        }
+
+        let model = VecModel::from(vec![
+            ("A", "First"),
+            ("A", "Second"),
+            ("B", "Third"),
+            ("B", "Fourth"),
+        ]);
+        let mut window = Node::new("Window", None);
+        let mut view = Node::new("StandardListView", Some("agenda"));
+        view.properties
+            .insert("accessible-name", "Agenda".to_owned().into());
+        view.properties
+            .insert("sticky-section-headers", true.into());
+        length(&mut view, "width", 180.0);
+        length(&mut view, "height", 110.0);
+        length(&mut view, "row-height", 30.0);
+        length(&mut view, "section-height", 26.0);
+        view.list = Some(ListMetrics {
+            row_count: model.len(),
+            first_row: 0,
+        });
+        view.list_sections =
+            Some(ListSectionProjection::default().snapshot(&model, None, |row| row.0));
+        view.list_section_renderer = Some(ListSectionRenderer::new(|input| {
+            let mut header = Node::new("SectionHeader", None);
+            let prefix = if input.pinned { "Pinned " } else { "" };
+            header.properties.insert(
+                "accessible-name",
+                format!("{prefix}{} · {}", input.label, input.count).into(),
+            );
+            let mut text = Node::new("Text", None);
+            text.properties
+                .insert("text", "Decorative content".to_owned().into());
+            header.children.push(text);
+            Some(header)
+        }));
+        let rows: Vec<_> = model
+            .snapshot()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, label))| {
+                let mut row = Node::new("StandardListItem", None);
+                row.row_key = model.row_key(index);
+                row.properties.insert("text", label.to_owned().into());
+                row
+            })
+            .collect();
+        view.list_row_renderer = Some(ListRowRenderer::new(move |range| rows[range].to_vec()));
+        window.children.push(view);
+        let base = Rc::new(window);
+        let size = Size::new(220.0, 120.0);
+        let mut input = Interaction::default();
+        let render = |input: &Interaction| {
+            let (scene, layout) =
+                xrack_layout::prepare_scene_with_input(&View, base.clone(), size, &mut Text, input);
+            (scene, Rc::new(layout))
+        };
+        let (scene, frame) = render(&input);
+        let mut projection = Projection::default();
+        let before = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (_, list) = named(&before, "Agenda");
+        let (a, heading) = named(&before, "A · 2");
+        let (first, _) = named(&before, "First");
+        let (b, _) = named(&before, "B · 2");
+        assert_eq!(heading.role(), Role::Heading);
+        assert_eq!(list.children()[..2], [a, first]);
+        assert_eq!(list.size_of_set(), Some(4));
+
+        assert!(input.accessibility_scroll_to(&frame, &[0], Orientation::Vertical, 42.0));
+        let (scene, frame) = render(&input);
+        let after = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (new_a, a_heading) = named(&after, "Pinned A · 2");
+        let (new_b, _) = named(&after, "B · 2");
+        let (_, list) = named(&after, "Agenda");
+        assert_eq!((new_a, new_b), (a, b));
+        assert_eq!(list.children().first(), Some(&a));
+        assert_eq!(a_heading.bounds().unwrap().y0, 0.0);
+        assert!(
+            !after
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Decorative content"))
+        );
+        assert!(
+            !after
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("First"))
+        );
+    }
+
+    #[test]
+    fn rtl_scroll_view_and_attached_bar_translate_native_physical_actions() {
+        use xrack_runtime::{LayoutDirection, ViewportHandle};
+
+        let mut window = Node::new("Window", None);
+        window
+            .properties
+            .insert("layout-direction", LayoutDirection::RightToLeft.into());
+        let mut view = Node::new("ScrollView", Some("canvas"));
+        let handle = ViewportHandle::with_scroll_notifications();
+        view.viewport_handle = Some(handle.clone());
+        view.properties
+            .insert("accessible-name", "Canvas".to_owned().into());
+        length(&mut view, "width", 120.0);
+        length(&mut view, "height", 80.0);
+        length(&mut view, "content-width", 360.0);
+        let mut bar = Node::new("ScrollBar", Some("bar"));
+        bar.scroll_target = Some(handle);
+        bar.properties
+            .insert("accessible-name", "Position".to_owned().into());
+        bar.properties
+            .insert("orientation", Orientation::Horizontal.into());
+        bar.properties
+            .insert("layout-direction", LayoutDirection::LeftToRight.into());
+        length(&mut bar, "y", 90.0);
+        length(&mut bar, "width", 120.0);
+        length(&mut bar, "height", 12.0);
+        window.children.extend([view, bar]);
+
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(160.0, 120.0), &mut Text));
+        let scale = 2.0;
+        let update = Projection::default()
+            .update(&scene, &frame, &Interaction::default(), scale, None)
+            .unwrap();
+        for (index, label) in [(0, "Canvas"), (1, "Position")] {
+            let (_, accessible) = named(&update, label);
+            assert_eq!(accessible.scroll_x(), Some(480.0));
+            assert!(accessible.supports_action(Action::ScrollLeft));
+            assert!(!accessible.supports_action(Action::ScrollRight));
+            let left = requested_scroll(
+                Action::ScrollLeft,
+                Some(&ActionData::ScrollUnit(ScrollUnit::Item)),
+                &scene.children[index],
+                &frame.children[index],
+                scale,
+            );
+            assert!(left[0].is_some_and(|offset| offset > 0.0));
+            let set = requested_scroll(
+                Action::SetScrollOffset,
+                Some(&ActionData::SetScrollOffset(accesskit::Point::new(
+                    300.0, 0.0,
+                ))),
+                &scene.children[index],
+                &frame.children[index],
+                scale,
+            );
+            assert_eq!(set[0], Some(90.0));
+        }
+    }
+
+    #[test]
+    fn rtl_table_reports_physical_scroll_position_and_left_scroll_action() {
+        let mut table = Node::new("TableView", None);
+        table.properties.insert(
+            "layout-direction",
+            xrack_runtime::LayoutDirection::RightToLeft.into(),
+        );
+        let columns = (0..2)
+            .map(|_| {
+                let mut column = Node::new("TableColumn", None);
+                length(&mut column, "width", 160.0);
+                column
+            })
+            .collect();
+        table.table_header = Some(Box::new(xrack_runtime::TableHeader {
+            columns,
+            sort: None,
+            column_widths: vec![],
+        }));
+        let item = layout(&table, Size::new(200.0, 120.0), &mut Text);
+        let mut accessible = AccessibleNode::new(Role::Table);
+        scroll_actions(&mut accessible, &item, 1.0);
+        assert_eq!(accessible.scroll_x(), Some(120.0));
+        assert!(accessible.supports_action(Action::ScrollLeft));
+        assert!(!accessible.supports_action(Action::ScrollRight));
+        let offset = requested_scroll(
+            Action::ScrollLeft,
+            Some(&ActionData::ScrollUnit(ScrollUnit::Item)),
+            &table,
+            &item,
+            1.0,
+        );
+        assert_eq!(offset, [Some(28.0), None]);
+    }
+
+    #[test]
+    fn rtl_tree_keeps_accessible_row_identity_and_routes_expand_and_collapse() {
+        use xrack_runtime::{LayoutDirection, TreeAction, TreeState};
+
+        let model = Rc::new(VecModel::from(vec![(1_i64, -1_i64), (2, 1)]));
+        let state = TreeState::default();
+        let scene = |direction| {
+            let mut window = Node::new("Window", None);
+            window
+                .properties
+                .insert("layout-direction", Value::LayoutDirection(direction));
+            let mut view = Node::new("TreeView", Some("directory"));
+            let snapshot = state.snapshot(|| model.clone(), |row| *row);
+            view.list = Some(ListMetrics {
+                row_count: snapshot.rows().len(),
+                first_row: 0,
+            });
+            for branch in snapshot.rows() {
+                let mut row = Node::new("ListRow", None);
+                row.row_key = Some(branch.row);
+                row.properties
+                    .insert("tree-depth", (branch.depth as i64).into());
+                row.properties
+                    .insert("tree-has-children", branch.has_children.into());
+                row.properties
+                    .insert("tree-expanded", branch.expanded.into());
+                let mut cell = Node::new("TreeCell", None);
+                cell.properties
+                    .insert("accessible-name", format!("Branch {}", branch.key).into());
+                let mut glyph = Node::new("Text", None);
+                glyph
+                    .properties
+                    .insert("text", "Decorative glyph".to_owned().into());
+                let mut disclosure = Node::new("TreeDisclosure", None);
+                disclosure.children.push(glyph);
+                let mut delegate = Node::new("TreeRow", None);
+                delegate.children.extend([disclosure, cell]);
+                row.children.push(delegate);
+                view.children.push(row);
+            }
+            view.tree = Some(snapshot);
+            window.children.push(view);
+            Rc::new(window)
+        };
+        let mut projection = Projection::default();
+        let input = Interaction::default();
+        let size = Size::new(220.0, 110.0);
+        let rtl = scene(LayoutDirection::RightToLeft);
+        let frame = Rc::new(layout(&rtl, size, &mut Text));
+        let update = projection.update(&rtl, &frame, &input, 1.0, None).unwrap();
+        let (row_id, row) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::TreeItem)
+            .unwrap();
+        let row_id = *row_id;
+        assert_eq!(row.is_expanded(), Some(false));
+        assert!(row.supports_action(Action::Expand));
+        assert!(
+            update
+                .nodes
+                .iter()
+                .all(|(_, node)| node.label() != Some("Decorative glyph"))
+        );
+        let (cell_id, cell) = named(&update, "Branch 1");
+        let rtl_bounds = cell.bounds().unwrap();
+        let Some(Route::Element { target, .. }) = projection.route(row_id) else {
+            panic!("branch has no action route");
+        };
+        let expand = input
+            .tree_row_expansion(&rtl, &frame, &target, true)
+            .unwrap();
+        let ControlAction::Tree(TreeAction::SetExpanded { key, row, expanded }) = expand.action
+        else {
+            panic!("wrong tree action");
+        };
+        assert!(state.set_expanded(rtl.children[0].tree.as_ref().unwrap(), key, row, expanded));
+
+        let ltr = scene(LayoutDirection::LeftToRight);
+        let frame = Rc::new(layout(&ltr, size, &mut Text));
+        let update = projection.update(&ltr, &frame, &input, 1.0, None).unwrap();
+        let row = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == row_id)
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(row.is_expanded(), Some(true));
+        assert!(row.supports_action(Action::Collapse));
+        let (updated_cell, cell) = named(&update, "Branch 1");
+        assert_eq!(cell_id, updated_cell);
+        assert!(cell.bounds().unwrap().x0 > rtl_bounds.x0);
+        let collapse = input
+            .tree_row_expansion(&ltr, &frame, &target, false)
+            .unwrap();
+        assert_eq!(
+            collapse.action,
+            ControlAction::Tree(TreeAction::SetExpanded {
+                key,
+                row: target.row_key.unwrap(),
+                expanded: false
+            })
+        );
+    }
+
+    #[test]
     fn virtual_table_exposes_absolute_cell_positions_and_sortable_headers() {
         let mut table = Node::new("TableView", Some("inventory"));
         table
@@ -3382,6 +3825,9 @@ mod tests {
             row_count: 50_000,
             first_row: 300,
         });
+        grid.properties.insert("multi-select", true.into());
+        grid.properties.insert("current-index", 300_i64.into());
+        xrack_runtime::TableSelection::default().populate_list_scene(&mut grid, &50_000_i64);
         let mut row = Node::new("ListRow", None);
         row.properties.insert("selected", true.into());
         let mut card = Node::new("Rectangle", None);
@@ -3403,6 +3849,7 @@ mod tests {
             .unwrap();
         let (_, grid) = named(&update, "Tiles");
         assert_eq!(grid.role(), Role::List);
+        assert!(grid.is_multiselectable());
         assert_eq!(grid.size_of_set(), Some(50_000));
         let tile = update
             .nodes
@@ -3978,7 +4425,12 @@ mod tests {
             length(&mut component, "width", 150.0);
             length(&mut component, "height", 100.0);
             for (row, label) in ["One", "Two"].into_iter().enumerate() {
-                let mut radio = Node::new("RadioButton", None);
+                let kind = if row == 0 {
+                    "RadioButton"
+                } else {
+                    "ToolButton"
+                };
+                let mut radio = Node::new(kind, None);
                 length(&mut radio, "y", (row * 40) as f64);
                 length(&mut radio, "height", 34.0);
                 radio
@@ -4009,6 +4461,7 @@ mod tests {
         assert!(disabled.is_disabled());
         assert_eq!(named(&update, "Left group One").1.member_of(), Some(left));
         assert_eq!(named(&update, "Left group Two").1.member_of(), Some(left));
+        assert_eq!(named(&update, "Left group Two").1.role(), Role::RadioButton);
         assert_eq!(named(&update, "Right group Two").1.member_of(), Some(right));
         assert_eq!(
             named(&update, "Left group One").1.toggled(),

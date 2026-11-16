@@ -1,13 +1,13 @@
 // Enumerate candidate spellings. The compiler decides whether each is available in context.
-pub(crate) const ELEMENTS: &str = "Action ActionGroup AnimatedImage ApplicationWindow MediaPlayer SoundEffect BusyIndicator Button ButtonGroup Calendar CheckBox CheckDelegate ColorPickerPopup ComboBox ContextMenuArea DatePickerPopup DelayButton Dial Dialog ControlFrame Pane EmptyState
+pub(crate) const ELEMENTS: &str = "Action ActionGroup AnimatedImage ApplicationWindow MediaPlayer BusyIndicator Button ButtonGroup Calendar CheckBox CheckDelegate ColorPickerPopup ComboBox ContextMenuArea DatePickerPopup DelayButton Dial Dialog ControlFrame Pane EmptyState
     ButtonContent SliderHandle RangeLowerHandle RangeUpperHandle ToggleIndicator SwitchThumb SpinUpIndicator SpinDownIndicator DayCell DayOfWeekRow DialogButton DialogButtonBox DoubleSpinBox DragArea Drawer DropArea FileDialog FontPickerPopup Flickable FlexboxLayout FlowLayout FocusScope GridLayout GridView GroupBox HorizontalBox HorizontalLayout Image Label LineEdit
     HoverHandler ItemDelegate ListView Menu MenuBar MenuItem MenuSeparator MessageDialog MonthGrid Page PageFooter PageHeader PageIndicator Path PopupWindow ProgressIndicator RadioButton RadioDelegate
-    RadioGroup RangeSlider Rectangle RoundButton Row ScaleRotateGestureHandler ScrollBar ScrollIndicator ScrollView SearchField SecondaryWindow Shortcut Slider SpinBox Spinner SplitView StackPage StackView
+    RadioGroup RangeSlider Rectangle RoundButton Row ScaleRotateGestureHandler ScrollBar ScrollIndicator ScrollView SearchField SecondaryWindow SectionHeader Shortcut Slider SpinBox Spinner SplitView StackPage StackView
     StyledText StandardButton StandardListView StandardTableView SwipeContent SwipeDelegate SwipeGestureHandler SwipeLeft SwipePage SwipeRight SwipeView Switch SwitchDelegate Tab TabBar TabButton TabWidget TableCell TableColumn TableRow TableView Text TextArea
-    SystemTrayIcon TextEdit TextInput TimePicker TimePickerPopup Timer ToolBar ToolButton ToolSeparator Tooltip TouchArea TreeCell TreeRow TreeView VerticalBox
+    SystemTrayIcon TextEdit TextInput TimePicker TimePickerPopup Timer ToolBar ToolButton ToolSeparator Tooltip TouchArea TreeCell TreeDisclosure TreeRow TreeView VerticalBox
     Tumbler VerticalLayout WeekNumberColumn WheelHandler Window WindowMoveArea";
 
-pub(crate) const PROPERTIES: &str = "autoplay duration volume ready ended error muted playback-rate network-bandwidth audio-track subtitle-track subtitle-tracks subtitle-file status seekable seek-start seek-end at-live-edge has-audio has-video audio-tracks media-title subtitle audio-error subtitle-error buffer-progress bitrate accent-color accept-files accept-text accepted-buttons accessible-description accessible-name action alignment anchor-gap animated allow-copy allow-link allow-move auto-complete auto-repeat auto-sort cancel-text blocking cursor-shape
+pub(crate) const PROPERTIES: &str = "autoplay duration volume ready ended error muted playback-rate network-bandwidth audio-track subtitle-track subtitle-tracks subtitle-file status seekable seek-start seek-end at-live-edge has-audio has-video audio-tracks media-title subtitle audio-error subtitle-error buffer-progress bitrate accent-color accept-files accept-text accepted-buttons accessible-description accessible-name action alignment anchor-gap animated allow-copy allow-link allow-move auto-complete auto-repeat auto-repeat-delay auto-repeat-interval auto-sort cancel-text blocking cursor-shape section-field section-height sticky-section-headers
     handle-swipe-left handle-swipe-right handle-swipe-up handle-swipe-down
     background bounds-behavior bounds-movement border-bottom-left-radius border-bottom-right-radius border-color border-radius buttons
     border-top-left-radius border-top-right-radius border-width can-go-back cell-height cell-width check-state checkable checked clip
@@ -23,11 +23,11 @@ pub(crate) const PROPERTIES: &str = "autoplay duration volume ready ended error 
     context-menu-enabled password-visible pasteable undoable paused placeholder-text preferred-height preferred-width preserve-scroll-anchor press-and-hold-interval primary progress progress-color read-only rebound-duration resizable resizable-columns resizable-rows restore-focus
     radius repeat role root-key row row-height row-height-field row-header-width row-header-text row-header-field row-key-field row-visible-field rowspan running selected-view-index selection-target sequence sequences shortcut sortable source source-clip-x source-clip-y source-clip-width source-clip-height speed spacing spacing-horizontal spacing-vertical start-angle step
     enabled-role show-alpha show-color-plane show-seconds snap-mode stack-index step-size stroke stroke-width suggestions suggestions-for text text-role time timeout title today track-color transform-origin-x transform-origin-y transform-rotation transform-scale transform-scale-x transform-scale-y transition-duration upper-value use-24-hour-format value value-role
-    vertical-alignment vertical-scroll-bar-policy vertical-spacing vertical-stretch vertical-tile-mode viewbox-height viewbox-width
+    typeahead-enabled typeahead-field vertical-alignment vertical-scroll-bar-policy vertical-spacing vertical-stretch vertical-tile-mode viewbox-height viewbox-width
     triggered-on-start tristate viewbox-x viewbox-y viewport-height visible visible-item-count week-start weekday-labels wheel-enabled width window-bounds-height window-bounds-width window-bounds-x window-bounds-y wrap z";
 
 pub(crate) const EVENTS: &str = "accepted activated activated-ambiguously applied canceled cancelled capture-key-pressed capture-key-released changed check-state-changed clicked close-requested closed collapsed deactivated wheel pointer-event
-    column-moved current-cell-changed current-row-changed discarded drag-finished drag-started dropped edited entered exited expanded failed files-dropped files-entered finished focus-changed-event focus-gained focus-lost focus-within-changed help-requested key-pressed key-released leave-requested link-activated month-changed opened position-changed rejected released removed reset resized row-moved search-triggered selected selection-changed
+    column-moved current-cell-changed current-row-changed discarded drag-finished drag-started dropped edited entered exited expanded failed files-dropped files-entered finished focus-changed-event focus-gained focus-lost focus-within-changed help-requested key-pressed key-released leave-requested link-activated month-changed opened position-changed pressed rejected released removed reset resized row-moved search-triggered selected selection-changed
     double-clicked ended flicked moved press-and-hold scroll-event scrolled sort-ascending sort-descending started swiped toggled triggered updated value-selected";
 
 pub(crate) const TYPES: &str = "int float bool string styled-text length percent color brush image [string] WheelEvent CursorShape PointerEvent PointerEventKind PointerButton PointerButtons TouchPoint TouchPoints [TouchPoint]
@@ -91,9 +91,15 @@ pub(crate) const FUNCTIONS: &[BuiltinFunction] = &[
 
 pub(crate) const CHILDREN_DOC: &str = "Places the caller's child elements at this point in a component. Their bindings still use the caller's scope.";
 
-pub(crate) fn list_key_methods(kind: &str) -> &'static [BuiltinFunction] {
-    if xrack_ir::semantic::selection_list(kind) {
+pub(crate) fn row_key_methods(kind: &str) -> &'static [BuiltinFunction] {
+    if xrack_ir::semantic::row_key_view(kind) {
         &[
+            BuiltinFunction {
+                name: "view-index-for-key",
+                parameters: &["key: int"],
+                result: Some("int"),
+                documentation: "Returns the displayed index for a unique row key, or -1 if it is hidden or unavailable. Requires row-key-field.",
+            },
             BuiltinFunction {
                 name: "select-key",
                 parameters: &["key: int"],
@@ -112,6 +118,76 @@ pub(crate) fn list_key_methods(kind: &str) -> &'static [BuiltinFunction] {
     }
 }
 
+pub(crate) fn row_selection_methods(kind: &str) -> &'static [BuiltinFunction] {
+    if !xrack_ir::semantic::row_selection_view(kind) {
+        return &[];
+    }
+    &[
+        BuiltinFunction {
+            name: "is-row-selected",
+            parameters: &["row: int"],
+            result: Some("bool"),
+            documentation: "Tests selection at a displayed row index, including rows outside the viewport.",
+        },
+        BuiltinFunction {
+            name: "select-row",
+            parameters: &["row: int"],
+            result: None,
+            documentation: "Replaces the selection with the record at this displayed index and moves the cursor.",
+        },
+        BuiltinFunction {
+            name: "toggle-row",
+            parameters: &["row: int"],
+            result: None,
+            documentation: "Toggles the record at this displayed index when multi-select is enabled.",
+        },
+        BuiltinFunction {
+            name: "select-all",
+            parameters: &[],
+            result: None,
+            documentation: "Selects the current filtered projection when multi-select is enabled.",
+        },
+        BuiltinFunction {
+            name: "clear-selection",
+            parameters: &[],
+            result: None,
+            documentation: "Clears the multi-selection and preserves the cursor.",
+        },
+    ]
+}
+
+pub(crate) fn batch_selection_methods(kind: &str) -> &'static [BuiltinFunction] {
+    if !xrack_ir::semantic::row_key_view(kind) && kind != "TreeView" {
+        return &[];
+    }
+    &[BuiltinFunction {
+        name: "select-keys",
+        parameters: &["keys: [int]"],
+        result: None,
+        documentation: "Atomically replaces the multi-selection by model key, including hidden rows, and preserves the current item. Lists, grids, and tables require row-key-field. Tables require row selection.",
+    }]
+}
+
+pub(crate) fn tree_selection_methods(kind: &str) -> &'static [BuiltinFunction] {
+    if kind != "TreeView" {
+        return &[];
+    }
+    &[
+        BuiltinFunction {
+            name: "is-key-selected",
+            parameters: &["key: int"],
+            result: Some("bool"),
+            documentation: "Checks whether the record with this key is selected, including retained selections in collapsed or filtered branches.",
+        },
+        BuiltinFunction {
+            name: "select-key",
+            parameters: &["key: int"],
+            result: None,
+            documentation: "Selects the displayed node with this key and replaces any existing multi-selection.",
+        },
+    ]
+}
+
 pub(crate) fn media_methods(kind: &str) -> &'static [BuiltinFunction] {
     match kind {
         "MediaPlayer" => MEDIA_METHODS,
@@ -119,7 +195,7 @@ pub(crate) fn media_methods(kind: &str) -> &'static [BuiltinFunction] {
             name: "play",
             parameters: &[],
             result: None,
-            documentation: "Plays the preloaded WAV from the start. Calls before ready are ignored.",
+            documentation: "Plays the WAV from the start. A call made during preload starts playback when the effect is ready.",
         }],
         _ => &[],
     }

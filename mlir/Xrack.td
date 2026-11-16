@@ -19,6 +19,7 @@ def XR_Bool : XR_Type<"Bool", "bool">;
 def XR_String : XR_Type<"String", "string">;
 def XR_StyledText : XR_Type<"StyledText", "styledtext">;
 def XR_StringList : XR_Type<"StringList", "stringlist">;
+def XR_IntList : XR_Type<"IntList", "intlist">;
 class XR_NamedType<string name, string spelling> : XR_Type<name, spelling> {
   let parameters = (ins StringRefParameter<"record symbol">:$name);
   let assemblyFormat = "`<` $name `>`";
@@ -82,7 +83,7 @@ def XR_Date : XR_Type<"Date", "date">;
 def XR_Time : XR_Type<"Time", "time">;
 def XR_Font : XR_Type<"Font", "font">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
-def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
+def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers, XR_WheelEvent,
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
@@ -190,7 +191,7 @@ def XR_StateTimingOp : XR_Op<"state_timing", [ParentOneOf<["ElementOp", "Instanc
   let hasVerifier = 1;
 }
 def XR_RepeatOp : XR_Op<"repeat", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
-  let arguments = (ins AnyTypeOf<[XR_Int, XR_StringList, XR_RecordList, XR_TouchPoints]>:$input, StrAttr:$name,
+  let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_StringList, XR_RecordList, XR_TouchPoints]>:$input, StrAttr:$name,
                        StrAttr:$item, StrAttr:$index);
 }
 def XR_ControlLinkOp : XR_Op<"control_link", [HasParent<"ElementOp">]> {
@@ -285,7 +286,7 @@ def XR_ScrollCommandOp : XR_Op<"scroll_command", [ParentOneOf<["CallbackOp", "Ha
   let hasVerifier = 1;
 }
 def XR_SourceSelectionOp : XR_Op<"source_selection", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
-  let arguments = (ins Variadic<XR_Int>:$args, StrAttr:$owner, StrAttr:$method);
+  let arguments = (ins Variadic<AnyTypeOf<[XR_Int, XR_IntList]>>:$args, StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
 def XR_TableSelectionCommandOp : XR_Op<"table_selection_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
@@ -359,6 +360,7 @@ def XR_FormatNumberOp : XR_ExpressionOp<"format_number",
 def XR_ParseNumberOp : XR_ExpressionOp<"parse_number",
     (ins XR_String:$input, XR_Float:$fallback), XR_Float, [MemoryEffects<[MemRead]>]>;
 def XR_ArrayOp : XR_ExpressionOp<"array", (ins Variadic<XR_String>:$items), XR_StringList, [Pure]>;
+def XR_IntArrayOp : XR_ExpressionOp<"int_array", (ins Variadic<XR_Int>:$items), XR_IntList, [Pure]>;
 def XR_PointerButtonsOp : XR_ExpressionOp<"pointer_buttons", (ins Variadic<XR_PointerButton>:$items), XR_PointerButtons, [Pure]>;
 def XR_RecordArrayOp : XR_ExpressionOp<"record_array", (ins Variadic<XR_Record>:$items), XR_RecordList, [Pure]>;
 def XR_MakeRecordOp : XR_ExpressionOp<"make_record", (ins Variadic<XR_Value>:$fields), XR_Record, [Pure]>;
@@ -412,6 +414,9 @@ def XR_TreeQueryOp : XR_ExpressionOp<"tree_query", (ins XR_Int:$key, StrAttr:$ow
   let hasVerifier = 1;
 }
 def XR_ListSelectionReadOp : XR_ExpressionOp<"list_selection_read", (ins StrAttr:$owner), XR_Int>;
+def XR_TreeSelectionKeysOp : XR_ExpressionOp<"tree_selection_keys", (ins StrAttr:$owner), XR_IntList>;
+def XR_ListSelectionKeysOp : XR_ExpressionOp<"list_selection_keys", (ins StrAttr:$owner), XR_IntList>;
+def XR_ListRowSelectedOp : XR_ExpressionOp<"list_row_selected", (ins XR_Int:$index, StrAttr:$owner), XR_Bool>;
 def XR_ViewCountOp : XR_ExpressionOp<"view_count", (ins StrAttr:$owner), XR_Int>;
 def XR_ViewIndexOp : XR_ExpressionOp<"view_index", (ins XR_Int:$index, StrAttr:$owner), XR_Int> {
   let hasVerifier = 1;
@@ -457,6 +462,7 @@ def XR_HoverReadOp : XR_ExpressionOp<"hover_read", (ins StrAttr:$owner), AnyType
 def XR_TouchAreaReadOp : XR_ExpressionOp<"touch_area_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Bool, XR_Int, XR_Length, XR_TouchPoints]>> {
   let hasVerifier = 1;
 }
+def XR_ButtonPressedOp : XR_ExpressionOp<"button_pressed", (ins StrAttr:$owner), XR_Bool>;
 def XR_ParamOp : XR_ExpressionOp<"param", (ins)>;
 def XR_CallOp : XR_ExpressionOp<"call", (ins Variadic<XR_Value>:$args, StrAttr:$owner)>;
 def XR_UnaryOp : XR_ExpressionOp<"unary", (ins XR_Value:$input), XR_Value,
@@ -473,12 +479,12 @@ def XR_ColorFunctionOp : XR_ExpressionOp<"color_function",
     (ins Variadic<AnyTypeOf<[XR_Int, XR_Float, XR_Color]>>:$inputs), XR_Color, [Pure]> {
   let hasVerifier = 1;
 }
-def XR_Model : AnyTypeOf<[XR_StringList, XR_RecordList]>;
+def XR_Model : AnyTypeOf<[XR_IntList, XR_StringList, XR_RecordList]>;
 def XR_ModelCountOp : XR_ExpressionOp<"model_count", (ins XR_Model:$input), XR_Int, [MemoryEffects<[MemRead]>]>;
 def XR_ModelIsEmptyOp : XR_ExpressionOp<"model_is_empty", (ins XR_Model:$input), XR_Bool, [MemoryEffects<[MemRead]>]>;
 def XR_ModelAtOp : XR_ExpressionOp<"model_at",
-    (ins XR_Model:$model, XR_Int:$index, AnyTypeOf<[XR_String, XR_Record]>:$fallback),
-    AnyTypeOf<[XR_String, XR_Record]>, [MemoryEffects<[MemRead]>, AllTypesMatch<["fallback", "result"]>]> {
+    (ins XR_Model:$model, XR_Int:$index, AnyTypeOf<[XR_Int, XR_String, XR_Record]>:$fallback),
+    AnyTypeOf<[XR_Int, XR_String, XR_Record]>, [MemoryEffects<[MemRead]>, AllTypesMatch<["fallback", "result"]>]> {
   let hasVerifier = 1;
 }
 def XR_FormatFixedOp : XR_ExpressionOp<"format_fixed",

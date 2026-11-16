@@ -60,7 +60,23 @@ fn main() -> std::process::ExitCode {
         Some("--decimal-spin") => xrack_platform_winit::run(DecimalSpinDemo::new()),
         Some("--tumbler") => xrack_platform_winit::run(TumblerDemo::new()),
         Some("--delay") => xrack_platform_winit::run(DelayDemo::new()),
+        Some("--repeat-buttons") => {
+            xrack_platform_winit::run(controls_ui::RepeatButtonsDemo::new())
+        }
+        Some(
+            "--button-hold" | "--button-double-click" | "--button-pressed" | "--button-lifecycle",
+        ) => {
+            let mut ui = controls_ui::RepeatButtonsDemo::new();
+            ui.set_repeating(false);
+            xrack_platform_winit::run(ui)
+        }
         Some("--check-state") => xrack_platform_winit::run(CheckStateDemo::new()),
+        Some("--checkable-buttons") => {
+            xrack_platform_winit::run(controls_ui::CheckableButtonsDemo::new())
+        }
+        Some("--grouped-buttons") => {
+            xrack_platform_winit::run(controls_ui::GroupedButtonsDemo::new())
+        }
         Some("--check-group") => xrack_platform_winit::run(CheckGroupDemo::new()),
         Some("--groups") => xrack_platform_winit::run(GroupBoxDemo::new()),
         Some("--indicators") => xrack_platform_winit::run(IndicatorsDemo::new()),

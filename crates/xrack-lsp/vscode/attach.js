@@ -4,31 +4,7 @@ const net = require('node:net');
 const path = require('node:path');
 const vscode = require('vscode');
 
-function readSnapshot(socketPath) {
-    return new Promise((resolve, reject) => {
-        const socket = net.createConnection(socketPath);
-        let text = '';
-        socket.setEncoding('utf8');
-        socket.setTimeout(2500, () => socket.destroy(new Error('Timed out waiting for the application')));
-        socket.on('data', chunk => {
-            text += chunk;
-            if (text.length > 4 * 1024 * 1024) socket.destroy(new Error('Invalid XRack snapshot size'));
-        });
-        socket.on('error', reject);
-        socket.on('end', () => {
-            try {
-                const parsed = JSON.parse(text);
-                if (parsed.error) throw new Error(parsed.error);
-                if (parsed.version !== 1 || !Array.isArray(parsed.properties)) {
-                    throw new Error('Incompatible XRack inspection protocol');
-                }
-                resolve(parsed);
-            } catch (error) {
-                reject(error);
-            }
-        });
-    });
-}
+const { readReply: readSnapshot } = require('./live-client');
 
 async function runningApps() {
     const results = [];
@@ -75,7 +51,7 @@ function page(webview, media) {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${webview.cspSource};">
 <link rel="stylesheet" href="${stylesheet}">
 </head><body>
-<header><h1 id="app"></h1><span id="status"></span></header>
+<header><h1 id="app"></h1><span id="status"></span><button id="copy-recording" hidden>Copy Recording</button></header>
 <p id="error" role="status">Waiting for the application…</p>
 <main>
 <section id="tree-section" hidden aria-labelledby="tree-title">
@@ -89,16 +65,39 @@ function page(webview, media) {
     <button id="component-source" hidden>Open Component Type</button></div>
   <div id="properties"></div>
 </section>
+<section id="calls-section" hidden aria-labelledby="calls-title">
+  <h2 id="calls-title">Recent calls</h2>
+  <p id="calls-status"></p>
+  <label hidden id="calls-picker">Call <select id="calls"></select></label>
+  <div id="call-stack"></div>
+</section>
+<section id="update-section" hidden aria-labelledby="update-title">
+  <h2 id="update-title">UI updates</h2>
+  <div id="update-details"></div>
+</section>
 </main>
 <script nonce="${nonce}" src="${script}"></script>
 </body></html>`;
 }
 
 async function openSource(connection, message) {
-    if (typeof message.key !== 'string') return;
     const snapshot = connection.snapshot;
     const node = snapshot?.tree?.nodes.find(node => node.key === message.key);
-    const source = message.component ? node?.componentSource : node?.source;
+    let source;
+    if (Number.isSafeInteger(message.planIndex)) {
+        if (message.generation !== snapshot?.trace?.generation) return;
+        source = snapshot?.updatePlan?.entries[message.planIndex]?.source;
+    } else if (Number.isSafeInteger(message.frame)) {
+        const frame = snapshot?.trace?.frames.find(frame => frame.id === message.frame);
+        if (!frame || frame.generation !== snapshot.trace.generation) return;
+        source = message.callSite ? frame.callSite : frame.source;
+    } else if (typeof message.property === 'string') {
+        const properties = node?.parent == null && message.key === 'root'
+            ? snapshot?.properties : node?.componentProperties;
+        source = properties?.find(property => property.name === message.property)?.source;
+    } else {
+        source = message.component ? node?.componentSource : node?.source;
+    }
     if (!source || typeof source.file !== 'string' || !path.isAbsolute(source.file)
         || path.extname(source.file) !== '.xr' || !Number.isSafeInteger(source.column)
         || !Number.isSafeInteger(source.line) || source.line < 1 || source.column < 1) return;
@@ -164,6 +163,12 @@ function registerAttach(context) {
             tree: snapshot?.tree,
             inspection: connection.inspecting ? snapshot?.inspection : undefined,
             properties: snapshot?.properties ?? [],
+            trace: snapshot?.trace,
+            updatePlan: snapshot?.updatePlan,
+            updates: snapshot?.updates,
+            recording: snapshot?.recording && {
+                count: snapshot.recording.steps.length, truncated: snapshot.recording.truncated,
+            },
             error: connection.error ?? connection.syncError ?? snapshot?.reloadDiagnostic ?? snapshot?.treeError,
         };
         const encoded = JSON.stringify(display);
@@ -292,6 +297,11 @@ function registerAttach(context) {
                     connection.ready = true;
                     connection.display = undefined;
                     show(connection);
+                } else if (message?.type === 'copyRecording' && connection.snapshot?.recording) {
+                    const recording = JSON.stringify(connection.snapshot.recording, null, 2);
+                    void vscode.env.clipboard.writeText(recording).catch(error => {
+                        void vscode.window.showErrorMessage('XRack recording: ' + error.message);
+                    });
                 } else if (message?.type === 'source') {
                     void openSource(connection, message).catch(error => {
                         void vscode.window.showErrorMessage('XRack definition: ' + error.message);

@@ -74,6 +74,8 @@ bazel build --config=fmt //... //tests:gpu_test
 bazel build --config=lint //... //tests:gpu_test
 ```
 
+`--config=lint` 报告生产代码中的 `unwrap()` 和 `expect()`。解释器 crate 默认将这两项设为错误。对其他目标可用 `bazel build --config=lint-strict <targets>` 执行同样的严格检查。测试断言由 Clippy 配置放行。若函数已建立可核实的不变量，可用带 `reason` 的局部 `#[expect(clippy::expect_used)]`。
+
 依赖 MLIR 原生库的可执行文件和测试通过 Bazel 构建。Cargo 可用于运行独立的 parser 测试，执行 `cargo test -p xrack-parser --locked` 前先按上文生成 Rust parser 并设置 `XRACK_ANTLR_DIR`。
 
 ## Bazel 磁盘缓存

@@ -52,11 +52,11 @@ use winit::{
     window::{CursorIcon, ImePurpose, Theme as NativeTheme, Window, WindowId},
 };
 use xrack_layout::{
-    ActivationKey, ChoiceKey, ComboGeometry, ControlInput, DragUpdate, EditAction, EditSource,
-    FocusObservers, HoverObservers, Interaction, LayoutNode, MenuKey, MenuShortcut, NavigationKey,
-    Point, PointerDelivery, PointerSequence, RangeInput, ScrollBarUpdate, ScrollGestureKind,
-    ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SpinGeometry, SplitResize,
-    StackTransitions, TableEditCommit, TableEditTarget, TablePasteDestination, Target,
+    ActivationKey, ButtonClick, ChoiceKey, ComboGeometry, ControlInput, DragUpdate, EditAction,
+    EditSource, FocusObservers, HoverObservers, Interaction, LayoutNode, MenuKey, MenuShortcut,
+    NavigationKey, Point, PointerDelivery, PointerSequence, RangeInput, ScrollBarUpdate,
+    ScrollGestureKind, ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SpinGeometry,
+    SplitResize, StackTransitions, TableEditCommit, TableEditTarget, TablePasteDestination, Target,
     TextAreaMotion, TumblerScroll, ViewportObservers, WheelAdjustment, WindowEffects,
 };
 use xrack_renderer_femtovg::{PointerCaret, Renderer};
@@ -394,11 +394,13 @@ struct Application<C> {
     additional_touch_captures: Vec<CapturedPointer>,
     next_touch_finger_id: i64,
     last_pointer_click: Option<(PointerHandle, Option<RowKey>, PointerClick)>,
+    last_button_click: Option<ButtonClick<Option<DeviceId>>>,
     scroll_requests: ScrollRequests,
     viewport_observers: ViewportObservers,
     focus_active: bool,
     scroll_contact: Option<ScrollContact>,
     modifiers: ModifiersState,
+    list_ime_focus: Option<xrack_layout::Target>,
     inspection_press: bool,
     state: Option<WindowState>,
     error: Option<String>,
@@ -434,11 +436,13 @@ impl<C: Component> Application<C> {
             additional_touch_captures: Vec::new(),
             next_touch_finger_id: 1,
             last_pointer_click: None,
+            last_button_click: None,
             scroll_requests: ScrollRequests::default(),
             viewport_observers: ViewportObservers::default(),
             focus_active: false,
             scroll_contact: None,
             modifiers: ModifiersState::default(),
+            list_ime_focus: None,
             inspection_press: false,
             state: None,
             error: None,
@@ -769,6 +773,16 @@ impl<C: Component> Application<C> {
                 AccessibleAction::Focus => {
                     self.input.focus_target(&self.scene, layout, target);
                     self.update_editor();
+                }
+                AccessibleAction::Expand | AccessibleAction::Collapse if kind == "ListRow" => {
+                    if let Some(action) = self.input.tree_row_expansion(
+                        &self.scene,
+                        layout,
+                        &target,
+                        request.action == AccessibleAction::Expand,
+                    ) {
+                        self.apply_control(action);
+                    }
                 }
                 AccessibleAction::Expand | AccessibleAction::Collapse
                     if kind == "SwipeDelegate" =>
@@ -1238,6 +1252,17 @@ impl<C: Component> Application<C> {
         mut target: Option<Target>,
         double_click: Option<PointerHandle>,
     ) {
+        if self.flush_button_press_events() {
+            self.refresh_scene();
+            target = target.filter(|target| {
+                self.layout.as_ref().is_some_and(|layout| {
+                    self.input
+                        .accessibility_target(&self.scene, layout, &target.path)
+                        .as_ref()
+                        == Some(target)
+                })
+            });
+        }
         if let (Some(delegate_target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
             && let Some(selection) =
                 self.input
@@ -1245,7 +1270,14 @@ impl<C: Component> Application<C> {
         {
             let row = delegate_target.row_key;
             let view = selection.path.clone();
+            let operation = self.row_selection(false);
+            let selection = selection.with_row_selection(&self.scene, operation);
+            let selection_only = operation != RowSelection::Replace
+                && matches!(selection.action, ControlAction::TableSelection(_));
             self.apply_control(selection);
+            if selection_only {
+                return;
+            }
             let resolved = row.zip(self.layout.as_ref()).and_then(|(row, layout)| {
                 self.input
                     .resolve_item_delegate(&self.scene, layout, &view, row)
@@ -1421,6 +1453,31 @@ impl<C: Component> Application<C> {
     }
 
     fn refresh_after_update(&mut self, redraw_input: bool) {
+        let needs_update = redraw_input
+            || self.component.scene_dirty()
+            || self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.frame.is_dirty())
+            || self.input.has_pending_swipe_events()
+            || !self.focus_requests.is_empty()
+            || !self.scroll_requests.is_empty();
+        let inspector = self
+            .component
+            .window_inspector(&self.base_scene)
+            .filter(|inspector| needs_update && inspector.profiling());
+        if let Some(inspector) = inspector {
+            if let Some(sample) = xrack_runtime::update_profile::measure(|| {
+                self.refresh_after_update_inner(redraw_input);
+            }) {
+                inspector.push_sample(sample);
+            }
+        } else {
+            self.refresh_after_update_inner(redraw_input);
+        }
+    }
+
+    fn refresh_after_update_inner(&mut self, redraw_input: bool) {
         self.flush_swipe_events(None);
         if self.sync_base_scene() {
             self.relayout();
@@ -1506,6 +1563,7 @@ impl<C: Component> Application<C> {
     }
 
     fn publish_focus(&mut self) {
+        self.flush_button_press_events();
         let Some(layout) = &self.layout else {
             return;
         };
@@ -1607,18 +1665,21 @@ impl<C: Component> Application<C> {
             state.window.set_ime_purpose(purpose);
             state.ime_purpose = purpose;
         }
+        let list_caret = self
+            .layout
+            .as_ref()
+            .and_then(|layout| self.input.list_typeahead_ime_area(&self.scene, layout));
         state.window.set_ime_allowed(
-            field.is_some_and(|node| !node.boolean("read-only", false))
+            (field.is_some_and(|node| !node.boolean("read-only", false)) || list_caret.is_some())
                 && state.window.has_focus()
                 && !self.input.menu_open(),
         );
         if let Some(layout) = &self.layout
-            && let Some(caret) = state.renderer.text.editor_ime_area(
-                &mut self.input,
-                &self.scene,
-                layout,
-                follow_caret,
-            )
+            && let Some(caret) = state
+                .renderer
+                .text
+                .editor_ime_area(&mut self.input, &self.scene, layout, follow_caret)
+                .or(list_caret)
         {
             state.window.set_ime_cursor_area(
                 LogicalPosition::new(caret.x, caret.y),
@@ -1784,6 +1845,11 @@ impl<C: Component> Application<C> {
             Instant::now(),
         ) {
             self.refresh_scene();
+            if let Some(inspector) = self.component.window_inspector(&self.base_scene)
+                && self.input.focused.as_ref() == Some(&target)
+            {
+                inspector.record_fill(&self.scene, &target.path);
+            }
         } else {
             self.update_editor();
         }
@@ -2335,6 +2401,7 @@ impl<C: Component> Application<C> {
                 }
             } else if capture.sequence.press_and_hold_triggered() {
                 self.last_pointer_click = None;
+                self.last_button_click = None;
                 self.input
                     .cancel_pointer_activation(capture.sequence.target());
             }
@@ -2349,6 +2416,7 @@ impl<C: Component> Application<C> {
 
     fn cancel_pointer(&mut self) {
         self.last_pointer_click = None;
+        self.last_button_click = None;
         if let Some(capture) = self.pointer_capture.take() {
             self.cancel_captured_pointer(capture);
         }
@@ -2380,6 +2448,7 @@ impl<C: Component> Application<C> {
 
     fn cancel_captured_pointer(&mut self, capture: CapturedPointer) {
         self.last_pointer_click = None;
+        self.last_button_click = None;
         if capture.contact.payload().0 == PointerButton::Primary {
             self.input
                 .cancel_pointer_activation(capture.sequence.target());
@@ -2431,6 +2500,7 @@ impl<C: Component> Application<C> {
             )
         {
             self.last_pointer_click = None;
+            self.last_button_click = None;
             self.refresh_dependencies();
         }
     }
@@ -2850,6 +2920,30 @@ impl<C: Component> Application<C> {
         true
     }
 
+    fn list_typeahead_key(&mut self, event: &KeyEvent) -> bool {
+        if event.state == ElementState::Pressed
+            && !event.repeat
+            && !(self.modifiers.control_key()
+                || self.modifiers.super_key()
+                || self.modifiers.alt_key())
+            && let Key::Character(text) = &event.logical_key
+        {
+            return self.list_typeahead_text(event.text.as_deref().unwrap_or(text));
+        }
+        false
+    }
+
+    fn list_typeahead_text(&mut self, text: &str) -> bool {
+        let Some(action) = self.layout.as_ref().and_then(|layout| {
+            self.input
+                .list_typeahead(&self.scene, layout, text, Instant::now())
+        }) else {
+            return false;
+        };
+        self.apply_control(action);
+        true
+    }
+
     fn choice_key(&mut self, event: &KeyEvent) -> bool {
         let open = self.input.choice_open();
         let focused = self
@@ -3060,10 +3154,16 @@ impl<C: Component> Application<C> {
             )
         {
             self.input.cancel_shortcut_sequence();
+            self.input.reset_list_typeahead();
         }
         if event.state == ElementState::Pressed && event.logical_key == Key::Named(NamedKey::Escape)
         {
             if self.cancel_drag() {
+                return true;
+            }
+            if self.input.button_hold_deadline().is_some() {
+                self.input.cancel_press();
+                self.update_editor();
                 return true;
             }
             if self.input.cancel_slider_preview()
@@ -3137,6 +3237,7 @@ impl<C: Component> Application<C> {
             || !is_synthetic && self.shortcut_key(event)
             || self.menu_key(event)
             || self.choice_key(event)
+            || !is_synthetic && self.list_typeahead_key(event)
             || self.table_edit_key(event)
             || self.selection_key(event)
             || self.tree_toggle_key(event)
@@ -3163,9 +3264,12 @@ impl<C: Component> Application<C> {
         if event.state == ElementState::Pressed {
             self.input.key_press_with_scene(&self.scene, key);
             if let Some(layout) = &self.layout {
+                let now = Instant::now();
+                self.input.begin_key_delay(&self.scene, layout, key, now);
                 self.input
-                    .begin_key_delay(&self.scene, layout, key, Instant::now());
+                    .begin_key_button_hold(&self.scene, layout, key, now);
             }
+            self.flush_button_press_events();
             if let Some(state) = &self.state {
                 state.window.request_redraw();
             }
@@ -3180,6 +3284,9 @@ impl<C: Component> Application<C> {
                     })
                     .unwrap_or(target)
             });
+            if target.is_some() {
+                self.last_button_click = None;
+            }
             self.activate(target);
         }
         true
@@ -3339,6 +3446,20 @@ impl<C: Component> Application<C> {
     }
 
     fn left_pointer(&mut self, state: ElementState, click: Option<PointerClick>) {
+        self.left_pointer_with_mode(state, click, false);
+    }
+
+    fn left_pointer_with_mode(
+        &mut self,
+        state: ElementState,
+        click: Option<PointerClick>,
+        replay: bool,
+    ) {
+        let previous_button = if state == ElementState::Released {
+            self.last_button_click.take()
+        } else {
+            None
+        };
         let previous_click = if state == ElementState::Released {
             self.last_pointer_click.take()
         } else {
@@ -3423,7 +3544,11 @@ impl<C: Component> Application<C> {
                 self.commit_spin();
             }
             if let Some(layout) = &self.layout {
-                self.input.pointer_press_in_scene(&self.scene, layout);
+                if replay {
+                    self.input.replay_tap_in_scene(&self.scene, layout);
+                } else {
+                    self.input.pointer_press_in_scene(&self.scene, layout);
+                }
             } else {
                 self.input.pointer_press();
             }
@@ -3441,8 +3566,10 @@ impl<C: Component> Application<C> {
                 }
             }
             if let Some(layout) = &self.layout {
+                let now = Instant::now();
+                self.input.begin_pointer_delay(&self.scene, layout, now);
                 self.input
-                    .begin_pointer_delay(&self.scene, layout, Instant::now());
+                    .begin_pointer_button_hold(&self.scene, layout, now);
                 self.input.split_press(&self.scene, layout);
                 self.input.spin_press(&self.scene, layout);
             }
@@ -3529,6 +3656,11 @@ impl<C: Component> Application<C> {
             self.apply_control(input);
         } else {
             let target = self.input.pointer_release_target();
+            if let Some(target) = &target
+                && let Some(inspector) = self.component.window_inspector(&self.base_scene)
+            {
+                inspector.record_click(&self.scene, &target.path);
+            }
             let edit_target = if self.row_selection(false) == RowSelection::Replace {
                 target.as_ref()
             } else {
@@ -3538,6 +3670,23 @@ impl<C: Component> Application<C> {
                 self.input
                     .table_cell_click(&self.scene, layout, edit_target, Instant::now())
             });
+            let double_button = click
+                .as_ref()
+                .zip(target.as_ref())
+                .and_then(|(click, target)| {
+                    let candidate = ButtonClick::new(
+                        &self.scene,
+                        target,
+                        click.touch_device,
+                        (click.point, click.time),
+                    )?;
+                    if previous_button.is_some_and(|previous| candidate.follows(&previous)) {
+                        Some(candidate)
+                    } else {
+                        self.last_button_click = Some(candidate);
+                        None
+                    }
+                });
             let double_click = click.zip(target.as_ref()).and_then(|(click, target)| {
                 let handle = self
                     .scene
@@ -3554,6 +3703,11 @@ impl<C: Component> Application<C> {
                 }
             });
             self.activate_with_double_click(target, double_click);
+            if let (Some(click), Some(layout)) = (double_button, &self.layout)
+                && click.deliver(&mut self.component, &self.input, &self.scene, layout)
+            {
+                self.refresh_scene();
+            }
             if editing {
                 self.update_editor();
             }
@@ -3662,6 +3816,13 @@ impl<C: Component> Application<C> {
         }
     }
 
+    fn flush_button_press_events(&mut self) -> bool {
+        self.layout.as_ref().is_some_and(|layout| {
+            self.input
+                .dispatch_button_press_events(&mut self.component, &self.scene, layout)
+        })
+    }
+
     fn move_direct_scroll(&mut self, point: Point, now: Instant) -> bool {
         let was_claimed = self.input.mouse_viewport_pan_claimed();
         let was_dragging_table = self.input.touch_table_drag_claimed();
@@ -3682,6 +3843,9 @@ impl<C: Component> Application<C> {
             self.relayout_after_scroll();
         } else if claimed && !was_claimed {
             self.update_editor();
+        }
+        if self.flush_button_press_events() {
+            self.refresh_scene();
         }
         claimed
     }
@@ -3724,12 +3888,17 @@ impl<C: Component> Application<C> {
         {
             self.input.pointer_move(&self.scene, layout, point);
         }
-        if outcome.tap {
+        let previous_target = self.input.hovered.clone();
+        let handled = self.flush_button_press_events();
+        if handled {
+            self.refresh_scene();
+        }
+        if outcome.tap && (!handled || previous_target == self.input.hovered) {
             let touch_device = match contact {
                 Some(ScrollContact::Touch(device, _, _)) => Some(device),
                 _ => None,
             };
-            self.left_pointer(ElementState::Pressed, None);
+            self.left_pointer_with_mode(ElementState::Pressed, None, true);
             self.left_pointer(
                 ElementState::Released,
                 Some(PointerClick {
@@ -3741,6 +3910,7 @@ impl<C: Component> Application<C> {
             self.input.pointer_leave();
         } else if !matches!(contact, Some(ScrollContact::MousePan(_))) {
             self.last_pointer_click = None;
+            self.last_button_click = None;
         }
         self.layout_changed(false);
     }
@@ -4094,7 +4264,7 @@ impl<C: Component> Application<C> {
         self.apply_scale_rotate_batch(deliveries);
     }
 
-    fn tick_delay(&mut self, now: Instant) {
+    fn tick_button_holds(&mut self, now: Instant) {
         let pending = self.input.delay_deadline().is_some();
         if let Some(action) = self
             .layout
@@ -4107,6 +4277,24 @@ impl<C: Component> Application<C> {
             && let Some(state) = &self.state
         {
             state.window.request_redraw();
+        }
+        if let Some((target, event)) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| self.input.advance_button_hold(&self.scene, layout, now))
+        {
+            self.last_button_click = None;
+            match event {
+                xrack_layout::ButtonHoldEvent::Repeat => self.activate(Some(target)),
+                xrack_layout::ButtonHoldEvent::PressAndHold => {
+                    if self
+                        .component
+                        .dispatch_at(&self.scene, &target.path, event.handler())
+                    {
+                        self.refresh_scene();
+                    }
+                }
+            }
         }
     }
 
@@ -4187,9 +4375,84 @@ impl<C: Component> Application<C> {
         }
     }
 
+    fn apply_inspection_input(
+        &mut self,
+        inspector: &xrack_runtime::WindowInspector,
+        action: xrack_runtime::RecordedAction,
+    ) -> Result<(), String> {
+        use xrack_runtime::RecordedAction;
+        if self.pointer_capture.is_some() || self.scroll_contact.is_some() {
+            return Err("The window is already handling a pointer gesture".into());
+        }
+        let (id, allowed) = match &action {
+            RecordedAction::Click { id } => (id, &["Button"][..]),
+            RecordedAction::Fill { id, .. } => (id, &["SearchField", "LineEdit", "TextEdit"][..]),
+            RecordedAction::Reload { .. } => return Err("Expected a pointer or text action".into()),
+        };
+        let path = inspector
+            .input_path(&self.scene, id)
+            .ok_or_else(|| format!("Target {id} is absent, repeated, or ambiguous"))?;
+        let node = self.scene.at_path(&path).ok_or("Target disappeared")?;
+        if !allowed.contains(&node.kind)
+            || node.is_password()
+            || matches!(action, RecordedAction::Fill { .. }) && node.boolean("read-only", false)
+        {
+            return Err(format!(
+                "Target {id} does not support that inspection action"
+            ));
+        }
+        let item = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.at_path(&path))
+            .filter(|item| item.visible && item.enabled)
+            .ok_or("Target is hidden or disabled")?;
+        let bounds = item.visible_window_bounds(item.bounds);
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return Err("Target is outside the visible window".into());
+        }
+        let point = Point {
+            x: bounds.x + bounds.width * 0.5,
+            y: bounds.y + bounds.height * 0.5,
+        };
+        let hit = self.layout.as_ref().and_then(|layout| {
+            self.input.pointer_move(&self.scene, layout, point);
+            self.input.pointer_hover_target(&self.scene, layout)
+        });
+        if !hit.is_some_and(|target| target.path == path) {
+            return Err("Target center is covered by another control".into());
+        }
+        let contact = PointerContact::Mouse(PointerButton::Primary);
+        self.left_pointer(ElementState::Pressed, None);
+        self.start_pointer(contact, point, Instant::now());
+        let now = Instant::now();
+        self.release_pointer(contact, point, now);
+        self.left_pointer(
+            ElementState::Released,
+            Some(PointerClick {
+                touch_device: None,
+                point,
+                time: now,
+            }),
+        );
+        self.publish_hover();
+        if let RecordedAction::Fill { text, .. } = action {
+            if !self
+                .input
+                .focused
+                .as_ref()
+                .is_some_and(|target| target.path == path)
+            {
+                return Err("The text target did not receive keyboard focus".into());
+            }
+            self.edit_text_from(EditAction::ReplaceAll(&text), EditSource::Atomic);
+        }
+        Ok(())
+    }
+
     fn redraw(&mut self) -> Result<(), String> {
         let now = Instant::now();
-        self.tick_delay(now);
+        self.tick_button_holds(now);
         self.tick_table_touch_hold(now);
         self.tick_pointer_hold(now);
         let animating = self.transition.running(Duration::ZERO);
@@ -4310,6 +4573,12 @@ impl<C: Component> HostedWindow for Application<C> {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
         self.refresh_after_update(false);
+        if let Some(inspector) = self.component.window_inspector(&self.base_scene)
+            && let Some(input) = inspector.take_input()
+        {
+            let result = self.apply_inspection_input(&inspector, input.action);
+            let _ = input.reply.send(result);
+        }
         if let Some(state) = &mut self.state {
             let revision = self
                 .component
@@ -4459,7 +4728,7 @@ impl<C: Component> HostedWindow for Application<C> {
                 .publish_window_status(state.sample_window_status());
         }
         self.refresh_dependencies();
-        self.tick_delay(now);
+        self.tick_button_holds(now);
         self.tick_table_touch_hold(now);
         self.tick_pointer_hold(now);
         self.tick_timers(now);
@@ -4526,6 +4795,7 @@ impl<C: Component> HostedWindow for Application<C> {
             scroll_wake,
             self.input.table_touch_hold_deadline(),
             self.input.delay_deadline(),
+            self.input.button_hold_deadline(),
             self.pointer_capture
                 .as_ref()
                 .and_then(|capture| capture.sequence.press_and_hold_deadline()),
@@ -4809,6 +5079,7 @@ impl<C: Component> Application<C> {
                 if matches!(self.scroll_contact, Some(ScrollContact::Touch(..))) {
                     return;
                 }
+                self.last_button_click = None;
                 self.cancel_drag();
                 self.input.pointer_leave();
                 self.state.as_ref().unwrap().window.request_redraw();
@@ -5023,12 +5294,19 @@ impl<C: Component> Application<C> {
                 self.keyboard_input(&event, is_synthetic);
             }
             WindowEvent::Ime(Ime::Commit(value)) if !self.input.menu_open() => {
-                self.edit_text_from(EditAction::Insert(&value), EditSource::Atomic)
+                if let Some(expected) = self.list_ime_focus.take() {
+                    if self.input.list_typeahead_focus(&self.scene) == Some(&expected) {
+                        self.list_typeahead_text(&value);
+                    }
+                } else if !self.list_typeahead_text(&value) {
+                    self.edit_text_from(EditAction::Insert(&value), EditSource::Atomic);
+                }
             }
             WindowEvent::Ime(Ime::Preedit(value, cursor)) if !self.input.menu_open() => {
                 self.pending_clipboard = None;
                 if !value.is_empty() {
                     self.input.cancel_shortcut_sequence();
+                    self.list_ime_focus = self.input.list_typeahead_focus(&self.scene).cloned();
                 }
                 if !value.is_empty() && self.input.editor.is_some() {
                     self.input.dismiss_choice();
@@ -5039,6 +5317,7 @@ impl<C: Component> Application<C> {
                 self.update_editor();
             }
             WindowEvent::Ime(Ime::Disabled) => {
+                self.list_ime_focus = None;
                 if let Some(editor) = &mut self.input.editor {
                     editor.set_preedit(String::new(), None);
                 }

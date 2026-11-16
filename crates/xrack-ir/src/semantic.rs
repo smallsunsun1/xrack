@@ -32,12 +32,14 @@ fn check_name(name: &str, span: Span) -> Result<()> {
 }
 
 pub fn table_selection_property(kind: &str, name: &str) -> Option<Type> {
-    if !table_view(kind) {
+    if !table_view(kind) && !row_selection_view(kind) {
         return None;
     }
     match name {
-        "current-column" | "selection-count" => Some(Type::Int),
+        "current-column" if table_view(kind) => Some(Type::Int),
+        "selection-count" => Some(Type::Int),
         "has-selection" => Some(Type::Bool),
+        "selected-keys" => Some(Type::IntList),
         _ => None,
     }
 }
@@ -101,6 +103,21 @@ pub fn viewport_kind(kind: &str) -> bool {
 
 pub fn selection_list(kind: &str) -> bool {
     matches!(kind, "ListView" | "GridView" | "StandardListView")
+}
+
+pub fn row_selection_view(kind: &str) -> bool {
+    selection_list(kind) || kind == "TreeView"
+}
+
+pub fn row_key_view(kind: &str) -> bool {
+    selection_list(kind) || table_view(kind)
+}
+
+fn keyed_row_view(kind: &str, members: &[ast::Member]) -> bool {
+    row_key_view(kind)
+        && members.iter().any(
+            |member| matches!(member, Member::Binding(binding) if binding.name == "row-key-field"),
+        )
 }
 
 pub fn list_selection_property(kind: &str, name: &str) -> bool {
@@ -241,11 +258,21 @@ pub fn control_part_parents(kind: &str) -> &'static [&'static str] {
         "ToggleIndicator" => &["CheckBox", "RadioButton", "Switch"],
         "SwitchThumb" => &["Switch"],
         "SpinUpIndicator" | "SpinDownIndicator" => &["SpinBox", "DoubleSpinBox"],
+        "TreeDisclosure" => &["TreeRow"],
+        "SectionHeader" => &["ListView", "StandardListView"],
         _ => &[],
     }
 }
 
 pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
+    if matches!(kind, "TreeDisclosure" | "SectionHeader") {
+        return match name {
+            "background" | "border-color" | "border-width" | "border-radius" | "opacity"
+            | "visible" => builtin_property("Rectangle", name),
+            "accessible-name" if kind == "SectionHeader" => Some(Type::String),
+            _ => None,
+        };
+    }
     if name == "layout-direction" && geometry_owner(kind) {
         return Some(Type::LayoutDirection);
     }
@@ -541,14 +568,23 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     }
     Some(match name {
         "accessible-name" | "accessible-description" => Type::String,
-        "value" if kind == "RadioButton" => Type::String,
-        "group" if matches!(kind, "RadioButton" | "CheckBox" | "Switch") => Type::String,
+        "value" if kind == "RadioButton" || builtins::push_button(kind) => Type::String,
+        "group" if builtins::button_group_member(kind) => Type::String,
         "color-scheme" if kind == "Window" => Type::ColorScheme,
         "accent-color" if kind == "Window" => Type::Color,
         "no-frame" | "resizable" if kind == "Window" => Type::Bool,
         "resize-border-width" if kind == "Window" => Type::Length,
         "initial-focus" if kind == "FocusScope" => Type::String,
-        "focus-on-click" if matches!(kind, "Button" | "ToolButton" | "RoundButton") => Type::Bool,
+        "focus-on-click" | "auto-repeat"
+            if matches!(kind, "Button" | "ToolButton" | "RoundButton") =>
+        {
+            Type::Bool
+        }
+        "auto-repeat-delay" | "auto-repeat-interval"
+            if matches!(kind, "Button" | "ToolButton" | "RoundButton") =>
+        {
+            Type::Int
+        }
         "focus-on-click" | "focus-on-tab-navigation" | "restore-focus" | "enabled"
             if kind == "FocusScope" =>
         {
@@ -777,7 +813,11 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "checked" if toggle(kind) || kind == "DelayButton" => Type::Bool,
         "check-state" if kind == "CheckBox" => Type::CheckState,
         "tristate" if kind == "CheckBox" => Type::Bool,
-        "checked" | "checkable" if matches!(kind, "MenuItem" | "GroupBox") => Type::Bool,
+        "checked" | "checkable"
+            if matches!(kind, "MenuItem" | "GroupBox") || builtins::push_button(kind) =>
+        {
+            Type::Bool
+        }
         "content-padding" if kind == "GroupBox" => Type::Length,
         "shortcut" if kind == "MenuItem" => Type::String,
         "open" | "close-on-escape" | "close-on-outside"
@@ -825,7 +865,11 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "resizing" if kind == "SplitView" => Type::Bool,
         "handle-color" if kind == "SplitView" => Type::Color,
         "delay" if matches!(kind, "Tooltip" | "DelayButton") => Type::Int,
-        "press-and-hold-interval" if kind == "TouchArea" => Type::Int,
+        "press-and-hold-interval"
+            if matches!(kind, "TouchArea" | "Button" | "ToolButton" | "RoundButton") =>
+        {
+            Type::Int
+        }
         "accepted-buttons" if kind == "TouchArea" => Type::PointerButtons,
         "multi-touch" if kind == "TouchArea" => Type::Bool,
         "timeout" if kind == "Tooltip" => Type::Int,
@@ -933,7 +977,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "current-row" | "frozen-columns" if table_view(kind) => Type::Int,
         "current-key" if kind == "TreeView" || selection_list(kind) => Type::Int,
         "root-key" if kind == "TreeView" => Type::Int,
-        "row-key-field" if selection_list(kind) => Type::String,
+        "row-key-field" if row_key_view(kind) => Type::String,
+        "typeahead-field" if selection_list(kind) => Type::String,
+        "typeahead-enabled" if selection_list(kind) => Type::Bool,
         "filter-field" | "filter-text" if matches!(kind, "TreeView" | "StandardTableView") => {
             Type::String
         }
@@ -945,6 +991,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Length
         }
         "row-height-field" if row_height_view(kind) => Type::String,
+        "section-field" if matches!(kind, "ListView" | "StandardListView") => Type::String,
+        "section-height" if matches!(kind, "ListView" | "StandardListView") => Type::Length,
+        "sticky-section-headers" if matches!(kind, "ListView" | "StandardListView") => Type::Bool,
         "row-visible-field" if row_visibility_view(kind) => Type::String,
         "header-height" | "row-header-width" if table_view(kind) => Type::Length,
         "row-header-text" if kind == "TableRow" => Type::String,
@@ -966,7 +1015,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Bool
         }
-        "multi-select" if table_view(kind) || kind == "TreeView" => Type::Bool,
+        "multi-select" if table_view(kind) || selection_list(kind) || kind == "TreeView" => {
+            Type::Bool
+        }
         "drag-select" if table_view(kind) => Type::Bool,
         "selection-target" if table_view(kind) => Type::SelectionTarget,
         "sortable" | "resizable" if kind == "TableColumn" => Type::Bool,
@@ -1359,7 +1410,8 @@ pub fn view_count_property(kind: &str, name: &str) -> bool {
 }
 
 pub fn focus_property(kind: &str, property: &str) -> bool {
-    property == "has-focus" && focus_target_kind(kind)
+    (property == "pressed" && matches!(kind, "Button" | "ToolButton" | "RoundButton"))
+        || property == "has-focus" && focus_target_kind(kind)
         || property == "focus-within" && kind == "FocusScope"
 }
 
@@ -1397,10 +1449,19 @@ fn key_handler(event: &str) -> bool {
 
 fn control_event(kind: &str, event: &str) -> bool {
     let kind = delegate_base(kind).unwrap_or(kind);
-    if matches!(
-        kind,
-        "SystemTrayIcon" | "Button" | "ToolButton" | "RoundButton"
-    ) {
+    if builtins::push_button(kind) {
+        return matches!(
+            event,
+            "clicked"
+                | "double-clicked"
+                | "press-and-hold"
+                | "pressed"
+                | "released"
+                | "canceled"
+                | "toggled"
+        );
+    }
+    if kind == "SystemTrayIcon" {
         return event == "clicked";
     }
     if kind == "SwipeGestureHandler" {
@@ -1423,6 +1484,9 @@ fn control_event(kind: &str, event: &str) -> bool {
             event,
             "changed" | "expanded" | "collapsed" | "selection-changed"
         );
+    }
+    if selection_list(kind) && event == "selection-changed" {
+        return true;
     }
     if kind == "SplitView" {
         return event == "resized";
@@ -1873,6 +1937,7 @@ fn validate_records(doc: &ast::Document) -> Result<BTreeMap<&str, &ast::RecordDe
                 field.ty,
                 Type::RecordList(_)
                     | Type::StringList
+                    | Type::IntList
                     | Type::TouchPoints
                     | Type::GradientStop
                     | Type::Percent
@@ -2938,7 +3003,8 @@ impl<'a> Scope<'a> {
             if matches!(kind, "ListView" | "GridView") {
                 let mut elements = members.iter().filter_map(|member| match member {
                     Member::Element(element)
-                        if !nonvisual_element(&element.ty) && element.ty != "EmptyState" =>
+                        if !nonvisual_element(&element.ty)
+                            && !matches!(element.ty.as_str(), "EmptyState" | "SectionHeader") =>
                     {
                         Some(element)
                     }
@@ -3027,7 +3093,8 @@ impl<'a> Scope<'a> {
                         return fail(e.span, "TableCell must be a direct cell of TableRow");
                     }
                     if matches!(kind, "TableCell" | "TreeCell")
-                        || kind == "StandardListView" && e.ty != "EmptyState"
+                        || kind == "StandardListView"
+                            && !matches!(e.ty.as_str(), "EmptyState" | "SectionHeader")
                     {
                         return fail(e.span, format!("{kind} cannot contain child elements"));
                     }
@@ -3101,6 +3168,13 @@ impl<'a> Scope<'a> {
                         if !page_slots.insert(&e.ty) {
                             return fail(e.span, format!("{kind} accepts at most one {}", e.ty));
                         }
+                    }
+                    if e.ty == "SectionHeader"
+                        && (e.id.is_some() || !members.iter().any(|member| {
+                            matches!(member, Member::Binding(binding) if binding.name == "section-field")
+                        }))
+                    {
+                        return fail(e.span, "SectionHeader requires an anonymous template in a list with section-field");
                     }
                     if e.ty == "SplitHandle" {
                         if kind != "SplitView"
@@ -3185,19 +3259,23 @@ impl<'a> Scope<'a> {
                     };
                     if let Some(required) = required
                         && (delegate_base(&e.ty).unwrap_or(&e.ty) != required
-                            || e.condition.is_some()
+                            || (kind != "RadioGroup" && e.condition.is_some())
                             || (matches!(kind, "TabWidget" | "SwipeView" | "StackView")
                                 && e.repeat.is_some()))
                     {
                         return fail(
                             e.span,
-                            format!("{kind} requires static {required} children"),
+                            if kind == "RadioGroup" {
+                                "RadioGroup requires RadioButton children".to_owned()
+                            } else {
+                                format!("{kind} requires static {required} children")
+                            },
                         );
                     }
                     if kind == "StackView" && e.id.is_none() {
                         return fail(e.span, "StackPage requires a route ID");
                     }
-                    if matches!(kind, "RadioGroup" | "TabBar")
+                    if kind == "TabBar"
                         && e.repeat.is_some()
                         && members
                             .iter()
@@ -3529,6 +3607,8 @@ impl<'a> Scope<'a> {
             ("text_selection_read", ty)
         } else if text_command_property(&element.kind, property) {
             ("text_command_available", Type::Bool)
+        } else if property == "pressed" && focus_property(&element.kind, property) {
+            ("button_pressed", Type::Bool)
         } else if focus_property(&element.kind, property) {
             ("focus_read", Type::Bool)
         } else {
@@ -3742,9 +3822,17 @@ impl<'a> Scope<'a> {
         let Some(ty) = table_selection_property(&element.kind, name) else {
             return Ok(None);
         };
+        let op = match (name, element.kind.as_str()) {
+            ("selected-keys", "TreeView") => "tree_selection_keys",
+            ("selected-keys", kind) if keyed_row_view(kind, element.members) => {
+                "list_selection_keys"
+            }
+            ("selected-keys", _) => return fail(span, "selected-keys requires row-key-field"),
+            _ => "table_selection_read",
+        };
         self.require_static_viewport(owner, span)?;
         Ok(Some(ir::Expr {
-            op: "table_selection_read".into(),
+            op: op.into(),
             owner: Some(owner.into()),
             value: name.into(),
             ty,
@@ -4048,25 +4136,35 @@ impl<'a> Scope<'a> {
             return Ok(None);
         };
         let owner = self.receiver(current, receiver).unwrap_or(receiver);
-        if !matches!(method, "is-expanded" | "depth" | "row-for-key")
-            || !self.owners.get(owner).is_some_and(|target| {
-                !target.instance
-                    && target.kind == "TreeView"
-                    && !target.callbacks.contains_key(method)
-            })
-        {
+        if !matches!(
+            method,
+            "is-expanded" | "depth" | "row-for-key" | "is-row-selected" | "is-key-selected"
+        ) || !self.owners.get(owner).is_some_and(|target| {
+            !target.instance && target.kind == "TreeView" && !target.callbacks.contains_key(method)
+        }) {
             return Ok(None);
         }
         self.require_static_viewport(owner, call.span)?;
         if call.arguments.len() != 1 {
-            return fail(call.span, format!("{method}() takes one key argument"));
+            let argument = if method == "is-row-selected" {
+                "row"
+            } else {
+                "key"
+            };
+            return fail(
+                call.span,
+                format!("{method}() takes one {argument} argument"),
+            );
         }
         let key = expression_as(&call.arguments[0], self, current, Type::Int)?;
         Ok(Some(ir::Expr {
             op: "tree_query".into(),
             owner: Some(owner.into()),
             value: method.into(),
-            ty: if method == "is-expanded" {
+            ty: if matches!(
+                method,
+                "is-expanded" | "is-row-selected" | "is-key-selected"
+            ) {
                 Type::Bool
             } else {
                 Type::Int
@@ -4081,25 +4179,40 @@ impl<'a> Scope<'a> {
             return Ok(None);
         };
         let owner = self.receiver(current, receiver).unwrap_or(receiver);
-        if !matches!(method, "view-index-for-source" | "source-index-for-view")
-            || !self.owners.get(owner).is_some_and(|target| {
-                !target.instance
-                    && !target.callbacks.contains_key(method)
-                    && viewport_kind(&target.kind)
-                    && !content_viewport(&target.kind)
-            })
-        {
+        let membership = method == "is-row-selected";
+        let business_key = method == "view-index-for-key";
+        if !matches!(
+            method,
+            "view-index-for-source"
+                | "source-index-for-view"
+                | "view-index-for-key"
+                | "is-row-selected"
+        ) || !self.owners.get(owner).is_some_and(|target| {
+            !target.instance
+                && !target.callbacks.contains_key(method)
+                && viewport_kind(&target.kind)
+                && !content_viewport(&target.kind)
+                && (!membership || selection_list(&target.kind))
+        }) {
             return Ok(None);
+        }
+        if business_key && !keyed_row_view(&self.owners[owner].kind, self.owners[owner].members) {
+            return fail(call.span, "view-index-for-key() requires row-key-field");
         }
         self.require_static_viewport(owner, call.span)?;
         let [index] = call.arguments.as_slice() else {
             return fail(call.span, format!("{method}() takes one index argument"));
         };
         Ok(Some(ir::Expr {
-            op: "view_index".into(),
+            op: if membership {
+                "list_row_selected"
+            } else {
+                "view_index"
+            }
+            .into(),
             owner: Some(owner.into()),
             value: method.into(),
-            ty: Type::Int,
+            ty: if membership { Type::Bool } else { Type::Int },
             args: vec![expression_as(index, self, current, Type::Int)?],
             span: call.span,
         }))
@@ -4172,7 +4285,7 @@ impl<'a> Scope<'a> {
             let owner = self.receiver(current, receiver).unwrap_or(receiver);
             if matches!(
                 method,
-                "select-source-index" | "select-source-cell" | "select-key"
+                "select-source-index" | "select-source-cell" | "select-key" | "select-keys"
             ) && let Some(target) = self.owners.get(owner)
                 && !target.instance
                 && !target.callbacks.contains_key(method)
@@ -4180,12 +4293,16 @@ impl<'a> Scope<'a> {
                 if !viewport_kind(&target.kind) || content_viewport(&target.kind) {
                     return fail(call.span, format!("{method}() requires a virtual view"));
                 }
-                if method == "select-key"
-                    && !(selection_list(&target.kind) && target.members.iter().any(|member|
-                        matches!(member, Member::Binding(binding) if binding.name == "row-key-field")))
+                if matches!(method, "select-key" | "select-keys")
+                    && target.kind != "TreeView"
+                    && !keyed_row_view(&target.kind, target.members)
                 {
-                    return fail(call.span, "select-key() requires a list or grid with row-key-field");
+                    return fail(
+                        call.span,
+                        format!("{method}() requires a TreeView or a view with row-key-field"),
+                    );
                 }
+                let batch = method == "select-keys";
                 let cell = method == "select-source-cell";
                 if cell && !table_view(&target.kind) {
                     return fail(call.span, "select-source-cell() requires a table");
@@ -4204,7 +4321,14 @@ impl<'a> Scope<'a> {
                 let args = call
                     .arguments
                     .iter()
-                    .map(|argument| expression_as(argument, self, current, Type::Int))
+                    .map(|argument| {
+                        expression_as(
+                            argument,
+                            self,
+                            current,
+                            if batch { Type::IntList } else { Type::Int },
+                        )
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 return Ok(ir::Statement::SourceSelection(ir::SourceSelection {
                     source_view: owner.into(),
@@ -4219,19 +4343,25 @@ impl<'a> Scope<'a> {
                     | "set-current-cell"
                     | "toggle-cell"
                     | "select-row"
+                    | "toggle-row"
                     | "select-column"
                     | "select-range"
                     | "select-all"
                     | "clear-selection"
             ) && self.owners.get(owner).is_some_and(|target| {
                 !target.instance
-                    && table_view(&target.kind)
+                    && (table_view(&target.kind) && method != "toggle-row"
+                        || row_selection_view(&target.kind)
+                            && matches!(
+                                method,
+                                "select-row" | "toggle-row" | "select-all" | "clear-selection"
+                            ))
                     && !target.callbacks.contains_key(method)
             }) {
                 if !self.effects_allowed {
                     return fail(
                         call.span,
-                        "table selection commands are not allowed in a pure callback",
+                        "selection commands are not allowed in a pure callback",
                     );
                 }
                 self.require_static_viewport(owner, call.span)?;
@@ -4509,11 +4639,9 @@ impl<'a> Scope<'a> {
                         "scroll commands are not allowed in a pure callback",
                     );
                 }
-                if method == "position-view-at-key"
-                    && !(selection_list(&target.kind) && target.members.iter().any(|member|
-                        matches!(member, Member::Binding(binding) if binding.name == "row-key-field")))
+                if method == "position-view-at-key" && !keyed_row_view(&target.kind, target.members)
                 {
-                    return fail(call.span, "position-view-at-key() requires a list or grid with row-key-field");
+                    return fail(call.span, "position-view-at-key() requires row-key-field");
                 }
                 let cell = matches!(
                     method,
@@ -5458,15 +5586,13 @@ fn element<'a>(
     let source_kind = kind;
     let delegate = delegate_base(kind).map(|_| kind);
     let kind = delegate_base(kind).unwrap_or(kind);
+    if kind == "TreeDisclosure" {
+        validate_visual_template(kind, members)?;
+    }
     let visual_template_scope;
-    let scope = if matches!(kind, "DayCell" | "SplitHandle") {
+    let scope = if let Some(inputs) = visual_template_inputs(kind) {
         validate_visual_template(kind, members)?;
         let mut template = scope.clone();
-        let inputs = if kind == "DayCell" {
-            day_cell_inputs().to_vec()
-        } else {
-            split_handle_inputs().to_vec()
-        };
         template
             .parameters
             .extend(inputs.into_iter().map(|(name, ty)| (name.into(), ty)));
@@ -5729,6 +5855,9 @@ fn element<'a>(
             Type::Length,
         )?;
     }
+    if !instance && matches!(kind, "ListView" | "StandardListView") {
+        check_view_record_field(kind, members, scope, owner, "section-field", Type::String)?;
+    }
     if !instance && row_visibility_view(kind) {
         check_view_record_field(kind, members, scope, owner, "row-visible-field", Type::Bool)?;
     }
@@ -5742,6 +5871,9 @@ fn element<'a>(
         {
             return fail(key.span, format!("{kind} current-key requires row-key-field"));
         }
+        check_view_record_field(kind, members, scope, owner, "typeahead-field", Type::String)?;
+    }
+    if !instance && row_key_view(kind) {
         check_view_record_field(kind, members, scope, owner, "row-key-field", Type::Int)?;
     }
     if !instance && matches!(kind, "TreeView" | "StandardTableView") {
@@ -6108,7 +6240,7 @@ fn element<'a>(
                         "action requires the id of an Action in this component",
                     );
                 }
-                if matches!(kind, "RadioButton" | "CheckBox" | "Switch") && b.name == "group" {
+                if builtins::button_group_member(kind) && b.name == "group" {
                     let mut current = &scope.owners[owner];
                     if current
                         .parent
@@ -6140,7 +6272,8 @@ fn element<'a>(
                             .filter(|target| target.kind == "ButtonGroup")
                     {
                         let non_exclusive = non_exclusive_group(group.members);
-                        if (kind == "RadioButton") == non_exclusive {
+                        let push_button = builtins::push_button(kind);
+                        if !push_button && (kind == "RadioButton") == non_exclusive {
                             return fail(
                                 b.span,
                                 if non_exclusive {
@@ -6149,6 +6282,27 @@ fn element<'a>(
                                     "CheckBox and Switch require a non-exclusive ButtonGroup"
                                 },
                             );
+                        }
+                        if push_button {
+                            if has_action {
+                                return fail(
+                                    b.span,
+                                    "a button linked to an Action cannot also join a ButtonGroup",
+                                );
+                            }
+                            if let Some(checkable) = named_binding(members, "checkable")
+                                && !matches!(&checkable.value.kind, ExprKind::Literal { value, ty: Type::Bool } if value == "true")
+                            {
+                                return fail(checkable.span, "ButtonGroup members are checkable");
+                            }
+                            if !non_exclusive
+                                && let Some(checked) = named_binding(members, "checked")
+                            {
+                                return fail(
+                                    checked.span,
+                                    "bind the exclusive ButtonGroup selection instead of checked",
+                                );
+                            }
                         }
                         if non_exclusive {
                             if members.iter().any(|member| matches!(member, Member::Binding(binding) if binding.name == "check-state" && !binding.two_way)) {
@@ -6215,7 +6369,7 @@ fn element<'a>(
                             };
                             let (_, model_type) =
                                 scope.property(&repeat.owner, model, true, *span)?;
-                            if model_type.list_item().is_none() {
+                            if !matches!(model_type, Type::StringList | Type::RecordList(_)) {
                                 return fail(
                                     b.span,
                                     "delegate links require a writable string or record model",
@@ -6308,7 +6462,12 @@ fn element<'a>(
                         (kind, "text") if text_input(kind) => Type::String,
                         ("CheckBox" | "Switch", "checked") => Type::Bool,
                         ("CheckBox", "check-state") => Type::CheckState,
-                        ("MenuItem" | "Action" | "DelayButton" | "GroupBox", "checked") => {
+                        (kind, "checked")
+                            if matches!(
+                                kind,
+                                "MenuItem" | "Action" | "DelayButton" | "GroupBox"
+                            ) || builtins::push_button(kind) =>
+                        {
                             Type::Bool
                         }
                         (kind, "open")
@@ -6601,7 +6760,12 @@ fn element<'a>(
             }
             Member::Handler(h) if scope.callback_info(owner, &h.name).is_some() => {}
             Member::Handler(h) if !root || control_event(kind, &h.name) => {
-                if has_action {
+                if has_action
+                    && !matches!(
+                        h.name.as_str(),
+                        "press-and-hold" | "double-clicked" | "pressed" | "released" | "canceled"
+                    )
+                {
                     return fail(h.span, "activation handler belongs to the linked Action");
                 }
                 if !builtin_event(kind, &h.name) {
@@ -6620,6 +6784,9 @@ fn element<'a>(
                     && !virtual_delegate
                     && !matches!(kind, "MenuItem" | "Shortcut")
                     && !close_requested
+                    && !(builtins::push_button(kind)
+                        && named_binding(members, "checkable").is_some()
+                        && matches!(h.name.as_str(), "clicked" | "toggled"))
                     && !(root && scrolled)
                     && !(root
                         && matches!(
@@ -7545,6 +7712,24 @@ pub fn split_handle_inputs() -> [(&'static str, Type); 4] {
     ]
 }
 
+pub fn section_header_inputs() -> [(&'static str, Type); 4] {
+    [
+        ("section-label", Type::String),
+        ("section-first-index", Type::Int),
+        ("section-count", Type::Int),
+        ("section-pinned", Type::Bool),
+    ]
+}
+
+pub fn visual_template_inputs(kind: &str) -> Option<Vec<(&'static str, Type)>> {
+    Some(match kind {
+        "DayCell" => day_cell_inputs().to_vec(),
+        "SplitHandle" => split_handle_inputs().to_vec(),
+        "SectionHeader" => section_header_inputs().to_vec(),
+        _ => return None,
+    })
+}
+
 fn validate_visual_template(kind: &str, members: &[Member]) -> Result<()> {
     for member in members {
         match member {
@@ -7620,17 +7805,17 @@ fn validate_template(
             "TreeCell requires a stable child path within a TreeRow",
         );
     }
+    let checkable_button =
+        builtins::push_button(kind) && named_binding(members, "checkable").is_some();
     if id.is_some()
         || !is_builtin(kind)
         || text_input(kind)
+        || (builtins::push_button(kind) && !checkable_button)
         || matches!(
             kind,
             "Window"
                 | "ApplicationWindow"
-                | "Button"
                 | "StandardButton"
-                | "ToolButton"
-                | "RoundButton"
                 | "DelayButton"
                 | "DialogButton"
                 | "Dialog"
@@ -7691,6 +7876,8 @@ fn validate_template(
     for member in members {
         match member {
             Member::Binding(_) | Member::Animation(_) | Member::States(_) => {}
+            Member::Handler(handler)
+                if checkable_button && matches!(handler.name.as_str(), "clicked" | "toggled") => {}
             Member::Element(child) => {
                 if (kind == "TableRow" || tree)
                     && let Some((property, _)) = row_editor_binding(&child.ty)
@@ -7797,6 +7984,9 @@ fn default(ty: Type, span: Span) -> ir::Expr {
     if ty == Type::StringList {
         return ir::Expr::operation("array", ty, vec![], span);
     }
+    if ty == Type::IntList {
+        return ir::Expr::operation("int_array", ty, vec![], span);
+    }
     if ty == Type::PointerButtons {
         return ir::Expr::operation("pointer_buttons", ty, vec![], span);
     }
@@ -7884,7 +8074,7 @@ fn expression_as(
     if let ExprKind::Conditional { condition, yes, no } = &e.kind
         && (matches!(
             expected,
-            Type::Brush | Type::PointerButtons | Type::TouchPoints
+            Type::Brush | Type::PointerButtons | Type::TouchPoints | Type::IntList
         ) || !expected.enum_variants().is_empty())
     {
         let condition = expression_as(condition, scope, owner, Type::Bool)?;
@@ -7905,6 +8095,15 @@ fn expression_as(
             .map(|item| expression_as(item, scope, owner, Type::Record(name.clone())))
             .collect::<Result<Vec<_>>>()?;
         return Ok(ir::Expr::operation("record_array", expected, items, e.span));
+    }
+    if let ExprKind::Array(items) = &e.kind
+        && expected == Type::IntList
+    {
+        let items = items
+            .iter()
+            .map(|item| expression_as(item, scope, owner, Type::Int))
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(ir::Expr::operation("int_array", expected, items, e.span));
     }
     if let ExprKind::Array(items) = &e.kind
         && expected == Type::PointerButtons
@@ -8152,6 +8351,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     Type::RecordList(name.clone()),
                     Type::Record(name.clone()),
                 ),
+                Some(Type::Int) => ("int_array", Type::IntList, Type::Int),
                 _ => ("array", Type::StringList, Type::String),
             };
             let items = items
@@ -8636,15 +8836,15 @@ fn model_call(
     function: &builtins::Function,
 ) -> Result<ir::Expr> {
     let mut args = builtin_arguments(call, scope, owner, function)?;
-    let row = match &args[0].ty {
-        Type::StringList => Type::String,
-        Type::RecordList(name) => Type::Record(name.clone()),
-        _ => {
-            return fail(
-                args[0].span,
-                format!("{} requires a string or record model", call.callee),
-            );
-        }
+    let Some(row) = args[0]
+        .ty
+        .list_item()
+        .filter(|_| args[0].ty != Type::TouchPoints)
+    else {
+        return fail(
+            args[0].span,
+            format!("{} requires an int, string, or record model", call.callee),
+        );
     };
     let (op, result) = match function.kind {
         FunctionKind::ModelCount => ("model_count", Type::Int),
@@ -9209,6 +9409,7 @@ fn collect_bindings(
         if matches!(
             e.op.as_str(),
             "focus_read"
+                | "button_pressed"
                 | "text_selection_read"
                 | "text_command_available"
                 | "image_playback_read"
@@ -9231,10 +9432,31 @@ fn collect_bindings(
                 );
                 return;
             }
-            if e.op == "list_selection_read" {
+            if matches!(
+                e.op.as_str(),
+                "list_selection_read"
+                    | "list_row_selected"
+                    | "tree_selection_keys"
+                    | "list_selection_keys"
+            ) || e.op == "tree_query"
+                && matches!(e.value.as_str(), "is-row-selected" | "is-key-selected")
+                || e.op == "table_selection_read"
+                    && matches!(e.value.as_str(), "selection-count" | "has-selection")
+            {
                 out.extend(
-                    ["@view-rows", "current-index", "current-key"].map(|name| path(owner, name)),
+                    [
+                        "@view-rows",
+                        "current-index",
+                        "current-key",
+                        "current-row",
+                        "multi-select",
+                        "selection-target",
+                    ]
+                    .map(|name| path(owner, name)),
                 );
+                for argument in &e.args {
+                    dependencies(argument, path, out);
+                }
                 return;
             }
             if e.op == "scroll_control_read" && e.value == "position" {

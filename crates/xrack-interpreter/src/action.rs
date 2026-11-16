@@ -140,6 +140,36 @@ impl Instance {
         Ok(true)
     }
 
+    pub(crate) fn activate_checkable_button(
+        &self,
+        element: &Element,
+        input: Option<InputRoute<'_>>,
+    ) -> Result<bool> {
+        let Some(next) = xrack_runtime::try_prepare_action_activation(
+            || {
+                Ok(match input {
+                    Some(input) => Ok(input.is_current()),
+                    None => self.item_delegate_available(element),
+                }? && self.check_group_member_enabled(element)?)
+            },
+            || Ok(element.button_group.is_some() || self.action_flag(element, "checkable", false)?),
+            || Ok(self.control_value(element, "checked")? == Some(Value::Bool(true))),
+        )?
+        else {
+            return Ok(false);
+        };
+        if input.is_some_and(|input| !input.is_current()) {
+            return Ok(false);
+        }
+        if let Some(checked) = next {
+            if !self.set_control_value(element, "checked", checked.into())? {
+                return Ok(false);
+            }
+            self.handler(element, "toggled", &[])?;
+        }
+        Ok(self.handler(element, "clicked", &[])? || next.is_some())
+    }
+
     pub(crate) fn toggle_group_box(
         &self,
         element: &Element,

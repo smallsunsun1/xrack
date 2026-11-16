@@ -1,7 +1,8 @@
 use list_ui::{
-    AnchoredListDemo, DirectoryItem, GridDemo, ItemDelegatesDemo, KeyNavigationDemo,
-    LinkedScrollDemo, ListDemo, ListVisibilityDemo, NestedDataDemo, NestedListsDemo,
-    ScrollBarsDemo, ScrollPositionDemo, StandaloneScrollDemo, StandardListDemo, ViewCountsDemo,
+    AnchoredListDemo, DirectionalScrollDemo, DirectoryItem, GridDemo, ItemDelegatesDemo,
+    KeyNavigationDemo, LinkedScrollDemo, ListDemo, ListSelectionTransferDemo, ListVisibilityDemo,
+    MultiSelectDemo, NestedDataDemo, NestedListsDemo, ScrollBarsDemo, ScrollPositionDemo,
+    SectionedListDemo, StandaloneScrollDemo, StandardListDemo, TypeaheadDemo, ViewCountsDemo,
 };
 
 fn records() -> Vec<DirectoryItem> {
@@ -18,6 +19,11 @@ fn main() -> std::process::ExitCode {
         Some("--position") => xrack_platform_winit::run(ScrollPositionDemo::new()),
         Some("--linked") => xrack_platform_winit::run(LinkedScrollDemo::new()),
         Some("--scroll-bars") => xrack_platform_winit::run(ScrollBarsDemo::new()),
+        Some("--rtl-scroll") => xrack_platform_winit::run(DirectionalScrollDemo::new()),
+        Some("--sections") => xrack_platform_winit::run(SectionedListDemo::new()),
+        Some("--typeahead") => xrack_platform_winit::run(TypeaheadDemo::new()),
+        Some("--multi-select") => xrack_platform_winit::run(MultiSelectDemo::new()),
+        Some("--selection-transfer") => xrack_platform_winit::run(ListSelectionTransferDemo::new()),
         Some("--standalone-scroll") => xrack_platform_winit::run(StandaloneScrollDemo::new()),
         Some("--item-delegates") => xrack_platform_winit::run(ItemDelegatesDemo::new()),
         Some("--key-navigation") => xrack_platform_winit::run(KeyNavigationDemo::new()),

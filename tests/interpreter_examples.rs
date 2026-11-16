@@ -292,6 +292,9 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             DecimalSpinDemo,
             TumblerDemo,
             DelayDemo,
+            RepeatButtonsDemo,
+            CheckableButtonsDemo,
+            GroupedButtonsDemo,
             CheckStateDemo,
             CheckGroupDemo,
             GroupBoxDemo,
@@ -392,6 +395,11 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             ItemDelegatesDemo,
             ListDemo,
             ScrollBarsDemo,
+            DirectionalScrollDemo,
+            SectionedListDemo,
+            TypeaheadDemo,
+            MultiSelectDemo,
+            ListSelectionTransferDemo,
             StandaloneScrollDemo,
             ScrollPositionDemo,
             LinkedScrollDemo,
@@ -438,6 +446,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             SelectionDemo,
             RecordComboDemo,
             GroupedRadiosDemo,
+            MixedRadioOptionsDemo,
             EditableChoiceDemo,
             DirectionalChoiceDemo
         ]
@@ -483,6 +492,8 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             WideTableDemo,
             ProjectedRowsDemo,
             StandardTableDemo,
+            DirectionalTableDemo,
+            KeyedTableDemo,
             TableSortViewsDemo
         ]
     );
@@ -496,7 +507,10 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             DelegateTreeDemo,
             SizedTreeDemo,
             TreeDemo,
+            DirectionalTreeDemo,
+            TreeDisclosureDemo,
             TreeCommandsDemo,
+            TreeBatchSelectionDemo,
             TreeBranchesDemo
         ]
     );

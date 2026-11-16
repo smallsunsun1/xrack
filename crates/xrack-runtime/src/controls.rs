@@ -1347,6 +1347,69 @@ pub fn group_selection_item(node: &Node, index: usize) -> Option<&Node> {
     (group_index(node) != Some(index)).then_some(item)
 }
 
+/// The flattened range and model stamp for a single declaration in a RadioGroup.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RadioOptionBlock {
+    end: usize,
+    stamp: Option<(u64, u64)>,
+}
+
+impl Node {
+    #[doc(hidden)]
+    pub fn record_radio_option_block(&mut self) {
+        self.push_radio_option_block(None);
+    }
+
+    fn push_radio_option_block(&mut self, stamp: Option<(u64, u64)>) {
+        let end = self.children.len();
+        let blocks = self.radio_option_blocks.get_or_insert_with(Rc::default);
+        let start = blocks.last().map_or(0, |block| block.end);
+        let scope = blocks.len() as u64 + 1;
+        Rc::make_mut(blocks).push(RadioOptionBlock { end, stamp });
+        for (row, option) in self.children[start..end].iter_mut().enumerate() {
+            if option.kind == "RadioButton" {
+                // Keep both anonymous fixed options and repeat rows identifiable after a reflow.
+                option.row_key.get_or_insert(crate::RowKey {
+                    model: 0,
+                    row: row as u64,
+                    scope: 0,
+                });
+                option.row_scope = scope;
+            }
+        }
+    }
+
+    /// Resolve the flattened scene position to a declaration and its local row.
+    #[doc(hidden)]
+    pub fn radio_option_location(&self, slot: usize) -> Option<(usize, usize)> {
+        if slot >= self.children.len() {
+            return None;
+        }
+        let Some(blocks) = &self.radio_option_blocks else {
+            return Some((slot, 0));
+        };
+        let declaration = blocks.partition_point(|block| block.end <= slot);
+        blocks.get(declaration)?;
+        let start = declaration
+            .checked_sub(1)
+            .map_or(0, |previous| blocks[previous].end);
+        Some((declaration, slot - start))
+    }
+
+    #[doc(hidden)]
+    pub fn radio_option_model_is_current(
+        &self,
+        declaration: usize,
+        model: &impl ListModel,
+    ) -> bool {
+        self.radio_option_blocks
+            .as_ref()
+            .and_then(|blocks| blocks.get(declaration))
+            .and_then(|block| block.stamp)
+            == Some(model.contents_stamp())
+    }
+}
+
 /// Validate the displayed option against the live group before committing a selection.
 #[doc(hidden)]
 pub fn try_prepare_group_selection<E>(
@@ -1482,15 +1545,24 @@ impl Node {
         source: impl FnOnce() -> Result<Rc<M>, E>,
         render: impl FnOnce(&Rc<M>) -> Result<Vec<Node>, E>,
     ) -> Result<(), E> {
+        let radio = self.kind == "RadioGroup";
+        let mut stamp = None;
         let options = crate::try_render_rows_from_source(
             || {
                 let model = source()?;
-                self.snapshot_group_options(&*model);
+                if radio {
+                    stamp = Some(model.contents_stamp());
+                } else {
+                    self.snapshot_group_options(&*model);
+                }
                 Ok(model)
             },
             |model| render(&model),
         )?;
         self.children.extend(options);
+        if radio {
+            self.push_radio_option_block(stamp);
+        }
         Ok(())
     }
 

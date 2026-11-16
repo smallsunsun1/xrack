@@ -17,7 +17,7 @@ export component SoundDemo inherits Window {
 
     keyboard := Shortcut {
         sequence: "F2";
-        enabled: root.sound-ready;
+        enabled: root.sound-error == "";
         activated => { confirmation.play(); }
     }
 
@@ -26,7 +26,7 @@ export component SoundDemo inherits Window {
         spacing: 12px;
         confirm := Button {
             text: "播放确认音";
-            enabled: root.sound-ready;
+            enabled: root.sound-error == "";
             clicked => { confirmation.play(); }
         }
         silence := CheckBox {

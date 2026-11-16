@@ -95,6 +95,7 @@ pub enum TableSelectionMethod {
     SelectAll,
     ClearSelection,
     SelectRow,
+    ToggleRow,
     SelectColumn,
     SelectCell,
     MoveCell,
@@ -108,6 +109,7 @@ impl TableSelectionMethod {
             "select-all" => Self::SelectAll,
             "clear-selection" => Self::ClearSelection,
             "select-row" => Self::SelectRow,
+            "toggle-row" => Self::ToggleRow,
             "select-column" => Self::SelectColumn,
             "select-cell" => Self::SelectCell,
             "set-current-cell" => Self::MoveCell,
@@ -123,9 +125,13 @@ impl TableSelectionMethod {
         Some(match (self, args) {
             (Self::SelectAll, []) => Action::All,
             (Self::ClearSelection, []) => Action::Clear,
-            (Self::SelectRow, [row]) => Action::Row {
+            (Self::SelectRow | Self::ToggleRow, [row]) => Action::Row {
                 index: index(*row)?,
-                operation: RowSelection::Replace,
+                operation: if matches!(self, Self::ToggleRow) {
+                    RowSelection::Toggle
+                } else {
+                    RowSelection::Replace
+                },
             },
             (Self::SelectColumn, [column]) => Action::Column {
                 column: index(*column)?,
@@ -800,6 +806,14 @@ pub enum TableSelectionCommand {
     Source { row: usize, column: Option<usize> },
 }
 
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub enum ListSelectionCommand {
+    Visual(TableSelectionAction),
+    Source(usize),
+    Key(i64),
+}
+
 #[derive(Default)]
 struct Selection {
     stamp: Option<(u64, u64)>,
@@ -972,6 +986,175 @@ pub struct TableSelection {
 }
 
 impl TableSelection {
+    #[doc(hidden)]
+    pub fn try_list_selected_keys<M: ListModel, E>(
+        selection: Option<&Self>,
+        rows: impl FnOnce() -> Result<TableRows<M>, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+        multiple: impl FnOnce() -> Result<bool, E>,
+        keys: impl FnOnce(&TableRows<M>, &BTreeSet<RowKey>) -> Vec<i64>,
+    ) -> Result<Vec<i64>, E> {
+        let prepared = crate::try_prepare_action_view(|| {
+            let rows = rows()?;
+            let current = usize::try_from(current()?)
+                .ok()
+                .filter(|&index| index < rows.row_count());
+            let multiple = multiple()?;
+            Ok(Some((rows, current, multiple)))
+        })?;
+        let Some((rows, current, multiple)) = prepared else {
+            return Ok(Vec::new());
+        };
+        if let Some(selection) = selection.filter(|_| multiple) {
+            let snapshot = selection.snapshot(&rows, current, SelectionTarget::Rows, 0, true);
+            return Ok(keys(&rows, snapshot.keys()));
+        }
+        Ok(current.map_or_else(Vec::new, |index| {
+            keys(&rows, &BTreeSet::from([rows.row_key(index)]))
+        }))
+    }
+
+    /// Replace the row selection after resolving every requested key against one source.
+    #[doc(hidden)]
+    pub fn try_replace_list_keys<M: ListModel, E>(
+        &self,
+        rows: impl FnOnce() -> Result<TableRows<M>, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+        multiple: impl FnOnce() -> Result<bool, E>,
+        resolve: impl FnOnce(&TableRows<M>) -> Option<BTreeSet<RowKey>>,
+    ) -> Result<Option<TableSelectionChange>, E> {
+        let prepared = crate::try_prepare_action_view(|| {
+            if !multiple()? {
+                return Ok(None);
+            }
+            let rows = rows()?;
+            let Some(keys) = resolve(&rows) else {
+                return Ok(None);
+            };
+            let current = usize::try_from(current()?).ok();
+            Ok(Some((rows, current, keys)))
+        })?;
+        let Some((rows, current, keys)) = prepared else {
+            return Ok(None);
+        };
+        let mut state = self.state.borrow_mut();
+        state.refresh(&rows, rows.structure_stamp(), SelectionTarget::Rows, true);
+        let previous = state.selected(&rows, current);
+        let next = Selected::Rows(Arc::new(keys));
+        let selected_count = (previous != next).then_some(next.len());
+        let was_implicit = state.selected.is_none();
+        state.selected = Some(next);
+        state.row_anchor = None;
+        state.column_anchor = None;
+        let had_range = state.drag_range.take().is_some();
+        drop(state);
+        if selected_count.is_some() || was_implicit || had_range {
+            self.changed.notify();
+        }
+        Ok(Some(TableSelectionChange {
+            current: None,
+            column_changed: false,
+            selected_count,
+        }))
+    }
+
+    #[doc(hidden)]
+    pub fn try_list_info<M: ListModel, E>(
+        selection: Option<&Self>,
+        rows: impl FnOnce() -> Result<TableRows<M>, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+        multiple: impl FnOnce() -> Result<bool, E>,
+        query: i64,
+    ) -> Result<(i64, bool), E> {
+        let prepared = crate::property::watch_reads(|reads| {
+            let rows = rows()?;
+            let count = rows.row_count();
+            let current = usize::try_from(current()?)
+                .ok()
+                .filter(|&index| index < count);
+            let multiple = multiple()?;
+            Ok((!reads.changed()).then_some((rows, count, current, multiple)))
+        })?;
+        let Some((rows, count, current, multiple)) = prepared else {
+            return Ok((0, false));
+        };
+        let query = usize::try_from(query).ok().filter(|&index| index < count);
+        if let Some(selection) = selection.filter(|_| multiple) {
+            let snapshot = selection.snapshot(&rows, current, SelectionTarget::Rows, 0, true);
+            Ok((
+                snapshot.selection_count(),
+                query.is_some_and(|index| snapshot.keys().contains(&rows.row_key(index))),
+            ))
+        } else {
+            Ok((
+                i64::from(current.is_some()),
+                query.is_some() && query == current,
+            ))
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn try_apply_list_command<M: ListModel, E>(
+        &self,
+        command: ListSelectionCommand,
+        rows: impl FnOnce() -> Result<TableRows<M>, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+        multiple: impl FnOnce() -> Result<bool, E>,
+        key_source: impl FnOnce(&TableRows<M>, i64) -> Option<usize>,
+    ) -> Result<Option<TableSelectionChange>, E> {
+        let prepared = crate::property::watch_reads(|reads| {
+            let rows = rows()?;
+            let replace = |index| TableSelectionAction::Row {
+                index,
+                operation: RowSelection::Replace,
+            };
+            let action = match command {
+                ListSelectionCommand::Visual(action) => Some(action),
+                ListSelectionCommand::Source(source) => {
+                    rows.positions().visual_index(source).map(replace)
+                }
+                ListSelectionCommand::Key(key) if key >= 0 => key_source(&rows, key)
+                    .and_then(|source| rows.positions().visual_index(source))
+                    .map(replace),
+                ListSelectionCommand::Key(_) => None,
+            };
+            let Some(action) = action else {
+                return Ok(None);
+            };
+            let current = usize::try_from(current()?).ok();
+            let multiple = multiple()?;
+            Ok((!reads.changed()).then_some((rows, current, multiple, action)))
+        })?;
+        let Some((rows, current, multiple, action)) = prepared else {
+            return Ok(None);
+        };
+        if !multiple {
+            return Ok(match action {
+                TableSelectionAction::Row {
+                    index,
+                    operation: RowSelection::Replace,
+                } if index < rows.row_count() && Some(index) != current => {
+                    Some(TableSelectionChange {
+                        current: Some(index),
+                        column_changed: false,
+                        selected_count: None,
+                    })
+                }
+                _ => None,
+            });
+        }
+        if !matches!(
+            action,
+            TableSelectionAction::Row { .. }
+                | TableSelectionAction::All
+                | TableSelectionAction::Clear
+        ) {
+            return Ok(None);
+        }
+        let view = self.snapshot(&rows, current, SelectionTarget::Rows, 0, true);
+        Ok(self.apply(&rows, &view, current, action))
+    }
+
     pub fn has_explicit_selection(&self) -> bool {
         self.changed.track();
         self.state.borrow().selected.is_some()
@@ -1059,6 +1242,16 @@ impl TableSelection {
                 .then(|| Box::new(snapshot));
     }
 
+    #[doc(hidden)]
+    pub fn populate_list_scene(&self, list: &mut Node, model: &impl ListModel) {
+        let multiple = list.boolean("multi-select", false);
+        let current = list
+            .int("current-index")
+            .and_then(|index| usize::try_from(index).ok());
+        let snapshot = self.snapshot(model, current, SelectionTarget::Rows, 0, multiple);
+        list.table_selection = multiple.then(|| Box::new(snapshot));
+    }
+
     /// Apply a scene's selection only while its row order and selection mode still apply.
     #[doc(hidden)]
     pub fn try_apply_control<M: ListModel, E>(
@@ -1095,6 +1288,16 @@ impl TableSelection {
                 else {
                     return Ok(None);
                 };
+                if table.table_header.is_none()
+                    && !matches!(
+                        selection,
+                        TableSelectionAction::Row { .. }
+                            | TableSelectionAction::All
+                            | TableSelectionAction::Clear
+                    )
+                {
+                    return Ok(None);
+                }
                 if matches!(selection, TableSelectionAction::DragRange { .. })
                     && !options.drag_select
                 {
@@ -1173,8 +1376,24 @@ impl TableSelection {
         current: impl FnOnce() -> Result<i64, E>,
         options: impl FnOnce() -> Result<TableSelectionOptions, E>,
     ) -> Result<Option<TableSelectionChange>, E> {
+        self.try_apply_command_for(column_count, rows, current, options, |_| Some(command))
+    }
+
+    /// Resolve commands against the same model projection that will receive them.
+    #[doc(hidden)]
+    pub fn try_apply_command_for<M: ListModel, E>(
+        &self,
+        column_count: usize,
+        rows: impl FnOnce() -> Result<TableRows<M>, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+        options: impl FnOnce() -> Result<TableSelectionOptions, E>,
+        command: impl FnOnce(&TableRows<M>) -> Option<TableSelectionCommand>,
+    ) -> Result<Option<TableSelectionChange>, E> {
         let prepared = crate::property::watch_reads(|reads| {
             let rows = rows()?;
+            let Some(command) = command(&rows) else {
+                return Ok(None);
+            };
             let command = match command {
                 TableSelectionCommand::Source { row, column } => {
                     let Some(row) = rows.positions().visual_index(row) else {
@@ -1454,7 +1673,16 @@ impl TableSelection {
                     SelectionTarget::Columns => column_count,
                     SelectionTarget::Cells => count.saturating_mul(column_count),
                 };
-                if previous.len() == total {
+                if previous.len() == total
+                    && match &previous {
+                        Selected::Rows(keys) => {
+                            let mut complete = true;
+                            model.visit_row_keys(0..count, |key| complete &= keys.contains(&key));
+                            complete
+                        }
+                        _ => true,
+                    }
+                {
                     if state.drag_range.take().is_some() {
                         self.changed.notify();
                     }

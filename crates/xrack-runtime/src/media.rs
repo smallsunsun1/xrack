@@ -432,10 +432,9 @@ impl MediaQueue {
                 {
                     entry
                 }
-                previous => {
-                    if previous.is_some() && registration.sound_effect {
-                        registration.slot.commands.take();
-                    }
+                _ => {
+                    // Keep commands from the current UI turn for the newly bound source.
+                    // A play already delivered to the previous session ends with that session.
                     let mut state = MediaState::default();
                     let session =
                         registration

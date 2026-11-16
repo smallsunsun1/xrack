@@ -597,6 +597,295 @@ fn global_properties_are_completed_and_resolve_to_their_declarations() {
 }
 
 #[test]
+fn list_selection_api_completes_and_has_typed_signatures() {
+    let items = complete_at(
+        "component App inherits Window { list := GridView {} out property <int> count: list.selection-|",
+    );
+    assert!(items.iter().any(|item| item["label"] == "selection-count"));
+    let items = complete_at(
+        "component App inherits Window { list := GridView {} button := Button { clicked => { list.toggle-| } } }",
+    );
+    assert!(items.iter().any(|item| item["label"] == "toggle-row"));
+    let line = "component App inherits Window { list := GridView {} out property <bool> found: list.is-row-selected(";
+    let signature = completion::signature_help(line, (0, line.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "is-row-selected(row: int) -> bool"
+    );
+}
+
+#[test]
+fn tree_selection_api_completes_key_queries_and_commands() {
+    let items = complete_at(
+        "component App inherits Window { tree := TreeView {} out property <bool> can-clear: tree.|",
+    );
+    for expected in [
+        "selection-count",
+        "has-selection",
+        "selected-keys",
+        "is-key-selected",
+        "is-row-selected",
+    ] {
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{expected}"
+        );
+    }
+    assert!(!items.iter().any(|item| item["label"] == "select-key"));
+
+    let items = complete_at(
+        "component App inherits Window { tree := TreeView {} Button { clicked => { tree.| } } }",
+    );
+    for expected in [
+        "select-key",
+        "select-keys",
+        "select-row",
+        "toggle-row",
+        "select-all",
+        "clear-selection",
+    ] {
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{expected}"
+        );
+    }
+    assert!(!items.iter().any(|item| item["label"] == "select-column"));
+
+    let line = "component App inherits Window { tree := TreeView {} out property <bool> found: tree.is-key-selected(";
+    let signature = completion::signature_help(line, (0, line.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "is-key-selected(key: int) -> bool"
+    );
+    let line = "component App inherits Window { tree := TreeView {} Button { clicked => { tree.select-keys(";
+    let signature = completion::signature_help(line, (0, line.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "select-keys(keys: [int])"
+    );
+}
+
+#[test]
+fn keyed_list_selection_batch_completes_for_all_list_kinds() {
+    for kind in ["ListView", "GridView", "StandardListView"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ view := {kind} {{ row-key-field: \"id\"; }} out property <[int]> saved: view.selected-|"
+        ));
+        assert!(
+            items.iter().any(|item| item["label"] == "selected-keys"),
+            "{kind}"
+        );
+        let line = format!(
+            "component App inherits Window {{ view := {kind} {{ row-key-field: \"id\"; }} Button {{ clicked => {{ view.select-keys("
+        );
+        let signature = completion::signature_help(&line, (0, line.len()), None);
+        assert_eq!(
+            signature["signatures"][0]["label"], "select-keys(keys: [int])",
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn keyed_tables_offer_stable_selection_and_navigation() {
+    for kind in ["TableView", "StandardTableView"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ table := {kind} {{ row-key-field: \"id\"; }} out property <int> row: table.|"
+        ));
+        for property in ["selected-keys", "view-index-for-key", "current-column"] {
+            assert!(
+                items.iter().any(|item| item["label"] == property),
+                "{kind} {property}"
+            );
+        }
+        assert!(!items.iter().any(|item| item["label"] == "select-key"));
+        let line = format!(
+            "component App inherits Window {{ table := {kind} {{ row-key-field: \"id\"; }} Button {{ clicked => {{ table.position-view-at-key("
+        );
+        let signature = completion::signature_help(&line, (0, line.len()), None);
+        assert_eq!(
+            signature["signatures"][0]["label"],
+            "position-view-at-key(key: int, alignment: ScrollAlignment)"
+        );
+    }
+}
+
+#[test]
+fn radio_group_completes_options_in_conditional_and_repeated_declarations() {
+    for prefix in ["", "if true: ", "for option in 3: ", "option := "] {
+        let options = complete_at(&format!(
+            "component App inherits Window {{ RadioGroup {{ {prefix}| }} }}"
+        ));
+        assert!(options.iter().any(|item| item["label"] == "RadioButton"));
+        assert!(!options.iter().any(|item| item["label"] == "Button"));
+    }
+}
+
+#[test]
+fn push_button_group_completion_finds_component_local_groups() {
+    for kind in ["Button", "ToolButton", "RoundButton"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ choices := ButtonGroup {{}} flags := ButtonGroup {{ exclusive: false; }} command := Action {{}} picker := {kind} {{ group: | }} }}"
+        ));
+        for name in ["choices", "flags"] {
+            assert!(
+                items.iter().any(|item| item["label"] == name),
+                "{kind}.{name}"
+            );
+        }
+        assert!(!items.iter().any(|item| item["label"] == "command"));
+    }
+}
+
+#[test]
+fn push_buttons_complete_checkable_state_and_toggle_handler() {
+    for kind in ["Button", "ToolButton", "RoundButton"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ pin := {kind} {{ | }} }}"
+        ));
+        for name in ["checkable", "checked", "toggled"] {
+            assert!(
+                items.iter().any(|item| item["label"] == name),
+                "{kind}.{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn push_buttons_complete_repeat_timing_bindings() {
+    for kind in ["Button", "RoundButton", "ToolButton"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ auto-re|"
+        ));
+        for name in ["auto-repeat", "auto-repeat-delay", "auto-repeat-interval"] {
+            assert!(
+                items.iter().any(|item| item["label"] == name),
+                "{kind} {name}"
+            );
+        }
+    }
+    let options = complete_at("component App inherits Window { CheckBox { auto-re|");
+    assert!(
+        !options
+            .iter()
+            .any(|item| item["label"] == "auto-repeat-interval")
+    );
+}
+
+#[test]
+fn push_buttons_complete_press_and_hold_handler_and_interval() {
+    for kind in ["Button", "RoundButton", "ToolButton", "TouchArea"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ press-and-|"
+        ));
+        for name in ["press-and-hold", "press-and-hold-interval"] {
+            assert!(
+                items.iter().any(|item| item["label"] == name),
+                "{kind} {name}"
+            );
+        }
+    }
+    let options = complete_at("component App inherits Window { CheckBox { press-and-|");
+    assert!(!options.iter().any(|item| item["label"] == "press-and-hold"));
+}
+
+#[test]
+fn double_click_completion_includes_push_buttons_and_touch_areas() {
+    for kind in ["Button", "RoundButton", "ToolButton", "TouchArea"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ target := {kind} {{ double-cl|"
+        ));
+        assert!(
+            items.iter().any(|item| item["label"] == "double-clicked"),
+            "{kind}"
+        );
+    }
+    let items = complete_at("component App inherits Window { target := CheckBox { double-cl|");
+    assert!(!items.iter().any(|item| item["label"] == "double-clicked"));
+}
+
+#[test]
+fn button_pressed_completes_as_a_read_only_binding() {
+    let reads = complete_at(
+        "component App inherits Window { button := Button {} out property <bool> down: button.pre|",
+    );
+    assert!(reads.iter().any(|item| item["label"] == "pressed"));
+    let writes = complete_at("component App inherits Window { button := Button { pre|");
+    assert!(
+        !writes
+            .iter()
+            .any(|item| item["label"] == "pressed" && item["kind"] == 10)
+    );
+}
+
+#[test]
+fn virtual_lists_offer_multi_select_and_the_selection_event() {
+    for kind in ["ListView", "GridView", "StandardListView"] {
+        let items = complete_at(&format!("component App inherits Window {{ {kind} {{ |"));
+        for name in ["multi-select", "selection-changed"] {
+            assert!(
+                items.iter().any(|item| item["label"] == name),
+                "{kind} {name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn typeahead_properties_complete_on_lists_and_grids() {
+    for kind in ["ListView", "StandardListView", "GridView"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ typeahead-|"
+        ));
+        for property in ["typeahead-field", "typeahead-enabled"] {
+            assert!(
+                items.iter().any(|item| item["label"] == property),
+                "{kind} {property}"
+            );
+        }
+    }
+    let items = complete_at("component App inherits Window { TreeView { typeahead-|");
+    assert!(!items.iter().any(|item| item["label"] == "typeahead-field"));
+}
+
+#[test]
+fn list_section_properties_complete_for_both_list_views() {
+    for kind in ["ListView", "StandardListView"] {
+        let items = complete_at(&format!("component App inherits Window {{ {kind} {{ |"));
+        for property in ["section-field", "section-height", "sticky-section-headers"] {
+            assert!(
+                items.iter().any(|item| item["label"] == property),
+                "{kind} {property}"
+            );
+        }
+    }
+    let grid = complete_at("component App inherits Window { GridView { |");
+    assert!(!grid.iter().any(|item| item["label"] == "section-field"));
+}
+
+#[test]
+fn section_header_parameters_complete_inside_the_visual_template() {
+    for kind in ["ListView", "StandardListView"] {
+        let items = complete_at(&format!("component App inherits Window {{ {kind} {{ Sect|"));
+        assert!(items.iter().any(|item| item["label"] == "SectionHeader"));
+    }
+    let inside = complete_at(
+        "component App inherits Window { ListView { SectionHeader { Text { text: section-|",
+    );
+    for name in [
+        "section-label",
+        "section-first-index",
+        "section-count",
+        "section-pinned",
+    ] {
+        assert!(inside.iter().any(|item| item["label"] == name), "{name}");
+    }
+    let outside = complete_at("component App inherits Window { ListView { Text { text: section-|");
+    assert!(!outside.iter().any(|item| item["label"] == "section-label"));
+}
+
+#[test]
 fn content_slot_and_control_parts_offer_contextual_completion() {
     for (text, expected) in [
         (
@@ -651,6 +940,10 @@ fn content_slot_and_control_parts_offer_contextual_completion() {
             "component Demo inherits Window { TabBar { TabButton { ButtonCo|",
             "ButtonContent",
         ),
+        (
+            "component Demo inherits Window { TreeView { for branch in root.branches : TreeRow { TreeDisc|",
+            "TreeDisclosure",
+        ),
     ] {
         assert!(
             complete_at(text)
@@ -675,6 +968,11 @@ fn content_slot_and_control_parts_offer_contextual_completion() {
         !complete_at("component Demo inherits Window { CheckBox { SwitchTh|")
             .iter()
             .any(|item| item["label"] == "SwitchThumb")
+    );
+    assert!(
+        !complete_at("component Demo inherits Window { TreeView { TreeDisc|")
+            .iter()
+            .any(|item| item["label"] == "TreeDisclosure")
     );
     let invalid = "component Panel inherits VerticalLayout { @children @children }";
     assert!(
@@ -2223,6 +2521,20 @@ fn media_player_completion_and_seek_signature() {
 
 #[test]
 fn sound_effect_completes_its_bindings_and_play_signature() {
+    let root = complete_at("component App inherits Window { chime := Sou| }");
+    assert!(root.iter().any(|item| item["label"] == "SoundEffect"));
+    for invalid in [
+        "component App inherits Sou|",
+        "component App inherits Window { Sou| }",
+        "component App inherits Window { VerticalLayout { chime := Sou| } }",
+        "component App inherits Window { if true: chime := Sou| }",
+    ] {
+        assert!(
+            !complete_at(invalid)
+                .iter()
+                .any(|item| item["label"] == "SoundEffect")
+        );
+    }
     let bindings = complete_at("component App inherits Window { chime := SoundEffect { | } }");
     for expected in ["source", "volume", "muted"] {
         assert!(
@@ -2230,7 +2542,7 @@ fn sound_effect_completes_its_bindings_and_play_signature() {
             "{expected}: {bindings:?}"
         );
     }
-    for unavailable in ["ready", "width", "autoplay"] {
+    for unavailable in ["ready", "width", "autoplay", "Button"] {
         assert!(!bindings.iter().any(|item| item["label"] == unavailable));
     }
     let items = complete_at(

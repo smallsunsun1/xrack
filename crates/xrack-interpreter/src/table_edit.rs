@@ -448,7 +448,10 @@ impl Instance {
         key: RowKey,
         item: Value,
     ) -> Result<Self> {
-        let repeat = template.repeat.as_ref().expect("table row repeat");
+        let repeat = template
+            .repeat
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing table row repeat".into()))?;
         self.allocate_row(
             template,
             RowScope {
@@ -576,7 +579,9 @@ impl Instance {
                                 self.sample_table_row(template, row, key, current.row_value())?,
                             ));
                         }
-                        let (_, sample) = sample.as_ref().expect("sampled row");
+                        let (_, sample) = sample.as_ref().ok_or_else(|| {
+                            Error::Evaluation("failed to sample table row".into())
+                        })?;
                         sample.parse_table_row(
                             template,
                             definition,
@@ -759,7 +764,9 @@ impl Instance {
                         self.sample_table_row(template, index, key, record.clone())?,
                     ));
                 }
-                let (_, sample) = sample.as_ref().expect("sampled row");
+                let (_, sample) = sample
+                    .as_ref()
+                    .ok_or_else(|| Error::Evaluation("failed to sample table row".into()))?;
                 Ok(sample.element_shown(template)?
                     && sample.visual_flag(template, "enabled", true)?
                     && sample.editable_for_table(cell)?)

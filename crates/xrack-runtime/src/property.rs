@@ -492,6 +492,16 @@ impl<T: PartialEq> Property<T> {
 }
 
 impl<T: Clone> Property<T> {
+    /// Return an explicit or clean cached value without evaluating or tracking the binding.
+    #[doc(hidden)]
+    pub fn cached_value(&self) -> Option<T> {
+        match &*self.value.borrow() {
+            Stored::Explicit(value) => Some(value.clone()),
+            Stored::Cached(value) if !self.dependency.dirty.get() => Some(value.clone()),
+            _ => None,
+        }
+    }
+
     /// Observe an explicit override while leaving the default to the caller.
     pub fn explicit_value(&self) -> Option<T> {
         self.dependency.track();
@@ -523,10 +533,14 @@ impl<T: Clone> Property<T> {
         self.dependency.track();
         match &*self.value.borrow() {
             Stored::Explicit(value) => return Ok(value.clone()),
-            Stored::Cached(value) if !self.dependency.dirty.get() => return Ok(value.clone()),
+            Stored::Cached(value) if !self.dependency.dirty.get() => {
+                crate::update_profile::property(false);
+                return Ok(value.clone());
+            }
             Stored::Unset | Stored::Cached(_) => {}
         }
 
+        crate::update_profile::property(true);
         let value = self.dependency.evaluate(read);
         let value = match value {
             Ok(value) => value,

@@ -39,6 +39,13 @@ build:fmt --output_groups=rustfmt_checks
 build:lint --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build:lint --output_groups=clippy_checks
 build:lint --@rules_rust//rust/settings:clippy_flag=-Dclippy::correctness
+build:lint --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+build:lint --@rules_rust//rust/settings:clippy_flag=-Wclippy::unwrap_used
+build:lint --@rules_rust//rust/settings:clippy_flag=-Wclippy::expect_used
+
+build:lint-strict --config=lint
+build:lint-strict --@rules_rust//rust/settings:clippy_flag=-Dclippy::unwrap_used
+build:lint-strict --@rules_rust//rust/settings:clippy_flag=-Dclippy::expect_used
 
 test --test_output=errors
 
@@ -52,7 +59,12 @@ build:media --@ffmpeg//:enable_matroska_demuxer=true
 build:media --@ffmpeg//:enable_vp8_decoder=true
 build:media --@ffmpeg//:enable_vp9_decoder=true
 build:media --@ffmpeg//:enable_wav_demuxer=true
+build:media --@ffmpeg//:enable_pcm_u8_decoder=true
 build:media --@ffmpeg//:enable_pcm_s16le_decoder=true
+build:media --@ffmpeg//:enable_pcm_s24le_decoder=true
+build:media --@ffmpeg//:enable_pcm_s32le_decoder=true
+build:media --@ffmpeg//:enable_pcm_f32le_decoder=true
+build:media --@ffmpeg//:enable_pcm_f64le_decoder=true
 build:media --@ffmpeg//:enable_mp3_demuxer=true
 build:media --@ffmpeg//:enable_mp3_decoder=true
 build:media --@ffmpeg//:enable_ogg_demuxer=true

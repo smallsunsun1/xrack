@@ -1,9 +1,9 @@
 //! Index a list's business keys while its model maintains stable row identities.
-use crate::{VecModel, list::MAX_ROWS, model::RowObserver, property::ChangeSignal};
+use crate::{RowKey, VecModel, list::MAX_ROWS, model::RowObserver, property::ChangeSignal};
 use std::{
     any::Any,
     cell::RefCell,
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{BTreeSet, HashMap, HashSet, hash_map::Entry},
     rc::Rc,
 };
 
@@ -29,7 +29,9 @@ struct Index {
     unique: HashMap<i64, u64>,
     duplicates: HashMap<i64, HashSet<u64>>,
     signals: HashMap<i64, ChangeSignal>,
+    row_signals: HashMap<u64, ChangeSignal>,
     next_prune: usize,
+    next_row_prune: usize,
 }
 
 impl Index {
@@ -76,6 +78,9 @@ impl Index {
             return;
         }
         row.key = key;
+        if let Some(signal) = self.row_signals.get(&row_id) {
+            signal.notify();
+        }
         let previous_owner = self.unique.get(&previous).copied();
         let new_owner = self.unique.get(&key).copied();
         self.remove(previous, row_id);
@@ -99,6 +104,17 @@ impl Index {
         }
         self.signals.entry(key).or_default().track();
     }
+
+    fn track_row(&mut self, row: u64) {
+        if !ChangeSignal::is_tracking() {
+            return;
+        }
+        if !self.row_signals.contains_key(&row) && self.row_signals.len() >= self.next_row_prune {
+            self.row_signals.retain(|_, signal| signal.has_observers());
+            self.next_row_prune = (self.row_signals.len() * 2).max(64);
+        }
+        self.row_signals.entry(row).or_default().track();
+    }
 }
 
 impl ListSelectionKeys {
@@ -113,6 +129,9 @@ impl ListSelectionKeys {
             // A locator from an older frame can still use this cache. Invalidate
             // readers before switching the row observer to another model.
             for (_, signal) in index.signals.drain() {
+                signal.notify();
+            }
+            for (_, signal) in index.row_signals.drain() {
                 signal.notify();
             }
             index.rows.clear();
@@ -147,6 +166,7 @@ impl ListSelectionKeys {
         });
         for (key, id) in removed {
             index.remove(key, id);
+            index.row_signals.remove(&id);
         }
 
         if replaced {
@@ -204,6 +224,60 @@ impl ListSelectionKeys {
         index.track(key);
         (index.unique.get(&key) == Some(&id)).then_some(key)
     }
+
+    /// Resolve a batch against the full source, including filtered rows.
+    #[doc(hidden)]
+    pub fn resolve_keys<T: 'static>(
+        &self,
+        model: &VecModel<T>,
+        keys: &[i64],
+        key_of: impl Fn(&T) -> i64 + 'static,
+    ) -> Option<BTreeSet<RowKey>> {
+        if keys.is_empty() {
+            return Some(BTreeSet::new());
+        }
+        self.synchronize(model, key_of);
+        let mut index = self.index.borrow_mut();
+        keys.iter()
+            .map(|&key| {
+                index.track(key);
+                let position = index.rows.get(index.unique.get(&key)?)?.position?;
+                model.row_key(position)
+            })
+            .collect()
+    }
+
+    /// Export only unambiguous keys and observe the selected records' key roles.
+    #[doc(hidden)]
+    pub fn keys_for_rows<T: 'static>(
+        &self,
+        model: &VecModel<T>,
+        rows: &BTreeSet<RowKey>,
+        key_of: impl Fn(&T) -> i64 + 'static,
+    ) -> Vec<i64> {
+        if rows.is_empty() {
+            return Vec::new();
+        }
+        self.synchronize(model, key_of);
+        let mut index = self.index.borrow_mut();
+        let mut keys = rows
+            .iter()
+            .filter_map(|row| {
+                if index.stamp.is_none_or(|(model, _)| model != row.model) {
+                    return None;
+                }
+                let key = index.rows.get(&row.row)?.key;
+                index.track_row(row.row);
+                if key < 0 {
+                    return None;
+                }
+                index.track(key);
+                (index.unique.get(&key) == Some(&row.row)).then_some(key)
+            })
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        keys
+    }
 }
 
 #[cfg(test)]
@@ -211,6 +285,31 @@ mod tests {
     use super::*;
     use crate::Property;
     use std::cell::Cell;
+
+    #[test]
+    fn selected_key_snapshots_track_key_edits_and_uniqueness_without_tracking_payload() {
+        let model = VecModel::from(vec![(1_i64, false), (2, false), (3, false)]);
+        let keys = ListSelectionKeys::default();
+        let selection = keys.resolve_keys(&model, &[2, 1, 2], |row| row.0).unwrap();
+        let snapshot = Property::default();
+        let read = || snapshot.get(|| keys.keys_for_rows(&model, &selection, |row| row.0));
+        assert_eq!(read(), [1, 2]);
+
+        assert!(model.set_row(0, (1, true)));
+        assert!(!snapshot.is_dirty());
+        assert!(model.set_row(0, (-1, true)));
+        assert!(snapshot.is_dirty());
+        assert_eq!(read(), [2]);
+        assert!(model.set_row(0, (4, true)));
+        assert!(snapshot.is_dirty());
+        assert_eq!(read(), [2, 4]);
+
+        assert!(model.set_row(2, (2, false)));
+        assert_eq!(read(), [4]);
+        assert!(keys.resolve_keys(&model, &[4, 2], |row| row.0).is_none());
+        assert!(model.set_row(2, (3, false)));
+        assert_eq!(read(), [2, 4]);
+    }
 
     #[test]
     fn large_models_only_project_changed_or_new_records() {

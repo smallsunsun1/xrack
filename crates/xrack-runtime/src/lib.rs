@@ -32,8 +32,10 @@ mod image_animation;
 mod image_asset;
 mod inspection;
 #[doc(hidden)]
-pub use inspection::WindowInspector;
+pub use inspection::{InspectionInput, RecordedAction, WindowInspector};
 mod media;
+#[doc(hidden)]
+pub mod update_profile;
 pub use media::{
     MediaCommand, MediaFrame, MediaOptions, MediaQueue, MediaRegistration, MediaSession, MediaSlot,
     MediaState, MediaStatus, open_media_session, register_media_backend, register_sound_backend,
@@ -51,6 +53,7 @@ mod property;
 mod range;
 mod record;
 pub use record::{RecordList, RecordRowValidator, RecordValue};
+mod list_sections;
 mod repeat;
 mod row_heights;
 mod scale_rotate;
@@ -83,7 +86,8 @@ pub use arithmetic::{int_divide, int_remainder, round_to_int, try_int_divide, tr
 pub use button_group::{
     ButtonGroup, ButtonGroupMembership, ButtonGroupOptions, ButtonGroupSelection, RadioMembership,
     bind_button_group, bind_button_group_options, bind_check_group, bind_dynamic_button_group,
-    prepare_radio_selection, radio_value, summarize_checks, try_prepare_radio_selection,
+    is_exclusive_push_option, prepare_button_group_option, prepare_radio_selection, radio_value,
+    summarize_checks, try_prepare_button_group_option, try_prepare_radio_selection,
     try_summarize_checks,
 };
 pub use calendar::{CalendarAction, CalendarState, Date, is_calendar_control};
@@ -147,12 +151,12 @@ pub use double_spin::{
 #[doc(hidden)]
 pub use drag::DragArguments;
 pub use drag::{DragAction, DragEvent, is_drag_area};
+#[doc(hidden)]
+pub use focus::{ButtonPressHandle, FocusCommandMethod, FocusHandler, is_focus_handler};
 pub use focus::{
     FocusAction, FocusContext, FocusEvent, FocusHandle, FocusReason, FocusRequest, FocusRequests,
     TextCommand, TextCommandAvailability,
 };
-#[doc(hidden)]
-pub use focus::{FocusCommandMethod, FocusHandler, is_focus_handler};
 pub use font_picker::Font;
 #[doc(hidden)]
 pub use font_picker::{FontPopupState, is_font_family_choice, set_font_family_choices};
@@ -169,14 +173,18 @@ pub use list::ViewIndex;
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
 pub use list::{
-    ListModel, ListRowLocator, ListRowRenderer, RowLifetime, TableCellEditor, TableColumnWindow,
-    TableField, project_standard_table_rows, render_standard_table_rows, standard_list_rows,
-    standard_list_rows_in_view, standard_table_rows, standard_table_rows_in_order,
-    standard_table_rows_with_editors_in_order, standard_table_rows_with_header,
-    try_project_standard_table_rows, try_render_rows_from_source, try_render_standard_table_rows,
+    ListModel, ListRowLocator, ListRowRenderer, ListTextSearch, RowLifetime, TableCellEditor,
+    TableColumnWindow, TableField, project_standard_table_rows, render_standard_table_rows,
+    standard_list_rows, standard_list_rows_in_view, standard_table_rows,
+    standard_table_rows_in_order, standard_table_rows_with_editors_in_order,
+    standard_table_rows_with_header, try_project_standard_table_rows, try_render_rows_from_source,
+    try_render_standard_table_rows,
 };
 #[doc(hidden)]
 pub use list_keys::ListSelectionKeys;
+pub use list_sections::{
+    ListSection, ListSectionInput, ListSectionParameter, ListSectionProjection, ListSectionRenderer,
+};
 pub use localization::LocaleContext;
 #[doc(hidden)]
 pub use localization::{LocaleBinding, LocaleId, TranslationCatalog, TranslationValue};
@@ -242,13 +250,13 @@ pub use table_rows::{
     try_next_table_edit_cell_in_view, try_next_table_edit_cell_while_current,
     try_prepare_history_replay, try_table_cell_edit_target, try_table_cell_edit_target_matching,
 };
-pub use table_selection::{
-    RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
-};
 #[doc(hidden)]
 pub use table_selection::{
-    TableSelectionChange, TableSelectionCommand, TableSelectionEvent, TableSelectionMethod,
-    TableSelectionOptions,
+    ListSelectionCommand, TableSelectionChange, TableSelectionCommand, TableSelectionEvent,
+    TableSelectionMethod, TableSelectionOptions,
+};
+pub use table_selection::{
+    RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
 };
 pub use table_selection::{
     copy_table_text, copy_table_text_in_order, copy_table_text_in_view, copy_table_text_in_view_if,
@@ -272,7 +280,7 @@ pub use tree::{TreeAction, TreeCommand, TreeItem, TreeSelectionAction, TreeSnaps
 #[doc(hidden)]
 pub use tree::{
     TreeCommandMethod, TreeControlChange, TreeControlEvent, TreeExpansionChange,
-    TreeSelectionChange,
+    TreeSelectionChange, TreeSelectionCommand, TreeSelectionLookup,
 };
 pub use tumbler::{Tumbler, TumblerItems};
 pub use viewport::{
@@ -1487,6 +1495,9 @@ pub enum Value {
     Bool(bool),
     String(String),
     StyledText(StyledText),
+    IntList(Vec<i64>),
+    /// A live integer list whose bindings share the same row identities.
+    IntModel(VecModel<i64>),
     StringList(Vec<String>),
     /// A live string list whose row identities are shared by its bindings.
     StringModel(VecModel<String>),
@@ -1693,6 +1704,8 @@ pub struct NodeData {
     #[doc(hidden)]
     pub focus_handle: Option<FocusHandle>,
     #[doc(hidden)]
+    pub button_press_handle: Option<ButtonPressHandle>,
+    #[doc(hidden)]
     pub scale_rotate_handle: Option<ScaleRotateHandle>,
     #[doc(hidden)]
     pub swipe_handle: Option<SwipeHandle>,
@@ -1723,6 +1736,12 @@ pub struct NodeData {
     pub list_row_renderer: Option<ListRowRenderer>,
     #[doc(hidden)]
     pub row_heights: Option<Arc<RowHeights>>,
+    #[doc(hidden)]
+    pub list_sections: Option<Arc<[ListSection]>>,
+    #[doc(hidden)]
+    pub list_section_renderer: Option<ListSectionRenderer>,
+    #[doc(hidden)]
+    pub list_text_search: Option<ListTextSearch>,
     /// Selection snapshot for model-backed views. Retains the generated field name.
     #[doc(hidden)]
     pub standard_list_stamp: Option<(u64, u64)>,
@@ -1737,6 +1756,7 @@ pub struct NodeData {
     pub action: Option<ActionKey>,
     #[doc(hidden)]
     pub button_group: Option<ButtonGroupMembership>,
+    pub(crate) radio_option_blocks: Option<Rc<Vec<controls::RadioOptionBlock>>>,
     /// Selected TreeView business keys and model row identities, including folded descendants.
     pub tree_selection: Option<Arc<BTreeMap<i64, RowKey>>>,
     pub split_weights: Option<Arc<[Option<f32>]>>,
@@ -1811,6 +1831,7 @@ impl NodeData {
             animations,
             state_timings,
             focus_handle,
+            button_press_handle,
             scale_rotate_handle,
             swipe_handle,
             hover_handle,
@@ -1827,6 +1848,9 @@ impl NodeData {
             row_locator,
             list_row_renderer,
             row_heights,
+            list_sections,
+            list_section_renderer,
+            list_text_search,
             standard_list_stamp,
             table_header,
             table_column_order,
@@ -1836,6 +1860,7 @@ impl NodeData {
             stack,
             action,
             button_group,
+            radio_option_blocks,
             tree_selection,
             split_weights,
             split_fill_pane,
@@ -2017,6 +2042,7 @@ impl Node {
             animations: BTreeMap::new(),
             state_timings: None,
             focus_handle: None,
+            button_press_handle: None,
             scale_rotate_handle: None,
             swipe_handle: None,
             hover_handle: None,
@@ -2033,6 +2059,9 @@ impl Node {
             row_locator: None,
             list_row_renderer: None,
             row_heights: None,
+            list_sections: None,
+            list_section_renderer: None,
+            list_text_search: None,
             standard_list_stamp: None,
             table_header: None,
             table_column_order: TableColumnOrder::default(),
@@ -2042,6 +2071,7 @@ impl Node {
             stack: None,
             action: None,
             button_group: None,
+            radio_option_blocks: None,
             tree_selection: None,
             split_weights: None,
             split_fill_pane: None,
@@ -2652,6 +2682,7 @@ impl Node {
                 | "SwitchThumb"
                 | "SpinUpIndicator"
                 | "SpinDownIndicator"
+                | "TreeDisclosure"
         )
     }
 
@@ -2773,6 +2804,7 @@ impl Node {
             ("ScaleRotateGestureHandler", "ended" | "cancelled")
                 | ("SwipeGestureHandler", "swiped" | "cancelled")
                 | ("HoverHandler", "exited")
+                | ("Button" | "ToolButton" | "RoundButton", "canceled")
         )
     }
 

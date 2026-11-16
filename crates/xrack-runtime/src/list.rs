@@ -571,6 +571,63 @@ impl fmt::Debug for ListRowLocator {
     }
 }
 
+type FindListText = dyn Fn(usize, &dyn Fn(&str) -> bool) -> Option<usize>;
+
+/// Searches the model order captured by a prepared view, without creating delegates.
+#[derive(Clone)]
+#[doc(hidden)]
+pub struct ListTextSearch(Rc<FindListText>);
+
+impl ListTextSearch {
+    pub fn new<T: 'static>(
+        model: VecModel<T>,
+        order: Option<crate::TableRowPositions>,
+        label: impl Fn(&T) -> &str + 'static,
+    ) -> Self {
+        let stamp = model.structure_stamp();
+        let count = order
+            .as_ref()
+            .map_or_else(|| model.len(), crate::TableRowPositions::row_count)
+            .min(MAX_ROWS);
+        Self(Rc::new(move |start, matches| {
+            if model.structure_stamp() != stamp {
+                return None;
+            }
+            let find = |range: Range<usize>| {
+                if let Some(order) = &order {
+                    range.into_iter().find(|&index| {
+                        order.source_index(index).and_then(|source| {
+                            model.project_row_untracked(source, |row| matches(label(row)))
+                        }) == Some(true)
+                    })
+                } else {
+                    model.position_untracked(range, |row| matches(label(row)))
+                }
+            };
+            let start = start.min(count);
+            find(start..count).or_else(|| find(0..start))
+        }))
+    }
+
+    pub fn find(&self, start: usize, matches: impl Fn(&str) -> bool) -> Option<usize> {
+        (self.0)(start, &matches)
+    }
+}
+
+impl PartialEq for ListTextSearch {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for ListTextSearch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ListTextSearch")
+            .finish_non_exhaustive()
+    }
+}
+
 #[doc(hidden)]
 pub fn standard_list_rows<T: Clone + PartialEq>(
     model: &VecModel<T>,
@@ -1069,6 +1126,36 @@ impl<T: Clone + PartialEq> ListModel for VecModel<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_text_search_walks_model_labels_and_rejects_an_old_order() {
+        let model = VecModel::from(
+            (0..50_000)
+                .map(|i| format!("Record {i:05}"))
+                .collect::<Vec<_>>(),
+        );
+        let search = ListTextSearch::new(model.clone(), None, String::as_str);
+        let visits = Cell::new(0);
+        assert_eq!(
+            search.find(49_998, |label| {
+                visits.set(visits.get() + 1);
+                label == "Record 49999"
+            }),
+            Some(49_999)
+        );
+        assert_eq!(visits.get(), 2);
+        assert_eq!(
+            search.find(49_999, |label| label == "Record 00000"),
+            Some(0)
+        );
+        assert!(model.set_row(49_999, "Updated".into()));
+        assert_eq!(
+            search.find(49_999, |label| label == "Updated"),
+            Some(49_999)
+        );
+        model.push("Record 50000".into());
+        assert_eq!(search.find(0, |label| label == "Updated"), None);
+    }
 
     #[test]
     fn standard_table_projects_values_and_editor_flags_only_for_requested_columns() {

@@ -16,6 +16,7 @@ pub(crate) struct TableDragSelection {
     anchor: (usize, usize),
     stamp: (u64, u64),
     order: TableColumnOrder,
+    mirrored: bool,
     target: SelectionTarget,
     additive: bool,
     adjusted_range: Option<[(usize, usize); 2]>,
@@ -38,6 +39,7 @@ impl TableDragSelection {
         start: Point,
         additive: bool,
         parent_row: Option<RowKey>,
+        mirrored: bool,
     ) -> Option<Self> {
         let view = node.table_selection.as_ref()?;
         if !view.multiple() || !node.boolean("drag-select", false) {
@@ -54,6 +56,7 @@ impl TableDragSelection {
             anchor,
             stamp: view.structure_stamp(),
             order: node.table_column_order.clone(),
+            mirrored,
             target: view.target(),
             additive,
             adjusted_range: None,
@@ -70,6 +73,7 @@ impl TableDragSelection {
             && node.element_id() == self.id.as_ref().map(ElementId::as_str)
             && node.boolean("drag-select", false)
             && node.table_column_order == self.order
+            && item.scroll_axis_reversed(Orientation::Horizontal) == self.mirrored
             && item.visible
             && item.enabled
             && (self.target == SelectionTarget::Rows
@@ -190,7 +194,7 @@ impl TableDragSelection {
         let x = if self.target == SelectionTarget::Rows
             || table
                 .frozen_boundary()
-                .is_some_and(|boundary| local.x < boundary)
+                .is_some_and(|boundary| table.logical_delta(local.x - boundary) < 0.0)
         {
             0.0
         } else {
@@ -202,7 +206,7 @@ impl TableDragSelection {
             edge_delta(local.y, body.y, body.height)
         };
         Point {
-            x: scrollable_delta(item, Orientation::Horizontal, x),
+            x: scrollable_delta(item, Orientation::Horizontal, table.logical_delta(x)),
             y: scrollable_delta(item, Orientation::Vertical, y),
         }
     }
@@ -252,7 +256,12 @@ pub(crate) fn selection_handles(
             column_bounds.width,
             row_bounds.height,
         );
-        let x = if leading { cell.x } else { cell.x + cell.width };
+        let left_edge = leading != table.mirrored();
+        let x = if left_edge {
+            cell.x
+        } else {
+            cell.x + cell.width
+        };
         let y = if leading {
             cell.y
         } else {
@@ -264,11 +273,12 @@ pub(crate) fn selection_handles(
         let visible = cell.intersect(clip);
         let size = 20.0_f32.min(visible.width * 0.5).min(visible.height * 0.5);
         (size > 0.0).then_some(TableSelectionHandle {
-            bounds: if leading {
-                Rect::new(x, y, size, size)
-            } else {
-                Rect::new(x - size, y - size, size, size)
-            },
+            bounds: Rect::new(
+                if left_edge { x } else { x - size },
+                if leading { y } else { y - size },
+                size,
+                size,
+            ),
             opposite,
         })
     };

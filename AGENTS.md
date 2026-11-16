@@ -28,6 +28,7 @@
 ## 构建与代码约定
 
 - 使用 Bazel 构建和测试。Rust 使用 edition 2024，C++ 使用 C++20。工具链版本以 `.bazelversion`、`rust-toolchain.toml`、`Cargo.toml` 和 `MODULE.bazel` 为准，升级时同步检查两个锁文件和相关 `BUILD.bazel`。
+- Rust 业务和库代码通过 `?`、`match` 或 `let else` 处理失败。Bazel Clippy 检查 `unwrap()` 和 `expect()`，用 `--config=lint-strict` 将两条规则视为错误。测试断言可以使用。确有不变量时，在最小的函数或语句上使用 `#[expect(clippy::expect_used, reason = "...")]` 并说明不变量的来由。
 - Python 源码中的函数、方法和需要显式声明的变量使用类型标注，覆盖绑定、示例、测试和构建脚本。
 - Python 原生绑定的 `.pyi` 由 Bazel 从 PyO3 元数据自动生成，随 wheel 分发。接口变更写在绑定源码上。
 - Python 格式化使用 Aspect rules_lint 的 Ruff 目标 `bazel run //bindings/python:format -- <files>`。

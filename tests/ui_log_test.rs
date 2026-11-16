@@ -344,7 +344,7 @@ fn logging_rejects_invalid_levels_arguments_and_pure_contexts() {
         (r#"title: Strings.contains(1, "s");"#, "type mismatch"),
         (
             "width: Model.count(3) * 1px;",
-            "requires a string or record model",
+            "requires an int, string, or record model",
         ),
         (r#"title: Strings.format("{:.21}", 1);"#, "between 0 and 20"),
         (

@@ -1,6 +1,6 @@
 use crate::{
-    ChangeSignal, ControlAction, ListMetrics, Node, Property, RowKey, RowSelection, Value,
-    VecModel, list::MAX_ROWS,
+    ChangeSignal, ControlAction, ListMetrics, Node, Property, RowKey, RowSelection,
+    TableSelectionAction, Value, VecModel, list::MAX_ROWS,
 };
 use std::{
     cell::RefCell,
@@ -86,6 +86,21 @@ pub enum TreeSelectionAction {
     },
     All,
     Clear,
+}
+
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub enum TreeSelectionCommand {
+    Visual(TableSelectionAction),
+    Source(usize),
+    Key(i64),
+}
+
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub enum TreeSelectionLookup {
+    Row(i64),
+    Key(i64),
 }
 
 #[doc(hidden)]
@@ -598,6 +613,15 @@ struct Selection {
 }
 
 impl Selection {
+    fn replace_keys(&mut self, keys: Arc<BTreeMap<i64, RowKey>>) -> Option<usize> {
+        if self.keys == keys {
+            return None;
+        }
+        let count = keys.len();
+        self.keys = keys;
+        Some(count)
+    }
+
     fn retain_live(&mut self, topology: &Topology) {
         let live = |key, row| topology.row_key(key) == Some(row);
         if self.keys.iter().any(|(&key, &row)| !live(key, row)) {
@@ -1133,6 +1157,101 @@ impl TreeState {
         self.selection.borrow().keys.clone()
     }
 
+    #[doc(hidden)]
+    pub fn selected_keys(&self, tree: &TreeSnapshot, single_current: Option<i64>) -> Vec<i64> {
+        if let Some(current) = single_current {
+            return tree
+                .visible_index(current)
+                .map(|_| current)
+                .into_iter()
+                .collect();
+        }
+        self.selection_changed.track();
+        self.selection.borrow().keys.keys().copied().collect()
+    }
+
+    /// Replace the full selection by business key, leaving cursor and expansion alone.
+    #[doc(hidden)]
+    pub fn try_replace_selection<E>(
+        &self,
+        keys: &[i64],
+        live: impl FnOnce() -> Result<Arc<TreeSnapshot>, E>,
+        multiple: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<Option<TreeSelectionChange>, E> {
+        let keys = crate::try_prepare_action_view(|| {
+            if !multiple()? {
+                return Ok(None);
+            }
+            let tree = live()?;
+            Ok(keys
+                .iter()
+                .map(|&key| tree.topology.row_key(key).map(|row| (key, row)))
+                .collect::<Option<BTreeMap<_, _>>>())
+        })?;
+        let Some(keys) = keys else {
+            return Ok(None);
+        };
+        let selected_count = {
+            let mut selection = self.selection.borrow_mut();
+            selection.anchor = None;
+            selection.replace_keys(Arc::new(keys))
+        };
+        if selected_count.is_some() {
+            self.selection_changed.notify();
+        }
+        Ok(Some(TreeSelectionChange {
+            current: None,
+            selected_count,
+        }))
+    }
+
+    #[doc(hidden)]
+    pub fn replace_selection(
+        &self,
+        keys: &[i64],
+        live: impl FnOnce() -> Arc<TreeSnapshot>,
+        multiple: impl FnOnce() -> bool,
+    ) -> Option<TreeSelectionChange> {
+        self.try_replace_selection(
+            keys,
+            || Ok::<_, std::convert::Infallible>(live()),
+            || Ok(multiple()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn selection_info(
+        &self,
+        tree: &TreeSnapshot,
+        multiple: bool,
+        current: i64,
+        query: Option<TreeSelectionLookup>,
+    ) -> (i64, bool) {
+        let key = match query {
+            Some(TreeSelectionLookup::Row(index)) => usize::try_from(index)
+                .ok()
+                .and_then(|index| tree.rows().get(index))
+                .map(|item| item.key),
+            Some(TreeSelectionLookup::Key(key)) => Some(key),
+            None => None,
+        };
+        if multiple {
+            self.selection_changed.track();
+            let selection = self.selection.borrow();
+            (
+                selection.keys.len() as i64,
+                key.is_some_and(|key| selection.keys.contains_key(&key)),
+            )
+        } else {
+            let current = tree.visible_index(current).map(|_| current);
+            (
+                i64::from(current.is_some()),
+                key.is_some() && key == current,
+            )
+        }
+    }
+
     /// Publish the same visible rows for layout, painting and input routing.
     #[doc(hidden)]
     pub fn populate_scene(&self, node: &mut Node, tree: Arc<TreeSnapshot>) {
@@ -1251,7 +1370,81 @@ impl TreeState {
         .unwrap_or_else(|error| match error {})
     }
 
-    /// Resolve a source index against the same live tree used to update selection.
+    /// Resolve a programmatic selection against the current tree projection.
+    #[doc(hidden)]
+    pub fn try_apply_selection<E>(
+        &self,
+        command: TreeSelectionCommand,
+        live: impl FnOnce() -> Result<Arc<TreeSnapshot>, E>,
+        multiple: impl FnOnce() -> Result<bool, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+    ) -> Result<Option<TreeSelectionChange>, E> {
+        let prepared = crate::try_prepare_action_view(|| {
+            let tree = live()?;
+            let row = |index: usize, operation| {
+                tree.rows().get(index).map(|item| TreeSelectionAction::Row {
+                    key: item.key,
+                    row: item.row,
+                    operation,
+                })
+            };
+            let replace = |index| row(index, RowSelection::Replace);
+            let action = match command {
+                TreeSelectionCommand::Source(source) => {
+                    tree.visible_index_for_source(source).and_then(replace)
+                }
+                TreeSelectionCommand::Key(key) => tree.visible_index(key).and_then(replace),
+                TreeSelectionCommand::Visual(TableSelectionAction::Row { index, operation }) => {
+                    row(index, operation)
+                }
+                TreeSelectionCommand::Visual(TableSelectionAction::All) => {
+                    Some(TreeSelectionAction::All)
+                }
+                TreeSelectionCommand::Visual(TableSelectionAction::Clear) => {
+                    Some(TreeSelectionAction::Clear)
+                }
+                TreeSelectionCommand::Visual(_) => None,
+            };
+            let Some(action) = action else {
+                return Ok(None);
+            };
+            let multiple = multiple()?;
+            if !multiple
+                && !matches!(
+                    action,
+                    TreeSelectionAction::Row {
+                        operation: RowSelection::Replace,
+                        ..
+                    }
+                )
+            {
+                return Ok(None);
+            }
+            let current = current()?;
+            Ok(Some((tree, multiple, current, action)))
+        })?;
+        Ok(prepared.and_then(|(tree, multiple, current, action)| {
+            self.select_in_mode(&tree, current, multiple, action)
+        }))
+    }
+
+    #[doc(hidden)]
+    pub fn apply_selection(
+        &self,
+        command: TreeSelectionCommand,
+        live: impl FnOnce() -> Arc<TreeSnapshot>,
+        multiple: impl FnOnce() -> bool,
+        current: impl FnOnce() -> i64,
+    ) -> Option<TreeSelectionChange> {
+        self.try_apply_selection(
+            command,
+            || Ok::<_, std::convert::Infallible>(live()),
+            || Ok(multiple()),
+            || Ok(current()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
     #[doc(hidden)]
     pub fn try_select_source<E>(
         &self,
@@ -1260,26 +1453,12 @@ impl TreeState {
         multiple: impl FnOnce() -> Result<bool, E>,
         current: impl FnOnce() -> Result<i64, E>,
     ) -> Result<Option<TreeSelectionChange>, E> {
-        let prepared = crate::try_prepare_action_view(|| {
-            let tree = live()?;
-            let Some(item) = tree
-                .visible_index_for_source(source)
-                .and_then(|index| tree.rows().get(index))
-            else {
-                return Ok(None);
-            };
-            let action = TreeSelectionAction::Row {
-                key: item.key,
-                row: item.row,
-                operation: RowSelection::Replace,
-            };
-            let multiple = multiple()?;
-            let current = current()?;
-            Ok(Some((tree, multiple, current, action)))
-        })?;
-        Ok(prepared.and_then(|(tree, multiple, current, action)| {
-            self.select_in_mode(&tree, current, multiple, action)
-        }))
+        self.try_apply_selection(
+            TreeSelectionCommand::Source(source),
+            live,
+            multiple,
+            current,
+        )
     }
 
     #[doc(hidden)]
@@ -1290,13 +1469,12 @@ impl TreeState {
         multiple: impl FnOnce() -> bool,
         current: impl FnOnce() -> i64,
     ) -> Option<TreeSelectionChange> {
-        self.try_select_source(
-            source,
-            || Ok::<_, std::convert::Infallible>(live()),
-            || Ok(multiple()),
-            || Ok(current()),
+        self.apply_selection(
+            TreeSelectionCommand::Source(source),
+            live,
+            multiple,
+            current,
         )
-        .unwrap_or_else(|error| match error {})
     }
 
     #[doc(hidden)]
@@ -1393,9 +1571,9 @@ impl TreeState {
                 None
             }
         };
-        let selected_count = (next != selection.keys).then_some(next.len());
+        let selected_count = selection.replace_keys(next);
+        drop(selection);
         if selected_count.is_some() {
-            selection.keys = next;
             self.selection_changed.notify();
         }
         Some(TreeSelectionChange {

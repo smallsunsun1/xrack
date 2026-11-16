@@ -37,7 +37,7 @@ pub(crate) struct State {
     widths: Property<Vec<Option<u32>>>,
     columns: Property<TableColumnOrder>,
     heights: RowHeightOverrides,
-    selection: TableSelection,
+    pub(crate) selection: TableSelection,
     pub(crate) history: xrack_runtime::TableEditHistory<RecordValue>,
     pub(crate) string_history: xrack_runtime::TableEditHistory<String>,
 }
@@ -82,6 +82,10 @@ impl Element {
             .filter(|column| matches!(column.visual, Visual::Builtin("TableColumn")))
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "table callers resolve a table view before accessing its definition"
+    )]
     pub(crate) fn table_definition(&self) -> &Definition {
         self.table.as_ref().expect("table definition")
     }
@@ -287,7 +291,7 @@ impl Instance {
         })
     }
 
-    fn current_row(&self, view: &Element) -> Result<i64> {
+    pub(crate) fn current_row(&self, view: &Element) -> Result<i64> {
         Ok(match self.control_value(view, "current-row")? {
             Some(Value::Int(value)) => value,
             _ => -1,
@@ -301,14 +305,14 @@ impl Instance {
         Ok(())
     }
 
-    fn table_selection_target(&self, view: &Element) -> Result<SelectionTarget> {
+    pub(crate) fn table_selection_target(&self, view: &Element) -> Result<SelectionTarget> {
         Ok(match self.binding_value(view, "selection-target")? {
             Some(Value::SelectionTarget(target)) => target,
             _ => SelectionTarget::Rows,
         })
     }
 
-    fn table_snapshot(
+    pub(crate) fn table_snapshot(
         &self,
         view: &Element,
         model: &TableRows<Model>,
@@ -329,10 +333,17 @@ impl Instance {
         view: &Element,
         command: TableSelectionCommand,
     ) -> Result<bool> {
+        self.apply_table_selection_for(view, |_| Some(command))
+    }
+
+    fn apply_table_selection_for(
+        &self,
+        view: &Element,
+        command: impl FnOnce(&TableRows<Model>) -> Option<TableSelectionCommand>,
+    ) -> Result<bool> {
         let state = self.repeat_state(view);
         let state = state.table_state();
-        let Some(change) = state.selection.try_apply_command(
-            command,
+        let Some(change) = state.selection.try_apply_command_for(
             view.table_columns().count(),
             || self.view_model(view)?.table_rows(),
             || self.current_row(view),
@@ -344,6 +355,7 @@ impl Instance {
                     drag_select: false,
                 })
             },
+            command,
         )?
         else {
             return Ok(false);
@@ -351,7 +363,7 @@ impl Instance {
         self.notify_table_selection(view, state, change, true)
     }
 
-    fn notify_table_selection(
+    pub(crate) fn notify_table_selection(
         &self,
         view: &Element,
         state: &State,
@@ -400,6 +412,14 @@ impl Instance {
             None => None,
         };
         self.apply_table_selection(view, TableSelectionCommand::Source { row, column })?;
+        Ok(())
+    }
+
+    pub(crate) fn select_table_key(&self, view: &Element, key: i64) -> Result<()> {
+        self.apply_table_selection_for(view, |rows| {
+            let row = self.business_key_source_index(view, rows.source(), key)?;
+            Some(TableSelectionCommand::Source { row, column: None })
+        })?;
         Ok(())
     }
 
@@ -494,6 +514,18 @@ impl Instance {
 
     pub(crate) fn table_read(&self, key: &str, read: TableRead) -> Result<Value> {
         let (owner, view) = self.element_owner(key)?;
+        if view.table.is_none() {
+            let (count, _) = if view.tree.is_some() {
+                owner.tree_selection_info(view, None)?
+            } else {
+                owner.list_selection_info(view, -1)?
+            };
+            return match read {
+                TableRead::SelectionCount => Ok(count.into()),
+                TableRead::HasSelection => Ok((count != 0).into()),
+                _ => Err(Error::Invalid("unsupported row selection query".into())),
+            };
+        }
         let state = owner.repeat_state(view);
         let sort = || state.table_state().sort.get(|| None);
         let snapshot = || {
@@ -561,7 +593,19 @@ impl Instance {
                     })
                     .collect::<Result<Vec<_>>>()?;
                 if let Some(action) = method.action(&indices) {
-                    owner.apply_table_selection(view, TableSelectionCommand::Visual(action))?;
+                    if view.table.is_some() {
+                        owner.apply_table_selection(view, TableSelectionCommand::Visual(action))?;
+                    } else if view.tree.is_some() {
+                        owner.select_tree(
+                            view,
+                            xrack_runtime::TreeSelectionCommand::Visual(action),
+                        )?;
+                    } else {
+                        owner.programmatic_list_selection(
+                            view,
+                            xrack_runtime::ListSelectionCommand::Visual(action),
+                        )?;
+                    }
                 }
             }
             _ => return Err(Error::Invalid("invalid table command operands".into())),
@@ -623,7 +667,10 @@ impl Instance {
                         self.sample_table_row(template, source, key, item.clone())?,
                     ));
                 }
-                let row = &sampled.as_ref().expect("sampled row").1;
+                let row = &sampled
+                    .as_ref()
+                    .ok_or_else(|| Error::Evaluation("failed to sample table row".into()))?
+                    .1;
                 if !row.element_shown(template)? || !row.element_shown(cell)? {
                     return Ok(None);
                 }

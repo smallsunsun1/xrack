@@ -139,6 +139,7 @@ Value: TypeAlias = (
     | float
     | str
     | list[str]
+    | list[int]
     | Brush
     | CheckState
     | Color

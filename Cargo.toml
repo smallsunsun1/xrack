@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*", "bundles/compiler/*", "bundles/mlir/*", "bundles/media/*", "bindings/python"]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/smallsunsun1/xrack"
@@ -26,18 +26,18 @@ icu_locale_core = "2.4"
 writeable = "0.6"
 unic-langid = "0.9"
 toml = "1.0"
-xrack-parser = { path = "crates/xrack-parser", version = "0.5.1" }
-xrack-runtime = { path = "crates/xrack-runtime", version = "0.5.1" }
-xrack-assets = { path = "crates/xrack-assets", version = "0.5.1" }
-xrack-syntax = { path = "crates/xrack-syntax", version = "0.5.1" }
-xrack-ir = { path = "crates/xrack-ir", version = "0.5.1" }
-xrack-mlir = { path = "crates/xrack-mlir", version = "0.5.1" }
-xrack-interpreter = { path = "crates/xrack-interpreter", version = "=0.5.1" }
+xrack-parser = { path = "crates/xrack-parser", version = "0.6.0" }
+xrack-runtime = { path = "crates/xrack-runtime", version = "0.6.0" }
+xrack-assets = { path = "crates/xrack-assets", version = "0.6.0" }
+xrack-syntax = { path = "crates/xrack-syntax", version = "0.6.0" }
+xrack-ir = { path = "crates/xrack-ir", version = "0.6.0" }
+xrack-mlir = { path = "crates/xrack-mlir", version = "0.6.0" }
+xrack-interpreter = { path = "crates/xrack-interpreter", version = "=0.6.0" }
 xrack-codegen = { path = "crates/xrack-codegen" }
-xrack-resources = { path = "crates/xrack-resources", version = "0.5.1" }
-xrack-layout = { path = "crates/xrack-layout", version = "0.5.1" }
-xrack-renderer-femtovg = { path = "crates/xrack-renderer-femtovg", version = "0.5.1" }
-xrack-platform-winit = { path = "crates/xrack-platform-winit", version = "0.5.1" }
+xrack-resources = { path = "crates/xrack-resources", version = "0.6.0" }
+xrack-layout = { path = "crates/xrack-layout", version = "0.6.0" }
+xrack-renderer-femtovg = { path = "crates/xrack-renderer-femtovg", version = "0.6.0" }
+xrack-platform-winit = { path = "crates/xrack-platform-winit", version = "0.6.0" }
 femtovg = { version = "=0.28.0", default-features = false, features = ["wgpu", "textlayout"] }
 wgpu = { version = "=30.0.0", default-features = false, features = ["std", "wgsl", "metal", "vulkan", "dx12"] }
 winit = "=0.30.13"

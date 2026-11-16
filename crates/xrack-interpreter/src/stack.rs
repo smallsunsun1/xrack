@@ -92,7 +92,7 @@ impl Instance {
                 .iter()
                 .position(|name| name == route)
                 .and_then(|index| view.children.get(index))
-                .expect("a stack only contains declared pages")
+                .ok_or_else(|| Error::Evaluation(format!("unknown stack page {route}")))
         };
         self.stack_state(view).try_navigate_guarded(
             routes,
@@ -103,7 +103,7 @@ impl Instance {
                 if input.is_some_and(|input| !input.is_current()) {
                     return Ok(false);
                 }
-                let Some(handler) = page(route).handlers.get("leave-requested") else {
+                let Some(handler) = page(route)?.handlers.get("leave-requested") else {
                     return Ok(input.is_none_or(|input| input.is_current()));
                 };
                 let arguments = [Value::String(destination.into()), Value::Bool(removing)];
@@ -120,10 +120,12 @@ impl Instance {
                 change.try_notify(|event| {
                     match event {
                         StackEvent::Deactivated(route) => {
-                            self.handler(page(route), "deactivated", &[])
+                            self.handler(page(route)?, "deactivated", &[])
                         }
-                        StackEvent::Removed(route) => self.handler(page(route), "removed", &[]),
-                        StackEvent::Activated(route) => self.handler(page(route), "activated", &[]),
+                        StackEvent::Removed(route) => self.handler(page(route)?, "removed", &[]),
+                        StackEvent::Activated(route) => {
+                            self.handler(page(route)?, "activated", &[])
+                        }
                         StackEvent::Changed { current, depth } => self.handler(
                             view,
                             "changed",

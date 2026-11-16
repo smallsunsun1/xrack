@@ -57,7 +57,8 @@ Operation *visualScope(Operation *binding) {
   // each row of the nearest repeat. Never share across those boundaries.
   for (auto *op = parent; op; op = op->getParentOp()) {
     if (auto element = dyn_cast<ElementOp>(op);
-        element && (element.getKind() == "DayCell" || element.getKind() == "SplitHandle"))
+        element && (element.getKind() == "DayCell" || element.getKind() == "SplitHandle" ||
+                    element.getKind() == "SectionHeader"))
       return nullptr; // The runtime caches each template instance separately.
     if (isa<ComponentOp>(op))
       return op;

@@ -311,6 +311,25 @@ impl<T> VecModel<T> {
         self.0.rows.borrow().len()
     }
 
+    /// Inspect a bounded page without recording reactive dependencies.
+    #[doc(hidden)]
+    pub fn inspect_rows<R>(
+        &self,
+        offset: usize,
+        limit: usize,
+        map: impl FnMut(&T) -> R,
+    ) -> (usize, Vec<R>) {
+        let rows = self.0.rows.borrow();
+        let items = rows
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .map(|row| &row.value)
+            .map(map)
+            .collect();
+        (rows.len(), items)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

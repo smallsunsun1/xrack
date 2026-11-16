@@ -9,6 +9,10 @@ rust_test(
         "gpu_test.rs",
         "ui_driver.rs",
     ],
+    crate_features = select({
+        "//crates/xrack-media:enabled_config": ["media_backend"],
+        "//conditions:default": [],
+    }),
     data = [
         "//examples/form:form.xr",
         "//examples/form:widgets.xr",
@@ -19,8 +23,18 @@ rust_test(
         "//examples/menu:assets/grid.svg",
         "//examples/selection:selection.xr",
         "//examples/slots:slots.xr",
-    ],
+        "//examples/split:split.xr",
+        "//examples/table:table.xr",
+        "//examples/tree:tree.xr",
+    ] + select({
+        "//crates/xrack-media:enabled_config": [
+            "//examples/sound_effect:click.wav",
+            "//examples/sound_effect:sound_effect.xr",
+        ],
+        "//conditions:default": [],
+    }),
     edition = "2024",
+    env = {"XRACK_MEDIA_TEST_AUDIO": "1"},
     tags = [
         "local",
         "manual",
@@ -56,7 +70,10 @@ rust_test(
         "//examples/tree:tree_ui",
         "@crates//:pollster",
         "@crates//:wgpu",
-    ],
+    ] + select({
+        "//crates/xrack-media:enabled_config": ["//crates/xrack-media:xrack_media"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(
@@ -353,4 +370,27 @@ rust_test(
         ],
         "//conditions:default": [],
     }),
+)
+
+rust_test(
+    name = "ui_replay_test",
+    size = "small",
+    srcs = [
+        "ui_driver.rs",
+        "ui_replay_test.rs",
+    ],
+    compile_data = [
+        "async_search_replay.json",
+        "//examples/async_demo:async.xr",
+    ],
+    edition = "2024",
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//examples/async_demo:async_ui",
+        "@crates//:serde",
+        "@crates//:serde_json",
+    ],
 )

@@ -338,6 +338,11 @@ impl TextEditContext {
 impl Interaction {
     pub fn begin_text_composition(&mut self, scene: &Node, id: u64) -> bool {
         let cancelled = self.cancel_text_composition(None);
+        if let Some(focus) = self.list_typeahead_focus(scene).cloned() {
+            self.cancel_shortcut_sequence();
+            self.list_composition = Some((id, focus));
+            return true;
+        }
         let Some(context) = TextEditContext::capture(self, scene)
             .filter(|context| !self.menu_open() && context.can_compose(self, scene))
         else {
@@ -377,6 +382,14 @@ impl Interaction {
     }
 
     pub fn cancel_text_composition(&mut self, id: Option<u64>) -> bool {
+        if self
+            .list_composition
+            .as_ref()
+            .is_some_and(|(current_id, _)| id.is_none_or(|id| id == *current_id))
+        {
+            self.list_composition = None;
+            return true;
+        }
         if let Some(editor) = &mut self.editor
             && let Some((current_id, _)) = &editor.composition
             && id.is_none_or(|id| id == *current_id)
@@ -394,6 +407,9 @@ impl Interaction {
     }
 
     fn text_composition(&self, scene: &Node) -> Option<(u64, bool)> {
+        if let Some((id, focus)) = &self.list_composition {
+            return Some((*id, self.list_typeahead_focus(scene) == Some(focus)));
+        }
         let (id, context) = self.editor.as_ref()?.composition.as_ref()?;
         Some((*id, !self.menu_open() && context.can_compose(self, scene)))
     }

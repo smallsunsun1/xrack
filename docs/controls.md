@@ -125,9 +125,23 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 鼠标或触摸拖动时预览，松手吸附并提交。滚轮按项移动，触控板像素滚动累积到一行后提交。方向键、Home、End 和 Page Up / Page Down 支持键盘选择。字符串模型只读取视口内的标签，模型重排或替换会使旧手势失效。运行 `bazel run //examples/controls:controls -- --tumbler` 体验小时和分钟选择。
 
+`Button`、`ToolButton` 和 `RoundButton` 的只读属性 `pressed` 可绑定到内容或样式。鼠标和触摸按住按钮、或聚焦后按住激活键时返回真。移出、滚动接管或松开会清除状态。正常松手产生的 `clicked()` 可以读取到已经更新的松开状态，连发回调可以读取到仍按住的状态。运行 `bazel run //examples/controls:controls -- --button-pressed` 查看实时提示。
+
+`Button`、`ToolButton` 和 `RoundButton` 可用 `auto-repeat: true;` 在鼠标、触摸或键盘按住时重复触发 `clicked()` 或关联的 `Action`。用 `auto-repeat-delay` 和 `auto-repeat-interval` 设置首次等待时间和间隔，默认 300 和 100 毫秒。间隔为零或负值时，按下和松开沿用普通点击。
+
+普通按钮可以声明 `double-clicked()`。同一输入来源在同一个按钮上完成两次短按，松开位置相隔不超过 6 个逻辑像素、时间差不超过 450 毫秒时，两次点击先各自提交，再触发双击回调。关联的 `Action` 仍按每次点击执行。长按、连发、滚动接管和失焦会中断配对。第二次点击若禁用了按钮或换了底下的记录行，双击回调会取消。运行 `bazel run //examples/controls:controls -- --button-double-click` 比较两个计数。
+
+短按仍在松开时触发一次。首次重复发生后，松开会结束重复。移出按钮、失焦、禁用、改变计时配置或触摸手势被滚动接管时，当前重复会取消。事件循环繁忙时跳过错过的触发。辅助技术的点击仍执行一次操作。运行 `bazel run //examples/controls:controls -- --repeat-buttons` 比较短按、连发和按钮到达上限后停止。
+
+普通按钮也可声明 `press-and-hold()`。鼠标、触摸或聚焦后按住空格或 Enter 达到 `press-and-hold-interval` 时触发一次，默认 800 毫秒，非正值关闭长按。移动超过 6 个逻辑像素、移出、失焦或滚动接管会取消等待。长按触发后，松开结束这次手势。开启 `auto-repeat` 时由连发接管。关联 `Action` 的按钮可在短按时执行命令，在长按时执行独立回调。运行 `bazel run //examples/controls:controls -- --button-hold`，短按「增加」后长按同一按钮可以把数值归零。
+
+普通按钮可声明 `pressed()`、`released()` 和 `canceled()`。三种输入共用这个顺序。按下和释放事件中的 `pressed` 属性已经更新，正常点击在 `released()` 之后处理。在外面松手、失焦或滚动接管时发出 `canceled()`。长按和连发期间，按下与释放事件仍各对应一次真实手势。运行 `bazel run //examples/controls:controls -- --button-lifecycle` 查看顺序。
+
 `DelayButton` 在鼠标、触摸或键盘持续按住达到 `delay` 毫秒后设置 `checked`，并触发一次 `activated()`。默认延时 3000 毫秒。进度颜色可用 `progress-color` 设置，`checked` 可双向绑定。松手、移出、失焦或禁用会取消仍在等待的确认。已确认的按钮再次点击时复位。
 
 通过辅助技术操作时，第一次激活开始等待，提示就绪后第二次激活提交。提前再次激活或按 Escape 会取消。运行 `bazel run //examples/controls:controls -- --delay` 体验。
+
+`Button`、`ToolButton` 和 `RoundButton` 可以用 `checkable: true;` 保留选中状态。`checked` 默认为 false，可用 `checked <=> root.pinned;` 双向绑定。用户激活时先写入选中值，再发出 `toggled()` 和 `clicked()`。程序修改绑定值时只更新选中态和无障碍状态。未关联外部绑定的重复项各自保留状态，移动模型行时选中态跟随原行。绑定了 `Action` 的按钮继续使用命令的选中值。运行 `bazel run //examples/controls:controls -- --checkable-buttons`。
 
 `ComboBox` 从 `[string]` 模型选择一项，可绑定 `current-index` 或 `current-value`，用户选择时触发 `selected(string)`。按值绑定取首个匹配项。弹层在窗口顶层绘制，只绘制当前可见行，支持滚轮、方向键、Home、End、PageUp、PageDown、Enter 与 Escape。点击弹层之外会关闭弹层并消费本次点击。
 
@@ -145,11 +159,13 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `accepted(string)` 报告显式提交的查询，`selected(string)` 报告选中的候选。两种操作都触发 `search-triggered(string)`。`live: true;` 也会在输入变化时触发它。`bazel run //examples/async_demo:async_demo` 演示用 Tokio 查询并在 UI 线程写回候选，示例单独维护一批候选和虚拟化的结果列表。
 
-`RadioGroup` 接收静态 `RadioButton`，也可以用一个 `for` 生成所有选项。通过组的 `current-index` 或 `current-value` 双向绑定选择，按钮的选中状态由组推导。组支持横竖排列、方向键导航和 `selected(string)`。
+`RadioGroup` 可混用固定的 `RadioButton`、`if` 条件项和多段 `for`。组的 `current-index` 使用展开后的顺序，隐藏的条件项保留槽位。动态选项可用 `current-value` 绑定稳定且唯一的业务值，重排和插入时保持原有选择。选项暂时隐藏时保留绑定值，重新显示后恢复选中，模型刷新本身不会触发 `selected(string)`。运行 `bazel run //examples/selection:selection -- --mixed-radio-options`。
 
 组件根部也可声明非可视的 `ButtonGroup`，各个 `RadioButton` 用 `group: group-id;` 加入同一组，可分别放在不同的行、列或条件容器中。`current-index` 按声明顺序分配槽位，隐藏项保留槽位。`RadioButton.value` 可提供稳定的业务值，`current-value` 和 `selected(string)` 使用该值，省略时沿用 `text`。每组在 Tab 顺序中只占一站，方向键在可用选项间循环。设置组的 `enabled: false;` 停用整组，`accessible-name` 会用于无障碍分组。运行 `bazel run //examples/selection:selection -- --radio-groups` 体验。
 
-`ButtonGroup { exclusive: false; }` 可组合 `CheckBox` 和 `Switch`。全选框用 `check-state <=> options.check-state;` 绑定汇总结果，普通成员各自保留 Tab 停靠点。汇总使用声明中的所有成员，包括隐藏或禁用的选项。`options.set-check-state(CheckState.checked)` 和 `options.set-check-state(CheckState.unchecked)` 分别批量选中和清除，传入部分选中值会保留当前成员状态。批量操作通过各成员的绑定更新属性，成员的用户操作回调由各自的交互触发。运行 `bazel run //examples/controls:controls -- --check-group` 体验。
+`Button`、`ToolButton` 和 `RoundButton` 也可用 `group: group-id;` 加入组。成员使用组件内的固定声明路径，入组自动启用选中态。互斥组使用组的 `current-index` 或 `current-value` 写入选中项。一次新选择先提交选中值，再触发目标的 `toggled()` 和组的 `selected(string)`。点击当前选中按钮仍触发 `clicked()`。方向键移动焦点并改变选择。
+
+`ButtonGroup { exclusive: false; }` 可组合普通按钮、`CheckBox` 和 `Switch`。普通按钮可用 `checked <=> root.flag;` 绑定各自的选中态。全选框用 `check-state <=> options.check-state;` 绑定汇总结果，普通成员各自保留 Tab 停靠点。汇总使用声明中的所有成员，包括隐藏或禁用的选项。`options.set-check-state(CheckState.checked)` 和 `options.set-check-state(CheckState.unchecked)` 分别批量选中和清除，传入部分选中值会保留当前成员状态。批量操作通过各成员的绑定更新属性，成员的用户操作回调由各自的交互触发。运行 `bazel run //examples/controls:controls -- --grouped-buttons` 体验两种分组。
 
 `TabWidget` 接收静态 `Tab` 子元素，可双向绑定 `current-index`，并通过 `orientation` 切换顶部或侧边标签栏。非活动页面保留组件状态，只有活动页构建内容场景。方向键跳过禁用项，Tab 键把每组选项视为一个焦点停靠点。
 
@@ -192,6 +208,8 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 `MessageDialog` 也通过 `open()` 打开系统对话框，可设置 `title`、`text`、`informative-text` 和 `level`。`buttons` 可取 `ok`、`ok-cancel`、`yes-no` 或 `yes-no-cancel`。确认和拒绝分别触发 `accepted()` 与 `rejected()`，随后 `finished(StandardButtonKind)` 报告具体结果。系统关闭或取消返回 `cancel`，宿主检测到的打开错误通过 `failed(string)` 返回。文件面板与消息对话框按请求顺序共用窗口的异步队列。运行 `bazel run //examples/form:form -- --message` 体验。
 
 `SplitView` 把直接子元素排成横向或纵向面板，支持嵌套。面板沿分栏方向使用 `min-width`、`preferred-width`、`max-width` 或对应的高度属性。拖动分隔线只调整相邻的可见面板，并在当前实例中保存比例。用 Tab 聚焦分隔线后，可用方向键步进，Home 和 End 到达两个边界。`handle-size` 和 `handle-color` 设置分隔线，`resized()` 在比例更新后触发。隐藏面板不占空间，再显示时会恢复其比例。
+
+横向分栏继承 `layout-direction`，RTL 下第一个面板在右侧。拖动和方向键按屏幕方向移动分隔条，Home、End 和无障碍数值对应声明顺序中前一个面板的尺寸。切换方向后可继续使用已保存的比例或侧栏尺寸。运行 `bazel run //examples/split -- --rtl-split` 切换验证。
 
 `SplitView.save-state()` 返回可持久化的布局字符串，`restore-state(state)` 在回调中恢复比例。命名面板按 ID 匹配，匿名面板按声明位置匹配。恢复会校验版本、面板集合和比例，再按当前尺寸约束布局。Rust 可用 `save_split_state(id)` 和 `restore_split_state(id, state)` 读写状态，后者返回是否接受了字符串。保存数据由应用负责。运行 `bazel run //examples/split:split`，用「保存布局」和「恢复布局」体验。
 
@@ -269,8 +287,8 @@ let scene = ui.render();
 
 `SoundEffect` 在组件根部以具名的非视觉对象声明。启用 Cargo 的 `media`
 feature 或 Bazel 的 `--config=media` 后，它会在组件挂载时异步预加载本地
-WAV。相对路径以声明所在的 `.xr` 文件为准。示例使用 16 位 PCM WAV，
-短音效最多 10 秒，文件最多 16 MiB。
+WAV。相对路径以声明所在的 `.xr` 文件为准。支持 8、16、24、32 位整数 PCM
+和 32、64 位浮点 WAV。短音效最多 10 秒，文件最多 16 MiB。
 
 ```xr
 confirmation := SoundEffect {
@@ -279,13 +297,13 @@ confirmation := SoundEffect {
 }
 confirm := Button {
     text: "确认";
-    enabled: confirmation.ready;
     clicked => { confirmation.play(); }
 }
 ```
 
 `volume` 的范围为 0 到 1，默认 1。`muted` 默认 false。`ready`、
-`playing` 和 `error` 为只读。加载完成前的 `play()` 会被忽略。
+`playing` 和 `error` 为只读。加载中的 `play()` 会在音效就绪后触发一次播放。
+回调中切换 `source` 后可以直接调用 `play()`，新文件加载完成后开始播放。
 同一实例连按时从头重播，不同实例可以同时播放。
 
 运行 `bazel run --config=media //examples/sound_effect`，也可以在 VS Code

@@ -17,6 +17,8 @@ enum Emit {
     Mlir,
     /// Print the lowered MLIR before native verification and optimization.
     MlirRaw,
+    /// Report source-linked paint, binding and row cache decisions as JSON.
+    UpdatePlan,
     /// Print the syntax tree for this file.
     Ast,
     /// Print the resolved and typed frontend representation.
@@ -164,6 +166,9 @@ fn run(args: Args) -> Result<(), CompilerError> {
         _ if args.check => return check_document(&doc, &args.input, assets),
         Emit::Ast => serde_json::to_string_pretty(&doc)?,
         Emit::Hir => serde_json::to_string_pretty(&semantic::analyze(&doc).map_err(diagnostic)?)?,
+        Emit::UpdatePlan => {
+            serde_json::to_string_pretty(&xrack_compiler::lower(&doc, &args.input)?.update_plan())?
+        }
         Emit::MlirRaw => mlir::lower(&doc, &args.input).map_err(diagnostic)?,
         Emit::Mlir => match args.output.as_deref() {
             Some(output) => export_mlir_to(&doc, &args.input, assets, output)?,

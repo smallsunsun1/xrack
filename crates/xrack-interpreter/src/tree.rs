@@ -1,6 +1,9 @@
 use crate::{repeat::Model, *};
 use std::sync::Arc;
-use xrack_runtime::{RecordValue, TreeCommand, TreeControlChange, TreeControlEvent, TreeSnapshot};
+use xrack_runtime::{
+    RecordValue, TreeCommand, TreeControlChange, TreeControlEvent, TreeSelectionCommand,
+    TreeSelectionLookup, TreeSnapshot,
+};
 
 pub(crate) struct Definition {
     pub(crate) key: Rc<[String]>,
@@ -13,6 +16,8 @@ pub(crate) enum Query {
     IsExpanded,
     Depth,
     RowForKey,
+    IsRowSelected,
+    IsKeySelected,
 }
 
 impl Query {
@@ -21,6 +26,8 @@ impl Query {
             "is-expanded" => Self::IsExpanded,
             "depth" => Self::Depth,
             "row-for-key" => Self::RowForKey,
+            "is-row-selected" => Self::IsRowSelected,
+            "is-key-selected" => Self::IsKeySelected,
             _ => return None,
         })
     }
@@ -42,11 +49,17 @@ fn filter_field(path: Rc<[String]>) -> impl Fn(&RecordValue) -> &str + Clone {
 
 impl Instance {
     pub(crate) fn tree_projection(&self, view: &Element) -> Result<(Arc<TreeSnapshot>, Rc<Model>)> {
-        let definition = view.tree.as_ref().expect("tree definition");
+        let definition = view
+            .tree
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing tree definition".into()))?;
         let template = view
             .view_template()
             .ok_or_else(|| Error::Invalid("missing tree row template".into()))?;
-        let repeat = template.repeat.as_ref().expect("tree row repeat");
+        let repeat = template
+            .repeat
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing tree row repeat".into()))?;
         let rows = self.repeat_state(template);
         let source = || {
             let model = rows.row_model(self, repeat)?;
@@ -85,11 +98,18 @@ impl Instance {
 
     pub(crate) fn tree_query(&self, target: &str, query: Query, key: i64) -> Result<Value> {
         let (owner, view) = self.element_owner(target)?;
-        let (tree, _) = owner.tree_projection(view)?;
+        let tree = || owner.tree_projection(view).map(|(tree, _)| tree);
+        let selected = |lookup| {
+            owner
+                .tree_selection_info(view, Some(lookup))
+                .map(|info| info.1)
+        };
         Ok(match query {
-            Query::IsExpanded => Value::Bool(tree.is_expanded(key)),
-            Query::Depth => Value::Int(tree.query_depth(key)),
-            Query::RowForKey => Value::Int(tree.query_row(key)),
+            Query::IsExpanded => tree()?.is_expanded(key).into(),
+            Query::Depth => tree()?.query_depth(key).into(),
+            Query::RowForKey => tree()?.query_row(key).into(),
+            Query::IsRowSelected => selected(TreeSelectionLookup::Row(key))?.into(),
+            Query::IsKeySelected => selected(TreeSelectionLookup::Key(key))?.into(),
         })
     }
 
@@ -146,10 +166,48 @@ impl Instance {
         })
     }
 
-    pub(crate) fn select_tree_source(&self, view: &Element, source: usize) -> Result<()> {
+    pub(crate) fn tree_selection_info(
+        &self,
+        view: &Element,
+        query: Option<TreeSelectionLookup>,
+    ) -> Result<(i64, bool)> {
+        let (tree, _) = self.tree_projection(view)?;
+        Ok(self.repeat_state(view).tree_state().selection_info(
+            &tree,
+            self.table_flag(view, "multi-select", false)?,
+            self.current_tree_key(view)?,
+            query,
+        ))
+    }
+
+    pub(crate) fn selected_tree_keys(&self, view: &Element) -> Result<Value> {
+        let (tree, _) = self.tree_projection(view)?;
+        let current = (!self.table_flag(view, "multi-select", false)?)
+            .then(|| self.current_tree_key(view))
+            .transpose()?;
+        let keys = self
+            .repeat_state(view)
+            .tree_state()
+            .selected_keys(&tree, current);
+        Ok(Value::IntModel(keys.into()))
+    }
+
+    pub(crate) fn replace_tree_selection(&self, view: &Element, keys: &[i64]) -> Result<()> {
         let state = self.repeat_state(view);
-        if let Some(change) = state.tree_state().try_select_source(
-            source,
+        if let Some(change) = state.tree_state().try_replace_selection(
+            keys,
+            || self.tree_projection(view).map(|(tree, _)| tree),
+            || self.table_flag(view, "multi-select", false),
+        )? {
+            self.notify_tree_change(view, TreeControlChange::Selection(change))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn select_tree(&self, view: &Element, command: TreeSelectionCommand) -> Result<()> {
+        let state = self.repeat_state(view);
+        if let Some(change) = state.tree_state().try_apply_selection(
+            command,
             || self.tree_projection(view).map(|(tree, _)| tree),
             || self.table_flag(view, "multi-select", false),
             || self.current_tree_key(view),

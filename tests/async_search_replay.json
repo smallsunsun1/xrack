@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "steps": [
+    { "type": "fill", "id": "query-field", "text": "cloud" },
+    { "type": "expect_searches", "queries": ["cloud"] },
+    { "type": "expect_property", "name": "loading", "value": true },
+    { "type": "reload_layout" },
+    { "type": "complete_search", "rows": ["cloud document", "cloud storage"] },
+    { "type": "expect_property", "name": "loading", "value": false },
+    { "type": "expect_property", "name": "query", "value": "cloud" },
+    { "type": "expect_results", "rows": ["cloud document", "cloud storage"] },
+    { "type": "expect_searches", "queries": ["cloud"] }
+  ]
+}

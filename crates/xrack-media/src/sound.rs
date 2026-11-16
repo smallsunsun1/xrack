@@ -123,6 +123,7 @@ struct Sound {
     volume: f32,
     preload: Option<mpsc::Receiver<Samples>>,
     samples: Option<Samples>,
+    play_pending: bool,
     cancelled: Arc<AtomicBool>,
     state: MediaState,
 }
@@ -147,6 +148,7 @@ pub(super) fn open(path: &Path, volume: f64) -> Result<Box<dyn MediaSession>, St
         volume: volume as f32,
         preload: Some(preload),
         samples: None,
+        play_pending: false,
         cancelled,
         state: MediaState {
             status: MediaStatus::Loading,
@@ -197,18 +199,8 @@ impl Drop for Sound {
 
 impl MediaSession for Sound {
     fn command(&mut self, command: MediaCommand) {
-        if command == MediaCommand::Play
-            && self.state.ready
-            && let Some(Ok(samples)) = &self.samples
-        {
-            self.mixer.voices.lock().unwrap().insert(
-                self.id,
-                Voice {
-                    samples: samples.clone(),
-                    cursor: 0,
-                    volume: self.volume,
-                },
-            );
+        if command == MediaCommand::Play && self.state.status != MediaStatus::Failed {
+            self.play_pending = true;
         }
     }
 
@@ -243,15 +235,23 @@ impl MediaSession for Sound {
         if let Some(error) = error {
             self.state.error.clone_from(error);
             self.state.status = MediaStatus::Failed;
-        } else if self.samples.is_some() && self.mixer.ready.get().is_some() {
+            self.play_pending = false;
+        } else if let Some(Ok(samples)) = &self.samples
+            && matches!(self.mixer.ready.get(), Some(Ok(())))
+        {
             self.state.ready = true;
-            self.state.playing = self
-                .mixer
-                .voices
-                .lock()
-                .unwrap()
-                .get(&self.id)
-                .is_some_and(Voice::playing);
+            let mut voices = self.mixer.voices.lock().unwrap();
+            if std::mem::take(&mut self.play_pending) {
+                voices.insert(
+                    self.id,
+                    Voice {
+                        samples: samples.clone(),
+                        cursor: 0,
+                        volume: self.volume,
+                    },
+                );
+            }
+            self.state.playing = voices.get(&self.id).is_some_and(Voice::playing);
             self.state.status = if self.state.playing {
                 MediaStatus::Playing
             } else {
@@ -263,13 +263,51 @@ impl MediaSession for Sound {
 
     fn active(&self) -> bool {
         // Keep polling until sample() has published the device and playback state.
-        self.state.status == MediaStatus::Loading || self.state.playing
+        self.state.status == MediaStatus::Loading || self.play_pending || self.state.playing
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preloads_mono_pcm_and_float_wav_formats() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("effect.wav");
+        for (format, sample) in [
+            (1u16, &[160u8][..]),
+            (1, &8192i16.to_le_bytes()),
+            (1, &[0, 0, 32]),
+            (1, &536_870_912i32.to_le_bytes()),
+            (3, &0.25f32.to_le_bytes()),
+            (3, &0.25f64.to_le_bytes()),
+        ] {
+            let frames = 480;
+            let sample_size = sample.len() as u16;
+            let data_size = frames * u32::from(sample_size);
+            let mut wav = b"RIFF".to_vec();
+            wav.extend((36 + data_size).to_le_bytes());
+            wav.extend(b"WAVEfmt ");
+            wav.extend(16u32.to_le_bytes());
+            wav.extend(format.to_le_bytes());
+            wav.extend(1u16.to_le_bytes()); // Mono.
+            wav.extend(RATE.to_le_bytes());
+            wav.extend((RATE * u32::from(sample_size)).to_le_bytes());
+            wav.extend(sample_size.to_le_bytes());
+            wav.extend((sample_size * 8).to_le_bytes());
+            wav.extend(b"data");
+            wav.extend(data_size.to_le_bytes());
+            wav.extend(sample.repeat(frames as usize));
+            std::fs::write(&path, wav).unwrap();
+
+            let samples = decode(&path, Arc::default()).unwrap_or_else(|error| {
+                panic!("WAV format {format}, {sample_size} bytes: {error}")
+            });
+            assert_eq!(samples.len(), frames as usize * CHANNELS);
+            assert!(samples.iter().all(|sample| *sample > 0.1 && *sample < 0.3));
+        }
+    }
 
     #[test]
     fn voices_mix_with_independent_gain_and_replay_from_the_start() {

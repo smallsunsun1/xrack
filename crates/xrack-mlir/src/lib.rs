@@ -2,6 +2,7 @@
 mod lowering;
 pub use lowering::{lower, lower_module};
 mod module;
+mod update_plan;
 #[cfg(xrack_bazel)]
 use xrack_mlir_bindings as ffi;
 
@@ -25,9 +26,9 @@ pub use visual::{
     AnimationRef, CallbackForward, ClipboardParserRef, ComponentAnalysis, GradientRef,
     InstanceBinding, InstanceBindings, InstanceStateInput, PropertyForward, RepeatRef,
     RowSceneCache, StackRead, StateCaseRef, TableClipboardRef, TablePasteRef, TableRead,
-    TranslationRef, VisualCacheGroup, VisualCacheKey, host_element_id, nine_slice_edges,
-    repeat_is_positioned, repeat_uses_row_identity, scene_children, split_fill_slot,
-    split_pane_names, visual_cache_operand,
+    TranslationRef, VisualCacheGroup, VisualCacheKey, has_button_check_state, host_element_id,
+    nine_slice_edges, repeat_is_positioned, repeat_uses_row_identity, scene_children,
+    split_fill_slot, split_pane_names, visual_cache_operand,
 };
 
 mod record;

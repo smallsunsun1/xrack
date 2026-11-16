@@ -222,6 +222,7 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
         | Type::Time
         | Type::Font
         | Type::StringList
+        | Type::IntList
         | Type::PointerButtons
         | Type::StyledText
         | Type::Record(_)

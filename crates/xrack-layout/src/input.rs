@@ -5,8 +5,8 @@ use crate::{
     SearchGeometry, ShortcutOutcome, SliderGeometry, SpinGeometry, SplitGeometry, SplitHandle,
     SplitHandleRange, StackTransitions, TextEdit, TextPosition, TreeRowGeometry, TumblerScroll,
     WindowResizeEdge,
-    choice::{ChoicePopup, ChoiceTypeahead, MAX_ROWS as CHOICE_PAGE, next_choice},
-    delay_button::{DelayHold, DelaySource},
+    choice::{ChoicePopup, MAX_ROWS as CHOICE_PAGE, Typeahead, matches_prefix, next_choice},
+    delay_button::{ButtonHold, ButtonHoldEvent, ButtonHoldTiming, DelayHold, DelaySource},
     history::{EditHistories, EditorKey, Group, Record, TextHistory},
     hover_observers::HoverEntry,
     list_anchor::{ListAnchor, capture_list_anchors},
@@ -79,6 +79,7 @@ pub struct Target {
     pub row_key: Option<RowKey>,
     pub text_link: Option<TextLinkTarget>,
     owned_id: Option<std::sync::Arc<str>>,
+    radio_option_key: Option<RowKey>,
 }
 
 impl PartialEq for Target {
@@ -88,6 +89,7 @@ impl PartialEq for Target {
             && self.focusable == other.focusable
             && self.row_key == other.row_key
             && self.text_link == other.text_link
+            && self.radio_option_key == other.radio_option_key
     }
 }
 
@@ -118,7 +120,9 @@ impl Target {
         focusable: bool,
         row_key: Option<RowKey>,
     ) -> Self {
-        Self::from_element_id(path, ElementId::of(node), focusable, row_key)
+        let mut target = Self::from_element_id(path, ElementId::of(node), focusable, row_key);
+        target.radio_option_key = Self::radio_option_key(node);
+        target
     }
 
     pub(crate) fn from_element_id(
@@ -134,6 +138,7 @@ impl Target {
             row_key,
             text_link: None,
             owned_id: None,
+            radio_option_key: None,
         };
         target.set_element_id(id);
         target
@@ -154,6 +159,15 @@ impl Target {
 
     pub(crate) fn matches_node(&self, node: &Node) -> bool {
         self.element_id() == node.element_id()
+            && self.radio_option_key == Self::radio_option_key(node)
+    }
+
+    fn radio_option_key(node: &Node) -> Option<RowKey> {
+        if node.kind == "RadioButton" {
+            node.routing_row_key()
+        } else {
+            None
+        }
     }
 
     pub(crate) fn node_in<'a>(&self, scene: &'a Node) -> Option<&'a Node> {
@@ -260,7 +274,8 @@ pub struct SplitResize {
 }
 
 impl ControlInput {
-    fn with_row_selection(mut self, scene: &Node, operation: RowSelection) -> Self {
+    #[doc(hidden)]
+    pub fn with_row_selection(mut self, scene: &Node, operation: RowSelection) -> Self {
         if let Some(node) = scene.at_path(&self.path)
             && let ControlAction::Select(index) = self.action
         {
@@ -308,6 +323,7 @@ struct TableResize {
     column: usize,
     pointer_x: f32,
     width: f32,
+    mirrored: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -324,6 +340,7 @@ struct TableColumnMove {
     column: usize,
     start: Point,
     order: xrack_runtime::TableColumnOrder,
+    mirrored: bool,
     claimed: bool,
     scroll_wake: Option<Instant>,
 }
@@ -344,9 +361,18 @@ struct TableRowMove {
 struct SplitDrag {
     target: Target,
     orientation: Orientation,
+    mirrored: bool,
     after_pane: usize,
     grab_offset: f32,
     state: Option<xrack_runtime::SplitResizeHandle>,
+}
+
+impl SplitDrag {
+    fn matches(&self, geometry: &SplitGeometry, handle: &SplitHandle) -> bool {
+        geometry.orientation == self.orientation
+            && geometry.mirrored == self.mirrored
+            && handle.after_pane() == self.after_pane
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -498,6 +524,7 @@ struct ScrollBarPress {
     target: ScrollTarget,
     source: &'static str,
     viewport: Option<xrack_runtime::ViewportHandle>,
+    reversed: bool,
     grab: Option<f32>,
     start: Point,
     last: Point,
@@ -529,6 +556,7 @@ struct ScrollGesture {
     route: ScrollRoute,
     motion: DragMotion,
     tap: Option<Hit>,
+    touch_point: Option<Point>,
     popup: (bool, bool),
     drawer: Option<DrawerSwipe>,
     pages: Vec<PageSwipe>,
@@ -538,6 +566,20 @@ struct ScrollGesture {
     swipe: Option<SwipeRoute>,
     delay_touch: bool,
     table_hold: Option<TableTouchHold>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ButtonContactSource {
+    Pointer,
+    Gesture,
+    Key(ActivationKey),
+}
+
+#[derive(Clone, Debug)]
+struct ButtonContact {
+    source: ButtonContactSource,
+    target: Target,
+    handle: xrack_runtime::ButtonPressHandle,
 }
 
 #[derive(Clone, Debug)]
@@ -843,8 +885,12 @@ pub struct Interaction {
     key_pressed: Option<(ActivationKey, Target)>,
     key_standard_button: Option<StandardButtonKind>,
     delay_hold: Option<DelayHold>,
-    delay_pointer_claimed: bool,
-    delay_key_claimed: Option<ActivationKey>,
+    button_hold: Option<ButtonHold>,
+    published_button_presses: Vec<xrack_runtime::ButtonPressHandle>,
+    button_contacts: Vec<ButtonContact>,
+    button_press_events: Vec<(ButtonContact, &'static str)>,
+    pointer_activation_claimed: bool,
+    key_activation_claimed: Option<ActivationKey>,
     range_keys: BTreeMap<SliderKey, Target>,
     slider_offset: f64,
     slider_anchor: Option<f64>,
@@ -855,7 +901,9 @@ pub struct Interaction {
     spin_draft: Option<SpinDraft>,
     choice: Option<ChoicePopup>,
     search_query: Option<String>,
-    choice_typeahead: ChoiceTypeahead,
+    choice_typeahead: Typeahead,
+    list_typeahead: Typeahead,
+    pub(crate) list_composition: Option<(u64, Target)>,
     painted_combo_completion: Option<ComboCompletion>,
     dismissed_combo_draft: Option<String>,
     menu: Option<MenuPopup>,
@@ -877,7 +925,7 @@ pub struct Interaction {
     pressed_control_part: Option<ControlAction>,
     hovered_standard_button: Option<StandardButtonKind>,
     pressed_standard_button: Option<StandardButtonKind>,
-    hovered_table_grip: Option<(usize, f32)>,
+    hovered_table_grip: Option<(usize, f32, bool)>,
     hovered_table_row_grip: Option<(RowKey, f32)>,
     table_resize: Option<TableResize>,
     table_row_resize: Option<TableRowResize>,
@@ -1023,6 +1071,14 @@ fn list_item_delegate_row<'a>(scene: &Node, path: &'a [usize]) -> Option<(&'a [u
     (scene.at_path(path)?.is_item_delegate()
         && matches!(scene.at_path(view)?.kind, "ListView" | "GridView"))
     .then_some((view, *slot))
+}
+
+fn tree_indicator_hit(node: &Node, item: &LayoutNode, point: Point) -> bool {
+    node.boolean("tree-has-children", false)
+        && item.contains_clip_point(point)
+        && TreeRowGeometry::for_layout(node, item)
+            .zip(item.map_from_window(point))
+            .is_some_and(|(tree, point)| tree.indicator.contains(point))
 }
 
 fn tree_cell_row<'a>(scene: &Node, path: &'a [usize]) -> Option<(&'a [usize], usize)> {
@@ -2305,6 +2361,7 @@ impl Interaction {
             self.focus_reason = reason;
             self.cancel_shortcut_sequence();
             self.cancel_delay();
+            self.button_hold = None;
             self.history.break_group();
             self.editor = None;
             self.spin_draft = None;
@@ -2312,7 +2369,9 @@ impl Interaction {
             self.last_table_click = None;
             self.choice = None;
             self.search_query = None;
-            self.choice_typeahead = ChoiceTypeahead::default();
+            self.choice_typeahead = Typeahead::default();
+            self.reset_list_typeahead();
+            self.list_composition = None;
             self.painted_combo_completion = None;
             self.dismissed_combo_draft = None;
             self.menu = None;
@@ -3311,6 +3370,7 @@ impl Interaction {
             target,
             source: node.kind,
             viewport: node.scroll_target.clone(),
+            reversed: bar.reversed(),
             grab,
             start,
             last: start,
@@ -3372,7 +3432,10 @@ impl Interaction {
             press.grab = None;
             return ScrollBarUpdate::Unchanged;
         };
-        let Some(bar) = self.scroll_bar_for_target(scene, layout, target) else {
+        let Some(bar) = self
+            .scroll_bar_for_target(scene, layout, target)
+            .filter(|bar| bar.reversed() == press.reversed)
+        else {
             press.grab = None;
             return ScrollBarUpdate::Unchanged;
         };
@@ -3431,9 +3494,13 @@ impl Interaction {
             (NavigationKey::PageUp, _) => bar.scroll.offset - page,
             (NavigationKey::PageDown, _) => bar.scroll.offset + page,
             (NavigationKey::Left, Orientation::Horizontal)
-            | (NavigationKey::Up, Orientation::Vertical) => bar.scroll.offset - bar.step,
+            | (NavigationKey::Up, Orientation::Vertical) => {
+                bar.scroll.offset + bar.logical_delta(-bar.step)
+            }
             (NavigationKey::Right, Orientation::Horizontal)
-            | (NavigationKey::Down, Orientation::Vertical) => bar.scroll.offset + bar.step,
+            | (NavigationKey::Down, Orientation::Vertical) => {
+                bar.scroll.offset + bar.logical_delta(bar.step)
+            }
             _ => return None,
         };
         let path = target.path.clone();
@@ -3659,10 +3726,15 @@ impl Interaction {
             let current = pending_scroll_offset(item, offsets, path, orientation)
                 .unwrap_or(scroll.offset)
                 .clamp(0.0, scroll.max_offset);
-            let wanted = f64::from(current) + delta;
+            let sign = if item.scroll_axis_reversed(orientation) {
+                -1.0
+            } else {
+                1.0
+            };
+            let wanted = f64::from(current) + delta * sign;
             let bounded = wanted.clamp(0.0, f64::from(scroll.max_offset));
-            // Measure the residual before rounding the committed offset to layout precision.
-            delta = wanted - bounded;
+            // Bubble any residual in the original physical direction.
+            delta = (wanted - bounded) * sign;
             if let ScrollInput::Pan { flicking, .. } = &input
                 && delta != 0.0
                 && scroll.max_offset > 0.0
@@ -3794,6 +3866,7 @@ impl Interaction {
             },
             motion: DragMotion::new(point, now),
             tap: None,
+            touch_point: None,
             popup: (false, false),
             drawer: None,
             pages: Vec::new(),
@@ -3963,6 +4036,14 @@ impl Interaction {
             }
             _ => None,
         };
+        let repeat_target = match &hit {
+            Hit::Target(target)
+                if kind == ScrollGestureKind::Touch && !interrupted && popup == (false, false) =>
+            {
+                Some(target.clone())
+            }
+            _ => None,
+        };
         let table_hold = match &hit {
             Hit::Target(target)
                 if kind == ScrollGestureKind::Touch && !interrupted && popup == (false, false) =>
@@ -3999,6 +4080,12 @@ impl Interaction {
             self.set_focus(Some(target.clone()));
             self.begin_delay(scene, layout, target, DelaySource::Touch(point), now)
         });
+        if let Some(target) = repeat_target {
+            self.begin_button_hold(scene, layout, target, DelaySource::Touch(point), now);
+        }
+        if let Some(Hit::Target(target)) = &tap {
+            self.start_button_contact(scene, target.clone(), ButtonContactSource::Gesture);
+        }
         self.scroll_gesture = Some(ScrollGesture {
             route: ScrollRoute {
                 scope_row: scene.row_key_at(&scope),
@@ -4010,6 +4097,7 @@ impl Interaction {
             },
             motion: DragMotion::new(point, now),
             tap,
+            touch_point: (kind == ScrollGestureKind::Touch).then_some(point),
             popup,
             drawer,
             pages,
@@ -4148,7 +4236,7 @@ impl Interaction {
                     let offset = pending_scroll_offset(item, offsets, path, target.orientation)
                         .unwrap_or(scroll.offset)
                         .clamp(0.0, scroll.max_offset);
-                    if forward {
+                    if forward != item.scroll_axis_reversed(target.orientation) {
                         offset < scroll.max_offset
                     } else {
                         offset > 0.0
@@ -4329,6 +4417,9 @@ impl Interaction {
         let Some(mut gesture) = self.scroll_gesture.take() else {
             return false;
         };
+        if gesture.touch_point.is_some() {
+            gesture.touch_point = Some(point);
+        }
         if !self.scroll_route_is_current(scene, layout, &gesture.route)
             || gesture.popup != (self.menu_open(), self.choice_open())
         {
@@ -4337,6 +4428,7 @@ impl Interaction {
             self.swipe_events
                 .extend(gesture.swipe.take().and_then(SwipeRoute::cancel));
             self.cancel_touch_delay();
+            self.cancel_touch_button_hold();
             return cleared
                 || gesture.tumbler.is_some_and(|drag| drag.offset != 0.0)
                 || gesture.switch.is_some_and(|drag| drag.position.is_some())
@@ -4354,6 +4446,18 @@ impl Interaction {
                 .is_some_and(|item| item.contains_subtree_point(point))
             {
                 self.cancel_delay();
+            }
+        }
+        if let Some(repeat) = &mut self.button_hold
+            && matches!(repeat.source, DelaySource::Touch(_))
+        {
+            repeat.source = DelaySource::Touch(point);
+            if repeat.moved_too_far(point)
+                || !layout
+                    .at_path(&repeat.target.path)
+                    .is_some_and(|item| item.contains_subtree_point(point))
+            {
+                self.cancel_touch_button_hold();
             }
         }
         let was_dragging = gesture.motion.dragging;
@@ -4383,6 +4487,8 @@ impl Interaction {
         let elastic_frame = self.overscroll.frame();
         let scrolled = gesture.motion.update(point, now).is_some_and(|delta| {
             gesture.table_hold = None;
+            self.finish_button_contact(ButtonContactSource::Gesture, false);
+            self.cancel_touch_button_hold();
             if gesture.route.mouse_viewport && !was_dragging {
                 let overscroll = self.take_drag_overscroll(
                     layout,
@@ -4522,6 +4628,7 @@ impl Interaction {
         point: Point,
         now: Instant,
     ) -> ScrollGestureEnd {
+        self.cancel_touch_button_hold();
         if !point.x.is_finite() || !point.y.is_finite() {
             self.cancel_scroll_gesture();
             self.cancel_table_touch_drag();
@@ -4546,11 +4653,12 @@ impl Interaction {
                 ..ScrollGestureEnd::default()
             };
         };
-        let tap = !gesture.delay_touch
-            && !gesture.motion.dragging
+        let inside = !gesture.motion.dragging
             && gesture
                 .tap
                 .is_some_and(|hit| hit == self.hit_at(scene, layout, point));
+        self.finish_button_contact(ButtonContactSource::Gesture, inside);
+        let tap = inside && !gesture.delay_touch;
         match gesture.swipe {
             Some(SwipeRoute::Captured(target)) => {
                 self.swipe_events.push(target.delivery(SwipePhase::Swiped));
@@ -4987,6 +5095,7 @@ impl Interaction {
     }
 
     pub fn cancel_scroll_gesture(&mut self) {
+        self.finish_button_contact(ButtonContactSource::Gesture, false);
         self.swipe_events.extend(
             self.scroll_gesture
                 .take()
@@ -4997,6 +5106,7 @@ impl Interaction {
         self.viewport_motion.clear();
         self.overscroll.clear();
         self.cancel_touch_delay();
+        self.cancel_touch_button_hold();
     }
 
     pub fn overscroll_frame(&self) -> crate::OverscrollFrame {
@@ -5079,7 +5189,7 @@ impl Interaction {
 
     pub fn begin_pointer_delay(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) {
         if let Some(target) = self.pressed.clone() {
-            self.delay_pointer_claimed =
+            self.pointer_activation_claimed =
                 self.begin_delay(scene, layout, target, DelaySource::Pointer, now);
         }
     }
@@ -5095,7 +5205,151 @@ impl Interaction {
             && pressed == key
             && self.begin_delay(scene, layout, target, DelaySource::Key(key), now)
         {
-            self.delay_key_claimed = Some(key);
+            self.key_activation_claimed = Some(key);
+        }
+    }
+
+    fn begin_button_hold(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: Target,
+        source: DelaySource,
+        now: Instant,
+    ) -> bool {
+        let scope = self.active_dialog(layout).unwrap_or_default();
+        if !target.path.starts_with(scope)
+            || !valid(&target, scene, layout)
+            || self.menu_open()
+            || self.choice_open()
+        {
+            return false;
+        }
+        let Some(timing) = target.node_in(scene).and_then(ButtonHoldTiming::from_node) else {
+            return false;
+        };
+        self.button_hold = Some(ButtonHold::new(
+            target,
+            source,
+            scope.to_vec(),
+            timing,
+            match source {
+                DelaySource::Pointer => self.pointer,
+                DelaySource::Touch(point) => Some(point),
+                _ => None,
+            },
+            now,
+        ));
+        true
+    }
+
+    pub fn begin_pointer_button_hold(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+    ) -> bool {
+        self.pressed.clone().is_some_and(|target| {
+            self.begin_button_hold(scene, layout, target, DelaySource::Pointer, now)
+        })
+    }
+
+    pub fn begin_key_button_hold(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: ActivationKey,
+        now: Instant,
+    ) {
+        if let Some((pressed, target)) = self.key_pressed.clone()
+            && pressed == key
+        {
+            self.begin_button_hold(scene, layout, target, DelaySource::Key(key), now);
+        }
+    }
+
+    pub fn button_hold_deadline(&self) -> Option<Instant> {
+        self.button_hold.as_ref().and_then(|hold| hold.deadline)
+    }
+
+    pub fn advance_button_hold(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+    ) -> Option<(Target, ButtonHoldEvent)> {
+        let mut repeat = self.button_hold.take()?;
+        let pointer_matches =
+            |point| self.target_at(scene, layout, point).as_ref() == Some(&repeat.target);
+        let pressed = match repeat.source {
+            DelaySource::Pointer => {
+                self.pressed.as_ref() == Some(&repeat.target)
+                    && self.pointer.is_some_and(pointer_matches)
+            }
+            DelaySource::Key(key) => {
+                self.focused.as_ref() == Some(&repeat.target)
+                    && self
+                        .key_pressed
+                        .as_ref()
+                        .is_some_and(|(held, target)| *held == key && target == &repeat.target)
+            }
+            DelaySource::Touch(point) => {
+                self.scroll_gesture
+                    .as_ref()
+                    .is_some_and(|gesture| !gesture.motion.dragging)
+                    && pointer_matches(point)
+            }
+            DelaySource::Accessibility => false,
+        };
+        if !pressed
+            || self.menu_open()
+            || self.choice_open()
+            || self.active_dialog(layout).unwrap_or_default() != repeat.scope
+            || !valid(&repeat.target, scene, layout)
+            || repeat
+                .target
+                .node_in(scene)
+                .and_then(ButtonHoldTiming::from_node)
+                != Some(repeat.timing)
+        {
+            return None;
+        }
+        let event = repeat.sample(now);
+        if event.is_some() {
+            match repeat.source {
+                DelaySource::Pointer => self.pointer_activation_claimed = true,
+                DelaySource::Key(key) => self.key_activation_claimed = Some(key),
+                DelaySource::Touch(_) => {
+                    if let Some(gesture) = &mut self.scroll_gesture {
+                        gesture.delay_touch = true;
+                    }
+                    if repeat.target.focusable
+                        && repeat
+                            .target
+                            .node_in(scene)
+                            .is_some_and(|node| node.boolean("focus-on-click", true))
+                    {
+                        self.set_focus_with_reason(
+                            Some(repeat.target.clone()),
+                            xrack_runtime::FocusReason::PointerClick,
+                        );
+                    }
+                }
+                DelaySource::Accessibility => {}
+            }
+        }
+        let delivery = event.map(|event| (repeat.target.clone(), event));
+        self.button_hold = Some(repeat);
+        delivery
+    }
+
+    fn cancel_touch_button_hold(&mut self) {
+        if self
+            .button_hold
+            .as_ref()
+            .is_some_and(|repeat| matches!(repeat.source, DelaySource::Touch(_)))
+        {
+            self.button_hold = None;
         }
     }
 
@@ -6013,7 +6267,7 @@ impl Interaction {
         self.set_focus(Some(target));
         self.cancel_shortcut_sequence();
         self.choice = Some(popup);
-        self.choice_typeahead = ChoiceTypeahead::default();
+        self.choice_typeahead = Typeahead::default();
         self.pressed = None;
         self.pressed_radio = None;
         self.hovered = None;
@@ -6065,7 +6319,7 @@ impl Interaction {
     pub fn dismiss_choice(&mut self) {
         self.choice = None;
         self.search_query = None;
-        self.choice_typeahead = ChoiceTypeahead::default();
+        self.choice_typeahead = Typeahead::default();
     }
 
     fn reconcile_search_choice(&mut self, scene: &Node, layout: &LayoutNode) {
@@ -6154,7 +6408,7 @@ impl Interaction {
         layout: &LayoutNode,
         key: ChoiceKey,
     ) -> Option<ControlInput> {
-        self.choice_typeahead = ChoiceTypeahead::default();
+        self.choice_typeahead = Typeahead::default();
         if let Some(popup) = &mut self.choice {
             return match key {
                 ChoiceKey::Escape | ChoiceKey::Open => {
@@ -6271,6 +6525,83 @@ impl Interaction {
         })
     }
 
+    fn typeahead_view<'a>(&self, scene: &Node, focus: &'a Target) -> &'a [usize] {
+        list_item_delegate_row(scene, &focus.path).map_or(focus.path.as_slice(), |(view, _)| view)
+    }
+
+    pub fn list_typeahead_focus(&self, scene: &Node) -> Option<&Target> {
+        if self.editor.is_some() || self.menu_open() || self.choice_open() {
+            return None;
+        }
+        let focus = self.focused.as_ref()?;
+        let view = self.typeahead_view(scene, focus);
+        scene.interactive_at_path(view)?.list_text_search.as_ref()?;
+        Some(focus)
+    }
+
+    pub fn list_typeahead_ime_area(&self, scene: &Node, layout: &LayoutNode) -> Option<Rect> {
+        let focus = self
+            .list_typeahead_focus(scene)
+            .filter(|focus| valid(focus, scene, layout))?;
+        let item = layout.at_path(self.typeahead_view(scene, focus))?;
+        let bounds = item.visible_window_bounds(item.bounds);
+        (bounds.width > 0.0 && bounds.height > 0.0).then(|| {
+            let offset = if item.layout_direction == LayoutDirection::RightToLeft {
+                (bounds.width - 6.0).max(0.0)
+            } else {
+                6.0_f32.min(bounds.width)
+            };
+            Rect::new(bounds.x + offset, bounds.y, 1.0, bounds.height.min(28.0))
+        })
+    }
+
+    pub fn reset_list_typeahead(&mut self) {
+        self.list_typeahead = Typeahead::default();
+    }
+
+    pub fn list_typeahead(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        text: &str,
+        now: Instant,
+    ) -> Option<ControlInput> {
+        if text.trim().is_empty() {
+            return None;
+        }
+        let focus = self
+            .list_typeahead_focus(scene)
+            .filter(|focus| valid(focus, scene, layout))?;
+        let path = self.typeahead_view(scene, focus).to_vec();
+        let from_delegate = focus.path != path;
+        let node = scene.interactive_at_path(&path)?;
+        let search = node.list_text_search.as_ref()?;
+        let item = layout.at_path(&path)?;
+        let current = ListMetrics::selection(node)
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|&index| node.list.is_some_and(|list| index < list.row_count));
+        let index = self
+            .list_typeahead
+            .find_with(text, now, current, |start, prefix| {
+                search.find(start, |label| matches_prefix(label, prefix))
+            })?;
+        self.reveal_row(&path, node, item, index);
+        if from_delegate {
+            let saved = std::mem::take(&mut self.list_typeahead);
+            self.set_focus(Some(Target::from_node(
+                path.clone(),
+                node,
+                true,
+                scene.row_key_at(&path),
+            )));
+            self.list_typeahead = saved;
+        }
+        Some(ControlInput {
+            path,
+            action: ControlAction::Select(index),
+        })
+    }
+
     pub fn pointer_move(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
         if self.pointer != Some(point) {
             self.tooltip.source = TooltipSource::Pointer;
@@ -6291,6 +6622,13 @@ impl Interaction {
         });
         if cancelled_delay {
             self.cancel_delay();
+        }
+        if self.button_hold.as_ref().is_some_and(|repeat| {
+            matches!(repeat.source, DelaySource::Pointer)
+                && (repeat.moved_too_far(point)
+                    || !matches!(&hit, Hit::Target(target) if *target == repeat.target))
+        }) {
+            self.button_hold = None;
         }
         self.pointer_on_stack_slide = matches!(hit, Hit::StackSlide);
         if self.menu.is_some() || self.choice.is_some() {
@@ -6338,13 +6676,7 @@ impl Interaction {
             scene
                 .at_path(&target.path)
                 .zip(layout.at_path(&target.path))
-                .is_some_and(|(node, item)| {
-                    node.boolean("tree-has-children", false)
-                        && TreeRowGeometry::new(node, item.bounds).is_some_and(|tree| {
-                            item.map_from_window(point)
-                                .is_some_and(|point| tree.indicator.contains(point))
-                        })
-                })
+                .is_some_and(|(node, item)| tree_indicator_hit(node, item, point))
         });
         let body_column = next.as_ref().and_then(|target| {
             let (path, _) = table_hit_row(scene, &target.path)?;
@@ -6366,7 +6698,7 @@ impl Interaction {
         {
             if let Some(index) = table.resize_at(node, item.clip, point) {
                 let bounds = table.columns[index];
-                table_grip = Some((index, bounds.width));
+                table_grip = Some((index, bounds.width, table.mirrored()));
             } else if let Some(index) = table.column_at(point)
                 && (node.selection_target() == SelectionTarget::Columns
                     || node
@@ -6424,6 +6756,13 @@ impl Interaction {
         if cancelled_delay {
             self.cancel_delay();
         }
+        let cancelled_repeat = self
+            .button_hold
+            .as_ref()
+            .is_some_and(|repeat| matches!(repeat.source, DelaySource::Pointer));
+        if cancelled_repeat {
+            self.button_hold = None;
+        }
         self.pointer = None;
         self.set_split_hover(None);
         self.tumbler_wheel = None;
@@ -6444,6 +6783,7 @@ impl Interaction {
             || bar
             || tooltip_was_visible
             || cancelled_delay
+            || cancelled_repeat
             || cancelled_table_selection
             || cancelled_row_move
     }
@@ -6452,6 +6792,14 @@ impl Interaction {
     }
 
     pub fn pointer_press_in_scene(&mut self, scene: &Node, layout: &LayoutNode) {
+        self.replay_tap_in_scene(scene, layout);
+        if let Some(target) = self.pressed.clone() {
+            self.start_button_contact(scene, target, ButtonContactSource::Pointer);
+        }
+    }
+
+    /// Reuse click routing for a gesture that has already delivered its press lifecycle.
+    pub fn replay_tap_in_scene(&mut self, scene: &Node, layout: &LayoutNode) {
         self.remember_focus_scope(scene, layout);
         let proxy = self
             .hovered
@@ -6496,9 +6844,11 @@ impl Interaction {
 
     fn press(&mut self, proxy: Option<Target>, layout: Option<&LayoutNode>, preserve_focus: bool) {
         self.cancel_shortcut_sequence();
+        self.reset_list_typeahead();
         self.reset_wheel_adjustment();
         self.cancel_delay();
-        self.delay_pointer_claimed = false;
+        self.button_hold = None;
+        self.pointer_activation_claimed = false;
         if self.pointer_on_stack_slide {
             return;
         }
@@ -6517,7 +6867,7 @@ impl Interaction {
         self.pressed_control_part = self.hovered_control_part;
         self.pressed_standard_button = self.hovered_standard_button;
         self.table_resize = (|| {
-            let (column, width) = self.hovered_table_grip?;
+            let (column, width, mirrored) = self.hovered_table_grip?;
             let target = self.pressed.clone()?;
             let pointer = self.pointer?;
             let point = match layout {
@@ -6529,6 +6879,7 @@ impl Interaction {
                 column,
                 pointer_x: point.x,
                 width,
+                mirrored,
             })
         })();
         self.table_row_resize = (|| {
@@ -6581,6 +6932,7 @@ impl Interaction {
             Some(SplitDrag {
                 target: target.clone(),
                 orientation,
+                mirrored: geometry.mirrored,
                 after_pane: handle.after_pane(),
                 grab_offset: position - handle.center(orientation),
                 state,
@@ -6644,7 +6996,7 @@ impl Interaction {
     pub fn split_drag(&self, scene: &Node, layout: &LayoutNode) -> Option<SplitResize> {
         let drag = self.split_drag.as_ref()?;
         let (path, geometry, handle) = split_target(&drag.target, scene, layout)?;
-        if geometry.orientation != drag.orientation || handle.after_pane() != drag.after_pane {
+        if !drag.matches(geometry, handle) {
             return None;
         }
         let point = layout.at_path(path)?.map_from_window(self.pointer?)?;
@@ -6652,7 +7004,7 @@ impl Interaction {
         geometry.resize(
             path.to_vec(),
             handle,
-            position - handle.center(drag.orientation),
+            geometry.logical_delta(position - handle.center(drag.orientation)),
         )
     }
 
@@ -6671,11 +7023,12 @@ impl Interaction {
         key: NavigationKey,
     ) -> Option<SplitResize> {
         let (path, geometry, handle) = split_target(self.focused.as_ref()?, scene, layout)?;
+        let step = SplitHandleRange::STEP as f32;
         let delta = match (geometry.orientation, key) {
             (Orientation::Horizontal, NavigationKey::Left)
-            | (Orientation::Vertical, NavigationKey::Up) => -(SplitHandleRange::STEP as f32),
+            | (Orientation::Vertical, NavigationKey::Up) => geometry.logical_delta(-step),
             (Orientation::Horizontal, NavigationKey::Right)
-            | (Orientation::Vertical, NavigationKey::Down) => SplitHandleRange::STEP as f32,
+            | (Orientation::Vertical, NavigationKey::Down) => geometry.logical_delta(step),
             (_, NavigationKey::Home) => handle.minimum,
             (_, NavigationKey::End) => handle.maximum,
             _ => return None,
@@ -6977,7 +7330,9 @@ impl Interaction {
         if !valid(target, scene, layout) {
             return None;
         }
-        if attached_radio(scene, &target.path).is_some() {
+        if attached_radio(scene, &target.path).is_some()
+            && scene.at_path(&target.path)?.kind == "RadioButton"
+        {
             return Some(ControlInput {
                 path: target.path.clone(),
                 action: ControlAction::ActivateRadioOption,
@@ -7014,7 +7369,24 @@ impl Interaction {
         layout: &LayoutNode,
         target: &Target,
     ) -> Option<ControlInput> {
-        if !self.hovered_tree_indicator || !valid(target, scene, layout) {
+        let point = self.pointer?;
+        let node = scene.at_path(&target.path)?;
+        let item = layout.at_path(&target.path)?;
+        if !self.hovered_tree_indicator || !tree_indicator_hit(node, item, point) {
+            return None;
+        }
+        self.tree_row_expansion(scene, layout, target, !node.boolean("tree-expanded", false))
+    }
+
+    #[doc(hidden)]
+    pub fn tree_row_expansion(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        expanded: bool,
+    ) -> Option<ControlInput> {
+        if !valid(target, scene, layout) {
             return None;
         }
         let (&slot, path) = target.path.split_last()?;
@@ -7025,16 +7397,17 @@ impl Interaction {
             return None;
         }
         let item = tree.rows().get(index)?;
-        (item.has_children && node.children.get(slot)?.row_key == Some(item.row)).then_some(
-            ControlInput {
-                path: path.to_vec(),
-                action: ControlAction::Tree(TreeAction::SetExpanded {
-                    key: item.key,
-                    row: item.row,
-                    expanded: !item.expanded,
-                }),
-            },
-        )
+        (item.has_children
+            && item.expanded != expanded
+            && node.children.get(slot)?.row_key == Some(item.row))
+        .then_some(ControlInput {
+            path: path.to_vec(),
+            action: ControlAction::Tree(TreeAction::SetExpanded {
+                key: item.key,
+                row: item.row,
+                expanded,
+            }),
+        })
     }
 
     pub fn tree_has_focus(&self, scene: &Node, layout: &LayoutNode) -> bool {
@@ -7084,16 +7457,16 @@ impl Interaction {
         }
         let path = self.focused_tree(scene, layout)?.to_vec();
         let node = scene.at_path(&path)?;
+        let view = layout.at_path(&path)?;
+        let forward = (key == NavigationKey::Right)
+            != (view.layout_direction == LayoutDirection::RightToLeft);
         let tree = node.tree.as_ref()?;
         let index = tree.visible_index(node.int("current-key")?)?;
         let item = tree.rows().get(index)?;
-        if !tree.is_filtering()
-            && item.has_children
-            && (key == NavigationKey::Right) != item.expanded
-        {
+        if !tree.is_filtering() && item.has_children && forward != item.expanded {
             return self.tree_toggle(scene, layout);
         }
-        let next = if key == NavigationKey::Left {
+        let next = if !forward {
             tree.visible_index(item.parent?)?
         } else {
             index.checked_add(1).filter(|&next| {
@@ -7102,7 +7475,7 @@ impl Interaction {
                     .is_some_and(|next| next.parent == Some(item.key))
             })?
         };
-        self.reveal_row(&path, node, layout.at_path(&path)?, next);
+        self.reveal_row(&path, node, view, next);
         self.set_focus(Some(Target::from_node(
             path.clone(),
             node,
@@ -7193,10 +7566,12 @@ impl Interaction {
         let (path, slot) = list_item_delegate_row(scene, &target.path)?;
         let view = scene.interactive_at_path(path)?;
         let row = view.list?.first_row.checked_add(slot)?;
-        (view.int("current-index") != Some(row as i64)).then_some(ControlInput {
-            path: path.to_vec(),
-            action: ControlAction::Select(row),
-        })
+        (view.table_selection.is_some() || view.int("current-index") != Some(row as i64)).then_some(
+            ControlInput {
+                path: path.to_vec(),
+                action: ControlAction::Select(row),
+            },
+        )
     }
 
     pub fn current_item_delegate(
@@ -7293,15 +7668,14 @@ impl Interaction {
             return None;
         }
         let item = layout.at_path(&target.path)?;
-        let column = item
-            .table
-            .as_ref()?
-            .column_at(item.map_from_window(start)?)?;
+        let table = item.table.as_ref()?;
+        let column = table.column_at(item.map_from_window(start)?)?;
         Some(TableColumnMove {
             target: target.clone(),
             column,
             start,
             order: node.table_column_order.clone(),
+            mirrored: table.mirrored(),
             claimed: false,
             scroll_wake: None,
         })
@@ -7483,7 +7857,7 @@ impl Interaction {
         None
     }
 
-    /// Resolve a table or tree selection shortcut in the current focus scope.
+    /// Resolve a selection shortcut in the current focus scope.
     pub fn selection_key_action(
         &self,
         scene: &Node,
@@ -7509,6 +7883,50 @@ impl Interaction {
                 return None;
             }
             self.tree_selection_key(scene, layout, key)
+                .or_else(|| self.list_selection_key(scene, layout, key))
+        })
+    }
+
+    fn list_selection_key(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: TableSelectionKey,
+    ) -> Option<ControlInput> {
+        let focused = self.focused.as_ref()?;
+        if self.editor.is_some()
+            || self.menu_open()
+            || self.choice_open()
+            || !valid(focused, scene, layout)
+        {
+            return None;
+        }
+        let path = list_item_delegate_row(scene, &focused.path)
+            .map_or(focused.path.as_slice(), |(view, _)| view);
+        let node = scene.interactive_at_path(path)?;
+        if !matches!(node.kind, "ListView" | "GridView" | "StandardListView") {
+            return None;
+        }
+        let selection = node.table_selection.as_ref()?;
+        let count = node.list?.row_count;
+        let action = match key {
+            TableSelectionKey::All if count > 0 => TableSelectionAction::All,
+            TableSelectionKey::Clear if !selection.is_empty() => TableSelectionAction::Clear,
+            TableSelectionKey::Toggle => {
+                let index = usize::try_from(ListMetrics::selection(node)?).ok()?;
+                if index >= count {
+                    return None;
+                }
+                TableSelectionAction::Row {
+                    index,
+                    operation: RowSelection::Toggle,
+                }
+            }
+            _ => return None,
+        };
+        Some(ControlInput {
+            path: path.to_vec(),
+            action: ControlAction::TableSelection(action),
         })
     }
 
@@ -7564,6 +7982,7 @@ impl Interaction {
         let path = cell_row.map_or(target.path.as_slice(), |(path, _)| path);
         let node = scene.interactive_at_path(path)?;
         let selection = node.table_selection.as_ref()?;
+        node.table_header.as_ref()?;
         let list = node.list?;
         let action = match key {
             TableSelectionKey::All
@@ -7762,15 +8181,16 @@ impl Interaction {
         let current_visual = current.and_then(|column| table.visual_index(column));
         let visible = |&column: &usize| table.is_column_visible(column);
         let visible_current = current.filter(visible);
+        let (previous, following) = navigation_axis(false, item.layout_direction);
         let next = match key {
-            NavigationKey::Left => table
+            key if key == previous => table
                 .visual_columns()
                 .take(current_visual.unwrap_or(table.columns.len()))
                 .rev()
                 .find(visible)
                 .or(visible_current)
                 .or_else(|| table.visible_columns().next()),
-            NavigationKey::Right => table
+            key if key == following => table
                 .visual_columns()
                 .skip(current_visual.map_or(0, |column| column + 1))
                 .find(visible)
@@ -7865,9 +8285,7 @@ impl Interaction {
         };
         let viewport = item.table.as_ref().map_or(item.bounds, |table| table.body);
         let cells = ViewCells::new(node, viewport.width);
-        let offset = scroll
-            .revealing(cells.top(row) as f32, cells.height(row), viewport.height)
-            .offset;
+        let offset = cells.reveal(scroll, row, viewport.height).offset;
         if offset != scroll.offset {
             store_scroll_offset(
                 item,
@@ -7963,6 +8381,7 @@ impl Interaction {
             path: path.to_vec(),
             action: ControlAction::Select(index),
         };
+        self.reset_list_typeahead();
         self.reveal_row(&action.path, node, layout, index);
         if focused_cell {
             self.set_focus(Some(Target::from_node(
@@ -8393,6 +8812,17 @@ impl Interaction {
     }
 
     pub fn pointer_release_target(&mut self) -> Option<Target> {
+        self.finish_button_contact(
+            ButtonContactSource::Pointer,
+            self.pressed.is_some() && self.pressed == self.hovered,
+        );
+        if self
+            .button_hold
+            .as_ref()
+            .is_some_and(|repeat| matches!(repeat.source, DelaySource::Pointer))
+        {
+            self.button_hold = None;
+        }
         let split_resized = self.clear_split_drag();
         self.table_column_move = None;
         if self.cancel_table_row_move() {
@@ -8401,7 +8831,7 @@ impl Interaction {
         if self.cancel_table_drag_selection() {
             return None;
         }
-        let claimed = std::mem::take(&mut self.delay_pointer_claimed);
+        let claimed = std::mem::take(&mut self.pointer_activation_claimed);
         if self
             .delay_hold
             .as_ref()
@@ -8545,6 +8975,7 @@ impl Interaction {
             point,
             additive,
             scene.row_key_at(path),
+            item.scroll_axis_reversed(Orientation::Horizontal),
         )
     }
 
@@ -8680,6 +9111,7 @@ impl Interaction {
                 point,
                 false,
                 focus.row_key,
+                item.scroll_axis_reversed(Orientation::Horizontal),
             )?;
             drag.adjust_range(node.table_selection.as_ref()?.drag_range()?);
             drag.touch = touch;
@@ -9117,7 +9549,7 @@ impl Interaction {
             return None;
         }
         let table = layout.table.as_ref()?;
-        if !table.is_column_visible(drag.column) {
+        if !table.is_column_visible(drag.column) || drag.mirrored != table.mirrored() {
             return None;
         }
         let local = layout.map_from_window(point)?;
@@ -9144,7 +9576,7 @@ impl Interaction {
         }
         let left = (visible.x + edge - point.x).clamp(0.0, edge);
         let right = (point.x - (visible.x + visible.width - edge)).clamp(0.0, edge);
-        let delta = (right - left) / edge * 18.0;
+        let delta = table.logical_delta((right - left) / edge * 18.0);
         let scroll = table.horizontal;
         ((scroll.offset + delta).clamp(0.0, scroll.max_offset) != scroll.offset).then_some(delta)
     }
@@ -9243,13 +9675,13 @@ impl Interaction {
         let column = resizable_table_column(node, drag.column)?;
         let item = layout.at_path(&drag.target.path)?;
         let table = item.table.as_ref()?;
-        if !table.is_column_visible(drag.column) {
+        if !table.is_column_visible(drag.column) || drag.mirrored != table.mirrored() {
             return None;
         }
         let bounds = table.columns[drag.column];
         let (min, max) = crate::table::column_limits(column, table.header.width);
         let point = item.map_from_window(self.pointer?)?;
-        let width = drag.width + (point.x - drag.pointer_x);
+        let width = drag.width + table.logical_delta(point.x - drag.pointer_x);
         if !width.is_finite() || (width.clamp(min, max) - bounds.width).abs() < 0.5 {
             return None;
         }
@@ -9326,7 +9758,7 @@ impl Interaction {
         if let Some(drag) = &self.table_resize {
             (drag.target.path == path).then_some(drag.column)
         } else if self.is_hovered(path) {
-            self.hovered_table_grip.map(|(column, _)| column)
+            self.hovered_table_grip.map(|(column, _, _)| column)
         } else {
             None
         }
@@ -9371,14 +9803,13 @@ impl Interaction {
                 && (press.node(scene).is_none()
                     || self
                         .scroll_bar_for_target(scene, layout, &press.target)
-                        .is_none())
+                        .is_none_or(|bar| bar.reversed() != press.reversed))
         }) {
             self.scroll_bar_press.as_mut().unwrap().grab = None;
         }
         if self.split_drag.as_ref().is_some_and(|drag| {
             !split_target(&drag.target, scene, layout).is_some_and(|(path, geometry, handle)| {
-                geometry.orientation == drag.orientation
-                    && handle.after_pane() == drag.after_pane
+                drag.matches(geometry, handle)
                     && scene
                         .at_path(path)
                         .and_then(|node| node.split_resize_handle.as_ref())
@@ -9388,20 +9819,22 @@ impl Interaction {
             self.clear_split_drag();
             self.pressed = None;
         }
-        let unavailable = |target: &Target, column| {
+        let unavailable = |target: &Target, column, mirrored| {
             layout
                 .at_path(&target.path)
                 .and_then(|item| item.table.as_ref())
-                .is_none_or(|table| !table.is_column_visible(column))
+                .is_none_or(|table| {
+                    !table.is_column_visible(column) || table.mirrored() != mirrored
+                })
         };
         if self
             .table_resize
             .as_ref()
-            .is_some_and(|drag| unavailable(&drag.target, drag.column))
+            .is_some_and(|drag| unavailable(&drag.target, drag.column, drag.mirrored))
             || self
                 .table_column_move
                 .as_ref()
-                .is_some_and(|drag| unavailable(&drag.target, drag.column))
+                .is_some_and(|drag| unavailable(&drag.target, drag.column, drag.mirrored))
         {
             self.cancel_press();
         }
@@ -9597,6 +10030,7 @@ impl Interaction {
                 self.set_split_hover(None);
             }
         }
+        self.publish_button_presses(scene, layout);
     }
 
     fn restore_stack_focus(
@@ -10045,13 +10479,17 @@ impl Interaction {
     }
     pub fn key_press(&mut self, key: ActivationKey) {
         self.cancel_delay();
-        self.delay_key_claimed = None;
+        self.button_hold = None;
+        self.key_activation_claimed = None;
         self.key_pressed = self.focused.clone().map(|t| (key, t));
         self.key_standard_button = None;
     }
 
     pub fn key_press_with_scene(&mut self, scene: &Node, key: ActivationKey) {
         self.key_press(key);
+        if let Some(target) = self.focused.clone() {
+            self.start_button_contact(scene, target, ButtonContactSource::Key(key));
+        }
         self.key_standard_button = self
             .focused
             .as_ref()
@@ -10066,8 +10504,17 @@ impl Interaction {
             return None;
         }
         let (_, target) = self.key_pressed.take()?;
+        self.finish_button_contact(
+            ButtonContactSource::Key(key),
+            self.focused.as_ref() == Some(&target),
+        );
+        if self.button_hold.as_ref().is_some_and(
+            |repeat| matches!(repeat.source, DelaySource::Key(pressed) if pressed == key),
+        ) {
+            self.button_hold = None;
+        }
         self.key_standard_button = None;
-        let claimed = self.delay_key_claimed.take() == Some(key);
+        let claimed = self.key_activation_claimed.take() == Some(key);
         if self
             .delay_hold
             .as_ref()
@@ -10085,14 +10532,23 @@ impl Interaction {
         (node.standard_button_kind() == kind).then_some(target)
     }
     pub fn cancel_press(&mut self) {
+        self.button_press_events.extend(
+            self.button_contacts
+                .drain(..)
+                .map(|contact| (contact, "canceled")),
+        );
+        for handle in self.published_button_presses.drain(..) {
+            handle.publish(false);
+        }
         if self.touch_table_drag_claimed() {
             self.pointer = None;
         }
         self.cancel_window_move();
         self.cancel_scroll_gesture();
         self.cancel_delay();
-        self.delay_pointer_claimed = false;
-        self.delay_key_claimed = None;
+        self.button_hold = None;
+        self.pointer_activation_claimed = false;
+        self.key_activation_claimed = None;
         self.dialog_backdrop = None;
         self.pressed = None;
         self.press_origin = None;
@@ -10124,6 +10580,150 @@ impl Interaction {
     pub fn is_focused(&self, path: &[usize]) -> bool {
         self.focused.as_ref().is_some_and(|t| t.path == path)
     }
+    /// Publish pressed state only for observed buttons which still own a live input.
+    pub fn publish_button_presses(&mut self, scene: &Node, layout: &LayoutNode) {
+        let mut next = Vec::new();
+        if !self.menu_open() && !self.choice_open() {
+            let pointer = self
+                .pressed
+                .as_ref()
+                .filter(|target| self.hovered.as_ref() == Some(*target));
+            let key = self
+                .key_pressed
+                .as_ref()
+                .map(|(_, target)| target)
+                .filter(|target| self.focused.as_ref() == Some(*target));
+            let touch = self.scroll_gesture.as_ref().and_then(|gesture| {
+                let point = gesture.touch_point?;
+                let Some(Hit::Target(target)) = &gesture.tap else {
+                    return None;
+                };
+                (!gesture.motion.dragging
+                    && self.target_at(scene, layout, point).as_ref() == Some(target))
+                .then_some(target)
+            });
+            let scope = self.active_dialog(layout).unwrap_or_default();
+            for target in [pointer, key, touch].into_iter().flatten() {
+                if target.path.starts_with(scope)
+                    && valid(target, scene, layout)
+                    && let Some(handle) = target
+                        .node_in(scene)
+                        .and_then(|node| node.button_press_handle.as_ref())
+                    && !next.contains(handle)
+                {
+                    next.push(handle.clone());
+                }
+            }
+        }
+        for old in &self.published_button_presses {
+            if !next.contains(old) {
+                old.publish(false);
+            }
+        }
+        for handle in &next {
+            handle.publish(true);
+        }
+        self.published_button_presses = next;
+    }
+
+    fn start_button_contact(&mut self, scene: &Node, target: Target, source: ButtonContactSource) {
+        let Some(handle) = target
+            .node_in(scene)
+            .and_then(|node| node.button_press_handle.clone())
+        else {
+            return;
+        };
+        self.finish_button_contact(source, false);
+        self.button_press_events.push((
+            ButtonContact {
+                source,
+                target: target.clone(),
+                handle: handle.clone(),
+            },
+            "pressed",
+        ));
+        self.button_contacts.push(ButtonContact {
+            source,
+            target,
+            handle,
+        });
+    }
+
+    fn finish_button_contact(&mut self, source: ButtonContactSource, released: bool) {
+        if let Some(index) = self
+            .button_contacts
+            .iter()
+            .position(|contact| contact.source == source)
+        {
+            self.button_press_events.push((
+                self.button_contacts.remove(index),
+                if released { "released" } else { "canceled" },
+            ));
+        }
+    }
+
+    /// Publish the reactive state before delivering events to their original buttons.
+    pub fn dispatch_button_press_events(
+        &mut self,
+        component: &mut impl Component,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> bool {
+        self.publish_button_presses(scene, layout);
+        if self.button_contacts.is_empty() && self.button_press_events.is_empty() {
+            return false;
+        }
+        let scope = self.active_dialog(layout).unwrap_or_default().to_vec();
+        let popup = self.menu_open() || self.choice_open();
+        let focused = self.focused.as_ref();
+        let pointer = self.pressed.as_ref();
+        let key_pressed = self.key_pressed.as_ref();
+        let gesture = self.scroll_gesture.is_some();
+        self.button_contacts.retain(|contact| {
+            let current = contact.target.path.starts_with(&scope)
+                && !popup
+                && valid(&contact.target, scene, layout)
+                && contact
+                    .target
+                    .node_in(scene)
+                    .and_then(|node| node.button_press_handle.as_ref())
+                    == Some(&contact.handle)
+                && match contact.source {
+                    ButtonContactSource::Pointer => pointer == Some(&contact.target),
+                    ButtonContactSource::Gesture => gesture,
+                    ButtonContactSource::Key(key) => {
+                        focused == Some(&contact.target)
+                            && key_pressed.is_some_and(|(pressed, target)| {
+                                key == *pressed && target == &contact.target
+                            })
+                    }
+                };
+            if !current {
+                self.button_press_events.push((
+                    ButtonContact {
+                        source: contact.source,
+                        target: contact.target.clone(),
+                        handle: contact.handle.clone(),
+                    },
+                    "canceled",
+                ));
+            }
+            current
+        });
+        let mut handled = false;
+        for (contact, event) in std::mem::take(&mut self.button_press_events) {
+            if contact
+                .target
+                .node_in(scene)
+                .and_then(|node| node.button_press_handle.as_ref())
+                == Some(&contact.handle)
+            {
+                handled |= component.dispatch_at(scene, &contact.target.path, event);
+            }
+        }
+        handled
+    }
+
     pub fn is_pressed(&self, path: &[usize]) -> bool {
         (self.pressed.as_ref().is_some_and(|t| t.path == path)
             && self.is_hovered(path)
@@ -10133,6 +10733,9 @@ impl Interaction {
                 .key_pressed
                 .as_ref()
                 .is_some_and(|(_, t)| t.path == path)
+            || self.button_hold.as_ref().is_some_and(|repeat| {
+                matches!(repeat.source, DelaySource::Touch(_)) && repeat.target.path == path
+            })
     }
 }
 

@@ -468,19 +468,50 @@ pub(crate) fn menu_panel(
     result
 }
 
+pub(crate) fn list_section_header(
+    canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
+    theme: Palette,
+    node: &Node,
+    header: &xrack_layout::ListSectionHeader,
+    direction: LayoutDirection,
+) -> Result<(), String> {
+    fill(canvas, header.bounds, 0.0, theme.role(Role::InsetSurface));
+    let mut label = header.bounds;
+    let inset = 10.0_f32.min(label.width * 0.5);
+    label.x += inset;
+    label.width -= inset * 2.0;
+    leading_label(
+        canvas,
+        text,
+        node,
+        label,
+        &header.label,
+        theme.text,
+        direction,
+    )
+}
+
 pub(crate) fn list_row(
     canvas: &mut Canvas<WGPURenderer>,
     theme: Palette,
     bounds: Rect,
+    direction: LayoutDirection,
     selected: bool,
     hovered: bool,
     current: bool,
 ) {
     if selected {
         fill(canvas, bounds, 0.0, theme.role(Role::RowSelection));
+        let width = bounds.width.min(3.0);
+        let x = if direction == LayoutDirection::RightToLeft {
+            bounds.x + bounds.width - width
+        } else {
+            bounds.x
+        };
         fill(
             canvas,
-            Rect::new(bounds.x, bounds.y, 3.0, bounds.height),
+            Rect::new(x, bounds.y, width, bounds.height),
             0.0,
             theme.role(Role::SelectionOutline),
         );
@@ -501,6 +532,7 @@ pub(crate) fn tree_indicator(
     canvas: &mut Canvas<WGPURenderer>,
     theme: Palette,
     bounds: Rect,
+    direction: LayoutDirection,
     expanded: bool,
     enabled: bool,
 ) {
@@ -513,9 +545,14 @@ pub(crate) fn tree_indicator(
         arrow.line_to(x + extent, y - extent * 0.5);
         arrow.line_to(x, y + extent * 0.5);
     } else {
-        arrow.move_to(x - extent * 0.5, y - extent);
-        arrow.line_to(x - extent * 0.5, y + extent);
-        arrow.line_to(x + extent * 0.5, y);
+        let dx = if direction == LayoutDirection::RightToLeft {
+            -extent * 0.5
+        } else {
+            extent * 0.5
+        };
+        arrow.move_to(x - dx, y - extent);
+        arrow.line_to(x - dx, y + extent);
+        arrow.line_to(x + dx, y);
     }
     arrow.close();
     let tint = if enabled {
@@ -564,8 +601,13 @@ pub(crate) fn table_header(
         }
         let sort = header.sort.filter(|sort| sort.column == index);
         let title_width = (bounds.width - if sort.is_some() { 32.0 } else { 16.0 }).max(0.0);
-        let title =
-            Rect::new(bounds.x + 8.0, bounds.y, title_width, bounds.height).intersect(visible);
+        let title = geometry.content_bounds(*bounds, 8.0, title_width);
+        let origin = if geometry.mirrored() {
+            title.x + title.width
+        } else {
+            title.x
+        };
+        let title = title.intersect(visible);
         if title.width > 0.0 && title.height > 0.0 {
             canvas.save();
             canvas.intersect_scissor(title.x, title.y, title.width, title.height);
@@ -573,11 +615,15 @@ pub(crate) fn table_header(
                 .default_font_size()
                 .unwrap_or(15.0)
                 .clamp(1.0, (bounds.height / 1.4).max(1.0));
+            let mut paint = text.paint(size, color(theme.text), false);
+            if geometry.mirrored() {
+                paint.set_text_align(Align::Right);
+            }
             let result = canvas.fill_text(
-                bounds.x + 8.0,
+                origin,
                 bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
                 column.text("title").unwrap_or(""),
-                &text.paint(size, color(theme.text), false),
+                &paint,
             );
             canvas.restore();
             result.map_err(|error| format!("table header drawing failed: {error}"))?;
@@ -589,7 +635,7 @@ pub(crate) fn table_header(
             canvas.intersect_scissor(visible.x, visible.y, visible.width, visible.height);
             chevron(
                 canvas,
-                bounds.x + bounds.width - 12.0,
+                geometry.content_bounds(*bounds, bounds.width - 12.0, 0.0).x,
                 bounds.y + bounds.height * 0.5,
                 4.0,
                 !sort.descending,
@@ -598,12 +644,7 @@ pub(crate) fn table_header(
             canvas.restore();
         }
         let thickness = if resizing { 2.0 } else { 1.0 };
-        let separator = Rect::new(
-            bounds.x + bounds.width - thickness,
-            bounds.y,
-            thickness,
-            bounds.height,
-        );
+        let separator = geometry.content_bounds(*bounds, bounds.width - thickness, thickness);
         let separator = separator.intersect(visible);
         if separator.width > 0.0 {
             fill(
@@ -684,11 +725,18 @@ pub(crate) fn table_row_headers(
             } else {
                 theme.disabled_text
             };
+            let mut paint = text.paint(size, color(tint), false);
+            let x = if table.mirrored() {
+                paint.set_text_align(Align::Right);
+                bounds.x + bounds.width - 6.0
+            } else {
+                bounds.x + 6.0
+            };
             let result = canvas.fill_text(
-                bounds.x + 6.0,
+                x,
                 bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
                 label,
-                &text.paint(size, color(tint), false),
+                &paint,
             );
             canvas.restore();
             result.map_err(|error| format!("table row header drawing failed: {error}"))?;
@@ -713,7 +761,7 @@ pub(crate) fn table_row_headers(
         );
     }
     let separator = Rect::new(
-        gutter.x + gutter.width - 1.0,
+        table.content_bounds(gutter, gutter.width - 1.0, 1.0).x,
         table.header.y,
         1.0,
         table.header.height + gutter.height,

@@ -5,6 +5,33 @@ use std::{cell::RefCell, fmt, ops::Range, rc::Rc};
 #[derive(Clone, Default)]
 pub struct FocusHandle(Rc<FocusSignals>);
 
+/// Reactive physical press state for one observed push button.
+#[derive(Clone, Default)]
+#[doc(hidden)]
+pub struct ButtonPressHandle(Rc<Property<bool>>);
+
+impl fmt::Debug for ButtonPressHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ButtonPressHandle").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ButtonPressHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl ButtonPressHandle {
+    pub fn pressed(&self) -> bool {
+        self.0.get(|| false)
+    }
+
+    pub fn publish(&self, pressed: bool) {
+        self.0.set_if_changed(pressed);
+    }
+}
+
 #[derive(Default)]
 struct FocusSignals {
     direct: Property<bool>,

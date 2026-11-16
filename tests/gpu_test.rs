@@ -11092,3 +11092,485 @@ fn rtl_calendar_templates_paint_the_same_day_on_the_mirrored_cell() {
         );
     }
 }
+
+#[test]
+fn rtl_custom_split_handles_keep_their_scene_index_and_theme() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut native = split_ui::CustomSplitDemo::new();
+    native.set_rtl(true);
+    let interpreter = interpret_example("examples/split/split.xr")
+        .create("CustomSplitDemo")
+        .unwrap();
+    interpreter.set("rtl", true.into()).unwrap();
+    let input = Interaction::default();
+    let frames = [
+        renderer
+            .snapshot(&native.render(), 640, 240, 1.0, &input)
+            .unwrap(),
+        renderer
+            .snapshot(&interpreter.render(), 640, 240, 1.0, &input)
+            .unwrap(),
+    ];
+    assert_same_pixels(&frames[0], &frames[1]);
+    let split = frames[0]
+        .layout
+        .child_at(0)
+        .unwrap()
+        .split
+        .as_ref()
+        .unwrap();
+    let first = split.handles[0].bounds;
+    let second = split.handles[1].bounds;
+    assert!(first.x > second.x);
+    let pixel = |bounds: xrack_layout::Rect| {
+        frames[0].pixel((bounds.x + 2.0) as u32, (bounds.y + 12.0) as u32)
+    };
+    assert_eq!(pixel(first), Some([0x69, 0x4b, 0x8e, 0xff]));
+    assert_eq!(pixel(second), Some([0x48, 0x5e, 0x7e, 0xff]));
+}
+
+#[test]
+fn rtl_tree_paints_the_collapsed_arrow_toward_its_children() {
+    fn snapshot(renderer: &mut Renderer, ui: &impl Component) -> xrack_renderer_femtovg::Snapshot {
+        let input = Interaction::default();
+        let size = Size::new(380.0, 220.0);
+        let (scene, layout) = renderer.prepare_scene(ui, ui.render_shared(), size, &input);
+        let row = [1, 0, 0];
+        let item = layout.at_path(&row).unwrap();
+        let geometry =
+            xrack_layout::TreeRowGeometry::for_layout(scene.at_path(&row).unwrap(), item).unwrap();
+        assert_eq!(
+            geometry.indicator.x + geometry.indicator.width,
+            item.bounds.x + item.bounds.width - 4.0
+        );
+        let center = (
+            (geometry.indicator.x + geometry.indicator.width * 0.5) as u32,
+            (geometry.indicator.y + geometry.indicator.height * 0.5) as u32,
+        );
+        let frame = renderer
+            .snapshot_prepared(&scene, layout, 380, 220, 1.0, &input)
+            .unwrap();
+        // Above the tip, the filled side of the left-facing triangle is on the right.
+        let tint = Some([0xc0, 0xd1, 0xea, 255]);
+        assert_eq!(frame.pixel(center.0 + 1, center.1 - 3), tint);
+        assert_ne!(frame.pixel(center.0 - 2, center.1 - 3), tint);
+        frame
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let native = tree_ui::DirectionalTreeDemo::new();
+    let interpreted = interpret_example("examples/tree/tree.xr")
+        .create("DirectionalTreeDemo")
+        .unwrap();
+    let native = snapshot(&mut renderer, &native);
+    let interpreted = snapshot(&mut renderer, &interpreted);
+    assert_same_pixels(&interpreted, &native);
+}
+
+#[test]
+fn preview_renames_the_selected_rtl_tree_record_with_f2() {
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::KeyEvent;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = interpret_example("examples/tree/tree.xr")
+        .create("DirectionalTreeDemo")
+        .unwrap();
+    let mut preview = PreviewScene::new(Box::new(ui.clone()));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(Point { x: 208.0, y: 67.0 });
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get("current"), Ok(Value::Int(1)));
+    for (key, text) in [("F2", ""), ("s", "s"), ("Enter", "")] {
+        assert!(preview.keyboard(
+            &mut renderer,
+            &KeyEvent {
+                key: key.into(),
+                text: text.into(),
+                ..Default::default()
+            },
+            true
+        ));
+        preview.render_animated(&mut renderer).unwrap();
+    }
+    let Value::RecordList(model) = ui.get("branches").unwrap() else {
+        panic!("expected tree model");
+    };
+    let record = model.model().row(0).unwrap();
+    assert_eq!(record.field("label"), Some(&Value::String("s".into())));
+}
+
+#[cfg(feature = "media_backend")]
+#[test]
+fn preview_plays_nonvisual_sound_effect_from_click_and_shortcut() {
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::KeyEvent;
+
+    xrack_media::install();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = interpret_example("examples/sound_effect/sound_effect.xr")
+        .create("SoundDemo")
+        .unwrap();
+    let mut preview = PreviewScene::new(Box::new(ui.clone()));
+    preview.render_animated(&mut renderer).unwrap();
+    let (scene, layout, _) = preview.inspect_frame().unwrap();
+    assert!(scene.find("confirmation").is_none());
+    let column = scene
+        .children
+        .iter()
+        .position(|child| child.kind == "VerticalLayout")
+        .unwrap();
+    let path = [column, 0];
+    assert_eq!(scene.at_path(&path).unwrap().element_id(), Some("confirm"));
+    let bounds = layout.at_path(&path).unwrap().bounds;
+    let point = Point {
+        x: bounds.x + bounds.width / 2.0,
+        y: bounds.y + bounds.height / 2.0,
+    };
+
+    let wait = |preview: &mut PreviewScene, renderer: &mut Renderer, playing| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            preview.advance(renderer);
+            assert_eq!(ui.get("sound-error"), Ok(Value::String(String::new())));
+            if ui.get("sound-ready") == Ok(Value::Bool(true))
+                && ui.get("sound-playing") == Ok(Value::Bool(playing))
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected sound-playing={playing}"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
+    wait(&mut preview, &mut renderer, false);
+    preview.click(point);
+    wait(&mut preview, &mut renderer, true);
+    wait(&mut preview, &mut renderer, false);
+    assert!(preview.keyboard(
+        &mut renderer,
+        &KeyEvent {
+            key: "F2".into(),
+            ..Default::default()
+        },
+        true
+    ));
+    wait(&mut preview, &mut renderer, true);
+}
+
+#[test]
+fn tree_disclosure_replaces_the_native_triangle_and_repaints_on_expansion() {
+    fn snapshot(
+        renderer: &mut Renderer,
+        ui: &impl Component,
+        expected: [u8; 4],
+    ) -> (std::rc::Rc<Node>, xrack_renderer_femtovg::Snapshot) {
+        let input = Interaction::default();
+        let size = Size::new(360.0, 214.0);
+        let (scene, layout) = renderer.prepare_scene(ui, ui.render_shared(), size, &input);
+        let bounds = layout.at_path(&[2, 0, 0, 0, 0]).unwrap().bounds;
+        let frame = renderer
+            .snapshot_prepared(&scene, layout, 360, 214, 1.0, &input)
+            .unwrap();
+        assert_eq!(
+            frame.pixel((bounds.x + 4.0) as u32, (bounds.y + 6.0) as u32),
+            Some(expected)
+        );
+        (scene, frame)
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut native = tree_ui::TreeDisclosureDemo::new();
+    let mut interpreted = interpret_example("examples/tree/tree.xr")
+        .create("TreeDisclosureDemo")
+        .unwrap();
+    let (native_scene, native_frame) = snapshot(&mut renderer, &native, [0xb1, 0x5d, 0x1e, 255]);
+    let (interpreted_scene, interpreted_frame) =
+        snapshot(&mut renderer, &interpreted, [0xb1, 0x5d, 0x1e, 255]);
+    assert_same_pixels(&interpreted_frame, &native_frame);
+
+    let path = [2, 0];
+    let action = |scene: &Node| {
+        let tree = scene.at_path(&path).unwrap().tree.as_ref().unwrap();
+        let row = tree.rows()[0];
+        ControlAction::Tree(TreeAction::SetExpanded {
+            key: row.key,
+            row: row.row,
+            expanded: true,
+        })
+    };
+    assert!(native.control_at(&native_scene, &path, action(&native_scene)));
+    assert!(interpreted.control_at(&interpreted_scene, &path, action(&interpreted_scene)));
+    let (_, native) = snapshot(&mut renderer, &native, [0, 0x7d, 0x66, 255]);
+    let (_, interpreted) = snapshot(&mut renderer, &interpreted, [0, 0x7d, 0x66, 255]);
+    assert_same_pixels(&interpreted, &native);
+}
+
+#[test]
+fn preview_grid_keeps_modifier_selection_separate_from_item_activation() {
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{KeyEvent, KeyModifiers, PointerButton, PointerEvent};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = interpret_example("examples/list/list.xr")
+        .create("MultiSelectDemo")
+        .unwrap();
+    let mut preview = PreviewScene::new(Box::new(ui.clone()));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(Point { x: 280.0, y: 92.0 });
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get("tile-key"), Ok(Value::Int(10)));
+    assert_eq!(ui.get("opened"), Ok(Value::Int(1)));
+    let second = Point { x: 426.0, y: 92.0 };
+    let contact = PointerContact {
+        id: 0,
+        primary: true,
+        event: PointerEvent {
+            button: PointerButton::Primary,
+            modifiers: KeyModifiers {
+                control: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    };
+    preview.press_contact(contact, second, false);
+    preview.finish_contact(contact, second, true, false);
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get("tile-key"), Ok(Value::Int(30)));
+    assert_eq!(ui.get("grid-selection"), Ok(Value::Int(2)));
+    assert_eq!(ui.get("opened"), Ok(Value::Int(1)));
+
+    let key = KeyEvent {
+        key: "ArrowDown".into(),
+        modifiers: KeyModifiers {
+            shift: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &key, true));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get("tile-key"), Ok(Value::Int(50)));
+    assert_eq!(ui.get("grid-selection"), Ok(Value::Int(3)));
+    assert_eq!(ui.get("opened"), Ok(Value::Int(1)));
+    preview.click(Point { x: 270.0, y: 51.0 });
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get("actual-grid-selection"), Ok(Value::Int(6)));
+    assert_eq!(ui.get("actual-list-selection"), Ok(Value::Int(6)));
+    preview.click(Point { x: 404.0, y: 51.0 });
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get("actual-grid-selection"), Ok(Value::Int(0)));
+    assert_eq!(ui.get("actual-list-selection"), Ok(Value::Int(0)));
+    assert_eq!(ui.get("tile-key"), Ok(Value::Int(50)));
+}
+
+#[test]
+fn preview_list_typeahead_accepts_committed_text_and_cancels_an_old_focus_session() {
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::KeyEvent;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = interpret_example("examples/list/list.xr")
+        .create("TypeaheadDemo")
+        .unwrap();
+    let mut preview = PreviewScene::new(Box::new(ui.clone()));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(Point { x: 100.0, y: 92.0 });
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get("selected-row"), Ok(Value::Int(0)));
+    assert!(preview.ime_area().is_some());
+    let mut key = KeyEvent {
+        key: "a".into(),
+        text: "a".into(),
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &key, true));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get("selected-row"), Ok(Value::Int(1)));
+
+    key.modifiers.control = true;
+    preview.keyboard(&mut renderer, &key, true);
+    assert_eq!(ui.get("selected-row"), Ok(Value::Int(1)));
+    assert!(preview.begin_text_composition(&mut renderer, 17));
+    assert!(preview.update_text_composition(17, "部".into()));
+    assert_eq!(ui.get("selected-row"), Ok(Value::Int(1)));
+    assert!(preview.finish_text_composition(17, "部署"));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get("selected-row"), Ok(Value::Int(4)));
+
+    assert!(preview.begin_text_composition(&mut renderer, 18));
+    preview.click(Point { x: 240.0, y: 92.0 });
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(!preview.finish_text_composition(18, "文档"));
+    assert_eq!(ui.get("selected-row"), Ok(Value::Int(4)));
+    let key = KeyEvent {
+        key: "b".into(),
+        text: "b".into(),
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &key, true));
+    assert_eq!(ui.get("selected-key"), Ok(Value::Int(40)));
+}
+
+#[test]
+fn sectioned_list_paints_a_pinned_heading_above_virtual_rows_in_both_backends() {
+    fn snapshot(renderer: &mut Renderer, ui: &impl Component) -> xrack_renderer_femtovg::Snapshot {
+        let size = Size::new(530.0, 246.0);
+        let mut input = Interaction::default();
+        let (scene, frame) = renderer.prepare_scene(ui, ui.render_shared(), size, &input);
+        input.pointer_move(&scene, &frame, Point { x: 350.0, y: 104.0 });
+        assert!(input.scroll_y(&frame, 50.0));
+        input.pointer_leave();
+        let (scene, frame) = renderer.prepare_scene(ui, ui.render_shared(), size, &input);
+        let header = &frame.at_path(&[3]).unwrap().list_section_headers()[0];
+        assert!(header.pinned);
+        assert_eq!(header.bounds.y, 62.0);
+        let capture = renderer
+            .snapshot_prepared(&scene, frame, 530, 246, 1.0, &input)
+            .unwrap();
+        assert_eq!(capture.pixel(492, 68), Some([0x81, 0x53, 0x29, 255]));
+        assert_eq!(capture.pixel(225, 68), Some([0x25, 0x33, 0x4b, 255]));
+        assert_eq!(capture.pixel(492, 94), Some([0x29, 0x43, 0x64, 255]));
+        capture
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let native = list_ui::SectionedListDemo::new();
+    let interpreted = interpret_example("examples/list/list.xr")
+        .create("SectionedListDemo")
+        .unwrap();
+    let native = snapshot(&mut renderer, &native);
+    let interpreted = snapshot(&mut renderer, &interpreted);
+    assert_same_pixels(&interpreted, &native);
+}
+
+#[test]
+fn rtl_scroll_canvas_starts_at_its_right_edge_and_grid_paints_on_the_same_side() {
+    fn snapshot(
+        renderer: &mut Renderer,
+        ui: &impl Component,
+        rtl: bool,
+    ) -> xrack_renderer_femtovg::Snapshot {
+        let input = Interaction::default();
+        let size = Size::new(510.0, 238.0);
+        let (scene, layout) = renderer.prepare_scene(ui, ui.render_shared(), size, &input);
+        let canvas = layout.at_path(&[2]).unwrap();
+        let bounds = canvas.bounds;
+        assert_eq!(canvas.children[1].bounds.x == bounds.x, !rtl);
+        assert_eq!(
+            canvas.children[2].bounds.x + canvas.children[2].bounds.width
+                == bounds.x + bounds.width,
+            rtl
+        );
+        let grid = layout.at_path(&[4]).unwrap();
+        assert_eq!(grid.children[0].bounds.x > grid.children[1].bounds.x, rtl);
+        let frame = renderer
+            .snapshot_prepared(&scene, layout, 510, 238, 1.0, &input)
+            .unwrap();
+        let (x, color) = if rtl {
+            (230, [0x81, 0x53, 0x29, 255])
+        } else {
+            (75, [0x38, 0x66, 0x97, 255])
+        };
+        assert_eq!(frame.pixel(x, 137), Some(color));
+        frame
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut native = list_ui::DirectionalScrollDemo::new();
+    let interpreted = interpret_example("examples/list/list.xr")
+        .create("DirectionalScrollDemo")
+        .unwrap();
+    for rtl in [true, false] {
+        native.set_rtl(rtl);
+        interpreted.set("rtl", Value::Bool(rtl)).unwrap();
+        let native = snapshot(&mut renderer, &native, rtl);
+        let interpreted = snapshot(&mut renderer, &interpreted, rtl);
+        assert_same_pixels(&interpreted, &native);
+    }
+}
+
+#[test]
+fn rtl_table_keeps_frozen_and_virtualized_cells_on_their_rendered_columns() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let native = table_ui::DirectionalTableDemo::new();
+    let interpreted = interpret_example("examples/table/table.xr")
+        .create("DirectionalTableDemo")
+        .unwrap();
+    let size = Size::new(520.0, 300.0);
+    let mut input = Interaction::default();
+    let path = [2, 0];
+    let (scene, layout) = renderer.prepare_scene(&native, native.render_shared(), size, &input);
+    let item = layout.at_path(&path).unwrap();
+    let table = item.table.as_ref().unwrap();
+    let frozen = table.columns[0];
+    let point = Point {
+        x: table.body.x + 24.0,
+        y: table.body.y + 20.0,
+    };
+    input.pointer_move(&scene, &layout, point);
+    assert!(input.scroll_x(&layout, -60.0));
+    let (scene, layout) = renderer.prepare_scene(&native, native.render_shared(), size, &input);
+    let item = layout.at_path(&path).unwrap();
+    let table = item.table.as_ref().unwrap();
+    assert_eq!(table.columns[0], frozen);
+    assert!(table.row_header.x > table.body.x);
+    assert_eq!(table.horizontal.offset, 60.0);
+    assert_eq!(item.at_path(&[0, 0, 0]).unwrap().bounds.x, frozen.x);
+    let aot = renderer
+        .snapshot_prepared(&scene, layout, 520, 300, 1.0, &input)
+        .unwrap();
+    let (scene, layout) =
+        renderer.prepare_scene(&interpreted, interpreted.render_shared(), size, &input);
+    let interpreted = renderer
+        .snapshot_prepared(&scene, layout, 520, 300, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&interpreted, &aot);
+}

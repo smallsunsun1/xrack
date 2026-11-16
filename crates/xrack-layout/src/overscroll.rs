@@ -63,14 +63,28 @@ struct ElasticAxis {
     value: f32,
     limit: f64,
     options: ElasticOptions,
+    reversed: bool,
     rebound: Option<Rebound>,
 }
 
 impl ElasticAxis {
+    fn logical_value(&self) -> f32 {
+        if self.reversed {
+            -self.value
+        } else {
+            self.value
+        }
+    }
+
+    fn publish(&self, axis: Orientation, rebounding: bool) {
+        self.owner
+            .publish_overshoot(axis, self.logical_value(), rebounding);
+    }
+
     fn resample(&mut self, axis: Orientation) {
         // A continuous resistance curve with a finite displacement limit.
         self.value = (self.limit * (self.raw / (2.0 * self.limit + self.raw.abs()))) as f32;
-        self.owner.publish_overshoot(axis, self.value, false);
+        self.publish(axis, false);
     }
 }
 
@@ -124,7 +138,7 @@ impl Overscroll {
                 // Invert the resistance curve at the current animation sample.
                 let value = f64::from(lane.value);
                 lane.raw = 2.0 * lane.limit * value / (lane.limit - value.abs());
-                lane.owner.publish_overshoot(axis, lane.value, false);
+                lane.publish(axis, false);
             }
         }
     }
@@ -163,11 +177,13 @@ impl Overscroll {
             return false;
         }
         let slot = &mut self.axes[index(axis)];
-        if slot.as_ref().is_some_and(|lane| &lane.owner != owner) {
-            slot.take()
-                .unwrap()
-                .owner
-                .publish_overshoot(axis, 0.0, false);
+        let reversed = item.scroll_axis_reversed(axis);
+        if slot
+            .as_ref()
+            .is_some_and(|lane| &lane.owner != owner || lane.reversed != reversed)
+            && let Some(lane) = slot.take()
+        {
+            lane.owner.publish_overshoot(axis, 0.0, false);
         }
         let lane = slot.get_or_insert_with(|| ElasticAxis {
             owner: owner.clone(),
@@ -175,6 +191,7 @@ impl Overscroll {
             value: 0.0,
             limit,
             options,
+            reversed,
             rebound: None,
         });
         lane.limit = limit;
@@ -202,7 +219,7 @@ impl Overscroll {
                     next: now + SCROLL_FRAME_INTERVAL,
                     initial: lane.value,
                 });
-                lane.owner.publish_overshoot(axis, lane.value, true);
+                lane.publish(axis, true);
             }
         }
         changed
@@ -235,7 +252,7 @@ impl Overscroll {
                 lane.value = rebound.initial * remaining.powi(3);
                 rebound.next =
                     (now + SCROLL_FRAME_INTERVAL).min(rebound.start + lane.options.duration);
-                lane.owner.publish_overshoot(axis, lane.value, true);
+                lane.publish(axis, true);
             }
         }
         changed
@@ -252,11 +269,12 @@ impl Overscroll {
             }
             if item.viewport_handle.as_ref() == Some(&lane.owner) {
                 return item.elastic.filter(|options| {
-                    (lane.rebound.is_some() || options.behavior.allows_overshoot(false))
+                    item.scroll_axis_reversed(axis) == lane.reversed
+                        && (lane.rebound.is_some() || options.behavior.allows_overshoot(false))
                         && item.pan_axes[index(axis)]
                         && item.scroll_on(axis).is_some_and(|scroll| {
                             scroll.max_offset > 0.0
-                                && if lane.value < 0.0 {
+                                && if lane.logical_value() < 0.0 {
                                     scroll.offset == 0.0
                                 } else {
                                     scroll.offset == scroll.max_offset

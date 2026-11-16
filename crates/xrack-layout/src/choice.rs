@@ -80,12 +80,12 @@ pub enum ChoiceKey {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ChoiceTypeahead {
+pub(crate) struct Typeahead {
     prefix: String,
     last: Option<Instant>,
 }
 
-impl ChoiceTypeahead {
+impl Typeahead {
     pub fn find(
         &mut self,
         node: &Node,
@@ -93,18 +93,22 @@ impl ChoiceTypeahead {
         now: Instant,
         current: Option<usize>,
     ) -> Option<usize> {
+        self.find_with(text, now, current, |start, prefix| {
+            combo_find_enabled_label(node, start, |label| matches_prefix(label, prefix))
+        })
+    }
+
+    pub(crate) fn find_with(
+        &mut self,
+        text: &str,
+        now: Instant,
+        current: Option<usize>,
+        find: impl Fn(usize, &str) -> Option<usize>,
+    ) -> Option<usize> {
         if text.is_empty() || text.chars().any(char::is_control) {
             return None;
         }
         let text: String = text.chars().flat_map(char::to_lowercase).collect();
-        let find = |start, prefix: &str| {
-            combo_find_enabled_label(node, start, |label| {
-                let mut label = label.chars().flat_map(char::to_lowercase);
-                prefix
-                    .chars()
-                    .all(|character| label.next() == Some(character))
-            })
-        };
         let continuing = self
             .last
             .is_some_and(|last| now.saturating_duration_since(last) <= Duration::from_millis(800));
@@ -118,6 +122,13 @@ impl ChoiceTypeahead {
         self.prefix = text;
         find(current.map_or(0, |index| index + 1), &self.prefix)
     }
+}
+
+pub(crate) fn matches_prefix(label: &str, prefix: &str) -> bool {
+    let mut label = label.chars().flat_map(char::to_lowercase);
+    prefix
+        .chars()
+        .all(|character| label.next() == Some(character))
 }
 
 pub(crate) fn next_choice(
@@ -454,7 +465,7 @@ impl ChoicePopup {
         &mut self,
         scene: &Node,
         layout: &LayoutNode,
-        search: &mut ChoiceTypeahead,
+        search: &mut Typeahead,
         text: &str,
         now: Instant,
     ) {

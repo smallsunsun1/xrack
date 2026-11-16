@@ -324,6 +324,7 @@ pub(crate) fn query(
                 Type::Record(name) => name.to_string(),
                 Type::RecordList(name) => format!("[{name}]"),
                 Type::StringList => "[string]".into(),
+                Type::IntList => "[int]".into(),
                 _ => ty.name().into_owned(),
             });
             let description = ty.map_or_else(
@@ -894,7 +895,10 @@ impl<'a, 'w> Symbols<'a, 'w> {
         if call
             && catalog::media_methods(kind)
                 .iter()
-                .chain(catalog::list_key_methods(kind))
+                .chain(catalog::row_key_methods(kind))
+                .chain(catalog::batch_selection_methods(kind))
+                .chain(catalog::row_selection_methods(kind))
+                .chain(catalog::tree_selection_methods(kind))
                 .any(|method| method.name == name)
         {
             return Some(Symbol::builtin(Kind::Function, None));
@@ -902,6 +906,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
         if let Some(ty) = (xrack_ir::semantic::view_count_property(kind, name)
             || xrack_ir::semantic::list_selection_property(kind, name))
         .then_some(Type::Int)
+        .or_else(|| xrack_ir::semantic::table_selection_property(kind, name))
         .or_else(|| xrack_ir::semantic::text_selection_property(kind, name))
         .or_else(|| xrack_ir::semantic::text_command_property(kind, name).then_some(Type::Bool))
         .or_else(|| xrack_ir::semantic::media_object_read_type(kind, name))
@@ -986,7 +991,10 @@ impl<'a, 'w> Symbols<'a, 'w> {
                 };
                 if let Some(method) = catalog::media_methods(kind)
                     .iter()
-                    .chain(catalog::list_key_methods(kind))
+                    .chain(catalog::row_key_methods(kind))
+                    .chain(catalog::batch_selection_methods(kind))
+                    .chain(catalog::row_selection_methods(kind))
+                    .chain(catalog::tree_selection_methods(kind))
                     .find(|method| method.name == self.text(i))
                 {
                     return Some((

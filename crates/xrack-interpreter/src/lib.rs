@@ -1,4 +1,5 @@
 //! Load optimized XR dialect IR and execute its UI on the XRack runtime.
+#![deny(clippy::expect_used, clippy::unwrap_used)]
 mod action;
 mod calendar;
 mod evaluate;
@@ -13,6 +14,8 @@ mod live_attach;
 mod live_editor;
 #[cfg(all(feature = "live-reload", unix))]
 mod live_inspect;
+#[cfg(all(feature = "live-reload", unix))]
+mod live_trace;
 mod load;
 mod native_dialog;
 mod picker;
@@ -78,6 +81,8 @@ type StaticCache<T> = Rc<OnceCell<Result<T>>>;
 
 #[derive(Clone)]
 pub struct Program {
+    #[cfg(all(feature = "live-reload", unix))]
+    update_plan: Rc<serde_json::Value>,
     components: Rc<BTreeMap<String, Result<Definition>>>,
     exports: Rc<BTreeSet<String>>,
     globals: Rc<BTreeMap<String, bool>>,
@@ -230,6 +235,7 @@ pub enum ValueType {
     Brush,
     String,
     StringList,
+    IntList,
     Record(Rc<str>),
     RecordList(Rc<str>),
     Date,
@@ -304,6 +310,7 @@ enum Expression {
     Param(usize),
     RowParam(String),
     SplitHandleParam(split::Parameter),
+    ListSectionParam(xrack_runtime::ListSectionParameter),
     CalendarCellParam(calendar::Parameter),
     Unary(UnaryOperator, Expr),
     Binary(BinaryOperator, Expr, Expr),
@@ -329,17 +336,21 @@ enum Expression {
     GeometryRead(String, Option<xrack_runtime::GeometryMetric>),
     ViewportRead(String, viewport::Metric),
     ListSelectionRead(String),
+    ListRowSelected(String, Expr),
     ViewCount {
         owner: String,
         source: bool,
     },
     ViewIndex(String, Expr, xrack_runtime::ViewIndex),
+    ViewIndexForKey(String, Expr),
     TreeQuery(String, tree::Query, Expr),
+    SelectionKeys(String),
     SplitSave(String),
     StackRead(String, xrack_mlir::StackRead),
     SplitResizing(String),
     TableRead(String, xrack_mlir::TableRead),
     FocusRead(String, bool),
+    ButtonPressed(String),
     TextSelectionRead(Member),
     TextCommandAvailable(Member),
     HoverRead(String, pointer::HoverRead),
@@ -362,6 +373,7 @@ enum Expression {
         arguments: Vec<(String, Expr)>,
     },
     Array(Vec<Expr>),
+    IntArray(Vec<Expr>),
     Record {
         name: Rc<str>,
         fields: Vec<(String, Expr)>,
@@ -376,13 +388,13 @@ enum Expression {
     DateAddMonths(Expr, Expr, Expr),
     MakeTime([Expr; 3]),
     MakeFont([Expr; 4]),
-    Call(Member, Vec<Expr>),
+    Call(Member, Vec<Expr>, CallSite),
 }
 
 #[derive(Clone)]
 enum Statement {
     Assign(Member, Expr),
-    Call(Member, Vec<Expr>),
+    Call(Member, Vec<Expr>, CallSite),
     Log {
         level: Expr,
         message: Expr,
@@ -392,6 +404,7 @@ enum Statement {
     Scroll(String, xrack_runtime::ScrollCommandMethod, Vec<Expr>),
     SelectSource(String, Expr, Option<Expr>),
     SelectKey(String, Expr),
+    SelectViewKeys(String, Expr),
     Table(String, table::Command, Vec<Expr>),
     Focus(String, xrack_runtime::FocusCommandMethod, Option<[Expr; 2]>),
     Tree(String, xrack_runtime::TreeCommandMethod, Expr, Option<Expr>),
@@ -410,7 +423,28 @@ enum Statement {
 }
 
 #[derive(Clone)]
+struct CallSite(#[cfg(all(feature = "live-reload", unix))] Option<Rc<live_inspect::Source>>);
+
+impl CallSite {
+    fn from_operation(op: xrack_mlir::OperationRef<'_>) -> Self {
+        #[cfg(all(feature = "live-reload", unix))]
+        return Self(live_inspect::Source::from_operation(op).map(Rc::new));
+        #[cfg(not(all(feature = "live-reload", unix)))]
+        {
+            let _ = op;
+            Self()
+        }
+    }
+}
+
+#[derive(Clone)]
 struct Function {
+    #[cfg(all(feature = "live-reload", unix))]
+    name: String,
+    #[cfg(all(feature = "live-reload", unix))]
+    location: Option<live_inspect::Source>,
+    #[cfg(all(feature = "live-reload", unix))]
+    parameter_names: Vec<String>,
     parameters: Vec<ValueType>,
     result: Option<ValueType>,
     body: Vec<Statement>,
@@ -419,6 +453,10 @@ struct Function {
 }
 
 struct PropertyDef {
+    #[cfg(all(feature = "live-reload", unix))]
+    location: Option<live_inspect::Source>,
+    #[cfg(all(feature = "live-reload", unix))]
+    visibility: String,
     ty: ValueType,
     source: PropertySource,
     public: bool,
@@ -450,6 +488,7 @@ struct Definition {
     source_scroll_targets: BTreeSet<String>,
     key_scroll_targets: BTreeSet<String>,
     focus_targets: BTreeSet<String>,
+    button_press_targets: BTreeSet<String>,
     text_selection_targets: BTreeSet<String>,
     text_command_targets: BTreeSet<String>,
     timer_order: Vec<String>,
@@ -473,12 +512,15 @@ struct Element {
     split: Option<split::Definition>,
     stack_routes: Option<Box<[String]>>,
     day_cell: Option<Box<Element>>,
+    section_header: Option<Box<Element>>,
     clipboard_paste: Option<table_edit::ClipboardPaste>,
     clipboard_text: Option<table::ClipboardText>,
     contains_delegate: bool,
     visible_field: Option<Rc<[String]>>,
     height_field: Option<Rc<[String]>>,
-    list_key_field: Option<Rc<[String]>>,
+    section_field: Option<Rc<[String]>>,
+    typeahead_field: Option<Rc<[String]>>,
+    row_key_field: Option<Rc<[String]>>,
     instance_handlers: BTreeMap<Vec<Member>, Function>,
     visual: Visual,
     grid_plan: Option<Arc<[xrack_runtime::GridCellSlot]>>,
@@ -685,7 +727,7 @@ impl Instance {
     pub fn get_snapshot(&self, name: &str) -> Result<Value> {
         let value = self.read_public_value(name)?;
         Ok(match value {
-            Value::StringModel(_) => evaluate::host_value(value),
+            Value::StringModel(_) | Value::IntModel(_) => evaluate::host_value(value),
             value => evaluate::callback_value(value),
         })
     }
@@ -698,6 +740,16 @@ impl Instance {
             Value::StringModel(model) => Ok(model),
             _ => Err(Error::Evaluation(format!(
                 "property {name} is not a string list"
+            ))),
+        }
+    }
+
+    /// Get the shared integer model, preserving live row identities.
+    pub fn int_model(&self, name: &str) -> Result<xrack_runtime::VecModel<i64>> {
+        match self.read_public_value(name)? {
+            Value::IntModel(model) => Ok(model),
+            _ => Err(Error::Evaluation(format!(
+                "property {name} is not an int list"
             ))),
         }
     }
@@ -717,7 +769,9 @@ impl Instance {
         let member = Member::root(name);
         let property = self.require_public(&member, true)?;
         let ValueType::RecordList(record) = &property.ty else {
-            return Err(Error::Evaluation(format!("property {name} is not a record list")));
+            return Err(Error::Evaluation(format!(
+                "property {name} is not a record list"
+            )));
         };
         self.program().validate_host_value(
             &ValueType::Record(record.clone()),

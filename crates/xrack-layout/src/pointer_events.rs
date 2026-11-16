@@ -5,12 +5,101 @@ use xrack_runtime::{
     PointerHandle,
 };
 
+pub(crate) const PRESS_AND_HOLD_SLOP: f32 = 6.0;
+
 pub fn pointer_click_follows(previous: (Point, Instant), current: (Point, Instant)) -> bool {
     current
         .1
         .checked_duration_since(previous.1)
         .is_some_and(|elapsed| elapsed <= Duration::from_millis(450))
         && (current.0.x - previous.0.x).hypot(current.0.y - previous.0.y) <= 6.0
+}
+
+/// A completed primary click on a push button. Device equality is supplied by the host.
+#[doc(hidden)]
+pub struct ButtonClick<Device> {
+    target: Target,
+    kind: &'static str,
+    device: Device,
+    sample: (Point, Instant),
+}
+
+impl<Device: PartialEq> ButtonClick<Device> {
+    pub fn new(
+        scene: &Node,
+        target: &Target,
+        device: Device,
+        sample: (Point, Instant),
+    ) -> Option<Self> {
+        let kind = target.node_in(scene)?.kind;
+        matches!(kind, "Button" | "RoundButton" | "ToolButton").then(|| Self {
+            target: target.clone(),
+            kind,
+            device,
+            sample,
+        })
+    }
+
+    pub fn follows(&self, previous: &Self) -> bool {
+        self.device == previous.device
+            && self.kind == previous.kind
+            && self.target == previous.target
+            && pointer_click_follows(previous.sample, self.sample)
+    }
+
+    /// Deliver after the second click's callbacks and any resulting relayout.
+    pub fn deliver(
+        self,
+        component: &mut impl Component,
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> bool {
+        !input.menu_open()
+            && !input.choice_open()
+            && self
+                .target
+                .node_in(scene)
+                .is_some_and(|node| node.kind == self.kind)
+            && crate::input::valid(&self.target, scene, layout)
+            && input
+                .accessibility_target(scene, layout, &self.target.path)
+                .as_ref()
+                == Some(&self.target)
+            && component.dispatch_at(scene, &self.target.path, "double-clicked")
+    }
+}
+
+#[cfg(test)]
+mod button_click_tests {
+    use super::*;
+    use xrack_runtime::VecModel;
+
+    #[test]
+    fn button_click_pairs_respect_time_distance_device_and_virtual_row() {
+        let rows = VecModel::from(vec![10_i64, 20]);
+        let mut scene = Node::new("Window", None);
+        let mut row = Node::new("ListRow", None);
+        row.children.push(Node::new("Button", Some("button")));
+        scene.children.push(row);
+        let path = &[0, 0];
+        let start = Instant::now();
+        let point = Point { x: 10.0, y: 10.0 };
+        let click = |scene: &Node, device, point, time| {
+            let button = scene.at_path(path).unwrap();
+            let target = Target::from_node(path.to_vec(), button, true, scene.row_key_at(path));
+            ButtonClick::new(scene, &target, device, (point, time)).unwrap()
+        };
+        scene.children[0].set_row_key(rows.row_key(0));
+        let first = click(&scene, false, point, start);
+        let edge = start + Duration::from_millis(450);
+        assert!(click(&scene, false, Point { x: 16.0, ..point }, edge).follows(&first));
+        assert!(!click(&scene, false, Point { x: 16.1, ..point }, edge).follows(&first));
+        assert!(!click(&scene, false, point, edge + Duration::from_millis(1)).follows(&first));
+        assert!(!click(&scene, true, point, edge).follows(&first));
+        scene.children[0].set_row_key(rows.row_key(1));
+        assert!(!click(&scene, false, point, edge).follows(&first));
+    }
 }
 
 enum PressAndHold {
@@ -154,7 +243,7 @@ impl PointerSequence {
             ..
         }) = &mut self.press_and_hold
         {
-            if inside && (point.x - origin.x).hypot(point.y - origin.y) <= 6.0 {
+            if inside && (point.x - origin.x).hypot(point.y - origin.y) <= PRESS_AND_HOLD_SLOP {
                 *previous = point;
             } else {
                 self.press_and_hold = None;

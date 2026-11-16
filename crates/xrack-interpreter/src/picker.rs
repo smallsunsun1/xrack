@@ -147,7 +147,8 @@ impl Instance {
             DialogRole::Accept => {
                 self.set_control_value(
                     element,
-                    property(element).expect("picker property"),
+                    property(element)
+                        .ok_or_else(|| Error::Invalid("missing picker property".into()))?,
                     value.clone(),
                 )?;
                 self.handler(element, "accepted", &[value])?;

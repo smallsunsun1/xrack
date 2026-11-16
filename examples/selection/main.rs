@@ -3,6 +3,9 @@ use selection_ui::{EditableChoiceDemo, GroupedRadiosDemo, RecordComboDemo, Selec
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--radio-groups") => xrack_platform_winit::run(GroupedRadiosDemo::new()),
+        Some("--mixed-radio-options") => {
+            xrack_platform_winit::run(selection_ui::MixedRadioOptionsDemo::new())
+        }
         Some("--editable-combo") => xrack_platform_winit::run(EditableChoiceDemo::new()),
         Some("--rtl-choice") => {
             xrack_platform_winit::run(selection_ui::DirectionalChoiceDemo::new())

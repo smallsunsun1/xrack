@@ -670,7 +670,13 @@ fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
             }
         };
 
-        // The default relative path works for both generated code and MLIR.
+        // Deliver play before the host publishes the first sample from the session.
+        let scene = ui.render_shared();
+        let laid_out = layout(&scene, size, &mut Text);
+        queue.sync(WindowEffects::collect(&scene, &laid_out).media);
+        assert_eq!(state(ui), (false, false, String::new()));
+        assert!(ui.dispatch("confirm", "clicked"));
+        wait(&mut queue, ui, true, false);
         wait(&mut queue, ui, false, false);
 
         let scene = ui.render_shared();
@@ -716,6 +722,8 @@ fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
         set_source(ui, "sound_effect.xr");
         wait(&mut queue, ui, false, true);
         set_source(ui, "click.wav");
+        assert!(ui.dispatch("confirm", "clicked"));
+        wait(&mut queue, ui, true, false);
         wait(&mut queue, ui, false, false);
 
         queue.sync([]);

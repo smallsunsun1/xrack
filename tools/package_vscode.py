@@ -41,6 +41,8 @@ EXTENSION_FILES = (
     "package-lock.json",
     "extension.js",
     "attach.js",
+    "live-client.js",
+    "xrack-mcp.js",
     "language-configuration.json",
     "preview.js",
     "preview-host.rs",
@@ -166,6 +168,8 @@ def verify_vsix(package, extension, target):
         for path in (
             "extension/" + extension["icon"],
             "extension/preview-host.rs",
+            "extension/live-client.js",
+            "extension/xrack-mcp.js",
             "extension/preview-sdk/Cargo.toml",
             *(f"extension/preview-sdk/crates/{crate}/src/lib.rs" for crate in RUNTIME_CRATES),
         ):

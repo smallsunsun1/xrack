@@ -9,7 +9,8 @@ pub use xrack_interpreter::live::{
 
 #[doc(hidden)]
 pub fn open_live<T: LiveUi>(filename: &str, name: &str) -> Result<LiveComponent<T>, String> {
-    LiveComponent::open_with(filename, name, None, |source, saved| {
+    let project = std::env::var_os("XRACK_LIVE_PROJECT").map(std::path::PathBuf::from);
+    LiveComponent::open_with(filename, name, project.as_deref(), |source, saved| {
         let filename = source.to_str().ok_or("the .xr path must be valid UTF-8")?;
         let prepared = xrack_compiler::prepare_preview(
             source_text(source, saved)?,

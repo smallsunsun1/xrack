@@ -1,5 +1,5 @@
 use crate::{
-    Rect, Size, TextMeasurer, dimension,
+    Rect, Size, TextMeasurer, TreeRowGeometry, dimension,
     linear::{AxisInfo, Metrics, Padding, fit_axis, measure as measure_node},
     participates_in_flow,
 };
@@ -180,8 +180,16 @@ pub(crate) fn measure(node: &Node, available: Size, text: &mut impl TextMeasurer
 
 pub(crate) struct Placement {
     pub(crate) bounds: Rect,
-    pub(crate) row_children: Option<Vec<CellPlacement>>,
+    pub(crate) row_children: Option<RowPlacements>,
     pub(crate) clip: Option<std::sync::Arc<crate::table::PaneClip>>,
+}
+
+pub(crate) enum RowPlacements {
+    Cells(Vec<CellPlacement>),
+    Tree {
+        geometry: TreeRowGeometry,
+        has_children: bool,
+    },
 }
 
 impl Placement {
@@ -230,13 +238,13 @@ pub(crate) fn children(
             if child.kind == "Row" && child.boolean("visible", true) {
                 Placement {
                     bounds: inner,
-                    row_children: Some(vec![
+                    row_children: Some(RowPlacements::Cells(vec![
                         CellPlacement {
                             bounds: hidden,
                             clip: None
                         };
                         child.children.len()
-                    ]),
+                    ])),
                     clip: None,
                 }
             } else {
@@ -256,7 +264,9 @@ pub(crate) fn children(
         let rect = crate::place_in_direction(rect, inner, direction);
         let placement = &mut placements[cell.index];
         if let Some(child) = cell.child_index {
-            placement.row_children.as_mut().unwrap()[child].bounds = rect;
+            if let Some(RowPlacements::Cells(children)) = &mut placement.row_children {
+                children[child].bounds = rect;
+            }
         } else {
             placement.bounds = rect;
         }

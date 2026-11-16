@@ -90,12 +90,15 @@ impl FrameCache {
             });
             self.input_changed.notify();
         }
+        let mut reused = true;
         let (prepared, layout) = self.prepared.get(|| {
+            reused = false;
             self.input_changed.track();
             let (prepared, layout) = resolve(scene.clone());
             self.uses_base_scene = Rc::ptr_eq(&scene, &prepared);
             ((!self.uses_base_scene).then_some(prepared), Rc::new(layout))
         });
+        xrack_runtime::update_profile::layout(reused);
         (prepared.unwrap_or(scene), layout)
     }
 }

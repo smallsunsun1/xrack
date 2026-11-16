@@ -14,7 +14,9 @@ fn main() -> std::process::ExitCode {
         Some("--row-field") => run_row_field(),
         Some("--row-visibility") => run_row_visibility(),
         Some("--sorted-views") => run_sorted_views(),
+        Some("--keyed-selection") => xrack_platform_winit::run(table_ui::KeyedTableDemo::new()),
         Some("--wide") => xrack_platform_winit::run(WideTableDemo::new()),
+        Some("--rtl-table") => xrack_platform_winit::run(table_ui::DirectionalTableDemo::new()),
         mode => run_table(mode),
     };
     match result {

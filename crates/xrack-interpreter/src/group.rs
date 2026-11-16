@@ -13,10 +13,16 @@ pub(crate) struct Members {
 }
 
 impl Element {
-    pub(crate) fn group_option_repeat(&self) -> Option<&Repeat> {
-        self.children
-            .first()?
-            .repeat
+    pub(crate) fn is_exclusive_push_option(&self) -> bool {
+        matches!(self.visual, Visual::Builtin(kind) if xrack_syntax::builtins::push_button(kind))
+            && self
+                .button_group
+                .as_ref()
+                .is_some_and(|group| group.check_property.is_none())
+    }
+
+    pub(crate) fn live_option_repeat(&self) -> Option<&Repeat> {
+        self.repeat
             .as_ref()
             .filter(|repeat| !repeat.empty && repeat.static_count.is_none())
     }
@@ -61,6 +67,15 @@ pub(crate) fn members(root: &Element) -> BTreeMap<String, Members> {
 }
 
 impl Instance {
+    pub(crate) fn group_member_path(&self, element: &Element) -> Option<&[usize]> {
+        let group = self
+            .definition()
+            .button_groups
+            .get(&element.button_group.as_ref()?.key)?;
+        let index = group.keys.iter().position(|key| *key == element.key)?;
+        Some(&group.paths[index])
+    }
+
     fn group_control(&self, group: &Element, name: &str) -> Result<Value> {
         self.control_value(group, name)?
             .map_or_else(|| self.default_control_value(group, name), Ok)
@@ -199,7 +214,7 @@ impl Instance {
             return Ok(false);
         };
         let (owner, group) = self.element_owner(&membership.key)?;
-        let Some((index, label)) = xrack_runtime::try_prepare_radio_selection(
+        let Some((index, label, changed)) = xrack_runtime::try_prepare_button_group_option(
             node,
             &membership.key,
             input,
@@ -210,27 +225,44 @@ impl Instance {
         else {
             return Ok(false);
         };
-        let property = group.selection_property();
-        let next = if property == "current-value" {
-            Value::String(label.clone())
-        } else {
-            Value::Int(index as i64)
-        };
-        if !owner.set_control_value(group, property, next)? {
-            return Ok(false);
+        let push_button = element.is_exclusive_push_option();
+        if changed {
+            let property = group.selection_property();
+            let next = if property == "current-value" {
+                Value::String(label.clone())
+            } else {
+                Value::Int(index as i64)
+            };
+            if !owner.set_control_value(group, property, next)? {
+                return Ok(false);
+            }
+            if push_button {
+                self.handler(element, "toggled", &[])?;
+            }
+            owner.handler(group, "selected", &[Value::String(label)])?;
         }
-        owner.handler(group, "selected", &[Value::String(label)])?;
-        Ok(true)
+        let click = push_button
+            && matches!(
+                input.event(),
+                xrack_runtime::RoutedEvent::Dispatch("clicked")
+            );
+        if click {
+            self.handler(element, "clicked", &[])?;
+        }
+        Ok(changed || click)
     }
 
     pub(crate) fn group_option_model(
         &self,
         element: &Element,
     ) -> Result<Option<Rc<crate::repeat::Model>>> {
-        let Some(repeat) = element.group_option_repeat() else {
+        let Some(template) = element.children.first() else {
             return Ok(None);
         };
-        self.repeat_state(&element.children[0])
+        let Some(repeat) = template.live_option_repeat() else {
+            return Ok(None);
+        };
+        self.repeat_state(template)
             .row_model(self, repeat)
             .map(Some)
     }
@@ -243,57 +275,63 @@ impl Instance {
         input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
         let property = element.selection_property();
-        let Some(label) = xrack_runtime::try_prepare_group_selection_with_model(
-            node,
-            index,
-            input,
-            || {
-                let source = self.group_option_model(element)?;
-                let current = source
-                    .as_ref()
-                    .is_none_or(|source| node.group_options_are_current(source.as_ref()));
-                Ok::<_, Error>(current.then_some(source))
-            },
-            || self.group_selection(element),
-            |source, index, label| {
-                if let Some(source) = source {
-                    let Some(key) = node.child_at(index).and_then(|item| item.row_key) else {
+        let label = if node.kind == "RadioGroup"
+            && element.children.iter().any(|child| child.repeat.is_some())
+        {
+            self.prepare_radio_group_selection(element, node, index, input)?
+        } else {
+            xrack_runtime::try_prepare_group_selection_with_model(
+                node,
+                index,
+                input,
+                || {
+                    let source = self.group_option_model(element)?;
+                    let current = source
+                        .as_ref()
+                        .is_none_or(|source| node.group_options_are_current(source.as_ref()));
+                    Ok::<_, Error>(current.then_some(source))
+                },
+                || self.group_selection(element),
+                |source, index, label| {
+                    if let Some(source) = source {
+                        let template = &element.children[0];
+                        let repeat = template.repeat.as_ref().ok_or_else(|| {
+                            Error::Invalid("missing repeated group option".into())
+                        })?;
+                        return self.live_repeated_group_option(
+                            template,
+                            repeat,
+                            source,
+                            index,
+                            node.child_at(index).and_then(|item| item.row_key),
+                            label,
+                        );
+                    }
+                    if element
+                        .children
+                        .first()
+                        .is_some_and(|child| child.repeat.is_some())
+                    {
+                        return Ok(xrack_runtime::group_item(node, index).map(|item| {
+                            if label {
+                                xrack_runtime::radio_value(item).into()
+                            } else {
+                                String::new()
+                            }
+                        }));
+                    }
+                    let Some(option) = element.children.get(index) else {
                         return Ok(None);
                     };
-                    let template = &element.children[0];
-                    let repeat = template.repeat.as_ref().expect("repeated group option");
-                    let Some(row) = self
-                        .repeat_state(template)
-                        .resolved_row(repeat, source, index, key, false)
-                    else {
-                        return Ok(None);
-                    };
-                    return row.live_group_option(
-                        template,
+                    self.live_group_option(
+                        option,
                         label,
-                        row.item_delegate_available(template)?,
-                    );
-                }
-                if element
-                    .children
-                    .first()
-                    .is_some_and(|child| child.repeat.is_some())
-                {
-                    return Ok(xrack_runtime::group_item(node, index).map(|item| {
-                        if label {
-                            xrack_runtime::radio_value(item).into()
-                        } else {
-                            String::new()
-                        }
-                    }));
-                }
-                let Some(option) = element.children.get(index) else {
-                    return Ok(None);
-                };
-                self.live_group_option(option, label, self.input_element_available(option, false)?)
-            },
-        )?
-        else {
+                        self.input_element_available(option, false)?,
+                    )
+                },
+            )?
+        };
+        let Some(label) = label else {
             return Ok(false);
         };
         let label = Value::String(label);
@@ -313,6 +351,80 @@ impl Instance {
             self.handler(element, "changed", &[index])?;
         }
         Ok(true)
+    }
+
+    fn prepare_radio_group_selection(
+        &self,
+        element: &Element,
+        node: &Node,
+        index: usize,
+        input: xrack_runtime::InputRoute<'_>,
+    ) -> Result<Option<String>> {
+        xrack_runtime::try_prepare_group_selection_with_model(
+            node,
+            index,
+            input,
+            || {
+                let Some((declaration, row)) = node.radio_option_location(index) else {
+                    return Ok(None);
+                };
+                let mut chosen = None;
+                for (slot, template) in element.children.iter().enumerate().take(declaration + 1) {
+                    if let Some(repeat) = template.live_option_repeat() {
+                        let source = self.repeat_state(template).row_model(self, repeat)?;
+                        if !node.radio_option_model_is_current(slot, source.as_ref()) {
+                            return Ok(None);
+                        }
+                        if slot == declaration {
+                            chosen = Some((repeat, source));
+                        }
+                    }
+                }
+                Ok(Some((declaration, row, chosen)))
+            },
+            || self.group_selection(element),
+            |(declaration, row, chosen), slot, label| {
+                let Some(template) = element.children.get(*declaration) else {
+                    return Ok(None);
+                };
+                if let Some((repeat, source)) = chosen {
+                    return self.live_repeated_group_option(
+                        template,
+                        repeat,
+                        source,
+                        *row,
+                        node.child_at(slot).and_then(|item| item.row_key),
+                        label,
+                    );
+                }
+                self.live_group_option(
+                    template,
+                    label,
+                    self.input_element_available(template, false)?,
+                )
+            },
+        )
+    }
+
+    fn live_repeated_group_option(
+        &self,
+        template: &Element,
+        repeat: &Repeat,
+        source: &Rc<crate::repeat::Model>,
+        row: usize,
+        key: Option<xrack_runtime::RowKey>,
+        label: bool,
+    ) -> Result<Option<String>> {
+        let Some(key) = key else {
+            return Ok(None);
+        };
+        let Some(owner) = self
+            .repeat_state(template)
+            .resolved_row(repeat, source, row, key, false)
+        else {
+            return Ok(None);
+        };
+        owner.live_group_option(template, label, owner.item_delegate_available(template)?)
     }
 
     fn live_group_option(

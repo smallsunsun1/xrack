@@ -1099,6 +1099,20 @@ impl<M> TableRows<M> {
 }
 
 impl<M: ListModel> TableRows<M> {
+    /// Capture a model in its source order.
+    #[doc(hidden)]
+    pub fn from_source(source: Rc<M>) -> Self {
+        let stamp = source.structure_stamp();
+        let positions = TableRowPositions {
+            stamp,
+            source_stamp: stamp,
+            count: source.row_count(),
+            projected: false,
+            order: None,
+        };
+        Self { source, positions }
+    }
+
     /// Apply positions to the same source exposed through a different item type.
     #[doc(hidden)]
     pub fn from_positions(source: Rc<M>, positions: TableRowPositions) -> Self {

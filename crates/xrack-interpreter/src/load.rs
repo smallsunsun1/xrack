@@ -100,6 +100,8 @@ pub(crate) fn program(
         }
     }
     Ok(Program {
+        #[cfg(all(feature = "live-reload", unix))]
+        update_plan: Rc::new(module.update_plan()),
         components: Rc::new(components),
         exports: Rc::new(exports),
         globals: Rc::new(globals),
@@ -171,6 +173,7 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::Brush => ValueType::Brush,
         Type::String => ValueType::String,
         Type::StringList => ValueType::StringList,
+        Type::IntList => ValueType::IntList,
         Type::Record(name) => ValueType::Record(Rc::from(name.as_ref())),
         Type::RecordList(name) => ValueType::RecordList(Rc::from(name.as_ref())),
         Type::Date => ValueType::Date,
@@ -279,11 +282,13 @@ struct Loader<'m> {
     source_scroll_targets: BTreeSet<String>,
     key_scroll_targets: BTreeSet<String>,
     focus_targets: BTreeSet<String>,
+    button_press_targets: BTreeSet<String>,
     text_selection_targets: BTreeSet<String>,
     text_command_targets: BTreeSet<String>,
     row_parameters: Vec<(String, Option<String>)>,
     in_split_handle: bool,
     in_day_cell: bool,
+    in_section_header: bool,
     timer_order: Vec<String>,
     action_keys: BTreeSet<String>,
     native_dialog_keys: BTreeSet<String>,
@@ -370,6 +375,7 @@ impl<'m> Loader<'m> {
             source_scroll_targets: loader.source_scroll_targets,
             key_scroll_targets: loader.key_scroll_targets,
             focus_targets: loader.focus_targets,
+            button_press_targets: loader.button_press_targets,
             text_selection_targets: loader.text_selection_targets,
             text_command_targets: loader.text_command_targets,
             timer_order: loader.timer_order,
@@ -388,6 +394,10 @@ impl<'m> Loader<'m> {
             PropertySource::Initial(self.expression(input, &[])?)
         };
         let property = PropertyDef {
+            #[cfg(all(feature = "live-reload", unix))]
+            location: crate::live_inspect::Source::from_operation(op),
+            #[cfg(all(feature = "live-reload", unix))]
+            visibility: visibility.into(),
             ty: value_kind(op, input)?,
             source,
             public: owner == "root" && visibility != "private",
@@ -427,7 +437,11 @@ impl<'m> Loader<'m> {
                     let arguments = (0..statement.operand_count())
                         .map(|index| expression(self, index))
                         .collect::<Result<_>>()?;
-                    body.push(Statement::Call(member(statement, "name")?, arguments));
+                    body.push(Statement::Call(
+                        member(statement, "name")?,
+                        arguments,
+                        CallSite::from_operation(statement),
+                    ));
                 }
                 "xr.log" => {
                     body.push(Statement::Log {
@@ -464,6 +478,8 @@ impl<'m> Loader<'m> {
                     let argument = expression(self, 0)?;
                     if method == "select-key" {
                         body.push(Statement::SelectKey(target, argument));
+                    } else if method == "select-keys" {
+                        body.push(Statement::SelectViewKeys(target, argument));
                     } else {
                         let column = (method == "select-source-cell")
                             .then(|| expression(self, 1))
@@ -613,6 +629,15 @@ impl<'m> Loader<'m> {
             }
         }
         Ok(Function {
+            #[cfg(all(feature = "live-reload", unix))]
+            name: op.attribute("name").unwrap_or(op.name()).into(),
+            #[cfg(all(feature = "live-reload", unix))]
+            location: crate::live_inspect::Source::from_operation(op),
+            #[cfg(all(feature = "live-reload", unix))]
+            parameter_names: parameters
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect(),
             parameters: parameter_types,
             result,
             body,
@@ -637,6 +662,7 @@ impl<'m> Loader<'m> {
                     model_type,
                     ValueType::Int
                         | ValueType::StringList
+                        | ValueType::IntList
                         | ValueType::RecordList(_)
                         | ValueType::TouchPoints
                 ) {
@@ -677,12 +703,15 @@ impl<'m> Loader<'m> {
         }
         let in_split_handle = self.in_split_handle;
         let in_day_cell = self.in_day_cell;
+        let in_section_header = self.in_section_header;
         self.in_split_handle |= op.attribute("kind") == Some("SplitHandle");
         self.in_day_cell |= op.attribute("kind") == Some("DayCell");
+        self.in_section_header |= op.attribute("kind") == Some("SectionHeader");
         let result = self.element_body(op, repeat, table_cell);
         self.visual_scope = previous_scope;
         self.in_split_handle = in_split_handle;
         self.in_day_cell = in_day_cell;
+        self.in_section_header = in_section_header;
         if nested {
             self.row_parameters.pop();
         }
@@ -799,6 +828,8 @@ impl<'m> Loader<'m> {
         } else {
             (None, None)
         };
+        let section_field = field("section-field")?;
+        let typeahead_field = field("typeahead-field")?;
         let mut instance_handlers = BTreeMap::new();
         let instance_bindings = self.analysis.instances.remove(key).unwrap_or_default();
         for handler in instance_bindings.callbacks {
@@ -902,6 +933,7 @@ impl<'m> Loader<'m> {
         let mut native_dialogs = Vec::new();
         let mut secondary_windows = Vec::new();
         let mut split_handle = None;
+        let mut section_header = None;
         let mut day_cell = None;
         for child in op.children() {
             match child.name() {
@@ -914,6 +946,13 @@ impl<'m> Loader<'m> {
                     if runtime::is_focus_handler(name) {
                         self.focus_targets.insert(key.into());
                     }
+                    if matches!(
+                        op.attribute("kind"),
+                        Some("Button" | "ToolButton" | "RoundButton")
+                    ) && matches!(name, "pressed" | "released" | "canceled")
+                    {
+                        self.button_press_targets.insert(key.into());
+                    }
                     if matches!(name, "scrolled" | "flicked") {
                         self.viewport_targets.insert(key.into());
                     }
@@ -924,6 +963,9 @@ impl<'m> Loader<'m> {
                 }
                 "xr.element" if child.attribute("kind") == Some("SplitHandle") => {
                     split_handle = Some(Box::new(self.element(child)?));
+                }
+                "xr.element" if child.attribute("kind") == Some("SectionHeader") => {
+                    section_header = Some(Box::new(self.element(child)?));
                 }
                 "xr.element" if child.attribute("kind") == Some("Timer") => {
                     timers.push(self.element(child)?)
@@ -1001,8 +1043,8 @@ impl<'m> Loader<'m> {
                         .and_then(viewport::offset_axis)
                         .is_some() =>
                 {
-                    let axis =
-                        viewport::offset_axis(attribute(child, "name")?).expect("viewport axis");
+                    let axis = viewport::offset_axis(attribute(child, "name")?)
+                        .ok_or_else(|| invalid(child, "invalid viewport axis"))?;
                     let input = operand(child, 0)?;
                     let offset = if child.name() == "xr.bind" {
                         viewport::Offset::Binding(self.visual_binding(child)?)
@@ -1019,6 +1061,8 @@ impl<'m> Loader<'m> {
                 "xr.bind"
                     if child.attribute("name") == Some("row-height-field")
                         && height_field.is_some() => {}
+                "xr.bind" if child.attribute("name") == Some("section-field") => {}
+                "xr.bind" if child.attribute("name") == Some("typeahead-field") => {}
                 "xr.bind"
                     if table.is_some()
                         && matches!(
@@ -1172,6 +1216,7 @@ impl<'m> Loader<'m> {
             split,
             stack_routes,
             day_cell,
+            section_header,
             clipboard_paste,
             clipboard_text,
             contains_delegate: is_instance
@@ -1180,7 +1225,9 @@ impl<'m> Loader<'m> {
                     .any(|child| child.repeat.is_none() && child.contains_delegate),
             visible_field,
             height_field,
-            list_key_field: field("row-key-field")?,
+            section_field,
+            typeahead_field,
+            row_key_field: field("row-key-field")?,
             instance_handlers,
             visual,
             grid_plan: scene_plan.grid.map(Arc::from),
@@ -1481,6 +1528,11 @@ impl<'m> Loader<'m> {
                 self.focus_targets.insert(owner.into());
                 Expression::FocusRead(owner.into(), spelling()? == "focus-within")
             }
+            "xr.button_pressed" => {
+                let owner = attribute(op, "owner")?;
+                self.button_press_targets.insert(owner.into());
+                Expression::ButtonPressed(owner.into())
+            }
             "xr.stack_read" => Expression::StackRead(
                 attribute(op, "owner")?.into(),
                 StackRead::from_operation(op).map_err(|error| invalid(op, error))?,
@@ -1492,13 +1544,22 @@ impl<'m> Loader<'m> {
                 let query = tree::Query::parse(method).ok_or_else(|| unsupported(op, method))?;
                 Expression::TreeQuery(attribute(op, "owner")?.into(), query, argument(self, 0)?)
             }
+            "xr.tree_selection_keys" | "xr.list_selection_keys" => {
+                Expression::SelectionKeys(attribute(op, "owner")?.into())
+            }
             "xr.list_selection_read" => {
                 Expression::ListSelectionRead(attribute(op, "owner")?.into())
+            }
+            "xr.list_row_selected" => {
+                Expression::ListRowSelected(attribute(op, "owner")?.into(), argument(self, 0)?)
             }
             "xr.view_count" => Expression::ViewCount {
                 owner: attribute(op, "owner")?.into(),
                 source: spelling()? == "source-row-count",
             },
+            "xr.view_index" if spelling()? == "view-index-for-key" => {
+                Expression::ViewIndexForKey(attribute(op, "owner")?.into(), argument(self, 0)?)
+            }
             "xr.view_index" => {
                 let method = spelling()?;
                 let direction = runtime::ViewIndex::parse(method).ok_or_else(|| {
@@ -1568,6 +1629,10 @@ impl<'m> Loader<'m> {
                     && let Some(parameter) = calendar::Parameter::parse(name)
                 {
                     Expression::CalendarCellParam(parameter)
+                } else if self.in_section_header
+                    && let Some(parameter) = runtime::ListSectionParameter::parse(name)
+                {
+                    Expression::ListSectionParam(parameter)
                 } else {
                     return Err(invalid(op, format_args!("unknown parameter {name}")));
                 }
@@ -1746,7 +1811,12 @@ impl<'m> Loader<'m> {
             ]),
             "xr.pointer_buttons" => Expression::PointerButtons(arguments(self)?),
             "xr.array" => Expression::Array(arguments(self)?),
-            "xr.call" => Expression::Call(member(op, "value")?, arguments(self)?),
+            "xr.int_array" => Expression::IntArray(arguments(self)?),
+            "xr.call" => Expression::Call(
+                member(op, "value")?,
+                arguments(self)?,
+                CallSite::from_operation(op),
+            ),
             _ => return Err(unsupported(op, op.name())),
         };
         let expression = Rc::new(expression);
@@ -1799,6 +1869,7 @@ pub(super) fn default_value(
             Ok(Value::RecordList(RecordList::new(name.clone(), Vec::new())))
         }
         ValueType::StringList => Ok(Value::StringList(Vec::new())),
+        ValueType::IntList => Ok(Value::IntList(Vec::new())),
         _ => runtime_default(ty).ok_or_else(|| format!("no runtime default for {ty:?}")),
     }
 }
@@ -1811,7 +1882,7 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
                 $(ValueType::$variant => Value::$variant(Default::default()),)*
                 ValueType::Image => Value::ImageAsset(ImageAsset::default()),
                 ValueType::Percent => Value::Percent(Percent(0.0)),
-                ValueType::Record(_) | ValueType::RecordList(_) | ValueType::StringList => return None,
+                ValueType::Record(_) | ValueType::RecordList(_) | ValueType::StringList | ValueType::IntList => return None,
             }
         };
     }
@@ -2016,6 +2087,9 @@ const PROPERTIES: &[&str] = &[
     "layout-order",
     "max-lines",
     "row-height",
+    "section-height",
+    "sticky-section-headers",
+    "typeahead-enabled",
     "header-height",
     "row-header-width",
     "row-header-text",
@@ -2179,6 +2253,8 @@ const PROPERTIES: &[&str] = &[
     "sequences",
     "focus-within",
     "auto-repeat",
+    "auto-repeat-delay",
+    "auto-repeat-interval",
     "border-color",
     "drop-shadow-color",
     "drop-shadow-blur",

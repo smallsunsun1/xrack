@@ -18,6 +18,9 @@ impl PythonValue {
     pub(super) fn into_for(self, ty: &ValueType) -> PyResult<HostValue> {
         let value = match (ty, self.0) {
             (ValueType::Float, HostValue::Int(value)) => HostValue::Float(value as f64),
+            (ValueType::IntList, HostValue::StringList(value)) if value.is_empty() => {
+                HostValue::IntList(Vec::new())
+            }
             (_, value) => value,
         };
         if ty.matches(&value) {
@@ -660,6 +663,7 @@ macro_rules! bridge_values {
             PyFloat::TYPE_HINT,
             PyString::TYPE_HINT,
             type_hint_subscript!(PyList::TYPE_HINT, PyString::TYPE_HINT),
+            type_hint_subscript!(PyList::TYPE_HINT, PyInt::TYPE_HINT),
             $($wrapper::TYPE_HINT,)+
             $($name::TYPE_HINT),+
         );
@@ -678,6 +682,12 @@ macro_rules! bridge_values {
                 return Ok(HostValue::String(value.extract()?));
             }
             if value.is_instance_of::<PyList>() {
+                let list = value.cast::<PyList>()?;
+                if !list.is_empty() && list.iter().all(|item| {
+                    item.is_instance_of::<PyInt>() && !item.is_instance_of::<PyBool>()
+                }) {
+                    return Ok(HostValue::IntList(value.extract()?));
+                }
                 return Ok(HostValue::StringList(value.extract()?));
             }
             $(
@@ -705,6 +715,8 @@ macro_rules! bridge_values {
                 HostValue::Float(value) => convert!(value),
                 HostValue::String(value) => convert!(value),
                 HostValue::StringList(value) => convert!(value),
+                HostValue::IntList(value) => convert!(value),
+                HostValue::IntModel(model) => convert!(model.into_snapshot()),
                 HostValue::Image(value) => convert!(Image(value.into())),
                 // The combo projection is renderer data and has no public ValueType.
                 HostValue::ComboModel(_) => Err(PyTypeError::new_err("invalid public XRack combo projection")),

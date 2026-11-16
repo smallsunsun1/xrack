@@ -1,8 +1,17 @@
-use tree_ui::{TreeBranchesDemo, TreeCommandsDemo, TreeDemo, VisibilityTreeDemo};
+use tree_ui::{
+    DirectionalTreeDemo, TreeBatchSelectionDemo, TreeBranchesDemo, TreeCommandsDemo, TreeDemo,
+    TreeDisclosureDemo, VisibilityTreeDemo,
+};
 
 fn main() -> std::process::ExitCode {
     let result = if std::env::args().nth(1).as_deref() == Some("--commands") {
         xrack_platform_winit::run(TreeCommandsDemo::new())
+    } else if std::env::args().nth(1).as_deref() == Some("--batch-selection") {
+        xrack_platform_winit::run(TreeBatchSelectionDemo::new())
+    } else if std::env::args().nth(1).as_deref() == Some("--rtl-tree") {
+        xrack_platform_winit::run(DirectionalTreeDemo::new())
+    } else if std::env::args().nth(1).as_deref() == Some("--disclosure") {
+        xrack_platform_winit::run(TreeDisclosureDemo::new())
     } else if std::env::args().nth(1).as_deref() == Some("--branches") {
         let mut ui = TreeBranchesDemo::new();
         ui.invoke_initialize();

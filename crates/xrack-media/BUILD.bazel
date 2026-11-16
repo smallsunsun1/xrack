@@ -196,6 +196,7 @@ rust_test(
     crate = ":xrack_media",
     crate_features = MEDIA_FEATURES,
     data = [":native_payload"],
+    deps = ["@crates//:tempfile"],
     env = {"XRACK_MEDIA_TEST_AUDIO": "1"},
     rustc_env = {"XRACK_MEDIA_RUNFILE": "$(rlocationpath :native_payload)"},
     tags = ["manual"],

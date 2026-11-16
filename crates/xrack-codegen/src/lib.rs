@@ -12,13 +12,15 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
 };
-use xrack_ir::semantic::{day_cell_inputs, is_window, rust_name, split_handle_inputs};
+use xrack_ir::semantic::{
+    day_cell_inputs, is_window, rust_name, section_header_inputs, split_handle_inputs,
+};
 use xrack_mlir::{
     AliasGraph, AliasGraphs, AnimationRef, BinaryOperator, CallbackForward, ComponentAnalysis,
     GradientRef, Module, OperationRef, PropertyEndpoint, RecordComboRef, RecordDeclRef, RepeatRef,
     RowSceneCache, StackRead, StandardTableRef, StateCaseRef, TableClipboardRef, TablePasteRef,
     TableRead, TranslationRef, TreeViewRef, UnaryOperator, ValueRef, VisualCacheGroup,
-    repeat_is_positioned, scene_children, visual_cache_operand,
+    has_button_check_state, repeat_is_positioned, scene_children, visual_cache_operand,
 };
 use xrack_resources::visual::{
     ControlDefault, ControlLiteral, action_ref, check_state_binding, check_state_control,
@@ -63,6 +65,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::Bool => quote!(::core::primitive::bool),
         Type::String => quote!(::std::string::String),
         Type::StyledText => quote!(::xrack_runtime::StyledText),
+        Type::IntList => quote!(::xrack_runtime::VecModel<::core::primitive::i64>),
         Type::StringList => quote!(::xrack_runtime::VecModel<::std::string::String>),
         Type::Record(name) => {
             let name = ident(name);
@@ -396,6 +399,18 @@ fn tree_selection_method(key: &str) -> Ident {
     format_ident!("__tree_selection_{}", rust_key(key))
 }
 
+fn tree_selection_info_method(key: &str) -> Ident {
+    format_ident!("__tree_selection_info_{}", rust_key(key))
+}
+
+fn tree_selection_keys_method(key: &str) -> Ident {
+    format_ident!("__tree_selection_keys_{}", rust_key(key))
+}
+
+fn tree_replace_selection_method(key: &str) -> Ident {
+    format_ident!("__tree_replace_selection_{}", rust_key(key))
+}
+
 fn tree_input_method(key: &str) -> Ident {
     format_ident!("__tree_input_{}", rust_key(key))
 }
@@ -462,6 +477,12 @@ fn instance_field(key: &str) -> Ident {
 
 fn radio_group_ref(element: OperationRef<'_>) -> Option<&str> {
     children(element, "xr.radio_group_ref")
+        .next()?
+        .attribute("group")
+}
+
+fn check_group_ref(element: OperationRef<'_>) -> Option<&str> {
+    children(element, "xr.check_group_ref")
         .next()?
         .attribute("group")
 }
@@ -542,6 +563,10 @@ fn state_selector_name(owner: &str) -> Ident {
 fn focus_handle(owner: &str) -> Ident {
     let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
     format_ident!("__xr_focus_{encoded}")
+}
+
+fn button_press_handle(owner: &str) -> Ident {
+    format_ident!("__button_press_{}", rust_key(owner))
 }
 
 fn scale_rotate_handle(owner: &str) -> Ident {
@@ -651,6 +676,33 @@ fn list_selection_index_method(key: &str) -> Ident {
     format_ident!("__list_selection_index_{}", rust_key(key))
 }
 
+fn list_multi_selection(element: OperationRef<'_>) -> bool {
+    matches!(
+        element.attr("kind"),
+        Ok("ListView" | "GridView" | "StandardListView")
+    ) && children(element, "xr.bind").any(|binding| binding.attr("name") == Ok("multi-select"))
+}
+
+fn list_selection_field(key: &str) -> Ident {
+    format_ident!("__list_selection_{}", rust_key(key))
+}
+
+fn list_selection_command_method(key: &str) -> Ident {
+    format_ident!("__list_selection_command_{}", rust_key(key))
+}
+
+fn list_selection_info_method(key: &str) -> Ident {
+    format_ident!("__list_selection_info_{}", rust_key(key))
+}
+
+fn list_selection_keys_method(key: &str) -> Ident {
+    format_ident!("__list_selection_keys_{}", rust_key(key))
+}
+
+fn list_replace_selection_method(key: &str) -> Ident {
+    format_ident!("__list_replace_selection_{}", rust_key(key))
+}
+
 fn view_count_method(key: &str) -> Ident {
     format_ident!("__view_count_{}", rust_key(key))
 }
@@ -665,6 +717,14 @@ fn source_selection_method(key: &str) -> Ident {
 
 fn list_renderer_field(key: &str) -> Ident {
     format_ident!("__list_renderer_{}", rust_key(key))
+}
+
+fn section_renderer_field(key: &str) -> Ident {
+    format_ident!("__section_renderer_{}", rust_key(key))
+}
+
+fn section_header_method(key: &str) -> Ident {
+    format_ident!("__section_header_{}", rust_key(key))
 }
 
 fn list_rows_method(key: &str) -> Ident {
@@ -709,6 +769,10 @@ fn static_children(op: OperationRef<'_>) -> impl Iterator<Item = (usize, Operati
     })
 }
 
+fn has_repeated_check_state(element: OperationRef<'_>) -> bool {
+    element.attr("kind") == Ok("GroupBox") || has_button_check_state(element)
+}
+
 type GroupMembers<'a> = BTreeMap<&'a str, Vec<(Vec<usize>, OperationRef<'a>)>>;
 
 fn button_group_members(root: OperationRef<'_>) -> GroupMembers<'_> {
@@ -717,11 +781,7 @@ fn button_group_members(root: OperationRef<'_>) -> GroupMembers<'_> {
         path: &mut Vec<usize>,
         groups: &mut GroupMembers<'a>,
     ) {
-        if let Some(group) = radio_group_ref(element).or_else(|| {
-            children(element, "xr.check_group_ref")
-                .next()?
-                .attribute("group")
-        }) {
+        if let Some(group) = radio_group_ref(element).or_else(|| check_group_ref(element)) {
             groups
                 .entry(group)
                 .or_default()
@@ -779,7 +839,7 @@ struct VisualScope<'a> {
     binding_types: Vec<Type>,
     repeats: BTreeMap<&'a str, RepeatScope<'a>>,
     row_delegates: BTreeMap<&'a str, usize>,
-    row_groups: BTreeMap<&'a str, OperationRef<'a>>,
+    row_checks: BTreeMap<&'a str, OperationRef<'a>>,
 }
 
 struct RepeatScope<'a> {
@@ -882,8 +942,8 @@ impl<'a> VisualScope<'a> {
             let rust_type = ty(value_type);
             fields.extend(quote!(#field: ::xrack_runtime::Property<#rust_type>,));
         }
-        for (&key, &group) in &self.row_groups {
-            if control_link(group, "checked").is_some() {
+        for (&key, &element) in &self.row_checks {
+            if control_link(element, "checked").is_some() {
                 continue;
             }
             let field = control_field(key, "checked");
@@ -936,6 +996,8 @@ struct Generator<'a> {
     tables: Vec<OperationRef<'a>>,
     standard_tables: BTreeMap<&'a str, StandardTableRef<'a>>,
     row_height_views: BTreeSet<&'a str>,
+    sectioned_lists: BTreeSet<&'a str>,
+    section_headers: BTreeMap<&'a str, OperationRef<'a>>,
     splits: Vec<&'a str>,
     trees: BTreeMap<&'a str, TreeViewRef<'a>>,
     stacks: BTreeMap<&'a str, OperationRef<'a>>,
@@ -945,12 +1007,15 @@ struct Generator<'a> {
     media_players: Vec<OperationRef<'a>>,
     native_dialogs: Vec<OperationRef<'a>>,
     focus_targets: BTreeSet<&'a str>,
+    button_press_targets: BTreeSet<&'a str>,
     text_selection_targets: BTreeSet<&'a str>,
     text_command_targets: BTreeSet<&'a str>,
     text_acceptance_targets: BTreeSet<&'a str>,
     pointer_targets: BTreeSet<&'a str>,
     viewport_targets: BTreeSet<&'a str>,
     view_count_targets: BTreeSet<&'a str>,
+    list_selection_info_targets: BTreeSet<&'a str>,
+    list_selection_command_targets: BTreeSet<&'a str>,
     list_selection_targets: BTreeSet<&'a str>,
     key_scroll_targets: BTreeSet<&'a str>,
     view_empty_state_owners: BTreeMap<&'a str, &'a str>,
@@ -1050,6 +1115,16 @@ impl<'a> Generator<'a> {
                 if row_height_binding(op).is_some() {
                     self.row_height_views.insert(key);
                 }
+                if children(op, "xr.bind")
+                    .any(|binding| binding.attr("name") == Ok("section-field"))
+                {
+                    self.sectioned_lists.insert(key);
+                }
+                if let Some(header) = children(op, "xr.element")
+                    .find(|child| child.attribute("kind") == Some("SectionHeader"))
+                {
+                    self.section_headers.insert(key, header);
+                }
                 if viewport_bindings(op).next().is_some() {
                     self.viewport_targets.insert(key);
                     self.bound_viewports.push(op);
@@ -1071,6 +1146,17 @@ impl<'a> Generator<'a> {
                         .is_some_and(xrack_runtime::is_focus_handler)
                 }) {
                     self.focus_targets.insert(key);
+                }
+                if matches!(
+                    op.attribute("kind"),
+                    Some("Button" | "ToolButton" | "RoundButton")
+                ) && children(op, "xr.handler").any(|handler| {
+                    matches!(
+                        handler.attribute("name"),
+                        Some("pressed" | "released" | "canceled")
+                    )
+                }) {
+                    self.button_press_targets.insert(key);
                 }
                 if let Some(combo) = RecordComboRef::from_operation(op)? {
                     self.record_combos.insert(key, combo);
@@ -1118,7 +1204,7 @@ impl<'a> Generator<'a> {
                 for (property, ty) in controlled_properties(op) {
                     if op.attr("kind") != Ok("Action")
                         && control_link(op, property).is_none()
-                        && !(repeat.is_some() && op.attr("kind") == Ok("GroupBox"))
+                        && !(repeat.is_some() && has_repeated_check_state(op))
                     {
                         self.unlinked_controls.push((key, property, ty));
                     }
@@ -1137,6 +1223,9 @@ impl<'a> Generator<'a> {
                 "xr.focus_read" => {
                     self.focus_targets.insert(child.attr("owner")?);
                 }
+                "xr.button_pressed" => {
+                    self.button_press_targets.insert(child.attr("owner")?);
+                }
                 "xr.text_selection_read" | "xr.text_command_available" => {
                     self.index_editor_state(child)?;
                 }
@@ -1150,6 +1239,10 @@ impl<'a> Generator<'a> {
                     let owner = child.attr("owner")?;
                     self.list_selection_targets.insert(owner);
                     self.view_count_targets.insert(owner);
+                }
+                "xr.table_selection_read" | "xr.list_row_selected" => {
+                    self.list_selection_info_targets
+                        .insert(child.attr("owner")?);
                 }
                 "xr.viewport_read" | "xr.flick_motion_read" => {
                     self.viewport_targets.insert(child.attr("owner")?);
@@ -1168,6 +1261,9 @@ impl<'a> Generator<'a> {
                             }
                             "xr.focus_read" | "xr.text_command" => {
                                 self.focus_targets.insert(effect.attr("owner")?);
+                            }
+                            "xr.button_pressed" => {
+                                self.button_press_targets.insert(effect.attr("owner")?);
                             }
                             "xr.text_selection_read" | "xr.text_command_available" => {
                                 self.index_editor_state(effect)?;
@@ -1202,6 +1298,14 @@ impl<'a> Generator<'a> {
                                 let owner = effect.attr("owner")?;
                                 self.list_selection_targets.insert(owner);
                                 self.view_count_targets.insert(owner);
+                            }
+                            "xr.table_selection_read" | "xr.list_row_selected" => {
+                                self.list_selection_info_targets
+                                    .insert(effect.attr("owner")?);
+                            }
+                            "xr.table_selection_command" => {
+                                self.list_selection_command_targets
+                                    .insert(effect.attr("owner")?);
                             }
                             "xr.geometry_read" => {
                                 self.geometry_targets.insert(effect.attr("owner")?);
@@ -1301,8 +1405,8 @@ impl<'a> Generator<'a> {
         scope: &mut VisualScope<'a>,
         next: &mut usize,
     ) -> Result<(), String> {
-        if scope.row_index.is_some() && element.attr("kind") == Ok("GroupBox") {
-            scope.row_groups.insert(element_key(element)?, element);
+        if scope.row_index.is_some() && has_repeated_check_state(element) {
+            scope.row_checks.insert(element_key(element)?, element);
         }
         for binding in indexed_visual_bindings(element) {
             self.index_visual_binding(binding, scope)?;
@@ -1475,7 +1579,7 @@ impl<'a> Generator<'a> {
                     &[#((#names, ::xrack_runtime::TranslationValue::from(#values))),*],
                 )))
             }
-            "xr.array" | "xr.record_array" => {
+            "xr.array" | "xr.int_array" | "xr.record_array" => {
                 let items = (0..op.operand_count())
                     .map(arg)
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1675,6 +1779,10 @@ impl<'a> Generator<'a> {
                 };
                 quote!(#receiver.__state.#handle.#getter())
             }
+            "xr.button_pressed" => {
+                let handle = button_press_handle(owner(op));
+                quote!(#receiver.__state.#handle.pressed())
+            }
             "xr.text_selection_read" | "xr.text_command_available" => {
                 let handle = focus_handle(owner(op));
                 let getter = ident(value);
@@ -1733,6 +1841,28 @@ impl<'a> Generator<'a> {
             }
             "xr.table_selection_read" | "xr.table_sort_read" | "xr.table_history_read" => {
                 let key = owner(op);
+                if self.trees.contains_key(key) {
+                    let method = tree_selection_info_method(key);
+                    let count = quote!(#receiver.#method(::core::option::Option::None).0);
+                    return match TableRead::from_operation(op)? {
+                        TableRead::SelectionCount => Ok(count),
+                        TableRead::HasSelection => Ok(quote!(#count != 0)),
+                        _ => Err("unsupported tree selection query".into()),
+                    };
+                }
+                if self.elements.get(key).is_some_and(|view| {
+                    matches!(
+                        view.attr("kind"),
+                        Ok("ListView" | "GridView" | "StandardListView")
+                    )
+                }) {
+                    let method = list_selection_info_method(key);
+                    return match TableRead::from_operation(op)? {
+                        TableRead::SelectionCount => Ok(quote!(#receiver.#method(-1).0)),
+                        TableRead::HasSelection => Ok(quote!(#receiver.#method(-1).0 != 0)),
+                        _ => Err("unsupported list selection query".into()),
+                    };
+                }
                 let snapshot = table_selection_snapshot_method(owner(op));
                 let field = table_sort_field(key);
                 let sort = quote!(#receiver.__state.#field.get(|| None));
@@ -1759,6 +1889,19 @@ impl<'a> Generator<'a> {
                     }
                 }
             }
+            "xr.list_row_selected" => {
+                let method = list_selection_info_method(owner(op));
+                let row = arg(0)?;
+                quote!(#receiver.#method(#row).1)
+            }
+            "xr.tree_selection_keys" | "xr.list_selection_keys" => {
+                let method = if op.name() == "xr.tree_selection_keys" {
+                    tree_selection_keys_method(owner(op))
+                } else {
+                    list_selection_keys_method(owner(op))
+                };
+                quote!(#receiver.#method())
+            }
             "xr.split_state_read" => {
                 let save = split_save_method(owner(op));
                 quote!(#receiver.#save())
@@ -1768,6 +1911,18 @@ impl<'a> Generator<'a> {
                 quote!(#receiver.__state.#state.handle().resizing())
             }
             "xr.tree_query" => {
+                if matches!(value, "is-row-selected" | "is-key-selected") {
+                    let method = tree_selection_info_method(owner(op));
+                    let lookup = if value == "is-row-selected" {
+                        quote!(Row)
+                    } else {
+                        quote!(Key)
+                    };
+                    let index = arg(0)?;
+                    return Ok(quote!(#receiver.#method(::core::option::Option::Some(
+                        ::xrack_runtime::TreeSelectionLookup::#lookup(#index)
+                    )).1));
+                }
                 let snapshot = tree_snapshot_method(owner(op));
                 let key = arg(0)?;
                 let method = match value {
@@ -1791,6 +1946,11 @@ impl<'a> Generator<'a> {
                 quote!(#receiver.#method(#source))
             }
             "xr.view_index" => {
+                if value == "view-index-for-key" {
+                    let method = list_key_index_method(owner(op));
+                    let key = arg(0)?;
+                    return Ok(quote!(#receiver.#method(#key)));
+                }
                 let method = view_index_method(owner(op));
                 let index = arg(0)?;
                 let direction =
@@ -2373,17 +2533,32 @@ impl<'a> Generator<'a> {
                 }
                 "xr.source_selection" => {
                     let owner = statement.attr("owner")?;
+                    let operation = statement.attr("method")?;
                     let method = source_selection_method(owner);
                     let source = self.expr(self.operand(statement, 0)?)?;
-                    let column = if statement.attr("method")? == "select-source-cell" {
+                    let column = if operation == "select-source-cell" {
                         let column = self.expr(self.operand(statement, 1)?)?;
                         quote!(Some(#column))
                     } else {
                         quote!(None)
                     };
-                    if statement.attr("method")? == "select-key" {
-                        let select = list_select_key_method(owner);
+                    if operation == "select-keys" {
+                        let select = if self.trees.contains_key(owner) {
+                            tree_replace_selection_method(owner)
+                        } else {
+                            list_replace_selection_method(owner)
+                        };
                         statements.extend(quote!(self.#select(#source);));
+                    } else if operation == "select-key" {
+                        if self.trees.contains_key(owner) {
+                            let select = tree_selection_method(owner);
+                            statements.extend(quote! {
+                                self.#select(::xrack_runtime::TreeSelectionCommand::Key(#source));
+                            });
+                        } else {
+                            let select = list_select_key_method(owner);
+                            statements.extend(quote!(self.#select(#source);));
+                        }
                     } else {
                         statements.extend(quote!(self.#method(#source, #column);));
                     }
@@ -2404,7 +2579,28 @@ impl<'a> Generator<'a> {
                     }
                 }
                 "xr.table_selection_command" => {
-                    let method = table_selection_method(owner(statement));
+                    let owner = owner(statement);
+                    let tree = self.trees.contains_key(owner);
+                    let list = self.elements.get(owner).is_some_and(|view| {
+                        matches!(
+                            view.attr("kind"),
+                            Ok("ListView" | "GridView" | "StandardListView")
+                        )
+                    });
+                    let method = if tree {
+                        tree_selection_method(owner)
+                    } else if list {
+                        list_selection_command_method(owner)
+                    } else {
+                        table_selection_method(owner)
+                    };
+                    let action = if tree {
+                        quote!(::xrack_runtime::TreeSelectionCommand::Visual(action))
+                    } else if list {
+                        quote!(::xrack_runtime::ListSelectionCommand::Visual(action))
+                    } else {
+                        quote!(action)
+                    };
                     let operation = statement.attr("method")?;
                     let selection = xrack_runtime::TableSelectionMethod::parse(operation)
                         .ok_or("unknown table selection command")?;
@@ -2414,7 +2610,7 @@ impl<'a> Generator<'a> {
                         .collect::<Result<Vec<_>, _>>()?;
                     statements.extend(quote! {
                         if let Some(action) = ::xrack_runtime::TableSelectionMethod::#variant.action(&[#(#values),*]) {
-                            let _ = self.#method(action);
+                            let _ = self.#method(#action);
                         }
                     });
                 }
@@ -3087,11 +3283,11 @@ impl<'a> Generator<'a> {
                 });
             }
             let mut groups = TokenStream::new();
-            self.repeated_group_targets(row, &repeat.row, &mut Vec::new(), &mut groups)?;
+            self.repeated_check_targets(row, &repeat.row, &mut Vec::new(), &mut groups)?;
             let group_route = if groups.is_empty() {
                 TokenStream::new()
             } else {
-                let route = self.with_group_event_row(
+                let route = self.with_check_event_row(
                     row,
                     &self.visuals,
                     repeat,
@@ -3433,7 +3629,7 @@ impl<'a> Generator<'a> {
                 if children(child, "xr.repeat").next().is_some() {
                     let slot = format_ident!("__xr_slot_{}", path.len());
                     let prefix = path.iter().map(|index| quote!(#index)).collect::<Vec<_>>();
-                    self.repeated_group_events(child, &self.visuals, &slot, &prefix, out)?;
+                    self.repeated_check_events(child, &self.visuals, &slot, &prefix, out)?;
                 } else {
                     self.delegate_event_arms(child, path, out, delegates)?;
                 }
@@ -3443,7 +3639,7 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
-    fn repeated_group_events(
+    fn repeated_check_events(
         &self,
         row: OperationRef<'a>,
         scope: &VisualScope<'_>,
@@ -3458,11 +3654,11 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         let mut body = TokenStream::new();
-        self.repeated_group_targets(row, &repeat.row, &mut Vec::new(), &mut body)?;
+        self.repeated_check_targets(row, &repeat.row, &mut Vec::new(), &mut body)?;
         if body.is_empty() {
             return Ok(());
         }
-        let route = self.with_group_event_row(row, scope, repeat, None, &body)?;
+        let route = self.with_check_event_row(row, scope, repeat, None, &body)?;
         out.extend(quote! {
             [#(#prefix,)* #slot, __xr_rest @ ..] => Some((|| {
                 if !matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked")) {
@@ -3478,7 +3674,7 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
-    fn with_group_event_row(
+    fn with_check_event_row(
         &self,
         row: OperationRef<'a>,
         scope: &VisualScope<'_>,
@@ -3521,7 +3717,7 @@ impl<'a> Generator<'a> {
         }
     }
 
-    fn repeated_group_targets(
+    fn repeated_check_targets(
         &self,
         row: OperationRef<'a>,
         scope: &VisualScope<'_>,
@@ -3531,16 +3727,21 @@ impl<'a> Generator<'a> {
         let node = *Self::row_path(row, path)?
             .last()
             .ok_or("missing repeated node")?;
-        if node.attr("kind") == Ok("GroupBox") {
+        if has_repeated_check_state(node) {
             let available = self.row_target_available(row, path, scope, &quote!(true), None)?;
-            let click = self.group_box_toggle(node, scope, &quote!(Some(input)))?;
+            let input = quote!(Some(input));
+            let click = if has_button_check_state(node) {
+                self.activate_checkable_button(node, scope, &input, &quote!(true))?
+            } else {
+                self.group_box_toggle(node, scope, &input)?
+            };
             out.extend(quote!([#(#path),*] => Some((#available) && #click),));
         }
         for (index, child) in child_slots(node) {
             if let Some(repeat) = scope.repeats.get(element_key(child)?) {
                 if repeat.uses_row_identity() {
                     let mut body = TokenStream::new();
-                    self.repeated_group_targets(child, &repeat.row, &mut Vec::new(), &mut body)?;
+                    self.repeated_check_targets(child, &repeat.row, &mut Vec::new(), &mut body)?;
                     if !body.is_empty() {
                         let available = self.row_target_available(
                             row,
@@ -3549,7 +3750,7 @@ impl<'a> Generator<'a> {
                             &quote!(false),
                             Some(index),
                         )?;
-                        let route = self.with_group_event_row(child, scope, repeat, None, &body)?;
+                        let route = self.with_check_event_row(child, scope, repeat, None, &body)?;
                         out.extend(quote! {
                             [#(#path,)* #index, __xr_slot, __xr_rest @ ..] => Some((#available) && (|| {
                                 let __xr_container = __xr_row_node.at_path(&[#(#path,)* #index])?;
@@ -3563,7 +3764,7 @@ impl<'a> Generator<'a> {
                 }
             } else if children(child, "xr.repeat").next().is_none() {
                 path.push(index);
-                self.repeated_group_targets(row, scope, path, out)?;
+                self.repeated_check_targets(row, scope, path, out)?;
                 path.pop();
             }
         }
@@ -3967,7 +4168,7 @@ impl<'a> Generator<'a> {
         };
         let key = element_key(element)?;
         let field = control_field(key, name);
-        let storage = if scope.row_groups.contains_key(key) {
+        let storage = if scope.row_checks.contains_key(key) {
             scope.receiver()
         } else {
             quote!(self.__state)
@@ -4902,10 +5103,17 @@ impl<'a> Generator<'a> {
         out: &mut TokenStream,
         next: &mut usize,
         name: Ident,
+        model: Option<&TokenStream>,
     ) -> Result<Ident, String> {
         if xrack_resources::visual::keyed_list(view) {
             let index = list_selection_index_method(element_key(view)?);
             out.extend(quote!(#name.properties.insert("current-index", self.#index().into());));
+        }
+        if list_multi_selection(view)
+            && let Some(model) = model
+        {
+            let selection = list_selection_field(element_key(view)?);
+            out.extend(quote!(self.__state.#selection.populate_list_scene(&mut #name, #model);));
         }
         if self.key_scroll_targets.contains(element_key(view)?) {
             let locator = list_key_locator_method(element_key(view)?);
@@ -5009,6 +5217,88 @@ impl<'a> Generator<'a> {
             quote!(self.__state.#projection.snapshot(#model, #base, |row| row #field))
         };
         Ok(Some(value))
+    }
+
+    fn project_list_sections(
+        &self,
+        element: OperationRef<'a>,
+        node: &Ident,
+        model: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let Some(field) = self.record_field_binding(element, "section-field")? else {
+            return Ok(TokenStream::new());
+        };
+        let field = field_access(field.split('.'));
+        let state = format_ident!("__list_sections_{}", rust_key(element_key(element)?));
+        let project = quote!(|row| (row #field).as_str());
+        let projection = if has_list_visibility(element) {
+            quote!(self.__state.#state.snapshot((#model).source(), Some((#model).positions()), #project))
+        } else {
+            quote!(self.__state.#state.snapshot(#model, None, #project))
+        };
+        Ok(quote!(#node.list_sections = Some(#projection);))
+    }
+
+    fn list_text_search(
+        &self,
+        element: OperationRef<'a>,
+        node: &Ident,
+        model: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        if !matches!(
+            element.attr("kind"),
+            Ok("ListView" | "GridView" | "StandardListView")
+        ) {
+            return Ok(TokenStream::new());
+        }
+        let field = self.record_field_binding(element, "typeahead-field")?;
+        if field.is_none()
+            && !children(element, "xr.bind")
+                .any(|binding| binding.attr("name") == Ok("typeahead-enabled"))
+        {
+            return Ok(TokenStream::new());
+        }
+        let standard = element.attr("kind") == Ok("StandardListView");
+        let binding = if standard {
+            model_binding(element)
+        } else {
+            Some(self.list_template(element)?.1)
+        };
+        let Some(binding) = binding else {
+            return Ok(TokenStream::new());
+        };
+        let default_enabled = field.is_some();
+        let label = match value_type(self.operand(binding, 0)?)? {
+            Type::StringList => quote!(|row| row.as_str()),
+            Type::RecordList(_) => {
+                let field = if standard {
+                    field
+                        .or(self.record_field_binding(element, "text-role")?)
+                        .or_else(|| Some("text".into()))
+                } else {
+                    field
+                };
+                let Some(field) = field else {
+                    return Ok(TokenStream::new());
+                };
+                let field = field_access(field.split('.'));
+                quote!(|row| (row #field).as_str())
+            }
+            _ => return Ok(TokenStream::new()),
+        };
+        let (source, order) = if has_list_visibility(element) {
+            (
+                quote!((#model).source().clone()),
+                quote!(Some((#model).positions().clone())),
+            )
+        } else {
+            (quote!((*#model).clone()), quote!(None))
+        };
+        Ok(quote! {
+            if #node.boolean("typeahead-enabled", #default_enabled) {
+                #node.list_text_search = Some(::xrack_runtime::ListTextSearch::new(#source, #order, #label));
+            }
+        })
     }
 
     fn table_model(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
@@ -5172,6 +5462,142 @@ impl<'a> Generator<'a> {
         }
     }
 
+    fn list_selection_input(
+        &self,
+        view: OperationRef<'a>,
+        available: &TokenStream,
+        current: &TokenStream,
+        projection: &TableProjection<'_, 'a>,
+    ) -> Result<TokenStream, String> {
+        if !list_multi_selection(view) {
+            return Ok(TokenStream::new());
+        }
+        let state = list_selection_field(element_key(view)?);
+        let rows = self.list_selection_rows(view)?;
+        let multiple = self.row_binding_or(view, "multi-select", quote!(false), projection)?;
+        let notify = self.list_selection_notifier(view)?;
+        Ok(quote! {
+            if node.table_selection.is_some() || matches!(action, ::xrack_runtime::ControlAction::TableSelection(_)) {
+                let __xr_rows = ::std::cell::OnceCell::new();
+                let __xr_model = || __xr_rows.get_or_init(|| #rows);
+                let Some(__xr_change) = self.__state.#state.apply_control(
+                    node, input, || #available, || __xr_model().clone(),
+                    || ::xrack_runtime::TableSelectionOptions {
+                        target: ::xrack_runtime::SelectionTarget::Rows,
+                        multiple: #multiple,
+                        order: ::core::default::Default::default(),
+                        drag_select: false,
+                    },
+                    || #current,
+                ) else { return false; };
+                return __xr_change.notify(false, #notify);
+            }
+        })
+    }
+
+    fn list_selection_rows(&self, view: OperationRef<'a>) -> Result<TokenStream, String> {
+        if has_list_visibility(view) {
+            let method = visible_list_model(element_key(view)?);
+            Ok(quote!(self.#method()))
+        } else {
+            let model = self.view_source_model(view)?;
+            Ok(quote!(::xrack_runtime::TableRows::from_source(#model)))
+        }
+    }
+
+    fn list_selection_notifier(&self, view: OperationRef<'a>) -> Result<TokenStream, String> {
+        let selected = if let Some(field) = self.record_field_binding(view, "row-key-field")? {
+            let field = field_access(field.split('.'));
+            quote!(::xrack_runtime::ListModel::item(__xr_model(), __xr_row) #field)
+        } else {
+            quote!(__xr_index)
+        };
+        let set = self.set_control(view, &selected)?;
+        let changed = self.typed_event(view, "changed", &quote!(__xr_index))?;
+        let selected = self.typed_event(view, "selection-changed", &quote!(__xr_count))?;
+        Ok(quote! {
+                 |event| match event {
+                    ::xrack_runtime::TableSelectionEvent::CurrentRowChanged(__xr_row) => {
+                        let __xr_index = __xr_row as ::core::primitive::i64;
+                        #set
+                        #changed
+                    }
+                    ::xrack_runtime::TableSelectionEvent::SelectionChanged(count) => {
+                        let __xr_count = count as ::core::primitive::i64;
+                        #selected
+                    }
+                    _ => {}
+                }
+        })
+    }
+
+    fn list_selection_methods(&self, view: OperationRef<'a>) -> Result<TokenStream, String> {
+        let key = element_key(view)?;
+        let reads = self.list_selection_info_targets.contains(key);
+        let multiple_bound = list_multi_selection(view);
+        let commands = multiple_bound || self.list_selection_command_targets.contains(key);
+        if !reads && !commands {
+            return Ok(TokenStream::new());
+        }
+        let rows = self.list_selection_rows(view)?;
+        let current = self.list_selection_index(view)?;
+        let multiple = self.binding_value_or(view, "multi-select", quote!(false))?;
+        let state = list_selection_field(key);
+        let mut methods = TokenStream::new();
+        if reads {
+            let info = list_selection_info_method(key);
+            let state = if multiple_bound {
+                quote!(::core::option::Option::Some(&self.__state.#state))
+            } else {
+                quote!(::core::option::Option::None)
+            };
+            methods.extend(quote! {
+                fn #info(&self, row: ::core::primitive::i64) -> (::core::primitive::i64, ::core::primitive::bool) {
+                    ::xrack_runtime::TableSelection::try_list_info(
+                        #state,
+                        || ::core::result::Result::Ok::<_, ::core::convert::Infallible>(#rows),
+                        || ::core::result::Result::Ok(#current),
+                        || ::core::result::Result::Ok(#multiple),
+                        row,
+                    ).unwrap_or_else(|error| match error {})
+                }
+            });
+        }
+        if commands {
+            let method = list_selection_command_method(key);
+            let notify = self.list_selection_notifier(view)?;
+            let selection = if multiple_bound {
+                quote!(self.__state.#state)
+            } else {
+                quote!(::xrack_runtime::TableSelection::default())
+            };
+            let key_source = if let Some(field) =
+                self.record_field_binding(view, "row-key-field")?
+            {
+                let field = field_access(field.split('.'));
+                let keys = format_ident!("__list_keys_{}", rust_key(key));
+                quote!(|rows, key| self.__state.#keys.find(rows.source(), key, |row| row #field))
+            } else {
+                quote!(|_, _| ::core::option::Option::None)
+            };
+            methods.extend(quote! {
+                fn #method(&self, command: ::xrack_runtime::ListSelectionCommand) -> ::core::primitive::bool {
+                    let __xr_rows = ::std::cell::OnceCell::new();
+                    let __xr_model = || __xr_rows.get_or_init(|| #rows);
+                    let change = #selection.try_apply_list_command(
+                        command,
+                        || ::core::result::Result::Ok::<_, ::core::convert::Infallible>(__xr_model().clone()),
+                        || ::core::result::Result::Ok(#current),
+                        || ::core::result::Result::Ok(#multiple),
+                        #key_source,
+                    ).unwrap_or_else(|error| match error {});
+                    change.is_some_and(|change| change.notify(false, #notify))
+                }
+            });
+        }
+        Ok(methods)
+    }
+
     fn source_selection_body(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
         let key = element_key(element)?;
         if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView")) {
@@ -5189,7 +5615,15 @@ impl<'a> Generator<'a> {
         }
         if element.attr("kind") == Ok("TreeView") {
             let select = tree_selection_method(key);
-            return Ok(quote!(self.#select(source);));
+            return Ok(
+                quote!(self.#select(::xrack_runtime::TreeSelectionCommand::Source(source));),
+            );
+        }
+        if list_multi_selection(element) {
+            let select = list_selection_command_method(key);
+            return Ok(quote! {
+                self.#select(::xrack_runtime::ListSelectionCommand::Source(source));
+            });
         }
         let lookup = view_index_method(key);
         let current = self.list_selection_index(element)?;
@@ -5418,6 +5852,14 @@ impl<'a> Generator<'a> {
         let Some(template) = scene_children(element).next() else {
             return Ok(None);
         };
+        self.group_template_model(template, scope)
+    }
+
+    fn group_template_model(
+        &self,
+        template: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+    ) -> Result<Option<TokenStream>, String> {
         let Some(model) = children(template, "xr.repeat").next() else {
             return Ok(None);
         };
@@ -5478,29 +5920,8 @@ impl<'a> Generator<'a> {
                     })
                 });
             }
-            let repeat = &self.visuals.repeats[element_key(template)?];
-            let field = repeat_field(repeat.index());
-            let row_state = row_local(repeat.index());
-            let parameters = RepeatRef::from_operation(model)?;
-            let item = parameter_ident(parameters.item);
-            let bind_index = parameters.index.map(|index| {
-                let index = parameter_ident(index);
-                quote!(let #index = __xr_row_index;)
-            });
-            let available = self.item_delegate_available(template, &repeat.row)?;
-            let option = self.live_group_option(template, &repeat.row, available, radio)?;
-            return Ok(quote! {
-                |model, slot, read_label| {
-                    let key = node.child_at(slot)?.row_key?;
-                    self.__state.__visuals.#field.with_resolved_row_state(
-                        model, slot, key,
-                        |#item, __xr_row_index, #row_state| {
-                            #bind_index
-                            #option
-                        },
-                    ).flatten()
-                }
-            });
+            let option = self.repeated_group_option(template, model, radio, &quote!(slot))?;
+            return Ok(quote!(|model, slot, read_label| #option));
         }
 
         let receiver = quote!(self);
@@ -5512,6 +5933,89 @@ impl<'a> Generator<'a> {
             options.extend(quote!(#slot => #option,));
         }
         Ok(quote!(|_, slot, read_label| match slot { #options _ => ::core::option::Option::None }))
+    }
+
+    fn repeated_group_option(
+        &self,
+        template: OperationRef<'a>,
+        repeat_op: OperationRef<'a>,
+        radio: bool,
+        row: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let repeat = &self.visuals.repeats[element_key(template)?];
+        let field = repeat_field(repeat.index());
+        let row_state = row_local(repeat.index());
+        let parameters = RepeatRef::from_operation(repeat_op)?;
+        let item = parameter_ident(parameters.item);
+        let bind_index = parameters.index.map(|index| {
+            let index = parameter_ident(index);
+            quote!(let #index = __xr_row_index;)
+        });
+        let available = self.item_delegate_available(template, &repeat.row)?;
+        let option = self.live_group_option(template, &repeat.row, available, radio)?;
+        Ok(quote! {{
+            let key = node.child_at(slot)?.row_key?;
+            self.__state.__visuals.#field.with_resolved_row_state(
+                model, #row, key,
+                |#item, __xr_row_index, #row_state| {
+                    #bind_index
+                    #option
+                },
+            ).flatten()
+        }})
+    }
+
+    fn radio_group_options(
+        &self,
+        element: OperationRef<'a>,
+    ) -> Result<(TokenStream, TokenStream), String> {
+        let mut sampling = TokenStream::new();
+        let mut options = TokenStream::new();
+        let mut models = Vec::new();
+        let receiver = quote!(self);
+        let projection = TableProjection::for_input(&receiver);
+        for (declaration, child) in scene_children(element).enumerate() {
+            let option = if let Some(repeat) = children(child, "xr.repeat").next() {
+                let Some(source) = self.group_template_model(child, &self.visuals)? else {
+                    continue;
+                };
+                let sample = format_ident!("__xr_radio_model_{declaration}");
+                let model = Literal::usize_unsuffixed(models.len());
+                models.push(sample.clone());
+                sampling.extend(quote! {
+                    let #sample = if #declaration <= __xr_declaration {
+                        let model = #source;
+                        if !node.radio_option_model_is_current(#declaration, &*model) {
+                            return ::core::option::Option::None;
+                        }
+                        ::core::option::Option::Some(model)
+                    } else {
+                        ::core::option::Option::None
+                    };
+                });
+                let repeated =
+                    self.repeated_group_option(child, repeat, true, &quote!(sample.1))?;
+                quote!({
+                    let model = sample.2.#model.as_ref()?;
+                    #repeated
+                })
+            } else {
+                let available = self.element_allows_editing(child, &projection)?;
+                self.live_group_option(child, &self.visuals, available, true)?
+            };
+            options.extend(quote!(#declaration => #option,));
+        }
+        Ok((
+            quote!({
+                let (__xr_declaration, __xr_row) = node.radio_option_location(index)?;
+                #sampling
+                ::core::option::Option::Some((__xr_declaration, __xr_row, (#(#models,)*)))
+            }),
+            quote!(|sample, slot, read_label| match sample.0 {
+                #options
+                _ => ::core::option::Option::None,
+            }),
+        ))
     }
 
     fn render_element(
@@ -5634,9 +6138,26 @@ impl<'a> Generator<'a> {
                 }).clone());
             });
         }
+        if self.section_headers.contains_key(key) {
+            let field = section_renderer_field(key);
+            let method = section_header_method(key);
+            out.extend(quote! {
+                #name.list_section_renderer = Some(self.__state.#field.get_or_init(|| {
+                    let __xr_weak = ::std::rc::Rc::downgrade(&self.__state);
+                    ::xrack_runtime::ListSectionRenderer::new(move |__xr_section| {
+                        let __state = __xr_weak.upgrade()?;
+                        Some(Self { __state }.#method(__xr_section))
+                    })
+                }).clone());
+            });
+        }
         if self.focus_targets.contains(key) {
             let handle = focus_handle(key);
             out.extend(quote!(#name.focus_handle = Some(self.__state.#handle.clone());));
+        }
+        if self.button_press_targets.contains(key) {
+            let handle = button_press_handle(key);
+            out.extend(quote!(#name.button_press_handle = ::core::option::Option::Some(self.__state.#handle.clone());));
         }
         if element.attr("kind") == Ok("ScaleRotateGestureHandler") {
             let handle = scale_rotate_handle(key);
@@ -5653,13 +6174,16 @@ impl<'a> Generator<'a> {
         if self.pointer_targets.contains(key) {
             let handle = pointer_handle(key);
             out.extend(quote!(#name.pointer_handle = Some(self.__state.#handle.clone());));
-            for handler in children(element, "xr.handler") {
-                match handler.attr("name")? {
-                    "scroll-event" => out.extend(quote!(#name.scroll_event_handler = true;)),
-                    "press-and-hold" => out.extend(quote!(#name.press_and_hold_handler = true;)),
-                    _ => {}
-                }
+            if children(element, "xr.handler")
+                .any(|handler| handler.attr("name") == Ok("scroll-event"))
+            {
+                out.extend(quote!(#name.scroll_event_handler = true;));
             }
+        }
+        if children(element, "xr.handler")
+            .any(|handler| handler.attr("name") == Ok("press-and-hold"))
+        {
+            out.extend(quote!(#name.press_and_hold_handler = true;));
         }
         if self.viewport_targets.contains(key) {
             let handle = viewport_handle(key);
@@ -5708,6 +6232,8 @@ impl<'a> Generator<'a> {
                     "content-x"
                         | "content-y"
                         | "row-height-field"
+                        | "section-field"
+                        | "typeahead-field"
                         | "row-key-field"
                         | "row-visible-field"
                         | "row-header-field"
@@ -5902,6 +6428,9 @@ impl<'a> Generator<'a> {
             let projected = self
                 .project_row_heights(element, &name, &quote!(&*__xr_view_model), None)?
                 .map(|value| quote!(#name.row_heights = #value;));
+            let sections =
+                self.project_list_sections(element, &name, &quote!(&*__xr_view_model))?;
+            let search = self.list_text_search(element, &name, &quote!(&*__xr_view_model))?;
             out.extend(quote! {
                 let __xr_view_model = ::std::rc::Rc::new(self.#model());
                 #name.list = Some(::xrack_runtime::ListMetrics {
@@ -5912,15 +6441,26 @@ impl<'a> Generator<'a> {
                     #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(__xr_view_model.clone()));
                 }
                 #projected
+                #sections
+                #search
             });
-            return self.render_view_empty_state(element, scope, out, next, name);
+            return self.render_view_empty_state(
+                element,
+                scope,
+                out,
+                next,
+                name,
+                Some(&quote!(&*__xr_view_model)),
+            );
         }
         if kind == Some("StandardListView") {
-            if let Some(binding) = model_binding(element) {
+            let model = if let Some(binding) = model_binding(element) {
                 let model = self.visual_value(binding, scope)?;
                 let projected = self
                     .project_row_heights(element, &name, &quote!(&__xr_model), None)?
                     .map(|value| quote!(#name.row_heights = #value;));
+                let sections = self.project_list_sections(element, &name, &quote!(&__xr_model))?;
+                let search = self.list_text_search(element, &name, &quote!(&__xr_model))?;
                 out.extend(quote! {
                     let __xr_model = #model;
                     #name.list = Some(::xrack_runtime::ListMetrics {
@@ -5928,14 +6468,18 @@ impl<'a> Generator<'a> {
                     });
                     #name.standard_list_stamp = Some(::xrack_runtime::ListModel::structure_stamp(&__xr_model));
                     #projected
+                    #sections
+                    #search
                     if #source_scroll || #name.boolean("preserve-scroll-anchor", false) {
-                        #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(::std::rc::Rc::new(__xr_model)));
+                        #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(::std::rc::Rc::new(__xr_model.clone())));
                     }
                 });
+                Some(quote!(&__xr_model))
             } else {
                 out.extend(quote! { #name.list = Some(::xrack_runtime::ListMetrics::default()); });
-            }
-            return self.render_view_empty_state(element, scope, out, next, name);
+                None
+            };
+            return self.render_view_empty_state(element, scope, out, next, name, model.as_ref());
         }
         if kind == Some("StandardTableView") {
             let key = element_key(element)?;
@@ -5963,7 +6507,7 @@ impl<'a> Generator<'a> {
                 &name,
                 &quote!(&*__xr_table_model),
             )?;
-            return self.render_view_empty_state(element, scope, out, next, name);
+            return self.render_view_empty_state(element, scope, out, next, name, None);
         }
         if matches!(
             kind,
@@ -5987,7 +6531,7 @@ impl<'a> Generator<'a> {
                     #projected
                     self.__state.#state.populate_scene(&mut #name, tree);
                 });
-                return self.render_view_empty_state(element, scope, out, next, name);
+                return self.render_view_empty_state(element, scope, out, next, name, None);
             }
             if kind == Some("TableView") {
                 let rows = self.table_rows_model(element)?;
@@ -6012,7 +6556,7 @@ impl<'a> Generator<'a> {
                     &name,
                     &quote!(&*__xr_view_model),
                 )?;
-                return self.render_view_empty_state(element, scope, out, next, name);
+                return self.render_view_empty_state(element, scope, out, next, name, None);
             }
             out.extend(quote! {
                 let __xr_view_model = #receiver.#field.resolve_model(|| #model);
@@ -6029,7 +6573,16 @@ impl<'a> Generator<'a> {
             {
                 out.extend(quote!(#name.row_heights = #projected;));
             }
-            return self.render_view_empty_state(element, scope, out, next, name);
+            out.extend(self.project_list_sections(element, &name, &quote!(&*__xr_view_model))?);
+            out.extend(self.list_text_search(element, &name, &quote!(&*__xr_view_model))?);
+            return self.render_view_empty_state(
+                element,
+                scope,
+                out,
+                next,
+                name,
+                Some(&quote!(&*__xr_view_model)),
+            );
         }
         let mut content = TokenStream::new();
         if kind == Some("StackView") {
@@ -6039,11 +6592,8 @@ impl<'a> Generator<'a> {
                 #name.stack = Some(__xr_stack.clone());
             });
         }
-        let option_model = if matches!(kind, Some("RadioGroup" | "TabBar")) {
-            self.group_option_model(element, scope)?
-        } else {
-            None
-        };
+        let radio_blocks = kind == Some("RadioGroup")
+            && scene_children(element).any(|child| children(child, "xr.repeat").next().is_some());
         let mut swipe_mounts = TokenStream::new();
         let mut table_cells = TokenStream::new();
         let mut table_columns = 0usize;
@@ -6062,7 +6612,7 @@ impl<'a> Generator<'a> {
             }
             let repeated_option = matches!(kind, Some("RadioGroup" | "TabBar"))
                 && children(child, "xr.repeat").next().is_some();
-            if repeated_option && let Some(model) = &option_model {
+            if repeated_option && let Some(model) = self.group_template_model(child, scope)? {
                 let repeat = &scope.repeats[element_key(child)?];
                 let field = repeat_field(repeat.index());
                 let receiver = scope.receiver();
@@ -6118,6 +6668,9 @@ impl<'a> Generator<'a> {
                 content.extend(quote!(#name.children.extend(#child.children.iter().cloned());));
             } else {
                 content.extend(quote!(#name.children.push(#child);));
+            }
+            if radio_blocks {
+                content.extend(quote!(#name.record_radio_option_block();));
             }
         }
         if !swipe_mounts.is_empty() {
@@ -6311,6 +6864,69 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn set_checked(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+    ) -> Result<TokenStream, String> {
+        let key = element_key(element)?;
+        if scope.row_checks.contains_key(key) && control_link(element, "checked").is_none() {
+            let field = control_field(key, "checked");
+            let storage = scope.receiver();
+            Ok(quote!(#storage.#field.set_if_changed(__xr_checked);))
+        } else {
+            self.set_control(element, &quote!(__xr_checked))
+        }
+    }
+
+    fn activate_checkable_button(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        input: &TokenStream,
+        available: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let (checkable, available) = if let Some(key) = check_group_ref(element) {
+            let group = *self.elements.get(key).ok_or("unknown check ButtonGroup")?;
+            let receiver = quote!(self);
+            let projection = TableProjection::new(ExpressionContext::new(&receiver));
+            let enabled = self.row_binding_or(group, "enabled", quote!(true), &projection)?;
+            (
+                quote!(true),
+                quote!((#available) && match __xr_route {
+                    ::core::option::Option::Some(input) => input.available(|| #enabled),
+                    ::core::option::Option::None => #enabled,
+                }),
+            )
+        } else {
+            let checkable = children(element, "xr.bind")
+                .find(|binding| binding.attr("name") == Ok("checkable"))
+                .map(|binding| self.visual_value(binding, scope))
+                .transpose()?
+                .unwrap_or_else(|| quote!(false));
+            (checkable, available.clone())
+        };
+        let current = self.control_value_in(element, "checked", Type::Bool, scope)?;
+        let update = self.set_checked(element, scope)?;
+        let toggled = self.typed_event_values(element, "toggled", &[])?;
+        let clicked = self.typed_event_values(element, "clicked", &[])?;
+        let has_clicked =
+            children(element, "xr.handler").any(|handler| handler.attr("name") == Ok("clicked"));
+        Ok(quote!((|| {
+            let __xr_route: ::core::option::Option<::xrack_runtime::InputRoute<'_>> = #input;
+            let ::core::option::Option::Some(__xr_next) = ::xrack_runtime::prepare_action_activation(
+                || #available, || #checkable, || #current,
+            ) else { return false; };
+            if __xr_route.is_some_and(|input| !input.is_current()) { return false; }
+            if let ::core::option::Option::Some(__xr_checked) = __xr_next {
+                #update
+                #toggled
+            }
+            #clicked
+            __xr_next.is_some() || #has_clicked
+        })()))
+    }
+
     fn group_box_toggle(
         &self,
         element: OperationRef<'a>,
@@ -6323,15 +6939,7 @@ impl<'a> Generator<'a> {
             .transpose()?
             .unwrap_or_else(|| quote!(false));
         let current = self.control_value_in(element, "checked", Type::Bool, scope)?;
-        let key = element_key(element)?;
-        let update =
-            if scope.row_groups.contains_key(key) && control_link(element, "checked").is_none() {
-                let field = control_field(key, "checked");
-                let storage = scope.receiver();
-                quote!(#storage.#field.set_if_changed(__xr_checked);)
-            } else {
-                self.set_control(element, &quote!(__xr_checked))?
-            };
+        let update = self.set_checked(element, scope)?;
         let toggled = self.typed_event(element, "toggled", &quote!(__xr_checked))?;
         Ok(quote!({
             if let Some(__xr_checked) = ::xrack_runtime::prepare_group_box_toggle(#input, || #checkable, || #current) {
@@ -6381,11 +6989,48 @@ impl<'a> Generator<'a> {
             let receiver = quote!(self);
             let projection = TableProjection::new(ExpressionContext::new(&receiver));
             let available = self.element_allows_editing(element, &projection)?;
-            paths.extend(
-                quote!([#(#path),*] => event == "clicked" && self.#activate(|| true, Some(input)),),
-            );
+            paths.extend(quote!([#(#path),*] => {
+                    if event == "clicked" {
+                        self.#activate(|| true, Some(input))
+                    } else {
+                        self.__dispatch_handler(path, event)
+                    }
+                },));
             if !id.is_empty() {
                 local.extend(quote!((#id, "clicked") => self.#activate(|| #available, None),));
+            }
+        } else if xrack_syntax::builtins::push_button(kind) && radio_group_ref(element).is_some() {
+            paths.extend(quote!([#(#path),*] => self.__dispatch_handler(path, event),));
+            if !id.is_empty() {
+                local.extend(quote!((#id, "clicked") => {
+                    let scene = self.__render_shared();
+                    let path = &[#(#path),*];
+                    ::xrack_runtime::RoutedEvent::Dispatch("clicked")
+                        .with_input(&scene, path, |input| self.__route_input(&scene, path, input))
+                        .unwrap_or(false)
+                },));
+            }
+        } else if has_button_check_state(element) {
+            let click = self.activate_checkable_button(
+                element,
+                &self.visuals,
+                &quote!(Some(input)),
+                &quote!(true),
+            )?;
+            paths.extend(quote!([#(#path),*] => {
+                if event == "clicked" { #click } else { self.__dispatch_handler(path, event) }
+            },));
+            if !id.is_empty() {
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let available = self.element_allows_editing(element, &projection)?;
+                let click = self.activate_checkable_button(
+                    element,
+                    &self.visuals,
+                    &quote!(None),
+                    &available,
+                )?;
+                local.extend(quote!((#id, "clicked") => #click,));
             }
         } else if element.attr("kind") == Ok("GroupBox") {
             let routed_click =
@@ -6396,10 +7041,7 @@ impl<'a> Generator<'a> {
                 local.extend(quote!((#id, "clicked") => #click,));
             }
         } else if element.attr("kind").is_ok_and(is_toggle) {
-            let group_guard = if let Some(key) = children(element, "xr.check_group_ref")
-                .next()
-                .and_then(|reference| reference.attribute("group"))
-            {
+            let group_guard = if let Some(key) = check_group_ref(element) {
                 let group = *self.elements.get(key).ok_or("unknown check ButtonGroup")?;
                 let receiver = quote!(self);
                 let projection = TableProjection::new(ExpressionContext::new(&receiver));
@@ -7700,8 +8342,11 @@ impl<'a> Generator<'a> {
                 };
                 let set = self.set_control(element, &selected)?;
                 let event = self.typed_event(element, "changed", &value)?;
+                let extended =
+                    self.list_selection_input(element, &available, &current, &projection)?;
                 out.extend(quote! {
                     [#(#path),*] => {
+                        #extended
                         let ::xrack_runtime::ControlAction::Select(index) = action else { return false; };
                         let ::core::option::Option::Some(__xr_index) = ::xrack_runtime::prepare_index_selection(
                             index, || #available,
@@ -7716,10 +8361,10 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
-            "RadioButton" => {
-                let Some(key) = radio_group_ref(element) else {
-                    return Ok(());
-                };
+            kind @ ("RadioButton" | "Button" | "ToolButton" | "RoundButton")
+                if radio_group_ref(element).is_some() =>
+            {
+                let key = radio_group_ref(element).unwrap();
                 let group = *self.elements.get(key).ok_or("unknown ButtonGroup")?;
                 let (property, ty) =
                     controlled_property(group).ok_or("missing ButtonGroup selection")?;
@@ -7740,33 +8385,49 @@ impl<'a> Generator<'a> {
                 };
                 let set = self.set_control(group, &quote!(__xr_next))?;
                 let selected = self.typed_event(group, "selected", &quote!(__xr_value))?;
+                let toggled = self.typed_event_values(element, "toggled", &[])?;
+                let clicked = self.typed_event_values(element, "clicked", &[])?;
+                let push_button = xrack_syntax::builtins::push_button(kind);
                 out.extend(quote! {
                     [#(#path),*] => {
                         if action != ::xrack_runtime::ControlAction::ActivateRadioOption { return false; }
-                        let ::core::option::Option::Some((__xr_index, __xr_value)) = ::xrack_runtime::prepare_radio_selection(
+                        let ::core::option::Option::Some((__xr_index, __xr_value, __xr_changed)) = ::xrack_runtime::prepare_button_group_option(
                             node, #key, input, || #enabled, || #label,
                             || ::xrack_runtime::ButtonGroupSelection::#selection(#current),
                         ) else { return false; };
-                        let __xr_next = #next;
-                        #set
-                        #selected
-                        true
+                        if __xr_changed {
+                            let __xr_next = #next;
+                            #set
+                            #toggled
+                            #selected
+                        }
+                        let __xr_click = #push_button && matches!(input.event(), ::xrack_runtime::RoutedEvent::Dispatch("clicked"));
+                        if __xr_click { #clicked }
+                        __xr_changed || __xr_click
                     },
                 });
             }
             "RadioGroup" | "TabWidget" | "TabBar" | "SwipeView" => {
                 let radio = element.attr("kind")? == "RadioGroup";
-                let model_current = self
-                    .group_option_model(element, &self.visuals)?
-                    .map_or_else(
-                        || quote!(::core::option::Option::Some(())),
-                        |model| {
-                            quote!({
-                                let model = #model;
-                                node.group_options_are_current(&*model).then_some(model)
-                            })
-                        },
-                    );
+                let (model_current, read_option) = if radio
+                    && scene_children(element)
+                        .any(|child| children(child, "xr.repeat").next().is_some())
+                {
+                    self.radio_group_options(element)?
+                } else {
+                    let model = self
+                        .group_option_model(element, &self.visuals)?
+                        .map_or_else(
+                            || quote!(::core::option::Option::Some(())),
+                            |model| {
+                                quote!({
+                                    let model = #model;
+                                    node.group_options_are_current(&*model).then_some(model)
+                                })
+                            },
+                        );
+                    (model, self.group_option_reader(element, radio)?)
+                };
                 let (property, ty) =
                     controlled_property(element).ok_or("missing group selection")?;
                 let current = self.control_value(element, property, ty)?;
@@ -7775,7 +8436,6 @@ impl<'a> Generator<'a> {
                 } else {
                     quote!(Index)
                 };
-                let read_option = self.group_option_reader(element, radio)?;
                 let value = if property == "current-value" {
                     quote!(__xr_label.clone())
                 } else {
@@ -8507,7 +9167,50 @@ impl<'a> Generator<'a> {
             fields.extend(quote!(#field: ::xrack_runtime::RowHeightProjection,));
             defaults.extend(quote!(#field: ::core::default::Default::default(),));
         }
+        for (&key, &element) in &self.elements {
+            if list_multi_selection(element) {
+                let field = list_selection_field(key);
+                fields.extend(quote!(#field: ::xrack_runtime::TableSelection,));
+                defaults.extend(quote!(#field: ::core::default::Default::default(),));
+            }
+        }
+        for &view in &self.sectioned_lists {
+            let field = format_ident!("__list_sections_{}", rust_key(view));
+            fields.extend(quote!(#field: ::xrack_runtime::ListSectionProjection,));
+            defaults.extend(quote!(#field: ::core::default::Default::default(),));
+        }
+        for (&view, &template) in &self.section_headers {
+            let field = section_renderer_field(view);
+            let method = section_header_method(view);
+            fields.extend(
+                quote!(#field: ::std::cell::OnceCell<::xrack_runtime::ListSectionRenderer>,),
+            );
+            defaults.extend(quote!(#field: ::core::default::Default::default(),));
+            let mut body = TokenStream::new();
+            let header = self.render(template, &VisualScope::default(), &mut body, &mut 0)?;
+            let inputs = section_header_inputs().map(|(name, _)| {
+                let binding = parameter_ident(name);
+                if name == "section-label" {
+                    quote!(let #binding = __xr_section.label.to_string();)
+                } else {
+                    let field = ident(name.trim_start_matches("section-"));
+                    quote!(let #binding = __xr_section.#field;)
+                }
+            });
+            methods.extend(quote! {
+                fn #method(&self, __xr_section: ::xrack_runtime::ListSectionInput) -> ::xrack_runtime::Node {
+                    #(#inputs)*
+                    #body
+                    #header
+                }
+            });
+        }
 
+        for &target in &self.button_press_targets {
+            let handle = button_press_handle(target);
+            fields.extend(quote!(#handle: ::xrack_runtime::ButtonPressHandle,));
+            defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+        }
         for &target in &self.focus_targets {
             let handle = focus_handle(target);
             fields.extend(quote!(#handle: ::xrack_runtime::FocusHandle,));
@@ -9290,6 +9993,81 @@ impl<'a> Generator<'a> {
                 }
             });
 
+            if let Some(field) = self.record_field_binding(table, "row-key-field")? {
+                let field = field_access(field.split('.'));
+                let keys = format_ident!("__list_keys_{}", rust_key(key));
+                fields.extend(quote!(#keys: ::std::rc::Rc<::xrack_runtime::ListSelectionKeys>,));
+                defaults.extend(quote!(#keys: ::core::default::Default::default(),));
+                let lookup = list_key_index_method(key);
+                let select_key = list_select_key_method(key);
+                let selected_keys = list_selection_keys_method(key);
+                let replace_keys = list_replace_selection_method(key);
+                methods.extend(quote! {
+                    fn #lookup(&self, key: ::core::primitive::i64) -> ::core::primitive::i64 {
+                        let rows = #rows;
+                        self.__state.#keys.find(rows.source(), key, |row| row #field)
+                            .and_then(|index| rows.positions().visual_index(index))
+                            .map_or(-1, |index| index as ::core::primitive::i64)
+                    }
+                    fn #select_key(&self, key: ::core::primitive::i64) {
+                        let change = self.__state.#selection.try_apply_command_for(
+                            #column_count,
+                            || ::core::result::Result::Ok::<_, ::core::convert::Infallible>(#rows),
+                            || ::core::result::Result::Ok(#current_row),
+                            || ::core::result::Result::Ok(::xrack_runtime::TableSelectionOptions {
+                                target: #target,
+                                multiple: #multiple,
+                                order: self.__state.#order.get(::core::default::Default::default),
+                                drag_select: false,
+                            }),
+                            |rows| {
+                                let row = self.__state.#keys.find(rows.source(), key, |row| row #field)?;
+                                ::core::option::Option::Some(::xrack_runtime::TableSelectionCommand::Source {
+                                    row, column: ::core::option::Option::None,
+                                })
+                            },
+                        ).unwrap_or_else(|error| match error {});
+                        if let ::core::option::Option::Some(change) = change {
+                            self.#notify_selection(change, true);
+                        }
+                    }
+                    fn #selected_keys(&self) -> ::xrack_runtime::VecModel<::core::primitive::i64> {
+                        let rows = #rows;
+                        let snapshot = self.__state.#selection.snapshot_with(
+                            &rows, #column_count, || #current_row, || #target, || #multiple,
+                            || self.__state.#order.get(::core::default::Default::default),
+                        );
+                        self.__state.#keys.keys_for_rows(rows.source(), snapshot.keys(), |row| row #field).into()
+                    }
+                    fn #replace_keys(&self, keys: ::xrack_runtime::VecModel<::core::primitive::i64>) {
+                        let keys = keys.into_snapshot();
+                        let change = self.__state.#selection.try_replace_list_keys(
+                            || ::core::result::Result::Ok::<_, ::core::convert::Infallible>(#rows),
+                            || ::core::result::Result::Ok(#current_row),
+                            || ::core::result::Result::Ok((#multiple) && (#target) == ::xrack_runtime::SelectionTarget::Rows),
+                            |rows| self.__state.#keys.resolve_keys(rows.source(), &keys, |row| row #field),
+                        ).unwrap_or_else(|error| match error {});
+                        if let ::core::option::Option::Some(change) = change {
+                            self.#notify_selection(change, false);
+                        }
+                    }
+                });
+                if self.key_scroll_targets.contains(key) {
+                    let locator = list_key_locator_method(key);
+                    methods.extend(quote! {
+                        fn #locator(&self) -> ::xrack_runtime::ListRowLocator {
+                            let rows = ::std::rc::Rc::new(#rows);
+                            ::xrack_runtime::ListRowLocator::new(rows.clone()).with_business_keys(
+                                self.__state.#keys.clone(),
+                                rows.source_model().clone(),
+                                ::core::option::Option::Some(rows.positions().clone()),
+                                |row| row #field,
+                            )
+                        }
+                    });
+                }
+            }
+
             let auto_sort = table.attr("kind") == Ok("StandardTableView")
                 && children(table, "xr.bind").any(|bind| bind.attr("name") == Ok("auto-sort"));
             let auto_sort_enabled = self.binding_value_or(table, "auto-sort", quote!(false))?;
@@ -9536,6 +10314,9 @@ impl<'a> Generator<'a> {
             let record = ident(&definition.record);
             let command = tree_command_method(key);
             let select = tree_selection_method(key);
+            let selection_info = tree_selection_info_method(key);
+            let selection_keys = tree_selection_keys_method(key);
+            let replace_selection = tree_replace_selection_method(key);
             let input = tree_input_method(key);
             let notify = format_ident!("__tree_notify_{}", rust_key(key));
             let current = self.control_value(element, "current-key", Type::Int)?;
@@ -9565,9 +10346,26 @@ impl<'a> Generator<'a> {
                 fn #snapshot(&self) -> ::std::sync::Arc<::xrack_runtime::TreeSnapshot> {
                     self.#project().0
                 }
-                fn #select(&self, source: ::core::primitive::usize) -> bool {
-                    let ::core::option::Option::Some(change) = self.__state.#field.select_source(
-                        source, || self.#snapshot(), || #multiple, || #current,
+                fn #selection_info(&self, query: ::core::option::Option<::xrack_runtime::TreeSelectionLookup>)
+                    -> (::core::primitive::i64, ::core::primitive::bool) {
+                    let tree = self.#snapshot();
+                    self.__state.#field.selection_info(&tree, #multiple, #current, query)
+                }
+                fn #selection_keys(&self) -> ::xrack_runtime::VecModel<::core::primitive::i64> {
+                    let tree = self.#snapshot();
+                    let current = (!#multiple).then(|| #current);
+                    self.__state.#field.selected_keys(&tree, current).into()
+                }
+                fn #replace_selection(&self, keys: ::xrack_runtime::VecModel<::core::primitive::i64>) {
+                    if let ::core::option::Option::Some(change) = self.__state.#field.replace_selection(
+                        &keys.into_snapshot(), || self.#snapshot(), || #multiple,
+                    ) {
+                        self.#notify(::xrack_runtime::TreeControlChange::Selection(change));
+                    }
+                }
+                fn #select(&self, command: ::xrack_runtime::TreeSelectionCommand) -> bool {
+                    let ::core::option::Option::Some(change) = self.__state.#field.apply_selection(
+                        command, || self.#snapshot(), || #multiple, || #current,
                     ) else { return false; };
                     self.#notify(::xrack_runtime::TreeControlChange::Selection(change))
                 }
@@ -9922,6 +10720,27 @@ impl<'a> Generator<'a> {
         };
 
         let groups = button_group_members(root);
+        let exclusive_button_paths: Vec<_> = groups
+            .values()
+            .flatten()
+            .filter(|(_, member)| {
+                member
+                    .attribute("kind")
+                    .is_some_and(xrack_syntax::builtins::push_button)
+                    && radio_group_ref(*member).is_some()
+            })
+            .map(|(path, _)| quote!([#(#path),*]))
+            .collect();
+        let exclusive_button_dispatch = if exclusive_button_paths.is_empty() {
+            TokenStream::new()
+        } else {
+            quote! {
+                RoutedEvent::Dispatch("clicked") if matches!(path, #(#exclusive_button_paths)|*) =>
+                    scene.at_path(path).is_some_and(|node| {
+                        self.__control_path(path, node, ::xrack_runtime::ControlAction::ActivateRadioOption, input)
+                    }),
+            }
+        };
         self.declare_check_groups(&groups, &mut fields, &mut defaults, &mut methods)?;
         let mut render = TokenStream::new();
         let node = self.render(root, &self.visuals, &mut render, &mut 0)?;
@@ -9971,6 +10790,12 @@ impl<'a> Generator<'a> {
             if !has_virtual_rows(view) {
                 continue;
             }
+            if matches!(
+                view.attr("kind"),
+                Ok("ListView" | "GridView" | "StandardListView")
+            ) {
+                methods.extend(self.list_selection_methods(view)?);
+            }
             if self.view_count_targets.contains(key) {
                 let count = view_count_method(key);
                 let count_body = self.view_count_body(view)?;
@@ -9999,7 +10824,11 @@ impl<'a> Generator<'a> {
             }
             let lookup = view_index_method(key);
             let index_body = self.view_index_body(view)?;
-            if let Some(field) = self.record_field_binding(view, "row-key-field")? {
+            if matches!(
+                view.attr("kind"),
+                Ok("ListView" | "GridView" | "StandardListView")
+            ) && let Some(field) = self.record_field_binding(view, "row-key-field")?
+            {
                 let field = field_access(field.split('.'));
                 let keys = format_ident!("__list_keys_{}", rust_key(key));
                 let current_key = self.control_value(view, "current-key", Type::Int)?;
@@ -10023,10 +10852,70 @@ impl<'a> Generator<'a> {
                 let key_at = list_selection_key_method(key);
                 fields.extend(quote!(#keys: ::std::rc::Rc<::xrack_runtime::ListSelectionKeys>,));
                 defaults.extend(quote!(#keys: ::core::default::Default::default(),));
+                let selected_keys = list_selection_keys_method(key);
+                let replace_selection = list_replace_selection_method(key);
+                let selection = list_selection_field(key);
+                let selection_rows = self.list_selection_rows(view)?;
+                let multiple = self.binding_value_or(view, "multi-select", quote!(false))?;
+                let sample_rows = quote! {
+                    let rows = ::std::cell::OnceCell::new();
+                    let __xr_model = || rows.get_or_init(|| #selection_rows);
+                    let read = || ::core::result::Result::Ok::<_, ::core::convert::Infallible>(__xr_model().clone());
+                    let current = || {
+                        let rows = __xr_model();
+                        let key = #current_key;
+                        ::core::result::Result::Ok(self.__state.#keys.find(rows.source(), key, |row| row #field)
+                            .and_then(|index| rows.positions().visual_index(index))
+                            .map_or(-1, |index| index as ::core::primitive::i64))
+                    };
+                };
+                let (selection_ref, replace) = if list_multi_selection(view) {
+                    let notify = self.list_selection_notifier(view)?;
+                    (
+                        quote!(::core::option::Option::Some(&self.__state.#selection)),
+                        quote! {
+                            #sample_rows
+                            let keys = keys.into_snapshot();
+                            let change = self.__state.#selection.try_replace_list_keys(
+                                read, current, || ::core::result::Result::Ok(#multiple),
+                                |rows| self.__state.#keys.resolve_keys(rows.source(), &keys, |row| row #field),
+                            ).unwrap_or_else(|error| match error {});
+                            if let ::core::option::Option::Some(change) = change {
+                                change.notify(false, #notify);
+                            }
+                        },
+                    )
+                } else {
+                    (quote!(::core::option::Option::None), quote!(let _ = keys;))
+                };
+                methods.extend(quote! {
+                    fn #selected_keys(&self) -> ::xrack_runtime::VecModel<::core::primitive::i64> {
+                        #sample_rows
+                        ::xrack_runtime::TableSelection::try_list_selected_keys(
+                            #selection_ref, read, current, || ::core::result::Result::Ok(#multiple),
+                            |rows, selection| self.__state.#keys.keys_for_rows(rows.source(), selection, |row| row #field),
+                        ).unwrap_or_else(|error| match error {}).into()
+                    }
+                    fn #replace_selection(&self, keys: ::xrack_runtime::VecModel<::core::primitive::i64>) {
+                        #replace
+                    }
+                });
                 let find = list_key_index_method(key);
                 let select = list_select_key_method(key);
                 let set = self.set_control_property(view, "current-key", &quote!(key))?;
                 let changed = self.typed_event(view, "changed", &quote!(index))?;
+                let select_body = if list_multi_selection(view) {
+                    let method = list_selection_command_method(key);
+                    quote!(self.#method(::xrack_runtime::ListSelectionCommand::Key(key));)
+                } else {
+                    quote! {
+                        let index = self.#find(key);
+                        if index >= 0 && key != (#current_key) {
+                            #set
+                            #changed
+                        }
+                    }
+                };
                 if self.key_scroll_targets.contains(key) {
                     let locator = list_key_locator_method(key);
                     let (model, source, order) = if has_list_visibility(view) {
@@ -10057,11 +10946,7 @@ impl<'a> Generator<'a> {
                             .map_or(-1, |index| index as ::core::primitive::i64)
                     }
                     fn #select(&self, key: ::core::primitive::i64) {
-                        let index = self.#find(key);
-                        if index >= 0 && key != (#current_key) {
-                            #set
-                            #changed
-                        }
+                        #select_body
                     }
                     fn #index(&self) -> ::core::primitive::i64 {
                         self.#find(#current_key)
@@ -10358,6 +11243,7 @@ impl<'a> Generator<'a> {
                     if !input.is_current() { return false; }
                     use ::xrack_runtime::{EventResult, RoutedEvent};
                     match event {
+                        #exclusive_button_dispatch
                         RoutedEvent::Dispatch(name) => self.__dispatch_delegate_event(scene, path, event, input)
                             .unwrap_or_else(|| self.__dispatch_path(path, name, input)),
                         RoutedEvent::Edit(text) => scene.at_path(path).is_some_and(|node| self.__edit_path(path, node, (*text).into(), input)),
@@ -10980,6 +11866,8 @@ fn generate_with_resources(
             tables: Vec::new(),
             standard_tables: BTreeMap::new(),
             row_height_views: BTreeSet::new(),
+            sectioned_lists: BTreeSet::new(),
+            section_headers: BTreeMap::new(),
             splits: Vec::new(),
             trees: BTreeMap::new(),
             stacks: BTreeMap::new(),
@@ -10989,12 +11877,15 @@ fn generate_with_resources(
             media_players: Vec::new(),
             native_dialogs: Vec::new(),
             focus_targets: BTreeSet::new(),
+            button_press_targets: BTreeSet::new(),
             text_selection_targets: BTreeSet::new(),
             text_command_targets: BTreeSet::new(),
             text_acceptance_targets: BTreeSet::new(),
             pointer_targets: BTreeSet::new(),
             viewport_targets: BTreeSet::new(),
             view_count_targets: BTreeSet::new(),
+            list_selection_info_targets: BTreeSet::new(),
+            list_selection_command_targets: BTreeSet::new(),
             list_selection_targets: BTreeSet::new(),
             key_scroll_targets: BTreeSet::new(),
             view_empty_state_owners: BTreeMap::new(),

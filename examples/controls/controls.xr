@@ -490,6 +490,180 @@ export component DelayDemo inherits Window {
     Text { x: 24px; y: 174px; text: "确认次数 " + root.activations; color: #acc0db; }
 }
 
+export component RepeatButtonsDemo inherits Window {
+    title: "XRack · 按钮双击、长按与连发";
+    width: 476px; height: 302px;
+    background: #162034;
+    in-out property <int> value: 0;
+    in-out property <int> limit: 12;
+    in-out property <bool> repeating: true;
+    in-out property <int> first-delay: 300;
+    in-out property <int> interval: 100;
+    in-out property <int> hold-interval: 800;
+    out property <int> activations: 0;
+    out property <int> commands: 0;
+    out property <int> holds: 0;
+    out property <int> doubles: 0;
+    out property <int> clicks-before-double: 0;
+    out property <bool> increase-pressed: increment.pressed;
+    out property <bool> pressed-at-click: false;
+    in property <bool> disable-on-release: false;
+    out property <string> lifecycle: "";
+    callback record-double();
+    record-double => {
+        root.doubles += 1;
+        root.clicks-before-double = root.activations + root.commands;
+    }
+
+    bump := Action {
+        text: "计次";
+        activated => { root.commands += 1; }
+    }
+    VerticalLayout {
+        padding: 18px; spacing: 10px;
+        Label { text: "按住增减，也可聚焦后按住空格"; font-size: 18px; }
+        HorizontalLayout {
+            spacing: 8px;
+            increment := Button {
+                text: "增加"; enabled: root.value < root.limit;
+                auto-repeat: root.repeating;
+                auto-repeat-delay: root.first-delay;
+                auto-repeat-interval: root.interval;
+                press-and-hold-interval: root.hold-interval;
+                press-and-hold => { root.value = 0; root.holds += 1; }
+                pressed => { root.lifecycle = root.increase-pressed ? "press " : "invalid "; }
+                released => {
+                    root.lifecycle += root.increase-pressed ? "invalid " : "release ";
+                    root.limit = root.disable-on-release ? root.value : root.limit;
+                }
+                canceled => { root.lifecycle += "cancel "; }
+                clicked => {
+                    root.pressed-at-click = increment.pressed;
+                    root.lifecycle += "click ";
+                    root.value += 1; root.activations += 1;
+                }
+                double-clicked => { root.record-double(); }
+            }
+            decrement := RoundButton {
+                text: "减少"; enabled: root.value > 0;
+                auto-repeat: root.repeating;
+                auto-repeat-delay: root.first-delay;
+                auto-repeat-interval: root.interval;
+                press-and-hold-interval: root.hold-interval;
+                press-and-hold => { root.holds += 1; }
+                clicked => { root.value -= 1; root.activations += 1; }
+                double-clicked => { root.record-double(); }
+            }
+            invoke-action := ToolButton {
+                action: bump;
+                auto-repeat: root.repeating;
+                auto-repeat-delay: root.first-delay;
+                auto-repeat-interval: root.interval;
+                press-and-hold-interval: root.hold-interval;
+                press-and-hold => { root.holds += 1; }
+                double-clicked => { root.record-double(); }
+            }
+        }
+        CheckBox { text: "自动重复"; checked <=> root.repeating; }
+        repeat-status := Label {
+            text: "数值 " + root.value + " · 增减次数 " + root.activations + " · 命令次数 " + root.commands;
+        }
+        hold-status := Label { text: "长按次数 " + root.holds; }
+        double-status := Label { text: "双击次数 " + root.doubles + " · 触发时点击次数 " + root.clicks-before-double; }
+        pressed-status := Label { text: root.increase-pressed ? "增加按钮已按下" : "增加按钮已松开"; }
+        lifecycle-status := Label { text: root.lifecycle; }
+    }
+}
+
+export component CheckableButtonsDemo inherits Window {
+    title: "XRack · 可切换按钮";
+    width: 440px; height: 245px;
+    in-out property <bool> pinned: false;
+    in property <bool> allow-pin: true;
+    in property <bool> pin-checkable: true;
+    in property <[string]> filters: ["文档", "图片", "视频"];
+    out property <string> events: "";
+    out property <int> filter-toggles: 0;
+
+    VerticalLayout {
+        padding: 18px; spacing: 10px;
+        pin := Button {
+            text: root.pinned ? "已固定" : "固定";
+            accessible-name: "固定";
+            checkable: root.pin-checkable;
+            checked <=> root.pinned;
+            enabled: root.allow-pin;
+            toggled => { root.events += root.pinned ? "on " : "off "; }
+            clicked => { root.events += root.pinned ? "click-on " : "click-off "; }
+        }
+        ToolButton {
+            text: "显示大纲";
+            checkable: true;
+            checked: true;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            for label in root.filters: RoundButton {
+                text: label;
+                checkable: true;
+                toggled => { root.filter-toggles += 1; }
+            }
+        }
+        pin-status := Label {
+            text: root.events + " · 筛选切换 " + root.filter-toggles + " 次";
+        }
+    }
+}
+
+export component GroupedButtonsDemo inherits Window {
+    title: "XRack · 按钮分组";
+    width: 450px; height: 300px;
+    in-out property <string> view-mode: "list";
+    in property <bool> grid-available: true;
+    in property <bool> filters-enabled: true;
+    in-out property <bool> starred: false;
+    out property <string> events: "";
+    out property <int> filter-toggles: 0;
+
+    modes := ButtonGroup {
+        accessible-name: "视图模式";
+        current-value <=> root.view-mode;
+        selected(value) => { root.events += "selected-" + value + " "; }
+    }
+    filters := ButtonGroup {
+        exclusive: false;
+        accessible-name: "筛选条件";
+        enabled: root.filters-enabled;
+    }
+    VerticalLayout {
+        padding: 18px; spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            list := ToolButton {
+                text: "列表"; value: "list"; group: modes;
+                toggled => { root.events += "toggle-" + root.view-mode + " "; }
+                clicked => { root.events += "click-" + root.view-mode + " "; }
+            }
+            grid := RoundButton {
+                text: "网格"; value: "grid"; group: modes;
+                enabled: root.grid-available;
+                toggled => { root.events += "toggle-" + root.view-mode + " "; }
+                clicked => { root.events += "click-" + root.view-mode + " "; }
+            }
+        }
+        details := RadioButton { text: "详情"; value: "details"; group: modes; }
+        master := CheckBox { text: "全选筛选"; check-state <=> filters.check-state; }
+        starred-filter := Button {
+            text: "已收藏"; group: filters; checked <=> root.starred;
+            toggled => { root.filter-toggles += 1; }
+        }
+        downloaded := Switch { text: "已下载"; group: filters; }
+        group-status := Label {
+            text: root.view-mode + " · " + root.events + " · 筛选切换 " + root.filter-toggles + " 次";
+        }
+    }
+}
+
 export struct ReviewRow {
     title: string,
     state: CheckState,

@@ -635,11 +635,27 @@ pub fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef
                         | "SecondaryWindow"
                         | "DayCell"
                         | "SplitHandle"
+                        | "SectionHeader"
                         | "FileDialog"
                         | "MessageDialog"
                 )
             )
     })
+}
+
+/// Ordinary push buttons allocate check state only when the declaration opts in.
+pub fn has_button_check_state(element: OperationRef<'_>) -> bool {
+    element
+        .attribute("kind")
+        .is_some_and(xrack_syntax::builtins::push_button)
+        && !element
+            .children()
+            .any(|child| child.name() == "xr.radio_group_ref")
+        && element.children().any(|child| {
+            child.name() == "xr.check_group_ref"
+                || matches!(child.name(), "xr.bind" | "xr.control_link")
+                    && matches!(child.attribute("name"), Some("checked" | "checkable"))
+        })
 }
 
 /// Determine whether a repeated scene needs state that follows model row keys.
@@ -654,6 +670,7 @@ pub fn repeat_uses_row_identity(template: OperationRef<'_>, use_visual_plan: boo
     }
     template.name() == "xr.instance"
         || template.attribute("kind") == Some("GroupBox")
+        || has_button_check_state(template)
         || scene_children(template).any(|child| repeat_uses_row_identity(child, use_visual_plan))
 }
 

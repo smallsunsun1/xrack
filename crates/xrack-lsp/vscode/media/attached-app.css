@@ -42,13 +42,13 @@ button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-off
 .select { min-width: 0; width: 100%; text-align: left; padding: 3px 4px; overflow-wrap: anywhere; }
 .select small { display: block; }
 
-#sources button, #pick {
+#sources button, #pick, #copy-recording {
     padding: 3px 7px;
     margin: 0 4px 5px 0;
     color: var(--vscode-button-secondaryForeground);
     background: var(--vscode-button-secondaryBackground);
 }
-#sources button:hover, #pick:hover { background: var(--vscode-button-secondaryHoverBackground); }
+#sources button:hover, #pick:hover, #copy-recording:hover { background: var(--vscode-button-secondaryHoverBackground); }
 #pick[aria-pressed="true"] {
     color: var(--vscode-button-foreground);
     background: var(--vscode-button-background);
@@ -70,3 +70,29 @@ ol { margin: 6px 0; padding-left: 18px; }
     main { grid-template-columns: minmax(0, 1fr); }
     .tree { max-height: 220px; overflow: auto; }
 }
+
+#calls-section, #update-section { grid-column: 1 / -1; }
+#calls-status:empty { display: none; }
+#calls {
+    max-width: 100%;
+    background: var(--vscode-dropdown-background);
+    color: var(--vscode-dropdown-foreground);
+    border: 1px solid var(--vscode-dropdown-border);
+    font: inherit;
+}
+.call-frame {
+    border-inline-start: 2px solid var(--vscode-panel-border);
+    padding-inline-start: 10px;
+    margin-block: 10px;
+}
+.frame-location { margin: 4px 0; }
+.source-link {
+    padding: 0;
+    text-align: start;
+    overflow-wrap: anywhere;
+    background: transparent;
+    color: var(--vscode-textLink-foreground);
+}
+.source-link:hover { text-decoration: underline; }
+dt .source-link { display: block; font-size: .9em; }
+.value-meta { display: block; }

@@ -4,7 +4,9 @@
 
 ## 滚动、列表和网格
 
-`ScrollView`、`ListView`、`TreeView` 和 `TableView` 在内容溢出时显示可拖动的纵向滚动条。`ScrollView` 和 `TableView` 也提供横向滚动条。拖动滑块定位，点击轨道按视口大小翻页。滚动条覆盖在内容边缘并共享滚轮的滚动位置，表头与表身继续同步。可通过 `vertical-scroll-bar-policy` 和 `horizontal-scroll-bar-policy` 设置各滚动轴的 `as-needed`、`always-on` 或 `always-off`。拖动滚动条保留当前焦点，虚拟视图继续只创建视口内的行。
+`ScrollView`、列表、虚拟网格、树和表格在内容溢出时显示可拖动的纵向滚动条。`ScrollView` 和表格也提供横向滚动条。拖动滑块定位，点击轨道按视口大小翻页。滚动条覆盖在内容边缘并共享滚轮的滚动位置，表头与表身继续同步。可通过 `vertical-scroll-bar-policy` 和 `horizontal-scroll-bar-policy` 设置各滚动轴的 `as-needed`、`always-on` 或 `always-off`。拖动滚动条保留当前焦点，虚拟视图继续只创建视口内的行。
+
+RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的横向起点在右侧。内建和附着的横向滑块也从右向左移动。物理方向的滚轮、拖动和无障碍动作仍按屏幕坐标操作，嵌套的 LTR 视口也可在同一次手势中接收剩余位移。运行 `bazel run //examples/list:list -- --rtl-scroll`，可切换方向并对照画布、滚动条和网格。
 
 `ScrollBar { target: canvas; orientation: horizontal; }` 和 `ScrollIndicator { target: canvas; }` 可以在视口外独立布局，`target` 引用同组件中的视口 ID。方向默认为纵向，`policy` 默认为 `as-needed`，也可设为 `always-on` 或 `always-off`。滚动条支持鼠标、触摸、Tab 焦点、方向键、PageUp/PageDown、Home/End 和原生无障碍操作。指示器只绘制滑块，指针事件可以穿过它。内建滚动条、外置滚动条和指示器共享视口偏移，用户移动外置滚动条时照常写回 `content-x/y` 绑定并触发 `scrolled()`。运行 `bazel run //examples/list:list -- --scroll-bars` 体验。
 
@@ -28,7 +30,7 @@
 
 `TableView` 和 `StandardTableView` 还提供 `position-view-at-cell(row, column, horizontal, vertical)`，两个方向分别接受 `ScrollAlignment`。`position-view-at-row(row, alignment)` 只移动纵轴，`position-view-at-column(column, alignment)` 只移动横轴。行号按当前显示顺序，列号按声明顺序，列重排后仍定位同一列。定位使用当前列宽、行高、行标题和冻结列的布局，冻结列保留横向偏移。这些命令保留光标和选区，无效单元格坐标取消整次定位。运行 `bazel run //examples/table:table -- --position-cells`，可在五万行模型中跳到末行末列，再重排列并比较定位结果。
 
-定位命令在回调结束并更新模型和布局后执行，结果限制在可滚动范围内。越界行索引会被忽略，定位本身不改变选择。读取 `content-x` 和 `content-y` 得到内容相对视口的实际位置，向右或向下滚动时为负值。`visible-width` 和 `visible-height` 是只读视口尺寸。表格的视口尺寸以表身为准。
+定位命令在回调结束并更新模型和布局后执行，结果限制在可滚动范围内。越界行索引会被忽略，定位本身不改变选择。`content-x` 和 `content-y` 是从滚动起点量起的带符号偏移。向阅读末端或向下滚动时，两者分别变为负值。RTL 下，横向 `0px` 对应内容右端，`scroll-to(x, y)` 仍接受非负的逻辑距离。`visible-width` 和 `visible-height` 是只读视口尺寸。表格的视口尺寸以表身为准。
 
 可用 `content-y: root.offset;` 提供响应式初值，或用 `content-y <=> root.offset;` 把滚动位置链接到可写的 `length` 属性。`ScrollView` 和表格的横轴也支持同样的绑定。单向绑定沿用其他可编辑控件的规则，视口首次主动移动后保留自己的位置。双向链接中的属性表示目标位置，各视口独立裁剪，内容尺寸变化本身不会写回。用户滚动和定位命令实际移动视口时，只将移动的轴写回绑定源。绑定纵轴的虚拟视图以目标位置为准，键盘导航可以更新它。运行 `bazel run //examples/list:list -- --linked` 可比较不同内容长度的联动画布。
 
@@ -42,9 +44,13 @@
 
 `current-index` 支持双向绑定，默认 `-1` 表示未选择。程序改变选中项时，列表会把它滚入视口。手动滚动后会保留位置，直到选择再次变化。设置 `follow-current: false;` 可关闭程序选中时的自动滚动。运行 `bazel run //examples/list:list -- --standard` 体验字符串分类和五万行记录。
 
+`ListView` 和 `StandardListView` 可用 `section-field: "group";` 给相邻且字段值相同的记录加一个分段标题。字段路径须为常量，值须为字符串。先应用记录可见性，再按显示顺序生成分段。空字符串对应无标题的区段。标题高度默认 28 个逻辑像素，可用 `section-height` 调整。`sticky-section-headers: true;` 会将当前段标题固定在视口顶部，下一段到达时将其推走。标题有独立的无障碍标题角色，列表索引、选区和定位命令仍按记录计数。
+
+需要自定义样式时，在列表内声明一个 `SectionHeader`。只读参数 `section-label`、`section-first-index`、`section-count` 和 `section-pinned` 分别提供组名、首条记录的显示索引、该组过滤后的记录数和实际吸顶状态。标题的尺寸由 `section-height` 和列表宽度决定，`accessible-name` 可提供自定义读屏名称。模板只为可见标题求值。运行 `bazel run //examples/list:list -- --sections` 对比默认和自定义标题。
+
 虚拟视图可用 `preserve-scroll-anchor: true;` 保留阅读位置。模型插入、删除、排序、树折叠或网格列数变化时，视口优先保留首个可见记录及其相对视口的位置。该记录消失后，尝试保留原来同屏的下一条记录。无可用记录时沿用现有偏移并按新边界裁剪。选中项跟随和显式定位仍可移动视口。绑定了 `content-y` 的轴由绑定源决定，行锚定本身也不会触发 `scrolled()`。默认关闭。运行 `bazel run //examples/list:list -- --anchor` 可比较两种行为。
 
-`GridView` 接收一个 `for` 模板，支持整数、字符串列表和记录模型，也支持使用自定义组件作为单元格。用 `cell-width`、`cell-height` 和 `spacing` 设置单元格，布局从左到右逐行排列，列数随视口宽度变化。只构建与垂直视口相交的网格行。自定义组件的状态按模型记录标识保存，滚出视口或在模型中移动后仍属于原记录。
+`GridView` 接收一个 `for` 模板，支持整数、字符串列表和记录模型，也支持使用自定义组件作为单元格。用 `cell-width`、`cell-height` 和 `spacing` 设置单元格，按布局方向逐行排列，列数随视口宽度变化。RTL 下第一列在右侧，左键选择屏幕左边的相邻项，模型索引保持原顺序。只构建与垂直视口相交的网格行。自定义组件的状态按模型记录标识保存，滚出视口或在模型中移动后仍属于原记录。
 
 `SwipeDelegate` 用一个 `SwipeContent` 声明行内容，再用 `SwipeLeft` 和 `SwipeRight` 声明一侧或两侧的操作区。操作区可设宽度，也可按子项尺寸测量。触摸或鼠标从行内容横向拖动时会预览操作区，松手时越过半宽才展开。纵向手势交给外层列表，预览期间操作按钮不能点击。聚焦行后可用左右方向键滑动，Escape 收起。行末的三点按钮也可用鼠标或辅助技术展开和收起，优先展开右侧。`open-side` 可双向绑定 `SwipeSide`，用户提交切换时触发 `changed(side)`。虚拟列表中的展开状态随记录标识保留。运行 `bazel run //examples/delegates:delegates -- --swipe` 体验。
 
@@ -90,6 +96,14 @@
 
 ## 列表、树和重复组件
 
+在 `ListView`、`StandardListView` 或 `GridView` 设置 `multi-select: true;` 可启用扩展选择。Ctrl／Command 加点击或空格增减一项，Shift 加点击或方向键按显示顺序选一段，两种修饰键结合可追加范围。Ctrl／Command 加方向键只移动光标，Ctrl／Command+A 选中当前投影中的记录，Escape 清空选区。带修饰键的行委托点击用于选择，普通点击仍触发委托的激活动作。
+
+选区按模型行标识保存，排序、插入和暂时隐藏记录后可以恢复。删除记录或替换模型会移除失效标识。`selection-changed(int)` 报告操作后的选中数，`changed(int)` 继续报告光标的显示索引。已有 `row-key-field` 的视图可用 `current-key` 保存光标对应的业务键。Rust 可从准备后的视图节点读取 `table_selection` 快照，再用 `keys()` 获取选中的行标识。
+
+`selection-count` 和 `has-selection` 可绑定到工具栏状态。计数包含暂时隐藏的选中记录。`is-row-selected(index)` 按当前显示索引查询，也可查询屏幕外的行。从回调调用 `select-row(index)`、`select-source-index(index)` 或 `select-key(key)` 会用目标记录替换选区，其中 `select-key` 使用配置的业务键。启用多选后也可用 `toggle-row(index)`、`select-all()` 和 `clear-selection()`。全选以当前过滤结果为准，全选和清空保留光标。运行 `bazel run //examples/list:list -- --multi-select` 试用键盘和工具栏两种入口。
+
+聚焦 `ListView`、`StandardListView` 或 `GridView` 后可直接键入文本查找下一条前缀匹配项。记录模型先按可见性过滤，再按显示顺序查找。设置 `typeahead-field: "alias";` 可指定用于匹配的常量字符串字段，并默认启用。字符串列表及使用 `text-role` 的标准列表可用 `typeahead-enabled: true;` 启用，`false` 暂停查找。连续键入可细化前缀，重复键入同一字母可在匹配项间循环。输入法提交后才查找，匹配的离屏项会滚入视口。配置 `row-key-field` 的视图继续以业务键更新选中项。运行 `bazel run //examples/list:list -- --typeahead` 试用按名称和别名定位。
+
 `ListView` 接收一个 `for` 模板，支持整数计数、`[string]` 和命名记录列表，最多寻址 100 万行。固定的 `row-height` 决定滚动位置与行索引，只有与视口相交的行才会生成。`current-index` 可双向绑定，鼠标选择和键盘方向键、Home、End、PageUp、PageDown 会更新索引。选择按位置解释，插入或删除行后仍使用当前索引。
 
 `ListView`、`GridView` 和 `StandardListView` 支持 `row-visible-field: "flags.shown";`。布尔字段为 `false` 的记录退出视图，网格用剩下的记录重新排列。视图的 `current-index` 和滚动命令使用显示索引，`for entry[source]` 中的 `source` 仍是源模型索引。编辑和行组件状态按记录标识定位，开启 `preserve-scroll-anchor` 时可在隐藏视口前的记录后保持锚点。运行 `bazel run //examples/list:list -- --visibility` 体验三个共享模型的视图。
@@ -102,6 +116,10 @@
 
 列表、网格和标准列表的只读 `selected-view-index` 返回当前显示索引，选中项不在视图的投影结果中时为 `-1`。配置业务键后，可用 `select-key(key)` 选中可见记录，或用 `position-view-at-key(key, alignment)` 单独滚动视口。滚动请求在应用到布局时解析键，即使同一回调随后替换模型，也会定位新模型中同键的记录。缺失、重复或被过滤的键不会产生选中或滚动。运行 `bazel run //examples/list:list -- --key-navigation` 体验。
 
+配置 `row-key-field` 的 `ListView`、`StandardListView` 和 `GridView` 也提供 `selected-keys` 和 `select-keys(keys)`。快照按业务键升序排列，包含筛选后保留的选中项。多选模式下可在不同投影间应用同一份快照。整批解析成功后一次提交，保留当前项和滚动位置，重复输入会合并。模型中缺失或不唯一的键会取消整批操作。若已选记录的键后来变成负值或出现冲突，快照会暂时省略该项，行选区仍按记录身份保存。
+
+运行 `bazel run //examples/list:list -- --selection-transfer`，可在标准列表选中含隐藏草稿的一批记录，再将选区同步到显示全部记录的自定义列表与网格。
+
 这六种视图均可直接声明一个 `EmptyState { … }`。当投影行数为零时，视图把它布置在正文区域，表格仍显示表头。槽里可以放文本、布局、输入框或带回调的组件。计数恢复后内容退出焦点、命中和无障碍遍历，组件状态随所属视图实例保留。`--row-counts` 示例可在列表和表格的空状态里直接恢复数据。
 
 `ItemDelegate`、`CheckDelegate`、`RadioDelegate` 和 `SwitchDelegate` 可作为 `ListView` 或 `GridView` 的直接行模板。整行可点击，默认高亮当前项，也可显式绑定 `highlighted`。聚焦列表后用方向键选行，按 Enter 或空格触发当前委托。`ItemDelegate.clicked()` 可读取重复项和索引，`RadioDelegate` 的勾选由列表的 `current-index` 派生。
@@ -109,6 +127,10 @@
 直接重复的 `CheckDelegate` 和 `SwitchDelegate` 用 `checked <=> row.field` 写回布尔字段。`CheckDelegate` 也支持 `check-state <=> row.state` 和 `tristate: true;`。交互会核对行标识和字段原值，确认写入后才执行状态回调。运行 `bazel run //examples/list:list -- --item-delegates` 查看四种控件。
 
 `TreeView` 接收一个重复的 `TreeRow`。在模板中用 `key: record.id; parent-key: record.parent-id;` 把两个整数记录字段声明为树的角色。非负键唯一，找不到父节点的记录显示为根，重复键的记录会被排除。循环在最小键处断开父链接。`current-key` 可双向绑定，展开状态按模型行标识保留，排序不会把展开状态转给别的记录。点击三角或按 Enter、Space 可切换展开，左右键可展开、折叠或移动到父子节点。只有视口内的可见节点会创建行内容。运行 `bazel run //examples/tree:tree` 查看示例。
+
+从右向左布局时，层级从右侧缩进，展开按钮位于行的右侧，纵向滚动条移到左侧。← 展开或进入子节点，→ 折叠或返回父节点。切换布局方向会保留当前项、选区和展开状态。运行 `bazel run //examples/tree:tree -- --rtl-tree` 可以在同一棵树上切换方向。
+
+用 `TreeDisclosure` 替换分支的默认三角。它是 `TreeRow` 的直接子项，使用树分配的展开区域，可以在只读绑定中访问当前记录和 `tree.is-expanded(record.key)`，并用 `Text`、`Image` 或 `Path` 绘制。叶子节点保留缩进并隐藏指示器。点击、键盘和无障碍继续操作同一个业务键。运行 `bazel run //examples/tree:tree -- --disclosure` 试用。
 
 `TreeView` 提供 `expand(key)`、`collapse(key)`、`toggle-expanded(key)` 和 `expand-to(key)`。参数使用记录里的业务键。`expand-to` 展开目标的祖先路径，可结合 `row-for-key(key)` 和 `position-view-at-index(...)` 滚动到深层节点。`depth(key)` 返回当前视图中的层级，未知键返回 `-1`。`is-expanded(key)` 可读取当前展开状态，`row-for-key(key)` 在节点折叠隐藏时返回 `-1`。
 
@@ -122,7 +144,15 @@
 
 树拓扑单独订阅模型的结构变化和当前视图使用的键字段。修改名称或数值时，只比较被修改行的键和父键，二者相同就复用拓扑和导航顺序。行内容按视口跟踪，视口外的字段变化可以保留当前帧缓存。插入、删除、排序和父子关系变化会在下次读取时更新拓扑。
 
-`multi-select: true;` 启用多选，选区与 `current-key` 独立。Shift+点击或 Shift+方向键选择当前树顺序中的一段，Ctrl/Cmd+点击或 Ctrl/Cmd+Space 增减一行，Ctrl/Cmd+Shift 增加一段，Ctrl/Cmd+方向键只移动光标。Ctrl/Cmd+A 选择展开后可见的所有行，Escape 清空选区。折叠保留后代的选中状态，排序保留记录标识，删除或替换模型会清除失效的选项。`selection-changed(int)` 报告用户操作改变选区后的选中数量。Rust 宿主可通过场景节点的 `tree_selection` 读取当前业务键及其行标识。
+`multi-select: true;` 启用多选，选区与 `current-key` 独立。Shift+点击或 Shift+方向键选择当前树顺序中的一段，Ctrl/Cmd+点击或 Ctrl/Cmd+Space 增减一行，Ctrl/Cmd+Shift 增加一段，Ctrl/Cmd+方向键只移动光标。Ctrl/Cmd+A 选择展开后可见的所有行，Escape 清空选区。折叠保留后代的选中状态，排序保留记录标识，删除或替换模型会清除失效的选项。`selection-changed(int)` 报告输入或回调命令改变选区后的选中数量。Rust 宿主可通过场景节点的 `tree_selection` 读取当前业务键及其行标识。
+
+`selection-count` 和 `has-selection` 可绑定到工具栏。`is-row-selected(index)` 查询展开和筛选后的显示行，包含视口外的行。`is-key-selected(key)` 查询业务键，也能读取折叠、筛选或切换分支前保留的选区。多选计数包含这些保留项。
+
+回调可用 `select-row(index)`、`select-key(key)` 或 `select-source-index(index)` 选中当前树投影中的记录并替换选区。选隐藏的节点前，可先用 `expand-to(key)` 展开路径。多选模式还支持 `toggle-row(index)`、`select-all()` 和 `clear-selection()`。全选替换为当前投影中的全部记录，清空和全选都保留光标。运行 `bazel run //examples/tree:tree -- --commands`，可按业务键选中节点，再折叠或筛选目录观察选区。
+
+`TreeView.selected-keys` 是按业务键升序排列的只读 `[int]` 快照，包含折叠、筛选和切换分支时保留的选中项。应用可把快照存进自己的属性，再用 `tree.select-keys(saved)` 一次替换多选。恢复在整个树模型中解析业务键，光标、展开状态和滚动位置保持原样。输入中的重复键会合并。只要有一个键在模型中缺失或不唯一，整个操作就不提交。传入 `[]` 可清空选区。
+
+`[int]` 可用于属性、回调参数和返回值，也可以通过 `for` 生成元素。用 `Model.count`、`Model.is-empty` 或 `Model.at` 读取，Rust 可以用属性的 `model_*` 访问器取得共享的 `VecModel<i64>`。运行 `bazel run //examples/tree:tree -- --batch-selection`，选择含折叠节点的一批记录，保存、清空后再恢复。
 
 `TreeRow` 可在布局中组合类型化编辑器。`TreeCell { text <=> record.label; }` 编辑字符串，`SpinBox { value <=> record.quota; }` 编辑整数，`Slider { value <=> record.load; }` 编辑浮点数，`CheckBox { checked <=> record.active; }` 或 `Switch` 编辑布尔值。绑定目标是可写列表中当前记录的字段。布局可用 `if` 条件显示，编辑器的路径需保持稳定。
 
@@ -143,6 +173,8 @@
 表格可用 `movable-columns: true;` 开启表头拖动，默认关闭。拖到目标列的前半或后半时会显示插入位置，松手后提交。靠近表头可见边缘时会自动横向滚动。列宽拖柄和短按排序仍按原操作处理。回调可调用 `table.move-column(0, 2)` 移动显示位置，两个参数都是从零开始的显示索引。`column-moved(column, position)` 给出被移动的声明列索引和新的显示索引。排序、单元格编辑和既有选区保留声明列，键盘导航、Shift 选区和无障碍阅读使用显示顺序。运行 `bazel run //examples/table:table -- --standard` 可试用表头拖动和程序化移动。
 
 表格支持 `frozen-columns: 1;`。它冻结当前显示顺序中的前 N 个可见列，列重排或可见性变化后重新计算。冻结列随整表纵向滚动，横向滚动条和翻页只覆盖后面的滚动区。两区共享行标识、选区和编辑状态。窗口较窄且内容溢出时，布局减少实际冻结列数，为滚动区保留空间。默认值为 0。运行 `bazel run //examples/table:table -- --frozen` 可试用，Shift 加滚轮可横向滚动。
+
+表格继承 `layout-direction`。RTL 下列从右向左排列，冻结列和行标题位于右侧。水平滚动条、方向键、列宽拖动和列重排都按显示位置操作，模型字段和 `content-x` 使用逻辑坐标。运行 `bazel run //examples/table -- --rtl-table` 切换体验。
 
 `TableColumn.visible` 可绑定应用状态，默认显示。隐藏列后，声明索引、重排顺序、手动列宽和选区仍保留。表头拖动按可见列命中，程序化 `move-column()` 按包含隐藏列的排列计数。键盘移动、剪贴板和无障碍按可见列处理。正在编辑的列隐藏时取消草稿，定位到隐藏列的请求会被拒绝。宽表示例的「编号列」和「二月列」可切换冻结列和普通列。
 
@@ -177,6 +209,10 @@
 `selection-target` 接受 `rows`、`cells` 和 `columns`，默认按行选择。单元格模式下，Shift 扩展矩形选区，方向键移动焦点并滚动到当前单元格。列模式可点击表头或表身选择整列，Alt+点击表头排序。`multi-select` 在三种目标下都可启用。`selection-changed(int)` 按当前目标报告行、单元格或列数。Rust 可读取 `current_column()`、`columns()` 或 `cell_keys(column)`。单元格选择跟随记录标识，整列选择在替换行模型后保留。
 
 用 `bazel run //examples/table:table -- --cells` 或 `bazel run //examples/table:table -- --columns` 体验两种选择方式。
+
+两种表格都可以为记录模型声明 `row-key-field: "id";`，字段须为唯一的非负整数，也支持点分路径。`view-index-for-key(key)` 返回排序和筛选后的显示索引，隐藏或无法解析时返回 `-1`。`select-key(key)` 按当前模式处理对应的显示行，`position-view-at-key(key, alignment)` 单独调整视口。
+
+行模式下，`selected-keys` 返回升序业务键快照，包含筛选或可见性规则隐藏的选中项。行多选支持 `select-keys(keys)`，在源模型中校验整批键后一次替换选区，并保留当前行和列。整批包含缺失或不唯一的键时取消。单元格和列模式返回空的键快照，并继续使用各自的选择命令。运行 `bazel run //examples/table:table -- --keyed-selection`，可在自定义表格保存含隐藏记录的选区，再同步到可排序和筛选的标准表格。
 
 表格同时设置 `multi-select: true;` 和 `drag-select: true;` 后，可从表身用鼠标拖出选区。预览随 `selection-target` 显示行、单元格或列范围，靠近边缘时会继续滚动到离屏内容。松手后一次提交，按住 Ctrl 或 Command 可保留原选区。Escape、移出窗口、失去焦点或拖动期间改变行结构和列顺序会取消本次选择。已进入编辑状态的单元格和独立的交互控件仍处理自己的拖动。
 

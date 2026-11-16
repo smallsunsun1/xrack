@@ -42,3 +42,57 @@ bazel run //:xrackc -- --emit mlir examples/counter/counter.xr -o .tools/ir/coun
 Rust 宿主可用 `xrack_interpreter::load_mlir_file` 加载文本 MLIR。图片、字体和翻译清单按 MLIR 文件所在目录解析，Fluent 文件按清单所在目录解析。用 `Program::create` 创建独立实例，再通过 `Instance::get`、`set`、`on`、`invoke` 操作公开接口。动态实例实现 `xrack_runtime::Component`。宿主回调需要访问组件时，可捕获 `Instance::as_weak()` 返回的弱引用，并在执行时用 `upgrade()` 获取仍存活的实例。宿主已有资源时可通过 `Program::from_module_with_assets` 提供。 用 `Program::create_with_locale` 可在创建时传入共享语言环境。
 
 `Instance::string_model`、`record_model` 和 `touch_points_model` 返回共享模型。宿主可以通过 `RecordList::from_model` 包装已有的记录模型，再用 `Instance::set` 绑定到可写属性，保留模型和行身份。
+
+### 检查运行中的应用
+
+以热重载模式启动应用，在 VS Code 运行 **XRack: Sync Editor to Running App**。组件树可以查看组件属性、值的类型与可写性，以及记录和模型的采样。属性旁的 **Definition** 跳到声明。**Recent calls** 保留最近完成的 XR 回调和控件处理器，可查看调用链、耗时、参数类型，以及当前源码版本对应的调用位置和定义位置。
+
+用 Bazel 运行仓库异步搜索示例时，可以显式指定会话发现目录。
+
+```sh
+XRACK_LIVE_PROJECT="$PWD" XRACK_DEBUG_VALUES=1 bazel run //examples/async_demo:async_demo_live
+```
+
+用 `XRACK_DEBUG_VALUES=1` 启动应用可额外捕获回调实参、返回值和已有缓存的私有属性值。未求值或已失效的私有绑定显示为无缓存。调用历史有容量上限。热重载前的帧仍可查看，源码跳转仅开放给当前版本。这个面板展示解释器里的 XR 调用帧。Rust 和 Python 宿主内部的堆栈及断点由各自的调试器提供。
+
+在 macOS 或 Linux 上，可以把同一个开发会话接到 MCP 客户端。配置 `stdio` 启动命令及参数，例如：
+
+```json
+{
+  "command": "node",
+  "args": [
+    "/path/to/xrack/crates/xrack-lsp/vscode/xrack-mcp.js",
+    "--project",
+    "/path/to/workspace"
+  ]
+}
+```
+
+先用 `list_sessions` 选择应用，再用 `get_ui_tree` 或 `get_node` 查值。用 `read_model` 分页读取公开的字符串或记录模型，继续翻页时核对 `modelRevision` 是否一致。用 `get_calls` 和 `get_call_stack` 查最近的调用，用 `get_diagnostics` 核对热重载错误和应用中的源码版本。这些查询工具只读取工作区里正在运行的开发会话。开启值捕获时，请使用适合共享给调试客户端的数据。
+
+### 录制交互和分析更新
+
+启动热重载示例时开启录制和采样。文本录制额外要求 `XRACK_DEBUG_VALUES=1`，会跳过密码输入。
+
+```sh
+XRACK_LIVE_PROJECT="$PWD" XRACK_RECORD_UI=1 XRACK_PROFILE_UI=1 XRACK_DEBUG_VALUES=1 \
+  bazel run //examples/async_demo:async_demo_live
+```
+
+在 **Sync Editor to Running App** 面板点 **Copy Recording**，或用 MCP 的 `get_recording` 导出 JSON。首版记录主窗口中 ID 唯一的按钮点击、文本框的提交文本，以及成功应用的热重载代次。重复行、触摸手势和未命名目标需要单独验证。录制达到上限会标记为截断。在开发应用上额外设置 `XRACK_CONTROL_UI=1`，MCP 可按当前源码代次调用 `click` 和 `fill`。动作通过窗口的命中测试和输入交互处理。用 `wait_for_property` 等待属性值或模型行数达到预期，也可以把断言写进回放。
+
+```sh
+bazel test //tests:ui_replay_test
+XRACK_REPLAY_FILE=/absolute/path/recording.json \
+  bazel run //tests:ui_replay_test -- replay_recorded_actions
+```
+
+异步搜索回归以固定的响应数据回放。解释器用示例的调整版布局验证请求在重载中延续。AOT 跑同一组输入和业务断言，并验证编译时布局。录制中的重载标记只存版本号，示例回放使用预设的布局改动。要复现其他源码改动，可把改动作为测试夹具加入。
+
+**UI updates** 和 MCP 的 `get_update_profile` 显示当前源码版本的 MLIR 计划和窗口更新样本。选择节点后可以查看该 ID 对应的编译决策和最近更新中的命名视觉绑定读取、行实例化数。窗口样本还包含属性实际求值数、缓存命中数、布局执行与复用次数，以及更新阶段的 CPU 耗时。视觉绑定读取包含取缓存的调用，CPU 耗时不含 GPU 绘制。列表行计数累加本次布局的实例化工作，同一行可能在多次准备中出现。
+
+也可从编译器直接导出计划，带回源位置按控件核对重绘标记、静态子树和行缓存决策。
+
+```sh
+bazel run //:xrackc -- --emit update-plan examples/async_demo/async.xr
+```

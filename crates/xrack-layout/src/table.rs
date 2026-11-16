@@ -1,9 +1,12 @@
 use crate::{
     LayoutNode, Point, Rect, ScrollLayout, TransformSpace,
     linear::{AxisInfo, fit_axis},
+    place_in_direction,
 };
 use std::sync::Arc;
-use xrack_runtime::{Node, TableColumnOrder, TableColumnWindow, resizable_table_column};
+use xrack_runtime::{
+    LayoutDirection, Node, TableColumnOrder, TableColumnWindow, resizable_table_column,
+};
 
 /// Shared by the row layout, header painting, and header hit testing.
 #[derive(Clone, Debug, PartialEq)]
@@ -13,6 +16,7 @@ pub struct TableGeometry {
     pub row_header: Rect,
     pub columns: Vec<Rect>,
     pub horizontal: ScrollLayout,
+    direction: LayoutDirection,
     order: TableColumnOrder,
     hidden_positions: Vec<usize>,
     frozen: Vec<bool>,
@@ -64,7 +68,13 @@ pub(crate) fn list_viewport(node: &Node, bounds: Rect) -> Rect {
 
 impl TableGeometry {
     pub fn new(node: &Node, bounds: Rect) -> Option<Self> {
-        Self::with_offset(node, bounds, bounds, 0.0)
+        Self::with_offset(
+            node,
+            bounds,
+            bounds,
+            0.0,
+            node.layout_direction().unwrap_or_default(),
+        )
     }
 
     pub(crate) fn with_offset(
@@ -72,6 +82,7 @@ impl TableGeometry {
         bounds: Rect,
         clip: Rect,
         requested: f32,
+        direction: LayoutDirection,
     ) -> Option<Self> {
         let header = node.table_header.as_ref()?;
         let rows = list_viewport(node, bounds);
@@ -80,8 +91,16 @@ impl TableGeometry {
             .filter(|width| width.is_finite())
             .unwrap_or_default()
             .clamp(0.0, (bounds.width - MIN_SCROLLABLE_WIDTH).max(0.0));
-        let body = Rect::new(rows.x + gutter, rows.y, rows.width - gutter, rows.height);
-        let row_header = Rect::new(rows.x, rows.y, gutter, rows.height);
+        let body = place_in_direction(
+            Rect::new(rows.x + gutter, rows.y, rows.width - gutter, rows.height),
+            rows,
+            direction,
+        );
+        let row_header = place_in_direction(
+            Rect::new(rows.x, rows.y, gutter, rows.height),
+            rows,
+            direction,
+        );
         let header_bounds = Rect::new(body.x, bounds.y, body.width, body.y - bounds.y);
         let tracks = header.columns.iter().map(|column| {
             if !column.is_visible() {
@@ -119,7 +138,7 @@ impl TableGeometry {
         let order = node.table_column_order.clone();
         let requested_frozen =
             usize::try_from(node.int("frozen-columns").unwrap_or(0)).unwrap_or(0);
-        let visible = body.intersect(clip);
+        let visible = place_in_direction(body.intersect(clip), body, direction);
         let visible_right = (visible.x + visible.width - body.x).clamp(0.0, body.width);
         let limit = if total_width > visible_right {
             (visible_right - MIN_SCROLLABLE_WIDTH).max(0.0)
@@ -159,7 +178,11 @@ impl TableGeometry {
             if width == 0.0 {
                 hidden_positions.push(visual);
             }
-            columns[index] = Rect::new(x, bounds.y, width, header_bounds.height);
+            columns[index] = place_in_direction(
+                Rect::new(x, bounds.y, width, header_bounds.height),
+                body,
+                direction,
+            );
             x += width;
         }
         Some(Self {
@@ -168,6 +191,7 @@ impl TableGeometry {
             row_header,
             columns,
             horizontal,
+            direction,
             order,
             hidden_positions,
             frozen,
@@ -179,7 +203,7 @@ impl TableGeometry {
 
     pub(crate) fn rows_area(&self) -> Rect {
         Rect::new(
-            self.row_header.x,
+            self.row_header.x.min(self.body.x),
             self.body.y,
             self.row_header.width + self.body.width,
             self.body.height,
@@ -239,13 +263,43 @@ impl TableGeometry {
         self.frozen.get(column).copied().unwrap_or(false)
     }
 
+    pub fn mirrored(&self) -> bool {
+        self.direction == LayoutDirection::RightToLeft
+    }
+
+    pub(crate) fn logical_delta(&self, delta: f32) -> f32 {
+        if self.mirrored() { -delta } else { delta }
+    }
+
+    fn mirror_x(&self, x: f32) -> f32 {
+        if self.mirrored() {
+            self.body.x + self.body.width - (x - self.body.x)
+        } else {
+            x
+        }
+    }
+
+    fn mirror_rect(&self, rect: Rect) -> Rect {
+        place_in_direction(rect, self.body, self.direction)
+    }
+
+    /// Position row or header content from the logical leading edge of its cell.
+    #[doc(hidden)]
+    pub fn content_bounds(&self, cell: Rect, start: f32, width: f32) -> Rect {
+        place_in_direction(
+            Rect::new(cell.x + start, cell.y, width, cell.height),
+            cell,
+            self.direction,
+        )
+    }
+
     fn scrollable_band(&self, band: Rect) -> Rect {
         let width = if self.frozen_count == self.visible_column_count() {
             0.0
         } else {
             (band.width - self.frozen_width).max(0.0)
         };
-        Rect::new(band.x + self.frozen_width, band.y, width, band.height)
+        self.content_bounds(band, self.frozen_width, width)
     }
 
     pub fn scrollable_header(&self) -> Rect {
@@ -257,12 +311,7 @@ impl TableGeometry {
     }
 
     pub(crate) fn frozen_body(&self) -> Rect {
-        Rect::new(
-            self.body.x,
-            self.body.y,
-            self.frozen_width,
-            self.body.height,
-        )
+        self.content_bounds(self.body, 0.0, self.frozen_width)
     }
 
     /// Clip a logical column to the pane it currently belongs to.
@@ -270,35 +319,36 @@ impl TableGeometry {
         if self.frozen_width == 0.0 {
             return band;
         }
-        let boundary = self.header.x + self.frozen_width;
-        if self.is_frozen(column) {
-            let right = (band.x + band.width).min(boundary);
-            Rect::new(band.x, band.y, (right - band.x).max(0.0), band.height)
+        let pane = if self.is_frozen(column) {
+            self.frozen_body()
         } else {
-            let left = band.x.max(boundary);
-            Rect::new(
-                left,
-                band.y,
-                (band.x + band.width - left).max(0.0),
-                band.height,
-            )
-        }
+            self.scrollable_body()
+        };
+        Rect::new(pane.x, band.y, pane.width, band.height).intersect(band)
     }
 
     pub fn frozen_boundary(&self) -> Option<f32> {
         (self.frozen_width > 0.0 && self.frozen_count < self.visible_column_count())
-            .then_some(self.header.x + self.frozen_width)
+            .then(|| self.mirror_x(self.header.x + self.frozen_width))
+    }
+
+    pub(crate) fn column_scroll_extent(&self, column: usize) -> Option<(f32, f32)> {
+        let bounds = self
+            .columns
+            .get(column)
+            .filter(|bounds| bounds.width > 0.0 && !self.is_frozen(column))?;
+        let viewport = self.mirror_rect(self.scrollable_body());
+        let bounds = self.mirror_rect(*bounds);
+        Some((bounds.x - viewport.x + self.horizontal.offset, bounds.width))
     }
 
     pub(crate) fn reveal_column(&self, column: usize) -> f32 {
-        if self.is_frozen(column) {
+        let Some((start, width)) = self.column_scroll_extent(column) else {
             return self.horizontal.offset;
-        }
-        let viewport = self.scrollable_body();
-        let bounds = self.columns[column];
-        let left = bounds.x - viewport.x + self.horizontal.offset;
+        };
+        let available = self.scrollable_body().width;
         self.horizontal
-            .revealing(left, bounds.width.min(viewport.width), viewport.width)
+            .revealing(start, width.min(available), available)
             .offset
     }
 
@@ -306,7 +356,8 @@ impl TableGeometry {
         if !self.header.contains(point) {
             return None;
         }
-        let frozen = self.frozen_width > 0.0 && point.x < self.header.x + self.frozen_width;
+        let x = self.mirror_x(point.x);
+        let frozen = self.frozen_width > 0.0 && x < self.header.x + self.frozen_width;
         let (start, end, pane) = if frozen {
             (
                 0,
@@ -322,7 +373,7 @@ impl TableGeometry {
             (
                 self.frozen_end,
                 self.columns.len(),
-                self.scrollable_header(),
+                self.mirror_rect(self.scrollable_header()),
             )
         };
         let mut insertion = None;
@@ -335,14 +386,14 @@ impl TableGeometry {
             if !self.is_column_visible(column) {
                 continue;
             }
-            let bounds = self.columns[column];
+            let bounds = self.mirror_rect(self.columns[column]);
             let visible = if self.frozen_width == 0.0 {
                 bounds
             } else {
                 bounds.intersect(pane)
             };
             if bounds.x >= pane.x + pane.width
-                || visible.width > 0.0 && point.x < visible.x + visible.width * 0.5
+                || visible.width > 0.0 && x < visible.x + visible.width * 0.5
             {
                 insertion = Some((visual, bounds.x));
                 break;
@@ -354,7 +405,7 @@ impl TableGeometry {
         if from == to {
             return None;
         }
-        Some((to, marker.clamp(pane.x, pane.x + pane.width)))
+        Some((to, self.mirror_x(marker.clamp(pane.x, pane.x + pane.width))))
     }
 
     pub(crate) fn column_at(&self, point: Point) -> Option<usize> {
@@ -386,9 +437,10 @@ impl TableGeometry {
             .filter_map(|(index, bounds)| {
                 let column = resizable_table_column(node, index)?;
                 let (min, max) = column_limits(column, self.header.width);
+                let bounds = self.mirror_rect(*bounds);
                 let edge = bounds.x + bounds.width;
-                let distance = (point.x - edge).abs();
-                let pane = self.column_clip(index, visible);
+                let distance = (self.mirror_x(point.x) - edge).abs();
+                let pane = self.mirror_rect(self.column_clip(index, visible));
                 (max > min
                     && bounds.width > 0.0
                     && edge > pane.x

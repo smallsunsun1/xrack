@@ -192,6 +192,44 @@ component QualityPicker inherits HorizontalLayout {
     ultra-quality := RadioButton { group: quality-options; text: "超高"; }
 }
 
+export struct TargetPreset {
+    code: string,
+    label: string,
+    available: bool,
+}
+
+export component MixedRadioOptionsDemo inherits Window {
+    title: "XRack · 动态单选组";
+    width: 425px; height: 360px;
+    in-out property <string> target: "desktop";
+    in-out property <bool> show-custom: true;
+    in property <[string]> platforms: ["desktop", "mobile"];
+    in property <[TargetPreset]> presets: [
+        TargetPreset { code: "studio", label: "工作室", available: true },
+        TargetPreset { code: "remote", label: "远程", available: false },
+    ];
+    out property <int> selections: 0;
+    out property <string> last-selection: "";
+
+    VerticalLayout {
+        padding: 18px; spacing: 8px;
+        targets := RadioGroup {
+            accessible-name: "目标平台";
+            current-value <=> root.target;
+            RadioButton { text: "自动"; value: "auto"; }
+            if root.show-custom: RadioButton { text: "自定义"; value: "custom"; }
+            for platform in root.platforms: RadioButton { text: platform; value: platform; }
+            for preset in root.presets: RadioButton {
+                text: preset.label; value: preset.code; enabled: preset.available;
+            }
+            RadioButton { text: "离线"; value: "offline"; }
+            selected(value) => { root.last-selection = value; root.selections += 1; }
+        }
+        show := CheckBox { text: "显示自定义选项"; checked <=> root.show-custom; }
+        target-status := Label { text: root.target + " · 用户选择 " + root.selections + " 次"; }
+    }
+}
+
 export component EditableChoiceDemo inherits Window {
     in-out property <[string]> workspaces: ["总部", "设计", "研发", "研发预览"];
     in-out property <int> active: 0;

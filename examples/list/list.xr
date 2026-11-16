@@ -318,6 +318,395 @@ export component ListDemo inherits Window {
     }
 }
 
+export component DirectionalScrollDemo inherits Window {
+    title: "XRack · 双向滚动画布和网格";
+    width: 510px; height: 238px;
+    background: #182331;
+    in-out property <bool> rtl: true;
+    in-out property <length> horizontal: 0px;
+    in-out property <int> current: 0;
+    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+
+    flip := Button {
+        x: 12px; y: 12px; width: 132px; height: 32px;
+        text: root.rtl ? "RTL → LTR" : "LTR → RTL";
+        clicked => { root.rtl = !root.rtl; }
+    }
+    jump := Button {
+        x: 158px; y: 12px; width: 134px; height: 32px;
+        text: "定位到阅读末端";
+        clicked => { canvas.scroll-to(280px, 0px); }
+    }
+    canvas := ScrollView {
+        x: 12px; y: 58px; width: 280px; height: 116px;
+        content-width: 560px; content-height: 160px;
+        content-x <=> root.horizontal;
+        Rectangle {
+            width: 100%; height: 100%; background: #263750;
+        }
+        left-edge := Rectangle {
+            width: 140px; height: 94px; background: #386697;
+            Text { x: 16px; y: 20px; text: "画布左端"; color: #f0f3fa; }
+        }
+        right-edge := Rectangle {
+            x: 420px; width: 140px; height: 94px; background: #815329;
+            Text { x: 16px; y: 20px; text: "画布右端"; color: #f0f3fa; }
+        }
+    }
+    band := ScrollBar {
+        x: 12px; y: 183px; width: 280px; height: 14px;
+        target: canvas;
+        orientation: Orientation.horizontal;
+        step-size: 0.125;
+        accessible-name: "画布横向滚动";
+    }
+    tiles := GridView {
+        x: 308px; y: 58px; width: 190px; height: 116px;
+        cell-width: 78px; cell-height: 42px; spacing: 8px;
+        current-index <=> root.current;
+        accessible-name: "示例网格";
+        for index in 24 : Rectangle {
+            width: 100%; height: 100%;
+            Text { x: 12px; y: 9px; text: "卡片 " + index; }
+        }
+    }
+    status := Text {
+        x: 12px; y: 207px;
+        text: "横向偏移 " + (canvas.content-x / 1px) + " · 网格 " + root.current;
+        color: #b8caff;
+    }
+}
+
+export struct SectionRecord {
+    title: string,
+    group: string,
+    shown: bool,
+}
+
+export component SectionedListDemo inherits Window {
+    title: "XRack · 分段列表";
+    width: 530px; height: 246px;
+    background: #182331;
+    in-out property <bool> sticky: true;
+    in property <color> section-accent: #815329;
+    in-out property <[SectionRecord]> records: [
+        SectionRecord { title: "准备交接", group: "待办", shown: true },
+        SectionRecord { title: "草拟公告", group: "待办", shown: true },
+        SectionRecord { title: "核对清单", group: "待办", shown: true },
+        SectionRecord { title: "发布预览", group: "进行中", shown: true },
+        SectionRecord { title: "审查反馈", group: "进行中", shown: true },
+        SectionRecord { title: "验证安装", group: "进行中", shown: true },
+        SectionRecord { title: "存档", group: "已完成", shown: true },
+        SectionRecord { title: "附注", group: "", shown: true },
+    ];
+    out property <int> visible-rows: agenda.row-count;
+
+    pin := Button {
+        x: 12px; y: 10px; width: 156px; height: 30px;
+        text: root.sticky ? "关闭标题固定" : "固定当前段标题";
+        clicked => { root.sticky = !root.sticky; }
+    }
+    jump := Button {
+        x: 188px; y: 10px; width: 156px; height: 30px;
+        text: "定位到进行中";
+        clicked => {
+            agenda.position-view-at-index(3, beginning);
+            custom.position-view-at-index(3, beginning);
+        }
+    }
+    agenda := StandardListView {
+        x: 12px; y: 62px; width: 244px; height: 110px;
+        accessible-name: "标准分段列表";
+        model: root.records;
+        text-role: "title";
+        row-visible-field: "shown";
+        row-height: 30px;
+        section-field: "group";
+        section-height: 26px;
+        sticky-section-headers: root.sticky;
+    }
+    custom := ListView {
+        x: 274px; y: 62px; width: 244px; height: 110px;
+        accessible-name: "自定义分段列表";
+        row-visible-field: "shown";
+        row-height: 30px;
+        section-field: "group";
+        section-height: 26px;
+        sticky-section-headers: root.sticky;
+        SectionHeader {
+            accessible-name: section-label + "，" + section-count + " 项";
+            background: section-pinned ? root.section-accent : #304565;
+            Text {
+                x: 10px; y: 3px;
+                text: section-label + " · " + section-count + " 项";
+                color: #f0f3fa;
+            }
+        }
+        for entry in root.records : Rectangle {
+            width: 100%; height: 100%;
+            background: #294364;
+            Text { x: 10px; y: 5px; text: entry.title; }
+        }
+    }
+    Text { x: 12px; y: 188px; text: "标准列表"; }
+    Text { x: 274px; y: 188px; text: "自定义行"; }
+}
+
+export struct LookupRecord {
+    id: int,
+    label: string,
+    alias: string,
+    shown: bool,
+}
+
+export component TypeaheadDemo inherits Window {
+    title: "XRack · 列表键入定位";
+    width: 660px; height: 252px;
+    background: #182331;
+    in-out property <bool> search-enabled: true;
+    in-out property <int> selected-row: -1;
+    in-out property <int> selected-key: -1;
+    in-out property <int> selected-string: -1;
+    out property <int> string-selection-count: strings.selection-count;
+    callback choose-string(int);
+    choose-string(row) => { strings.select-row(row); }
+    in-out property <[LookupRecord]> records: [
+        LookupRecord { id: 10, label: "Atlas", alias: "archive", shown: true },
+        LookupRecord { id: 20, label: "Aardvark", alias: "archive hidden", shown: false },
+        LookupRecord { id: 30, label: "Atom", alias: "audio", shown: true },
+        LookupRecord { id: 40, label: "Beacon", alias: "build", shown: true },
+        LookupRecord { id: 50, label: "文档", alias: "手册", shown: true },
+        LookupRecord { id: 60, label: "部署", alias: "发布日志", shown: true },
+        LookupRecord { id: 70, label: "Äther", alias: "network", shown: true },
+        LookupRecord { id: 80, label: "Archive", alias: "archive mirror", shown: true },
+    ];
+
+    Text { x: 12px; y: 10px; text: "聚焦视图后键入 Atlas、build 或「文档」"; }
+    CheckBox {
+        x: 12px; y: 41px; width: 156px; height: 28px;
+        text: "标准列表启用查找";
+        checked <=> root.search-enabled;
+    }
+    standard := StandardListView {
+        x: 12px; y: 78px; width: 174px; height: 118px;
+        accessible-name: "按名称搜索";
+        model: root.records;
+        text-role: "label";
+        row-visible-field: "shown";
+        row-height: 30px;
+        current-index <=> root.selected-row;
+        typeahead-enabled: root.search-enabled;
+    }
+    tiles := GridView {
+        x: 206px; y: 78px; width: 262px; height: 118px;
+        accessible-name: "按别名搜索";
+        cell-width: 118px; cell-height: 44px; spacing: 6px;
+        row-visible-field: "shown";
+        row-key-field: "id";
+        current-key <=> root.selected-key;
+        typeahead-field: "alias";
+        for item in root.records : Rectangle {
+            width: 100%; height: 100%;
+            Text { x: 8px; y: 7px; text: item.label; }
+        }
+    }
+    strings := ListView {
+        x: 486px; y: 78px; width: 160px; height: 118px;
+        accessible-name: "字符串列表";
+        row-height: 30px;
+        typeahead-enabled: true;
+        current-index <=> root.selected-string;
+        for item in ["Alpha", "Beta", "Almanac", "报告", "预览"] : Text { text: item; }
+    }
+    status := Text {
+        x: 12px; y: 219px;
+        text: "显示行 " + root.selected-row + " · 网格键 " + root.selected-key
+            + " · 字符串行 " + root.selected-string;
+    }
+}
+
+export component MultiSelectDemo inherits Window {
+    title: "XRack · 列表和网格多选";
+    width: 560px; height: 254px;
+    background: #182331;
+    in-out property <bool> multiple: true;
+    in-out property <int> current: -1;
+    in-out property <int> tile-key: -1;
+    out property <int> list-selection: 0;
+    out property <int> grid-selection: 0;
+    out property <int> grid-selection-events: 0;
+    out property <int> actual-list-selection: entries.selection-count;
+    out property <int> actual-grid-selection: tiles.selection-count;
+    out property <bool> grid-has-selection: tiles.has-selection;
+    in property <int> inspected-row: 0;
+    out property <bool> inspected-selected: tiles.is-row-selected(root.inspected-row);
+    out property <int> opened: 0;
+    callback select-grid-row(int);
+    select-grid-row(row) => { tiles.select-row(row); }
+    callback toggle-grid-row(int);
+    toggle-grid-row(row) => { tiles.toggle-row(row); }
+    callback select-grid-key(int);
+    select-grid-key(key) => { tiles.select-key(key); }
+    callback select-grid-source(int);
+    select-grid-source(source) => { tiles.select-source-index(source); }
+    callback select-all-records();
+    select-all-records => { entries.select-all(); tiles.select-all(); }
+    callback clear-selections();
+    clear-selections => { entries.clear-selection(); tiles.clear-selection(); }
+    in-out property <[LookupRecord]> records: [
+        LookupRecord { id: 10, label: "规划", alias: "准备", shown: true },
+        LookupRecord { id: 20, label: "隐藏草稿", alias: "准备", shown: false },
+        LookupRecord { id: 30, label: "实现", alias: "准备", shown: true },
+        LookupRecord { id: 40, label: "测试", alias: "检查", shown: true },
+        LookupRecord { id: 50, label: "审阅", alias: "检查", shown: true },
+        LookupRecord { id: 60, label: "发布", alias: "完成", shown: true },
+        LookupRecord { id: 70, label: "存档", alias: "完成", shown: true },
+    ];
+
+    Text { x: 12px; y: 10px; text: "Ctrl / Command 增减，Shift 选取范围"; }
+    CheckBox {
+        x: 12px; y: 38px; width: 150px; height: 28px;
+        text: "启用多选";
+        checked <=> root.multiple;
+    }
+    entries := StandardListView {
+        x: 12px; y: 74px; width: 174px; height: 130px;
+        accessible-name: "任务列表";
+        model: root.records;
+        text-role: "label";
+        row-visible-field: "shown";
+        row-height: 30px;
+        multi-select: root.multiple;
+        current-index <=> root.current;
+        selection-changed(n) => { root.list-selection = n; }
+    }
+    tiles := GridView {
+        x: 208px; y: 74px; width: 340px; height: 130px;
+        accessible-name: "任务网格";
+        cell-width: 156px; cell-height: 40px; spacing: 6px;
+        row-visible-field: "shown";
+        row-key-field: "id";
+        current-key <=> root.tile-key;
+        multi-select: root.multiple;
+        selection-changed(n) => {
+            root.grid-selection = n;
+            root.grid-selection-events += 1;
+        }
+        for record in root.records : ItemDelegate {
+            text: record.label;
+            clicked => { root.opened += 1; }
+        }
+    }
+    status := Text {
+        x: 12px; y: 222px;
+        text: "列表 " + root.current + "/" + root.list-selection
+            + " · 网格 " + root.tile-key + "/" + root.grid-selection
+            + " · 打开 " + root.opened;
+        color: #b8caff;
+    }
+    select-all := Button {
+        x: 208px; y: 38px; width: 120px; height: 28px;
+        text: "全选";
+        enabled: root.multiple;
+        clicked => { root.select-all-records(); }
+    }
+    clear := Button {
+        x: 342px; y: 38px; width: 120px; height: 28px;
+        text: "清空选区";
+        enabled: root.multiple && (entries.has-selection || tiles.has-selection);
+        clicked => { root.clear-selections(); }
+    }
+}
+
+export component ListSelectionTransferDemo inherits Window {
+    title: "XRack · 跨视图选区";
+    width: 720px; height: 340px;
+    in-out property <[LookupRecord]> records: [
+        LookupRecord { id: 10, label: "规划", alias: "", shown: true },
+        LookupRecord { id: 20, label: "草稿", alias: "", shown: false },
+        LookupRecord { id: 30, label: "实现", alias: "", shown: true },
+        LookupRecord { id: 40, label: "审阅", alias: "", shown: true },
+    ];
+    in-out property <int> source-current: -1;
+    out property <[int]> source-keys: source-view.selected-keys;
+    out property <[int]> list-keys: list-view.selected-keys;
+    out property <[int]> grid-keys: grid-view.selected-keys;
+    out property <int> source-count: source-view.selection-count;
+    out property <int> source-events: 0;
+    out property <[int]> saved: [];
+    callback choose([int]);
+    choose(keys) => { source-view.select-keys(keys); }
+    callback transfer();
+    transfer => {
+        root.saved = source-view.selected-keys;
+        root.restore();
+    }
+    callback restore();
+    restore => {
+        source-view.select-keys(root.saved);
+        list-view.select-keys(root.saved);
+        grid-view.select-keys(root.saved);
+    }
+    callback clear();
+    clear => {
+        source-view.select-keys([]);
+        list-view.select-keys([]);
+        grid-view.select-keys([]);
+    }
+
+    VerticalLayout {
+        padding: 18px; spacing: 10px;
+        HorizontalLayout {
+            spacing: 8px;
+            choose-batch := Button {
+                text: "选中规划和草稿"; clicked => { root.choose([10, 20]); }
+            }
+            transfer-batch := Button {
+                text: "同步到其他视图"; clicked => { root.transfer(); }
+            }
+            clear-batch := Button {
+                text: "清空选区"; clicked => { root.clear(); }
+            }
+            restore-batch := Button {
+                text: "恢复已保存选区"; enabled: !Model.is-empty(root.saved);
+                clicked => { root.restore(); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            VerticalLayout {
+                Label { text: "标准列表 · 隐藏草稿"; }
+                source-view := StandardListView {
+                    model: root.records; text-role: "label"; row-key-field: "id";
+                    row-visible-field: "shown"; row-height: 36px; multi-select: true;
+                    current-key <=> root.source-current;
+                    selection-changed(n) => { root.source-events += 1; }
+                }
+            }
+            VerticalLayout {
+                Label { text: "自定义列表"; }
+                list-view := ListView {
+                    row-key-field: "id"; row-height: 36px; multi-select: true;
+                    for row in root.records : ItemDelegate { text: row.label; }
+                }
+            }
+            VerticalLayout {
+                Label { text: "网格"; }
+                grid-view := GridView {
+                    row-key-field: "id"; cell-width: 98px; cell-height: 36px;
+                    spacing: 4px; multi-select: true;
+                    for row in root.records : ItemDelegate { text: row.label; }
+                }
+            }
+        }
+        batch-status := Label {
+            text: "选区 · 标准列表 " + Model.count(root.source-keys)
+                + " · 自定义列表 " + Model.count(root.list-keys)
+                + " · 网格 " + Model.count(root.grid-keys);
+        }
+    }
+}
+
 export component ScrollBarsDemo inherits Window {
     title: "XRack · External scroll controls";
     width: 352px;

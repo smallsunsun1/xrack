@@ -933,6 +933,16 @@ pub(crate) fn import_fixes(
 
 fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut Items<'a>) {
     let role = index.scopes[scope].role;
+    let radio_group = matches!(
+        role,
+        Role::Component {
+            base: "RadioGroup",
+            ..
+        } | Role::Element {
+            kind: "RadioGroup",
+            ..
+        }
+    );
     if items.prefix.starts_with('@') {
         if head.is_empty()
             && matches!(role, Role::Component { .. } | Role::Element { .. })
@@ -961,6 +971,20 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         return;
     }
     if last == ":=" || last == "inherits" || (matches!(first, "if" | "for") && last == ":") {
+        if radio_group && last != "inherits" {
+            items.add("RadioButton", CLASS, "RadioGroup option");
+            return;
+        }
+        if last == ":="
+            && head.len() == 2
+            && matches!(role, Role::Component { base, .. } if base != "global")
+        {
+            items.add(
+                "SoundEffect",
+                CLASS,
+                "nonvisual object · preloads a local WAV",
+            );
+        }
         items.elements(index);
         return;
     }
@@ -1035,7 +1059,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         }
         _ => "",
     };
-    if matches!(kind, "RadioButton" | "CheckBox" | "Switch" | "Action")
+    if (builtins::button_group_member(kind) || kind == "Action")
         && first == "group"
         && head.iter().any(|token| token.text == ":")
     {
@@ -1076,23 +1100,13 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             .iter()
             .any(|t| matches!(t.text, ":" | "<=>" | "=" | "+=" | "-="));
     if expression {
-        let template = index.ancestors(scope).find_map(|ancestor| {
-            if let Role::Element {
-                kind: kind @ ("DayCell" | "SplitHandle"),
-                ..
-            } = index.scopes[ancestor].role
-            {
-                Some(kind)
-            } else {
-                None
-            }
-        });
-        if let Some(template) = template {
-            let inputs = if template == "DayCell" {
-                xrack_ir::semantic::day_cell_inputs().to_vec()
-            } else {
-                xrack_ir::semantic::split_handle_inputs().to_vec()
+        let inputs = index.ancestors(scope).find_map(|ancestor| {
+            let Role::Element { kind, .. } = index.scopes[ancestor].role else {
+                return None;
             };
+            xrack_ir::semantic::visual_template_inputs(kind)
+        });
+        if let Some(inputs) = inputs {
             for (name, ty) in inputs {
                 items.add(name, VARIABLE, &ty.name());
             }
@@ -1189,6 +1203,9 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                 items.add(property, PROPERTY, &ty.name());
             }
         }
+        if kind == "SoundEffect" {
+            return;
+        }
         if !animation {
             let instance = matches!(role, Role::Element { .. }) && !is_builtin(kind);
             if matches!(
@@ -1275,6 +1292,8 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                     let detail = match part {
                         "EmptyState" => "content shown when the view has no rows",
                         "SwitchThumb" => "switch thumb laid out at the current drag position",
+                        "TreeDisclosure" => "branch disclosure artwork driven by the TreeView",
+                        "SectionHeader" => "visual template for each section heading in a list",
                         _ => "replacement control part",
                     };
                     items.add(part, CLASS, detail);
@@ -1287,7 +1306,11 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             {
                 items.add(event, FUNCTION, "event handler");
             }
-            items.elements(index);
+            if radio_group {
+                items.add("RadioButton", CLASS, "RadioGroup option");
+            } else {
+                items.elements(index);
+            }
             items.words(
                 "property callback pure in out in-out private if for animate states",
                 KEYWORD,
@@ -1511,7 +1534,7 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
             _ => "",
         };
-        for property in ["has-focus", "focus-within"] {
+        for property in ["has-focus", "focus-within", "pressed"] {
             if focus_property(kind, property) {
                 items.add(property, PROPERTY, "read-only bool");
             }
@@ -1668,6 +1691,8 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         ] {
             if let Some(ty) = touch_area_property(kind, metric) {
                 items.add(metric, PROPERTY, &format!("read-only {}", ty.name()));
+            } else if metric == "pressed" && focus_property(kind, metric) {
+                items.add(metric, PROPERTY, "read-only bool");
             }
         }
         for metric in [
@@ -1707,6 +1732,18 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.words("undo redo", FUNCTION, "()");
             }
         }
+        if xrack_ir::semantic::row_selection_view(kind) {
+            items.add("selection-count", PROPERTY, "read-only int");
+            items.add("has-selection", PROPERTY, "read-only bool");
+            for method in catalog::row_selection_methods(kind)
+                .iter()
+                .chain(catalog::tree_selection_methods(kind))
+            {
+                if method.result.is_some() || matches!(role, Role::Handler) {
+                    items.add(method.name, FUNCTION, &method.signature());
+                }
+            }
+        }
         if kind == "SplitView" {
             items.add("resizing", PROPERTY, "read-only bool");
             items.add("save-state", FUNCTION, "() -> string");
@@ -1730,6 +1767,15 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         }
         if viewport_kind(kind) {
             items.words("visible-width visible-height", PROPERTY, "read-only length");
+            let batch = catalog::batch_selection_methods(kind);
+            if !batch.is_empty() {
+                items.add("selected-keys", PROPERTY, "read-only [int]");
+            }
+            for method in catalog::row_key_methods(kind).iter().chain(batch) {
+                if method.result.is_some() || matches!(role, Role::Handler) {
+                    items.add(method.name, FUNCTION, &method.signature());
+                }
+            }
             if !content_viewport(kind) {
                 items.add("view-index-for-source", FUNCTION, "(source: int) -> int");
                 items.add("source-index-for-view", FUNCTION, "(index: int) -> int");
@@ -1756,9 +1802,6 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             }
             if matches!(role, Role::Handler) {
                 items.add("scroll-to", FUNCTION, "(length, length)");
-                for method in catalog::list_key_methods(kind) {
-                    items.add(method.name, FUNCTION, &method.signature());
-                }
                 if !content_viewport(kind) {
                     items.add("select-source-index", FUNCTION, "(source: int)");
                     items.add("position-view-at-index", FUNCTION, "(int, ScrollAlignment)");

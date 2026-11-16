@@ -13,7 +13,7 @@ rust_library(
     srcs = glob(["src/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.5.1",
+    version = "0.6.0",
     visibility = ["//visibility:public"],
     deps = _DEPS,
 )
@@ -25,7 +25,7 @@ rust_library(
     crate_name = "xrack_interpreter",
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.5.1",
+    version = "0.6.0",
     visibility = ["//visibility:public"],
     deps = _DEPS + ["@crates//:serde", "@crates//:serde_json"],
 )
@@ -34,5 +34,12 @@ rust_test(
     name = "interpreter_test",
     size = "small",
     crate = ":xrack_interpreter",
+    deps = ["//crates/xrack-parser:xrack_parser"],
+)
+
+rust_test(
+    name = "live_inspect_test",
+    size = "small",
+    crate = ":xrack_interpreter_live",
     deps = ["//crates/xrack-parser:xrack_parser"],
 )

@@ -37,10 +37,15 @@ test('separates read-only attachment from opt-in editor sync', { timeout: 5000, 
         client.end(JSON.stringify({
             version: 1,
             properties: [
-                { name: 'query', kind: 'String', value: 'XRack' },
+                { name: 'query', kind: 'String', value: 'XRack', source: { file, line: 1, column: 1 } },
                 { name: 'loading', kind: 'Bool', value: loading },
                 { name: 'results', kind: 'StringList', count: loading ? 0 : 1, items: loading ? [] : ['XRack · 结果 1'] },
             ],
+            trace: { generation: 2, captureValues: true, frames: [
+                { id: 1, generation: 1, source: { file, line: 1, column: 1 } },
+                { id: 2, generation: 2, source: { file, line: 1, column: 1 },
+                    callSite: { file, line: 1, column: 3 } },
+            ] },
             tree: {
                 nodes: [
                     { key: 'root', parent: null, kind: 'Window', properties: [] },
@@ -184,6 +189,23 @@ test('separates read-only attachment from opt-in editor sync', { timeout: 5000, 
         assert.equal(jump.document.uri.fsPath, file);
         assert.equal(jump.options.selection.start.line, 0);
         assert.equal(jump.options.selection.start.character, 3);
+
+        assert.equal(snapshot.trace.generation, 2);
+        const definition = once(changed, 'opened');
+        changes.emit('message', { type: 'source', key: 'root', property: 'query' });
+        assert.equal((await definition)[0].options.selection.start.character, 0);
+
+        const caller = once(changed, 'opened');
+        changes.emit('message', { type: 'source', frame: 2, callSite: true });
+        assert.equal((await caller)[0].options.selection.start.character, 3);
+
+        const historical = [];
+        const recordOpen = message => historical.push(message);
+        changed.on('opened', recordOpen);
+        changes.emit('message', { type: 'source', frame: 1 });
+        await new Promise(resolve => setImmediate(resolve));
+        changed.off('opened', recordOpen);
+        assert.deepEqual(historical, []);
 
         const stopped = once(changes, 'disconnected');
         await commands['xrack.detachRunningApp']();

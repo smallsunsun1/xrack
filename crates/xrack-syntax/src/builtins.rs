@@ -1,5 +1,13 @@
 //! Shared names and signatures for the XR UI standard library.
 
+pub fn push_button(kind: &str) -> bool {
+    matches!(kind, "Button" | "ToolButton" | "RoundButton")
+}
+
+pub fn button_group_member(kind: &str) -> bool {
+    push_button(kind) || matches!(kind, "RadioButton" | "CheckBox" | "Switch")
+}
+
 /// Canonical spellings of built-in elements, including the base of each delegate.
 pub fn builtin_element(name: &str) -> Option<&'static str> {
     macro_rules! elements {
@@ -84,6 +92,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "ScrollView",
         "SearchField",
         "SecondaryWindow",
+        "SectionHeader",
         "Shortcut",
         "Slider",
         "SliderHandle",
@@ -131,6 +140,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "Tooltip",
         "TouchArea",
         "TreeCell",
+        "TreeDisclosure",
         "TreeRow",
         "TreeView",
         "Tumbler",
@@ -341,7 +351,7 @@ const DATE: Parameter = Parameter::with_type("date: Date", &Type::Date);
 const DATE_FALLBACK: Parameter = Parameter::with_type("fallback: Date", &Type::Date);
 const TEXT: Parameter = Parameter::with_type("text: string", &Type::String);
 const NUMBER: Parameter = Parameter::with_type("value: float", &Type::Float);
-const MODEL: Parameter = Parameter::new("model: [string] | [Record]");
+const MODEL: Parameter = Parameter::new("model: [int] | [string] | [Record]");
 const OPACITY: Parameter = Parameter::with_type("alpha: float", &Type::Float);
 const RGB: &[Parameter] = &[
     Parameter::with_type("red: int", &Type::Int),

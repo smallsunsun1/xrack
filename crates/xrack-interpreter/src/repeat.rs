@@ -1,14 +1,15 @@
 use crate::*;
 use std::{cell::OnceCell, ops::Range, rc::Weak};
 use xrack_runtime::{
-    ComponentRepeater, Length, ListMetrics, ListModel, ListRowLocator, ListRowRenderer, Property,
-    RecordValue, Repeater, RowContext, RowHeightProjection, RowKey, RowLifetime, TableColumnWindow,
-    TableRowOrder, TableRowPositions, TableRows, VecModel,
+    ComponentRepeater, Length, ListMetrics, ListModel, ListRowLocator, ListRowRenderer,
+    ListSectionProjection, Property, RecordValue, Repeater, RowContext, RowHeightProjection,
+    RowKey, RowLifetime, TableColumnWindow, TableRowOrder, TableRowPositions, TableRows, VecModel,
 };
 
 #[derive(Clone)]
 pub(crate) enum Model {
     Count(i64),
+    Integers(VecModel<i64>),
     Strings(VecModel<String>),
     Records(xrack_runtime::RecordList),
     Touches(xrack_runtime::TouchPoints),
@@ -20,6 +21,7 @@ impl ListModel for Model {
     fn row_count(&self) -> usize {
         match self {
             Self::Count(count) => count.row_count(),
+            Self::Integers(rows) => rows.row_count(),
             Self::Strings(rows) => rows.row_count(),
             Self::Records(records) => records.model().row_count(),
             Self::Touches(points) => points.row_count(),
@@ -29,6 +31,7 @@ impl ListModel for Model {
     fn item(&self, row: usize) -> Value {
         match self {
             Self::Count(count) => Value::Int(count.item(row)),
+            Self::Integers(rows) => rows.item(row).into(),
             Self::Strings(rows) => rows.item(row).into(),
             Self::Records(records) => Value::Record(records.model().item(row)),
             Self::Touches(points) => Value::TouchPoint(points.item(row)),
@@ -38,6 +41,7 @@ impl ListModel for Model {
     fn track_item(&self, row: usize) {
         match self {
             Self::Count(count) => count.track_item(row),
+            Self::Integers(rows) => rows.track_item(row),
             Self::Strings(rows) => rows.track_item(row),
             Self::Records(records) => records.model().track_item(row),
             Self::Touches(points) => points.track_item(row),
@@ -47,6 +51,7 @@ impl ListModel for Model {
     fn row_key(&self, row: usize) -> RowKey {
         match self {
             Self::Count(count) => count.row_key(row),
+            Self::Integers(rows) => ListModel::row_key(rows, row),
             Self::Strings(rows) => ListModel::row_key(rows, row),
             Self::Records(records) => ListModel::row_key(records.model(), row),
             Self::Touches(points) => points.row_key(row),
@@ -56,6 +61,7 @@ impl ListModel for Model {
     fn visit_row_keys(&self, range: Range<usize>, visit: impl FnMut(RowKey)) {
         match self {
             Self::Count(count) => count.visit_row_keys(range, visit),
+            Self::Integers(rows) => ListModel::visit_row_keys(rows, range, visit),
             Self::Strings(rows) => ListModel::visit_row_keys(rows, range, visit),
             Self::Records(records) => ListModel::visit_row_keys(records.model(), range, visit),
             Self::Touches(points) => points.visit_row_keys(range, visit),
@@ -65,6 +71,7 @@ impl ListModel for Model {
     fn index_of_key(&self, key: RowKey) -> Option<usize> {
         match self {
             Self::Count(count) => count.index_of_key(key),
+            Self::Integers(rows) => ListModel::index_of_key(rows, key),
             Self::Strings(rows) => ListModel::index_of_key(rows, key),
             Self::Records(records) => ListModel::index_of_key(records.model(), key),
             Self::Touches(points) => points.index_of_key(key),
@@ -74,6 +81,7 @@ impl ListModel for Model {
     fn row_lifetime(&self, key: RowKey) -> RowLifetime {
         match self {
             Self::Count(count) => count.row_lifetime(key),
+            Self::Integers(rows) => ListModel::row_lifetime(rows, key),
             Self::Strings(rows) => ListModel::row_lifetime(rows, key),
             Self::Records(records) => ListModel::row_lifetime(records.model(), key),
             Self::Touches(points) => points.row_lifetime(key),
@@ -83,6 +91,7 @@ impl ListModel for Model {
     fn structure_stamp(&self) -> (u64, u64) {
         match self {
             Self::Count(count) => count.structure_stamp(),
+            Self::Integers(rows) => ListModel::structure_stamp(rows),
             Self::Strings(rows) => ListModel::structure_stamp(rows),
             Self::Records(records) => ListModel::structure_stamp(records.model()),
             Self::Touches(points) => points.structure_stamp(),
@@ -92,6 +101,7 @@ impl ListModel for Model {
     fn contents_stamp(&self) -> (u64, u64) {
         match self {
             Self::Count(count) => count.contents_stamp(),
+            Self::Integers(rows) => rows.contents_stamp(),
             Self::Strings(rows) => rows.contents_stamp(),
             Self::Records(records) => records.model().contents_stamp(),
             Self::Touches(points) => points.contents_stamp(),
@@ -119,11 +129,14 @@ pub(crate) struct RepeatState {
     table: OnceCell<table::State>,
     tree: OnceCell<xrack_runtime::TreeState>,
     row_heights: RowHeightProjection,
+    list_sections: ListSectionProjection,
+    pub(crate) list_selection: xrack_runtime::TableSelection,
+    section_renderer: OnceCell<xrack_runtime::ListSectionRenderer>,
     list_keys: OnceCell<Rc<xrack_runtime::ListSelectionKeys>>,
 }
 
 impl RepeatState {
-    fn selection_keys(&self) -> &Rc<xrack_runtime::ListSelectionKeys> {
+    pub(crate) fn selection_keys(&self) -> &Rc<xrack_runtime::ListSelectionKeys> {
         self.list_keys.get_or_init(Default::default)
     }
 
@@ -139,6 +152,8 @@ impl RepeatState {
         let model = self.model.try_get(|| {
             let model = match owner.evaluate(source, &[])? {
                 Value::Int(count) => Ok(Model::Count(count)),
+                Value::IntModel(model) => Ok(Model::Integers(model)),
+                Value::IntList(items) => Ok(Model::Integers(items.into())),
                 Value::StringModel(model) => Ok(Model::Strings(model)),
                 Value::StringList(items) => Ok(Model::Strings(VecModel::from(items))),
                 Value::RecordList(records) => Ok(Model::Records(records)),
@@ -163,7 +178,10 @@ impl RepeatState {
         template: &Element,
         range: Range<usize>,
     ) -> Result<Vec<Node>> {
-        let repeat = template.repeat.as_ref().expect("repeated template");
+        let repeat = template
+            .repeat
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing repeated template".into()))?;
         xrack_runtime::try_render_rows_from_source(
             || self.row_model(owner, repeat),
             |model| {
@@ -186,7 +204,10 @@ impl RepeatState {
         indices: impl Iterator<Item = usize>,
         columns: &TableColumnWindow,
     ) -> Result<Vec<Node>> {
-        let repeat = template.repeat.as_ref().expect("repeated template");
+        let repeat = template
+            .repeat
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing repeated template".into()))?;
         let allocate = |context| {
             owner.allocate_row(
                 template,
@@ -215,7 +236,9 @@ impl RepeatState {
                     }
                     instance
                         .get()
-                        .expect("initialized display row")
+                        .ok_or_else(|| {
+                            Error::Evaluation("failed to initialize display row".into())
+                        })?
                         .render_template(template, columns)
                 },
             );
@@ -317,6 +340,15 @@ impl ViewModel {
             .positions()
             .ok_or_else(|| Error::Invalid("table has no row order".into()))?;
         Ok(TableRows::from_positions(source.clone(), positions.clone()))
+    }
+
+    pub(crate) fn selection_rows(&self) -> Option<TableRows<Model>> {
+        let source = self.source.clone()?;
+        Some(if let Some(positions) = self.positions() {
+            TableRows::from_positions(source, positions.clone())
+        } else {
+            TableRows::from_source(source)
+        })
     }
 
     pub(crate) fn row_count(&self) -> usize {
@@ -512,7 +544,7 @@ impl Instance {
 
     pub(crate) fn selected_list_index(&self, target: &str) -> Result<i64> {
         let (owner, view) = self.element_owner(target)?;
-        let property = if view.list_key_field.is_some() {
+        let property = if view.row_key_field.is_some() {
             "current-key"
         } else {
             "current-index"
@@ -524,42 +556,53 @@ impl Instance {
             return Ok(-1);
         }
         let model = owner.view_model(view)?;
-        if view.list_key_field.is_some() {
-            owner.list_index_for_key(view, &model, requested)
+        if view.row_key_field.is_some() {
+            owner.index_for_business_key(view, &model, requested)
         } else {
             Ok(ListMetrics::effective_index(requested, model.row_count()))
         }
     }
 
     pub(crate) fn list_selection_index(&self, view: &Element, model: &ViewModel) -> Result<i64> {
-        if view.list_key_field.is_none() {
+        if view.row_key_field.is_none() {
             return self.current_index(view);
         }
         let Some(Value::Int(key)) = self.control_value(view, "current-key")? else {
             return Err(Error::Invalid("missing list selection key".into()));
         };
-        self.list_index_for_key(view, model, key)
+        self.index_for_business_key(view, model, key)
     }
 
-    pub(crate) fn list_index_for_key(
+    pub(crate) fn index_for_business_key(
         &self,
         view: &Element,
         model: &ViewModel,
         key: i64,
     ) -> Result<i64> {
-        let field = view
-            .list_key_field
-            .clone()
-            .ok_or_else(|| Error::Invalid("missing list key field".into()))?;
-        let Some(Model::Records(records)) = model.source.as_deref() else {
-            return Ok(-1);
-        };
-        Ok(self
-            .repeat_state(view)
-            .selection_keys()
-            .find(records.model(), key, move |row| list_key(row, &field))
+        if view.row_key_field.is_none() {
+            return Err(Error::Invalid("missing list key field".into()));
+        }
+        Ok(model
+            .source
+            .as_deref()
+            .and_then(|source| self.business_key_source_index(view, source, key))
             .and_then(|source| model.visual_index(source))
             .map_or(-1, |index| index as i64))
+    }
+
+    pub(crate) fn business_key_source_index(
+        &self,
+        view: &Element,
+        source: &Model,
+        key: i64,
+    ) -> Option<usize> {
+        let field = view.row_key_field.clone()?;
+        let Model::Records(records) = source else {
+            return None;
+        };
+        self.repeat_state(view)
+            .selection_keys()
+            .find(records.model(), key, move |row| list_key(row, &field))
     }
 
     pub(crate) fn list_selection_value(
@@ -568,7 +611,7 @@ impl Instance {
         model: &ViewModel,
         index: i64,
     ) -> Option<(&'static str, Value)> {
-        let Some(field) = view.list_key_field.clone() else {
+        let Some(field) = view.row_key_field.clone() else {
             return Some(("current-index", Value::Int(index)));
         };
         let Model::Records(records) = model.source.as_deref()? else {
@@ -598,7 +641,7 @@ impl Instance {
             "current-index"
         };
         node.properties.entry(property).or_insert(Value::Int(-1));
-        if view.list_key_field.is_some() {
+        if view.table.is_none() && view.row_key_field.is_some() {
             node.properties
                 .insert(property, self.list_selection_index(view, &model)?.into());
         }
@@ -621,12 +664,35 @@ impl Instance {
                 state.row_heights.snapshot(records.model(), base, field)
             };
         }
+        if let Some(path) = &view.section_field
+            && let Some(Model::Records(records)) = model.source.as_deref()
+        {
+            let path = path.clone();
+            node.list_sections = Some(state.list_sections.snapshot(
+                records.model(),
+                model.positions(),
+                move |record| match record.field_path(&path) {
+                    Some(Value::String(label)) => label,
+                    _ => "",
+                },
+            ));
+        }
         if view.table.is_some() {
             self.render_table(view, &model, &state, node)?;
+        } else if view
+            .bindings
+            .iter()
+            .any(|binding| binding.name == "multi-select")
+            && let Some(rows) = model.selection_rows()
+        {
+            state.list_selection.populate_list_scene(node, &rows);
+        }
+        if node.boolean("typeahead-enabled", view.typeahead_field.is_some()) {
+            node.list_text_search = list_text_search(view, &model);
         }
         if self.definition().key_scroll_targets.contains(&view.key) {
             if let (Some(field), Some(Model::Records(records))) =
-                (view.list_key_field.clone(), model.source.as_deref())
+                (view.row_key_field.clone(), model.source.as_deref())
             {
                 node.row_locator = model.clone().locator().map(|locator| {
                     locator.with_business_keys(
@@ -644,6 +710,23 @@ impl Instance {
             node.row_locator = model.locator();
         }
         node.list_row_renderer = Some(state.renderer(self, view));
+        if view.section_header.is_some() {
+            node.list_section_renderer = Some(
+                state
+                    .section_renderer
+                    .get_or_init(|| {
+                        let owner = Rc::downgrade(&self.0);
+                        let key = view.key.clone();
+                        xrack_runtime::ListSectionRenderer::new(move |input| {
+                            let owner = owner.upgrade().map(Instance::from_state)?;
+                            let view = owner.definition().root.find_key(&key)?;
+                            let template = view.section_header.as_deref()?;
+                            owner.capture_result(owner.render_section_header(template, input))
+                        })
+                    })
+                    .clone(),
+            );
+        }
         Ok(())
     }
 
@@ -726,7 +809,34 @@ impl Instance {
     }
 }
 
-fn list_key(row: &RecordValue, field: &[String]) -> i64 {
+fn list_text_search(view: &Element, model: &ViewModel) -> Option<xrack_runtime::ListTextSearch> {
+    let order = model.positions().cloned();
+    match model.source.as_deref()? {
+        Model::Strings(rows) => Some(xrack_runtime::ListTextSearch::new(
+            rows.clone(),
+            order,
+            String::as_str,
+        )),
+        Model::Records(records) => {
+            let field = view.typeahead_field.clone().or_else(|| {
+                view.standard_list
+                    .as_ref()
+                    .map(|standard| standard.label.clone().into())
+            })?;
+            Some(xrack_runtime::ListTextSearch::new(
+                records.model().clone(),
+                order,
+                move |row| match row.field_path(&field) {
+                    Some(Value::String(label)) => label,
+                    _ => "",
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn list_key(row: &RecordValue, field: &[String]) -> i64 {
     match row.field_path(field) {
         Some(Value::Int(key)) => *key,
         _ => -1,
