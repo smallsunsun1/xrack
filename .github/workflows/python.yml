@@ -1,79 +1,119 @@
-name: Python wheels
+name: Recover XRack 0.6.0 on PyPI
 
 on:
-  push:
-    branches: [main]
-    tags: ['v[0-9]*']
-  pull_request:
-    paths:
-      - '.github/workflows/python.yml'
-      - 'bindings/python/**'
-      - 'crates/**'
-      - 'grammar/**'
-      - 'mlir/**'
-      - 'bazel/**'
-      - '.bazelrc'
-      - '.bazelversion'
-      - 'MODULE.bazel*'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'examples/async_demo/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: xrack-pypi-v0.6.0
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: v0.6.0
+  RELEASE_COMMIT: 26df03df96673c6eeb70fa60aca0b2c858e740e1
+  WHEEL_RUN: '43783390267'
+
 jobs:
-  wheel:
-    if: >-
-      github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v') ||
-      contains(github.ref_name, '-') || contains(github.ref_name, '+')
-    name: Wheel (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
-    env:
-      CARGO_BAZEL_ISOLATED: "false"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-26
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - os: windows-2025
-            target: x86_64-pc-windows-msvc
-          - os: windows-11-arm
-            target: aarch64-pc-windows-msvc
+  verify:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact-ids: ${{ steps.artifacts.outputs.ids }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: refs/tags/v0.6.0
+          fetch-depth: 0
           persist-credentials: false
-      - name: Configure the Windows LLVM toolchain
-        if: runner.os == 'Windows'
-        shell: pwsh
+      - name: Verify the release commit and existing wheel artifacts
+        id: artifacts
         env:
-          BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA }}
-          BAZEL_WINDOWS_SDK_EULA: ${{ vars.BAZEL_WINDOWS_SDK_EULA }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          if ($env:BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA -ne '1' -or $env:BAZEL_WINDOWS_SDK_EULA -ne '1') {
-            throw 'Set the two Windows LLVM toolchain license variables first.'
-          }
-          "BAZEL_SH=C:/msys64/usr/bin/bash.exe" >> $env:GITHUB_ENV
-          "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=$env:BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA" >> $env:GITHUB_ENV
-          "BAZEL_WINDOWS_SDK_EULA=$env:BAZEL_WINDOWS_SDK_EULA" >> $env:GITHUB_ENV
-      - name: Select native Rust on Windows ARM64
-        if: matrix.os == 'windows-11-arm'
-        run: rustup set default-host aarch64-pc-windows-msvc
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WHEEL_RUN" |
+            jq -e --arg sha "$RELEASE_COMMIT" '
+              .head_sha == $sha and .event == "push" and .head_branch == "main"
+              and .path == ".github/workflows/python.yml"
+            ' >/dev/null
+          ids="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WHEEL_RUN/artifacts" | jq -er '
+            [
+              "xrack-python-aarch64-apple-darwin",
+              "xrack-python-aarch64-pc-windows-msvc",
+              "xrack-python-aarch64-unknown-linux-gnu",
+              "xrack-python-x86_64-pc-windows-msvc",
+              "xrack-python-x86_64-unknown-linux-gnu"
+            ] as $expected
+            | [.artifacts[] | select(.expired == false and (.name as $name | $expected | index($name)))]
+            | select((map(.name) | sort) == ($expected | sort))
+            | map(.id | tostring) | join(",")
+          ')"
+          printf 'ids=%s\n' "$ids" >> "$GITHUB_OUTPUT"
+
+  authorize:
+    runs-on: ubuntu-24.04
+    needs: verify
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Check PyPI Trusted Publishing
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          request = Request(
+              os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=pypi",
+              headers={"Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
+          )
+          with urlopen(request, timeout=30) as response:
+              identity = json.load(response)["value"]
+          request = Request(
+              "https://pypi.org/_/oidc/mint-token",
+              data=json.dumps({"token": identity}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          try:
+              with urlopen(request, timeout=30) as response:
+                  if not json.load(response).get("token"):
+                      raise SystemExit("PyPI did not return a publishing token")
+          except HTTPError as error:
+              try:
+                  codes = ", ".join(item["code"] for item in json.load(error).get("errors", []))
+              except (ValueError, KeyError, TypeError):
+                  codes = "unknown error"
+              raise SystemExit(f"PyPI rejected this workflow identity (HTTP {error.code}, {codes})") from None
+          print("PyPI accepted the workflow identity")
+          PY
+
+  intel:
+    name: Build macOS Intel wheel
+    needs: verify
+    runs-on: macos-15-intel
+    timeout-minutes: 330
+    env:
+      CARGO_BAZEL_ISOLATED: "false"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: refs/tags/v0.6.0
+          persist-credentials: false
+      - name: Verify the tagged source
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-          architecture: ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
+          architecture: x64
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-cache: true
@@ -82,16 +122,9 @@ jobs:
             - MODULE.bazel
             - Cargo.lock
           disk-cache: true
-          cache-save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           bazelrc: |
-            build --jobs=${{ runner.os == 'macOS' && '3' || '4' }}
-      - name: Install Linux wheel repair tools
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y binutils patchelf
-          python -m pip install auditwheel==6.8.2
-      - name: Test the Python bindings and build the wheel
+            build --jobs=4
+      - name: Test the bindings and build the wheel
         shell: bash
         run: |
           bazel test --lockfile_mode=update --repo_env=CARGO_BAZEL_ISOLATED=false \
@@ -99,21 +132,19 @@ jobs:
       - name: Smoke-test the installed wheel
         shell: bash
         run: |
-          bazel_bin="$(bazel info --lockfile_mode=update --repo_env=CARGO_BAZEL_ISOLATED=false bazel-bin | tr -d '\r')"
-          python bindings/python/package_wheel.py build --target "${{ matrix.target }}" \
+          bazel_bin="$(bazel info --lockfile_mode=update --repo_env=CARGO_BAZEL_ISOLATED=false bazel-bin)"
+          python bindings/python/package_wheel.py build --target x86_64-apple-darwin \
             --bazel-bin "$bazel_bin" --output .tools/python-dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: xrack-python-${{ matrix.target }}
+          name: xrack-python-x86_64-apple-darwin
           path: .tools/python-dist/*.whl
           include-hidden-files: true
           if-no-files-found: error
           compression-level: 0
 
   publish:
-    if: >-
-      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
-      !contains(github.ref_name, '-') && !contains(github.ref_name, '+')
+    needs: [verify, authorize, intel]
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:
@@ -123,32 +154,21 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
+          ref: refs/tags/v0.6.0
           persist-credentials: false
-      - name: Require a release commit on main
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-      - name: Find the verified wheels for this commit
-        id: wheel-ci
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/python.yml/runs" \
-            -f branch=main -f event=push -f status=success -f head_sha="$GITHUB_SHA" \
-            --jq '.workflow_runs[0].id // empty')
-          if [[ -z "$run_id" ]]; then
-            echo "::error::The release commit must pass the Python wheel build on main."
-            exit 1
-          fi
-          printf 'run-id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ steps.wheel-ci.outputs.run-id }}
-          pattern: xrack-python-*
+          run-id: ${{ env.WHEEL_RUN }}
+          artifact-ids: ${{ needs.verify.outputs.artifact-ids }}
           merge-multiple: true
           path: .tools/python-dist
-      - name: Verify the release version and all six wheels
-        run: python3 bindings/python/package_wheel.py verify-release --artifacts .tools/python-dist --tag "$GITHUB_REF_NAME"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: xrack-python-x86_64-apple-darwin
+          path: .tools/python-dist
+      - name: Verify all six wheels for the release tag
+        run: python3 bindings/python/package_wheel.py verify-release --artifacts .tools/python-dist --tag "$RELEASE_TAG"
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           packages-dir: .tools/python-dist/
