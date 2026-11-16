@@ -34,6 +34,11 @@ pyo3_extension(
     edition = "2024",
     module_name = "xrack._native",
     stubs = True,
+    # rules_rust otherwise adds the toolchain's shared runtime to cdylibs.
+    features = select({
+        "@platforms//os:linux": ["-static_link_cpp_runtimes"],
+        "//conditions:default": [],
+    }),
     link_deps = select({
         "@platforms//os:linux": [":linux_cpp_runtime"],
         "//conditions:default": [],

@@ -86,7 +86,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y patchelf
+          sudo apt-get install -y binutils patchelf
           python -m pip install auditwheel==6.8.2
       - name: Test the Bazel Python bindings
         run: bazel test --lockfile_mode=update --repo_env=CARGO_BAZEL_ISOLATED=false //bindings/python:binding_test

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -76,6 +77,20 @@ def verify_wheel(wheel: Path, release_version: str, platform: str) -> None:
             raise ValueError(f"Missing generated declarations in {wheel.name}")
 
 
+def verify_linux_cpp_runtime(wheel: Path, directory: Path) -> None:
+    with zipfile.ZipFile(wheel) as archive:
+        binding = archive.extract("xrack/_native.so", path=directory)
+    dynamic = subprocess.check_output(["readelf", "-d", binding], text=True)
+    needed = re.findall(r"\(NEEDED\).*\[([^\]]+)\]", dynamic)
+    shared_runtimes = [
+        name
+        for name in needed
+        if name.startswith(("libc++.so", "libc++abi.so", "libstdc++.so", "libunwind.so"))
+    ]
+    if shared_runtimes:
+        raise ValueError(f"{wheel.name} links shared C++ runtimes: {', '.join(shared_runtimes)}")
+
+
 def smoke_test(wheel: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="xrack-wheel-") as temporary:
         directory = Path(temporary)
@@ -127,6 +142,7 @@ def build(target: str, output: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="wheel-", dir=output) as staging_dir:
         staging = Path(staging_dir)
         if raw_platform.startswith("linux_"):
+            verify_linux_cpp_runtime(raw_wheel, staging / "native")
             subprocess.run(
                 [
                     sys.executable,
