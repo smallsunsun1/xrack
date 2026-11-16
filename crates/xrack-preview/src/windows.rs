@@ -67,6 +67,10 @@ impl Windows {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "select validates the window ID and render resets the selection when its child closes"
+    )]
     pub(crate) fn selected_mut(&mut self) -> &mut PreviewScene {
         self.window(self.selected)
             .expect("live preview window selection")
@@ -112,7 +116,9 @@ impl Windows {
         let mut next = VecDeque::from([None]);
         let mut closed = false;
         while let Some(id) = next.pop_front() {
-            let scene = self.window(id).expect("mounted preview window");
+            let Some(scene) = self.window(id) else {
+                continue;
+            };
             scene.advance(renderer);
             if scene.window_closed() {
                 let Some(id) = id else { break };

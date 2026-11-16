@@ -40,12 +40,10 @@ build:lint --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build:lint --output_groups=clippy_checks
 build:lint --@rules_rust//rust/settings:clippy_flag=-Dclippy::correctness
 build:lint --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
-build:lint --@rules_rust//rust/settings:clippy_flag=-Wclippy::unwrap_used
-build:lint --@rules_rust//rust/settings:clippy_flag=-Wclippy::expect_used
+build:lint --@rules_rust//rust/settings:clippy_flag=-Dclippy::unwrap_used
+build:lint --@rules_rust//rust/settings:clippy_flag=-Dclippy::expect_used
 
 build:lint-strict --config=lint
-build:lint-strict --@rules_rust//rust/settings:clippy_flag=-Dclippy::unwrap_used
-build:lint-strict --@rules_rust//rust/settings:clippy_flag=-Dclippy::expect_used
 
 test --test_output=errors
 

@@ -670,3 +670,101 @@ export component KeyedTableDemo inherits Window {
         }
     }
 }
+
+export struct HandleSampleRow {
+    name: string,
+    quantity: int,
+}
+
+export component SelectionHandlesDemo inherits Window {
+    title: "XRack · 表格选区手柄";
+    width: 632px;
+    height: 350px;
+    background: #202c3a;
+
+    in-out property <bool> show-end: true;
+    in-out property <bool> mirrored: false;
+    in-out property <SelectionGesture> gesture: auto;
+    in-out property <int> hold-ms: 500;
+    out property <bool> selection-active: grid.selection-active || detail.selection-active;
+    out property <bool> selection-dragging: grid.selection-dragging || detail.selection-dragging;
+    in-out property <[HandleSampleRow]> records: [
+        HandleSampleRow { name: "交换机", quantity: 12 },
+        HandleSampleRow { name: "工作站", quantity: 6 },
+        HandleSampleRow { name: "路由器", quantity: 9 },
+        HandleSampleRow { name: "存储盘", quantity: 28 },
+        HandleSampleRow { name: "电源", quantity: 14 },
+        HandleSampleRow { name: "显示器", quantity: 10 },
+        HandleSampleRow { name: "适配器", quantity: 16 },
+        HandleSampleRow { name: "光模块", quantity: 24 },
+    ];
+
+    Text { x: 16px; y: 14px; text: "拖动表格选区，再移动橙色或青色手柄"; }
+    grid := StandardTableView {
+        x: 16px; y: 48px; width: 290px; height: 210px;
+        layout-direction: root.mirrored ? right-to-left : left-to-right;
+        model: root.records;
+        row-height: 36px;
+        header-height: 30px;
+        multi-select: true;
+        drag-select: true;
+        selection-gesture: root.gesture;
+        selection-hold-interval: root.hold-ms;
+        selection-target: cells;
+        frozen-columns: 1;
+        TableColumn { title: "设备"; field: "name"; width: 156px; }
+        TableColumn { title: "库存"; field: "quantity"; width: 96px; }
+        SelectionStartHandle {
+            width: 12px; height: 16px;
+            background: #f19a37;
+            border-radius: 3px;
+        }
+        SelectionEndHandle {
+            width: 17px; height: 14px;
+            visible: root.show-end;
+            Rectangle { width: 100%; height: 100%; background: #3de3c8; border-radius: 3px; }
+        }
+    }
+    detail := TableView {
+        x: 326px; y: 48px; width: 290px; height: 210px;
+        layout-direction: root.mirrored ? right-to-left : left-to-right;
+        row-height: 36px;
+        header-height: 30px;
+        multi-select: true;
+        drag-select: true;
+        selection-gesture: root.gesture;
+        selection-hold-interval: root.hold-ms;
+        selection-target: cells;
+        TableColumn { title: "设备"; width: 156px; }
+        TableColumn { title: "库存"; width: 96px; }
+        SelectionStartHandle { width: 12px; height: 16px; background: #f19a37; }
+        for record in root.records : TableRow {
+            TableCell { text: record.name; }
+            TableCell { text: "" + record.quantity; }
+        }
+        SelectionEndHandle {
+            width: 17px; height: 14px; background: #3de3c8;
+            visible: root.show-end;
+        }
+    }
+    end-handle := CheckBox {
+        x: 16px; y: 272px; width: 220px; text: "显示结束端手柄";
+        checked <=> root.show-end;
+    }
+    mirror := CheckBox {
+        x: 326px; y: 272px; width: 220px; text: "从右到左";
+        checked <=> root.mirrored;
+    }
+    gesture-picker := ComboBox {
+        x: 369px; y: 8px; width: 242px; height: 34px;
+        model: ["自动", "直接拖动", "长按后拖动"];
+        current-index: root.gesture == SelectionGesture.drag ? 1 : (root.gesture == SelectionGesture.press-and-hold ? 2 : 0);
+        selected(label) => {
+            root.gesture = label == "直接拖动" ? SelectionGesture.drag : (label == "长按后拖动" ? SelectionGesture.press-and-hold : SelectionGesture.auto);
+        }
+    }
+    gesture-state := Label {
+        x: 16px; y: 315px;
+        text: root.selection-dragging ? "正在框选" : (root.selection-active ? "选区已提交" : "尚未框选");
+    }
+}

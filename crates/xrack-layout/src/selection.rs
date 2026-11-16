@@ -6,6 +6,41 @@ use crate::{
 use xrack_runtime::{LayoutDirection, Node, Orientation, group_index};
 
 pub const TAB_LABEL_SIZE: f32 = 14.0;
+const TAB_CLOSE_RESERVE: f32 = 28.0;
+
+pub(crate) fn tab_close_rect(header: Rect, direction: LayoutDirection) -> Option<Rect> {
+    let size = (header.height.min(header.width) - 6.0).min(24.0);
+    if size < 1.0 {
+        return None;
+    }
+    let rect = Rect::new(
+        header.x + header.width - size - 3.0,
+        header.y + (header.height - size) * 0.5,
+        size,
+        size,
+    );
+    Some(place_in_direction(rect, header, direction))
+}
+
+/// Reserve the logical trailing strip for a close button.
+pub fn tab_content_rect(header: Rect, close: Rect) -> Rect {
+    if close.x + close.width / 2.0 < header.x + header.width / 2.0 {
+        let start = close.x + close.width + 2.0;
+        Rect::new(
+            start,
+            header.y,
+            (header.x + header.width - start).max(0.0),
+            header.height,
+        )
+    } else {
+        Rect::new(
+            header.x,
+            header.y,
+            (close.x - header.x - 2.0).max(0.0),
+            header.height,
+        )
+    }
+}
 
 pub(crate) fn tab_bar(
     node: &Node,
@@ -41,6 +76,12 @@ pub(crate) fn tab_bar(
             } else {
                 tab.relative_length(size_property, extent)
             };
+            let close_space =
+                if axis == Axis::Horizontal && xrack_runtime::tab_is_closable(node, tab) {
+                    TAB_CLOSE_RESERVE
+                } else {
+                    0.0
+                };
             let size = explicit.unwrap_or_else(|| {
                 if let Some(content) = tab.control_part("ButtonContent") {
                     let padding = 2.0 * ButtonContent::new(tab).padding;
@@ -54,7 +95,7 @@ pub(crate) fn tab_bar(
                     } else {
                         Size::default()
                     };
-                    return (axis.extent(content) + padding).max(lower_limit);
+                    return (axis.extent(content) + padding).max(lower_limit) + close_space;
                 }
                 match axis {
                     Axis::Horizontal => {
@@ -66,6 +107,7 @@ pub(crate) fn tab_bar(
                             .unwrap_or(TAB_LABEL_SIZE)
                             .clamp(1.0, (cross_extent / 1.4).max(1.0));
                         (text.measure(label, font_size, f32::INFINITY).width + 24.0).max(48.0)
+                            + close_space
                     }
                     Axis::Vertical => 36.0,
                 }

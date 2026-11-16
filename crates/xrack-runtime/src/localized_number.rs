@@ -49,10 +49,8 @@ impl PartsWrite for DecimalParts {
 impl DecimalParts {
     fn from_decimal(formatter: &DecimalFormatter, decimal: &Decimal) -> Self {
         let mut parts = Self::default();
-        formatter
-            .format(decimal)
-            .write_to_parts(&mut parts)
-            .expect("writing into a String");
+        // DecimalParts writes into an owned String and always returns Ok.
+        let _ = formatter.format(decimal).write_to_parts(&mut parts);
         parts
     }
 
@@ -73,6 +71,10 @@ pub(crate) struct LocalizedNumber {
 impl LocalizedNumber {
     pub(crate) fn new(language: &str) -> Self {
         let locale = language.parse::<Locale>().unwrap_or(Locale::UNKNOWN);
+        #[expect(
+            clippy::expect_used,
+            reason = "ICU compiled data includes the root locale used as fallback"
+        )]
         let formatter = DecimalFormatter::try_new(locale.into(), Default::default())
             .unwrap_or_else(|_| {
                 DecimalFormatter::try_new(Default::default(), Default::default())
@@ -80,19 +82,27 @@ impl LocalizedNumber {
             });
         // Read the digits, punctuation and grouping widths from the same public
         // ICU formatter used for output, including the locale's numbering system.
+        #[expect(
+            clippy::expect_used,
+            reason = "the constant is a valid fixed_decimal literal"
+        )]
         let sample: Decimal = "1234567890.1".parse().expect("valid decimal sample");
         let mut positive: Decimal = 1.into();
         positive.apply_sign_display(SignDisplay::Always);
         let plus = DecimalParts::from_decimal(&formatter, &positive);
         let minus = DecimalParts::from_decimal(&formatter, &(-1).into());
         let sample = DecimalParts::from_decimal(&formatter, &sample);
+        #[expect(
+            clippy::expect_used,
+            reason = "the sample has one fractional digit and its captured separator comes from the same formatter"
+        )]
         let (integer, _) = sample
             .text
             .split_once(&sample.decimal)
             .expect("decimal part");
         let grouping = (!sample.group.is_empty()).then(|| {
             let mut groups = integer.rsplit(&sample.group);
-            let primary = groups.next().unwrap().chars().count();
+            let primary = groups.next().map_or(0, |group| group.chars().count());
             let secondary = groups.next().map_or(primary, |group| group.chars().count());
             (sample.group.clone(), primary, secondary)
         });

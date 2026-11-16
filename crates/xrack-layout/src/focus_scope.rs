@@ -1,15 +1,188 @@
 use crate::{
     LayoutNode, Target,
     input::{
-        eligible, focus_reachable, focus_targets_with_reveal, focusable, moved_row_target,
-        radio_group_focus, valid,
+        eligible, focus_reachable, focus_targets, focus_targets_with_reveal, focusable,
+        moved_row_target, radio_group_focus, valid,
     },
 };
-use xrack_runtime::{FocusHandle, Node, is_window_overlay};
+use std::collections::{BTreeMap, BTreeSet};
+use xrack_runtime::{FocusHandle, Node, PageIdentity, group_index, is_window_overlay};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FocusHistory {
     entries: Vec<(Target, Target)>,
+}
+
+fn remembers_page_focus(view: &Node) -> bool {
+    matches!(view.kind, "StackLayout" | "SwipeView" | "TabWidget")
+}
+
+fn is_page_content(view: &Node, depth: usize, target: &Target) -> bool {
+    // A Tab is also its title-bar focus target.
+    target.path.len() > depth + 1 || view.kind != "TabWidget"
+}
+
+#[derive(Clone, Debug)]
+struct ViewedPages {
+    owner: Target,
+    last_page: PageIdentity,
+    pages: BTreeMap<PageIdentity, Target>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PageFocusHistory {
+    views: BTreeMap<Vec<usize>, ViewedPages>,
+}
+
+impl PageFocusHistory {
+    pub fn remember(&mut self, scene: &Node, layout: &LayoutNode, focus: Option<&Target>) {
+        let Some(focus) = focus.filter(|focus| valid(focus, scene, layout)) else {
+            return;
+        };
+        if scene
+            .at_path(&focus.path)
+            .is_some_and(|node| is_window_overlay(node.kind))
+        {
+            return;
+        }
+        for depth in (0..focus.path.len()).rev() {
+            let path = &focus.path[..depth];
+            let Some(view) = scene.at_path(path) else {
+                break;
+            };
+            if is_window_overlay(view.kind) {
+                break;
+            }
+            let slot = focus.path[depth];
+            if !remembers_page_focus(view)
+                || !is_page_content(view, depth, focus)
+                || group_index(view) != Some(slot)
+            {
+                continue;
+            }
+            let Some(page) = view.child_at(slot) else {
+                continue;
+            };
+            let id = PageIdentity::of(page, slot);
+            let owner = Target::from_node(path.to_vec(), view, false, scene.row_key_at(path));
+            let history = self
+                .views
+                .entry(path.to_vec())
+                .or_insert_with(|| ViewedPages {
+                    owner: owner.clone(),
+                    last_page: id.clone(),
+                    pages: BTreeMap::new(),
+                });
+            if history.owner != owner {
+                history.owner = owner;
+                history.pages.clear();
+            } else if history.last_page != id {
+                // Model pages still have their row metadata while their content is unmounted.
+                let live: BTreeSet<_> = view
+                    .children
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, page)| PageIdentity::of(page, slot))
+                    .collect();
+                history.pages.retain(|page, _| live.contains(page));
+            }
+            history.last_page = id.clone();
+            history.pages.insert(id, focus.clone());
+        }
+    }
+
+    pub fn reconcile(&mut self, scene: &Node) {
+        self.views.retain(|_, history| {
+            history
+                .owner
+                .node_in(scene)
+                .is_some_and(remembers_page_focus)
+        });
+    }
+
+    pub fn restore(
+        &self,
+        outgoing: &Target,
+        scene: &Node,
+        layout: &LayoutNode,
+        boundary: &[usize],
+    ) -> Option<Target> {
+        if !outgoing.path.starts_with(boundary) {
+            return None;
+        }
+        for depth in (boundary.len()..outgoing.path.len()).rev() {
+            let path = &outgoing.path[..depth];
+            let Some(history) = self.views.get(path) else {
+                continue;
+            };
+            if history.pages.get(&history.last_page) != Some(outgoing) {
+                continue;
+            }
+            let Some(view) = scene.interactive_at_path(path) else {
+                continue;
+            };
+            let Some(slot) = group_index(view) else {
+                continue;
+            };
+            let Some(page) = view.child_at(slot) else {
+                continue;
+            };
+            let id = PageIdentity::of(page, slot);
+            if id == history.last_page {
+                continue;
+            }
+            let mut page_path = path.to_vec();
+            page_path.push(slot);
+            return Self::remembered(history, &id, &page_path, scene, layout)
+                .or_else(|| focus_targets(scene, layout, &page_path).into_iter().next());
+        }
+        None
+    }
+
+    pub fn tab_entry(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        previous: Option<&Target>,
+        candidate: &Target,
+        boundary: usize,
+        stops: &[Target],
+    ) -> Option<Target> {
+        (boundary..candidate.path.len()).find_map(|depth| {
+            let path = &candidate.path[..depth];
+            let history = self.views.get(path)?;
+            let view = history.owner.node_in(scene)?;
+            let slot = candidate.path[depth];
+            let page_path = &candidate.path[..=depth];
+            if !is_page_content(view, depth, candidate)
+                || previous.is_some_and(|p| {
+                    p.path.starts_with(page_path) && is_page_content(view, depth, p)
+                })
+                || group_index(view) != Some(slot)
+            {
+                return None;
+            }
+            let id = PageIdentity::of(view.child_at(slot)?, slot);
+            Self::remembered(history, &id, page_path, scene, layout)
+                .filter(|target| stops.contains(target))
+        })
+    }
+
+    fn remembered(
+        history: &ViewedPages,
+        id: &PageIdentity,
+        page: &[usize],
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<Target> {
+        let (&slot, owner) = page.split_last()?;
+        let mut target = history.pages.get(id)?.clone();
+        target.path[owner.len()] = slot;
+        if valid(&target, scene, layout) {
+            return Some(target);
+        }
+        moved_row_target(&target, scene, layout).filter(|target| target.path.starts_with(page))
+    }
 }
 
 pub(crate) fn target_at(scene: &Node, layout: &LayoutNode, path: &[usize]) -> Option<Target> {

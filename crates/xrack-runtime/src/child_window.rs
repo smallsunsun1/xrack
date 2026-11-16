@@ -61,6 +61,10 @@ impl SecondaryWindowCommand {
 pub struct SecondaryWindowSlot(u64);
 
 impl Default for SecondaryWindowSlot {
+    #[expect(
+        clippy::expect_used,
+        reason = "window IDs cannot be reused for native window events"
+    )]
     fn default() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Self(

@@ -1,5 +1,5 @@
 use super::{
-    Canvas, Color, LayoutNode, Node, Paint, PaintFrame, Palette, Path, Rect, Renderer,
+    Canvas, Color, LayoutNode, Node, Paint, PaintFrame, Palette, Path, Point, Rect, Renderer,
     WGPURenderer, image,
 };
 use femtovg::{ImageFlags, ImageId, ImageInfo, PixelFormat, Transform2D};
@@ -168,7 +168,7 @@ impl Renderer {
         &mut self,
         page: &Rc<(Node, LayoutNode)>,
         bounds: Rect,
-        offset: f32,
+        offset: Point,
         frame: PaintFrame<'_>,
         cacheable: bool,
     ) -> Result<(), String> {
@@ -177,7 +177,7 @@ impl Renderer {
         } else {
             None
         };
-        self.canvas.translate(offset, 0.0);
+        self.canvas.translate(offset.x, offset.y);
         if let Some(raster) = layer {
             self.composite_layer(raster, 1.0);
             Ok(())
@@ -360,7 +360,9 @@ impl Renderer {
             };
             self.retained_layers.capture = Some((canvas, Default::default()));
         }
-        let mut capture = self.retained_layers.capture.take().unwrap();
+        let Some(mut capture) = self.retained_layers.capture.take() else {
+            return Ok(None);
+        };
         self.retained_layers.capturing = true;
         std::mem::swap(&mut self.canvas, &mut capture.0);
         std::mem::swap(&mut self.images, &mut capture.1);

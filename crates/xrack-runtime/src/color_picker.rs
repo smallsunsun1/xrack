@@ -241,10 +241,13 @@ impl ColorPopupState {
             picker.children.push(self.color_plane(draft.hsv));
         }
         append_picker_dialog(dialog, picker);
-        if !draft.hex_valid(show_alpha) {
-            dialog.children.last_mut().expect("picker footer").children[1]
-                .properties
-                .insert("enabled", false.into());
+        if !draft.hex_valid(show_alpha)
+            && let Some(button) = dialog
+                .children
+                .last_mut()
+                .and_then(|footer| footer.children.get_mut(1))
+        {
+            button.properties.insert("enabled", false.into());
         }
         Ok(())
     }

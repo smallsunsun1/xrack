@@ -206,6 +206,7 @@ impl RowHeightProjection {
                         updates,
                     });
                 }
+                #[expect(clippy::expect_used, reason = "the observer is installed above when missing or when its model changes")]
                 let observation = observation.as_ref().expect("installed field observation");
                 observation.changed.track();
                 observation.updates.take()
@@ -297,8 +298,10 @@ impl Overrides {
         }
         let mut index = 0;
         model.visit_row_keys(0..count, |key| {
-            if displaced.remove(&key) {
-                self.rows.get_mut(&key).expect("tracked row").0 = index;
+            if displaced.remove(&key)
+                && let Some(row) = self.rows.get_mut(&key)
+            {
+                row.0 = index;
             }
             index += 1;
         });
@@ -315,7 +318,9 @@ impl Overrides {
             displaced = live;
         }
         for key in displaced {
-            self.rows.get_mut(&key).expect("tracked row").0 = usize::MAX;
+            if let Some(row) = self.rows.get_mut(&key) {
+                row.0 = usize::MAX;
+            }
         }
     }
 }

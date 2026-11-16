@@ -128,6 +128,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::DrawerEdge => quote!(::xrack_runtime::DrawerEdge),
         Type::PopupPlacement => quote!(::xrack_runtime::PopupPlacement),
         Type::SelectionTarget => quote!(::xrack_runtime::SelectionTarget),
+        Type::SelectionGesture => quote!(::xrack_runtime::SelectionGesture),
         Type::Date => quote!(::xrack_runtime::Date),
         Type::Time => quote!(::xrack_runtime::Time),
         Type::Font => quote!(::xrack_runtime::Font),
@@ -187,7 +188,7 @@ fn value_type(op: OperationRef<'_>) -> Result<Type, String> {
         return Err(format!("{} must produce one XR value", op.name()));
     }
     op.result(0)
-        .expect("one result")
+        .ok_or("missing XR value")?
         .xr_type()
         .map_err(|error| format!("{} has unsupported {error}", op.name()))
 }
@@ -569,7 +570,10 @@ fn radio_choice_method(key: &str) -> Ident {
 fn repeated_navigation_page(
     view: OperationRef<'_>,
 ) -> Option<(OperationRef<'_>, OperationRef<'_>)> {
-    if !matches!(view.attribute("kind"), Some("TabWidget" | "SwipeView")) {
+    if !matches!(
+        view.attribute("kind"),
+        Some("TabWidget" | "SwipeView" | "StackLayout")
+    ) {
         return None;
     }
     let page = scene_children(view).next()?;
@@ -677,6 +681,11 @@ fn hover_handle(owner: &str) -> Ident {
 fn pointer_handle(owner: &str) -> Ident {
     let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
     format_ident!("__xr_pointer_{encoded}")
+}
+
+fn swipe_preview_handle(owner: &str) -> Ident {
+    let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format_ident!("__xr_swipe_preview_{encoded}")
 }
 
 fn viewport_handle(owner: &str) -> Ident {
@@ -956,6 +965,10 @@ struct RepeatScope<'a> {
 }
 
 impl RepeatScope<'_> {
+    #[expect(
+        clippy::expect_used,
+        reason = "a RepeatScope is constructed with a row index"
+    )]
     fn index(&self) -> usize {
         self.row.row_index.expect("repeat row index")
     }
@@ -969,6 +982,7 @@ impl RepeatScope<'_> {
         let model_type = ty(&self.model);
         if self.uses_row_identity() {
             let types = self.delegates.iter().map(|(_, delegate)| {
+                #[expect(clippy::expect_used, reason = "MLIR verification requires a component on each row delegate")]
                 let component = ident(delegate.attr("component").expect("verified component"));
                 if self.table {
                     quote!(::std::cell::LazyCell<#component, ::std::boxed::Box<dyn FnOnce() -> #component>>)
@@ -1012,6 +1026,12 @@ impl<'a> ExpressionContext<'a> {
             quote!(__xr_index)
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum GroupOptionRead {
+    Select(bool),
+    Close,
 }
 
 struct TableProjection<'context, 'module> {
@@ -1245,7 +1265,10 @@ impl<'a> Generator<'a> {
                     self.repeated_buttons.insert(key);
                 }
                 self.elements.insert(key, op);
-                if navigation_selects_by_value(op) || repeated_navigation_page(op).is_some() {
+                if navigation_selects_by_value(op)
+                    || repeated_navigation_page(op).is_some()
+                    || op.attribute("kind") == Some("StackLayout")
+                {
                     self.navigation_read_groups.insert(key);
                 }
                 if repeat.is_none() && op.attr("kind") == Ok("TouchArea") {
@@ -1684,6 +1707,7 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    #[expect(clippy::expect_used, reason = "the verified binding has one operand")]
     fn visual_cache_key(&self, binding: OperationRef<'a>) -> VisualCacheKey<'a> {
         VisualCacheKey::for_binding(binding, self.use_visual_plan)
             .expect("verified binding operand")
@@ -2368,7 +2392,8 @@ impl<'a> Generator<'a> {
                         _ => Err("unsupported list selection query".into()),
                     };
                 }
-                let snapshot = table_selection_snapshot_method(owner(op));
+                let snapshot = table_selection_snapshot_method(key);
+                let selection = table_selection_field(key);
                 let field = table_sort_field(key);
                 let sort = quote!(#receiver.__state.#field.get(|| None));
                 match TableRead::from_operation(op)? {
@@ -2377,6 +2402,10 @@ impl<'a> Generator<'a> {
                     }
                     TableRead::SelectionCount => quote!(#receiver.#snapshot().selection_count()),
                     TableRead::HasSelection => quote!(!#receiver.#snapshot().is_empty()),
+                    TableRead::SelectionActive => quote!(
+                        #receiver.__state.#selection.dragging() || #receiver.#snapshot().drag_range().is_some()
+                    ),
+                    TableRead::SelectionDragging => quote!(#receiver.__state.#selection.dragging()),
                     TableRead::SortColumn => {
                         quote!(::xrack_runtime::TableSort::column_index(#sort))
                     }
@@ -2814,6 +2843,10 @@ impl<'a> Generator<'a> {
 
     fn take_forwarded_inputs(names: &[&str]) -> TokenStream {
         let mut fields = names.iter().map(|name| property_field("root", name));
+        #[expect(
+            clippy::expect_used,
+            reason = "a property forward is recorded only for a nonempty alias group"
+        )]
         let first = fields.next().expect("a forward has at least one alias");
         quote!(__inputs.#first.take() #(.or_else(|| __inputs.#fields.take()))*)
     }
@@ -4911,7 +4944,7 @@ impl<'a> Generator<'a> {
             );
         }
         if edit_text {
-            let cell = *nodes.last().expect("a row editor path has a cell");
+            let cell = *nodes.last().ok_or("a row editor path requires a cell")?;
             let editable = flag(cell, "editable", quote!(true))?;
             let read_only = flag(cell, "read-only", quote!(false))?;
             checks.push(quote!(#input.available(|| !(#read_only) && (#editable))));
@@ -6889,12 +6922,32 @@ impl<'a> Generator<'a> {
         option: OperationRef<'a>,
         scope: &VisualScope<'_>,
         available: TokenStream,
-        radio: bool,
+        read: GroupOptionRead,
     ) -> Result<TokenStream, String> {
-        let label = if radio {
-            self.live_radio_value(option, scope)?
-        } else {
-            quote!(::std::string::String::new())
+        let label = match read {
+            GroupOptionRead::Select(true) => self.live_radio_value(option, scope)?,
+            GroupOptionRead::Select(false) => quote!(::std::string::String::new()),
+            GroupOptionRead::Close => {
+                let receiver = quote!(self);
+                let projection = TableProjection::for_input(&receiver);
+                let closable = self.row_input_flag(
+                    option,
+                    "closable",
+                    quote!(__xr_tabs_closable()),
+                    scope,
+                    &projection,
+                    false,
+                )?;
+                let value = option
+                    .children()
+                    .find(|binding| {
+                        binding.name() == "xr.bind" && binding.attr("name") == Ok("value")
+                    })
+                    .map(|binding| self.visual_value(binding, scope))
+                    .transpose()?
+                    .unwrap_or_else(|| quote!(::std::string::String::new()));
+                return Ok(quote! { ((#available) && (#closable)).then(|| #value) });
+            }
         };
         Ok(quote! {
             (#available).then(|| if read_label { #label } else { ::std::string::String::new() })
@@ -7011,6 +7064,8 @@ impl<'a> Generator<'a> {
 
     fn navigation_choice(&self, group: OperationRef<'a>) -> Result<TokenStream, String> {
         let by_value = navigation_selects_by_value(group);
+        let layout = group.attr("kind") == Ok("StackLayout");
+        let exact_index = layout || group.attr("kind") == Ok("TabWidget");
         let (property, ty) = controlled_property(group).ok_or("missing navigation selection")?;
         let current = self.control_value(group, property, ty)?;
         let receiver = quote!(self);
@@ -7032,7 +7087,11 @@ impl<'a> Generator<'a> {
                 repeat_parameters: true,
                 ..ExpressionContext::new(&receiver)
             });
-            let available = self.element_allows_editing(option, &projection)?;
+            let available = if layout {
+                quote!(true)
+            } else {
+                self.element_allows_editing(option, &projection)?
+            };
             let selectors = self.input_selectors(&projection)?;
             let option = if by_value {
                 let label = self.row_binding_or(
@@ -7045,7 +7104,7 @@ impl<'a> Generator<'a> {
             } else {
                 available
             };
-            if group.attr("kind") == Ok("TabWidget") && !by_value {
+            if exact_index && !by_value {
                 return Ok(quote! {
                     let requested = #current;
                     #init
@@ -7070,7 +7129,11 @@ impl<'a> Generator<'a> {
         let projection = TableProjection::new(ExpressionContext::new(&receiver));
         let options = scene_children(group)
             .map(|option| {
-                let available = self.element_allows_editing(option, &projection)?;
+                let available = if layout {
+                    quote!(true)
+                } else {
+                    self.element_allows_editing(option, &projection)?
+                };
                 if by_value {
                     let label = self.live_radio_value(option, &self.visuals)?;
                     Ok(quote!((#available).then(|| #label)))
@@ -7087,7 +7150,7 @@ impl<'a> Generator<'a> {
             quote!(false)
         };
         let eligible = quote!(|slot| match slot { #(#slots => #options,)* _ => #missing });
-        if group.attr("kind") == Ok("TabWidget") && !by_value {
+        if exact_index && !by_value {
             return Ok(
                 quote!(::core::primitive::usize::try_from(#current).ok().filter(|index| (#eligible)(*index))),
             );
@@ -7119,12 +7182,23 @@ impl<'a> Generator<'a> {
     fn group_option_reader(
         &self,
         element: OperationRef<'a>,
-        radio: bool,
+        read: GroupOptionRead,
     ) -> Result<TokenStream, String> {
         if let Some(template) = scene_children(element).next()
             && let Some(model) = children(template, "xr.repeat").next()
         {
             if self.empty_repeat(template) || self.static_subtree(template) {
+                if matches!(read, GroupOptionRead::Close) {
+                    return Ok(quote! {
+                        |_, slot, _| ::xrack_runtime::group_item(node, slot)
+                            .filter(|item| if item.properties.contains_key("closable") {
+                                item.boolean("closable", false)
+                            } else {
+                                __xr_tabs_closable()
+                            })
+                            .map(|item| item.text("value").unwrap_or("").to_owned())
+                    });
+                }
                 return Ok(quote! {
                     |_, slot, read_label| ::xrack_runtime::group_item(node, slot).map(|item| {
                         if read_label { ::xrack_runtime::radio_value(item).to_owned() } else { ::std::string::String::new() }
@@ -7132,14 +7206,14 @@ impl<'a> Generator<'a> {
                 });
             }
             if repeated_navigation_page(element).is_some() {
-                let describe = self.sample_repeated_navigation_option(template, model)?;
+                let describe = self.sample_repeated_navigation_option(template, model, read)?;
                 return Ok(quote!(|model, slot, read_label| {
                     let model = &**model;
                     let __xr_index = slot;
                     #describe
                 }));
             }
-            let option = self.repeated_group_option(template, model, radio, &quote!(slot))?;
+            let option = self.repeated_group_option(template, model, read, &quote!(slot))?;
             return Ok(quote!(|model, slot, read_label| #option));
         }
 
@@ -7148,7 +7222,7 @@ impl<'a> Generator<'a> {
         let mut options = TokenStream::new();
         for (slot, child) in static_children(element) {
             let available = self.element_allows_editing(child, &projection)?;
-            let option = self.live_group_option(child, &self.visuals, available, radio)?;
+            let option = self.live_group_option(child, &self.visuals, available, read)?;
             options.extend(quote!(#slot => #option,));
         }
         Ok(quote!(|_, slot, read_label| match slot { #options _ => ::core::option::Option::None }))
@@ -7158,7 +7232,7 @@ impl<'a> Generator<'a> {
         &self,
         template: OperationRef<'a>,
         repeat_op: OperationRef<'a>,
-        radio: bool,
+        read: GroupOptionRead,
         row: &TokenStream,
     ) -> Result<TokenStream, String> {
         let repeat = &self.visuals.repeats[element_key(template)?];
@@ -7171,7 +7245,7 @@ impl<'a> Generator<'a> {
             quote!(let #index = __xr_row_index;)
         });
         let available = self.item_delegate_available(template, &repeat.row)?;
-        let option = self.live_group_option(template, &repeat.row, available, radio)?;
+        let option = self.live_group_option(template, &repeat.row, available, read)?;
         Ok(quote! {{
             let key = node.child_at(slot)?.row_key?;
             self.__state.__visuals.#field.with_resolved_row_state(
@@ -7213,15 +7287,24 @@ impl<'a> Generator<'a> {
                         ::core::option::Option::None
                     };
                 });
-                let repeated =
-                    self.repeated_group_option(child, repeat, true, &quote!(sample.1))?;
+                let repeated = self.repeated_group_option(
+                    child,
+                    repeat,
+                    GroupOptionRead::Select(true),
+                    &quote!(sample.1),
+                )?;
                 quote!({
                     let model = sample.2.#model.as_ref()?;
                     #repeated
                 })
             } else {
                 let available = self.element_allows_editing(child, &projection)?;
-                self.live_group_option(child, &self.visuals, available, true)?
+                self.live_group_option(
+                    child,
+                    &self.visuals,
+                    available,
+                    GroupOptionRead::Select(true),
+                )?
             };
             options.extend(quote!(#declaration => #option,));
         }
@@ -7242,6 +7325,7 @@ impl<'a> Generator<'a> {
         &self,
         page: OperationRef<'a>,
         repeat: OperationRef<'a>,
+        read: GroupOptionRead,
     ) -> Result<TokenStream, String> {
         let (_, _, parameters) = self.sampled_group_options(page, repeat)?;
         let component = quote!(self);
@@ -7250,17 +7334,24 @@ impl<'a> Generator<'a> {
             ..ExpressionContext::new(&component)
         });
         let available = self.element_allows_editing(page, &projection)?;
-        let selectors = self.input_selectors(&projection)?;
+        let (available, read_value) = if matches!(read, GroupOptionRead::Close) {
+            let closable =
+                self.row_binding_or(page, "closable", quote!(__xr_tabs_closable()), &projection)?;
+            (quote!((#available) && (#closable)), quote!(true))
+        } else {
+            (available, quote!(read_label))
+        };
         let value = self.row_binding_or(
             page,
             "value",
             quote!(::std::string::String::new()),
             &projection,
         )?;
+        let selectors = self.input_selectors(&projection)?;
         Ok(quote! {
             #parameters
             #selectors
-            (#available).then(|| if read_label { #value } else { ::std::string::String::new() })
+            (#available).then(|| if #read_value { #value } else { ::std::string::String::new() })
         })
     }
 
@@ -7301,6 +7392,55 @@ impl<'a> Generator<'a> {
                 }
             });
         }
+        if kind == "StackItem" {
+            for property in [
+                "width",
+                "height",
+                "min-width",
+                "min-height",
+                "preferred-width",
+                "preferred-height",
+                "max-width",
+                "max-height",
+            ] {
+                let optional = |value| quote!(::core::option::Option::Some(::xrack_runtime::Value::from(#value)));
+                let base = children(page, "xr.bind")
+                    .find(|binding| binding.attr("name") == Ok(property))
+                    .map(|binding| {
+                        self.table_projection_value(binding, &projection)
+                            .map(optional)
+                    })
+                    .transpose()?
+                    .unwrap_or_else(|| {
+                        quote!(::core::option::Option::<::xrack_runtime::Value>::None)
+                    });
+                let value =
+                    self.row_state_value_mapped(page, property, base, &projection, optional)?;
+                properties.extend(quote! {
+                    if let ::core::option::Option::Some(value) = #value {
+                        __xr_page.properties.insert(#property, value);
+                    }
+                });
+            }
+        }
+        if kind == "Tab" {
+            let optional = |value| quote!(::core::option::Option::Some(#value));
+            let base = children(page, "xr.bind")
+                .find(|binding| binding.attr("name") == Ok("closable"))
+                .map(|binding| {
+                    self.table_projection_value(binding, &projection)
+                        .map(optional)
+                })
+                .transpose()?
+                .unwrap_or_else(|| quote!(::core::option::Option::<::core::primitive::bool>::None));
+            let closable =
+                self.row_state_value_mapped(page, "closable", base, &projection, optional)?;
+            properties.extend(quote! {
+                if let ::core::option::Option::Some(flag) = #closable {
+                    __xr_page.properties.insert("closable", ::xrack_runtime::Value::from(flag));
+                }
+            });
+        }
         let selectors = self.input_selectors(&projection)?;
         Ok(quote! {
             #parameters
@@ -7338,7 +7478,7 @@ impl<'a> Generator<'a> {
                     let model = &**model;
                     #describe
                 },
-                |model, active| #receiver.#field.render_resolved_indices(&**model, active, None, #factory, #draw),
+                |model, active| #receiver.#field.render_resolved_indices(&**model, active.into_iter().flatten(), None, #factory, #draw),
             );
         });
         Ok(())
@@ -7776,6 +7916,27 @@ impl<'a> Generator<'a> {
                 #name.add_range_thumbs();
             });
         }
+        if matches!(kind, Some("TableView" | "StandardTableView")) {
+            let mut parts = TokenStream::new();
+            for (index, kind) in xrack_syntax::builtins::TABLE_SELECTION_PARTS
+                .iter()
+                .enumerate()
+            {
+                if let Some(part) =
+                    element_children(element).find(|child| child.attr("kind") == Ok(*kind))
+                {
+                    let child = self.render(part, scope, &mut parts, next)?;
+                    parts.extend(quote!(#name.set_table_selection_part(#index, #child);));
+                }
+            }
+            if !parts.is_empty() {
+                out.extend(quote! {
+                    if #name.boolean("drag-select", false) && #name.boolean("multi-select", false) {
+                        #parts
+                    }
+                });
+            }
+        }
         if has_list_visibility(element) {
             let model = visible_list_model(element_key(element)?);
             let projected = self
@@ -7938,6 +8099,10 @@ impl<'a> Generator<'a> {
             );
         }
         let mut content = TokenStream::new();
+        if kind == Some("SwipeView") {
+            let handle = swipe_preview_handle(key);
+            content.extend(quote! { #name.enable_swipe_preview(self.__state.#handle.clone()); });
+        }
         if kind == Some("StackView") {
             let snapshot = stack_snapshot_method(element_key(element)?);
             content.extend(quote! {
@@ -7951,7 +8116,7 @@ impl<'a> Generator<'a> {
         let mut table_cells = TokenStream::new();
         let mut table_columns = 0usize;
         for (index, child) in scene_children(element).enumerate() {
-            if matches!(kind, Some("SwipeView" | "TabWidget"))
+            if matches!(kind, Some("SwipeView" | "TabWidget" | "StackLayout"))
                 && let Some(repeat) = children(child, "xr.repeat").next()
             {
                 if !self.empty_repeat(child) {
@@ -7978,15 +8143,15 @@ impl<'a> Generator<'a> {
                 table_columns = index + 1;
                 continue;
             }
-            let repeated_option = matches!(kind, Some("RadioGroup" | "TabBar"))
-                && children(child, "xr.repeat").next().is_some();
-            if repeated_option && let Some(model) = self.group_template_model(child, scope)? {
+            let repeat_op = children(child, "xr.repeat")
+                .next()
+                .filter(|_| matches!(kind, Some("RadioGroup" | "TabBar")));
+            if let Some(repeat_op) = repeat_op
+                && let Some(model) = self.group_template_model(child, scope)?
+            {
                 let repeat = &scope.repeats[element_key(child)?];
                 let field = repeat_field(repeat.index());
                 let receiver = scope.receiver();
-                let repeat_op = children(child, "xr.repeat")
-                    .next()
-                    .expect("repeated option");
                 let row = self.repeat_row(child, repeat, repeat_op, next)?;
                 let rows = if repeat.uses_row_identity() {
                     let factory = self.repeat_delegate_factory(repeat, repeat_op, None)?;
@@ -8050,7 +8215,7 @@ impl<'a> Generator<'a> {
             } else {
                 self.render(child, scope, &mut content, next)?
             };
-            if repeated_option {
+            if repeat_op.is_some() {
                 content.extend(quote!(#name.children.extend(#child.children.iter().cloned());));
             } else {
                 content.extend(quote!(#name.children.push(#child);));
@@ -8061,7 +8226,7 @@ impl<'a> Generator<'a> {
         }
         if !swipe_mounts.is_empty() {
             content.extend(quote! {
-                let _ = #name.mount_active_swipe_page(|index, page| match index {
+                #name.mount_swipe_pages(|index, page| match index {
                     #swipe_mounts
                     _ => ::core::unreachable!(),
                 });
@@ -8122,7 +8287,7 @@ impl<'a> Generator<'a> {
                 }
             }),
             RenderContent::Deferred(mount) => out.extend(quote! {
-                let #mount = |#name: &mut ::xrack_runtime::Node| { #content };
+                let mut #mount = |#name: &mut ::xrack_runtime::Node| { #content };
             }),
         }
         if kind == Some("RadioGroup") {
@@ -8427,7 +8592,7 @@ impl<'a> Generator<'a> {
         let mut checks = Vec::new();
         for (depth, &element) in ancestors.iter().enumerate() {
             let kind = element.attr("kind")?;
-            let page = matches!(kind, "Tab" | "StackPage" | "SwipePage");
+            let page = matches!(kind, "Tab" | "StackPage" | "SwipePage" | "StackItem");
             checks.push(if page {
                 self.element_allows_editing(element, projection)?
             } else {
@@ -8447,6 +8612,10 @@ impl<'a> Generator<'a> {
                     checks.push(
                         quote!(self.#snapshot().current() == ::core::option::Option::Some(#route)),
                     );
+                }
+                "StackLayout" => {
+                    let method = navigation_choice_method(element_key(element)?);
+                    checks.push(quote!(self.#method() == ::core::option::Option::Some(#slot)));
                 }
                 "TabWidget" => {
                     let current = self.control_value(element, "current-index", Type::Int)?;
@@ -9224,6 +9393,10 @@ impl<'a> Generator<'a> {
                 let side = self.control_value(element, "open-side", Type::SwipeSide)?;
                 quote!(&& node.input_scope_available(#next, || false, || false, || true, || #side))
             }
+            "StackLayout" => {
+                let method = navigation_choice_method(element_key(element)?);
+                quote!(&& (depth == path.len() || self.#method() == path.get(depth).copied()))
+            }
             "TabWidget" | "SwipeView"
                 if navigation_selects_by_value(element)
                     || repeated_navigation_page(element).is_some() =>
@@ -9798,7 +9971,7 @@ impl<'a> Generator<'a> {
         let model = self
             .group_option_model(bar, &self.visuals)?
             .ok_or("missing reorderable tab model")?;
-        let read = self.group_option_reader(bar, false)?;
+        let read = self.group_option_reader(bar, GroupOptionRead::Select(false))?;
         let receiver = quote!(self);
         let projection = TableProjection::for_input(&receiver);
         let enabled = self.row_binding_or(bar, "reorderable", quote!(false), &projection)?;
@@ -9865,7 +10038,8 @@ impl<'a> Generator<'a> {
             kind @ ("MenuItem" | "Button" | "ToolButton" | "RoundButton" | "Shortcut")
                 if action_ref(element).is_some() =>
             {
-                let activate = action_activate_method(action_ref(element).unwrap());
+                let activate =
+                    action_activate_method(action_ref(element).ok_or("missing action reference")?);
                 let expected = match kind {
                     "MenuItem" => quote!(ActivateMenuItem),
                     "Shortcut" => quote!(ActivateShortcut),
@@ -10158,7 +10332,7 @@ impl<'a> Generator<'a> {
             kind @ ("RadioButton" | "Button" | "ToolButton" | "RoundButton")
                 if radio_group_ref(element).is_some() =>
             {
-                let key = radio_group_ref(element).unwrap();
+                let key = radio_group_ref(element).ok_or("missing ButtonGroup reference")?;
                 let group = *self.elements.get(key).ok_or("unknown ButtonGroup")?;
                 let (property, ty) =
                     controlled_property(group).ok_or("missing ButtonGroup selection")?;
@@ -10224,7 +10398,7 @@ impl<'a> Generator<'a> {
                         model,
                         self.group_option_reader(
                             element,
-                            radio || navigation_selects_by_value(element),
+                            GroupOptionRead::Select(radio || navigation_selects_by_value(element)),
                         )?,
                     )
                 };
@@ -10255,8 +10429,36 @@ impl<'a> Generator<'a> {
                 } else {
                     TokenStream::new()
                 };
+                let close_tab = if matches!(element.attribute("kind"), Some("TabBar" | "TabWidget"))
+                    && children(element, "xr.handler")
+                        .any(|handler| handler.attr("name") == Ok("tab-close-requested"))
+                {
+                    let read = self.group_option_reader(element, GroupOptionRead::Close)?;
+                    let receiver = quote!(self);
+                    let projection = TableProjection::for_input(&receiver);
+                    let enabled =
+                        self.row_binding_or(element, "tabs-closable", quote!(false), &projection)?;
+                    let event = self.typed_event_values(
+                        element,
+                        "tab-close-requested",
+                        &[quote!(request.index as i64), quote!(__xr_tab_value)],
+                    )?;
+                    quote! {
+                        if let ::xrack_runtime::ControlAction::CloseTab(request) = action {
+                            let __xr_tabs_closable = || #enabled;
+                            let ::core::option::Option::Some(__xr_tab_value) =
+                                ::xrack_runtime::prepare_tab_close(node, request, input, || #model_current, #read)
+                                else { return false; };
+                            #event
+                            return true;
+                        }
+                    }
+                } else {
+                    TokenStream::new()
+                };
                 out.extend(quote! {
                     [#(#path),*] => {
+                        #close_tab
                         #move_tab
                         let ::xrack_runtime::ControlAction::Select(index) = action else { return false; };
                         let ::core::option::Option::Some(__xr_label) = ::xrack_runtime::prepare_group_selection_with_model(
@@ -11223,6 +11425,11 @@ impl<'a> Generator<'a> {
             defaults.extend(quote!(#handle: #initial,));
         }
         for (&key, &element) in &self.elements {
+            if element.attr("kind") == Ok("SwipeView") {
+                let handle = swipe_preview_handle(key);
+                fields.extend(quote!(#handle: ::xrack_runtime::SwipePreviewHandle,));
+                defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+            }
             if element.attr("kind") == Ok("SearchField") {
                 methods.extend(self.search_methods(element, key == root_key)?);
             }

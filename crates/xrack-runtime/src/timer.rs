@@ -78,6 +78,10 @@ pub struct TimerSlot {
 }
 
 impl Default for TimerSlot {
+    #[expect(
+        clippy::expect_used,
+        reason = "timer IDs must stay unique even if the counter reaches its limit"
+    )]
     fn default() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let key = NEXT
@@ -130,6 +134,10 @@ impl TimerSlot {
         self.revision.get(|| 0)
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "timer revision IDs must stay unique even if the counter reaches its limit"
+    )]
     pub fn restart(&self) {
         self.revision.set(
             self.revision()

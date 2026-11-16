@@ -4,9 +4,10 @@ use crate::{
     TableRows, table_rows::with_table_rows_in_view,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ops::Range,
+    rc::Rc,
     sync::Arc,
 };
 
@@ -16,6 +17,25 @@ pub enum SelectionTarget {
     Rows,
     Cells,
     Columns,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SelectionGesture {
+    #[default]
+    Auto,
+    Drag,
+    PressAndHold,
+}
+
+impl SelectionGesture {
+    #[doc(hidden)]
+    pub fn uses_hold(self, touch: bool) -> bool {
+        match self {
+            Self::Auto => touch,
+            Self::Drag => false,
+            Self::PressAndHold => true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -977,15 +997,81 @@ fn toggle<T: Ord>(set: &mut BTreeSet<T>, key: T) {
     }
 }
 
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct TableSelectionDragHandle(Rc<TableSelectionDragState>);
+
+#[derive(Default)]
+struct TableSelectionDragState {
+    claims: Cell<usize>,
+    signal: ChangeSignal,
+}
+
+impl std::fmt::Debug for TableSelectionDragHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("TableSelectionDragHandle")
+            .field(&self.0.claims.get())
+            .finish()
+    }
+}
+
+impl PartialEq for TableSelectionDragHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct TableSelectionDrag(TableSelectionDragHandle);
+
+impl TableSelectionDragHandle {
+    pub fn claim(&self) -> Rc<TableSelectionDrag> {
+        let count = self.0.claims.get();
+        self.0.claims.set(count + 1);
+        if count == 0 {
+            self.0.signal.notify();
+        }
+        Rc::new(TableSelectionDrag(self.clone()))
+    }
+
+    pub fn dragging(&self) -> bool {
+        self.0.signal.track();
+        self.0.claims.get() != 0
+    }
+}
+
+impl Drop for TableSelectionDrag {
+    fn drop(&mut self) {
+        let state = &self.0.0;
+        let previous = state.claims.get();
+        state.claims.set(previous - 1);
+        if previous == 1 {
+            state.signal.notify();
+        }
+    }
+}
+
 /// Generated per table so gestures and data changes share the same selection.
 #[doc(hidden)]
 #[derive(Default)]
 pub struct TableSelection {
     state: RefCell<Selection>,
     changed: ChangeSignal,
+    drag: OnceCell<TableSelectionDragHandle>,
 }
 
 impl TableSelection {
+    fn drag_handle(&self) -> &TableSelectionDragHandle {
+        self.drag.get_or_init(Default::default)
+    }
+
+    #[doc(hidden)]
+    pub fn dragging(&self) -> bool {
+        self.drag_handle().dragging()
+    }
+
     #[doc(hidden)]
     pub fn try_list_selected_keys<M: ListModel, E>(
         selection: Option<&Self>,
@@ -1234,6 +1320,9 @@ impl TableSelection {
             .as_ref()
             .map_or(0, |header| header.columns.len());
         let multiple = table.boolean("multi-select", false);
+        if multiple && table.boolean("drag-select", false) {
+            table.table_selection_drag = Some(self.drag_handle().clone());
+        }
         let snapshot = self
             .snapshot(model, current, target, columns, multiple)
             .with_column_order(table.table_column_order.clone());

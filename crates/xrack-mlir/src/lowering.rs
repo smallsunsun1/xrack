@@ -133,7 +133,10 @@ impl Builder<'_> {
         results: &[ffi::MlirType],
         attrs: &[ffi::MlirNamedAttribute],
     ) -> BuildResult<ffi::MlirOperation> {
-        let &(block, _) = self.blocks.last().expect("active lowering block");
+        let &(block, _) = self.blocks.last().ok_or_else(|| Diagnostic {
+            span,
+            message: "missing active lowering block".into(),
+        })?;
         // The generated builder inserts the operation into the current block.
         // All handles belong to the same module context and slices are borrowed for this call.
         let native = unsafe {
@@ -172,7 +175,14 @@ impl Builder<'_> {
     }
 
     fn close(&mut self) -> BuildResult<()> {
-        let &(_, span) = self.blocks.last().expect("active lowering block");
+        let &(_, span) = self.blocks.last().ok_or_else(|| Diagnostic {
+            span: Span {
+                line: 1,
+                column: 1,
+                source: 0,
+            },
+            message: "missing block to close".into(),
+        })?;
         self.emit("end", span, &[], &[], &[])?;
         self.blocks.pop();
         Ok(())
@@ -221,7 +231,11 @@ impl Builder<'_> {
     }
 
     fn callback(&mut self, op: &str, callback: &ir::Callback) -> BuildResult<()> {
-        let parameters = serde_json::to_string(&callback.parameters).unwrap();
+        let parameters =
+            serde_json::to_string(&callback.parameters).map_err(|error| Diagnostic {
+                span: callback.span,
+                message: error.to_string(),
+            })?;
         let mut attrs = self.strings(&[("name", &callback.name), ("parameters", &parameters)]);
         if callback.pure {
             attrs.extend(self.strings(&[("pure", "true")]));
@@ -748,7 +762,12 @@ pub fn lower_module(doc: &Document, filename: &str) -> Result<Module, Vec<Diagno
                 ty: field.ty.clone(),
             })
             .collect::<Vec<_>>();
-        let fields = serde_json::to_string(&fields).unwrap();
+        let fields = serde_json::to_string(&fields).map_err(|error| {
+            vec![Diagnostic {
+                span: record.span,
+                message: error.to_string(),
+            }]
+        })?;
         let attrs = builder.strings(&[("sym_name", &record.name), ("fields", &fields)]);
         builder
             .emit("record_decl", record.span, &[], &[], &attrs)

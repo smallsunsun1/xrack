@@ -52,6 +52,7 @@ pub(crate) enum Route {
         orientation: Orientation,
     },
     TextLink(Target),
+    TabClose(Target),
     Choice {
         target: Target,
         index: usize,
@@ -366,6 +367,10 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
+    #[expect(
+        clippy::expect_used,
+        reason = "accessibility IDs must remain distinct across rebuilds so stale actions cannot target new nodes"
+    )]
     fn id(&mut self, key: Key) -> NodeId {
         let id = self.previous_ids.get(&key).copied().unwrap_or_else(|| {
             *self.next_id = self
@@ -1126,8 +1131,51 @@ impl Builder<'_> {
             };
             self.routes.insert(id, route);
         }
+        if let Some(close) = self.tab_close_button(node, item, path, row) {
+            children.insert(0, close);
+        }
         accessible.set_children(children);
         self.nodes.push((id, accessible));
+        Some(id)
+    }
+
+    fn tab_close_button(
+        &mut self,
+        node: &Node,
+        item: &LayoutNode,
+        path: &[usize],
+        row: Option<(RowKey, usize)>,
+    ) -> Option<NodeId> {
+        let rect = item.visible_window_bounds(item.tab_close?);
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return None;
+        }
+        let mut key = Key::element(node, path, row);
+        key.kind = "TabClose";
+        let id = self.id(key);
+        let mut close = AccessibleNode::new(Role::Button);
+        let title = node
+            .text("accessible-name")
+            .or_else(|| node.text(if node.kind == "Tab" { "title" } else { "text" }))
+            .filter(|title| !title.is_empty());
+        close.set_label(
+            title.map_or_else(|| "Close tab".to_owned(), |title| format!("Close {title}")),
+        );
+        close.set_bounds(bounds(rect, self.scale));
+        if !item.enabled {
+            close.set_disabled();
+        } else if let Some(target) = self
+            .input
+            .accessibility_target(self.scene, self.layout, path)
+            && self
+                .input
+                .tab_close_action(self.scene, self.layout, &target)
+                .is_some()
+        {
+            close.add_action(Action::Click);
+            self.routes.insert(id, Route::TabClose(target));
+        }
+        self.nodes.push((id, close));
         Some(id)
     }
 
@@ -4235,6 +4283,55 @@ mod tests {
         let (_, editor) = named(&tree, "Page editor");
         assert_eq!(editor.role(), Role::Button);
         assert!(editor.bounds().unwrap().y0 >= 34.0);
+    }
+
+    #[test]
+    fn tab_close_affordances_are_named_and_route_to_their_own_tab() {
+        let mut bar = Node::new("TabBar", Some("tab-strip"));
+        bar.properties.insert("tabs-closable", true.into());
+        for (name, enabled, closable) in [
+            ("Pinned", true, false),
+            ("Notes", true, true),
+            ("Disabled", false, true),
+        ] {
+            let mut tab = Node::new("TabButton", None);
+            tab.properties.insert("text", name.to_owned().into());
+            tab.properties.insert("value", name.to_lowercase().into());
+            tab.properties.insert("enabled", enabled.into());
+            tab.properties.insert("closable", closable.into());
+            bar.children.push(tab);
+        }
+        let scene = Rc::new(bar);
+        let frame = Rc::new(layout(&scene, Size::new(400.0, 42.0), &mut Text));
+        let input = Interaction::default();
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (id, close) = named(&update, "Close Notes");
+        assert_eq!(close.role(), Role::Button);
+        assert!(close.supports_action(Action::Click));
+        let Some(Route::TabClose(target)) = projection.route(id) else {
+            panic!("missing close route");
+        };
+        assert_eq!(target.path, [1]);
+        let input = input.tab_close_action(&scene, &frame, &target).unwrap();
+        assert_eq!(
+            input.action,
+            ControlAction::CloseTab(scene.tab_close(1).unwrap())
+        );
+        assert!(input.path.is_empty());
+        assert!(
+            !named(&update, "Close Disabled")
+                .1
+                .supports_action(Action::Click)
+        );
+        assert!(
+            update
+                .nodes
+                .iter()
+                .all(|(_, node)| node.label() != Some("Close Pinned"))
+        );
     }
 
     #[test]

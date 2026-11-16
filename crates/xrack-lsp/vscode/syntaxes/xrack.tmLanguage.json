@@ -429,7 +429,7 @@
         },
         {
           "name": "support.type.xrack",
-          "match": "(?<![A-Za-z_0-9.-])(?:TumblerOption|PathView|PathViewOption)(?=\\s*\\{)"
+          "match": "(?<![A-Za-z_0-9.-])(?:TumblerOption|PathView|PathViewOption|SelectionStartHandle|SelectionEndHandle|StackLayout|StackItem)(?=\\s*\\{)"
         },
         {
           "name": "entity.name.type.xrack",

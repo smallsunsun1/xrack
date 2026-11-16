@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use async_ui::AsyncDemo;
 use bundled_ui::BundledFontsDemo;
 pub mod ui_driver;
@@ -6128,6 +6130,95 @@ fn table_drag_selection_previews_only_the_clipped_table_body() {
 }
 
 #[test]
+fn authored_selection_handles_paint_their_background_and_children() {
+    use table_ui::SelectionHandlesDemo;
+    use xrack_runtime::{ControlAction, TableSelectionAction};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = SelectionHandlesDemo::new();
+    let mut input = Interaction::default();
+    let viewport = Size::new(632.0, 310.0);
+    let path = [1];
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let focus = input.accessibility_target(&scene, &layout, &path).unwrap();
+    input.focus_target(&scene, &layout, focus);
+    assert!(ui.control_at(
+        &scene,
+        &path,
+        ControlAction::TableSelection(TableSelectionAction::DragRange {
+            anchor: (0, 0),
+            end: (1, 1),
+            additive: false,
+        }),
+    ));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let shot = renderer.snapshot(&scene, 632, 310, 1.0, &input).unwrap();
+    let handles = input
+        .table_selection_handle_parts(
+            &path,
+            scene.at_path(&path).unwrap(),
+            layout.at_path(&path).unwrap(),
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 2);
+    for (index, bounds) in handles {
+        let x = (bounds.x + bounds.width * 0.5) as u32;
+        let y = (bounds.y + bounds.height * 0.5) as u32;
+        let colors = [[241, 154, 55, 255], [61, 227, 200, 255]];
+        let actual = shot.pixel(x, y).unwrap();
+        assert!(
+            actual
+                .into_iter()
+                .zip(colors[index])
+                .all(|(a, b)| a.abs_diff(b) <= 2),
+            "{actual:?}"
+        );
+    }
+}
+
+#[test]
+fn stack_layout_paints_only_the_selected_item() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut window = xrack_runtime::Node::new("Window", None);
+    let mut layers = xrack_runtime::Node::new("StackLayout", None);
+    for packed in [0xc8482aff, 0x3577d0ff] {
+        let mut child = xrack_runtime::Node::new("Rectangle", None);
+        child
+            .properties
+            .insert("background", xrack_runtime::Color(packed).into());
+        layers.children.push(child);
+    }
+    window.children.push(layers);
+    for (index, expected) in [[200, 72, 42, 255], [53, 119, 208, 255]]
+        .into_iter()
+        .enumerate()
+    {
+        window.children[0]
+            .properties
+            .insert("current-index", (index as i64).into());
+        let shot = renderer
+            .snapshot(&window, 114, 76, 1.0, &Interaction::default())
+            .unwrap();
+        let pixel = shot.pixel(55, 35).unwrap();
+        assert!(
+            pixel
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 2),
+            "{pixel:?}"
+        );
+    }
+}
+
+#[test]
 fn counter_click_updates_both_bindings_and_the_frame() {
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -7205,6 +7296,175 @@ fn page_indicator_and_swipe_view_share_the_current_page() {
     assert!(ui.control_at(&scene, &home.path, home.action));
     assert_eq!(ui.get_swipe_page(), 0);
     assert_eq!(ui.get_indicator_changes(), 2);
+}
+
+#[test]
+fn swipe_page_slides_follow_the_axis_and_right_to_left_direction() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::{ScrollGestureKind, StackTransitions};
+    use xrack_runtime::{Color, LayoutDirection, Length, Node, Orientation, SwipePreviewHandle};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+
+    let viewport = Size::new(160.0, 124.0);
+    let outgoing = [0xff, 0x00, 0x00, 0xff];
+    let incoming = [0x00, 0x00, 0xff, 0xff];
+    for (axis, direction, physical, start, end) in [
+        (
+            Orientation::Horizontal,
+            LayoutDirection::LeftToRight,
+            1.0,
+            (31, 50),
+            (128, 50),
+        ),
+        (
+            Orientation::Horizontal,
+            LayoutDirection::RightToLeft,
+            -1.0,
+            (128, 50),
+            (31, 50),
+        ),
+        (
+            Orientation::Vertical,
+            LayoutDirection::LeftToRight,
+            1.0,
+            (80, 25),
+            (80, 98),
+        ),
+    ] {
+        let mut before = Node::new("Window", None);
+        before
+            .properties
+            .insert("background", Color(0xffffffff).into());
+        let mut view = Node::new("SwipeView", Some("pages"));
+        view.properties.extend([
+            ("layout-direction", direction.into()),
+            ("orientation", axis.into()),
+            ("transition-duration", 100_i64.into()),
+            ("x", Length(20.0).into()),
+            ("y", Length(16.0).into()),
+            ("width", Length(120.0).into()),
+            ("height", Length(90.0).into()),
+        ]);
+        for (id, color) in [("first", outgoing), ("second", incoming)] {
+            let mut page = Node::new("SwipePage", Some(id));
+            let mut face = Node::new("Rectangle", None);
+            face.properties
+                .insert("background", Color(u32::from_be_bytes(color)).into());
+            face.properties.insert("width", Length(120.0).into());
+            face.properties.insert("height", Length(90.0).into());
+            page.children.push(face);
+            view.children.push(page);
+        }
+        view.enable_swipe_preview(SwipePreviewHandle::default());
+        before.children.push(view);
+        let mut input = Interaction::default();
+        let before_layout = renderer.layout_with_input(&before, viewport, &input);
+        let touch = match axis {
+            Orientation::Horizontal => Point {
+                x: 80.0 + 40.0 * physical,
+                y: 50.0,
+            },
+            Orientation::Vertical => Point { x: 80.0, y: 88.0 },
+        };
+        let dragged = match axis {
+            Orientation::Horizontal => Point {
+                x: touch.x - 60.0 * physical,
+                y: touch.y,
+            },
+            Orientation::Vertical => Point {
+                x: touch.x,
+                y: touch.y - 45.0,
+            },
+        };
+        let gesture = Instant::now();
+        assert!(input.begin_scroll_gesture(
+            &before,
+            &before_layout,
+            touch,
+            gesture,
+            ScrollGestureKind::Touch
+        ));
+        assert!(input.move_scroll_gesture(
+            &before,
+            &before_layout,
+            dragged,
+            gesture + Duration::from_millis(20)
+        ));
+        before.children[0].mount_swipe_pages(|_, _| {});
+        let during = renderer.snapshot(&before, 160, 124, 1.0, &input).unwrap();
+        assert_eq!(during.pixel(start.0, start.1), Some(outgoing));
+        assert_eq!(during.pixel(end.0, end.1), Some(incoming));
+        assert_eq!(during.pixel(19, 15), Some([255; 4]));
+        assert_eq!(xrack_runtime::group_index(&before.children[0]), Some(0));
+        let release = input.end_scroll_gesture(
+            &before,
+            &before_layout,
+            dragged,
+            gesture + Duration::from_millis(45),
+        );
+        assert!(release.control.is_some());
+        let mut after = before.clone();
+        after.children[0]
+            .properties
+            .insert("current-index", 1_i64.into());
+        let after_layout = renderer.layout_with_input(&after, viewport, &input);
+        after.children[0].mount_swipe_pages(|_, _| {});
+        let mut transitions = StackTransitions::default();
+        let now = Instant::now();
+        transitions.update_with_input(
+            (&before, &before_layout),
+            (&after, &after_layout),
+            now,
+            Some(&input),
+        );
+        assert_eq!(
+            transitions.at(&[0]).unwrap().incoming_offset(),
+            physical * 0.5
+        );
+        let continued = renderer
+            .snapshot_with_transitions(&after, 160, 124, 1.0, &input, &transitions)
+            .unwrap();
+        assert_eq!(
+            continued.pixel(start.0, start.1),
+            during.pixel(start.0, start.1)
+        );
+        assert_eq!(continued.pixel(end.0, end.1), during.pixel(end.0, end.1));
+
+        transitions = StackTransitions::default();
+        transitions.update((&before, &before_layout), (&after, &after_layout), now);
+        assert_eq!(transitions.at(&[0]).unwrap().incoming_offset(), physical);
+
+        let midpoint = now + Duration::from_millis(20);
+        transitions.advance(midpoint);
+        let frame = renderer
+            .snapshot_with_transitions(&after, 160, 124, 1.0, &input, &transitions)
+            .unwrap();
+        assert_eq!(
+            frame.pixel(start.0, start.1),
+            Some(outgoing),
+            "{axis:?} {direction:?}"
+        );
+        assert_eq!(
+            frame.pixel(end.0, end.1),
+            Some(incoming),
+            "{axis:?} {direction:?}"
+        );
+        assert_eq!(frame.pixel(19, 15), Some([255; 4]));
+
+        transitions.update((&after, &after_layout), (&before, &before_layout), midpoint);
+        let interrupted = renderer
+            .snapshot_with_transitions(&before, 160, 124, 1.0, &input, &transitions)
+            .unwrap();
+        assert_eq!(interrupted.pixel(start.0, start.1), Some(outgoing));
+        assert_eq!(interrupted.pixel(end.0, end.1), Some(incoming));
+        transitions.advance(midpoint + Duration::from_millis(100));
+        assert!(!transitions.is_active());
+    }
 }
 
 #[test]

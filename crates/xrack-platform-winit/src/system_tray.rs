@@ -309,11 +309,14 @@ impl TrayHost {
             let _scope = self.tasks.enter();
             self.native = Some(NativeTray::new(self.events.clone(), self.mount)?);
         }
-        self.native.as_mut().unwrap().update(
-            &presentation,
-            self.presentation.as_ref(),
-            rebuild.then_some(self.revision),
-        )?;
+        self.native
+            .as_mut()
+            .ok_or("system tray backend is unavailable")?
+            .update(
+                &presentation,
+                self.presentation.as_ref(),
+                rebuild.then_some(self.revision),
+            )?;
         self.presentation = Some(presentation);
         Ok(())
     }

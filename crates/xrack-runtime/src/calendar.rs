@@ -490,8 +490,9 @@ impl CalendarCells {
                 let Some(date) = date else {
                     return Ok(Node::hidden());
                 };
-                let (week_year, week) =
-                    date.iso_week().expect("calendar cells contain valid dates");
+                let Some((week_year, week)) = date.iso_week() else {
+                    return Ok(Node::hidden());
+                };
                 let input = CalendarCell {
                     date,
                     index: index as i64,

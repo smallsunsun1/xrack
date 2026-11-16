@@ -6,6 +6,10 @@ use navigation_ui::{
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--stack") => xrack_platform_winit::run(StackDemo::new()),
+        Some("--stack-layout") => xrack_platform_winit::run(navigation_ui::StackLayoutDemo::new()),
+        Some("--model-stack-layout") => {
+            xrack_platform_winit::run(navigation_ui::ModelStackLayoutDemo::new())
+        }
         Some("--stack-guard") => xrack_platform_winit::run(StackGuardDemo::new()),
         Some("--tab-bar") => xrack_platform_winit::run(TabBarDemo::new()),
         Some("--rtl-tabs") => xrack_platform_winit::run(navigation_ui::DirectionalTabsDemo::new()),

@@ -84,6 +84,10 @@ impl GeometryHandle {
     }
     // A queued request can outlive the target's scene node. A fresh handle
     // never inherits an old request even when its allocation reuses an address.
+    #[expect(
+        clippy::expect_used,
+        reason = "scroll target IDs must stay unique even if the counter reaches its limit"
+    )]
     pub fn scroll_target_id(&self) -> u64 {
         *self.0.scroll_target_id.get_or_init(|| {
             NEXT_SCROLL_TARGET.with(|next| {

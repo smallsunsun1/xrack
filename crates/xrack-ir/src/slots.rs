@@ -278,14 +278,13 @@ fn apply_inputs(members: &mut Vec<Member>, overrides: Vec<Member>) -> Result<BTr
                     property.two_way = binding.two_way;
                 } else if !binding.two_way && layout_item_property(&binding.name).is_some() {
                     members.retain(|member| !matches!(member, Member::Binding(existing) if existing.name == binding.name));
-                    let name = binding.name.clone();
-                    members.push(Member::Binding(binding));
-                    if !caller_members.insert(name.clone()) {
+                    if !caller_members.insert(binding.name.clone()) {
                         return Err(error(
-                            members.last().unwrap().span(),
-                            format!("duplicate input `{name}`"),
+                            binding.span,
+                            format!("duplicate input `{}`", binding.name),
                         ));
                     }
+                    members.push(Member::Binding(binding));
                     continue;
                 } else {
                     return Err(error(

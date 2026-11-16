@@ -53,7 +53,12 @@ impl LocaleBinding {
     pub fn locale(&self, catalog: Option<&TranslationCatalog>) -> String {
         let requested = self.language();
         match catalog {
-            Some(catalog) => catalog.languages(requested).first().unwrap().to_string(),
+            Some(catalog) => catalog
+                .languages(requested)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| &catalog.locales[catalog.default])
+                .to_string(),
             None => requested.map_or_else(|| "und".to_owned(), |locale| locale.to_string()),
         }
     }
@@ -71,11 +76,17 @@ impl LocaleBinding {
             })
         });
         let mut cache = self.number.borrow_mut();
-        if cache.as_ref().is_none_or(|(cached, _)| *cached != language) {
-            let formatter = LocalizedNumber::new(&language.to_string());
-            *cache = Some((language, formatter));
+        if cache
+            .as_ref()
+            .is_some_and(|(cached, _)| *cached != language)
+        {
+            *cache = None;
         }
-        use_number(&cache.as_ref().unwrap().1)
+        let (_, formatter) = cache.get_or_insert_with(|| {
+            let formatter = LocalizedNumber::new(&language.to_string());
+            (language, formatter)
+        });
+        use_number(formatter)
     }
 
     #[doc(hidden)]
@@ -121,6 +132,10 @@ pub struct TranslationCatalog {
 }
 
 impl TranslationCatalog {
+    #[expect(
+        clippy::expect_used,
+        reason = "the compiler validates sources before generating calls to this constructor"
+    )]
     pub fn new(default: &str, sources: &[(&str, &'static str)]) -> Self {
         Self::from_sources(
             default,
@@ -223,11 +238,17 @@ impl TranslationCatalog {
     ) -> String {
         let args: FluentArgs<'_> = args.iter().cloned().collect();
         for language in self.languages(locale.language()) {
-            let index = self
+            let Some(index) = self
                 .locales
                 .iter()
                 .position(|candidate| candidate == language)
-                .expect("negotiated a catalog language");
+            else {
+                continue;
+            };
+            #[expect(
+                clippy::expect_used,
+                reason = "catalog construction validates every bundle against the same sources"
+            )]
             let bundle = self.bundles[index]
                 .get_or_init(|| self.build_bundle(index).expect("validated Fluent resource"));
             if let Some(pattern) = bundle.get_message(id).and_then(|message| message.value()) {

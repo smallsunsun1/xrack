@@ -45,6 +45,10 @@ impl<T: Clone> PickerSession<T> {
         let (revision, initial) = if let Some(session) = session {
             session
         } else {
+            #[expect(
+                clippy::expect_used,
+                reason = "picker sessions cannot reuse IDs while older scene inputs may still arrive"
+            )]
             let revision = NEXT_SESSION.with(|next| {
                 let current = next.get();
                 next.set(current.checked_add(1).expect("picker sessions exhausted"));
@@ -83,6 +87,10 @@ impl<T: Clone> PickerSession<T> {
                 .is_some_and(|(revision, _)| scene.int(SESSION) == Some(*revision))
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "a new picker draft must invalidate input from older revisions"
+    )]
     pub(crate) fn set(&self, draft: T) {
         self.draft_revision.set(
             self.draft_revision

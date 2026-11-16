@@ -61,10 +61,12 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode, text: &mut impl Text
             continue;
         };
         let geometry = attached.geometry;
-        let item = path
+        let Some(item) = path
             .iter()
             .try_fold(&mut *layout, |item, &index| item.child_at_mut(index))
-            .expect("indexed scroll control path");
+        else {
+            continue;
+        };
         item.enabled &= enabled;
         item.attached_scroll_bar = Some(Box::new(attached));
         if !node.has_scroll_parts() {
@@ -121,14 +123,14 @@ fn resolve_attachment(
     }) {
         return None;
     }
-    let viewport = layout.at_path(target).expect("indexed viewport path");
+    let viewport = layout.at_path(target)?;
     let axis = node.orientation();
     let scroll = viewport.scroll_on(axis)?;
     let page = span(viewport.scroll_viewport(axis), axis);
     if page <= 0.0 || !shows_bar(control_policy(node), scroll) {
         return None;
     }
-    let item = layout.at_path(path).expect("indexed scroll control path");
+    let item = layout.at_path(path)?;
     let mut geometry = ScrollBarGeometry::new(
         axis,
         item.bounds,

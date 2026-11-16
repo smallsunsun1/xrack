@@ -6,7 +6,7 @@ use crate::{
 };
 use crate::{
     ff,
-    native::{AudioDevice, api},
+    native::{AudioDevice, media_function},
 };
 use std::{
     collections::VecDeque,
@@ -224,6 +224,14 @@ fn sample_index(seconds: f64) -> u64 {
     (seconds * f64::from(RATE)).round() as u64
 }
 
+impl Shared {
+    fn playback(&self) -> std::sync::MutexGuard<'_, Playback> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 struct Session(Arc<Shared>);
 
 pub fn install() {
@@ -263,7 +271,7 @@ fn start_session(
         .name("xrack-media".into())
         .spawn(move || {
             if let Err(error) = decode(path, &producer) {
-                let mut playback = producer.state.lock().unwrap();
+                let mut playback = producer.playback();
                 if producer.cancelled.load(Ordering::Relaxed) {
                     return;
                 }
@@ -282,14 +290,14 @@ fn start_session(
 impl Drop for Session {
     fn drop(&mut self) {
         self.0.cancelled.store(true, Ordering::Relaxed);
-        let _state = self.0.state.lock().unwrap();
+        let _state = self.0.playback();
         self.0.wake.notify_one();
     }
 }
 
 impl MediaSession for Session {
     fn command(&mut self, command: MediaCommand) {
-        let mut playback = self.0.state.lock().unwrap();
+        let mut playback = self.0.playback();
         match command {
             MediaCommand::Play => {
                 let was_stopped = std::mem::take(&mut playback.stopped);
@@ -377,11 +385,11 @@ impl MediaSession for Session {
     }
 
     fn set_volume(&mut self, volume: f64) {
-        self.0.state.lock().unwrap().volume = volume as f32;
+        self.0.playback().volume = volume as f32;
     }
 
     fn configure(&mut self, options: &MediaOptions) {
-        let mut playback = self.0.state.lock().unwrap();
+        let mut playback = self.0.playback();
         let now = Instant::now();
         let changed_rate = playback.options.playback_rate != options.playback_rate;
         if changed_rate && playback.state.playing && playback.anchor.is_some() {
@@ -396,7 +404,7 @@ impl MediaSession for Session {
     }
 
     fn sample(&mut self, now: Instant) -> MediaState {
-        let mut playback = self.0.state.lock().unwrap();
+        let mut playback = self.0.playback();
         if playback.state.ready {
             if playback.buffering {
                 let available = playback
@@ -442,8 +450,9 @@ impl MediaSession for Session {
                     .video
                     .front()
                     .is_some_and(|(timestamp, _)| *timestamp <= video_position)
+                    && let Some((_, frame)) = playback.video.pop_front()
                 {
-                    playback.state.frame = Some(playback.video.pop_front().unwrap().1);
+                    playback.state.frame = Some(frame);
                 }
                 if playback.video_eof
                     && playback.video.is_empty()
@@ -473,7 +482,7 @@ impl MediaSession for Session {
                     .front()
                     .is_some_and(|(timestamp, _)| *timestamp <= playback.state.position)
             {
-                playback.state.frame = Some(playback.video.pop_front().unwrap().1);
+                playback.state.frame = playback.video.pop_front().map(|(_, frame)| frame);
             }
         }
         playback.state.at_live_edge = playback.state.live
@@ -498,7 +507,7 @@ impl MediaSession for Session {
     }
 
     fn active(&self) -> bool {
-        let state = self.0.state.lock().unwrap();
+        let state = self.0.playback();
         !self.0.cancelled.load(Ordering::Relaxed)
             && (state.dirty
                 || state.state.error.is_empty()
@@ -511,7 +520,7 @@ impl MediaSession for Session {
     }
 
     fn poll_interval(&self) -> Duration {
-        let playback = self.0.state.lock().unwrap();
+        let playback = self.0.playback();
         if playback.state.live
             && playback.state.ready
             && !playback.requested_play
@@ -548,7 +557,7 @@ fn live_window(
 /// reads the same multiplexed data for audio and must not be charged again.
 fn pace_input(shared: &Shared, bytes: u64, epoch: u64) {
     let mut remaining = bytes as f64 * 8.0;
-    let mut playback = shared.state.lock().unwrap();
+    let mut playback = shared.playback();
     while remaining > 0.0
         && playback.epoch == epoch
         && !playback.go_live
@@ -560,7 +569,10 @@ fn pace_input(shared: &Shared, bytes: u64, epoch: u64) {
         }
         let start = Instant::now();
         let delay = Duration::from_secs_f64((remaining / bandwidth).min(0.1));
-        (playback, _) = shared.wake.wait_timeout(playback, delay).unwrap();
+        (playback, _) = shared
+            .wake
+            .wait_timeout(playback, delay)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         remaining -= start.elapsed().as_secs_f64() * bandwidth;
     }
 }
@@ -612,29 +624,26 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
         last_change: Instant::now(),
         underruns: 0,
     };
-    let track = shared.state.lock().unwrap().options.audio_track;
+    let track = shared.playback().options.audio_track;
     let selected = VideoDecoder::open_audio_track(&path, track, variant, cancel.clone());
     let mut audio = match selected {
         Ok(audio) => audio.map(AudioDecoder::new),
         Err(error) if video.is_some() => {
-            shared.state.lock().unwrap().state.audio_error = error.to_string();
+            shared.playback().state.audio_error = error.to_string();
             None
         }
         Err(error) => return Err(error),
     };
     {
-        let mut state = shared.state.lock().unwrap();
+        let mut state = shared.playback();
         if state.options.audio_track == track {
             state.audio_track_dirty = false;
         }
     }
-    if video.is_none() && audio.is_none() {
-        return Err(MediaError("no playable audio or video streams".into()));
-    }
     let input = video
         .as_ref()
         .or(audio.as_ref().map(|audio| &audio.decoder))
-        .unwrap();
+        .ok_or_else(|| MediaError("no playable audio or video streams".into()))?;
     let live = input.is_live();
     let mut origin = input.origin();
     if live && let Some(window) = input.live_window(false) {
@@ -648,11 +657,11 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
     }
     let mut device = None;
     {
-        let mut state = shared.state.lock().unwrap();
+        let mut state = shared.playback();
         let input = video
             .as_ref()
             .or(audio.as_ref().map(|audio| &audio.decoder))
-            .unwrap();
+            .ok_or_else(|| MediaError("no playable audio or video streams".into()))?;
         state.state.duration = input.duration();
         state.state.live = live;
         if live {
@@ -679,7 +688,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
         match AudioDevice::open(shared.clone(), render_audio) {
             Ok(output) => device = Some(output),
             Err(error) if video.is_some() => {
-                let mut state = shared.state.lock().unwrap();
+                let mut state = shared.playback();
                 state.state.audio_error = error.to_string();
                 state.audio = false;
                 state.audio_eof = true;
@@ -698,7 +707,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
     let mut subtitle_decoder = None;
     let mut next_cue: Option<subtitles::Cue> = None;
     'decode: loop {
-        let mut playback = shared.state.lock().unwrap();
+        let mut playback = shared.playback();
         if cancel.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -706,7 +715,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
             drop(playback);
             let window = live_window(video.as_ref(), audio.as_ref(), true);
             refresh_at = Instant::now() + Duration::from_millis(500);
-            playback = shared.state.lock().unwrap();
+            playback = shared.playback();
             if let Some(window) = window {
                 if !playback.state.seekable && !have_preview && playback.state.position == 0.0 {
                     origin += window.start;
@@ -795,7 +804,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                 audio.decoder.set_live_origin(origin);
             }
             let window = live_window(video.as_ref(), audio.as_ref(), false);
-            playback = shared.state.lock().unwrap();
+            playback = shared.playback();
             if let Some(window) = window {
                 playback.update_window(window);
             }
@@ -819,7 +828,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                 shared
                     .wake
                     .wait_timeout(playback, Duration::from_millis(500))
-                    .unwrap(),
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
             continue;
         }
@@ -830,7 +839,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                     Err(_) if cancel.load(Ordering::Relaxed) => return Ok(()),
                     Err(_) if network && retries < 2 => {
                         retries += 1;
-                        let mut playback = shared.state.lock().unwrap();
+                        let mut playback = shared.playback();
                         if variant > 0 {
                             rendition = Some(variant - 1);
                             adaptive.last_change = Instant::now();
@@ -871,7 +880,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
             } else {
                 (Vec::new(), String::new())
             };
-            playback = shared.state.lock().unwrap();
+            playback = shared.playback();
             if playback.options.subtitle_file == file && playback.options.subtitle_track == track {
                 playback.subtitles = cues;
                 playback.state.subtitle_error = error;
@@ -884,7 +893,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
             let track = playback.options.audio_track;
             drop(playback);
             let selected = VideoDecoder::open_audio_track(&path, track, variant, cancel.clone());
-            playback = shared.state.lock().unwrap();
+            playback = shared.playback();
             if playback.options.audio_track == track {
                 match selected {
                     Ok(Some(mut selected)) => {
@@ -929,7 +938,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
             retry_audio = Instant::now() + Duration::from_secs(2);
             if let Ok(output) = AudioDevice::open(shared.clone(), render_audio) {
                 device = Some(output);
-                let mut state = shared.state.lock().unwrap();
+                let mut state = shared.playback();
                 let position = state.state.position;
                 state.reset(position);
                 state.audio = true;
@@ -959,9 +968,9 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
             {
                 let _ = decoder.seek((position - 5.0).max(0.0));
                 next_cue = None;
-                shared.state.lock().unwrap().subtitles.clear();
+                shared.playback().subtitles.clear();
             }
-            let mut state = shared.state.lock().unwrap();
+            let mut state = shared.playback();
             state.video_eof = video.is_none();
             state.audio_eof = !state.audio;
             drop(state);
@@ -1003,21 +1012,25 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                     shared
                         .wake
                         .wait_timeout(playback, Duration::from_millis(400))
-                        .unwrap(),
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
                 );
             } else {
-                drop(shared.wake.wait(playback).unwrap());
+                drop(
+                    shared
+                        .wake
+                        .wait(playback)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
             }
             continue;
         }
         drop(playback);
 
-        if fill_subtitle {
-            let cue = next_cue.take().map_or_else(
-                || subtitle_decoder.as_mut().unwrap().next_cue(),
-                |cue| Ok(Some(cue)),
-            );
-            let mut state = shared.state.lock().unwrap();
+        if fill_subtitle && let Some(decoder) = &mut subtitle_decoder {
+            let cue = next_cue
+                .take()
+                .map_or_else(|| decoder.next_cue(), |cue| Ok(Some(cue)));
+            let mut state = shared.playback();
             if let Ok(Some(cue)) = cue {
                 if cue.start > target + 0.5 {
                     next_cue = Some(cue);
@@ -1040,16 +1053,12 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
             }
         }
 
-        if fill_audio {
-            let block = receive!(audio.as_mut().unwrap().next());
+        if fill_audio && let Some(audio) = &mut audio {
+            let block = receive!(audio.next());
             if network && video.is_none() {
-                pace_input(
-                    shared,
-                    audio.as_mut().unwrap().decoder.take_packet_bytes(),
-                    epoch,
-                );
+                pace_input(shared, audio.decoder.take_packet_bytes(), epoch);
             }
-            let mut playback = shared.state.lock().unwrap();
+            let mut playback = shared.playback();
             if playback.epoch == epoch {
                 if let Some(block) = block {
                     if block.end() > playback.audio_cursor {
@@ -1060,16 +1069,16 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                 }
             }
         }
-        if fill_video {
+        if fill_video && let Some(video) = &mut video {
             let frame = if let Some(frame) = next_video.take() {
                 Some(frame)
             } else {
-                receive!(video.as_mut().unwrap().next_frame())
+                receive!(video.next_frame())
             };
             if network {
-                pace_input(shared, video.as_mut().unwrap().take_packet_bytes(), epoch);
+                pace_input(shared, video.take_packet_bytes(), epoch);
             }
-            let mut playback = shared.state.lock().unwrap();
+            let mut playback = shared.playback();
             if playback.epoch != epoch {
                 continue;
             }
@@ -1082,7 +1091,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                 if live && !have_preview && timestamp > target {
                     drop(playback);
                     let image = video_frame(frame)?;
-                    let mut playback = shared.state.lock().unwrap();
+                    let mut playback = shared.playback();
                     if playback.epoch == epoch {
                         playback.state.frame = Some(image);
                         have_preview = true;
@@ -1092,11 +1101,11 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                     drop(playback);
                     let mut selected = frame;
                     loop {
-                        let Some(candidate) = receive!(video.as_mut().unwrap().next_frame()) else {
+                        let Some(candidate) = receive!(video.next_frame()) else {
                             break;
                         };
                         // Seek preroll does not feed the playback queues.
-                        video.as_mut().unwrap().take_packet_bytes();
+                        video.take_packet_bytes();
                         let time = candidate
                             .timestamp_seconds
                             .unwrap_or(last_video + 1.0 / 30.0);
@@ -1106,7 +1115,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                         }
                         last_video = time;
                         selected = candidate;
-                        let state = shared.state.lock().unwrap();
+                        let state = shared.playback();
                         if cancel.load(Ordering::Relaxed) {
                             return Ok(());
                         }
@@ -1115,7 +1124,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                         }
                     }
                     let image = video_frame(selected)?;
-                    let mut playback = shared.state.lock().unwrap();
+                    let mut playback = shared.playback();
                     if playback.epoch == epoch {
                         playback.state.frame = Some(image);
                         have_preview = true;
@@ -1123,7 +1132,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                 } else {
                     drop(playback);
                     let image = video_frame(frame)?;
-                    let mut playback = shared.state.lock().unwrap();
+                    let mut playback = shared.playback();
                     if playback.epoch != epoch {
                         continue;
                     }
@@ -1134,7 +1143,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
                 playback.video_eof = true;
             }
         }
-        let mut playback = shared.state.lock().unwrap();
+        let mut playback = shared.playback();
         if playback.epoch == epoch
             && (have_preview || playback.video_eof)
             && (!playback.audio || !playback.audio_blocks.is_empty() || playback.audio_eof)
@@ -1169,7 +1178,7 @@ impl AudioDecoder {
 
     fn seek(&mut self, position: f64) -> Result<(), MediaError> {
         self.decoder.seek(position)?;
-        unsafe { ((api().swr_free).unwrap())(&mut self.resample) };
+        unsafe { media_function!(swr_free)(&mut self.resample) };
         self.initialized = false;
         self.cursor = sample_index(position);
         Ok(())
@@ -1187,9 +1196,9 @@ impl AudioDecoder {
                     && self.resample.is_null()
                 {
                     let mut layout = std::mem::zeroed();
-                    ((api().av_channel_layout_default).unwrap())(&mut layout, CHANNELS as i32);
+                    media_function!(av_channel_layout_default)(&mut layout, CHANNELS as i32);
                     check(
-                        ((api().swr_alloc_set_opts2).unwrap())(
+                        media_function!(swr_alloc_set_opts2)(
                             &mut self.resample,
                             &layout,
                             ff::AVSampleFormat_AV_SAMPLE_FMT_FLT,
@@ -1203,12 +1212,12 @@ impl AudioDecoder {
                         "configure audio resampler",
                     )?;
                     check(
-                        ((api().swr_init).unwrap())(self.resample),
+                        media_function!(swr_init)(self.resample),
                         "start audio resampler",
                     )?;
                 }
                 let count = frame.map_or(0, |frame| frame.nb_samples);
-                let capacity = ((api().swr_get_out_samples).unwrap())(self.resample, count);
+                let capacity = media_function!(swr_get_out_samples)(self.resample, count);
                 check(capacity, "size audio buffer")?;
                 if capacity > RATE as i32 * 2 {
                     return Err(MediaError("excessive audio frame size".into()));
@@ -1218,7 +1227,7 @@ impl AudioDecoder {
                 let input = frame
                     .map_or(ptr::null_mut(), |frame| frame.extended_data)
                     .cast();
-                let written = ((api().swr_convert).unwrap())(
+                let written = media_function!(swr_convert)(
                     self.resample,
                     &mut output,
                     capacity,
@@ -1250,7 +1259,7 @@ impl AudioDecoder {
 
 impl Drop for AudioDecoder {
     fn drop(&mut self) {
-        unsafe { ((api().swr_free).unwrap())(&mut self.resample) }
+        unsafe { media_function!(swr_free)(&mut self.resample) }
     }
 }
 

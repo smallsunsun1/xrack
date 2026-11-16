@@ -1213,6 +1213,88 @@ fn model_edits_complete_only_as_statements_with_writable_model_signatures() {
 }
 
 #[test]
+fn selection_gesture_completion_offers_typed_modes_and_read_only_state() {
+    let options =
+        complete_at("component App inherits Window { TableView { selection-gesture: |; } }");
+    for mode in ["auto", "drag", "press-and-hold"] {
+        assert!(options.iter().any(|item| item["label"] == mode), "{mode}");
+    }
+    let items = complete_at(
+        "component App inherits Window { table := TableView {} Text { text: table.selection-dr|; } }",
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "selection-dragging")
+    );
+}
+
+#[test]
+fn table_selection_handle_parts_complete_only_in_table_contexts() {
+    for view in ["TableView", "StandardTableView"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {view} {{ Selection| }} }}"
+        ));
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "SelectionStartHandle")
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "SelectionEndHandle")
+        );
+    }
+    let items = complete_at("component App inherits Window { Rectangle { Selection| } }");
+    assert!(
+        !items
+            .iter()
+            .any(|item| item["label"] == "SelectionStartHandle")
+    );
+}
+
+#[test]
+fn stack_layout_completes_index_and_read_only_selection_properties() {
+    let bindings = complete_at("component App inherits Window { StackLayout { current-i| } }");
+    assert!(
+        bindings
+            .iter()
+            .any(|item| item["label"] == "current-index" && item["detail"] == "int")
+    );
+    let fields = complete_at(
+        "component App inherits Window { layers := StackLayout {} Label { text: layers.active-i|; } }",
+    );
+    assert!(fields.iter().any(|item| item["label"] == "active-index"));
+    let bindings = complete_at("component App inherits Window { StackLayout { active-i| } }");
+    assert!(!bindings.iter().any(|item| item["label"] == "active-index"));
+    let fields = complete_at(
+        "component App inherits Window { StackLayout { page := StackItem {} Rectangle { visible: page.ac|; } } }",
+    );
+    assert!(fields.iter().any(|item| item["label"] == "active"));
+}
+
+#[test]
+fn swipe_view_completes_an_integer_transition_duration() {
+    for (control, available) in [
+        ("SwipeView", true),
+        ("StackView", true),
+        ("TabWidget", false),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {control} {{ transition-d| }} }}"
+        ));
+        assert_eq!(
+            items
+                .iter()
+                .any(|item| item["label"] == "transition-duration" && item["detail"] == "int"),
+            available,
+            "{control}"
+        );
+    }
+}
+
+#[test]
 fn model_navigation_commands_offer_typed_signatures_and_moved_events() {
     for (kind, event) in [
         ("TabBar", "tab-moved"),
@@ -1235,6 +1317,36 @@ fn model_navigation_commands_offer_typed_signatures_and_moved_events() {
             "component App inherits Window {{ nav := {kind} {{ {event}| }} }}"
         ));
         assert!(members.iter().any(|item| item["label"] == event));
+    }
+}
+
+#[test]
+fn tab_close_properties_and_handler_complete_in_both_tab_containers() {
+    for (group, tab) in [("TabBar", "TabButton"), ("TabWidget", "Tab")] {
+        let binding = complete_at(&format!(
+            "component App inherits Window {{ tabs := {group} {{ tabs-clos| }} }}"
+        ));
+        assert!(
+            binding
+                .iter()
+                .any(|item| item["label"] == "tabs-closable" && item["detail"] == "bool")
+        );
+        let binding = complete_at(&format!(
+            "component App inherits Window {{ {group} {{ {tab} {{ clos| }} }} }}"
+        ));
+        assert!(
+            binding
+                .iter()
+                .any(|item| item["label"] == "closable" && item["detail"] == "bool")
+        );
+        let event = complete_at(&format!(
+            "component App inherits Window {{ tabs := {group} {{ tab-close-r| }} }}"
+        ));
+        assert!(
+            event
+                .iter()
+                .any(|item| item["label"] == "tab-close-requested")
+        );
     }
 }
 

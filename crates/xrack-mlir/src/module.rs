@@ -430,6 +430,10 @@ impl<'m> OperationRef<'m> {
         })
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "registered operation names and parsed identifiers are UTF-8"
+    )]
     pub fn name(self) -> &'m str {
         // Registered operation identifiers are valid UTF-8 and live in the context.
         let name = unsafe { ffi::mlirIdentifierStr(ffi::mlirOperationGetName(self.raw)) };
@@ -617,6 +621,10 @@ impl Hash for ValueRef<'_> {
 }
 
 impl<'m> ValueRef<'m> {
+    #[expect(
+        clippy::expect_used,
+        reason = "MLIR returns the operation containing each non-null use in the use list"
+    )]
     pub(crate) fn uses(self) -> impl Iterator<Item = (OperationRef<'m>, usize)> {
         // Uses are borrowed from the module. Its operation graph cannot be mutated
         // while these handles are available.

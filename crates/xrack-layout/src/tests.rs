@@ -1213,6 +1213,132 @@ fn vertical_tab_bar_reveals_the_selected_tab_and_scrolls_on_its_axis() {
 }
 
 #[test]
+fn a_tab_close_press_cannot_activate_the_body_or_a_changed_value() {
+    let mut bar = node("TabBar", "tabs");
+    boolean(&mut bar, "tabs-closable", true);
+    let mut tab = node("TabButton", "note");
+    tab.properties.insert("value", "one".to_owned().into());
+    bar.children.push(tab);
+    let mut input = Interaction::default();
+    let size = Size::new(180.0, 40.0);
+    let frame = layout_with_input(&bar, size, &mut Text, &input);
+    let close = frame.children[0].tab_close.unwrap();
+    let at = Point {
+        x: close.x + close.width * 0.5,
+        y: close.y + close.height * 0.5,
+    };
+    input.pointer_move(&bar, &frame, at);
+    input.pointer_press_in_scene(&bar, &frame);
+    input.pointer_move(&bar, &frame, Point { x: 25.0, y: at.y });
+    assert!(input.pointer_release_target().is_none());
+
+    input.pointer_move(&bar, &frame, at);
+    input.pointer_press_in_scene(&bar, &frame);
+    bar.children[0]
+        .properties
+        .insert("value", "two".to_owned().into());
+    let changed = layout_with_input(&bar, size, &mut Text, &input);
+    input.pointer_move(&bar, &changed, at);
+    assert!(input.pointer_release_target().is_none());
+}
+
+#[test]
+fn stack_layout_measures_the_stack_and_places_only_the_current_child() {
+    let mut stack = node("StackLayout", "layers");
+    length(&mut stack, "padding", 5.0);
+    stack.properties.insert(
+        "layout-direction",
+        xrack_runtime::LayoutDirection::RightToLeft.into(),
+    );
+    let mut first = node("Rectangle", "first");
+    length(&mut first, "width", 100.0);
+    length(&mut first, "height", 40.0);
+    let mut second = node("StackItem", "second");
+    length(&mut second, "preferred-width", 178.0);
+    length(&mut second, "min-height", 64.0);
+    length(&mut second, "max-width", 192.0);
+    boolean(&mut second, "enabled", false);
+    stack.children.extend([first, second]);
+
+    let available = Size::new(240.0, 140.0);
+    let preferred = crate::linear::measure(&stack, available, &mut Text);
+    assert_eq!(preferred.x.preferred, 188.0);
+    assert_eq!(preferred.y.min, 74.0);
+
+    let view = layout(&stack, available, &mut Text);
+    assert!(view.children[0].visible);
+    assert!(!view.children[1].visible);
+    assert_eq!(view.children[0].bounds, Rect::new(135.0, 5.0, 100.0, 40.0));
+
+    stack.properties.insert("current-index", 1_i64.into());
+    let view = layout(&stack, available, &mut Text);
+    assert!(!view.children[0].visible);
+    assert!(view.children[1].visible);
+    assert!(!view.children[1].enabled);
+    assert_eq!(view.children[1].bounds, Rect::new(43.0, 5.0, 192.0, 130.0));
+    assert_eq!(
+        crate::linear::measure(&stack, available, &mut Text)
+            .x
+            .preferred,
+        188.0
+    );
+
+    stack.properties.insert("current-index", (-1_i64).into());
+    assert!(
+        layout(&stack, available, &mut Text)
+            .children
+            .iter()
+            .all(|child| !child.visible)
+    );
+}
+
+#[test]
+fn page_focus_skips_disabled_controls_and_replaced_rows() {
+    use xrack_runtime::VecModel;
+
+    let model = VecModel::from(vec![0_i64, 1, 2]);
+    for (kind, page, replace_row) in [
+        ("StackLayout", "StackItem", false),
+        ("StackLayout", "StackItem", true),
+        ("SwipeView", "SwipePage", false),
+        ("SwipeView", "SwipePage", true),
+    ] {
+        let mut stack = node(kind, "layers");
+        let mut first = node(page, "first");
+        first.set_row_key(model.row_key(0));
+        let mut details = button("details");
+        length(&mut details, "y", 30.0);
+        first.children.extend([button("edit"), details]);
+        let mut second = node(page, "second");
+        second.set_row_key(model.row_key(1));
+        second.children.push(button("open"));
+        stack.children.extend([first, second]);
+
+        let size = Size::new(240.0, 140.0);
+        let mut input = Interaction::default();
+        let frame = layout_with_input(&stack, size, &mut Text, &input);
+        let details = input.accessibility_target(&stack, &frame, &[0, 1]).unwrap();
+        input.focus_target(&stack, &frame, details);
+        assert!(input.is_focused(&[0, 1]));
+
+        stack.properties.insert("current-index", 1_i64.into());
+        let frame = layout_with_input(&stack, size, &mut Text, &input);
+        input.reconcile(&stack, &frame);
+        assert!(input.is_focused(&[1, 0]));
+
+        if replace_row {
+            stack.children[0].set_row_key(model.row_key(2));
+        } else {
+            boolean(&mut stack.children[0].children[1], "enabled", false);
+        }
+        stack.properties.insert("current-index", 0_i64.into());
+        let frame = layout_with_input(&stack, size, &mut Text, &input);
+        input.reconcile(&stack, &frame);
+        assert!(input.is_focused(&[0, 0]));
+    }
+}
+
+#[test]
 fn overflowing_tab_widget_scrolls_only_the_header_and_reveals_keyboard_selection() {
     let mut widget = node("TabWidget", "tabs");
     widget.properties.insert("current-index", 0_i64.into());
@@ -2180,6 +2306,45 @@ fn swipe_view_yields_to_a_scrollable_page_until_the_next_gesture_at_its_edge() {
         })
     );
     assert!(!input.scroll_motion_active());
+}
+
+#[test]
+fn swipe_gesture_cancels_when_a_model_change_replaces_its_destination() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{ControlAction, VecModel};
+
+    let model = VecModel::from(vec![0_i64, 1, 2]);
+    let mut view = node("SwipeView", "pages");
+    for index in 0..3 {
+        let mut page = Node::new("SwipePage", None);
+        page.set_row_key(model.row_key(index));
+        view.children.push(page);
+    }
+    let size = Size::new(240.0, 140.0);
+    let start = Point { x: 210.0, y: 60.0 };
+    let end = Point { x: 25.0, y: 60.0 };
+    let now = Instant::now();
+    let mut input = Interaction::default();
+    let frame = layout_with_input(&view, size, &mut Text, &input);
+    assert!(input.begin_scroll_gesture(&view, &frame, start, now, ScrollGestureKind::Touch));
+    input.move_scroll_gesture(
+        &view,
+        &frame,
+        Point { x: 170.0, y: 60.0 },
+        now + Duration::from_millis(20),
+    );
+
+    view.children.swap(1, 2);
+    let frame = layout_with_input(&view, size, &mut Text, &input);
+    let release = input.end_scroll_gesture(&view, &frame, end, now + Duration::from_millis(80));
+    assert!(release.control.is_none());
+    assert!(!release.tap);
+    assert_eq!(group_index(&view), Some(0));
+
+    let now = now + Duration::from_millis(100);
+    assert!(input.begin_scroll_gesture(&view, &frame, start, now, ScrollGestureKind::Touch));
+    let release = input.end_scroll_gesture(&view, &frame, end, now + Duration::from_millis(70));
+    assert_eq!(release.control.unwrap().action, ControlAction::Select(1));
 }
 
 #[test]

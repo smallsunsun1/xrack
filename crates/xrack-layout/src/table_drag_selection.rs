@@ -1,7 +1,8 @@
 use crate::{LayoutNode, Point, Rect, TableGeometry, Target, input::ElementId};
-use std::time::Instant;
+use std::{rc::Rc, time::Instant};
 use xrack_runtime::{
-    Node, Orientation, RowKey, SelectionTarget, TableColumnOrder, TableSelectionAction,
+    Node, Orientation, RowKey, SelectionGesture, SelectionTarget, TableColumnOrder,
+    TableSelectionAction, TableSelectionDrag, TableSelectionDragHandle,
 };
 
 #[derive(Clone, Debug)]
@@ -10,6 +11,11 @@ pub(crate) struct TableDragSelection {
     pub start: Point,
     pub claimed: bool,
     pub touch: bool,
+    pub scroll_capture: bool,
+    pub gesture: SelectionGesture,
+    pub hold_interval: u64,
+    drag_handle: Option<TableSelectionDragHandle>,
+    presentation: Option<Rc<TableSelectionDrag>>,
     pub scroll_wake: Option<Instant>,
     pub parent_row: Option<RowKey>,
     id: Option<ElementId>,
@@ -50,6 +56,11 @@ impl TableDragSelection {
             start,
             claimed: false,
             touch: false,
+            scroll_capture: false,
+            gesture: node.selection_gesture(),
+            hold_interval: node.selection_hold_interval(),
+            drag_handle: node.table_selection_drag.clone(),
+            presentation: None,
             scroll_wake: None,
             parent_row,
             id: ElementId::of(node),
@@ -68,10 +79,23 @@ impl TableDragSelection {
         self.claimed = true;
     }
 
+    pub fn begin_presentation(&mut self) {
+        if self.presentation.is_none() {
+            self.presentation = self
+                .drag_handle
+                .as_ref()
+                .map(TableSelectionDragHandle::claim);
+        }
+    }
+
     pub fn valid(&self, node: &Node, item: &LayoutNode) -> bool {
         self.claimed
             && node.element_id() == self.id.as_ref().map(ElementId::as_str)
             && node.boolean("drag-select", false)
+            && (self.adjusted_range.is_some()
+                || (self.gesture == node.selection_gesture()
+                    && self.hold_interval == node.selection_hold_interval()))
+            && node.table_selection_drag == self.drag_handle
             && node.table_column_order == self.order
             && item.scroll_axis_reversed(Orientation::Horizontal) == self.mirrored
             && item.visible
@@ -109,6 +133,16 @@ impl TableDragSelection {
             end: self.endpoint(node, item, point)?,
             additive: self.additive,
         })
+    }
+
+    pub fn preview_handles(
+        &self,
+        node: &Node,
+        item: &LayoutNode,
+        point: Point,
+    ) -> Option<[Option<TableSelectionHandle>; 2]> {
+        let end = self.endpoint(node, item, point)?;
+        handles_for_range(node, item, [self.anchor, end])
     }
 
     fn endpoint(&self, node: &Node, item: &LayoutNode, point: Point) -> Option<(usize, usize)> {
@@ -216,11 +250,18 @@ pub(crate) fn selection_handles(
     node: &Node,
     item: &LayoutNode,
 ) -> Option<[Option<TableSelectionHandle>; 2]> {
+    handles_for_range(node, item, node.table_selection.as_ref()?.drag_range()?)
+}
+
+fn handles_for_range(
+    node: &Node,
+    item: &LayoutNode,
+    [(row_a, col_a), (row_b, col_b)]: [(usize, usize); 2],
+) -> Option<[Option<TableSelectionHandle>; 2]> {
     let view = node.table_selection.as_ref()?;
-    if !node.boolean("drag-select", false) || !item.visible || !item.enabled {
+    if !view.multiple() || !node.boolean("drag-select", false) || !item.visible || !item.enabled {
         return None;
     }
-    let [(row_a, col_a), (row_b, col_b)] = view.drag_range()?;
     let table = item.table.as_ref()?;
     let (left, right) = if table.visual_index(col_a)? <= table.visual_index(col_b)? {
         (col_a, col_b)
@@ -230,7 +271,11 @@ pub(crate) fn selection_handles(
     let first = (row_a.min(row_b), left);
     let last = (row_a.max(row_b), right);
     let body = table.body.intersect(item.clip);
-    let handle = |(row, column): (usize, usize), opposite, leading| {
+    let handle = |(row, column): (usize, usize), opposite, leading: bool| {
+        let part = node.table_selection_part(usize::from(!leading));
+        if part.is_some_and(|part| !part.is_visible() || !part.boolean("enabled", true)) {
+            return None;
+        }
         let (row_bounds, column_bounds, clip) = (
             if view.target() == SelectionTarget::Columns {
                 body
@@ -271,13 +316,23 @@ pub(crate) fn selection_handles(
             return None;
         }
         let visible = cell.intersect(clip);
-        let size = 20.0_f32.min(visible.width * 0.5).min(visible.height * 0.5);
-        (size > 0.0).then_some(TableSelectionHandle {
+        let max_width = visible.width * 0.5;
+        let max_height = visible.height * 0.5;
+        let size = 20.0_f32.min(max_width).min(max_height);
+        let width = part
+            .and_then(|part| part.relative_length("width", visible.width))
+            .unwrap_or(size)
+            .min(max_width);
+        let height = part
+            .and_then(|part| part.relative_length("height", visible.height))
+            .unwrap_or(size)
+            .min(max_height);
+        (width > 0.0 && height > 0.0).then_some(TableSelectionHandle {
             bounds: Rect::new(
-                if left_edge { x } else { x - size },
-                if leading { y } else { y - size },
-                size,
-                size,
+                if left_edge { x } else { x - width },
+                if leading { y } else { y - height },
+                width,
+                height,
             ),
             opposite,
         })

@@ -181,8 +181,22 @@ fn type_span(ctx: &TypeNameContextAll<'_>) -> Span {
     ctx.identifier().as_deref().map_or_else(|| span(ctx), span)
 }
 
+trait RequiredGrammarChild<T> {
+    fn required(self, description: &str) -> T;
+}
+
+impl<T> RequiredGrammarChild<T> for Option<T> {
+    #[expect(
+        clippy::expect_used,
+        reason = "AST conversion only receives error-free parse trees; the grammar requires these children"
+    )]
+    fn required(self, description: &str) -> T {
+        self.expect(description)
+    }
+}
+
 fn child_text<'input>(ctx: &impl ParserRuleContext<'input>, index: usize) -> String {
-    ctx.get_child(index).expect("grammar child").get_text()
+    ctx.get_child(index).required("grammar child").get_text()
 }
 
 fn starts_with<'input>(ctx: &impl ParserRuleContext<'input>, text: &str) -> bool {
@@ -196,12 +210,12 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
             .importDecl_all()
             .iter()
             .map(|import| Import {
-                path: import.STRING().expect("import path").get_text(),
+                path: import.STRING().required("import path").get_text(),
                 names: import
                     .importName_all()
                     .iter()
                     .map(|item| ImportName {
-                        name: item.identifier(0).expect("import name").get_text(),
+                        name: item.identifier(0).required("import name").get_text(),
                         alias: item.identifier(1).map(|id| id.get_text()),
                     })
                     .collect(),
@@ -212,7 +226,7 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
             .fontImport_all()
             .iter()
             .map(|font| FontImport {
-                path: font.STRING().expect("font path").get_text(),
+                path: font.STRING().required("font path").get_text(),
                 span: span(&**font),
                 filename: None,
             })
@@ -223,7 +237,7 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
             .map(|declaration| TranslationImport {
                 path: declaration
                     .STRING()
-                    .expect("translation catalog path")
+                    .required("translation catalog path")
                     .get_text(),
                 span: span(&**declaration),
             })
@@ -232,15 +246,15 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
             .recordDecl_all()
             .iter()
             .map(|record| RecordDef {
-                name: record.identifier().expect("record name").get_text(),
+                name: record.identifier().required("record name").get_text(),
                 exported: starts_with(&**record, "export"),
                 fields: record
                     .recordField_all()
                     .iter()
                     .map(|field| RecordField {
-                        name: field.identifier().expect("field name").get_text(),
-                        ty: Type::from_source(&field.typeName().expect("field type").get_text()),
-                        type_span: type_span(&field.typeName().expect("field type")),
+                        name: field.identifier().required("field name").get_text(),
+                        ty: Type::from_source(&field.typeName().required("field type").get_text()),
+                        type_span: type_span(&field.typeName().required("field type")),
                         span: span(&**field),
                     })
                     .collect(),
@@ -251,7 +265,10 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
             .component_all()
             .iter()
             .map(|component| Component {
-                name: component.identifier(0).expect("component name").get_text(),
+                name: component
+                    .identifier(0)
+                    .required("component name")
+                    .get_text(),
                 global: component.identifier(1).is_none(),
                 base: component
                     .identifier(1)
@@ -272,7 +289,7 @@ fn members(contexts: Vec<Rc<MemberContextAll<'_>>>) -> Vec<Member> {
     let mut result = Vec::new();
     for ctx in contexts {
         if let Some(animation) = ctx.animation() {
-            let options = animation_options(&animation.animationBody().expect("animation body"));
+            let options = animation_options(&animation.animationBody().required("animation body"));
             result.extend(animation.identifier_all().into_iter().map(|target| {
                 Member::Animation(Animation {
                     property: target.get_text(),
@@ -295,7 +312,7 @@ fn animation_options(body: &AnimationBodyContextAll<'_>) -> Vec<AnimationOption>
                 AnimationValue::Milliseconds(value.get_text())
             } else {
                 AnimationValue::Expression(expression(
-                    &field.expression().expect("animation option"),
+                    &field.expression().required("animation option"),
                 ))
             };
             AnimationOption {
@@ -318,8 +335,8 @@ fn state_block(block: &StateBlockContextAll<'_>) -> StateBlock {
                 .stateBinding_all()
                 .into_iter()
                 .map(|binding| Binding {
-                    name: binding.reference().expect("state target").get_text(),
-                    value: expression(&binding.expression().expect("state binding")),
+                    name: binding.reference().required("state target").get_text(),
+                    value: expression(&binding.expression().required("state binding")),
                     span: span(&*binding),
                     two_way: false,
                 })
@@ -335,7 +352,7 @@ fn state_block(block: &StateBlockContextAll<'_>) -> StateBlock {
                             let options = animation_options(
                                 &animation
                                     .animationBody()
-                                    .expect("transition animation body"),
+                                    .required("transition animation body"),
                             );
                             let span = span(&*animation);
                             let mut targets: Vec<_> = animation
@@ -360,7 +377,7 @@ fn state_block(block: &StateBlockContextAll<'_>) -> StateBlock {
                 })
                 .collect();
             State {
-                name: state.identifier().expect("state name").get_text(),
+                name: state.identifier().required("state name").get_text(),
                 when: state.expression().as_deref().map(expression),
                 changes,
                 transitions,
@@ -378,9 +395,9 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
     if let Some(property) = ctx.property() {
         let alias = property.reference();
         Member::Property(Property {
-            name: property.identifier().expect("property name").get_text(),
-            ty: Type::from_source(&property.typeName().expect("property type").get_text()),
-            type_span: type_span(&property.typeName().expect("property type")),
+            name: property.identifier().required("property name").get_text(),
+            ty: Type::from_source(&property.typeName().required("property type").get_text()),
+            type_span: type_span(&property.typeName().required("property type")),
             visibility: property
                 .visibility()
                 .map_or_else(|| "private".into(), |v| v.get_text()),
@@ -393,7 +410,7 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
         })
     } else if let Some(callback) = ctx.callback() {
         Member::Callback(Callback {
-            name: callback.identifier().expect("callback name").get_text(),
+            name: callback.identifier().required("callback name").get_text(),
             parameters: callback
                 .parameter_all()
                 .iter()
@@ -402,14 +419,14 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
                         .identifier()
                         .map_or_else(String::new, |id| id.get_text()),
                     ty: Type::from_source(
-                        &parameter.typeName().expect("parameter type").get_text(),
+                        &parameter.typeName().required("parameter type").get_text(),
                     ),
                 })
                 .collect(),
             parameter_type_spans: callback
                 .parameter_all()
                 .iter()
-                .map(|param| type_span(&param.typeName().expect("parameter type")))
+                .map(|param| type_span(&param.typeName().required("parameter type")))
                 .collect(),
             result_type_span: callback.typeName().as_deref().map(type_span),
             span: span(&*callback),
@@ -424,17 +441,17 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
         let reference = binding.reference();
         let value = match &reference {
             Some(reference) => reference_expr(reference),
-            None => expression(&binding.expression().expect("binding expression")),
+            None => expression(&binding.expression().required("binding expression")),
         };
         Member::Binding(Binding {
-            name: binding.identifier().expect("binding name").get_text(),
+            name: binding.identifier().required("binding name").get_text(),
             value,
             span: span(&*binding),
             two_way: reference.is_some(),
         })
     } else if let Some(handler) = ctx.handler() {
         Member::Handler(Handler {
-            name: handler.identifier(0).expect("handler name").get_text(),
+            name: handler.identifier(0).required("handler name").get_text(),
             parameters: handler
                 .identifier_all()
                 .into_iter()
@@ -458,7 +475,7 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
     } else if let Some(element) = ctx.element() {
         let first = element
             .identifier(0)
-            .expect("element kind or id")
+            .required("element kind or id")
             .get_text();
         let (id, ty) = match element.identifier(1) {
             Some(kind) => (Some(first), kind.get_text()),
@@ -469,20 +486,20 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
             type_span: span(
                 &*element
                     .identifier(usize::from(id.is_some()))
-                    .expect("element type"),
+                    .required("element type"),
             ),
             id,
             ty,
             members: members(element.member_all()),
             span: span(&*element),
             condition: element.conditionClause().map(|condition| {
-                expression(&condition.expression().expect("condition expression"))
+                expression(&condition.expression().required("condition expression"))
             }),
             repeat: element.repeatClause().map(|repeat| Repeat {
-                item: repeat.identifier(0).expect("repeat item").get_text(),
+                item: repeat.identifier(0).required("repeat item").get_text(),
                 index: repeat.identifier(1).map(|id| id.get_text()),
-                model: expression(&repeat.expression().expect("repeat model")),
-                item_span: span(&*repeat.identifier(0).expect("repeat item")),
+                model: expression(&repeat.expression().required("repeat model")),
+                item_span: span(&*repeat.identifier(0).required("repeat item")),
                 index_span: repeat
                     .identifier(1)
                     .map_or_else(Span::default, |id| span(&*id)),
@@ -502,9 +519,12 @@ fn statement(ctx: &StatementContextAll<'_>) -> Statement {
         Statement::Call(call(&invocation))
     } else {
         Statement::Assignment(Assignment {
-            target: ctx.reference().expect("assignment target").get_text(),
-            op: ctx.assignmentOp().expect("assignment operator").get_text(),
-            value: expression(&ctx.expression().expect("assignment value")),
+            target: ctx.reference().required("assignment target").get_text(),
+            op: ctx
+                .assignmentOp()
+                .required("assignment operator")
+                .get_text(),
+            value: expression(&ctx.expression().required("assignment value")),
             span: span(ctx),
         })
     }
@@ -512,7 +532,7 @@ fn statement(ctx: &StatementContextAll<'_>) -> Statement {
 
 fn call(ctx: &CallContextAll<'_>) -> Call {
     Call {
-        callee: ctx.reference().expect("callee").get_text(),
+        callee: ctx.reference().required("callee").get_text(),
         arguments: ctx
             .expression_all()
             .iter()
@@ -530,12 +550,12 @@ fn reference_expr(ctx: &ReferenceContextAll<'_>) -> Expr {
 }
 
 fn expression(ctx: &ExpressionContextAll<'_>) -> Expr {
-    let ctx = ctx.conditional().expect("conditional expression");
-    let condition = logical_or(&ctx.logicalOr().expect("logical expression"));
+    let ctx = ctx.conditional().required("conditional expression");
+    let condition = logical_or(&ctx.logicalOr().required("logical expression"));
     let Some(yes) = ctx.expression(0) else {
         return condition;
     };
-    let no = ctx.expression(1).expect("conditional alternative");
+    let no = ctx.expression(1).required("conditional alternative");
     Expr {
         kind: ExprKind::Conditional {
             condition: Box::new(condition),
@@ -550,7 +570,7 @@ fn binary_chain<'input>(
     ctx: &impl ParserRuleContext<'input>,
     mut operands: impl Iterator<Item = Expr>,
 ) -> Expr {
-    let first = operands.next().expect("left operand");
+    let first = operands.next().required("left operand");
     operands.enumerate().fold(first, |left, (i, right)| Expr {
         kind: ExprKind::Binary {
             op: child_text(ctx, 2 * i + 1),
@@ -598,7 +618,7 @@ fn unary(ctx: &UnaryContextAll<'_>) -> Expr {
     Expr {
         kind: ExprKind::Unary {
             op: child_text(ctx, 0),
-            value: Box::new(unary(&ctx.unary().expect("unary operand"))),
+            value: Box::new(unary(&ctx.unary().required("unary operand"))),
         },
         span: span(ctx),
     }
@@ -617,11 +637,11 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
     let kind = if let Some(invocation) = ctx.call() {
         ExprKind::Call(call(&invocation))
     } else if let Some(url) = ctx.imageUrl() {
-        let path = url.STRING().expect("image URL").get_text();
+        let path = url.STRING().required("image URL").get_text();
         if let Some(slice) = url.imageSlice() {
             ExprKind::SlicedImageUrl {
                 path,
-                slice: slice.IDENT().expect("image modifier").get_text(),
+                slice: slice.IDENT().required("image modifier").get_text(),
                 edges: slice
                     .imageEdge_all()
                     .iter()
@@ -632,17 +652,17 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
             ExprKind::ImageUrl(path)
         }
     } else if let Some(markdown) = ctx.markdown() {
-        ExprKind::Markdown(markdown.STRING().expect("Markdown string").get_text())
+        ExprKind::Markdown(markdown.STRING().required("Markdown string").get_text())
     } else if let Some(translation) = ctx.translation() {
         ExprKind::Translation {
-            id: translation.STRING().expect("translation ID").get_text(),
+            id: translation.STRING().required("translation ID").get_text(),
             arguments: translation
                 .recordValue_all()
                 .iter()
                 .map(|argument| RecordValue {
                     span: span(&**argument),
-                    name: argument.identifier().expect("argument name").get_text(),
-                    value: expression(&argument.expression().expect("argument value")),
+                    name: argument.identifier().required("argument name").get_text(),
+                    value: expression(&argument.expression().required("argument value")),
                 })
                 .collect(),
         }
@@ -656,14 +676,14 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
         )
     } else if let Some(record) = ctx.recordLiteral() {
         ExprKind::Record {
-            name: record.identifier().expect("record type").get_text(),
+            name: record.identifier().required("record type").get_text(),
             fields: record
                 .recordValue_all()
                 .iter()
                 .map(|value| RecordValue {
                     span: span(&**value),
-                    name: value.identifier().expect("record field").get_text(),
-                    value: expression(&value.expression().expect("record field value")),
+                    name: value.identifier().required("record field").get_text(),
+                    value: expression(&value.expression().required("record field value")),
                 })
                 .collect(),
         }
@@ -697,7 +717,7 @@ fn gradient_expr(ctx: &GradientContextAll<'_>) -> Expr {
         .gradientStop_all()
         .iter()
         .map(|stop| GradientStop {
-            color: expression(&stop.expression().expect("gradient color")),
+            color: expression(&stop.expression().required("gradient color")),
             position: stop.NUMBER().map(|position| position.get_text()),
             span: span(&**stop),
         })
@@ -707,7 +727,7 @@ fn gradient_expr(ctx: &GradientContextAll<'_>) -> Expr {
             angle: angle
                 .get_text()
                 .strip_suffix("deg")
-                .expect("degree suffix")
+                .required("degree suffix")
                 .into(),
             stops,
         },

@@ -262,7 +262,9 @@ impl PyComponent {
         PENDING_RUN.set(Some(self.instance.clone()));
         let id = self.id;
         let result = py.detach(move || {
-            let component = PENDING_RUN.take().expect("prepared XRack component");
+            let component = PENDING_RUN
+                .take()
+                .ok_or("XRack component was not prepared")?;
             let result = xrack_platform_winit::run_desktop(|desktop| {
                 WINDOW.set(Some((id, desktop.open(component)?)));
                 Python::attach(|py| ready.0.call0(py).map_err(|error| error.to_string()))?;
@@ -348,7 +350,9 @@ fn load_file(path: PathBuf, live: bool, project: Option<PathBuf>) -> PyResult<Py
             .map_err(runtime_error)?;
     let live = if live {
         let project = project
-            .unwrap_or_else(|| path.parent().expect("canonical file").to_owned())
+            .as_deref()
+            .or_else(|| path.parent())
+            .ok_or_else(|| PyValueError::new_err("XRack file has no parent directory"))?
             .canonicalize()?;
         Some((path, project))
     } else {

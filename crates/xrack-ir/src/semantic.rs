@@ -47,6 +47,7 @@ pub fn table_selection_property(kind: &str, name: &str) -> Option<Type> {
         "current-column" if table_view(kind) => Some(Type::Int),
         "selection-count" => Some(Type::Int),
         "has-selection" => Some(Type::Bool),
+        "selection-active" | "selection-dragging" if table_view(kind) => Some(Type::Bool),
         "selected-keys" => Some(Type::IntList),
         _ => None,
     }
@@ -300,6 +301,7 @@ pub fn control_part_parents(kind: &str) -> &'static [&'static str] {
         "PathViewOption" => &["PathView"],
         "TreeDisclosure" => &["TreeRow"],
         "SectionHeader" => &["ListView", "StandardListView"],
+        "SelectionStartHandle" | "SelectionEndHandle" => &["TableView", "StandardTableView"],
         _ => &[],
     }
 }
@@ -370,6 +372,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                 | "cross-axis-self-alignment"
         )
     {
+        return None;
+    }
+    if builtins::TABLE_SELECTION_PARTS.contains(&kind) && matches!(name, "x" | "y") {
         return None;
     }
     if !control_part_parents(kind).is_empty() {
@@ -890,6 +895,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "BusyIndicator"
                     | "Spinner"
                     | "SwipePage"
+                    | "StackItem"
+                    | "StackLayout"
                     | "StackView"
                     | "StackPage"
                     | "Page"
@@ -1061,6 +1068,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                 "ComboBox"
                     | "RadioGroup"
                     | "TabWidget"
+                    | "StackLayout"
                     | "TabBar"
                     | "SwipeView"
                     | "ListView"
@@ -1071,7 +1079,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Int
         }
         "count" if builtins::navigation_group(kind) => Type::Int,
-        "reorderable" if matches!(kind, "TabBar" | "TabWidget") => Type::Bool,
+        "active-index" if kind == "StackLayout" => Type::Int,
+        "reorderable" | "tabs-closable" if matches!(kind, "TabBar" | "TabWidget") => Type::Bool,
+        "closable" if matches!(kind, "Tab" | "TabButton") => Type::Bool,
         "current-index" | "count" if matches!(kind, "PageIndicator" | "Tumbler" | "PathView") => {
             Type::Int
         }
@@ -1106,7 +1116,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "interactive" if matches!(kind, "SwipeView" | "PageIndicator") => Type::Bool,
         "open-side" if kind == "SwipeDelegate" => Type::SwipeSide,
         "initial-page" if kind == "StackView" => Type::String,
-        "transition-duration" if kind == "StackView" => Type::Int,
+        "transition-duration" if matches!(kind, "StackView" | "SwipeView") => Type::Int,
         "dot-size" | "spacing" if kind == "PageIndicator" => Type::Length,
         "current-row" | "frozen-columns" if table_view(kind) => Type::Int,
         "current-key" if kind == "TreeView" || selection_list(kind) => Type::Int,
@@ -1153,6 +1163,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Bool
         }
         "drag-select" if table_view(kind) => Type::Bool,
+        "selection-gesture" if table_view(kind) => Type::SelectionGesture,
+        "selection-hold-interval" if table_view(kind) => Type::Int,
         "selection-target" if table_view(kind) => Type::SelectionTarget,
         "sortable" | "resizable" if kind == "TableColumn" => Type::Bool,
         "value" if builtins::navigation_option(kind) => Type::String,
@@ -1250,6 +1262,11 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "bounds-behavior" if kind == "Flickable" => Type::FlickBoundsBehavior,
         "bounds-movement" if kind == "Flickable" => Type::FlickBoundsMovement,
         "rebound-duration" if kind == "Flickable" => Type::Int,
+        "padding" | "padding-left" | "padding-right" | "padding-top" | "padding-bottom"
+            if kind == "StackLayout" =>
+        {
+            Type::Length
+        }
         "spacing" | "padding" | "padding-left" | "padding-right" | "padding-top"
         | "padding-bottom"
             if linear_layout(kind)
@@ -1580,7 +1597,7 @@ pub fn radio_checked_property(kind: &str, property: &str) -> bool {
 pub fn navigation_active_property(kind: &str, property: &str) -> bool {
     matches!(
         (kind, property),
-        ("TabButton", "checked") | ("Tab" | "SwipePage", "active")
+        ("TabButton", "checked") | ("Tab" | "SwipePage" | "StackItem", "active")
     )
 }
 
@@ -1733,6 +1750,7 @@ fn control_event(kind: &str, event: &str) -> bool {
         || kind == "ComboBox" && matches!(event, "edited" | "accepted")
         || matches!(kind, "ComboBox" | "Tumbler" | "PathView") && event == "value-selected"
         || builtins::navigation_move_event(kind) == Some(event)
+        || matches!(kind, "TabBar" | "TabWidget") && event == "tab-close-requested"
         || matches!(
             kind,
             "TabWidget"
@@ -1824,6 +1842,7 @@ pub fn event_parameters<'a>(
     Ok(match kind {
         _ if scrolled => &[],
         _ if event == "current-cell-changed" => &[Type::Int, Type::Int],
+        _ if event == "tab-close-requested" => &[Type::Int, Type::String],
         _ if matches!(event, "column-moved" | "tab-moved" | "page-moved") => {
             &[Type::Int, Type::Int]
         }
@@ -1976,9 +1995,7 @@ pub fn resolve_symbols(
     let references = SymbolReferences::default();
     let doc = crate::declare_handles(doc);
     analyze_components(&doc, Some(references.clone()), |_, _| {})?;
-    Ok(std::rc::Rc::try_unwrap(references)
-        .expect("analysis scopes released")
-        .into_inner())
+    Ok(std::rc::Rc::unwrap_or_clone(references).into_inner())
 }
 
 /// Hand off each component only after its names, types and bindings are valid.
@@ -2126,9 +2143,13 @@ fn analyze_components(
     let mut validated = Vec::new();
     for placed in &placed {
         let c = &placed.component;
-        let mut scope = scopes
-            .remove(c.name.as_str())
-            .expect("registered component scope");
+        let Some(mut scope) = scopes.remove(c.name.as_str()) else {
+            errors.push(Diagnostic {
+                span: c.span,
+                message: format!("missing scope for component {}", c.name),
+            });
+            continue;
+        };
         scope.callback_catalog = Some(callbacks.clone());
         match ActionGroups::resolve(&scope.owners) {
             Ok(groups) => scope.action_groups = std::rc::Rc::new(groups),
@@ -2732,7 +2753,7 @@ fn validate_table(kind: &str, members: &[Member], span: Span) -> Result<()> {
         _ => None,
     }) {
         match element.ty.as_str() {
-            "EmptyState" => {}
+            "EmptyState" | "SelectionStartHandle" | "SelectionEndHandle" => {}
             "TableColumn" if element.repeat.is_none() && element.condition.is_none() => {
                 if element
                     .members
@@ -2922,12 +2943,12 @@ impl<'a> Scope<'a> {
         declaration: Span,
         name: &str,
     ) {
-        if let Some((receiver, _)) = spelling.split_once('.') {
+        if let Some((receiver, member)) = spelling.split_once('.') {
             if !matches!(receiver, "root" | "self") {
                 let source = receiver
                     .split_once('@')
                     .map_or(receiver, |(source, _)| source);
-                let spelling = format!("{source}.{}", spelling.split_once('.').unwrap().1);
+                let spelling = format!("{source}.{member}");
                 self.reference(usage, &spelling, 0, self.owners[owner].span, source);
                 self.reference(usage, &spelling, 1, declaration, name);
                 return;
@@ -3482,8 +3503,10 @@ impl<'a> Scope<'a> {
                         while let Some(key) = ancestor {
                             let element = &self.owners[key];
                             if matches!(element.kind.as_str(), "TableRow" | "TreeRow")
-                                || (matches!(element.kind.as_str(), "SwipePage" | "Tab")
-                                    && element.repeated)
+                                || (matches!(
+                                    element.kind.as_str(),
+                                    "SwipePage" | "Tab" | "StackItem"
+                                ) && element.repeated)
                             {
                                 found = true;
                                 break;
@@ -3539,6 +3562,15 @@ impl<'a> Scope<'a> {
                             },
                         );
                     }
+                    if kind == "StackLayout"
+                        && e.ty != "StackItem"
+                        && (e.repeat.is_some() || named_binding(members, "current-value").is_some())
+                    {
+                        return fail(
+                            e.span,
+                            "StackLayout requires StackItem children for repetition or current-value",
+                        );
+                    }
                     if builtins::navigation_group(kind)
                         && builtins::navigation_option(&e.ty)
                         && named_binding(members, "current-value").is_some()
@@ -3555,7 +3587,7 @@ impl<'a> Scope<'a> {
                     if kind == "StackView" && e.id.is_none() {
                         return fail(e.span, "StackPage requires a route ID");
                     }
-                    if matches!(kind, "TabBar" | "SwipeView" | "TabWidget")
+                    if builtins::navigation_group(kind)
                         && e.repeat.is_some()
                         && members
                             .iter()
@@ -3583,6 +3615,7 @@ impl<'a> Scope<'a> {
                         || (e.ty == "Tab" && kind != "TabWidget")
                         || (e.ty == "TabButton" && kind != "TabBar")
                         || (e.ty == "SwipePage" && kind != "SwipeView")
+                        || (e.ty == "StackItem" && kind != "StackLayout")
                         || (e.ty == "StackPage" && kind != "StackView")
                     {
                         return fail(
@@ -3615,10 +3648,9 @@ impl<'a> Scope<'a> {
                         e.span,
                         e.placement_scope.as_ref(),
                     )?;
-                    self.owners
-                        .get_mut(&child)
-                        .expect("registered child")
-                        .repeated = e.repeat.is_some();
+                    if let Some(registered) = self.owners.get_mut(&child) {
+                        registered.repeated = e.repeat.is_some();
+                    }
                 }
             }
         }
@@ -3631,16 +3663,20 @@ impl<'a> Scope<'a> {
             .map_or(0, |placement| placement.lexical_scope)
     }
 
+    fn caller_lexical_scope(&self, current: &str) -> usize {
+        self.caller_scope
+            .as_ref()
+            .and_then(|(placement, _)| placement.caller.as_ref())
+            .map_or_else(|| self.lexical_scope(current), |(scope, _)| *scope)
+    }
+
     fn receiver<'b>(&'b self, current: &'b str, prefix: &'b str) -> Option<&'b str> {
         if prefix == "self" {
             return Some(current);
         }
         let (source, global_name) = prefix.split_once('@').unwrap_or((prefix, prefix));
         let prefix = source;
-        let scope = self.caller_scope.as_ref().map_or_else(
-            || self.lexical_scope(current),
-            |(placement, _)| placement.caller.as_ref().unwrap().0,
-        );
+        let scope = self.caller_lexical_scope(current);
         let names = self.placement_names.get(scope);
         if prefix == "root" {
             return Some(names.map_or("root", |names| names.root.as_str()));
@@ -3673,8 +3709,9 @@ impl<'a> Scope<'a> {
         let element = &self.owners[owner];
         if let Some((placement, root)) = &self.caller_scope
             && root == owner
+            && let Some((_, caller)) = &placement.caller
         {
-            return Some(&placement.caller.as_ref().unwrap().1);
+            return Some(caller);
         }
         match element.placement {
             Some(placement) => placement.lexical_parent.as_deref(),
@@ -3766,10 +3803,7 @@ impl<'a> Scope<'a> {
         let external = scope.instance
             || scope.placement.is_some_and(|placement| {
                 placement.caller.is_some()
-                    && self.caller_scope.as_ref().map_or_else(
-                        || self.lexical_scope(current),
-                        |(caller, _)| caller.caller.as_ref().unwrap().0,
-                    ) != placement.lexical_scope
+                    && self.caller_lexical_scope(current) != placement.lexical_scope
             });
         if external && p.visibility == "private" {
             return fail(span, format!("property `{reference}` is private"));
@@ -3951,6 +3985,7 @@ impl<'a> Scope<'a> {
                     || navigation_active_property(&element.kind, name)
                     || builtins::navigation_group(&element.kind)
                         && matches!(name, "current-index" | "count")
+                    || element.kind == "StackLayout" && name == "active-index"
                     || toggle_state_property(&element.kind, name).is_some()
                     || numeric_control_property(&element.kind, name).is_some()
                     || combo_state_property(&element.kind, name).is_some()
@@ -3981,6 +4016,9 @@ impl<'a> Scope<'a> {
         } else if builtins::navigation_group(&element.kind) && property == "count" {
             self.require_static_viewport(owner, span)?;
             ("navigation_count", Type::Int, property)
+        } else if element.kind == "StackLayout" && property == "active-index" {
+            self.require_static_viewport(owner, span)?;
+            ("navigation_index", Type::Int, property)
         } else if builtins::navigation_group(&element.kind)
             && property == "current-index"
             && named_binding(element.members, "current-value").is_some()
@@ -4384,7 +4422,7 @@ impl<'a> Scope<'a> {
                 stack_page_read_type(name)?,
                 vec![ir::Expr::literal(
                     Type::String,
-                    serde_json::to_string(owner).unwrap(),
+                    string_literal_spelling(owner),
                     span,
                 )],
             ),
@@ -6264,10 +6302,12 @@ fn custom_clipboard_paste(
         span: target.span,
         message: error.to_string(),
     })?;
-    let row = scope
-        .repeat_source
-        .as_ref()
-        .expect("table row has a repeat");
+    let Some(row) = &scope.repeat_source else {
+        return fail(
+            target.span,
+            "clipboard-target requires a repeated table row",
+        );
+    };
     let declaration = scope.owners[owner].properties.get(name.as_str());
     let linked = members.iter().any(|member| {
         matches!(member, Member::Binding(binding)
@@ -6587,7 +6627,7 @@ fn element<'a>(
     if let Some(initial) = scope.action_groups.initial.get(owner) {
         lowered.push(LoweredMember::Binding(ir::Binding {
             name: "current-value".into(),
-            value: ir::Expr::literal(Type::String, serde_json::to_string(initial).unwrap(), span),
+            value: ir::Expr::literal(Type::String, string_literal_spelling(initial), span),
             span,
         }));
     }
@@ -6655,7 +6695,7 @@ fn element<'a>(
                 kind == "TreeRow",
                 matches!(
                     kind,
-                    "TableRow" | "TreeRow" | "TabButton" | "SwipePage" | "Tab"
+                    "TableRow" | "TreeRow" | "TabButton" | "SwipePage" | "Tab" | "StackItem"
                 ),
             )?;
         }
@@ -6844,6 +6884,9 @@ fn element<'a>(
         }
         check_view_record_field(kind, members, scope, owner, "filter-field", Type::String)?;
     }
+    if kind == "StackLayout" {
+        scope.require_static_viewport(owner, span)?;
+    }
     if matches!(kind, "TabBar" | "TabWidget")
         && let Some(binding) = named_binding(members, "reorderable")
     {
@@ -7015,6 +7058,7 @@ fn element<'a>(
                     || view_count_property(kind, &b.name)
                     || list_selection_property(kind, &b.name)
                     || builtins::navigation_group(kind) && b.name == "count"
+                    || kind == "StackLayout" && b.name == "active-index"
                     || is_window(kind) && window_status_property(&b.name)
                     || viewport_property(kind, &b.name) && !viewport_offset
                 {
@@ -7336,7 +7380,9 @@ fn element<'a>(
                         let ExprKind::Reference(reference) = &b.value.kind else {
                             return fail(b.span, "two-way binding requires a property reference");
                         };
-                        let head = reference.split('.').next().unwrap();
+                        let head = reference
+                            .split_once('.')
+                            .map_or(reference.as_str(), |(head, _)| head);
                         let value = if scope.parameters.contains_key(head) {
                             let Some(repeat) = scope
                                 .repeat_source
@@ -7482,7 +7528,8 @@ fn element<'a>(
                         ("SpinBox", "value")
                         | (
                             "ComboBox" | "RadioGroup" | "ButtonGroup" | "TabWidget" | "TabBar"
-                            | "SwipeView" | "ListView" | "GridView" | "StandardListView",
+                            | "SwipeView" | "StackLayout" | "ListView" | "GridView"
+                            | "StandardListView",
                             "current-index",
                         ) => Type::Int,
                         ("ComboBox" | "Tumbler" | "PathView", "current-value") => combo
@@ -7838,6 +7885,8 @@ fn element<'a>(
                         "current-cell-changed" | "column-moved" | "tab-moved" | "page-moved"
                     ) {
                         format!("event {} expects two int parameters", h.name)
+                    } else if h.name == "tab-close-requested" {
+                        "event tab-close-requested expects an int index and a string value".into()
                     } else if h.name == "row-moved" {
                         "event row-moved expects three int parameters".into()
                     } else if kind == "StackView" {
@@ -9106,6 +9155,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::DrawerEdge => "left",
         Type::PopupPlacement => "below",
         Type::SelectionTarget => "rows",
+        Type::SelectionGesture => "auto",
         _ => "0",
     };
     ir::Expr::literal(ty, value, span)
@@ -9231,13 +9281,18 @@ fn gradient_stops(
         })
         .collect::<Result<Vec<_>>>()?;
     offsets[0].get_or_insert(0.0);
-    offsets.last_mut().unwrap().get_or_insert(1.0);
+    let last = offsets.len() - 1;
+    offsets[last].get_or_insert(1.0);
     let mut start = 0;
     for end in 1..offsets.len() {
         let Some(to) = offsets[end] else {
             continue;
         };
-        let from = offsets[start].unwrap();
+        #[expect(
+            clippy::expect_used,
+            reason = "start is initialized to the first filled stop and advances only to a filled stop"
+        )]
+        let from = offsets[start].expect("gradient interpolation start");
         if to < from {
             return fail(
                 stops[end].span,
@@ -9255,7 +9310,12 @@ fn gradient_stops(
         .zip(offsets)
         .map(|(stop, offset)| {
             let color = coerce(expression(&stop.color, scope, owner)?, Type::Color)?;
-            let offset = ir::Expr::literal(Type::Float, offset.unwrap().to_string(), stop.span);
+            #[expect(
+                clippy::expect_used,
+                reason = "interpolation fills every stop between the two initialized endpoints"
+            )]
+            let offset = offset.expect("interpolated gradient offset");
+            let offset = ir::Expr::literal(Type::Float, offset.to_string(), stop.span);
             Ok(ir::Expr::operation(
                 "gradient_stop",
                 Type::GradientStop,
@@ -9348,7 +9408,10 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 args.push(value);
             }
             ir::Expr {
-                value: serde_json::to_string(&(id, names)).unwrap(),
+                value: serde_json::to_string(&(id, names)).map_err(|error| Diagnostic {
+                    span,
+                    message: error.to_string(),
+                })?,
                 ..ir::Expr::operation("translate", Type::String, args, span)
             }
         }
@@ -9730,9 +9793,12 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "DrawerEdge"
                         | "PopupPlacement"
                         | "SelectionTarget"
+                        | "SelectionGesture"
                 )
             {
-                let ty = Type::parse(namespace).unwrap();
+                let Some(ty) = Type::parse(namespace) else {
+                    return fail(span, format!("unknown enum {namespace}"));
+                };
                 if !ty.enum_variants().contains(&name) {
                     return fail(span, format!("unknown {namespace} value `{name}`"));
                 }
@@ -9960,7 +10026,10 @@ fn model_call(
         FunctionKind::ModelCount => ("model_count", Type::Int),
         FunctionKind::ModelIsEmpty => ("model_is_empty", Type::Bool),
         FunctionKind::ModelAt => {
-            let fallback = coerce(args.pop().unwrap(), row.clone())?;
+            let Some(fallback) = args.pop() else {
+                return fail(call.span, "Model.at requires a fallback value");
+            };
+            let fallback = coerce(fallback, row.clone())?;
             args.push(fallback);
             ("model_at", row)
         }
@@ -10045,13 +10114,8 @@ fn format_call(call: &ast::Call, scope: &Scope<'_>, owner: &str) -> Result<ir::E
         span: template.span,
         message: format!("invalid format string: {error}"),
     })?;
-    let literal = |text: &str| {
-        ir::Expr::literal(
-            Type::String,
-            serde_json::to_string(text).unwrap(),
-            template.span,
-        )
-    };
+    let literal =
+        |text: &str| ir::Expr::literal(Type::String, string_literal_spelling(text), template.span);
     let mut chars = pattern.chars().peekable();
     let mut values_iter = values.iter();
     let mut parts = Vec::new();
@@ -10123,13 +10187,20 @@ fn format_call(call: &ast::Call, scope: &Scope<'_>, owner: &str) -> Result<ir::E
     if !text.is_empty() || parts.is_empty() {
         parts.push(literal(&text));
     }
-    Ok(parts
+    parts
         .into_iter()
         .reduce(|left, right| ir::Expr {
             value: "+".into(),
             ..ir::Expr::operation("binary", Type::String, vec![left, right], call.span)
         })
-        .expect("format includes at least one part"))
+        .ok_or_else(|| Diagnostic {
+            span: call.span,
+            message: "format includes no parts".into(),
+        })
+}
+
+fn string_literal_spelling(text: &str) -> String {
+    serde_json::Value::String(text.into()).to_string()
 }
 
 fn numeric(t: &Type) -> bool {
@@ -10347,7 +10418,9 @@ fn check_composition(components: &[(&ast::Component, Vec<LoweredMember<'_>>)]) -
             .extract_if(.., |key, _| key.starts_with("@state-input:"))
             .collect();
         for (key, (span, dependencies)) in overlays {
-            let destination = key.strip_prefix("@state-input:").unwrap();
+            let Some(destination) = key.strip_prefix("@state-input:") else {
+                continue;
+            };
             if links.contains_key(destination) {
                 return fail(span, "state cannot override a two-way component input");
             }
@@ -10416,6 +10489,14 @@ impl GeometryFlow {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "binding analysis seeds each stack with a root and only pops matched element scopes"
+)]
+fn binding_scope<T>(stack: &[T]) -> &T {
+    stack.last().expect("active binding scope")
+}
+
 fn geometry_sensitive_parts<'a>(
     members: &'a [LoweredMember<'_>],
 ) -> (BTreeSet<&'a str>, BTreeSet<&'a str>) {
@@ -10426,7 +10507,7 @@ fn geometry_sensitive_parts<'a>(
         match member {
             LoweredMember::BeginElement { key, kind, .. } => {
                 if *kind == "ProgressFill" {
-                    layout_progress.insert(*owners.last().unwrap());
+                    layout_progress.insert(*binding_scope(&owners));
                 }
                 owners.push(key);
                 if matches!(*kind, "Text" | "Label" | "StyledText") {
@@ -10439,7 +10520,7 @@ fn geometry_sensitive_parts<'a>(
             LoweredMember::Binding(binding)
                 if binding.value.op == "literal" && binding.value.ty == Type::Length =>
             {
-                if let Some(flags) = axes.get_mut(owners.last().unwrap()) {
+                if let Some(flags) = axes.get_mut(binding_scope(&owners)) {
                     match binding.name.as_str() {
                         "width" => *flags |= 1,
                         "height" => *flags |= 2,
@@ -10450,7 +10531,7 @@ fn geometry_sensitive_parts<'a>(
             LoweredMember::StateBinding(state)
                 if matches!(state.binding.name.as_str(), "width" | "height") =>
             {
-                if let Some(flags) = axes.get_mut(owners.last().unwrap()) {
+                if let Some(flags) = axes.get_mut(binding_scope(&owners)) {
                     *flags |= 4;
                 }
             }
@@ -10592,7 +10673,13 @@ fn collect_bindings(
             ) || e.op == "tree_query"
                 && matches!(e.value.as_str(), "is-row-selected" | "is-key-selected")
                 || e.op == "table_selection_read"
-                    && matches!(e.value.as_str(), "selection-count" | "has-selection")
+                    && matches!(
+                        e.value.as_str(),
+                        "selection-count"
+                            | "has-selection"
+                            | "selection-active"
+                            | "selection-dragging"
+                    )
             {
                 out.extend(
                     [
@@ -10657,7 +10744,7 @@ fn collect_bindings(
     let mut action_groups = Vec::new();
     let mut non_exclusive_groups = BTreeSet::new();
     let mut radio_groups = BTreeMap::<&str, Vec<(&str, Span, Vec<&str>)>>::new();
-    let mut selection_controls = BTreeMap::<&str, Vec<(&str, Span)>>::new();
+    let mut selection_controls = BTreeMap::<&str, (Span, Vec<(&str, Span)>)>::new();
     let mut state_inputs = BTreeMap::<(&str, &str), Vec<String>>::new();
     let mut kinds = BTreeMap::new();
     let mut swipe_pages = BTreeMap::<&str, Vec<&str>>::new();
@@ -10722,24 +10809,29 @@ fn collect_bindings(
                     scopes.push(key);
                     range_directions.push((key.as_str(), *span, scopes));
                 }
-                if matches!(*kind, "RadioButton" | "TabButton" | "Tab" | "SwipePage")
-                    && let Some(parent) = owners.last()
+                if *kind == "StackLayout" && !*instance {
+                    selection_controls.entry(key).or_insert((*span, Vec::new()));
+                }
+                if let Some(parent) = owners.last()
                     && matches!(
                         (*kind, kinds.get(parent).copied()),
                         ("RadioButton", Some("RadioGroup" | "ListView" | "GridView"))
                             | ("TabButton", Some("TabBar"))
                             | ("Tab", Some("TabWidget"))
                             | ("SwipePage", Some("SwipeView"))
+                            | (_, Some("StackLayout"))
                     )
+                    && !nonvisual_element(kind)
                 {
                     selection_controls
                         .entry(parent)
-                        .or_default()
+                        .or_insert_with(|| (*span, Vec::new()))
+                        .1
                         .push((key, *span));
                 }
                 if *kind == "SwipePage" {
                     swipe_pages
-                        .entry(owners.last().unwrap())
+                        .entry(binding_scope(&owners))
                         .or_default()
                         .push(key);
                 }
@@ -10752,7 +10844,7 @@ fn collect_bindings(
                         edges.insert(path(key, name), (*span, inputs.clone()));
                     }
                 } else if *kind == "TableRow" {
-                    let table = owners.last().unwrap();
+                    let table = binding_scope(&owners);
                     for name in ["can-undo", "can-redo"] {
                         if let Some((_, inputs)) = edges.get_mut(&path(table, name)) {
                             inputs.push(path(key, "@model"));
@@ -10764,7 +10856,7 @@ fn collect_bindings(
                         .last()
                         .is_some_and(|(kind, _)| *kind == "TreeView")
                 {
-                    let tree = owners.last().unwrap();
+                    let tree = binding_scope(&owners);
                     edges.insert(
                         path(tree, "@tree"),
                         (
@@ -10795,7 +10887,7 @@ fn collect_bindings(
                 }
                 owners.push(key);
                 let overlay =
-                    layout_scopes.last().unwrap().1 || matches!(*kind, "PopupWindow" | "Tooltip");
+                    binding_scope(&layout_scopes).1 || matches!(*kind, "PopupWindow" | "Tooltip");
                 layout_scopes.push((kind, overlay));
                 geometry.overlays.insert(scope_path(key), overlay);
                 if *instance {
@@ -10816,7 +10908,7 @@ fn collect_bindings(
                 continue;
             }
             LoweredMember::ScrollTarget { target, span } => {
-                let owner = owners.last().unwrap();
+                let owner = binding_scope(&owners);
                 let source = format!("@geometry:{}", path(target, "scroll-range"));
                 for metric in ["position", "size"] {
                     edges.insert(
@@ -10833,18 +10925,18 @@ fn collect_bindings(
             }
             LoweredMember::ActionRef { owner, span } => {
                 edges.insert(
-                    path(owners.last().unwrap(), "checked"),
+                    path(binding_scope(&owners), "checked"),
                     (*span, vec![path(owner, "checked")]),
                 );
                 continue;
             }
             LoweredMember::ActionGroupRef { membership, span } => {
-                action_groups.push((*owners.last().unwrap(), membership.group.as_str(), *span));
+                action_groups.push((*binding_scope(&owners), membership.group.as_str(), *span));
                 continue;
             }
             LoweredMember::RadioGroupRef { group, span } => {
                 radio_groups.entry(group).or_default().push((
-                    *owners.last().unwrap(),
+                    *binding_scope(&owners),
                     *span,
                     owners.clone(),
                 ));
@@ -10855,7 +10947,7 @@ fn collect_bindings(
                 property,
                 span,
             } => {
-                let member = owners.last().unwrap();
+                let member = binding_scope(&owners);
                 edges
                     .entry(path(group, "check-state"))
                     .or_insert((*span, Vec::new()))
@@ -10864,7 +10956,7 @@ fn collect_bindings(
                 continue;
             }
             LoweredMember::Condition(value) | LoweredMember::Repeat { model: value, .. } => {
-                let owner = owners.last().unwrap();
+                let owner = binding_scope(&owners);
                 let key = path(
                     owner,
                     if matches!(m, LoweredMember::Condition(_)) {
@@ -10894,7 +10986,7 @@ fn collect_bindings(
                 continue;
             }
             LoweredMember::StateBinding(state) => {
-                let owner = owners.last().unwrap();
+                let owner = binding_scope(&owners);
                 let binding = &state.binding;
                 if matches!(
                     binding.name.as_str(),
@@ -10923,7 +11015,7 @@ fn collect_bindings(
                         .extend(deps);
                 } else if !safe_binding(
                     owner,
-                    layout_scopes.last().unwrap().0,
+                    binding_scope(&layout_scopes).0,
                     &binding.name,
                     fixed_labels.contains(owner),
                 ) {
@@ -10936,8 +11028,8 @@ fn collect_bindings(
                 continue;
             }
             LoweredMember::InstanceLayout(binding) => {
-                let owner = owners.last().unwrap();
-                if !safe_binding(owner, layout_scopes.last().unwrap().0, &binding.name, false) {
+                let owner = binding_scope(&owners);
+                if !safe_binding(owner, binding_scope(&layout_scopes).0, &binding.name, false) {
                     let key = path(owner, &format!("@layout.{}", binding.name));
                     let mut deps = Vec::new();
                     dependencies(&binding.value, &path, &mut deps);
@@ -10946,17 +11038,20 @@ fn collect_bindings(
                 }
                 continue;
             }
-            LoweredMember::Animation(animation) if animation.enabled.is_some() => {
-                let owner = owners.last().unwrap();
+            LoweredMember::Animation(animation) => {
+                let Some(enabled) = &animation.enabled else {
+                    continue;
+                };
+                let owner = binding_scope(&owners);
                 if !safe_binding(
                     owner,
-                    layout_scopes.last().unwrap().0,
+                    binding_scope(&layout_scopes).0,
                     &animation.property,
                     false,
                 ) {
                     let key = path(owner, &format!("@animate.{}", animation.property));
                     let mut deps = Vec::new();
-                    dependencies(animation.enabled.as_ref().unwrap(), &path, &mut deps);
+                    dependencies(enabled, &path, &mut deps);
                     edges.insert(key.clone(), (animation.span, deps));
                     geometry
                         .sinks
@@ -10965,11 +11060,11 @@ fn collect_bindings(
                 continue;
             }
             LoweredMember::StateTiming(timing) => {
-                let owner = owners.last().unwrap();
+                let owner = binding_scope(&owners);
                 let animation = &timing.animation;
                 if !safe_binding(
                     owner,
-                    layout_scopes.last().unwrap().0,
+                    binding_scope(&layout_scopes).0,
                     &animation.property,
                     false,
                 ) {
@@ -11108,7 +11203,7 @@ fn collect_bindings(
                 if let Some(result) = &callback.result {
                     dependencies(result, &path, &mut deps);
                 }
-                let owner = owners.last().unwrap();
+                let owner = binding_scope(&owners);
                 let slot = format!("{}()", path(owner, &callback.name));
                 if let Some(target) = &callback.alias {
                     let target = format!("{}()", path(&target.owner, &target.name));
@@ -11130,12 +11225,12 @@ fn collect_bindings(
                 continue;
             }
             LoweredMember::Binding(b) | LoweredMember::InstanceLink(b)
-                if instances.contains(owners.last().unwrap()) =>
+                if instances.contains(binding_scope(&owners)) =>
             {
                 (&b.name, &b.value, b.span)
             }
             LoweredMember::Binding(b)
-                if b.name == "initial-page" && stacks.contains(owners.last().unwrap()) =>
+                if b.name == "initial-page" && stacks.contains(binding_scope(&owners)) =>
             {
                 ("@stack", &b.value, b.span)
             }
@@ -11146,7 +11241,7 @@ fn collect_bindings(
         };
         let mut deps = Vec::new();
         dependencies(value, &path, &mut deps);
-        let owner = owners.last().unwrap();
+        let owner = binding_scope(&owners);
         if name == "exclusive" && value.op == "literal" && value.value == "false" {
             non_exclusive_groups.insert(*owner);
         }
@@ -11158,7 +11253,7 @@ fn collect_bindings(
             && matches!(m, LoweredMember::Binding(_) | LoweredMember::ControlLink(_))
             && !safe_binding(
                 owner,
-                layout_scopes.last().unwrap().0,
+                binding_scope(&layout_scopes).0,
                 name,
                 fixed_labels.contains(owner),
             )
@@ -11239,12 +11334,11 @@ fn collect_bindings(
                 }
             }
         }
-        if preview_ranges.contains(range) && kinds[range] != "Dial" {
-            edges
-                .get_mut(&path(range, "@range-position"))
-                .unwrap()
-                .1
-                .extend(["step", "snap-mode"].map(|name| path(range, name)));
+        if preview_ranges.contains(range)
+            && kinds[range] != "Dial"
+            && let Some((_, inputs)) = edges.get_mut(&path(range, "@range-position"))
+        {
+            inputs.extend(["step", "snap-mode"].map(|name| path(range, name)));
         }
         let mut directions = vec![path(range, "orientation")];
         for owner in ancestors {
@@ -11324,6 +11418,7 @@ fn collect_bindings(
                         read_flag(ancestor, "@stack");
                     }
                     "TabWidget" => read_flag(ancestor, "current-index"),
+                    "StackLayout" => read_flag(ancestor, "@navigation-choice"),
                     "SwipeView" => {
                         read_flag(ancestor, "visible");
                         read_flag(ancestor, "current-index");
@@ -11347,9 +11442,9 @@ fn collect_bindings(
             previous = Some(candidate);
         }
     }
-    for (group, options) in selection_controls {
+    for (group, (group_span, options)) in selection_controls {
         let kind = kinds[group];
-        let navigation = matches!(kind, "TabBar" | "TabWidget" | "SwipeView");
+        let navigation = builtins::navigation_group(kind);
         let choice = if navigation {
             "@navigation-choice"
         } else {
@@ -11363,7 +11458,6 @@ fn collect_bindings(
         } else {
             vec![path(group, "current-index")]
         };
-        let group_span = options[0].1;
         if navigation {
             edges.insert(
                 path(group, "@navigation-count"),
@@ -11388,7 +11482,12 @@ fn collect_bindings(
                 );
             }
             for (option, span) in options {
-                for flag in ["@model", "@visible", "visible", "enabled"] {
+                let flags: &[_] = if kind == "StackLayout" {
+                    &["@model"]
+                } else {
+                    &["@model", "@visible", "visible", "enabled"]
+                };
+                for &flag in flags {
                     inputs.push(path(option, flag));
                     inputs.extend(
                         state_inputs

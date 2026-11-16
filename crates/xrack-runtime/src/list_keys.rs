@@ -59,8 +59,9 @@ impl Index {
         }
         if let Some(rows) = self.duplicates.get_mut(&key) {
             rows.remove(&row);
-            if rows.len() == 1 {
-                let remaining = *rows.iter().next().unwrap();
+            if rows.len() == 1
+                && let Some(&remaining) = rows.iter().next()
+            {
                 self.duplicates.remove(&key);
                 self.unique.insert(key, remaining);
             }

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::{path::Path, time::Instant};
 use xrack_layout::{Interaction, Point, Size, TextMeasurer, layout};
 use xrack_runtime::{

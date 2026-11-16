@@ -721,6 +721,14 @@ impl Renderer {
             self.paint_group(visible_viewport.intersect(layout.clip), 1.0, |renderer| {
                 renderer.paint_children(node, layout, path, frame)
             })?;
+        } else if let Some(close) = layout.tab_close
+            && node.kind == "TabButton"
+        {
+            let content =
+                xrack_layout::tab_content_rect(layout.bounds, close).intersect(layout.clip);
+            self.paint_group(content, 1.0, |renderer| {
+                renderer.paint_children(node, layout, path, frame)
+            })?;
         } else if let Some(clip) = layout.child_clip_shape() {
             let mut path_clip = Path::new();
             append_rect(&mut path_clip, clip.bounds, clip.radii);
@@ -1187,6 +1195,8 @@ impl Renderer {
                             selected: selected == Some(index),
                             enabled: page.enabled,
                             focused: input.is_focused(path),
+                            close: page.tab_close,
+                            close_hovered: input.tab_close_hovered(path),
                         },
                     )
                 });
@@ -1638,17 +1648,17 @@ impl Renderer {
                 indicator_phase: None,
             };
             for (page, offset, visible, cacheable) in slide.outgoing_layers() {
+                let clip = slide.slice(bounds, visible).intersect(slide_viewport);
+                if clip.width <= 0.0 || clip.height <= 0.0 {
+                    continue;
+                }
                 self.canvas.save();
-                self.canvas.intersect_scissor(
-                    slide_viewport.x + visible.start * slide_viewport.width,
-                    slide_viewport.y,
-                    (visible.end - visible.start) * slide_viewport.width,
-                    slide_viewport.height,
-                );
+                self.canvas
+                    .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
                 let result = self.paint_stack_layer(
                     page,
                     bounds,
-                    offset * slide_viewport.width,
+                    slide.displacement(bounds, offset),
                     frozen,
                     cacheable,
                 );
@@ -1656,6 +1666,53 @@ impl Renderer {
                 result?;
             }
         }
+        let swipe_offset = frame
+            .input
+            .swipe_page_motion(path)
+            .zip(
+                node.swipe_preview
+                    .as_ref()
+                    .and_then(|preview| preview.page.as_ref()),
+            )
+            .zip(layout.swipe_preview.as_deref())
+            .filter(|(((slot, _, _), (preview_slot, _)), item)| {
+                slot == preview_slot && item.visible
+            });
+        let swipe_offset = if let Some((((_, fraction, orientation), (_, page)), item)) =
+            swipe_offset
+            && slide.is_none()
+        {
+            let (x, y) = match orientation {
+                xrack_runtime::Orientation::Horizontal => (bounds.width, 0.0),
+                xrack_runtime::Orientation::Vertical => (0.0, bounds.height),
+            };
+            let preview_input = Interaction::default();
+            let frozen = PaintFrame {
+                input: &preview_input,
+                transitions: None,
+                indicator_phase: None,
+                ..frame
+            };
+            let fraction_to_page = fraction.signum() - fraction;
+            self.canvas.save();
+            self.canvas.intersect_scissor(
+                slide_viewport.x,
+                slide_viewport.y,
+                slide_viewport.width,
+                slide_viewport.height,
+            );
+            self.canvas
+                .translate(x * fraction_to_page, y * fraction_to_page);
+            let result = self.paint(page, item, &mut Vec::new(), frozen, is_layout);
+            self.canvas.restore();
+            result?;
+            Some(Point {
+                x: -x * fraction,
+                y: -y * fraction,
+            })
+        } else {
+            None
+        };
         let thumb = if node.kind == "Switch" {
             layout
                 .children_in_paint_order(node)
@@ -1676,10 +1733,18 @@ impl Renderer {
                 continue;
             }
             path.push(i);
-            let result = if let Some(slide) = slide {
+            let offset = slide
+                .map(|slide| slide.displacement(bounds, slide.incoming_offset()))
+                .or(swipe_offset);
+            let result = if let Some(offset) = offset {
                 self.canvas.save();
-                self.canvas
-                    .translate(slide.incoming_offset() * slide_viewport.width, 0.0);
+                self.canvas.intersect_scissor(
+                    slide_viewport.x,
+                    slide_viewport.y,
+                    slide_viewport.width,
+                    slide_viewport.height,
+                );
+                self.canvas.translate(offset.x, offset.y);
                 let result = self.paint(node, layout, path, frame, is_layout);
                 self.canvas.restore();
                 result
@@ -1890,7 +1955,30 @@ impl Renderer {
             self.canvas
                 .stroke_path(&outline, &Paint::color(color(theme.focus)));
         }
-        for rect in input.table_selection_handles(path, node, layout) {
+        for (index, rect) in input.table_selection_handle_parts(path, node, layout) {
+            if let Some(part) = node.table_selection_part(index) {
+                let item = xrack_layout::layout_choice_option(
+                    part,
+                    rect,
+                    layout.layout_direction,
+                    layout.enabled,
+                    &mut self.text,
+                );
+                self.paint_group(rect, 1.0, |renderer| {
+                    renderer.paint(
+                        part,
+                        &item,
+                        &mut Vec::new(),
+                        PaintFrame {
+                            input: &Interaction::default(),
+                            transitions: None,
+                            ..frame
+                        },
+                        false,
+                    )
+                })?;
+                continue;
+            }
             let x = rect.x + rect.width * 0.5;
             let y = rect.y + rect.height * 0.5;
             let radius = 6.0_f32.min(rect.width * 0.5);

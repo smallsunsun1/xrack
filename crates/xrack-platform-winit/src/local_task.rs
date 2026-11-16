@@ -178,6 +178,10 @@ impl LocalExecutor {
         Scope(EXECUTOR.with(|current| current.replace(Some(self.clone()))))
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "new tasks must have distinct IDs because wakeups can outlive completed tasks"
+    )]
     pub(crate) fn spawn<F: Future + 'static>(
         &self,
         future: F,

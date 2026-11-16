@@ -29,7 +29,10 @@ pub enum EventLoopError {
 pub fn invoke_from_event_loop(
     callback: impl FnOnce() + Send + 'static,
 ) -> Result<(), EventLoopError> {
-    let post = EVENT_LOOP.lock().unwrap().clone();
+    let post = EVENT_LOOP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     post.ok_or(EventLoopError::NotRunning)?(Box::new(callback))
 }
 
@@ -41,7 +44,9 @@ impl EventLoopRegistration {
     pub fn new(
         post: impl Fn(UiCallback) -> Result<(), EventLoopError> + Send + Sync + 'static,
     ) -> Result<Self, EventLoopError> {
-        let mut active = EVENT_LOOP.lock().unwrap();
+        let mut active = EVENT_LOOP
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if active.is_some() {
             return Err(EventLoopError::AlreadyRunning);
         }
@@ -52,7 +57,10 @@ impl EventLoopRegistration {
 
 impl Drop for EventLoopRegistration {
     fn drop(&mut self) {
-        let previous = EVENT_LOOP.lock().unwrap().take();
+        let previous = EVENT_LOOP
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         drop(previous);
     }
 }

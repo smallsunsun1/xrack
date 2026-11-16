@@ -251,6 +251,7 @@ pub enum ValueType {
     ScrollSnapMode,
     ScrollAlignment,
     SelectionTarget,
+    SelectionGesture,
     ScrollBarPolicy,
     FlickDirection,
     FlickBoundsBehavior,

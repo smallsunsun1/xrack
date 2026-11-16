@@ -922,6 +922,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
             return Some(symbol);
         }
         if name == "count" && xrack_parser::builtins::navigation_group(kind)
+            || name == "active-index" && kind == "StackLayout"
             || name == "current-index" && self.index.value_navigation.contains(&owner)
         {
             let mut symbol = Symbol::builtin(Kind::Property, Some(Type::Int));

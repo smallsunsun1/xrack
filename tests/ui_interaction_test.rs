@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 pub mod ui_driver;
 
 use async_ui::AsyncDemo;

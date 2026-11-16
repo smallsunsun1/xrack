@@ -543,7 +543,9 @@ fn refresh_analyses(
         })
         .collect();
     for (uri, analysis) in refreshed {
-        documents.get_mut(&uri).expect("open document").analysis = analysis;
+        if let Some(doc) = documents.get_mut(&uri) {
+            doc.analysis = analysis;
+        }
     }
 
     // Combine reports from all entry documents. A dependency may be shared by

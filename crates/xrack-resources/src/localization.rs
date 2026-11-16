@@ -143,7 +143,9 @@ pub fn resolve_translations(
         let language = locale_id(&language)
             .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
         let path = load(
-            manifest_path.parent().expect("manifest has a parent"),
+            manifest_path
+                .parent()
+                .ok_or("translation manifest has no parent directory")?,
             &relative,
             "language pack",
         )

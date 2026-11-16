@@ -275,6 +275,8 @@ struct InspectedElement {
     kind: &'static str,
     id: Option<String>,
     bounds: [f32; 4],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tab_close_bounds: Option<[f32; 4]>,
     enabled: bool,
     focused: bool,
     label: Option<String>,
@@ -313,6 +315,15 @@ fn inspect_nodes(
             kind: node.kind,
             id: node.element_id().map(str::to_owned),
             bounds: [rect.x, rect.y, rect.width, rect.height],
+            tab_close_bounds: layout.tab_close.and_then(|close| {
+                let rect = layout.visible_window_bounds(close);
+                (rect.width > 0.0 && rect.height > 0.0).then_some([
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                ])
+            }),
             enabled: layout.enabled,
             focused: focus == Some(path.as_slice()),
             label: (!node.is_password())
@@ -433,8 +444,12 @@ impl Host {
                     .map_err(failure)?,
                 );
             }
+            let renderer = self
+                .renderer
+                .as_mut()
+                .ok_or_else(|| failure("preview renderer was not initialized"))?;
             windows
-                .render(self.renderer.as_mut().unwrap(), self.scale.unwrap_or(1.0))
+                .render(renderer, self.scale.unwrap_or(1.0))
                 .map_err(failure)?
         };
         if let Some(error) = instance.take_error() {

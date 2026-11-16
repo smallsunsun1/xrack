@@ -108,9 +108,15 @@ impl AtlasCache {
                     .entries
                     .iter()
                     .min_by_key(|(_, atlas)| atlas.last_used)
-                    .expect("cache contains an atlas to evict")
+                    .ok_or("image atlas cache accounting is inconsistent")?
                     .0;
-                self.bytes -= self.entries.remove(&oldest).unwrap().raster.rgba.len();
+                self.bytes -= self
+                    .entries
+                    .remove(&oldest)
+                    .ok_or("missing image atlas")?
+                    .raster
+                    .rgba
+                    .len();
             }
             self.bytes += raster.rgba.len();
             self.entries.insert(
@@ -121,7 +127,7 @@ impl AtlasCache {
                 },
             );
         }
-        let atlas = self.entries.get_mut(&key).unwrap();
+        let atlas = self.entries.get_mut(&key).ok_or("missing image atlas")?;
         atlas.last_used = self.clock;
         Ok(&atlas.raster)
     }
@@ -218,8 +224,9 @@ impl Images {
             .video
             .get(&key)
             .is_some_and(|texture| texture.frame.size() != frame.size())
+            && let Some(texture) = self.video.remove(&key)
         {
-            canvas.delete_image(self.video.remove(&key).unwrap().id);
+            canvas.delete_image(texture.id);
         }
         let texture = match self.video.entry(key) {
             Entry::Occupied(entry) => {

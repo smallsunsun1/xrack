@@ -224,7 +224,7 @@ pub(crate) fn children(
         let mut offsets = Vec::with_capacity(sizes.len() + 1);
         offsets.push(0.0);
         for size in sizes {
-            offsets.push(offsets.last().unwrap() + size + gap);
+            offsets.push(offsets.last().copied().unwrap_or(0.0) + size + gap);
         }
         offsets
     };

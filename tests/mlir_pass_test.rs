@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use xrack_compiler::{
     codegen,
     mlir::{self, Module, OperationRef},

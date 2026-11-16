@@ -552,6 +552,14 @@ impl<C: Component> Application<C> {
             | Route::Choice { target, .. }
             | Route::ControlPart { target, .. }
             | Route::TableRowHeader(target) => target,
+            Route::TabClose(target) => {
+                if request.action == AccessibleAction::Click
+                    && let Some(action) = self.input.tab_close_action(&self.scene, layout, target)
+                {
+                    self.apply_control(action);
+                }
+                return;
+            }
             Route::TextLink(target) => {
                 let Some(action) = self.input.text_link_activation(&self.scene, layout, target)
                 else {
@@ -1081,10 +1089,11 @@ impl<C: Component> Application<C> {
             return swiped;
         }
         if let Some(previous) = &self.layout {
-            self.stack_transitions.update(
+            self.stack_transitions.update_with_input(
                 (&self.scene, previous),
                 (&scene, &layout),
                 Instant::now(),
+                Some(&self.input),
             );
             self.input.sync_stack_transitions(&self.stack_transitions);
         }
@@ -1092,7 +1101,9 @@ impl<C: Component> Application<C> {
         if let Some((base, offsets)) = elastic_input
             && offsets != self.input.overscroll_frame()
         {
-            let state = self.state.as_mut().unwrap();
+            let Some(state) = self.state.as_mut() else {
+                return false;
+            };
             (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
                 state
                     .renderer
@@ -1789,7 +1800,9 @@ impl<C: Component> Application<C> {
                 || node.children.iter().any(accepts_files)
         }
         if accepts_files(&self.scene) {
-            let events = self.events.as_ref().expect("window events").clone();
+            let Some(events) = self.events.clone() else {
+                return;
+            };
             match file_drop::FileDropBridge::new(&state.window, events) {
                 Ok(bridge) => state.file_drop = Some(bridge),
                 Err(error) => self.fail(error),
@@ -3278,6 +3291,7 @@ impl<C: Component> Application<C> {
             || !is_synthetic && self.shortcut_key(event)
             || self.menu_key(event)
             || self.choice_key(event)
+            || self.tab_close_key(event)
             || !is_synthetic && self.list_typeahead_key(event)
             || self.table_edit_key(event)
             || self.selection_key(event)
@@ -3330,6 +3344,29 @@ impl<C: Component> Application<C> {
             }
             self.activate(target);
         }
+        true
+    }
+
+    fn tab_close_key(&mut self, event: &KeyEvent) -> bool {
+        let modifiers = self.input_modifiers();
+        if event.state != ElementState::Pressed
+            || event.repeat
+            || event.logical_key != Key::Named(NamedKey::Delete)
+            || modifiers.shift
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.meta
+        {
+            return false;
+        }
+        let Some(action) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| self.input.focused_tab_close(&self.scene, layout))
+        else {
+            return false;
+        };
+        self.apply_control(action);
         true
     }
 
@@ -3780,9 +3817,17 @@ impl<C: Component> Application<C> {
             }
         };
         let overscroll = self.input.overscroll_frame();
+        let additive = kind == ScrollGestureKind::MouseControl
+            && (self.modifiers.control_key() || self.modifiers.super_key());
         if self.layout.as_ref().is_some_and(|layout| {
-            self.input
-                .begin_scroll_gesture(&self.scene, layout, point, now, kind)
+            self.input.begin_scroll_gesture_with_selection(
+                &self.scene,
+                layout,
+                point,
+                now,
+                kind,
+                additive,
+            )
         }) {
             self.scroll_contact = Some(contact);
             self.pending_clipboard = None;
@@ -3881,7 +3926,7 @@ impl<C: Component> Application<C> {
 
     fn move_direct_scroll(&mut self, point: Point, now: Instant) -> bool {
         let was_claimed = self.input.mouse_viewport_pan_claimed();
-        let was_dragging_table = self.input.touch_table_drag_claimed();
+        let was_dragging_table = self.input.scroll_table_drag_claimed();
         let moved = self.layout.as_ref().is_some_and(|layout| {
             self.input
                 .move_scroll_gesture(&self.scene, layout, point, now)
@@ -3889,7 +3934,7 @@ impl<C: Component> Application<C> {
         let claimed = self.input.mouse_viewport_pan_claimed();
         if self.input.has_pending_swipe_events() {
             self.refresh_after_update(false);
-        } else if moved && self.input.touch_table_drag_claimed() {
+        } else if moved && self.input.scroll_table_drag_claimed() {
             if !was_dragging_table {
                 self.update_editor();
             } else if let Some(state) = &self.state {
@@ -3997,7 +4042,7 @@ impl<C: Component> Application<C> {
             || self.input.has_switch_preview()
             || self.input.has_swipe_preview()
             || self.input.has_overscroll();
-        let table_drag = self.input.cancel_table_touch_drag();
+        let table_drag = self.input.cancel_scroll_table_drag();
         self.input.cancel_scroll_gesture();
         if self.input.has_pending_swipe_events() {
             self.refresh_after_update(false);
@@ -4424,7 +4469,7 @@ impl<C: Component> Application<C> {
         }
     }
 
-    fn tick_table_touch_hold(&mut self, now: Instant) {
+    fn tick_table_hold(&mut self, now: Instant) {
         if self.layout.as_ref().is_some_and(|layout| {
             self.input
                 .advance_table_touch_hold(&self.scene, layout, now)
@@ -4525,7 +4570,7 @@ impl<C: Component> Application<C> {
         }
         let now = Instant::now();
         self.tick_button_holds(now);
-        self.tick_table_touch_hold(now);
+        self.tick_table_hold(now);
         self.tick_pointer_hold(now);
         let animating = self.transition.running(Duration::ZERO);
         let elapsed = self.transition_epoch.elapsed();
@@ -4597,7 +4642,7 @@ impl<C: Component> Application<C> {
         let layout = self
             .layout
             .as_ref()
-            .expect("layout prepared for the window");
+            .ok_or("layout was not prepared for the window")?;
         let pointer_changed = self.input.sync_stack_transitions(&self.stack_transitions);
         if pointer_changed {
             self.input.reconcile(&self.scene, layout);
@@ -4762,7 +4807,7 @@ impl<C: Component> HostedWindow for Application<C> {
         let adapter = self
             .events
             .as_ref()
-            .expect("window events")
+            .ok_or("window events are unavailable")?
             .accessibility(event_loop, &window);
         let mut state = WindowState::new(window, adapter, graphics, owner)?;
         let id = state.window.id();
@@ -4836,7 +4881,7 @@ impl<C: Component> HostedWindow for Application<C> {
             delivery.apply(&mut self.component, &self.scene);
             self.refresh_after_update(true);
         }
-        self.tick_table_touch_hold(now);
+        self.tick_table_hold(now);
         self.tick_pointer_hold(now);
         self.tick_timers(now);
         self.tick_image_playback(now);
@@ -5042,7 +5087,9 @@ impl<C: Component> Application<C> {
                 if matches!(change, WindowEvent::ScaleFactorChanged { .. }) {
                     self.cancel_scale_rotate();
                 }
-                if let Err(error) = self.state.as_mut().unwrap().resize() {
+                if let Some(state) = self.state.as_mut()
+                    && let Err(error) = state.resize()
+                {
                     self.fail(error);
                     return;
                 }
@@ -5085,7 +5132,9 @@ impl<C: Component> Application<C> {
                 {
                     return;
                 }
-                let state = self.state.as_ref().unwrap();
+                let Some(state) = self.state.as_ref() else {
+                    return;
+                };
                 let p = position.to_logical::<f32>(state.window.scale_factor());
                 let point = Point { x: p.x, y: p.y };
                 if let Some(layout) = &self.layout
@@ -5115,7 +5164,9 @@ impl<C: Component> Application<C> {
                 if self.move_drag(point) {
                     return;
                 }
-                let state = self.state.as_ref().unwrap();
+                let Some(state) = self.state.as_ref() else {
+                    return;
+                };
                 if let Some(layout) = &self.layout {
                     let before_resize = self.window_resize_cursor();
                     let changed = self.input.pointer_move(&self.scene, layout, point);
@@ -5165,7 +5216,9 @@ impl<C: Component> Application<C> {
                     .as_ref()
                     .is_some_and(|layout| self.input.table_column_move_drag(layout, Instant::now()))
                 {
-                    self.state.as_ref().unwrap().window.request_redraw();
+                    if let Some(state) = &self.state {
+                        state.window.request_redraw();
+                    }
                     return;
                 }
                 if self.input.pressed.is_some()
@@ -5186,7 +5239,9 @@ impl<C: Component> Application<C> {
                 {
                     self.adjust_range(input);
                 } else if self.input.has_slider_preview() {
-                    self.state.as_ref().unwrap().window.request_redraw();
+                    if let Some(state) = &self.state {
+                        state.window.request_redraw();
+                    }
                 }
             }
             WindowEvent::CursorLeft { .. } => {
@@ -5196,7 +5251,9 @@ impl<C: Component> Application<C> {
                 self.last_button_click = None;
                 self.cancel_drag();
                 self.input.pointer_leave();
-                self.state.as_ref().unwrap().window.request_redraw();
+                if let Some(state) = &self.state {
+                    state.window.request_redraw();
+                }
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 if matches!(self.scroll_contact, Some(ScrollContact::Touch(..))) {
@@ -5210,7 +5267,10 @@ impl<C: Component> Application<C> {
                     self.update_editor();
                 }
                 self.dismiss_tooltip();
-                let scale = self.state.as_ref().unwrap().window.scale_factor();
+                let Some(state) = self.state.as_ref() else {
+                    return;
+                };
+                let scale = state.window.scale_factor();
                 let (delta, lines) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
                         Point {
@@ -5435,13 +5495,17 @@ impl<C: Component> Application<C> {
                 if let Some(editor) = &mut self.input.editor {
                     editor.set_preedit(String::new(), None);
                 }
-                self.state.as_ref().unwrap().window.request_redraw();
+                if let Some(state) = &self.state {
+                    state.window.request_redraw();
+                }
             }
             WindowEvent::Focused(focused) => {
                 self.focus_active = focused;
                 if !focused {
                     self.cancel_scale_rotate();
-                    self.state.as_mut().unwrap().finish_client_resize();
+                    if let Some(state) = &mut self.state {
+                        state.finish_client_resize();
+                    }
                     self.cancel_drag();
                     self.input.cancel_shortcut_sequence();
                     self.input.set_painted_combo_completion(None);
@@ -5463,14 +5527,18 @@ impl<C: Component> Application<C> {
             WindowEvent::Occluded(occluded) => {
                 if occluded {
                     self.cancel_scale_rotate();
-                    self.state.as_mut().unwrap().finish_client_resize();
+                    if let Some(state) = &mut self.state {
+                        state.finish_client_resize();
+                    }
                     self.input.cancel_window_move();
                     self.cancel_drag();
                     self.input.set_painted_combo_completion(None);
                     self.cancel_direct_scroll();
                     self.input.finish_scroll_bar();
                 } else {
-                    self.state.as_ref().unwrap().window.request_redraw();
+                    if let Some(state) = &self.state {
+                        state.window.request_redraw();
+                    }
                 }
             }
             _ => {}

@@ -335,6 +335,15 @@ impl PreviewScene {
             }
         }
         let modifiers = event.modifiers;
+        if event.key == "Delete"
+            && !event.repeat
+            && !(modifiers.shift || modifiers.control || modifiers.alt || modifiers.meta)
+            && let Some((scene, layout)) = &self.frame
+            && let Some(ControlInput { path, action }) = self.input.focused_tab_close(scene, layout)
+        {
+            self.component.control_at(scene, &path, action);
+            return true;
+        }
         if self.range_key(&event.key, true) || self.spin_key(&event.key) {
             return true;
         }
@@ -1227,7 +1236,11 @@ impl PreviewScene {
             if pan {
                 captured = self.begin_pan(point);
             } else if contact.event.button == PointerButton::Primary {
-                captured = self.begin_pointer_for_device(point, contact.event.is_touch);
+                captured = self.begin_pointer_for_device(
+                    point,
+                    contact.event.is_touch,
+                    contact.event.modifiers.control || contact.event.modifiers.meta,
+                );
                 if contact.event.is_touch
                     && self.pointer_capture.is_none()
                     && let Some((scene, layout)) = &self.frame
@@ -1408,7 +1421,7 @@ impl PreviewScene {
         {
             self.pointer_capture = None;
             if canceled {
-                self.input.cancel_table_touch_drag();
+                self.input.cancel_scroll_table_drag();
                 self.input.cancel_scroll_gesture();
                 false
             } else {
@@ -1555,7 +1568,9 @@ impl PreviewScene {
         {
             return false;
         }
-        let drag = self.drag_contact.take().expect("matched drag contact");
+        let Some(drag) = self.drag_contact.take() else {
+            return false;
+        };
         let Some((scene, layout)) = &self.frame else {
             return drag.captured;
         };
@@ -1634,10 +1649,10 @@ impl PreviewScene {
     }
 
     pub fn begin_pointer(&mut self, point: Point) -> bool {
-        self.begin_pointer_for_device(point, false)
+        self.begin_pointer_for_device(point, false, false)
     }
 
-    fn begin_pointer_for_device(&mut self, point: Point, touch: bool) -> bool {
+    fn begin_pointer_for_device(&mut self, point: Point, touch: bool, additive: bool) -> bool {
         let cancelled = self.cancel_pointer_captures()
             | self.cancel_delay_key()
             | self.input.cancel_text_composition(None);
@@ -1685,12 +1700,13 @@ impl PreviewScene {
             }
             return true;
         }
-        if self.input.begin_scroll_gesture(
+        if self.input.begin_scroll_gesture_with_selection(
             scene,
             layout,
             point,
             Instant::now(),
             ScrollGestureKind::MouseControl,
+            additive,
         ) {
             self.pointer_capture = Some(PointerCapture::ScrollGesture);
             return true;
@@ -2038,7 +2054,7 @@ impl PreviewScene {
         match self.pointer_capture.take() {
             Some(PointerCapture::Split) => self.finish_split_drag(),
             Some(PointerCapture::ScrollGesture) => {
-                self.input.cancel_table_touch_drag();
+                self.input.cancel_scroll_table_drag();
                 self.input.cancel_scroll_gesture();
                 true
             }
@@ -2904,14 +2920,17 @@ impl PreviewScene {
         self.renderer_needs_redraw = false;
         self.dimensions = (width, height);
         self.frame = Some((scene, layout));
-        if self.flush_pointer_carets(renderer) {
-            let (scene, _) = self.frame.as_ref().unwrap();
+        if self.flush_pointer_carets(renderer)
+            && let Some((scene, _)) = &self.frame
+        {
             self.focus_observers.sync_text_editor(&self.input, scene);
             if self.component.scene_dirty() {
                 self.refresh_input_frame(renderer);
             }
         }
-        let (scene, layout) = self.frame.as_ref().unwrap();
+        let Some((scene, layout)) = &self.frame else {
+            return;
+        };
         self.ime_area = renderer
             .text
             .editor_ime_area(
@@ -2951,10 +2970,11 @@ impl PreviewScene {
             let now = Instant::now();
             self.stack_transitions.advance(now);
             if let Some((previous_scene, previous_layout)) = &self.frame {
-                self.stack_transitions.update(
+                self.stack_transitions.update_with_input(
                     (previous_scene, previous_layout),
                     (scene, layout),
                     now,
+                    Some(&self.input),
                 );
             }
         } else {

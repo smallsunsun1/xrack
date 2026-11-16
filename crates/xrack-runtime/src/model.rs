@@ -75,6 +75,10 @@ impl<T> Clone for VecModel<T> {
 }
 
 impl<T> From<Vec<T>> for VecModel<T> {
+    #[expect(
+        clippy::expect_used,
+        reason = "model IDs must stay unique even if the counter reaches its limit"
+    )]
     fn from(rows: Vec<T>) -> Self {
         let id = NEXT_MODEL
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -124,6 +128,10 @@ impl<T> VecModel<T> {
         Rc::strong_count(&self.0) > 1
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "a new row must never reuse a row identity"
+    )]
     fn entry(&self, value: T) -> Entry<T> {
         let id = self.0.next_row.get();
         self.0
@@ -441,6 +449,10 @@ impl<T> VecModel<T> {
         {
             let mut rows = self.0.rows.borrow_mut();
             let mut source: Vec<_> = rows.drain(first_changed..).map(Some).collect();
+            #[expect(
+                clippy::expect_used,
+                reason = "the sort permutation contains each existing row index exactly once"
+            )]
             rows.extend(order.into_iter().skip(first_changed).map(|index| {
                 source[index - first_changed]
                     .take()

@@ -53,6 +53,7 @@ from ._native import (
     ScrollAlignment,
     ScrollBarPolicy,
     ScrollSnapMode,
+    SelectionGesture,
     SelectionTarget,
     StandardButtonKind,
     StringModel,
@@ -119,6 +120,7 @@ __all__ = [
     "ScrollAlignment",
     "ScrollBarPolicy",
     "ScrollSnapMode",
+    "SelectionGesture",
     "SelectionTarget",
     "StandardButtonKind",
     "StringModel",
@@ -190,6 +192,7 @@ Value: TypeAlias = (
     | ScrollAlignment
     | ScrollBarPolicy
     | ScrollSnapMode
+    | SelectionGesture
     | SelectionTarget
     | StandardButtonKind
     | StringModel

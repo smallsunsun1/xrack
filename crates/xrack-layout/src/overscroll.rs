@@ -293,11 +293,8 @@ impl Overscroll {
             };
             if let Some(options) = layout.and_then(|item| current(item, lane, axis)) {
                 lane.options.move_contents = options.move_contents;
-            } else {
-                slot.take()
-                    .unwrap()
-                    .owner
-                    .publish_overshoot(axis, 0.0, false);
+            } else if let Some(lane) = slot.take() {
+                lane.owner.publish_overshoot(axis, 0.0, false);
                 changed = true;
             }
         }

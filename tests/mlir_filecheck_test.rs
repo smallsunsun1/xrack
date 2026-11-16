@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Run LLVM FileCheck over optimized XR dialect IR.
 use runfiles::Runfiles;
 use std::{

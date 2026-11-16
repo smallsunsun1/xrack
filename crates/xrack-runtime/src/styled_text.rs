@@ -136,7 +136,7 @@ impl StyledText {
                     }
                 }
                 Event::End(tag) => {
-                    style = stack.pop().expect("balanced Markdown events");
+                    style = stack.pop().unwrap_or_default();
                     if tag == TagEnd::Link {
                         builder.end_link();
                     }
@@ -269,8 +269,10 @@ impl Markdown {
             }
             if let Some(link) = links.peek().filter(|link| link.start <= start) {
                 let end = start + grapheme.len();
-                if last_link_start == Some(link.start) {
-                    normalized_links.last_mut().unwrap().end = end;
+                if last_link_start == Some(link.start)
+                    && let Some(previous) = normalized_links.last_mut()
+                {
+                    previous.end = end;
                 } else {
                     normalized_links.push(StyledLink {
                         start,

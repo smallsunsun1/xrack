@@ -176,8 +176,10 @@ impl TextHistory {
         self.group = Some((group, now));
         self.redo.clear();
         let mut bytes: usize = self.undo.iter().map(Record::bytes).sum();
-        while self.undo.len() > EDIT_GROUPS || bytes > EDIT_BYTES {
-            bytes -= self.undo.pop_front().unwrap().bytes();
+        while (self.undo.len() > EDIT_GROUPS || bytes > EDIT_BYTES)
+            && let Some(oldest) = self.undo.pop_front()
+        {
+            bytes -= oldest.bytes();
         }
     }
 
@@ -201,9 +203,15 @@ impl TextHistory {
 
     pub(crate) fn commit_replay(&mut self, text: String, redo: bool) {
         if redo {
-            self.undo.push_back(self.redo.pop().unwrap());
+            let Some(record) = self.redo.pop() else {
+                return;
+            };
+            self.undo.push_back(record);
         } else {
-            self.redo.push(self.undo.pop_back().unwrap());
+            let Some(record) = self.undo.pop_back() else {
+                return;
+            };
+            self.redo.push(record);
         }
         self.expected = text;
         self.group = None;
@@ -221,6 +229,10 @@ impl EditHistories {
             .map(|(_, history)| history)
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the deque is appended immediately before returning the new last value"
+    )]
     pub(crate) fn entry(&mut self, key: EditorKey) -> &mut TextHistory {
         let old = self
             .0
@@ -232,7 +244,7 @@ impl EditHistories {
         }
         self.0
             .push_back(old.unwrap_or_else(|| (key, TextHistory::default())));
-        &mut self.0.back_mut().unwrap().1
+        &mut self.0.back_mut().expect("inserted editor history").1
     }
 
     pub(crate) fn get_mut(&mut self, key: &EditorKey) -> Option<&mut TextHistory> {

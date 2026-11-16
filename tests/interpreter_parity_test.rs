@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 mod interpreter_examples;
 #[allow(dead_code)]
 mod ui_driver;
@@ -22491,6 +22493,540 @@ fn model_tabs_keep_editor_state_and_track_headers_selection_and_count() {
 }
 
 #[test]
+fn tab_close_requests_preserve_background_focus_and_reject_stale_input() {
+    use navigation_ui::ModelTabsDemo;
+    use xrack_layout::{Interaction, Point, Size};
+    use xrack_runtime::group_index;
+
+    fn exercise(ui: &mut impl Component) {
+        let size = Size::new(560.0, 334.0);
+        let mut input = Interaction::default();
+        let (scene, _) = prepare_list(ui, &input, size);
+        assert!(ui.dispatch_at(&scene, &[0, 1, 0, 1], "clicked"));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let draft = input
+            .accessibility_target(&scene, &layout, &[0, 1, 0, 1])
+            .unwrap();
+        input.focus_target(&scene, &layout, draft);
+        assert!(layout.at_path(&[0, 0]).unwrap().tab_close.is_none());
+        let close = layout.at_path(&[0, 2]).unwrap().tab_close.unwrap();
+        let at = Point {
+            x: close.x + close.width / 2.0,
+            y: close.y + close.height / 2.0,
+        };
+        input.pointer_move(&scene, &layout, at);
+        assert!(input.tab_close_hovered(&[0, 2]));
+        input.pointer_press_in_scene(&scene, &layout);
+        let target = input.pointer_release_target().unwrap();
+        assert!(input.is_focused(&[0, 1, 0, 1]));
+        let request = input.select_group_option(&scene, &layout, &target).unwrap();
+        assert!(ui.control_at(&scene, &request.path, request.action));
+        assert!(!ui.control_at(&scene, &request.path, request.action));
+        let (after, layout) = prepare_list(ui, &input, size);
+        input.reconcile(&after, &layout);
+        assert_eq!(group_index(&after.children[0]), Some(1));
+        assert_eq!(after.children[0].children.len(), 2);
+        assert!(input.is_focused(&[0, 1, 0, 1]));
+        assert_eq!(
+            after.find("editor-title").unwrap().text("text"),
+            Some("草稿 · 编辑 1 次")
+        );
+    }
+
+    let mut actual = interpret_navigation_fixture("ModelTabsDemo");
+    let mut expected = ModelTabsDemo::new();
+    exercise(&mut actual);
+    exercise(&mut expected);
+    assert_eq!(actual.get("last-close"), Ok("notes".to_owned().into()));
+    assert_eq!(expected.get_last_close(), "notes");
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn stack_layout_regular_items_keep_state_and_route_only_the_current_page() {
+    use navigation_ui::StackLayoutDemo;
+    use xrack_layout::{Interaction, Size};
+    let mut actual = interpret_navigation_fixture("StackLayoutDemo");
+    let mut generated = StackLayoutDemo::new();
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        let first = ui.render();
+        assert!(ui.dispatch_at(&first, &[2, 0, 1], "clicked"));
+        assert!(!ui.dispatch_at(&first, &[2, 1, 0, 1], "clicked"));
+        assert!(ui.dispatch("advanced-page", "clicked"));
+        assert!(!ui.dispatch_at(&first, &[2, 0, 1], "clicked"));
+        let second = ui.render();
+        assert!(ui.dispatch_at(&second, &[2, 1, 0, 1], "clicked"));
+        assert!(ui.dispatch("ordinary", "clicked"));
+        let scene = ui.render();
+        let frame = xrack_layout::layout(&scene, Size::new(520.0, 244.0), &mut FixedText);
+        let input = Interaction::default();
+        assert!(
+            input
+                .accessibility_target(&scene, &frame, &[2, 0, 1])
+                .is_some()
+        );
+        assert!(
+            input
+                .accessibility_target(&scene, &frame, &[2, 1, 0, 1])
+                .is_none()
+        );
+        assert_eq!(
+            scene.at_path(&[2, 0, 0]).unwrap().text("text"),
+            Some("常规设置 · 编辑 1 次")
+        );
+    }
+    actual.set("page", 9_i64.into()).unwrap();
+    generated.set_page(9);
+    assert_eq!(actual.get("active-index"), Ok((-1_i64).into()));
+    assert_eq!(generated.get_active_index(), -1);
+    assert_eq!(actual.get("page-count"), Ok(2_i64.into()));
+    assert_eq!(generated.get_page_count(), 2);
+    assert_eq!(actual.get("advanced-active"), Ok(false.into()));
+    assert!(!generated.get_advanced_active());
+    assert_eq!(actual.take_error(), None);
+}
+
+fn navigation_fixture_shortcut(
+    ui: &mut dyn Component,
+    input: &mut xrack_layout::Interaction,
+    scene: &Node,
+    frame: &xrack_layout::LayoutNode,
+    sequence: &str,
+) {
+    let xrack_layout::ShortcutOutcome::Activate(event) = input.shortcut_press(
+        scene,
+        frame,
+        sequence.parse().unwrap(),
+        false,
+        std::time::Instant::now(),
+    ) else {
+        panic!("the {sequence} shortcut should be active");
+    };
+    assert!(ui.control_at(scene, &event.path, event.action));
+}
+
+#[test]
+fn stack_layout_remembers_each_page_focus_without_stealing_external_focus() {
+    use navigation_ui::StackLayoutDemo;
+    use xrack_layout::{Interaction, Point, Size};
+
+    let mut actual = interpret_navigation_fixture("StackLayoutDemo");
+    let mut generated = StackLayoutDemo::new();
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        let mut input = Interaction::default();
+        let size = Size::new(520.0, 244.0);
+        let prepare = |ui: &dyn Component, input: &mut Interaction| {
+            let scene = ui.render();
+            let frame = xrack_layout::layout_with_input(&scene, size, &mut FixedText, input);
+            input.reconcile(&scene, &frame);
+            (scene, frame)
+        };
+        let (scene, frame) = prepare(ui, &mut input);
+        let details = input
+            .accessibility_target(&scene, &frame, &[2, 0, 2])
+            .unwrap();
+        input.focus_target(&scene, &frame, details);
+
+        navigation_fixture_shortcut(ui, &mut input, &scene, &frame, "F6");
+        let (scene, frame) = prepare(ui, &mut input);
+        assert!(input.is_focused(&[2, 1, 0, 1]));
+        assert!(
+            input
+                .accessibility_target(&scene, &frame, &[2, 0, 2])
+                .is_none()
+        );
+        let details = input
+            .accessibility_target(&scene, &frame, &[2, 1, 0, 2])
+            .unwrap();
+        input.focus_target(&scene, &frame, details);
+
+        navigation_fixture_shortcut(ui, &mut input, &scene, &frame, "F6");
+        let (scene, frame) = prepare(ui, &mut input);
+        assert!(input.is_focused(&[2, 0, 2]));
+
+        navigation_fixture_shortcut(ui, &mut input, &scene, &frame, "F6");
+        let (scene, frame) = prepare(ui, &mut input);
+        assert!(input.is_focused(&[2, 1, 0, 2]));
+
+        input.pointer_move(&scene, &frame, Point { x: 25.0, y: 22.0 });
+        input.pointer_press_in_scene(&scene, &frame);
+        let ordinary = input.pointer_release_target().unwrap();
+        assert_eq!(ordinary.element_id(), Some("ordinary"));
+        assert!(ui.dispatch_at(&scene, &ordinary.path, "clicked"));
+        prepare(ui, &mut input);
+        assert!(input.is_focused(&[0]));
+    }
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn swipe_pages_restore_focus_on_keyboard_touch_and_model_move() {
+    use navigation_ui::ModelSwipeDemo;
+    use std::time::{Duration, Instant};
+    use xrack_layout::{
+        Interaction, NavigationKey, Point, ScrollGestureKind, Size, StackTransitions,
+    };
+
+    fn exercise(ui: &mut impl Component) {
+        let mut input = Interaction::default();
+        let size = Size::new(520.0, 286.0);
+        let (scene, frame) = prepare_list(ui, &input, size);
+        let draft = scene.row_key_at(&[1, 1]).unwrap();
+        let details = input
+            .accessibility_target(&scene, &frame, &[1, 1, 0, 2])
+            .unwrap();
+        input.focus_target(&scene, &frame, details);
+
+        let next = input
+            .swipe_key(&scene, &frame, NavigationKey::Right)
+            .unwrap();
+        assert!(ui.control_at(&scene, &next.path, next.action));
+        let (notes_scene, notes_frame) = prepare_list(ui, &input, size);
+        let mut transitions = StackTransitions::default();
+        let start = Instant::now();
+        transitions.update((&scene, &frame), (&notes_scene, &notes_frame), start);
+        assert_eq!(transitions.at(&[1]).unwrap().incoming_offset(), 1.0);
+        assert_eq!(
+            notes_scene
+                .at_path(&[1])
+                .unwrap()
+                .int("transition-duration"),
+            Some(180)
+        );
+        assert!(notes_scene.at_path(&[1, 1]).unwrap().children.is_empty());
+        assert!(scene.at_path(&[1, 2]).unwrap().children.is_empty());
+        transitions.advance(start + Duration::from_millis(180));
+        assert!(!transitions.is_active());
+        let (scene, frame) = (notes_scene, notes_frame);
+        input.reconcile(&scene, &frame);
+        assert!(input.is_focused(&[1, 2, 0, 1]));
+        let details = input
+            .accessibility_target(&scene, &frame, &[1, 2, 0, 2])
+            .unwrap();
+        input.focus_target(&scene, &frame, details);
+
+        let start = Point { x: 100.0, y: 170.0 };
+        let end = Point { x: 390.0, y: 170.0 };
+        let now = Instant::now();
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        let previous =
+            input.end_scroll_gesture(&scene, &frame, end, now + Duration::from_millis(75));
+        assert!(!previous.tap);
+        let previous = previous.control.unwrap();
+        assert!(ui.control_at(&scene, &previous.path, previous.action));
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert!(input.is_focused(&[1, 1, 0, 2]));
+
+        let next = input
+            .swipe_key(&scene, &frame, NavigationKey::Right)
+            .unwrap();
+        assert!(ui.control_at(&scene, &next.path, next.action));
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert!(input.is_focused(&[1, 2, 0, 2]));
+        navigation_fixture_shortcut(ui, &mut input, &scene, &frame, "F7");
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        let first = input
+            .swipe_key(&scene, &frame, NavigationKey::Home)
+            .unwrap();
+        assert!(ui.control_at(&scene, &first.path, first.action));
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert_eq!(scene.row_key_at(&[1, 0]), Some(draft));
+        assert!(input.is_focused(&[1, 0, 0, 2]));
+
+        navigation_fixture_shortcut(ui, &mut input, &scene, &frame, "F7");
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert_eq!(scene.row_key_at(&[1, 1]), Some(draft));
+        assert!(input.is_focused(&[1, 1, 0, 2]));
+    }
+
+    let mut actual = interpret_navigation_fixture("ModelSwipeDemo");
+    exercise(&mut actual);
+    exercise(&mut ModelSwipeDemo::new());
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn swipe_drag_prepares_only_the_requested_neighbor_and_commits_from_the_drag_position() {
+    use navigation_ui::ModelSwipeDemo;
+    use std::time::{Duration, Instant};
+    use xrack_layout::{Interaction, Point, ScrollGestureKind, Size, StackTransitions};
+    use xrack_runtime::{ControlAction, group_index};
+
+    fn exercise(ui: &mut impl Component) {
+        let size = Size::new(520.0, 286.0);
+        let mut input = Interaction::default();
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        let details = input
+            .accessibility_target(&scene, &frame, &[1, 1, 0, 2])
+            .unwrap();
+        input.focus_target(&scene, &frame, details);
+        let view = scene.at_path(&[1]).unwrap();
+        assert!(view.swipe_preview.as_ref().unwrap().page.is_none());
+
+        let start = Point { x: 430.0, y: 169.0 };
+        let short = Point { x: 386.0, y: 169.0 };
+        let now = Instant::now();
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        assert!(input.move_scroll_gesture(&scene, &frame, short, now + Duration::from_millis(18)));
+        let (dragged, drag_frame) = prepare_list(ui, &input, size);
+        let view = dragged.at_path(&[1]).unwrap();
+        let (slot, prepared) = view.swipe_preview.as_ref().unwrap().page.as_ref().unwrap();
+        assert_eq!(*slot, 2);
+        assert_eq!(group_index(view), Some(1));
+        assert!(prepared.find("details").is_some());
+        assert!(view.children[0].children.is_empty());
+        assert!(view.children[2].children.is_empty());
+        assert!(drag_frame.at_path(&[1]).unwrap().swipe_preview.is_some());
+        assert!(
+            input
+                .accessibility_target(&dragged, &drag_frame, &[1, 2, 0, 2])
+                .is_none()
+        );
+        assert!(!ui.dispatch_at(&dragged, &[1, 2, 0, 1], "clicked"));
+        assert!(input.is_focused(&[1, 1, 0, 2]));
+
+        let released = now + Duration::from_millis(45);
+        let release = input.end_scroll_gesture(&dragged, &drag_frame, short, released);
+        assert!(release.control.is_none() && !release.tap);
+        assert!(input.scroll_motion_deadline().is_some());
+        input.advance_scroll_motion(&dragged, &drag_frame, released + Duration::from_millis(181));
+        let (scene, frame) = prepare_list(ui, &input, size);
+        assert!(
+            scene
+                .at_path(&[1])
+                .unwrap()
+                .swipe_preview
+                .as_ref()
+                .unwrap()
+                .page
+                .is_none()
+        );
+        assert_eq!(group_index(scene.at_path(&[1]).unwrap()), Some(1));
+        assert!(input.is_focused(&[1, 1, 0, 2]));
+
+        let now = released + Duration::from_millis(240);
+        let halfway = Point {
+            x: start.x - 244.0,
+            y: start.y,
+        };
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        assert!(input.move_scroll_gesture(
+            &scene,
+            &frame,
+            halfway,
+            now + Duration::from_millis(18)
+        ));
+        let (dragged, drag_frame) = prepare_list(ui, &input, size);
+        let committed = now + Duration::from_millis(54);
+        let action = input
+            .end_scroll_gesture(&dragged, &drag_frame, halfway, committed)
+            .control
+            .unwrap();
+        assert_eq!(action.action, ControlAction::Select(2));
+        assert!(ui.control_at(&dragged, &action.path, action.action));
+        let (after, layout) = prepare_list(ui, &input, size);
+        input.reconcile(&after, &layout);
+        let mut transitions = StackTransitions::default();
+        transitions.update_with_input(
+            (&dragged, &drag_frame),
+            (&after, &layout),
+            committed,
+            Some(&input),
+        );
+        assert_eq!(transitions.at(&[1]).unwrap().incoming_offset(), 0.5);
+        assert!(input.is_focused(&[1, 2, 0, 1]));
+        assert!(
+            after
+                .at_path(&[1])
+                .unwrap()
+                .swipe_preview
+                .as_ref()
+                .unwrap()
+                .page
+                .is_none()
+        );
+    }
+
+    let mut interpreted = interpret_navigation_fixture("ModelSwipeDemo");
+    let mut aot = ModelSwipeDemo::new();
+    exercise(&mut interpreted);
+    exercise(&mut aot);
+    assert_eq!(interpreted.get("page-changes"), Ok(1_i64.into()));
+    assert_eq!(aot.get_page_changes(), 1);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn tab_widget_keeps_header_focus_and_restores_the_last_tab_stop_on_entry() {
+    use navigation_ui::ModelTabsDemo;
+    use xrack_layout::{Interaction, NavigationKey, Point, Size};
+
+    fn exercise(ui: &mut impl Component) {
+        let mut input = Interaction::default();
+        let size = Size::new(560.0, 334.0);
+        let (scene, frame) = prepare_list(ui, &input, size);
+        let details = input
+            .accessibility_target(&scene, &frame, &[0, 1, 0, 2])
+            .unwrap();
+        input.focus_target(&scene, &frame, details);
+
+        navigation_fixture_shortcut(ui, &mut input, &scene, &frame, "F6");
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert!(input.is_focused(&[0, 2, 0, 1]));
+        let note = input
+            .accessibility_target(&scene, &frame, &[0, 2, 0, 2])
+            .unwrap();
+        input.focus_target(&scene, &frame, note);
+        navigation_fixture_shortcut(ui, &mut input, &scene, &frame, "F6");
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert!(input.is_focused(&[0, 1, 0, 2]));
+
+        let notes = frame.at_path(&[0, 2]).unwrap().tab_header.unwrap();
+        input.pointer_move(
+            &scene,
+            &frame,
+            Point {
+                x: notes.x + notes.width * 0.5,
+                y: notes.y + notes.height * 0.5,
+            },
+        );
+        input.pointer_press_in_scene(&scene, &frame);
+        let header = input.pointer_release_target().unwrap();
+        let select = input.select_group_option(&scene, &frame, &header).unwrap();
+        assert!(ui.control_at(&scene, &select.path, select.action));
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert!(input.is_focused(&[0, 2]));
+        let previous = input
+            .group_key(&scene, &frame, NavigationKey::Left)
+            .unwrap();
+        assert!(ui.control_at(&scene, &previous.path, previous.action));
+        let (scene, frame) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert!(input.is_focused(&[0, 1]));
+
+        input.focus_next(&scene, &frame, false);
+        assert!(input.is_focused(&[0, 1, 0, 2]));
+        input.focus_next(&scene, &frame, true);
+        assert!(input.is_focused(&[0, 1, 0, 1]));
+    }
+
+    let mut actual = interpret_navigation_fixture("ModelTabsDemo");
+    exercise(&mut actual);
+    exercise(&mut ModelTabsDemo::new());
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn keyed_stack_layout_mounts_one_page_and_preserves_its_row_on_reorder() {
+    use navigation_ui::ModelStackLayoutDemo;
+    use xrack_layout::{Interaction, Size};
+    let mut actual = interpret_navigation_fixture("ModelStackLayoutDemo");
+    let mut generated = ModelStackLayoutDemo::new();
+    fn exercise(ui: &mut impl Component) {
+        let mut input = Interaction::default();
+        let size = Size::new(520.0, 282.0);
+        let (scene, _) = prepare_list(ui, &input, size);
+        let key = scene.row_key_at(&[1, 1]).unwrap();
+        let editors = |scene: &Node| {
+            scene.children[1]
+                .children
+                .iter()
+                .filter(|row| !row.children.is_empty())
+                .count()
+        };
+        assert_eq!(editors(&scene), 1);
+        assert!(ui.dispatch_at(&scene, &[1, 1, 0, 1], "clicked"));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let target = input
+            .accessibility_target(&scene, &layout, &[1, 1, 0, 2])
+            .unwrap();
+        input.focus_target(&scene, &layout, target);
+        assert!(input.is_focused(&[1, 1, 0, 2]));
+        navigation_fixture_shortcut(ui, &mut input, &scene, &layout, "F6");
+        let (scene, layout) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &layout);
+        assert!(input.is_focused(&[1, 2, 0, 1]));
+
+        navigation_fixture_shortcut(ui, &mut input, &scene, &layout, "F7");
+        let (scene, layout) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &layout);
+        assert!(input.is_focused(&[1, 2, 0, 1]));
+        navigation_fixture_shortcut(ui, &mut input, &scene, &layout, "F6");
+        let (scene, layout) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &layout);
+        assert_eq!(editors(&scene), 1);
+        assert_eq!(scene.row_key_at(&[1, 0]), Some(key));
+        assert!(input.is_focused(&[1, 0, 0, 2]));
+        assert_eq!(
+            scene.find("editor-title").unwrap().text("text"),
+            Some("草稿 · 编辑 1 次")
+        );
+    }
+    exercise(&mut actual);
+    exercise(&mut generated);
+    assert_eq!(actual.get("active-index"), Ok(0_i64.into()));
+    assert_eq!(generated.get_active_index(), 0);
+    assert_eq!(actual.get("selected"), Ok("draft".to_owned().into()));
+    assert_eq!(generated.get_selected(), "draft");
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn static_tab_keyboard_close_checks_live_inheritance_and_reports_the_value() {
+    use navigation_ui::StaticTabCloseFixture;
+    use xrack_layout::{Interaction, Size};
+
+    fn pending(ui: &impl Component) -> (std::rc::Rc<Node>, xrack_layout::ControlInput) {
+        let mut input = Interaction::default();
+        let (scene, layout) = prepare_list(ui, &input, Size::new(360.0, 90.0));
+        assert!(layout.at_path(&[0, 0]).unwrap().tab_close.is_none());
+        let tab = input
+            .accessibility_target(&scene, &layout, &[0, 1])
+            .unwrap();
+        input.focus_target(&scene, &layout, tab);
+        let request = input.focused_tab_close(&scene, &layout).unwrap();
+        (scene, request)
+    }
+
+    let mut actual = interpret_navigation_fixture("StaticTabCloseFixture");
+    let mut generated = StaticTabCloseFixture::new();
+    let (scene, request) = pending(&actual);
+    let (other, expected) = pending(&generated);
+    actual.set("close-enabled", false.into()).unwrap();
+    generated.set_close_enabled(false);
+    assert!(!actual.control_at(&scene, &request.path, request.action));
+    assert!(!generated.control_at(&other, &expected.path, expected.action));
+    actual.set("close-enabled", true.into()).unwrap();
+    generated.set_close_enabled(true);
+    let (scene, request) = pending(&actual);
+    let (other, expected) = pending(&generated);
+    assert!(actual.control_at(&scene, &request.path, request.action));
+    assert!(generated.control_at(&other, &expected.path, expected.action));
+    assert_eq!(actual.get("requested"), Ok(1_i64.into()));
+    assert_eq!(generated.get_requested(), 1);
+    assert_eq!(actual.get("requested-value"), Ok("notes".to_owned().into()));
+    assert_eq!(generated.get_requested_value(), "notes");
+    assert_eq!(
+        xrack_runtime::group_index(&actual.render().children[0]),
+        Some(0)
+    );
+    assert_eq!(
+        xrack_runtime::group_index(&generated.render().children[0]),
+        Some(0)
+    );
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn tab_widget_drag_and_keyboard_reorder_preserve_the_page_and_focus() {
     use navigation_ui::ModelTabsDemo;
     use std::time::{Duration, Instant};
@@ -27870,6 +28406,208 @@ fn table_copy_stops_at_the_first_projection_error_and_can_retry() {
     assert_eq!(actual.copy_table_at(&left, &[0], &columns), expected);
     assert_eq!(generated.copy_table_at(&right, &[0], &columns), expected);
     assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn configurable_table_selection_publishes_active_drag_and_commit_state() {
+    use std::time::{Duration, Instant};
+    use table_ui::SelectionHandlesDemo;
+    use xrack_layout::{Interaction, Point, ScrollGestureKind, Size};
+    use xrack_runtime::{ControlAction, SelectionGesture, TableSelectionAction};
+
+    fn text(ui: &impl Component) -> String {
+        ui.render()
+            .find("gesture-state")
+            .unwrap()
+            .text("text")
+            .unwrap()
+            .to_owned()
+    }
+
+    fn exercise(ui: &mut impl Component, gesture: SelectionGesture) {
+        let mut input = Interaction::default();
+        let (scene, layout) = prepare_list(ui, &input, Size::new(632.0, 350.0));
+        let path = [1];
+        let item = layout.at_path(&path).unwrap();
+        let table = item.table.as_ref().unwrap();
+        let start = Point {
+            x: table.columns[0].x + 32.0,
+            y: item.children[0].bounds.y + 14.0,
+        };
+        let end = Point {
+            x: table.columns[1].x + 32.0,
+            y: item.children[1].bounds.y + 14.0,
+        };
+        let now = Instant::now();
+        let at = |ms| now + Duration::from_millis(ms);
+        let kind = if gesture == SelectionGesture::PressAndHold {
+            ScrollGestureKind::MouseControl
+        } else {
+            ScrollGestureKind::Touch
+        };
+        assert_eq!(text(ui), "尚未框选");
+        assert!(input.begin_scroll_gesture(&scene, &layout, start, now, kind));
+        if gesture == SelectionGesture::PressAndHold {
+            assert_eq!(input.table_touch_hold_deadline(), Some(at(360)));
+            assert!(!input.advance_table_touch_hold(&scene, &layout, at(359)));
+            let tap = input.end_scroll_gesture(&scene, &layout, start, at(359));
+            assert!(tap.tap && tap.control.is_none());
+            assert!(input.begin_scroll_gesture(&scene, &layout, start, now, kind));
+            assert!(input.advance_table_touch_hold(&scene, &layout, at(360)));
+            assert_eq!(text(ui), "正在框选");
+        } else {
+            assert!(input.table_touch_hold_deadline().is_none());
+        }
+        assert!(input.move_scroll_gesture(&scene, &layout, end, at(380)));
+        assert!(input.scroll_table_drag_claimed());
+        assert_eq!(text(ui), "正在框选");
+
+        if gesture == SelectionGesture::Drag {
+            assert!(input.cancel_scroll_table_drag());
+            assert_eq!(text(ui), "尚未框选");
+        } else {
+            let finish = input.end_scroll_gesture(&scene, &layout, end, at(395));
+            let action = finish.control.unwrap();
+            assert!(!finish.tap);
+            assert_eq!(text(ui), "尚未框选");
+            assert!(ui.control_at(&scene, &action.path, action.action));
+            assert_eq!(text(ui), "选区已提交");
+            let fresh = ui.render();
+            assert!(ui.control_at(
+                &fresh,
+                &path,
+                ControlAction::TableSelection(TableSelectionAction::Clear)
+            ));
+            assert_eq!(text(ui), "尚未框选");
+        }
+    }
+
+    for gesture in [SelectionGesture::PressAndHold, SelectionGesture::Drag] {
+        let mut interpreted = interpret_table_fixture("SelectionHandlesDemo");
+        let mut generated = SelectionHandlesDemo::new();
+        interpreted.set("gesture", gesture.into()).unwrap();
+        interpreted.set("hold-ms", 360_i64.into()).unwrap();
+        generated.set_gesture(gesture);
+        generated.set_hold_ms(360);
+        exercise(&mut interpreted, gesture);
+        exercise(&mut generated, gesture);
+        assert_eq!(interpreted.take_error(), None);
+    }
+}
+
+#[test]
+fn custom_table_selection_handles_adjust_the_same_range_in_both_engines() {
+    use std::time::Instant;
+    use table_ui::SelectionHandlesDemo;
+    use xrack_layout::{Interaction, Point, Rect, Size};
+    use xrack_runtime::{ControlAction, TableSelectionAction};
+
+    fn exercise(ui: &mut impl Component, grid: usize) {
+        let path = [grid];
+        let size = Size::new(632.0, 310.0);
+        let mut input = Interaction::default();
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+        input.focus_target(&scene, &layout, target);
+        assert!(ui.control_at(
+            &scene,
+            &path,
+            ControlAction::TableSelection(TableSelectionAction::DragRange {
+                anchor: (0, 0),
+                end: (1, 1),
+                additive: false,
+            }),
+        ));
+
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let node = scene.at_path(&path).unwrap();
+        let table = layout.at_path(&path).unwrap();
+        assert_eq!(
+            node.table_selection_part(0).unwrap().kind,
+            "SelectionStartHandle"
+        );
+        assert_eq!(
+            node.table_selection_part(1).unwrap().kind,
+            "SelectionEndHandle"
+        );
+        assert!(node.children.iter().all(|row| row.kind == "ListRow"));
+        let handles = |input: &Interaction| {
+            input
+                .table_selection_handle_parts(&path, node, table)
+                .collect::<Vec<_>>()
+        };
+        let before = handles(&input);
+        assert_eq!(
+            before
+                .iter()
+                .map(|(side, rect)| (*side, rect.width, rect.height))
+                .collect::<Vec<_>>(),
+            [(0, 12.0, 16.0), (1, 17.0, 14.0)]
+        );
+        let center = |rect: Rect| Point {
+            x: rect.x + rect.width * 0.5,
+            y: rect.y + rect.height * 0.5,
+        };
+        input.pointer_move(&scene, &layout, center(before[1].1));
+        assert!(input.press_table_selection_handle(&scene, &layout));
+        let destination = Point {
+            x: center(before[1].1).x,
+            y: table.children[2].bounds.y + table.children[2].bounds.height * 0.5,
+        };
+        input.pointer_move(&scene, &layout, destination);
+        assert!(input.move_table_drag_selection(&layout, Instant::now()));
+        let draft = handles(&input);
+        assert_eq!(draft[0], before[0]);
+        assert!(draft[1].1.y > before[1].1.y);
+        assert_eq!(
+            node.table_selection.as_ref().unwrap().drag_range(),
+            Some([(0, 0), (1, 1)])
+        );
+        let action = input.finish_table_drag_selection(&scene, &layout).unwrap();
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        let (after, frame) = prepare_list(ui, &input, size);
+        let node = after.at_path(&path).unwrap();
+        assert_eq!(
+            node.table_selection.as_ref().unwrap().drag_range(),
+            Some([(0, 0), (2, 1)])
+        );
+        assert_eq!(
+            input
+                .table_selection_handle_parts(&path, node, frame.at_path(&path).unwrap())
+                .collect::<Vec<_>>(),
+            draft
+        );
+    }
+
+    let mut interpreted = interpret_table_fixture("SelectionHandlesDemo");
+    let mut generated = SelectionHandlesDemo::new();
+    for grid in [1, 2] {
+        exercise(&mut interpreted, grid);
+        exercise(&mut generated, grid);
+    }
+    interpreted.set("show-end", false.into()).unwrap();
+    generated.set_show_end(false);
+    fn check_hidden(ui: &impl Component) {
+        let path = [1];
+        let mut input = Interaction::default();
+        let (scene, layout) = prepare_list(ui, &input, Size::new(632.0, 310.0));
+        let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+        input.focus_target(&scene, &layout, target);
+        assert_eq!(
+            input
+                .table_selection_handle_parts(
+                    &path,
+                    scene.at_path(&path).unwrap(),
+                    layout.at_path(&path).unwrap()
+                )
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>(),
+            [0]
+        );
+    }
+    check_hidden(&interpreted);
+    check_hidden(&generated);
+    assert_eq!(interpreted.take_error(), None);
 }
 
 #[test]

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use xrack_parser::{ast::Diagnostic, parse};
 
 const SYNTAX: &str = include_str!("fixtures/syntax.xr");

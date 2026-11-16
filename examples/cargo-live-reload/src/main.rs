@@ -21,29 +21,26 @@ fn setup(ui: &mut AsyncDemo, runtime: Handle) {
         generation.set(task);
         let ui_thread = thread::current().id();
         let timer = timer_runtime.spawn(async { sleep(Duration::from_millis(500)).await });
-        drop(
-            spawn_local(async move {
-                if let Some(mut ui) = weak.upgrade() {
-                    ui.set_local_status("UI Future 已挂起，界面仍可操作".into());
-                }
-                let result = timer.await;
-                assert_eq!(thread::current().id(), ui_thread);
-                if generation.get() == task
-                    && let Some(mut ui) = weak.upgrade()
-                {
-                    match result {
-                        Ok(()) => {
-                            ui.set_local_status("Tokio 计时结束，UI Future 已在主线程恢复".into());
-                            println!(
-                                "Tokio timer completed, local future resumed on the UI thread"
-                            );
-                        }
-                        Err(error) => ui.set_local_status(format!("Tokio 计时任务结束：{error}")),
+        if let Err(error) = spawn_local(async move {
+            if let Some(mut ui) = weak.upgrade() {
+                ui.set_local_status("UI Future 已挂起，界面仍可操作".into());
+            }
+            let result = timer.await;
+            assert_eq!(thread::current().id(), ui_thread);
+            if generation.get() == task
+                && let Some(mut ui) = weak.upgrade()
+            {
+                match result {
+                    Ok(()) => {
+                        ui.set_local_status("Tokio 计时结束，UI Future 已在主线程恢复".into());
+                        println!("Tokio timer completed, local future resumed on the UI thread");
                     }
+                    Err(error) => ui.set_local_status(format!("Tokio 计时任务结束：{error}")),
                 }
-            })
-            .expect("XRack event loop is active"),
-        );
+            }
+        }) {
+            eprintln!("could not start XRack local task: {error}");
+        }
     });
 
     let weak = ui.as_weak();

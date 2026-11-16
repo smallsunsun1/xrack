@@ -5,6 +5,14 @@ use crate::{
 };
 use xrack_syntax::ast::{Diagnostic, Document};
 
+#[expect(
+    clippy::expect_used,
+    reason = "lowering emits element members between matching BeginElement and EndElement records"
+)]
+fn current_element(elements: &mut [ir::Element]) -> &mut ir::Element {
+    elements.last_mut().expect("active lowered element")
+}
+
 pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
     let doc = crate::declare_handles(doc);
     let doc = doc.as_ref();
@@ -58,64 +66,68 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                     children: vec![],
                 }),
                 LoweredMember::Binding(b) | LoweredMember::InstanceLayout(b) => {
-                    elements.last_mut().unwrap().bindings.push(b)
+                    current_element(&mut elements).bindings.push(b)
                 }
                 LoweredMember::ActionRef { owner, .. } => {
-                    elements.last_mut().unwrap().action = Some(owner)
+                    current_element(&mut elements).action = Some(owner)
                 }
                 LoweredMember::ActionGroupRef { membership, .. } => {
-                    elements.last_mut().unwrap().action_group = Some(membership);
+                    current_element(&mut elements).action_group = Some(membership);
                 }
                 LoweredMember::ScrollTarget { target, .. } => {
-                    elements.last_mut().unwrap().scroll_target = Some(target)
+                    current_element(&mut elements).scroll_target = Some(target)
                 }
                 LoweredMember::SplitFill { target, .. } => {
-                    elements.last_mut().unwrap().split_fill = Some(target);
+                    current_element(&mut elements).split_fill = Some(target);
                 }
                 LoweredMember::RadioGroupRef { group, .. }
                 | LoweredMember::CheckGroupRef { group, .. } => {
-                    elements.last_mut().unwrap().button_group = Some(group)
+                    current_element(&mut elements).button_group = Some(group)
                 }
                 LoweredMember::ControlLink(b)
                 | LoweredMember::InstanceLink(b)
-                | LoweredMember::RowLink(b) => elements.last_mut().unwrap().bindings.push(b),
+                | LoweredMember::RowLink(b) => current_element(&mut elements).bindings.push(b),
                 LoweredMember::Animation(animation) => {
-                    elements.last_mut().unwrap().animations.push(animation)
+                    current_element(&mut elements).animations.push(animation)
                 }
                 LoweredMember::StateSelection(state) => {
-                    elements.last_mut().unwrap().states = Some(state)
+                    current_element(&mut elements).states = Some(state)
                 }
                 LoweredMember::StateBinding(binding) => {
-                    elements.last_mut().unwrap().state_bindings.push(binding)
+                    current_element(&mut elements).state_bindings.push(binding)
                 }
                 LoweredMember::StateTiming(timing) => {
-                    elements.last_mut().unwrap().state_timings.push(timing)
+                    current_element(&mut elements).state_timings.push(timing)
                 }
                 LoweredMember::InitialFocus { target, .. } => {
-                    elements.last_mut().unwrap().initial_focus = Some(target)
+                    current_element(&mut elements).initial_focus = Some(target)
                 }
                 LoweredMember::Condition(value) => {
-                    elements.last_mut().unwrap().bindings.push(ir::Binding {
+                    current_element(&mut elements).bindings.push(ir::Binding {
                         name: "if".into(),
                         span: value.span,
                         value,
                     })
                 }
                 LoweredMember::Repeat { model, .. } => {
-                    elements.last_mut().unwrap().bindings.push(ir::Binding {
+                    current_element(&mut elements).bindings.push(ir::Binding {
                         name: "for".into(),
                         span: model.span,
                         value: model,
                     })
                 }
                 LoweredMember::Handler(h) | LoweredMember::InstanceHandler(h) => {
-                    elements.last_mut().unwrap().handlers.push(h)
+                    current_element(&mut elements).handlers.push(h)
                 }
                 LoweredMember::ClipboardPaste(paste) => {
-                    elements.last_mut().unwrap().clipboard_paste = Some(paste)
+                    current_element(&mut elements).clipboard_paste = Some(paste)
                 }
                 LoweredMember::EndElement => {
-                    let child = elements.pop().unwrap();
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "each EndElement is paired with an earlier BeginElement"
+                    )]
+                    let child = elements.pop().expect("active lowered element");
                     if let Some(parent) = elements.last_mut() {
                         parent.children.push(child);
                     } else {
@@ -124,13 +136,18 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                 }
             }
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "successful component lowering emits one root element"
+        )]
+        let root = root.expect("validated component has a root element");
         components.push(ir::Component {
             name: syntax.name.clone(),
             exported: syntax.exported,
             span: syntax.span,
             properties,
             callbacks,
-            root: root.expect("validated component has a root element"),
+            root,
         });
     })?;
     Ok(ir::Module {

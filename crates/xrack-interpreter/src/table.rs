@@ -539,6 +539,10 @@ impl Instance {
             TableRead::CurrentColumn => snapshot()?.current_column_index().into(),
             TableRead::SelectionCount => snapshot()?.selection_count().into(),
             TableRead::HasSelection => (!snapshot()?.is_empty()).into(),
+            TableRead::SelectionActive => (state.table_state().selection.dragging()
+                || snapshot()?.drag_range().is_some())
+            .into(),
+            TableRead::SelectionDragging => state.table_state().selection.dragging().into(),
         })
     }
 

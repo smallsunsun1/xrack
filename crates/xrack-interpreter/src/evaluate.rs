@@ -53,6 +53,7 @@ pub(crate) struct State {
     combo_popups: BTreeMap<String, xrack_runtime::ComboPopupHandle>,
     range_positions: BTreeMap<String, xrack_runtime::RangePositionHandle>,
     hover: RefCell<BTreeMap<String, xrack_runtime::HoverHandle>>,
+    swipe_previews: RefCell<BTreeMap<String, xrack_runtime::SwipePreviewHandle>>,
     gestures: gesture::Handles,
     pointers: RefCell<BTreeMap<String, xrack_runtime::PointerHandle>>,
     pub(crate) actions: BTreeMap<String, xrack_runtime::ActionKey>,
@@ -337,6 +338,7 @@ impl Program {
                 window,
                 secondary_windows: secondary_window::State::new(&root.secondary_windows),
                 hover: RefCell::default(),
+                swipe_previews: RefCell::default(),
                 gestures: gesture::Handles::default(),
                 pointers: RefCell::default(),
                 split_input: Cell::default(),
@@ -398,7 +400,10 @@ impl Program {
         let mut children = BTreeMap::new();
         stack.push(name.into());
         let sampling_navigation_page = instance.0.row.as_ref().is_some_and(|row| row.sampled)
-            && matches!(root.visual, Visual::Builtin("SwipePage" | "Tab"));
+            && matches!(
+                root.visual,
+                Visual::Builtin("SwipePage" | "Tab" | "StackItem")
+            );
         let result = if sampling_navigation_page {
             Ok(())
         } else {
@@ -3159,6 +3164,21 @@ impl Instance {
         }
         if element.is_list_view() {
             self.render_view(element, &mut node)?;
+            if matches!(node.kind, "TableView" | "StandardTableView")
+                && node.boolean("drag-select", false)
+                && node.boolean("multi-select", false)
+            {
+                for (index, kind) in xrack_syntax::builtins::TABLE_SELECTION_PARTS
+                    .iter()
+                    .enumerate()
+                {
+                    if let Some(part) = element.children.iter().find(
+                        |child| matches!(child.visual, Visual::Builtin(name) if name == *kind),
+                    ) {
+                        node.set_table_selection_part(index, self.render_element(part)?);
+                    }
+                }
+            }
             if include_children
                 && node.list.is_some_and(|list| list.row_count == 0)
                 && let Some(slot) = element.empty_state()
@@ -3252,7 +3272,7 @@ impl Instance {
                 .push(self.render_element_body(page, false, Some(&mut selected))?);
             selections.push(selected);
         }
-        node.mount_active_swipe_page(|index, node| {
+        node.try_mount_swipe_pages(|index, node| {
             let page = &element.children[index];
             let _selection = page
                 .render_selector
@@ -3260,8 +3280,6 @@ impl Instance {
                 .map(|(selector, selected)| self.scoped_selection(selector, selected));
             self.render_children(page, node)
         })
-        .transpose()?;
-        Ok(())
     }
 
     fn render_children(&self, element: &Element, node: &mut Node) -> Result<()> {
@@ -3278,7 +3296,17 @@ impl Instance {
         if matches!(element.visual, Visual::Builtin("RangeSlider")) {
             node.add_range_thumbs();
         }
-        if matches!(node.kind, "SwipeView" | "TabWidget")
+        if node.kind == "SwipeView" {
+            let handle = self
+                .0
+                .swipe_previews
+                .borrow_mut()
+                .entry(element.key.clone())
+                .or_default()
+                .clone();
+            node.enable_swipe_preview(handle);
+        }
+        if matches!(node.kind, "SwipeView" | "TabWidget" | "StackLayout")
             && let Some(page) = element.children.first()
             && let Some(repeat) = &page.repeat
         {
@@ -3287,7 +3315,13 @@ impl Instance {
                 || state.row_model(self, repeat),
                 |model, slot| self.describe_navigation_page(page, repeat, model, slot),
                 |model, active| {
-                    state.render_indices(self, page, model, active.into_iter(), &Default::default())
+                    state.render_indices(
+                        self,
+                        page,
+                        model,
+                        active.into_iter().flatten(),
+                        &Default::default(),
+                    )
                 },
             );
         }
@@ -3437,7 +3471,9 @@ impl Instance {
                         "TabWidget" if element.selection_property() != "current-value" => {
                             usize::try_from(self.current_index(element)?).ok()
                         }
-                        "TabWidget" | "SwipeView" => self.navigation_choice(element)?,
+                        "TabWidget" | "SwipeView" | "StackLayout" => {
+                            self.navigation_choice(element)?
+                        }
                         "StackView" => self
                             .stack_snapshot_for(element)?
                             .current()
@@ -3575,7 +3611,7 @@ impl Instance {
             }
             return row.locate(program, template, child, tail, route);
         }
-        if matches!(scene.kind, "SwipeView" | "TabWidget")
+        if matches!(scene.kind, "SwipeView" | "TabWidget" | "StackLayout")
             && let Some(template) = element.children.first()
             && let Some(repeat) = &template.repeat
         {
@@ -5243,6 +5279,9 @@ impl Instance {
                 instance.handler(element, "changed", &[next])?;
                 Ok(true)
             })(),
+            ControlAction::CloseTab(request) if matches!(node.kind, "TabBar" | "TabWidget") => {
+                instance.close_tab(element, node, request, input)
+            }
             ControlAction::MoveTab(movement) if matches!(node.kind, "TabBar" | "TabWidget") => {
                 instance.move_tab(element, node, movement, input)
             }
@@ -5669,6 +5708,7 @@ impl ValueType {
                 | (Self::ScrollSnapMode, Value::ScrollSnapMode(_))
                 | (Self::ScrollAlignment, Value::ScrollAlignment(_))
                 | (Self::SelectionTarget, Value::SelectionTarget(_))
+                | (Self::SelectionGesture, Value::SelectionGesture(_))
                 | (Self::ScrollBarPolicy, Value::ScrollBarPolicy(_))
                 | (Self::FlickDirection, Value::FlickDirection(_))
                 | (Self::FlickBoundsBehavior, Value::FlickBoundsBehavior(_))

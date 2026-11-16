@@ -248,6 +248,7 @@ pub fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, T
             | "TabWidget"
             | "TabBar"
             | "SwipeView"
+            | "StackLayout"
             | "ListView"
             | "GridView"
             | "StandardListView")
@@ -256,10 +257,7 @@ pub fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, T
             matches!(binding.name(), "xr.bind" | "xr.control_link")
                 && binding.attr("name") == Ok("current-value")
         }) {
-            Some((
-                "current-value",
-                operand_type(binding).expect("verified choice value type"),
-            ))
+            Some(("current-value", operand_type(binding)?))
         } else {
             Some(("current-index", Type::Int))
         }

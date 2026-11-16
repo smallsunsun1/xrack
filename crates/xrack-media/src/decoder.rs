@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     ff,
-    native::{api, load},
+    native::{load, media_function},
 };
 
 #[derive(Debug)]
@@ -33,7 +33,7 @@ pub(crate) fn check(code: i32, stage: &str) -> Result<(), MediaError> {
     let mut buffer = [0_i8; 192];
     // FFmpeg writes a terminated string on success.
     let message = unsafe {
-        if (api().av_strerror.unwrap())(code, buffer.as_mut_ptr().cast(), buffer.len() as _) == 0 {
+        if media_function!(av_strerror)(code, buffer.as_mut_ptr().cast(), buffer.len() as _) == 0 {
             std::ffi::CStr::from_ptr(buffer.as_ptr().cast())
                 .to_string_lossy()
                 .into_owned()
@@ -115,7 +115,7 @@ struct Options(*mut ff::AVDictionary);
 impl Options {
     fn set(&mut self, key: &CStr, value: &CStr) -> Result<(), MediaError> {
         check(
-            unsafe { (api().av_dict_set.unwrap())(&mut self.0, key.as_ptr(), value.as_ptr(), 0) },
+            unsafe { media_function!(av_dict_set)(&mut self.0, key.as_ptr(), value.as_ptr(), 0) },
             "configure media input",
         )
     }
@@ -123,7 +123,7 @@ impl Options {
 
 impl Drop for Options {
     fn drop(&mut self) {
-        unsafe { (api().av_dict_free.unwrap())(&mut self.0) }
+        unsafe { media_function!(av_dict_free)(&mut self.0) }
     }
 }
 
@@ -323,7 +323,7 @@ impl VideoDecoder {
 
         // All allocations are owned by the decoder immediately, including failed opens.
         unsafe {
-            decoder.format = (api().avformat_alloc_context.unwrap())();
+            decoder.format = media_function!(avformat_alloc_context)();
             if decoder.format.is_null() {
                 return Err(MediaError("allocate media format".into()));
             }
@@ -337,7 +337,7 @@ impl VideoDecoder {
                 });
             decoder.io.arm();
             check(
-                (api().avformat_open_input.unwrap())(
+                media_function!(avformat_open_input)(
                     &mut decoder.format,
                     path.as_ptr(),
                     ptr::null(),
@@ -347,7 +347,7 @@ impl VideoDecoder {
             )?;
             decoder.io.arm();
             check(
-                (api().avformat_find_stream_info.unwrap())(decoder.format, ptr::null_mut()),
+                media_function!(avformat_find_stream_info)(decoder.format, ptr::null_mut()),
                 "read stream metadata",
             )?;
             let format = decoder.format.cast::<u8>();
@@ -374,7 +374,7 @@ impl VideoDecoder {
                     .map(|i| *programs.add(i))
                     .filter(|program| !program.is_null())
                     .filter_map(|program| {
-                        let bitrate = (api().av_dict_get.unwrap())(
+                        let bitrate = media_function!(av_dict_get)(
                             (*program).metadata,
                             c"variant_bitrate".as_ptr(),
                             ptr::null(),
@@ -430,7 +430,7 @@ impl VideoDecoder {
                 .add(ff::XRACK_FFMPEG_METADATA_OFFSET as usize)
                 .cast::<*mut ff::AVDictionary>();
             if let Some(title) =
-                (api().av_dict_get.unwrap())(metadata, c"title".as_ptr(), ptr::null(), 0).as_ref()
+                media_function!(av_dict_get)(metadata, c"title".as_ptr(), ptr::null(), 0).as_ref()
             {
                 decoder.title = CStr::from_ptr(title.value).to_string_lossy().into_owned();
             }
@@ -458,14 +458,14 @@ impl VideoDecoder {
                 if decoder.stream < 0 {
                     return Ok(None);
                 }
-                codec = (api().avcodec_find_decoder.unwrap())(
+                codec = media_function!(avcodec_find_decoder)(
                     (*(*(*streams.add(decoder.stream as usize))).codecpar).codec_id,
                 );
                 if codec.is_null() {
                     return Err(MediaError("unsupported media track codec".into()));
                 }
             } else {
-                decoder.stream = (api().av_find_best_stream.unwrap())(
+                decoder.stream = media_function!(av_find_best_stream)(
                     decoder.format,
                     media_type,
                     -1,
@@ -500,7 +500,7 @@ impl VideoDecoder {
                 let mut start = 0;
                 let mut end = 0;
                 let mut edge = 0;
-                let result = (api().xr_hls_window.unwrap())(
+                let result = media_function!(xr_hls_window)(
                     decoder.format,
                     decoder.stream,
                     0,
@@ -513,9 +513,9 @@ impl VideoDecoder {
                     decoder.duration = 0.0;
                 }
             }
-            decoder.codec = ((api().avcodec_alloc_context3).unwrap())(codec);
-            decoder.frame = ((api().av_frame_alloc).unwrap())();
-            decoder.packet = ((api().av_packet_alloc).unwrap())();
+            decoder.codec = media_function!(avcodec_alloc_context3)(codec);
+            decoder.frame = media_function!(av_frame_alloc)();
+            decoder.packet = media_function!(av_packet_alloc)();
             if decoder.codec.is_null() || decoder.frame.is_null() || decoder.packet.is_null() {
                 return Err(MediaError("allocate video decoder".into()));
             }
@@ -525,11 +525,11 @@ impl VideoDecoder {
             decoder.time_base = stream.time_base;
             (*decoder.codec).pkt_timebase = decoder.time_base;
             check(
-                ((api().avcodec_parameters_to_context).unwrap())(decoder.codec, stream.codecpar),
+                media_function!(avcodec_parameters_to_context)(decoder.codec, stream.codecpar),
                 "copy stream parameters",
             )?;
             check(
-                ((api().avcodec_open2).unwrap())(decoder.codec, codec, ptr::null_mut()),
+                media_function!(avcodec_open2)(decoder.codec, codec, ptr::null_mut()),
                 "open video codec",
             )?;
         }
@@ -572,7 +572,7 @@ impl VideoDecoder {
         let (mut start, mut end, mut edge) = (0, 0, 0);
         // Only the decoder worker calls this. FFmpeg owns the demuxer and its playlists.
         let result = unsafe {
-            (api().xr_hls_window.unwrap())(
+            media_function!(xr_hls_window)(
                 self.format,
                 self.stream,
                 i32::from(refresh),
@@ -606,13 +606,13 @@ impl VideoDecoder {
         unsafe {
             loop {
                 self.io.arm();
-                let read = (api().av_read_frame.unwrap())(self.format, self.packet);
+                let read = media_function!(av_read_frame)(self.format, self.packet);
                 if read == ff::XRACK_FFMPEG_EOF {
                     return Ok(None);
                 }
                 check(read, "read subtitle packet")?;
                 if (*self.packet).stream_index != self.stream {
-                    (api().av_packet_unref.unwrap())(self.packet);
+                    media_function!(av_packet_unref)(self.packet);
                     continue;
                 }
                 let base = self.time_base;
@@ -625,15 +625,15 @@ impl VideoDecoder {
                 let mut subtitle: ff::AVSubtitle = std::mem::zeroed();
                 let mut decoded = 0;
                 // FFmpeg text subtitle codecs use the legacy subtitle API.
-                let result = (api().avcodec_decode_subtitle2.unwrap())(
+                let result = media_function!(avcodec_decode_subtitle2)(
                     self.codec,
                     &mut subtitle,
                     &mut decoded,
                     self.packet,
                 );
-                (api().av_packet_unref.unwrap())(self.packet);
+                media_function!(av_packet_unref)(self.packet);
                 if result < 0 || decoded == 0 {
-                    (api().avsubtitle_free.unwrap())(&mut subtitle);
+                    media_function!(avsubtitle_free)(&mut subtitle);
                     check(result, "decode text subtitle")?;
                     continue;
                 }
@@ -672,7 +672,7 @@ impl VideoDecoder {
                         }
                     }
                 }
-                (api().avsubtitle_free.unwrap())(&mut subtitle);
+                media_function!(avsubtitle_free)(&mut subtitle);
                 let text = lines.join("\n");
                 if end > start && !text.is_empty() {
                     return Ok(Some(Cue { start, end, text }));
@@ -713,10 +713,10 @@ impl VideoDecoder {
                 flags |= ff::XRACK_FFMPEG_SEEK_ANY;
             }
             check(
-                (api().av_seek_frame.unwrap())(self.format, stream, timestamp as i64, flags),
+                media_function!(av_seek_frame)(self.format, stream, timestamp as i64, flags),
                 "seek media",
             )?;
-            (api().avcodec_flush_buffers.unwrap())(self.codec);
+            media_function!(avcodec_flush_buffers)(self.codec);
         }
         self.hls_seek_target = self.hls.then_some(position);
         self.draining = false;
@@ -744,7 +744,7 @@ impl VideoDecoder {
         // The packet is unreferenced after each send and each skipped stream.
         unsafe {
             loop {
-                let received = ((api().avcodec_receive_frame).unwrap())(self.codec, self.frame);
+                let received = media_function!(avcodec_receive_frame)(self.codec, self.frame);
                 match received {
                     0 => {
                         if let Some(target) = self.hls_seek_target.take()
@@ -768,10 +768,10 @@ impl VideoDecoder {
                 }
                 loop {
                     self.io.arm();
-                    let code = ((api().av_read_frame).unwrap())(self.format, self.packet);
+                    let code = media_function!(av_read_frame)(self.format, self.packet);
                     if code == ff::XRACK_FFMPEG_EOF {
                         check(
-                            ((api().avcodec_send_packet).unwrap())(self.codec, ptr::null()),
+                            media_function!(avcodec_send_packet)(self.codec, ptr::null()),
                             "drain video decoder",
                         )?;
                         self.draining = true;
@@ -782,12 +782,12 @@ impl VideoDecoder {
                         self.packet_bytes += u64::from((*self.packet).size.max(0) as u32);
                     }
                     if (*self.packet).stream_index == self.stream {
-                        let sent = ((api().avcodec_send_packet).unwrap())(self.codec, self.packet);
-                        ((api().av_packet_unref).unwrap())(self.packet);
+                        let sent = media_function!(avcodec_send_packet)(self.codec, self.packet);
+                        media_function!(av_packet_unref)(self.packet);
                         check(sent, "submit video packet")?;
                         break;
                     }
-                    ((api().av_packet_unref).unwrap())(self.packet);
+                    media_function!(av_packet_unref)(self.packet);
                 }
             }
         }
@@ -803,7 +803,7 @@ impl VideoDecoder {
                     "video dimensions {width}×{height} are outside the supported range"
                 )));
             }
-            self.scale = ((api().sws_getCachedContext).unwrap())(
+            self.scale = media_function!(sws_getCachedContext)(
                 self.scale,
                 width,
                 height,
@@ -831,7 +831,7 @@ impl VideoDecoder {
                 ptr::null_mut(),
             ];
             let strides = [stride, 0, 0, 0];
-            let rows = ((api().sws_scale).unwrap())(
+            let rows = media_function!(sws_scale)(
                 self.scale,
                 sources.as_ptr(),
                 frame.linesize.as_ptr(),
@@ -858,11 +858,11 @@ impl VideoDecoder {
 impl Drop for VideoDecoder {
     fn drop(&mut self) {
         unsafe {
-            ((api().sws_freeContext).unwrap())(self.scale);
-            ((api().av_packet_free).unwrap())(&mut self.packet);
-            ((api().av_frame_free).unwrap())(&mut self.frame);
-            ((api().avcodec_free_context).unwrap())(&mut self.codec);
-            ((api().avformat_close_input).unwrap())(&mut self.format);
+            media_function!(sws_freeContext)(self.scale);
+            media_function!(av_packet_free)(&mut self.packet);
+            media_function!(av_frame_free)(&mut self.frame);
+            media_function!(avcodec_free_context)(&mut self.codec);
+            media_function!(avformat_close_input)(&mut self.format);
         }
     }
 }

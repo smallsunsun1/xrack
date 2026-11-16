@@ -89,7 +89,7 @@ impl TextDocument {
             character_index: run
                 .offsets
                 .binary_search(&position.offset)
-                .expect("editor boundary"),
+                .unwrap_or_else(|next| next.saturating_sub(1)),
         }
     }
 
@@ -293,8 +293,9 @@ pub(crate) fn project_text(
                     })
                     .collect::<Vec<_>>(),
             );
-            if first != 0 {
-                let (previous_id, previous) = nodes.last_mut().expect("previous run on line");
+            if first != 0
+                && let Some((previous_id, previous)) = nodes.last_mut()
+            {
                 previous.set_next_on_line(id);
                 run.set_previous_on_line(*previous_id);
             }

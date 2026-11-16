@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 #[allow(dead_code)]
 mod ui_driver;
 

@@ -90,6 +90,10 @@ fn controls() -> Result<String, Box<dyn std::error::Error>> {
                 builtin_property(kind, property)
                     .or_else(|| media_object_read_type(kind, property))
                     .or_else(|| combo_state_property(kind, property))
+                    .or_else(|| {
+                        xrack_ir::semantic::navigation_active_property(kind, property)
+                            .then_some(xrack_syntax::ast::Type::Bool)
+                    })
                     .map(|ty| (property, ty))
             })
             .peekable();
@@ -109,6 +113,8 @@ fn controls() -> Result<String, Box<dyn std::error::Error>> {
                         || xrack_ir::semantic::range_position_property(kind, property)
                         || xrack_ir::semantic::combo_popup_property(kind, property).is_some()
                         || property == "count" && xrack_syntax::builtins::navigation_group(kind)
+                        || kind == "StackLayout" && property == "active-index"
+                        || xrack_ir::semantic::navigation_active_property(kind, property)
                         || kind == "ComboBox" && matches!(property, "count" | "current-text")
                         || matches!(kind, "Tumbler" | "PathView") && property == "current-text"
                     {

@@ -153,8 +153,9 @@ jobs:
           //crates/xrack-interpreter:interpreter_test
           //crates/xrack-preview:preview_test //crates/xrack-lsp:xrack_lsp_test
       - name: Run Clippy through Bazel
-        if: runner.os == 'macOS'
         run: bazel build --config=lint --lockfile_mode=error //... //tests:gpu_test
+      - name: Run Clippy on the media backend
+        run: bazel build --config=lint --config=media --lockfile_mode=error //crates/xrack-media:xrack_media
       - name: Check the Cargo dependency lock
         run: git diff --exit-code -- Cargo.lock
       - name: Package xrackc

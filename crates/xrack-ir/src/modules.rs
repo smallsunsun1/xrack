@@ -556,7 +556,7 @@ fn rebase_asset(spelling: &mut String, prefix: &Path) {
         let path = path.to_string_lossy();
         #[cfg(windows)]
         let path = path.replace('\\', "/");
-        *spelling = serde_json::to_string(&path).unwrap();
+        *spelling = serde_json::Value::String(path.into()).to_string();
     }
 }
 

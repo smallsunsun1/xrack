@@ -710,9 +710,9 @@ pub(crate) fn draw_area(
     for index in layout.visible_lines(scroll) {
         let x = origin + layout.line_offset(index);
         let line = &layout.lines[index];
-        let visual = layout
-            .visual_line(index)
-            .expect("text system shapes each line");
+        let Some(visual) = layout.visual_line(index) else {
+            continue;
+        };
         let y = area.y + index as f32 * height - scroll.y;
         let local = |span: &Range<usize>| {
             span.start.saturating_sub(line.start)..span.end.saturating_sub(line.start)

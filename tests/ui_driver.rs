@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! A named-target driver for native UI scenarios. Pointer and focus
 //! actions use the same Interaction state machine as the window backend.
 use std::{

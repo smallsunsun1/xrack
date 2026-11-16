@@ -64,8 +64,7 @@ impl FrameCache {
                     .map(|(path, key, offset)| (path.as_slice(), *key, *offset))
                     == swipe_preview
         });
-        if same_geometry_inputs {
-            let last = self.input.as_mut().expect("matching frame input");
+        if same_geometry_inputs && let Some(last) = &mut self.input {
             if !Rc::ptr_eq(&last.scene, &scene) {
                 // Prepared scenes with materialized rows must be rebuilt from
                 // the new base, even if the base changed only in paint data.

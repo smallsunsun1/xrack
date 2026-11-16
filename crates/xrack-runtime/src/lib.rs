@@ -120,9 +120,9 @@ pub use combo::{
 };
 pub use controls::{
     ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
-    StandardButtonKind, SwipeSide, TabMove, TableColumnOrder, TableHeader, TableSort, button_text,
-    combo_editable, delay_millis, dialog_button_action, group_index, group_item, is_button,
-    is_modal_overlay, is_pane, is_spin_box, is_window_overlay, page_indicator_count,
+    StandardButtonKind, SwipeSide, TabClose, TabMove, TableColumnOrder, TableHeader, TableSort,
+    button_text, combo_editable, delay_millis, dialog_button_action, group_index, group_item,
+    is_button, is_modal_overlay, is_pane, is_spin_box, is_window_overlay, page_indicator_count,
     page_indicator_index, resizable_table_column, resolve_swipe_index, search_suggestion,
     search_suggestions, spin_editable, spin_text, spin_value_after, text_input_value,
 };
@@ -133,6 +133,8 @@ pub use controls::{
     try_set_overlay_open,
 };
 #[doc(hidden)]
+pub use controls::{PageIdentity, SwipePreview, SwipePreviewHandle};
+#[doc(hidden)]
 pub use controls::{
     SPIN_VIEW_PROPERTIES, prepare_spin_view, spin_view_is_current, try_prepare_spin_view,
     try_spin_view_is_current,
@@ -142,12 +144,13 @@ pub use controls::{
     delay_button_transition_is_current, group_selection_item, moved_navigation_index,
     prepare_action_activation, prepare_action_view, prepare_group_box_toggle,
     prepare_group_selection, prepare_group_selection_with_model, prepare_index_selection,
-    prepare_row_toggle, prepare_row_toggle_matching, prepare_source_selection, prepare_tab_move,
-    resize_table_column, table_drag_available, try_delay_button_transition_is_current,
-    try_prepare_action_activation, try_prepare_action_view, try_prepare_group_box_toggle,
-    try_prepare_group_selection, try_prepare_group_selection_with_model,
-    try_prepare_index_selection, try_prepare_row_toggle, try_prepare_row_toggle_matching,
-    try_prepare_source_selection, try_prepare_tab_move, try_table_drag_available,
+    prepare_row_toggle, prepare_row_toggle_matching, prepare_source_selection, prepare_tab_close,
+    prepare_tab_move, resize_table_column, tab_is_closable, table_drag_available,
+    try_delay_button_transition_is_current, try_prepare_action_activation, try_prepare_action_view,
+    try_prepare_group_box_toggle, try_prepare_group_selection,
+    try_prepare_group_selection_with_model, try_prepare_index_selection, try_prepare_row_toggle,
+    try_prepare_row_toggle_matching, try_prepare_source_selection, try_prepare_tab_close,
+    try_prepare_tab_move, try_table_drag_available,
 };
 #[doc(hidden)]
 pub use delegate::{ComponentRepeater, RowContext};
@@ -274,11 +277,12 @@ pub use table_rows::{
 };
 #[doc(hidden)]
 pub use table_selection::{
-    ListSelectionCommand, TableSelectionChange, TableSelectionCommand, TableSelectionEvent,
-    TableSelectionMethod, TableSelectionOptions,
+    ListSelectionCommand, TableSelectionChange, TableSelectionCommand, TableSelectionDrag,
+    TableSelectionDragHandle, TableSelectionEvent, TableSelectionMethod, TableSelectionOptions,
 };
 pub use table_selection::{
-    RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
+    RowSelection, SelectionGesture, SelectionTarget, TableSelection, TableSelectionAction,
+    TableSelectionSnapshot,
 };
 pub use table_selection::{
     copy_table_text, copy_table_text_in_order, copy_table_text_in_view, copy_table_text_in_view_if,
@@ -1599,6 +1603,7 @@ pub enum Value {
     DrawerEdge(DrawerEdge),
     PopupPlacement(PopupPlacement),
     SelectionTarget(SelectionTarget),
+    SelectionGesture(SelectionGesture),
     Date(Date),
     Time(Time),
     Font(Font),
@@ -1695,6 +1700,7 @@ value_from!(DragAction, DragAction);
 value_from!(DrawerEdge, DrawerEdge);
 value_from!(PopupPlacement, PopupPlacement);
 value_from!(SelectionTarget, SelectionTarget);
+value_from!(SelectionGesture, SelectionGesture);
 value_from!(Date, Date);
 value_from!(Time, Time);
 value_from!(Font, Font);
@@ -1770,6 +1776,8 @@ pub struct NodeData {
     #[doc(hidden)]
     pub swipe_handle: Option<SwipeHandle>,
     #[doc(hidden)]
+    pub swipe_preview: Option<Box<SwipePreview>>,
+    #[doc(hidden)]
     pub hover_handle: Option<HoverHandle>,
     #[doc(hidden)]
     pub pointer_handle: Option<PointerHandle>,
@@ -1811,6 +1819,9 @@ pub struct NodeData {
     #[doc(hidden)]
     pub table_column_order: TableColumnOrder,
     pub table_selection: Option<Box<TableSelectionSnapshot>>,
+    #[doc(hidden)]
+    pub table_selection_drag: Option<TableSelectionDragHandle>,
+    table_selection_parts: Option<Rc<[Option<Node>; 2]>>,
     #[doc(hidden)]
     pub table_cell_editor: Option<TableCellEditor>,
     pub tree: Option<Arc<TreeSnapshot>>,
@@ -1901,6 +1912,7 @@ impl NodeData {
             combo_popup_handle,
             scale_rotate_handle,
             swipe_handle,
+            swipe_preview,
             hover_handle,
             pointer_handle,
             scroll_event_handler,
@@ -1923,6 +1935,8 @@ impl NodeData {
             table_header,
             table_column_order,
             table_selection,
+            table_selection_drag,
+            table_selection_parts,
             table_cell_editor,
             tree,
             stack,
@@ -2119,6 +2133,7 @@ impl Node {
             combo_popup_handle: None,
             scale_rotate_handle: None,
             swipe_handle: None,
+            swipe_preview: None,
             hover_handle: None,
             pointer_handle: None,
             scroll_event_handler: false,
@@ -2141,6 +2156,8 @@ impl Node {
             table_header: None,
             table_column_order: TableColumnOrder::default(),
             table_selection: None,
+            table_selection_drag: None,
+            table_selection_parts: None,
             table_cell_editor: None,
             tree: None,
             stack: None,
@@ -2638,6 +2655,19 @@ impl Node {
         }
     }
 
+    pub fn selection_gesture(&self) -> SelectionGesture {
+        match self.properties.get("selection-gesture") {
+            Some(Value::SelectionGesture(gesture)) => *gesture,
+            _ => SelectionGesture::Auto,
+        }
+    }
+
+    pub fn selection_hold_interval(&self) -> u64 {
+        self.int("selection-hold-interval")
+            .unwrap_or(500)
+            .clamp(100, 5000) as u64
+    }
+
     pub fn selection_target(&self) -> SelectionTarget {
         match self.properties.get("selection-target") {
             Some(Value::SelectionTarget(target)) => *target,
@@ -2758,6 +2788,22 @@ impl Node {
     }
 
     #[doc(hidden)]
+    pub fn set_table_selection_part(&mut self, index: usize, part: Node) {
+        let parts = self
+            .data_mut()
+            .table_selection_parts
+            .get_or_insert_with(Default::default);
+        if let Some(slot) = Rc::make_mut(parts).get_mut(index) {
+            *slot = Some(part);
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn table_selection_part(&self, index: usize) -> Option<&Node> {
+        self.table_selection_parts.as_ref()?.get(index)?.as_ref()
+    }
+
+    #[doc(hidden)]
     pub fn control_part(&self, kind: &str) -> Option<&Self> {
         self.children.iter().find(|child| child.kind == kind)
     }
@@ -2791,6 +2837,8 @@ impl Node {
                 | "ComboIndicator"
                 | "ComboPopup"
                 | "TreeDisclosure"
+                | "SelectionStartHandle"
+                | "SelectionEndHandle"
         )
     }
 
@@ -2893,7 +2941,7 @@ impl Node {
             let has_page_content = depth + 1 < path.len() || node.kind != "TabWidget";
             if has_page_content {
                 let active = match node.kind {
-                    "TabWidget" | "SwipeView" => group_index(node),
+                    "TabWidget" | "SwipeView" | "StackLayout" => group_index(node),
                     "StackView" => node.stack_page_index(),
                     _ => Some(*index),
                 };
@@ -3008,7 +3056,8 @@ impl Node {
                 mount_key = Some(mount.key);
             }
             if node.kind == "ListRow"
-                || matches!(node.kind, "TabButton" | "Tab") && node.row_key.is_some()
+                || matches!(node.kind, "TabButton" | "Tab" | "StackItem" | "SwipePage")
+                    && node.row_key.is_some()
             {
                 key = node.routing_row_key();
             }

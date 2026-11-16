@@ -313,6 +313,10 @@ impl Node {
 }
 
 impl Default for ActionKey {
+    #[expect(
+        clippy::expect_used,
+        reason = "action IDs must remain unique across all action instances"
+    )]
     fn default() -> Self {
         static NEXT_ACTION: AtomicU64 = AtomicU64::new(1);
         let id = NEXT_ACTION
@@ -376,6 +380,7 @@ pub enum ControlAction {
     Select(usize),
     ActivateRadioOption,
     MoveTab(TabMove),
+    CloseTab(TabClose),
     PickTumbler {
         index: usize,
         row: crate::RowKey,
@@ -1358,6 +1363,16 @@ fn navigation_index(
     index: Option<i64>,
     items: &[Node],
 ) -> Option<usize> {
+    if kind == "StackLayout" {
+        return match requested {
+            Some(value) => {
+                resolve_navigation_value(value, items.iter().map(|item| item.text("value")))
+            }
+            None => usize::try_from(index.unwrap_or(0))
+                .ok()
+                .filter(|index| *index < items.len()),
+        };
+    }
     let expected = navigation_item_kind(kind)?;
     let eligible = |item: &Node| group_item_available(item, expected);
     if let Some(value) = requested {
@@ -1373,6 +1388,82 @@ fn navigation_index(
         return items.get(slot).filter(|item| eligible(item)).map(|_| slot);
     }
     resolve_swipe_index(index, items.iter().map(eligible))
+}
+
+#[doc(hidden)]
+pub fn tab_is_closable(group: &Node, item: &Node) -> bool {
+    matches!(
+        (group.kind, item.kind),
+        ("TabBar", "TabButton") | ("TabWidget", "Tab")
+    ) && item.boolean("closable", group.boolean("tabs-closable", false))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabClose {
+    pub index: usize,
+    row: Option<crate::RowKey>,
+    stamp: Option<(u64, u64)>,
+}
+
+impl Node {
+    #[doc(hidden)]
+    pub fn tab_close(&self, index: usize) -> Option<TabClose> {
+        let item = group_item(self, index)?;
+        tab_is_closable(self, item).then_some(TabClose {
+            index,
+            row: item.row_key,
+            stamp: self.standard_list_stamp,
+        })
+    }
+}
+
+/// Validate an offered close target against the current model and its live bindings.
+#[doc(hidden)]
+pub fn try_prepare_tab_close<M, E>(
+    node: &Node,
+    request: TabClose,
+    route: crate::InputRoute<'_>,
+    model: impl FnOnce() -> Result<Option<M>, E>,
+    read: impl FnOnce(&M, usize) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    if node.tab_close(request.index) != Some(request) {
+        return Ok(None);
+    }
+    let expected = node
+        .child_at(request.index)
+        .and_then(|item| item.text("value"))
+        .unwrap_or("");
+    let mut label = None;
+    let sample = || {
+        if let Some(model) = model()? {
+            label = read(&model, request.index)?.filter(|current| current == expected);
+        }
+        Ok(label.is_some())
+    };
+    let accepted = if route.checks_availability() {
+        route.try_available(sample)?
+    } else {
+        sample()?
+    };
+    Ok(label.filter(|_| accepted && route.is_current()))
+}
+
+#[doc(hidden)]
+pub fn prepare_tab_close<M>(
+    node: &Node,
+    request: TabClose,
+    route: crate::InputRoute<'_>,
+    model: impl FnOnce() -> Option<M>,
+    read: impl FnOnce(&M, usize, bool) -> Option<String>,
+) -> Option<String> {
+    try_prepare_tab_close(
+        node,
+        request,
+        route,
+        || Ok::<_, std::convert::Infallible>(model()),
+        |model, slot| Ok(read(model, slot, true)),
+    )
+    .unwrap_or_else(|error| match error {})
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1681,6 +1772,92 @@ pub fn prepare_group_selection(
     .unwrap_or_else(|error| match error {})
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[doc(hidden)]
+pub enum PageIdentity {
+    Row(RowKey),
+    Named(Arc<str>),
+    Slot(usize, &'static str),
+}
+
+impl PageIdentity {
+    pub fn of(page: &Node, slot: usize) -> Self {
+        if let Some(key) = page.routing_row_key() {
+            Self::Row(key)
+        } else if let Some(id) = page.shared_element_id() {
+            Self::Named(id)
+        } else if let Some(id) = page.id {
+            Self::Named(Arc::from(id))
+        } else {
+            Self::Slot(slot, page.kind)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SwipePreviewRequest {
+    from: (usize, PageIdentity),
+    to: (usize, PageIdentity),
+}
+
+/// The host requests one neighboring page for painting during a SwipeView drag.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct SwipePreviewHandle(Rc<Property<Option<SwipePreviewRequest>>>);
+
+impl std::fmt::Debug for SwipePreviewHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SwipePreviewHandle")
+            .field(&Rc::as_ptr(&self.0))
+            .finish()
+    }
+}
+
+impl PartialEq for SwipePreviewHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl SwipePreviewHandle {
+    pub fn request(&self, from: (usize, PageIdentity), to: (usize, PageIdentity)) {
+        self.0
+            .set_if_changed(Some(SwipePreviewRequest { from, to }));
+    }
+
+    pub fn clear(&self) {
+        self.0.set_if_changed(None);
+    }
+
+    fn slot(&self, active: Option<usize>, pages: &[Node]) -> Option<usize> {
+        let request = self.0.get(|| None)?;
+        let available = |(slot, id): &(usize, PageIdentity)| {
+            pages.get(*slot).is_some_and(|page| {
+                group_item_available(page, "SwipePage") && PageIdentity::of(page, *slot) == *id
+            })
+        };
+        (active == Some(request.from.0)
+            && request.from.0 != request.to.0
+            && available(&request.from)
+            && available(&request.to))
+        .then_some(request.to.0)
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SwipePreview {
+    pub handle: SwipePreviewHandle,
+    pub page: Option<(usize, Node)>,
+}
+
+impl Node {
+    #[doc(hidden)]
+    pub fn enable_swipe_preview(&mut self, handle: SwipePreviewHandle) {
+        self.swipe_preview = Some(Box::new(SwipePreview { handle, page: None }));
+    }
+}
+
 impl Node {
     #[doc(hidden)]
     pub fn try_append_group_options<M: ListModel, E>(
@@ -1722,19 +1899,24 @@ impl Node {
         .unwrap_or_else(|error| match error {});
     }
 
-    /// Project navigation metadata for every page and mount only the selected row.
+    /// Project navigation metadata for every page and mount the selected row and any paint-only swipe preview.
     #[doc(hidden)]
     pub fn try_append_navigation_pages<M: ListModel, E>(
         &mut self,
         source: impl FnOnce() -> Result<Rc<M>, E>,
         mut describe: impl FnMut(&Rc<M>, usize) -> Result<Node, E>,
-        mount: impl FnOnce(&Rc<M>, Option<usize>) -> Result<Vec<Node>, E>,
+        mount: impl FnOnce(&Rc<M>, [Option<usize>; 2]) -> Result<Vec<Node>, E>,
     ) -> Result<(), E> {
         let requested = self.text("current-value").map(str::to_owned);
         let index = self.int("current-index");
         let visible = self.is_visible();
         let kind = self.kind;
         let mut stamp = None;
+        let preview_handle = self
+            .swipe_preview
+            .as_ref()
+            .map(|preview| preview.handle.clone());
+        let mut painted = None;
         let pages = crate::try_render_rows_from_source(
             || {
                 let model = source()?;
@@ -1756,12 +1938,15 @@ impl Node {
                 let active = visible
                     .then(|| navigation_index(kind, requested.as_deref(), index, &pages))
                     .flatten();
-                let mounted = mount(&model, active)?;
+                let preview_slot = preview_handle
+                    .as_ref()
+                    .and_then(|handle| handle.slot(active, &pages));
+                let mut mounted = mount(&model, [active, preview_slot])?.into_iter();
                 if model.contents_stamp() != stamp {
                     return Ok(Vec::new());
                 }
                 if let Some(slot) = active {
-                    let Some(page) = mounted.into_iter().next() else {
+                    let Some(page) = mounted.next() else {
                         return Ok(Vec::new());
                     };
                     if page.row_key != pages[slot].row_key {
@@ -1769,9 +1954,18 @@ impl Node {
                     }
                     pages[slot] = page;
                 }
+                if let Some(slot) = preview_slot
+                    && let Some(page) = mounted.next()
+                    && page.row_key == pages[slot].row_key
+                {
+                    painted = Some((slot, page));
+                }
                 Ok(pages)
             },
         )?;
+        if let Some(preview) = &mut self.swipe_preview {
+            preview.page = if pages.is_empty() { None } else { painted };
+        }
         self.standard_list_stamp = stamp;
         self.children.extend(pages);
         Ok(())
@@ -1782,7 +1976,7 @@ impl Node {
         &mut self,
         source: impl FnOnce() -> Rc<M>,
         mut describe: impl FnMut(&Rc<M>, usize) -> Node,
-        mount: impl FnOnce(&Rc<M>, Option<usize>) -> Vec<Node>,
+        mount: impl FnOnce(&Rc<M>, [Option<usize>; 2]) -> Vec<Node>,
     ) {
         self.try_append_navigation_pages(
             || Ok::<_, std::convert::Infallible>(source()),
@@ -1804,7 +1998,7 @@ impl Node {
 }
 
 pub fn group_index(node: &Node) -> Option<usize> {
-    if navigation_item_kind(node.kind).is_some() {
+    if node.kind == "StackLayout" || navigation_item_kind(node.kind).is_some() {
         return navigation_index(
             node.kind,
             node.text("current-value"),
@@ -1837,6 +2031,39 @@ impl Node {
         }
         let index = group_index(self)?;
         Some(mount(index, &mut self.children[index]))
+    }
+
+    /// Populate the adjacent page outside the live scene while a swipe is in progress.
+    #[doc(hidden)]
+    pub fn try_mount_swipe_pages<E>(
+        &mut self,
+        mut mount: impl FnMut(usize, &mut Node) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.mount_active_swipe_page(&mut mount).transpose()?;
+        let active = self.is_visible().then(|| group_index(self)).flatten();
+        let mut painted = None;
+        if let Some(slot) = self
+            .swipe_preview
+            .as_ref()
+            .and_then(|preview| preview.handle.slot(active, &self.children))
+            && let Some(mut page) = self.children.get(slot).cloned()
+        {
+            mount(slot, &mut page)?;
+            painted = Some((slot, page));
+        }
+        if let Some(preview) = &mut self.swipe_preview {
+            preview.page = painted;
+        }
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn mount_swipe_pages(&mut self, mut mount: impl FnMut(usize, &mut Node)) {
+        self.try_mount_swipe_pages(|slot, node| {
+            mount(slot, node);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|error| match error {});
     }
 }
 

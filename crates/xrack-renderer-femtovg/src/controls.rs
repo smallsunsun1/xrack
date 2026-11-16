@@ -1151,6 +1151,8 @@ pub(crate) struct TabAppearance {
     pub selected: bool,
     pub enabled: bool,
     pub focused: bool,
+    pub close: Option<Rect>,
+    pub close_hovered: bool,
 }
 
 pub(crate) fn tab(
@@ -1178,6 +1180,29 @@ pub(crate) fn tab(
         paint.set_line_width(1.5);
         canvas.stroke_path(&path, &paint);
     }
+    let content = if let Some(close) = appearance.close {
+        if appearance.enabled && appearance.close_hovered {
+            fill(canvas, close, 4.0, theme.role(Role::SelectedSurface));
+        }
+        let center = (close.x + close.width / 2.0, close.y + close.height / 2.0);
+        let radius = (close.width * 0.19).min(5.0);
+        let mut glyph = Path::new();
+        glyph.move_to(center.0 - radius, center.1 - radius);
+        glyph.line_to(center.0 + radius, center.1 + radius);
+        glyph.move_to(center.0 - radius, center.1 + radius);
+        glyph.line_to(center.0 + radius, center.1 - radius);
+        let tint = if appearance.enabled {
+            theme.text
+        } else {
+            theme.disabled_text
+        };
+        let mut paint = Paint::color(color(tint));
+        paint.set_line_width(1.5);
+        canvas.stroke_path(&glyph, &paint);
+        xrack_layout::tab_content_rect(bounds, close)
+    } else {
+        bounds
+    };
     if node.kind == "TabButton" && node.control_part("ButtonContent").is_some() {
         return Ok(());
     }
@@ -1186,10 +1211,10 @@ pub(crate) fn tab(
         text,
         node,
         Rect::new(
-            bounds.x + 10.0,
-            bounds.y,
-            (bounds.width - 20.0).max(0.0),
-            bounds.height,
+            content.x + 10.0,
+            content.y,
+            (content.width - 20.0).max(0.0),
+            content.height,
         ),
         title,
         text.default_font_size()

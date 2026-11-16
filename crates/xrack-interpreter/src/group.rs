@@ -151,10 +151,10 @@ impl Instance {
         slot: usize,
     ) -> Result<Node> {
         let sample = self.sample_group_option(page, repeat, model, slot)?;
-        let kind = if matches!(page.visual, Visual::Builtin("Tab")) {
-            "Tab"
-        } else {
-            "SwipePage"
+        let kind = match page.visual {
+            Visual::Builtin("Tab") => "Tab",
+            Visual::Builtin("StackItem") => "StackItem",
+            _ => "SwipePage",
         };
         let mut header = Node::new(kind, None);
         header
@@ -163,12 +163,26 @@ impl Instance {
         header
             .properties
             .insert("enabled", sample.visual_flag(page, "enabled", true)?.into());
-        for property in [
+        let mut properties = vec![
             "title",
             "value",
             "accessible-name",
             "accessible-description",
-        ] {
+            "closable",
+        ];
+        if kind == "StackItem" {
+            properties.extend([
+                "width",
+                "height",
+                "min-width",
+                "min-height",
+                "preferred-width",
+                "preferred-height",
+                "max-width",
+                "max-height",
+            ]);
+        }
+        for property in properties {
             let value = if let Some(cases) = page.state_bindings.get(property) {
                 match sample.state_value(cases)? {
                     Some(value) => Some(value),
@@ -177,8 +191,8 @@ impl Instance {
             } else {
                 sample.binding_value(page, property)?
             };
-            if let Some(Value::String(value)) = value {
-                header.properties.insert(property, value.into());
+            if let Some(value) = value {
+                header.properties.insert(property, value);
             }
         }
         Ok(header)
@@ -210,6 +224,7 @@ impl Instance {
             {
                 return Ok(None);
             }
+            let layout = matches!(group.visual, Visual::Builtin("StackLayout"));
             if group.selection_property() == "current-value" {
                 let ButtonGroupSelection::Value(requested) = self.group_selection(group)? else {
                     return Err(Error::Evaluation("invalid navigation value".into()));
@@ -228,7 +243,7 @@ impl Instance {
                             sample.live_group_option(
                                 option,
                                 true,
-                                sample.input_element_available(option, false)?,
+                                layout || sample.input_element_available(option, false)?,
                             )
                         }),
                     );
@@ -239,13 +254,13 @@ impl Instance {
                         self.live_group_option(
                             option,
                             true,
-                            self.input_element_available(option, false)?,
+                            layout || self.input_element_available(option, false)?,
                         )
                     }),
                 );
             }
             let requested = self.current_index(group)?;
-            if matches!(group.visual, Visual::Builtin("TabWidget")) {
+            if layout || matches!(group.visual, Visual::Builtin("TabWidget")) {
                 let Some(index) = usize::try_from(requested).ok() else {
                     return Ok(None);
                 };
@@ -259,13 +274,16 @@ impl Instance {
                     if index >= model.row_count().min(4096) {
                         return Ok(None);
                     }
+                    if layout {
+                        return Ok(Some(index));
+                    }
                     let sample = self.sample_group_option(tab, repeat, &model, index)?;
                     return Ok(sample.input_element_available(tab, false)?.then_some(index));
                 }
                 let Some(tab) = group.children.get(index) else {
                     return Ok(None);
                 };
-                return Ok(self.input_element_available(tab, false)?.then_some(index));
+                return Ok((layout || self.input_element_available(tab, false)?).then_some(index));
             }
             if let Some(option) = group.children.first()
                 && let Some(repeat) = &option.repeat
@@ -293,7 +311,10 @@ impl Instance {
     }
 
     pub(crate) fn group_option_checked(&self, element: &Element) -> Result<bool> {
-        let key = &element.button_group.as_ref().unwrap().key;
+        let Some(membership) = &element.button_group else {
+            return Ok(false);
+        };
+        let key = &membership.key;
         let (owner, group) = self.element_owner(key)?;
         let definition = owner.definition();
         let members = &definition.button_groups[key];
@@ -340,6 +361,7 @@ impl Instance {
             };
             let mounted = match element.visual {
                 Visual::Builtin("TabWidget") => self.current_index(element)? == index as i64,
+                Visual::Builtin("StackLayout") => self.navigation_choice(element)? == Some(index),
                 Visual::Builtin("StackView") => {
                     self.visual_flag(element, "visible", true)?
                         && self.stack_snapshot_for(element)?.current() == Some(child.id.as_ref())
@@ -627,6 +649,81 @@ impl Instance {
         self.repeat_state(template)
             .row_model(self, repeat)
             .map(Some)
+    }
+
+    pub(crate) fn close_tab(
+        &self,
+        element: &Element,
+        node: &Node,
+        request: xrack_runtime::TabClose,
+        input: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        let Some(value) = xrack_runtime::try_prepare_tab_close(
+            node,
+            request,
+            input,
+            || {
+                let model = self.group_option_model(element)?;
+                let current = model
+                    .as_ref()
+                    .is_none_or(|model| node.group_options_are_current(model.as_ref()));
+                Ok::<_, Error>(current.then_some(model))
+            },
+            |model, slot| {
+                let (tab, owner) = if let Some(model) = model {
+                    let Some(template) = element.children.first() else {
+                        return Ok(None);
+                    };
+                    let Some(repeat) = template.live_option_repeat() else {
+                        return Ok(None);
+                    };
+                    let row = if node.kind == "TabWidget" {
+                        self.sample_group_option(template, repeat, model, slot)?
+                    } else {
+                        let Some(key) = node.child_at(slot).and_then(|item| item.row_key) else {
+                            return Ok(None);
+                        };
+                        let Some(row) = self
+                            .repeat_state(template)
+                            .resolved_row(repeat, model, slot, key, false)
+                        else {
+                            return Ok(None);
+                        };
+                        row
+                    };
+                    (template, row)
+                } else {
+                    let Some(tab) = element.children.get(slot) else {
+                        return Ok(None);
+                    };
+                    (tab, self.clone())
+                };
+                if !(owner.input_element_available(tab, false)?) {
+                    return Ok(None);
+                }
+                let allowed = match owner.input_flag_value(tab, "closable")? {
+                    Some(flag) => flag,
+                    None => self
+                        .input_flag_value(element, "tabs-closable")?
+                        .unwrap_or(false),
+                };
+                if !allowed {
+                    return Ok(None);
+                }
+                Ok(Some(match owner.binding_value(tab, "value")? {
+                    Some(Value::String(value)) => value,
+                    _ => String::new(),
+                }))
+            },
+        )?
+        else {
+            return Ok(false);
+        };
+        self.handler(
+            element,
+            "tab-close-requested",
+            &[Value::Int(request.index as i64), value.into()],
+        )
     }
 
     pub(crate) fn move_tab(

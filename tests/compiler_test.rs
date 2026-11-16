@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use xrack_compiler::{Compilation, CompilerError, ir, mlir, parse, semantic};
 
 fn compile(source: &str, filename: &str) -> Result<Compilation, String> {
@@ -4149,6 +4151,96 @@ fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
 }
 
 #[test]
+fn table_selection_gestures_and_live_state_are_typed_and_read_only() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <SelectionGesture> gesture: press-and-hold;
+            property <[string]> rows: ["one", "two"];
+            out property <bool> active: grid.selection-active;
+            out property <bool> dragging: grid.selection-dragging;
+            grid := TableView {
+                selection-gesture: root.gesture;
+                selection-hold-interval: 360;
+                drag-select: true;
+                multi-select: true;
+                TableColumn { title: "Label"; }
+                for row in root.rows : TableRow { TableCell { text: row; } }
+            }
+        }
+    "#;
+    let compiled = compile(source, "selection_gesture.xr").unwrap();
+    assert!(compiled.mlir.contains("!xr.selectiongesture"));
+    assert!(compiled.rust.to_string().contains("dragging"));
+    for (before, after, message) in [
+        (
+            "selection-gesture: root.gesture;",
+            "selection-gesture: true;",
+            "expected selectiongesture",
+        ),
+        (
+            "selection-hold-interval: 360;",
+            "selection-hold-interval: 360px;",
+            "expected int",
+        ),
+        ("drag-select: true;", "selection-active: true;", "read-only"),
+    ] {
+        let error = compile(&source.replace(before, after), "selection_gesture.xr")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+}
+
+#[test]
+fn selection_handle_parts_are_static_unique_and_positioned_by_the_table() {
+    let source = r#"
+        export component App inherits Window {
+            property <[string]> labels: ["one", "two"];
+            TableView {
+                drag-select: true;
+                multi-select: true;
+                TableColumn { title: "Label"; }
+                for row in root.labels : TableRow { TableCell { text: row; } }
+                SelectionStartHandle { width: 12px; background: #ee9922; }
+                SelectionEndHandle { height: 14px; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "selection_handles.xr").unwrap();
+    assert!(compiled.mlir.contains("SelectionStartHandle"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("set_table_selection_part")
+    );
+    let duplicate = source.replace("SelectionEndHandle", "SelectionStartHandle");
+    assert!(
+        compile(&duplicate, "selection_handles.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("at most one")
+    );
+    let misplaced = source.replace("width: 12px;", "x: 12px;");
+    assert!(
+        compile(&misplaced, "selection_handles.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("property")
+    );
+    let raw = lower(source, "selection_handles.xr");
+    let error =
+        mlir::process(&raw.replace("SelectionEndHandle", "SelectionStartHandle")).unwrap_err();
+    assert!(
+        error.contains("at most one SelectionStartHandle"),
+        "{error}"
+    );
+}
+
+#[test]
 fn model_edits_verify_the_property_row_type_and_callback_effects() {
     let source = r#"
         export component App inherits Window {
@@ -4252,6 +4344,103 @@ fn navigation_move_commands_verify_owners_writability_and_effects() {
         mlir::process(&invalid_owner)
             .unwrap_err()
             .contains("writable list model")
+    );
+}
+
+#[test]
+fn stack_layout_supports_regular_children_and_checks_keyed_templates() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <int> index: 0;
+            out property <int> selected: layers.active-index;
+            out property <int> items: layers.count;
+            layers := StackLayout {
+                current-index <=> root.index;
+                padding: 5px;
+                Text { text: "First"; }
+                second := StackItem { Text { text: "Second"; } }
+            }
+        }
+    "#;
+    let compiled = compile(source, "stack_layout.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.navigation_index"));
+    assert!(compiled.mlir.contains("xr.navigation_count"));
+    let keyed = source.replace(
+        "current-index <=> root.index;",
+        r#"current-value: "second";"#,
+    );
+    assert!(
+        compile(&keyed, "stack_layout.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("requires StackItem children")
+    );
+    let readonly = source.replace("padding: 5px;", "active-index: 1;");
+    assert!(
+        compile(&readonly, "stack_layout.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("read-only")
+    );
+    let cycle = "export component App inherits Window { layers := StackLayout { current-index: layers.active-index; } }";
+    assert!(
+        compile(cycle, "stack_layout.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("cyc")
+    );
+    let inline = "export component App inherits Window { ListView { for index in 2 : Rectangle { StackLayout { current-index: index; Rectangle {} } } } }";
+    assert!(
+        compile(inline, "stack_layout.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("requires a component delegate")
+    );
+}
+
+#[test]
+fn close_tab_properties_and_event_payload_have_verified_types() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <string> last: "";
+            tabs := TabBar {
+                tabs-closable: true;
+                TabButton { text: "Notes"; value: "notes"; closable: true; }
+                tab-close-requested(index, value) => { root.last = value + index; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "tab_close.xr").unwrap();
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("ControlAction :: CloseTab")
+    );
+    for (old, new, message) in [
+        ("tabs-closable: true;", "tabs-closable: 1;", "expected bool"),
+        ("closable: true; }", "closable: 0; }", "expected bool"),
+        (
+            "tab-close-requested(index, value)",
+            "tab-close-requested(index)",
+            "an int index and a string value",
+        ),
+    ] {
+        let error = compile(&source.replace(old, new), "tab_close.xr")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+    let input = lower(source, "tab_close.xr");
+    assert!(
+        mlir::process(&input.replace("tab-close-requested", "tab-moved"))
+            .unwrap_err()
+            .contains("tab-moved(int, int)")
     );
 }
 
@@ -7689,6 +7878,34 @@ fn page_indicator_verifies_count_style_and_index_binding() {
             .err()
             .unwrap()
             .contains("only accepts Tooltip children")
+    );
+}
+
+#[test]
+fn swipe_transition_duration_is_verified_in_source_and_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            pages := SwipeView {
+                interactive: true;
+                transition-duration: 180;
+                SwipePage { Rectangle {} }
+                SwipePage { Rectangle {} }
+            }
+        }
+    "#;
+    assert!(compile(source, "swipe-transition.xr").is_ok());
+    let invalid = source.replace("transition-duration: 180", "transition-duration: true");
+    let error = compile(&invalid, "swipe-transition.xr").err().unwrap();
+    assert!(error.contains("type mismatch"), "{error}");
+    let raw = lower(
+        &source.replace("transition-duration: 180;", ""),
+        "swipe-transition.xr",
+    );
+    let invalid = raw.replace("name = \"interactive\"", "name = \"transition-duration\"");
+    let error = mlir::process(&invalid).unwrap_err();
+    assert!(
+        error.contains("transition-duration requires an integer"),
+        "{error}"
     );
 }
 

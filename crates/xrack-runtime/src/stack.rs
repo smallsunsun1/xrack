@@ -80,6 +80,10 @@ pub struct StackSnapshot {
 }
 
 impl StackSnapshot {
+    #[expect(
+        clippy::expect_used,
+        reason = "navigation revision IDs must stay unique even if the counter reaches its limit"
+    )]
     fn new(routes: Vec<Cow<'static, str>>) -> Self {
         let revision = NEXT_REVISION
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {

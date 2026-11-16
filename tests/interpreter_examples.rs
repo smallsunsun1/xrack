@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::{Component, Program, assert_same_scene, prepare_list};
 use std::{collections::BTreeSet, panic::catch_unwind};
 use xrack_layout::{Interaction, LayoutNode, Point, Size, Target};
@@ -454,6 +456,9 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             ModelTabsDemo,
             IndexTabCommandsDemo,
             ModelEditFixture,
+            StaticTabCloseFixture,
+            StackLayoutDemo,
+            ModelStackLayoutDemo,
             ApplicationWindowDemo,
             PageDemo
         ]
@@ -516,6 +521,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             WideTableDemo,
             ProjectedRowsDemo,
             StandardTableDemo,
+            SelectionHandlesDemo,
             DirectionalTableDemo,
             KeyedTableDemo,
             TableSortViewsDemo

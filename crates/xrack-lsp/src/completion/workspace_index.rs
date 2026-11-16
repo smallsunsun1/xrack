@@ -1414,7 +1414,7 @@ impl BackgroundIndex {
     fn send(&self, message: Message) -> io::Result<()> {
         self.sender
             .as_ref()
-            .expect("active index")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "workspace index stopped"))?
             .send(message)
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "workspace index stopped"))
     }

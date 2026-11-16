@@ -35,7 +35,10 @@ impl Paths {
     }
 
     fn iter(&self) -> impl ExactSizeIterator<Item = &[usize]> {
-        (0..self.len()).map(|index| self.get(index).expect("group path index"))
+        (0..self.len()).map(|index| match self {
+            Self::Static(paths) => paths[index],
+            Self::Owned(paths) => paths[index].as_slice(),
+        })
     }
 }
 

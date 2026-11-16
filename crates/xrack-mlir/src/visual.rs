@@ -822,6 +822,8 @@ pub fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef
                         | "DayCell"
                         | "SplitHandle"
                         | "SectionHeader"
+                        | "SelectionStartHandle"
+                        | "SelectionEndHandle"
                         | "ComboOption"
                         | "TumblerOption"
                         | "PathViewOption"
@@ -1216,6 +1218,8 @@ pub enum TableRead {
     CurrentColumn,
     SelectionCount,
     HasSelection,
+    SelectionActive,
+    SelectionDragging,
     SortColumn,
     SortDescending,
     History { redo: bool },
@@ -1228,6 +1232,8 @@ impl TableRead {
             ("xr.table_selection_read", "current-column") => Self::CurrentColumn,
             ("xr.table_selection_read", "selection-count") => Self::SelectionCount,
             ("xr.table_selection_read", "has-selection") => Self::HasSelection,
+            ("xr.table_selection_read", "selection-active") => Self::SelectionActive,
+            ("xr.table_selection_read", "selection-dragging") => Self::SelectionDragging,
             ("xr.table_sort_read", "current-sort-column") => Self::SortColumn,
             ("xr.table_sort_read", "current-sort-descending") => Self::SortDescending,
             ("xr.table_history_read", "can-undo") => Self::History { redo: false },
@@ -1619,8 +1625,12 @@ impl<'m> TranslationRef<'m> {
         let arguments = names
             .into_iter()
             .enumerate()
-            .map(|(index, name)| (name, op.operand(index).expect("checked argument count")))
-            .collect();
+            .map(|(index, name)| {
+                op.operand(index)
+                    .map(|value| (name, value))
+                    .ok_or("missing translation argument")
+            })
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             id: op.attr("value")?,
             arguments,

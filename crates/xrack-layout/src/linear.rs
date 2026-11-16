@@ -314,7 +314,25 @@ pub(crate) fn measure_with_width(
             .map(|value| value.max(0.0))
             .unwrap_or(reference.height),
     );
-    let metrics = if matches!(node.kind, "Loader" | "LoaderCandidate") {
+    let metrics = if node.kind == "StackLayout" {
+        let padding = Padding::read(node);
+        let inner = padding.inner_size(available);
+        let mut x = AxisInfo::flexible(0.0);
+        let mut y = AxisInfo::flexible(0.0);
+        for child in node.children.iter().filter(|child| child.is_visible()) {
+            let measured = measure(child, inner, text);
+            x.min = x.min.max(measured.x.min);
+            y.min = y.min.max(measured.y.min);
+            x.preferred = x.preferred.max(measured.x.preferred);
+            y.preferred = y.preferred.max(measured.y.preferred);
+        }
+        let padding = padding.size();
+        x.min += padding.width;
+        y.min += padding.height;
+        x.preferred += padding.width;
+        y.preferred += padding.height;
+        Metrics { x, y }
+    } else if matches!(node.kind, "Loader" | "LoaderCandidate") {
         let padding = Padding::read(node);
         let child = node.children.iter().find(|child| child.is_visible());
         let preferred = child.map_or(Size::default(), |child| {

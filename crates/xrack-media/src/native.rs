@@ -82,6 +82,103 @@ fn initialize() -> Result<Native, String> {
         let api = entry()
             .as_ref()
             .ok_or("media library returned an empty API table")?;
+        let required = [
+            (stringify!(av_strerror), api.av_strerror.is_some()),
+            (
+                stringify!(av_channel_layout_default),
+                api.av_channel_layout_default.is_some(),
+            ),
+            (stringify!(av_frame_alloc), api.av_frame_alloc.is_some()),
+            (stringify!(av_frame_free), api.av_frame_free.is_some()),
+            (stringify!(av_packet_alloc), api.av_packet_alloc.is_some()),
+            (stringify!(av_packet_free), api.av_packet_free.is_some()),
+            (stringify!(av_packet_unref), api.av_packet_unref.is_some()),
+            (
+                stringify!(avcodec_alloc_context3),
+                api.avcodec_alloc_context3.is_some(),
+            ),
+            (
+                stringify!(avcodec_free_context),
+                api.avcodec_free_context.is_some(),
+            ),
+            (
+                stringify!(avcodec_parameters_to_context),
+                api.avcodec_parameters_to_context.is_some(),
+            ),
+            (stringify!(avcodec_open2), api.avcodec_open2.is_some()),
+            (
+                stringify!(avcodec_send_packet),
+                api.avcodec_send_packet.is_some(),
+            ),
+            (
+                stringify!(avcodec_receive_frame),
+                api.avcodec_receive_frame.is_some(),
+            ),
+            (
+                stringify!(avcodec_flush_buffers),
+                api.avcodec_flush_buffers.is_some(),
+            ),
+            (
+                stringify!(avformat_open_input),
+                api.avformat_open_input.is_some(),
+            ),
+            (
+                stringify!(avformat_find_stream_info),
+                api.avformat_find_stream_info.is_some(),
+            ),
+            (
+                stringify!(av_find_best_stream),
+                api.av_find_best_stream.is_some(),
+            ),
+            (stringify!(av_read_frame), api.av_read_frame.is_some()),
+            (stringify!(av_seek_frame), api.av_seek_frame.is_some()),
+            (
+                stringify!(avformat_close_input),
+                api.avformat_close_input.is_some(),
+            ),
+            (stringify!(swr_init), api.swr_init.is_some()),
+            (
+                stringify!(swr_alloc_set_opts2),
+                api.swr_alloc_set_opts2.is_some(),
+            ),
+            (stringify!(swr_free), api.swr_free.is_some()),
+            (stringify!(swr_convert), api.swr_convert.is_some()),
+            (
+                stringify!(swr_get_out_samples),
+                api.swr_get_out_samples.is_some(),
+            ),
+            (stringify!(sws_freeContext), api.sws_freeContext.is_some()),
+            (stringify!(sws_scale), api.sws_scale.is_some()),
+            (
+                stringify!(sws_getCachedContext),
+                api.sws_getCachedContext.is_some(),
+            ),
+            (stringify!(xr_audio_open), api.xr_audio_open.is_some()),
+            (stringify!(xr_audio_close), api.xr_audio_close.is_some()),
+            (
+                stringify!(avformat_alloc_context),
+                api.avformat_alloc_context.is_some(),
+            ),
+            (
+                stringify!(avcodec_find_decoder),
+                api.avcodec_find_decoder.is_some(),
+            ),
+            (stringify!(av_dict_set), api.av_dict_set.is_some()),
+            (stringify!(av_dict_get), api.av_dict_get.is_some()),
+            (stringify!(av_dict_free), api.av_dict_free.is_some()),
+            (
+                stringify!(avcodec_decode_subtitle2),
+                api.avcodec_decode_subtitle2.is_some(),
+            ),
+            (stringify!(avsubtitle_free), api.avsubtitle_free.is_some()),
+            (stringify!(xr_hls_window), api.xr_hls_window.is_some()),
+        ];
+        if let Some((name, _)) = required.into_iter().find(|&(_, present)| !present) {
+            return Err(format!(
+                "media library {} is missing {name}",
+                path.display()
+            ));
+        }
         Ok(Native {
             _library: library,
             api,
@@ -97,6 +194,10 @@ pub fn load() -> Result<(), &'static str> {
         .map_err(String::as_str)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "decoder and audio device constructors load the media library before accessing the API"
+)]
 pub(crate) fn api() -> &'static XrackMediaApi {
     // Each decoder loads the library before it allocates a C handle.
     NATIVE
@@ -105,6 +206,21 @@ pub(crate) fn api() -> &'static XrackMediaApi {
         .expect("loaded media library")
         .api
 }
+
+#[expect(
+    clippy::expect_used,
+    reason = "initialize verifies all required entries in the versioned media API table"
+)]
+pub(crate) fn required_function<F>(function: Option<F>, name: &str) -> F {
+    function.expect(name)
+}
+
+macro_rules! media_function {
+    ($name:ident) => {
+        $crate::native::required_function($crate::native::api().$name, stringify!($name))
+    };
+}
+pub(crate) use media_function;
 
 fn library_path() -> Result<Option<PathBuf>, String> {
     if let Some(path) = std::env::var_os("XRACK_MEDIA_LIBRARY") {
@@ -174,7 +290,12 @@ fn packaged_windows_library() -> Result<PathBuf, String> {
     if !digest
         .iter()
         .zip(crate::ff::LIBRARY_SHA256.as_bytes().chunks_exact(2))
-        .all(|(byte, hex)| u8::from_str_radix(std::str::from_utf8(hex).unwrap(), 16) == Ok(*byte))
+        .all(|(byte, hex)| {
+            std::str::from_utf8(hex)
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                == Some(*byte)
+        })
     {
         return Err(format!(
             "incorrect bundled media library {}",

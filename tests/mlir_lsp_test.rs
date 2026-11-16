@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use runfiles::Runfiles;
 use serde_json::{Value, json};
 use std::{

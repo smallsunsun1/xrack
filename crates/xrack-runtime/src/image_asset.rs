@@ -73,6 +73,10 @@ struct LoadedImageSource {
 }
 
 impl LoadedImage {
+    #[expect(
+        clippy::expect_used,
+        reason = "loaded image IDs must stay unique even if the counter reaches its limit"
+    )]
     pub fn new(format: ImageFormat, bytes: Vec<u8>, size: [u32; 2]) -> Self {
         static NEXT_IMAGE: AtomicU64 = AtomicU64::new(1);
         let id = NEXT_IMAGE

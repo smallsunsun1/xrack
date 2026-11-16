@@ -260,7 +260,9 @@ impl DragSession {
             send(&mut update, &self.source, DragEvent::Started);
         }
         update.captured = true;
-        let active = self.active.as_mut().unwrap();
+        let Some(active) = &mut self.active else {
+            return (update, false);
+        };
         let next = context.hover(&active.offer, point, requested);
         active.update_hover(next, &mut update);
         (update, true)
@@ -301,7 +303,9 @@ impl DragSession {
         if !valid {
             return update;
         }
-        let active = self.active.take().unwrap();
+        let Some(active) = self.active.take() else {
+            return update;
+        };
         let action = active.hover.map_or(DragAction::None, |over| {
             send(
                 &mut update,

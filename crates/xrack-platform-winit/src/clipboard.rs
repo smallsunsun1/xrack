@@ -132,11 +132,11 @@ impl ClipboardPort {
                 .insert(Worker::new().map_err(|error| error.to_string())?),
         };
         let id = self.next;
-        self.next = id.checked_add(1).expect("clipboard request ID exhausted");
+        self.next = id.checked_add(1).ok_or("clipboard request ID exhausted")?;
         worker
             .send
             .as_ref()
-            .unwrap()
+            .ok_or("clipboard worker stopped")?
             .try_send(Request {
                 id,
                 operation,

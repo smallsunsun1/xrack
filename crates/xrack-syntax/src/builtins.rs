@@ -102,6 +102,8 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "ScrollThumb",
         "ScrollView",
         "SearchField",
+        "SelectionEndHandle",
+        "SelectionStartHandle",
         "SecondaryWindow",
         "SectionHeader",
         "Shortcut",
@@ -113,6 +115,8 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "Spinner",
         "SplitHandle",
         "SplitView",
+        "StackItem",
+        "StackLayout",
         "StackPage",
         "StackView",
         "StandardButton",
@@ -166,12 +170,15 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
     )
 }
 
+/// Logical start and end artwork slots for a table's selection range.
+pub const TABLE_SELECTION_PARTS: [&str; 2] = ["SelectionStartHandle", "SelectionEndHandle"];
+
 pub fn navigation_group(kind: &str) -> bool {
-    matches!(kind, "TabBar" | "TabWidget" | "SwipeView")
+    matches!(kind, "TabBar" | "TabWidget" | "SwipeView" | "StackLayout")
 }
 
 pub fn navigation_option(kind: &str) -> bool {
-    matches!(kind, "TabButton" | "Tab" | "SwipePage")
+    matches!(kind, "TabButton" | "Tab" | "SwipePage" | "StackItem")
 }
 
 pub struct BuiltinSignature {

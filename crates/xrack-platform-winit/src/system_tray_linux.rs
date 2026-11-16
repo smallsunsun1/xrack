@@ -215,7 +215,12 @@ async fn serve(
         {
             Event::Update(Ok(())) => {
                 let next = updates.borrow_and_update().clone();
-                let previous = std::mem::replace(&mut *shared.lock().unwrap(), next.clone());
+                let previous = std::mem::replace(
+                    &mut *shared
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    next.clone(),
+                );
                 let icon_changed = !Arc::ptr_eq(&previous.pixmaps, &next.pixmaps);
                 let title_changed = previous.title != next.title;
                 if icon_changed {
@@ -277,7 +282,11 @@ impl Item {
     }
     #[zbus(property)]
     fn title(&self) -> String {
-        self.shared.lock().unwrap().title.clone()
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .title
+            .clone()
     }
     #[zbus(property)]
     fn status(&self) -> &str {
@@ -297,7 +306,12 @@ impl Item {
     }
     #[zbus(property)]
     fn icon_pixmap(&self) -> Vec<Pixmap> {
-        (*self.shared.lock().unwrap().pixmaps).clone()
+        (*self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pixmaps)
+            .clone()
     }
     #[zbus(property)]
     fn overlay_icon_name(&self) -> &str {
@@ -321,7 +335,10 @@ impl Item {
     }
     #[zbus(property)]
     fn tool_tip(&self) -> Tooltip {
-        let snapshot = self.shared.lock().unwrap();
+        let snapshot = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (
             String::new(),
             (*snapshot.pixmaps).clone(),
@@ -514,7 +531,10 @@ impl Menu {
         recursion_depth: i32,
         property_names: Vec<String>,
     ) -> fdo::Result<(u32, Layout)> {
-        let snapshot = self.shared.lock().unwrap();
+        let snapshot = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let menu = &snapshot.menu;
         Ok((
             menu.revision,
@@ -527,7 +547,10 @@ impl Menu {
         ids: Vec<i32>,
         property_names: Vec<String>,
     ) -> Vec<(i32, Properties)> {
-        let snapshot = self.shared.lock().unwrap();
+        let snapshot = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries = &snapshot.menu.entries;
         if ids.is_empty() {
             entries
@@ -542,7 +565,10 @@ impl Menu {
     }
 
     fn get_property(&self, id: i32, name: &str) -> fdo::Result<Value<'static>> {
-        let snapshot = self.shared.lock().unwrap();
+        let snapshot = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = snapshot.menu.entry(id)?;
         if let Some(value) = entry.properties.get(name) {
             return Ok(value.clone());
@@ -566,7 +592,10 @@ impl Menu {
         _timestamp: u32,
     ) -> fdo::Result<()> {
         let command = {
-            let snapshot = self.shared.lock().unwrap();
+            let snapshot = self
+                .shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let menu = &snapshot.menu;
             menu.entry(id)?.command.map(|item| TrayActivation::Menu {
                 revision: menu.activation_revision,
@@ -591,13 +620,20 @@ impl Menu {
     }
 
     fn about_to_show(&self, id: i32) -> fdo::Result<bool> {
-        self.shared.lock().unwrap().menu.entry(id)?;
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .menu
+            .entry(id)?;
         Ok(false)
     }
 
     #[zbus(out_args("updates_needed", "id_errors"))]
     fn about_to_show_group(&self, ids: Vec<i32>) -> (Vec<i32>, Vec<i32>) {
-        let snapshot = self.shared.lock().unwrap();
+        let snapshot = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (
             Vec::new(),
             ids.into_iter()

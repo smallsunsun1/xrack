@@ -15,6 +15,9 @@ fn main() -> std::process::ExitCode {
         Some("--row-visibility") => run_row_visibility(),
         Some("--sorted-views") => run_sorted_views(),
         Some("--keyed-selection") => xrack_platform_winit::run(table_ui::KeyedTableDemo::new()),
+        Some("--selection-handles") => {
+            xrack_platform_winit::run(table_ui::SelectionHandlesDemo::new())
+        }
         Some("--wide") => xrack_platform_winit::run(WideTableDemo::new()),
         Some("--rtl-table") => xrack_platform_winit::run(table_ui::DirectionalTableDemo::new()),
         mode => run_table(mode),

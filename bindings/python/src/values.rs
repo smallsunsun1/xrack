@@ -794,6 +794,7 @@ bridge_values! {
         ScrollBarPolicy { AsNeeded, AlwaysOn, AlwaysOff },
         ScrollSnapMode { #[pyo3(name = "None_")] None, Always, OnRelease },
         SelectionTarget { Rows, Cells, Columns },
+        SelectionGesture { Auto, Drag, PressAndHold },
         StandardButtonKind { Ok, Open, Save, SaveAll, Cancel, Close, Apply, Reset, RestoreDefaults, Help, Yes, YesToAll, No, NoToAll, Abort, Retry, Ignore, Discard },
         SwipeSide { Closed, Left, Right },
         TextHorizontalAlignment { Start, End, Left, Center, Right },

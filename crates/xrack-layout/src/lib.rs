@@ -95,7 +95,7 @@ pub use scale_rotate::{ScaleRotateTarget, TouchTransform, touch_centroid};
 pub use scroll_bar::ScrollBarGeometry;
 pub use scroll_gesture::{ScrollGestureEnd, ScrollGestureKind};
 pub use search::SearchGeometry;
-pub use selection::TAB_LABEL_SIZE;
+pub use selection::{TAB_LABEL_SIZE, tab_content_rect};
 pub use shortcut::{MenuShortcut, ShortcutKey, ShortcutModifiers, ShortcutOutcome};
 pub use spin::SpinGeometry;
 pub use split::{SplitGeometry, SplitHandle, SplitHandleRange};
@@ -212,11 +212,15 @@ pub struct LayoutNode {
     pub split: Option<Box<SplitGeometry>>,
     /// Header hit box of a tab, independent of the page visibility.
     pub tab_header: Option<Rect>,
+    /// Close button bounds within a tab header or standalone tab button.
+    pub tab_close: Option<Rect>,
     tab_strip: Option<Rect>,
     pub tumbler: Option<Box<TumblerGeometry>>,
     /// Logical thumb position while a switch gesture is active.
     pub switch_position: Option<f32>,
     pub swipe_delegate: Option<Box<SwipeDelegateGeometry>>,
+    #[doc(hidden)]
+    pub swipe_preview: Option<Box<LayoutNode>>,
     pub styled_text: Option<Box<StyledTextLayout>>,
     font_size: f32,
     overlays: Option<Box<modal::OverlayIndex>>,
@@ -890,7 +894,13 @@ fn prepare_scene_with_offsets(
     row_layouts: Option<&mut RowLayoutCache>,
 ) -> (Rc<Node>, LayoutNode) {
     fn has_lists(node: &Node) -> bool {
-        node.list.is_some() || node.children.iter().any(has_lists)
+        node.list.is_some()
+            || node.children.iter().any(has_lists)
+            || node
+                .swipe_preview
+                .as_ref()
+                .and_then(|preview| preview.page.as_ref())
+                .is_some_and(|(_, page)| has_lists(page))
     }
 
     text.begin_window(&scene);
@@ -1204,6 +1214,17 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             layout.missing_descendant_list_rows |= item.has_missing_list_rows();
             self.path.pop();
         }
+        if let Some((index, page)) = node
+            .swipe_preview
+            .as_mut()
+            .and_then(|preview| preview.page.as_mut())
+            && let Some(item) = &mut layout.swipe_preview
+        {
+            self.path.push(*index);
+            self.populate_lists(component, page, item);
+            self.path.pop();
+            scroll_bar::attach(page, item, self.text);
+        }
         self.row_key = previous_row;
         self.layout_direction = previous_direction;
     }
@@ -1311,8 +1332,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         if let Some(mut layout) = self
             .row_layouts
             .as_deref_mut()
-            .unwrap()
-            .get(path, slot, node, inputs)
+            .and_then(|cache| cache.get(path, slot, node, inputs))
         {
             row_layout::place_in_view(&mut layout, bounds, clip);
             return layout;
@@ -1323,10 +1343,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         let local = Rect::new(0.0, 0.0, inputs.size.width, inputs.size.height);
         let mut layout = self.place_node(node, local, local, inputs.visible, inputs.enabled, None);
         let path = &self.path[..path_len];
-        self.row_layouts
-            .as_deref_mut()
-            .unwrap()
-            .insert(path, slot, node, inputs, &layout);
+        if let Some(cache) = self.row_layouts.as_deref_mut() {
+            cache.insert(path, slot, node, inputs, &layout);
+        }
         row_layout::place_in_view(&mut layout, bounds, clip);
         layout
     }
@@ -1451,10 +1470,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 table: None,
                 split: None,
                 tab_header: None,
+                tab_close: None,
                 tab_strip: None,
                 tumbler: None,
                 switch_position: None,
                 swipe_delegate: None,
+                swipe_preview: None,
                 styled_text: None,
                 font_size,
                 overlays: None,
@@ -1500,7 +1521,11 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else {
             clip.intersect(clipping.map_or(viewport, |shape| shape.bounds))
         };
-        if matches!(node.kind, "TabWidget" | "SwipeView" | "StackView") && visible {
+        if matches!(
+            node.kind,
+            "TabWidget" | "SwipeView" | "StackView" | "StackLayout"
+        ) && visible
+        {
             let tabs = (node.kind == "TabWidget").then(|| {
                 selection::TabGeometry::new(
                     bounds,
@@ -1508,7 +1533,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     self.layout_direction.unwrap_or_default(),
                 )
             });
-            let page_bounds = tabs.as_ref().map_or(bounds, |geometry| geometry.content);
+            let stack_layout = node.kind == "StackLayout";
+            let page_bounds = if stack_layout {
+                linear::Padding::read(node).inner_rect(bounds)
+            } else {
+                tabs.as_ref().map_or(bounds, |geometry| geometry.content)
+            };
             let selected = if node.kind == "StackView" {
                 node.stack_page_index()
             } else {
@@ -1531,23 +1561,53 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .enumerate()
                 .map(|(index, tab)| {
                     self.path.push(index);
-                    let mut page = self.place(
-                        tab,
-                        page_bounds,
-                        child_clip,
-                        selected == Some(index),
-                        enabled,
-                        None,
-                    );
+                    let active = selected == Some(index);
+                    let bounds = if stack_layout && active && tab.is_visible() {
+                        let size = Size::new(page_bounds.width, page_bounds.height);
+                        let metrics = linear::measure(tab, size, self.text);
+                        place_in_direction(
+                            Rect::new(
+                                page_bounds.x,
+                                page_bounds.y,
+                                metrics.x.clamp(size.width),
+                                metrics.y.clamp(size.height),
+                            ),
+                            page_bounds,
+                            direction,
+                        )
+                    } else {
+                        page_bounds
+                    };
+                    let clip = if stack_layout {
+                        child_clip.intersect(page_bounds)
+                    } else {
+                        child_clip
+                    };
+                    let mut page = self.place(tab, bounds, clip, active, enabled, None);
                     self.path.pop();
                     if let Some((rects, _)) = &headers
                         && tab.is_visible()
                     {
                         page.tab_header = rects.get(index).copied();
+                        if xrack_runtime::tab_is_closable(node, tab) {
+                            page.tab_close = page
+                                .tab_header
+                                .and_then(|header| selection::tab_close_rect(header, direction));
+                        }
                     }
                     page
                 })
                 .collect();
+            let swipe_preview = node
+                .swipe_preview
+                .as_ref()
+                .and_then(|preview| preview.page.as_ref())
+                .map(|(index, page)| {
+                    self.path.push(*index);
+                    let item = self.place(page, page_bounds, child_clip, true, enabled, None);
+                    self.path.pop();
+                    Box::new(item)
+                });
             return LayoutNode {
                 bounds,
                 clip,
@@ -1572,10 +1632,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 table: None,
                 split: None,
                 tab_header: None,
+                tab_close: None,
                 tab_strip: tabs.as_ref().map(|geometry| geometry.bar),
                 tumbler: None,
                 switch_position: None,
                 swipe_delegate: None,
+                swipe_preview,
                 styled_text: None,
                 font_size,
                 overlays: None,
@@ -2043,6 +2105,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             .map(|((index, child), placement)| {
                 self.path.push(index);
                 let is_handle = child.kind == "SplitHandle";
+                let closable = xrack_runtime::tab_is_closable(node, child);
                 let clip = page.as_ref().map_or(child_clip, |page| {
                     child_clip.intersect(page.band(child).unwrap_or(page.body))
                 });
@@ -2153,6 +2216,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                         placement.row_children,
                     )
                 };
+                if child.visible && closable {
+                    child.tab_close = selection::tab_close_rect(
+                        placement.bounds,
+                        self.layout_direction.unwrap_or_default(),
+                    );
+                }
                 if let Some(shapes) = outer_shapes {
                     self.ancestor_shapes = shapes;
                 }
@@ -2255,10 +2324,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             table,
             split,
             tab_header: None,
+            tab_close: None,
             tab_strip: None,
             tumbler,
             switch_position,
             swipe_delegate,
+            swipe_preview: None,
             styled_text: if visible && node.kind == "StyledText" {
                 self.text
                     .layout_styled_text(node, Size::new(bounds.width, bounds.height))
@@ -2511,6 +2582,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         }
         // If responsive content oscillates between two bar sets, keep the
         // gutters permitted by policy and give the view a stable area.
+        #[expect(
+            clippy::expect_used,
+            reason = "enumeration always includes the allowed combination of forced and optional scrollbars"
+        )]
         fallback.expect("scrollbar policies allow a candidate")
     }
 

@@ -317,9 +317,9 @@ fn encode_split_values(version: &str, panes: &[&str], weights: Option<&[Option<f
             .copied()
             .flatten();
         if let Some(value) = value {
-            write!(state, ";{pane}={value}").expect("writing to a String");
+            let _ = write!(state, ";{pane}={value}");
         } else {
-            write!(state, ";{pane}=-").expect("writing to a String");
+            let _ = write!(state, ";{pane}=-");
         }
     }
     state

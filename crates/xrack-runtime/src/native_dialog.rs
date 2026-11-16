@@ -250,6 +250,10 @@ impl NativeDialogSlot {
 
     /// Prevent reentry and publish only while the permission and options remain current.
     #[doc(hidden)]
+    #[expect(
+        clippy::expect_used,
+        reason = "native dialog request IDs must stay unique even if the counter reaches its limit"
+    )]
     pub fn try_open_if<E>(
         &self,
         enabled: impl FnOnce() -> Result<bool, E>,
@@ -330,8 +334,9 @@ impl NativeDialogSlot {
         self.request.set(None);
         match result {
             NativeDialogResult::Files(paths) => {
-                let selection = selection.expect("validated file dialog selection");
-                selection.commit(&paths);
+                if let Some(selection) = selection {
+                    selection.commit(&paths);
+                }
                 notify(NativeDialogEvent::FilesSelected(VecModel::from(paths)))?;
             }
             NativeDialogResult::Canceled => {

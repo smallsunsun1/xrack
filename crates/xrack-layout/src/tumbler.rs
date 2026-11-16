@@ -517,12 +517,14 @@ pub(crate) fn scroll(
         },
         remainder: rows.fract(),
     });
-    if index == config.selected {
-        TumblerScroll::Pending
-    } else {
+    if index != config.selected
+        && let Some(action) = wheel.select(index)
+    {
         TumblerScroll::Select(ControlInput {
             path: target.path.clone(),
-            action: wheel.select(index).expect("selected wheel row"),
+            action,
         })
+    } else {
+        TumblerScroll::Pending
     }
 }

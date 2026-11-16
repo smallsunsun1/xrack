@@ -433,13 +433,13 @@ impl MenuPopup {
         if viewport.width <= 0.0 || viewport.height <= 0.0 || !valid(&self.trigger, scene, layout) {
             return Vec::new();
         }
-        let mut anchor = self.point.map_or_else(
-            || {
-                let item = layout.at_path(&self.trigger.path).unwrap();
-                item.window_bounds(item.bounds)
-            },
-            |point| Rect::new(point.x, point.y, 0.0, 0.0),
-        );
+        let mut anchor = if let Some(point) = self.point {
+            Rect::new(point.x, point.y, 0.0, 0.0)
+        } else if let Some(item) = layout.at_path(&self.trigger.path) {
+            item.window_bounds(item.bounds)
+        } else {
+            return Vec::new();
+        };
         let mut panels = Vec::new();
         let mut parent_direction = self.trigger_direction(layout);
         for (index, level) in self.levels.iter().enumerate() {

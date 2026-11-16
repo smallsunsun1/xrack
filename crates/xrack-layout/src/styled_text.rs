@@ -67,7 +67,7 @@ impl StyledTextLayout {
             .chunk_by_mut(|left, right| left.bounds.y == right.bounds.y)
         {
             let first = line[0].bounds.x;
-            let last = line.last().unwrap().bounds;
+            let last = line[line.len() - 1].bounds;
             let shift = alignment.offset(width - (last.x + last.width - first), false) - first;
             for fragment in line {
                 fragment.bounds.x += shift;

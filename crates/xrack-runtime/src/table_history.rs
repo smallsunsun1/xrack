@@ -241,6 +241,10 @@ impl<T> History<T> {
     }
 
     fn remove(&mut self, index: usize) {
+        #[expect(
+            clippy::expect_used,
+            reason = "history removes indices selected from the current batch collection"
+        )]
         let batch = self.batches.remove(index).expect("valid history index");
         self.bytes -= batch.bytes;
         if index < self.cursor {

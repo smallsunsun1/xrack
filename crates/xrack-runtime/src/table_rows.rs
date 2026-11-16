@@ -618,7 +618,9 @@ impl TableRowOrder {
                         ),
                     });
                 }
-                observation.as_ref().unwrap().changed.track();
+                if let Some(observation) = observation.as_ref() {
+                    observation.changed.track();
+                }
             }
             let manual = {
                 let state = self.state.borrow();
@@ -1132,11 +1134,19 @@ impl<M: ListModel> ListModel for TableRows<M> {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "ListModel requires a row below row_count; the projection maps every such row"
+    )]
     fn item(&self, row: usize) -> Self::Item {
         self.source
             .item(self.positions.source_index(row).expect("row in range"))
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "ListModel requires a row below row_count; the projection maps every such row"
+    )]
     fn row_key(&self, row: usize) -> RowKey {
         self.source
             .row_key(self.positions.source_index(row).expect("row in range"))

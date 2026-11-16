@@ -1,11 +1,11 @@
-use crate::LayoutNode;
+use crate::{Interaction, LayoutNode, Point, Rect};
 use std::{
     collections::BTreeMap,
     ops::Range,
     rc::Rc,
     time::{Duration, Instant},
 };
-use xrack_runtime::Node;
+use xrack_runtime::{LayoutDirection, Node, Orientation, PageIdentity, group_index};
 
 const MAX_INTERRUPTED_LAYERS: usize = 32;
 
@@ -45,18 +45,48 @@ impl PageLayer {
     }
 }
 
-/// A stack's paint-only motion. Offsets and clip ranges are fractions of its width.
+/// A stack's paint-only motion. Offsets and clip ranges are fractions of the moving axis.
 pub struct StackSlide {
     start: Instant,
     duration: Duration,
     direction: f32,
+    orientation: Orientation,
     progress: f32,
+    initial_progress: f32,
     previous: Vec<PageLayer>,
 }
 
 impl StackSlide {
     pub fn incoming_offset(&self) -> f32 {
         self.direction * (1.0 - self.progress)
+    }
+
+    #[doc(hidden)]
+    pub fn displacement(&self, bounds: Rect, offset: f32) -> Point {
+        match self.orientation {
+            Orientation::Horizontal => Point {
+                x: bounds.width * offset,
+                y: 0.0,
+            },
+            Orientation::Vertical => Point {
+                x: 0.0,
+                y: bounds.height * offset,
+            },
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn slice(&self, bounds: Rect, range: Range<f32>) -> Rect {
+        let start = self.displacement(bounds, range.start);
+        let end = self.displacement(bounds, range.end);
+        match self.orientation {
+            Orientation::Horizontal => {
+                Rect::new(bounds.x + start.x, bounds.y, end.x - start.x, bounds.height)
+            }
+            Orientation::Vertical => {
+                Rect::new(bounds.x, bounds.y + start.y, bounds.width, end.y - start.y)
+            }
+        }
     }
 
     pub fn outgoing(&self) -> impl Iterator<Item = (&Node, &LayoutNode, f32, Range<f32>)> {
@@ -110,7 +140,7 @@ impl StackTransitions {
         self.slides.retain(|_, slide| {
             let elapsed = now.saturating_duration_since(slide.start);
             let remaining = 1.0 - elapsed.as_secs_f32() / slide.duration.as_secs_f32();
-            slide.progress = 1.0 - remaining.max(0.0).powi(3);
+            slide.progress = 1.0 - (1.0 - slide.initial_progress) * remaining.max(0.0).powi(3);
             elapsed < slide.duration
         });
     }
@@ -121,15 +151,26 @@ impl StackTransitions {
         next: (&Node, &LayoutNode),
         now: Instant,
     ) {
+        self.update_with_input(previous, next, now, None);
+    }
+
+    #[doc(hidden)]
+    pub fn update_with_input(
+        &mut self,
+        previous: (&Node, &LayoutNode),
+        next: (&Node, &LayoutNode),
+        now: Instant,
+        input: Option<&Interaction>,
+    ) {
         let mut prior = std::mem::take(&mut self.slides);
-        self.collect(previous, next, now, &mut Vec::new(), &mut prior);
+        self.collect(previous, next, (now, input), &mut Vec::new(), &mut prior);
     }
 
     fn collect(
         &mut self,
         (old, old_layout): (&Node, &LayoutNode),
         (new, new_layout): (&Node, &LayoutNode),
-        now: Instant,
+        (now, input): (Instant, Option<&Interaction>),
         path: &mut Vec<usize>,
         prior: &mut BTreeMap<Vec<usize>, StackSlide>,
     ) {
@@ -140,8 +181,7 @@ impl StackTransitions {
         {
             return;
         }
-        if let ("StackView", Some(old_stack), Some(new_stack)) = (new.kind, &old.stack, &new.stack)
-        {
+        if let Some(change) = PageChange::between(old, new, new_layout) {
             let existing = prior.remove(path);
             let duration = new.int("transition-duration").unwrap_or(0).max(0) as u64;
             let bounds = new_layout.bounds;
@@ -149,26 +189,35 @@ impl StackTransitions {
             let can_slide = duration > 0
                 && old_layout.bounds == bounds
                 && old_layout.clip == new_layout.clip
+                && (new.kind != "SwipeView"
+                    || (old.orientation(), old_layout.layout_direction)
+                        == (new.orientation(), new_layout.layout_direction))
                 && viewport.width > 0.0
                 && viewport.height > 0.0;
-            if old_stack.current() != new_stack.current() {
+            if change.changed {
                 if can_slide
-                    && let Some(index) = old.stack_page_index()
-                    && let Some(page_layout) = old_layout.children.get(index)
+                    && let Some(direction) = change.direction
+                    && let Some(index) = change.from
+                    && let Some(previous) = old.child_at(index).zip(old_layout.child_at(index))
                 {
-                    let backward = new_stack.depth() < old_stack.depth()
-                        && old_stack.routes().starts_with(new_stack.routes());
-                    let previous = (&old.children[index], page_layout);
-                    self.slides.insert(
-                        path.clone(),
-                        StackSlide {
-                            start: now,
-                            duration: Duration::from_millis(duration),
-                            direction: if backward { -1.0 } else { 1.0 },
-                            progress: 0.0,
-                            previous: outgoing_pages(previous, existing.as_ref()),
-                        },
-                    );
+                    let offset =
+                        input.map_or(0.0, |input| input.swipe_commit_fraction(path, old, new));
+                    let progress = (offset * direction).max(0.0);
+                    let duration = Duration::from_millis(duration).mul_f32(1.0 - progress);
+                    if !duration.is_zero() {
+                        self.slides.insert(
+                            path.clone(),
+                            StackSlide {
+                                start: now,
+                                duration,
+                                direction,
+                                orientation: change.orientation,
+                                progress,
+                                initial_progress: progress,
+                                previous: outgoing_pages(previous, existing.as_ref()),
+                            },
+                        );
+                    }
                 }
                 return;
             }
@@ -181,8 +230,53 @@ impl StackTransitions {
                 continue;
             };
             path.push(index);
-            self.collect(before, (child, layout), now, path, prior);
+            self.collect(before, (child, layout), (now, input), path, prior);
             path.pop();
+        }
+    }
+}
+
+struct PageChange {
+    from: Option<usize>,
+    changed: bool,
+    direction: Option<f32>,
+    orientation: Orientation,
+}
+
+impl PageChange {
+    fn between(old: &Node, new: &Node, layout: &LayoutNode) -> Option<Self> {
+        match new.kind {
+            "StackView" => {
+                let (before, after) = old.stack.as_ref().zip(new.stack.as_ref())?;
+                let backward =
+                    after.depth() < before.depth() && before.routes().starts_with(after.routes());
+                Some(Self {
+                    from: old.stack_page_index(),
+                    changed: before.current() != after.current(),
+                    direction: Some(if backward { -1.0 } else { 1.0 }),
+                    orientation: Orientation::Horizontal,
+                })
+            }
+            "SwipeView" => {
+                let from = group_index(old);
+                let to = group_index(new);
+                let identity = |node: &Node, slot: Option<usize>| {
+                    let slot = slot?;
+                    Some(PageIdentity::of(node.child_at(slot)?, slot))
+                };
+                let orientation = new.orientation();
+                let mirrored = orientation == Orientation::Horizontal
+                    && layout.layout_direction == LayoutDirection::RightToLeft;
+                Some(Self {
+                    from,
+                    changed: identity(old, from) != identity(new, to),
+                    direction: from.zip(to).and_then(|(from, to)| {
+                        (from != to).then_some(if (from < to) != mirrored { 1.0 } else { -1.0 })
+                    }),
+                    orientation,
+                })
+            }
+            _ => None,
         }
     }
 }

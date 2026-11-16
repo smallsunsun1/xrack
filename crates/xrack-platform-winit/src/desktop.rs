@@ -215,6 +215,10 @@ struct Commands {
 }
 
 impl Commands {
+    #[expect(
+        clippy::expect_used,
+        reason = "window and tray events can outlive their owners, so desktop IDs cannot be reused"
+    )]
     fn key(&self) -> WindowKey {
         let key = self.next.get();
         self.next.set(
@@ -685,7 +689,9 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime {
             DesktopEvent::Tray(key, event) => {
                 match event {
                     TrayEvent::Activated(event) if self.resumed && self.sync_tray(key) => {
-                        self.trays.get_mut(&key).unwrap().activate(event);
+                        if let Some(tray) = self.trays.get_mut(&key) {
+                            tray.activate(event);
+                        }
                         self.sync_tray(key);
                     }
                     TrayEvent::PollTasks => {
@@ -711,18 +717,17 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime {
                     TrayEvent::ContextMenu { mount, anchor }
                         if self.resumed && self.sync_tray(key) =>
                     {
-                        self.trays.get(&key).unwrap().request_menu(mount, anchor);
+                        if let Some(tray) = self.trays.get(&key) {
+                            tray.request_menu(mount, anchor);
+                        }
                     }
                     #[cfg(target_os = "windows")]
                     TrayEvent::Restore {
                         mount,
                         taskbar_created,
                     } if self.resumed && self.sync_tray(key) => {
-                        if let Err(error) = self
-                            .trays
-                            .get_mut(&key)
-                            .unwrap()
-                            .restore(mount, taskbar_created)
+                        if let Some(tray) = self.trays.get_mut(&key)
+                            && let Err(error) = tray.restore(mount, taskbar_created)
                         {
                             self.error.get_or_insert(error);
                             self.trays.remove(&key);

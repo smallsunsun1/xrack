@@ -204,6 +204,10 @@ impl ListRowRenderer {
     }
 
     #[doc(hidden)]
+    #[expect(
+        clippy::expect_used,
+        reason = "virtual view IDs must stay unique even if the counter reaches its limit"
+    )]
     pub fn with_columns_in_scene(
         rows: impl Fn(Range<usize>, &TableColumnWindow, Option<&Node>) -> Vec<Node> + 'static,
     ) -> Self {
@@ -1094,6 +1098,10 @@ impl<T: Clone + PartialEq> ListModel for VecModel<T> {
         self.visit_row_data(self.row_count(), visit);
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "ListModel requires a row below row_count; the projection maps every such row"
+    )]
     fn item(&self, row: usize) -> Self::Item {
         self.row(row).expect("row is inside the model range")
     }
@@ -1102,6 +1110,10 @@ impl<T: Clone + PartialEq> ListModel for VecModel<T> {
         self.project_row(row, |_| ());
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "ListModel requires a row below row_count; the projection maps every such row"
+    )]
     fn row_key(&self, row: usize) -> RowKey {
         self.row_key(row).expect("row is inside the model range")
     }

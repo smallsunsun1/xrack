@@ -13,6 +13,9 @@ pub(crate) struct TabDrag {
 
 impl TabDrag {
     pub fn new(source: &Target, scene: &Node, layout: &LayoutNode, start: Point) -> Option<Self> {
+        if source.tab_close.is_some() {
+            return None;
+        }
         let (&slot, path) = source.path.split_last()?;
         let bar = scene.at_path(path)?;
         let item = layout.at_path(path)?;

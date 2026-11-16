@@ -23,7 +23,10 @@ impl<T> EventQueue<T> {
 
     pub(crate) fn try_push(&self, item: T) -> Result<(), TrySendError<T>> {
         let wake = {
-            let mut items = self.items.lock().unwrap();
+            let mut items = self
+                .items
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(items) = items.as_mut() else {
                 return Err(TrySendError::Disconnected(item));
             };
@@ -42,7 +45,10 @@ impl<T> EventQueue<T> {
 
     pub(crate) fn take_batch(&self) -> Vec<T> {
         let (batch, more) = {
-            let mut items = self.items.lock().unwrap();
+            let mut items = self
+                .items
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(items) = items.as_mut() else {
                 return Vec::new();
             };
@@ -56,7 +62,11 @@ impl<T> EventQueue<T> {
     }
 
     pub(crate) fn close(&self) {
-        let items = self.items.lock().unwrap().take();
+        let items = self
+            .items
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         drop(items);
     }
 }

@@ -251,7 +251,7 @@ impl Topology {
                     let root = cycle
                         .chain(std::iter::once(node))
                         .min_by_key(|&index| entries[index].key)
-                        .unwrap();
+                        .unwrap_or(node);
                     entries[root].parent = None;
                     break;
                 }
@@ -919,7 +919,9 @@ impl TreeState {
                     ),
                 });
             }
-            observation.as_ref().unwrap().changed.track();
+            if let Some(observation) = observation.as_ref() {
+                observation.changed.track();
+            }
         }
         let mut included = vec![false; topology.entries.len()];
         let mut pending = topology.roots_for(root, branch).to_vec();

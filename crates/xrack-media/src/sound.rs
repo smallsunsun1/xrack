@@ -195,7 +195,11 @@ fn decode(path: &Path, cancelled: Arc<AtomicBool>) -> Samples {
 impl Drop for Sound {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Relaxed);
-        self.mixer.voices.lock().unwrap().remove(&self.id);
+        self.mixer
+            .voices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
     }
 }
 
@@ -207,7 +211,11 @@ impl MediaSession for Sound {
             }
             MediaCommand::Stop => {
                 self.play_pending = false;
-                self.mixer.voices.lock().unwrap().remove(&self.id);
+                self.mixer
+                    .voices
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&self.id);
             }
             _ => {}
         }
@@ -215,7 +223,11 @@ impl MediaSession for Sound {
 
     fn configure(&mut self, options: &MediaOptions) {
         self.loops = options.loops;
-        let mut voices = self.mixer.voices.lock().unwrap();
+        let mut voices = self
+            .mixer
+            .voices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(voice) = voices.get_mut(&self.id).filter(|voice| voice.playing()) {
             voice.loops_remaining = self.loops;
         }
@@ -223,7 +235,13 @@ impl MediaSession for Sound {
 
     fn set_volume(&mut self, volume: f64) {
         self.volume = volume as f32;
-        if let Some(voice) = self.mixer.voices.lock().unwrap().get_mut(&self.id) {
+        if let Some(voice) = self
+            .mixer
+            .voices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&self.id)
+        {
             voice.volume = self.volume;
         }
     }
@@ -257,7 +275,11 @@ impl MediaSession for Sound {
             && matches!(self.mixer.ready.get(), Some(Ok(())))
         {
             self.state.ready = true;
-            let mut voices = self.mixer.voices.lock().unwrap();
+            let mut voices = self
+                .mixer
+                .voices
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if std::mem::take(&mut self.play_pending) {
                 voices.insert(
                     self.id,

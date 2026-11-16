@@ -299,7 +299,9 @@ fn resolve(exact: Vec<Binding>, has_prefix: bool, repeat: bool) -> ShortcutOutco
         (0, false, _) => ShortcutOutcome::Unmatched,
         (0, true, _) => ShortcutOutcome::Consumed,
         (1, false, _) => {
-            let binding = distinct.pop().expect("one shortcut target");
+            let Some(binding) = distinct.pop() else {
+                return ShortcutOutcome::Unmatched;
+            };
             if !repeat || binding.auto_repeat && binding.keys.len() == 1 {
                 ShortcutOutcome::Activate(binding.target)
             } else {

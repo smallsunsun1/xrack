@@ -1173,7 +1173,7 @@ fn import_edit(
         |offset| offset + 1,
     );
     let line_break = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let path = serde_json::to_string(path).expect("serialize import path");
+    let path = Value::String(path.into()).to_string();
     json!({"range": source.range(insertion, insertion), "newText": format!("import {{ {name} }} from {path};{line_break}")})
 }
 
@@ -1474,6 +1474,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                 || xrack_ir::semantic::flick_motion_property(kind, property).is_some()
                 || property == "current-index" && index.value_navigation.contains(&scope)
                 || property == "count" && builtins::navigation_group(kind)
+                || property == "active-index" && kind == "StackLayout"
                 || xrack_ir::semantic::range_position_property(kind, property)
                 || xrack_ir::semantic::combo_popup_property(kind, property).is_some()
                 || view_count_property(kind, property)
@@ -1630,6 +1631,12 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                         "ScrollThumb" => "artwork following the actual scrollbar thumb",
                         "TreeDisclosure" => "branch disclosure artwork driven by the TreeView",
                         "SectionHeader" => "visual template for each section heading in a list",
+                        "SelectionStartHandle" => {
+                            "artwork at the leading corner of a table selection"
+                        }
+                        "SelectionEndHandle" => {
+                            "artwork at the trailing corner of a table selection"
+                        }
                         _ => "replacement control part",
                     };
                     items.add(part, CLASS, detail);
@@ -1890,6 +1897,9 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 PROPERTY,
                 "read-only int · number of navigation items",
             );
+        }
+        if kind == "StackLayout" {
+            items.add("active-index", PROPERTY, "read-only int");
         }
         if index.value_navigation.contains(&owner) {
             items.add(
@@ -2195,6 +2205,11 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.add("edit-cell", FUNCTION, "(row: int, column: int)");
                 items.add("cancel-edit", FUNCTION, "()");
                 items.words("undo redo", FUNCTION, "()");
+            }
+        }
+        for property in ["selection-active", "selection-dragging"] {
+            if xrack_ir::semantic::table_selection_property(kind, property).is_some() {
+                items.add(property, PROPERTY, "read-only bool");
             }
         }
         if xrack_ir::semantic::row_selection_view(kind) {
