@@ -2,7 +2,7 @@
 
 [返回项目首页](../README.md) · [控件与布局参考](controls.md)
 
-在 `.xr` 回调中用 `Model.append(root.rows, value)`、`Model.insert`、`Model.set`、`Model.remove`、`Model.move` 和 `Model.clear` 编辑共享列表。更新或移动保留行标识，移除只结束被删行的生命周期。绑定到同一模型的视图会接收对应的内容或结构更新。运行 `bazel run //examples/navigation:navigation -- --model-tabs`，可新建和关闭文档，并切回仍开启的草稿查看原来的编辑状态。[Model API](language.md#内置函数)
+在 `.xr` 回调中用 `Model.append(root.rows, value)`、`Model.insert`、`Model.set`、`Model.remove`、`Model.move` 和 `Model.clear` 编辑共享列表。更新或移动保留行标识，移除只结束被删行的生命周期。绑定到同一模型的视图会接收对应的内容或结构更新。运行 `bazel run //examples/navigation:navigation -- --model-tabs`，可新建和关闭文档，并切回仍开启的草稿查看原来的编辑状态。[Model API](language.md)
 
 ## 滚动、列表和网格
 
