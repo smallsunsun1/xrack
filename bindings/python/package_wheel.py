@@ -123,19 +123,20 @@ def smoke_test(wheel: Path) -> None:
         )
 
 
-def build(target: str, output: Path) -> None:
+def build(target: str, output: Path, bin_dir: Path | None = None) -> None:
     raw_platform, final_platform = MATRIX[target]
     release_version = version()
-    subprocess.run(
-        ["bazel", "build", *BAZEL_OPTIONS, "//bindings/python:wheel"],
-        cwd=ROOT,
-        check=True,
-    )
-    bin_dir = Path(
-        subprocess.check_output(
-            ["bazel", "info", *BAZEL_OPTIONS, "bazel-bin"], cwd=ROOT, text=True
-        ).strip()
-    )
+    if bin_dir is None:
+        subprocess.run(
+            ["bazel", "build", *BAZEL_OPTIONS, "//bindings/python:wheel"],
+            cwd=ROOT,
+            check=True,
+        )
+        bin_dir = Path(
+            subprocess.check_output(
+                ["bazel", "info", *BAZEL_OPTIONS, "bazel-bin"], cwd=ROOT, text=True
+            ).strip()
+        )
     raw_wheel = bin_dir / "bindings/python" / f"xrack-{release_version}-{ABI}-{raw_platform}.whl"
     output.mkdir(parents=True, exist_ok=True)
     # Only publish the artifact after verification and isolated installation.
@@ -195,12 +196,13 @@ def main() -> None:
     package = commands.add_parser("build")
     package.add_argument("--target", choices=MATRIX, required=True)
     package.add_argument("--output", type=Path, required=True)
+    package.add_argument("--bazel-bin", type=Path, help="Use an already built Bazel wheel")
     release = commands.add_parser("verify-release")
     release.add_argument("--artifacts", type=Path, required=True)
     release.add_argument("--tag", required=True)
     args = parser.parse_args()
     if args.command == "build":
-        build(args.target, args.output.resolve())
+        build(args.target, args.output.resolve(), args.bazel_bin)
     else:
         verify_release(args.artifacts, args.tag)
 
