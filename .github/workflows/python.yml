@@ -1,18 +1,13 @@
-name: Recover XRack 0.6.0 on PyPI
+name: Publish five verified XRack 0.6.0 wheels
 
 on:
   workflow_dispatch:
-    inputs:
-      authorization_only:
-        description: Check PyPI Trusted Publishing without building or uploading wheels
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.authorization_only && 'xrack-pypi-v0.6.0-auth' || 'xrack-pypi-v0.6.0' }}
+  group: xrack-pypi-v0.6.0
   cancel-in-progress: false
 
 env:
@@ -61,97 +56,8 @@ jobs:
           ')"
           printf 'ids=%s\n' "$ids" >> "$GITHUB_OUTPUT"
 
-  authorize:
-    runs-on: ubuntu-24.04
-    needs: verify
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - name: Check PyPI Trusted Publishing
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from urllib.error import HTTPError
-          from urllib.request import Request, urlopen
-
-          request = Request(
-              os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=pypi",
-              headers={"Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
-          )
-          with urlopen(request, timeout=30) as response:
-              identity = json.load(response)["value"]
-          request = Request(
-              "https://pypi.org/_/oidc/mint-token",
-              data=json.dumps({"token": identity}).encode(),
-              headers={"Content-Type": "application/json"},
-          )
-          try:
-              with urlopen(request, timeout=30) as response:
-                  if not json.load(response).get("token"):
-                      raise SystemExit("PyPI did not return a publishing token")
-          except HTTPError as error:
-              try:
-                  codes = ", ".join(item["code"] for item in json.load(error).get("errors", []))
-              except (ValueError, KeyError, TypeError):
-                  codes = "unknown error"
-              raise SystemExit(f"PyPI rejected this workflow identity (HTTP {error.code}, {codes})") from None
-          print("PyPI accepted the workflow identity")
-          PY
-
-  intel:
-    if: ${{ !inputs.authorization_only }}
-    name: Build macOS Intel wheel
-    needs: verify
-    runs-on: macos-15-intel
-    timeout-minutes: 330
-    env:
-      CARGO_BAZEL_ISOLATED: "false"
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: refs/tags/v0.6.0
-          persist-credentials: false
-      - name: Verify the tagged source
-        run: test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-          architecture: x64
-      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-cache: true
-          repository-cache: |
-            - .bazelversion
-            - MODULE.bazel
-            - Cargo.lock
-          disk-cache: true
-          bazelrc: |
-            build --jobs=4
-      - name: Test the bindings and build the wheel
-        shell: bash
-        run: |
-          bazel test --lockfile_mode=update --repo_env=CARGO_BAZEL_ISOLATED=false \
-            //bindings/python:binding_test //bindings/python:wheel
-      - name: Smoke-test the installed wheel
-        shell: bash
-        run: |
-          bazel_bin="$(bazel info --lockfile_mode=update --repo_env=CARGO_BAZEL_ISOLATED=false bazel-bin)"
-          python bindings/python/package_wheel.py build --target x86_64-apple-darwin \
-            --bazel-bin "$bazel_bin" --output .tools/python-dist
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: xrack-python-x86_64-apple-darwin
-          path: .tools/python-dist/*.whl
-          include-hidden-files: true
-          if-no-files-found: error
-          compression-level: 0
-
   publish:
-    if: ${{ !inputs.authorization_only }}
-    needs: [verify, authorize, intel]
+    needs: verify
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:
@@ -170,12 +76,34 @@ jobs:
           artifact-ids: ${{ needs.verify.outputs.artifact-ids }}
           merge-multiple: true
           path: .tools/python-dist
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: xrack-python-x86_64-apple-darwin
-          path: .tools/python-dist
-      - name: Verify all six wheels for the release tag
-        run: python3 bindings/python/package_wheel.py verify-release --artifacts .tools/python-dist --tag "$RELEASE_TAG"
+      - name: Verify the five approved release wheels
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          python3 - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "bindings/python")
+          from package_wheel import MATRIX, verify_wheel, version
+
+          release_version = version()
+          if f"v{release_version}" != os.environ["RELEASE_TAG"]:
+              raise SystemExit("The wheel version must match the release tag")
+          wheels = set(Path(".tools/python-dist").glob("*.whl"))
+          for target, (_, platform) in MATRIX.items():
+              if target == "x86_64-apple-darwin":
+                  continue
+              matches = [wheel for wheel in wheels
+                         if platform in wheel.stem.rsplit("-", 1)[1].split(".")]
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected exactly one wheel for {platform}")
+              verify_wheel(matches[0], release_version, platform)
+              wheels.remove(matches[0])
+          if wheels:
+              raise SystemExit(f"Unexpected wheels: {sorted(w.name for w in wheels)}")
+          PY
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           packages-dir: .tools/python-dist/
