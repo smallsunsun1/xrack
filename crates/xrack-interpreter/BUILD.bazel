@@ -15,7 +15,7 @@ rust_library(
     srcs = glob(["src/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.6.0",
+    version = "0.7.0",
     visibility = ["//visibility:public"],
     deps = _DEPS,
 )
@@ -27,7 +27,7 @@ rust_library(
     crate_name = "xrack_interpreter",
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.6.0",
+    version = "0.7.0",
     visibility = ["//visibility:public"],
     deps = _DEPS + ["@crates//:serde", "@crates//:serde_json"],
 )
