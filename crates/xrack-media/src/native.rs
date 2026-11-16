@@ -1,5 +1,49 @@
-use crate::ff::XrackMediaApi;
-use std::{path::PathBuf, sync::OnceLock};
+use crate::{
+    MediaError,
+    ff::{XrackAudioDevice, XrackMediaApi},
+};
+use std::{
+    ffi::c_void,
+    path::PathBuf,
+    ptr::NonNull,
+    sync::{Arc, OnceLock},
+};
+
+pub(crate) struct AudioDevice<T> {
+    handle: NonNull<XrackAudioDevice>,
+    close: unsafe extern "C" fn(*mut XrackAudioDevice),
+    pub(crate) state: Arc<T>,
+}
+
+impl<T: Send + Sync> AudioDevice<T> {
+    pub(crate) fn open(
+        state: Arc<T>,
+        render: unsafe extern "C" fn(*mut c_void, *mut f32, u32, u32),
+    ) -> Result<Self, MediaError> {
+        load().map_err(|error| MediaError(error.into()))?;
+        let api = api();
+        let (Some(open), Some(close)) = (api.xr_audio_open, api.xr_audio_close) else {
+            return Err(MediaError(
+                "the media library does not provide audio output".into(),
+            ));
+        };
+        // The callback state stays alive until close has joined the device.
+        let handle = unsafe { open(Some(render), Arc::as_ptr(&state).cast_mut().cast()) };
+        let handle = NonNull::new(handle)
+            .ok_or_else(|| MediaError("no audio output device is available".into()))?;
+        Ok(Self {
+            handle,
+            close,
+            state,
+        })
+    }
+}
+
+impl<T> Drop for AudioDevice<T> {
+    fn drop(&mut self) {
+        unsafe { (self.close)(self.handle.as_ptr()) }
+    }
+}
 
 struct Native {
     _library: libloading::Library,

@@ -174,6 +174,7 @@ impl VideoDecoder {
             ff::AVMediaType_AVMEDIA_TYPE_VIDEO,
             -1,
             variant,
+            false,
             cancelled,
         )
     }
@@ -194,6 +195,7 @@ impl VideoDecoder {
             ff::AVMediaType_AVMEDIA_TYPE_AUDIO,
             track,
             variant,
+            false,
             cancelled,
         )
     }
@@ -209,6 +211,21 @@ impl VideoDecoder {
             ff::AVMediaType_AVMEDIA_TYPE_SUBTITLE,
             track,
             variant,
+            false,
+            cancelled,
+        )
+    }
+
+    pub(crate) fn open_wav(
+        path: &Path,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Option<Self>, MediaError> {
+        Self::open_stream(
+            path,
+            ff::AVMediaType_AVMEDIA_TYPE_AUDIO,
+            -1,
+            0,
+            true,
             cancelled,
         )
     }
@@ -218,9 +235,13 @@ impl VideoDecoder {
         media_type: ff::AVMediaType,
         track: i64,
         variant: usize,
+        local_wav: bool,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Option<Self>, MediaError> {
         let network = is_network(path);
+        if local_wav && path.to_string_lossy().contains("://") {
+            return Err(MediaError("SoundEffect requires a local WAV file".into()));
+        }
         let local;
         let path = if network {
             path
@@ -269,6 +290,9 @@ impl VideoDecoder {
             {
                 options.set(c"ca_file", &value)?;
             }
+        } else if local_wav {
+            options.set(c"protocol_whitelist", c"file")?;
+            options.set(c"format_whitelist", c"wav")?;
         } else {
             options.set(c"protocol_whitelist", c"file,crypto")?;
         }

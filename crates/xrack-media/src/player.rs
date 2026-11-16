@@ -4,7 +4,10 @@ use crate::{
     decoder::{LiveWindow, MediaError, check, is_network},
     subtitles,
 };
-use crate::{ff, native::api};
+use crate::{
+    ff,
+    native::{AudioDevice, api},
+};
 use std::{
     collections::VecDeque,
     ffi::c_void,
@@ -26,38 +29,13 @@ const AUDIO_AHEAD: u64 = RATE as u64 / 3;
 const VIDEO_AHEAD: f64 = 0.25;
 const VIDEO_BYTES_AHEAD: usize = 64 * 1024 * 1024;
 
-struct Device {
-    handle: *mut ff::XrackAudioDevice,
-    state: Arc<Shared>,
-}
-
-impl Device {
+impl AudioDevice<Shared> {
     fn last_callback_elapsed(&self) -> Duration {
         let millis = self.state.audio_callback.load(Ordering::Relaxed);
         self.state
             .started
             .elapsed()
             .saturating_sub(Duration::from_millis(millis))
-    }
-
-    fn open(state: Arc<Shared>) -> Result<Self, MediaError> {
-        let handle = unsafe {
-            ((api().xr_audio_open).unwrap())(
-                Some(render_audio),
-                Arc::as_ptr(&state).cast_mut().cast(),
-            )
-        };
-        if handle.is_null() {
-            return Err(MediaError("no audio output device is available".into()));
-        }
-        Ok(Self { handle, state })
-    }
-}
-
-impl Drop for Device {
-    fn drop(&mut self) {
-        // Closing the device waits for its callback before releasing the shared state.
-        unsafe { ((api().xr_audio_close).unwrap())(self.handle) }
     }
 }
 
@@ -698,7 +676,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
         state.audio = audio.is_some();
     }
     if audio.is_some() {
-        match Device::open(shared.clone()) {
+        match AudioDevice::open(shared.clone(), render_audio) {
             Ok(output) => device = Some(output),
             Err(error) if video.is_some() => {
                 let mut state = shared.state.lock().unwrap();
@@ -949,7 +927,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
         {
             drop(playback);
             retry_audio = Instant::now() + Duration::from_secs(2);
-            if let Ok(output) = Device::open(shared.clone()) {
+            if let Ok(output) = AudioDevice::open(shared.clone(), render_audio) {
                 device = Some(output);
                 let mut state = shared.state.lock().unwrap();
                 let position = state.state.position;

@@ -49,6 +49,7 @@ pub enum MediaStatus {
     #[default]
     Empty,
     Loading,
+    Ready,
     Seeking,
     Buffering,
     Paused,
@@ -62,6 +63,7 @@ impl MediaStatus {
         match self {
             Self::Empty => "empty",
             Self::Loading => "loading",
+            Self::Ready => "ready",
             Self::Seeking => "seeking",
             Self::Buffering => "buffering",
             Self::Paused => "paused",

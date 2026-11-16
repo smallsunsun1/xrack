@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 播放本地视频和 HLS
 
-启用 `xrack` 的 `media` feature 后，`xrack::run` 和 `xrack::run_desktop` 会自动注册 `MediaPlayer` 后端。可与 `interpreter` 同时启用。Cargo 按目标平台选择包含 Bazel 预编译媒体库的 `xrack-media-bin-*` 包，安装依赖时无需安装 FFmpeg 或 Bazel。
+启用 `xrack` 的 `media` feature 后，`xrack::run` 和 `xrack::run_desktop` 会自动注册 `MediaPlayer` 和 `SoundEffect` 后端。可与 `interpreter` 同时启用。Cargo 按目标平台选择包含 Bazel 预编译媒体库的 `xrack-media-bin-*` 包，安装依赖时无需安装 FFmpeg 或 Bazel。
 
 ```toml
 [dependencies]

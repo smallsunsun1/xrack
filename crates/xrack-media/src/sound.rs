@@ -1,6 +1,7 @@
 //! Predecoded WAV effects sharing one miniaudio output per UI thread.
 use crate::{
-    VideoDecoder, native,
+    VideoDecoder,
+    native::AudioDevice,
     player::{AudioDecoder, CHANNELS, RATE},
 };
 use std::{
@@ -98,26 +99,14 @@ impl Mixer {
             let ready = mixer.ready.clone();
             std::thread::Builder::new()
                 .name("xrack-sound-output".into())
-                .spawn(move || {
-                    if let Err(error) = native::load() {
-                        let _ = ready.set(Err(error.to_owned()));
-                        return;
+                .spawn(move || match AudioDevice::open(voices, render) {
+                    Ok(_device) => {
+                        let _ = ready.set(Ok(()));
+                        let _ = shutdown.recv();
                     }
-                    // The device is closed on this thread before its callback state is released.
-                    let api = native::api();
-                    let handle = unsafe {
-                        (api.xr_audio_open.unwrap())(
-                            Some(render),
-                            Arc::as_ptr(&voices).cast_mut().cast(),
-                        )
-                    };
-                    if handle.is_null() {
-                        let _ = ready.set(Err("no audio output device is available".into()));
-                        return;
+                    Err(error) => {
+                        let _ = ready.set(Err(error.to_string()));
                     }
-                    let _ = ready.set(Ok(()));
-                    let _ = shutdown.recv();
-                    unsafe { (api.xr_audio_close.unwrap())(handle) };
                 })
                 .map_err(|error| error.to_string())?;
             *cached = Rc::downgrade(&mixer);
@@ -182,7 +171,7 @@ fn decode(path: &Path, cancelled: Arc<AtomicBool>) -> Samples {
     if &header[..4] != b"RIFF" || &header[8..] != b"WAVE" {
         return Err("SoundEffect requires a local WAV file".into());
     }
-    let decoder = VideoDecoder::open_audio_track(path, 0, 0, cancelled.clone())
+    let decoder = VideoDecoder::open_wav(path, cancelled.clone())
         .map_err(|error| error.to_string())?
         .ok_or("WAV has no audio stream")?;
     let mut decoder = AudioDecoder::new(decoder);
@@ -287,7 +276,7 @@ impl MediaSession for Sound {
             self.state.status = if self.state.playing {
                 MediaStatus::Playing
             } else {
-                MediaStatus::Stopped
+                MediaStatus::Ready
             };
         }
         self.state.clone()

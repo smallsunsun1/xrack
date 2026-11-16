@@ -1435,7 +1435,9 @@ pub fn is_builtin(kind: &str) -> bool {
 pub fn media_object_read_type(kind: &str, name: &str) -> Option<Type> {
     match kind {
         "MediaPlayer" => media_read_type(name),
-        "SoundEffect" if matches!(name, "ready" | "playing" | "error") => media_read_type(name),
+        "SoundEffect" if matches!(name, "ready" | "playing" | "status" | "error") => {
+            media_read_type(name)
+        }
         "SoundEffect" if name == "loops-remaining" => Some(Type::Int),
         _ => None,
     }

@@ -4573,7 +4573,8 @@ static LogicalResult verifyReferences(ComponentOp component,
       if (!target ||
           !((target.getKind() == "MediaPlayer" && name != "loops-remaining") ||
             (target.getKind() == "SoundEffect" &&
-             (name == "ready" || name == "playing" || name == "error" || name == "loops-remaining"))))
+             (name == "ready" || name == "playing" || name == "status" ||
+              name == "error" || name == "loops-remaining"))))
         result = op->emitOpError("requires a media owner exposing this state property");
     } else if (auto read = dyn_cast<ImagePlaybackReadOp>(op)) {
       auto target = elementOwner(read.getOwner());

@@ -140,10 +140,10 @@ jobs:
           bazel run @xrack_rust_host_tools//:rustfmt -- --check --edition 2024 \
             "$GITHUB_WORKSPACE/examples/cargo-consumer/build.rs" \
             "$GITHUB_WORKSPACE/examples/cargo-consumer/src/main.rs"
-      - name: Test media decoding, synchronization, and seeking
+      - name: Test media playback and sound effects
         run: >-
           bazel test --config=media --lockfile_mode=update --nocache_test_results --keep_going
-          //crates/xrack-media:media_test //tests:media_player_test
+          //crates/xrack-media:media_test //tests:media_player_test //tests:sound_effect_test
       - name: Test compiler, MLIR passes, and generated Rust
         # Bazel extension digests can differ between the local installation and hosted runners.
         run: >-

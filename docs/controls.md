@@ -494,7 +494,8 @@ confirm := Button {
 ```
 
 `volume` 的范围为 0 到 1，默认 1。`muted` 默认 false。`ready`、
-`playing` 和 `error` 为只读。加载中的 `play()` 会在音效就绪后触发一次播放。
+`playing`、`status` 和 `error` 为只读。`status` 可为 `empty`、`loading`、
+`ready`、`playing` 或 `failed`。加载中的 `play()` 会在音效就绪后触发一次播放。
 回调中切换 `source` 后可以直接调用 `play()`，新文件加载完成后开始播放。
 同一实例连按时从头重播，不同实例可以同时播放。
 `loops` 默认 1，0 也播放一次，-1 持续循环。播放中修改它会更新剩余次数，

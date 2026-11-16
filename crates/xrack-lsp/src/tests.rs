@@ -1191,6 +1191,21 @@ fn swipe_page_inherits_typed_record_completion_from_its_model() {
 }
 
 #[test]
+fn model_edits_complete_only_as_statements_with_writable_model_signatures() {
+    let statement = complete_at("component App inherits Window { Button { clicked => { Model.| } } }");
+    for method in ["append", "insert", "set", "remove", "move", "clear"] {
+        assert!(statement.iter().any(|item| item["label"] == method), "{method}");
+    }
+    let binding = complete_at("component App inherits Window { property <int> rows: Model.|; }");
+    assert!(binding.iter().any(|item| item["label"] == "count"));
+    assert!(!binding.iter().any(|item| item["label"] == "append"));
+    let call = "component App inherits Window { Button { clicked => { Model.insert(root.rows, 1, ";
+    let hint = completion::signature_help(call, (0, call.len()), None);
+    assert_eq!(hint["signatures"][0]["label"], "Model.insert(model: writable [Row], index: int, value: Row)");
+    assert_eq!(hint["activeParameter"], 2);
+}
+
+#[test]
 fn model_navigation_commands_offer_typed_signatures_and_moved_events() {
     for (kind, event) in [
         ("TabBar", "tab-moved"),
@@ -3261,7 +3276,7 @@ fn sound_effect_completes_its_bindings_and_playback_signatures() {
             "{expected}: {bindings:?}"
         );
     }
-    for unavailable in ["ready", "loops-remaining", "width", "autoplay", "Button"] {
+    for unavailable in ["ready", "status", "loops-remaining", "width", "autoplay", "Button"] {
         assert!(!bindings.iter().any(|item| item["label"] == unavailable));
     }
     let items = complete_at(
@@ -3272,6 +3287,7 @@ fn sound_effect_completes_its_bindings_and_playback_signatures() {
         "stop",
         "ready",
         "playing",
+        "status",
         "error",
         "loops-remaining",
     ] {

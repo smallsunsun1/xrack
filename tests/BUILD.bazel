@@ -417,6 +417,24 @@ rust_test(
 )
 
 rust_test(
+    name = "sound_effect_test",
+    size = "small",
+    srcs = ["sound_effect_test.rs"],
+    data = [
+        "//examples/sound_effect:click.wav",
+        "//examples/sound_effect:sound_effect.xr",
+    ],
+    edition = "2024",
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//examples/sound_effect:sound_ui",
+    ],
+)
+
+rust_test(
     name = "ui_replay_test",
     size = "small",
     srcs = [
