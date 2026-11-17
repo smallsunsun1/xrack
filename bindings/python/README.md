@@ -49,6 +49,6 @@ Run the binding tests with `bazel test //bindings/python:binding_test`. On a des
 
 ## PyPI releases
 
-The Python workflow builds CPython 3.11+ wheels for macOS, Linux, and Windows on ARM64 and x86-64. macOS wheels target macOS 13 or later. Linux wheels are repaired and checked for the manylinux glibc 2.39 baseline. Each job installs its wheel into a clean virtual environment and runs the binding tests.
+The Python workflow builds CPython 3.11+ wheels for macOS ARM64, Linux ARM64 and x86-64, and Windows ARM64 and x86-64. The macOS wheel targets macOS 13 or later. Linux wheels are repaired and checked for the manylinux glibc 2.39 baseline. Each job installs its wheel into a clean virtual environment and runs the binding tests.
 
-A stable version tag on `main` publishes the six verified wheels. The tag must match the workspace version and the wheel version. For the first release, configure a PyPI pending publisher for the distribution `xrack` with owner `smallsunsun1`, repository `xrack`, workflow `python.yml`, and GitHub environment `pypi`.
+A stable version tag on `main` publishes the five verified wheels. The tag must match the workspace version and the wheel version. For the first release, configure a PyPI pending publisher for the distribution `xrack` with owner `smallsunsun1`, repository `xrack`, workflow `python.yml`, and GitHub environment `pypi`.

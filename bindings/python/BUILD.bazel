@@ -139,7 +139,6 @@ py_wheel(
         ":linux_arm64": "linux_aarch64",
         ":linux_x64": "linux_x86_64",
         ":macos_arm64": "macosx_13_0_arm64",
-        ":macos_x64": "macosx_13_0_x86_64",
         ":windows_arm64": "win_arm64",
         ":windows_x64": "win_amd64",
     }),
@@ -165,11 +164,6 @@ config_setting(
 config_setting(
     name = "macos_arm64",
     constraint_values = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
-)
-
-config_setting(
-    name = "macos_x64",
-    constraint_values = ["@platforms//os:macos", "@platforms//cpu:x86_64"],
 )
 
 config_setting(

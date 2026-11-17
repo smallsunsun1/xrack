@@ -18,7 +18,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX: dict[str, tuple[str, str]] = {
     "aarch64-apple-darwin": ("macosx_13_0_arm64", "macosx_13_0_arm64"),
-    "x86_64-apple-darwin": ("macosx_13_0_x86_64", "macosx_13_0_x86_64"),
     "aarch64-unknown-linux-gnu": ("linux_aarch64", "manylinux_2_39_aarch64"),
     "x86_64-unknown-linux-gnu": ("linux_x86_64", "manylinux_2_39_x86_64"),
     "x86_64-pc-windows-msvc": ("win_amd64", "win_amd64"),
