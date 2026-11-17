@@ -11,3 +11,6 @@ xrack = "=0.7.0"
 
 [build-dependencies]
 xrack-build = "=0.7.0"
+
+[dev-dependencies]
+xrack-testing = "=0.7.0"

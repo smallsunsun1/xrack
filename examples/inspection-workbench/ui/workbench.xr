@@ -1,0 +1,517 @@
+import { AppMark, MetricCard, ScopeLabel, WorkbenchColors } from "theme.xr";
+
+export struct InspectionRow {
+    id: int,
+    code: string,
+    asset: string,
+    site: string,
+    owner: string,
+    state: string,
+    searchable: string,
+    shown: bool,
+}
+
+export component InspectionWorkbench inherits Window {
+    title: root.project-name + (root.unsaved ? " *" : "") + " — 巡检工作台";
+    width: 1296px;
+    height: 760px;
+    min-width: 990px;
+    min-height: 580px;
+    background: WorkbenchColors.canvas;
+    color-scheme: light;
+    accent-color: WorkbenchColors.accent;
+    default-font-family: "Inter";
+    default-font-size: 13px;
+
+    in-out property <[InspectionRow]> rows: [];
+    in property <string> project-name: "巡检示例";
+    in property <int> total: 0;
+    in property <int> pending: 0;
+    in property <int> active: 0;
+    in property <int> completed: 0;
+    in property <bool> busy: false;
+    in property <bool> loading: false;
+    in property <bool> unsaved: false;
+    in-out property <string> message: "浏览记录，或打开一份巡检项目";
+    in property <string> last-change: "";
+    in-out property <string> query: "";
+    in property <int> scope: -1;
+    in property <int> selected-id: -1;
+    in property <int> editing-id: -1;
+    in property <string> editing-label: "";
+    in property <string> baseline-owner: "";
+    in property <int> baseline-state: 0;
+    in property <string> baseline-note: "";
+    in-out property <string> owner-draft: "";
+    in-out property <int> state-draft: 0;
+    in-out property <string> note-draft: "";
+    out property <bool> draft-changed: root.editing-id >= 0 && (root.owner-draft != root.baseline-owner || root.state-draft != root.baseline-state || root.note-draft != root.baseline-note);
+    out property <int> visible-count: inspections.row-count;
+    private property <bool> close-approved: false;
+    private property <int> completion-rate: root.total == 0 ? 0 : root.completed * 100 / root.total;
+
+    callback choose-scope(scope: int);
+    callback choose-selection(keys: [int]);
+    callback begin-edit();
+    callback discard-edit();
+    callback apply-edit();
+    callback read-file(path: string);
+    callback write-file(path: string);
+    callback request-save();
+
+    callback confirm-close() -> bool;
+    confirm-close => { close-prompt.open(); false }
+    close-requested() => { root.close-approved ? true : root.busy ? false : root.unsaved || root.draft-changed ? root.confirm-close() : true }
+
+    callback show-save-panel;
+    show-save-panel => { save-picker.open(); }
+
+    open-picker := FileDialog {
+        mode: open-file;
+        title: "打开巡检项目";
+        name-filters: ["Inspection project (*.json)"];
+        accepted(paths) => { root.read-file(self.selected-file); }
+        failed(error) => { root.message = error; }
+    }
+    save-picker := FileDialog {
+        mode: save-file;
+        title: "保存巡检项目";
+        file-name: "inspection.json";
+        name-filters: ["Inspection project (*.json)"];
+        accepted(paths) => { root.write-file(self.selected-file); }
+        failed(error) => { root.message = error; }
+    }
+    close-prompt := MessageDialog {
+        title: "放弃未保存的修改？";
+        text: "尚未保存的项目或详情草稿将丢失。";
+        level: warning;
+        buttons: ok-cancel;
+        accepted => { root.close-approved = true; root.close(); }
+        failed(error) => { root.message = error; }
+    }
+
+    Shortcut { sequence: "Primary+S"; enabled: !root.busy && !root.draft-changed; activated => { root.request-save(); } }
+    Shortcut { sequence: "Primary+F"; activated => { search.focus(); } }
+
+    shell := SplitView {
+        handle-size: 6px;
+        fill-pane: content;
+        SplitHandle {
+            background: handle-pressed ? #8796f0 : handle-hovered ? #c7cff8 : WorkbenchColors.canvas;
+        }
+        rail := Rectangle {
+            preferred-width: 190px;
+            min-width: 164px;
+            max-width: 248px;
+            background: WorkbenchColors.rail;
+            VerticalLayout {
+                padding: 15px;
+                padding-top: 22px;
+                spacing: 6px;
+                HorizontalLayout {
+                    height: 39px;
+                    spacing: 10px;
+                    cross-axis-alignment: center;
+                    AppMark {}
+                    Label { text: "巡检工作台"; color: #ffffff; font-size: 15px; font-weight: 700; }
+                }
+                Rectangle { height: 21px; }
+                Label {
+                    text: "记录范围";
+                    color: #9eafce;
+                    font-size: 11px;
+                    font-weight: 650;
+                    height: 19px;
+                }
+                all := Button {
+                    text: "全部记录";
+                    height: 39px;
+                    border-radius: 8px;
+                    background: self.pressed ? WorkbenchColors.rail-soft : root.scope == -1 ? WorkbenchColors.rail-selected : #00000000;
+                    ButtonContent { ScopeLabel { caption: "全部记录"; count: root.total; active: root.scope == -1; dot: #a8baff; } }
+                    clicked => { root.choose-scope(-1); }
+                }
+                pending-only := Button {
+                    text: "待处理";
+                    height: 39px;
+                    border-radius: 8px;
+                    background: self.pressed ? WorkbenchColors.rail-soft : root.scope == 0 ? WorkbenchColors.rail-selected : #00000000;
+                    ButtonContent { ScopeLabel { caption: "待处理"; count: root.pending; active: root.scope == 0; dot: #f6b96d; } }
+                    clicked => { root.choose-scope(0); }
+                }
+                active-only := Button {
+                    text: "处理中";
+                    height: 39px;
+                    border-radius: 8px;
+                    background: self.pressed ? WorkbenchColors.rail-soft : root.scope == 1 ? WorkbenchColors.rail-selected : #00000000;
+                    ButtonContent { ScopeLabel { caption: "处理中"; count: root.active; active: root.scope == 1; dot: #76baff; } }
+                    clicked => { root.choose-scope(1); }
+                }
+                completed-only := Button {
+                    text: "已完成";
+                    height: 39px;
+                    border-radius: 8px;
+                    background: self.pressed ? WorkbenchColors.rail-soft : root.scope == 2 ? WorkbenchColors.rail-selected : #00000000;
+                    ButtonContent { ScopeLabel { caption: "已完成"; count: root.completed; active: root.scope == 2; dot: #78dfc1; } }
+                    clicked => { root.choose-scope(2); }
+                }
+                Rectangle { vertical-stretch: 1; }
+                Rectangle {
+                    height: 69px;
+                    background: WorkbenchColors.rail-soft;
+                    border-radius: 9px;
+                    VerticalLayout {
+                        padding: 11px;
+                        spacing: 10px;
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 5px;
+                            Label { text: "完成进度"; color: WorkbenchColors.rail-text; font-size: 11px; horizontal-stretch: 1; }
+                            Label { text: "" + root.completion-rate + "%"; color: #ffffff; font-size: 12px; font-weight: 700; }
+                        }
+                        ProgressIndicator {
+                            accessible-name: "巡检完成进度";
+                            height: 5px;
+                            maximum: 100;
+                            progress: root.completion-rate;
+                            ProgressTrack { background: #344966; border-radius: 3px; }
+                            ProgressFill { background: #7b93ff; border-radius: 3px; }
+                        }
+                    }
+                }
+            }
+        }
+        content := VerticalLayout {
+            padding: 22px;
+            padding-left: 16px;
+            spacing: 15px;
+            HorizontalLayout {
+                height: 47px;
+                spacing: 9px;
+                cross-axis-alignment: center;
+                Label {
+                    text: root.project-name;
+                    color: WorkbenchColors.ink;
+                    font-size: 25px;
+                    font-weight: 700;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                open-project := Button {
+                    text: "打开项目…";
+                    width: 102px;
+                    height: 36px;
+                    primary: false;
+                    color: WorkbenchColors.ink;
+                    background: self.pressed ? #e9edf5 : WorkbenchColors.paper;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: WorkbenchColors.border;
+                    enabled: !root.busy && !root.unsaved && !root.draft-changed && !open-picker.pending;
+                    clicked => { open-picker.open(); }
+                }
+                save-copy := Button {
+                    text: "另存为…";
+                    width: 88px;
+                    height: 36px;
+                    primary: false;
+                    color: WorkbenchColors.ink;
+                    background: self.pressed ? #e9edf5 : WorkbenchColors.paper;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: WorkbenchColors.border;
+                    enabled: !root.busy && !root.draft-changed && !save-picker.pending;
+                    clicked => { root.show-save-panel(); }
+                }
+                save-project := Button {
+                    text: "保存项目";
+                    width: 94px;
+                    height: 36px;
+                    primary: true;
+                    color: #ffffff;
+                    background: self.pressed ? WorkbenchColors.accent-pressed : WorkbenchColors.accent;
+                    border-radius: 8px;
+                    enabled: !root.busy && !root.draft-changed && !save-picker.pending;
+                    clicked => { root.request-save(); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                height: 86px;
+                MetricCard {
+                    caption: "全部记录";
+                    value: root.total;
+                    accent: #4455d9;
+                    tint: #edf0ff;
+                    icon-path: "M4 5 H20 V19 H4 Z M4 10 H20 M9 10 V19";
+                }
+                MetricCard {
+                    caption: "待处理";
+                    value: root.pending;
+                    accent: #a45a15;
+                    tint: #fff1dc;
+                    icon-path: "M12 3.5 A8.5 8.5 0 1 1 11.99 3.5 Z M12 7 V12 L15.5 14";
+                }
+                MetricCard {
+                    caption: "处理中";
+                    value: root.active;
+                    accent: #2563c8;
+                    tint: #e7f2ff;
+                    icon-path: "M4 12 H8 L10.5 6 L13.5 18 L16 12 H20";
+                }
+                MetricCard {
+                    caption: "已完成";
+                    value: root.completed;
+                    accent: #118068;
+                    tint: #e5f7f0;
+                    icon-path: "M12 3.5 A8.5 8.5 0 1 1 11.99 3.5 Z M8 12 L10.8 14.8 L16 9.5";
+                }
+            }
+            workspace := SplitView {
+                vertical-stretch: 1;
+                handle-size: 14px;
+                fill-pane: main-pane;
+                SplitHandle {
+                    background: #00000000;
+                    Rectangle {
+                        x: 6px;
+                        y: 0px;
+                        width: 2px;
+                        height: 100%;
+                        border-radius: 1px;
+                        background: handle-pressed ? #8796f0 : handle-hovered ? #c7cff8 : #00000000;
+                    }
+                }
+                main-pane := Rectangle {
+                    min-width: 405px;
+                    background: WorkbenchColors.paper;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: WorkbenchColors.border;
+                    VerticalLayout {
+                        padding: 15px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            height: 36px;
+                            spacing: 10px;
+                            cross-axis-alignment: center;
+                            Label {
+                                text: "巡检记录";
+                                color: WorkbenchColors.ink;
+                                font-size: 16px;
+                                font-weight: 700;
+                                horizontal-stretch: 1;
+                            }
+                            Rectangle {
+                                width: 258px;
+                                height: 34px;
+                                border-width: 1px;
+                                border-color: WorkbenchColors.border;
+                                border-radius: 8px;
+                                background: WorkbenchColors.field;
+                                Path {
+                                    x: 10px; y: 10px; width: 14px; height: 14px;
+                                    viewbox-width: 24; viewbox-height: 24;
+                                    fill: #00000000;
+                                    stroke: #65748c;
+                                    stroke-width: 1.8px;
+                                    commands: "M10.5 4.5 A6 6 0 1 1 10.49 4.5 Z M15 15 L20 20";
+                                }
+                                search := LineEdit {
+                                    x: 28px;
+                                    y: 1px;
+                                    width: 229px;
+                                    height: 32px;
+                                    padding-left: 3px;
+                                    padding-right: 9px;
+                                    background: #00000000;
+                                    border-width: 0px;
+                                    accessible-name: "搜索巡检记录";
+                                    placeholder-text: "搜索编号、设备、站点或负责人";
+                                    placeholder-text-color: #687891;
+                                    text <=> root.query;
+                                }
+                            }
+                        }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            border-width: 1px;
+                            border-color: WorkbenchColors.border;
+                            border-radius: 8px;
+                            clip: true;
+                            VerticalLayout {
+                                padding: 1px;
+                                inspections := StandardTableView {
+                                    vertical-stretch: 1;
+                                    background: #ffffff;
+                                    accessible-name: "巡检记录";
+                                    model: root.rows;
+                                    row-key-field: "id";
+                                    multi-select: true;
+                                    row-visible-field: "shown";
+                                    filter-field: "searchable";
+                                    filter-text: root.query;
+                                    row-height: 33px;
+                                    auto-sort: true;
+                                    resizable-columns: true;
+                                    selection-changed(count) => { root.choose-selection(self.selected-keys); }
+                                    TableColumn { title: "编号"; field: "code"; sortable: true; width: 128px; }
+                                    TableColumn { title: "设备"; field: "asset"; sortable: true; width: 158px; }
+                                    TableColumn { title: "站点"; field: "site"; sortable: true; width: 150px; }
+                                    TableColumn { title: "负责人"; field: "owner"; sortable: true; width: 112px; }
+                                    TableColumn { title: "状态"; field: "state"; sortable: true; width: 142px; }
+                                }
+                            }
+                            if root.visible-count == 0 : Label {
+                                width: 100%;
+                                height: 100%;
+                                y: 34px;
+                                text: root.total == 0 ? "当前项目没有巡检记录" : "没有符合条件的记录";
+                                color: WorkbenchColors.muted;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            height: 33px;
+                            spacing: 8px;
+                            cross-axis-alignment: center;
+                            Label {
+                                text: "显示 " + root.visible-count + " / " + root.total + " 条" + (inspections.selection-count > 1 ? "  ·  已选 " + inspections.selection-count + " 条" : "");
+                                color: WorkbenchColors.muted;
+                                font-size: 12px;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            edit-selection := Button {
+                                text: "编辑选中项";
+                                width: 109px;
+                                height: 33px;
+                                color: #3448b2;
+                                background: self.pressed ? #dfe6ff : #edf1ff;
+                                border-radius: 7px;
+                                enabled: root.selected-id >= 0 && !root.draft-changed && !root.loading;
+                                clicked => { root.begin-edit(); }
+                            }
+                        }
+                    }
+                }
+                detail := Rectangle {
+                    preferred-width: 298px;
+                    min-width: 246px;
+                    background: WorkbenchColors.paper;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: WorkbenchColors.border;
+                    VerticalLayout {
+                        padding: 15px;
+                        spacing: 6px;
+                        HorizontalLayout {
+                            height: 24px;
+                            spacing: 7px;
+                            cross-axis-alignment: center;
+                            Path {
+                                width: 15px; height: 15px;
+                                viewbox-width: 24; viewbox-height: 24;
+                                stroke: WorkbenchColors.accent;
+                                stroke-width: 1.6px;
+                                fill: #00000000;
+                                commands: "M6 4 H18 V20 H6 Z M9 9 H15 M9 13 H15 M9 17 H13";
+                            }
+                            Label {
+                                text: "记录详情";
+                                color: WorkbenchColors.ink;
+                                font-size: 16px;
+                                font-weight: 700;
+                            }
+                        }
+                        Label {
+                            text: root.editing-id >= 0 ? root.editing-label : "选择一条记录后编辑";
+                            color: WorkbenchColors.muted;
+                            font-size: 12px;
+                            overflow: elide;
+                        }
+                        Rectangle { height: 1px; background: WorkbenchColors.border; }
+                        Label { text: "负责人"; color: WorkbenchColors.ink; font-size: 12px; font-weight: 650; }
+                        owner := LineEdit {
+                            height: 34px;
+                            padding-left: 10px;
+                            background: WorkbenchColors.field;
+                            border-width: 1px;
+                            border-color: WorkbenchColors.border;
+                            accessible-name: "负责人";
+                            text <=> root.owner-draft;
+                            enabled: root.editing-id >= 0 && !root.loading;
+                        }
+                        Label { text: "处理状态"; color: WorkbenchColors.ink; font-size: 12px; font-weight: 650; }
+                        state-choice := ComboBox {
+                            height: 34px;
+                            accessible-name: "处理状态";
+                            model: ["待处理", "处理中", "已完成"];
+                            current-index <=> root.state-draft;
+                            enabled: root.editing-id >= 0 && !root.loading;
+                        }
+                        Label { text: "巡检备注"; color: WorkbenchColors.ink; font-size: 12px; font-weight: 650; }
+                        note := TextEdit {
+                            accessible-name: "巡检备注";
+                            text <=> root.note-draft;
+                            read-only: root.editing-id < 0 || root.loading;
+                            placeholder-text: "输入处理过程或复检结果";
+                            min-height: 48px;
+                            placeholder-text-color: #687891;
+                            background: WorkbenchColors.field;
+                            border-width: 1px;
+                            border-color: WorkbenchColors.border;
+                            vertical-stretch: 1;
+                            padding: 10px;
+                        }
+                        HorizontalLayout {
+                            height: 35px;
+                            spacing: 8px;
+                            reset-edit := Button {
+                                text: "撤销草稿";
+                                primary: false;
+                                color: WorkbenchColors.ink;
+                                background: self.pressed ? #e9edf5 : WorkbenchColors.paper;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: WorkbenchColors.border;
+                                enabled: root.draft-changed;
+                                clicked => { root.discard-edit(); }
+                            }
+                            apply := Button {
+                                text: "应用修改";
+                                primary: true;
+                                color: #ffffff;
+                                background: self.pressed ? WorkbenchColors.accent-pressed : WorkbenchColors.accent;
+                                border-radius: 8px;
+                                enabled: root.draft-changed;
+                                clicked => { root.apply-edit(); }
+                            }
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                height: 20px;
+                spacing: 7px;
+                cross-axis-alignment: center;
+                BusyIndicator { width: 14px; height: 14px; running: root.busy; visible: root.busy; }
+                Label {
+                    text: root.message;
+                    color: WorkbenchColors.muted;
+                    font-size: 11px;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if root.unsaved : Rectangle { width: 6px; height: 6px; border-radius: 3px; background: #ac691f; }
+                Label {
+                    text: root.unsaved ? "有未保存的修改" : root.last-change;
+                    color: root.unsaved ? #8d501a : WorkbenchColors.muted;
+                    font-size: 11px;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}

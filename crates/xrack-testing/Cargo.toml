@@ -1,0 +1,13 @@
+[package]
+name = "xrack-testing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Headless interaction testing for XRack applications"
+
+[dependencies]
+thiserror.workspace = true
+xrack-layout.workspace = true
+xrack-runtime.workspace = true

@@ -2,7 +2,7 @@
 
 mod interpreter_examples;
 #[allow(dead_code)]
-mod ui_driver;
+use xrack_testing as ui_driver;
 
 use counter_ui::Counter;
 use xrack_interpreter::{Instance, Program};

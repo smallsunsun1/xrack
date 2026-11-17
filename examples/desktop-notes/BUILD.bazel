@@ -1,0 +1,6 @@
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+xr_ui_library(
+    name = "notes_ui",
+    src = "ui/notes.xr",
+)

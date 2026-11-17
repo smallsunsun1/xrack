@@ -4681,6 +4681,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrack-testing"
+version = "0.7.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "xrack-layout",
+ "xrack-runtime",
+]
+
+[[package]]
 name = "xrackc-bin-aarch64-apple-darwin"
 version = "0.7.0"
 

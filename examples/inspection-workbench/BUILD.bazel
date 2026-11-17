@@ -1,0 +1,7 @@
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+xr_ui_library(
+    name = "workbench_ui",
+    src = "ui/workbench.xr",
+    sources = ["ui/theme.xr"],
+)

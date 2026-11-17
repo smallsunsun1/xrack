@@ -22,6 +22,7 @@ CRATES = (
     "xrack-runtime",
     "xrack-assets",
     "xrack-layout",
+    "xrack-testing",
     "xrack-renderer-femtovg",
     "xrack-media",
     "xrack-platform-winit",
@@ -33,7 +34,10 @@ CRATES = (
     "xrack",
     "xrack-build",
 )
-BOOTSTRAP_CRATES = CRATES[:4] + ("xrack-syntax",)
+BOOTSTRAP_CRATES = (
+    "xrack-runtime", "xrack-assets", "xrack-layout", "xrack-testing",
+    "xrack-renderer-femtovg", "xrack-syntax",
+)
 
 
 def output(*args):

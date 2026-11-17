@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 #[allow(dead_code)]
-mod ui_driver;
+use xrack_testing as ui_driver;
 
 use std::{cell::Cell, rc::Rc};
 use ui_driver::UiDriver;

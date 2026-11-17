@@ -202,6 +202,10 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--interpreter", action="store_true")
     mode.add_argument("--media", action="store_true")
+    mode.add_argument("--desktop-notes", dest="desktop_example", action="store_const", const="desktop-notes",
+                      help="build and test the standalone notes app")
+    mode.add_argument("--inspection-workbench", dest="desktop_example", action="store_const",
+                      const="inspection-workbench", help="build and test the standalone inspection workbench")
     parser.add_argument("--published", action="store_true", help="test the published media crates from crates.io")
     args = parser.parse_args()
     if args.published:
@@ -245,7 +249,8 @@ def main():
         else:
             commit = subprocess.check_output(("git", "rev-parse", "HEAD"), cwd=root, text=True).strip()
             bundles.install_bundle(workspace, archives, version, args.host, commit)
-            shutil.copytree(root / "examples/cargo-consumer", app)
+            example = args.desktop_example or "cargo-consumer"
+            shutil.copytree(root / "examples" / example, app)
             expected = "count=1, doubled=2"
         command = ["cargo", "run", "--release"]
         if not args.published:
@@ -274,6 +279,10 @@ def main():
                     artifact = Path(env["CARGO_TARGET_DIR"]) / "package" / f"{name}-{version}.crate"
                     if artifact.stat().st_size > 10_000_000:
                         raise ValueError(f"{artifact.name} exceeds the crates.io package size limit")
+        if args.desktop_example:
+            subprocess.run(["cargo", "test", *command[2:]], cwd=app, env=env, check=True)
+            subprocess.run(["cargo", "build", *command[2:]], cwd=app, env=env, check=True)
+            return
         with media_server(app / "hls") if args.media else nullcontext() as url:
             if url:
                 env["XRACK_TEST_HLS"] = url
@@ -281,6 +290,8 @@ def main():
         print(result.stdout, end="")
         if result.stdout.strip() != expected:
             raise SystemExit("unexpected Cargo consumer output")
+        if not (args.interpreter or args.media):
+            subprocess.run(["cargo", "test", *command[2:]], cwd=app, env=env, check=True)
 
 
 if __name__ == "__main__":

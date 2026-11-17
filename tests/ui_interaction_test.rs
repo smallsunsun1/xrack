@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-pub mod ui_driver;
+pub use xrack_testing as ui_driver;
 
 use async_ui::AsyncDemo;
 use controls_ui::{

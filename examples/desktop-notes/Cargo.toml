@@ -1,0 +1,18 @@
+[package]
+name = "xrack-desktop-notes"
+version = "0.7.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+tempfile = "3.27"
+tokio = { version = "=1.54.1", features = ["rt-multi-thread"] }
+xrack = "=0.7.0"
+
+[build-dependencies]
+xrack-build = "=0.7.0"
+
+[dev-dependencies]
+xrack-testing = "=0.7.0"

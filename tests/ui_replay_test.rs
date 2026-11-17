@@ -2,7 +2,7 @@
 
 //! Replay named UI actions through the same interaction code used by desktop windows.
 #![allow(dead_code)] // Only part of the shared driver is needed for this scenario.
-mod ui_driver;
+use xrack_testing as ui_driver;
 
 use async_ui::AsyncDemo;
 use serde::Deserialize;

@@ -2,7 +2,6 @@
 
 use async_ui::AsyncDemo;
 use bundled_ui::BundledFontsDemo;
-pub mod ui_driver;
 use controls_ui::{
     CalendarAgendaDemo, CalendarDemo, CheckStateDemo, ColorDemo, ControlsDemo, DecimalSpinDemo,
     DelayDemo, FontPickerDemo, GroupBoxDemo, IndicatorsDemo, MonthGridDemo, SnapSlidersDemo,
@@ -33,6 +32,7 @@ use xrack_layout::{
     RangeInput, Size, SliderGeometry, SliderKey, SpinGeometry, TextAreaMotion, TextEdit,
     TextMeasurer, TextPosition, font_size,
 };
+pub use xrack_testing as ui_driver;
 
 fn interpret_example(file: &str) -> xrack_interpreter::Program {
     let source = std::fs::read_to_string(file).unwrap();

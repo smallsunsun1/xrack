@@ -1,0 +1,114 @@
+export global WorkbenchColors {
+    out property <color> canvas: #f4f6fa;
+    out property <color> paper: #ffffff;
+    out property <color> border: #dfe5ee;
+    out property <color> ink: #172338;
+    out property <color> muted: #596981;
+    out property <color> field: #f6f8fc;
+    out property <color> accent: #3e50da;
+    out property <color> accent-pressed: #3040bb;
+    out property <color> rail: #142136;
+    out property <color> rail-soft: #1e304b;
+    out property <color> rail-selected: #2a3d61;
+    out property <color> rail-text: #d5dfef;
+}
+
+export component AppMark inherits Rectangle {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: #5267f4;
+    Path {
+        x: 8px;
+        y: 8px;
+        width: 20px;
+        height: 20px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        fill: #00000000;
+        stroke: #ffffff;
+        stroke-width: 1.65px;
+        commands: "M7 4 H17 Q19 4 19 6 V19 Q19 21 17 21 H7 Q5 21 5 19 V6 Q5 4 7 4 Z M9 4 V3 H15 V4 M8.5 13 L11 15.5 L16 10";
+    }
+}
+
+export component ScopeLabel inherits Rectangle {
+    in property <string> caption;
+    in property <int> count;
+    in property <color> dot: #a5b5d3;
+    in property <bool> active: false;
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 9px;
+        cross-axis-alignment: center;
+        Rectangle { width: 6px; height: 6px; border-radius: 3px; background: root.dot; }
+        Label {
+            text: root.caption;
+            color: root.active ? #ffffff : WorkbenchColors.rail-text;
+            font-size: 13px;
+            font-weight: root.active ? 650 : 500;
+            horizontal-stretch: 1;
+        }
+        Label {
+            text: "" + root.count;
+            color: root.active ? #c9d7ff : #a2b1cd;
+            font-size: 11px;
+            horizontal-alignment: right;
+        }
+    }
+}
+
+export component MetricCard inherits Rectangle {
+    in property <string> caption;
+    in property <int> value;
+    in property <string> icon-path;
+    in property <color> accent;
+    in property <color> tint;
+    background: WorkbenchColors.paper;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: WorkbenchColors.border;
+
+    HorizontalLayout {
+        padding: 15px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 4px;
+            Label {
+                text: root.caption;
+                color: WorkbenchColors.muted;
+                font-size: 12px;
+                font-weight: 550;
+            }
+            Label {
+                text: "" + root.value;
+                color: WorkbenchColors.ink;
+                font-size: 26px;
+                font-weight: 700;
+            }
+        }
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            background: root.tint;
+            Path {
+                x: 9px;
+                y: 9px;
+                width: 18px;
+                height: 18px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                fill: #00000000;
+                stroke: root.accent;
+                stroke-width: 1.65px;
+                commands: root.icon-path;
+            }
+        }
+    }
+}

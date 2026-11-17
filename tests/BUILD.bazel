@@ -7,7 +7,6 @@ rust_test(
     size = "small",
     srcs = [
         "gpu_test.rs",
-        "ui_driver.rs",
     ],
     crate_features = select({
         "//crates/xrack-media:enabled_config": ["media_backend"],
@@ -49,6 +48,7 @@ rust_test(
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
         "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
         "//examples/async_demo:async_ui",
         "//examples/controls:controls_ui",
         "//examples/counter:counter_ui",
@@ -138,7 +138,6 @@ rust_test(
     size = "small",
     srcs = [
         "loader_test.rs",
-        "ui_driver.rs",
     ],
     compile_data = ["loader.xr"],
     edition = "2024",
@@ -148,6 +147,7 @@ rust_test(
         "//crates/xrack-interpreter:xrack_interpreter",
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
     ],
 )
 
@@ -159,7 +159,7 @@ xr_ui_library(
 rust_test(
     name = "dynamic_children_test",
     size = "small",
-    srcs = ["dynamic_children_test.rs", "ui_driver.rs"],
+    srcs = ["dynamic_children_test.rs"],
     compile_data = ["dynamic_children.xr"],
     edition = "2024",
     deps = [
@@ -168,6 +168,7 @@ rust_test(
         "//crates/xrack-interpreter:xrack_interpreter",
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
     ],
 )
 
@@ -221,7 +222,6 @@ rust_test(
     name = "ui_interaction_test",
     size = "small",
     srcs = [
-        "ui_driver.rs",
         "ui_interaction_test.rs",
     ],
     crate_root = "ui_interaction_test.rs",
@@ -229,6 +229,7 @@ rust_test(
     deps = [
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
         "//examples/async_demo:async_ui",
         "//examples/controls:controls_ui",
         "//examples/counter:counter_ui",
@@ -299,7 +300,6 @@ rust_test(
     srcs = [
         "interpreter_examples.rs",
         "interpreter_parity_test.rs",
-        "ui_driver.rs",
     ],
     compile_data = [
         "expressions.xr",
@@ -352,6 +352,7 @@ rust_test(
         "//crates/xrack-interpreter:xrack_interpreter",
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
         "//examples/async_demo:async_ui",
         "//examples/controls:controls_ui",
         "//examples/counter:counter_ui",
@@ -439,7 +440,6 @@ rust_test(
     name = "ui_replay_test",
     size = "small",
     srcs = [
-        "ui_driver.rs",
         "ui_replay_test.rs",
     ],
     compile_data = [
@@ -452,8 +452,62 @@ rust_test(
         "//crates/xrack-interpreter:xrack_interpreter",
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
         "//examples/async_demo:async_ui",
         "@crates//:serde",
         "@crates//:serde_json",
+    ],
+)
+
+xr_ui_library(
+    name = "table_workload_ui",
+    src = "table_workload.xr",
+)
+
+rust_test(
+    name = "ui_scenario_test",
+    size = "small",
+    srcs = [
+        "table_workload.rs",
+        "ui_scenario_test.rs",
+    ],
+    compile_data = ["table_workload.xr"],
+    crate_root = "ui_scenario_test.rs",
+    edition = "2024",
+    deps = [
+        ":table_workload_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
+    ],
+)
+
+rust_test(
+    name = "ui_frame_benchmark",
+    size = "small",
+    srcs = [
+        "table_workload.rs",
+        "ui_frame_benchmark.rs",
+    ],
+    compile_data = ["table_workload.xr"],
+    crate_root = "ui_frame_benchmark.rs",
+    edition = "2024",
+    tags = [
+        "local",
+        "manual",
+        "no-sandbox",
+        "requires-gpu",
+    ],
+    deps = [
+        ":table_workload_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
+        "@crates//:pollster",
+        "@crates//:serde_json",
+        "@crates//:wgpu",
     ],
 )

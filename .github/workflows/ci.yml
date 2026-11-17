@@ -55,13 +55,13 @@ jobs:
       - name: Test Cargo runtime and desktop host
         run: >-
           cargo test --release --locked -p xrack-build
-          -p xrack-runtime -p xrack-assets -p xrack-layout
+          -p xrack-runtime -p xrack-assets -p xrack-layout -p xrack-testing
           -p xrack-renderer-femtovg -p xrack-platform-winit -p xrack
       - name: Verify publishable crates
         if: matrix.os == 'ubuntu-24.04'
         run: >-
           cargo package --locked
-          -p xrack-runtime -p xrack-assets -p xrack-layout
+          -p xrack-runtime -p xrack-assets -p xrack-layout -p xrack-testing
           -p xrack-renderer-femtovg
       - name: Upload Cargo packages
         if: matrix.os == 'ubuntu-24.04'
@@ -136,10 +136,19 @@ jobs:
       - name: Check Rust formatting through Bazel
         if: runner.os == 'macOS'
         run: |
-          bazel build --config=fmt --lockfile_mode=update //... //tests:gpu_test
+          bazel build --config=fmt --lockfile_mode=update //... //tests:gpu_test //tests:ui_frame_benchmark
           bazel run @xrack_rust_host_tools//:rustfmt -- --check --edition 2024 \
             "$GITHUB_WORKSPACE/examples/cargo-consumer/build.rs" \
-            "$GITHUB_WORKSPACE/examples/cargo-consumer/src/main.rs"
+            "$GITHUB_WORKSPACE/examples/cargo-consumer/src/main.rs" \
+            "$GITHUB_WORKSPACE/examples/cargo-consumer/tests/ui_test.rs" \
+            "$GITHUB_WORKSPACE/examples/desktop-notes/build.rs" \
+            "$GITHUB_WORKSPACE/examples/desktop-notes/src/lib.rs" \
+            "$GITHUB_WORKSPACE/examples/desktop-notes/src/main.rs" \
+            "$GITHUB_WORKSPACE/examples/desktop-notes/tests/editor.rs" \
+            "$GITHUB_WORKSPACE/examples/inspection-workbench/build.rs" \
+            "$GITHUB_WORKSPACE/examples/inspection-workbench/src/lib.rs" \
+            "$GITHUB_WORKSPACE/examples/inspection-workbench/src/main.rs" \
+            "$GITHUB_WORKSPACE/examples/inspection-workbench/tests/workflows.rs"
       - name: Test media playback and sound effects
         run: >-
           bazel test --config=media --lockfile_mode=update --nocache_test_results --keep_going
@@ -150,10 +159,11 @@ jobs:
           bazel test --announce_rc --lockfile_mode=update
           //tests:compiler_test //tests:mlir_pass_test //tests:expressions_test
           //tests:mlir_filecheck_test //tests:mlir_lsp_test //tests:ui_log_test //tests:interpreter_parity_test
+          //tests:ui_scenario_test //tests:ui_interaction_test //tests:ui_replay_test
           //crates/xrack-interpreter:interpreter_test
           //crates/xrack-preview:preview_test //crates/xrack-lsp:xrack_lsp_test
       - name: Run Clippy through Bazel
-        run: bazel build --config=lint --lockfile_mode=error //... //tests:gpu_test
+        run: bazel build --config=lint --lockfile_mode=error //... //tests:gpu_test //tests:ui_frame_benchmark
       - name: Run Clippy on the media backend
         run: bazel build --config=lint --config=media --lockfile_mode=error //crates/xrack-media:xrack_media
       - name: Check the Cargo dependency lock
@@ -164,6 +174,14 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
         run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }}
+      - name: Build and test the standalone desktop notes app
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
+        run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }} --desktop-notes
+      - name: Build and test the standalone inspection workbench
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
+        run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }} --inspection-workbench
       - name: Compare interpreted MLIR and generated Rust in a standalone Cargo consumer
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
