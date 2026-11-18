@@ -587,13 +587,16 @@ fn rewrite_expr(
                 rewrite_expr(item, prefix, names, source);
             }
         }
-        Record { name, fields } => {
+        Record { name, fields, base } => {
             if let Some(symbol) = names.get(name) {
                 *name = symbol.clone();
             }
             for field in fields {
                 field.span.source = source;
                 rewrite_expr(&mut field.value, prefix, names, source);
+            }
+            if let Some(base) = base {
+                rewrite_expr(base, prefix, names, source);
             }
         }
         Translation { arguments, .. } => {
@@ -651,12 +654,17 @@ fn rewrite_global_expr(expr: &mut ast::Expr, globals: &BTreeMap<String, String>)
                 rewrite_global_expr(value, globals);
             }
         }
-        Record { fields, .. }
-        | Translation {
-            arguments: fields, ..
-        } => {
+        Record { fields, base, .. } => {
             for field in fields {
                 rewrite_global_expr(&mut field.value, globals);
+            }
+            if let Some(base) = base {
+                rewrite_global_expr(base, globals);
+            }
+        }
+        Translation { arguments, .. } => {
+            for argument in arguments {
+                rewrite_global_expr(&mut argument.value, globals);
             }
         }
         LinearGradient { stops, .. } | RadialGradient { stops } => {

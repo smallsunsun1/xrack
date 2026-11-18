@@ -6,8 +6,8 @@ use crate::{
 use std::{cell::RefCell, collections::HashMap};
 use xrack_mlir::{
     AliasGraphs, AnimationRef, ComponentAnalysis, GradientRef, Module, OperationRef,
-    RecordComboRef, RecordDeclRef, RepeatRef, StackRead, StandardTableRef, StateCaseRef,
-    TableClipboardRef, TablePasteRef, TranslationRef, TreeViewRef, ValueRef,
+    RecordComboRef, RecordDeclRef, RecordUpdateRef, RepeatRef, StackRead, StandardTableRef,
+    StateCaseRef, TableClipboardRef, TablePasteRef, TranslationRef, TreeViewRef, ValueRef,
 };
 use xrack_resources::visual::{
     ControlDefault, ControlLiteral, control_default, controlled_properties,
@@ -1905,6 +1905,25 @@ impl<'m> Loader<'m> {
                 Expression::Record {
                     name: name.into(),
                     fields: names.into_iter().zip(values).collect(),
+                    base: None,
+                }
+            }
+            "xr.update_record" => {
+                let Type::Record(name) = ty else {
+                    return Err(invalid(op, "expected record result"));
+                };
+                let update =
+                    RecordUpdateRef::from_operation(op).map_err(|error| invalid(op, error))?;
+                Expression::Record {
+                    name: name.into(),
+                    fields: update
+                        .fields
+                        .into_iter()
+                        .map(|(name, value)| {
+                            Ok((name.to_owned(), self.expression(value, parameters)?))
+                        })
+                        .collect::<Result<_>>()?,
+                    base: Some(self.expression(update.base, parameters)?),
                 }
             }
             "xr.default_record" => {

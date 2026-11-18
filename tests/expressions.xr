@@ -3272,3 +3272,27 @@ export component SplitPaneNamesParity inherits SplitView {
     if root.show-middle : Rectangle {}
     fill := Rectangle {}
 }
+
+export struct UpdateDetails { label: string }
+export struct UpdateRecord { first: int, second: int, revision: int, details: UpdateDetails }
+
+export component RecordUpdateParity inherits Window {
+    in-out property <UpdateRecord> source: UpdateRecord {
+        first: 10, second: 20, revision: 30, details: UpdateDetails { label: "original" },
+    };
+    in-out property <UpdateRecord> record: root.source;
+    out property <string> summary: root.record.details.label + ":" + root.record.revision;
+
+    pure callback mark(int) -> int;
+    pure callback base() -> UpdateRecord;
+    base => {
+        UpdateRecord { first: 11, second: 22, revision: root.mark(3), details: root.record.details }
+    }
+    pure callback next(bool) -> UpdateRecord;
+    next(update) => {
+        update ? UpdateRecord { second: root.mark(2), first: root.mark(1), ..root.base() }
+               : UpdateRecord { ..root.record }
+    }
+    callback edit();
+    edit => { root.record = root.next(true); }
+}

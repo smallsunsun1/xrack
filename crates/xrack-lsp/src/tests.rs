@@ -3181,6 +3181,55 @@ states[active when true:{width:20 px;in{animate width{duration:2 ms;}}}]
 }
 
 #[test]
+fn record_update_base_supports_diagnostics_navigation_and_completion() {
+    let source = r#"struct User { name: string, age: int }
+component Demo inherits Window {
+    property <User> original: User { name: "old", age: 27 };
+    property <User> changed: User {name:"new",.. root.original};
+}"#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let edits = formatting::edits(source, &json!({}));
+    let formatted = edits[0]["newText"].as_str().unwrap();
+    assert!(
+        formatted.contains("User { name: \"new\", ..root.original }"),
+        "{formatted}"
+    );
+    assert_eq!(
+        request_at(
+            "textDocument/definition",
+            URI,
+            &source.replace("root.original", "root.ori|ginal"),
+            None,
+        ),
+        location_at(
+            URI,
+            &source.replace("> original", "> |original"),
+            "original"
+        ),
+    );
+
+    for (marker, expected) in [(".. ro|", "root"), ("..root.ori|", "original")] {
+        let items = complete_at(&source.replace(".. root.original};", marker));
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{items:?}"
+        );
+    }
+    let wrong_type = source.replace("root.original", "42");
+    let diagnostics = analysis::analyze(URI, &wrong_type, None).diagnostics;
+    assert!(
+        diagnostics
+            .values()
+            .flatten()
+            .any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("type mismatch"))),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn index_progress_waits_for_client_ack_and_reports_completion() {
     let root = workspace_fixture("index-progress");
     let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();

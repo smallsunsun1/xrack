@@ -456,6 +456,93 @@ fn input_literals_and_record_defaults_match_generated_runtime_types() {
 }
 
 #[test]
+fn record_updates_preserve_fields_and_evaluation_order_in_both_backends() {
+    use expressions_ui::{RecordUpdateParity, UpdateDetails, UpdateRecord};
+    use std::{cell::RefCell, rc::Rc};
+    use xrack_runtime::RecordValue;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("RecordUpdateParity")
+        .unwrap();
+    let mut generated = RecordUpdateParity::new();
+    let interpreted_calls = Rc::new(RefCell::new(Vec::new()));
+    let aot_calls = Rc::new(RefCell::new(Vec::new()));
+    actual
+        .on("mark", {
+            let calls = interpreted_calls.clone();
+            Rc::new(move |args| {
+                let Value::Int(value) = args[0] else {
+                    panic!("expected an integer marker");
+                };
+                calls.borrow_mut().push(value);
+                Ok(Some(Value::Int(value)))
+            })
+        })
+        .unwrap();
+    generated.on_mark({
+        let calls = aot_calls.clone();
+        move |value| {
+            calls.borrow_mut().push(value);
+            value
+        }
+    });
+    let assert_summary = |actual: &Instance, generated: &RecordUpdateParity, expected: &str| {
+        assert_eq!(actual.get("summary"), Ok(Value::String(expected.into())));
+        assert_eq!(generated.get_summary(), expected);
+    };
+    assert_summary(&actual, &generated, "original:30");
+    assert_eq!(
+        actual.invoke("next", &[Value::Bool(false)]),
+        Ok(Some(actual.get("record").unwrap()))
+    );
+    assert_eq!(generated.invoke_next(false), generated.get_record());
+    assert!(interpreted_calls.borrow().is_empty());
+    assert!(aot_calls.borrow().is_empty());
+
+    actual.invoke("edit", &[]).unwrap();
+    generated.invoke_edit();
+    assert_eq!(&*interpreted_calls.borrow(), &[2, 1, 3]);
+    assert_eq!(&*aot_calls.borrow(), &[2, 1, 3]);
+    assert_summary(&actual, &generated, "original:3");
+    let Value::Record(record) = actual.get("record").unwrap() else {
+        panic!("expected the updated record");
+    };
+    assert_eq!(record.field("first"), Some(&Value::Int(1)));
+    assert_eq!(record.field("second"), Some(&Value::Int(2)));
+    assert_eq!(generated.get_record().first, 1);
+    assert_eq!(generated.get_record().second, 2);
+
+    let details = RecordValue::new(
+        "UpdateDetails",
+        [("label".into(), Value::String("changed".into()))].into(),
+    );
+    let Value::Record(source) = actual.get("source").unwrap() else {
+        panic!("expected a record on the source property");
+    };
+    let source = source
+        .with_field(&["details".into()], Value::Record(details))
+        .unwrap();
+    actual.set("source", Value::Record(source)).unwrap();
+    generated.set_source(UpdateRecord {
+        details: UpdateDetails {
+            label: "changed".into(),
+        },
+        ..generated.get_source()
+    });
+    assert_summary(&actual, &generated, "original:3");
+    actual.reset("record").unwrap();
+    generated.reset_record();
+    assert_summary(&actual, &generated, "changed:30");
+}
+
+#[test]
 fn nested_builtin_fields_match_generated_rust_and_follow_input_updates() {
     use xrack_runtime::{
         Date, Font, KeyEvent, KeyModifiers, Length, PointerButton, PointerEvent, RecordValue, Time,

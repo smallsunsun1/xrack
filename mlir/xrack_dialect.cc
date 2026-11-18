@@ -44,7 +44,7 @@ bool isExpression(Operation &op) {
   return isa<LiteralOp, ReadOp, DynamicActionOp, DynamicReadOp, LoaderMountedOp, LoaderExternalStatusOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, TreeSelectionKeysOp, ListSelectionKeysOp, ViewIndexOp, ViewCountOp, ListSelectionReadOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, TextAcceptsOp, TextValidityOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, TextSelectionReadOp, TextCommandAvailableOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ButtonPressedOp, ButtonCheckedOp, RadioCheckedOp, NavigationActiveOp, NavigationIndexOp, NavigationCountOp, ToggleStateReadOp, NumericValueReadOp, ComboStateReadOp, ComboPopupReadOp, RangePositionReadOp, ParamOp, UnaryOp, CastOp,
              ListRowSelectedOp, StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
              LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, PointerButtonsOp, CallOp,
-             RoundOp, MathFunctionOp, StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
+             RoundOp, MathFunctionOp, StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, UpdateRecordOp, DefaultRecordOp, RecordArrayOp,
              GetFieldOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp,
              DateIsValidOp, DateAddDaysOp, DateAddMonthsOp, DateWeekdayOp, DateMonthsOp, DateMonthIndexOp, DateParseIsoOp, DateIsSelectableOp,
              MakeTimeOp, TimeFieldOp, TimeParseIsoOp, TimeIsValidIsoOp, TimeFormatIsoOp, TimeInRangeOp, MakeFontOp, FontFieldOp>(op);
@@ -5827,6 +5827,26 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
           })) {
         op->emitOpError("record operands must match its field types");
         return WalkResult::interrupt();
+      }
+    } else if (auto update = dyn_cast<UpdateRecordOp>(op)) {
+      auto type = cast<RecordType>(update.getResult().getType());
+      if (update.getBase().getType() != type ||
+          update.getFields().size() != update.getOverrides().size()) {
+        op->emitOpError("record update requires a base of its result type and one name per override");
+        return WalkResult::interrupt();
+      }
+      const auto &schema = records.find(type.getName())->second;
+      llvm::StringSet<> seen;
+      for (auto [field, value] : llvm::zip(update.getFields(), update.getOverrides())) {
+        auto name = cast<StringAttr>(field).getValue();
+        if (!seen.insert(name).second ||
+            !llvm::any_of(schema, [&](const auto &entry) {
+              return entry.first == name &&
+                     matchesDeclaredType(value.getType(), entry.second);
+            })) {
+          op->emitOpError("unknown, duplicate or mismatched record update field: ") << name;
+          return WalkResult::interrupt();
+        }
       }
     } else if (auto field = dyn_cast<GetFieldOp>(op)) {
       const auto name = cast<RecordType>(field.getInput().getType()).getName();

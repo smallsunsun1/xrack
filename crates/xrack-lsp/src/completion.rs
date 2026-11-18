@@ -1393,7 +1393,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         return;
     }
     let expression = matches!(role, Role::Handler | Role::States)
-        || matches!(first, "if" | "for")
+        || matches!(first, "if" | "for" | "..")
         || head
             .iter()
             .any(|t| matches!(t.text, ":" | "<=>" | "=" | "+=" | "-="));

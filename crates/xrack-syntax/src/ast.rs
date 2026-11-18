@@ -784,6 +784,8 @@ pub enum ExprKind {
     Record {
         name: String,
         fields: Vec<RecordValue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<Box<Expr>>,
     },
     Call(Call),
     LinearGradient {

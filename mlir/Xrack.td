@@ -390,6 +390,8 @@ def XR_DateArrayOp : XR_ExpressionOp<"date_array", (ins Variadic<XR_Date>:$items
 def XR_PointerButtonsOp : XR_ExpressionOp<"pointer_buttons", (ins Variadic<XR_PointerButton>:$items), XR_PointerButtons, [Pure]>;
 def XR_RecordArrayOp : XR_ExpressionOp<"record_array", (ins Variadic<XR_Record>:$items), XR_RecordList, [Pure]>;
 def XR_MakeRecordOp : XR_ExpressionOp<"make_record", (ins Variadic<XR_Value>:$fields), XR_Record, [Pure]>;
+def XR_UpdateRecordOp : XR_ExpressionOp<"update_record",
+    (ins Variadic<XR_Value>:$overrides, XR_Record:$base, StrArrayAttr:$fields), XR_Record, [Pure]>;
 def XR_DefaultRecordOp : XR_ExpressionOp<"default_record", (ins), XR_Record, [Pure]>;
 def XR_GetFieldOp : XR_ExpressionOp<"get_field", (ins XR_Record:$input), XR_Value, [Pure]>;
 def XR_KeyFieldOp : XR_ExpressionOp<"key_field", (ins AnyTypeOf<[XR_KeyEvent, XR_KeyModifiers]>:$input), XR_Value, [Pure]> {

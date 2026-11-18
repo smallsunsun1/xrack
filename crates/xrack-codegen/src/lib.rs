@@ -18,10 +18,11 @@ use xrack_ir::semantic::{
 };
 use xrack_mlir::{
     AliasGraph, AliasGraphs, AnimationRef, BinaryOperator, CallbackForward, ComponentAnalysis,
-    GradientRef, Module, OperationRef, PropertyEndpoint, RecordComboRef, RecordDeclRef, RepeatRef,
-    RowSceneCache, StackRead, StandardTableRef, StateCaseRef, TableClipboardRef, TablePasteRef,
-    TableRead, TranslationRef, TreeViewRef, UnaryOperator, ValueRef, VisualCacheGroup,
-    has_button_check_state, repeat_is_positioned, scene_children, visual_cache_operand,
+    GradientRef, Module, OperationRef, PropertyEndpoint, RecordComboRef, RecordDeclRef,
+    RecordUpdateRef, RepeatRef, RowSceneCache, StackRead, StandardTableRef, StateCaseRef,
+    TableClipboardRef, TablePasteRef, TableRead, TranslationRef, TreeViewRef, UnaryOperator,
+    ValueRef, VisualCacheGroup, has_button_check_state, repeat_is_positioned, scene_children,
+    visual_cache_operand,
 };
 use xrack_resources::visual::{
     ControlDefault, ControlLiteral, action_ref, check_state_binding, check_state_control,
@@ -2014,6 +2015,28 @@ impl<'a> Generator<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 let names = fields.iter().map(|field| ident(&field.name));
                 quote!(#name { #(#names: #values),* })
+            }
+            "xr.update_record" => {
+                let record = ty(&value_type(op)?);
+                let update = RecordUpdateRef::from_operation(op)?;
+                let fields = update
+                    .fields
+                    .into_iter()
+                    .map(|(name, value)| {
+                        let name = ident(name);
+                        let value = value
+                            .defining_operation()
+                            .ok_or("record field has no definition")?;
+                        let value = self.expr_in(value, context)?;
+                        Ok(quote!(#name: #value))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let base = update
+                    .base
+                    .defining_operation()
+                    .ok_or("record update base has no definition")?;
+                let base = self.expr_in(base, context)?;
+                quote!(#record { #(#fields,)* ..#base })
             }
             "xr.make_date" => {
                 let (year, month, day) = (arg(0)?, arg(1)?, arg(2)?);

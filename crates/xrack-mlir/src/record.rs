@@ -21,6 +21,35 @@ impl<'m> RecordDeclRef<'m> {
     }
 }
 
+pub struct RecordUpdateRef<'m> {
+    pub fields: Vec<(&'m str, ValueRef<'m>)>,
+    pub base: ValueRef<'m>,
+}
+
+impl<'m> RecordUpdateRef<'m> {
+    pub fn from_operation(op: OperationRef<'m>) -> Result<Self, String> {
+        let names = op
+            .string_array_attribute("fields")
+            .ok_or("invalid record update field names")?;
+        if names.len() + 1 != op.operand_count() {
+            return Err("record update requires one value per field and a base".into());
+        }
+        let base = op
+            .operand(names.len())
+            .ok_or("missing record update base")?;
+        let fields = names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                op.operand(index)
+                    .map(|value| (name, value))
+                    .ok_or("missing record update field value")
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self { fields, base })
+    }
+}
+
 pub fn record_field_path(mut value: ValueRef<'_>) -> Result<(ValueRef<'_>, Vec<&str>), String> {
     let mut path = Vec::new();
     while let Some(operation) = value

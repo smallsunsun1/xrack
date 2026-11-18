@@ -2315,11 +2315,24 @@ impl Instance {
                     .collect::<Result<Vec<_>>>()?;
                 Ok(Value::String(catalog.translate(&self.0.locale, id, &args)))
             }
-            Record { name, fields } => {
-                let fields = fields
+            Record { name, fields, base } => {
+                let mut fields = fields
                     .iter()
                     .map(|(name, value)| Ok((name.clone(), self.evaluate(value, args)?)))
-                    .collect::<Result<_>>()?;
+                    .collect::<Result<BTreeMap<_, _>>>()?;
+                if let Some(base) = base {
+                    let Value::Record(base) = self.evaluate(base, args)? else {
+                        return Err(evaluation("record update requires a record base"));
+                    };
+                    if fields.is_empty() {
+                        return Ok(Value::Record(base));
+                    }
+                    for (name, value) in base.fields() {
+                        fields
+                            .entry(name.to_owned())
+                            .or_insert_with(|| value.clone());
+                    }
+                }
                 Ok(Value::Record(RecordValue::new(name.clone(), fields)))
             }
             RecordArray(name, items) => {

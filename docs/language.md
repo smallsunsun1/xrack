@@ -37,6 +37,16 @@ export component Counter inherits Window {
 
 setter 和 DSL 赋值覆盖绑定并解除订阅，`reset_*()` 恢复默认绑定。已知值相同的写入不会使下游失效。`in` 和 `in-out` 属性提供公开 setter，`out` 提供公开 getter，`private` 仅供组件内部访问。
 
+结构体更新表达式用 `..` 从同类型的结构体取出未列出的字段。它先按书写顺序计算显式字段，再求值一次 `..` 后的表达式，得到一个新的结构体值。可以用它在回调中修改几个字段，再把整个值写回属性。
+
+```xr
+rename(new-name) => {
+    root.user = User { name: new-name, ..root.user };
+}
+```
+
+这里的赋值遵循整属性写入规则，会覆盖 `user` 原有的绑定。直接给 `root.user.name` 赋值仍不支持。
+
 直接写在元素上的普通计算绑定也使用缓存，例如 `Text { text: "计数：" + root.count; }`。纯回调被 Rust 重新注册时，依赖它的绑定会失效。生成组件通过 `Component::render_shared()` 复用干净的 `Node` 快照。
 
 `for` 按位置保存每行的场景和绑定缓存。替换字符串列表时会比较被使用的行，值相同的位置复用原有绑定。嵌套 `for` 各自跟踪依赖，`if` 隐藏的列表会等到再次显示才求值。普通重复项最多生成 4096 行。

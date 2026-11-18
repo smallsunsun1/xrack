@@ -4904,9 +4904,15 @@ impl<'a> Scope<'a> {
             let [initial] = call.arguments.as_slice() else {
                 return fail(span, "mount expects a component initializer");
             };
-            let ExprKind::Record { name, fields } = &initial.kind else {
+            let ExprKind::Record { name, fields, base } = &initial.kind else {
                 return fail(initial.span, "mount expects a component initializer");
             };
+            if let Some(base) = base {
+                return fail(
+                    base.span,
+                    "component initializers do not support a record base",
+                );
+            }
             let Some(&component) = definitions.get(name.as_str()) else {
                 return fail(initial.span, format!("unknown component `{name}`"));
             };
@@ -9616,7 +9622,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 .collect::<Result<_>>()?;
             ir::Expr::operation(op, ty, items, span)
         }
-        ExprKind::Record { name, fields } => {
+        ExprKind::Record { name, fields, base } => {
             if scope.records.contains_key("ExternalComponentHandle")
                 && (name == "ExternalComponentHandle"
                     || name.strip_suffix("Handle").is_some_and(|base| {
@@ -9684,6 +9690,34 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         format!("duplicate record field `{}`", field.name),
                     );
                 }
+            }
+            if let Some(base) = base {
+                if builtin.is_some() {
+                    return fail(base.span, "record updates require a struct type");
+                }
+                let ty = Type::Record(name.as_str().into());
+                let mut args = fields
+                    .iter()
+                    .map(|field| {
+                        let (_, ty) = schema
+                            .iter()
+                            .find(|(name, _)| *name == field.name)
+                            .ok_or_else(|| Diagnostic {
+                                span: field.span,
+                                message: format!("unknown record field `{}`", field.name),
+                            })?;
+                        expression_as(&field.value, scope, owner, ty.clone())
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                args.push(expression_as(base, scope, owner, ty.clone())?);
+                return Ok(ir::Expr {
+                    value: fields
+                        .iter()
+                        .map(|field| field.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    ..ir::Expr::operation("update_record", ty, args, span)
+                });
             }
             let args = schema
                 .into_iter()

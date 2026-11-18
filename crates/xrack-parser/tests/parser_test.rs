@@ -31,3 +31,20 @@ fn reports_reference_lexer_and_parser_diagnostics() {
         assert_eq!(parse(&source).unwrap_err(), expected, "{source:?}");
     }
 }
+
+#[test]
+fn record_update_base_must_follow_the_explicit_fields() {
+    for (value, valid) in [
+        ("User { name: \"new\", ..root.base }", true),
+        ("User { ..root.base, }", true),
+        ("User { name: \"new\" ..root.base }", false),
+        ("User { ..root.base, name: \"new\" }", false),
+        ("User { ..root.base, ..root.base }", false),
+        ("User { .. }", false),
+    ] {
+        let source = format!(
+            "struct User {{ name: string }} component App inherits Window {{ property <User> current: {value}; }}"
+        );
+        assert_eq!(parse(&source).is_ok(), valid, "{value}");
+    }
+}

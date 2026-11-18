@@ -6627,6 +6627,50 @@ fn record_fields_are_typed_through_mlir_and_rust_generation() {
 }
 
 #[test]
+fn record_updates_check_the_base_and_all_explicit_fields() {
+    let source = r#"
+        struct Entry { name: string, count: int }
+        struct Other { name: string, count: int }
+        export component App inherits Window {
+            property <Entry> active: Entry { name: "old", count: 2 };
+            property <Other> other: Other { name: "other", count: 3 };
+            callback edit();
+            edit => { root.active = Entry { name: "new", ..root.active }; }
+        }
+    "#;
+    let ir = lower(source, "record-update.xr");
+    assert!(ir.contains("\"xr.update_record\""));
+    assert!(mlir::process(&ir).is_ok());
+    assert!(mlir::process(&ir.replace("fields = [\"name\"]", "fields = [\"count\"]")).is_err());
+    for (value, diagnostic) in [
+        ("Entry { name: \"new\", ..root.other }", "type mismatch"),
+        ("Entry { name: 1, ..root.active }", "type mismatch"),
+        (
+            "Entry { unknown: 1, ..root.active }",
+            "unknown record field",
+        ),
+        (
+            "Entry { count: 0, count: 1, ..root.active }",
+            "duplicate record field",
+        ),
+        ("Entry { name: \"new\" }", "missing record field"),
+    ] {
+        let source = source.replace("Entry { name: \"new\", ..root.active }", value);
+        let error = compile(&source, "record-update.xr").err().unwrap();
+        assert!(error.contains(diagnostic), "{value}: {error}");
+    }
+    let source = source.replace(
+        "root.active = Entry { name: \"new\", ..root.active }",
+        "root.active.name = \"new\"",
+    );
+    let error = compile(&source, "record-update.xr").err().unwrap();
+    assert!(
+        error.contains("unknown property `root.active.name`"),
+        "{error}"
+    );
+}
+
+#[test]
 fn table_editors_verify_typed_record_links() {
     let source = r#"
         struct RowData { units: int, available: bool, load: float }
@@ -8211,6 +8255,8 @@ fn exported_record_types_and_literals_resolve_through_import_aliases() {
     let source = r#"import { Data as Row, Details as Info } from "types.xr";
         export component App inherits Window {
             in property <[Row]> rows: [Row { details: Info { label: "one" } }];
+            property <Info> info: Info { label: "two" };
+            out property <Info> copy: Info { ..Info { ..root.info } };
             VerticalLayout { for item in root.rows : Text { text: item.details.label; } }
         }
     "#;
@@ -8233,6 +8279,7 @@ fn exported_record_types_and_literals_resolve_through_import_aliases() {
     std::fs::remove_dir_all(directory).unwrap();
     let compiled = result.unwrap();
     assert!(compiled.mlir.matches("\"xr.get_field\"").count() >= 2);
+    assert_eq!(compiled.mlir.matches("\"xr.update_record\"").count(), 2);
     assert!(
         missing.contains("types.xr:1:") && missing.contains("unknown record type `Details`"),
         "{missing}"

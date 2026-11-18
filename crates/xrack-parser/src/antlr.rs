@@ -133,6 +133,7 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                 || (spelling == "deg" && parent == RULE_gradientAngle)
                 || (spelling == "[" && parent == RULE_repeatClause);
             let attach_after = (angle && spelling == "<")
+                || (parent == RULE_recordBase && spelling == "..")
                 || (matches!(spelling, "-" | "+" | "!")
                     && matches!(parent, RULE_unary | RULE_gradientAngle));
             result.push(FormatToken {
@@ -686,6 +687,9 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
                     value: expression(&value.expression().required("record field value")),
                 })
                 .collect(),
+            base: record
+                .recordBase()
+                .map(|base| Box::new(expression(&base.expression().required("record base")))),
         }
     } else {
         let value = child_text(ctx, 0);

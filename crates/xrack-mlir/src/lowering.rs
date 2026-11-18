@@ -204,6 +204,10 @@ impl Builder<'_> {
             let mut attrs = self.strings(&[("value", id)]);
             attrs.push(self.string_array("arg_names", names));
             attrs
+        } else if expr.op == "update_record" {
+            let mut attrs = self.strings(&[("value", "")]);
+            attrs.push(self.string_array("fields", expr.value.split_terminator(',')));
+            attrs
         } else {
             self.strings(&[("value", &expr.value)])
         };

@@ -407,6 +407,7 @@ enum Expression {
     Record {
         name: Rc<str>,
         fields: Vec<(String, Expr)>,
+        base: Option<Expr>,
     },
     RecordArray(Rc<str>, Vec<Expr>),
     RecordField(Expr, String),

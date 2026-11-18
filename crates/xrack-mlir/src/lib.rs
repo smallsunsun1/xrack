@@ -33,8 +33,8 @@ pub use visual::{
 
 mod record;
 pub use record::{
-    RecordComboRef, RecordDeclRef, StandardTableColumnRef, StandardTableRef, TreeViewRef,
-    record_field_path, record_role,
+    RecordComboRef, RecordDeclRef, RecordUpdateRef, StandardTableColumnRef, StandardTableRef,
+    TreeViewRef, record_field_path, record_role,
 };
 
 mod aliases;
