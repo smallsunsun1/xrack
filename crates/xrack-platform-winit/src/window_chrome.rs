@@ -1,6 +1,8 @@
+#[cfg(not(target_os = "ios"))]
+use winit::window::WindowAttributes;
 use winit::{
     dpi::LogicalSize,
-    window::{ResizeDirection, Window, WindowAttributes},
+    window::{ResizeDirection, Window},
 };
 use xrack_layout::WindowResizeEdge;
 use xrack_runtime::Node;
@@ -60,6 +62,7 @@ impl WindowChrome {
         )
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub fn attributes(self, attrs: WindowAttributes, scene: &Node) -> WindowAttributes {
         let initial = |size, preferred, fallback| {
             window_length(scene, size)
@@ -116,7 +119,7 @@ pub(crate) fn resize_direction(edge: WindowResizeEdge) -> ResizeDirection {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "ios")))]
 mod tests {
     use super::*;
     use winit::dpi::Size;

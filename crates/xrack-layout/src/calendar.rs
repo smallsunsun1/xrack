@@ -210,16 +210,22 @@ impl CalendarGeometry {
     }
 
     pub fn cursor(&self) -> Option<Date> {
-        if self.has_header()
-            || (self.cells.contains(&Some(self.state.selected))
-                && (!self.state.fixed_month
-                    || self.state.selected.first_of_month() == self.state.month))
+        if self.has_header() {
+            let preferred = self.state.cursor();
+            let mut prior = None;
+            for day in self.days().filter(|day| day.in_month && day.enabled) {
+                if day.date >= preferred {
+                    return Some(day.date);
+                }
+                prior = Some(day.date);
+            }
+            return prior;
+        }
+        if self.state.allows(self.state.selected)
+            && self.cells.contains(&Some(self.state.selected))
+            && (!self.state.fixed_month || self.state.selected.first_of_month() == self.state.month)
         {
-            return Some(if self.has_header() {
-                self.state.cursor()
-            } else {
-                self.state.selected
-            });
+            return Some(self.state.selected);
         }
         self.days()
             .find(|day| day.enabled && day.in_month)

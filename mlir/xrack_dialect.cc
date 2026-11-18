@@ -1529,6 +1529,8 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError("incorrect text font property or type");
       }
       const bool textEntry = singleLine || kind == "ComboBox";
+      if (name == "return-key" && (!textEntry || !isa<ReturnKeyType>(type)))
+        return child.emitOpError("return-key requires a return key on a single-line text editor");
       if ((name == "input-type" && (!textEntry || !isa<InputModeType>(type))) ||
           (name == "password-visible" && (!singleLine || !isa<BoolType>(type))) ||
           (name == "password-character" && (!textEntry || !isa<StringType>(type))) ||
@@ -2810,10 +2812,7 @@ LogicalResult NavigateOp::verify() {
 }
 
 LogicalResult TimerCommandOp::verify() {
-  auto *parent = (*this)->getParentOp();
-  if (!isa_and_nonnull<HandlerOp, CallbackOp>(parent))
-    return emitOpError("requires a handler or callback parent");
-  if (auto callback = dyn_cast<CallbackOp>(parent);
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("timer commands are not allowed in a pure callback");
   auto command = getCommand();
@@ -3922,7 +3921,10 @@ LogicalResult LiteralOp::verify() {
                 .Default(false);
   } else if (isa<InputModeType>(type)) {
     valid = spelling == "text" || spelling == "password" || spelling == "number" ||
-            spelling == "decimal" || spelling == "search";
+            spelling == "decimal" || spelling == "search" || spelling == "email" ||
+            spelling == "url" || spelling == "tel";
+  } else if (isa<ReturnKeyType>(type)) {
+    valid = spelling == "auto" || spelling == "next" || spelling == "done";
   } else if (isa<ColorSchemeType>(type)) {
     valid = spelling == "system" || spelling == "light" || spelling == "dark";
   } else if (isa<FileDialogModeType>(type)) {
@@ -5464,7 +5466,7 @@ static bool recordScalarType(llvm::StringRef type) {
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
               "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "LayoutDirection", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap", "MouseSelectionMode", "InputValidity",
-              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
+              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "ReturnKey", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
               "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "WheelEvent", "PointerEvent", "PointerEventKind", "PointerButton", "PointerButtons", "TouchPoint", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "SelectionGesture", "Date", "Time", "Font", "CheckState"},
              true)
       .Default(false);

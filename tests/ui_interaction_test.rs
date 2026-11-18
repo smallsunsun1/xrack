@@ -6141,10 +6141,10 @@ fn color_popup_edits_a_session_draft_and_preserves_hidden_alpha() {
     let viewport = Size::new(478.0, 384.0);
     let launcher = [2];
     let dialog = [5];
-    let red = [5, 0, 1, 1];
-    let green = [5, 0, 2, 2];
-    let alpha = [5, 0, 4, 1];
-    let preview = [5, 0, 0, 0];
+    let red = [5, 0, 0, 1, 1];
+    let green = [5, 0, 0, 2, 2];
+    let alpha = [5, 0, 0, 4, 1];
+    let preview = [5, 0, 0, 0, 0];
     let original = ui.get_selected();
 
     let closed = ui.render_shared();
@@ -6160,7 +6160,7 @@ fn color_popup_edits_a_session_draft_and_preserves_hidden_alpha() {
     let old = ui.render_shared();
     let layout = xrack_layout::layout(&old, viewport, &mut FixedText);
     input.reconcile(&old, &layout);
-    assert!(input.is_focused(&[5, 0, 0, 1]));
+    assert!(input.is_focused(&[5, 0, 0, 0, 1]));
     input.focus_next(&old, &layout, false);
     assert!(input.is_focused(&red));
     let action = input
@@ -6208,8 +6208,8 @@ fn color_popup_edits_a_session_draft_and_preserves_hidden_alpha() {
 #[test]
 fn color_picker_hex_preserves_alpha_and_blocks_accept_until_valid() {
     let mut driver = UiDriver::new(ColorDemo::new(), FixedText, Size::new(478.0, 384.0));
-    let hex = [5, 0, 0, 1];
-    let preview = [5, 0, 0, 0];
+    let hex = [5, 0, 0, 0, 1];
+    let preview = [5, 0, 0, 0, 0];
     let dialog = [5];
     let accept = [5, 1, 1];
     let original = driver.component().get_selected();
@@ -6274,9 +6274,9 @@ fn color_plane_keeps_hue_through_black_and_drags_both_axes() {
     ui.set_plane_visible(true);
     ui.set_alpha_visible(false);
     let viewport = Size::new(478.0, 540.0);
-    let plane = [5, 0, 5, 0];
-    let hue = [5, 0, 5, 1];
-    let preview = [5, 0, 0, 0];
+    let plane = [5, 0, 0, 5, 0];
+    let hue = [5, 0, 0, 5, 1];
+    let preview = [5, 0, 0, 0, 0];
     let before = ui.render_shared();
     assert!(ui.adjust_range_at(&before, &hue, RangeAction::SetFraction(1.0 / 3.0)));
     let scene = ui.render_shared();
@@ -6347,11 +6347,11 @@ fn font_picker_selects_a_catalog_family_and_commits_the_draft_as_one_value() {
     let mut driver = UiDriver::new(FontPickerDemo::new(), text, Size::new(510.0, 430.0));
     let original = driver.component().get_selected();
     let popup = [3];
-    let family = [3, 0, 0, 1];
-    let size = [3, 0, 1, 1];
-    let weight = [3, 0, 2, 1];
-    let style = [3, 0, 3, 1];
-    let preview = [3, 0, 4];
+    let family = [3, 0, 0, 0, 1];
+    let size = [3, 0, 0, 1, 1];
+    let weight = [3, 0, 0, 2, 1];
+    let style = [3, 0, 0, 3, 1];
+    let preview = [3, 0, 0, 4];
 
     driver.click("open-font");
     let old = driver.scene().clone();

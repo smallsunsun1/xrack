@@ -12,6 +12,7 @@ use xrack_runtime::{EmbeddedFonts, LayoutDirection, Node, TextStyle, TextWrap};
 
 pub(crate) fn fill_selected_text(
     canvas: &mut Canvas<WGPURenderer>,
+    text_system: &TextSystem,
     clip: Rect,
     origin: Point,
     text: &str,
@@ -20,8 +21,8 @@ pub(crate) fn fill_selected_text(
     selected_color: Option<Color>,
 ) -> Result<(), ErrorKind> {
     let Some(selected_color) = selected_color.filter(|_| !spans.is_empty()) else {
-        return canvas
-            .fill_text(origin.x, origin.y, text, paint)
+        return text_system
+            .fill_text(canvas, origin.x, origin.y, text, paint)
             .map(|_| ());
     };
 
@@ -44,8 +45,8 @@ pub(crate) fn fill_selected_text(
         left = end;
     }
     if selected.is_empty() {
-        return canvas
-            .fill_text(origin.x, origin.y, text, paint)
+        return text_system
+            .fill_text(canvas, origin.x, origin.y, text, paint)
             .map(|_| ());
     }
     if left < right {
@@ -54,7 +55,7 @@ pub(crate) fn fill_selected_text(
     let mut fill = |path: &Path, paint: &Paint| {
         canvas.save();
         canvas.clip_path(path, FillRule::NonZero);
-        let result = canvas.fill_text(origin.x, origin.y, text, paint);
+        let result = text_system.fill_text(canvas, origin.x, origin.y, text, paint);
         canvas.restore();
         result.map(|_| ())
     };
@@ -234,6 +235,8 @@ struct FontContext {
     fallback: Vec<FontId>,
     catalog: RefCell<FontCatalog>,
     bundled: Option<RefCell<FontCatalog>>,
+    #[cfg(target_os = "ios")]
+    native_font: Option<(FontId, Rc<crate::ios_font::NativeFont>)>,
 }
 
 impl FontContext {
@@ -258,14 +261,36 @@ impl FontContext {
         let families = font_family_names(&system, Some(&db));
         let catalog = RefCell::new(FontCatalog::new(system, loaded, fallback.first().copied()));
         let bundled = Some(RefCell::new(FontCatalog::new(db, HashMap::new(), None)));
-        Self {
+        let result = Self {
             identity: Rc::new(()),
             families,
             context,
             fallback,
             catalog,
             bundled,
+            #[cfg(target_os = "ios")]
+            native_font: None,
+        };
+        #[cfg(target_os = "ios")]
+        let result = if let Some((_, native)) = &self.native_font {
+            result.with_native_font(native.clone())
+        } else {
+            result
+        };
+        result
+    }
+
+    #[cfg(target_os = "ios")]
+    fn with_native_font(mut self, native: Rc<crate::ios_font::NativeFont>) -> Self {
+        if let Ok(id) = self
+            .context
+            .add_shared_font_with_index(native.data.clone(), 0)
+        {
+            self.fallback.insert(self.fallback.len().min(1), id);
+            self.fallback.truncate(8);
+            self.native_font = Some((id, native));
         }
+        self
     }
 }
 
@@ -307,6 +332,7 @@ pub struct TextSystem {
     default_weight: u16,
     default_italic: bool,
     default_size: Option<f32>,
+    text_scale: f32,
     edit_layout: RefCell<Option<EditLayout>>,
     edit_line: RefCell<Option<EditLine>>,
 }
@@ -326,6 +352,14 @@ impl TextSystem {
     pub fn system() -> Result<Self, String> {
         let mut db = Database::new();
         db.load_system_fonts();
+        // fontdb's Apple system font discovery targets macOS.
+        #[cfg(target_os = "ios")]
+        db.load_fonts_dir("/System/Library/Fonts");
+        #[cfg(target_os = "android")]
+        {
+            db.load_fonts_dir("/system/fonts");
+            db.set_sans_serif_family("Roboto");
+        }
         let mut selected = Vec::new();
         if let Some(id) = db.query(&Query {
             families: &[Family::SansSerif],
@@ -382,7 +416,16 @@ impl TextSystem {
                 break;
             }
         }
-        Ok(Self::new(db, context, fonts, loaded, sources))
+        let system = Self::new(db, context, fonts, loaded, sources);
+        #[cfg(target_os = "ios")]
+        let system = if let Some(native) = crate::ios_font::NativeFont::ping_fang() {
+            let mut system = system;
+            system.base = system.base.with_native_font(Rc::new(native));
+            system
+        } else {
+            system
+        };
+        Ok(system)
     }
 
     pub fn from_fonts(fonts: impl IntoIterator<Item = (Vec<u8>, u32)>) -> Result<Self, String> {
@@ -431,6 +474,8 @@ impl TextSystem {
                 fallback,
                 catalog,
                 bundled: None,
+                #[cfg(target_os = "ios")]
+                native_font: None,
             },
             fallback_sources,
             bundled: None,
@@ -439,9 +484,20 @@ impl TextSystem {
             default_weight: 400,
             default_italic: false,
             default_size: None,
+            text_scale: 1.0,
             edit_layout: RefCell::default(),
             edit_line: RefCell::default(),
         }
+    }
+
+    pub(super) fn set_text_scale(&mut self, scale: f32) -> bool {
+        if !scale.is_finite() || scale <= 0.0 || self.text_scale == scale {
+            return false;
+        }
+        self.text_scale = scale;
+        self.edit_layout.get_mut().take();
+        self.edit_line.get_mut().take();
+        true
     }
 
     pub fn set_window(&mut self, scene: &Node) {
@@ -489,6 +545,36 @@ impl TextSystem {
         &self.font_context().context
     }
 
+    pub(crate) fn fill_text(
+        &self,
+        canvas: &mut Canvas<WGPURenderer>,
+        x: f32,
+        y: f32,
+        text: &str,
+        paint: &Paint,
+    ) -> Result<TextMetrics, ErrorKind> {
+        let metrics = canvas.fill_text(x, y, text, paint)?;
+        #[cfg(target_os = "ios")]
+        if let Some((font_id, font)) = &self.font_context().native_font {
+            for glyph in metrics
+                .glyphs
+                .iter()
+                .filter(|glyph| glyph.font_id == *font_id)
+            {
+                font.draw(
+                    canvas,
+                    glyph.glyph_id,
+                    Point {
+                        x: glyph.x,
+                        y: glyph.y,
+                    },
+                    paint,
+                );
+            }
+        }
+        Ok(metrics)
+    }
+
     pub(crate) fn context_key(&self) -> &Rc<()> {
         &self.font_context().identity
     }
@@ -498,7 +584,7 @@ impl TextSystem {
             &self.default_family,
             self.default_weight,
             self.default_italic,
-            self.default_size,
+            Some(self.default_size.unwrap_or(xrack_layout::DEFAULT_FONT_SIZE) * self.text_scale),
         )
     }
 
@@ -746,8 +832,9 @@ impl TextSystem {
         if text.is_empty() || width <= 0.0 {
             return vec![];
         }
+        // FemtoVG wraps on equality. Allow rounding when layout reapplies measured widths.
         self.context()
-            .break_text_vec(width, text, paint)
+            .break_text_vec(width + 0.001, text, paint)
             .unwrap_or_else(|_| std::iter::once(0..text.len()).collect())
     }
 
@@ -811,6 +898,14 @@ impl TextMeasurer for TextSystem {
             },
             |plan| plan.size,
         )
+    }
+
+    fn font_size(&self, node: &Node) -> f32 {
+        let size = node
+            .font_size()
+            .or(self.default_size)
+            .unwrap_or(xrack_layout::DEFAULT_FONT_SIZE);
+        (size * self.text_scale).clamp(1.0, 512.0)
     }
 
     fn measure_node(&mut self, node: &Node, text: &str, max_width: f32) -> Size {

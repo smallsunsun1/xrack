@@ -52,6 +52,7 @@ from ._native import (
     Record,
     RecordList,
     RecordModel,
+    ReturnKey,
     ScrollAlignment,
     ScrollBarPolicy,
     ScrollSnapMode,
@@ -121,6 +122,7 @@ __all__ = [
     "Record",
     "RecordList",
     "RecordModel",
+    "ReturnKey",
     "ScrollAlignment",
     "ScrollBarPolicy",
     "ScrollSnapMode",
@@ -195,6 +197,7 @@ Value: TypeAlias = (
     | PopupPlacement
     | Record
     | RecordList
+    | ReturnKey
     | ScrollAlignment
     | ScrollBarPolicy
     | ScrollSnapMode

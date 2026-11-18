@@ -3,6 +3,8 @@ mod controls;
 mod entry;
 mod image;
 mod image_colorize;
+#[cfg(target_os = "ios")]
+mod ios_font;
 mod nine_slice;
 pub mod preview;
 mod preview_pointer;
@@ -14,7 +16,7 @@ mod text;
 mod theme;
 mod vector;
 #[doc(hidden)]
-pub use entry::PointerCaret;
+pub use entry::{PointerCaret, TouchSelectionHandle};
 use femtovg::{
     Canvas, Color, FillRule, LayerEffects, Paint, Path, Solidity, Transform2D,
     renderer::WGPURenderer,
@@ -34,7 +36,6 @@ use theme::{Palette, PaletteRole as Role};
 use xrack_layout::{
     Affine, ButtonContent, ComboCompletion, ImagePresentation, Interaction, LayoutNode, Point,
     Rect, Size, SpinGeometry, StackTransitions, TextMeasurer, TreeRowGeometry, corner_radii,
-    dialog_title_height,
 };
 use xrack_runtime::{
     Brush, Color as UiColor, ColorScheme, Component, GradientStop, Node, Orientation,
@@ -174,11 +175,21 @@ impl RenderDevice {
             })
             .await
             .map_err(|e| format!("no compatible GPU adapter: {e}"))?;
+        let supported_limits = adapter.limits();
+        let required_limits = wgpu::Limits::default().using_resolution(supported_limits.clone());
+        // The iOS Simulator advertises one fewer varyings slot than the WebGPU default.
+        #[cfg(target_os = "ios")]
+        let required_limits = wgpu::Limits {
+            max_inter_stage_shader_variables: required_limits
+                .max_inter_stage_shader_variables
+                .min(supported_limits.max_inter_stage_shader_variables),
+            ..required_limits
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("XRack"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+                required_limits,
                 ..Default::default()
             })
             .await
@@ -246,6 +257,17 @@ impl Renderer {
             theme: Theme::default(),
             system_color_scheme: ColorScheme::System,
         })
+    }
+
+    /// Apply the platform's preferred text scale to measurement and drawing.
+    /// Returns whether cached layouts need to be prepared again.
+    pub fn set_text_scale(&mut self, scale: f32) -> bool {
+        if !self.text.set_text_scale(scale) {
+            return false;
+        }
+        self.row_layouts = Default::default();
+        self.retained_layers.clear_images(&mut self.canvas);
+        true
     }
 
     pub fn layout(&mut self, scene: &Node, viewport: Size) -> LayoutNode {
@@ -458,6 +480,9 @@ impl Renderer {
                 &mut self.images,
                 scale,
             )?;
+        }
+        for handle in self.text.touch_selection_handles(scene, layout, input) {
+            handle.paint(&mut self.canvas, color(theme.focus));
         }
         if let Some(popup) = input.tooltip_popup(scene, layout) {
             let viewport = Rect::new(
@@ -1022,14 +1047,15 @@ impl Renderer {
             }
             self.needs_redraw |= pending && layout.enabled;
         }
-        if dialog_title_height(node) > 0.0 {
+        if layout.dialog_title_height(node) > 0.0 {
             let paint = self.text.paint_node(
                 node,
                 color(node.color("color").unwrap_or(theme.text)),
                 false,
             );
-            self.canvas
+            self.text
                 .fill_text(
+                    &mut self.canvas,
                     bounds.x + 16.0,
                     bounds.y + 12.0,
                     node.text("title").unwrap_or(""),
@@ -1054,8 +1080,9 @@ impl Renderer {
                 } else {
                     theme.disabled_text
                 };
-                self.canvas
+                self.text
                     .fill_text(
+                        &mut self.canvas,
                         header.x,
                         header.y + ((header.height - size * 1.4) * 0.5).max(0.0),
                         node.text("title").unwrap_or(""),
@@ -1452,8 +1479,9 @@ impl Renderer {
             );
             for line in label.lines {
                 if !line.text.is_empty() {
-                    self.canvas
+                    self.text
                         .fill_text(
+                            &mut self.canvas,
                             bounds.x + line.origin.x,
                             bounds.y + line.origin.y,
                             &*line.text,
@@ -1536,8 +1564,8 @@ impl Renderer {
                     if y >= label.y + label.height {
                         break;
                     }
-                    self.canvas
-                        .fill_text(x, y, &text[range.clone()], &paint)
+                    self.text
+                        .fill_text(&mut self.canvas, x, y, &text[range.clone()], &paint)
                         .map_err(|e| format!("text drawing failed: {e}"))?;
                 }
                 Ok::<(), String>(())

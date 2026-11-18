@@ -5575,6 +5575,16 @@ impl Instance {
                 && self.handle_result(instance.activate_action(element, command, Some(input)));
         }
         self.handle_result(match action {
+            ControlAction::ValidateTextSubmission
+                if matches!(node.kind, "TextInput" | "LineEdit") =>
+            {
+                input.try_available(|| {
+                    let Some(Value::String(text)) = instance.control_value(element, "text")? else {
+                        return Ok(false);
+                    };
+                    instance.check_text_submission(element, &text)
+                })
+            }
             ControlAction::StackBack { revision }
                 if node.kind == "StackView"
                     && node
@@ -6137,6 +6147,7 @@ impl ValueType {
                 | (Self::TextOverflow, Value::TextOverflow(_))
                 | (Self::ColorScheme, Value::ColorScheme(_))
                 | (Self::InputType, Value::InputType(_))
+                | (Self::ReturnKey, Value::ReturnKey(_))
                 | (Self::DialInputMode, Value::DialInputMode(_))
                 | (Self::Image, Value::Image(_) | Value::ImageAsset(_))
                 | (Self::LogLevel, Value::LogLevel(_))

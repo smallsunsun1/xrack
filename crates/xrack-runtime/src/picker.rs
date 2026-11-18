@@ -1,8 +1,16 @@
-use crate::{DialogRole, InputRoute, Node, Property};
+use crate::{DialogRole, InputRoute, Length, Node, Property};
 use std::cell::{Cell, RefCell};
 
 const SESSION: &str = "__picker-session";
 const DRAFT_REVISION: &str = "__picker-draft-revision";
+
+impl Node {
+    /// Identity shared by the rendered picker dialog and its generated controls.
+    #[doc(hidden)]
+    pub fn picker_session_id(&self) -> Option<i64> {
+        self.int(SESSION)
+    }
+}
 
 thread_local! {
     static NEXT_SESSION: Cell<i64> = const { Cell::new(1) };
@@ -74,7 +82,7 @@ impl<T: Clone> PickerSession<T> {
     pub(crate) fn current(&self, scene: &Node) -> Option<T> {
         let initial = self.initial.borrow();
         let (revision, value) = initial.as_ref()?;
-        (scene.int(SESSION) == Some(*revision))
+        (scene.picker_session_id() == Some(*revision))
             .then(|| self.draft.get(|| None).unwrap_or_else(|| value.clone()))
     }
 
@@ -84,7 +92,7 @@ impl<T: Clone> PickerSession<T> {
                 .initial
                 .borrow()
                 .as_ref()
-                .is_some_and(|(revision, _)| scene.int(SESSION) == Some(*revision))
+                .is_some_and(|(revision, _)| scene.picker_session_id() == Some(*revision))
     }
 
     #[expect(
@@ -147,12 +155,16 @@ impl<T: Clone> PickerSession<T> {
 
 pub(crate) fn append_picker_dialog(dialog: &mut Node, picker: Node, can_accept: bool) {
     let mut footer = Node::new("DialogButtonBox", None);
+    let date_or_time = matches!(picker.kind, "Calendar" | "TimePicker");
+    footer.properties.insert("__picker-actions", true.into());
     for (role, property) in [
         (DialogRole::Reject, "cancel-text"),
         (DialogRole::Accept, "accept-text"),
     ] {
         let mut button = Node::new("DialogButton", None);
         button.properties.insert("role", role.into());
+        button.properties.insert("min-width", Length(44.0).into());
+        button.properties.insert("min-height", Length(44.0).into());
         if role == DialogRole::Accept && !can_accept {
             button.properties.insert("enabled", false.into());
         }
@@ -161,5 +173,16 @@ pub(crate) fn append_picker_dialog(dialog: &mut Node, picker: Node, can_accept: 
         }
         footer.children.push(button);
     }
+    let picker = if date_or_time {
+        picker
+    } else {
+        let mut viewport = Node::new("ScrollView", None);
+        viewport.properties.insert("__picker-viewport", true.into());
+        viewport
+            .properties
+            .insert("reserve-scroll-bar-space", true.into());
+        viewport.children.push(picker);
+        viewport
+    };
     dialog.children.extend([picker, footer]);
 }

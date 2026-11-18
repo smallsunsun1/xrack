@@ -496,7 +496,9 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             .scene
             .at_path(path)
             .unwrap_or_else(|| panic!("UI target {path:?} has no scene node"));
-        let bounds = if node.group_checkable() {
+        let bounds = if let Some(header) = item.tab_header {
+            header
+        } else if node.group_checkable() {
             item.group_header(node)
         } else {
             item.bounds

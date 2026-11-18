@@ -1033,6 +1033,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "overflow" if kind == "Text" => Type::TextOverflow,
         "max-lines" if kind == "Text" => Type::Int,
         "input-type" if builtins::text_submission_single_line(kind) => Type::InputType,
+        "return-key" if builtins::text_submission_single_line(kind) => Type::ReturnKey,
         "password-visible" if matches!(kind, "TextInput" | "LineEdit") => Type::Bool,
         "password-character" if builtins::text_submission_single_line(kind) => Type::String,
         "password-mask-delay" if builtins::text_submission_single_line(kind) => Type::Int,
@@ -2896,7 +2897,7 @@ fn swipe_slot(kind: &str) -> bool {
     matches!(kind, "SwipeContent" | "SwipeLeft" | "SwipeRight")
 }
 
-fn nonvisual_element(kind: &str) -> bool {
+pub fn nonvisual_element(kind: &str) -> bool {
     matches!(
         kind,
         "Action" | "ActionGroup" | "ButtonGroup" | "Timer" | "SoundEffect" | "SecondaryWindow"
@@ -9329,6 +9330,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::TextVerticalAlignment => "top",
         Type::TextOverflow => "clip",
         Type::InputType => "text",
+        Type::ReturnKey => "auto",
         Type::CursorShape => "auto",
         Type::ColorScheme => "system",
         Type::FileDialogMode => "open-file",
@@ -10030,6 +10032,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "TextVerticalAlignment"
                         | "TextOverflow"
                         | "InputType"
+                        | "ReturnKey"
                         | "CursorShape"
                         | "PointerEventKind"
                         | "PointerButton"

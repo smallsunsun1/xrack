@@ -1,6 +1,6 @@
-//! Map AccessKit text positions to the editor's committed UTF-8 text.
+//! Map AccessKit text positions to the editor's current UTF-8 text.
 use accesskit::{Node as AccessibleNode, NodeId, Role, TextDirection, TextSelection};
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_layout::Affine;
 use xrack_layout::{
@@ -22,27 +22,42 @@ pub(crate) fn supports_ranges(node: &Node) -> bool {
     is_text_input(node.kind) || combo_editable(node) || node.selectable_styled_text()
 }
 
+pub(crate) fn accessible_text_value<'a>(
+    node: &'a Node,
+    input: &'a Interaction,
+    path: &[usize],
+) -> Cow<'a, str> {
+    if input.table_cell_editing(path) {
+        input.editor_value(node)
+    } else {
+        Cow::Borrowed(text_input_value(node))
+    }
+}
+
 #[derive(PartialEq)]
 pub(crate) struct EditorState {
     anchor: usize,
     focus: TextPosition,
     composing: bool,
     horizontal_drag_scroll: Option<f32>,
+    cell_draft: Option<String>,
 }
 
 impl EditorState {
     pub fn focused(scene: &Node, input: &Interaction) -> Option<Self> {
         let target = input.focused.as_ref()?;
+        let cell_editing = input.table_cell_editing(&target.path);
         let node = scene
             .at_path(&target.path)
-            .filter(|node| supports_ranges(node))?;
+            .filter(|node| supports_ranges(node) || cell_editing)?;
         let editor = input.editor.as_ref()?;
-        let text = text_input_value(node);
+        let text = accessible_text_value(node, input, &target.path);
         Some(Self {
-            anchor: editor.anchor(text),
-            focus: editor.position(text),
+            anchor: editor.anchor(&text),
+            focus: editor.position(&text),
             composing: !editor.preedit.is_empty(),
             horizontal_drag_scroll: editor.horizontal_drag_scroll(),
+            cell_draft: cell_editing.then(|| text.into_owned()),
         })
     }
 }
@@ -57,6 +72,7 @@ pub(crate) struct TextDocument {
     runs: Vec<Run>,
     path: Vec<usize>,
     scroll: Point,
+    cell_draft: Option<String>,
 }
 
 impl TextDocument {
@@ -65,9 +81,14 @@ impl TextDocument {
     }
 
     pub fn matches_value(&self, scene: &Node, value: &str) -> bool {
-        scene
-            .at_path(&self.path)
-            .is_some_and(|node| text_input_value(node) == value)
+        self.cell_draft.as_deref().map_or_else(
+            || {
+                scene
+                    .at_path(&self.path)
+                    .is_some_and(|node| text_input_value(node) == value)
+            },
+            |draft| draft == value,
+        )
     }
 
     fn position(&self, position: TextPosition) -> accesskit::TextPosition {
@@ -135,7 +156,8 @@ pub(crate) fn project_text(
     text_system: Option<&TextSystem>,
     mut allocate_id: impl FnMut(usize, &str) -> NodeId,
 ) -> (TextDocument, Vec<(NodeId, AccessibleNode)>) {
-    let source = text_input_value(node);
+    let text = accessible_text_value(node, input, path);
+    let source = text.as_ref();
     let mask = node
         .is_password()
         .then(|| PasswordMask::for_node(node, source));
@@ -246,6 +268,7 @@ pub(crate) fn project_text(
         runs: Vec::new(),
         path: path.to_vec(),
         scroll,
+        cell_draft: input.table_cell_editing(path).then(|| source.to_owned()),
     };
     let mut nodes: Vec<(NodeId, AccessibleNode)> = Vec::new();
 
@@ -360,6 +383,7 @@ pub(crate) fn project_styled_text(
         runs: Vec::new(),
         path: path.to_vec(),
         scroll: Point::default(),
+        cell_draft: None,
     };
     let mut nodes: Vec<(NodeId, AccessibleNode)> = Vec::new();
     let mut previous_line = None;
@@ -576,6 +600,7 @@ mod tests {
             ],
             path: Vec::new(),
             scroll: Point::default(),
+            cell_draft: None,
         };
         let mut editor = TextEdit::default();
         for (trailing, node, character_index) in [(true, NodeId(1), 2), (false, NodeId(2), 0)] {

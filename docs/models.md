@@ -12,6 +12,10 @@
 
 使用 Tab、Shift+Tab 或控件的 `.focus()` 进入 `ScrollView` 中的控件时，容器会自动把目标滚入可见区域。嵌套视口从内到外处理，扣除滚动条预留空间，并沿逻辑方向写回滚动绑定。可用 `auto-reveal-focus: false;` 关闭当前视口的自动滚动。低层 `Flickable` 可用 `auto-reveal-focus: true;` 启用。运行 `bazel run //examples/list:list -- --scroll-focus`，可用 Tab 或 **Focus last field** 定位嵌套视口中的输入框。
 
+iOS 在旋转设备或停靠键盘改变可用区域时，也会用同一规则把聚焦的输入框滚回可见区域。数字键盘的 Done 工具栏计入遮挡范围。只要当前编辑器在新布局里仍可滚到，就会保留焦点与输入内容。可在 [Pocket Tasks](../examples/ios/README.md) 的 **Readings** 表单体验。
+
+iPad 的浮动键盘保留窗口的可用尺寸。它遮挡输入框时，启用了 `auto-reveal-focus` 的 `ScrollView` 或 `Flickable` 可临时上下移开内容，以让输入框完整显示。滚动绑定和原始滚动位置会保留，移开或收起键盘后恢复。视口需要有足够的空间容纳完整输入框。
+
 `ScrollView` 和 `Flickable` 可在回调中调用 `view.position-view-at-child(field, ScrollAlignment.contain, ScrollAlignment.center)`。首个参数是同一组件里已声明的后代 ID，两个对齐参数各自沿逻辑轴解释。命令在布局更新后定位，先揭示嵌套视口中的目标，再对齐指定视口。可和 `scroll-to()` 或 `scroll-by()` 在同一回调里按顺序组合，并通过滚动绑定观察结果。运行 `--scroll-focus` 示例的 **Center last field** 可单独定位输入框。
 
 RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的横向起点在右侧。内建和附着的横向滑块也从右向左移动。物理方向的滚轮、拖动和无障碍动作仍按屏幕坐标操作，嵌套的 LTR 视口也可在同一次手势中接收剩余位移。运行 `bazel run //examples/list:list -- --rtl-scroll`，可切换方向并对照画布、滚动条和网格。
@@ -21,6 +25,8 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 附着模式的 `position` 和 `size` 是只读的归一化视口数据，分别为实际偏移和可见长度占内容总长度的比例。没有溢出时返回 `0` 和 `1`，视口尚未布局或被隐藏时都返回 `0`。滚动条的显示策略和最小滑块尺寸独立于这两个值。可以用这些读数驱动文本、颜色或另一个滚动指示器。编译器会检查它们流入当前布局阶段的尺寸或位置时是否形成反馈。
 
 省略 `target` 即可使用独立滚动控件。`size` 是可见部分占总内容的比例，取值为 `0..1`，`position` 的有效范围为 `0..1-size`。用 `position <=> root.offset` 接收滚动条输入，或者在表达式中读取 `bar.position` 和 `bar.size` 来移动自定义内容或驱动指示器。`size` 改变时，有效位置会重新夹紧，原绑定值会保留。用户移动滑块时会写回位置并触发 `changed(position)`。`step-size` 控制方向键和无障碍增减的步长，默认 `0.1`。两种模式都支持 `minimum-size` 设置最小滑块比例，滚动条可用 `interactive: false` 切换为被动显示。运行 `bazel run //examples/list:list -- --standalone-scroll` 体验。
+
+在 iOS 上，有可滚动范围和正步长的交互式 `ScrollBar` 会作为可调节元素出现在 UIKit 无障碍树中。独立滚动条以比例提供当前位置，附着式滚动条以逻辑像素提供视口偏移。增减按配置的步长执行，并在边界处停用对应方向。禁用或被动显示的滚动条只提供读数。
 
 两种模式的 `ScrollBar` 和 `ScrollIndicator` 都提供只读的 `visual-position` 和 `visual-size`。它们分别是滑块的物理起点和长度，占实际轨道的比例，包含 `minimum-size` 及默认的最小像素尺寸。横排 RTL 从左侧量起，因此逻辑滚动起点对应轨道右端。尚未布局、显示策略隐藏滑块或附着视口被隐藏时，这两个读数均为零。可把它们绑定到固定尺寸的读数标签或其他绘制属性。运行 `bazel run //examples/list:list -- --scroll-visual-metrics`，拖动滚动条并切换 RTL 可对比附着滚动条与独立指示器。
 
@@ -37,6 +43,8 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 `ScrollView` 根据直接子项的位置和布局尺寸计算内容范围。`content-width` 和 `content-height` 可以用长度或视口百分比指定最小内容尺寸。子项的百分比尺寸以显式内容尺寸或视口为基准。`viewport-height` 仍可用于既有的最小内容高度绑定。`Shift` 加滚轮可横向滚动，嵌套视图会将各轴剩余滚动量交给外层。运行 `bazel run //examples/layout:layout` 可体验二维画布。
 
 `Flickable` 是可拖动并带惯性的底层视口。它默认裁剪内容，滚动条可通过 `ScrollBar { target: canvas; }` 独立放置。`content-width` 和 `content-height` 给出各轴的显式内容范围，省略时按子项推导。`flick-direction` 可设为 `both`、`horizontal` 或 `vertical`，`interactive: false` 暂停拖动和惯性输入，子控件、滚轮和 `scroll-to()` 仍可操作。`dragging`、`flicking` 和 `moving` 反映当前消费位移的视口。`flicked()` 在用户改变偏移时触发，`cancel-flick()` 停止该视口正在参与的惯性滚动。运行 `bazel run //examples/layout:layout -- --flickable` 体验。
+
+Android 库存示例的 **Open canvas** 可以用触摸对照双轴拖动、自定义附着滚动条和 `scroll-to()`。画布锁定拖动后，滑块和画布内按钮仍可操作。运行 `//examples/android:canvas_ui_test` 验证设备交互，构建和运行方式见 [Android 示例](../examples/android/README.md)。
 
 `bounds-behavior` 默认是 `FlickBoundsBehavior.stop-at-bounds`。可分别启用拖动越界 `drag-over-bounds`、惯性越界 `overshoot-bounds`，或同时启用 `drag-and-overshoot-bounds`。嵌套视口先消费合法范围内的位移，剩余部分才交给最外层启用弹性的视口。`horizontal-overshoot` 和 `vertical-overshoot` 是带符号的逻辑像素，`content-x/y` 仍表示合法的内容偏移。设 `bounds-movement: FlickBoundsMovement.stop-at-bounds` 可让内容停在边界，用读数驱动自定义效果。`rebound-duration` 默认 180 毫秒，`rebounding` 和 `moving` 在回弹期间为真。也可调用 `return-to-bounds()` 主动开始回弹。示例中的 **Elastic content** 切换内容是否随越界移动。
 
@@ -68,9 +76,19 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 
 虚拟视图可用 `preserve-scroll-anchor: true;` 保留阅读位置。模型插入、删除、排序、树折叠或网格列数变化时，视口优先保留首个可见记录及其相对视口的位置。该记录消失后，尝试保留原来同屏的下一条记录。无可用记录时沿用现有偏移并按新边界裁剪。选中项跟随和显式定位仍可移动视口。绑定了 `content-y` 的轴由绑定源决定，行锚定本身也不会触发 `scrolled()`。默认关闭。运行 `bazel run //examples/list:list -- --anchor` 可比较两种行为。
 
+Android 库存示例的 **Open log** 演示自定义分段标题随触摸滚动吸顶和接替，也可在视口前插入或筛掉记录，观察标题条数和当前阅读位置。设备回归目标为 `//examples/android:inspection_log_ui_test`。[Android 示例](../examples/android/README.md#检查记录分段回归)
+
 `GridView` 接收一个 `for` 模板，支持整数、字符串列表和记录模型，也支持使用自定义组件作为单元格。用 `cell-width`、`cell-height` 和 `spacing` 设置单元格，按布局方向逐行排列，列数随视口宽度变化。RTL 下第一列在右侧，左键选择屏幕左边的相邻项，模型索引保持原顺序。只构建与垂直视口相交的网格行。自定义组件的状态按模型记录标识保存，滚出视口或在模型中移动后仍属于原记录。
 
+Android 库存示例的 **Open catalog** 演示按业务键选择零件。卡片滚出视口、在模型中移动或暂时被过滤后，卡片内的收藏状态仍随原记录保留。运行 `//examples/android:catalog_ui_test` 验证触摸交互，构建和运行方式见 [Android 示例](../examples/android/README.md#零件网格回归)。
+
 `SwipeDelegate` 用一个 `SwipeContent` 声明行内容，再用 `SwipeLeft` 和 `SwipeRight` 声明一侧或两侧的操作区。操作区可设宽度，也可按子项尺寸测量。触摸或鼠标从行内容横向拖动时会预览操作区，松手时越过半宽才展开。纵向手势交给外层列表，预览期间操作按钮不能点击。聚焦行后可用左右方向键滑动，Escape 收起。行末的三点按钮也可用鼠标或辅助技术展开和收起，优先展开右侧。`open-side` 可双向绑定 `SwipeSide`，用户提交切换时触发 `changed(side)`。虚拟列表中的展开状态随记录标识保留。运行 `bazel run //examples/delegates:delegates -- --swipe` 体验。
+
+SwipeContent 和操作区可以包含按钮。短按仍交给按钮，横向拖动会寻找所在的最近一层 SwipeDelegate，纵向拖动交给外层滚动容器。手势开始后换掉同一虚拟位置上的记录时，旧手势会取消。iOS 的无障碍树会单独公开展开按钮和已露出的操作区，让辅助技术可以直接选中操作按钮。见 [Pocket Tasks](../examples/ios/README.md) 的任务列表。
+
+Android 系统返回键可收起当前聚焦任务行的操作区。[Android 任务列表回归](../examples/android/README.md#模拟器测试) 检查横拖预览和吸附、从露出按钮处纵向滚动，以及按记录标识保留操作区并完成或重新打开正确的任务。
+
+焦点位于行内按钮时，左右方向键和 Escape 仍操作最近一层 `SwipeDelegate`，并遵守当前模态弹层的焦点范围。iOS 外接键盘沿用同一套规则，Tab / Shift+Tab 切换焦点，回车或空格激活按钮；文本编辑的 `Primary` 修饰键为 Command。输入法组字期间，编辑器把文字和候选操作交给 UIKit，避免抢走候选选择按键。
 
 `current-index` 可双向绑定，点击单元格或按方向键、Home / End、Page Up / Page Down 选择。用户改选时触发 `changed(index)`。默认在索引变化或列数变化后滚入选中项，可用 `follow-current: false;` 关闭。辅助技术可访问当前可见项及其内部控件。运行 `bazel run //examples/list:list -- --grid` 体验五万张卡片，勾选收藏后滚动或调整窗口宽度可查看状态是否保留。
 
@@ -96,11 +114,13 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 
 弹层默认非模态，点击外部会收起最上层弹层，并把这次按下交给背景。点直接触发按钮时由按钮处理。设置 `modal: true;` 会阻断背景输入并默认显示遮罩。`focus`、`close-on-outside` 和 `close-on-escape` 可控制焦点及关闭方式。弹层内按 Tab 循环，关闭后恢复此前焦点。运行 `bazel run //examples/dialog:dialog -- --popup` 体验。
 
+Android 导航示例的 **Open popup** 覆盖打开时移动锚点、边缘翻转、外部触摸和返回键关闭层级。设备回归目标为 `//examples/android:popup_window_ui_test`。[Android 示例](../examples/android/README.md#锚定弹层回归)
+
 `StandardButton` 的 `kind` 使用 `StandardButtonKind`，例如 `kind: save;`。控件有默认英文标签，也可用 `text` 覆盖。独立使用时通过 `clicked()` 处理操作。在 `Dialog` 中，确认和取消类按钮派发 `accepted()` 或 `rejected()`。`apply`、`reset` 和 `help` 分别触发 `applied()`、`reset()` 和 `help-requested()` 并保持对话框打开。`discard` 使用危险样式，明确激活后关闭并触发 `discarded()`。默认 Enter 只走可用的确认操作，丢弃按钮不会自动获得初始焦点。`primary` 强调按钮，并在初始焦点落在按钮区时优先选择可用的确认按钮。
 
 `DialogButtonBox` 接收 `StandardButton`、`DialogButton` 或普通 `Button`。它按角色排列按钮，确认和取消的默认相对顺序随平台变化。空间不足时会换行，Tab 和无障碍按布局顺序遍历。可用 `layout-order` 覆盖单个按钮的位置，或设置 `wrap: false;`。运行 `bazel run //examples/dialog:dialog -- --standard` 体验。
 
-`Drawer` 是贴靠窗口边缘的模态抽屉。`edge` 可取 `left`、`right`、`top` 或 `bottom`，`open` 可双向绑定。设置 `drag-margin: 18px;` 后，可从窗口边缘向内滑动打开，从面板内侧边缘反向滑动关闭。桌面可用中键执行同样的手势，滑动达到阈值后在松手时提交。手势开启触发 `opened()`，手势、Escape 或遮罩关闭触发 `closed()`。遮罩关闭默认启用。抽屉与对话框共用模态栈和焦点恢复，关闭时延迟构建抽屉内容。运行 `bazel run //examples/dialog:dialog` 体验。
+`Drawer` 是贴靠窗口边缘的模态抽屉。`edge` 可取 `left`、`right`、`top` 或 `bottom`，`open` 可双向绑定。设置 `drag-margin: 18px;` 后，可从窗口边缘向内滑动打开，从面板内侧边缘反向滑动关闭。桌面可用中键执行同样的手势，滑动达到阈值后在松手时提交。手势开启触发 `opened()`，手势、Escape 或遮罩关闭触发 `closed()`。遮罩关闭默认启用。抽屉与对话框共用模态栈和焦点恢复，关闭时延迟构建抽屉内容。 在有系统安全区的窗口中，打开手势从安全区边缘开始。iOS 底部抽屉可以从 Home 指示条上方往上滑，也可用 UIKit 无障碍取消动作关闭。 抽屉的可见标题作为独立标题公开，模态期间系统只遍历面板内的控件。运行 `bazel run //examples/dialog:dialog` 体验。
 
 `Page` 可以单独使用，也可以放进 `SwipePage` 或 `StackPage`。直接声明可选的 `PageHeader` 和 `PageFooter`，各最多一个。两端占满页宽，默认按内部垂直布局的首选高度排布，也可设置 `height`。普通子项在中间区域按局部坐标布局，`padding` 作用于正文，`spacing` 留出正文与可见页眉和页脚之间的间距。正文可放一个 `width: 100%; height: 100%;` 的 `ScrollView`，滚动时两端保持固定。`title` 为无障碍提供页面名称。Tab 和无障碍按页眉、正文、页脚遍历，各区内部保持声明顺序。运行 `bazel run //examples/navigation:navigation -- --page` 体验。
 
@@ -148,6 +168,8 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 
 从右向左布局时，层级从右侧缩进，展开按钮位于行的右侧，纵向滚动条移到左侧。← 展开或进入子节点，→ 折叠或返回父节点。切换布局方向会保留当前项、选区和展开状态。运行 `bazel run //examples/tree:tree -- --rtl-tree` 可以在同一棵树上切换方向。
 
+iOS 在系统无障碍树中提供树节点名称、展开状态以及 **Expand** 和 **Collapse** 动作。展开后，当前视口内的子节点和可编辑单元格可以分别操作。折叠会移除被收起的子节点，父节点保留原有无障碍身份。
+
 用 `TreeDisclosure` 替换分支的默认三角。它是 `TreeRow` 的直接子项，使用树分配的展开区域，可以在只读绑定中访问当前记录和 `tree.is-expanded(record.key)`，并用 `Text`、`Image` 或 `Path` 绘制。叶子节点保留缩进并隐藏指示器。点击、键盘和无障碍继续操作同一个业务键。运行 `bazel run //examples/tree:tree -- --disclosure` 试用。
 
 `TreeView` 提供 `expand(key)`、`collapse(key)`、`toggle-expanded(key)` 和 `expand-to(key)`。参数使用记录里的业务键。`expand-to` 展开目标的祖先路径，可结合 `row-for-key(key)` 和 `position-view-at-index(...)` 滚动到深层节点。`depth(key)` 返回当前视图中的层级，未知键返回 `-1`。`is-expanded(key)` 可读取当前展开状态，`row-for-key(key)` 在节点折叠隐藏时返回 `-1`。
@@ -166,6 +188,8 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 
 `selection-count` 和 `has-selection` 可绑定到工具栏。`is-row-selected(index)` 查询展开和筛选后的显示行，包含视口外的行。`is-key-selected(key)` 查询业务键，也能读取折叠、筛选或切换分支前保留的选区。多选计数包含这些保留项。
 
+[Android 树形目录回归](../examples/android/README.md#树形目录回归) 检查通过触摸操作自定义展开按钮、折叠后回退光标、插入同级记录后保留选区，以及 RTL 下从右侧展开分支。
+
 回调可用 `select-row(index)`、`select-key(key)` 或 `select-source-index(index)` 选中当前树投影中的记录并替换选区。选隐藏的节点前，可先用 `expand-to(key)` 展开路径。多选模式还支持 `toggle-row(index)`、`select-all()` 和 `clear-selection()`。全选替换为当前投影中的全部记录，清空和全选都保留光标。运行 `bazel run //examples/tree:tree -- --commands`，可按业务键选中节点，再折叠或筛选目录观察选区。
 
 `TreeView.selected-keys` 是按业务键升序排列的只读 `[int]` 快照，包含折叠、筛选和切换分支时保留的选中项。应用可把快照存进自己的属性，再用 `tree.select-keys(saved)` 一次替换多选。恢复在整个树模型中解析业务键，光标、展开状态和滚动位置保持原样。输入中的重复键会合并。只要有一个键在模型中缺失或不唯一，整个操作就不提交。传入 `[]` 可清空选区。
@@ -179,6 +203,8 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 双击文本单元格或按 F2 开始重命名，Enter 提交，Escape 放弃。聚焦树并选定当前行后，按 Tab 可进入该行可用的复选框、数字框或滑块。重排后仍在视口内的记录会保留草稿，折叠隐藏记录或外部修改被编辑字段会丢弃草稿。树和表格的编辑器共用字段提交逻辑，核对行标识和字段原值后再合并到最新记录。
 
 `ListView` 的 `for` 也可直接实例化匿名行组件。组件可接收模型项和索引作为输入，包含输入框、按钮或其他控件。行状态按模型标识保留，滚出视口或因插入而移动时会跟随原行。已访问过的行组件保留到模型删除该行或替换模型。
+
+在 iOS 上，`ListView`、`GridView` 和 `StandardListView` 会分别公开当前可见的列表项与行内控件。按屏幕位置探索时，可见的行控件优先响应。向列表项发送辅助功能滚动命令时，由所属列表滚动并更新可见项。自定义行内按钮可以通过 `accessible-name` 提供名称，通过 `accessible-description` 说明状态和激活动作。可在 [Pocket Tasks](../examples/ios/README.md) 的任务列表体验。
 
 虚拟行组件可以包含自己的 `ListView`、`GridView` 或 `StandardListView`。给内层视图设定高度后，两层视图分别按自己的可见区域生成行。内层滚动偏移随外层行实例保留。多个内层视图共享同一模型时，点击、焦点和无障碍操作仍能定位到各自的行。运行 `bazel run //examples/list:list -- --nested` 体验 1 万个分组共用 5 万条记录。
 
@@ -202,6 +228,12 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 
 表格可用 `row-header-width: 64px;` 显示左侧行标题，默认显示从 1 开始的显示行号。自定义表格在 `TableRow` 里绑定 `row-header-text`。标准表格用 `row-header-field: "name";` 投影记录字段，也接受点分路径。行标题复用可见行和行高，横向滚动时固定在左侧，启用行高调整后可在标题分隔线上拖动。点击标题可选中整行，单元格多选时选择该行所有单元格，列选择模式下保留已选列并移动当前行。辅助技术可读取可见的行标题及其行号。运行 `bazel run //examples/table:table -- --row-headers` 查看记录名称和冻结列，或用 `--row-numbers` 查看行号。
 
+iOS 上可在启用行移动的表格行标题中使用 **Move row up** 和 **Move row down**。到达边界后仅提供可执行的方向，重排后同一条记录保留自己的无障碍身份。
+
+iOS 的可编辑单元格提供 **Edit cell** 无障碍动作。编辑期间，UIKit 文本输入和无障碍值使用当前草稿，**Save edit** 提交后写回原记录，**Cancel edit** 或系统无障碍取消动作丢弃草稿。结束编辑后，无障碍焦点保留在同一记录的单元格。
+
+iOS 上，可排序列标题作为按钮出现在 UIKit 无障碍树中。其值说明当前为未排序、升序或降序，提示说明下一次激活会切换到哪个方向。清除排序后读数随之恢复，禁用表格时列标题保留当前排序方向。
+
 开启 `movable-rows: true;` 后可用鼠标拖动行标题。移动期间显示插入线，靠近上下边缘会滚动，松手提交。可用 Escape 取消。回调可调用 `table.move-row(from, to)`，两个参数为零基显示行号。提交后触发 `row-moved(model-row, from, to)`，第一个参数是源模型索引。行顺序属于表格实例，共享模型的其他视图可保留自己的顺序。当前行、选区和手动行高随记录移动，编辑和粘贴按显示位置写回对应记录。源模型插入、删除、排序或替换时恢复源顺序。运行 `bazel run //examples/table:table -- --move-rows`，拖动左侧设备名称体验。
 
 触屏按住行标题 500 毫秒后可拖动该行，短按仍选择该行，提前滑动仍滚动表格。聚焦表格后按 Alt+↑ 或 Alt+↓ 可移动当前行，包括视口外的当前行。macOS 上用 Option 键。AccessKit 行标题公开上移、下移自定义动作，边界处只公开有效方向。
@@ -213,6 +245,8 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 `StandardTableView` 可直接绑定记录列表，例如 `model: root.inventory; TableColumn { title: "设备"; field: "name"; }`。`field` 是编译期校验的字段名，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。控件为可见行生成文本单元格，复用固定表头、列宽调整、选择和排序回调。默认将程序选中的行滚入视口，可通过 `follow-current: false;` 关闭。辅助技术可读取可见的表头、行列位置和单元格值。运行 `bazel run //examples/table:table -- --standard` 体验五万行库存表。
 
 标准表格的列可用 `editable: true;` 或布尔绑定启用内置文本编辑器。声明可编辑列时，`model` 须直接引用可写的记录列表属性。编辑器按 `field` 的类型解析文本，也支持嵌套字段。整数和有限浮点数接受十进制文本，布尔值接受 `true`、`false`、`1` 和 `0`，日期和时间使用 `YYYY-MM-DD` 与 `HH:MM:SS`。无效草稿显示错误边框，按 Enter 或 Tab 后仍可修正。提交核对行标识与原字段值，只修改目标字段。辅助技术设置单元格值时使用同一写回路径。运行 `bazel run //examples/table:table -- --editable` 体验。
+
+Android 软键盘的提交操作沿用表格的类型校验。有效值写回后关闭单元格编辑器，无效草稿保留供修改。[库存表格回归](../examples/android/README.md#库存表格回归) 还覆盖冻结列、长按框选和 TSV 剪贴板往返。
 
 `StandardTableView` 可设置 `auto-sort: true;`，由控件按排序列的 `field` 对视图排序，排序回调仍会收到通知。多个视图可共享模型并使用不同顺序。排序保留记录标识、行高和多选，显式排序与清除排序时会按记录标识重定位当前行。排序字段更新时重新计算顺序，同值项保持源顺序，`current-row` 此时按新的显示顺序解释。清除排序后恢复源顺序，手动移动行可在此时使用。运行 `bazel run //examples/table:table -- --sorted-views` 体验。
 
@@ -287,6 +321,8 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 普通视觉节点支持 `transform-rotation`、`transform-scale`、`transform-scale-x` 和 `transform-scale-y`。旋转值用顺时针角度，逐轴值可覆盖统一缩放，负值可镜像。`transform-origin-x` 和 `transform-origin-y` 接受长度或百分比，省略时以节点中心为原点。变换作用于已完成布局的子树，绘制、指针定位和裁剪共用变换矩阵。窗口级弹出层继续以窗口坐标定位。运行 `bazel run //examples/layout:layout -- --transforms`。
 
 `ScaleRotateGestureHandler` 把触屏双指手势和 macOS 触控板手势统一成 `started()`、`updated()`、`ended()` 和 `cancelled()`。在 `started()` 保存初始状态，在 `updated()` 读取累计 `scale`、顺时针角度 `rotation` 和局部逻辑像素中心 `center-x/y`，再更新内容变换。手势结束或取消时，`active` 变回 `false`，读数回到默认值。两指须从同一个可用区域开始。第二指接管待提交的单指输入时，会取消原来的点击候选。关闭 `enabled` 会取消该区域的手势，子控件仍可接收单指操作。运行 `bazel run //examples/layout:layout -- --scale-rotate`。
+
+[Android 控件示例](../examples/android/README.md#独立控件回归) 的 **Open gestures** 面板可验证双指接管、松手保留变换、后台取消和恢复后重新点击。应用在 `cancelled()` 中将图形恢复到本次手势开始前的状态。
 
 `SwipeGestureHandler` 用 `handle-swipe-left/right/up/down` 选择接收的方向，默认全部关闭。鼠标左键或单指触屏移动达到 8 逻辑像素后，最内层接受主方向的区域接管输入。其他方向可继续由滚动视图处理。`moved()` 中可读 `swiping` 与 `pressed-x/y`、`current-x/y`。坐标以按下时的局部坐标系计算。松手触发 `swiped()`，此时可以读取最终坐标。滑动期间调用 `cancel()`、禁用区域或失去窗口焦点会触发 `cancelled()`。轻触仍可点击内部按钮。运行 `bazel run //examples/layout:layout -- --swipe-gesture`，横拖移动卡片，竖拖滚动画布。
 

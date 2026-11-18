@@ -377,20 +377,37 @@ pub enum SpinAction {
         original: Option<SpinDecimal>,
         value: SpinDecimal,
     },
+    #[doc(hidden)]
+    StepFromIntegerDraft {
+        original: Option<i64>,
+        draft: i64,
+        steps: i64,
+    },
+    #[doc(hidden)]
+    StepFromDecimalDraft {
+        original: Option<SpinDecimal>,
+        draft: SpinDecimal,
+        steps: i64,
+    },
 }
 
 impl SpinAction {
-    /// Read the live control value only for a commit that carries an original value.
+    /// Read the live control value when applying an action based on an earlier draft.
     #[doc(hidden)]
     pub fn try_accepts_current<E>(
         self,
         current: impl FnOnce() -> Result<Value, E>,
     ) -> Result<bool, E> {
         Ok(match self {
-            Self::CommitIfCurrent { original, .. } => {
+            Self::CommitIfCurrent { original, .. }
+            | Self::StepFromIntegerDraft {
+                original: Some(original),
+                ..
+            } => {
                 matches!(current()?, Value::Int(value) if value == original)
             }
-            Self::CommitDecimalIfCurrent { original, .. } => {
+            Self::CommitDecimalIfCurrent { original, .. }
+            | Self::StepFromDecimalDraft { original, .. } => {
                 matches!(current()?, Value::Float(value) if SpinDecimal::new(value) == original)
             }
             _ => true,
@@ -436,6 +453,8 @@ pub enum ControlAction {
     ActivateShortcut,
     AmbiguousShortcut,
     AcceptComboText,
+    #[doc(hidden)]
+    ValidateTextSubmission,
     SubmitSearch,
     ClearSearch,
     SortColumn(usize),
@@ -1178,7 +1197,19 @@ impl SpinRange {
                 value
             }
             SpinAction::CommitIfCurrent { .. } => return None,
-            SpinAction::CommitDecimal(_) | SpinAction::CommitDecimalIfCurrent { .. } => {
+            SpinAction::StepFromIntegerDraft {
+                original,
+                draft,
+                steps,
+            } if original.is_none() || original == self.original => {
+                let value = draft.clamp(self.min, self.max);
+                let range = Self { value, ..*self };
+                range.apply(SpinAction::Step(steps)).unwrap_or(value)
+            }
+            SpinAction::CommitDecimal(_)
+            | SpinAction::CommitDecimalIfCurrent { .. }
+            | SpinAction::StepFromIntegerDraft { .. }
+            | SpinAction::StepFromDecimalDraft { .. } => {
                 return None;
             }
         }
@@ -1191,7 +1222,9 @@ pub fn spin_value_after(node: &Node, action: SpinAction) -> Option<i64> {
     if node.boolean("read-only", false)
         || matches!(
             action,
-            SpinAction::Commit(_) | SpinAction::CommitIfCurrent { .. }
+            SpinAction::Commit(_)
+                | SpinAction::CommitIfCurrent { .. }
+                | SpinAction::StepFromIntegerDraft { .. }
         ) && !spin_editable(node)
     {
         return None;
@@ -1240,10 +1273,16 @@ pub fn try_prepare_spin_view<T, E>(
             | SpinAction::CommitIfCurrent { .. }
             | SpinAction::CommitDecimal(_)
             | SpinAction::CommitDecimalIfCurrent { .. }
+            | SpinAction::StepFromIntegerDraft { .. }
+            | SpinAction::StepFromDecimalDraft { .. }
     );
     let step = matches!(
         action,
-        SpinAction::Increase | SpinAction::Decrease | SpinAction::Step(_)
+        SpinAction::Increase
+            | SpinAction::Decrease
+            | SpinAction::Step(_)
+            | SpinAction::StepFromIntegerDraft { .. }
+            | SpinAction::StepFromDecimalDraft { .. }
     );
     crate::property::watch_reads(|reads| {
         if !available()? || reads.changed() {

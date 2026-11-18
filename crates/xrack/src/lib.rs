@@ -4,6 +4,10 @@ pub use xrack_assets as assets;
 pub use xrack_interpreter as interpreter;
 pub use xrack_layout as layout;
 pub use xrack_platform_winit as platform;
+#[cfg(target_os = "ios")]
+pub use xrack_platform_winit::IosDirectory;
+#[cfg(target_os = "android")]
+pub use xrack_platform_winit::{AndroidDirectory, AndroidDocument};
 pub use xrack_platform_winit::{
     Desktop, DesktopTray, DesktopWindow, LocalTask, SpawnLocalError, TaskCancelled, spawn_local,
 };

@@ -108,6 +108,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::TextVerticalAlignment => quote!(::xrack_runtime::TextVerticalAlignment),
         Type::TextOverflow => quote!(::xrack_runtime::TextOverflow),
         Type::InputType => quote!(::xrack_runtime::InputType),
+        Type::ReturnKey => quote!(::xrack_runtime::ReturnKey),
         Type::CursorShape => quote!(::xrack_runtime::CursorShape),
         Type::ColorScheme => quote!(::xrack_runtime::ColorScheme),
         Type::FileDialogMode => quote!(::xrack_runtime::FileDialogMode),
@@ -9456,7 +9457,7 @@ impl<'a> Generator<'a> {
             let popup = picker_field(element_key(element)?);
             let show_alpha = self.binding_value_or(element, "show-alpha", quote!(false))?;
             out.extend(quote! {
-                [#(#path,)* 0, 0, 1] => {
+                [#(#path,)* 0, 0, 0, 1] => {
                     if !self.__state.#popup.accepts_input(node, input) { return false; }
                     let show_alpha = #show_alpha;
                     input.is_current() && self.__state.#popup.edit_hex(show_alpha, node, text)
@@ -10098,9 +10099,9 @@ impl<'a> Generator<'a> {
             let show_alpha = self.binding_value_or(element, "show-alpha", quote!(false))?;
             let show_plane = self.binding_value_or(element, "show-color-plane", quote!(false))?;
             out.extend(quote! {
-                [#(#path,)* 0, 5, ..] => self.__state.#popup.accepts_input(node, input)
+                [#(#path,)* 0, 0, 5, ..] => self.__state.#popup.accepts_input(node, input)
                     && (#show_plane) && input.is_current() && self.__state.#popup.adjust_plane(node, action),
-                [#(#path,)* 0, ..] => {
+                [#(#path,)* 0, 0, ..] => {
                     if !self.__state.#popup.accepts_input(node, input) { return false; }
                     let show_alpha = #show_alpha;
                     input.is_current() && self.__state.#popup.slide(show_alpha, node, action)
@@ -10427,6 +10428,13 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         match element.attr("kind")? {
+            "TextInput" | "LineEdit" => {
+                let accepts = self.text_acceptance_expression(element)?;
+                out.extend(quote! {
+                    [#(#path),*] => action == ::xrack_runtime::ControlAction::ValidateTextSubmission
+                        && input.available(|| #accepts),
+                });
+            }
             "Expander" => {
                 let change =
                     self.expander_change(element, &quote!(Some(input)), &quote!(Some(expanded)))?;
@@ -11109,7 +11117,7 @@ impl<'a> Generator<'a> {
                     }
                     "FontPickerPopup" => {
                         out.extend(quote! {
-                            [#(#path,)* 0, ..] => input.is_current() && self.__state.#popup.edit(node, action),
+                            [#(#path,)* 0, 0, ..] => input.is_current() && self.__state.#popup.edit(node, action),
                         });
                         quote!(self.__state.#popup.finish_with_role(node, role))
                     }
@@ -11117,7 +11125,7 @@ impl<'a> Generator<'a> {
                         let show_alpha =
                             self.binding_value_or(element, "show-alpha", quote!(false))?;
                         out.extend(quote! {
-                            [#(#path,)* 0, ..] => {
+                            [#(#path,)* 0, 0, ..] => {
                                 let ::xrack_runtime::ControlAction::Spin(action) = action else { return false; };
                                 if !self.__state.#popup.accepts_input(node, input) { return false; }
                                 let show_alpha = #show_alpha;
@@ -14381,7 +14389,7 @@ fn generate_with_resources(
     let with_locale = translations.is_some() || module.operations().any(uses_locale);
     let mut out = quote! {
         const _: () = assert!(
-            ::xrack_runtime::CODEGEN_ABI_VERSION == 15,
+            ::xrack_runtime::CODEGEN_ABI_VERSION == 16,
             "xrackc and xrack-runtime have incompatible code generation interfaces"
         );
     };

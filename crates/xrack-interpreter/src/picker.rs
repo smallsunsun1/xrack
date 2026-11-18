@@ -209,22 +209,24 @@ impl Instance {
             (State::Time(picker), Input::Control(action, route), [0, slot]) => {
                 picker.try_edit_input(node, *slot, action, route, || self.time_options(element))?
             }
-            (State::Font(picker), Input::Control(action, route), [0, ..]) => {
+            (State::Font(picker), Input::Control(action, route), [0, 0, ..]) => {
                 route.is_current() && picker.edit(node, action)
             }
-            (State::Color(picker), Input::Control(ControlAction::Spin(action), route), [0, ..])
-                if picker.accepts_input(node, route) =>
-            {
+            (
+                State::Color(picker),
+                Input::Control(ControlAction::Spin(action), route),
+                [0, 0, ..],
+            ) if picker.accepts_input(node, route) => {
                 let show_alpha = self.show_alpha(element)?;
                 route.is_current() && picker.spin(show_alpha, node, action)
             }
-            (State::Color(picker), Input::Range(action, route), [0, 5, ..]) => {
+            (State::Color(picker), Input::Range(action, route), [0, 0, 5, ..]) => {
                 picker.accepts_input(node, route)
                     && self.binding_value(element, "show-color-plane")? == Some(Value::Bool(true))
                     && route.is_current()
                     && picker.adjust_plane(node, action)
             }
-            (State::Color(picker), Input::Range(action, route), [0, ..])
+            (State::Color(picker), Input::Range(action, route), [0, 0, ..])
                 if picker.accepts_input(node, route) =>
             {
                 let show_alpha = self.show_alpha(element)?;
@@ -242,7 +244,7 @@ impl Instance {
         text: &str,
         input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        if tail != [0, 0, 1] || !matches!(element.visual, Visual::Builtin("ColorPickerPopup")) {
+        if tail != [0, 0, 0, 1] || !matches!(element.visual, Visual::Builtin("ColorPickerPopup")) {
             return Ok(false);
         }
         let state = self.picker_state(element);

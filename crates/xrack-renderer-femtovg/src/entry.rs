@@ -58,6 +58,147 @@ pub struct PointerCaret {
     mode: EditorPointerMode,
 }
 
+/// A selection endpoint in window coordinates.
+#[doc(hidden)]
+pub struct TouchSelectionHandle {
+    pub center: Point,
+    pub caret: Point,
+    pub position: TextPosition,
+}
+
+impl TouchSelectionHandle {
+    pub fn distance(&self, point: Point) -> f32 {
+        (self.center.x - point.x).hypot(self.center.y - point.y)
+    }
+
+    pub(crate) fn paint(&self, canvas: &mut Canvas<WGPURenderer>, tint: Color) {
+        let mut stem = Path::new();
+        stem.move_to(self.caret.x, self.caret.y);
+        stem.line_to(self.center.x, self.center.y);
+        canvas.stroke_path(&stem, &Paint::color(tint).with_line_width(2.0));
+        let mut knob = Path::new();
+        knob.circle(self.center.x, self.center.y, 5.5);
+        canvas.fill_path(&knob, &Paint::color(tint));
+    }
+}
+
+impl TextSystem {
+    #[doc(hidden)]
+    pub fn touch_selection_handles(
+        &self,
+        scene: &Node,
+        root: &LayoutNode,
+        input: &Interaction,
+    ) -> Vec<TouchSelectionHandle> {
+        let Some(target) = input.touch_selection_target() else {
+            return Vec::new();
+        };
+        let Some((node, item)) = target.node_in(scene).zip(root.at_path(&target.path)) else {
+            return Vec::new();
+        };
+        let Some(editor) = input
+            .editor
+            .as_ref()
+            .filter(|editor| editor.preedit.is_empty())
+        else {
+            return Vec::new();
+        };
+        if !item.visible
+            || !item.enabled
+            || node.is_password()
+            || !xrack_runtime::is_text_input(node.kind)
+                && !combo_editable(node)
+                && !spin_editable(node)
+        {
+            return Vec::new();
+        }
+        let value = input.editor_value(node);
+        let selection = editor.selection(&value);
+        if selection.is_empty() {
+            return Vec::new();
+        }
+        let bounds = editor_part(node, item).unwrap_or(item.bounds);
+        let direction = item.layout_direction_override();
+        let visible = item.visible_window_bounds(item.bounds);
+        let make_handle = |position: TextPosition, area: Rect, x: f32, y: f32, height: f32| {
+            let caret = Point {
+                x,
+                y: y + height * 0.5,
+            };
+            if !area.contains(caret) {
+                return None;
+            }
+            let center = Point {
+                x,
+                y: y + if position.trailing {
+                    height + 4.0
+                } else {
+                    -4.0
+                },
+            };
+            let center = item.map_to_window(center);
+            visible.contains(center).then(|| TouchSelectionHandle {
+                center,
+                caret: item.map_to_window(caret),
+                position,
+            })
+        };
+        let positions = [
+            TextPosition {
+                offset: selection.start,
+                trailing: false,
+            },
+            TextPosition {
+                offset: selection.end,
+                trailing: true,
+            },
+        ];
+        if is_multiline_text_input(node.kind) {
+            let geometry = self.text_area_layout_in_direction(node, bounds, &value, direction);
+            let scroll = geometry.clamp_scroll(input.text_scroll(&target.path));
+            positions
+                .into_iter()
+                .filter_map(|position| {
+                    let caret = geometry
+                        .caret_point(&value, position, |value| self.advance_node(node, value));
+                    make_handle(
+                        position,
+                        geometry.area,
+                        geometry.area.x + caret.x - scroll.x,
+                        geometry.area.y + caret.y - scroll.y,
+                        geometry.line_height,
+                    )
+                })
+                .collect()
+        } else {
+            let area = text_editor_viewport(node, bounds);
+            let line = self.single_line_layout(node, &value);
+            let line_bounds = text_editor_line_bounds(area, self.font_size(node) * 1.4);
+            let (x, _) = entry_origin(
+                node,
+                area,
+                &line,
+                Some(editor.position(&value)),
+                false,
+                direction,
+                editor.horizontal_drag_scroll(),
+            );
+            positions
+                .into_iter()
+                .filter_map(|position| {
+                    make_handle(
+                        position,
+                        area,
+                        x + line.caret_x(position),
+                        line_bounds.y,
+                        line_bounds.height,
+                    )
+                })
+                .collect()
+        }
+    }
+}
+
 impl PointerCaret {
     pub fn new(
         input: &Interaction,
@@ -951,6 +1092,7 @@ pub(crate) fn draw(
     let paint = text_system.paint_node(node, color(foreground), false);
     fill_selected_text(
         canvas,
+        text_system,
         area,
         Point { x, y },
         &content,
@@ -960,8 +1102,9 @@ pub(crate) fn draw(
     )
     .map_err(|error| format!("text input drawing failed: {error}"))?;
     if let Some((_, ghost, suffix)) = hint {
-        canvas
+        text_system
             .fill_text(
+                canvas,
                 ghost,
                 y,
                 suffix,
@@ -1043,6 +1186,7 @@ pub(crate) fn draw_area(
         if !line.is_empty() {
             fill_selected_text(
                 canvas,
+                text_system,
                 area,
                 Point { x, y },
                 &display.content[line.clone()],

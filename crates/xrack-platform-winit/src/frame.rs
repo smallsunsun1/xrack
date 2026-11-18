@@ -9,8 +9,10 @@ struct FrameInput {
     horizontal_offsets: BTreeMap<Vec<usize>, f32>,
     tumbler_preview: Option<(Vec<usize>, f32)>,
     slider_preview: Option<(Vec<usize>, f64)>,
+    switch_preview: Option<(Vec<usize>, Option<RowKey>, f32)>,
     swipe_preview: Option<(Vec<usize>, Option<RowKey>, f32)>,
     overscroll: OverscrollFrame,
+    keyboard_avoidance: Option<(Vec<usize>, f32)>,
 }
 
 /// Reuses layout until the base scene, geometry, or an observed row changes.
@@ -45,19 +47,31 @@ impl FrameCache {
         let offsets = input.scroll_offsets();
         let horizontal_offsets = input.horizontal_scroll_offsets();
         let tumbler_preview = input.tumbler_preview();
+        let switch_preview = input.switch_preview();
         let swipe_preview = input.swipe_preview();
         let overscroll = input.overscroll_frame();
+        let keyboard_avoidance = input.keyboard_avoidance();
         let same_geometry_inputs = self.input.as_ref().is_some_and(|last| {
             last.viewport == viewport
                 && &last.offsets == offsets
                 && &last.horizontal_offsets == horizontal_offsets
                 && last.overscroll == overscroll
+                && last
+                    .keyboard_avoidance
+                    .as_ref()
+                    .map(|(path, shift)| (path.as_slice(), *shift))
+                    == keyboard_avoidance
                 && !self.slider_preview_changed(input)
                 && last
                     .tumbler_preview
                     .as_ref()
                     .map(|(path, offset)| (path.as_slice(), *offset))
                     == tumbler_preview
+                && last
+                    .switch_preview
+                    .as_ref()
+                    .map(|(path, key, position)| (path.as_slice(), *key, *position))
+                    == switch_preview
                 && last
                     .swipe_preview
                     .as_ref()
@@ -80,10 +94,13 @@ impl FrameCache {
                 offsets: offsets.clone(),
                 horizontal_offsets: horizontal_offsets.clone(),
                 overscroll,
+                keyboard_avoidance: keyboard_avoidance.map(|(path, shift)| (path.to_vec(), shift)),
                 tumbler_preview: tumbler_preview.map(|(path, offset)| (path.to_vec(), offset)),
                 slider_preview: input
                     .slider_preview_position()
                     .map(|(path, fraction)| (path.to_vec(), fraction)),
+                switch_preview: switch_preview
+                    .map(|(path, key, position)| (path.to_vec(), key, position)),
                 swipe_preview: swipe_preview
                     .map(|(path, key, offset)| (path.to_vec(), key, offset)),
             });

@@ -9,7 +9,10 @@ exports_files(
 xr_ui_library(
     name = "list_ui",
     src = "list.xr",
-    visibility = ["//tests:__pkg__"],
+    visibility = [
+        "//examples/ios:__pkg__",
+        "//tests:__pkg__",
+    ],
 )
 
 rust_binary(

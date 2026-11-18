@@ -7,6 +7,7 @@ rust_test(
     size = "small",
     srcs = [
         "gpu_test.rs",
+        "gpu_text_scale.rs",
     ],
     crate_features = select({
         "//crates/xrack-media:enabled_config": ["media_backend"],

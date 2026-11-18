@@ -24,11 +24,19 @@ xr_ui_library(
 )
 
 exports_files(
-    [
-        "assets/nine-slice.svg",
-        "assets/pulse.gif",
-    ],
+    ["assets/nine-slice.svg"],
     visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    [
+        "assets/pulse.gif",
+        "assets/sprite-atlas.png",
+    ],
+    visibility = [
+        "//examples/android:__pkg__",
+        "//tests:__pkg__",
+    ],
 )
 
 rust_binary(

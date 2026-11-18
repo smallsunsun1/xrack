@@ -4,7 +4,10 @@ load("//bazel:xrack.bzl", "xr_ui_library")
 xr_ui_library(
     name = "split_ui",
     src = "split.xr",
-    visibility = ["//tests:__pkg__"],
+    visibility = [
+        "//examples/ios:__pkg__",
+        "//tests:__pkg__",
+    ],
 )
 
 exports_files(["split.xr"], visibility = ["//tests:__pkg__"])

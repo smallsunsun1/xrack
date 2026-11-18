@@ -12,6 +12,9 @@ use std::{
 };
 use xrack_runtime::Value;
 
+mod android_back;
+mod keyboard_touch;
+
 #[test]
 fn native_cursor_resolution_prefers_resize_then_explicit_shapes_then_text() {
     use xrack_layout::{TextMeasurer, layout};
@@ -660,6 +663,117 @@ fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
 }
 
 #[test]
+fn accessibility_escape_respects_topmost_overlay_policy_and_restores_focus() {
+    use xrack_layout::TextMeasurer;
+    use xrack_runtime::{DialogRole, Length};
+
+    #[derive(Default)]
+    struct OverlayDemo {
+        outer: bool,
+        inner: bool,
+        inner_locked: bool,
+        rejected: usize,
+    }
+
+    impl Component for OverlayDemo {
+        fn render(&self) -> Node {
+            fn button(id: &'static str) -> Node {
+                let mut button = Node::new("Button", Some(id));
+                button.properties.insert("width", Length(100.0).into());
+                button.properties.insert("height", Length(40.0).into());
+                button
+            }
+
+            let mut window = Node::new("Window", None);
+            window.children.push(button("opener"));
+            for (id, open, close_on_escape) in [
+                ("outer", self.outer, true),
+                ("inner", self.inner, !self.inner_locked),
+            ] {
+                let mut dialog = Node::new("Dialog", Some(id));
+                dialog.properties.insert("open", open.into());
+                dialog.properties.insert("width", Length(220.0).into());
+                dialog.properties.insert("height", Length(130.0).into());
+                dialog
+                    .properties
+                    .insert("close-on-escape", close_on_escape.into());
+                dialog.children.push(button("confirm"));
+                window.children.push(dialog);
+            }
+            window
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+
+        fn control_at(&mut self, _: &Node, path: &[usize], action: ControlAction) -> bool {
+            assert_eq!(action, ControlAction::Dialog(DialogRole::Reject));
+            match path {
+                [1] => self.outer = false,
+                [2] => self.inner = false,
+                _ => panic!("Unexpected overlay path: {path:?}"),
+            }
+            self.rejected += 1;
+            true
+        }
+    }
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(30.0, 16.0)
+        }
+    }
+
+    let mut app = Application::new(OverlayDemo::default(), LocalExecutor::new(|| {}));
+    let prepare = |app: &mut Application<OverlayDemo>| {
+        app.scene = Rc::new(app.component.render());
+        let layout = Rc::new(xrack_layout::layout(
+            &app.scene,
+            Size::new(320.0, 250.0),
+            &mut Measure,
+        ));
+        app.input.reconcile(&app.scene, &layout);
+        app.layout = Some(layout);
+    };
+    prepare(&mut app);
+    app.input
+        .focus_next(&app.scene, app.layout.as_deref().unwrap(), false);
+    assert!(app.input.is_focused(&[0]));
+    assert!(app.accessibility_escape().is_none());
+
+    app.component.outer = true;
+    prepare(&mut app);
+    assert!(app.input.is_focused(&[1, 0]));
+    let outer = app.accessibility_escape().unwrap();
+    app.component.inner = true;
+    app.component.inner_locked = true;
+    prepare(&mut app);
+    assert!(app.input.is_focused(&[2, 0]));
+    assert!(app.accessibility_escape().is_none());
+    app.perform_accessibility_escape(outer.clone());
+    assert_eq!(app.component.rejected, 0);
+
+    app.component.inner_locked = false;
+    prepare(&mut app);
+    let inner = app.accessibility_escape().unwrap();
+    app.perform_accessibility_escape(inner.clone());
+    assert!(app.component.outer && !app.component.inner);
+    assert_eq!(app.component.rejected, 1);
+    prepare(&mut app);
+    assert!(app.input.is_focused(&[1, 0]));
+    app.perform_accessibility_escape(inner);
+    assert_eq!(app.component.rejected, 1);
+
+    app.perform_accessibility_escape(outer);
+    assert_eq!(app.component.rejected, 2);
+    prepare(&mut app);
+    assert!(app.input.is_focused(&[0]));
+    assert!(app.accessibility_escape().is_none());
+}
+
+#[test]
 fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
     use accesskit::{NodeId, Role};
     use xrack_layout::{TextMeasurer, layout};
@@ -1005,6 +1119,215 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
     app.layout = Some(Rc::new(layout(&app.scene, viewport, &mut Measure)));
     app.accessibility_action(route, request(click, AccessibleAction::Click, None));
     assert_eq!(app.component.clicks, 1);
+}
+
+#[test]
+fn touch_text_hold_uses_the_event_loop_deadline_and_yields_to_queued_motion() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::Length;
+
+    struct Editor;
+    impl Component for Editor {
+        fn render(&self) -> Node {
+            let mut root = Node::new("Window", None);
+            let mut editor = Node::new("TextEdit", Some("entry"));
+            editor.properties.insert("width", Length(140.0).into());
+            editor.properties.insert("height", Length(80.0).into());
+            root.children.push(editor);
+            root
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+
+    let mut app = Application::new(Editor, LocalExecutor::new(|| {}));
+    app.layout = Some(Rc::new(layout(
+        &app.scene,
+        Size::new(220.0, 120.0),
+        &mut Measure,
+    )));
+    let origin = Point { x: 20.0, y: 20.0 };
+    let device = DeviceId::dummy();
+    let now = Instant::now();
+    app.update_touch(device, 1, TouchPhase::Started, origin, now);
+    let deadline = app.touch_hold.as_ref().unwrap().deadline.unwrap();
+    app.tick(deadline - std::time::Duration::from_millis(1));
+    assert!(app.touch_hold.is_some());
+    app.tick(deadline);
+    assert!(app.touch_hold.is_none());
+
+    app.update_touch(device, 2, TouchPhase::Started, origin, deadline);
+    assert!(app.touch_hold.is_some());
+    app.update_touch(
+        device,
+        2,
+        TouchPhase::Moved,
+        Point { x: 20.0, y: 38.0 },
+        deadline + std::time::Duration::from_millis(600),
+    );
+    assert!(app.touch_hold.is_none());
+    assert!(app.scroll_contact.is_some());
+}
+
+#[test]
+fn touch_context_menu_owns_the_hold_and_scrolls_its_own_rows() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::Length;
+
+    #[derive(Default)]
+    struct View {
+        taps: usize,
+        selected: Option<String>,
+    }
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut area = Node::new("ContextMenuArea", Some("area"));
+            let mut button = Node::new("Button", Some("row"));
+            button.properties.insert("width", Length(180.0).into());
+            button.properties.insert("height", Length(164.0).into());
+            area.children.push(button);
+
+            let mut menu = Node::new("Menu", Some("menu"));
+            for index in 0..8 {
+                let mut item = Node::new("MenuItem", None);
+                item.properties
+                    .insert("text", format!("Option {index}").into());
+                item.properties
+                    .insert("enabled", (!(2..=4).contains(&index)).into());
+                menu.children.push(item);
+            }
+            area.children.push(menu);
+            area
+        }
+
+        fn dispatch(&mut self, id: &str, event: &str) -> bool {
+            let tapped = (id, event) == ("row", "clicked");
+            self.taps += usize::from(tapped);
+            tapped
+        }
+
+        fn control_at(&mut self, scene: &Node, path: &[usize], action: ControlAction) -> bool {
+            assert_eq!(action, ControlAction::ActivateMenuItem);
+            self.selected = scene
+                .at_path(path)
+                .and_then(|node| node.text("text"))
+                .map(str::to_owned);
+            self.selected.is_some()
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
+    let size = Size::new(220.0, 170.0);
+    app.layout = Some(Rc::new(layout(&app.scene, size, &mut Measure)));
+    let device = DeviceId::dummy();
+    let origin = Point { x: 20.0, y: 32.0 };
+    let before_hold = Duration::from_millis(499);
+    let hold_time = Duration::from_millis(500);
+    let now = Instant::now();
+
+    app.update_touch(device, 1, TouchPhase::Started, origin, now);
+    app.tick(now + before_hold);
+    assert!(!app.input.menu_open());
+    app.update_touch(device, 1, TouchPhase::Ended, origin, now + before_hold);
+    assert_eq!(app.component.taps, 1);
+
+    let now = now + hold_time;
+    app.update_touch(device, 2, TouchPhase::Started, origin, now);
+    let moved = Point {
+        y: origin.y + 20.0,
+        ..origin
+    };
+    app.update_touch(device, 2, TouchPhase::Moved, moved, now + hold_time);
+    app.tick(now + hold_time);
+    assert!(!app.input.menu_open());
+    app.update_touch(device, 2, TouchPhase::Ended, origin, now + hold_time);
+    assert_eq!(app.component.taps, 1);
+
+    let now = now + hold_time;
+    app.update_touch(device, 3, TouchPhase::Started, origin, now);
+    Rc::make_mut(&mut app.scene).id = Some("replacement");
+    app.tick(now + hold_time);
+    assert!(!app.input.menu_open());
+    app.update_touch(device, 3, TouchPhase::Cancelled, origin, now + hold_time);
+
+    let now = now + hold_time;
+    app.update_touch(device, 4, TouchPhase::Started, origin, now);
+    app.tick(now + hold_time);
+    assert!(app.input.menu_open());
+    app.update_touch(device, 4, TouchPhase::Ended, origin, now + hold_time);
+    assert_eq!(app.component.taps, 1);
+    assert!(app.component.selected.is_none());
+
+    let menu_top = |app: &Application<View>| {
+        let panels = app
+            .input
+            .menu_panels(&app.scene, app.layout.as_ref().unwrap());
+        let panel = &panels[0];
+        (panel.bounds, panel.rows[0].label.to_owned())
+    };
+    let (_, first) = menu_top(&app);
+    assert_eq!(first, "Option 0");
+    let mut now = now + hold_time;
+    for (id, expected) in [(5, "Option 2"), (6, "Option 4")] {
+        let (bounds, _) = menu_top(&app);
+        let pan = Point {
+            x: bounds.x + 12.0,
+            y: bounds.y + bounds.height - 12.0,
+        };
+        let end = Point {
+            y: pan.y - 100.0,
+            ..pan
+        };
+        app.update_touch(device, id, TouchPhase::Started, pan, now);
+        app.update_touch(
+            device,
+            id,
+            TouchPhase::Moved,
+            end,
+            now + Duration::from_millis(20),
+        );
+        app.update_touch(
+            device,
+            id,
+            TouchPhase::Ended,
+            end,
+            now + Duration::from_millis(30),
+        );
+        now += Duration::from_millis(40);
+        app.tick(now);
+        assert_eq!(menu_top(&app).1, expected);
+        assert!(app.component.selected.is_none());
+    }
+
+    let (bounds, _) = menu_top(&app);
+    let item = Point {
+        x: bounds.x + 12.0,
+        y: bounds.y + 58.0,
+    };
+    app.update_touch(device, 7, TouchPhase::Started, item, now);
+    app.update_touch(
+        device,
+        7,
+        TouchPhase::Ended,
+        item,
+        now + Duration::from_millis(20),
+    );
+    assert!(!app.input.menu_open());
+    assert_eq!(app.component.selected.as_deref(), Some("Option 5"));
+    assert_eq!(app.component.taps, 1);
 }
 
 #[test]
@@ -2539,6 +2862,7 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
         }
     }
     let mut app = Application::new(Editor("初始".into()), LocalExecutor::new(|| {}));
+    app.focus_active = true;
     app.input.focused = Some(Target::from_node(vec![], &app.scene, true, None));
     app.input.sync_editor(&app.scene);
     app.input
@@ -2549,16 +2873,16 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
 
     let context = xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap();
     assert_eq!(context.selection(), "初始");
-    app.pending_clipboard = Some((1, ClipboardContext::Edit(context)));
+    app.pending_clipboard = Some(PendingClipboard::new(1, ClipboardContext::Cut(context)));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
         id: 1,
         result: Err("test write failure".into()),
     }));
     assert_eq!(app.component.0, "初始");
 
-    app.pending_clipboard = Some((
+    app.pending_clipboard = Some(PendingClipboard::new(
         5,
-        ClipboardContext::Edit(
+        ClipboardContext::Paste(
             xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
         ),
     ));
@@ -2568,9 +2892,9 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
     }));
     assert_eq!(app.component.0, "初始");
 
-    app.pending_clipboard = Some((
+    app.pending_clipboard = Some(PendingClipboard::new(
         2,
-        ClipboardContext::Edit(
+        ClipboardContext::Cut(
             xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
         ),
     ));
@@ -2580,31 +2904,61 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
     }));
     assert_eq!(app.base_scene.text("text"), Some(""));
     app.scene = app.base_scene.clone();
-    app.pending_clipboard = Some((
+    app.pending_clipboard = Some(PendingClipboard::new(
         3,
-        ClipboardContext::Edit(
+        ClipboardContext::Paste(
             xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
         ),
     ));
-    app.process_user_event(UserEvent::Clipboard(ClipboardReply {
-        id: 3,
-        result: Ok(ClipboardValue::Text("一\r\n二".into())),
-    }));
+    app.accept_clipboard_reply(
+        ClipboardReply {
+            id: 3,
+            result: Ok(ClipboardValue::Text("一\r\n二".into())),
+        },
+        false,
+    );
+    assert_eq!(app.base_scene.text("text"), Some(""));
+    app.finish_deferred_paste();
     assert_eq!(app.base_scene.text("text"), Some("一\n二"));
+    assert!(app.pending_clipboard.is_none());
     app.scene = app.base_scene.clone();
-    app.pending_clipboard = Some((
+    app.pending_clipboard = Some(PendingClipboard::new(
         4,
-        ClipboardContext::Edit(
+        ClipboardContext::Paste(
             xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
         ),
     ));
+    app.accept_clipboard_reply(
+        ClipboardReply {
+            id: 4,
+            result: Ok(ClipboardValue::Text("过期粘贴".into())),
+        },
+        false,
+    );
     app.component.0 = "后台更新".into();
     app.scene = app.component.render_shared();
-    app.process_user_event(UserEvent::Clipboard(ClipboardReply {
-        id: 4,
-        result: Ok(ClipboardValue::Text("过期粘贴".into())),
-    }));
+    app.finish_deferred_paste();
     assert_eq!(app.component.0, "后台更新");
+    assert!(app.pending_clipboard.is_none());
+
+    app.pending_clipboard = Some(PendingClipboard::new(
+        6,
+        ClipboardContext::Paste(
+            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+        ),
+    ));
+    app.accept_clipboard_reply(
+        ClipboardReply {
+            id: 6,
+            result: Ok(ClipboardValue::Text("不跨后台的粘贴".into())),
+        },
+        false,
+    );
+    app.suspend();
+    app.focus_active = true;
+    app.finish_deferred_paste();
+    assert_eq!(app.component.0, "后台更新");
+    assert!(app.pending_clipboard.is_none());
 }
 
 #[test]
@@ -2870,6 +3224,150 @@ fn elastic_displacement_invalidates_prepared_geometry_without_offset_changes() {
 }
 
 #[test]
+fn reduced_motion_finishes_running_transitions_and_restores_future_animation() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{Animation, Easing};
+
+    struct View(Rc<Node>);
+    impl Component for View {
+        fn render(&self) -> Node {
+            (*self.0).clone()
+        }
+        fn render_shared(&self) -> Rc<Node> {
+            self.0.clone()
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let make_scene = |index: i64, progress: f64| {
+        let mut scene = Node::new("Window", None);
+        let mut badge = Node::new("ProgressIndicator", Some("progress"));
+        badge.properties.insert("progress", progress.into());
+        badge.set_animation("progress", Animation::new(800, 0, Easing::LINEAR));
+        let mut pages = Node::new("SwipeView", Some("pages"));
+        pages.properties.insert("current-index", index.into());
+        pages
+            .properties
+            .insert("transition-duration", 800_i64.into());
+        pages.children.extend([
+            Node::new("SwipePage", Some("first")),
+            Node::new("SwipePage", Some("second")),
+        ]);
+        scene.children.extend([badge, pages]);
+        Rc::new(scene)
+    };
+    let size = Size::new(240.0, 180.0);
+    let initial = make_scene(0, 0.0);
+    let mut app = Application::new(View(initial.clone()), LocalExecutor::new(|| {}));
+    app.layout = Some(Rc::new(layout(&initial, size, &mut Measure)));
+    let update = |app: &mut Application<View>, index, progress| {
+        let scene = make_scene(index, progress);
+        let next_layout = Rc::new(layout(&scene, size, &mut Measure));
+        app.component.0 = scene.clone();
+        assert!(app.sync_base_scene());
+        app.update_page_transitions(&scene, &next_layout, Instant::now());
+        app.scene = scene;
+        app.layout = Some(next_layout);
+    };
+
+    update(&mut app, 1, 0.5);
+    assert!(app.transition.running(app.transition_epoch.elapsed()));
+    assert!(app.stack_transitions.is_active());
+    let layout = app.layout.as_ref().unwrap();
+    let pages = layout.at_path(&[1]).unwrap().bounds;
+    app.input.pointer_move(
+        &app.scene,
+        layout,
+        Point {
+            x: pages.x + 4.0,
+            y: pages.y + 4.0,
+        },
+    );
+    assert!(app.input.pointer_on_stack_slide());
+    app.animation_wake = Some(Instant::now());
+
+    assert!(app.set_reduce_motion(true));
+    assert!(!app.input.pointer_on_stack_slide());
+    assert!(app.animation_wake.is_none());
+    assert!(!app.transition.running(app.transition_epoch.elapsed()));
+    assert!(!app.stack_transitions.is_active());
+    let frame = app
+        .transition
+        .frame(&app.base_scene, app.transition_epoch.elapsed());
+    assert_eq!(frame.children[0].float("progress"), Some(0.5));
+
+    update(&mut app, 0, 1.0);
+    assert!(!app.transition.running(app.transition_epoch.elapsed()));
+    assert!(!app.stack_transitions.is_active());
+    assert!(!app.set_reduce_motion(true));
+
+    assert!(app.set_reduce_motion(false));
+    assert!(!app.transition.running(app.transition_epoch.elapsed()));
+    assert!(!app.stack_transitions.is_active());
+    update(&mut app, 1, 0.25);
+    assert!(app.transition.running(app.transition_epoch.elapsed()));
+    assert!(app.stack_transitions.is_active());
+}
+
+#[test]
+fn reduced_motion_preserves_direct_page_drag_and_skips_settling() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::SwipePreviewHandle;
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let mut scene = Node::new("SwipeView", None);
+    scene.properties.insert("current-index", 0_i64.into());
+    scene
+        .properties
+        .insert("transition-duration", 300_i64.into());
+    scene.enable_swipe_preview(SwipePreviewHandle::default());
+    scene.children.extend([
+        Node::new("SwipePage", Some("first")),
+        Node::new("SwipePage", Some("second")),
+    ]);
+    let layout = layout(&scene, Size::new(240.0, 180.0), &mut Measure);
+    let start = Point { x: 160.0, y: 90.0 };
+    let stopped = Point { x: 143.0, ..start };
+    let swiped = Point { x: 64.0, ..start };
+    let mut input = Interaction::default();
+    let mut now = Instant::now();
+    let pause = Duration::from_millis(300);
+    assert!(input.begin_scroll_gesture(&scene, &layout, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&scene, &layout, stopped, now + pause));
+    assert!(input.swipe_page_motion(&[]).is_some());
+    now += 2 * pause;
+    assert!(
+        input
+            .end_scroll_gesture(&scene, &layout, stopped, now)
+            .control
+            .is_none()
+    );
+    assert!(input.swipe_page_motion(&[]).is_some());
+    input.set_reduce_motion(true);
+    assert!(input.swipe_page_motion(&[]).is_none());
+
+    assert!(input.begin_scroll_gesture(&scene, &layout, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&scene, &layout, swiped, now + pause));
+    assert!(input.swipe_page_motion(&[]).is_some());
+    let end = input.end_scroll_gesture(&scene, &layout, swiped, now + 2 * pause);
+    assert_eq!(end.control.unwrap().action, ControlAction::Select(1));
+    assert!(end.scrolled);
+    assert!(input.swipe_page_motion(&[]).is_none());
+}
+
+#[test]
 fn swipe_preview_invalidates_the_native_frame_cache_until_canceled() {
     use xrack_layout::{TextMeasurer, layout_with_input};
     use xrack_runtime::Length;
@@ -2967,6 +3465,55 @@ fn range_preview_updates_cached_thumb_geometry_and_cancellation_restores_it() {
     let restored = prepare(&mut cache, &input);
     assert_eq!(restored.children[0].bounds, before.children[0].bounds);
     assert_eq!(restored.children[2].bounds, before.children[2].bounds);
+}
+
+#[test]
+fn switch_drag_updates_cached_thumb_geometry_until_canceled() {
+    use xrack_layout::{TextMeasurer, ToggleGeometry, layout_with_input};
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+
+    let mut node = Node::new("Switch", None);
+    node.properties.insert("checked", true.into());
+    let scene = Rc::new(node);
+    let viewport = Size::new(160.0, 44.0);
+    let mut cache = FrameCache::default();
+    let mut prepare = |input: &Interaction| {
+        cache
+            .prepare(scene.clone(), viewport, input, |scene| {
+                let layout = layout_with_input(&scene, viewport, &mut Measure, input);
+                (scene, layout)
+            })
+            .1
+    };
+    let mut input = Interaction::default();
+    let before = prepare(&input);
+    let geometry = ToggleGeometry::new(&scene, before.bounds, before.layout_direction);
+    let thumb = geometry.switch_thumb(true, None);
+    let start = Point {
+        x: thumb.x + thumb.width / 2.0,
+        y: thumb.y + thumb.height / 2.0,
+    };
+    let now = Instant::now();
+    assert!(input.begin_scroll_gesture(&scene, &before, start, now, ScrollGestureKind::Touch));
+    for (distance, expected) in [(9.0, 0.5), (18.0, 0.0)] {
+        let point = Point {
+            x: start.x - distance,
+            ..start
+        };
+        assert!(input.move_scroll_gesture(&scene, &before, point, now + Duration::from_millis(40)));
+        let preview = prepare(&input);
+        assert_eq!(preview.switch_position, Some(expected));
+        assert!(Rc::ptr_eq(&preview, &prepare(&input)));
+    }
+    input.cancel_scroll_gesture();
+    assert_eq!(prepare(&input).switch_position, None);
+    assert!(scene.boolean("checked", false));
 }
 
 #[test]
@@ -3214,4 +3761,103 @@ fn image_playback_wakes_the_window_only_at_visible_frame_boundaries() {
     assert_eq!(app.refresh_deadline(at(200)), Some(at(250)));
     app.tick(at(250));
     assert_eq!(app.component.slot.current_frame(), 0);
+}
+
+#[test]
+fn unconsumed_keys_continue_after_a_native_suggestion_region() {
+    struct Editor(String);
+    impl Component for Editor {
+        fn render(&self) -> Node {
+            let mut input = Node::new("LineEdit", Some("editor"));
+            input.properties.insert("text", self.0.clone().into());
+            input
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+        fn edit_at(&mut self, _: &Node, _: &[usize], text: String) -> bool {
+            self.0 = text;
+            true
+        }
+    }
+
+    for (value, preedit, cursor, expected) in [("O", "O", 1, "O!"), ("旧🚰", "新词", 3, "新!词")]
+    {
+        let mut app = Application::new(Editor(value.into()), LocalExecutor::new(|| {}));
+        app.input.focused = Some(Target::from_node(Vec::new(), &app.scene, true, None));
+        app.input.sync_editor(&app.scene);
+        let editor = app.input.editor.as_mut().unwrap();
+        editor.set_selection(
+            value,
+            0,
+            xrack_layout::TextPosition {
+                offset: value.len(),
+                trailing: false,
+            },
+        );
+        editor.set_preedit(preedit.into(), Some((cursor, cursor)));
+        app.commit_text_preedit();
+        assert!(app.input.editor.as_ref().unwrap().preedit.is_empty());
+        assert_eq!(app.component.0, preedit);
+        // Publish the updated model without creating a native renderer in this test.
+        app.scene = app.component.render_shared();
+        app.base_scene = app.scene.clone();
+        app.edit_text(EditAction::Insert("!"));
+        assert_eq!(app.component.0, expected);
+    }
+}
+
+#[test]
+fn selecting_committed_ime_text_preserves_real_composition_and_avoids_model_writes() {
+    struct Editor {
+        value: String,
+        writes: usize,
+    }
+    impl Component for Editor {
+        fn render(&self) -> Node {
+            let mut node = Node::new("LineEdit", Some("editor"));
+            node.properties.insert("text", self.value.clone().into());
+            node
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+        fn edit_at(&mut self, _: &Node, _: &[usize], text: String) -> bool {
+            self.writes += 1;
+            self.value = text;
+            true
+        }
+    }
+    for (value, preedit, finished) in [
+        ("#4080C0FF", "#4080C0FF", true),
+        ("你好🚰", "你好🚰", true),
+        ("旧", "新词", false),
+    ] {
+        let mut app = Application::new(
+            Editor {
+                value: value.into(),
+                writes: 0,
+            },
+            LocalExecutor::new(|| {}),
+        );
+        app.input.focused = Some(Target::from_node(Vec::new(), &app.scene, true, None));
+        app.input.sync_editor(&app.scene);
+        let editor = app.input.editor.as_mut().unwrap();
+        editor.set_selection(
+            value,
+            0,
+            xrack_layout::TextPosition {
+                offset: value.len(),
+                trailing: false,
+            },
+        );
+        editor.set_preedit(preedit.into(), Some((preedit.len(), preedit.len())));
+        assert_eq!(app.finish_committed_suggestion(), finished);
+        assert_eq!(app.component.value, value);
+        assert_eq!(app.component.writes, 0);
+        assert_eq!(
+            app.input.editor.as_ref().unwrap().preedit.is_empty(),
+            finished
+        );
+    }
 }

@@ -247,6 +247,7 @@ impl Configuration {
 #[derive(Clone, Debug)]
 pub(crate) struct TumblerDrag {
     pub target: Target,
+    pub(crate) picker_session: Option<i64>,
     config: Configuration,
     pub start: Point,
     step: f32,
@@ -264,6 +265,7 @@ impl TumblerDrag {
         let step = geometry.step_size();
         (step > 0.0).then_some(Self {
             target,
+            picker_session: node.picker_session_id(),
             config,
             start,
             step,
@@ -288,6 +290,7 @@ impl TumblerDrag {
         let node = scene.at_path(&self.target.path)?;
         let geometry = item.tumbler.as_ref()?;
         if !valid(&self.target, scene, layout)
+            || node.picker_session_id() != self.picker_session
             || geometry.step_size() != self.step
             || geometry.path != self.path
             || item.world_transform() != self.transform

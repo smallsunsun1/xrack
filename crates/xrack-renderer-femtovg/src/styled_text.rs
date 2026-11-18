@@ -104,6 +104,7 @@ pub(crate) fn draw(
             .or_insert_with(|| system.paint_styled(node, color(tint), style));
         fill_selected_text(
             canvas,
+            system,
             bounds,
             Point { x, y: y + baseline },
             &fragment.text(document),

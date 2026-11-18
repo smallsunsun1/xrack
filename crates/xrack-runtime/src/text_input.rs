@@ -13,6 +13,17 @@ pub enum InputType {
     Number,
     Decimal,
     Search,
+    Email,
+    Url,
+    Tel,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReturnKey {
+    #[default]
+    Auto,
+    Next,
+    Done,
 }
 
 #[doc(hidden)]
@@ -170,6 +181,14 @@ impl Node {
             ("TextInput" | "LineEdit", Some(Value::InputType(mode))) => *mode,
             ("ComboBox", Some(Value::InputType(mode))) if combo_editable(self) => *mode,
             _ => InputType::Text,
+        }
+    }
+
+    pub fn return_key(&self) -> ReturnKey {
+        match (self.kind, self.properties.get("return-key")) {
+            ("TextInput" | "LineEdit", Some(Value::ReturnKey(key))) => *key,
+            ("ComboBox", Some(Value::ReturnKey(key))) if combo_editable(self) => *key,
+            _ => ReturnKey::Auto,
         }
     }
 
@@ -586,6 +605,11 @@ fn text_syntax_allows<E>(
     Ok(match mode {
         InputType::Number => text.bytes().all(|byte| byte.is_ascii_digit()),
         InputType::Decimal => spin_text_is_valid(text, Some(separator()?)),
-        InputType::Text | InputType::Password | InputType::Search => true,
+        InputType::Text
+        | InputType::Password
+        | InputType::Search
+        | InputType::Email
+        | InputType::Url
+        | InputType::Tel => true,
     })
 }

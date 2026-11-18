@@ -121,6 +121,153 @@ fn complete_in(marker: &str, workspace: Option<&completion::Workspace<'_>>) -> V
 }
 
 #[test]
+fn completion_suggests_inherits_after_the_component_name() {
+    for marker in [
+        "component Demo |",
+        "export component Demo inh|",
+        "import { Card } from \"widgets.xr\";\nexport component Demo inh|erits Window {}",
+    ] {
+        let items = complete_at(marker);
+        assert!(
+            items.iter().any(|item| item["label"] == "inherits"
+                && item["kind"] == 14
+                && item["textEdit"]["newText"] == "inherits"),
+            "missing inherits in {marker:?}: {items:?}"
+        );
+    }
+    assert!(complete_at("global Theme inh|").is_empty());
+    let bases = complete_at("export component Demo inherits W|");
+    assert!(bases.iter().any(|item| item["label"] == "Window"));
+    let import = complete_at("import { Card } fr|");
+    assert_eq!(import[0]["label"], "from");
+}
+
+#[test]
+fn completion_suggests_window_height_while_typing() {
+    for marker in [
+        "export component Demo inherits Window {\n    h|",
+        "export component Demo inherits Window {\n    width: 400px;\n    h|\n}",
+        "export component Demo inherits Window {\n    title: \"Demo\"\n    h|\n}",
+    ] {
+        let items = complete_at(marker);
+        assert!(
+            items.iter().any(|item| item["label"] == "height"
+                && item["kind"] == 10
+                && item["detail"] == "length"),
+            "missing height in {marker:?}: {items:?}"
+        );
+    }
+    for marker in [
+        "component Demo inherits Window { width:\n    h|\n}",
+        "component Demo inherits Window { width: (1px +\n    h|\n}",
+        "component Demo inherits Window { width: true ? 1px\n    h|\n}",
+    ] {
+        assert!(
+            !complete_at(marker)
+                .iter()
+                .any(|item| item["label"] == "height"),
+            "offered a member inside an expression in {marker:?}"
+        );
+    }
+}
+
+#[test]
+fn completion_suggests_timer_after_a_named_instance() {
+    for marker in [
+        "component Demo inherits Window {\n    endup := |\n}",
+        "component Demo inherits Window {\n    endup := Ti|\n}",
+        "component Demo inherits Window {\n    title: \"Demo\"\n    endup := Ti|\n}",
+    ] {
+        let items = complete_at(marker);
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "Timer" && item["kind"] == 7),
+            "missing Timer in {marker:?}: {items:?}"
+        );
+    }
+    let items = complete_at("component Demo inherits Window {\n    endup ：= Ti|\n}");
+    let timer = items.iter().find(|item| item["label"] == "Timer").unwrap();
+    assert_eq!(timer["textEdit"]["newText"], "Timer");
+    assert_eq!(
+        timer["textEdit"]["range"]["start"],
+        json!({"line":1,"character":13})
+    );
+    assert_eq!(
+        timer["additionalTextEdits"],
+        json!([{
+            "range":{"start":{"line":1,"character":10},"end":{"line":1,"character":11}},
+            "newText":":"
+        }])
+    );
+    for marker in [
+        "component Demo inherits Ti|",
+        "component Demo inherits Window { Ti| }",
+        "component Demo inherits Window { Rectangle { endup := Ti| } }",
+    ] {
+        assert!(
+            !complete_at(marker)
+                .iter()
+                .any(|item| item["label"] == "Timer")
+        );
+    }
+    let body = complete_at("component Demo inherits Window { endup := Timer { | } }");
+    for label in ["interval", "repeat", "triggered"] {
+        assert!(body.iter().any(|item| item["label"] == label));
+    }
+    assert!(!body.iter().any(|item| item["label"] == "Text"));
+    let derived = complete_at(
+        "component Base inherits Window {} component Demo inherits Base { child := Sec| }",
+    );
+    assert!(
+        derived
+            .iter()
+            .any(|item| item["label"] == "SecondaryWindow")
+    );
+}
+
+#[test]
+fn completion_triggers_for_the_named_instance_operator_over_stdio() {
+    let uri = "untitled:timer.xr";
+    let text = "component Demo inherits Window { endup := }";
+    let invalid_trigger = "component Demo inherits Window { property <bool> active: 1 == }";
+    let request = |id, text: &str| {
+        let offset = text.rfind('=').unwrap() + 1;
+        let (line, character) = analysis::Source::new(text).coordinates(offset);
+        json!({"jsonrpc":"2.0","id":id,"method":"textDocument/completion","params":{
+            "textDocument":{"uri":uri}, "position":{"line":line,"character":character},
+            "context":{"triggerKind":2,"triggerCharacter":"="}
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":uri,"version":1,"text":text}
+        }}),
+        request(2, text),
+        json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{
+            "textDocument":{"uri":uri,"version":2}, "contentChanges":[{"text":invalid_trigger}]
+        }}),
+        request(3, invalid_trigger),
+    ]);
+    let result = |id| &messages.iter().find(|message| message["id"] == id).unwrap()["result"];
+    assert!(
+        result(1)["capabilities"]["completionProvider"]["triggerCharacters"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("="))
+    );
+    assert!(
+        result(2)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "Timer")
+    );
+    assert_eq!(result(3), &json!([]));
+}
+
+#[test]
 fn tree_completions_expose_queries_and_effectful_expansion_commands() {
     let properties = complete_at("component Demo inherits Window { TreeView { | } }");
     assert!(properties.iter().any(|item| item["label"] == "root-key"));
@@ -3780,6 +3927,52 @@ fn single_line_text_editors_complete_the_string_input_mask() {
             "{items:?}",
         );
     }
+}
+
+#[test]
+fn return_key_hints_complete_with_or_without_enum_qualification() {
+    for source in [
+        "component App inherits Window { LineEdit { return-key: |",
+        "component App inherits Window { TextInput { return-key: ReturnKey.|",
+    ] {
+        let values = complete_at(source);
+        for mode in ["auto", "next", "done"] {
+            assert!(
+                values.iter().any(|item| item["label"] == mode),
+                "{values:?}"
+            );
+        }
+    }
+    let valid = "component App inherits Window { LineEdit { return-key: ReturnKey.next; } }";
+    let report = analysis::analyze(URI, valid, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    let invalid = valid.replace("LineEdit", "TextArea");
+    let report = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(report[URI].iter().any(|item| {
+        item["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("return-key"))
+    }));
+}
+
+#[test]
+fn contact_input_modes_complete_in_both_enum_forms() {
+    for source in [
+        "component App inherits Window { LineEdit { input-type: |",
+        "component App inherits Window { TextInput { input-type: InputType.|",
+        "component App inherits Window { ComboBox { editable: true; input-type: |",
+    ] {
+        let values = complete_at(source);
+        for mode in ["email", "url", "tel"] {
+            assert!(
+                values.iter().any(|item| item["label"] == mode),
+                "{source}: {values:?}"
+            );
+        }
+    }
+    let source = "component App inherits Window { LineEdit { input-type: email; } TextInput { input-type: InputType.url; } LineEdit { input-type: tel; } }";
+    let report = analysis::analyze(URI, source, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
 }
 
 #[test]

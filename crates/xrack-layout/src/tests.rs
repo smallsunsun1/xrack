@@ -1,6 +1,197 @@
 use super::*;
 use xrack_runtime::{CrossAxisAlignment, LayoutAlignment, Length, Node, Value};
 
+mod stack_back;
+mod touch_spin;
+
+#[test]
+fn next_text_field_skips_unavailable_controls_and_stops_in_the_dialog() {
+    let mut window = node("Window", "root");
+    let mut dialog = node("Dialog", "form");
+    boolean(&mut dialog, "open", true);
+    length(&mut dialog, "width", 280.0);
+    length(&mut dialog, "height", 250.0);
+    let mut column = node("VerticalLayout", "fields");
+    for (kind, id) in [
+        ("LineEdit", "name"),
+        ("Button", "show-hint"),
+        ("LineEdit", "readonly"),
+        ("LineEdit", "disabled"),
+        ("LineEdit", "hidden"),
+        ("TextInput", "phone"),
+    ] {
+        let mut field = node(kind, id);
+        length(&mut field, "height", 32.0);
+        match id {
+            "readonly" => boolean(&mut field, "read-only", true),
+            "disabled" => boolean(&mut field, "enabled", false),
+            "hidden" => boolean(&mut field, "visible", false),
+            _ => {}
+        }
+        column.children.push(field);
+    }
+    dialog.children.push(column);
+    window
+        .children
+        .extend([dialog, node("TextInput", "background")]);
+    let frame = layout(&window, Size::new(360.0, 400.0), &mut Text);
+    let mut input = Interaction::default();
+    input.reconcile(&window, &frame);
+    assert!(input.is_focused(&[0, 0, 0]));
+    assert_eq!(input.focus_next_text_field(&window, &frame), Some(false));
+    assert!(input.is_focused(&[0, 0, 5]));
+    assert_eq!(input.focus_next_text_field(&window, &frame), None);
+}
+
+#[test]
+fn drawer_gestures_start_at_the_safe_viewport_edge() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{ControlAction, DrawerEdge};
+
+    let mut window = node("Window", "root");
+    let mut drawer = node("Drawer", "tools");
+    drawer.properties.insert("edge", DrawerEdge::Bottom.into());
+    length(&mut drawer, "height", 140.0);
+    length(&mut drawer, "drag-margin", 20.0);
+    window.children.push(drawer);
+    set_window_safe_area(&mut window, [0.0, 42.0, 0.0, 34.0]);
+    let size = Size::new(390.0, 740.0);
+    let frame = layout(&window, size, &mut Text);
+    let gesture = |scene: &Node, frame: &LayoutNode, start: Point, finish: Point| {
+        let mut input = Interaction::default();
+        let now = Instant::now();
+        input.begin_scroll_gesture(scene, frame, start, now, ScrollGestureKind::Touch);
+        input
+            .end_scroll_gesture(scene, frame, finish, now + Duration::from_millis(300))
+            .control
+    };
+
+    let open = gesture(
+        &window,
+        &frame,
+        Point { x: 180.0, y: 700.0 },
+        Point { x: 180.0, y: 590.0 },
+    )
+    .unwrap();
+    assert_eq!(open.path, [0]);
+    assert_eq!(open.action, ControlAction::Drawer(true));
+    assert!(
+        gesture(
+            &window,
+            &frame,
+            Point { x: 180.0, y: 733.0 },
+            Point { x: 180.0, y: 598.0 }
+        )
+        .is_none()
+    );
+
+    boolean(&mut window.children[0], "open", true);
+    let frame = layout(&window, size, &mut Text);
+    assert_eq!(
+        frame.children[0].bounds,
+        Rect::new(0.0, 566.0, 390.0, 140.0)
+    );
+    let close = gesture(
+        &window,
+        &frame,
+        Point { x: 180.0, y: 573.0 },
+        Point { x: 180.0, y: 675.0 },
+    )
+    .unwrap();
+    assert_eq!(close.path, [0]);
+    assert_eq!(close.action, ControlAction::Drawer(false));
+}
+
+#[test]
+fn platform_safe_area_keeps_window_padding_and_centers_the_dialog_in_available_space() {
+    let mut window = node("Window", "root");
+    length(&mut window, "padding", 8.0);
+    let mut content = node("Rectangle", "content");
+    length(&mut content, "width", 24.0);
+    length(&mut content, "height", 20.0);
+    let mut dialog = node("Dialog", "dialog");
+    boolean(&mut dialog, "open", true);
+    length(&mut dialog, "width", 120.0);
+    length(&mut dialog, "height", 80.0);
+    window.children.extend([content, dialog]);
+
+    let viewport = Size::new(400.0, 320.0);
+    set_window_safe_area(&mut window, [12.0, 42.0, 4.0, 108.0]);
+    let safe = layout(&window, viewport, &mut Text);
+    assert_eq!(safe.children[0].bounds, Rect::new(20.0, 50.0, 24.0, 20.0));
+    assert_eq!(safe.children[1].bounds, Rect::new(144.0, 87.0, 120.0, 80.0));
+
+    set_window_safe_area(&mut window, [0.0; 4]);
+    let full = layout(&window, viewport, &mut Text);
+    assert_eq!(full.children[0].bounds, Rect::new(8.0, 8.0, 24.0, 20.0));
+    assert_eq!(
+        full.children[1].bounds,
+        Rect::new(140.0, 120.0, 120.0, 80.0)
+    );
+}
+
+#[test]
+fn narrow_picker_with_long_labels_preserves_wheel_height_and_stacks_actions() {
+    let mut window = node("Window", "root");
+    let mut dialog = node("Dialog", "picker");
+    boolean(&mut dialog, "open", true);
+    for (property, label) in [
+        ("accept-text", "Confirm inspection time"),
+        ("cancel-text", "Keep the previous time"),
+    ] {
+        dialog.properties.insert(property, label.to_owned().into());
+    }
+    xrack_runtime::TimePopupState::default().populate(&mut dialog, || xrack_runtime::Time::MIN);
+    window.children.push(dialog);
+    let layout = layout(&window, Size::new(270.0, 500.0), &mut Text);
+    let body = layout.at_path(&[0, 0]).unwrap().bounds;
+    let first = layout.at_path(&[0, 1, 0]).unwrap().bounds;
+    let second = layout.at_path(&[0, 1, 1]).unwrap().bounds;
+    assert!(body.height >= 148.0, "{body:?}");
+    assert!(body.y + body.height <= first.y.min(second.y));
+    assert_eq!(first.x, second.x);
+    assert!((first.y - second.y).abs() >= 44.0);
+    assert_eq!(first.height, 44.0);
+    assert_eq!(second.height, 44.0);
+}
+
+#[test]
+fn centered_icon_keeps_a_header_free_to_grow_for_larger_text() {
+    struct ScaledText;
+    impl TextMeasurer for ScaledText {
+        fn measure(&mut self, text: &str, size: f32, width: f32) -> Size {
+            Size::new((text.len() as f32 * size * 0.5).min(width), size * 1.4)
+        }
+        fn font_size(&self, node: &Node) -> f32 {
+            super::font_size(node) * 1.5
+        }
+    }
+
+    let mut row = node("HorizontalLayout", "header");
+    length(&mut row, "min-height", 50.0);
+    row.properties
+        .insert("cross-axis-alignment", CrossAxisAlignment::Center.into());
+    let mut icon = node("Rectangle", "icon");
+    length(&mut icon, "width", 40.0);
+    length(&mut icon, "height", 40.0);
+    let mut title = node("VerticalLayout", "title");
+    for (name, size) in [("heading", 22.0), ("subtitle", 12.0)] {
+        let mut label = node("Label", name);
+        label.properties.insert("text", "Field".to_owned().into());
+        length(&mut label, "font-size", size);
+        title.children.push(label);
+    }
+    row.children.extend([icon, title]);
+    let measured = crate::linear::measure(&row, Size::new(402.0, 874.0), &mut ScaledText);
+    let expected = (22.0 + 12.0) * 1.5 * 1.4;
+    assert!(
+        measured.y.preferred >= expected - 0.01,
+        "{:?}",
+        measured.y.preferred
+    );
+    assert!(measured.y.max >= measured.y.preferred);
+}
+
 #[test]
 fn editor_padding_reserves_space_and_clamps_exhausted_axes() {
     let mut editor = Node::new("LineEdit", None);

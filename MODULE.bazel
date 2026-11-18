@@ -1,6 +1,12 @@
 module(name = "xrack", version = "0.7.0")
 
 bazel_dep(name = "llvm", version = "0.8.26")
+bazel_dep(name = "apple_support", version = "2.9.1")
+bazel_dep(name = "rules_apple", version = "5.4.0")
+bazel_dep(name = "rules_android", version = "0.8.1")
+bazel_dep(name = "rules_android_ndk", version = "0.1.5")
+bazel_dep(name = "hermetic_android_toolchains", version = "0.2.0", dev_dependency = True)
+bazel_dep(name = "rules_go", version = "0.59.0")
 bazel_dep(name = "rules_rust", version = "0.75.0")
 bazel_dep(name = "rules_rust_bindgen", version = "0.75.0")
 bazel_dep(name = "rules_rust_pyo3", version = "0.75.0")
@@ -12,6 +18,7 @@ bazel_dep(name = "rules_java", version = "9.3.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "ffmpeg", version = "9.0.1.beta.bcr.6")
+
 # OpenSSL needs Winsock declarations and a native Perl runtime on Windows.
 bazel_dep(name = "openssl", version = "3.5.9.bcr.1")
 bazel_dep(name = "rules_perl", version = "2.1.0")
@@ -35,6 +42,22 @@ single_version_override(
 )
 
 register_toolchains("@llvm//toolchain:all")
+
+# Download pinned Android tools instead of discovering a host installation.
+android = use_extension("@hermetic_android_toolchains//:extensions.bzl", "android", dev_dependency = True)
+android.sdk(version = "34", build_tools_version = "35.0.0")
+android.ndk(version = "r28c", api_level = 26)
+use_repo(android, "androidsdk", "androidndk")
+
+android_sdk = use_extension("@rules_android//rules/android_sdk_repository:rule.bzl", "android_sdk_repository_extension")
+override_repo(android_sdk, "androidsdk")
+
+android_ndk = use_extension("@rules_android_ndk//:extension.bzl", "android_ndk_repository_extension")
+override_repo(android_ndk, "androidndk")
+
+# Gazelle requires a newer Go SDK than the one requested by rules_android.
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(version = "1.25.6")
 
 single_version_override(
     module_name = "rules_rust",
@@ -108,6 +131,17 @@ rust.toolchain(
     versions = ["1.99.1"],
     rustfmt_version = "1.99.1",
     rust_analyzer_version = "1.99.1",
+    extra_target_triples = [
+        "aarch64-apple-darwin",
+        "aarch64-apple-ios-sim",
+        "aarch64-linux-android",
+        "aarch64-unknown-linux-gnu",
+        "wasm32-unknown-unknown",
+        "wasm32-wasip1",
+        "wasm32-wasip2",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+    ],
 )
 use_repo(rust, "rust_toolchains")
 register_toolchains("@rust_toolchains//:all")
@@ -133,6 +167,7 @@ rust_host_tools.host_tools(
 use_repo(rust_host_tools, "xrack_rust_host_tools")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+
 # Share the same PyO3 instance between the extension and the asyncio bridge.
 inject_repo(crate, rules_rust_pyo3 = "rules_rust_pyo3")
 python_abi_toolchain = "@rules_rust_pyo3//:current_pyo3_toolchain"
@@ -153,6 +188,7 @@ python_abi_toolchain = "@rules_rust_pyo3//:current_pyo3_toolchain"
     )
     for name in ["pyo3-build-config", "pyo3-ffi"]
 ]
+
 # Preserve the native AppKit mixed value for tri-state check boxes.
 crate.annotation(
     crate = "accesskit_macos",
@@ -165,9 +201,10 @@ crate.from_cargo(
     cargo_lockfile = "//:Cargo.lock",
     manifests = ["//:Cargo.toml"],
     host_tools = "@xrack_rust_host_tools",
-    # Keep the default triples and add the native Windows arm64 runner.
     supported_platform_triples = [
         "aarch64-apple-darwin",
+        "aarch64-apple-ios-sim",
+        "aarch64-linux-android",
         "aarch64-pc-windows-msvc",
         "aarch64-unknown-linux-gnu",
         "wasm32-unknown-unknown",

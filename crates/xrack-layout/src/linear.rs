@@ -375,6 +375,7 @@ pub(crate) fn measure_with_width(
             .filter(|child| linear_child(node, child));
         let remeasure = matches!(axis, Axis::Horizontal) && children.clone().any(reflows_at_width);
         let alignment = layout_alignment(node);
+        let default_cross = cross_alignment(node, "cross-axis-alignment");
         let legacy = legacy_box(node.kind);
         let mut line_infos = Vec::new();
         for child in children.clone() {
@@ -390,7 +391,16 @@ pub(crate) fn measure_with_width(
             main.stretch += child_main.stretch;
             cross.min = cross.min.max(child_cross.min);
             cross.preferred = cross.preferred.max(child_cross.preferred);
-            cross.max = cross.max.min(child_cross.max);
+            let child_alignment = match cross_alignment(child, "cross-axis-self-alignment") {
+                CrossAxisAlignment::Auto => default_cross,
+                value => value,
+            };
+            if matches!(
+                child_alignment,
+                CrossAxisAlignment::Auto | CrossAxisAlignment::Stretch
+            ) {
+                cross.max = cross.max.min(child_cross.max);
+            }
             cross.stretch = cross.stretch.min(child_cross.stretch);
             count += 1;
         }
@@ -475,6 +485,15 @@ pub(crate) fn measure_with_width(
             metrics.x.max = metrics.x.max.max(metrics.x.preferred);
         }
         metrics
+    } else if node.kind == "ScrollView" && node.boolean("__picker-viewport", false) {
+        let content = node
+            .children
+            .first()
+            .map(|child| measure(child, available, text));
+        Metrics {
+            x: AxisInfo::flexible(content.as_ref().map_or(0.0, |metrics| metrics.x.preferred)),
+            y: AxisInfo::flexible(content.as_ref().map_or(0.0, |metrics| metrics.y.preferred)),
+        }
     } else if flow::uses_flow(node) {
         crate::flow::measure(node, available, text)
     } else if node.kind == "GridLayout" {

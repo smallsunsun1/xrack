@@ -1,0 +1,272 @@
+load("@rules_apple//apple:ios.bzl", "ios_application", "ios_ui_test", "ios_unit_test")
+load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:objc_library.bzl", "objc_library")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_static_library", "rust_test")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+_IOS_LINKOPTS = [
+    "-framework UIKit",
+    "-framework UniformTypeIdentifiers",
+    "-framework Foundation",
+    "-framework CoreFoundation",
+    "-framework CoreGraphics",
+    "-framework CoreText",
+    "-framework Metal",
+    "-framework QuartzCore",
+    "-liconv",
+    "-lobjc",
+]
+
+xr_ui_library(
+    name = "touch_ui",
+    src = "touch.xr",
+    visibility = [
+        "//examples/android:__pkg__",
+        "//tests:__pkg__",
+    ],
+)
+
+rust_library(
+    name = "pocket_tasks_notes",
+    srcs = ["notes.rs"],
+    edition = "2024",
+    visibility = ["//examples/android:__pkg__"],
+)
+
+rust_test(
+    name = "notes_test",
+    size = "small",
+    crate = ":pocket_tasks_notes",
+    deps = ["@crates//:tempfile"],
+)
+
+rust_static_library(
+    name = "touch_core",
+    srcs = ["app.rs"],
+    crate_root = "app.rs",
+    edition = "2024",
+    target_compatible_with = ["@platforms//os:ios"],
+    deps = [
+        ":pocket_tasks_notes",
+        ":touch_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+cc_library(
+    name = "start",
+    srcs = ["start.c"],
+    linkopts = _IOS_LINKOPTS,
+    target_compatible_with = ["@platforms//os:ios"],
+    deps = [":touch_core"],
+)
+
+ios_application(
+    name = "simulator",
+    bundle_id = "dev.xrack.ios-demo",
+    bundle_name = "PocketTasks",
+    families = [
+        "iphone",
+        "ipad",
+    ],
+    infoplists = ["Info.plist"],
+    minimum_os_version = "18.2",
+    tags = ["manual"],
+    deps = [":start"],
+)
+
+rust_static_library(
+    name = "split_core",
+    srcs = ["split_app.rs"],
+    crate_root = "split_app.rs",
+    edition = "2024",
+    target_compatible_with = ["@platforms//os:ios"],
+    deps = [
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//examples/split:split_ui",
+    ],
+)
+
+cc_library(
+    name = "split_start",
+    srcs = ["start.c"],
+    linkopts = _IOS_LINKOPTS,
+    target_compatible_with = ["@platforms//os:ios"],
+    deps = [":split_core"],
+)
+
+ios_application(
+    name = "split_simulator",
+    bundle_id = "dev.xrack.ios-split",
+    bundle_name = "XRackSplit",
+    families = ["iphone", "ipad"],
+    infoplists = ["SplitInfo.plist"],
+    minimum_os_version = "18.2",
+    tags = ["manual"],
+    deps = [":split_start"],
+)
+
+objc_library(
+    name = "touch_ui_test_source",
+    testonly = True,
+    srcs = ["touch_ui_test.m"],
+    sdk_frameworks = [
+        "CoreGraphics",
+        "XCTest",
+    ],
+    target_compatible_with = ["@platforms//os:ios"],
+)
+
+xr_ui_library(
+    name = "native_actions_ui",
+    src = "native_actions.xr",
+)
+
+rust_static_library(
+    name = "controls_core",
+    srcs = ["controls_app.rs"],
+    crate_root = "controls_app.rs",
+    edition = "2024",
+    target_compatible_with = ["@platforms//os:ios"],
+    deps = [
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+        ":native_actions_ui",
+        "//examples/android:mobile_controls_ui",
+        "//examples/list:list_ui",
+    ],
+)
+
+cc_library(
+    name = "controls_start",
+    srcs = ["start.c"],
+    linkopts = _IOS_LINKOPTS,
+    target_compatible_with = ["@platforms//os:ios"],
+    deps = [":controls_core"],
+)
+
+ios_application(
+    name = "controls_simulator",
+    bundle_id = "dev.xrack.ios-controls",
+    bundle_name = "XRackControls",
+    families = ["iphone", "ipad"],
+    infoplists = ["ControlsInfo.plist"],
+    minimum_os_version = "18.2",
+    tags = ["manual"],
+    deps = [":controls_start"],
+)
+
+py_binary(
+    name = "xctest_keyboard_setup",
+    srcs = ["xctest_keyboard_setup.py"],
+    main = "xctest_keyboard_setup.py",
+    python_version = "3.11",
+)
+
+# Isolate installations so simulator patch caches cannot reuse an earlier app.
+ios_xctestrun_runner(
+    name = "fresh_simulator_runner",
+    pre_action = ":xctest_keyboard_setup",
+    reuse_simulator = False,
+)
+
+objc_library(
+    name = "accessibility_escape_test_source",
+    testonly = True,
+    srcs = ["accessibility_escape_test.m"],
+    hdrs = ["accessibility_test_support.h"],
+    sdk_frameworks = [
+        "UIKit",
+        "XCTest",
+    ],
+    target_compatible_with = ["@platforms//os:ios"],
+)
+
+ios_unit_test(
+    name = "simulator_accessibility_escape_test",
+    size = "medium",
+    minimum_os_version = "18.2",
+    runner = ":fresh_simulator_runner",
+    tags = [
+        "exclusive",
+        "manual",
+    ],
+    test_host = ":controls_simulator",
+    deps = [":accessibility_escape_test_source"],
+)
+
+objc_library(
+    name = "native_actions_test_source",
+    testonly = True,
+    srcs = ["native_actions_test.m"],
+    hdrs = ["accessibility_test_support.h"],
+    sdk_frameworks = [
+        "UIKit",
+        "XCTest",
+    ],
+    target_compatible_with = ["@platforms//os:ios"],
+)
+
+ios_unit_test(
+    name = "simulator_native_actions_test",
+    size = "medium",
+    env = {"XRACK_CONTROLS_DEMO": "--native-actions"},
+    minimum_os_version = "18.2",
+    runner = ":fresh_simulator_runner",
+    tags = [
+        "exclusive",
+        "manual",
+    ],
+    test_host = ":controls_simulator",
+    deps = [":native_actions_test_source"],
+)
+
+ios_ui_test(
+    name = "simulator_ui_test",
+    size = "medium",
+    minimum_os_version = "18.2",
+    runner = ":fresh_simulator_runner",
+    tags = ["manual"],
+    test_host = ":simulator",
+    deps = [":touch_ui_test_source"],
+)
+
+py_test(
+    name = "simulator_hardware_keyboard_test",
+    size = "medium",
+    srcs = ["hardware_keyboard_test.py"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    main = "hardware_keyboard_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+rust_test(
+    name = "touch_parity_test",
+    size = "small",
+    srcs = ["touch_parity.rs"],
+    compile_data = [
+        "native_actions.xr",
+        "touch.xr",
+    ],
+    edition = "2024",
+    deps = [
+        ":native_actions_ui",
+        ":touch_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
+    ],
+)

@@ -1,0 +1,348 @@
+struct Sample {
+    instrument: string,
+    location: string,
+}
+
+struct InspectionTab {
+    title: string,
+    key: string,
+}
+
+struct InspectionBranch {
+    id: int,
+    parent: int,
+    title: string,
+    note: string,
+}
+
+component InspectionTabContent inherits Rectangle {
+    in property <string> caption;
+    Button {
+        x: 12px; y: 22px; width: 164px; height: 44px;
+        text: root.caption + " content";
+    }
+}
+
+export component NativeActionsDemo inherits Window {
+    title: "Inspection queue";
+    width: 390px;
+    height: 720px;
+    background: #f1f6f4;
+
+    private property <[Sample]> samples: [
+        Sample { instrument: "Gauge", location: "Pump room" },
+        Sample { instrument: "Valve", location: "East riser" },
+        Sample { instrument: "Sensor", location: "Tank A" },
+    ];
+    private property <[InspectionBranch]> branches: [
+        InspectionBranch { id: 1, parent: -1, title: "Pump area", note: "" },
+        InspectionBranch { id: 2, parent: 1, title: "Intake valve", note: "Service note" },
+        InspectionBranch { id: 3, parent: 1, title: "Return valve", note: "Checked" },
+        InspectionBranch { id: 4, parent: -1, title: "Tank area", note: "" },
+    ];
+    private property <bool> show-tabs: false;
+    private property <bool> tools-open: false;
+    out property <int> drawer-opens: 0;
+    out property <int> drawer-closes: 0;
+    out property <int> tool-runs: 0;
+    private property <bool> show-disclosures: false;
+    private property <bool> details-expanded: false;
+    private property <bool> optional-enabled: true;
+    out property <int> checks: 0;
+    private property <bool> show-overflow-tabs: false;
+    private property <bool> show-inspection-cards: false;
+    private property <bool> show-service-log: false;
+    private property <bool> cards-mirrored: false;
+    private property <int> card-index: 0;
+    private property <int> card-changes: 0;
+    private property <bool> overflow-draft-visible: true;
+    private property <string> overflow-selected: "overview";
+    private property <string> selected-tab: "draft";
+    private property <[InspectionTab]> tabs: [
+        InspectionTab { title: "Pinned", key: "pinned" },
+        InspectionTab { title: "Draft", key: "draft" },
+        InspectionTab { title: "Results", key: "results" },
+    ];
+    out property <int> reviews: 0;
+    out property <string> movement: "No rows moved";
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+
+        Text { text: "Inspection queue"; font-size: 26px; font-weight: 700; color: #173e32; }
+        ContextMenuArea {
+            height: 44px;
+            review-trigger := Button {
+                width: 100%; height: 100%;
+                text: "Review options";
+                background: #266451; color: #ffffff; border-radius: 9px;
+            }
+            Menu {
+                record-review := MenuItem {
+                    text: "Record review";
+                    activated => { root.reviews += 1; }
+                }
+                manage-tabs := MenuItem {
+                    text: "Manage tabs";
+                    activated => { root.show-tabs = true; }
+                }
+                disclosure-options := MenuItem {
+                    text: "Disclosure controls";
+                    activated => {
+                        root.details-expanded = false;
+                        root.optional-enabled = true;
+                        root.checks = 0;
+                        root.show-disclosures = true;
+                    }
+                }
+                tools-entry := MenuItem {
+                    text: "Open tools drawer";
+                    activated => { root.tools-open = true; }
+                }
+                browse-tabs := MenuItem {
+                    text: "Browse narrow tabs";
+                    activated => {
+                        root.overflow-selected = "overview";
+                        root.overflow-draft-visible = true;
+                        root.show-overflow-tabs = true;
+                    }
+                }
+                MenuItem {
+                    text: "Inspect cards";
+                    activated => {
+                        root.card-index = 0;
+                        root.card-changes = 0;
+                        root.cards-mirrored = false;
+                        root.show-inspection-cards = true;
+                    }
+                }
+                MenuItem {
+                    text: "Read service log";
+                    activated => { root.show-service-log = true; }
+                }
+            }
+        }
+        review-count := Text { text: "Reviews " + root.reviews; font-size: 17px; color: #173e32; }
+        instrument-table := StandardTableView {
+            height: 196px;
+            row-height: 43px;
+            header-height: 40px;
+            row-header-width: 46px;
+            accessible-name: "Inspection instruments";
+            movable-rows: true;
+            auto-sort: true;
+            edit-on-click: true;
+            model: root.samples;
+            row-moved(model-row, from, to) => {
+                root.movement = "Moved row " + (from + 1) + " to " + (to + 1);
+            }
+            TableColumn { title: "Instrument"; field: "instrument"; width: 120px; }
+            TableColumn { title: "Location"; field: "location"; width: 144px; sortable: false; editable: true; }
+        }
+        row-movement := Text { text: root.movement; font-size: 17px; color: #173e32; }
+        reset-sort := Button {
+            text: "Clear sort";
+            height: 44px;
+            enabled: instrument-table.current-sort-column >= 0;
+            clicked => { instrument-table.clear-sort(); }
+        }
+        tool-closures := Text {
+            visible: root.drawer-closes > 0;
+            text: "Tool closures " + root.drawer-closes;
+            font-size: 17px; color: #173e32;
+        }
+        Text { text: "Inspection hierarchy"; font-size: 18px; font-weight: 700; color: #173e32; }
+        inspection-tree := TreeView {
+            accessible-name: "Inspection hierarchy";
+            height: 156px;
+            row-height: 38px;
+            for branch in root.branches : TreeRow {
+                key: branch.id;
+                parent-key: branch.parent;
+                TreeCell { width: 140px; text: branch.title; }
+                if branch.parent >= 0 : TreeCell { text <=> branch.note; }
+            }
+        }
+    }
+
+    tab-dialog := Dialog {
+        title: "Inspection tabs";
+        open <=> root.show-tabs;
+        width: 346px;
+        height: 224px;
+        tabs-view := TabWidget {
+            width: 100%;
+            height: 154px;
+            current-value <=> root.selected-tab;
+            tabs-closable: true;
+            for entry in root.tabs : Tab {
+                title: entry.title;
+                value: entry.key;
+                closable: entry.key != "pinned";
+                InspectionTabContent {
+                    width: 100%; height: 100%;
+                    caption: entry.title;
+                }
+            }
+            tab-close-requested(index, value) => {
+                Model.remove(root.tabs, index);
+                if root.selected-tab == value {
+                    root.selected-tab = "pinned";
+                }
+            }
+        }
+    }
+
+    overflow-dialog := Dialog {
+        title: "Scrollable tabs";
+        open <=> root.show-overflow-tabs;
+        width: 346px;
+        height: 176px;
+        overflow-tabs := TabBar {
+            x: 12px; y: 0px; width: 184px; height: 46px;
+            accessible-name: "Scrollable tab strip";
+            current-value <=> root.overflow-selected;
+            TabButton { width: 92px; text: "Overview"; value: "overview"; }
+            TabButton {
+                width: 92px; text: "Draft"; value: "draft";
+                visible: root.overflow-draft-visible;
+                closable: true;
+            }
+            TabButton { width: 92px; text: "Results"; value: "results"; }
+            TabButton { width: 92px; text: "Archive"; value: "archive"; }
+            tab-close-requested(index, value) => {
+                if value == "draft" {
+                    root.overflow-draft-visible = false;
+                    root.overflow-selected = root.overflow-selected == value ? "overview" : root.overflow-selected;
+                }
+            }
+        }
+        Text {
+            x: 12px; y: 58px;
+            text: "Current tab: " + root.overflow-selected;
+        }
+    }
+
+    cards-dialog := Dialog {
+        title: "Inspection cards";
+        open <=> root.show-inspection-cards;
+        width: 346px;
+        height: 270px;
+
+        VerticalLayout {
+            spacing: 8px;
+            inspection-cards := SwipeView {
+                width: 100%; height: 124px;
+                accessible-name: "Inspection pages";
+                current-index <=> root.card-index;
+                layout-direction: root.cards-mirrored ? right-to-left : left-to-right;
+                transition-duration: 180;
+                changed(index) => { root.card-changes += 1; }
+
+                SwipePage {
+                    ScrollView {
+                        width: 100%; height: 100%;
+                        content-height: 288px;
+                        card-summary := Button {
+                            x: 8px; y: 8px; width: 184px; height: 44px;
+                            text: "Card summary";
+                        }
+                        card-notes := Button {
+                            x: 8px; y: 144px; width: 184px; height: 44px;
+                            text: "Card notes";
+                        }
+                    }
+                }
+                SwipePage { visible: false; Button { text: "Hidden card"; } }
+                SwipePage { enabled: false; Button { text: "Disabled card"; } }
+                SwipePage {
+                    card-finish := Button {
+                        x: 8px; y: 8px; width: 184px; height: 44px;
+                        text: "Finish inspection";
+                    }
+                }
+            }
+            mirror-cards := Button {
+                height: 44px;
+                text: root.cards-mirrored ? "Restore card direction" : "Mirror cards";
+                clicked => { root.cards-mirrored = !root.cards-mirrored; }
+            }
+            card-status := Text { text: "Card changes: " + root.card-changes; }
+        }
+    }
+
+    log-dialog := Dialog {
+        title: "Service log";
+        open <=> root.show-service-log;
+        width: 346px;
+        height: 248px;
+
+        log-viewport := ScrollView {
+            width: 100%; height: 100%;
+            content-height: 410px;
+            accessible-name: "Service records";
+
+            log-heading := Text { x: 8px; y: 8px; text: "Shift notes"; font-weight: 700; }
+            log-hours := ScrollView {
+                x: 8px; y: 45px; width: 152px; height: 44px;
+                content-width: 308px;
+                accessible-name: "Service shifts";
+                log-morning := Text { x: 4px; y: 4px; text: "Morning shift"; }
+                log-night := Text { x: 170px; y: 4px; text: "Night shift"; }
+            }
+            log-parts := Text { x: 8px; y: 194px; text: "Parts replaced"; font-weight: 700; }
+            Text { x: 8px; y: 356px; text: "Service log complete"; }
+        }
+    }
+
+    disclosure-dialog := Dialog {
+        title: "Inspection settings";
+        open <=> root.show-disclosures;
+        width: 346px;
+        height: 280px;
+
+        VerticalLayout {
+            spacing: 10px;
+            details := Expander {
+                title: "Advanced options";
+                expanded <=> root.details-expanded;
+                network-details := Button {
+                    height: 44px;
+                    text: "Network details";
+                    clicked => { root.checks += 1; }
+                }
+            }
+            optional := GroupBox {
+                title: "Optional settings";
+                checkable: true;
+                checked <=> root.optional-enabled;
+                content-padding: 8px;
+                test-settings := Button {
+                    height: 44px;
+                    text: "Test settings";
+                    clicked => { root.checks += 1; }
+                }
+            }
+            checks-status := Text { text: "Checks " + root.checks; }
+        }
+    }
+
+    tools-drawer := Drawer {
+        title: "Inspection tools";
+        edge: bottom;
+        height: 214px;
+        drag-margin: 20px;
+        open <=> root.tools-open;
+        opened => { root.drawer-opens += 1; }
+        closed => { root.drawer-closes += 1; }
+        Text { text: "Tool gestures " + root.drawer-opens; }
+        run-tool := Button {
+            text: "Check instrument";
+            height: 44px;
+            clicked => { root.tool-runs += 1; }
+        }
+        Text { text: "Tool runs " + root.tool-runs; }
+    }
+}

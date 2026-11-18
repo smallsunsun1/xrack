@@ -18,10 +18,10 @@ use std::{
 use xrack_ir::semantic::{
     builtin_event, builtin_property, content_viewport, control_alias_type, focus_property,
     geometry_owner, geometry_property, hover_property, is_builtin, layout_item_property,
-    scale_rotate_property, state_property, swipe_property, table_history_property,
-    table_selection_property, table_sort_property, text_command_property, text_selection_property,
-    touch_area_property, view_count_property, viewport_kind, viewport_offset_property,
-    window_status_property,
+    nonvisual_element, scale_rotate_property, state_property, swipe_property,
+    table_history_property, table_selection_property, table_sort_property, text_command_property,
+    text_selection_property, touch_area_property, view_count_property, viewport_kind,
+    viewport_offset_property, window_status_property,
 };
 use xrack_parser::{ast::Type, builtins};
 
@@ -925,9 +925,13 @@ impl<'a> Items<'a> {
         }
     }
 
-    fn elements(&mut self, index: &Index<'a>) {
+    fn elements(&mut self, index: &Index<'a>, allow_nonvisual: impl Fn(&str) -> bool) {
+        let prefix = self.prefix;
         for kind in catalog::ELEMENTS.split_ascii_whitespace().filter(|kind| {
-            is_builtin(kind) && xrack_ir::semantic::control_part_parents(kind).is_empty()
+            kind.starts_with(prefix)
+                && is_builtin(kind)
+                && xrack_ir::semantic::control_part_parents(kind).is_empty()
+                && (!nonvisual_element(kind) || allow_nonvisual(kind))
         }) {
             self.add(kind, CLASS, "built-in element");
         }
@@ -1121,19 +1125,23 @@ pub(crate) fn complete_with_imports(
         return items.values;
     }
     let prior = &code[..code.partition_point(|t| t.range.end <= start)];
-    if let Some(workspace) = workspace
-        && !index.imports.is_empty()
-    {
-        index.imported_members = workspace.imported_members(&tokens);
+    if scope != 0 {
+        if let Some(workspace) = workspace
+            && !index.imports.is_empty()
+        {
+            index.imported_members = workspace.imported_members(&tokens);
+        }
+        index.infer_repeat_items(false);
+        index.infer_choice_roles(&tokens);
+        index.infer_handler_parameters(&code);
+        index.infer_repeat_items(true);
     }
-    index.infer_repeat_items(false);
-    index.infer_choice_roles(&tokens);
-    index.infer_handler_parameters(&code);
-    index.infer_repeat_items(true);
     let head = &prior[prior
         .iter()
         .rposition(|t| matches!(t.text, "{" | "}" | ";"))
         .map_or(0, |i| i + 1)..];
+    let role = index.scopes[scope].role;
+    let head = member_head(text, &tokens, head, start, role);
     if let Some(close) = prior.last().filter(|token| token.text == "}")
         && index.scopes.iter().any(|branch| {
             matches!(branch.role, Role::StatementBlock)
@@ -1171,7 +1179,18 @@ pub(crate) fn complete_with_imports(
             items.add(&name, ENUM, "expected enum");
         }
     }
-    suggest(&index, scope, head, &mut items);
+    if scope == 0
+        && prior.last().is_some_and(|token| {
+            token.text == "}"
+                && index.scopes.iter().any(|scope| {
+                    matches!(scope.role, Role::Import) && scope.close == token.range.start
+                })
+        })
+    {
+        items.add("from", KEYWORD, "import path");
+    } else {
+        suggest(&index, scope, head, &mut items);
+    }
     if let Some(kind) = items
         .import_kind
         .filter(|_| !items.prefix.is_empty() && workspace.is_some())
@@ -1191,7 +1210,93 @@ pub(crate) fn complete_with_imports(
             }));
         }
     }
+    if matches!(role, Role::Component { .. } | Role::Element { .. })
+        && let Some(colon) = full_width_assignment(head)
+    {
+        let edit = json!({
+            "range": source.range(colon.range.start, colon.range.end),
+            "newText": ":",
+        });
+        for item in &mut items.values {
+            if let Some(edits) = item["additionalTextEdits"].as_array_mut() {
+                edits.push(edit.clone());
+            } else {
+                item["additionalTextEdits"] = json!([edit]);
+            }
+        }
+    }
     items.values
+}
+
+fn full_width_assignment<'a, 't>(head: &[&'t Token<'a>]) -> Option<&'t Token<'a>> {
+    match head {
+        [id, colon, equals]
+            if name(id.text)
+                && colon.text == "："
+                && equals.text == "="
+                && colon.range.end == equals.range.start =>
+        {
+            Some(colon)
+        }
+        _ => None,
+    }
+}
+
+fn member_head<'a, 't>(
+    text: &str,
+    tokens: &[Token<'a>],
+    head: &'t [&'t Token<'a>],
+    start: usize,
+    role: Role<'a>,
+) -> &'t [&'t Token<'a>] {
+    if !matches!(role, Role::Component { .. } | Role::Element { .. }) {
+        return head;
+    }
+    let line = text[..start].rfind(['\n', '\r']).map_or(0, |end| end + 1);
+    let (previous, current) = head.split_at(head.partition_point(|token| token.range.end <= line));
+    if !current.is_empty()
+        && !matches!(current, [id, assign] if name(id.text) && assign.text == ":=")
+        && full_width_assignment(current).is_none()
+    {
+        return head;
+    }
+    let Some(binding) = previous
+        .iter()
+        .position(|token| matches!(token.text, ":" | "<=>"))
+    else {
+        return head;
+    };
+    // A complete binding on the preceding line may be missing its semicolon.
+    // Keep the original expression context for continuations and open calls.
+    let last = tokens[..tokens.partition_point(|token| token.range.end <= line)]
+        .iter()
+        .rfind(|token| token.code() || token.quoted());
+    if last.is_none_or(|token| {
+        token.range.start < previous[binding].range.end
+            || !(token.quoted()
+                || name(token.text)
+                || token
+                    .text
+                    .starts_with(|c: char| c.is_ascii_digit() || c == '#')
+                || matches!(token.text, ")" | "]"))
+    }) {
+        return head;
+    }
+    let mut open = Vec::new();
+    for token in &previous[binding + 1..] {
+        match token.text {
+            "(" => open.push(")"),
+            "[" => open.push("]"),
+            "?" => open.push(":"),
+            ")" | "]" | ":" => {
+                if open.pop() != Some(token.text) {
+                    return head;
+                }
+            }
+            _ => {}
+        }
+    }
+    if open.is_empty() { current } else { head }
 }
 
 fn import_names(index: &Index<'_>) -> BTreeSet<String> {
@@ -1314,26 +1419,71 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     };
     let first = head.first().map_or("", |t| t.text);
     let last = head.last().map_or("", |t| t.text);
+    if scope == 0 {
+        let declaration = match head {
+            [export, rest @ ..] if export.text == "export" => rest,
+            _ => head,
+        };
+        match declaration {
+            [component, id] if component.text == "component" && name(id.text) => {
+                items.add("inherits", KEYWORD, "base component");
+            }
+            [component, id, inherits]
+                if component.text == "component"
+                    && name(id.text)
+                    && inherits.text == "inherits" =>
+            {
+                items.elements(index, |_| false);
+            }
+            [] => items.words(
+                if first == "export" {
+                    "component global struct"
+                } else {
+                    "import translations export component global struct"
+                },
+                KEYWORD,
+                "XRack declaration",
+            ),
+            _ => {}
+        }
+        return;
+    }
     if last == "." {
         qualified(index, scope, head, items);
         return;
     }
-    if last == ":=" || last == "inherits" || (matches!(first, "if" | "for") && last == ":") {
-        if radio_group && last != "inherits" {
+    let full_width = matches!(role, Role::Component { .. } | Role::Element { .. })
+        && full_width_assignment(head).is_some();
+    if last == ":=" || full_width || (matches!(first, "if" | "for") && last == ":") {
+        if radio_group {
             items.add("RadioButton", CLASS, "RadioGroup option");
             return;
         }
-        if last == ":="
-            && head.len() == 2
-            && matches!(role, Role::Component { base, .. } if base != "global")
-        {
+        let named =
+            matches!(head, [id, assign] if name(id.text) && assign.text == ":=") || full_width;
+        let root = named && matches!(role, Role::Component { base, .. } if base != "global");
+        if root {
             items.add(
                 "SoundEffect",
                 CLASS,
                 "nonvisual object · preloads a local WAV",
             );
         }
-        items.elements(index);
+        // An imported base can itself inherit a Window.
+        let window = matches!(role, Role::Component { base, .. }
+            if !is_builtin(base) || xrack_ir::semantic::is_window(base));
+        let action_group = matches!(
+            role,
+            Role::Element {
+                kind: "ActionGroup",
+                ..
+            }
+        );
+        items.elements(index, |kind| match kind {
+            "SecondaryWindow" => root && window,
+            "Action" => root || named && action_group,
+            _ => root,
+        });
         return;
     }
     if last == "->"
@@ -1342,18 +1492,6 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         || head.iter().any(|t| t.text == "callback") && last == ":"
     {
         items.types(index);
-        return;
-    }
-    if scope == 0 {
-        items.words(
-            if first == "export" {
-                "component struct"
-            } else {
-                "import export component struct"
-            },
-            KEYWORD,
-            "XRack declaration",
-        );
         return;
     }
     let kind = match role {
@@ -1516,7 +1654,11 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     }
     if !kind.is_empty() {
         let animation = first == "animate";
-        for property in catalog::PROPERTIES.split_ascii_whitespace() {
+        let prefix = items.prefix;
+        for property in catalog::PROPERTIES
+            .split_ascii_whitespace()
+            .filter(|property| property.starts_with(prefix))
+        {
             if xrack_ir::semantic::media_object_read_type(kind, property).is_some()
                 || (builtins::text_submission_editor(kind)
                     && matches!(property, "acceptable-input" | "input-validity"))
@@ -1583,6 +1725,12 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             return;
         }
         if matches!(kind, "SoundEffect" | "ComboPopup") {
+            return;
+        }
+        if kind == "Timer" {
+            if !animation {
+                items.add("triggered", FUNCTION, "event handler");
+            }
             return;
         }
         if !animation {
@@ -1661,7 +1809,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             }
             if instance {
                 items.add("states", KEYWORD, "conditional component inputs and layout");
-                items.elements(index);
+                items.elements(index, |_| false);
                 return;
             }
             for part in catalog::ELEMENTS.split_ascii_whitespace() {
@@ -1718,7 +1866,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             if radio_group {
                 items.add("RadioButton", CLASS, "RadioGroup option");
             } else {
-                items.elements(index);
+                items.elements(index, |_| false);
             }
             items.words(
                 "property callback pure in out in-out private if for animate states",

@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+mod gpu_text_scale;
+
 use async_ui::AsyncDemo;
 use bundled_ui::BundledFontsDemo;
 use controls_ui::{
@@ -1984,6 +1986,59 @@ fn preview_double_press_selects_a_word_and_drag_extends_to_whole_words() {
 }
 
 #[test]
+fn touch_handles_use_the_active_edits_line_geometry_and_selection() {
+    use xrack_layout::{Interaction, TextPosition, layout};
+    use xrack_renderer_femtovg::TextSystem;
+    use xrack_runtime::{Length, Node};
+
+    let mut text = TextSystem::system().unwrap();
+    for (kind, value) in [
+        ("TextEdit", "Valve\nPressure"),
+        ("LineEdit", "Valve pressure"),
+    ] {
+        let mut scene = Node::new("Window", None);
+        let mut field = Node::new(kind, Some("entry"));
+        field.properties.insert("text", value.to_owned().into());
+        field.properties.insert("width", Length(210.0).into());
+        field.properties.insert("height", Length(96.0).into());
+        scene.children.push(field);
+        let layout = layout(&scene, Size::new(240.0, 140.0), &mut text);
+        let mut input = Interaction::default();
+        let target = input.accessibility_target(&scene, &layout, &[0]).unwrap();
+        input.focus_target(&scene, &layout, target);
+        input.sync_editor(&scene);
+        input.editor.as_mut().unwrap().set_selection(
+            value,
+            value.len(),
+            TextPosition {
+                offset: 0,
+                trailing: false,
+            },
+        );
+        assert!(
+            text.touch_selection_handles(&scene, &layout, &input)
+                .is_empty()
+        );
+
+        input.set_touch_selection_handles(true);
+        let handles = text.touch_selection_handles(&scene, &layout, &input);
+        let [start, end] = handles.as_slice() else {
+            panic!("expected two touch selection handles for {kind}");
+        };
+        assert_eq!(start.position.offset, 0);
+        assert_eq!(end.position.offset, value.len());
+        assert!(start.center.y < start.caret.y);
+        assert!(end.center.y > end.caret.y);
+        assert_eq!(end.caret.y > start.caret.y, kind == "TextEdit");
+        input.clear_focus();
+        assert!(
+            text.touch_selection_handles(&scene, &layout, &input)
+                .is_empty()
+        );
+    }
+}
+
+#[test]
 fn preview_mouse_selection_modes_match_between_interpreter_and_aot() {
     use form_ui::EditorSelectionDemo;
     use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
@@ -3311,9 +3366,9 @@ fn font_picker_prepares_system_and_embedded_families_and_paints_the_draft() {
     let embedded = BundledFontsDemo::new().render().fonts;
     let input = Interaction::default();
     let viewport = Size::new(510.0, 430.0);
-    let family = [3, 0, 0, 1];
-    let size = [3, 0, 1, 1];
-    let preview = [3, 0, 4];
+    let family = [3, 0, 0, 0, 1];
+    let size = [3, 0, 0, 1, 1];
+    let preview = [3, 0, 0, 4];
     let prepare = |ui: &FontPickerDemo, renderer: &mut Renderer, fonts| {
         let mut scene = ui.render();
         scene.fonts = fonts;
@@ -3877,13 +3932,13 @@ fn color_picker_paints_channel_gradients_and_alpha_over_checkerboard() {
     let scene = ui.render_shared();
     let translucent = renderer.snapshot(&scene, 478, 384, 1.0, &input).unwrap();
     let swatch = |snapshot: &xrack_renderer_femtovg::Snapshot, column: f32| {
-        let bounds = snapshot.layout.at_path(&[5, 0, 0, 0]).unwrap().bounds;
+        let bounds = snapshot.layout.at_path(&[5, 0, 0, 0, 0]).unwrap().bounds;
         let x = bounds.x + bounds.width * (column + 0.5) / 8.0;
         let y = bounds.y + bounds.height * 0.25;
         snapshot.pixel(x as u32, y as u32).unwrap()
     };
     assert_ne!(swatch(&translucent, 0.0), swatch(&translucent, 1.0));
-    let red = translucent.layout.at_path(&[5, 0, 1, 1]).unwrap().bounds;
+    let red = translucent.layout.at_path(&[5, 0, 0, 1, 1]).unwrap().bounds;
     let slider = SliderGeometry::new(red, Orientation::Horizontal);
     let red_at = |fraction| {
         let point = slider.position(fraction);
@@ -3895,7 +3950,7 @@ fn color_picker_paints_channel_gradients_and_alpha_over_checkerboard() {
         "red gradient ranges from {low} to {high}"
     );
 
-    assert!(ui.adjust_range_at(&scene, &[5, 0, 4, 1], RangeAction::Maximum));
+    assert!(ui.adjust_range_at(&scene, &[5, 0, 0, 4, 1], RangeAction::Maximum));
     let opaque = renderer
         .snapshot(&ui.render_shared(), 478, 384, 1.0, &input)
         .unwrap();
@@ -3918,9 +3973,9 @@ fn hsv_color_picker_paints_its_plane_and_synchronizes_hex() {
     ui.set_picker_open(true);
     ui.set_selected(Color(0xff000080));
     let input = Interaction::default();
-    let plane = [5, 0, 5, 0];
-    let hue = [5, 0, 5, 1];
-    let hex = [5, 0, 0, 1];
+    let plane = [5, 0, 0, 5, 0];
+    let hue = [5, 0, 0, 5, 1];
+    let hex = [5, 0, 0, 0, 1];
     let scene = ui.render_shared();
     let before = renderer.snapshot(&scene, 478, 540, 1.0, &input).unwrap();
     let geometry = ColorPlaneGeometry::new(before.layout.at_path(&plane).unwrap().bounds);

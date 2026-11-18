@@ -10,6 +10,7 @@ use xrack_runtime::{
 };
 
 const ROW_HEIGHT: f32 = 28.0;
+const TOUCH_ROW_HEIGHT: f32 = 44.0;
 const MAX_VISIBLE_ROWS: usize = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,6 +146,36 @@ pub(crate) struct MenuPopup {
     pressed: Option<PressedItem>,
     pub session: u64,
     pub text: Option<TextMenu>,
+    pub(crate) touch: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MenuPan {
+    session: u64,
+    path: Vec<usize>,
+    remainder: f32,
+}
+
+impl MenuPan {
+    pub(crate) fn advance(
+        &mut self,
+        menu: &mut MenuPopup,
+        scene: &Node,
+        layout: &LayoutNode,
+        delta: f32,
+    ) -> bool {
+        if menu.session != self.session {
+            return false;
+        }
+        let Some(depth) = menu.levels.iter().position(|level| level.path == self.path) else {
+            return false;
+        };
+        let row_height = menu.row_height();
+        self.remainder += delta;
+        let rows = (self.remainder / row_height).trunc() as isize;
+        self.remainder %= row_height;
+        rows != 0 && menu.scroll_level(scene, layout, depth, rows)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -176,7 +207,7 @@ impl TextMenu {
         selection: SelectionState,
         commands: TextCommandAvailability,
     ) -> Self {
-        let writable = !node.boolean("read-only", false);
+        let writable = !node.text_read_only();
         let password = node.is_password();
         let mut menu = Node::new("Menu", None);
         menu.properties
@@ -378,6 +409,7 @@ impl MenuPopup {
         scene: &Node,
         layout: &LayoutNode,
         text: Option<TextMenu>,
+        touch: bool,
     ) -> Option<Self> {
         static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
         let mut popup = Self {
@@ -391,6 +423,7 @@ impl MenuPopup {
             pressed: None,
             session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             text,
+            touch,
         };
         popup.reconcile(scene, layout).then_some(popup)
     }
@@ -422,14 +455,24 @@ impl MenuPopup {
         }
     }
 
-    fn visible_count(viewport: Rect, count: usize) -> usize {
-        ((viewport.height / ROW_HEIGHT) as usize)
+    fn visible_count(viewport: Rect, count: usize, row_height: f32) -> usize {
+        ((viewport.height / row_height) as usize)
             .clamp(1, MAX_VISIBLE_ROWS)
             .min(count)
     }
 
+    fn row_height(&self) -> f32 {
+        if self.touch {
+            TOUCH_ROW_HEIGHT
+        } else {
+            ROW_HEIGHT
+        }
+    }
+
     pub fn panels<'a>(&'a self, scene: &'a Node, layout: &LayoutNode) -> Vec<MenuPanel<'a>> {
         let viewport = layout.clip.inset(4.0);
+        let row_height = self.row_height();
+        let show_shortcuts = !self.touch;
         if viewport.width <= 0.0 || viewport.height <= 0.0 || !valid(&self.trigger, scene, layout) {
             return Vec::new();
         }
@@ -454,13 +497,16 @@ impl MenuPopup {
             if count == 0 {
                 break;
             }
-            let visible = Self::visible_count(viewport, count);
+            let visible = Self::visible_count(viewport, count, row_height);
             let first = level.first.min(count - visible);
             let icon_column = rows(menu).any(|(_, row)| icon(row).is_some());
             let width = rows(menu)
                 .map(|(_, row)| {
-                    let shortcut_width =
-                        shortcut(row).map_or(0.0, |key| key.to_string().len() as f32 * 8.0 + 14.0);
+                    let shortcut_width = if show_shortcuts {
+                        shortcut(row).map_or(0.0, |key| key.to_string().len() as f32 * 8.0 + 14.0)
+                    } else {
+                        0.0
+                    };
                     label(row)
                         .chars()
                         .map(|ch| if ch.is_ascii() { 8.0 } else { 16.0 })
@@ -476,7 +522,7 @@ impl MenuPopup {
                 anchor,
                 viewport,
                 width,
-                (visible as f32 * ROW_HEIGHT).min(viewport.height),
+                (visible as f32 * row_height).min(viewport.height),
                 index > 0,
                 if index == 0 {
                     direction
@@ -500,7 +546,9 @@ impl MenuPopup {
                         node: row,
                         label: label(row),
                         icon: icon(row),
-                        shortcut: shortcut(row).map(|key| key.to_string()),
+                        shortcut: show_shortcuts
+                            .then(|| shortcut(row).map(|key| key.to_string()))
+                            .flatten(),
                         enabled: enabled(row),
                         separator: row.kind == "MenuSeparator",
                         submenu: row.kind == "Menu",
@@ -533,22 +581,30 @@ impl MenuPopup {
 
     pub fn reconcile(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
         let viewport = layout.clip.inset(4.0);
+        let row_height = self.row_height();
         for level in &mut self.levels {
             let Some(menu) = menu_at(scene, self.text.as_ref(), &level.path) else {
                 break;
             };
+            let count = rows(menu).count();
+            let visible = Self::visible_count(viewport, count, row_height);
+            level.first = level.first.min(count.saturating_sub(visible));
             if !level.highlight.is_some_and(|index| {
                 menu.children
                     .get(index)
                     .is_some_and(|row| row.is_visible() && enabled(row))
             }) {
+                let (first, limit) = if self.touch {
+                    (level.first, visible)
+                } else {
+                    (0, count)
+                };
                 level.highlight = rows(menu)
+                    .skip(first)
+                    .take(limit)
                     .find(|(_, row)| enabled(row))
                     .map(|(index, _)| index);
             }
-            let count = rows(menu).count();
-            let visible = Self::visible_count(viewport, count);
-            level.first = level.first.min(count.saturating_sub(visible));
             if let Some(slot) = rows(menu).position(|(index, _)| Some(index) == level.highlight) {
                 level.first = level
                     .first
@@ -768,6 +824,18 @@ impl MenuPopup {
         None
     }
 
+    pub fn pan_at(&self, scene: &Node, layout: &LayoutNode, point: Point) -> Option<MenuPan> {
+        let panel = self
+            .panels(scene, layout)
+            .into_iter()
+            .rfind(|panel| panel.bounds.contains(point))?;
+        Some(MenuPan {
+            session: self.session,
+            path: panel.path,
+            remainder: 0.0,
+        })
+    }
+
     pub fn scroll(
         &mut self,
         scene: &Node,
@@ -783,22 +851,35 @@ impl MenuPopup {
         else {
             return;
         };
+        self.scroll_level(scene, layout, depth, delta);
+    }
+
+    fn scroll_level(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        depth: usize,
+        delta: isize,
+    ) -> bool {
+        let row_height = self.row_height();
         let level = &mut self.levels[depth];
         let Some(menu) = menu_at(scene, self.text.as_ref(), &level.path) else {
-            return;
+            return false;
         };
         let count = rows(menu).count();
-        let visible = Self::visible_count(layout.clip.inset(4.0), count);
-        level.first = level
-            .first
-            .saturating_add_signed(delta)
-            .min(count - visible);
+        let visible = Self::visible_count(layout.clip.inset(4.0), count, row_height);
+        let first = level.first;
+        let highlight = level.highlight;
+        level.first = first.saturating_add_signed(delta).min(count - visible);
         level.highlight = rows(menu)
             .skip(level.first)
             .take(visible)
             .find(|(_, row)| enabled(row))
             .map(|(index, _)| index);
+        let changed = level.first != first || level.highlight != highlight;
+        let removed = self.levels.len() > depth + 1;
         self.levels.truncate(depth + 1);
+        changed || removed
     }
 
     pub fn input(&self, mut path: Vec<usize>) -> Option<ControlInput> {

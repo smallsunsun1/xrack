@@ -87,20 +87,24 @@ impl WindowEvents {
 
     pub(crate) fn accessibility(
         &self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         window: &winit::window::Window,
-    ) -> accesskit_winit::Adapter {
+    ) -> Result<crate::WindowAccessibility, &'static str> {
         let handler = AccessibilityEvents {
             events: self.clone(),
             window_id: window.id(),
         };
-        accesskit_winit::Adapter::with_direct_handlers(
-            event_loop,
+        #[cfg(target_os = "ios")]
+        return crate::ios::Accessibility::new(window, self.clone(), handler)
+            .ok_or("the iOS window does not have an accessibility view");
+        #[cfg(not(target_os = "ios"))]
+        Ok(accesskit_winit::Adapter::with_direct_handlers(
+            _event_loop,
             window,
             handler.clone(),
             handler.clone(),
             handler,
-        )
+        ))
     }
 }
 
@@ -180,12 +184,16 @@ pub(crate) trait HostedWindow {
         owner: Option<&Window>,
     ) -> Result<WindowId, String>;
     fn suspend(&mut self);
+    #[cfg(target_os = "ios")]
+    fn set_ios_application_active(&mut self, active: bool);
     fn window_id(&self) -> Option<WindowId>;
     fn native_window(&self) -> Option<Arc<Window>>;
     fn secondary_windows(&self) -> Option<Rc<[SecondaryWindowRegistration]>>;
     fn close(&mut self);
     fn request_close(&mut self) -> bool;
     fn take_close_request(&mut self) -> bool;
+    #[cfg(target_os = "android")]
+    fn begin_input_batch(&mut self, started_at: Instant);
     fn tick(&mut self, now: Instant);
     fn refresh_deadline(&mut self, now: Instant) -> Option<Instant>;
     fn refresh_after_desktop_update(&mut self);
@@ -275,12 +283,34 @@ impl Desktop {
     }
 
     pub fn open<C: Component + 'static>(&self, component: C) -> Result<DesktopWindow, String> {
+        self.open_window(component, None)
+    }
+
+    /// Open a window and report its available logical content size before layout
+    /// and when the native viewport changes.
+    pub fn open_with_viewport<C: Component + 'static>(
+        &self,
+        component: C,
+        handler: impl FnMut(&mut C, crate::Size) + 'static,
+    ) -> Result<DesktopWindow, String> {
+        self.open_window(component, Some(Box::new(handler)))
+    }
+
+    fn open_window<C: Component + 'static>(
+        &self,
+        component: C,
+        viewport_handler: Option<crate::ViewportHandler<C>>,
+    ) -> Result<DesktopWindow, String> {
         let commands = self.0.upgrade().ok_or("the XRack desktop is closed")?;
         component.set_locale_context(commands.locale.clone());
         let key = commands.key();
         commands.enqueue(Command::Open(
             key,
-            Box::new(move |events, clipboard| Box::new(make_window(component, events, clipboard))),
+            Box::new(move |events, clipboard| {
+                let mut window = make_window(component, events, clipboard);
+                window.viewport_handler = viewport_handler;
+                Box::new(window)
+            }),
         ))?;
         Ok(DesktopWindow {
             desktop: self.clone(),
@@ -335,11 +365,143 @@ impl DesktopTray {
     }
 }
 
-/// A UI-thread handle for requesting closure of one desktop window.
+/// A UI-thread handle for a hosted window.
 #[derive(Clone)]
 pub struct DesktopWindow {
     desktop: Desktop,
     key: WindowKey,
+}
+
+#[cfg(target_os = "ios")]
+impl DesktopWindow {
+    /// Present the iOS share sheet with text from this window.
+    /// Returns false if the activity was canceled.
+    pub async fn share_text(&self, text: impl Into<String>) -> Result<bool, String> {
+        self.transfer(crate::native_dialog::Transfer::ShareText(text.into()))
+            .await
+    }
+
+    /// Present the iOS share sheet for an existing file with an absolute path.
+    /// Keep the source file available until this future completes.
+    pub async fn share_file(&self, path: impl Into<std::path::PathBuf>) -> Result<bool, String> {
+        self.transfer(crate::native_dialog::Transfer::ShareFile(path.into()))
+            .await
+    }
+
+    /// Let the user export a copy of an existing file to Files.
+    /// Keep the source file available until this future completes.
+    /// Returns false if the user canceled the export.
+    pub async fn export_file(&self, path: impl Into<std::path::PathBuf>) -> Result<bool, String> {
+        self.transfer(crate::native_dialog::Transfer::ExportFile(path.into()))
+            .await
+    }
+
+    /// Let the user grant access to an existing directory through iOS Files.
+    /// Returns `Ok(None)` if the selection is canceled.
+    pub async fn select_directory(&self) -> Result<Option<crate::IosDirectory>, String> {
+        let events = self
+            .desktop
+            .0
+            .upgrade()
+            .ok_or("the XRack desktop is closed")?
+            .events(self.key);
+        let (reply, result) = tokio::sync::oneshot::channel();
+        if !events.post(UserEvent::IosSelectDirectory(
+            crate::native_dialog::DirectoryRequest { reply },
+        )) {
+            return Err("the XRack desktop is closed".into());
+        }
+        result
+            .await
+            .map_err(|_| "the window closed before the directory picker finished")?
+    }
+
+    async fn transfer(&self, operation: crate::native_dialog::Transfer) -> Result<bool, String> {
+        let events = self
+            .desktop
+            .0
+            .upgrade()
+            .ok_or("the XRack desktop is closed")?
+            .events(self.key);
+        let (reply, result) = tokio::sync::oneshot::channel();
+        if !events.post(UserEvent::IosTransfer(
+            crate::native_dialog::TransferRequest { operation, reply },
+        )) {
+            return Err("the XRack desktop is closed".into());
+        }
+        result
+            .await
+            .map_err(|_| "the window closed before the system operation finished")?
+    }
+}
+
+#[cfg(target_os = "android")]
+impl DesktopWindow {
+    /// Share text through Android's system share sheet.
+    /// Returns true when the user selects a receiving application, false on dismissal.
+    pub async fn share_text(&self, text: impl Into<String>) -> Result<bool, String> {
+        let events = self
+            .desktop
+            .0
+            .upgrade()
+            .ok_or("the XRack desktop is closed")?
+            .events(self.key);
+        let (reply, result) = tokio::sync::oneshot::channel();
+        if !events.post(UserEvent::AndroidSystem(
+            crate::native_dialog::AndroidSystemRequest::ShareText {
+                text: text.into(),
+                reply,
+            },
+        )) {
+            return Err("the XRack desktop is closed".into());
+        }
+        result
+            .await
+            .map_err(|_| "the window closed before the share sheet finished")?
+    }
+
+    /// Export an existing absolute file through Android's system document picker.
+    /// Keep the source file available until this future completes.
+    pub async fn export_file(&self, path: impl Into<std::path::PathBuf>) -> Result<bool, String> {
+        let events = self
+            .desktop
+            .0
+            .upgrade()
+            .ok_or("the XRack desktop is closed")?
+            .events(self.key);
+        let (reply, result) = tokio::sync::oneshot::channel();
+        if !events.post(UserEvent::AndroidSystem(
+            crate::native_dialog::AndroidSystemRequest::ExportFile {
+                path: path.into(),
+                reply,
+            },
+        )) {
+            return Err("the XRack desktop is closed".into());
+        }
+        result
+            .await
+            .map_err(|_| "the window closed before the export finished")?
+    }
+
+    /// Grant access to a directory through Android's system document picker.
+    /// Returns `Ok(None)` when the user cancels.
+    pub async fn select_directory(&self) -> Result<Option<crate::AndroidDirectory>, String> {
+        let events = self
+            .desktop
+            .0
+            .upgrade()
+            .ok_or("the XRack desktop is closed")?
+            .events(self.key);
+        let (reply, result) = tokio::sync::oneshot::channel();
+        if !events.post(UserEvent::AndroidSystem(
+            crate::native_dialog::AndroidSystemRequest::SelectDirectory { reply },
+        )) {
+            return Err("the XRack desktop is closed".into());
+        }
+        result
+            .await
+            .map_err(|_| "the window closed before the directory picker finished")?
+    }
 }
 
 impl DesktopWindow {
@@ -389,7 +551,8 @@ struct OwnedWindow {
 }
 
 impl DesktopRuntime {
-    fn new(proxy: EventLoopProxy<DesktopEvent>) -> Self {
+    fn new(event_loop: &EventLoop<DesktopEvent>) -> Self {
+        let proxy = event_loop.create_proxy();
         let callback_events = proxy.clone();
         let callbacks = Arc::new(EventQueue::new(CALLBACK_CAPACITY, move || {
             let _ = callback_events.send_event(DesktopEvent::InvokeCallbacks);
@@ -409,7 +572,10 @@ impl DesktopRuntime {
                 pending: RefCell::new(Vec::new()),
                 proxy,
             }),
-            clipboard: Rc::new(RefCell::new(ClipboardPort::new())),
+            clipboard: Rc::new(RefCell::new(ClipboardPort::new(
+                #[cfg(target_os = "android")]
+                winit::platform::android::EventLoopExtAndroid::android_app(event_loop).clone(),
+            ))),
             windows: BTreeMap::new(),
             trays: BTreeMap::new(),
             owned: BTreeMap::new(),
@@ -641,19 +807,40 @@ impl DesktopRuntime {
 }
 
 impl ApplicationHandler<DesktopEvent> for DesktopRuntime {
+    #[cfg(target_os = "android")]
+    fn new_events(&mut self, _: &ActiveEventLoop, _: winit::event::StartCause) {
+        let started_at = Instant::now();
+        for window in self.windows.values_mut() {
+            window.begin_input_batch(started_at);
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.resumed = true;
         self.apply_commands(event_loop);
+        #[cfg(target_os = "ios")]
+        for window in self.windows.values_mut() {
+            window.set_ios_application_active(true);
+        }
     }
 
     fn suspended(&mut self, _: &ActiveEventLoop) {
         self.resumed = false;
-        self.native.clear();
         for tray in self.trays.values_mut() {
             tray.suspend();
         }
+        // Winit delivers UIKit's WillResignActive as Suspended. System sheets
+        // can send that notification without putting the app in the background.
+        #[cfg(target_os = "ios")]
         for window in self.windows.values_mut().rev() {
-            window.suspend();
+            window.set_ios_application_active(false);
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            self.native.clear();
+            for window in self.windows.values_mut().rev() {
+                window.suspend();
+            }
         }
     }
 
@@ -747,6 +934,20 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime {
         let Some(&key) = self.native.get(&id) else {
             return;
         };
+        #[cfg(target_os = "ios")]
+        if matches!(event, WindowEvent::Occluded(true)) {
+            // iOS reports DidEnterBackground via Occluded. Discard transient
+            // input and release graphics at that point.
+            self.native.remove(&id);
+            if let Some(window) = self.windows.get_mut(&key) {
+                window.suspend();
+            }
+            return;
+        }
+        #[cfg(target_os = "ios")]
+        if !self.resumed && matches!(event, WindowEvent::RedrawRequested) {
+            return;
+        }
         if matches!(event, WindowEvent::CloseRequested) {
             self.request_close(key);
         } else if matches!(event, WindowEvent::Destroyed) {
@@ -786,18 +987,45 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn event_loop() -> Result<EventLoop<DesktopEvent>, String> {
     EventLoop::with_user_event()
         .build()
         .map_err(|error| error.to_string())
 }
 
+#[cfg(target_os = "android")]
+fn event_loop() -> Result<EventLoop<DesktopEvent>, String> {
+    Err("Android requires run_android with the Activity's AndroidApp".into())
+}
+
 /// Run windows and system tray components on one UI thread.
 pub fn run_desktop(setup: impl FnOnce(&Desktop) -> Result<(), String>) -> Result<(), String> {
+    run(event_loop()?, setup)
+}
+
+/// Run an XRack component from the Android Activity's native entry point.
+#[cfg(target_os = "android")]
+pub fn run_android(
+    app: winit::platform::android::activity::AndroidApp,
+    setup: impl FnOnce(&Desktop) -> Result<(), String>,
+) -> Result<(), String> {
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+
+    let event_loop = EventLoop::with_user_event()
+        .with_android_app(app)
+        .build()
+        .map_err(|error| error.to_string())?;
+    run(event_loop, setup)
+}
+
+fn run(
+    event_loop: EventLoop<DesktopEvent>,
+    setup: impl FnOnce(&Desktop) -> Result<(), String>,
+) -> Result<(), String> {
     #[cfg(feature = "media")]
     xrack_media::install();
-    let event_loop = event_loop()?;
-    let mut desktop = DesktopRuntime::new(event_loop.create_proxy());
+    let mut desktop = DesktopRuntime::new(&event_loop);
     let _registration = desktop.register_event_loop()?;
     {
         let _scope = desktop.tasks.enter();
@@ -809,18 +1037,22 @@ pub fn run_desktop(setup: impl FnOnce(&Desktop) -> Result<(), String>) -> Result
     desktop.error.take().map_or(Ok(()), Err)
 }
 
-pub(crate) fn run_window<C: Component + 'static>(component: C) -> Result<(), String> {
+pub(crate) fn run_window<C: Component + 'static>(
+    component: C,
+    viewport_handler: Option<crate::ViewportHandler<C>>,
+) -> Result<(), String> {
     #[cfg(feature = "media")]
     xrack_media::install();
     let event_loop = event_loop()?;
-    let mut desktop = DesktopRuntime::new(event_loop.create_proxy());
+    let mut desktop = DesktopRuntime::new(&event_loop);
     let _registration = desktop.register_event_loop()?;
     let key = desktop.commands.key();
-    let window = make_window(
+    let mut window = make_window(
         component,
         desktop.commands.events(key),
         desktop.clipboard.clone(),
     );
+    window.viewport_handler = viewport_handler;
     desktop.windows.insert(key, Box::new(window));
     event_loop
         .run_app(&mut desktop)

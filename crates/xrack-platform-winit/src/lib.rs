@@ -1,11 +1,28 @@
 //! Native desktop host. The event loop sleeps until input, resize, or OS redraw.
 mod accessibility;
 mod accessibility_text;
+#[cfg(target_os = "android")]
+mod android_directory;
+#[cfg(any(target_os = "android", test))]
+mod android_keyboard;
+#[cfg(target_os = "android")]
+mod android_text;
 mod clipboard;
 mod desktop;
 #[cfg(target_os = "macos")]
 mod file_drop;
 mod frame;
+#[cfg(target_os = "ios")]
+mod ios;
+#[cfg(target_os = "ios")]
+mod ios_accessibility_actions;
+#[cfg(target_os = "ios")]
+mod ios_directory;
+#[cfg(target_os = "ios")]
+mod ios_keyboard;
+#[cfg(target_os = "ios")]
+mod ios_text;
+mod keyboard;
 mod local_task;
 mod native_dialog;
 mod queue;
@@ -19,16 +36,23 @@ mod system_tray_macos;
 mod system_tray_windows;
 #[cfg(test)]
 mod tests;
+#[cfg(any(target_os = "android", target_os = "ios", test))]
+mod text_indices;
 mod window_chrome;
 mod window_owner;
 mod window_presentation;
 
 use accessibility::{Projection, Route};
 use accesskit::{Action as AccessibleAction, ActionData, ActionRequest, TreeId};
+#[cfg(target_os = "android")]
+pub use android_directory::{AndroidDirectory, AndroidDocument};
 use clipboard::{ClipboardPort, ClipboardValue, Reply as ClipboardReply};
 pub use desktop::{Desktop, DesktopTray, DesktopWindow, run_desktop};
 use desktop::{DesktopGraphics, HostedWindow, WindowEvents};
 use frame::FrameCache;
+#[cfg(target_os = "ios")]
+pub use ios_directory::IosDirectory;
+use keyboard::KeyEvent;
 use local_task::LocalExecutor;
 pub use local_task::{LocalTask, SpawnLocalError, TaskCancelled, spawn_local};
 use std::{
@@ -44,8 +68,7 @@ use window_presentation::WindowPresentation;
 use winit::{
     dpi::{LogicalPosition, LogicalSize, PhysicalPosition},
     event::{
-        DeviceId, ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, Touch, TouchPhase,
-        WindowEvent,
+        DeviceId, ElementState, Ime, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
     },
     event_loop::ActiveEventLoop,
     keyboard::{Key, ModifiersState, NamedKey},
@@ -63,21 +86,28 @@ use xrack_renderer_femtovg::{PointerCaret, Renderer};
 use xrack_runtime::{
     ColorScheme, Component, ControlAction, CursorShape, DragAction, EventResult, FocusRequests,
     ImagePlaybackQueue, KeyPhase, NativeDialogQueue, NativeDialogResult, Node, Orientation,
-    PointerButton, PointerEvent, PointerEventKind, PointerHandle, RangeAction, RowKey,
+    PointerButton, PointerEvent, PointerEventKind, PointerHandle, RangeAction, ReturnKey, RowKey,
     RowSelection, SceneTransition, ScrollRequests, SecondaryWindowRegistration, SpinAction,
     SpinDecimal, TablePaste, TextCommand, TimerQueue, combo_editable, decimal_separator,
-    is_calendar_control, is_multiline_text_input, is_spin_box, spin_editable, text_input_value,
+    is_calendar_control, is_multiline_text_input, is_spin_box, spin_editable,
 };
 pub use xrack_runtime::{EventLoopError, invoke_from_event_loop};
+#[cfg(target_os = "android")]
+pub use {desktop::run_android, winit::platform::android::activity::AndroidApp};
 
 #[cfg(feature = "media")]
 pub use xrack_media::install as install_media;
+
+#[cfg(target_os = "ios")]
+type WindowAccessibility = ios::Accessibility;
+#[cfg(not(target_os = "ios"))]
+type WindowAccessibility = accesskit_winit::Adapter;
 
 struct WindowState {
     surface: wgpu::Surface<'static>,
     renderer: Renderer,
     config: wgpu::SurfaceConfiguration,
-    accessibility: accesskit_winit::Adapter,
+    accessibility: WindowAccessibility,
     projection: Projection,
     accessibility_active: bool,
     ime_purpose: ImePurpose,
@@ -87,10 +117,32 @@ struct WindowState {
     resize_drag: Option<window_chrome::ResizeDrag>,
     owner: WindowOwner,
     window: Arc<Window>,
+    #[cfg(target_os = "android")]
+    android_app: AndroidApp,
+    #[cfg(target_os = "android")]
+    android_text: Option<android_text::TextInput>,
+    #[cfg(target_os = "android")]
+    android_spin_step_focus: Option<Target>,
+    #[cfg(target_os = "android")]
+    android_ime_top: Option<u32>,
     applied_cursor: Cell<Option<CursorIcon>>,
     frame: FrameCache,
     presentation: WindowPresentation,
     inspection_revision: Option<u64>,
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    safe_area: [f64; 4],
+    #[cfg(target_os = "ios")]
+    ios_text: Option<ios_text::TextInput>,
+    #[cfg(target_os = "ios")]
+    ios_floating_keyboard: Option<xrack_layout::Rect>,
+    #[cfg(target_os = "ios")]
+    ios_keyboard: Option<ios_keyboard::KeyboardInput>,
+    #[cfg(target_os = "ios")]
+    _ios_accessibility_observer: Option<ios::AccessibilityObserver>,
+    #[cfg(target_os = "ios")]
+    ios_spin_step_focus: Option<Target>,
+    #[cfg(target_os = "ios")]
+    ios_scroll_announcement: Option<ios::ScrollAnnouncement>,
 }
 
 fn activation_key_value(key: &Key) -> Option<ActivationKey> {
@@ -143,12 +195,58 @@ fn color_scheme(theme: Option<NativeTheme>) -> ColorScheme {
     }
 }
 
+fn drawable_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
+    #[cfg(target_os = "ios")]
+    return window.outer_size();
+    #[cfg(not(target_os = "ios"))]
+    return window.inner_size();
+}
+
+#[cfg(target_os = "android")]
+fn android_safe_area(window: &Window, ime_top: Option<u32>) -> [f64; 4] {
+    use winit::platform::android::WindowExtAndroid;
+
+    let content = window.content_rect();
+    let size = drawable_size(window);
+    let mut insets = if content.right > content.left && content.bottom > content.top {
+        [
+            f64::from(content.left),
+            f64::from(content.top),
+            f64::from(size.width) - f64::from(content.right),
+            f64::from(size.height) - f64::from(content.bottom),
+        ]
+    } else {
+        [0.0; 4]
+    };
+    if let Some(top) = ime_top {
+        insets[3] = insets[3].max(f64::from(size.height.saturating_sub(top)));
+    }
+    insets.map(|pixels| pixels.max(0.0) / window.scale_factor())
+}
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
+fn inset_content(mut scene: Rc<Node>, insets: [f64; 4]) -> Rc<Node> {
+    if insets != [0.0; 4] {
+        xrack_layout::set_window_safe_area(Rc::make_mut(&mut scene), insets);
+    }
+    scene
+}
+
 impl WindowState {
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    fn content_insets(&self) -> [f64; 4] {
+        #[cfg(target_os = "ios")]
+        return ios::content_geometry(&self.window, self.ios_text.as_ref()).0;
+        #[cfg(target_os = "android")]
+        return android_safe_area(&self.window, self.android_ime_top);
+    }
+
     fn new(
         window: Arc<Window>,
-        accessibility: accesskit_winit::Adapter,
+        accessibility: WindowAccessibility,
         graphics: &mut DesktopGraphics,
         owner: Option<&Window>,
+        #[cfg(target_os = "android")] android_app: AndroidApp,
     ) -> Result<Self, String> {
         let surface = graphics
             .instance
@@ -156,7 +254,7 @@ impl WindowState {
             .map_err(|e| e.to_string())?;
         let mut renderer = graphics.renderer(&surface)?;
         renderer.set_system_color_scheme(color_scheme(window.theme()));
-        let size = window.inner_size();
+        let size = drawable_size(&window);
         let mut config = surface
             .get_default_config(&renderer.adapter, size.width.max(1), size.height.max(1))
             .ok_or("no supported surface configuration")?;
@@ -186,10 +284,32 @@ impl WindowState {
             resize_drag: None,
             owner,
             window,
+            #[cfg(target_os = "android")]
+            android_app,
+            #[cfg(target_os = "android")]
+            android_text: None,
             applied_cursor: Cell::new(None),
             frame: FrameCache::default(),
             presentation: WindowPresentation::default(),
             inspection_revision: None,
+            #[cfg(any(target_os = "ios", target_os = "android"))]
+            safe_area: [0.0; 4],
+            #[cfg(target_os = "ios")]
+            ios_text: None,
+            #[cfg(target_os = "ios")]
+            ios_floating_keyboard: None,
+            #[cfg(target_os = "ios")]
+            ios_keyboard: None,
+            #[cfg(target_os = "ios")]
+            _ios_accessibility_observer: None,
+            #[cfg(target_os = "ios")]
+            ios_spin_step_focus: None,
+            #[cfg(target_os = "ios")]
+            ios_scroll_announcement: None,
+            #[cfg(target_os = "android")]
+            android_spin_step_focus: None,
+            #[cfg(target_os = "android")]
+            android_ime_top: None,
         })
     }
 
@@ -248,14 +368,11 @@ impl WindowState {
         self.presentation.sample(&self.window)
     }
     fn viewport(&self) -> Size {
-        let size = self
-            .window
-            .inner_size()
-            .to_logical::<f32>(self.window.scale_factor());
+        let size = drawable_size(&self.window).to_logical::<f32>(self.window.scale_factor());
         Size::new(size.width, size.height)
     }
     fn resize(&mut self) -> Result<(), String> {
-        let size = self.window.inner_size();
+        let size = drawable_size(&self.window);
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
@@ -276,6 +393,33 @@ impl WindowState {
 pub(crate) enum UserEvent {
     PollTasks,
     Clipboard(ClipboardReply),
+    #[cfg(target_os = "ios")]
+    IosReadClipboard(u64),
+    #[cfg(target_os = "ios")]
+    IosText(ios_text::NativeEdit),
+    #[cfg(target_os = "ios")]
+    IosControlKey(KeyEvent, ModifiersState),
+    #[cfg(target_os = "ios")]
+    IosKeyCancelled,
+    #[cfg(target_os = "ios")]
+    IosKeyboardGeometry,
+    #[cfg(target_os = "ios")]
+    IosAccessibilityPreferencesChanged,
+    #[cfg(target_os = "ios")]
+    IosAccessibilityEscape(AccessibilityEscape),
+    #[cfg(target_os = "ios")]
+    IosTransfer(native_dialog::TransferRequest),
+    #[cfg(target_os = "ios")]
+    IosSelectDirectory(native_dialog::DirectoryRequest),
+    #[cfg(target_os = "android")]
+    AndroidSystem(native_dialog::AndroidSystemRequest),
+    #[cfg(target_os = "android")]
+    AndroidText(android_text::Edit),
+    #[cfg(target_os = "android")]
+    AndroidImeGeometry {
+        token: i64,
+        top: Option<u32>,
+    },
     NativeDialogFinished {
         id: u64,
         result: NativeDialogResult,
@@ -288,6 +432,21 @@ pub(crate) enum UserEvent {
     Accessibility(accesskit_winit::Event),
 }
 
+#[cfg(any(target_os = "ios", test))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AccessibilityEscape {
+    Menu {
+        session: u64,
+        path: Vec<usize>,
+    },
+    Choice(Target),
+    CellEdit(Target),
+    Overlay {
+        target: Target,
+        action: ControlAction,
+    },
+}
+
 enum ClipboardShortcut {
     Copy,
     Cut,
@@ -295,11 +454,36 @@ enum ClipboardShortcut {
 }
 
 enum ClipboardContext {
-    Edit(xrack_layout::TextEditContext),
+    Cut(xrack_layout::TextEditContext),
+    Paste(xrack_layout::TextEditContext),
     Table {
         destination: TablePasteDestination,
         apply: TablePaste,
     },
+}
+
+struct PendingClipboard {
+    id: u64,
+    context: ClipboardContext,
+    deferred_text: Option<String>,
+}
+
+impl PendingClipboard {
+    fn new(id: u64, context: ClipboardContext) -> Self {
+        Self {
+            id,
+            context,
+            deferred_text: None,
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn reads_text(&self) -> bool {
+        matches!(
+            self.context,
+            ClipboardContext::Paste(_) | ClipboardContext::Table { .. }
+        )
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -355,6 +539,28 @@ struct CapturedPointer {
     sequence: PointerSequence,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TouchHoldKind {
+    Editor,
+    ContextMenu,
+}
+
+struct TouchHold {
+    contact: PointerContact,
+    target: Target,
+    origin: Point,
+    deadline: Option<Instant>,
+    kind: TouchHoldKind,
+}
+
+struct SelectionHandleDrag {
+    contact: PointerContact,
+    target: Target,
+    origin: Point,
+    finger_offset: Point,
+    value: String,
+}
+
 struct PointerClick {
     touch_device: Option<DeviceId>,
     point: Point,
@@ -371,11 +577,15 @@ impl PointerClick {
     }
 }
 
+type ViewportHandler<C> = Box<dyn FnMut(&mut C, Size)>;
+
 struct Application<C> {
     component: C,
+    viewport_handler: Option<ViewportHandler<C>>,
     base_scene: Rc<Node>,
     scene: Rc<Node>,
     transition: SceneTransition,
+    reduce_motion: bool,
     transition_epoch: Instant,
     animation_wake: Option<Instant>,
     timers: TimerQueue,
@@ -395,6 +605,10 @@ struct Application<C> {
     hover_observers: HoverObservers,
     hover_pointer: Option<PhysicalPosition<f64>>,
     pointer_capture: Option<CapturedPointer>,
+    touch_hold: Option<TouchHold>,
+    #[cfg(target_os = "android")]
+    input_batch_started_at: Option<Instant>,
+    selection_handle_drag: Option<SelectionHandleDrag>,
     additional_touch_captures: Vec<CapturedPointer>,
     next_touch_finger_id: i64,
     last_pointer_click: Option<(PointerHandle, Option<RowKey>, PointerClick)>,
@@ -402,15 +616,19 @@ struct Application<C> {
     scroll_requests: ScrollRequests,
     viewport_observers: ViewportObservers,
     focus_active: bool,
+    #[cfg(target_os = "ios")]
+    ios_application_active: bool,
     scroll_contact: Option<ScrollContact>,
     modifiers: ModifiersState,
+    #[cfg(target_os = "android")]
+    android_keyboard: android_keyboard::Keyboard,
     list_ime_focus: Option<xrack_layout::Target>,
     inspection_press: bool,
     state: Option<WindowState>,
     error: Option<String>,
     tasks: Rc<LocalExecutor>,
     clipboard: Option<Rc<RefCell<ClipboardPort>>>,
-    pending_clipboard: Option<(u64, ClipboardContext)>,
+    pending_clipboard: Option<PendingClipboard>,
     events: Option<WindowEvents>,
 }
 
@@ -419,9 +637,11 @@ impl<C: Component> Application<C> {
         let scene = component.render_shared();
         Self {
             component,
+            viewport_handler: None,
             base_scene: scene.clone(),
             scene,
             transition: SceneTransition::default(),
+            reduce_motion: false,
             transition_epoch: Instant::now(),
             animation_wake: None,
             timers: TimerQueue::default(),
@@ -441,6 +661,10 @@ impl<C: Component> Application<C> {
             hover_observers: HoverObservers::default(),
             hover_pointer: None,
             pointer_capture: None,
+            touch_hold: None,
+            #[cfg(target_os = "android")]
+            input_batch_started_at: None,
+            selection_handle_drag: None,
             additional_touch_captures: Vec::new(),
             next_touch_finger_id: 1,
             last_pointer_click: None,
@@ -448,8 +672,12 @@ impl<C: Component> Application<C> {
             scroll_requests: ScrollRequests::default(),
             viewport_observers: ViewportObservers::default(),
             focus_active: false,
+            #[cfg(target_os = "ios")]
+            ios_application_active: true,
             scroll_contact: None,
             modifiers: ModifiersState::default(),
+            #[cfg(target_os = "android")]
+            android_keyboard: android_keyboard::Keyboard::default(),
             list_ime_focus: None,
             inspection_press: false,
             state: None,
@@ -468,8 +696,95 @@ impl<C: Component> Application<C> {
                 self.finish_clipboard(reply);
                 false
             }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosReadClipboard(id) => {
+                self.read_ios_clipboard(id);
+                false
+            }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosText(edit) => {
+                self.commit_ios_text(edit);
+                false
+            }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosControlKey(event, modifiers) => {
+                self.modifiers = modifiers;
+                self.keyboard_input(&event, false);
+                false
+            }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosKeyCancelled => {
+                self.modifiers = ModifiersState::empty();
+                self.input.cancel_press();
+                self.update_editor();
+                false
+            }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosKeyboardGeometry => {
+                self.publish_viewport();
+                self.relayout();
+                false
+            }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosAccessibilityPreferencesChanged => {
+                if self.sync_ios_accessibility_preferences() {
+                    self.relayout();
+                }
+                false
+            }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosAccessibilityEscape(request) => {
+                self.perform_accessibility_escape(request);
+                false
+            }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosTransfer(request) => {
+                if let Some(state) = &self.state {
+                    let window = state.window.clone();
+                    let _ = self.tasks.spawn(request.present(window));
+                } else {
+                    let _ = request.reply.send(Err("the window is unavailable".into()));
+                }
+                false
+            }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosSelectDirectory(request) => {
+                if let Some(state) = &self.state {
+                    let _ = self.tasks.spawn(request.present(state.window.clone()));
+                } else {
+                    let _ = request.reply.send(Err("the window is unavailable".into()));
+                }
+                false
+            }
             UserEvent::NativeDialogFinished { id, result } => {
                 self.native_dialogs.complete(id, result)
+            }
+            #[cfg(target_os = "android")]
+            UserEvent::AndroidSystem(request) => {
+                if let Some(state) = &self.state {
+                    let _ = self.tasks.spawn(request.present(state.android_app.clone()));
+                }
+                false
+            }
+            #[cfg(target_os = "android")]
+            UserEvent::AndroidText(edit) => {
+                self.commit_android_text(edit);
+                false
+            }
+            #[cfg(target_os = "android")]
+            UserEvent::AndroidImeGeometry { token, top } => {
+                if let Some(state) = self.state.as_mut()
+                    && state
+                        .android_text
+                        .as_ref()
+                        .is_some_and(|input| input.owns_token(token))
+                    && state.android_ime_top != top
+                {
+                    state.android_ime_top = top;
+                    self.publish_viewport();
+                    self.relayout();
+                }
+                false
             }
             #[cfg(target_os = "macos")]
             UserEvent::NativeFileDrag { window, input } => {
@@ -498,15 +813,20 @@ impl<C: Component> Application<C> {
     }
 
     fn update_accessibility(&mut self) {
+        #[cfg(target_os = "ios")]
+        let escape = self.accessibility_escape();
         let (Some(state), Some(layout)) = (&mut self.state, &self.layout) else {
             return;
         };
+        let scale_factor = state.window.scale_factor();
+        #[cfg(target_os = "ios")]
+        state.accessibility.prepare(scale_factor, escape);
         if state.accessibility_active
             && let Some(update) = state.projection.update(
                 &self.scene,
                 layout,
                 &self.input,
-                state.window.scale_factor(),
+                scale_factor,
                 Some(&state.renderer.text),
             )
         {
@@ -531,10 +851,18 @@ impl<C: Component> Application<C> {
             }
             AccessEvent::AccessibilityDeactivated => {
                 state.accessibility_active = false;
+                #[cfg(target_os = "ios")]
+                {
+                    state.accessibility.clear_actions();
+                    state.ios_scroll_announcement = None;
+                }
                 state.projection.clear();
             }
             AccessEvent::ActionRequested(request) if request.target_tree == TreeId::ROOT => {
-                if let Some(route) = state.projection.route(request.target_node) {
+                if let Some(route) = state
+                    .projection
+                    .route_for_action(request.target_node, request.action)
+                {
                     self.accessibility_action(route, request);
                 }
             }
@@ -556,6 +884,23 @@ impl<C: Component> Application<C> {
                 if request.action == AccessibleAction::Click
                     && let Some(action) = self.input.tab_close_action(&self.scene, layout, target)
                 {
+                    if cfg!(target_os = "ios")
+                        && self
+                            .scene
+                            .at_path(&action.path)
+                            .and_then(xrack_runtime::group_index)
+                            == target.path.last().copied()
+                        && self
+                            .input
+                            .focused
+                            .as_ref()
+                            .is_none_or(|focus| !focus.path.starts_with(&target.path))
+                        && let Some(header) =
+                            self.input
+                                .accessibility_target(&self.scene, layout, &target.path)
+                    {
+                        self.input.accessibility_focus(header);
+                    }
                     self.apply_control(action);
                 }
                 return;
@@ -808,6 +1153,7 @@ impl<C: Component> Application<C> {
                         &target,
                         request.action == AccessibleAction::Expand,
                     ) {
+                        self.input.accessibility_focus(target);
                         self.apply_control(action);
                     }
                 }
@@ -835,6 +1181,32 @@ impl<C: Component> Application<C> {
                         self.apply_control(action);
                     } else {
                         self.update_editor();
+                    }
+                }
+                AccessibleAction::CustomAction
+                    if cfg!(target_os = "ios") && xrack_runtime::editable_table_cell(node) =>
+                {
+                    let editing = self.input.table_cell_editing(&target.path);
+                    match request.data {
+                        Some(ActionData::CustomAction(accessibility::EDIT_CELL_ACTION)) => {
+                            if self
+                                .input
+                                .begin_accessible_table_edit(&self.scene, layout, target)
+                            {
+                                self.update_editor();
+                            }
+                        }
+                        Some(ActionData::CustomAction(accessibility::SAVE_CELL_ACTION))
+                            if editing =>
+                        {
+                            self.commit_table_edit();
+                        }
+                        Some(ActionData::CustomAction(accessibility::CANCEL_CELL_ACTION))
+                            if editing =>
+                        {
+                            self.cancel_table_edit();
+                        }
+                        _ => {}
                     }
                 }
                 AccessibleAction::Click if accessibility::supports_click(kind) => {
@@ -866,7 +1238,9 @@ impl<C: Component> Application<C> {
                 }
                 AccessibleAction::SetValue if accessibility::supports_text_value(node) => {
                     if let Some(ActionData::Value(value)) = request.data {
-                        if node.table_cell_editor.is_some() {
+                        if node.table_cell_editor.is_some()
+                            && !self.input.table_cell_editing(&target.path)
+                        {
                             let original = node.text("text").unwrap_or_default();
                             if self.component.commit_table_cell(
                                 &self.scene,
@@ -884,19 +1258,22 @@ impl<C: Component> Application<C> {
                 }
                 AccessibleAction::SetTextSelection
                     if target.focusable
-                        && accessibility_text::supports_ranges(node)
+                        && (accessibility_text::supports_ranges(node)
+                            || self.input.table_cell_editing(&target.path))
                         && self
                             .input
                             .editor
                             .as_ref()
                             .is_none_or(|edit| edit.preedit.is_empty()) =>
                 {
-                    let value = text_input_value(node);
+                    let value =
+                        accessibility_text::accessible_text_value(node, &self.input, &target.path)
+                            .into_owned();
                     if let Some(ActionData::SetTextSelection(selection)) = request.data
                         && let Some((anchor, focus)) = self.state.as_ref().and_then(|state| {
                             state
                                 .projection
-                                .text_selection(request.target_node, selection, value)
+                                .text_selection(request.target_node, selection, &value)
                         })
                     {
                         self.pending_clipboard = None;
@@ -904,8 +1281,8 @@ impl<C: Component> Application<C> {
                         self.input.break_text_edit_group();
                         self.input
                             .editor
-                            .get_or_insert_with(|| xrack_layout::TextEdit::at_end(value))
-                            .set_selection(value, anchor, focus);
+                            .get_or_insert_with(|| xrack_layout::TextEdit::at_end(&value))
+                            .set_selection(&value, anchor, focus);
                         self.update_editor();
                     }
                 }
@@ -993,6 +1370,27 @@ impl<C: Component> Application<C> {
                         ),
                     });
                 }
+                #[cfg(target_os = "ios")]
+                AccessibleAction::ScrollUp
+                | AccessibleAction::ScrollDown
+                | AccessibleAction::ScrollLeft
+                | AccessibleAction::ScrollRight
+                    if kind == "SwipeView" =>
+                {
+                    if let Some(index) = layout.at_path(&target.path).and_then(|item| {
+                        accessibility::swipe_scroll_selection(request.action, node, item)
+                    }) {
+                        let announcement =
+                            ios::ScrollAnnouncement::page(target.clone(), node, index);
+                        self.apply_control(ControlInput {
+                            path: target.path,
+                            action: ControlAction::Select(index),
+                        });
+                        if let Some(state) = &mut self.state {
+                            state.ios_scroll_announcement = announcement;
+                        }
+                    }
+                }
                 AccessibleAction::ScrollUp
                 | AccessibleAction::ScrollDown
                 | AccessibleAction::ScrollLeft
@@ -1043,6 +1441,13 @@ impl<C: Component> Application<C> {
                         }
                     }
                     if moved {
+                        #[cfg(target_os = "ios")]
+                        if let Some(announcement) =
+                            ios::ScrollAnnouncement::viewport(&target, item, request.action)
+                            && let Some(state) = &mut self.state
+                        {
+                            state.ios_scroll_announcement = Some(announcement);
+                        }
                         self.relayout_with_caret(false);
                     }
                 }
@@ -1066,19 +1471,65 @@ impl<C: Component> Application<C> {
             return false;
         };
         let viewport = state.viewport();
+        #[cfg(target_os = "ios")]
+        let previous_insets = state.safe_area;
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let insets = {
+            #[cfg(target_os = "ios")]
+            let insets = {
+                let (insets, floating) =
+                    ios::content_geometry(&state.window, state.ios_text.as_ref());
+                state.ios_floating_keyboard = floating;
+                insets
+            };
+            #[cfg(target_os = "android")]
+            let insets = state.content_insets();
+            if insets != state.safe_area {
+                state.safe_area = insets;
+                state.frame = FrameCache::default();
+            }
+            insets
+        };
         let base = match self.transition.frame(&self.base_scene, elapsed) {
             Cow::Borrowed(_) => self.base_scene.clone(),
             Cow::Owned(frame) => Rc::new(frame),
         };
+        #[cfg(target_os = "ios")]
+        let resized_base = self.layout.as_ref().and_then(|layout| {
+            (previous_insets != insets
+                || viewport != Size::new(layout.bounds.width, layout.bounds.height))
+            .then(|| base.clone())
+        });
+        #[cfg(target_os = "ios")]
+        let floating_base = (state.ios_floating_keyboard.is_some()
+            || self.input.keyboard_avoidance().is_some())
+        .then(|| base.clone());
         let elastic_input = self
             .input
             .has_overscroll()
             .then(|| (base.clone(), self.input.overscroll_frame()));
         let (mut scene, mut layout) = state.frame.prepare(base, viewport, &self.input, |base| {
+            #[cfg(any(target_os = "ios", target_os = "android"))]
+            let base = inset_content(base, insets);
             state
                 .renderer
                 .prepare_scene(&self.component, base, viewport, &self.input)
         });
+        #[cfg(target_os = "ios")]
+        if let Some(base) = floating_base
+            && self
+                .input
+                .avoid_floating_keyboard(&scene, &layout, state.ios_floating_keyboard)
+        {
+            (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
+                state.renderer.prepare_scene(
+                    &self.component,
+                    inset_content(base, insets),
+                    viewport,
+                    &self.input,
+                )
+            });
+        }
         if self
             .layout
             .as_ref()
@@ -1097,15 +1548,22 @@ impl<C: Component> Application<C> {
             }
             return swiped;
         }
-        if let Some(previous) = &self.layout {
-            self.stack_transitions.update_with_input(
-                (&self.scene, previous),
-                (&scene, &layout),
-                Instant::now(),
-                Some(&self.input),
-            );
-            self.input.sync_stack_transitions(&self.stack_transitions);
+        // A docked keyboard can clip the editor's old location completely.
+        // Reveal it in the new viewport before focus reconciliation.
+        #[cfg(target_os = "ios")]
+        if let Some(base) = resized_base
+            && self.input.reveal_focused_editor(&scene, &layout)
+        {
+            (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
+                state.renderer.prepare_scene(
+                    &self.component,
+                    inset_content(base, insets),
+                    viewport,
+                    &self.input,
+                )
+            });
         }
+        self.update_page_transitions(&scene, &layout, Instant::now());
         self.input.reconcile(&scene, &layout);
         if let Some((base, offsets)) = elastic_input
             && offsets != self.input.overscroll_frame()
@@ -1114,6 +1572,8 @@ impl<C: Component> Application<C> {
                 return false;
             };
             (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
+                #[cfg(any(target_os = "ios", target_os = "android"))]
+                let base = inset_content(base, insets);
                 state
                     .renderer
                     .prepare_scene(&self.component, base, viewport, &self.input)
@@ -1145,6 +1605,54 @@ impl<C: Component> Application<C> {
             self.dispatch_scale_rotate(&previous, event);
         }
         self.sync_window_effects(Instant::now());
+        true
+    }
+
+    fn update_page_transitions(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) {
+        if !self.reduce_motion
+            && let Some(previous) = &self.layout
+        {
+            self.stack_transitions.update_with_input(
+                (&self.scene, previous),
+                (scene, layout),
+                now,
+                Some(&self.input),
+            );
+            self.input.sync_stack_transitions(&self.stack_transitions);
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn sync_ios_accessibility_preferences(&mut self) -> bool {
+        let reduced = self.set_reduce_motion(ios::reduce_motion());
+        let text_changed = self.state.as_mut().is_some_and(|state| {
+            if state.renderer.set_text_scale(ios::text_scale()) {
+                state.frame = FrameCache::default();
+                true
+            } else {
+                false
+            }
+        });
+        reduced || text_changed
+    }
+
+    #[cfg(any(target_os = "ios", test))]
+    fn set_reduce_motion(&mut self, reduced: bool) -> bool {
+        if self.reduce_motion == reduced {
+            return false;
+        }
+        self.reduce_motion = reduced;
+        self.input.set_reduce_motion(reduced);
+        if reduced {
+            self.transition = SceneTransition::default();
+            self.animation_wake = None;
+            self.stack_transitions = StackTransitions::default();
+            if self.input.sync_stack_transitions(&self.stack_transitions)
+                && let Some(layout) = &self.layout
+            {
+                self.input.reconcile(&self.scene, layout);
+            }
+        }
         true
     }
 
@@ -1278,13 +1786,14 @@ impl<C: Component> Application<C> {
         visible
     }
     fn activate(&mut self, target: Option<Target>) {
-        self.activate_with_double_click(target, None);
+        self.activate_with_double_click(target, None, false);
     }
 
     fn activate_with_double_click(
         &mut self,
         mut target: Option<Target>,
         double_click: Option<PointerHandle>,
+        touch: bool,
     ) {
         if self.flush_button_press_events() {
             self.refresh_scene();
@@ -1364,7 +1873,7 @@ impl<C: Component> Application<C> {
         if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
             && self
                 .input
-                .open_menu_bar(&self.scene, layout, target.clone())
+                .open_menu_bar_with_touch(&self.scene, layout, target.clone(), touch)
         {
             self.pending_clipboard = None;
             self.update_editor();
@@ -1468,6 +1977,77 @@ impl<C: Component> Application<C> {
         true
     }
 
+    #[cfg(any(target_os = "ios", test))]
+    fn accessibility_escape(&self) -> Option<AccessibilityEscape> {
+        let layout = self.layout.as_deref()?;
+        if self.input.menu_open() {
+            let panels = self.input.menu_panels(&self.scene, layout);
+            let panel = panels.last()?;
+            return Some(AccessibilityEscape::Menu {
+                session: panel.session(),
+                path: panel.path().to_vec(),
+            });
+        }
+        if self.input.choice_open() {
+            return self
+                .input
+                .focused
+                .as_ref()
+                .filter(|target| self.input.choice_is_open_for(&target.path))
+                .cloned()
+                .map(AccessibilityEscape::Choice);
+        }
+        if self
+            .input
+            .editor
+            .as_ref()
+            .is_some_and(|editor| !editor.preedit.is_empty())
+        {
+            return None;
+        }
+        if let Some(target) = self.input.focused.as_ref()
+            && self.input.table_cell_editing(&target.path)
+        {
+            return Some(AccessibilityEscape::CellEdit(target.clone()));
+        }
+        let next = self.input.dialog_escape(&self.scene, layout)?;
+        let node = self.scene.at_path(&next.path)?;
+        let row = self.scene.row_key_at(&next.path);
+        Some(AccessibilityEscape::Overlay {
+            target: Target::from_node(next.path, node, false, row),
+            action: next.action,
+        })
+    }
+
+    #[cfg(any(target_os = "ios", test))]
+    fn perform_accessibility_escape(&mut self, request: AccessibilityEscape) {
+        if self.accessibility_escape().as_ref() != Some(&request) {
+            return;
+        }
+        let key = KeyEvent {
+            logical_key: Key::Named(NamedKey::Escape),
+            unmodified_key: Key::Named(NamedKey::Escape),
+            text: None,
+            state: ElementState::Pressed,
+            repeat: false,
+        };
+        match request {
+            AccessibilityEscape::Menu { .. } => {
+                self.menu_key(&key);
+            }
+            AccessibilityEscape::Choice(_) => {
+                self.choice_key(&key);
+            }
+            AccessibilityEscape::CellEdit(_) => self.cancel_table_edit(),
+            AccessibilityEscape::Overlay { target, action } => {
+                self.apply_control(ControlInput {
+                    path: target.path,
+                    action,
+                });
+            }
+        }
+    }
+
     fn refresh_scene(&mut self) {
         self.refresh_after_update(true);
     }
@@ -1533,6 +2113,26 @@ impl<C: Component> Application<C> {
         }
     }
 
+    fn publish_viewport(&mut self) {
+        let Some((handler, state)) = self.viewport_handler.as_mut().zip(self.state.as_ref()) else {
+            return;
+        };
+        let size = state.viewport();
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let size = {
+            let [left, top, right, bottom] = state.content_insets();
+            Size::new(
+                size.width - (left + right) as f32,
+                size.height - (top + bottom) as f32,
+            )
+        };
+        if size.width <= 0.0 || size.height <= 0.0 {
+            return;
+        }
+        handler(&mut self.component, size);
+        self.sync_base_scene();
+    }
+
     fn sync_base_scene(&mut self) -> bool {
         let target = self.component.render_shared();
         if Rc::ptr_eq(&self.base_scene, &target) {
@@ -1542,8 +2142,10 @@ impl<C: Component> Application<C> {
         let previous_height = self.base_scene.length("height");
         let was_visible = self.base_scene.boolean("visible", true);
         let previous_chrome = WindowChrome::read(&self.base_scene);
-        self.transition
-            .retarget(&self.base_scene, &target, self.transition_epoch.elapsed());
+        if !self.reduce_motion {
+            self.transition
+                .retarget(&self.base_scene, &target, self.transition_epoch.elapsed());
+        }
         self.animation_wake = None;
         self.base_scene = target;
         if let Some(state) = &mut self.state {
@@ -1688,6 +2290,14 @@ impl<C: Component> Application<C> {
             }
         }
         let edited_focused = self.apply_focus_and_text_requests();
+        #[cfg(target_os = "ios")]
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.ios_floating_keyboard.is_some())
+        {
+            self.prepare_frame(self.transition_epoch.elapsed());
+        }
         if let Some(layout) = &self.layout {
             self.input.remember_focus_scope(&self.scene, layout);
         }
@@ -1725,11 +2335,99 @@ impl<C: Component> Application<C> {
             .layout
             .as_ref()
             .and_then(|layout| self.input.list_typeahead_ime_area(&self.scene, layout));
-        state.window.set_ime_allowed(
-            (field.is_some_and(|node| !node.text_read_only()) || list_caret.is_some())
-                && state.window.has_focus()
-                && !self.input.menu_open(),
-        );
+        let ime_allowed = (field.is_some_and(|node| !node.text_read_only())
+            || list_caret.is_some())
+            && state.window.has_focus()
+            && !self.input.menu_open()
+            && self.selection_handle_drag.is_none();
+        #[cfg(target_os = "android")]
+        let ime_allowed = {
+            if state.android_spin_step_focus != focused {
+                state.android_spin_step_focus = None;
+            }
+            ime_allowed && state.android_spin_step_focus.is_none()
+        };
+        #[cfg(target_os = "ios")]
+        let ime_allowed = {
+            if state.ios_spin_step_focus != focused {
+                state.ios_spin_step_focus = None;
+            }
+            ime_allowed && self.ios_application_active && state.ios_spin_step_focus.is_none()
+        };
+        #[cfg(target_os = "ios")]
+        if ime_allowed && state.ios_text.is_none() {
+            state.ios_text = self
+                .events
+                .as_ref()
+                .and_then(|events| ios_text::TextInput::new(&state.window, events));
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        let native_active = false;
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let return_key = match field.map_or(ReturnKey::Auto, Node::return_key) {
+            ReturnKey::Next
+                if self.layout.as_ref().is_none_or(|layout| {
+                    self.input.next_text_field(&self.scene, layout).is_none()
+                }) =>
+            {
+                ReturnKey::Done
+            }
+            hint => hint,
+        };
+        #[cfg(target_os = "android")]
+        let native_active = if ime_allowed
+            && let Some((target, node)) = focused.as_ref().zip(field)
+            && let Some(editor) = self.input.editor.as_ref()
+            && let Some(native) = state.android_text.as_mut()
+        {
+            let value = self.input.editor_value(node);
+            native.focus(
+                target,
+                node,
+                return_key,
+                &value,
+                editor.anchor(&value)..editor.caret(&value),
+                !editor.preedit.is_empty(),
+            )
+        } else {
+            if let Some(native) = state.android_text.as_mut() {
+                native.clear_focus();
+            }
+            if let Some(editor) = self.input.editor.as_mut() {
+                editor.set_preedit(String::new(), None);
+            }
+            false
+        };
+        #[cfg(target_os = "ios")]
+        let native_active = if ime_allowed
+            && let Some((target, node)) = focused.as_ref().zip(field)
+            && (is_multiline_text_input(node.kind)
+                || combo_editable(node)
+                || spin_editable(node)
+                || matches!(node.kind, "TextInput" | "LineEdit" | "SearchField")
+                || self.input.table_cell_editing(&target.path))
+            && let Some(editor) = self.input.editor.as_ref()
+        {
+            if let Some(native) = &mut state.ios_text {
+                let value = self.input.editor_value(node);
+                let mode = ios_text::Mode::for_node(node);
+                native.focus(target, mode, return_key, &value, editor.selection(&value))
+            } else {
+                false
+            }
+        } else {
+            if let Some(native) = &mut state.ios_text {
+                native.clear_focus();
+            }
+            false
+        };
+        if !native_active {
+            state.window.set_ime_allowed(ime_allowed);
+        }
+        #[cfg(target_os = "ios")]
+        if let Some(keyboard) = &state.ios_keyboard {
+            keyboard.focus(self.focus_active && self.ios_application_active && !ime_allowed);
+        }
         if let Some(layout) = &self.layout
             && let Some(caret) = state
                 .renderer
@@ -1921,6 +2619,287 @@ impl<C: Component> Application<C> {
             .scroll_editor_area(&mut self.input, &self.scene, layout, delta)
     }
 
+    #[cfg(target_os = "android")]
+    fn commit_android_text(&mut self, edit: android_text::Edit) {
+        let Some(target) = self.input.focused.clone() else {
+            return;
+        };
+        if self
+            .scene
+            .at_path(&target.path)
+            .is_none_or(|node| node.text_read_only())
+        {
+            return;
+        }
+        let accepted = self
+            .state
+            .as_mut()
+            .and_then(|state| state.android_text.as_mut())
+            .is_some_and(|native| native.accept(&target, &edit));
+        if !accepted {
+            return;
+        }
+        self.apply_android_text(&target, edit);
+        if let Some(native) = self
+            .state
+            .as_mut()
+            .and_then(|state| state.android_text.as_mut())
+        {
+            native.finish_event();
+        }
+        self.update_editor();
+    }
+
+    #[cfg(target_os = "android")]
+    fn apply_android_text(&mut self, target: &Target, mut edit: android_text::Edit) {
+        if edit.kind == 2 {
+            self.submit_editor_action(target);
+            return;
+        }
+        let Some(node) = self.scene.at_path(&target.path) else {
+            return;
+        };
+        if node.kind == "DoubleSpinBox" || node.input_type() == xrack_runtime::InputType::Decimal {
+            edit.value = edit
+                .value
+                .replace(['.', ','], &decimal_separator(node).to_string());
+        }
+        let changed = self.input.editor_value(node) != edit.value;
+        if let Some(editor) = self.input.editor.as_mut() {
+            editor.set_preedit(String::new(), None);
+        }
+        if changed {
+            self.edit_text_from(EditAction::ReplaceAll(&edit.value), EditSource::Ime);
+        }
+        if self.input.focused.as_ref() != Some(target) {
+            return;
+        }
+        let Some(value) = self
+            .scene
+            .at_path(&target.path)
+            .map(|node| self.input.editor_value(node).into_owned())
+            .filter(|value| *value == edit.value)
+        else {
+            return;
+        };
+        if let Some(editor) = self.input.editor.as_mut() {
+            let selection = if edit.kind == 1 {
+                edit.anchor
+            } else {
+                edit.selection.clone()
+            };
+            editor.set_selection(
+                &value,
+                selection.start,
+                xrack_layout::TextPosition {
+                    offset: selection.end,
+                    trailing: false,
+                },
+            );
+            if edit.kind == 1 {
+                editor.set_preedit(
+                    edit.preedit,
+                    Some((edit.selection.start, edit.selection.end)),
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn commit_ios_text(&mut self, edit: ios_text::NativeEdit) {
+        let Some(target) = self.input.focused.clone() else {
+            return;
+        };
+        let Some(editor) = self
+            .state
+            .as_mut()
+            .and_then(|state| state.ios_text.as_mut())
+        else {
+            return;
+        };
+        if !editor.accept(&target, &edit) {
+            return;
+        }
+        let (mut value, selection) = match edit.input {
+            ios_text::NativeInput::Submit => {
+                self.submit_editor_action(&target);
+                return;
+            }
+            ios_text::NativeInput::Preedit { text, selection } => {
+                self.pending_clipboard = None;
+                if let Some(editor) = &mut self.input.editor {
+                    editor.set_preedit(text, Some((selection.start, selection.end)));
+                    self.update_editor();
+                }
+                return;
+            }
+            ios_text::NativeInput::Commit { value, selection } => (value, selection),
+        };
+        if let Some(editor) = &mut self.input.editor {
+            editor.set_preedit(String::new(), None);
+        }
+        if let Some(node) = self.scene.at_path(&target.path)
+            && (node.kind == "DoubleSpinBox"
+                || node.input_type() == xrack_runtime::InputType::Decimal)
+        {
+            value = value.replace(['.', ','], &decimal_separator(node).to_string());
+        }
+        self.edit_text_from(EditAction::ReplaceAll(&value), EditSource::Ime);
+        if self.input.focused.as_ref() == Some(&target)
+            && let Some(displayed) = self
+                .scene
+                .at_path(&target.path)
+                .map(|node| self.input.editor_value(node).into_owned())
+                .filter(|displayed| *displayed == value)
+            && let Some(editor) = self.input.editor.as_mut()
+        {
+            editor.set_selection(
+                &displayed,
+                selection.start,
+                xrack_layout::TextPosition {
+                    offset: selection.end,
+                    trailing: false,
+                },
+            );
+            self.update_editor();
+        }
+    }
+
+    fn submit_editor_action(&mut self, target: &Target) {
+        let Some(node) = target
+            .node_in(&self.scene)
+            .filter(|_| self.input.focused.as_ref() == Some(target))
+        else {
+            return;
+        };
+        if node.text_read_only()
+            || self
+                .input
+                .editor
+                .as_ref()
+                .is_some_and(|editor| !editor.preedit.is_empty())
+        {
+            return;
+        }
+        if self.input.table_cell_editing(&target.path) {
+            self.commit_table_edit();
+            return;
+        }
+        let search =
+            node.kind == "SearchField" || node.input_type() == xrack_runtime::InputType::Search;
+        let return_key = node.return_key();
+        let dismiss_after_submit = spin_editable(node)
+            || search
+            || matches!(
+                node.input_type(),
+                xrack_runtime::InputType::Number
+                    | xrack_runtime::InputType::Decimal
+                    | xrack_runtime::InputType::Tel
+            );
+        if matches!(node.kind, "TextInput" | "LineEdit")
+            && !self.component.control_at(
+                &self.scene,
+                &target.path,
+                ControlAction::ValidateTextSubmission,
+            )
+        {
+            return;
+        }
+        let submitted = if spin_editable(node) {
+            self.commit_spin();
+            true
+        } else if node.kind == "SearchField" || combo_editable(node) {
+            let Some(action) = self.layout.as_ref().and_then(|layout| {
+                self.input
+                    .choice_key(&self.scene, layout, ChoiceKey::Accept)
+            }) else {
+                return;
+            };
+            if action.action == ControlAction::AcceptComboText && !node.accepts_text_submission() {
+                return;
+            }
+            self.apply_control(action);
+            true
+        } else {
+            self.submit_text(target, return_key == ReturnKey::Auto)
+        };
+        if !submitted || self.input.focused.as_ref() != Some(target) {
+            return;
+        }
+        if return_key == ReturnKey::Next
+            && let Some(revealed) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| self.input.focus_next_text_field(&self.scene, layout))
+        {
+            if revealed {
+                self.relayout();
+            } else {
+                self.update_editor();
+            }
+            return;
+        }
+        if dismiss_after_submit || return_key != ReturnKey::Auto {
+            self.input.clear_focus();
+            self.update_editor();
+        }
+    }
+
+    fn editor_return(&mut self, event: &KeyEvent) -> bool {
+        if event.state != ElementState::Pressed || event.logical_key != Key::Named(NamedKey::Enter)
+        {
+            return false;
+        }
+        let Some(target) = self.input.focused.clone() else {
+            return false;
+        };
+        let Some(node) = target.node_in(&self.scene) else {
+            return false;
+        };
+        #[cfg(target_os = "ios")]
+        let native = !is_multiline_text_input(node.kind)
+            && self
+                .state
+                .as_ref()
+                .and_then(|state| state.ios_text.as_ref())
+                .is_some_and(|input| input.editing(&target));
+        #[cfg(not(target_os = "ios"))]
+        let native = false;
+        if !native && node.return_key() == ReturnKey::Auto {
+            return false;
+        }
+        // UIKit's responder forwards hardware Return as a key event. Use the
+        // same field validation and dismissal as its native keyboard action.
+        if !event.repeat {
+            self.submit_editor_action(&target);
+        }
+        true
+    }
+
+    fn submit_text(&mut self, target: &Target, accept_dialog: bool) -> bool {
+        if !self
+            .scene
+            .at_path(&target.path)
+            .is_some_and(Node::accepts_text_submission)
+        {
+            return false;
+        }
+        if self
+            .component
+            .dispatch_at(&self.scene, &target.path, "accepted")
+        {
+            self.refresh_scene();
+        } else if accept_dialog
+            && let Some(action) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| self.input.dialog_accept(&self.scene, layout))
+        {
+            self.apply_control(action);
+        }
+        true
+    }
+
     fn edit_text(&mut self, action: EditAction<'_>) {
         self.edit_text_from(action, EditSource::Keyboard);
     }
@@ -1977,60 +2956,115 @@ impl<C: Component> Application<C> {
         };
         match clipboard.borrow_mut().request(events, operation) {
             Ok(id) if !matches!(shortcut, ClipboardShortcut::Copy) => {
-                self.pending_clipboard = Some((id, ClipboardContext::Edit(context)))
+                let context = if matches!(shortcut, ClipboardShortcut::Paste) {
+                    ClipboardContext::Paste(context)
+                } else {
+                    ClipboardContext::Cut(context)
+                };
+                self.pending_clipboard = Some(PendingClipboard::new(id, context));
             }
             Ok(_) => {}
             Err(error) => eprintln!("XRack clipboard: {error}"),
         }
     }
 
+    fn clipboard_reply_ready(&self) -> bool {
+        #[cfg(target_os = "ios")]
+        return self.ios_application_active && self.focus_active;
+        #[cfg(not(target_os = "ios"))]
+        true
+    }
+
     fn finish_clipboard(&mut self, reply: ClipboardReply) {
-        let pending = if self
+        self.accept_clipboard_reply(reply, self.clipboard_reply_ready());
+    }
+
+    fn accept_clipboard_reply(&mut self, reply: ClipboardReply, ready: bool) {
+        let Some(request) = self
             .pending_clipboard
-            .as_ref()
-            .is_some_and(|(id, _)| *id == reply.id)
-        {
-            self.pending_clipboard.take()
-        } else {
-            None
+            .as_mut()
+            .filter(|request| request.id == reply.id)
+        else {
+            if let Err(error) = reply.result {
+                eprintln!("XRack clipboard: {error}");
+            }
+            return;
         };
         let result = match reply.result {
+            Ok(ClipboardValue::Text(text)) if !ready && !text.is_empty() => {
+                request.deferred_text = Some(text);
+                return;
+            }
             Ok(result) => result,
             Err(error) => {
+                self.pending_clipboard = None;
                 eprintln!("XRack clipboard: {error}");
                 return;
             }
         };
-        let Some((_, context)) = pending else {
+        let Some(request) = self.pending_clipboard.take() else {
             return;
         };
         if self.component.scene_dirty() {
             self.refresh_scene();
         }
-        match context {
-            ClipboardContext::Edit(context) if context.is_current(&self.input, &self.scene) => {
-                match result {
-                    ClipboardValue::Text(text) if !text.is_empty() => {
-                        self.edit_text_from(EditAction::Insert(&text), EditSource::Atomic)
-                    }
-                    ClipboardValue::Text(_) => {}
-                    ClipboardValue::Written => {
-                        self.edit_text_from(EditAction::Delete, EditSource::Atomic)
-                    }
-                }
+        match (request.context, result) {
+            (ClipboardContext::Paste(context), ClipboardValue::Text(text))
+                if !text.is_empty() && context.is_current(&self.input, &self.scene) =>
+            {
+                self.edit_text_from(EditAction::Insert(&text), EditSource::Atomic);
             }
-            ClipboardContext::Table { destination, apply } => {
-                if let ClipboardValue::Text(text) = result
+            (ClipboardContext::Cut(context), ClipboardValue::Written)
+                if context.is_current(&self.input, &self.scene) =>
+            {
+                self.edit_text_from(EditAction::Delete, EditSource::Atomic);
+            }
+            (ClipboardContext::Table { destination, apply }, ClipboardValue::Text(text))
+                if !text.is_empty()
                     && self.layout.as_ref().is_some_and(|layout| {
                         self.input.table_paste_target(&self.scene, layout).as_ref()
                             == Some(&destination)
-                    })
-                    && apply(&text)
-                {
+                    }) =>
+            {
+                if apply(&text) {
                     self.refresh_scene();
                 }
             }
-            ClipboardContext::Edit(_) => {}
+            _ => {}
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn read_ios_clipboard(&mut self, id: u64) {
+        if !self
+            .pending_clipboard
+            .as_ref()
+            .is_some_and(|request| request.id == id)
+        {
+            return;
+        }
+        if !self.clipboard_reply_ready() {
+            self.pending_clipboard = None;
+            return;
+        }
+        let result = clipboard::perform_ios(clipboard::Operation::Read);
+        if let Some(events) = &self.events {
+            events.post(UserEvent::Clipboard(ClipboardReply { id, result }));
+        }
+    }
+
+    fn finish_deferred_paste(&mut self) {
+        if !self.clipboard_reply_ready() {
+            return;
+        }
+        if let Some(request) = &mut self.pending_clipboard
+            && let Some(text) = request.deferred_text.take()
+        {
+            let reply = ClipboardReply {
+                id: request.id,
+                result: Ok(ClipboardValue::Text(text)),
+            };
+            self.finish_clipboard(reply);
         }
     }
 
@@ -2121,8 +3155,10 @@ impl<C: Component> Application<C> {
                     .request(events, clipboard::Operation::Read)
                 {
                     Ok(id) => {
-                        self.pending_clipboard =
-                            Some((id, ClipboardContext::Table { destination, apply }))
+                        self.pending_clipboard = Some(PendingClipboard::new(
+                            id,
+                            ClipboardContext::Table { destination, apply },
+                        ));
                     }
                     Err(error) => eprintln!("XRack clipboard: {error}"),
                 }
@@ -2163,7 +3199,105 @@ impl<C: Component> Application<C> {
             .replay_text_edit(&mut self.component, &self.scene, redo)
     }
 
+    #[cfg(any(target_os = "android", test))]
+    fn commit_text_preedit(&mut self) {
+        let Some(target) = self.input.focused.clone() else {
+            return;
+        };
+        let Some(node) = self.scene.at_path(&target.path) else {
+            return;
+        };
+        let Some(editor) = self
+            .input
+            .editor
+            .as_ref()
+            .filter(|editor| !editor.preedit.is_empty())
+        else {
+            return;
+        };
+        let value = self.input.editor_value(node);
+        let selection = editor.selection(&value);
+        let position = selection.start + editor.preedit_cursor.unwrap_or(editor.preedit.len());
+        let preedit = editor.preedit.clone();
+        let changes_value = value[selection] != preedit;
+        if let Some(editor) = self.input.editor.as_mut() {
+            editor.set_preedit(String::new(), None);
+        }
+        if changes_value {
+            self.edit_text_from(EditAction::Insert(&preedit), EditSource::Ime);
+        }
+        if self.input.focused.as_ref() == Some(&target)
+            && let Some(value) = self
+                .scene
+                .at_path(&target.path)
+                .map(|node| self.input.editor_value(node).into_owned())
+            && let Some(editor) = self.input.editor.as_mut()
+        {
+            editor.place_caret(
+                &value,
+                xrack_layout::TextPosition {
+                    offset: position.min(value.len()),
+                    trailing: false,
+                },
+                false,
+            );
+            self.update_editor();
+        }
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    fn finish_committed_suggestion(&mut self) -> bool {
+        let same_text = self
+            .input
+            .focused
+            .as_ref()
+            .and_then(|target| {
+                let node = self.scene.at_path(&target.path)?;
+                let editor = self
+                    .input
+                    .editor
+                    .as_ref()
+                    .filter(|editor| !editor.preedit.is_empty())?;
+                let value = self.input.editor_value(node);
+                Some(value[editor.selection(&value)] == editor.preedit)
+            })
+            .unwrap_or(false);
+        if same_text {
+            self.commit_text_preedit();
+        }
+        same_text
+    }
+
     fn text_key(&mut self, event: &KeyEvent) -> bool {
+        // NativeActivity also delivers keys left unconsumed by the input method.
+        // Finish its suggestion region before applying those editing keys.
+        #[cfg(target_os = "android")]
+        if event.state == ElementState::Pressed
+            && matches!(
+                event.logical_key,
+                Key::Character(_)
+                    | Key::Named(
+                        NamedKey::Space
+                            | NamedKey::Enter
+                            | NamedKey::Backspace
+                            | NamedKey::Delete
+                            | NamedKey::ArrowLeft
+                            | NamedKey::ArrowRight
+                            | NamedKey::ArrowUp
+                            | NamedKey::ArrowDown
+                            | NamedKey::Home
+                            | NamedKey::End
+                            | NamedKey::PageUp
+                            | NamedKey::PageDown
+                    )
+            )
+        {
+            let focused = self.input.focused.clone();
+            self.commit_text_preedit();
+            if self.input.focused != focused {
+                return true;
+            }
+        }
         let Some(target) = self.input.focused.clone() else {
             return false;
         };
@@ -2229,7 +3363,11 @@ impl<C: Component> Application<C> {
             _ => None,
         };
         if let Some(action) = word_key.and_then(|key| {
-            EditAction::word_shortcut(key, self.input_modifiers(), cfg!(target_os = "macos"))
+            EditAction::word_shortcut(
+                key,
+                self.input_modifiers(),
+                cfg!(any(target_os = "macos", target_os = "ios")),
+            )
         }) {
             if let Some((motion, selecting)) = TextAreaMotion::from_word_action(action)
                 && self.move_text_caret(motion, selecting)
@@ -2267,24 +3405,8 @@ impl<C: Component> Application<C> {
             }
             Key::Named(NamedKey::Enter) if multiline => Some(EditAction::Insert("\n")),
             Key::Named(NamedKey::Enter) => {
-                if !event.repeat
-                    && self
-                        .scene
-                        .at_path(&target.path)
-                        .is_some_and(Node::accepts_text_submission)
-                {
-                    if self
-                        .component
-                        .dispatch_at(&self.scene, &target.path, "accepted")
-                    {
-                        self.refresh_scene();
-                    } else if let Some(action) = self
-                        .layout
-                        .as_ref()
-                        .and_then(|layout| self.input.dialog_accept(&self.scene, layout))
-                    {
-                        self.apply_control(action);
-                    }
+                if !event.repeat {
+                    self.submit_text(&target, true);
                 }
                 return true;
             }
@@ -2302,9 +3424,42 @@ impl<C: Component> Application<C> {
             false
         }
     }
-    fn apply_control(&mut self, input: ControlInput) {
-        if matches!(input.action, ControlAction::Spin(_)) {
-            self.input.discard_spin_draft();
+    fn apply_control(&mut self, mut input: ControlInput) {
+        if input.action == ControlAction::Dialog(xrack_runtime::DialogRole::Accept)
+            && let Some(session) = self
+                .scene
+                .at_path(&input.path)
+                .and_then(Node::picker_session_id)
+            && let Some(wheel) = self.layout.as_ref().and_then(|layout| {
+                self.input
+                    .settle_time_picker_wheel(&self.scene, layout, &input.path)
+            })
+        {
+            self.apply_control(wheel);
+            // The wheel writes a new draft. Confirm against that draft's scene
+            // without letting the old activation reach a replacement dialog.
+            if self
+                .scene
+                .at_path(&input.path)
+                .and_then(Node::picker_session_id)
+                != Some(session)
+            {
+                return;
+            }
+        }
+        if let ControlAction::Spin(action) = input.action {
+            let Some(action) = self
+                .input
+                .resolve_spin_action(&self.scene, &input.path, action)
+            else {
+                return;
+            };
+            input.action = ControlAction::Spin(action);
+            if self.input.focused.as_ref().is_some_and(|target| {
+                target.path == input.path && target.node_in(&self.scene).is_some()
+            }) {
+                self.input.discard_spin_draft();
+            }
         }
         let search = self
             .scene
@@ -2377,7 +3532,7 @@ impl<C: Component> Application<C> {
             shift: self.modifiers.shift_key(),
             alt: self.modifiers.alt_key(),
             meta,
-            primary: if cfg!(target_os = "macos") {
+            primary: if cfg!(any(target_os = "macos", target_os = "ios")) {
                 meta
             } else {
                 control
@@ -2558,6 +3713,9 @@ impl<C: Component> Application<C> {
     }
 
     fn cancel_all_pointers(&mut self) {
+        self.touch_hold = None;
+        self.selection_handle_drag = None;
+        self.input.set_touch_selection_handles(false);
         self.cancel_pointer();
         for capture in std::mem::take(&mut self.additional_touch_captures) {
             self.deliver_pointer_cancel(capture.sequence);
@@ -2757,6 +3915,21 @@ impl<C: Component> Application<C> {
         result
     }
 
+    fn cancel_table_edit(&mut self) {
+        if self
+            .input
+            .editor
+            .as_ref()
+            .is_some_and(|editor| !editor.preedit.is_empty())
+        {
+            return;
+        }
+        if self.input.cancel_table_edit() {
+            self.pending_clipboard = None;
+            self.update_editor();
+        }
+    }
+
     fn continue_table_edit(&mut self, origin: &TableEditTarget, backward: bool) -> bool {
         let Some(layout) = &self.layout else {
             return false;
@@ -2809,9 +3982,7 @@ impl<C: Component> Application<C> {
                 if event.logical_key == Key::Named(NamedKey::Enter) {
                     self.commit_table_edit();
                 } else {
-                    self.pending_clipboard = None;
-                    self.input.cancel_table_edit();
-                    self.update_editor();
+                    self.cancel_table_edit();
                 }
             }
             return true;
@@ -2918,14 +4089,7 @@ impl<C: Component> Application<C> {
         let Some(layout) = &self.layout else {
             return false;
         };
-        // Native desktop backends expose the base key of the current keyboard layout.
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        let key = {
-            use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-            event.key_without_modifiers()
-        };
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        let key = event.logical_key.clone();
+        let key = event.unmodified_key.clone();
         let key = match key {
             Key::Character(text) => {
                 let mut chars = text.chars();
@@ -3285,6 +4449,10 @@ impl<C: Component> Application<C> {
     }
 
     fn default_key_input(&mut self, event: &KeyEvent, is_synthetic: bool) -> bool {
+        #[cfg(target_os = "android")]
+        if self.android_back_key(event) {
+            return true;
+        }
         if event.state == ElementState::Pressed
             && matches!(
                 event.logical_key,
@@ -3315,7 +4483,11 @@ impl<C: Component> Application<C> {
                 return true;
             }
         }
-        self.cancel_direct_scroll();
+        // Android can deliver the preceding shortcut's key-up after a new touch
+        // has started. Only key presses interrupt the pointer's scroll/tap route.
+        if event.state == ElementState::Pressed {
+            self.cancel_direct_scroll_with_key(Some(&event.logical_key));
+        }
         if event.state == ElementState::Pressed && event.logical_key != Key::Named(NamedKey::Tab) {
             let dismissed = self.dismiss_tooltip();
             if dismissed && event.logical_key == Key::Named(NamedKey::Escape) {
@@ -3374,7 +4546,13 @@ impl<C: Component> Application<C> {
         if self.context_menu_key(event)
             || !is_synthetic && self.shortcut_key(event)
             || self.menu_key(event)
-            || self.choice_key(event)
+        {
+            return true;
+        }
+        if !is_synthetic && self.editor_return(event) {
+            return true;
+        }
+        if self.choice_key(event)
             || self.tab_close_key(event)
             || !is_synthetic && self.list_typeahead_key(event)
             || self.table_edit_key(event)
@@ -3447,6 +4625,62 @@ impl<C: Component> Application<C> {
             .layout
             .as_ref()
             .and_then(|layout| self.input.focused_tab_close(&self.scene, layout))
+        else {
+            return false;
+        };
+        self.apply_control(action);
+        true
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    fn android_back_key(&mut self, event: &KeyEvent) -> bool {
+        if event.logical_key != Key::Named(NamedKey::BrowserBack) {
+            return false;
+        }
+        // One physical Back gesture dismisses at most one layer. Its key-up
+        // and repeated key-down events must not reach the layer underneath.
+        if event.state != ElementState::Pressed || event.repeat {
+            return true;
+        }
+        let cancel = KeyEvent {
+            logical_key: Key::Named(NamedKey::Escape),
+            unmodified_key: Key::Named(NamedKey::Escape),
+            text: None,
+            state: ElementState::Pressed,
+            repeat: false,
+        };
+        if self.input.menu_open() {
+            self.menu_key(&cancel);
+            return true;
+        }
+        if self.input.choice_open() {
+            self.choice_key(&cancel);
+            return true;
+        }
+        if self
+            .input
+            .editor
+            .as_ref()
+            .is_some_and(|editor| !editor.preedit.is_empty())
+        {
+            return true;
+        }
+        if self.dismiss_tooltip() || self.dialog_key(&cancel) {
+            return true;
+        }
+        if self.layout.as_ref().is_some_and(|layout| {
+            layout
+                .overlay_paths()
+                .iter()
+                .any(|path| self.input.allows_popup(layout, path))
+        }) {
+            // A nonmodal popup may explicitly prohibit Escape/Back dismissal.
+            return true;
+        }
+        let Some(action) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| self.input.stack_back_in_window(&self.scene, layout))
         else {
             return false;
         };
@@ -3761,7 +4995,33 @@ impl<C: Component> Application<C> {
                 self.input
                     .begin_pointer_button_hold(&self.scene, layout, now);
                 self.input.split_press(&self.scene, layout);
-                self.input.spin_press(&self.scene, layout);
+                let _step_pressed = self.input.spin_press(&self.scene, layout);
+                #[cfg(target_os = "android")]
+                if let Some(state) = &mut self.state {
+                    // A stepper changes a number without opening an editor.
+                    // A later tap on the text body restores native text input.
+                    state.android_spin_step_focus = self
+                        .input
+                        .focused
+                        .as_ref()
+                        .filter(|_| _step_pressed)
+                        .cloned();
+                }
+                #[cfg(target_os = "ios")]
+                if let Some(state) = &mut self.state {
+                    state.ios_spin_step_focus = self
+                        .input
+                        .focused
+                        .as_ref()
+                        .filter(|target| {
+                            _step_pressed
+                                && !state
+                                    .ios_text
+                                    .as_ref()
+                                    .is_some_and(|input| input.editing(target))
+                        })
+                        .cloned();
+                }
             }
             if let Some(input) = self
                 .layout
@@ -3877,6 +5137,9 @@ impl<C: Component> Application<C> {
                         None
                     }
                 });
+            let touch = click
+                .as_ref()
+                .is_some_and(|click| click.touch_device.is_some());
             let double_click = click.zip(target.as_ref()).and_then(|(click, target)| {
                 let handle = self
                     .scene
@@ -3892,7 +5155,7 @@ impl<C: Component> Application<C> {
                     None
                 }
             });
-            self.activate_with_double_click(target, double_click);
+            self.activate_with_double_click(target, double_click, touch);
             if let (Some(click), Some(layout)) = (double_button, &self.layout)
                 && click.deliver(&mut self.component, &self.input, &self.scene, layout)
             {
@@ -4114,6 +5377,11 @@ impl<C: Component> Application<C> {
     }
 
     fn cancel_direct_scroll(&mut self) {
+        self.cancel_direct_scroll_with_key(None);
+    }
+
+    fn cancel_direct_scroll_with_key(&mut self, key: Option<&Key>) {
+        self.touch_hold = None;
         if self.pointer_capture.as_ref().is_some_and(|capture| {
             self.scroll_contact.map(PointerContact::for_scroll) == Some(capture.contact)
         }) {
@@ -4140,7 +5408,15 @@ impl<C: Component> Application<C> {
             || self.input.has_swipe_preview()
             || self.input.has_overscroll();
         let table_drag = self.input.cancel_scroll_table_drag();
-        self.input.cancel_scroll_gesture();
+        match (self.layout.as_ref(), key) {
+            (Some(layout), Some(Key::Named(NamedKey::Tab))) => self
+                .input
+                .cancel_scroll_gesture_for_picker_key(&self.scene, layout, false),
+            (Some(layout), Some(key)) if activation_key_value(key).is_some() => self
+                .input
+                .cancel_scroll_gesture_for_picker_key(&self.scene, layout, true),
+            _ => self.input.cancel_scroll_gesture(),
+        }
         if self.input.has_pending_swipe_events() {
             self.refresh_after_update(false);
         } else if preview || self.component.scene_dirty() {
@@ -4163,6 +5439,31 @@ impl<C: Component> Application<C> {
             x: point.x,
             y: point.y,
         };
+        #[cfg(target_os = "android")]
+        if touch.phase == TouchPhase::Started
+            && self
+                .input
+                .focused
+                .as_ref()
+                .and_then(|target| self.layout.as_ref()?.at_path(&target.path))
+                .is_some_and(|item| item.visible_window_bounds(item.bounds).contains(point))
+        {
+            self.finish_committed_suggestion();
+        }
+        #[cfg(target_os = "android")]
+        if touch.phase == TouchPhase::Started
+            && self.layout.as_ref().is_some_and(|layout| {
+                self.input
+                    .touch_text_target(&self.scene, layout, point)
+                    .is_some()
+            })
+            && let Some(native) = self
+                .state
+                .as_mut()
+                .and_then(|state| state.android_text.as_mut())
+        {
+            native.request_keyboard();
+        }
         self.update_touch(
             touch.device_id,
             touch.id,
@@ -4180,6 +5481,16 @@ impl<C: Component> Application<C> {
         point: Point,
         now: Instant,
     ) {
+        let contact = PointerContact::Touch(device, id);
+        if self.update_selection_handle_drag(contact, phase, point) {
+            return;
+        }
+        if phase == TouchPhase::Started && self.input.touch_selection_target().is_some() {
+            self.input.set_touch_selection_handles(false);
+            if let Some(state) = &self.state {
+                state.window.request_redraw();
+            }
+        }
         if let Some(layout) = &self.layout {
             let (consumed, events) = self.scale_rotate.touch(
                 &scale_rotate::Context {
@@ -4193,8 +5504,12 @@ impl<C: Component> Application<C> {
             );
             self.apply_scale_rotate_batch(events);
             if consumed {
+                self.touch_hold = None;
                 return;
             }
+        }
+        if self.update_touch_hold(contact, phase, point) {
+            return;
         }
         let route = match self.scroll_contact {
             Some(ScrollContact::Touch(current_device, current_id, route))
@@ -4229,6 +5544,14 @@ impl<C: Component> Application<C> {
                     && !self.input.split_resize_active()
                     && !self.input.scroll_bar_captured() =>
             {
+                if self.input.menu_open() {
+                    self.begin_direct_scroll(
+                        ScrollContact::Touch(device, id, TouchRoute::Direct),
+                        point,
+                        now,
+                    );
+                    return;
+                }
                 if let Some(update) = self.layout.as_ref().and_then(|layout| {
                     self.input
                         .touch_scroll_bar_press(&self.scene, layout, point)
@@ -4271,6 +5594,7 @@ impl<C: Component> Application<C> {
                 if matches!(self.scroll_contact, Some(ScrollContact::Touch(current_device, current_id, _))
                     if current_device == device && current_id == id)
                 {
+                    self.arm_touch_hold(contact, point, now);
                     self.start_pointer(PointerContact::Touch(device, id), point, now);
                 }
             }
@@ -4357,6 +5681,288 @@ impl<C: Component> Application<C> {
                 },
             ),
         }
+    }
+
+    fn arm_touch_hold(&mut self, contact: PointerContact, point: Point, now: Instant) {
+        self.touch_hold = self.layout.as_ref().and_then(|layout| {
+            let (target, kind) = if let Some(target) =
+                self.input
+                    .touch_context_menu_target(&self.scene, layout, point)
+            {
+                (target, TouchHoldKind::ContextMenu)
+            } else {
+                let target = self.input.touch_text_target(&self.scene, layout, point)?;
+                PointerCaret::new(
+                    &self.input,
+                    &self.scene,
+                    layout,
+                    &target,
+                    point,
+                    point,
+                    false,
+                )?;
+                (target, TouchHoldKind::Editor)
+            };
+            Some(TouchHold {
+                contact,
+                target,
+                origin: point,
+                deadline: Some(now + Duration::from_millis(500)),
+                kind,
+            })
+        });
+    }
+
+    fn tick_touch_hold(&mut self, now: Instant) {
+        // Android drains input before drawing. Touch events that arrive during
+        // a stalled frame must reach us before they can be outrun by this timer.
+        #[cfg(target_os = "android")]
+        let now = self.input_batch_started_at.unwrap_or(now);
+        let Some(selection) = self
+            .touch_hold
+            .take_if(|selection| selection.deadline.is_some_and(|deadline| deadline <= now))
+        else {
+            return;
+        };
+        if self.input.direct_pointer_claimed()
+            || self.input.drag_position().is_some()
+            || self.scroll_contact.map(PointerContact::for_scroll) != Some(selection.contact)
+            || self.pointer_capture.as_ref().is_some_and(|capture| {
+                capture.contact == selection.contact
+                    && (capture.sequence.press_and_hold_deadline().is_some()
+                        || capture.sequence.press_and_hold_triggered())
+            })
+        {
+            return;
+        }
+        if selection.kind == TouchHoldKind::ContextMenu {
+            if self.input.delay_deadline().is_none()
+                && self.input.button_hold_deadline().is_none()
+                && self.layout.as_ref().is_some_and(|layout| {
+                    self.input.open_touch_context_menu(
+                        &self.scene,
+                        layout,
+                        selection.target,
+                        selection.origin,
+                    )
+                })
+            {
+                self.cancel_drag();
+                self.cancel_direct_scroll();
+                self.update_editor();
+            }
+            return;
+        }
+        self.cancel_drag();
+        self.cancel_direct_scroll();
+        if self.input.focused.as_ref() != Some(&selection.target) {
+            self.commit_spin();
+        }
+        #[cfg(target_os = "android")]
+        if self.input.focused.as_ref() == Some(&selection.target) {
+            self.finish_committed_suggestion();
+        }
+        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
+            return;
+        };
+        if self
+            .input
+            .touch_text_target(&self.scene, layout, selection.origin)
+            .as_ref()
+            != Some(&selection.target)
+        {
+            return;
+        }
+        let Some(caret) = PointerCaret::new(
+            &self.input,
+            &self.scene,
+            layout,
+            &selection.target,
+            selection.origin,
+            selection.origin,
+            false,
+        ) else {
+            return;
+        };
+        if self
+            .input
+            .focus_text_from_touch(&self.scene, layout, selection.target.clone())
+            && caret.place(&state.renderer.text, &mut self.input, &self.scene, layout)
+        {
+            self.pending_clipboard = None;
+            self.input
+                .apply_text_selection(&self.scene, TextCommand::SelectWord);
+            self.input.set_touch_selection_handles(true);
+            self.touch_hold = Some(TouchHold {
+                deadline: None,
+                ..selection
+            });
+            self.update_editor();
+        }
+    }
+
+    fn update_touch_hold(
+        &mut self,
+        contact: PointerContact,
+        phase: TouchPhase,
+        point: Point,
+    ) -> bool {
+        let Some(selection) = self.touch_hold.as_ref() else {
+            return false;
+        };
+        if selection.contact != contact {
+            if selection.deadline.is_none() {
+                return true;
+            }
+            if phase == TouchPhase::Started {
+                self.touch_hold = None;
+            }
+            return false;
+        }
+        let distance = (point.x - selection.origin.x).hypot(point.y - selection.origin.y);
+        if selection.deadline.is_some() {
+            // A queued release or swipe can arrive after the clock deadline.
+            // Only the event-loop timer can activate a hold while contact continues.
+            if distance > 8.0 || matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.touch_hold = None;
+            }
+            return false;
+        }
+        let Some(selection) = self.touch_hold.take() else {
+            return false;
+        };
+        if let (Some(state), Some(layout)) = (&self.state, &self.layout)
+            && self.input.focused.as_ref() == Some(&selection.target)
+        {
+            if matches!(phase, TouchPhase::Moved | TouchPhase::Ended)
+                && distance > 8.0
+                && let Some(caret) = PointerCaret::new(
+                    &self.input,
+                    &self.scene,
+                    layout,
+                    &selection.target,
+                    selection.origin,
+                    point,
+                    true,
+                )
+            {
+                caret.place(&state.renderer.text, &mut self.input, &self.scene, layout);
+            }
+        }
+        if phase == TouchPhase::Ended && self.input.focused.as_ref() == Some(&selection.target) {
+            self.open_touch_selection_menu(selection.target.clone(), point);
+        }
+        if phase == TouchPhase::Moved {
+            self.touch_hold = Some(selection);
+        }
+        self.update_editor();
+        true
+    }
+
+    fn update_selection_handle_drag(
+        &mut self,
+        contact: PointerContact,
+        phase: TouchPhase,
+        point: Point,
+    ) -> bool {
+        if let Some(drag) = self.selection_handle_drag.take() {
+            if drag.contact != contact {
+                self.selection_handle_drag = Some(drag);
+                return true;
+            }
+            if matches!(phase, TouchPhase::Moved | TouchPhase::Ended)
+                && self.input.focused.as_ref() == Some(&drag.target)
+                && let Some(node) = drag.target.node_in(&self.scene)
+                && self.input.editor_value(node) == drag.value
+                && let (Some(state), Some(layout)) = (&self.state, &self.layout)
+            {
+                let caret = Point {
+                    x: point.x - drag.finger_offset.x,
+                    y: point.y - drag.finger_offset.y,
+                };
+                if let Some(hit) = PointerCaret::new(
+                    &self.input,
+                    &self.scene,
+                    layout,
+                    &drag.target,
+                    drag.origin,
+                    caret,
+                    true,
+                ) {
+                    hit.place(&state.renderer.text, &mut self.input, &self.scene, layout);
+                }
+                if phase == TouchPhase::Ended {
+                    self.open_touch_selection_menu(drag.target.clone(), point);
+                } else {
+                    self.selection_handle_drag = Some(drag);
+                }
+            }
+            self.update_editor();
+            return true;
+        }
+        if phase != TouchPhase::Started || self.scroll_contact.is_some() {
+            return false;
+        }
+        let (Some(state), Some(layout), Some(target)) = (
+            &self.state,
+            &self.layout,
+            self.input.touch_selection_target().cloned(),
+        ) else {
+            return false;
+        };
+        let Some(handle) = state
+            .renderer
+            .text
+            .touch_selection_handles(&self.scene, layout, &self.input)
+            .into_iter()
+            .filter(|handle| handle.distance(point) <= 17.0)
+            .min_by(|a, b| a.distance(point).total_cmp(&b.distance(point)))
+        else {
+            return false;
+        };
+        let Some(node) = target.node_in(&self.scene) else {
+            return false;
+        };
+        let value = self.input.editor_value(node).into_owned();
+        let Some(editor) = self.input.editor.as_mut() else {
+            return false;
+        };
+        let selection = editor.selection(&value);
+        let anchor = if handle.position.trailing {
+            selection.start
+        } else {
+            selection.end
+        };
+        editor.set_selection(&value, anchor, handle.position);
+        self.pending_clipboard = None;
+        self.input.dismiss_menu();
+        self.selection_handle_drag = Some(SelectionHandleDrag {
+            contact,
+            target,
+            origin: handle.caret,
+            finger_offset: Point {
+                x: point.x - handle.caret.x,
+                y: point.y - handle.caret.y,
+            },
+            value,
+        });
+        self.update_editor();
+        true
+    }
+
+    fn open_touch_selection_menu(&mut self, target: Target, mut point: Point) {
+        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
+            return;
+        };
+        let handles = state
+            .renderer
+            .text
+            .touch_selection_handles(&self.scene, layout, &self.input);
+        for handle in handles {
+            point.y = point.y.max(handle.center.y + 14.0);
+        }
+        self.input
+            .open_touch_text_menu(&self.scene, layout, target, point);
     }
 
     fn move_touch_range(&mut self, point: Point) {
@@ -4532,7 +6138,10 @@ impl<C: Component> Application<C> {
         let Some(request) = self.native_dialogs.begin_next() else {
             return;
         };
-        let window = state.window.clone();
+        #[cfg(not(target_os = "android"))]
+        let parent = state.window.clone();
+        #[cfg(target_os = "android")]
+        let parent = state.android_app.clone();
         let events = events.clone();
         let id = request.id;
         if self
@@ -4541,7 +6150,7 @@ impl<C: Component> Application<C> {
                 let result = if request.is_abandoned() {
                     NativeDialogResult::Abandoned
                 } else {
-                    native_dialog::present(&window, &request.options).await
+                    native_dialog::present(&parent, &request.options).await
                 };
                 events.post(UserEvent::NativeDialogFinished { id, result });
             })
@@ -4669,6 +6278,7 @@ impl<C: Component> Application<C> {
         self.tick_button_holds(now);
         self.tick_table_hold(now);
         self.tick_pointer_hold(now);
+        self.tick_touch_hold(now);
         let animating = self.transition.running(Duration::ZERO);
         let elapsed = self.transition_epoch.elapsed();
         let tumbler = self
@@ -4704,7 +6314,7 @@ impl<C: Component> Application<C> {
         let Some(state) = &mut self.state else {
             return Ok(());
         };
-        let size = state.window.inner_size();
+        let size = drawable_size(&state.window);
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
@@ -4764,8 +6374,17 @@ impl<C: Component> Application<C> {
             self.animation_wake = match self.transition.next_frame(elapsed) {
                 Some(next) if next > elapsed => self.transition_epoch.checked_add(next),
                 Some(_) => {
-                    state.window.request_redraw();
-                    None
+                    // UIKit can coalesce setNeedsDisplay issued inside drawRect.
+                    // Wake a later event-loop turn to request the next animation frame.
+                    #[cfg(target_os = "ios")]
+                    {
+                        Some(Instant::now() + Duration::from_millis(16))
+                    }
+                    #[cfg(not(target_os = "ios"))]
+                    {
+                        state.window.request_redraw();
+                        None
+                    }
                 }
                 None => {
                     self.transition = SceneTransition::default();
@@ -4786,6 +6405,10 @@ impl<C: Component> Application<C> {
         self.input
             .set_painted_combo_completion(completion.filter(|_| state.window.has_focus()));
         if state.renderer.needs_redraw() || self.stack_transitions.is_active() {
+            #[cfg(target_os = "ios")]
+            self.animation_wake
+                .get_or_insert(Instant::now() + Duration::from_millis(16));
+            #[cfg(not(target_os = "ios"))]
             state.window.request_redraw();
         }
         if suboptimal {
@@ -4793,6 +6416,25 @@ impl<C: Component> Application<C> {
             self.relayout();
         } else if pointer_changed {
             self.publish_hover();
+        }
+        if animating && !self.transition.running(Duration::ZERO) {
+            self.update_accessibility();
+        }
+        #[cfg(target_os = "ios")]
+        if let Some(state) = &mut self.state
+            && state
+                .ios_scroll_announcement
+                .as_ref()
+                .is_some_and(|scroll| scroll.ready(&self.stack_transitions))
+            && let Some(scroll) = state.ios_scroll_announcement.take()
+            && let Some(layout) = &self.layout
+            && self
+                .input
+                .accessibility_target(&self.scene, layout, &scroll.target.path)
+                .as_ref()
+                == Some(&scroll.target)
+        {
+            scroll.announce(&self.scene, layout);
         }
         Ok(())
     }
@@ -4896,17 +6538,38 @@ impl<C: Component> HostedWindow for Application<C> {
         let attrs = Window::default_attributes()
             .with_title(self.base_scene.text("title").unwrap_or("XRack"))
             .with_visible(false);
+        #[cfg(not(target_os = "ios"))]
         let attrs = WindowChrome::read(&self.base_scene).attributes(attrs, &self.base_scene);
         let window = event_loop
             .create_window(window_owner::attributes(attrs, owner)?)
             .map(Arc::new)
             .map_err(|e| e.to_string())?;
-        let adapter = self
+        let events = self
             .events
             .as_ref()
-            .ok_or("window events are unavailable")?
-            .accessibility(event_loop, &window);
-        let mut state = WindowState::new(window, adapter, graphics, owner)?;
+            .ok_or("window events are unavailable")?;
+        let adapter = events.accessibility(event_loop, &window)?;
+        let mut state = WindowState::new(
+            window,
+            adapter,
+            graphics,
+            owner,
+            #[cfg(target_os = "android")]
+            winit::platform::android::ActiveEventLoopExtAndroid::android_app(event_loop).clone(),
+        )?;
+        #[cfg(target_os = "android")]
+        {
+            match android_text::TextInput::new(state.android_app.clone(), events.clone()) {
+                Ok(input) => state.android_text = Some(input),
+                Err(error) => eprintln!("XRack Android input: {error}"),
+            }
+        }
+        #[cfg(target_os = "ios")]
+        {
+            state._ios_accessibility_observer =
+                Some(ios::AccessibilityObserver::new(events.clone()));
+            state.ios_keyboard = ios_keyboard::KeyboardInput::new(&state.window, events.clone());
+        }
         let id = state.window.id();
         state.set_visible(self.base_scene.boolean("visible", true));
         self.focus_active = state.window.has_focus();
@@ -4914,11 +6577,18 @@ impl<C: Component> HostedWindow for Application<C> {
         self.component
             .publish_window_status(state.sample_window_status());
         self.state = Some(state);
+        #[cfg(target_os = "ios")]
+        self.sync_ios_accessibility_preferences();
+        self.publish_viewport();
         self.sync_base_scene();
         self.relayout();
         Ok(id)
     }
     fn suspend(&mut self) {
+        #[cfg(target_os = "android")]
+        {
+            self.modifiers = self.android_keyboard.clear();
+        }
         if let Some(event) = self.scale_rotate.reset() {
             let scene = self.scene.clone();
             self.dispatch_scale_rotate(&scene, event);
@@ -4940,6 +6610,10 @@ impl<C: Component> HostedWindow for Application<C> {
         self.input.dismiss_choice();
         self.input.dismiss_menu();
         self.input.discard_spin_draft();
+        #[cfg(target_os = "android")]
+        if let Some(editor) = self.input.editor.as_mut() {
+            editor.set_preedit(String::new(), None);
+        }
         self.input.cancel_press();
         self.input.pointer_leave();
         self.input.clear_file_drag();
@@ -4948,11 +6622,48 @@ impl<C: Component> HostedWindow for Application<C> {
         self.button_animations.sync([]);
         self.image_playback.sync(Instant::now(), []);
         self.media.sync([]);
+        // The Android system picker can suspend the surface while the dialog is open.
+        #[cfg(not(target_os = "android"))]
         self.native_dialogs.sync(&[]);
         self.state = None;
         self.component
             .publish_window_status(xrack_runtime::WindowStatus::default());
     }
+
+    #[cfg(target_os = "ios")]
+    fn set_ios_application_active(&mut self, active: bool) {
+        self.ios_application_active = active;
+        if !active {
+            self.modifiers = ModifiersState::empty();
+            self.input.set_editor_window_active(false);
+            self.cancel_all_pointers();
+            if self
+                .pending_clipboard
+                .as_ref()
+                .is_some_and(|request| !request.reads_text())
+            {
+                self.pending_clipboard = None;
+            }
+            return;
+        }
+        self.focus_active = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.window.has_focus());
+        self.input.set_editor_window_active(self.focus_active);
+        if self.sync_ios_accessibility_preferences() {
+            self.relayout();
+        } else {
+            self.update_editor();
+        }
+        self.finish_deferred_paste();
+    }
+
+    #[cfg(target_os = "android")]
+    fn begin_input_batch(&mut self, started_at: Instant) {
+        self.input_batch_started_at = Some(started_at);
+    }
+
     fn tick(&mut self, now: Instant) {
         let _scope = self.tasks.enter();
         let _focus = self.focus_requests.enter();
@@ -4981,6 +6692,7 @@ impl<C: Component> HostedWindow for Application<C> {
         }
         self.tick_table_hold(now);
         self.tick_pointer_hold(now);
+        self.tick_touch_hold(now);
         self.tick_timers(now);
         self.tick_image_playback(now);
         if self.media.advance(now) {
@@ -5067,6 +6779,9 @@ impl<C: Component> HostedWindow for Application<C> {
             self.input.password_echo_deadline(),
             self.viewport_observers.scroll_activity_deadline(),
             self.input.table_touch_hold_deadline(),
+            self.touch_hold
+                .as_ref()
+                .and_then(|selection| selection.deadline),
             self.input.delay_deadline(),
             self.input.button_hold_deadline(),
             self.button_animations.deadline(),
@@ -5089,6 +6804,7 @@ impl<C: Component> HostedWindow for Application<C> {
         let Some(state) = self.state.as_mut().filter(|state| state.window.id() == id) else {
             return;
         };
+        #[cfg(not(target_os = "ios"))]
         state.accessibility.process_event(&state.window, &event);
         let scale = state.window.scale_factor();
         let publish_hover = match &event {
@@ -5208,6 +6924,7 @@ impl<C: Component> Application<C> {
                     self.fail(error);
                     return;
                 }
+                self.publish_viewport();
                 self.relayout();
             }
             WindowEvent::RedrawRequested => {
@@ -5580,6 +7297,17 @@ impl<C: Component> Application<C> {
                 is_synthetic,
                 ..
             } => {
+                #[cfg(target_os = "android")]
+                let event = {
+                    let physical = event.physical_key;
+                    let (event, modifiers) = self
+                        .android_keyboard
+                        .translate(physical, KeyEvent::from(event));
+                    self.modifiers = modifiers;
+                    event
+                };
+                #[cfg(not(target_os = "android"))]
+                let event = KeyEvent::from(event);
                 self.keyboard_input(&event, is_synthetic);
             }
             WindowEvent::Ime(Ime::Commit(value)) if !self.input.menu_open() => {
@@ -5618,6 +7346,10 @@ impl<C: Component> Application<C> {
                 self.focus_active = focused;
                 self.input.set_editor_window_active(focused);
                 if !focused {
+                    #[cfg(target_os = "android")]
+                    {
+                        self.modifiers = self.android_keyboard.clear();
+                    }
                     self.cancel_scale_rotate();
                     if let Some(state) = &mut self.state {
                         state.finish_client_resize();
@@ -5627,9 +7359,18 @@ impl<C: Component> Application<C> {
                     self.input.set_painted_combo_completion(None);
                     self.cancel_direct_scroll();
                     self.dismiss_tooltip();
-                    self.pending_clipboard = None;
-                    self.commit_spin();
-                    self.input.cancel_table_edit();
+                    #[cfg(target_os = "ios")]
+                    let preserve_paste = self
+                        .pending_clipboard
+                        .as_ref()
+                        .is_some_and(PendingClipboard::reads_text);
+                    #[cfg(not(target_os = "ios"))]
+                    let preserve_paste = false;
+                    if !preserve_paste {
+                        self.pending_clipboard = None;
+                        self.commit_spin();
+                        self.input.cancel_table_edit();
+                    }
                     self.input.dismiss_choice();
                     self.input.dismiss_menu();
                     self.input.cancel_press();
@@ -5639,6 +7380,9 @@ impl<C: Component> Application<C> {
                     }
                 }
                 self.update_editor();
+                if focused {
+                    self.finish_deferred_paste();
+                }
             }
             WindowEvent::Occluded(occluded) => {
                 if occluded {
@@ -5664,5 +7408,15 @@ impl<C: Component> Application<C> {
 
 /// Open a native window and run a generated component on the main thread.
 pub fn run<C: Component + 'static>(component: C) -> Result<(), String> {
-    desktop::run_window(component)
+    desktop::run_window(component, None)
+}
+
+/// Run one window and report its logical content size before the initial layout
+/// and after a native resize or scale change. On iOS this also reports available
+/// space when a docked keyboard appears or disappears.
+pub fn run_with_viewport<C: Component + 'static>(
+    component: C,
+    handler: impl FnMut(&mut C, Size) + 'static,
+) -> Result<(), String> {
+    desktop::run_window(component, Some(Box::new(handler)))
 }

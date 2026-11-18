@@ -106,7 +106,7 @@ impl RetainedLayers {
         });
     }
 
-    fn clear_images(&mut self, canvas: &mut Canvas<WGPURenderer>) {
+    pub(super) fn clear_images(&mut self, canvas: &mut Canvas<WGPURenderer>) {
         for layer in self.layers.drain(..) {
             canvas.delete_image(layer.raster.image);
         }

@@ -1,0 +1,748 @@
+export struct RoundTask {
+    id: int,
+    title: string,
+    location: string,
+    category: string,
+}
+
+component ChecklistMark inherits Rectangle {
+    width: 41px;
+    height: 41px;
+    border-radius: 14px;
+    background: #ddefe5;
+
+    Path {
+        x: 9px;
+        y: 9px;
+        width: 23px;
+        height: 23px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        fill: #00000000;
+        stroke: #27654f;
+        stroke-width: 1.65px;
+        commands: "M7 6 H17 Q19 6 19 8 V19 Q19 21 17 21 H7 Q5 21 5 19 V8 Q5 6 7 6 Z M9 6 V3 H15 V6 M8.5 13 L11 15.5 L16 10.5";
+    }
+}
+
+component TaskRow inherits ContextMenuArea {
+    in property <string> caption;
+    in property <string> context;
+    in property <string> tag;
+    in property <bool> done;
+    private property <SwipeSide> revealed: closed;
+
+    callback request-toggle;
+    width: 100%;
+    height: 66px;
+
+    task-toggle := SwipeDelegate {
+        width: 100%;
+        height: 100%;
+        clicked => { root.request-toggle(); }
+        open-side <=> root.revealed;
+        accessible-name: root.caption;
+        accessible-description: (root.done ? "Completed. " : "Open. ") + root.context +
+            (root.done ? ". Reopen task." : ". Mark task complete.");
+        SwipeContent {
+            task-button := Button {
+                width: 100%;
+                height: 100%;
+                text: root.caption;
+                clicked => { root.request-toggle(); }
+                background: self.pressed ? #e4f0e8 : #ffffff;
+                border-color: #dce7df;
+                border-width: 1px;
+                border-radius: 15px;
+                ButtonContent {
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+                        cross-axis-alignment: center;
+                        Rectangle {
+                            width: 30px;
+                            height: 30px;
+                            border-radius: 10px;
+                            background: root.done ? #e0f1e7 : #f6f9f6;
+                            border-width: 1px;
+                            border-color: root.done ? #cce6d6 : #cbdcd0;
+
+                            if root.done : Path {
+                                x: 6px;
+                                y: 6px;
+                                width: 18px;
+                                height: 18px;
+                                viewbox-width: 24;
+                                viewbox-height: 24;
+                                fill: #00000000;
+                                stroke: #217257;
+                                stroke-width: 1.95px;
+                                commands: "M5 12 L10 17 L19 7";
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 4px;
+                            Label { text: root.caption; font-size: 15px; font-weight: 650; color: #18362b; overflow: elide; }
+                            Label { text: root.context; font-size: 12px; color: #50685c; overflow: elide; }
+                        }
+                        Rectangle {
+                            width: 69px;
+                            height: 23px;
+                            border-radius: 8px;
+                            background: root.tag == "Safety" ? #fff0d8 : root.tag == "Quality" ? #e8f0fb : #e9f2eb;
+                            Label {
+                                width: 100%;
+                                height: 100%;
+                                text: root.tag;
+                                font-size: 11px;
+                                font-weight: 650;
+                                color: root.tag == "Safety" ? #835321 : root.tag == "Quality" ? #345b86 : #3c644e;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        SwipeRight {
+            width: 112px;
+            task-action := Button {
+                width: 112px;
+                height: 100%;
+                text: root.done ? "Reopen" : "Complete";
+                accessible-name: (root.done ? "Reopen " : "Complete ") + root.caption;
+                background: #24684f;
+                color: #ffffff;
+                border-radius: 12px;
+                clicked => { root.revealed = SwipeSide.closed; root.request-toggle(); }
+            }
+        }
+    }
+
+    Menu {
+        toggle-item := MenuItem {
+            text: root.done ? "Reopen task" : "Mark complete";
+            activated => { root.request-toggle(); }
+        }
+    }
+}
+
+export component TouchDemo inherits Window {
+    title: "Pocket Tasks";
+    width: 402px;
+    height: 780px;
+    color-scheme: light;
+    accent-color: #25735a;
+    default-font-size: 15px;
+    background: #f3f6f1;
+
+    in-out property <string> draft: "";
+    in-out property <bool> show-completed: false;
+    in-out property <bool> show-notes: false;
+    in-out property <bool> show-readings: false;
+    in-out property <string> notes: "";
+    in-out property <int> sample-count: 0;
+    in-out property <float> pressure: 0;
+    in-out property <float> temperature-offset: 0;
+    in-out property <Date> inspection-date: Date { year: 2024, month: 2, day: 28 };
+    in-out property <Time> inspection-time: Time { hour: 12, minute: 30, second: 41 };
+    in-out property <bool> date-open: false;
+    in-out property <bool> time-open: false;
+    out property <string> schedule-status: "";
+    out property <string> form-result: "";
+    private property <string> code-draft: "";
+    private property <string> reading-draft: "";
+    private property <bool> contact-open: false;
+    private property <string> contact-status: "";
+    private property <string> contact-email-draft: "";
+    private property <string> contact-url-draft: "";
+    private property <string> contact-tel-draft: "";
+    in-out property <int> note-category: 0;
+    in-out property <bool> notes-locked: false;
+    out property <string> import-status: "";
+    in property <bool> folder-import-available: false;
+    in property <bool> transfer-pending: false;
+    in property <string> transfer-status: "";
+    private property <bool> note-operation-pending: root.transfer-pending ||
+        note-picker.pending || replace-notes.pending;
+    private property <bool> can-transfer: root.notes != "" && !root.note-operation-pending;
+    private property <bool> can-import: !root.notes-locked && !root.note-operation-pending;
+    in property <bool> wide: false;
+    in property <bool> compact: false;
+    out property <int> remaining: Model.count(root.pending-tasks);
+    out property <int> resolved: Model.count(root.completed-tasks);
+    private property <int> next-id: 100;
+    private property <int> total: root.remaining + root.resolved;
+
+    in-out property <[RoundTask]> pending-tasks: [
+        RoundTask { id: 1, title: "Check pump pressure", location: "Utilities · North plant", category: "Equipment" },
+        RoundTask { id: 2, title: "Verify door interlock", location: "Loading bay · Dock B", category: "Safety" },
+        RoundTask { id: 3, title: "Log chilled water temperature", location: "Cooling loop · Station 02", category: "Quality" },
+        RoundTask { id: 4, title: "Inspect fire cabinet", location: "Warehouse · West aisle", category: "Safety" },
+        RoundTask { id: 5, title: "Confirm sensor calibration", location: "Production · Line 1", category: "Quality" },
+        RoundTask { id: 6, title: "Clean ventilation grille", location: "Mechanical · Level 2", category: "Equipment" },
+        RoundTask { id: 7, title: "Review spill kit supplies", location: "Stores · Receiving", category: "Safety" },
+        RoundTask { id: 8, title: "Inspect return valve", location: "Utilities · South plant", category: "Equipment" },
+        RoundTask { id: 9, title: "Review calibration logs", location: "Maintenance · Office", category: "Quality" },
+    ];
+    in-out property <[RoundTask]> completed-tasks: [
+        RoundTask { id: 10, title: "Record meter reading", location: "Utilities · North plant", category: "Equipment" },
+        RoundTask { id: 11, title: "Clear emergency walkway", location: "Warehouse · North aisle", category: "Safety" },
+        RoundTask { id: 12, title: "Confirm sample labels", location: "Quality lab · Bench 3", category: "Quality" },
+    ];
+
+    callback add-task;
+    add-task => {
+        Model.insert(root.pending-tasks, Strings.trim(root.draft) != "" ? 0 : -1,
+            RoundTask { id: root.next-id, title: Strings.trim(root.draft), location: "Field notes", category: "New" });
+        root.next-id += 1;
+        root.draft = "";
+        root.show-completed = false;
+    }
+
+    callback read-notes(paths: [string]) -> bool;
+    callback transfer-note(text: string, export-file: bool);
+    callback import-folder;
+
+    inspection-date-picker := DatePickerPopup {
+        title: "Inspection date";
+        open <=> root.date-open;
+        date <=> root.inspection-date;
+        minimum-date: Date { year: 2024, month: 2, day: 1 };
+        maximum-date: Date { year: 2024, month: 4, day: 30 };
+        disabled-weekdays: [6, 7];
+        accept-text: "Save date";
+        cancel-text: "Cancel";
+        accepted(date) => { root.schedule-status = "Date saved"; }
+        canceled => { root.schedule-status = "Date unchanged"; }
+    }
+
+    inspection-time-picker := TimePickerPopup {
+        title: "Inspection time";
+        open <=> root.time-open;
+        time <=> root.inspection-time;
+        minimum-time: Time { hour: 8 };
+        maximum-time: Time { hour: 18 };
+        use-24-hour-format: false;
+        show-seconds: true;
+        accept-text: "Save time";
+        cancel-text: "Cancel";
+        accepted(time) => { root.schedule-status = "Time saved"; }
+        canceled => { root.schedule-status = "Time unchanged"; }
+    }
+
+    contact-dialog := Dialog {
+        title: "Inspection contact";
+        open <=> root.contact-open;
+        width: 340px;
+        height: 260px;
+        padding: root.compact ? 6px : 16px;
+
+        contact-viewport := ScrollView {
+            width: 100%;
+            height: 100%;
+            horizontal-scroll-bar-policy: always-off;
+            VerticalLayout {
+                width: 100%;
+                spacing: 6px;
+                contact-email := LineEdit {
+                    accessible-name: "Contact email";
+                    placeholder-text: "Email address";
+                    text <=> root.contact-email-draft;
+                    input-type: email;
+                    return-key: next;
+                    minimum-length: 2;
+                    height: 38px;
+                    accepted => { root.contact-status = "Email: " + root.contact-email-draft; }
+                }
+                contact-tel := LineEdit {
+                    accessible-name: "Contact telephone";
+                    placeholder-text: "Telephone";
+                    text <=> root.contact-tel-draft;
+                    input-type: tel;
+                    return-key: ReturnKey.next;
+                    minimum-length: 3;
+                    height: 38px;
+                    accepted => { root.contact-status = "Telephone: " + root.contact-tel-draft; }
+                }
+                contact-url := TextInput {
+                    accessible-name: "Contact website";
+                    placeholder-text: "Website URL";
+                    text <=> root.contact-url-draft;
+                    input-type: InputType.url;
+                    return-key: done;
+                    height: 38px;
+                    accepted => { root.contact-status = "Website: " + root.contact-url-draft; }
+                }
+                contact-result := Label {
+                    text: root.contact-status;
+                    visible: root.contact-status != "";
+                    color: #225a46;
+                }
+                close-contact := Button {
+                    text: "Close contact details";
+                    height: 38px;
+                    clicked => { root.contact-open = false; }
+                }
+            }
+        }
+    }
+
+    note-picker := FileDialog {
+        mode: FileDialogMode.open-files;
+        name-filters: ["Text notes (*.txt *.md)"];
+        accepted(paths) => { replace-notes.open(); }
+        canceled => { root.import-status = "Import canceled"; }
+        failed(message) => { root.import-status = message; }
+    }
+
+    replace-notes := MessageDialog {
+        title: root.notes == "" ? "Import notes?" : "Replace current notes?";
+        text: Model.count(note-picker.selected-files) == 1 ? "1 selected file" :
+            Model.count(note-picker.selected-files) + " selected files";
+        informative-text: root.notes == "" ? "" : "Choosing Yes replaces the text in the editor.";
+        buttons: yes-no-cancel;
+        finished(button) => {
+            root.import-status = button != StandardButtonKind.yes ? "Current notes kept" :
+                !root.read-notes(note-picker.selected-files) ? "Could not read the selected notes" :
+                Model.count(note-picker.selected-files) == 1 ? "Note imported" :
+                Model.count(note-picker.selected-files) + " notes imported";
+        }
+        failed(message) => { root.import-status = message; }
+    }
+
+    callback finish-task(index: int, task: RoundTask) -> bool;
+    finish-task(index, task) => {
+        Model.remove(root.pending-tasks, index);
+        Model.insert(root.completed-tasks, 0, task);
+        true
+    }
+
+    callback reopen-task(index: int, task: RoundTask) -> bool;
+    reopen-task(index, task) => {
+        Model.remove(root.completed-tasks, index);
+        Model.insert(root.pending-tasks, 0, task);
+        true
+    }
+
+    callback move-task(index: int, task: RoundTask) -> bool;
+    move-task(index, task) => {
+        root.show-completed ? root.reopen-task(index, task) : root.finish-task(index, task)
+    }
+
+    Pane {
+        width: 100%;
+        height: 100%;
+        background: #f3f6f1;
+        padding: root.compact ? 9px : 18px;
+        VerticalLayout {
+            spacing: root.compact ? 8px : 15px;
+            HorizontalLayout {
+                min-height: root.compact ? 41px : 50px;
+                vertical-stretch: 0;
+                spacing: 11px;
+                cross-axis-alignment: center;
+                ChecklistMark {}
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 3px;
+                    alignment: center;
+                    Label { text: "Pocket Tasks"; min-width: 0px; overflow: elide; font-size: 22px; font-weight: 750; color: #18362b; }
+                    Label { text: "Field checklist"; min-width: 0px; overflow: elide; font-size: 12px; color: #526b5e; visible: !root.compact; }
+                }
+                readings-toggle := Button {
+                    text: root.show-readings ? "Tasks" : "Readings";
+                    accessible-name: root.show-readings ? "Back to checklist" : "Open readings";
+                    min-height: 36px;
+                    min-width: 86px;
+                    font-size: 14px;
+                    background: #e0eee5;
+                    border-radius: 10px;
+                    color: #225a46;
+                    clicked => { root.show-readings = !root.show-readings; root.show-notes = false; }
+                }
+                notes-toggle := Button {
+                    text: root.show-notes ? "Tasks" : "Notes";
+                    accessible-name: root.show-notes ? "Back to tasks" : "Open field notes";
+                    min-height: 36px;
+                    min-width: 75px;
+                    primary: false;
+                    background: #e0eee5;
+                    border-radius: 10px;
+                    color: #225a46;
+                    clicked => { root.show-notes = !root.show-notes; root.show-readings = false; }
+                }
+            }
+            FlexboxLayout {
+                visible: !root.show-notes && !root.show-readings;
+                vertical-stretch: 1;
+                flex-direction: root.wide ? FlexboxLayoutDirection.row : FlexboxLayoutDirection.column;
+                flex-wrap: no-wrap;
+                spacing: 15px;
+                alignment: stretch;
+                cross-axis-alignment: stretch;
+
+                summary := VerticalLayout {
+                    preferred-width: root.wide ? 264px : 0px;
+                    max-width: root.wide ? 264px : 1600px;
+                    spacing: 12px;
+                    alignment: start;
+                    Rectangle {
+                        height: 135px;
+                        visible: !root.compact;
+                        border-radius: 17px;
+                        background: @linear-gradient(118deg, #123c32 0%, #285e4b 100%);
+                        VerticalLayout {
+                            padding: 15px;
+                            spacing: 7px;
+                            Label { text: "Round progress"; color: #c6e2d2; font-size: 13px; font-weight: 600; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                cross-axis-alignment: center;
+                                Label { text: root.resolved + " / " + root.total; font-size: 31px; font-weight: 750; color: #ffffff; horizontal-stretch: 1; }
+                                Label { text: root.remaining + " open"; font-size: 12px; color: #d2ebdb; }
+                            }
+                            round-progress := ProgressIndicator {
+                                accessible-name: "Round progress";
+                                height: 6px;
+                                maximum: root.total > 0 ? root.total : 1;
+                                progress: root.resolved;
+                                animate progress { duration: 800ms; }
+                                ProgressTrack { background: #417663; border-radius: 3px; }
+                                ProgressFill { background: #aee9c5; border-radius: 3px; }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        entry := LineEdit {
+                            height: 46px;
+                            padding-left: 12px;
+                            background: #ffffff;
+                            border-color: #d3dfd6;
+                            border-radius: 12px;
+                            color: #18362b;
+                            text <=> root.draft;
+                            placeholder-text: "New task";
+                            accessible-name: "New task";
+                            submit-when: Strings.trim(root.draft) != "";
+                            accepted => { root.add-task(); }
+                        }
+                        add := Button {
+                            width: 65px;
+                            height: 46px;
+                            text: "Add";
+                            primary: true;
+                            border-radius: 12px;
+                            color: #ffffff;
+                            background: self.pressed ? #1b5a46 : #267459;
+                            enabled: Strings.trim(root.draft) != "";
+                            clicked => { root.add-task(); }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    spacing: 5px;
+                    HorizontalLayout {
+                        height: 40px;
+                        spacing: 8px;
+                        open-tab := Button {
+                            text: "Open · " + root.remaining;
+                            accessible-name: "Open tasks";
+                            primary: false;
+                            color: root.show-completed ? #456457 : #155e46;
+                            border-radius: 9px;
+                            background: root.show-completed ? #edf2eb : #dceee2;
+                            clicked => { root.show-completed = false; }
+                        }
+                        completed-tab := Button {
+                            text: "Done · " + root.resolved;
+                            accessible-name: "Completed tasks";
+                            primary: false;
+                            color: root.show-completed ? #155e46 : #456457;
+                            border-radius: 9px;
+                            background: root.show-completed ? #dceee2 : #edf2eb;
+                            clicked => { root.show-completed = true; }
+                        }
+                    }
+                    task-list := ListView {
+                        background: #00000000;
+                        accessible-name: root.show-completed ? "Completed checklist" : "Open checklist";
+                        row-height: 74px;
+                        row-key-field: "id";
+                        for task[index] in root.show-completed ? root.completed-tasks : root.pending-tasks : TaskRow {
+                            caption: task.title;
+                            context: task.location;
+                            tag: task.category;
+                            done: root.show-completed;
+                            request-toggle => { root.move-task(index, task); }
+                        }
+                        EmptyState {
+                            Label {
+                                width: 100%;
+                                height: 62px;
+                                text: root.show-completed ? "Completed tasks appear here." : "All caught up.";
+                                color: #526b5e;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                visible: root.show-readings;
+                vertical-stretch: 1;
+                min-height: 0px;
+                background: #ffffff;
+                border-width: 1px;
+                border-color: #dce7df;
+                border-radius: 16px;
+                readings-viewport := ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    accessible-name: "Readings form";
+                    VerticalLayout {
+                        padding: root.compact ? 8px : 14px;
+                        spacing: root.compact ? 4px : 12px;
+                        alignment: start;
+                        Label {
+                            text: "Instrument readings";
+                            color: #18362b;
+                            font-size: 20px;
+                            font-weight: 700;
+                            visible: !root.compact;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 3px;
+                                Label { text: "Samples"; color: #526b5e; visible: !root.compact; }
+                                samples := SpinBox {
+                                    accessible-name: "Sample count";
+                                    value <=> root.sample-count;
+                                    minimum: 0;
+                                    maximum: 12;
+                                    height: 36px;
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 3px;
+                                Label { text: "Pressure"; color: #526b5e; visible: !root.compact; }
+                                pressure-reading := DoubleSpinBox {
+                                    accessible-name: "Pressure";
+                                    value <=> root.pressure;
+                                    minimum: 0;
+                                    maximum: 20;
+                                    decimals: 2;
+                                    decimal-separator: ",";
+                                    height: 36px;
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 3px;
+                                Label { text: "Offset"; color: #526b5e; visible: !root.compact; }
+                                temperature-reading := DoubleSpinBox {
+                                    accessible-name: "Temperature offset";
+                                    value <=> root.temperature-offset;
+                                    minimum: -10;
+                                    maximum: 10;
+                                    decimals: 1;
+                                    height: 36px;
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            form-code := TextInput {
+                                accessible-name: "Inspection code";
+                                width: 94px;
+                                height: 38px;
+                                horizontal-stretch: 1;
+                                placeholder-text: "Code";
+                                text <=> root.code-draft;
+                                input-type: number;
+                                minimum-length: 2;
+                                accepted => { root.form-result = "Code " + root.code-draft; }
+                            }
+                            form-reading := LineEdit {
+                                accessible-name: "Validated reading";
+                                width: 103px;
+                                height: 38px;
+                                horizontal-stretch: 1;
+                                placeholder-text: "Reading";
+                                text <=> root.reading-draft;
+                                input-type: decimal;
+                                decimal-separator: ",";
+                                minimum-value: 1.0;
+                                maximum-value: 10.0;
+                                accepted => { root.form-result = "Reading " + root.reading-draft; }
+                            }
+                            form-search := SearchField {
+                                accessible-name: "Find instrument";
+                                width: 108px;
+                                height: 38px;
+                                horizontal-stretch: 1;
+                                placeholder-text: "Find";
+                                accepted(value) => { root.form-result = "Search: " + value; }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            choose-date := Button {
+                                text: "" + root.inspection-date;
+                                accessible-name: "Choose inspection date, " + root.inspection-date;
+                                horizontal-stretch: 1;
+                                height: 44px;
+                                clicked => { root.date-open = true; }
+                            }
+                            choose-time := Button {
+                                text: "" + root.inspection-time;
+                                accessible-name: "Choose inspection time, " + root.inspection-time;
+                                horizontal-stretch: 1;
+                                height: 44px;
+                                clicked => { root.time-open = true; }
+                            }
+                        }
+                        schedule-result := Label {
+                            text: root.schedule-status;
+                            color: #225a46;
+                            visible: root.schedule-status != "";
+                        }
+                        readings-result := Label {
+                            text: root.sample-count + " samples · " + root.pressure + " bar · " +
+                                root.temperature-offset + " °C";
+                            color: #225a46;
+                        }
+                        submitted-form := Label {
+                            text: root.form-result;
+                            color: #225a46;
+                            visible: root.form-result != "";
+                        }
+                        contact-details := Button {
+                            text: "Contact details";
+                            height: 44px;
+                            clicked => { root.contact-open = true; }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                visible: root.show-notes;
+                vertical-stretch: 1;
+                background: #ffffff;
+                border-width: 1px;
+                border-color: #dce7df;
+                border-radius: 16px;
+                VerticalLayout {
+                    padding: root.compact ? 9px : 14px;
+                    spacing: root.compact ? 7px : 11px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        visible: !root.compact;
+                        Label {
+                            text: "Field notes";
+                            min-width: 0px;
+                            overflow: elide;
+                            color: #18362b;
+                            font-size: 20px;
+                            font-weight: 700;
+                            horizontal-stretch: 1;
+                        }
+                        import-note := Button {
+                            text: "Import";
+                            accessible-name: "Import note";
+                            enabled: root.can-import;
+                            min-height: 36px;
+                            clicked => { note-picker.open(); }
+                        }
+                        import-folder := Button {
+                            text: "Folder";
+                            accessible-name: "Import notes from folder";
+                            visible: root.folder-import-available;
+                            enabled: root.can-import;
+                            min-height: 36px;
+                            clicked => { root.import-folder(); }
+                        }
+                    }
+                    import-status := Label {
+                        text: root.import-status;
+                        color: #526b5e;
+                        visible: !root.compact && root.import-status != "";
+                        min-width: 0px;
+                        wrap: word-wrap;
+                        max-lines: 2;
+                        overflow: elide;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        visible: !root.compact;
+                        note-category := ComboBox {
+                            accessible-name: "Note category";
+                            editable: true;
+                            height: 40px;
+                            model: ["Routine", "Follow-up", "Urgent"];
+                            current-index <=> root.note-category;
+                        }
+                        note-lock := CheckBox {
+                            text: "Read-only";
+                            checked <=> root.notes-locked;
+                        }
+                    }
+                    notes-editor := TextEdit {
+                        accessible-name: "Inspection notes";
+                        vertical-stretch: 1;
+                        min-height: 42px;
+                        text <=> root.notes;
+                        read-only: root.notes-locked;
+                        placeholder-text: "Record findings and follow-up steps";
+                        wrap: word-wrap;
+                        padding: 10px;
+                        background: #f6f9f6;
+                        border-radius: 12px;
+                        border-color: #dce7df;
+                        color: #18362b;
+                    }
+                    transfer-status := Label {
+                        text: root.transfer-status;
+                        color: #526b5e;
+                        visible: !root.compact && root.transfer-status != "";
+                        min-width: 0px;
+                        wrap: word-wrap;
+                        max-lines: 2;
+                        overflow: elide;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: end;
+                        visible: !root.compact;
+                        share-note := Button {
+                            text: "Share";
+                            accessible-name: "Share note";
+                            min-height: 36px;
+                            enabled: root.can-transfer;
+                            clicked => { root.transfer-note(root.notes, false); }
+                        }
+                        export-note := Button {
+                            text: "Save to Files";
+                            accessible-name: "Save note to Files";
+                            min-height: 36px;
+                            width: 112px;
+                            enabled: root.can-transfer;
+                            clicked => { root.transfer-note(root.notes, true); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,951 @@
+component TapCounter inherits Rectangle {
+    in property <string> caption;
+    private property <int> count: 0;
+    background: #e6eef8;
+    border-radius: 10px;
+    Text {
+        x: 16px; y: 10px;
+        text: root.caption + " total " + root.count;
+        font-size: 18px; color: #173047;
+    }
+    add := Button {
+        x: 16px; y: 48px; width: 144px; height: 40px;
+        text: "Add " + root.caption;
+        clicked => { root.count += 1; }
+    }
+}
+
+component InspectionTool inherits Rectangle {
+    in property <string> caption;
+    in property <int> base-reading;
+    private property <int> samples: 0;
+    callback record-pressed();
+    callback recorded(int);
+
+    background: #eaf1f7;
+    border-radius: 8px;
+    Text {
+        x: 14px; y: 12px;
+        text: root.caption + " samples " + root.samples;
+        font-size: 19px; color: #173047;
+    }
+    record := Button {
+        x: 14px; y: 56px; width: 242px; height: 44px;
+        text: "Record " + root.caption;
+        pressed => { root.record-pressed(); }
+        clicked => {
+            root.samples += 1;
+            root.recorded(root.base-reading + root.samples);
+        }
+    }
+}
+
+component ToolWorkshop inherits Rectangle {
+    private property <bool> active: false;
+    private property <bool> swap-armed: false;
+    private property <string> panel: "pressure";
+    private property <int> mounts: 0;
+    private property <int> records: 0;
+    private property <string> reading: "No reading";
+
+    tool-state := Text { text: "Loader " + stage.status; color: #173047; font-size: 17px; }
+    tool-mounts := Text { x: 174px; text: "Mounts " + root.mounts; color: #173047; font-size: 17px; }
+    tool-records := Text { y: 30px; text: "Records " + root.records; color: #173047; font-size: 17px; }
+    tool-reading := Text { x: 174px; y: 30px; text: root.reading; color: #173047; font-size: 17px; }
+    Rectangle {
+        y: 64px; width: 298px; height: 124px;
+        background: #f1f5f9; border-radius: 8px;
+        Text {
+            x: 14px; y: 12px; visible: stage.status != "ready";
+            text: stage.status == "error" ? "No matching tool" :
+                stage.status == "loading" ? "Preparing tool" : "Choose an inspection tool";
+            color: #173047; font-size: 17px;
+        }
+        stage := Loader {
+            width: 100%; height: 100%;
+            active: root.active;
+            source: root.panel;
+            asynchronous: true;
+            loaded => {
+                root.mounts += 1;
+                self.focus();
+            }
+            pressure := InspectionTool {
+                caption: "Pressure"; base-reading: 30;
+                record-pressed => {
+                    root.panel = root.swap-armed ? "flow" : root.panel;
+                    root.swap-armed = false;
+                }
+                recorded(value) => { root.records += 1; root.reading = "Pressure " + value; }
+            }
+            flow := InspectionTool {
+                caption: "Flow"; base-reading: 60;
+                recorded(value) => { root.records += 1; root.reading = "Flow " + value; }
+            }
+        }
+    }
+    load-pressure := Button {
+        y: 208px; width: 144px; height: 44px; text: "Load pressure";
+        clicked => { root.panel = "pressure"; root.active = true; root.swap-armed = false; }
+    }
+    load-flow := Button {
+        x: 154px; y: 208px; width: 144px; height: 44px; text: "Load flow";
+        clicked => { root.panel = "flow"; root.active = true; root.swap-armed = false; }
+    }
+    arm-swap := Button {
+        y: 262px; width: 144px; height: 44px;
+        text: root.swap-armed ? "Switch armed" : "Switch on press";
+        enabled: stage.status == "ready" && root.panel == "pressure" && !root.swap-armed;
+        clicked => { root.swap-armed = true; }
+    }
+    missing-tool := Button {
+        x: 154px; y: 262px; width: 144px; height: 44px; text: "Missing source";
+        clicked => { root.panel = "missing"; root.active = true; root.swap-armed = false; }
+    }
+    unload-tool := Button {
+        y: 316px; width: 144px; height: 44px; text: "Unload tool";
+        enabled: root.active;
+        clicked => { root.active = false; root.swap-armed = false; }
+    }
+}
+
+component SampleCard inherits Button {
+    in property <string> caption;
+    in-out property <int> samples: 0;
+    out property <bool> held: root.pressed;
+    callback add-samples(amount: int) -> int;
+    add-samples(amount) => { root.samples += amount; root.samples }
+
+    height: 60px;
+    text: root.caption + " count " + root.samples;
+    clicked => { root.samples += 1; }
+}
+
+component CardWorkshop inherits Rectangle {
+    private property <SampleCardHandle> north;
+    private property <SampleCardHandle> south;
+    private property <SampleCardHandle> fresh;
+    private property <bool> populated: false;
+    private property <bool> north-last: false;
+    private property <bool> armed: false;
+    private property <bool> checked-old: false;
+    private property <int> old-result: 0;
+    private property <int> mounts: 0;
+
+    remove-held-card := Timer {
+        interval: 600;
+        running: root.armed && cards.get(root.north, "held", false);
+        triggered => { root.armed = false; cards.remove(root.north); }
+    }
+    card-mounts := Text { text: "Mounts " + root.mounts; color: #173047; font-size: 17px; }
+    card-south := Text { x: 155px; text: "South " + cards.status(root.south); color: #173047; font-size: 17px; }
+    card-original := Text { y: 30px; text: "Original " + cards.status(root.north); color: #173047; font-size: 17px; }
+    card-old := Text {
+        x: 155px; y: 30px;
+        text: root.checked-old ? "Stale " + root.old-result : "Handle test idle";
+        color: #173047; font-size: 17px;
+    }
+    cards := DynamicContainer {
+        y: 68px; width: 298px; height: 142px;
+        spacing: 10px;
+        mounted => { root.mounts += 1; }
+    }
+    add-cards := Button {
+        y: 228px; width: 142px; height: 44px; text: "Add cards";
+        enabled: !root.populated;
+        clicked => {
+            root.populated = true;
+            root.north = cards.mount(SampleCard { caption: "North" });
+            root.south = cards.mount-async(SampleCard { caption: "South" });
+        }
+    }
+    move-north := Button {
+        x: 154px; y: 228px; width: 144px; height: 44px;
+        text: root.north-last ? "North up" : "North down";
+        enabled: cards.is-mounted(root.north) && cards.is-mounted(root.south) && !root.armed;
+        focus-on-click: false;
+        clicked => {
+            root.north-last = !root.north-last;
+            cards.move(root.north, root.north-last ? 1 : 0);
+        }
+    }
+    arm-removal := Button {
+        y: 282px; width: 142px; height: 44px;
+        text: root.armed ? "Removal armed" : "Arm removal";
+        enabled: cards.is-mounted(root.north) && !root.north-last && !root.armed;
+        focus-on-click: false;
+        clicked => { root.armed = true; }
+    }
+    add-fresh-card := Button {
+        x: 154px; y: 282px; width: 144px; height: 44px; text: "Add fresh card";
+        enabled: root.populated && !cards.is-mounted(root.north) && !cards.is-mounted(root.fresh);
+        clicked => {
+            root.fresh = cards.mount(SampleCard { caption: "North" });
+            cards.move(root.fresh, 0);
+        }
+    }
+    try-old-card := Button {
+        y: 336px; width: 142px; height: 44px; text: "Try old handle";
+        enabled: cards.is-mounted(root.fresh);
+        clicked => {
+            cards.set(root.north, "samples", 9);
+            root.old-result = cards.call(root.north, "add-samples", -1, 7);
+            root.checked-old = true;
+        }
+    }
+}
+
+component ImageWorkshop inherits Rectangle {
+    private property <image> atlas: @image-url("../media/assets/sprite-atlas.png");
+    private property <bool> cover-atlas: false;
+    private property <bool> lower-row: false;
+    private property <bool> playing: false;
+    private property <bool> paused: false;
+    private property <int> completions: 0;
+
+    atlas-size := Text {
+        text: "Atlas " + root.atlas.width + " by " + root.atlas.height;
+        color: #173047; font-size: 17px;
+    }
+    pulse-frame := Text {
+        x: 156px; text: "Frame " + pulse.current-frame;
+        color: #173047; font-size: 17px;
+    }
+    Rectangle {
+        y: 36px; width: 140px; height: 140px; background: #dae2eb;
+        atlas-tile := Image {
+            width: 100%; height: 100%; source: root.atlas;
+            source-clip-y: root.lower-row ? 4 : 0;
+            source-clip-width: 8; source-clip-height: 4;
+            image-fit: root.cover-atlas ? ImageFit.cover : ImageFit.contain;
+            image-rendering: pixelated;
+            horizontal-alignment: center; vertical-alignment: center;
+            accessible-name: "Atlas row";
+        }
+    }
+    Rectangle {
+        x: 156px; y: 36px; width: 140px; height: 140px; background: #dae2eb;
+        pulse := AnimatedImage {
+            width: 100%; height: 100%;
+            source: @image-url("../media/assets/pulse.gif");
+            image-fit: contain; image-rendering: pixelated;
+            horizontal-alignment: center; vertical-alignment: center;
+            playing: root.playing; paused: root.paused;
+            loops: 1; speed: 0.25;
+            accessible-name: "Pulse animation";
+            finished => { root.completions += 1; }
+        }
+    }
+    fit-atlas := Button {
+        y: 196px; width: 140px; height: 44px;
+        text: root.cover-atlas ? "Use contain" : "Use cover";
+        clicked => { root.cover-atlas = !root.cover-atlas; }
+    }
+    play-pulse := Button {
+        x: 156px; y: 196px; width: 140px; height: 44px;
+        text: root.playing ? "Stop pulse" : "Play pulse";
+        clicked => { root.playing = !root.playing; }
+    }
+    crop-atlas := Button {
+        y: 250px; width: 140px; height: 44px;
+        text: root.lower-row ? "Top row" : "Bottom row";
+        clicked => { root.lower-row = !root.lower-row; }
+    }
+    pause-pulse := Button {
+        x: 156px; y: 250px; width: 140px; height: 44px;
+        text: root.paused ? "Resume pulse" : "Pause pulse";
+        clicked => { root.paused = !root.paused; }
+    }
+    pulse-count := Text {
+        y: 306px; text: "Frames " + pulse.frame-count;
+        color: #173047; font-size: 17px;
+    }
+    pulse-finished := Text {
+        x: 156px; y: 306px; text: "Finished " + root.completions;
+        color: #173047; font-size: 17px;
+    }
+}
+
+struct ServiceOption {
+    caption: string,
+    code: int,
+    available: bool,
+}
+
+component ServiceChoiceWorkshop inherits Rectangle {
+    private property <int> code: 10;
+    private property <string> draft: "";
+    private property <int> edits: 0;
+    private property <int> picks: 0;
+    private property <int> accepts: 0;
+    private property <string> trace: "Editing";
+    private property <bool> unicode-accepted: false;
+
+    service-code := Text { text: "Code " + root.code; font-size: 17px; color: #173047; }
+    service-picks := Text { x: 154px; text: "Picks " + root.picks; font-size: 17px; color: #173047; }
+    service-accepts := Text { y: 29px; text: "Accepts " + root.accepts; font-size: 17px; color: #173047; }
+    service-edits := Text { x: 154px; y: 29px; text: "Edits " + root.edits; font-size: 17px; color: #173047; }
+    Text { x: 154px; y: 58px; text: "Row " + service-choice.highlighted-index; font-size: 17px; color: #173047; }
+    service-choice := ComboBox {
+        y: 90px; width: 298px; height: 46px;
+        editable: true;
+        auto-complete: true;
+        placeholder-text: "Enter a service code";
+        accessible-name: "Service code";
+        model: [
+            ServiceOption { caption: "Standard", code: 10, available: true },
+            ServiceOption { caption: "47 Hold", code: 20, available: false },
+            ServiceOption { caption: "47 Service", code: 30, available: true },
+            ServiceOption { caption: "48 Repair", code: 40, available: true },
+            ServiceOption { caption: "你好🚰", code: 80, available: true },
+        ];
+        text-role: "caption"; value-role: "code"; enabled-role: "available";
+        current-value <=> root.code;
+        edit-text <=> root.draft;
+        edited(text) => { root.edits += 1; }
+        selected(text) => { root.picks += 1; root.trace = "Selected"; }
+        accepted(text) => {
+            root.accepts += 1;
+            root.trace = "Accepted";
+            root.unicode-accepted = text == "你好🚰";
+        }
+        editing-finished(text, acceptable) => { root.trace += " finished"; }
+        ComboIndicator {
+            width: 76px; height: 38px;
+            Text {
+                width: 100%; height: 100%; text: "Choices";
+                horizontal-alignment: center; vertical-alignment: center;
+                color: #3051b3; font-size: 15px;
+            }
+        }
+        ComboPopup { row-height: 44px; max-height: 240px; }
+    }
+    service-draft := Text {
+        y: 151px;
+        text: root.draft == "" ? "Draft empty" : (root.draft == "你好🚰" ? "Unicode draft" : "Draft " + root.draft);
+        font-size: 17px; color: #173047;
+    }
+    service-trace := Text { y: 185px; text: root.trace; font-size: 17px; color: #173047; }
+    Text { y: 218px; text: "Unicode accepted"; visible: root.unicode-accepted; font-size: 17px; color: #173047; }
+}
+
+component PartsSearchWorkshop inherits Rectangle {
+    private property <string> query: "";
+    private property <string> batch: "none";
+    private property <[string]> suggestions: [];
+    private property <bool> old-in-flight: false;
+    private property <bool> old-ready: false;
+    private property <bool> recent-pending: false;
+    private property <bool> meter-pending: false;
+    private property <int> searches: 0;
+    private property <int> picks: 0;
+    private property <int> accepts: 0;
+    private property <string> last: "";
+
+    recent-response := Timer {
+        interval: 120;
+        running: root.recent-pending;
+        triggered => {
+            root.recent-pending = false;
+            root.batch = "met";
+            root.suggestions = ["Meter kit", "Meter body"];
+            root.old-ready = root.old-in-flight;
+        }
+    }
+    late-response := Timer {
+        interval: 5000;
+        running: root.old-ready;
+        triggered => {
+            root.old-ready = false;
+            root.old-in-flight = false;
+            root.batch = "me";
+            root.suggestions = ["Mesh cover"];
+        }
+    }
+    meter-response := Timer {
+        interval: 120;
+        running: root.meter-pending;
+        triggered => {
+            root.meter-pending = false;
+            root.batch = "meter";
+            root.suggestions = ["Meter gasket", "Meter sensor"];
+        }
+    }
+    search-batch := Text { text: "Batch " + root.batch; color: #173047; font-size: 17px; }
+    search-total := Text { x: 180px; text: "Searches " + root.searches; color: #173047; font-size: 17px; }
+    search-query := Text {
+        y: 29px; text: root.query == "" ? "Query empty" : "Query " + root.query;
+        color: #173047; font-size: 17px;
+    }
+    search-picks := Text { x: 180px; y: 29px; text: "Picks " + root.picks; color: #173047; font-size: 17px; }
+    search-last := Text {
+        y: 58px; text: root.last == "" ? "No search sent" : "Sent " + root.last;
+        color: #173047; font-size: 17px;
+    }
+    search-accepts := Text { x: 180px; y: 58px; text: "Accepts " + root.accepts; color: #173047; font-size: 17px; }
+    parts-query := SearchField {
+        y: 92px; width: 298px; height: 46px;
+        placeholder-text: "Find a part";
+        accessible-name: "Parts search";
+        text <=> root.query;
+        live: true;
+        suggestions: root.suggestions;
+        suggestions-for: root.batch;
+        search-triggered(query) => {
+            root.searches += 1;
+            root.last = query;
+            root.old-in-flight = root.old-in-flight || query == "me";
+            root.recent-pending = root.recent-pending || query == "met";
+            root.meter-pending = root.meter-pending || query == "meter";
+        }
+        selected(text) => { root.picks += 1; }
+        accepted(text) => { root.accepts += 1; }
+    }
+    Text {
+        y: 150px; text: "Old request queued"; visible: root.old-in-flight;
+        color: #173047; font-size: 16px;
+    }
+}
+
+component PopupWorkshop inherits Rectangle {
+    private property <bool> lower: false;
+    private property <bool> modal: false;
+    private property <int> opens: 0;
+    private property <int> closes: 0;
+    private property <int> actions: 0;
+    private property <int> outside: 0;
+
+    Text { text: "Opens " + root.opens; color: #173047; font-size: 17px; }
+    Text { x: 155px; text: "Closes " + root.closes; color: #173047; font-size: 17px; }
+    Text { y: 29px; text: "Actions " + root.actions; color: #173047; font-size: 17px; }
+    Text { x: 155px; y: 29px; text: "Outside " + root.outside; color: #173047; font-size: 17px; }
+    outside-action := Button {
+        y: 60px; width: 144px; height: 44px; text: "Count outside";
+        clicked => { root.outside += 1; }
+    }
+    modal-mode := CheckBox {
+        x: 155px; y: 60px; width: 143px; height: 44px;
+        text: root.modal ? "Modal on" : "Modal popup";
+        checked <=> root.modal;
+    }
+    popup-anchor := Button {
+        x: root.lower ? 154px : 0px;
+        y: root.lower ? 516px : 142px;
+        width: 144px; height: 44px;
+        text: "Show actions";
+        clicked => { inspection-popup.show(); }
+        inspection-popup := PopupWindow {
+            width: 210px; height: 150px;
+            placement: below; anchor-gap: 8px;
+            modal: root.modal;
+            close-on-outside: true;
+            background: #e4f0ed;
+            accessible-name: "Inspection actions";
+            opened => { root.opens += 1; }
+            closed => { root.closes += 1; }
+            VerticalLayout {
+                width: 100%; height: 100%; padding: 8px; spacing: 6px;
+                Text { text: "Inspection actions"; color: #173047; font-size: 17px; }
+                move-popup-anchor := Button {
+                    height: 44px; text: "Move anchor";
+                    clicked => { root.lower = !root.lower; }
+                }
+                apply-popup-action := Button {
+                    height: 44px; text: "Apply action";
+                    clicked => { root.actions += 1; }
+                }
+            }
+        }
+    }
+}
+
+component CommandWorkshop inherits Rectangle {
+    private property <string> mode: "detail";
+    private property <bool> locked: false;
+    private property <int> calls: 0;
+    private property <int> groups: 0;
+    private property <int> denied: 0;
+    private property <string> action-mode: "";
+    private property <string> order: "Ready";
+
+    workshop-modes := ActionGroup {
+        enabled: !root.locked;
+        current-value <=> root.mode;
+        activated(value) => {
+            root.groups += 1;
+            root.order = root.action-mode == value && root.calls == root.groups ? "Order ok" : "Order error";
+        }
+        workshop-detail := Action {
+            text: "Detailed"; value: "detail"; shortcut: "Ctrl+1";
+            activated => { root.calls += 1; root.action-mode = root.mode; }
+        }
+        workshop-compact := Action {
+            text: "Compact"; value: "compact"; shortcut: "Ctrl+2";
+            activated => { root.calls += 1; root.action-mode = root.mode; }
+        }
+    }
+    MenuBar {
+        width: 298px; height: 44px;
+        workshop-menu := Menu {
+            title: "Commands";
+            MenuItem {
+                text: "Unavailable"; enabled: false;
+                activated => { root.denied += 1; }
+            }
+            Menu {
+                title: "View mode";
+                MenuItem { action: workshop-detail; }
+                MenuItem { action: workshop-compact; }
+            }
+        }
+    }
+    ToolBar {
+        y: 62px; width: 298px; height: 44px; spacing: 8px;
+        detail-tool := ToolButton { text: "Detail tool"; width: 144px; action: workshop-detail; }
+        compact-tool := ToolButton { text: "Compact tool"; width: 144px; action: workshop-compact; }
+    }
+    Text { y: 122px; text: "Mode " + root.mode; color: #173047; font-size: 17px; }
+    Text {
+        x: 154px; y: 122px; text: compact-tool.checked ? "Tool compact" : "Tool detail";
+        color: #173047; font-size: 17px;
+    }
+    Text { y: 151px; text: "Calls " + root.calls; color: #173047; font-size: 17px; }
+    Text { x: 154px; y: 151px; text: "Groups " + root.groups; color: #173047; font-size: 17px; }
+    Text { y: 180px; text: root.order; color: #173047; font-size: 17px; }
+    Text { x: 154px; y: 180px; text: "Denied " + root.denied; color: #173047; font-size: 17px; }
+    lock-modes := CheckBox {
+        y: 217px; width: 144px; height: 44px;
+        text: root.locked ? "Modes locked" : "Lock modes";
+        checked <=> root.locked;
+    }
+}
+
+component ScanWorkshop inherits Rectangle {
+    private property <int> samples: 0;
+    private property <bool> scanning: false;
+    private property <bool> report-pending: false;
+    private property <int> reports: 0;
+    private property <string> receipt: "";
+
+    scan-clock := Timer {
+        interval: 1200; repeat: true; running <=> root.scanning;
+        triggered => {
+            root.samples += 1;
+            if (root.samples == 2 || root.samples == 4) {
+                scan-clock.stop();
+            }
+        }
+    }
+    report-clock := Timer {
+        interval: 6500; running <=> root.report-pending;
+        triggered => {
+            root.reports += 1;
+            root.receipt = root.report-pending ? "Report order error" : "Report saved";
+        }
+    }
+
+    Text {
+        width: 100%; height: 28px; horizontal-alignment: center; vertical-alignment: center;
+        text: "Samples " + root.samples + " of 4"; color: #173047; font-size: 17px;
+    }
+    scan-progress := ProgressIndicator {
+        x: 16px; y: 44px; width: 266px; height: 16px;
+        progress: root.samples / 4.0;
+        color: #1b875b; track-color: #ccd8e4;
+    }
+    scan-spinner := Spinner {
+        x: 60px; y: 80px; width: 48px; height: 48px; stroke-width: 8px;
+        progress: root.samples / 4.0;
+        color: #1b875b; track-color: #ccd8e4;
+    }
+    scan-busy := BusyIndicator {
+        x: 190px; y: 80px; width: 48px; height: 48px; stroke-width: 8px;
+        running: root.report-pending;
+        color: #c44159;
+    }
+    Text {
+        y: 144px; text: root.scanning ? "Scanning" : root.samples == 0 ? "Scan ready" : root.samples == 2 ? "Scan paused" : "Scan complete";
+        color: #173047; font-size: 17px;
+    }
+    start-scan := Button {
+        y: 178px; width: 144px; height: 44px; text: "Start scan";
+        clicked => { root.samples = 0; scan-clock.restart(); }
+    }
+    resume-scan := Button {
+        x: 154px; y: 178px; width: 144px; height: 44px; text: "Continue scan";
+        enabled: root.samples == 2 && !root.scanning;
+        clicked => { scan-clock.start(); }
+    }
+    queue-report := Button {
+        y: 234px; width: 144px; height: 44px; text: "Queue report";
+        enabled: root.samples == 4 && !root.report-pending;
+        clicked => { report-clock.restart(); }
+    }
+    Text { x: 154px; y: 235px; text: "Reports " + root.reports; color: #173047; font-size: 17px; }
+    Text {
+        x: 154px; y: 260px; text: root.report-pending ? "Report queued" : root.receipt;
+        color: #173047; font-size: 17px;
+    }
+}
+
+component FocusWorkshop inherits Rectangle {
+    private property <string> code: "";
+    private property <string> memo: "";
+    private property <bool> memo-disabled: false;
+    private property <string> capture: "";
+    private property <string> route-status: "Keys ready";
+    private property <int> blocks: 0;
+    private property <int> routes: 0;
+    private property <int> entries: 0;
+
+    enter-fields := Button {
+        width: 144px; height: 44px; text: "Enter fields";
+        clicked => { field-scope.focus(); }
+    }
+    leave-fields := Button {
+        x: 154px; width: 144px; height: 44px; text: "Leave fields";
+    }
+    field-scope := FocusScope {
+        y: 56px; width: 298px; height: 102px;
+        initial-focus: editors;
+        focus-within-changed(focused, reason) => {
+            root.entries = focused ? root.entries + 1 : root.entries;
+        }
+        capture-key-pressed(event) => {
+            root.capture = event.key == "x" || event.key == "F2" ? "outer" : "";
+            EventResult.reject
+        }
+        key-pressed(event) => {
+            if event.key == "F2" {
+                root.routes += 1;
+                root.route-status = root.capture == "inner" ? "F2 routed" : "Key order error";
+            }
+            event.key == "F2" ? EventResult.accept : EventResult.reject
+        }
+        editors := FocusScope {
+            width: 100%; height: 100%;
+            initial-focus: stock-code;
+            capture-key-pressed(event) => {
+                if event.key == "x" {
+                    root.blocks += 1;
+                    root.route-status = root.capture == "outer" ? "Key blocked" : "Key order error";
+                }
+                event.key == "x" ? EventResult.accept : EventResult.reject
+            }
+            key-pressed(event) => {
+                if event.key == "F2" {
+                    root.capture = root.capture == "outer" ? "inner" : "";
+                }
+                EventResult.reject
+            }
+            stock-code := LineEdit {
+                width: 100%; height: 44px;
+                text <=> root.code; placeholder-text: "Asset code";
+                accessible-name: "Asset code";
+            }
+            stock-memo := LineEdit {
+                y: 56px; width: 100%; height: 44px;
+                text <=> root.memo; placeholder-text: "Asset memo";
+                accessible-name: "Asset memo";
+                enabled: !root.memo-disabled;
+            }
+        }
+    }
+    lock-memo := CheckBox {
+        y: 170px; width: 144px; height: 38px;
+        text: root.memo-disabled ? "Memo disabled" : "Disable memo";
+        checked <=> root.memo-disabled;
+    }
+    Text {
+        x: 154px; y: 179px; font-size: 16px; color: #173047;
+        text: stock-code.has-focus ? "Focus code" : stock-memo.has-focus ? "Focus memo" : "Focus outside";
+    }
+    Text {
+        y: 216px; font-size: 16px; color: #173047;
+        text: root.code == "" ? "Code empty" : "Code " + root.code;
+    }
+    Text {
+        x: 154px; y: 216px; font-size: 16px; color: #173047;
+        text: root.memo == "" ? "Memo empty" : "Memo " + root.memo;
+    }
+    Text { y: 246px; font-size: 16px; color: #173047; text: root.route-status; }
+    Text { x: 154px; y: 246px; font-size: 16px; color: #173047; text: "Blocks " + root.blocks; }
+    Text { y: 276px; font-size: 16px; color: #173047; text: "Entries " + root.entries; }
+    Text { x: 154px; y: 276px; font-size: 16px; color: #173047; text: "Routes " + root.routes; }
+}
+
+export component MobileNavigation inherits Window {
+    title: "XRack Navigation";
+    width: 390px; height: 750px;
+    color-scheme: light;
+    background: #f3f7fb;
+    in-out property <int> mode: 0;
+    in-out property <int> tab: 0;
+    in-out property <int> card: 0;
+    in-out property <bool> locked: false;
+    in-out property <bool> menu-open: false;
+    private property <bool> help-open: false;
+    private property <bool> color-open: false;
+    private property <bool> font-open: false;
+    private property <bool> workshop-open: false;
+    private property <bool> cards-open: false;
+    private property <bool> images-open: false;
+    private property <bool> services-open: false;
+    private property <bool> search-open: false;
+    private property <bool> popup-workshop-open: false;
+    private property <bool> commands-open: false;
+    private property <bool> scan-open: false;
+    private property <bool> focus-open: false;
+    in-out property <color> chosen-color: #4080c0;
+    in-out property <Font> chosen-font: Font { family: "sans-serif", size: 18px, weight: 400, italic: false };
+    out property <string> picker-status: "";
+    out property <int> mode-changes: 0;
+    out property <int> drawer-opens: 0;
+    out property <int> drawer-closes: 0;
+    out property <int> moves: 0;
+    out property <int> hotkeys: 0;
+
+    keyboard-action := Shortcut {
+        sequence: "Ctrl+K";
+        activated => { root.hotkeys += 1; }
+    }
+
+    Text { x: 24px; y: 16px; text: "XRack Navigation"; font-size: 25px; font-weight: 700; color: #173047; }
+    mode-status := Text {
+        x: 24px; y: 60px; font-size: 17px; color: #173047;
+        text: "Mode " + (root.mode == 0 ? "Balanced" : root.mode == 1 ? "Fast" : "Quiet");
+    }
+    Text { x: 250px; y: 60px; text: "Hotkeys " + root.hotkeys; font-size: 17px; color: #173047; }
+    modes := RadioGroup {
+        x: 24px; y: 88px; width: 342px; height: 44px;
+        orientation: horizontal;
+        spacing: 8px;
+        current-index <=> root.mode;
+        selected(value) => { root.mode-changes += 1; }
+        balanced := RadioButton { text: "Balanced"; }
+        fast := RadioButton { text: "Fast"; }
+        quiet := RadioButton { text: "Quiet"; enabled: false; }
+    }
+    tabs := TabWidget {
+        x: 24px; y: 148px; width: 342px; height: 150px;
+        current-index <=> root.tab;
+        overview := Tab {
+            title: "Overview";
+            tab-counter := TapCounter { caption: "Tab"; }
+        }
+        settings := Tab {
+            title: "Settings";
+            type-preview := Text { x: 16px; y: 12px; text: "Settings page"; font: root.chosen-font; color: #173047; }
+            paint-preview := Rectangle { x: 284px; y: 8px; width: 36px; height: 28px; background: root.chosen-color; border-radius: 4px; }
+            pick-color := Button { x: 16px; y: 48px; width: 146px; height: 40px; text: "Pick color"; clicked => { root.color-open = true; } }
+            pick-font := Button { x: 178px; y: 48px; width: 146px; height: 40px; text: "Pick font"; clicked => { root.font-open = true; } }
+            picker-result := Text { x: 16px; y: 96px; text: root.picker-status; font-size: 12px; color: #173047; }
+        }
+        blocked := Tab { title: "Disabled"; enabled: false; }
+    }
+    card-status := Text {
+        x: 24px; y: 312px; font-size: 17px; color: #173047;
+        text: "Card " + (root.card == 0 ? "Alpha" : root.card == 1 ? "Beta" : "Gamma");
+    }
+    cards := SwipeView {
+        x: 24px; y: 342px; width: 342px; height: 126px;
+        current-index <=> root.card;
+        interactive: !root.locked;
+        transition-duration: 160;
+        alpha := SwipePage { swipe-counter := TapCounter { caption: "Swipe"; } }
+        beta := SwipePage {
+            Rectangle { background: #e2f2e9; Text { x: 16px; y: 20px; text: "Second card"; font-size: 19px; color: #173047; } }
+        }
+        gamma := SwipePage {
+            Rectangle { background: #f4eddd; Text { x: 16px; y: 20px; text: "Third card"; font-size: 19px; color: #173047; } }
+        }
+    }
+    lock := CheckBox {
+        x: 24px; y: 484px; width: 185px; height: 40px;
+        text: "Lock swipes";
+        checked <=> root.locked;
+    }
+    dots := PageIndicator {
+        x: 226px; y: 488px; width: 128px; height: 32px;
+        count: 3;
+        current-index <=> root.card;
+        interactive: !root.locked;
+    }
+    route-status := Text { x: 24px; y: 536px; text: "Route " + routes.current-page; font-size: 17px; color: #173047; }
+    depth-status := Text { x: 270px; y: 536px; text: "Depth " + routes.depth; font-size: 17px; color: #173047; }
+    routes := StackView {
+        x: 24px; y: 564px; width: 342px; height: 116px;
+        initial-page: "home";
+        transition-duration: 160;
+        changed(page, depth) => { root.moves += 1; }
+        home := StackPage {
+            open-details := Button {
+                x: 16px; y: 20px; width: 180px; height: 44px;
+                text: "Open details";
+                clicked => { routes.push("details"); }
+            }
+        }
+        details := StackPage {
+            detail-counter := TapCounter { caption: "Detail"; }
+            review-next := Button {
+                x: 210px; y: 48px; width: 112px; height: 40px;
+                text: "Review";
+                clicked => { routes.push("review"); }
+            }
+        }
+        review := StackPage {
+            Text { x: 16px; y: 10px; text: "Review page"; font-size: 18px; color: #173047; }
+            review-back := Button {
+                x: 16px; y: 48px; width: 150px; height: 40px;
+                text: "Back to detail";
+                clicked => { routes.pop(); }
+            }
+        }
+    }
+    open-menu := Button {
+        x: 24px; y: 700px; width: 150px; height: 40px;
+        text: "Open menu";
+        clicked => { root.menu-open = true; }
+    }
+    drawer-status := Text { x: 190px; y: 710px; text: "Drawer closes " + root.drawer-closes; font-size: 17px; color: #173047; }
+    drawer := Drawer {
+        edge: left;
+        width: 280px;
+        drag-margin: 18px;
+        open <=> root.menu-open;
+        title: "Navigation menu";
+        background: #ffffff;
+        opened => { root.drawer-opens += 1; }
+        closed => { root.drawer-closes += 1; }
+        Text { text: "Drawer opens " + root.drawer-opens; font-size: 18px; color: #173047; }
+        show-help := Button { text: "Show help"; height: 44px; clicked => { root.help-open = true; } }
+        open-workshop := Button {
+            text: "Open tools"; height: 44px;
+            clicked => { root.menu-open = false; root.workshop-open = true; }
+        }
+        open-card-workshop := Button {
+            text: "Open cards"; height: 44px;
+            clicked => { root.menu-open = false; root.cards-open = true; }
+        }
+        open-image-workshop := Button {
+            text: "Open images"; height: 44px;
+            clicked => { root.menu-open = false; root.images-open = true; }
+        }
+        open-service-workshop := Button {
+            text: "Open choices"; height: 44px;
+            clicked => { root.menu-open = false; root.services-open = true; }
+        }
+        open-search-workshop := Button {
+            text: "Open search"; height: 44px;
+            clicked => { root.menu-open = false; root.search-open = true; }
+        }
+        open-popup-workshop := Button {
+            text: "Open popup"; height: 44px;
+            clicked => { root.menu-open = false; root.popup-workshop-open = true; }
+        }
+        open-commands := Button {
+            text: "Open commands"; height: 44px;
+            clicked => { root.menu-open = false; root.commands-open = true; }
+        }
+        open-scan := Button {
+            text: "Open scan"; height: 44px;
+            clicked => { root.menu-open = false; root.scan-open = true; }
+        }
+        open-focus := Button {
+            text: "Open focus"; height: 44px;
+            clicked => { root.menu-open = false; root.focus-open = true; }
+        }
+        close-menu := Button { text: "Close menu"; height: 44px; clicked => { root.menu-open = false; } }
+        help := Dialog {
+            title: "Navigation help";
+            open <=> root.help-open;
+            width: 260px; height: 190px;
+            Text { text: "Back closes one layer."; font-size: 17px; color: #173047; }
+            DialogButton { text: "Close help"; role: reject; }
+        }
+    }
+    Dialog {
+        open <=> root.workshop-open;
+        title: "Inspection tools";
+        width: 338px; height: 444px;
+        background: #ffffff; color: #173047;
+        ToolWorkshop { width: 100%; height: 360px; }
+    }
+    Dialog {
+        open <=> root.cards-open;
+        title: "Dynamic cards";
+        width: 338px; height: 464px;
+        background: #ffffff; color: #173047;
+        CardWorkshop { width: 100%; height: 380px; }
+    }
+    Dialog {
+        open <=> root.images-open;
+        title: "Image workshop";
+        width: 338px; height: 414px;
+        background: #ffffff; color: #173047;
+        ImageWorkshop { width: 100%; height: 330px; }
+    }
+    Dialog {
+        open <=> root.services-open;
+        title: "Service choices";
+        width: 338px; height: 332px;
+        background: #ffffff; color: #173047;
+        ServiceChoiceWorkshop { width: 100%; height: 248px; }
+    }
+    Dialog {
+        open <=> root.search-open;
+        title: "Parts search";
+        width: 338px; height: 282px;
+        background: #ffffff; color: #173047;
+        PartsSearchWorkshop { width: 100%; height: 198px; }
+    }
+    Dialog {
+        open <=> root.popup-workshop-open;
+        title: "Popup workshop";
+        width: 338px; height: 700px;
+        background: #ffffff; color: #173047;
+        PopupWorkshop { width: 100%; height: 616px; }
+    }
+    Dialog {
+        open <=> root.commands-open;
+        title: "Command workshop";
+        width: 338px; height: 346px;
+        background: #ffffff; color: #173047;
+        CommandWorkshop { width: 100%; height: 262px; }
+    }
+    Dialog {
+        open <=> root.scan-open;
+        title: "Scan workshop";
+        width: 338px; height: 370px;
+        background: #ffffff; color: #173047;
+        ScanWorkshop { width: 100%; height: 286px; }
+    }
+    Dialog {
+        open <=> root.focus-open;
+        title: "Focus workshop";
+        width: 338px; height: 388px;
+        background: #ffffff; color: #173047;
+        FocusWorkshop { width: 100%; height: 304px; }
+    }
+    paint := ColorPickerPopup {
+        title: "Paint color";
+        open <=> root.color-open;
+        color <=> root.chosen-color;
+        show-alpha: true;
+        show-color-plane: true;
+        accept-text: "Save color";
+        cancel-text: "Cancel";
+        accepted(value) => { root.picker-status = "Color saved"; }
+        canceled => { root.picker-status = "Color unchanged"; }
+    }
+    typography := FontPickerPopup {
+        title: "Text font";
+        open <=> root.font-open;
+        font <=> root.chosen-font;
+        preview-text: "Aa Bb 0123";
+        accept-text: "Save font";
+        cancel-text: "Cancel";
+        accepted(value) => { root.picker-status = "Font saved " + value.family; }
+        canceled => { root.picker-status = "Font unchanged"; }
+    }
+}

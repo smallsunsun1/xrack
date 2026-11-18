@@ -17,6 +17,8 @@ export component HostValues inherits Window {
     in-out property <length> offset: 12px;
     in-out property <LayoutDirection> direction: LayoutDirection.left-to-right;
     in-out property <ButtonDisplay> presentation;
+    in-out property <InputType> input-mode: InputType.email;
+    in-out property <ReturnKey> enter-action: ReturnKey.next;
     in-out property <Date> date;
     in-out property <Time> time;
     in-out property <Font> font;
@@ -106,6 +108,8 @@ class BindingTest(unittest.TestCase):
             ink = xrack.Color.from_hex("#123456")
             self.assertEqual(ui.get("ink"), ink)
             self.assertEqual(ui.get("presentation"), xrack.ButtonDisplay.TextBesideIcon)
+            self.assertEqual(ui.get("input-mode"), xrack.InputType.Email)
+            self.assertEqual(ui.get("enter-action"), xrack.ReturnKey.Next)
             self.assertEqual(ink.rgba, (0x12, 0x34, 0x56, 255))
             accent = xrack.Color(200, 100, 25)
             brush = xrack.Brush.linear(
@@ -120,6 +124,9 @@ class BindingTest(unittest.TestCase):
                 ("label", xrack.StyledText.from_markdown("**bold**")),
                 ("direction", xrack.LayoutDirection.RightToLeft),
                 ("presentation", xrack.ButtonDisplay.TextUnderIcon),
+                ("input-mode", xrack.InputType.Url),
+                ("input-mode", xrack.InputType.Tel),
+                ("enter-action", xrack.ReturnKey.Done),
             )
             for name, value in properties:
                 ui.set(name, value)

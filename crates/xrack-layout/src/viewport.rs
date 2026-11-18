@@ -1,6 +1,6 @@
 use crate::{
-    Interaction, LayoutNode, Rect, ScrollBarGeometry, ScrollLayout, scroll_gesture::PanDevice,
-    view_cells::ViewCells,
+    Interaction, LayoutNode, Point, Rect, ScrollBarGeometry, ScrollLayout,
+    scroll_gesture::PanDevice, view_cells::ViewCells,
 };
 use std::{
     collections::BTreeMap,
@@ -794,14 +794,84 @@ impl Interaction {
 
 /// Content viewports can reveal items that already have a stable layout path.
 pub(crate) fn reveals_focus(node: &Node, item: &LayoutNode) -> bool {
-    matches!(node.kind, "ScrollView" | "Flickable")
-        && node.boolean("auto-reveal-focus", node.kind == "ScrollView")
+    can_reveal_focus(node)
         && [Orientation::Horizontal, Orientation::Vertical]
             .into_iter()
             .any(|axis| {
                 item.scroll_on(axis)
                     .is_some_and(|axis| axis.max_offset > 0.0)
             })
+}
+
+fn can_reveal_focus(node: &Node) -> bool {
+    matches!(node.kind, "ScrollView" | "Flickable")
+        && node.boolean("auto-reveal-focus", node.kind == "ScrollView")
+}
+
+pub(crate) fn plan_keyboard_avoidance(
+    scene: &Node,
+    layout: &LayoutNode,
+    editor: &[usize],
+    mut field: Rect,
+    keyboard: Rect,
+    previous: Option<(&[usize], f32)>,
+) -> Option<(Vec<usize>, f32)> {
+    const GAP: f32 = 8.0;
+    let previous = previous.and_then(|(path, offset)| {
+        let item = layout.at_path(path)?;
+        matches!(scene.at_path(path)?.kind, "ScrollView" | "Flickable").then(|| {
+            (
+                path,
+                item.world_transform()
+                    .map_vector(Point { x: 0.0, y: offset })
+                    .y,
+            )
+        })
+    });
+    let applied_shift = |path: &[usize]| {
+        previous
+            .filter(|(owner, _)| path.len() > owner.len() && path.starts_with(owner))
+            .map_or(0.0, |(_, y)| y)
+    };
+    // Always compare against the original position so moving the keyboard
+    // away restores the layout, even if the shifted editor is already visible.
+    field.y -= applied_shift(editor);
+    let overlap = field.intersect(keyboard);
+    if overlap.width <= 0.0 || overlap.height <= 0.0 {
+        return None;
+    }
+    for depth in (0..editor.len()).rev() {
+        let path = &editor[..depth];
+        let node = scene.at_path(path)?;
+        if is_window_overlay(node.kind) {
+            break;
+        }
+        let item = layout.at_path(path)?;
+        if !item.visible || !item.enabled || !can_reveal_focus(node) {
+            continue;
+        }
+        let mut bounds = item.visible_window_bounds(item.scroll_viewport(Orientation::Vertical));
+        bounds.y -= applied_shift(path);
+        let shifts = [
+            keyboard.y - GAP - field.y - field.height,
+            keyboard.y + keyboard.height + GAP - field.y,
+        ];
+        let shift = shifts
+            .into_iter()
+            .filter(|shift| {
+                field.y + shift >= bounds.y
+                    && field.y + field.height + shift <= bounds.y + bounds.height
+            })
+            .min_by(|left, right| left.abs().total_cmp(&right.abs()));
+        if let Some(shift) = shift
+            && let Some(local) = item.map_delta_from_window(Point { x: 0.0, y: shift })
+            && local.x.abs() < 0.01
+            && local.y.is_finite()
+        {
+            return Some((path.to_vec(), local.y));
+        }
+    }
+    None
 }
 
 pub(crate) struct ScrollPosition {

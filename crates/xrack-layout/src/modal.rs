@@ -1,5 +1,5 @@
-use crate::{LayoutNode, Point, Rect, Size, TextMeasurer, font_size, linear};
-use xrack_runtime::{DrawerEdge, Node, is_modal_overlay, is_window_overlay};
+use crate::{LayoutNode, Point, Rect, Size, TextMeasurer, font_size, linear, place_in_direction};
+use xrack_runtime::{DrawerEdge, LayoutDirection, Node, is_modal_overlay, is_window_overlay};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct OverlayIndex {
@@ -33,10 +33,24 @@ pub(crate) fn bounds(node: &Node, viewport: Rect, text: &mut impl TextMeasurer) 
     let height = node
         .relative_length("height", viewport.height)
         .unwrap_or_else(|| {
-            linear::measure(node, Size::new(width, viewport.height), text)
+            let preferred = linear::measure(node, Size::new(width, viewport.height), text)
                 .y
-                .preferred
-                .max(96.0)
+                .preferred;
+            let extra = picker_parts(node).map_or(0.0, |(_, footer)| {
+                let inner = linear::Padding::read(node).inner_rect(Rect::new(
+                    0.0,
+                    0.0,
+                    width,
+                    viewport.height,
+                ));
+                let (inline, stacked) = picker_actions_size(footer, inner, text);
+                if inner.width < inline.width {
+                    stacked.height - inline.height
+                } else {
+                    0.0
+                }
+            });
+            (preferred + extra).max(96.0)
         })
         .clamp(0.0, area.height);
     Rect::new(
@@ -45,6 +59,94 @@ pub(crate) fn bounds(node: &Node, viewport: Rect, text: &mut impl TextMeasurer) 
         width,
         height,
     )
+}
+
+pub(crate) fn picker_children(
+    node: &Node,
+    bounds: Rect,
+    direction: LayoutDirection,
+    text: &mut impl TextMeasurer,
+) -> Option<Vec<Rect>> {
+    if node.boolean("__picker-actions", false) {
+        let (inline, stacked) = picker_actions_size(node, bounds, text);
+        let axis = if bounds.height >= stacked.height && bounds.width < inline.width {
+            linear::Axis::Vertical
+        } else {
+            linear::Axis::Horizontal
+        };
+        return Some(linear::children(node, axis, bounds, direction, text));
+    }
+
+    let (picker, footer) = picker_parts(node)?;
+    let inner = linear::Padding::read(node).inner_rect(bounds);
+    let available = Size::new(inner.width, inner.height);
+    let body = linear::measure(picker, available, text);
+    let (inline, stacked) = picker_actions_size(footer, inner, text);
+    let gap = linear::spacing(node);
+    // Leave room for seven touch-sized day columns, or the picker's natural width.
+    let minimum_body_width = body.x.preferred.min(7.0 * 44.0);
+    let side_by_side = body.y.preferred + inline.height + gap > inner.height
+        && stacked.height <= inner.height
+        && inner.width - stacked.width - gap >= minimum_body_width;
+    if side_by_side {
+        let width = inner.width - stacked.width - gap;
+        let actions = Rect::new(
+            inner.x + width + gap,
+            inner.y + inner.height - stacked.height,
+            stacked.width,
+            stacked.height,
+        );
+        return Some(vec![
+            place_in_direction(
+                Rect::new(inner.x, inner.y, width, inner.height),
+                inner,
+                direction,
+            ),
+            place_in_direction(actions, inner, direction),
+        ]);
+    }
+
+    let footer_height = if inner.width < inline.width && inner.height >= stacked.height + gap {
+        stacked.height
+    } else {
+        inline.height.min(inner.height)
+    };
+    let body_height = (inner.height - footer_height - gap).max(0.0);
+    Some(vec![
+        Rect::new(inner.x, inner.y, inner.width, body_height),
+        Rect::new(
+            inner.x,
+            inner.y + inner.height - footer_height,
+            inner.width,
+            footer_height,
+        ),
+    ])
+}
+
+fn picker_parts(node: &Node) -> Option<(&Node, &Node)> {
+    let [picker, footer] = node.children.as_slice() else {
+        return None;
+    };
+    footer
+        .boolean("__picker-actions", false)
+        .then_some((picker, footer))
+}
+
+fn picker_actions_size(footer: &Node, bounds: Rect, text: &mut impl TextMeasurer) -> (Size, Size) {
+    let available = Size::new(bounds.width, bounds.height);
+    let mut inline = Size::default();
+    let mut stacked = Size::default();
+    for button in &footer.children {
+        let metrics = linear::measure(button, available, text);
+        inline.width += metrics.x.preferred;
+        inline.height = inline.height.max(metrics.y.preferred);
+        stacked.width = stacked.width.max(metrics.x.preferred);
+        stacked.height += metrics.y.preferred;
+    }
+    let gap = linear::spacing(footer);
+    inline.width += gap;
+    stacked.height += gap;
+    (inline, stacked)
 }
 
 pub(crate) fn drawer_bounds(node: &Node, viewport: Rect) -> Rect {

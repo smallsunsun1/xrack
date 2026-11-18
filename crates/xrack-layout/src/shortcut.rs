@@ -76,7 +76,9 @@ impl FromStr for MenuShortcut {
                 "alt" => &mut modifiers.alt,
                 "shift" => &mut modifiers.shift,
                 "super" => &mut modifiers.super_key,
-                "primary" if cfg!(target_os = "macos") => &mut modifiers.super_key,
+                "primary" if cfg!(any(target_os = "macos", target_os = "ios")) => {
+                    &mut modifiers.super_key
+                }
                 "primary" => &mut modifiers.ctrl,
                 _ => return Err(()),
             };
@@ -94,7 +96,7 @@ impl fmt::Display for MenuShortcut {
             f.write_str("Ctrl+")?;
         }
         if self.modifiers.alt {
-            f.write_str(if cfg!(target_os = "macos") {
+            f.write_str(if cfg!(any(target_os = "macos", target_os = "ios")) {
                 "Option+"
             } else {
                 "Alt+"
@@ -104,7 +106,7 @@ impl fmt::Display for MenuShortcut {
             f.write_str("Shift+")?;
         }
         if self.modifiers.super_key {
-            f.write_str(if cfg!(target_os = "macos") {
+            f.write_str(if cfg!(any(target_os = "macos", target_os = "ios")) {
                 "Cmd+"
             } else {
                 "Super+"

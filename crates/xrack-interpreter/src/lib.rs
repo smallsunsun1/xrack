@@ -270,6 +270,7 @@ pub enum ValueType {
     TextOverflow,
     ColorScheme,
     InputType,
+    ReturnKey,
     DialInputMode,
     Image,
     LogLevel,

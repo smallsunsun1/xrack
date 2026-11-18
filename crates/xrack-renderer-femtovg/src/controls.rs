@@ -91,7 +91,8 @@ pub(crate) fn calendar(
         let paint = text.paint_node_at_size(node, size, color(tint), true);
         canvas.save();
         canvas.intersect_scissor(rect.x, rect.y, rect.width, rect.height);
-        let result = canvas.fill_text(
+        let result = text.fill_text(
+            canvas,
             rect.x + rect.width * 0.5,
             rect.y + ((rect.height - size * 1.4) * 0.5).max(0.0),
             label,
@@ -292,7 +293,8 @@ pub(crate) fn tumbler_row(
         (row.bounds.width - 8.0).max(0.0),
         row.bounds.height,
     );
-    let result = canvas.fill_text(
+    let result = text.fill_text(
+        canvas,
         row.bounds.x + row.bounds.width * 0.5,
         row.bounds.y + ((row.bounds.height - size * 1.4) * 0.5).max(0.0),
         &row.label,
@@ -460,7 +462,7 @@ pub(crate) fn menu_panel(
                         shortcut_paint.set_text_align(Align::Right);
                         area.x + area.width
                     };
-                    draw_label(canvas, area, shortcut, size, x, &shortcut_paint)?;
+                    draw_label(canvas, text, area, shortcut, size, x, &shortcut_paint)?;
                     label_end = trailing - width - 12.0;
                 }
             }
@@ -472,7 +474,7 @@ pub(crate) fn menu_panel(
             } else {
                 area.x
             };
-            draw_label(canvas, area, row.label, size, x, &label_paint)?;
+            draw_label(canvas, text, area, row.label, size, x, &label_paint)?;
             let mut mark = Path::new();
             if row.checked == Some(true) {
                 let start = panel.row_content_bounds(slot, 9.0, 10.0).x;
@@ -649,7 +651,8 @@ pub(crate) fn table_header(
             if geometry.mirrored() {
                 paint.set_text_align(Align::Right);
             }
-            let result = canvas.fill_text(
+            let result = text.fill_text(
+                canvas,
                 origin,
                 bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
                 column.text("title").unwrap_or(""),
@@ -762,7 +765,8 @@ pub(crate) fn table_row_headers(
             } else {
                 bounds.x + 6.0
             };
-            let result = canvas.fill_text(
+            let result = text.fill_text(
+                canvas,
                 x,
                 bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
                 label,
@@ -883,7 +887,7 @@ pub(crate) fn combo(
         } else {
             label.x + 1.0
         };
-        draw_label(canvas, label, combo_text(node), size, x, &paint)?;
+        draw_label(canvas, text, label, combo_text(node), size, x, &paint)?;
     }
     Ok(geometry)
 }
@@ -993,7 +997,7 @@ pub(crate) fn choice_row(
     } else {
         row.x + 10.0
     };
-    draw_label(canvas, row, &menu.rows[offset], size, x, &paint)
+    draw_label(canvas, text, row, &menu.rows[offset], size, x, &paint)
 }
 
 pub(crate) fn label(
@@ -1006,7 +1010,7 @@ pub(crate) fn label(
     tint: Color,
 ) -> Result<(), String> {
     let paint = text.paint_node_at_size(node, size, color(tint), false);
-    draw_label(canvas, bounds, value, size, bounds.x, &paint)
+    draw_label(canvas, text, bounds, value, size, bounds.x, &paint)
 }
 
 pub(crate) fn leading_label(
@@ -1026,11 +1030,12 @@ pub(crate) fn leading_label(
     } else {
         bounds.x
     };
-    draw_label(canvas, bounds, value, size, x, &paint)
+    draw_label(canvas, text, bounds, value, size, x, &paint)
 }
 
 fn draw_label(
     canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
     bounds: Rect,
     value: &str,
     size: f32,
@@ -1042,7 +1047,8 @@ fn draw_label(
     }
     canvas.save();
     canvas.intersect_scissor(bounds.x, bounds.y, bounds.width, bounds.height);
-    let result = canvas.fill_text(
+    let result = text.fill_text(
+        canvas,
         x,
         bounds.y + ((bounds.height - size * 1.4) * 0.5).max(0.0),
         value,
@@ -1162,15 +1168,15 @@ pub(crate) fn expander_header(
     if rtl {
         paint.set_text_align(Align::Right);
     }
-    canvas
-        .fill_text(
-            x + direction * 13.0,
-            header.y + ((header.height - size * 1.4) * 0.5).max(0.0),
-            node.text("title").unwrap_or(""),
-            &paint,
-        )
-        .map(|_| ())
-        .map_err(|error| format!("expander header drawing failed: {error}"))
+    text.fill_text(
+        canvas,
+        x + direction * 13.0,
+        header.y + ((header.height - size * 1.4) * 0.5).max(0.0),
+        node.text("title").unwrap_or(""),
+        &paint,
+    )
+    .map(|_| ())
+    .map_err(|error| format!("expander header drawing failed: {error}"))
 }
 
 pub(crate) fn group_title(

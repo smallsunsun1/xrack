@@ -12,6 +12,10 @@
 
 `GridLayout` 支持 `Row`、`row`、`col`、`rowspan`、`colspan` 和分轴间距。尺寸绑定可使用相对父容器内容区域的百分比，例如 `width: 50%;`。`animate width { duration: 220ms; }` 可对相同类型的视觉属性值做线性过渡。
 
+在 iOS 开启「减弱动态效果」后，`animate`、状态过渡和 `StackView`、`SwipeView` 的切页动画会直接显示目标状态。拖动页面时仍会跟手，松手后立即显示当前页或目标页。应用会在系统设置变更和回到前台时重新读取偏好。
+
+iOS 会按系统「文字大小」缩放默认字号和控件显式指定的 `font-size`，文字测量、编辑选区和实际绘制使用同一字号。更改系统字号或返回应用时，宿主重新计算布局，并清除旧字号对应的列表行缓存。显式指定的控件宽高仍由应用布局决定，长文字可用自动高度、换行或滚动容器容纳。
+
 同一过渡可以用 `animate x, width` 应用于多个属性。`duration` 和 `delay` 用毫秒整数声明，默认均为 `0ms`。`easing` 支持 `linear`、`ease`、`ease-in`、`ease-out`、`ease-in-out` 和 `cubic-bezier(x1, y1, x2, y2)`。自定义曲线的两个 x 坐标均须在 0 到 1 之间。`enabled` 可绑定应用状态，关闭后属性直接显示目标值。相同类型且色标数量一致的渐变也可参与过渡。
 
 每个属性保留自己的开始和结束时间。目标改变时从当前显示值起步，其他属性继续原有过渡。窗口在延迟期间可等待下一次唤醒。运行 `bazel run //examples/layout:layout -- --animations`，可对比线性与缓动，在过渡中反转目标或只更新旁边的计数。
@@ -26,7 +30,9 @@
 
 取消勾选会保留内容和布局，禁用组内输入、快捷键和弹层。普通输入焦点会回到仍可用的分组标题。运行 `bazel run //examples/controls:controls -- --groups` 体验。
 
-`Expander` 默认折叠。设定 `title` 和可双向绑定的 `expanded`，就可以通过点击标题、Enter、Space 或无障碍展开和折叠。用户切换会触发 `expanded-changed(bool)`。折叠释放内容占用的布局空间，保留控件状态，并把内容里的焦点移回标题。展开后的子项沿用垂直布局的内边距、间距与尺寸约束。运行 `bazel run //examples/controls:controls -- --expander`，输入草稿后按 F8 折叠，再展开可继续编辑。
+`Expander` 默认折叠。设定 `title` 和可双向绑定的 `expanded`，就可以通过点击标题、Enter、Space 或无障碍展开和折叠。用户切换会触发 `expanded-changed(bool)`。折叠释放内容占用的布局空间，保留控件状态，并把内容里的焦点移回标题。展开后的子项沿用垂直布局的内边距、间距与尺寸约束。 iOS 的展开标题会读出当前状态，并提供 **Expand** 或 **Collapse** 无障碍动作。展开后的子控件可以分别聚焦。可勾选的 `GroupBox` 会同时向 UIKit 报告标题的勾选值和子项的禁用状态。运行 `bazel run //examples/controls:controls -- --expander`，输入草稿后按 F8 折叠，再展开可继续编辑。
+
+[Android 连接面板](../examples/android/README.md#独立控件回归) 演示编辑时折叠、标题焦点恢复和草稿保留，也可比较禁用分组时保留的布局。
 
 `FlowLayout` 按子项的首选尺寸自动换行，设置 `orientation: vertical;` 可改为纵向排列并换列。每一行或列独立应用 `alignment` 和 `cross-axis-alignment`，子项仍可使用尺寸约束、`layout-order` 和 `cross-axis-self-alignment`。用 `horizontal-spacing` 和 `vertical-spacing` 分别控制两个方向的间距，默认沿用 `spacing`。隐藏和零尺寸子项不参与排布。运行 `bazel run //examples/layout:layout -- --flow` 后调整窗口宽度，可观察按钮换行和下方状态文本的位置变化。
 
@@ -61,6 +67,8 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 设置 `selectable: true;` 后，`StyledText` 可以拖选、双击选词、全选和复制纯文本。选区按已排版的字形定位，样式和链接保持有效。短按链接触发 `link-activated`，从链接上开始拖动则选择文字。可通过 `selected-text` 读取选中内容，通过 `select-all()`、`select-word()`、`set-selection-offsets(anchor, focus)`、`clear-selection()` 和 `copy()` 操作已聚焦的选区。全选包含原文中被截断的部分。运行 `bazel run //examples/layout:layout -- --selectable-styled-text` 体验。
 
+Android 库存示例的 **Open bulletin** 演示轻触链接、长按选词、从编辑菜单复制纯文本，以及截断后的链接命中。设备回归目标为 `//examples/android:bulletin_ui_test`。[Android 示例](../examples/android/README.md#富文本触摸回归)
+
 窗口可绑定 `default-font-family`、`default-font-size`、`default-font-weight` 和 `default-font-italic`。文字、按钮和输入控件可分别用 `font-family`、`font-size`、`font-weight` 和 `font-italic` 覆盖窗口设置。字体可用系统字体族名或 `monospace`。缺少所选字形时继续用系统回退字体。字重使用 100 到 900，400 为常规字重，0 沿用默认值。可变字体使用支持的字重和斜体轴。布局、GPU 绘制、编辑器光标和无障碍文字范围共用字体选择。运行 `bazel run //examples/layout:layout -- --fonts`，切换等宽字体和字号，观察单行输入和多行换行。
 
 在 `.xr` 文件顶部写 `import "fonts/example.ttf";` 可内嵌本地 TTF、OTF 或 TTC 字体。路径相对于声明所在的 `.xr` 文件，Bazel 目标通过 `xr_ui_library` 的 `assets` 列出字体文件。通过字体内部的字体族名设置 `font-family` 或 `default-font-family`。内嵌字体优先于系统同名字体，TTC 可按字重和斜体选择文件中的字体变体。
@@ -79,11 +87,23 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `TextInput` 和 `LineEdit` 的 `input-type: number;` 接受 ASCII 数字，`decimal` 允许前置正负号和一个小数分隔符。`decimal-separator` 默认为 `"."`，也可设为 `","`。空文本、单独的符号或分隔符可作为编辑中间态，按 Enter 提交需至少有一位数字。`input-type: search;` 将单行输入向辅助技术标记为搜索框。
 
+`input-type: email;`、`url` 和 `tel` 可用于 `TextInput`、`LineEdit` 和可编辑的 `ComboBox`。在 iOS 和 Android 上，它们分别选择邮箱、网址和电话键盘。iOS 也把用途提供给 UIKit 的文本内容提示。三种类型沿用普通文本的编辑和校验规则，可用 `input-pattern` 或 `minimum-length` 声明表单约束。示例见 [iOS 巡检表单](../examples/ios/README.md)。
+
+iOS 的单行编辑器会根据 `input-type` 选择系统键盘。数字和电话字段的 **Done**、搜索字段的系统搜索键和外接键盘的 Return 使用同一套提交规则。通过校验时提交并收起数字、电话或搜索键盘，未通过时保留焦点供继续修改。其他单行字段的回车触发 `accepted`，多行字段的回车插入换行。
+
+`TextInput`、`LineEdit` 和可编辑的 `ComboBox` 支持 `return-key: next;` 和 `return-key: done;`。按键先校验当前值并触发原有提交回调。`next` 沿当前窗口或弹层的 Tab 顺序移动到下一个可编辑字段，跳过隐藏、禁用和只读字段。没有下一项时结束编辑。`done` 直接结束编辑。校验失败会保留焦点。默认的 `auto` 沿用输入类型原有的回车行为。iOS 会设置系统键盘上的 Next 或 Done，数字和电话键盘通过工具栏提供相应按钮。Android 使用系统输入法的对应操作。
+
+iOS 的系统字体回退使用 Core Text 绘制简体中文苹方字形。常规字重的回退字形与文本测量、光标定位和选区共用同一份排版数据，应用可以继续用 `font-family` 指定自己的字体。
+
 单行和多行编辑器都支持按词操作。macOS 使用 Option，Windows 和 Linux 使用 Ctrl。配合左右方向键可移动一个 Unicode 词段，再按住 Shift 可扩展选区。配合 Backspace 或 Delete 可删除光标前方或后方的词段，也可删除已有选区。方向键遵循双向文字的视觉顺序，删除使用文本中的逻辑前后顺序。每次删除可以撤销。运行 `bazel run //examples/form:form -- --bidi` 试用混合方向文字。
 
 `TextInput`、`LineEdit`、`TextEdit`、`TextArea`、`SearchField` 和可编辑的 `ComboBox` 支持 `mouse-selection-mode`。默认 `MouseSelectionMode.characters` 按 Unicode 字素拖选，`MouseSelectionMode.words` 让拖动和 Shift+点击按完整 Unicode 词段扩选。两种模式下双击都会选中词段，双击后不松开鼠标可继续逐词扩选。密码字段按词选择时以整段文字为单位。
 
 `MouseSelectionMode.caret` 让鼠标只负责聚焦和放置光标。键盘、无障碍和程序仍可设置选区。运行 `bazel run //examples/form:form -- --editor-selection`，点击模式按钮切换三种行为。
+
+触摸屏上，长按文本可选中光标处的词，保持手指接触并拖动可扩展选区，松手后打开编辑菜单。单行和多行编辑器的选区端点会显示手柄，松手后仍可重新拖动手柄来调整边界。菜单使用适合触摸的行高，复用编辑器的复制、剪切和粘贴规则。只读控件仍可选择和复制文字。可在 [Pocket Tasks](../examples/ios/README.md) 的备注页体验。
+
+iOS 跨应用粘贴可由系统弹窗请求授权。允许后，XRack 会在恢复活跃时核对原字段、文字和选区，再完成这次粘贴。拒绝授权会保留原文，应用真正进入后台时会取消尚未完成的粘贴。
 
 在 `TextArea` 或 `TextEdit` 中按住鼠标拖出编辑区域时，内容会沿该方向自动滚动并继续扩展选区。离边缘越远，滚动越快。不换行的长行也可向左右拖选。松开鼠标、移回编辑区域或失去焦点时停止滚动。运行 `bazel run //examples/form:form -- --long-text-selection` 可体验字素和词段两种拖选方式。
 
@@ -167,6 +187,8 @@ Loader {
 
 候选首次挂载时创建实例。关闭或切换后，原实例会在场景更新时卸载，再挂载会重新初始化其局部属性。需要保留的数据可放在父组件。切换时用普通的属性绑定更新候选的输入。
 
+Android 导航示例的 **Open tools** 演示在手指仍按住时替换候选。松手不会点击占据相同位置的新实例，父组件保留已提交的数据。设备回归目标为 `//examples/android:loader_ui_test`。[Android 示例](../examples/android/README.md#动态加载回归)
+
 `Loader` 在每个轴上分别采用显式尺寸或内容的自然尺寸。挂载后，子组件占用 Loader 的内容区域，`padding` 留在内容区域之外。`loaded()` 在新实例进入场景后触发一次。`self.focus()` 会把焦点交给当前内容中第一个可聚焦项。卸载后，该实例的焦点和指向旧实例的输入事件随之失效。
 
 Rust AOT 可以通过 `ui.loader_item::<Details>("area")` 取得已挂载候选的类型化句柄。解释器的 `Instance::loader_item("area")` 返回解释器实例的句柄。`upgrade()` 在原挂载仍有效时返回实例，卸载后返回 `None`。外部组件的句柄使用 `xrack::interpreter::Instance` 类型。
@@ -213,13 +235,15 @@ export component App inherits Window {
 
 `get(handle, "property", fallback)` 读取公开属性。句柄无法访问时返回指定默认值。`set(handle, "property", value)` 写入 `in` 或 `in-out` 属性。`call(handle, "callback", args...)` 调用无返回值的回调。有返回值的回调在参数前再传一个同类型的默认值。`move(handle, index)` 使用从零开始的索引并保留实例状态。`remove(handle)` 卸载或取消实例，使原句柄失效。
 
+Android 导航示例的 **Open cards** 演示同步与延迟创建、移动时保留卡片状态与焦点，以及长按移除后的触摸和句柄失效。设备回归目标为 `//examples/android:dynamic_cards_ui_test`。[Android 示例](../examples/android/README.md#动态卡片回归)
+
 `mount-url(source)` 通过解释器加载外部文件或 URL，返回 `ExternalComponentHandle`。它支持查询状态、移动和移除，外部 URI 与 `Loader.source-url` 使用相同的加载入口。
 
 ## 表单与选择控件
 
 `Slider` 的 `value` 可双向绑定到 `float` 属性。鼠标拖动连续更新数值，方向键按 `step` 调整，Home 和 End 移到端点。`changed(value)` 只在交互写入新值时调用，`released(value)` 在鼠标或调节键松开后调用。`orientation: vertical;` 将最小值放在下方。`Switch` 支持 `checked` 双向绑定与 `toggled()`。`ProgressIndicator` 接收 `0..1` 或百分比进度，`indeterminate: true;` 显示运动指示条。
 
-绑定、自定义手柄和回调可以直接读取 `Slider.value`、`Dial.value`、`SpinBox.value`、`DoubleSpinBox.value`，以及 `RangeSlider.lower-value` 和 `upper-value`。这些属性读取已提交的值。使用 `live: false;` 时，拖动中的手柄位置先预览，松手后提交数值。绑定到表格或树模型字段的编辑器也可以用 `self.value` 读取当前行的值。
+绑定、自定义手柄和回调可以直接读取 `Slider.value`、`Dial.value`、`SpinBox.value`、`DoubleSpinBox.value`，以及 `RangeSlider.lower-value` 和 `upper-value`。这些属性读取已提交的值。`Slider` 和 `RangeSlider` 使用 `live: false;` 时，拖动中的手柄位置先预览，松手后提交数值。绑定到表格或树模型字段的编辑器也可以用 `self.value` 读取当前行的值。
 
 `Slider.position`、`Dial.position` 与 `RangeSlider.lower-position`、`upper-position` 提供 0 到 1 的归一化位置。滑块使用 `live: false;` 时，位置跟随拖动预览，取消拖动后回到已提交值。手柄可用 `visual-position` 或 `lower-visual-position`、`upper-visual-position` 获取屏幕方向的位置，横向 RTL 从右到左，竖向从上到下。重复的编辑器可在各自的组件内读取位置。
 
@@ -239,11 +263,13 @@ export component App inherits Window {
 
 `check-state: expression;` 保留单向绑定，交互通过 `check-state-changed(state)` 报告请求的状态，适合汇总子项选择。`check-state <=> root.state;` 直接写入可写属性，也可绑定表格或树行的 `CheckState` 字段。运行 `bazel run //examples/controls:controls -- --check-state` 体验全选和独立三态循环。
 
-`RangeSlider` 使用 `lower-value` 和 `upper-value` 选择一个区间，两端可分别双向绑定到不同的 `float` 属性。Tab 在两个手柄之间移动焦点，方向键按 `step` 调整，Home 和 End 移到当前手柄可达的边界。点击轨道移动最近的手柄。手柄相遇时，向较小值拖动下限，向较大值拖动上限。横向和纵向都使用 `changed(lower, upper)` 和 `released(lower, upper)` 报告有效区间。外部写入交叉值时，显示的下限收拢到上限，下一次有效交互会写回有序区间。运行 `bazel run //examples/controls:controls` 体验。
+`RangeSlider` 使用 `lower-value` 和 `upper-value` 选择一个区间，两端可分别双向绑定到不同的 `float` 属性。Tab 在两个手柄之间移动焦点，方向键按 `step` 调整，Home 和 End 移到当前手柄可达的边界。点击轨道移动最近的手柄。手柄相遇时，向较小值拖动下限，向较大值拖动上限。触摸重合手柄时，沿滑轨移动至少 8 个逻辑像素才选定端点，以免轻微抖动改变拖动方向。横向和纵向都使用 `changed(lower, upper)` 和 `released(lower, upper)` 报告有效区间。外部写入交叉值时，显示的下限收拢到上限，下一次有效交互会写回有序区间。运行 `bazel run //examples/controls:controls` 体验。
 
 横向默认手柄和自定义手柄都继承 `layout-direction`。在 `right-to-left` 下，最小值在右侧，拖向左侧或按左方向键增加数值。纵向仍从底部向顶部递增，区间的下限和上限各自保有焦点和无障碍数值。运行 `bazel run //examples/controls -- --rtl-sliders` 切换方向并体验。
 
 `Slider` 和 `RangeSlider` 支持 `snap-mode`。用 `ScrollSnapMode.always` 在拖动时吸附到以最小值为起点的步进刻度，或用 `on-release` 在松手时吸附。最大值也可作为终点。设置 `live: false;` 后，鼠标和触摸拖动先预览手柄位置，松手后提交，数值变化时触发 `changed`，随后触发 `released`。Escape 可取消待提交的预览，键盘和辅助技术可以直接调整数值。运行 `bazel run //examples/controls:controls -- --slider-snap` 体验。
+
+Android 可构建 `//examples/android:controls_app` 体验触摸拖动、吸附、禁用输入和弹层交互。[Android 控件回归](../examples/android/README.md#独立控件回归) 提供模拟器测试与同一份界面的 AOT／解释器对照命令。
 
 `Slider`、`RangeSlider`、`Dial`、`SpinBox` 和 `DoubleSpinBox` 可设置 `wheel-enabled: true`。滚轮向上或向右增加数值，`RangeSlider` 调整靠近指针的手柄。滚轮按系统报告的行增量计步，触控板每 28 个逻辑像素累计为一步。一次输入的多步合并提交，数值变化时触发 `changed` 或 `edited`。上层 `WheelHandler` 仍可先消费输入。非循环控件到达边界后，同方向的后续滚轮会交回外层视口。带修饰键的滚轮沿用原路由。运行 `bazel run //examples/controls:controls -- --wheel` 可试用。
 
@@ -251,15 +277,23 @@ export component App inherits Window {
 
 `Dial` 的 `value` 同样可双向绑定。输入模式使用 `DialInputMode`，可取 `circular`、`horizontal` 或 `vertical`。圆形模式按角度定位，直线模式按水平或垂直位移相对调节。方向键按 `step` 调节，Home 和 End 移到端点。默认使用 280 度限位圆弧，`wrap: true;` 使用整圈并允许跨过端点。可用 `start-angle` 和 `end-angle` 自定义以十二点方向为零、顺时针递增的角度。事件 `changed(value)` 和 `released(value)` 与 `Slider` 相同。
 
-`SpinBox` 的 `value` 是可双向绑定的整数。它支持 `minimum`、`maximum`、`step-size`、`wrap` 和 `read-only`。方向键和步进按钮立即提交，直接输入的数字在 Enter 或移开焦点时提交，Escape 丢弃草稿。交互改值触发 `edited(int)`。
+[Android 控件回归](../examples/android/README.md#独立控件回归) 的 **Open dial** 面板可用触摸验证三种模式、拖出旋钮后的输入捕获和前后台切换。
+
+`SpinBox` 的 `value` 是可双向绑定的整数。它支持 `minimum`、`maximum`、`step-size`、`wrap` 和 `read-only`。方向键、步进按钮和无障碍步进以当前有效草稿为起点，只提交步进后的结果。没有有效草稿时以已提交值为起点。直接输入的数字在 Enter 或移开焦点时提交，Escape 丢弃草稿。交互改值触发 `edited(int)`。`DoubleSpinBox` 沿用相同规则，按配置的小数精度和分隔符解析草稿。
 
 `DoubleSpinBox` 使用相同的交互，`value` 和步进范围使用 `float`，改值触发 `edited(float)`。`decimals` 指定 0–15 位小数，默认 2 位，步进与提交都按此精度舍入。`decimal-separator` 可设为 `"."` 或 `","`，显示和输入使用同一分隔符。编辑期间外部更新数值会使旧草稿失效。在表格和树视图里可双向绑定可写记录的浮点字段，提交时保留同一行其他字段的更新。运行 `bazel run //examples/controls:controls -- --decimal-spin` 体验。
+
+iOS 会按数值类型显示整数、小数或可输入负号的系统键盘。键盘上方的 **Done** 提交草稿并收起键盘，切换到另一控件也会提交。键盘收起时，点步进箭头可以直接调整数值。系统键盘的英文点号或逗号会转换成 `DoubleSpinBox` 配置的分隔符。校验、范围限制和舍入沿用控件本身的规则。可在 [Pocket Tasks](../examples/ios/README.md) 的 **Readings** 页面体验。
 
 `Tumbler` 用 `model: [string]` 显示标签，或用 `count` 生成从 0 开始的数字。选中项居中，`current-index` 可双向绑定，用户提交时触发 `changed(index)`。`visible-item-count` 取 1–15 之间的奇数，默认 5。默认在模型项多于可见项时循环，也可显式设置 `wrap`。
 
 鼠标或触摸拖动时预览。慢速松手直接吸附，快速甩动会先按惯性滚动，再在目标行居中时提交一次。惯性期间保留已提交的值，循环模型可以跨过首尾，非循环模型在边界内吸附。再次按住、用键盘或滚轮调整、控件被禁用、模型重排或替换都会取消待提交的惯性选择。
 
 `flick-deceleration` 用逻辑像素每平方秒表示减速度，默认 `2400`，设为 `0` 可关闭惯性。只读的 `dragging`、`flicking` 和 `moving` 可用于绑定样式。滚轮按项移动，触控板像素滚动累积到一行后提交。方向键、Home、End 和 Page Up / Page Down 支持键盘选择。运行 `bazel run //examples/controls:controls -- --tumbler` 体验小时和分钟选择。
+
+[Android 控件示例](../examples/android/README.md#独立控件回归) 的 **Open wheels** 面板展示触摸滚轮和曲线卡片选择。设备回归覆盖首尾循环、卡片镜像、禁用状态和应用进入后台时取消未提交的拖动。
+
+iOS 开启「减弱动态效果」时，`Tumbler`、`PathView` 和时间选择器的滚轮仍跟随手指。松手时就近选中当前行，跳过惯性滑动。滑动期间开启设置时，滚轮在下一帧选中当前显示位置对应的行。时间弹层里的选项仍是草稿。滚轮减速时，Tab 可以移动焦点，滚轮继续滑动。点确认按钮或在其上按 Return／空格，会先让可见行落位，再校验草稿并写入绑定。取消则丢弃草稿。
 
 记录模型可以用 `text-role` 指定显示标签，用 `value-role` 指定业务值。两项都是常量字段路径。标签字段必须为 `string`，业务字段可以是 `string`、`int`、`float`、`bool`、`Date` 或 `Time`。省略 `text-role` 时使用 `text` 字段，省略 `value-role` 时使用标签字段。
 
@@ -300,7 +334,7 @@ PathView {
 }
 ```
 
-选择项吸附到路径长度的中点，`option-progress` 是该卡片从路径起点算起的弧长占比。`PathViewOption` 也可读取原始模型数据、标签、索引、选中状态和位移。数字、字符串与记录模型沿用滚轮的选择语义。拖动方向由 `orientation` 指定，默认横向。视图支持惯性、鼠标点击、方向键和原生无障碍选择。RTL 会镜像路径与横向导航。运行 `bazel run //examples/navigation:navigation -- --path-view` 体验曲线、直线和 RTL 切换。
+选择项吸附到路径长度的中点，`option-progress` 是该卡片从路径起点算起的弧长占比。`PathViewOption` 也可读取原始模型数据、标签、索引、选中状态和位移。数字、字符串与记录模型沿用滚轮的选择语义。拖动方向由 `orientation` 指定，默认横向。视图支持惯性、鼠标点击、方向键和原生无障碍选择。RTL 会镜像路径与横向导航。iOS 将 `PathView` 公开为一个可调节元素，读出当前卡片标签，增减沿模型顺序选择上一项或下一项。可以用 `accessible-name` 指定控件名称。运行 `bazel run //examples/navigation:navigation -- --path-view` 体验曲线、直线和 RTL 切换。
 
 `Button`、`ToolButton` 和 `RoundButton` 的只读属性 `pressed` 可绑定到内容或样式。鼠标和触摸按住按钮、或聚焦后按住激活键时返回真。移出、滚动接管或松开会清除状态。正常松手产生的 `clicked()` 可以读取到已经更新的松开状态，连发回调可以读取到仍按住的状态。运行 `bazel run //examples/controls:controls -- --button-pressed` 查看实时提示。
 
@@ -314,9 +348,13 @@ PathView {
 
 普通按钮可声明 `pressed()`、`released()` 和 `canceled()`。三种输入共用这个顺序。按下和释放事件中的 `pressed` 属性已经更新，正常点击在 `released()` 之后处理。在外面松手、失焦或滚动接管时发出 `canceled()`。长按和连发期间，按下与释放事件仍各对应一次真实手势。运行 `bazel run //examples/controls:controls -- --button-lifecycle` 查看顺序。
 
+[Android 按压示例](../examples/android/README.md#独立控件回归) 演示触摸短按、单次长按、连发到上限，以及触点移动或切到后台后的取消事件。
+
 可在有副作用的回调中调用当前组件中可静态寻址的 `Button`、`ToolButton` 或 `RoundButton` 的 `click()`。程序化点击同步发出 `pressed()` 和 `released()`，再走普通激活路径，包括勾选、互斥组和共享 `Action`。按下回调禁用按钮时发出 `canceled()`，释放回调禁用按钮时跳过激活。同一按钮的递归点击会被忽略。运行 `bazel run //examples/controls:controls -- --programmatic-click`，点击触发按钮或按 F4 查看顺序。
 
 `animate-click()` 会立即进入按下态，并由窗口在 100 毫秒后释放和激活。释放前再次调用会重启计时。等待期间禁用按钮会取消激活，卸载后清除按下态。上述示例也可按 F5 体验动画。
+
+[Android 点击路径示例](../examples/android/README.md#独立控件回归) 验证触摸双击与共享命令的顺序，以及程序化点击、动画重启和禁用取消。
 
 `toggle()` 同步修改按钮、共享 `Action` 或互斥组拥有的状态。它可以修改禁用或隐藏按钮的状态，仅更新绑定和外观。互斥组在选中该项和清空选择之间切换。使用 `current-value` 的 `ButtonGroup` 以空字符串表示无选中项，选项使用非空的业务值。运行 `bazel run //examples/controls:controls -- --programmatic-toggle` 后按 F6 体验。
 
@@ -325,6 +363,8 @@ PathView {
 `DelayButton` 在鼠标、触摸或键盘持续按住达到 `delay` 毫秒后设置 `checked`，并触发一次 `activated()`。默认延时 3000 毫秒。进度颜色可用 `progress-color` 设置，`checked` 可双向绑定。松手、移出、失焦或禁用会取消仍在等待的确认。已确认的按钮再次点击时复位。
 
 通过辅助技术操作时，第一次激活开始等待，提示就绪后第二次激活提交。提前再次激活或按 Escape 会取消。运行 `bazel run //examples/controls:controls -- --delay` 体验。
+
+[Android 延时确认示例](../examples/android/README.md#独立控件回归) 验证滚动区域里的按压进度、提前松手、禁用和确认后复位。
 
 `Button`、`ToolButton` 和 `RoundButton` 可以用 `checkable: true;` 保留选中状态。`checked` 默认为 false，可用 `checked <=> root.pinned;` 双向绑定。用户激活时先写入选中值，再发出 `toggled()` 和 `clicked()`。程序修改绑定值时只更新选中态和无障碍状态。未关联外部绑定的重复项各自保留状态，移动模型行时选中态跟随原行。绑定了 `Action` 的按钮继续使用命令的选中值。运行 `bazel run //examples/controls:controls -- --checkable-buttons`。
 
@@ -360,7 +400,11 @@ PathView {
 
 `auto-complete: true;` 可在编辑区显示模型中首个前缀匹配项的后缀。光标位于草稿末尾、没有选区且 IME 未预编辑时才显示。已有精确匹配时保留当前文字。按可见后缀所在方向的箭头键插入补全并形成一笔可撤销的编辑。按 Escape 收起提示。模型变化会使过期候选失效。按 Enter 仍提交草稿，Tab 仍切换焦点。
 
-`SearchField` 支持 `text` 双向绑定，搜索图标提交查询，清空图标和选中候选都可撤销。候选由应用通过 `suggestions` 提供，类型为 `[string]`。可用 `suggestions-for` 标记生成这批结果的查询，只有标记与当前输入一致时才显示。方向键高亮候选，Enter 选中高亮项或提交当前查询，Escape 收起候选。候选变化使旧的高亮失效。
+Android 导航示例的 **Open choices** 覆盖预编辑、记录选项的业务值、禁用项和输入法确认。设备回归目标为 `//examples/android:combo_ime_ui_test`。[Android 示例](../examples/android/README.md#可编辑下拉框与输入法回归)
+
+`SearchField` 支持 `text` 双向绑定，搜索图标提交查询，清空图标和选中候选都可撤销。候选由应用通过 `suggestions` 提供，类型为 `[string]`。可用 `suggestions-for` 标记生成这批结果的查询，只有标记与当前输入一致时才显示。方向键高亮候选，Enter 选中高亮项或提交当前查询，Escape 收起候选。候选变化使旧的高亮失效。 iOS 将文本区、提交按钮和可用的清空按钮按顺序提供给系统无障碍。清空后可以继续输入，也可以用 Command+Z 恢复查询。
+
+Android 导航示例的 **Open search** 用定时器模拟乱序结果，覆盖候选失效、触摸选择、撤销和显式提交。设备回归目标为 `//examples/android:search_results_ui_test`。[Android 示例](../examples/android/README.md#搜索候选回归)
 
 `ComboBox` 和 `SearchField` 继承 `layout-direction`。RTL 下下拉触发器和清除按钮在左侧，搜索按钮在右侧，候选弹层和项目文字从右侧对齐。行内补全按草稿的文字方向摆放。运行 `bazel run //examples/selection -- --rtl-choice` 切换体验。
 
@@ -380,7 +424,11 @@ PathView {
 
 `ButtonGroup { exclusive: false; }` 可组合普通按钮、`CheckBox` 和 `Switch`。普通按钮可用 `checked <=> root.flag;` 绑定各自的选中态。全选框用 `check-state <=> options.check-state;` 绑定汇总结果，普通成员各自保留 Tab 停靠点。汇总使用声明中的所有成员，包括隐藏或禁用的选项。`options.set-check-state(CheckState.checked)` 和 `options.set-check-state(CheckState.unchecked)` 分别批量选中和清除，传入部分选中值会保留当前成员状态。批量操作通过各成员的绑定更新属性，成员的用户操作回调由各自的交互触发。运行 `bazel run //examples/controls:controls -- --grouped-buttons` 体验两种分组。
 
+[Android 导出选项示例](../examples/android/README.md#独立控件回归) 把自定义全选指示器、三态复选框和可拖动开关放在同一组，演示批量更新与成员交互各自的回调顺序。
+
 `TabWidget` 可以直接声明多个 `Tab`，也可以用一个 `for … : Tab` 从模型创建标签和页面。可双向绑定 `current-index`，并通过 `orientation` 切换顶部或侧边标签栏。方向键跳过隐藏和禁用项，Tab 键把每组选项视为一个焦点停靠点。
+
+Android 的 `//examples/android:navigation_app` 展示单选组、标签页、滑动页、分页圆点、抽屉和页面栈。[页面导航与触摸回归](../examples/android/README.md#页面导航与触摸回归) 提供设备测试和 AOT／解释器对照命令，页内计数可用于检查切换后的局部状态。
 
 模型驱动的 `Tab` 可以用 `title: doc.title` 和 `value: doc.id`。内建标签栏会读取各行标题及可用状态，页内组件在首次选中时才创建。已访问页的局部状态随模型行保留，包括在同一模型内插入、重排或切页。运行 `bazel run //examples/navigation:navigation -- --model-tabs` 试用模型标签、RTL 侧边栏和页码指示器。
 
@@ -392,7 +440,7 @@ PathView {
 
 `TabWidget` 的标签尺寸会保留可读的标题宽度和可点击的行高。标题超出空间后可沿标签栏触摸滑动或滚动。横排可以用横向滚轮或 Shift + 滚轮，竖排使用上下滚动。只有标题栏滚动，页内内容的位置保持稳定。键盘选中超出视口的标签会将它滚入视野。运行 `bazel run //examples/navigation:navigation -- --model-tabs`，开启「窄标签栏」试用拖动、滚动和重排。
 
-`TabBar` 和 `TabWidget` 的 `tabs-closable: true` 会为标题添加关闭按钮。`TabButton` 或 `Tab` 的 `closable` 可以覆盖默认值，例如用 `closable: false` 固定某一页。点击按钮或在标题聚焦时按 Delete 会触发 `tab-close-requested(index, value)`，参数为零基索引和当前 `value`。未设置 `value` 时传空字符串。应用可以在这个回调中保存或确认，再用 `Model.remove` 移除对应的行。异步确认可使用稳定的业务标识重新定位。关闭背景页时可以保留正在编辑的页面。`--model-tabs` 示例包含标题关闭按钮和固定的「概览」页。
+`TabBar` 和 `TabWidget` 的 `tabs-closable: true` 会为标题添加关闭按钮。`TabButton` 或 `Tab` 的 `closable` 可以覆盖默认值，例如用 `closable: false` 固定某一页。点击按钮或在标题聚焦时按 Delete 会触发 `tab-close-requested(index, value)`，参数为零基索引和当前 `value`。未设置 `value` 时传空字符串。应用可以在这个回调中保存或确认，再用 `Model.remove` 移除对应的行。异步确认可使用稳定的业务标识重新定位。关闭背景页时可以保留正在编辑的页面。 iOS 在无障碍树中分别公开标签、关闭按钮和当前页内容。 标签栏溢出时，可从可见标签或关闭按钮发起 UIKit 滚动，滚动只移动标签栏。关闭背景标签时保留当前页焦点，关闭当前标签后，焦点随应用选中的后续页面转移。`--model-tabs` 示例包含标题关闭按钮和固定的「概览」页。
 
 在回调里可调用 `bar.move-item(from, to)`、`tabs.move-item(from, to)` 或 `pages.move-item(from, to)`，移动同一个可写列表中的原行。参数是零基索引，`to` 是移动完成后的位置。相同索引或越界时保持原样。命令在回调内立即生效并保留选择和页面状态。`TabBar` 和 `TabWidget` 触发 `tab-moved(from, to)`，`SwipeView` 触发 `page-moved(from, to)`。程序化移动也可以移动隐藏或禁用的行，`reorderable` 只控制手势和键盘重排。
 
@@ -403,6 +451,8 @@ PathView {
 当焦点在 `TabWidget` 或 `SwipeView` 的页面内时，切页会恢复新页面上次聚焦的控件。没有记录时，焦点移到页内第一个可聚焦控件。模型页面按行身份记忆焦点，重排后仍能返回同一行的控件。点击 `TabWidget` 的标题后，方向键继续在标题间导航。按 Tab 进入内容区时，会优先回到该页上次聚焦的 Tab 停靠点。可在 `--model-tabs` 示例里聚焦页内的「详情」后按 F6 切页，或在 `--model-swipe` 中滑动、按方向键切页并用 F7 重排前两项。
 
 `SwipeView.transition-duration` 以毫秒指定选中页改变后的滑动时长，默认为 `0`。启用后，拖动时当前页和相邻页跟随指针移动。达到切页距离后松手会从当前位置继续滑动。短距离快速甩动也可切到同方向的相邻页，停顿后以拖动距离判定，收手时急反向可以滑回当前页。取消手势也会滑回当前页。拖动时只准备当前方向的一张相邻页，选择、焦点和事件仍由当前页处理。过渡沿 `orientation` 运动，横排遵循 RTL。过渡期间旧页仅用作绘制快照，焦点和无障碍立即切到新页。按方向键再次切页时，会从已显示的动画帧接续。手势开始后若当前页或目标页被模型替换，或目标页因重排改变位置，本次手势取消。运行 `bazel run //examples/navigation:navigation -- --model-swipe` 可查看 180 毫秒的过渡。
+
+iOS 的 `SwipeView` 支持从页内控件发起无障碍翻页。翻页遵循排列方向和 RTL，跳过隐藏或禁用的页面，触发同一个 `changed(index)` 回调。页内滚动区域能沿请求方向继续滚动时优先滚动内容。翻页完成后，应用把当前可用页的位置和页数发给 UIKit。
 
 `SwipeView` 可以用一个 `for … : SwipePage` 从模型生成全部页面。和 `TabBar` 使用同一个模型、绑定同一个 `current-value` 后，两处的顺序和选择都随模型同步。建议把编辑器、表单等交互和局部状态封装在页内的组件中。
 
@@ -456,6 +506,10 @@ SwipeView {
 
 `TimePickerPopup` 通过 `open` 打开，打开时读取一次 `time` 作为草稿。确认后写回并触发 `accepted(time)`，取消或按 Escape 触发 `canceled()`。可用 `title`、`accept-text` 和 `cancel-text` 自定义文字。`minimum-time` 和 `maximum-time` 可限制弹层的确认范围。滚轮可以经过超出范围的中间值，小于下限或大于上限时禁止确认。运行 `bazel run //examples/controls:controls -- --time` 体验。
 
+日期和时间弹层会根据可用尺寸排布内容。确认和取消按钮为触控预留至少 44 个逻辑像素的宽高。横屏高度紧张且宽度足够时，按钮移到选择区旁边，给日历格和时间滚轮保留更多高度。窄屏通常把按钮放在选择区下方，较长的按钮文字可以分行排列。iOS 的无障碍树会公开单个日期、翻月和操作按钮，并把时间滚轮公开为可调节控件。见 [Pocket Tasks 的巡检页](../examples/ios/README.md)。
+
+iOS 日期弹层翻月时，无障碍焦点会跟到当前月的可选日期。翻月本身保留草稿，按回车可选择当前焦点日期。当月没有可选日期时，焦点落到可用的翻月按钮。如果翻月也不可用，焦点落到取消按钮。关闭弹层后，焦点回到打开它的控件。
+
 `TimeField` 定义在 `examples/form/widgets.xr`，可直接导入。它组合文本编辑器和时间弹层，支持输入或粘贴纯数字并用 Enter 提交，Escape 恢复已提交时间。`show-seconds` 同时控制文本和滚轮是否显示秒，隐藏时提交分钟会保留原秒数。文本使用 24 小时制，`use-24-hour-format` 可单独调整弹层。可用 `set-time(time)` 同步程序写入，两种输入路径共用 `minimum-time`、`maximum-time` 和 `committed(time)` 回调。运行 `bazel run //examples/form:form -- --time-field` 体验。
 
 `ColorPickerPopup` 支持 RGBA 滑条、0–255 数值输入和十六进制编辑。`show-color-plane: true;` 打开 HSV 色板和色相滑条，鼠标或触摸可拖动色板，方向键分别调整饱和度和明度。所有输入共享草稿并实时更新棋盘格上的预览。十六进制输入接受六位 RGB，也可以在 `show-alpha: true;` 时输入八位 RGBA。六位输入和隐藏透明度控件都会保留原有 alpha。格式无效时保留上一次有效预览，修正后可确认。
@@ -464,17 +518,47 @@ SwipeView {
 
 `FontPickerPopup` 通过 `open` 打开，使用当前窗口渲染器的系统字体和内嵌字体。可选择字体族、逻辑像素字号、1–1000 的字重以及斜体，`preview-text` 自定义预览内容。`font` 支持双向绑定，确认时一次写回整个 `Font` 并触发 `accepted(font)`，取消或按 Escape 丢弃草稿并触发 `canceled()`。用 `Text { font: root.selected; }` 应用选择，或将窗口的 `default-font` 绑定到同一值。单独设置的 `font-family`、`font-size`、`font-weight` 和 `font-italic` 覆盖对应字段。构造示例为 `Font { family: "sans-serif", size: 16px, weight: 400, italic: false }`。运行 `bazel run //examples/controls:controls -- --font-picker` 体验。
 
+颜色和字体弹层在受限高度下滚动编辑内容，确认与取消按钮留在可见操作区，按钮至少为 44×44 逻辑像素。Android 宿主将输入法实际占用区域纳入窗口布局，编辑期间仍可访问操作区。[Android 颜色与字体回归](../examples/android/README.md#颜色与字体回归) 提供手机示例、像素验证和 AOT／解释器对照命令。
+
+Android 的基础编辑快捷键沿用共享编辑器语义，包括全选、复制、剪切、粘贴、撤销／重做和 Shift 选字。平台会在失焦时清除修饰键状态，编辑器只读时仍可复制。[Android 键盘回归](../examples/android/README.md#键盘快捷键回归) 检查编辑控件和独立 Shortcut 的实际按键路径。
+
 在组件根部声明命名的 `FileDialog`，从回调调用 `picker.open()`。`mode` 可取 `open-file`、`open-files`、`save-file`、`select-folder` 或 `select-folders`。可设置 `directory`、`file-name` 和 `name-filters`，扩展名过滤用 `"Text files (*.txt *.md)"` 这样的形式。宿主异步显示系统面板，并在 UI 线程触发 `accepted([string])`、`canceled()` 或 `failed(string)`。应用收到 UTF-8 本地路径后自行读写文件。同一窗口串行显示面板，同一个 `FileDialog` 的请求未结束时会合并重复调用。发起组件离开活动场景后，宿主丢弃该请求的结果。运行 `bazel run //examples/form:form -- --files` 体验。
 
 `FileDialog.selected-files` 和 `selected-file` 可绑定到界面，分别提供上次确认的全部路径和第一条路径。确认结果在 `accepted` 执行前提交。取消、失败和弃用回执保留上一次结果。`FileDialog` 与 `MessageDialog` 都提供只读的 `pending`，排队和显示面板期间为真，结果回调执行前恢复为假。
 
+Android 宿主通过 `XRackActivity` 接入系统文档选择器，支持 `open-file`、`open-files` 和扩展名过滤。选中文档后，宿主在后台复制到应用私有缓存，再把可读取的本地路径交给 `accepted`。应用可自行保存需要长期保留的内容。Rust 宿主还可通过 `DesktopWindow.export_file()` 导出现有文件，通过 `select_directory()` 获取 `AndroidDirectory`，在工作线程列举和读取授权目录中的文档。DSL 的 `FileDialog.save-file`、`select-folder` 和 `select-folders` 仍待接入。构建和设备回归命令见 [Android 示例](../examples/android/README.md)。
+
+iOS 上的 `open-file` 和 `open-files` 打开系统 Files 选择器。扩展名过滤和起始目录由系统处理，界面标题由 Files 提供。选择的文件会复制到应用沙盒，应用可以在 `accepted` 后读取本地副本，需要长期保留时应移到应用管理的位置。iOS 上的 `save-file`、`select-folder` 和 `select-folders` 会触发 `failed`。
+
 `MessageDialog` 也通过 `open()` 打开系统对话框，可设置 `title`、`text`、`informative-text` 和 `level`。`buttons` 可取 `ok`、`ok-cancel`、`yes-no` 或 `yes-no-cancel`。确认和拒绝分别触发 `accepted()` 与 `rejected()`，随后 `finished(StandardButtonKind)` 报告具体结果。系统关闭或取消返回 `cancel`，宿主检测到的打开错误通过 `failed(string)` 返回。文件面板与消息对话框按请求顺序共用窗口的异步队列。运行 `bazel run //examples/form:form -- --message` 体验。
 
+iOS 使用 UIKit 系统提示样式显示 `MessageDialog`，四种按钮组合都可用。应用可在 `Localizable.strings` 中翻译 `OK`、`Yes`、`No` 和 `Cancel`。iOS 提示样式统一，`level` 不改变提示外观。
+
+Android 使用系统 `AlertDialog`，支持四种按钮组合。点击按钮后在 XRack UI 线程交付对应的 `StandardButtonKind`，返回键和点击外部区域按 Cancel 处理。`level` 沿用同一系统提示样式。
+
+Android 的 Rust 宿主还可在 `spawn_local` 中调用 `DesktopWindow.share_text(text)` 打开系统分享面板。返回 `Ok(true)` 表示系统确认用户已选择目标应用，`Ok(false)` 表示关闭分享面板，`Err` 报告打开失败。调用结束后可继续使用原窗口和组件状态。接收应用后续的发送或保存由它自身处理，设备回归用本地测试接收应用校验完整文本与 `text/plain` 类型。命令见 [Android 示例](../examples/android/README.md)。
+
+Android 的 `XRackActivity` 为可编辑文本控件提供 `InputConnection`，把预编辑与已提交文本分别传给 XRack。预编辑只影响当前编辑器的显示，提交后才更新绑定属性。焦点或控件身份变化会取消旧会话，延迟返回的输入回执按会话身份丢弃。输入法使用的 UTF-16 选区会转换为 UTF-8 字节边界，按码点删除可完整移除 emoji。设备回归通过测试输入法覆盖这些操作，命令见 [Android 示例](../examples/android/README.md)。
+
+iOS 通过 UIKit 的无障碍取消动作关闭当前菜单、下拉选项或弹层。每次只关闭最上层，遵守 `close-on-escape: false;`。关闭后沿用弹层的焦点还原，日期和时间弹层取消时保留打开前的值。
+
+Android 系统返回键优先关闭当前菜单、下拉框、弹层或对话框，然后处理页面栈。`close-on-escape: false;` 的弹层会保留，按键松开和长按重复事件不会继续关闭下一层。日期和时间弹层通过返回取消时会丢弃未确认的草稿。`//examples/android:picker_ui_test` 覆盖日期、时间和旋转过程，命令见 [Android 日期与时间回归](../examples/android/README.md#日期与时间回归)。
+
+Android 页面返回优先处理焦点所在的栈。焦点在页外时，会查找唯一可返回的活动 `StackView`，嵌套时优先内层。多个独立栈同时可返回且没有焦点归属时保持页面。查找只使用已准备好的可见场景，不展开虚拟列表的离屏行；禁用、隐藏和离屏的栈不会成为默认候选。[Android 导航回归](../examples/android/README.md#页面导航与触摸回归) 覆盖关闭全局抽屉后继续返回页面的路径。
+
+iOS 的 Rust 宿主可在 `spawn_local` 中调用 `DesktopWindow::share_text(text)`、`share_file(path)` 或 `export_file(path)`。前两个打开系统分享面板，`export_file` 通过 Files 保存现有文件的副本。传文件时使用绝对路径，并保留源文件直至异步调用结束。返回 `Ok(true)` 表示操作完成，`Ok(false)` 表示取消，`Err` 报告无法打开或执行失败。同一窗口已有系统面板时，请等它关闭再发起操作。窗口句柄来自 `Desktop::open()` 或能同时接收可用尺寸的 `Desktop::open_with_viewport()`。用法见 [Pocket Tasks iOS 示例](../examples/ios/README.md)。
+
+iOS 的 Rust 宿主也可以在 `spawn_local` 中调用 `DesktopWindow::select_directory().await`。选择成功返回 `IosDirectory`，取消返回 `Ok(None)`。把句柄移到工作线程后，用 `with_read_access("", |path| ...)` 读取目录列表，或传入相对路径读取子项。系统授权和经过协调的文件路径在回调期间有效，应用应在回调结束前完成读取。
+
 `SplitView` 把直接子元素排成横向或纵向面板，支持嵌套。面板沿分栏方向使用 `min-width`、`preferred-width`、`max-width` 或对应的高度属性。拖动分隔线只调整相邻的可见面板，并在当前实例中保存比例。用 Tab 聚焦分隔线后，可用方向键步进，Home 和 End 到达两个边界。`handle-size` 和 `handle-color` 设置分隔线，`resized()` 在比例更新后触发。隐藏面板不占空间，再显示时会恢复其比例。
+
+iOS 会把仍可移动的分隔线公开为可调节控件。无障碍增减操作以 8 个逻辑像素为一步，沿用触摸拖动和键盘步进的尺寸限制。空间不足、分隔线已无法移动时，只公开当前尺寸。[iOS 分栏示例](../examples/ios/README.md#ipad-分栏示例)复用桌面示例的 `.xr`。
 
 横向分栏继承 `layout-direction`，RTL 下第一个面板在右侧。拖动和方向键按屏幕方向移动分隔条，Home、End 和无障碍数值对应声明顺序中前一个面板的尺寸。切换方向后可继续使用已保存的比例或侧栏尺寸。运行 `bazel run //examples/split -- --rtl-split` 切换验证。
 
 `SplitView.save-state()` 返回可持久化的布局字符串，`restore-state(state)` 在回调中恢复比例。命名面板按 ID 匹配，匿名面板按声明位置匹配。恢复会校验版本、面板集合和比例，再按当前尺寸约束布局。Rust 可用 `save_split_state(id)` 和 `restore_split_state(id, state)` 读写状态，后者返回是否接受了字符串。保存数据由应用负责。运行 `bazel run //examples/split:split`，用「保存布局」和「恢复布局」体验。
+
+[Android 分栏布局回归](../examples/android/README.md#分栏布局回归) 检查宽于可见分隔线的触摸热区、两层分栏的尺寸约束、RTL 拖动、禁用以及保存恢复。
 
 `handle-hit-size` 设置鼠标和触摸可抓取的宽度，纵向分栏时设置高度。命中尺寸默认等于可见分隔线的尺寸，可设得更大以便触摸操作。命中区域重叠时选最近的可拖动分隔线。`resizing` 是只读布尔属性，鼠标或触摸抓住分隔线时变为 `true`，释放、取消或分隔线失效时恢复为 `false`。键盘仍按步长调整。示例的 `--fill-pane` 模式用 `handle-color: self.resizing ? #ffbf69 : #81a6e1;` 显示拖动反馈。
 
@@ -499,7 +583,13 @@ SplitView {
 
 `MenuBar` 和 `ContextMenuArea` 分别通过顶部菜单和右键打开 `Menu`。菜单支持嵌套子菜单、禁用项、分隔线和可勾选的 `MenuItem`。`activated()` 在选中可用菜单项时触发。方向键导航，Escape 逐层关闭。右键菜单也可用 Shift+F10 打开。
 
+触屏上，按住 `ContextMenuArea` 约 500 毫秒会打开同一个菜单，松手不会触发底层控件的点击。手指先滑动时，滚动和拖拽仍由原来的控件处理。触摸菜单的行高为 44 个逻辑像素，菜单过长时可在面板内滑动浏览，不会带动底部列表。默认文本编辑菜单和显式 `ContextMenuArea` 共用长按手势，控件有自定义菜单时优先打开它。用 [Pocket Tasks](../examples/ios/README.md) 长按任务行体验。
+
+触摸点按 `MenuBar` 打开的菜单及其子菜单也使用 44 个逻辑像素行高。Android 导航示例的 **Open commands** 覆盖行高、共享命令和返回键关闭层级。[Android 示例](../examples/android/README.md#触摸菜单栏回归)
+
 菜单继承 `layout-direction`。RTL 下菜单栏从右向左排列，弹层和文字按起始侧对齐，图标、勾选标记和快捷键栏随布局换边。左键进入子菜单，右键返回。子菜单优先向左展开，空间不足时换边。运行 `bazel run //examples/menu -- --rtl-menu` 切换体验。
+
+在 iOS 上，具有上下文菜单的控件会在 VoiceOver 的「操作」转子中提供 **Show context menu**。打开后可以逐项选择菜单内容，使用系统的无障碍取消动作返回。
 
 单行、多行、搜索框、可编辑下拉框、数字输入框和正在编辑的表格或树单元格提供默认编辑菜单。右键、Shift+F10 或辅助技术均可打开。菜单与键盘共用选区、剪贴板和撤销记录。只读框可复制，密码框禁用复制和剪切。数字框的撤销和重做作用于草稿，提交时再更新绑定的数值。`ContextMenuArea` 优先，`context-menu-enabled: false` 可关闭默认菜单。菜单打开后，外部修改当前文本或选区会使旧操作失效。运行 `bazel run //examples/form:form -- --editor-menus` 体验。
 
@@ -536,6 +626,8 @@ SplitView {
 用 `@image-url("assets/frame.svg", nine-slice(4 6 8 10))` 创建九宫格图像。边距按上、右、下、左顺序指定源像素数，也可以给一个统一值，或给纵向和横向两个值。编译器会检查图像是否保留了正尺寸的中心。九宫格填满 `Image`，四角保留逻辑尺寸，空间不足时同轴边距按比例收缩。`horizontal-tile-mode` 和 `vertical-tile-mode` 独立支持 `stretch`、`repeat` 和 `round`，分别拉伸、按原尺寸平铺并裁剪末片、缩放为整数个完整的平铺单元。Rust 可以用 `Image::with_nine_slice` 为已有资源设置边距。运行时图片可用 `Image::Loaded` 提供，图片值通过 `clone()` 共享底层数据。运行 `bazel run //examples/media:media -- --nine-slice` 查看对照。
 
 `AnimatedImage` 可播放通过 `@image-url` 内嵌的本地 GIF。编译器合成差分帧并保留帧时长和文件循环次数，普通 `Image` 显示首帧。用 `playing` 开始或停止，停止会回到首帧。用 `paused` 暂停，或用 `speed` 调整播放速率。`loops: 0;` 沿用文件设置，`-1` 持续循环，正数表示总播放轮数。完成有限循环后保留末帧并触发 `finished()`。只读的 `current-frame` 和 `frame-count` 在窗口同步播放状态后可用于绑定。仍在场景中但不可见的控件冻结播放时钟，重新可见时继续。运行 `bazel run //examples/media:media -- --animated` 体验。
+
+Android 导航示例的 **Open images** 通过设备截图核对 PNG 图集的裁剪和尺寸适配，以及 GIF 首末帧和完成回调。设备回归目标为 `//examples/android:images_ui_test`。[Android 示例](../examples/android/README.md#图像和-gif-回归)
 
 `Path` 的 `commands` 接受 SVG 路径字符串，包括相对坐标、直线、曲线、弧线和闭合。可以用 `fill`、`stroke`、`stroke-width` 设置外观，用 `viewbox-x`、`viewbox-y`、`viewbox-width`、`viewbox-height` 和 `fit` 控制适配。默认以非零环绕规则填充并使用 `contain`。
 
@@ -619,11 +711,15 @@ HLS 点播和直播都支持动态码率。多码率源从低码率开始，在�
 
 键盘路由以事件开始时的焦点为准。回调改变焦点后，新控件从下一个事件开始接收。模态弹层和菜单限制分发范围，IME 预编辑沿用原输入路径。运行 `bazel run //examples/layout:layout -- --key-routing`，聚焦输入框后比较 `x` 被拦截、`a` 正常输入和 `F2` 冒泡。
 
+[Android 焦点作用域示例](../examples/android/README.md#焦点作用域与按键路由回归) 用嵌套录入区域演示 Tab 导航、按键捕获和冒泡，以及原输入框禁用后的焦点回退。
+
 ## 窗口内拖放
 
 `DragArea` 通过 `data` 绑定字符串载荷，通过 `drag-key` 标记用途。鼠标或触摸移动 6 个逻辑像素后开始拖动并冻结载荷，短距离按放仍可点击子控件。`allow-copy`、`allow-move`、`allow-link` 声明源允许的操作。按 Ctrl 请求复制，按 Shift 请求移动，同时按两键请求链接。源可以用 `drag-finished(DragAction)` 根据最终结果更新模型。取消时结果为 `none`。
 
 `DropArea` 用 `keys` 过滤拖动源，也可以用 `drop-action` 限制操作。嵌套目标优先匹配最深的可接收区域。`entered(string, DragAction)`、`position-changed(length, length)`、`exited()` 和 `dropped(string, DragAction)` 提供有类型的事件，位置坐标相对于目标区域。成功释放时先调用目标的 `dropped`，再通知源。拖动复用窗口的裁剪、弹层范围和虚拟行标识。设置任一区域的 `enabled: false;` 只停用该区域的拖放行为，子控件仍可交互。
+
+[Android 应用内拖放回归](../examples/android/README.md#应用内拖放回归) 覆盖真实触点、拒绝与外层目标回退、复制和移动，以及应用切到后台时取消未提交的拖放。
 
 运行 `bazel run //examples/form:form -- --drag`，把编号拖到右侧。移动后左侧编号消失，按 Ctrl 拖动则保留编号。当前载荷是窗口内的字符串，适用于卡片、条目和同窗口控件之间的操作。
 
@@ -634,6 +730,8 @@ macOS 上，`DropArea { accept-files: true; }` 也可接收 Finder 或其他应�
 `Timer` 是组件根部的命名声明，`interval` 使用整数毫秒，默认 1000，非正数暂停调度。`running` 默认关闭，可双向绑定。默认触发一次并在 `triggered()` 前清除 `running`，设置 `repeat: true;` 可循环。`triggered-on-start: true;` 会在启动时额外触发一次。处理器可调用 `timer.start()`、`timer.stop()` 或 `timer.restart()`。
 
 计时器随拥有它的组件进入或离开活动布局而启动或撤销。回调在 UI 线程运行，间隔变化会重新计时，重复计时器错过的周期合并为一次回调。运行 `bazel run //examples/controls:controls -- --timer` 体验倒计时、暂停和单次触发。
+
+[Android 采样示例](../examples/android/README.md#计时与进度回归) 用计时器驱动进度条和圆形进度，并在等待报告时显示忙碌指示器。关闭面板会撤销单次报告的调度，重新打开时，仍处于运行状态的计时器从一个新的间隔开始等待。
 
 ## 首版边界
 

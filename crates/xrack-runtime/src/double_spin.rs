@@ -138,6 +138,21 @@ impl DecimalSpinRange {
             SpinAction::CommitDecimalIfCurrent { original, value } if original == self.original => {
                 rounded(value.0, self.decimals)
             }
+            SpinAction::StepFromDecimalDraft {
+                original,
+                draft,
+                steps,
+            } if original == self.original => {
+                let value = rounded(draft.0, self.decimals).clamp(self.minimum, self.maximum);
+                crate::range::step_float(
+                    value,
+                    self.limits(),
+                    self.step,
+                    steps,
+                    self.wrap,
+                    |value| rounded(value, self.decimals),
+                )
+            }
             _ => return None,
         };
         let next = match action {
@@ -154,7 +169,9 @@ pub fn decimal_spin_value_after(node: &Node, action: SpinAction) -> Option<f64> 
         || node.boolean("read-only", false)
         || matches!(
             action,
-            SpinAction::CommitDecimal(_) | SpinAction::CommitDecimalIfCurrent { .. }
+            SpinAction::CommitDecimal(_)
+                | SpinAction::CommitDecimalIfCurrent { .. }
+                | SpinAction::StepFromDecimalDraft { .. }
         ) && !spin_editable(node)
     {
         return None;
@@ -165,6 +182,38 @@ pub fn decimal_spin_value_after(node: &Node, action: SpinAction) -> Option<f64> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draft_step_wraps_at_the_display_precision_and_rejects_a_stale_step_size() {
+        let mut node = Node::new("DoubleSpinBox", None);
+        node.properties.insert("value", 0.2_f64.into());
+        node.properties.insert("minimum", (-0.4_f64).into());
+        node.properties.insert("maximum", 0.3_f64.into());
+        node.properties.insert("wrap", true.into());
+        node.properties.insert("step-size", 0.1_f64.into());
+        let action = SpinAction::StepFromDecimalDraft {
+            original: SpinDecimal::new(0.2),
+            draft: SpinDecimal::parse("0,30", ',').unwrap(),
+            steps: 1,
+        };
+        let prepare = |live: &Node| {
+            crate::prepare_spin_view(
+                &node,
+                action,
+                || true,
+                || live.properties["value"].clone(),
+                |name| live.properties.get(name).cloned(),
+                || decimal_spin_value_after(&node, action),
+            )
+        };
+        assert_eq!(prepare(&node), Some(-0.4));
+        let mut live = node.clone();
+        live.properties.insert("step-size", 0.25_f64.into());
+        assert_eq!(prepare(&live), None);
+        assert_eq!(decimal_spin_value_after(&live, action), Some(-0.4));
+        live.properties.insert("value", 0.1_f64.into());
+        assert_eq!(decimal_spin_value_after(&live, action), None);
+    }
 
     #[test]
     fn decimal_steps_compare_rounded_values_before_wrapping() {

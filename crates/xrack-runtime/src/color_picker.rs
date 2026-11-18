@@ -286,7 +286,7 @@ impl ColorPopupState {
         self.0.stamp(&mut hue);
         hue.properties.insert("height", Length(132.0).into());
         hue.properties.insert(HUE, true.into());
-        hue.properties.insert("width", Length(30.0).into());
+        hue.properties.insert("width", Length(44.0).into());
         hue.properties
             .insert("orientation", Orientation::Vertical.into());
         hue.properties.insert("value", hsv.hue.into());

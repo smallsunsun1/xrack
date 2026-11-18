@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 15;
+pub const CODEGEN_ABI_VERSION: u32 = 16;
 
 mod animation;
 mod arithmetic;
@@ -301,7 +301,7 @@ pub use table_selection::{
     copy_table_text_while_current, try_copy_table_text_in_order, try_copy_table_text_in_view,
     try_copy_table_text_while_current,
 };
-pub use text_input::InputType;
+pub use text_input::{InputType, ReturnKey};
 #[doc(hidden)]
 pub use text_input::{
     NumericTextLimits, SearchInput, SearchUpdate, text_input_validity, text_submission_is_valid,
@@ -475,8 +475,11 @@ pub trait Component {
         false
     }
 
-    fn control_at(&mut self, _scene: &Node, _path: &[usize], _action: ControlAction) -> bool {
-        false
+    fn control_at(&mut self, scene: &Node, path: &[usize], action: ControlAction) -> bool {
+        action == ControlAction::ValidateTextSubmission
+            && scene
+                .interactive_at_path(path)
+                .is_some_and(Node::accepts_text_submission)
     }
 
     #[doc(hidden)]
@@ -1612,6 +1615,7 @@ pub enum Value {
     TextVerticalAlignment(TextVerticalAlignment),
     TextOverflow(TextOverflow),
     InputType(InputType),
+    ReturnKey(ReturnKey),
     CursorShape(CursorShape),
     PointerEventKind(PointerEventKind),
     PointerButton(PointerButton),
@@ -1723,6 +1727,7 @@ value_from!(TextHorizontalAlignment, TextHorizontalAlignment);
 value_from!(TextVerticalAlignment, TextVerticalAlignment);
 value_from!(TextOverflow, TextOverflow);
 value_from!(InputType, InputType);
+value_from!(ReturnKey, ReturnKey);
 value_from!(CursorShape, CursorShape);
 value_from!(PointerEventKind, PointerEventKind);
 value_from!(PointerButton, PointerButton);

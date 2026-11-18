@@ -3800,12 +3800,29 @@ fn timer_validates_nonvisual_properties_and_effectful_commands() {
                 triggered() => { root.hits += 1; self.stop(); }
             }
             start := Button { clicked() => { timer.restart(); } }
+            callback stop-timer(bool);
+            stop-timer(enabled) => {
+                if enabled {
+                    for tick in 2 { timer.stop(); }
+                }
+            }
         }
     "#;
     let output = compile(source, "timer.xr").unwrap();
     assert!(output.mlir.contains("xr.timer_command"));
     assert!(output.rust.to_string().contains("TimerSlot"));
     let raw = lower(source, "timer.xr");
+    assert!(raw.contains("\"xr.if\""));
+    assert!(raw.contains("\"xr.for\""));
+    let pure = raw.replace(
+        "name = \"stop-timer\"",
+        "name = \"stop-timer\", pure = \"true\"",
+    );
+    assert!(
+        mlir::process(&pure)
+            .unwrap_err()
+            .contains("timer commands are not allowed in a pure callback")
+    );
     let invalid = raw.replace("command = \"restart\"", "command = \"unknown\"");
     assert!(
         mlir::process(&invalid)
@@ -5863,18 +5880,30 @@ fn text_editor_constraints_are_verified_in_semantics_and_mlir() {
             LineEdit { input-type: number; maximum-length: 4; }
             TextInput { input-type: decimal; decimal-separator: ","; }
             LineEdit { input-type: search; }
+            LineEdit { input-type: email; }
+            TextInput { input-type: InputType.url; }
+            ComboBox { editable: true; input-type: tel; }
             TextArea { maximum-length: 20; }
         }
     "#;
     let compilation = compile(source, "constraints.xr").unwrap();
     let rust = compilation.rust.to_string();
-    for mode in ["Number", "Decimal", "Search"] {
+    for mode in ["Number", "Decimal", "Search", "Email", "Url", "Tel"] {
         assert!(rust.contains(&format!("InputType :: {mode}")));
     }
     let wrong_type = source.replace("maximum-length: 4", "maximum-length: true");
     assert!(compile(&wrong_type, "constraints.xr").is_err());
+    assert!(
+        compile(
+            &source.replace("InputType.url", "InputType.uri"),
+            "constraints.xr"
+        )
+        .is_err()
+    );
 
     let raw = lower(source, "constraints.xr");
+    assert!(raw.contains("\"tel\""));
+    assert!(mlir::process(&raw.replace("\"tel\"", "\"unsupported-input-type\"")).is_err());
     let wrong_type = raw.replace("name = \"decimal-separator\"", "name = \"maximum-length\"");
     assert!(
         mlir::process(&wrong_type)
@@ -5889,6 +5918,33 @@ fn text_editor_constraints_are_verified_in_semantics_and_mlir() {
     );
     let wrong_enum = raw.replace("value = \"decimal\"", "value = \"hexadecimal\"");
     assert!(mlir::process(&wrong_enum).is_err());
+}
+
+#[test]
+fn return_key_hints_are_typed_and_limited_to_single_line_editors() {
+    let source = r#"
+        export component App inherits Window {
+            in property <ReturnKey> action: ReturnKey.next;
+            LineEdit { return-key: root.action; }
+            TextInput { return-key: done; }
+            ComboBox { editable: true; return-key: auto; }
+        }
+    "#;
+    let compilation = compile(source, "return-key.xr").unwrap();
+    assert!(compilation.mlir.contains("!xr.returnkey"));
+    for mode in ["Next", "Done", "Auto"] {
+        assert!(
+            compilation
+                .rust
+                .to_string()
+                .contains(&format!("ReturnKey :: {mode}"))
+        );
+    }
+    assert!(compile(&source.replace("<ReturnKey>", "<string>"), "return-key.xr").is_err());
+    assert!(compile(&source.replace("TextInput", "TextArea"), "return-key.xr").is_err());
+    let raw = lower(source, "return-key.xr");
+    assert!(mlir::process(&raw.replace("\"next\"", "\"previous\"")).is_err());
+    assert!(mlir::process(&raw.replace("kind = \"TextInput\"", "kind = \"TextArea\"")).is_err());
 }
 
 #[test]

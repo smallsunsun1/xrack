@@ -1,5 +1,17 @@
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use winit::window::Window;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use xrack_runtime::{NativeDialogOptions, NativeDialogResult};
+
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(target_os = "android")]
+pub(crate) use android::{SystemRequest as AndroidSystemRequest, present};
+
+#[cfg(target_os = "ios")]
+mod ios;
+#[cfg(target_os = "ios")]
+pub(crate) use ios::{DirectoryRequest, Transfer, TransferRequest, present};
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub(crate) async fn present(window: &Window, options: &NativeDialogOptions) -> NativeDialogResult {
@@ -134,7 +146,13 @@ async fn present_message(
     })
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(
+    target_os = "ios",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux"
+)))]
 pub(crate) async fn present(_: &Window, _: &NativeDialogOptions) -> NativeDialogResult {
     NativeDialogResult::Failed("Native dialogs are unavailable on this platform.".into())
 }

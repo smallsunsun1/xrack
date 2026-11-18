@@ -270,7 +270,7 @@ fn serve(
                             "workspace": { "workspaceFolders": { "supported": true, "changeNotifications": true } },
                             "documentHighlightProvider": true,
                             "semanticTokensProvider": { "legend": completion::legend(), "full": true },
-                            "completionProvider": { "triggerCharacters": [".", "@", "<", ":"] },
+                            "completionProvider": { "triggerCharacters": [".", "@", "<", ":", "="] },
                         },
                         "serverInfo": { "name": "xrack-lsp" },
                     }))
@@ -761,6 +761,16 @@ fn index_request(
         .ok_or((-32602, "missing document or position"))?;
     if method == "textDocument/completion" {
         return Ok(json!(text.map_or_else(Vec::new, |text| {
+            if params["context"]["triggerKind"] == 2
+                && params["context"]["triggerCharacter"] == "="
+                && !analysis::Source::new(text)
+                    .offset_at(position.0, position.1)
+                    .is_some_and(|cursor| {
+                        text[..cursor].ends_with(":=") || text[..cursor].ends_with("：=")
+                    })
+            {
+                return Vec::new();
+            }
             completion::complete_with_imports(
                 text,
                 position.0,

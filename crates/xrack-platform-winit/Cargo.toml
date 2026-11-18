@@ -22,7 +22,22 @@ winit.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 unicode-segmentation.workspace = true
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 arboard = { version = "=3.7.0", default-features = false, features = ["wayland-data-control"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "=0.22.4", default-features = false }
+tokio = { version = "=1.54.1", features = ["sync"] }
+winit = { workspace = true, features = ["android-native-activity"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+accesskit_ios = "=0.2.2"
+block2 = "=0.5.1"
+objc2 = "=0.5.3"
+objc2-foundation = { version = "=0.2.2", default-features = false, features = ["NSFileCoordinator", "NSNotification", "NSObject", "NSOperation", "NSString", "NSThread", "block2"] }
+objc2-ui-kit = { version = "=0.2.2", default-features = false, features = ["UIAccessibility", "UIAccessibilityCustomAction", "UIAccessibilityContainer", "UIAction", "UIActivity", "UIActivityViewController", "UIAlertController", "UIBarButtonItem", "UIBarItem", "UIControl", "UIContentSizeCategory", "UIDocumentPickerViewController", "UIFontMetrics", "UIKey", "UIKeyConstants", "UICommand", "UIPress", "UIPressesEvent", "UIKeyboardLayoutGuide", "UILayoutGuide", "UIMenuElement", "UIPasteboard", "UIPopoverPresentationController", "UIPresentationController", "UIResponder", "UIScrollView", "UITextField", "UITextInput", "UITextInputTraits", "UITextView", "UIToolbar", "UITrackingLayoutGuide", "UIView", "UIViewController", "UIViewControllerTransitionCoordinator", "UIWindow", "block2", "objc2-uniform-type-identifiers"] }
+objc2-uniform-type-identifiers = { version = "=0.2.2", default-features = false, features = ["UTCoreTypes", "UTType"] }
+tokio = { version = "=1.54.1", features = ["sync"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 rfd = "=0.18.0"

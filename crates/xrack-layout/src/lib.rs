@@ -78,7 +78,7 @@ pub use image::{ImagePlacement, ImagePresentation, ImageRegion, fitted_rect, til
 pub use input::{
     ActivationKey, ControlInput, Interaction, NavigationKey, RangeInput, ScrollBarUpdate,
     SliderKey, SplitResize, TableEditCommit, TableEditTarget, TablePasteDestination,
-    TableSelectionKey, Target, TextLinkTarget, WheelAdjustment, WheelRoute,
+    TableSelectionKey, Target, TextLinkTarget, WheelAdjustment, WheelRoute, swipe_view_selection,
 };
 pub use keyboard::KeyRoute;
 pub use label::{
@@ -478,6 +478,11 @@ impl LayoutNode {
             })
     }
 
+    /// Reserved title height using the text metrics prepared for this layout.
+    pub fn dialog_title_height(&self, node: &Node) -> f32 {
+        modal::title_height(node, self.font_size)
+    }
+
     pub fn group_header(&self, node: &Node) -> Rect {
         group_box::header_with_font_size(node, self.bounds, self.font_size)
     }
@@ -793,6 +798,7 @@ fn layout_current_window(
     input: Option<&Interaction>,
 ) -> LayoutNode {
     let bounds = Rect::new(0.0, 0.0, viewport.width.max(0.0), viewport.height.max(0.0));
+    let safe_viewport = window_safe_area(scene, bounds);
     let mut layout = LayoutContext {
         text,
         layout_direction: None,
@@ -805,11 +811,46 @@ fn layout_current_window(
         row_layouts: None,
         ancestor_shapes: None,
         space: None,
-        viewport: bounds,
+        viewport: safe_viewport,
     }
     .place(scene, bounds, bounds, true, true, None);
     modal::index_overlays(scene, &mut layout);
     layout
+}
+
+const WINDOW_SAFE_AREA: [&str; 4] = [
+    "__safe-area-left",
+    "__safe-area-top",
+    "__safe-area-right",
+    "__safe-area-bottom",
+];
+
+/// Record host-provided insets on a window scene in logical pixels.
+#[doc(hidden)]
+pub fn set_window_safe_area(scene: &mut Node, insets: [f64; 4]) {
+    for (edge, value) in WINDOW_SAFE_AREA.into_iter().zip(insets) {
+        if value > 0.0 && value.is_finite() {
+            scene
+                .properties
+                .insert(edge, xrack_runtime::Length(value).into());
+        } else {
+            scene.properties.remove(edge);
+        }
+    }
+}
+
+fn window_safe_area(node: &Node, bounds: Rect) -> Rect {
+    if node.kind != "Window" {
+        return bounds;
+    }
+    let [left, top, right, bottom] =
+        WINDOW_SAFE_AREA.map(|edge| node.length(edge).unwrap_or(0.0).max(0.0));
+    Rect::new(
+        bounds.x + left.min(bounds.width),
+        bounds.y + top.min(bounds.height),
+        (bounds.width - left - right).max(0.0),
+        (bounds.height - top - bottom).max(0.0),
+    )
 }
 
 /// Place replacement artwork in the already resolved popup row.
@@ -1678,8 +1719,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         };
         let table_cells = node.kind == "TableRow" && row_children.is_some();
         let mut row_children = row_children;
+        let content_bounds = window_safe_area(node, bounds);
         let page = (visible && (node.kind == "Page" || node.application_window))
-            .then(|| page::Regions::new(node, bounds, self.text));
+            .then(|| page::Regions::new(node, content_bounds, self.text));
         let swipe_delegate = (visible && node.kind == "SwipeDelegate").then(|| {
             let mut geometry = SwipeDelegateGeometry::new(node, bounds, self.text);
             if enabled
@@ -2059,10 +2101,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 })
                 .collect()
         } else {
-            let mut content = if pane || node.kind == "Loader" {
-                linear::Padding::read(node).inner_rect(bounds)
+            let mut content = if pane || matches!(node.kind, "Loader" | "Window") {
+                linear::Padding::read(node).inner_rect(content_bounds)
             } else {
-                bounds
+                content_bounds
             };
             let title = (selection::radio_title_height(node, font_size)
                 + modal::title_height(node, font_size)
@@ -2085,6 +2127,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                             .unwrap_or_else(|| self.absolute_child(child, page.body))
                     })
                     .collect()
+            } else if let Some(rects) = modal::picker_children(
+                node,
+                content,
+                self.layout_direction.unwrap_or_default(),
+                self.text,
+            ) {
+                rects
             } else if flow::uses_flow(node) {
                 flow::children(
                     node,
@@ -2478,9 +2527,15 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else {
             horizontal.offset
         };
+        let keyboard_shift = self
+            .input
+            .and_then(Interaction::keyboard_avoidance)
+            .filter(|(path, _)| *path == self.path)
+            .map_or(0.0, |(_, shift)| shift);
         let origin = Point {
             x: viewport.x - physical_x - elastic_offset(Orientation::Horizontal),
-            y: viewport.y - vertical.offset - elastic_offset(Orientation::Vertical),
+            y: viewport.y - vertical.offset - elastic_offset(Orientation::Vertical)
+                + keyboard_shift,
         };
         let rects = node
             .children

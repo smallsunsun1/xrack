@@ -28,6 +28,7 @@
 ## 构建与代码约定
 
 - 使用 Bazel 构建和测试。Rust 使用 edition 2024，C++ 使用 C++20。工具链版本以 `.bazelversion`、`rust-toolchain.toml`、`Cargo.toml` 和 `MODULE.bazel` 为准，升级时同步检查两个锁文件和相关 `BUILD.bazel`。
+- Android SDK、NDK 和 ADB 由 `hermetic_android_toolchains` 模块下载并校验，版本在 `MODULE.bazel` 中固定。Android 构建与设备测试禁止通过 `ANDROID_HOME`、`ANDROID_SDK_ROOT`、`ANDROID_NDK_HOME` 或硬编码的本机安装目录查找工具。APK 使用 `--config=android`，ADB 使用宿主平台的 `bazel run //bazel:adb -- ...`，设备测试通过 Bazel runfiles 声明 ADB。
 - Rust 业务和库代码通过 `?`、`match` 或 `let else` 处理失败。Bazel `--config=lint` 和 CI 将生产代码中的 `unwrap()` 和 `expect()` 视为错误。测试断言可以使用。确有不变量时，在最小的函数或语句上使用带 `reason` 的 `#[expect(clippy::expect_used)]`，说明不变量如何成立。
 - Python 源码中的函数、方法和需要显式声明的变量使用类型标注，覆盖绑定、示例、测试和构建脚本。
 - Python 原生绑定的 `.pyi` 由 Bazel 从 PyO3 元数据自动生成，随 wheel 分发。接口变更写在绑定源码上。

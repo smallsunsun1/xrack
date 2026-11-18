@@ -24471,7 +24471,7 @@ fn color_picker_reuses_hex_validation_and_hsv_and_channel_drafts() {
     let mut expected = ColorDemo::new();
     let original = Value::Color(Color(0x4080c080));
     let dialog = [5];
-    let hex = [5, 0, 0, 1];
+    let hex = [5, 0, 0, 0, 1];
     let accept = ControlAction::Dialog(DialogRole::Accept);
     let cancel = ControlAction::Dialog(DialogRole::Reject);
     actual.set("picker-open", true.into()).unwrap();
@@ -24499,17 +24499,17 @@ fn color_picker_reuses_hex_validation_and_hsv_and_channel_drafts() {
     assert!(!actual.control_at(&stale, &dialog, accept));
     assert!(!expected.control_at(&expected_stale, &dialog, accept));
     for (path, action) in [
-        ([5, 0, 5, 0], RangeAction::SetPoint { x: 0.75, y: 0.6 }),
-        ([5, 0, 5, 1], RangeAction::SetValue(120.0)),
-        ([5, 0, 1, 1], RangeAction::SetValue(32.0)),
+        ([5, 0, 0, 5, 0], RangeAction::SetPoint { x: 0.75, y: 0.6 }),
+        ([5, 0, 0, 5, 1], RangeAction::SetValue(120.0)),
+        ([5, 0, 0, 1, 1], RangeAction::SetValue(32.0)),
     ] {
         assert!(actual.adjust_range_at(&actual.render(), &path, action));
         assert!(expected.adjust_range_at(&expected.render(), &path, action));
         assert_same_scene(&actual.render(), &expected.render());
     }
     let spin = ControlAction::Spin(SpinAction::Step(2));
-    assert!(actual.control_at(&actual.render(), &[5, 0, 3, 2], spin));
-    assert!(expected.control_at(&expected.render(), &[5, 0, 3, 2], spin));
+    assert!(actual.control_at(&actual.render(), &[5, 0, 0, 3, 2], spin));
+    assert!(expected.control_at(&expected.render(), &[5, 0, 0, 3, 2], spin));
     assert_eq!(actual.get("selected").unwrap(), original);
     assert!(actual.control_at(&actual.render(), &dialog, accept));
     assert!(expected.control_at(&expected.render(), &dialog, accept));
@@ -24546,7 +24546,7 @@ fn color_picker_rejects_accept_from_before_the_hex_format_changed() {
     let mut interpreted = interpret_controls_fixture("ColorDemo");
     let mut generated = ColorDemo::new();
     let dialog = [5];
-    let hex = [5, 0, 0, 1];
+    let hex = [5, 0, 0, 0, 1];
     let accept = ControlAction::Dialog(DialogRole::Accept);
 
     interpreted.set("picker-open", true.into()).unwrap();
@@ -24609,7 +24609,7 @@ fn font_picker_uses_layout_catalog_and_commits_the_complete_font_value() {
     let mut expected = FontPickerDemo::new();
     let original = Value::Font(expected.get_selected());
     let popup = [3];
-    let family = [3, 0, 0, 1];
+    let family = [3, 0, 0, 0, 1];
     let accept = ControlAction::Dialog(DialogRole::Accept);
     let cancel = ControlAction::Dialog(DialogRole::Reject);
     assert_same_scene(&actual.render(), &expected.render());
@@ -24637,11 +24637,14 @@ fn font_picker_uses_layout_catalog_and_commits_the_complete_font_value() {
     for (path, action) in [
         (family, ControlAction::Select(2)),
         (
-            [3, 0, 1, 1],
+            [3, 0, 0, 1, 1],
             ControlAction::Spin(SpinAction::CommitDecimal(SpinDecimal::new(31.5).unwrap())),
         ),
-        ([3, 0, 2, 1], ControlAction::Spin(SpinAction::Commit(750))),
-        ([3, 0, 3, 1], ControlAction::Select(1)),
+        (
+            [3, 0, 0, 2, 1],
+            ControlAction::Spin(SpinAction::Commit(750)),
+        ),
+        ([3, 0, 0, 3, 1], ControlAction::Select(1)),
     ] {
         assert!(actual.control_at(&prepare(&actual), &path, action));
         assert!(expected.control_at(&prepare(&expected), &path, action));
@@ -31371,11 +31374,11 @@ fn picker_editor_resolves_its_live_visibility_once_per_input() {
             interpreted_calls.set(0);
             generated_calls.set(0);
             let deliver = |ui: &mut dyn Component, scene: &Node| match edit {
-                0 => ui.edit_at(scene, &[0, 0, 0, 1], "#12AB349A".into()),
-                1 => ui.adjust_range_at(scene, &[0, 0, 1, 1], RangeAction::SetValue(32.0)),
+                0 => ui.edit_at(scene, &[0, 0, 0, 0, 1], "#12AB349A".into()),
+                1 => ui.adjust_range_at(scene, &[0, 0, 0, 1, 1], RangeAction::SetValue(32.0)),
                 _ => ui.control_at(
                     scene,
-                    &[0, 0, 3, 2],
+                    &[0, 0, 0, 3, 2],
                     ControlAction::Spin(SpinAction::Step(2)),
                 ),
             };
@@ -31440,11 +31443,11 @@ fn closed_picker_rejects_old_input_before_evaluating_its_options() {
         (&mut actual as &mut dyn Component, &rendered),
         (&mut generated as &mut dyn Component, &compiled),
     ] {
-        assert!(!ui.edit_at(scene, &[0, 0, 0, 1], "#12AB349A".into()));
-        assert!(!ui.adjust_range_at(scene, &[0, 0, 1, 1], RangeAction::SetValue(32.0)));
+        assert!(!ui.edit_at(scene, &[0, 0, 0, 0, 1], "#12AB349A".into()));
+        assert!(!ui.adjust_range_at(scene, &[0, 0, 0, 1, 1], RangeAction::SetValue(32.0)));
         assert!(!ui.control_at(
             scene,
-            &[0, 0, 3, 2],
+            &[0, 0, 0, 3, 2],
             ControlAction::Spin(SpinAction::Step(2))
         ));
         assert!(!ui.control_at(scene, &[0], ControlAction::Dialog(DialogRole::Accept)));
@@ -31538,15 +31541,19 @@ fn picker_editor_ignores_previous_session_before_reading_current_options() {
         (&mut actual as &mut dyn Component, &old_actual),
         (&mut compiled as &mut dyn Component, &old_compiled),
     ] {
-        assert!(!ui.edit_at(old, &[0, 0, 0, 1], "#12AB349A".into()));
-        assert!(!ui.adjust_range_at(old, &[0, 0, 1, 1], RangeAction::SetValue(32.0)));
-        assert!(!ui.control_at(old, &[0, 0, 3, 2], ControlAction::Spin(SpinAction::Step(2))));
+        assert!(!ui.edit_at(old, &[0, 0, 0, 0, 1], "#12AB349A".into()));
+        assert!(!ui.adjust_range_at(old, &[0, 0, 0, 1, 1], RangeAction::SetValue(32.0)));
+        assert!(!ui.control_at(
+            old,
+            &[0, 0, 0, 3, 2],
+            ControlAction::Spin(SpinAction::Step(2))
+        ));
     }
     assert_eq!([actual_reads.get(), compiled_reads.get()], [0, 0]);
     assert_eq!(actual.take_error(), None);
 
-    assert!(actual.edit_at(&current_actual, &[0, 0, 0, 1], "#12AB349A".into()));
-    assert!(compiled.edit_at(&current_compiled, &[0, 0, 0, 1], "#12AB349A".into()));
+    assert!(actual.edit_at(&current_actual, &[0, 0, 0, 0, 1], "#12AB349A".into()));
+    assert!(compiled.edit_at(&current_compiled, &[0, 0, 0, 0, 1], "#12AB349A".into()));
     assert_eq!([actual_reads.get(), compiled_reads.get()], [1, 1]);
     assert_same_scene(&actual.render_shared(), &compiled.render_shared());
 }
@@ -31691,7 +31698,7 @@ fn picker_confirmation_preserves_a_draft_edited_while_reading_options() {
         dialog
     };
     let old = render();
-    let text = old.at_path(&[0, 0, 1]).unwrap();
+    let text = old.at_path(&[0, 0, 0, 1]).unwrap();
     let accept = RoutedEvent::Control(ControlAction::Dialog(DialogRole::Accept));
     assert_eq!(
         accept.with_input(&old, &[], |route| {

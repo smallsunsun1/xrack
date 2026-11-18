@@ -30,6 +30,8 @@ bazel test //...
 | [VS Code 与预览](docs/editor.md) | .xr LSP、MLIR 调试、项目图和编译数据库 |
 | [编译器与运行时架构](docs/architecture.md) | Crate 分层、MLIR 降低和优化 |
 | [项目构建与验证](docs/development.md) | 工具链、Bazel 目标、缓存和测试 |
+| [iOS 模拟器示例](examples/ios/README.md) | 用 Bazel 构建并运行触屏待办应用 |
+| [Android 模拟器示例](examples/android/README.md) | 用 Bazel 打包同一份触屏待办应用的 arm64 APK |
 | [巡检工作台](examples/inspection-workbench/README.md) | 万行虚拟表格、详情表单与后台项目读写 |
 | [桌面应用示例](examples/desktop-notes/README.md) | 笔记编辑、原生文件面板、Cargo 测试与 macOS 应用包 |
 | [应用 UI 测试](docs/testing.md) | Cargo 无窗口测试、双后端回归与 GPU 基准 |
