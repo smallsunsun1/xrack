@@ -119,8 +119,10 @@ fn format(text: &str, options: &Value) -> Option<String> {
             let breaks = original.bytes().filter(|&byte| byte == b'\n').count();
             let empty = prev.opens_block() && token.closes_block();
             let trailing_comment = token.comment() && breaks == 0;
+            let joins_block = prev.closes_block() && token.hint.joins_block;
             let split = !empty
                 && !trailing_comment
+                && !joins_block
                 && (prev.opens_block()
                     || token.closes_block()
                     || prev.text == ";"

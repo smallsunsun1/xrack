@@ -79,6 +79,7 @@ pub struct FormatToken {
     pub block: bool,
     pub attach_before: bool,
     pub attach_after: bool,
+    pub joins_block: bool,
     pub space_before: bool,
 }
 
@@ -107,6 +108,7 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                         | RULE_recordDecl
                         | RULE_element
                         | RULE_handler
+                        | RULE_statementBlock
                         | RULE_stateDecl
                         | RULE_stateTransition
                         | RULE_animationBody
@@ -131,7 +133,7 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                 || (matches!(spelling, "px" | "%")
                     && matches!(parent, RULE_primary | RULE_gradientStop))
                 || (spelling == "deg" && parent == RULE_gradientAngle)
-                || (spelling == "[" && parent == RULE_repeatClause);
+                || (spelling == "[" && parent == RULE_iteration);
             let attach_after = (angle && spelling == "<")
                 || (parent == RULE_recordBase && spelling == "..")
                 || (matches!(spelling, "-" | "+" | "!")
@@ -142,6 +144,7 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                 block,
                 attach_before,
                 attach_after,
+                joins_block: spelling == "else" && parent == RULE_ifStatement,
                 space_before: spelling == ":" && parent == RULE_conditional,
             });
         } else {
@@ -496,15 +499,9 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
             condition: element.conditionClause().map(|condition| {
                 expression(&condition.expression().required("condition expression"))
             }),
-            repeat: element.repeatClause().map(|repeat| Repeat {
-                item: repeat.identifier(0).required("repeat item").get_text(),
-                index: repeat.identifier(1).map(|id| id.get_text()),
-                model: expression(&repeat.expression().required("repeat model")),
-                item_span: span(&*repeat.identifier(0).required("repeat item")),
-                index_span: repeat
-                    .identifier(1)
-                    .map_or_else(Span::default, |id| span(&*id)),
-            }),
+            repeat: element
+                .repeatClause()
+                .map(|repeat| iteration(&repeat.iteration().required("repeat iteration"))),
         })
     } else if let Some(block) = ctx.stateBlock() {
         Member::States(state_block(&block))
@@ -516,7 +513,15 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
 }
 
 fn statement(ctx: &StatementContextAll<'_>) -> Statement {
-    if let Some(invocation) = ctx.call() {
+    if let Some(branch) = ctx.ifStatement() {
+        if_statement(&branch)
+    } else if let Some(loop_stmt) = ctx.forStatement() {
+        Statement::For {
+            iteration: iteration(&loop_stmt.iteration().required("loop iteration")),
+            body: statement_block(&loop_stmt.statementBlock().required("loop body")),
+            span: span(&*loop_stmt),
+        }
+    } else if let Some(invocation) = ctx.call() {
         Statement::Call(call(&invocation))
     } else {
         Statement::Assignment(Assignment {
@@ -528,6 +533,40 @@ fn statement(ctx: &StatementContextAll<'_>) -> Statement {
             value: expression(&ctx.expression().required("assignment value")),
             span: span(ctx),
         })
+    }
+}
+
+fn if_statement(ctx: &IfStatementContextAll<'_>) -> Statement {
+    Statement::If {
+        condition: expression(&ctx.expression().required("if condition")),
+        then_body: statement_block(&ctx.statementBlock(0).required("if body")),
+        else_body: if let Some(branch) = ctx.ifStatement() {
+            vec![if_statement(&branch)]
+        } else {
+            ctx.statementBlock(1)
+                .as_deref()
+                .map_or_else(Vec::new, statement_block)
+        },
+        span: span(ctx),
+    }
+}
+
+fn statement_block(ctx: &StatementBlockContextAll<'_>) -> Vec<Statement> {
+    ctx.statement_all()
+        .iter()
+        .map(|ctx| statement(ctx))
+        .collect()
+}
+
+fn iteration(ctx: &IterationContextAll<'_>) -> Repeat {
+    let item = ctx.identifier(0).required("iteration item");
+    let index = ctx.identifier(1);
+    Repeat {
+        item: item.get_text(),
+        index: index.as_ref().map(|id| id.get_text()),
+        model: expression(&ctx.expression().required("iteration source")),
+        item_span: span(&*item),
+        index_span: index.as_deref().map_or_else(Span::default, span),
     }
 }
 

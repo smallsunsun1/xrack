@@ -409,7 +409,7 @@
       "patterns": [
         {
           "name": "keyword.control.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:export|import|translations|from|as|inherits|if|for|in-out|in|out|private|pure|animate|states|when)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])(?:export|import|translations|from|as|inherits|if|else|for|in-out|in|out|private|pure|animate|states|when)(?![A-Za-z_0-9-])"
         },
         {
           "name": "storage.type.xrack",

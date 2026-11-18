@@ -48,3 +48,23 @@ fn record_update_base_must_follow_the_explicit_fields() {
         assert_eq!(parse(&source).is_ok(), valid, "{value}");
     }
 }
+
+#[test]
+fn parses_nested_callback_branches_and_loops() {
+    let source = r#"
+        component Demo inherits Window {
+            callback run(bool);
+            run(ready) => {
+                if ready {} else if false {
+                    for item[index] in ["a", "b"] {
+                        if index == 0 { Log.info(item); }
+                    }
+                } else {
+                    for index in 3 {}
+                }
+            }
+        }
+    "#;
+    assert!(parse(source).is_ok(), "{:?}", parse(source).err());
+    assert!(parse(&source.replace("else if false", "else if")).is_err());
+}

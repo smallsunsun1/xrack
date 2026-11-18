@@ -138,6 +138,19 @@ def XR_HandlerOp : XR_ScopeOp<"handler", [HasParent<"ElementOp">]> {
   let hasVerifier = 1;
 }
 
+def XR_IfOp : XR_Op<"if", [SingleBlockImplicitTerminator<"EndOp">, NoRegionArguments,
+    ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
+  let arguments = (ins XR_Bool:$condition);
+  let regions = (region SizedRegion<1>:$thenBody, SizedRegion<1>:$elseBody);
+  let hasVerifier = 1;
+}
+def XR_ForOp : XR_ScopeOp<"for", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
+  let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_DateList, XR_StringList,
+                                 XR_RecordList, XR_TouchPoints]>:$model,
+                       StrAttr:$item, StrAttr:$index);
+  let hasVerifier = 1;
+}
+
 def XR_PropertyOp : XR_Op<"property"> {
   let arguments = (ins XR_Value:$initial, StrAttr:$name, StrAttr:$visibility, OptionalAttr<StrAttr>:$alias);
   let hasVerifier = 1;
@@ -226,12 +239,12 @@ def XR_AssignOp : XR_Op<"assign"> {
 def XR_ReturnOp : XR_Op<"return", [ParentOneOf<["CallbackOp", "HandlerOp", "ClipboardPasteOp"]>]> {
   let arguments = (ins XR_Value:$input, StrAttr:$name);
 }
-def XR_LogOp : XR_Op<"log", [ParentOneOf<["CallbackOp", "HandlerOp"]>,
+def XR_LogOp : XR_Op<"log", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>,
                                 MemoryEffects<[MemWrite]>]> {
   let arguments = (ins XR_LogLevel:$level, XR_String:$message);
   let hasVerifier = 1;
 }
-def XR_EvaluateOp : XR_Op<"evaluate", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_EvaluateOp : XR_Op<"evaluate", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_Value:$input);
 }
 def XR_InvokeOp : XR_Op<"invoke"> {
@@ -261,96 +274,96 @@ def XR_NativeDialogOpenOp : XR_Op<"native_dialog_open"> {
   let arguments = (ins StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_WindowCloseOp : XR_Op<"window_close", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_WindowCloseOp : XR_Op<"window_close", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let hasVerifier = 1;
 }
-def XR_WindowCommandOp : XR_Op<"window_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_WindowCommandOp : XR_Op<"window_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins Optional<XR_Bool>:$enabled, StrAttr:$command);
   let hasVerifier = 1;
 }
-def XR_CheckGroupCommandOp : XR_Op<"check_group_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_CheckGroupCommandOp : XR_Op<"check_group_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_CheckState:$state, StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_SecondaryWindowCommandOp : XR_Op<"secondary_window_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_SecondaryWindowCommandOp : XR_Op<"secondary_window_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins StrAttr:$owner, StrAttr:$command);
   let hasVerifier = 1;
 }
-def XR_FocusCommandOp : XR_Op<"focus_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_FocusCommandOp : XR_Op<"focus_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins StrAttr:$target, StrAttr:$action);
   let hasVerifier = 1;
 }
-def XR_ButtonClickOp : XR_Op<"button_click", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_ButtonClickOp : XR_Op<"button_click", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins StrAttr:$owner, OptionalAttr<StrAttr>:$animated);
   let hasVerifier = 1;
 }
-def XR_ButtonToggleOp : XR_Op<"button_toggle", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_ButtonToggleOp : XR_Op<"button_toggle", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_SwipeCancelOp : XR_Op<"swipe_cancel", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_SwipeCancelOp : XR_Op<"swipe_cancel", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_TextCommandOp : XR_Op<"text_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_TextCommandOp : XR_Op<"text_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins Variadic<AnyTypeOf<[XR_Int, XR_String]>>:$args, StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
-def XR_ScrollCommandOp : XR_Op<"scroll_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_ScrollCommandOp : XR_Op<"scroll_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins Variadic<AnyTypeOf<[XR_Length, XR_Int, XR_ScrollAlignment]>>:$args,
                        StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
-def XR_PositionChildOp : XR_Op<"position_child", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_PositionChildOp : XR_Op<"position_child", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins StrAttr:$owner, StrAttr:$target,
                        XR_ScrollAlignment:$horizontal, XR_ScrollAlignment:$vertical);
   let hasVerifier = 1;
 }
-def XR_SourceSelectionOp : XR_Op<"source_selection", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_SourceSelectionOp : XR_Op<"source_selection", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins Variadic<AnyTypeOf<[XR_Int, XR_IntList]>>:$args, StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
-def XR_TableSelectionCommandOp : XR_Op<"table_selection_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_TableSelectionCommandOp : XR_Op<"table_selection_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins Variadic<XR_Int>:$args, StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
-def XR_TableSortCommandOp : XR_Op<"table_sort_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_TableSortCommandOp : XR_Op<"table_sort_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins Variadic<AnyTypeOf<[XR_Int, XR_Bool]>>:$args, StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
-def XR_TableHistoryCommandOp : XR_Op<"table_history_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_TableHistoryCommandOp : XR_Op<"table_history_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
-def XR_SplitRestoreOp : XR_Op<"split_restore", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_SplitRestoreOp : XR_Op<"split_restore", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_String:$state, StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_TreeCommandOp : XR_Op<"tree_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_TreeCommandOp : XR_Op<"tree_command", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins Variadic<XR_Int>:$args, StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
-def XR_CancelFlickOp : XR_Op<"cancel_flick", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_CancelFlickOp : XR_Op<"cancel_flick", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_ReturnToBoundsOp : XR_Op<"return_to_bounds", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_ReturnToBoundsOp : XR_Op<"return_to_bounds", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_MoveColumnOp : XR_Op<"move_column", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_MoveColumnOp : XR_Op<"move_column", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_Int:$source, XR_Int:$destination, StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_MoveRowOp : XR_Op<"move_row", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_MoveRowOp : XR_Op<"move_row", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_Int:$source, XR_Int:$destination, StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_MoveNavigationItemOp : XR_Op<"move_navigation_item", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_MoveNavigationItemOp : XR_Op<"move_navigation_item", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_Int:$source, XR_Int:$destination, StrAttr:$owner);
   let hasVerifier = 1;
 }
-def XR_SetRowHeightOp : XR_Op<"set_row_height", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_SetRowHeightOp : XR_Op<"set_row_height", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_Int:$row, XR_Length:$height, StrAttr:$owner);
   let hasVerifier = 1;
 }
@@ -521,6 +534,9 @@ def XR_ComboStateReadOp : XR_ExpressionOp<"combo_state_read", (ins StrAttr:$owne
 def XR_RangePositionReadOp : XR_ExpressionOp<"range_position_read", (ins StrAttr:$owner), XR_Float>;
 def XR_ComboPopupReadOp : XR_ExpressionOp<"combo_popup_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Bool, XR_Int]>>;
 def XR_ParamOp : XR_ExpressionOp<"param", (ins)>;
+def XR_LoopParamOp : XR_ExpressionOp<"loop_param", (ins)> {
+  let hasVerifier = 1;
+}
 def XR_CallOp : XR_ExpressionOp<"call", (ins Variadic<XR_Value>:$args, StrAttr:$owner)>;
 def XR_UnaryOp : XR_ExpressionOp<"unary", (ins XR_Value:$input), XR_Value,
                                 [AllTypesMatch<["input", "result"]>]> {
@@ -537,7 +553,7 @@ def XR_ColorFunctionOp : XR_ExpressionOp<"color_function",
   let hasVerifier = 1;
 }
 def XR_Model : AnyTypeOf<[XR_IntList, XR_DateList, XR_StringList, XR_RecordList]>;
-def XR_ModelEditOp : XR_Op<"model_edit", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_ModelEditOp : XR_Op<"model_edit", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_Model:$model, Variadic<XR_Value>:$args, StrAttr:$method);
   let hasVerifier = 1;
 }

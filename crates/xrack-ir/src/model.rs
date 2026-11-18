@@ -54,6 +54,19 @@ pub struct CallbackRef {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Statement {
+    If {
+        condition: Expr,
+        then_body: Vec<Statement>,
+        else_body: Vec<Statement>,
+        span: Span,
+    },
+    For {
+        model: Expr,
+        item: String,
+        index: Option<String>,
+        body: Vec<Statement>,
+        span: Span,
+    },
     Assignment(Assignment),
     Invoke(CallbackCall),
     Evaluate {
@@ -120,6 +133,30 @@ pub enum Statement {
         span: Span,
     },
     SetRowHeight(SetRowHeight),
+}
+
+impl Statement {
+    fn nested(&self) -> impl DoubleEndedIterator<Item = &Self> {
+        let (first, second) = match self {
+            Self::If {
+                then_body,
+                else_body,
+                ..
+            } => (then_body.as_slice(), else_body.as_slice()),
+            Self::For { body, .. } => (body.as_slice(), &[][..]),
+            _ => (&[][..], &[][..]),
+        };
+        first.iter().chain(second)
+    }
+}
+
+pub fn walk_statements(statements: &[Statement]) -> impl Iterator<Item = &Statement> {
+    let mut pending: Vec<_> = statements.iter().rev().collect();
+    std::iter::from_fn(move || {
+        let statement = pending.pop()?;
+        pending.extend(statement.nested().rev());
+        Some(statement)
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

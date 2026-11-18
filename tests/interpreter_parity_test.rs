@@ -543,6 +543,82 @@ fn record_updates_preserve_fields_and_evaluation_order_in_both_backends() {
 }
 
 #[test]
+fn callback_control_flow_matches_aot_with_model_edits_and_nested_bindings() {
+    use std::{cell::RefCell, rc::Rc};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("HandlerControlFlowParity")
+        .unwrap();
+    let mut aot = expressions_ui::HandlerControlFlowParity::new();
+    let interpreted_calls = Rc::new(RefCell::new(Vec::new()));
+    let aot_calls = Rc::new(RefCell::new(Vec::new()));
+    actual
+        .on("selected", {
+            let calls = interpreted_calls.clone();
+            Rc::new(move |args| {
+                let Value::Int(mode) = args[0] else {
+                    panic!("expected integer mode")
+                };
+                calls.borrow_mut().push(format!("select {mode}"));
+                Ok(Some(Value::Bool(mode == 1)))
+            })
+        })
+        .unwrap();
+    actual
+        .on("touched", {
+            let calls = interpreted_calls.clone();
+            Rc::new(move |args| {
+                let Value::String(label) = &args[0] else {
+                    panic!("expected row label")
+                };
+                calls.borrow_mut().push(label.clone());
+                Ok(None)
+            })
+        })
+        .unwrap();
+    aot.on_selected({
+        let calls = aot_calls.clone();
+        move |mode| {
+            calls.borrow_mut().push(format!("select {mode}"));
+            mode == 1
+        }
+    });
+    aot.on_touched({
+        let calls = aot_calls.clone();
+        move |label| calls.borrow_mut().push(label)
+    });
+
+    for (mode, expected_trace, expected_total, expected_rows) in
+        [(1, "0A!", 0, 3), (2, "0A!", 7, 3), (0, "skip", 7, 3)]
+    {
+        assert_eq!(
+            actual.invoke("run", &[Value::Int(mode)]),
+            Ok(Some(Value::String(expected_trace.into())))
+        );
+        assert_eq!(aot.invoke_run(mode), expected_trace);
+        assert_eq!(actual.get("total"), Ok(Value::Int(expected_total)));
+        assert_eq!(aot.get_total(), expected_total);
+        assert_eq!(
+            actual.record_model("rows").unwrap().model().len(),
+            expected_rows
+        );
+        assert_eq!(aot.get_rows().len(), expected_rows);
+    }
+    assert_eq!(
+        &*interpreted_calls.borrow(),
+        &["select 1", "A", "select 2", "select 0"]
+    );
+    assert_eq!(*aot_calls.borrow(), *interpreted_calls.borrow());
+}
+
+#[test]
 fn nested_builtin_fields_match_generated_rust_and_follow_input_updates() {
     use xrack_runtime::{
         Date, Font, KeyEvent, KeyModifiers, Length, PointerButton, PointerEvent, RecordValue, Time,

@@ -163,15 +163,18 @@ impl Builder<'_> {
 
     fn open(&mut self, op: &str, span: Span, attrs: &[ffi::MlirNamedAttribute]) -> BuildResult<()> {
         let scope = self.emit(op, span, &[], &[], attrs)?;
-        // ODS creates a single region for component, element, instance, callback and handler.
-        // Transfer ownership of the new block to that region immediately.
+        self.enter_region(scope, 0, span);
+        Ok(())
+    }
+
+    fn enter_region(&mut self, scope: ffi::MlirOperation, region: isize, span: Span) {
+        // ODS creates the region. Transfer ownership of the new block to it.
         let body = unsafe {
             let body = ffi::mlirBlockCreate(0, ptr::null(), ptr::null());
-            ffi::mlirRegionAppendOwnedBlock(ffi::mlirOperationGetRegion(scope, 0), body);
+            ffi::mlirRegionAppendOwnedBlock(ffi::mlirOperationGetRegion(scope, region), body);
             body
         };
         self.blocks.push((body, span));
-        Ok(())
     }
 
     fn close(&mut self) -> BuildResult<()> {
@@ -255,8 +258,45 @@ impl Builder<'_> {
             }
         }
         self.open(op, callback.span, &attrs)?;
-        for statement in &callback.body {
+        self.statements(&callback.body)?;
+        if let Some(result) = &callback.result {
+            self.consume("return", "result", result, &[], result.span)?;
+        }
+        self.close()
+    }
+
+    fn statements(&mut self, statements: &[ir::Statement]) -> BuildResult<()> {
+        for statement in statements {
             match statement {
+                ir::Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                    span,
+                } => {
+                    let condition = self.expr(condition)?;
+                    let branch = self.emit("if", *span, &[condition], &[], &[])?;
+                    for (region, body) in [(0, then_body), (1, else_body)] {
+                        self.enter_region(branch, region, *span);
+                        self.statements(body)?;
+                        self.close()?;
+                    }
+                }
+                ir::Statement::For {
+                    model,
+                    item,
+                    index,
+                    body,
+                    span,
+                } => {
+                    let model = self.expr(model)?;
+                    let attrs =
+                        self.strings(&[("item", item), ("index", index.as_deref().unwrap_or(""))]);
+                    let loop_op = self.emit("for", *span, &[model], &[], &attrs)?;
+                    self.enter_region(loop_op, 0, *span);
+                    self.statements(body)?;
+                    self.close()?;
+                }
                 ir::Statement::Assignment(s) => self.consume(
                     "assign",
                     &s.target.name,
@@ -486,10 +526,7 @@ impl Builder<'_> {
                 }
             }
         }
-        if let Some(result) = &callback.result {
-            self.consume("return", "result", result, &[], result.span)?;
-        }
-        self.close()
+        Ok(())
     }
 
     fn component(
@@ -514,7 +551,7 @@ impl Builder<'_> {
                 | LoweredMember::InstanceHandler(callback) => Some(&callback.body),
                 _ => None,
             })
-            .flatten()
+            .flat_map(|body| ir::walk_statements(body))
             .filter_map(|statement| match statement {
                 ir::Statement::ButtonToggle {
                     toggle_button_owner,

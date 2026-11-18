@@ -3296,3 +3296,41 @@ export component RecordUpdateParity inherits Window {
     callback edit();
     edit => { root.record = root.next(true); }
 }
+
+export struct FlowRow { label: string, ready: bool }
+
+export component HandlerControlFlowParity inherits Window {
+    in-out property <[FlowRow]> rows: [
+        FlowRow { label: "A", ready: true },
+        FlowRow { label: "B", ready: false },
+    ];
+    out property <string> trace: "";
+    out property <int> total: 0;
+
+    pure callback selected(int) -> bool;
+    callback touched(string);
+    callback run(int) -> string;
+    run(mode) => {
+        if root.selected(mode) {
+            for row[index] in root.rows {
+                if row.ready {
+                    root.trace = root.trace + index + row.label;
+                    root.touched(row.label);
+                    Model.append(root.rows, FlowRow { label: "new", ready: false });
+                } else {
+                    root.trace += "!";
+                }
+            }
+        } else if mode == 2 {
+            for step in 3 {
+                for step in step { root.total += step + 1; }
+                root.total += step;
+            }
+            for step in -1 { root.total += 1000; }
+            for empty in [] { root.total += 1000; }
+        } else {
+            root.trace = "skip";
+        }
+        root.trace
+    }
+}

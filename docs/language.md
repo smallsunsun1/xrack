@@ -61,6 +61,27 @@ model.set_row(1, "第二行已更新".into());
 
 回调可用 `callback score(value: int) -> int;` 声明结果类型，处理器的末尾表达式提供返回值。`.xr` 中可用 `root.score(4)` 或 `child.score(4)` 调用组件回调。属性绑定只能调用标有 `pure` 的回调，其处理器也不能写入属性或调用有副作用的回调。编译器会检查参数和返回类型，并拒绝递归调用以及经回调形成的属性依赖循环。
 
+回调体可以用 `if`、`else if` 和 `else` 执行语句。条件必须是 `bool`，每个条件最多求值一次，只有选中的分支会执行。条件取值仍可用 `条件 ? 真值 : 假值`，有返回类型的回调仍以末尾表达式返回结果。
+
+```xr
+clicked => {
+    if root.can-save {
+        root.status = "保存中";
+        root.save();
+    } else {
+        root.status = "请先填写必填项";
+    }
+}
+
+refresh => {
+    for entry[index] in root.entries {
+        root.refresh-row(index, entry);
+    }
+}
+```
+
+`for entry in model { ... }` 遍历进入循环时取得的模型快照。循环体内的模型增删会立即更新模型，当前循环会遍历原来取得的条目。`[index]` 可省略，索引从零开始。循环源也可以是整数计数，例如 `for step in 3 { ... }` 依次绑定 `0`、`1`、`2`，非正数执行零次。循环变量在循环体内可读，语句可嵌套，`pure` 回调的限制适用于每个分支和循环体。
+
 DSL 调用与 Rust 的 `invoke_*()` 共用同一处理逻辑。注册了 Rust `on_*()` 闭包时，有返回类型的调用返回闭包的结果。纯回调接收 `Fn` 闭包，调用方需保证闭包没有副作用。元素事件通过 `dispatch(id, event)` 分发。
 
 `callback submitted <=> editor.accepted;` 可以把内部控件事件或子组件的回调作为组件 API 公开。别名沿用目标的参数、返回类型和纯度，调用别名与调用目标进入同一个回调。也可以在命名元素上声明自定义回调。组件实例可写 `entry := Editor { submitted => { root.save(); } }`，类型化的处理器可以返回结果。列表和网格的实例处理器可读取当前模型项和索引。

@@ -379,6 +379,11 @@ fn collect_dependencies<'m>(
             collect_dependencies(definition, qualify, seen, dependencies)?;
         }
     }
+    if matches!(op.name(), "xr.if" | "xr.for") {
+        for statement in op.children().filter(|child| child.result_count() == 0) {
+            collect_dependencies(statement, qualify, seen, dependencies)?;
+        }
+    }
     Ok(())
 }
 

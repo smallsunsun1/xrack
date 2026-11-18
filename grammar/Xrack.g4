@@ -25,11 +25,15 @@ callback: 'pure'? 'callback' identifier ('<=>' reference | '(' (parameter (',' p
 parameter: (identifier ':')? typeName;
 binding: identifier (':' expression | '<=>' reference) ';';
 handler: identifier ('(' (identifier (',' identifier)*)? ')')? '=>' '{' statement* (expression ';'?)? '}';
-statement: (reference assignmentOp expression | call) ';';
+statement: (reference assignmentOp expression | call) ';' | ifStatement | forStatement;
+statementBlock: '{' statement* '}';
+ifStatement: 'if' expression statementBlock ('else' (ifStatement | statementBlock))?;
+forStatement: iteration statementBlock;
 assignmentOp: '=' | '+=' | '-=';
 element: (conditionClause | repeatClause)? (identifier ':=')? identifier '{' member* '}';
 conditionClause: 'if' expression ':';
-repeatClause: 'for' identifier ('[' identifier ']')? 'in' expression ':';
+repeatClause: iteration ':';
+iteration: 'for' identifier ('[' identifier ']')? 'in' expression;
 
 expression: conditional;
 conditional: logicalOr ('?' expression ':' expression)?;
@@ -58,7 +62,7 @@ gradientStop: expression (NUMBER '%')?;
 reference: ('root' | 'self' | identifier) ('.' identifier)*;
 // Type words are contextual: `color: ...` is an ordinary element binding.
 identifier: IDENT | 'int' | 'float' | 'bool' | 'string' | 'length' | 'color' | 'brush' | 'image'
-          | 'ImageFit' | 'LayoutAlignment' | 'CrossAxisAlignment' | 'Orientation' | 'DialInputMode' | 'ScrollBarPolicy' | 'TextWrap' | 'DialogRole' | 'DrawerEdge' | 'SelectionTarget' | 'circle' | 'deg' | 'duration' | 'ms' | 'as' | 'from' | 'pure' | 'struct' | 'states' | 'when' | 'translations';
+          | 'ImageFit' | 'LayoutAlignment' | 'CrossAxisAlignment' | 'Orientation' | 'DialInputMode' | 'ScrollBarPolicy' | 'TextWrap' | 'DialogRole' | 'DrawerEdge' | 'SelectionTarget' | 'circle' | 'deg' | 'duration' | 'ms' | 'as' | 'from' | 'pure' | 'struct' | 'states' | 'when' | 'translations' | 'else';
 
 UNIT: 'px';
 COLOR: '#' [0-9a-fA-F]+;

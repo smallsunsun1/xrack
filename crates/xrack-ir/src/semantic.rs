@@ -2419,6 +2419,7 @@ struct Scope<'a> {
     owners: BTreeMap<String, Owner<'a>>,
     parameters: BTreeMap<String, Type>,
     parameter_sites: BTreeMap<String, Span>,
+    loop_locals: BTreeSet<String>,
     effects_allowed: bool,
     writable_row: Option<String>,
     row_template: Option<RowTemplate>,
@@ -9141,10 +9142,69 @@ fn discarded_call(expr: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir
 }
 
 fn statements(h: &ast::Handler, scope: &Scope<'_>, owner: &str) -> Result<Vec<ir::Statement>> {
-    h.statements
+    statement_block(&h.statements, scope, owner)
+}
+
+fn statement_block(
+    statements: &[ast::Statement],
+    scope: &Scope<'_>,
+    owner: &str,
+) -> Result<Vec<ir::Statement>> {
+    statements
         .iter()
         .map(|statement| {
             let s = match statement {
+                ast::Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                    span,
+                } => {
+                    return Ok(ir::Statement::If {
+                        condition: expression_as(condition, scope, owner, Type::Bool)?,
+                        then_body: statement_block(then_body, scope, owner)?,
+                        else_body: statement_block(else_body, scope, owner)?,
+                        span: *span,
+                    });
+                }
+                ast::Statement::For {
+                    iteration,
+                    body,
+                    span,
+                } => {
+                    let model = expression(&iteration.model, scope, owner)?;
+                    let item_type = if model.ty == Type::Int {
+                        Type::Int
+                    } else {
+                        model.ty.list_item().ok_or_else(|| Diagnostic {
+                            span: model.span,
+                            message: "for requires a model or an integer count".into(),
+                        })?
+                    };
+                    if iteration.index.as_ref() == Some(&iteration.item) {
+                        return fail(
+                            iteration.index_span,
+                            "loop item and index must have different names",
+                        );
+                    }
+                    let mut body_scope = scope.clone();
+                    let mut declare = |name: &str, ty, span| {
+                        body_scope.parameters.insert(name.into(), ty);
+                        body_scope.parameter_sites.insert(name.into(), span);
+                        body_scope.loop_locals.insert(name.into());
+                    };
+                    declare(&iteration.item, item_type, iteration.item_span);
+                    if let Some(index) = &iteration.index {
+                        declare(index, Type::Int, iteration.index_span);
+                    }
+                    return Ok(ir::Statement::For {
+                        model,
+                        item: iteration.item.clone(),
+                        index: iteration.index.clone(),
+                        body: statement_block(body, &body_scope, owner)?,
+                        span: *span,
+                    });
+                }
                 ast::Statement::Call(call) => {
                     return scope.effect_call(call, owner);
                 }
@@ -9154,6 +9214,9 @@ fn statements(h: &ast::Handler, scope: &Scope<'_>, owner: &str) -> Result<Vec<ir
                 return fail(s.span, "assignment is not allowed in a pure callback");
             }
             if !s.target.contains('.') && scope.parameters.contains_key(&s.target) {
+                if scope.loop_locals.contains(&s.target) {
+                    return fail(s.span, "loop bindings cannot be assigned");
+                }
                 return fail(s.span, "callback parameters cannot be assigned");
             }
             let (target, ty) = scope.property(owner, &s.target, true, s.span)?;
@@ -10078,7 +10141,12 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     scope.reference(span, s, 0, *declaration, s);
                 }
                 return Ok(ir::Expr {
-                    op: "param".into(),
+                    op: if scope.loop_locals.contains(s) {
+                        "loop_param"
+                    } else {
+                        "param"
+                    }
+                    .into(),
                     value: s.clone(),
                     owner: None,
                     ty: ty.clone(),
@@ -11282,8 +11350,12 @@ fn collect_bindings(
             LoweredMember::Property(p) => (&p.name, &p.init, p.span),
             LoweredMember::Callback(callback) | LoweredMember::InstanceHandler(callback) => {
                 let mut deps = Vec::new();
-                for statement in &callback.body {
+                for statement in ir::walk_statements(&callback.body) {
                     match statement {
+                        ir::Statement::If { condition, .. } => {
+                            dependencies(condition, &path, &mut deps)
+                        }
+                        ir::Statement::For { model, .. } => dependencies(model, &path, &mut deps),
                         ir::Statement::Assignment(assignment) => {
                             dependencies(&assignment.value, &path, &mut deps)
                         }

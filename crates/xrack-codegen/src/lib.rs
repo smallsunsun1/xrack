@@ -2572,6 +2572,10 @@ impl<'a> Generator<'a> {
                 }
             }
             "xr.call" => from_host(self.callback_call(op, value, context)?, &value_type(op)?),
+            "xr.loop_param" => {
+                let name = parameter_ident(value);
+                quote!(#name.clone())
+            }
             "xr.param" => {
                 let name = parameter_ident(value);
                 if context.repeat_parameters || context.combo_option && value == "option-data" {
@@ -2979,10 +2983,62 @@ impl<'a> Generator<'a> {
         handler: OperationRef<'a>,
         context: ExpressionContext<'_>,
     ) -> Result<TokenStream, String> {
+        self.statement_block(&mut handler.children(), context)
+    }
+
+    fn statement_block(
+        &self,
+        operations: &mut dyn Iterator<Item = OperationRef<'a>>,
+        context: ExpressionContext<'_>,
+    ) -> Result<TokenStream, String> {
         let expression = |op| self.expr_in(op, context);
         let mut statements = TokenStream::new();
-        for statement in handler.children() {
+        for statement in operations {
             match statement.name() {
+                "xr.if" => {
+                    let condition = expression(self.operand(statement, 0)?)?;
+                    let mut branches = statement.regions().map(|region| {
+                        self.statement_block(
+                            &mut region.blocks().flat_map(|block| block.operations()),
+                            context,
+                        )
+                    });
+                    let yes = branches.next().ok_or("missing if body")??;
+                    let no = branches.next().ok_or("missing else body")??;
+                    if no.is_empty() {
+                        statements.extend(quote!(if #condition { #yes }));
+                    } else {
+                        statements.extend(quote!(if #condition { #yes } else { #no }));
+                    }
+                }
+                "xr.for" => {
+                    let model = self.operand(statement, 0)?;
+                    let model_type = value_type(model)?;
+                    let values = expression(model)?;
+                    let values = if model_type == Type::Int {
+                        quote!(0..(#values))
+                    } else {
+                        let model_type = ty(&model_type);
+                        quote!({
+                            let __xr_model: #model_type = #values;
+                            __xr_model.into_snapshot().into_iter()
+                        })
+                    };
+                    let body = self.statements_in(statement, context)?;
+                    let item = parameter_ident(statement.attr("item")?);
+                    let index = statement.attr("index")?;
+                    if index.is_empty() {
+                        statements.extend(quote!(for #item in #values { #body }));
+                    } else {
+                        let index = parameter_ident(index);
+                        statements.extend(quote! {
+                            for (__xr_index, #item) in ::core::iter::Iterator::enumerate(#values) {
+                                let #index = __xr_index as ::core::primitive::i64;
+                                #body
+                            }
+                        });
+                    }
+                }
                 "xr.assign" => {
                     let value = expression(self.operand(statement, 0)?)?;
                     statements.extend(self.set_property(

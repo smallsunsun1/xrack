@@ -45,7 +45,7 @@ bool isExpression(Operation &op) {
              ListRowSelectedOp, StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
              LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, PointerButtonsOp, CallOp,
              RoundOp, MathFunctionOp, StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, UpdateRecordOp, DefaultRecordOp, RecordArrayOp,
-             GetFieldOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp,
+             GetFieldOp, LoopParamOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp,
              DateIsValidOp, DateAddDaysOp, DateAddMonthsOp, DateWeekdayOp, DateMonthsOp, DateMonthIndexOp, DateParseIsoOp, DateIsSelectableOp,
              MakeTimeOp, TimeFieldOp, TimeParseIsoOp, TimeIsValidIsoOp, TimeFormatIsoOp, TimeInRangeOp, MakeFontOp, FontFieldOp>(op);
 }
@@ -2968,7 +2968,7 @@ LogicalResult TextCommandOp::verify() {
 }
 
 LogicalResult ScrollCommandOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("scroll commands are not allowed in pure callbacks");
   auto args = getArgs();
@@ -2998,14 +2998,14 @@ LogicalResult ScrollCommandOp::verify() {
 }
 
 LogicalResult PositionChildOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("scroll commands are not allowed in pure callbacks");
   return success();
 }
 
 LogicalResult TableSelectionCommandOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("table selection commands are not allowed in a pure callback");
   auto arity = llvm::StringSwitch<int>(getMethod())
@@ -3019,7 +3019,7 @@ LogicalResult TableSelectionCommandOp::verify() {
 }
 
 LogicalResult SourceSelectionOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("source selection is not allowed in pure callbacks");
   auto method = getMethod();
@@ -3043,7 +3043,7 @@ LogicalResult TableSelectionReadOp::verify() {
 }
 
 LogicalResult TableSortCommandOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("table sorting is not allowed in a pure callback");
   auto args = getArgs();
@@ -3063,7 +3063,7 @@ LogicalResult TableSortReadOp::verify() {
 }
 
 LogicalResult TableHistoryCommandOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("table history commands are not allowed in a pure callback");
   if (getMethod() != "undo" && getMethod() != "redo")
@@ -3078,14 +3078,14 @@ LogicalResult TableHistoryReadOp::verify() {
 }
 
 LogicalResult SplitRestoreOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("restoring split state is not allowed in a pure callback");
   return success();
 }
 
 LogicalResult TreeCommandOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("tree commands are not allowed in pure callbacks");
   auto arity = llvm::StringSwitch<int>(getMethod())
@@ -3114,28 +3114,28 @@ LogicalResult ViewIndexOp::verify() {
 }
 
 LogicalResult MoveColumnOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("moving a column is not allowed in a pure callback");
   return success();
 }
 
 LogicalResult MoveRowOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("moving a row is not allowed in a pure callback");
   return success();
 }
 
 LogicalResult MoveNavigationItemOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("move-item is not allowed in a pure callback");
   return success();
 }
 
 LogicalResult SetRowHeightOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("set-row-height is not allowed in a pure callback");
   return success();
@@ -3158,7 +3158,7 @@ LogicalResult WindowReadOp::verify() {
 LogicalResult WindowCommandOp::verify() {
   if (!hasRootWindow(*this))
     return emitOpError("requires a component with a root Window");
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("window commands are not allowed in a pure callback");
   if (getCommand() == "set-full-screen" && getEnabled())
@@ -3171,7 +3171,7 @@ LogicalResult WindowCommandOp::verify() {
 }
 
 LogicalResult CheckGroupCommandOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("group commands are not allowed in a pure callback");
   return success();
@@ -3180,14 +3180,14 @@ LogicalResult CheckGroupCommandOp::verify() {
 LogicalResult WindowCloseOp::verify() {
   if (!hasRootWindow(*this))
     return emitOpError("requires a component with a root Window");
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("Window.close is not allowed in a pure callback");
   return success();
 }
 
 LogicalResult SecondaryWindowCommandOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("secondary window commands are not allowed in a pure callback");
   if (getCommand() != "show" && getCommand() != "hide" && getCommand() != "close")
@@ -3351,6 +3351,33 @@ static LogicalResult verifyInstanceLayout(Operation *op, llvm::StringRef name, T
 
 LogicalResult LayoutBindOp::verify() {
   return verifyInstanceLayout(*this, getName(), getInput().getType());
+}
+
+static LogicalResult verifyStatementBlock(Region &body, bool allowReturn) {
+  for (Operation &child : body.front()) {
+    if (isa<ReturnOp>(child) &&
+        (!allowReturn || !isa_and_nonnull<EndOp>(child.getNextNode())))
+      return child.emitOpError("must be immediately before xr.end in a callback");
+    if (!isa<IfOp, ForOp, AssignOp, InvokeOp, EvaluateOp, LogOp, NavigateOp, TimerCommandOp, MediaCommandOp, PopupCommandOp,
+             FileDialogOpenOp, NativeDialogOpenOp, WindowCloseOp, WindowCommandOp, CheckGroupCommandOp,
+             SecondaryWindowCommandOp, FocusCommandOp, ButtonClickOp, ButtonToggleOp, SwipeCancelOp, TextCommandOp, ScrollCommandOp, PositionChildOp, SourceSelectionOp, TreeCommandOp, TableSortCommandOp, TableSelectionCommandOp, TableHistoryCommandOp, SplitRestoreOp, CancelFlickOp, ReturnToBoundsOp, MoveColumnOp, MoveRowOp, MoveNavigationItemOp, ModelEditOp,
+             SetRowHeightOp, ReturnOp, EndOp>(child) &&
+        !isExpression(child))
+      return child.emitOpError("is not valid in a callback or event handler");
+  }
+  return success();
+}
+
+LogicalResult IfOp::verify() {
+  if (failed(verifyStatementBlock(getThenBody(), false)))
+    return failure();
+  return verifyStatementBlock(getElseBody(), false);
+}
+
+LogicalResult ForOp::verify() {
+  if (getItem().empty() || getItem() == getIndex())
+    return emitOpError("requires a named item and a distinct optional index");
+  return verifyStatementBlock(getBody(), false);
 }
 
 static LogicalResult verifyCallback(Operation *op, Region &body,
@@ -3686,17 +3713,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
                << type << " parameter";
     }
   }
-  for (Operation &child : body.front()) {
-    if (isa<ReturnOp>(child) && !isa_and_nonnull<EndOp>(child.getNextNode()))
-      return child.emitOpError("must be immediately before xr.end");
-    if (!isa<AssignOp, InvokeOp, EvaluateOp, LogOp, NavigateOp, TimerCommandOp, MediaCommandOp, PopupCommandOp,
-             FileDialogOpenOp, NativeDialogOpenOp, WindowCloseOp, WindowCommandOp, CheckGroupCommandOp,
-             SecondaryWindowCommandOp, FocusCommandOp, ButtonClickOp, ButtonToggleOp, SwipeCancelOp, TextCommandOp, ScrollCommandOp, PositionChildOp, SourceSelectionOp, TreeCommandOp, TableSortCommandOp, TableSelectionCommandOp, TableHistoryCommandOp, SplitRestoreOp, CancelFlickOp, ReturnToBoundsOp, MoveColumnOp, MoveRowOp, MoveNavigationItemOp, ModelEditOp,
-             SetRowHeightOp, ReturnOp, EndOp>(child) &&
-        !isExpression(child))
-      return child.emitOpError("is not valid in a callback or event handler");
-  }
-  return success();
+  return verifyStatementBlock(body, true);
 }
 
 LogicalResult CallbackOp::verify() {
@@ -3708,11 +3725,11 @@ LogicalResult CallbackOp::verify() {
     return emitOpError("requires a named alias target on a callback declaration");
   if (getImplementation() && *getImplementation() != "true")
     return emitOpError("implementation marker must be true");
-  if (getPure())
-    for (Operation &child : getBody().front())
-      if (isa<AssignOp>(child))
-        return child.emitOpError(
-            "assignment is not allowed in a pure callback");
+  if (getPure() && (*this)->walk([](AssignOp assign) {
+        assign.emitOpError("assignment is not allowed in a pure callback");
+        return WalkResult::interrupt();
+      }).wasInterrupted())
+    return failure();
   return verifyCallback(*this, getBody(), getParameters());
 }
 
@@ -3802,7 +3819,7 @@ LogicalResult FormatFixedOp::verify() {
 }
 
 LogicalResult LogOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure())
     return emitOpError("logging is not allowed in a pure callback");
   return success();
@@ -4308,7 +4325,7 @@ static Type repeatedItemType(Type model) {
 }
 
 LogicalResult ModelEditOp::verify() {
-  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("model edits are not allowed in a pure callback");
   if (!getModel().getDefiningOp<ReadOp>())
@@ -4334,6 +4351,25 @@ LogicalResult ModelAtOp::verify() {
 }
 
 
+LogicalResult LoopParamOp::verify() {
+  auto name = getValue();
+  for (auto *scope = (*this)->getParentOp(); scope; scope = scope->getParentOp()) {
+    if (auto loop = dyn_cast<ForOp>(scope)) {
+      Type expected;
+      if (name == loop.getItem())
+        expected = repeatedItemType(loop.getModel().getType());
+      else if (!name.empty() && name == loop.getIndex())
+        expected = IntType::get(getContext());
+      if (expected) {
+        if (getResult().getType() != expected)
+          return emitOpError("loop binding type mismatch for ") << name;
+        return success();
+      }
+    }
+  }
+  return emitOpError("unknown loop binding ") << name;
+}
+
 static LogicalResult verifyParameter(ParamOp param) {
   auto name = param.getValue();
   auto type = param.getResult().getType();
@@ -4343,6 +4379,8 @@ static LogicalResult verifyParameter(ParamOp param) {
     return success();
   };
   auto *scope = param->getParentOp();
+  while (isa<IfOp, ForOp>(scope))
+    scope = scope->getParentOp();
   bool allowsRow = true;
   if (isa<CallbackOp, HandlerOp>(scope)) {
     auto parsed = llvm::json::parse(
@@ -4467,8 +4505,8 @@ static LogicalResult verifyCall(Operation *op, const Owners &owners,
   for (auto callback : target->getRegion(0).front().getOps<CallbackOp>()) {
     if (callback.getName() != name)
       continue;
-    auto enclosing = dyn_cast<CallbackOp>(op->getParentOp());
-    if (!callback.getPure() && !isa<HandlerOp>(op->getParentOp()) &&
+    auto enclosing = op->getParentOfType<CallbackOp>();
+    if (!callback.getPure() && !op->getParentOfType<HandlerOp>() &&
         (!enclosing || enclosing.getPure()))
       return op->emitOpError("impure callback in a pure context: ") << name;
 

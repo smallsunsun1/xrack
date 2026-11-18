@@ -3230,6 +3230,53 @@ component Demo inherits Window {
 }
 
 #[test]
+fn callback_control_flow_supports_loop_scope_and_incomplete_branches() {
+    let source = r#"struct LoopEntry { label: string }
+component Demo inherits Window {
+    property <[LoopEntry]> rows: [LoopEntry { label: "a" }];
+    property <string> output;
+    callback run(bool);
+    run(go)=>{if go{for row[index] in root.rows{root.output = row.label;}}
+    else{root.output = "";}}
+}"#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let edits = formatting::edits(source, &json!({}));
+    let formatted = edits[0]["newText"].as_str().unwrap();
+    assert!(
+        formatted.contains("for row[index] in root.rows {"),
+        "{formatted}"
+    );
+    assert!(formatted.contains("} else {"), "{formatted}");
+    assert_eq!(
+        request_at(
+            "textDocument/definition",
+            URI,
+            &source.replace("row.label", "ro|w.label"),
+            None
+        ),
+        location_at(URI, &source.replace("for row", "for |row"), "row"),
+    );
+    let items = complete_at(&source.replace("row.label;", "row.la|"));
+    assert!(
+        items.iter().any(|item| item["label"] == "label"),
+        "{items:?}"
+    );
+    let items = complete_at(&source.replace("else{root.output = \"\";}", "el|"));
+    assert!(
+        items.iter().any(|item| item["label"] == "else"),
+        "{items:?}"
+    );
+    let items = complete_at(&source.replace("root.output = row.label;", "i|"));
+    for expected in ["if", "index"] {
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
 fn index_progress_waits_for_client_ack_and_reports_completion() {
     let root = workspace_fixture("index-progress");
     let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();

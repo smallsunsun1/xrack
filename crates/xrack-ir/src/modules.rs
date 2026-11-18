@@ -452,20 +452,7 @@ fn rewrite_members(
                 for span in &mut handler.parameter_spans {
                     span.source = source;
                 }
-                for statement in &mut handler.statements {
-                    match statement {
-                        ast::Statement::Assignment(assignment) => {
-                            assignment.span.source = source;
-                            rewrite_expr(&mut assignment.value, asset_prefix, names, source)
-                        }
-                        ast::Statement::Call(call) => {
-                            call.span.source = source;
-                            for argument in &mut call.arguments {
-                                rewrite_expr(argument, asset_prefix, names, source);
-                            }
-                        }
-                    }
-                }
+                rewrite_statements(&mut handler.statements, asset_prefix, names, source);
                 if let Some(value) = &mut handler.result {
                     rewrite_expr(value, asset_prefix, names, source);
                 }
@@ -557,6 +544,50 @@ fn rebase_asset(spelling: &mut String, prefix: &Path) {
         #[cfg(windows)]
         let path = path.replace('\\', "/");
         *spelling = serde_json::Value::String(path.into()).to_string();
+    }
+}
+
+fn rewrite_statements(
+    statements: &mut [ast::Statement],
+    prefix: &Path,
+    names: &BTreeMap<String, String>,
+    source: usize,
+) {
+    for statement in statements {
+        match statement {
+            ast::Statement::Assignment(assignment) => {
+                assignment.span.source = source;
+                rewrite_expr(&mut assignment.value, prefix, names, source);
+            }
+            ast::Statement::Call(call) => {
+                call.span.source = source;
+                for argument in &mut call.arguments {
+                    rewrite_expr(argument, prefix, names, source);
+                }
+            }
+            ast::Statement::If {
+                condition,
+                then_body,
+                else_body,
+                span,
+            } => {
+                span.source = source;
+                rewrite_expr(condition, prefix, names, source);
+                rewrite_statements(then_body, prefix, names, source);
+                rewrite_statements(else_body, prefix, names, source);
+            }
+            ast::Statement::For {
+                iteration,
+                body,
+                span,
+            } => {
+                span.source = source;
+                iteration.item_span.source = source;
+                iteration.index_span.source = source;
+                rewrite_expr(&mut iteration.model, prefix, names, source);
+                rewrite_statements(body, prefix, names, source);
+            }
+        }
     }
 }
 
@@ -691,20 +722,7 @@ fn rewrite_global_members(members: &mut [ast::Member], globals: &BTreeMap<String
                 }
             }
             ast::Member::Handler(handler) => {
-                for statement in &mut handler.statements {
-                    match statement {
-                        ast::Statement::Assignment(assignment) => {
-                            rewrite_global_reference(&mut assignment.target, globals);
-                            rewrite_global_expr(&mut assignment.value, globals);
-                        }
-                        ast::Statement::Call(call) => {
-                            rewrite_global_reference(&mut call.callee, globals);
-                            for value in &mut call.arguments {
-                                rewrite_global_expr(value, globals);
-                            }
-                        }
-                    }
-                }
+                rewrite_global_statements(&mut handler.statements, globals);
                 if let Some(value) = &mut handler.result {
                     rewrite_global_expr(value, globals);
                 }
@@ -747,6 +765,47 @@ fn rewrite_global_members(members: &mut [ast::Member], globals: &BTreeMap<String
                 }
             }
             ast::Member::Children(_) => {}
+        }
+    }
+}
+
+fn rewrite_global_statements(
+    statements: &mut [ast::Statement],
+    globals: &BTreeMap<String, String>,
+) {
+    for statement in statements {
+        match statement {
+            ast::Statement::Assignment(assignment) => {
+                rewrite_global_reference(&mut assignment.target, globals);
+                rewrite_global_expr(&mut assignment.value, globals);
+            }
+            ast::Statement::Call(call) => {
+                rewrite_global_reference(&mut call.callee, globals);
+                for value in &mut call.arguments {
+                    rewrite_global_expr(value, globals);
+                }
+            }
+            ast::Statement::If {
+                condition,
+                then_body,
+                else_body,
+                ..
+            } => {
+                rewrite_global_expr(condition, globals);
+                rewrite_global_statements(then_body, globals);
+                rewrite_global_statements(else_body, globals);
+            }
+            ast::Statement::For {
+                iteration, body, ..
+            } => {
+                rewrite_global_expr(&mut iteration.model, globals);
+                let mut local_globals = globals.clone();
+                local_globals.remove(&iteration.item);
+                if let Some(index) = &iteration.index {
+                    local_globals.remove(index);
+                }
+                rewrite_global_statements(body, &local_globals);
+            }
         }
     }
 }

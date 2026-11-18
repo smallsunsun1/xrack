@@ -547,9 +547,10 @@ impl<'a, 'w> Symbols<'a, 'w> {
         if let Some(workspace) = workspace {
             index.imported_members = workspace.interfaces(&imports, &mut modules);
         }
-        index.infer_repeat_items();
+        index.infer_repeat_items(false);
         index.infer_choice_roles(tokens);
         index.infer_handler_parameters(&code);
+        index.infer_repeat_items(true);
         let elements = index
             .scopes
             .iter()

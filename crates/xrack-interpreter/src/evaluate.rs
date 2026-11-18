@@ -1710,9 +1710,44 @@ impl Instance {
         {
             slot.track();
         }
-        let mut fallback = None;
-        for statement in &function.body {
+        let fallback = self.execute_statements(&function.body, args)?;
+        let result = match slot.and_then(CallbackSlot::get) {
+            Some(callback) => callback(args)?,
+            None => fallback
+                .map(|expression| self.evaluate(expression, args))
+                .transpose()?,
+        };
+        if slot.is_some() {
+            // Ordinary calls validate the result with the callback's name and schema.
+            return Ok(result);
+        }
+        match (function.result.as_ref(), &result) {
+            (None, None) => Ok(result),
+            (Some(ty), Some(value)) if ty.matches(value) => Ok(result),
+            _ => Err(evaluation("callback return type does not match")),
+        }
+    }
+
+    fn execute_statements<'a>(
+        &self,
+        body: &'a [Statement],
+        args: &[Value],
+    ) -> Result<Option<&'a Expr>> {
+        for statement in body {
             match statement {
+                Statement::If { condition, yes, no } => {
+                    let Value::Bool(condition) = self.evaluate(condition, args)? else {
+                        return Err(evaluation("if condition must be a bool"));
+                    };
+                    self.execute_statements(if condition { yes } else { no }, args)?;
+                }
+                Statement::For {
+                    model,
+                    indexed,
+                    body,
+                } => {
+                    self.execute_loop(self.evaluate(model, args)?, *indexed, body, args)?;
+                }
                 Statement::Assign(target, expression) => {
                     self.write(target, self.evaluate(expression, args)?)?;
                 }
@@ -1908,27 +1943,52 @@ impl Instance {
                         .ok_or_else(|| evaluation("invalid window command arguments"))?;
                     self.0.window.request(command);
                 }
-                Statement::Return(expression) => {
-                    fallback = Some(expression);
-                    break;
-                }
+                Statement::Return(expression) => return Ok(Some(expression)),
             }
         }
-        let result = match slot.and_then(CallbackSlot::get) {
-            Some(callback) => callback(args)?,
-            None => fallback
-                .map(|expression| self.evaluate(expression, args))
-                .transpose()?,
+        Ok(None)
+    }
+
+    fn execute_loop(
+        &self,
+        model: Value,
+        indexed: bool,
+        body: &[Statement],
+        args: &[Value],
+    ) -> Result<()> {
+        let mut iteration = args.to_vec();
+        let mut visit = |index, value| {
+            iteration.truncate(args.len());
+            iteration.push(value);
+            if indexed {
+                iteration.push(Value::Int(index));
+            }
+            self.execute_statements(body, &iteration).map(|_| ())
         };
-        if slot.is_some() {
-            // Ordinary calls validate the result with the callback's name and schema.
-            return Ok(result);
+        let items: Box<dyn Iterator<Item = Value>> = match model_value(model) {
+            Value::Int(count) => {
+                for index in 0..count {
+                    visit(index, Value::Int(index))?;
+                }
+                return Ok(());
+            }
+            Value::IntModel(items) => Box::new(items.into_snapshot().into_iter().map(Value::Int)),
+            Value::StringModel(items) => {
+                Box::new(items.into_snapshot().into_iter().map(Value::String))
+            }
+            Value::DateModel(items) => Box::new(items.into_snapshot().into_iter().map(Value::Date)),
+            Value::RecordList(items) => {
+                Box::new(items.into_snapshot().1.into_iter().map(Value::Record))
+            }
+            Value::TouchPoints(items) => {
+                Box::new(items.into_snapshot().into_iter().map(Value::TouchPoint))
+            }
+            _ => return Err(evaluation("for requires a model or an integer count")),
+        };
+        for (index, item) in items.enumerate() {
+            visit(index as i64, item)?;
         }
-        match (function.result.as_ref(), &result) {
-            (None, None) => Ok(result),
-            (Some(ty), Some(value)) if ty.matches(value) => Ok(result),
-            _ => Err(evaluation("callback return type does not match")),
-        }
+        Ok(())
     }
 
     fn arguments(&self, expressions: &[Expr], args: &[Value]) -> Result<Vec<Value>> {

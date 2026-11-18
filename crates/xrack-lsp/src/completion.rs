@@ -57,6 +57,7 @@ enum Role<'a> {
     },
     RecordValue(&'a str),
     Handler,
+    StatementBlock,
     Animation,
     States,
     State,
@@ -166,6 +167,9 @@ impl<'a> Index<'a> {
                         Role::State if matches!(head, [name] if matches!(name.text, "in" | "out" | "in-out")) => {
                             Role::StateTransition
                         }
+                        Role::Handler | Role::StatementBlock if control_block(head) => {
+                            Role::StatementBlock
+                        }
                         _ => role(head, current == 0),
                     };
                     let members = locals(head, role);
@@ -179,7 +183,7 @@ impl<'a> Index<'a> {
                         statement: i + 1,
                         brackets: 0,
                         members,
-                        repeat_model: repeat_model(head),
+                        repeat_model: repeat_model(head, role),
                     });
                     current = scopes.len() - 1;
                 }
@@ -195,8 +199,17 @@ impl<'a> Index<'a> {
                                 }),
                         );
                     }
+                    let record_value = matches!(scope.role, Role::RecordValue(_));
                     current = scope.parent;
-                    scopes[current].statement = i + 1;
+                    let parent = &mut scopes[current];
+                    let control_header =
+                        matches!(parent.role, Role::Handler | Role::StatementBlock)
+                            && tokens
+                                .get(parent.statement)
+                                .is_some_and(|token| matches!(token.text, "if" | "else" | "for"));
+                    if !record_value || !control_header {
+                        parent.statement = i + 1;
+                    }
                 }
                 ";" => scopes[current].statement = i + 1,
                 "current-value"
@@ -528,9 +541,13 @@ impl<'a> Index<'a> {
             .map_or(&[], |s| &s.members)
     }
 
-    fn infer_repeat_items(&mut self) {
+    fn infer_repeat_items(&mut self, loops: bool) {
         for i in 1..self.scopes.len() {
             let scope = &self.scopes[i];
+            if scope.repeat_model.is_empty() || matches!(scope.role, Role::StatementBlock) != loops
+            {
+                continue;
+            }
             let parent = scope.parent;
             let ty = match scope.repeat_model.as_slice() {
                 [owner, ".", field] => {
@@ -541,6 +558,7 @@ impl<'a> Index<'a> {
                     };
                     owner.and_then(|owner| self.typed_member(owner, field))
                 }
+                [count] if count.parse::<i64>().is_ok() => Some((Type::Int, None)),
                 [name] => self
                     .ancestors(parent)
                     .find_map(|i| self.typed_member(i, name)),
@@ -686,8 +704,8 @@ fn role<'a>(head: &[&Token<'a>], top_level: bool) -> Role<'a> {
 }
 
 fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
-    let repeat =
-        matches!(role, Role::Element { .. }) && head.first().is_some_and(|t| t.text == "for");
+    let repeat = matches!(role, Role::Element { .. } | Role::StatementBlock)
+        && head.first().is_some_and(|t| t.text == "for");
     let names: &[&Token<'_>] = match role {
         Role::Handler => head
             .iter()
@@ -741,12 +759,31 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
         .collect()
 }
 
-fn repeat_model<'a>(head: &[&Token<'a>]) -> Vec<&'a str> {
+fn control_block(head: &[&Token<'_>]) -> bool {
+    if !head
+        .first()
+        .is_some_and(|token| matches!(token.text, "if" | "else" | "for"))
+    {
+        return false;
+    }
+    let depth = head.iter().fold(0, |depth, token| match token.text {
+        "[" | "(" => depth + 1,
+        "]" | ")" => depth - 1,
+        _ => depth,
+    });
+    depth == 0
+}
+
+fn repeat_model<'a>(head: &[&Token<'a>], role: Role<'_>) -> Vec<&'a str> {
     if head.first().is_none_or(|token| token.text != "for") {
         return vec![];
     }
     let start = head.iter().position(|t| t.text == "in");
-    let end = head.iter().rposition(|t| t.text == ":");
+    let end = if matches!(role, Role::StatementBlock) {
+        Some(head.len())
+    } else {
+        head.iter().rposition(|t| t.text == ":")
+    };
     start
         .zip(end)
         .filter(|(start, end)| start < end)
@@ -1089,13 +1126,26 @@ pub(crate) fn complete_with_imports(
     {
         index.imported_members = workspace.imported_members(&tokens);
     }
-    index.infer_repeat_items();
+    index.infer_repeat_items(false);
     index.infer_choice_roles(&tokens);
     index.infer_handler_parameters(&code);
+    index.infer_repeat_items(true);
     let head = &prior[prior
         .iter()
         .rposition(|t| matches!(t.text, "{" | "}" | ";"))
         .map_or(0, |i| i + 1)..];
+    if let Some(close) = prior.last().filter(|token| token.text == "}")
+        && index.scopes.iter().any(|branch| {
+            matches!(branch.role, Role::StatementBlock)
+                && branch.parent == scope
+                && branch.close == close.range.start
+                && matches!(&code[branch.header.clone()], [first, rest @ ..]
+                    if first.text == "if" || first.text == "else"
+                        && rest.first().is_some_and(|token| token.text == "if"))
+        })
+    {
+        items.add("else", KEYWORD, "XRack conditional branch");
+    }
     if suggest_position_child_argument(&index, scope, prior, &mut items) {
         return items.values;
     }
@@ -1392,12 +1442,17 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         }
         return;
     }
-    let expression = matches!(role, Role::Handler | Role::States)
+    let in_handler = matches!(role, Role::Handler | Role::StatementBlock);
+    let expression = in_handler
+        || matches!(role, Role::States)
         || matches!(first, "if" | "for" | "..")
         || head
             .iter()
             .any(|t| matches!(t.text, ":" | "<=>" | "=" | "+=" | "-="));
     if expression {
+        if in_handler && head.is_empty() {
+            items.words("if for", KEYWORD, "XRack statement");
+        }
         if let Some((ty, _)) = index.combo_option_data(scope) {
             let detail =
                 ty.map_or_else(|| "ComboBox model item".into(), |ty| ty.name().into_owned());
@@ -1440,7 +1495,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             }
         }
         for namespace in builtins::NAMESPACES {
-            let statements_allowed = matches!(role, Role::Handler) && head.is_empty();
+            let statements_allowed = in_handler && head.is_empty();
             let has_member = builtins::FUNCTIONS.iter().any(|function| {
                 function.namespace == *namespace
                     && (statements_allowed || function.result.is_some())

@@ -435,12 +435,78 @@ impl<'m> Loader<'m> {
             .iter()
             .map(|param| kind(op, &param.ty))
             .collect::<Result<_>>()?;
+        let result = op
+            .children()
+            .find(|statement| statement.name() == "xr.return")
+            .map(|statement| value_kind(statement, operand(statement, 0)?))
+            .transpose()?;
+        let body = self.statement_block(&mut op.children(), &parameters)?;
+        Ok(Function {
+            #[cfg(all(feature = "live-reload", unix))]
+            name: op.attribute("name").unwrap_or(op.name()).into(),
+            #[cfg(all(feature = "live-reload", unix))]
+            location: crate::live_inspect::Source::from_operation(op),
+            #[cfg(all(feature = "live-reload", unix))]
+            parameter_names: parameters
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect(),
+            parameters: parameter_types,
+            result,
+            body,
+            pure: op.attribute("pure") == Some("true"),
+            alias: None,
+        })
+    }
+
+    fn statement_block(
+        &mut self,
+        operations: &mut dyn Iterator<Item = Op<'m>>,
+        parameters: &[Parameter],
+    ) -> Result<Vec<Statement>> {
         let mut body = Vec::new();
-        let mut result = None;
-        for statement in op.children() {
+        for statement in operations {
             let expression =
-                |this: &mut Self, index| this.expression(operand(statement, index)?, &parameters);
+                |this: &mut Self, index| this.expression(operand(statement, index)?, parameters);
             match statement.name() {
+                "xr.if" => {
+                    let condition = expression(self, 0)?;
+                    let mut branches = statement.regions().map(|region| {
+                        self.statement_block(
+                            &mut region.blocks().flat_map(|block| block.operations()),
+                            parameters,
+                        )
+                    });
+                    let yes = branches
+                        .next()
+                        .ok_or_else(|| invalid(statement, "missing if body"))??;
+                    let no = branches
+                        .next()
+                        .ok_or_else(|| invalid(statement, "missing else body"))??;
+                    body.push(Statement::If { condition, yes, no });
+                }
+                "xr.for" => {
+                    let model = expression(self, 0)?;
+                    let model_type = value_type(statement, operand(statement, 0)?)?;
+                    let mut locals = parameters.to_vec();
+                    locals.push(Parameter {
+                        name: attribute(statement, "item")?.into(),
+                        ty: model_type.list_item().unwrap_or(Type::Int),
+                    });
+                    let index = attribute(statement, "index")?;
+                    let indexed = !index.is_empty();
+                    if indexed {
+                        locals.push(Parameter {
+                            name: index.into(),
+                            ty: Type::Int,
+                        });
+                    }
+                    body.push(Statement::For {
+                        model,
+                        indexed,
+                        body: self.statement_block(&mut statement.children(), &locals)?,
+                    });
+                }
                 "xr.assign" => body.push(Statement::Assign(
                     member(statement, "name")?,
                     expression(self, 0)?,
@@ -601,7 +667,7 @@ impl<'m> Loader<'m> {
                     body.push(Statement::Media(
                         attribute(statement, "owner")?.into(),
                         command
-                            .try_map_position(|position| self.expression(position, &parameters))?,
+                            .try_map_position(|position| self.expression(position, parameters))?,
                     ));
                 }
                 "xr.timer_command" => {
@@ -673,31 +739,13 @@ impl<'m> Loader<'m> {
                         .transpose()?;
                     body.push(Statement::WindowCommand(command, enabled));
                 }
-                "xr.return" => {
-                    result = Some(value_kind(statement, operand(statement, 0)?)?);
-                    body.push(Statement::Return(expression(self, 0)?));
-                }
+                "xr.return" => body.push(Statement::Return(expression(self, 0)?)),
                 "xr.end" => {}
                 _ if statement.result_count() != 0 => {}
                 _ => return Err(unsupported(statement, statement.name())),
             }
         }
-        Ok(Function {
-            #[cfg(all(feature = "live-reload", unix))]
-            name: op.attribute("name").unwrap_or(op.name()).into(),
-            #[cfg(all(feature = "live-reload", unix))]
-            location: crate::live_inspect::Source::from_operation(op),
-            #[cfg(all(feature = "live-reload", unix))]
-            parameter_names: parameters
-                .iter()
-                .map(|parameter| parameter.name.clone())
-                .collect(),
-            parameters: parameter_types,
-            result,
-            body,
-            pure: op.attribute("pure") == Some("true"),
-            alias: None,
-        })
+        Ok(body)
     }
 
     fn element(&mut self, op: Op<'m>) -> Result<Element> {
@@ -1746,6 +1794,15 @@ impl<'m> Loader<'m> {
                 let edges =
                     xrack_resources::nine_slice_edges(op).map_err(|error| invalid(op, error))?;
                 Expression::NineSlice(argument(self, 0)?, edges)
+            }
+            "xr.loop_param" => {
+                let name = spelling()?;
+                Expression::Param(
+                    parameters
+                        .iter()
+                        .rposition(|parameter| parameter.name == name)
+                        .ok_or_else(|| invalid(op, format_args!("unknown loop binding {name}")))?,
+                )
             }
             "xr.param" => {
                 let name = spelling()?;

@@ -6671,6 +6671,62 @@ fn record_updates_check_the_base_and_all_explicit_fields() {
 }
 
 #[test]
+fn callback_control_flow_checks_nested_statements_and_loop_bindings() {
+    let source = r#"
+        export component App inherits Window {
+            out property <int> total: 0;
+            callback run(bool);
+            run(enabled) => {
+                if enabled {
+                    for item[index] in [2, 3] { root.total += item + index; }
+                } else { root.total = 0; }
+            }
+        }
+    "#;
+    let ir = lower(source, "callback-control-flow.xr");
+    assert!(ir.contains("\"xr.if\""));
+    assert!(ir.contains("\"xr.for\""));
+    assert!(ir.contains("\"xr.loop_param\""));
+    assert!(mlir::process(&ir).is_ok());
+    let invalid = ir.replace("value = \"item\"", "value = \"missing\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("unknown loop binding")
+    );
+
+    for (from, to, diagnostic) in [
+        ("if enabled", "if 1", "expected bool"),
+        ("[2, 3]", "true", "for requires a model or an integer count"),
+        (
+            "item[index]",
+            "item[item]",
+            "loop item and index must have different names",
+        ),
+        (
+            "root.total += item + index;",
+            "item = 0;",
+            "loop bindings cannot be assigned",
+        ),
+        (
+            "else { root.total = 0; }",
+            "else { root.total = item; }",
+            "unknown property `item`",
+        ),
+        (
+            "callback run(bool)",
+            "pure callback run(bool)",
+            "assignment is not allowed in a pure callback",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "callback-control-flow.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(diagnostic), "{to}: {error}");
+    }
+}
+
+#[test]
 fn table_editors_verify_typed_record_links() {
     let source = r#"
         struct RowData { units: int, available: bool, load: float }

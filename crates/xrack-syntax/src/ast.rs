@@ -701,6 +701,17 @@ pub struct Handler {
 pub enum Statement {
     Assignment(Assignment),
     Call(Call),
+    If {
+        condition: Expr,
+        then_body: Vec<Statement>,
+        else_body: Vec<Statement>,
+        span: Span,
+    },
+    For {
+        iteration: Repeat,
+        body: Vec<Statement>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

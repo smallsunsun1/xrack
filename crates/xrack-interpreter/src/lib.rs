@@ -432,6 +432,16 @@ enum Expression {
 
 #[derive(Clone)]
 enum Statement {
+    If {
+        condition: Expr,
+        yes: Vec<Statement>,
+        no: Vec<Statement>,
+    },
+    For {
+        model: Expr,
+        indexed: bool,
+        body: Vec<Statement>,
+    },
     Assign(Member, Expr),
     Evaluate(Expr),
     Call(Member, Vec<Expr>, CallSite),
