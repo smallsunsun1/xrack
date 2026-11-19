@@ -5,6 +5,43 @@ mod stack_back;
 mod touch_spin;
 
 #[test]
+fn calendar_arrows_start_at_the_disabled_selection_and_skip_excluded_days() {
+    use xrack_runtime::{CalendarAction, ControlAction, Date};
+
+    let date = |day| Date::new(2024, 3, day).unwrap();
+    for kind in ["Calendar", "MonthGrid"] {
+        let mut calendar = node(kind, "calendar");
+        length(&mut calendar, "width", 396.0);
+        length(&mut calendar, "height", 322.0);
+        calendar.properties.insert("date", date(5).into());
+        calendar.properties.insert("display-month", date(1).into());
+        calendar
+            .properties
+            .insert("disabled-dates", Value::DateList(vec![date(4), date(5)]));
+        calendar
+            .properties
+            .insert("disabled-weekdays", Value::IntList(vec![6, 7]));
+        let mut window = node("Window", "root");
+        window.children.push(calendar);
+        let layout = layout(&window, Size::new(440.0, 440.0), &mut Text);
+        let mut input = Interaction::default();
+        let focus = input.accessibility_target(&window, &layout, &[0]).unwrap();
+        input.focus_target(&window, &layout, focus);
+        for (key, expected) in [
+            (NavigationKey::Left, date(1)),
+            (NavigationKey::Right, date(6)),
+        ] {
+            let action = input.calendar_key(&window, &layout, key).unwrap();
+            assert_eq!(action.path, [0]);
+            assert_eq!(
+                action.action,
+                ControlAction::Calendar(CalendarAction::Select(expected))
+            );
+        }
+    }
+}
+
+#[test]
 fn next_text_field_skips_unavailable_controls_and_stops_in_the_dialog() {
     let mut window = node("Window", "root");
     let mut dialog = node("Dialog", "form");
@@ -1457,7 +1494,7 @@ fn a_tab_close_press_cannot_activate_the_body_or_a_changed_value() {
 }
 
 #[test]
-fn editor_double_click_requires_a_completed_click_on_the_same_model_row() {
+fn editor_multi_click_requires_a_completed_click_on_the_same_model_row() {
     use std::time::{Duration, Instant};
     use xrack_runtime::VecModel;
 
@@ -1483,48 +1520,26 @@ fn editor_double_click_requires_a_completed_click_on_the_same_model_row() {
         assert_eq!(target.path, [0, 0]);
         input.editor_mouse_press(&target, point, at, selecting)
     };
-    assert!(!press(&mut input, &scene, now, false));
+    assert_eq!(press(&mut input, &scene, now, false), 1);
     assert!(input.pointer_release_target().is_some());
-    assert!(press(
-        &mut input,
-        &scene,
-        now + Duration::from_millis(85),
-        false
-    ));
+    let at = |ms| now + Duration::from_millis(ms);
+    assert_eq!(press(&mut input, &scene, at(85), false), 2);
+    assert!(input.pointer_release_target().is_some());
+    assert_eq!(press(&mut input, &scene, at(100), false), 3);
     assert!(input.pointer_release_target().is_some());
 
-    assert!(!press(
-        &mut input,
-        &scene,
-        now + Duration::from_millis(100),
-        false
-    ));
+    assert_eq!(press(&mut input, &scene, at(125), false), 1);
     let frame = layout(&scene, size, &mut Text);
     input.pointer_move(&scene, &frame, Point { x: 80.0, y: 18.0 });
     input.pointer_move(&scene, &frame, point);
     assert!(input.pointer_release_target().is_some());
-    assert!(!press(
-        &mut input,
-        &scene,
-        now + Duration::from_millis(150),
-        false
-    ));
+    assert_eq!(press(&mut input, &scene, at(150), false), 1);
     assert!(input.pointer_release_target().is_some());
 
     scene.children[0].set_row_key(rows.row_key(1));
-    assert!(!press(
-        &mut input,
-        &scene,
-        now + Duration::from_millis(200),
-        false
-    ));
+    assert_eq!(press(&mut input, &scene, at(200), false), 1);
     assert!(input.pointer_release_target().is_some());
-    assert!(!press(
-        &mut input,
-        &scene,
-        now + Duration::from_millis(300),
-        true
-    ));
+    assert_eq!(press(&mut input, &scene, at(300), true), 0);
 }
 
 #[test]
@@ -2371,6 +2386,115 @@ fn left_mouse_pan_respects_editors_scrollbars_and_nested_opt_in() {
     let release = input.end_scroll_gesture(&outer, &next, end, now + Duration::from_millis(25));
     assert!(!release.tap);
     assert!(!input.scroll_motion_active());
+}
+
+#[test]
+fn an_ancestor_consumes_scroll_before_a_nested_view_can_refresh() {
+    use std::time::{Duration, Instant};
+
+    let mut outer = node("ScrollView", "outer");
+    length(&mut outer, "content-height", 640.0);
+    let mut inner = node("ScrollView", "inner");
+    inner.viewport_handle = Some(xrack_runtime::ViewportHandle::default());
+    length(&mut inner, "y", 140.0);
+    length(&mut inner, "width", 240.0);
+    length(&mut inner, "height", 180.0);
+    boolean(&mut inner, "pull-to-refresh", true);
+    outer.children.push(inner);
+
+    for (outer_offset, refresh) in [(120.0, false), (0.0, true)] {
+        let mut input = Interaction::default();
+        let size = Size::new(320.0, 365.0);
+        let initial = layout_with_input(&outer, size, &mut Text, &input);
+        input.accessibility_scroll_to(&initial, &[], Orientation::Vertical, outer_offset);
+        let layout = layout_with_input(&outer, size, &mut Text, &input);
+        let bounds = layout.at_path(&[0]).unwrap().bounds;
+        let start = Point {
+            x: 80.0,
+            y: bounds.y + 28.0,
+        };
+        let end = Point {
+            y: start.y + 100.0,
+            ..start
+        };
+        let now = Instant::now();
+        assert!(input.begin_scroll_gesture(&outer, &layout, start, now, ScrollGestureKind::Touch));
+        input.move_scroll_gesture(&outer, &layout, end, now + Duration::from_millis(90));
+        let layout = layout_with_input(&outer, size, &mut Text, &input);
+        input.reconcile(&outer, &layout);
+        input.end_scroll_gesture(&outer, &layout, end, now + Duration::from_millis(120));
+        assert_eq!(input.refresh_request.is_some(), refresh);
+    }
+}
+
+#[test]
+fn a_nested_touch_pan_only_dismisses_the_keyboard_when_it_reaches_the_opt_in_viewport() {
+    use std::time::{Duration, Instant};
+
+    let mut outer = node("ScrollView", "outer");
+    boolean(&mut outer, "dismiss-keyboard-on-drag", true);
+    let mut inner = node("ScrollView", "inner");
+    length(&mut inner, "y", 100.0);
+    length(&mut inner, "width", 200.0);
+    length(&mut inner, "height", 140.0);
+    length(&mut inner, "content-height", 300.0);
+    outer.children.push(inner);
+
+    let size = Size::new(320.0, 360.0);
+    for (kind, offset, content_height, dismisses) in [
+        (ScrollGestureKind::Touch, 40.0, 640.0, false),
+        (ScrollGestureKind::Touch, 0.0, 640.0, true),
+        (ScrollGestureKind::Touch, 0.0, 200.0, true),
+        (ScrollGestureKind::MousePan, 0.0, 640.0, false),
+    ] {
+        length(&mut outer, "content-height", content_height);
+        let mut input = Interaction::default();
+        let frame = layout_with_input(&outer, size, &mut Text, &input);
+        input.accessibility_scroll_to(&frame, &[0], Orientation::Vertical, offset);
+        let frame = layout_with_input(&outer, size, &mut Text, &input);
+        let start = Point { x: 50.0, y: 126.0 };
+        let end = Point { y: 164.0, ..start };
+        let now = Instant::now();
+        assert!(input.begin_scroll_gesture(&outer, &frame, start, now, kind));
+        input.move_scroll_gesture(&outer, &frame, end, now + Duration::from_millis(40));
+        assert_eq!(input.take_scroll_keyboard_dismissal(), dismisses);
+        assert!(!input.take_scroll_keyboard_dismissal());
+    }
+}
+
+#[test]
+fn scroll_to_top_uses_the_largest_outer_vertical_viewport() {
+    let scroll_view = |id, x, width, height| {
+        let mut view = node("ScrollView", id);
+        length(&mut view, "x", x);
+        length(&mut view, "width", width);
+        length(&mut view, "height", height);
+        length(&mut view, "content-height", 700.0);
+        view
+    };
+    let mut window = node("Window", "root");
+    let sidebar = scroll_view("sidebar", 0.0, 80.0, 140.0);
+    let mut main = scroll_view("main", 100.0, 200.0, 300.0);
+    main.children
+        .push(scroll_view("nested", 10.0, 100.0, 160.0));
+    window.children.extend([sidebar, main]);
+
+    let mut input = Interaction::default();
+    let frame =
+        |input: &Interaction| layout_with_input(&window, Size::new(360.0, 410.0), &mut Text, input);
+    let initial = frame(&input);
+    for (path, offset) in [(&[0][..], 80.0), (&[1][..], 100.0), (&[1, 0][..], 30.0)] {
+        assert!(input.accessibility_scroll_to(&initial, path, Orientation::Vertical, offset));
+    }
+    assert!(input.scroll_to_top(&window, &frame(&input)));
+    let updated = frame(&input);
+    for (path, offset) in [(&[0][..], 80.0), (&[1][..], 0.0), (&[1, 0][..], 30.0)] {
+        assert_eq!(
+            updated.at_path(path).unwrap().scroll.unwrap().offset,
+            offset
+        );
+    }
+    assert!(!input.scroll_to_top(&window, &updated));
 }
 
 #[test]
@@ -3665,13 +3789,57 @@ fn deferred_drop_rejects_a_replacement_with_a_different_runtime_id() {
     let mut receiver = Receiver::default();
     let old = root.clone();
     root.children[1].set_owned_id(Some("replacement".into()));
-    let result = DragDispatch {
-        target: drop.target.clone(),
-        event: drop.event.clone(),
-    };
+    let result = DragDispatch::new(drop.target.clone(), drop.event.clone());
     assert!(!result.apply(&mut receiver, &root));
     assert!(drop.apply(&mut receiver, &old));
     assert_eq!(receiver.0, 1);
+}
+
+#[test]
+fn removing_an_opted_in_drag_source_cancels_against_the_live_row_model() {
+    use std::{rc::Rc, time::Instant};
+    use xrack_runtime::{
+        DragAction, DragEvent, ListMetrics, ListRowLocator, ListRowRenderer, VecModel,
+    };
+
+    let model = Rc::new(VecModel::from(vec![String::from("Pump")]));
+    let mut list = node("ListView", "list");
+    boolean(&mut list, "drag-auto-scroll", true);
+    list.list = Some(ListMetrics {
+        row_count: 1,
+        first_row: 0,
+    });
+    list.row_locator = Some(ListRowLocator::new(model.clone()));
+    list.list_row_renderer = Some(ListRowRenderer::new(|_| Vec::new()));
+    let mut row = node("ListRow", "pump");
+    row.row_key = model.row_key(0);
+    let mut source = node("DragArea", "source");
+    boolean(&mut source, "allow-move", true);
+    length(&mut source, "width", 100.0);
+    length(&mut source, "height", 26.0);
+    row.children.push(source);
+    list.children.push(row);
+
+    let frame = layout(&list, Size::new(140.0, 120.0), &mut Text);
+    let mut input = Interaction::default();
+    let now = Instant::now();
+    input.arm_touch_drag(&list, &frame, Point { x: 10.0, y: 10.0 }, now);
+    let end = Point { x: 40.0, y: 10.0 };
+    assert!(input.drag_motion_at(&list, &frame, end, None, now).captured);
+
+    model.remove(0);
+    // The previous prepared frame still contains the source slot.
+    let update = input.reconcile_drag(&list, &frame, None);
+    assert!(update.captured);
+    assert!(matches!(update.events.as_slice(), [event]
+        if event.event == DragEvent::Finished(DragAction::None)));
+    assert!(input.drag_scroll_deadline(&list, &frame).is_none());
+    assert!(
+        input
+            .finish_drag(&list, &frame, end, None)
+            .events
+            .is_empty()
+    );
 }
 
 #[test]

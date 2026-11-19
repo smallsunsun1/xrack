@@ -303,11 +303,64 @@ pub(crate) fn indicator(
         } else {
             theme.role(Role::Track)
         });
+    circular_indicator(
+        canvas,
+        bounds,
+        progress,
+        motion.unwrap_or(0.0),
+        foreground,
+        track,
+        node.length("stroke-width").unwrap_or(4.0),
+    ) && motion.is_some()
+        && foreground.0 & 0xff != 0
+}
+
+pub(crate) fn refresh_indicator(
+    canvas: &mut Canvas<WGPURenderer>,
+    theme: Palette,
+    viewport: Rect,
+    progress: f32,
+    phase: Option<f32>,
+) {
+    let diameter = viewport.width.min(viewport.height - 12.0).min(32.0);
+    if diameter <= 0.0 {
+        return;
+    }
+    let bounds = Rect::new(
+        viewport.x + (viewport.width - diameter) * 0.5,
+        viewport.y + 6.0,
+        diameter,
+        diameter,
+    );
+    let mut badge = Path::new();
+    badge.circle(
+        bounds.x + diameter * 0.5,
+        bounds.y + diameter * 0.5,
+        diameter * 0.5,
+    );
+    canvas.fill_path(&badge, &Paint::color(color(theme.role(Role::Surface))));
+    circular_indicator(
+        canvas,
+        bounds.inset(diameter * 0.22),
+        progress,
+        phase.unwrap_or(0.0),
+        theme.button,
+        theme.role(Role::Track),
+        2.5,
+    );
+}
+
+fn circular_indicator(
+    canvas: &mut Canvas<WGPURenderer>,
+    bounds: Rect,
+    progress: f32,
+    phase: f32,
+    foreground: Color,
+    track: Color,
+    stroke: f32,
+) -> bool {
     let diameter = bounds.width.min(bounds.height);
-    let stroke = node
-        .length("stroke-width")
-        .unwrap_or(4.0)
-        .clamp(0.0, diameter * 0.5);
+    let stroke = stroke.clamp(0.0, diameter * 0.5);
     if stroke <= 0.0 {
         return false;
     }
@@ -338,7 +391,7 @@ pub(crate) fn indicator(
         arc(canvas, 0.0, 1.0, track);
     }
     if progress > 0.0 {
-        arc(canvas, motion.unwrap_or(0.0), progress, foreground);
+        arc(canvas, phase, progress, foreground);
     }
-    motion.is_some() && foreground.0 & 0xff != 0
+    true
 }

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::time::{Duration, Instant};
 
 use mobile_controls_ui::MobileControls;
@@ -298,6 +300,100 @@ fn scale_rotate_touches_preserve_committed_transform_on_cancel()
     Ok(())
 }
 
+fn exercise_trackpad_transforms(app: impl Component) {
+    use xrack_layout::scale_rotate_gestures::{Context, Gestures, TouchPhase, TrackpadDelta};
+
+    let mut ui = UiDriver::headless(app, Size::new(390.0, 740.0));
+    ui.click("open-gestures");
+    let pad = ui.bounds("gesture");
+    let mut input = Interaction::default();
+    input.pointer_move(
+        ui.scene(),
+        ui.layout(),
+        Point {
+            x: pad.x + 92.0,
+            y: pad.y + 96.0,
+        },
+    );
+    let mut gestures = Gestures::default();
+
+    for (phase, delta, id, value) in [
+        (
+            TouchPhase::Started,
+            TrackpadDelta::Scale(0.25),
+            "zoom-label",
+            "Zoom 125",
+        ),
+        (
+            TouchPhase::Started,
+            TrackpadDelta::Rotation(0.0),
+            "starts-label",
+            "Starts 1",
+        ),
+        (
+            TouchPhase::Moved,
+            TrackpadDelta::Rotation(-30.0),
+            "angle-label",
+            "Angle 30",
+        ),
+        (
+            TouchPhase::Ended,
+            TrackpadDelta::Scale(0.20),
+            "gesture-state",
+            "Gesture active",
+        ),
+        (
+            TouchPhase::Ended,
+            TrackpadDelta::Rotation(0.0),
+            "ends-label",
+            "Ends 1",
+        ),
+        (
+            TouchPhase::Started,
+            TrackpadDelta::Scale(0.20),
+            "zoom-label",
+            "Zoom 180",
+        ),
+        (
+            TouchPhase::Cancelled,
+            TrackpadDelta::Scale(0.0),
+            "cancels-label",
+            "Cancels 1",
+        ),
+    ] {
+        let events = gestures.trackpad(
+            &Context {
+                scene: ui.scene(),
+                layout: ui.layout(),
+                input: &input,
+            },
+            (),
+            phase,
+            delta,
+        );
+        let scene = ui.scene().clone();
+        ui.update(|app| {
+            for event in events.into_iter().flatten() {
+                assert!(event.apply(app, &scene));
+            }
+        });
+        assert_eq!(ui.node(id).text("text"), Some(value), "{id}");
+    }
+    assert_eq!(ui.node("zoom-label").text("text"), Some("Zoom 150"));
+    assert_eq!(ui.node("angle-label").text("text"), Some("Angle 30"));
+    ui.click("probe");
+    assert_eq!(ui.node("taps-label").text("text"), Some("Taps 1"));
+}
+
+#[test]
+fn scale_rotate_trackpad_channels_share_a_gesture_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_trackpad_transforms(MobileControls::new());
+    let module = xrack_compiler::compile(include_str!("controls.xr"), "controls.xr")?;
+    exercise_trackpad_transforms(load_mlir(&module.mlir)?.create("MobileControls")?);
+    Ok(())
+}
+
 fn exercise_dial(app: impl Component) {
     let mut ui = UiDriver::headless(app, Size::new(390.0, 740.0));
     ui.click("open-dial");
@@ -449,6 +545,99 @@ fn coincident_range_thumbs_ignore_touch_jitter_until_direction_is_clear()
         interpreted.set("upper", xrack_interpreter::HostValue::Float(50.0))?;
         separate_coincident_thumbs(interpreted, direction);
     }
+    Ok(())
+}
+
+fn exercise_range_handles<C: Component>(app: C) {
+    let mut ui = UiDriver::headless(app, Size::new(390.0, 740.0));
+    ui.click("open-dial");
+    ui.click("open-range");
+    let path = ui.path("band");
+    let mut input = Interaction::default();
+    let state = |ui: &UiDriver<_>, values, preview, (edits, releases)| {
+        assert_eq!(ui.node("band-value").text("text"), Some(values));
+        assert_eq!(ui.node("band-preview").text("text"), Some(preview));
+        assert_eq!(
+            ui.node("band-order").text("text"),
+            Some("Callbacks ordered")
+        );
+        assert_eq!(
+            ui.node("band-edits").text("text"),
+            Some(format!("Range edits {edits}").as_str())
+        );
+        assert_eq!(
+            ui.node("band-releases").text("text"),
+            Some(format!("Range releases {releases}").as_str())
+        );
+    };
+    let press = |input: &mut Interaction, ui: &UiDriver<_>, fraction| {
+        let geometry = SliderGeometry::for_node(ui.bounds("band"), ui.node("band"));
+        assert!(input.touch_range_press(ui.scene(), ui.layout(), geometry.position(fraction)));
+        assert!(input.slider_press(ui.scene(), ui.layout()).is_none());
+        geometry
+    };
+    let drag = |input: &mut Interaction, ui: &mut UiDriver<_>, point| {
+        input.pointer_move(ui.scene(), ui.layout(), point);
+        assert!(input.slider_drag(ui.scene(), ui.layout()).is_none());
+        ui.update(|_| {});
+    };
+    let release = |input: &mut Interaction, ui: &mut UiDriver<C>, thumb| {
+        let release = input.slider_release(ui.scene(), ui.layout()).unwrap();
+        assert_eq!(release.path, [path.clone(), vec![thumb]].concat());
+        let scene = ui.scene().clone();
+        ui.update(|app| assert!(app.adjust_range_at(&scene, &release.path, release.action)));
+        input.finish_touch_range();
+    };
+
+    state(&ui, "Band 50 to 50", "Preview idle", (0, 0));
+    let track = press(&mut input, &ui, 0.5);
+    let center = track.position(0.5);
+    drag(
+        &mut input,
+        &mut ui,
+        Point {
+            x: center.x + 3.0,
+            y: center.y + 5.0,
+        },
+    );
+    assert!(!input.has_slider_preview());
+    drag(&mut input, &mut ui, track.position(0.28));
+    state(&ui, "Band 50 to 50", "Preview lower", (0, 0));
+    let (thumb, fraction) = input.slider_preview_position().unwrap();
+    assert_eq!(thumb, [path.clone(), vec![0]].concat());
+    assert!((fraction - 0.28).abs() < 1e-6);
+    release(&mut input, &mut ui, 0);
+    state(&ui, "Band 30 to 50", "Preview idle", (1, 1));
+
+    ui.click("mirror-range");
+    let track = press(&mut input, &ui, 0.30);
+    assert!(track.position(0.30).x > track.position(0.5).x);
+    drag(&mut input, &mut ui, track.position(0.18));
+    state(&ui, "Band 30 to 50", "Preview lower", (1, 1));
+    assert!(input.cancel_slider_preview());
+    assert!(input.slider_release(ui.scene(), ui.layout()).is_none());
+    input.finish_touch_range();
+    ui.update(|_| {});
+    state(&ui, "Band 30 to 50", "Preview idle", (1, 1));
+
+    ui.click("reset-range");
+    state(&ui, "Band 50 to 50", "Preview idle", (1, 1));
+    let track = press(&mut input, &ui, 0.5);
+    drag(&mut input, &mut ui, track.position(0.72));
+    state(&ui, "Band 50 to 50", "Preview upper", (1, 1));
+    release(&mut input, &mut ui, 1);
+    state(&ui, "Band 50 to 70", "Preview idle", (2, 2));
+    press(&mut input, &ui, 0.7);
+    release(&mut input, &mut ui, 1);
+    state(&ui, "Band 50 to 70", "Preview idle", (2, 3));
+}
+
+#[test]
+fn range_touch_preview_and_callbacks_match_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_range_handles(MobileControls::new());
+    let module = xrack_compiler::compile(include_str!("controls.xr"), "controls.xr")?;
+    exercise_range_handles(load_mlir(&module.mlir)?.create("MobileControls")?);
     Ok(())
 }
 
@@ -653,6 +842,54 @@ fn deliver_lifecycle<C: Component>(ui: &mut UiDriver<C>, input: &mut Interaction
     ui.update(|app| {
         input.dispatch_button_press_events(app, &scene, &layout);
     });
+}
+
+fn exercise_tag_format<C: Component>(app: C) {
+    let mut ui = UiDriver::headless(app, Size::new(390.0, 740.0));
+    ui.click("open-dial");
+    ui.click("open-tag-format");
+    ui.click("asset-tag");
+    let path = ui.path("asset-tag");
+    let submit = |ui: &mut UiDriver<C>, accepted| {
+        ui.update(|app| {
+            let scene = app.render_shared();
+            assert_eq!(
+                app.control_at(&scene, &path, ControlAction::ValidateTextSubmission),
+                accepted,
+            );
+            assert_eq!(app.dispatch_at(&scene, &path, "accepted"), accepted);
+        });
+    };
+
+    assert!(ui.edit_focused(EditAction::Insert("AB1")));
+    assert_eq!(ui.node("tag-draft").text("text"), Some("Draft AB-1"));
+    assert_eq!(ui.node("tag-ready").text("text"), Some("Tag incomplete"));
+    submit(&mut ui, false);
+    assert_eq!(ui.node("tag-saves").text("text"), Some("Saves 0"));
+    assert_eq!(ui.node("tag-finishes").text("text"), Some("Finishes 0"));
+    assert!(!ui.edit_focused(EditAction::Insert("你好🚰")));
+    assert_eq!(ui.node("tag-draft").text("text"), Some("Draft AB-1"));
+    assert!(ui.edit_focused(EditAction::Insert("47")));
+    assert_eq!(ui.node("tag-ready").text("text"), Some("Tag ready"));
+    assert!(!ui.edit_focused(EditAction::ReplaceAll("ab147")));
+    assert_eq!(ui.node("tag-draft").text("text"), Some("Draft AB-147"));
+    submit(&mut ui, true);
+    assert_eq!(ui.node("tag-saved").text("text"), Some("Saved AB-147"));
+    assert_eq!(ui.node("tag-saves").text("text"), Some("Saves 1"));
+    assert_eq!(ui.node("tag-finishes").text("text"), Some("Finishes 1"));
+    assert_eq!(
+        ui.node("tag-finish").text("text"),
+        Some("Finished after save")
+    );
+}
+
+#[test]
+fn formatted_tag_keeps_invalid_edits_atomic_and_submits_in_order_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_tag_format(MobileControls::new());
+    let module = xrack_compiler::compile(include_str!("controls.xr"), "controls.xr")?;
+    exercise_tag_format(load_mlir(&module.mlir)?.create("MobileControls")?);
+    Ok(())
 }
 
 fn exercise_button_holds<C: Component>(app: C) {
@@ -901,6 +1138,23 @@ fn exercise_delay_confirmation<C: Component>(app: C) {
     let scene = ui.scene().clone();
     ui.update(|app| assert!(app.control_at(&scene, &path, ControlAction::DelayButton(false))));
     verify(&ui, false, "Confirmations 1");
+
+    begin(&ui, &mut input, 38000);
+    assert!(
+        input
+            .advance_delay(ui.scene(), ui.layout(), at(42100))
+            .is_none()
+    );
+    assert_eq!(input.delay_progress(&path), Some((0.5, true)));
+    input.cancel_scroll_gesture();
+    assert_eq!(input.delay_deadline(), None);
+    assert_eq!(input.delay_progress(&path), None);
+    assert!(
+        input
+            .advance_delay(ui.scene(), ui.layout(), at(46200))
+            .is_none()
+    );
+    verify(&ui, false, "Confirmations 1");
     ui.escape();
     assert!(ui.can_hit("open-delay-confirmation"));
 }
@@ -1034,5 +1288,38 @@ fn click_routes_preserve_action_and_animation_order_in_both_backends()
     exercise_click_routes(MobileControls::new());
     let module = xrack_compiler::compile(include_str!("controls.xr"), "controls.xr")?;
     exercise_click_routes(load_mlir(&module.mlir)?.create("MobileControls")?);
+    Ok(())
+}
+
+fn exercise_password_panel(app: impl Component) {
+    let mut ui = UiDriver::headless(app, Size::new(390.0, 740.0));
+    ui.click("open-button-holds");
+    ui.click("open-password");
+    ui.click("clipboard-entry");
+    ui.click("clear-probe");
+    assert_eq!(ui.focused(), Some("clipboard-entry"));
+    assert_eq!(ui.node("probe-result").text("text"), Some("Probe empty"));
+    ui.click("password-entry");
+    assert!(ui.edit_focused(EditAction::Insert("moss7")));
+    let entry = ui.node("password-entry");
+    assert!(entry.is_password() && entry.password_masked());
+    assert_eq!(entry.text("password-character"), Some("X"));
+    assert_eq!(ui.node("password-result").text("text"), Some("Bound match"));
+    ui.click("reveal-password");
+    assert_eq!(ui.focused(), Some("password-entry"));
+    let entry = ui.node("password-entry");
+    assert!(entry.is_password() && !entry.password_masked());
+    assert_eq!(entry.text("text"), Some("moss7"));
+    ui.click("reveal-password");
+    assert!(ui.node("password-entry").password_masked());
+    assert_eq!(ui.node("password-result").text("text"), Some("Bound match"));
+}
+
+#[test]
+fn password_panel_preserves_its_binding_and_type_when_revealed_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_password_panel(MobileControls::new());
+    let module = xrack_compiler::compile(include_str!("controls.xr"), "controls.xr")?;
+    exercise_password_panel(load_mlir(&module.mlir)?.create("MobileControls")?);
     Ok(())
 }

@@ -289,8 +289,8 @@ export component NativeActionsDemo inherits Window {
                 x: 8px; y: 45px; width: 152px; height: 44px;
                 content-width: 308px;
                 accessible-name: "Service shifts";
-                log-morning := Text { x: 4px; y: 4px; text: "Morning shift"; }
-                log-night := Text { x: 170px; y: 4px; text: "Night shift"; }
+                log-morning := Text { x: 4px; y: 4px; width: 118px; text: "Morning shift"; }
+                log-night := Text { x: 170px; y: 4px; width: 118px; text: "Night shift"; }
             }
             log-parts := Text { x: 8px; y: 194px; text: "Parts replaced"; font-weight: 700; }
             Text { x: 8px; y: 356px; text: "Service log complete"; }

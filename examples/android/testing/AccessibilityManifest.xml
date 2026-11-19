@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.xrack.accessibility_test">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+    <application android:label="XRack Accessibility Test" />
+    <instrumentation android:name=".ControlsProbe" android:targetPackage="dev.xrack.accessibility_test" />
+</manifest>

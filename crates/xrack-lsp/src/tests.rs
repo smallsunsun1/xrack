@@ -3956,6 +3956,220 @@ fn return_key_hints_complete_with_or_without_enum_qualification() {
 }
 
 #[test]
+fn accessible_heading_level_completes_only_on_text_and_label() {
+    for (kind, expected) in [("Text", true), ("Label", true), ("Button", false)] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ accessible-h|"
+        ));
+        assert_eq!(
+            items.iter().any(|item| {
+                item["label"] == "accessible-heading-level" && item["detail"] == "int"
+            }),
+            expected
+        );
+    }
+    let source = "component App inherits Window { Label { accessible-heading-level: 2; } }";
+    let report = analysis::analyze(URI, source, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    let invalid = source.replace("2", "true");
+    let report = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(!report[URI].is_empty());
+}
+
+#[test]
+fn accessible_live_completion_is_scoped_to_plain_text() {
+    for (kind, expected) in [("Text", true), ("Label", true), ("Button", false)] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ accessible-l|"
+        ));
+        assert_eq!(
+            items.iter().any(|item| item["label"] == "accessible-live"),
+            expected
+        );
+    }
+    for value in ["|", "AccessibleLive.|"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ Label {{ accessible-live: {value}"
+        ));
+        for priority in ["off", "polite", "assertive"] {
+            assert!(items.iter().any(|item| item["label"] == priority));
+        }
+    }
+    let source = "component App inherits Window { Label { accessible-live: polite; } }";
+    let report = analysis::analyze(URI, source, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    let invalid = source.replace("polite", "urgent");
+    let report = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(!report[URI].is_empty());
+}
+
+#[test]
+fn drag_auto_scroll_completes_only_on_list_and_grid_views() {
+    for (kind, expected) in [("ListView", true), ("GridView", true), ("DragArea", false)] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ drag-auto-|"
+        ));
+        assert_eq!(
+            items
+                .iter()
+                .any(|item| item["label"] == "drag-auto-scroll" && item["detail"] == "bool"),
+            expected
+        );
+    }
+}
+
+#[test]
+fn touch_drag_delay_completes_only_on_drag_sources() {
+    for (kind, expected) in [("DragArea", true), ("DropArea", false), ("ListView", false)] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ touch-drag-|"
+        ));
+        assert_eq!(
+            items
+                .iter()
+                .any(|item| { item["label"] == "touch-drag-delay" && item["detail"] == "int" }),
+            expected
+        );
+    }
+    let source = "component App inherits Window { DragArea { touch-drag-delay: 420; } }";
+    let report = analysis::analyze(URI, source, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    let invalid = source.replace("420", "true");
+    let report = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(!report[URI].is_empty());
+}
+
+#[test]
+fn keyboard_dismissal_on_drag_completes_only_on_viewports() {
+    for (kind, expected) in [
+        ("ScrollView", true),
+        ("Flickable", true),
+        ("ListView", true),
+        ("LineEdit", false),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ dismiss-key|"
+        ));
+        assert_eq!(
+            items.iter().any(|item| {
+                item["label"] == "dismiss-keyboard-on-drag" && item["detail"] == "bool"
+            }),
+            expected
+        );
+    }
+    let source = "component App inherits Window { ScrollView { dismiss-keyboard-on-drag: true; } }";
+    let report = analysis::analyze(URI, source, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    let invalid = source.replace("true", "\"true\"");
+    let report = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(!report[URI].is_empty());
+}
+
+#[test]
+fn pull_to_refresh_completion_and_diagnostics_follow_scrollable_elements() {
+    for kind in ["ScrollView", "ListView", "Flickable"] {
+        let props = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ pull-to-r|"
+        ));
+        assert!(
+            props
+                .iter()
+                .any(|item| item["label"] == "pull-to-refresh" && item["detail"] == "bool")
+        );
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ refre|"
+        ));
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "refresh-requested")
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "refreshing" && item["detail"] == "bool")
+        );
+    }
+    let items = complete_at("component App inherits Window { Button { refre|");
+    assert!(
+        !items
+            .iter()
+            .any(|item| item["label"] == "refresh-requested")
+    );
+    let valid = r#"component App inherits Window {
+        list := ListView {
+            pull-to-refresh: true;
+            refresh-requested() => {}
+            for row in ["item"] : Label { text: row; }
+        }
+    }"#;
+    let report = analysis::analyze(URI, valid, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+}
+
+#[test]
+fn file_drop_failure_handler_completes_with_a_string_argument() {
+    let items = complete_at("component App inherits Window { DropArea { files-f|");
+    assert!(items.iter().any(|item| {
+        item["label"] == "files-failed" && item["detail"] == "event handler (string)"
+    }));
+    let items = complete_at("component App inherits Window { Button { files-f|");
+    assert!(!items.iter().any(|item| item["label"] == "files-failed"));
+    let valid = r#"component App inherits Window {
+        out property <string> message;
+        inbox := DropArea {
+            accept-files: true;
+            files-failed(reason) => { root.message = reason; }
+        }
+    }"#;
+    let report = analysis::analyze(URI, valid, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    let invalid = valid.replace("<string>", "<[string]>");
+    let report = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(!report[URI].is_empty());
+}
+
+#[test]
+fn input_purpose_completion_and_diagnostics_follow_single_line_editors() {
+    let property = complete_at("component App inherits Window { LineEdit { input-pu|");
+    assert!(
+        property
+            .iter()
+            .any(|item| item["label"] == "input-purpose" && item["detail"] == "inputpurpose")
+    );
+    for source in [
+        "component App inherits Window { LineEdit { input-purpose: |",
+        "component App inherits Window { ComboBox { editable: true; input-purpose: InputPurpose.|",
+    ] {
+        let values = complete_at(source);
+        for purpose in [
+            "auto",
+            "username",
+            "current-password",
+            "new-password",
+            "one-time-code",
+        ] {
+            assert!(
+                values.iter().any(|item| item["label"] == purpose),
+                "{source}: {values:?}"
+            );
+        }
+    }
+    let valid = "component App inherits Window { LineEdit { input-type: email; input-purpose: username; } }";
+    let report = analysis::analyze(URI, valid, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    let invalid = valid
+        .replace("LineEdit", "TextArea")
+        .replace("input-type: email;", "");
+    let report = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(report[URI].iter().any(|item| {
+        item["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("input-purpose"))
+    }));
+}
+
+#[test]
 fn contact_input_modes_complete_in_both_enum_forms() {
     for source in [
         "component App inherits Window { LineEdit { input-type: |",

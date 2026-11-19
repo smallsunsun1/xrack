@@ -4,7 +4,7 @@
         <activity
             android:name="dev.xrack.platform.XRackActivity"
             android:theme="@style/PocketTasksTheme"
-            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|uiMode"
             android:exported="true">
             <meta-data android:name="android.app.lib_name" android:value="mobile_table" />
             <intent-filter>

@@ -8,6 +8,12 @@
 
 `ScrollView`、列表、虚拟网格、树和表格在内容溢出时显示可拖动的纵向滚动条。`ScrollView` 和表格也提供横向滚动条。拖动滑块定位，点击轨道按视口大小翻页。滚动条覆盖在内容边缘并共享滚轮的滚动位置，表头与表身继续同步。可通过 `vertical-scroll-bar-policy` 和 `horizontal-scroll-bar-policy` 设置各滚动轴的 `as-needed`、`always-on` 或 `always-off`。拖动滚动条保留当前焦点，虚拟视图继续只创建视口内的行。
 
+在 iOS 点按系统状态栏，当前页面或活动弹层中可见面积最大的外层纵向滚动区会立即回到顶部。横向位置和其他滚动区的偏移会保留，焦点沿用该滚动容器的常规规则。
+
+`ScrollView`、`Flickable`、列表、网格、树和表格可用 `pull-to-refresh: true;` 启用下拉刷新。在内容顶部向下拉超过 72 个逻辑像素后松手，触发一次 `refresh-requested()`。短内容也可以下拉。绑定 `refreshing: root.loading;`，在回调里开始加载，并在异步工作结束后清除加载状态。加载期间显示刷新指示器，应用可将同一个刷新回调用在普通按钮上。减弱动态效果时，指示器仍会显示，滚动内容的位置保持稳定。
+
+`ScrollView`、`Flickable`、列表、网格、树和表格可以设置 `dismiss-keyboard-on-drag: true;`。iOS 在滚动容器接管触摸拖动时收起软键盘及输入工具栏，保留当前字段焦点、草稿和选区。内容未撑满视口时也可以拖动收起。点回输入框可继续输入。正在组字时保留键盘，属性默认关闭。
+
 在 `ScrollView` 上设置 `reserve-scroll-bar-space: true;` 可为内建滚动条预留空间。视口、内容裁剪、翻页距离和附着滚动条都使用扣除预留区后的矩形。布局一起判断两个轴的策略，并在某一轴占用空间后重新测量另一个轴。默认采用覆盖式滚动条。只读的 `effective-scroll-bar-width` 和 `effective-scroll-bar-height` 分别报告纵向与横向内建滚动条的厚度，未显示时为零。开启预留空间时，`visible-width` 和 `visible-height` 报告扣除预留区后的视口尺寸。运行 `bazel run //examples/list:list -- --scroll-gutters`，可切换预留区、RTL 和固定内容宽度。
 
 使用 Tab、Shift+Tab 或控件的 `.focus()` 进入 `ScrollView` 中的控件时，容器会自动把目标滚入可见区域。嵌套视口从内到外处理，扣除滚动条预留空间，并沿逻辑方向写回滚动绑定。可用 `auto-reveal-focus: false;` 关闭当前视口的自动滚动。低层 `Flickable` 可用 `auto-reveal-focus: true;` 启用。运行 `bazel run //examples/list:list -- --scroll-focus`，可用 Tab 或 **Focus last field** 定位嵌套视口中的输入框。
@@ -41,6 +47,8 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 视口的 `scroll-by(dx, dy)` 接收带符号的逻辑像素增量，正值朝对应轴的末端移动。它和 `scroll-to`、附着滚动条步进按回调里的调用顺序执行，每次使用此前已提交的位置并限制到可滚动范围。程序命令通过绑定发布位置，`changed(position)` 和 `scrolled()` 留给鼠标、键盘等直接输入。运行 `--scroll-visual-metrics` 示例，切换 RTL 并试用两个步进按钮和 **Batch move**。
 
 `ScrollView` 根据直接子项的位置和布局尺寸计算内容范围。`content-width` 和 `content-height` 可以用长度或视口百分比指定最小内容尺寸。子项的百分比尺寸以显式内容尺寸或视口为基准。`viewport-height` 仍可用于既有的最小内容高度绑定。`Shift` 加滚轮可横向滚动，嵌套视图会将各轴剩余滚动量交给外层。运行 `bazel run //examples/layout:layout` 可体验二维画布。
+
+iOS 上可以从视口内可见的文本和控件发起无障碍滚动。每个方向交给最近还能沿该方向移动的视口。滚动完成后，当前滚动位置会提交给 UIKit。嵌套视口分别保存自己的位置。
 
 `Flickable` 是可拖动并带惯性的底层视口。它默认裁剪内容，滚动条可通过 `ScrollBar { target: canvas; }` 独立放置。`content-width` 和 `content-height` 给出各轴的显式内容范围，省略时按子项推导。`flick-direction` 可设为 `both`、`horizontal` 或 `vertical`，`interactive: false` 暂停拖动和惯性输入，子控件、滚轮和 `scroll-to()` 仍可操作。`dragging`、`flicking` 和 `moving` 反映当前消费位移的视口。`flicked()` 在用户改变偏移时触发，`cancel-flick()` 停止该视口正在参与的惯性滚动。运行 `bazel run //examples/layout:layout -- --flickable` 体验。
 
@@ -131,6 +139,8 @@ Android 导航示例的 **Open popup** 覆盖打开时移动锚点、边缘翻�
 通过 `orientation` 选择横向或纵向。可用触摸、中键拖动或聚焦后按方向键切页，Home 和 End 跳到首尾可用页。手势在松手时切页，页内同轴滚动优先，滚到边界后下一次滑动可以切页。`interactive: false;` 暂停手势和键盘切页，应用仍可更新选择。导航跳过隐藏或禁用的页面。按索引选择时，索引不可用会显示首个可用页。按值选择时，未匹配到可用页会保留值并显示空页。用户切页会写回选择并触发 `changed(index)`。运行 `bazel run //examples/navigation:navigation -- --model-swipe` 可体验。
 
 `PageIndicator` 用 `count` 和 `current-index` 表示页数与当前页。可以直接绑定 `SwipeView.count` 或 `TabWidget.count`，也可以和索引选择模式的 `SwipeView` 双向绑定到同一个页索引。设置 `interactive: true;` 后可点击点位，或聚焦后用方向键和 Home / End 切页，用户切页触发 `changed(index)`。`orientation` 控制横排或竖排，`dot-size`、`spacing`、`color` 和 `current-color` 控制外观。空间不足时，点位围绕当前页显示一段连续索引，最多绘制 64 个点，两端缩小的点提示还有页。点击仍使用点位对应的原始页索引。
+
+iOS 把非空的 `PageIndicator` 公开成一个无障碍元素，读出当前页和总页数。可交互的指示器可按逻辑页序调到前一页或后一页，RTL 镜像影响点位的显示顺序。页面变化触发 `changed(index)`。单页、禁用或非交互指示器可读出页码。零页时不创建页码元素。
 
 ## 列表、树和重复组件
 
@@ -320,7 +330,7 @@ Android 软键盘的提交操作沿用表格的类型校验。有效值写回后
 
 普通视觉节点支持 `transform-rotation`、`transform-scale`、`transform-scale-x` 和 `transform-scale-y`。旋转值用顺时针角度，逐轴值可覆盖统一缩放，负值可镜像。`transform-origin-x` 和 `transform-origin-y` 接受长度或百分比，省略时以节点中心为原点。变换作用于已完成布局的子树，绘制、指针定位和裁剪共用变换矩阵。窗口级弹出层继续以窗口坐标定位。运行 `bazel run //examples/layout:layout -- --transforms`。
 
-`ScaleRotateGestureHandler` 把触屏双指手势和 macOS 触控板手势统一成 `started()`、`updated()`、`ended()` 和 `cancelled()`。在 `started()` 保存初始状态，在 `updated()` 读取累计 `scale`、顺时针角度 `rotation` 和局部逻辑像素中心 `center-x/y`，再更新内容变换。手势结束或取消时，`active` 变回 `false`，读数回到默认值。两指须从同一个可用区域开始。第二指接管待提交的单指输入时，会取消原来的点击候选。关闭 `enabled` 会取消该区域的手势，子控件仍可接收单指操作。运行 `bazel run //examples/layout:layout -- --scale-rotate`。
+`ScaleRotateGestureHandler` 把触屏双指手势、macOS 和 iPadOS 触控板手势统一成 `started()`、`updated()`、`ended()` 和 `cancelled()`。在 `started()` 保存初始状态，在 `updated()` 读取累计 `scale`、顺时针角度 `rotation` 和局部逻辑像素中心 `center-x/y`，再更新内容变换。手势结束或取消时，`active` 变回 `false`，读数回到默认值。两指须从同一个可用区域开始。第二指接管待提交的单指输入时，会取消原来的点击候选。关闭 `enabled` 会取消该区域的手势，子控件仍可接收单指操作。运行 `bazel run //examples/layout:layout -- --scale-rotate`。
 
 [Android 控件示例](../examples/android/README.md#独立控件回归) 的 **Open gestures** 面板可验证双指接管、松手保留变换、后台取消和恢复后重新点击。应用在 `cancelled()` 中将图形恢复到本次手势开始前的状态。
 
@@ -328,7 +338,7 @@ Android 软键盘的提交操作沿用表格的类型校验。有效值写回后
 
 `WheelHandler` 的 `wheel(event)` 接收类型化的 `WheelEvent`。其中 `x/y` 是处理器内的局部坐标，`delta-x/y` 是逻辑像素增量，向右和向下为正。行滚轮输入还提供 `is-line` 和 `lines-x/y`，`modifiers` 可读取修饰键。设置 `orientation` 可只接收含指定轴增量的事件，省略时接收双轴。处理器沿命中路径由内向外执行，返回 `accept` 即消费，返回 `reject` 则继续交给外层或默认滚动。裁剪与模态区域约束照常生效。运行 `bazel run //examples/layout:layout -- --wheel`，按住 Ctrl 滚动可围绕光标缩放画布。
 
-`TouchArea` 的 `pointer-event(event)` 接收 `down`、`move`、`up` 和 `cancel`。事件包含按钮、局部逻辑像素坐标 `x/y`、命中状态 `inside`、触摸标记 `is-touch` 和 `modifiers`。鼠标移出控件后仍由起始控件接收事件。滚动等手势接管时，起始控件收到 `cancel`。有效点击先收到 `up`，再执行 `clicked()`。运行 `bazel run //examples/layout:layout -- --pointer` 可试用。
+`TouchArea` 的 `pointer-event(event)` 接收 `down`、`move`、`up` 和 `cancel`。事件包含按钮、局部逻辑像素坐标 `x/y`、命中状态 `inside`、触摸标记 `is-touch` 和 `modifiers`。鼠标移出控件后仍由起始控件接收事件。滚动等手势接管时，起始控件收到 `cancel`。 iPadOS 的鼠标和触控板按键走同一条鼠标输入路径，手指轻点仍报告 `is-touch: true`。有效点击先收到 `up`，再执行 `clicked()`。运行 `bazel run //examples/layout:layout -- --pointer` 可试用。
 
 触摸事件的 `event.touch-finger-id` 是窗口分配的正整数，同一触点从按下到释放或取消都使用同一个 ID。鼠标为 `0`。设置 `multi-touch: true` 后，区域可以同时捕获多个触点，`active-touch-count` 可直接绑定。`pressed` 表示还有指针按住，`contains-press` 表示至少一个活动指针仍在区域内。每个窗口仍由一个触点驱动常规点击、长按和滚动。附加触点发送各自的指针事件，同一区域并发触摸会取消单指点击和长按候选。双指缩放接管时只取消它所用的触点。`--pointer` 示例显示当前触点数和最近事件的 ID，并在两个触点同时按住时改变底色。
 
@@ -346,4 +356,4 @@ Android 软键盘的提交操作沿用表格的类型校验。有效值写回后
 
 `HoverHandler` 包住要观察的区域，子控件照常接收点击。可绑定只读 `hovered` 和局部逻辑像素坐标 `hover-x/y`，离开后坐标归零。`entered()`、`moved()` 和 `exited()` 在同一帧的悬停状态发布后执行。命中路径上的嵌套处理器可同时观察，设置 `blocking: true;` 会停止向外层传递。布局移动、禁用、裁剪和模态弹窗会重新计算悬停，即使光标静止。运行 `bazel run //examples/layout:layout -- --hover` 体验悬停样式和子按钮点击。
 
-`HoverHandler` 和 `TouchArea` 可绑定 `cursor-shape`，类型为 `CursorShape`。可用值包括 `pointer`、`crosshair`、`text`、`grab` 和 `zoom-in`。默认 `auto` 会沿当前命中路径查找显式形状，再使用控件默认光标。`default` 则明确使用系统箭头。实际命中的 `TouchArea` 优先于悬停处理器，嵌套悬停优先用内层的形状。拖放和分栏、表格、窗口调整大小仍使用原生操作光标，编辑区默认使用 I 形光标。`--hover` 示例中的外层区域使用十字，内层按钮区域使用手形。
+`HoverHandler` 和 `TouchArea` 可绑定 `cursor-shape`，类型为 `CursorShape`。可用值包括 `pointer`、`crosshair`、`text`、`grab` 和 `zoom-in`。默认 `auto` 会沿当前命中路径查找显式形状，再使用控件默认光标。`default` 则明确使用系统箭头。实际命中的 `TouchArea` 优先于悬停处理器，嵌套悬停优先用内层的形状。拖放和分栏、表格、窗口调整大小仍使用原生操作光标，编辑区默认使用 I 形光标。`--hover` 示例中的外层区域使用十字，内层按钮区域使用手形。 iPadOS 使用 UIKit 文字光标、十字准星和分栏调整箭头。普通控件使用系统光标。

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 mod navigation_fixture;
 
 use mobile_navigation_ui::MobileNavigation;
@@ -6,10 +8,13 @@ use std::time::{Duration, Instant};
 use xrack_interpreter::HostValue;
 use xrack_layout::{
     ActivationKey, ChoiceKey, EditAction, EditSource, FocusObservers, Interaction, MenuKey,
-    MenuShortcut, PageIndicatorGeometry, ScrollGestureKind, ShortcutOutcome,
+    MenuShortcut, PageIndicatorGeometry, ScrollGestureKind, ShortcutOutcome, layout_with_input,
 };
-use xrack_runtime::{Component, ControlAction, EventResult, KeyEvent, KeyPhase, Node};
-use xrack_testing::{Point, Size, UiDriver};
+use xrack_runtime::{
+    CalendarAction, Component, ControlAction, Date, DialogRole, EventResult, KeyEvent, KeyPhase,
+    Node, SceneTransition, Tumbler,
+};
+use xrack_testing::{FixedText, Point, Size, UiDriver};
 
 fn text_path(node: &Node, text: &str) -> Option<Vec<usize>> {
     if node.text("text") == Some(text) {
@@ -61,6 +66,235 @@ fn marker<C: Component>(ui: &mut UiDriver<C>, index: usize) {
     input.pointer_press_in_scene(&scene, ui.layout());
     let action = input.control_part_release(&scene, ui.layout()).unwrap();
     ui.update(|app| assert!(app.control_at(&scene, &action.path, action.action)));
+}
+
+fn exercise_calendar_fields(app: impl Component) {
+    let mut ui = UiDriver::headless(app, Size::new(390.0, 750.0));
+    ui.click("open-menu");
+    ui.click("open-layouts");
+    ui.click("open-fields");
+    for (field, input, accepted, draft, stored, commits) in [
+        (
+            "date-entry",
+            "20240302",
+            false,
+            "Date draft 2024-03-02",
+            "Stored date 2024-02-28",
+            "Date commits 0",
+        ),
+        (
+            "date-entry",
+            "20240227",
+            true,
+            "Date draft 2024-02-27",
+            "Stored date 2024-02-27",
+            "Date commits 1",
+        ),
+        (
+            "minute-entry",
+            "2359",
+            false,
+            "Time draft 23:59",
+            "Stored time 12:30:41",
+            "Time commits 0",
+        ),
+        (
+            "minute-entry",
+            "1345",
+            true,
+            "Time draft 13:45",
+            "Stored time 13:45:41",
+            "Time commits 1",
+        ),
+    ] {
+        ui.click(field);
+        ui.fill_focused(input);
+        require_text(&ui, draft);
+        let path = ui.path(field);
+        let scene = ui.scene().clone();
+        ui.update(|app| {
+            assert_eq!(
+                app.control_at(&scene, &path, ControlAction::ValidateTextSubmission),
+                accepted
+            );
+            assert_eq!(app.dispatch_at(&scene, &path, "accepted"), accepted);
+        });
+        require_text(&ui, stored);
+        require_text(&ui, commits);
+    }
+
+    ui.click("date-picker-button");
+    let date_popup = ui.path("date-picker");
+    let mut calendar = date_popup.clone();
+    calendar.push(0);
+    let scene = ui.scene().clone();
+    ui.update(|app| {
+        let leap_day = Date::new(2024, 2, 29).unwrap();
+        let select = ControlAction::Calendar(CalendarAction::Select(leap_day));
+        assert!(app.control_at(&scene, &calendar, select));
+    });
+    require_text(&ui, "Stored date 2024-02-27");
+    let scene = ui.scene().clone();
+    ui.update(|app| {
+        assert!(app.control_at(
+            &scene,
+            &date_popup,
+            ControlAction::Dialog(DialogRole::Accept)
+        ));
+    });
+    require_text(&ui, "Stored date 2024-02-29");
+    require_text(&ui, "Date draft 2024-02-29");
+    require_text(&ui, "Date commits 2");
+
+    for (role, stored, draft, commits) in [
+        (
+            DialogRole::Reject,
+            "Stored time 13:45:41",
+            "Time draft 13:45",
+            "Time commits 1",
+        ),
+        (
+            DialogRole::Accept,
+            "Stored time 13:46:41",
+            "Time draft 13:46",
+            "Time commits 2",
+        ),
+    ] {
+        ui.click("time-picker-button");
+        let time_popup = ui.path("time-picker");
+        let mut minute = time_popup.clone();
+        minute.extend([0, 1]);
+        let scene = ui.scene().clone();
+        let row = Tumbler::from_node(scene.at_path(&minute).unwrap())
+            .row_key(46)
+            .unwrap();
+        ui.update(|app| {
+            assert!(app.control_at(
+                &scene,
+                &minute,
+                ControlAction::PickTumbler { index: 46, row }
+            ));
+        });
+        require_text(&ui, "Stored time 13:45:41");
+        let scene = ui.scene().clone();
+        ui.update(|app| {
+            assert!(app.control_at(&scene, &time_popup, ControlAction::Dialog(role)));
+        });
+        require_text(&ui, stored);
+        require_text(&ui, draft);
+        require_text(&ui, commits);
+    }
+}
+
+#[test]
+fn imported_calendar_fields_validate_and_commit_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_calendar_fields(MobileNavigation::new());
+    exercise_calendar_fields(interpreted_navigation()?);
+    Ok(())
+}
+
+fn exercise_document_tabs(app: impl Component) {
+    let mut ui = UiDriver::headless(app, Size::new(390.0, 750.0));
+    ui.click("open-menu");
+    ui.click("open-card-workshop");
+    ui.click("open-tab-workshop");
+    click_text(&mut ui, "Add Valve");
+    require_text(&ui, "Valve total 1");
+    let path = ui.path("document-tabs");
+    let tabs = ui.layout_at(&path).unwrap();
+    let header = |index: usize| {
+        let rect = tabs.children[index].tab_header.unwrap();
+        Point {
+            x: rect.x + rect.width * 0.35,
+            y: rect.y + rect.height / 2.0,
+        }
+    };
+    let start = header(1);
+    let end = header(2);
+    let now = Instant::now();
+    let mut interrupted = Interaction::default();
+    assert!(interrupted.begin_scroll_gesture(
+        ui.scene(),
+        ui.layout(),
+        start,
+        now,
+        ScrollGestureKind::Touch,
+    ));
+    interrupted.move_scroll_gesture(
+        ui.scene(),
+        ui.layout(),
+        end,
+        now + Duration::from_millis(300),
+    );
+    assert!(interrupted.tab_move_active());
+    interrupted.cancel_scroll_gesture();
+    assert!(!interrupted.tab_move_active());
+    let release = interrupted.end_scroll_gesture(
+        ui.scene(),
+        ui.layout(),
+        end,
+        now + Duration::from_millis(450),
+    );
+    assert!(!release.tap && release.control.is_none());
+    require_text(&ui, "Tab moves 0");
+    require_text(&ui, "Valve total 1");
+    assert_eq!(
+        ui.node("document-tabs").children[1].text("title"),
+        Some("Valve")
+    );
+
+    assert!(swipe(&mut ui, start, end));
+    require_text(&ui, "Active Valve");
+    require_text(&ui, "Valve total 1");
+    require_text(&ui, "Moved 1 to 2");
+    require_text(&ui, "Tab moves 1");
+    assert_eq!(
+        ui.node("document-tabs").children[2].text("title"),
+        Some("Valve")
+    );
+
+    for (index, title, active, count) in [(1, "Meter", "Valve", 2), (1, "Valve", "Pump", 1)] {
+        let close = ui.layout_at(&path).unwrap().children[index]
+            .tab_close
+            .unwrap();
+        let mut input = Interaction::default();
+        input.pointer_move(
+            ui.scene(),
+            ui.layout(),
+            Point {
+                x: close.x + close.width / 2.0,
+                y: close.y + close.height / 2.0,
+            },
+        );
+        input.pointer_press_in_scene(ui.scene(), ui.layout());
+        let target = input.pointer_release_target().unwrap();
+        let action = input
+            .select_group_option(ui.scene(), ui.layout(), &target)
+            .unwrap();
+        let scene = ui.scene().clone();
+        ui.update(|app| assert!(app.control_at(&scene, &action.path, action.action)));
+        require_text(&ui, &format!("Closed {title}"));
+        require_text(&ui, &format!("Active {active}"));
+        require_text(&ui, &format!("Tab count {count}"));
+        require_text(&ui, "Tab moves 1");
+        require_text(
+            &ui,
+            if active == "Valve" {
+                "Valve total 1"
+            } else {
+                "Pump total 0"
+            },
+        );
+    }
+}
+
+#[test]
+fn model_tabs_share_touch_reordering_and_close_results_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_document_tabs(MobileNavigation::new());
+    exercise_document_tabs(interpreted_navigation()?);
+    Ok(())
 }
 
 fn exercise<C: Component>(app: C) -> UiDriver<C> {
@@ -840,5 +1074,136 @@ fn nested_focus_routes_and_remembered_editors_match_in_both_backends()
 -> Result<(), Box<dyn std::error::Error>> {
     exercise_focus_routes(MobileNavigation::new());
     exercise_focus_routes(interpreted_navigation()?);
+    Ok(())
+}
+
+fn exercise_motion<C: Component>(app: C) {
+    let viewport = Size::new(390.0, 750.0);
+    let mut ui = UiDriver::headless(app, viewport);
+    ui.click("open-menu");
+    ui.click("open-motion");
+    let base = ui.scene().clone();
+    let deck = ui.path("deck");
+    let button = ui.path("motion-target");
+    let baseline = ui.bounds("deck");
+    assert_eq!(baseline.width, 72.0);
+    ui.click("move-deck");
+    let deployed = ui.scene().clone();
+    assert_eq!(ui.bounds("deck").width, 168.0);
+    assert_eq!(ui.node("motion-target").text("text"), Some("Wide tile"));
+
+    let mut timeline = SceneTransition::between(&base, &deployed);
+    let at = Duration::from_millis;
+    let halfway = timeline.frame(&deployed, at(5000));
+    let mut input = Interaction::default();
+    let layout = layout_with_input(&halfway, viewport, &mut FixedText, &input);
+    let rectangle = layout.at_path(&deck).unwrap().bounds;
+    assert_eq!((rectangle.x - baseline.x, rectangle.width), (52.0, 120.0));
+    let gap = Point {
+        x: baseline.x + 90.0,
+        y: rectangle.y + 42.0,
+    };
+    assert!(gap.x > baseline.x + baseline.width);
+    assert!(gap.x < ui.bounds("deck").x);
+    input.reconcile(&halfway, &layout);
+    input.pointer_move(&halfway, &layout, gap);
+    input.pointer_press_in_scene(&halfway, &layout);
+    let target = input.pointer_release_target().unwrap();
+    assert_eq!(target.path, button);
+    ui.update(|app| assert!(app.dispatch_at(&halfway, &target.path, "clicked")));
+    require_text(&ui, "Motion picks 1");
+
+    ui.click("widen-base");
+    require_text(&ui, "Base wider");
+    assert_eq!(ui.bounds("deck").width, 168.0);
+    let wider = ui.scene().clone();
+    timeline.retarget(&deployed, &wider, at(5000));
+    ui.click("move-deck");
+    let stowed = ui.scene().clone();
+    timeline.retarget(&wider, &stowed, at(5000));
+    let bounds_at = |millis| {
+        let scene = timeline.frame(&stowed, at(millis));
+        layout_with_input(&scene, viewport, &mut FixedText, &input)
+            .at_path(&deck)
+            .unwrap()
+            .bounds
+    };
+    assert_eq!(bounds_at(5000), rectangle);
+    let returning = bounds_at(10000);
+    assert_eq!((returning.x - baseline.x, returning.width), (26.0, 108.0));
+    let restored = bounds_at(15000);
+    assert_eq!((restored.x, restored.width), (baseline.x, 96.0));
+    assert_eq!(ui.node("motion-target").text("text"), Some("Tile"));
+    assert!(!timeline.running(at(15000)));
+}
+
+#[test]
+fn motion_uses_the_animated_hitbox_and_retargets_to_the_live_base_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_motion(MobileNavigation::new());
+    exercise_motion(interpreted_navigation()?);
+    Ok(())
+}
+
+fn exercise_layout_workshop(app: impl Component) {
+    let mut ui = UiDriver::headless(app, Size::new(390.0, 750.0));
+    ui.click("open-menu");
+    ui.click("open-layouts");
+    let x = |ui: &UiDriver<_>, id| ui.bounds(id).x;
+    let y = |ui: &UiDriver<_>, id| ui.bounds(id).y;
+
+    assert!(x(&ui, "grid-pump") < x(&ui, "grid-valve"));
+    assert!(x(&ui, "flow-ash") < x(&ui, "flow-bay"));
+    assert!(x(&ui, "flow-bay") < x(&ui, "flow-fir"));
+    assert_eq!(y(&ui, "flow-ash"), y(&ui, "flow-fir"));
+    assert!(x(&ui, "flex-blue") > x(&ui, "flex-red"));
+    assert!(x(&ui, "flex-red") > x(&ui, "flex-gold"));
+    assert_eq!(y(&ui, "flex-blue"), y(&ui, "flex-gold"));
+    let pump = ui.bounds("grid-pump");
+    ui.click("grid-pump");
+    require_text(&ui, "Picked Grid pump");
+    ui.click("flex-blue");
+    assert_eq!(ui.focused(), Some("flex-blue"));
+    ui.tab();
+    assert_eq!(ui.focused(), Some("flex-red"));
+    assert!(ui.activate(ActivationKey::Enter));
+    require_text(&ui, "Picked Flex red");
+    require_text(&ui, "Layout clicks 3");
+
+    ui.click("mirror-rows");
+    let valve = ui.bounds("grid-valve");
+    let physical_center = pump.x + pump.width / 2.0;
+    assert!((valve.x..valve.x + valve.width).contains(&physical_center));
+    assert!(x(&ui, "grid-pump") > x(&ui, "grid-valve"));
+    assert!(x(&ui, "flow-ash") > x(&ui, "flow-bay"));
+    assert!(x(&ui, "flow-bay") > x(&ui, "flow-fir"));
+    assert!(x(&ui, "flex-blue") < x(&ui, "flex-red"));
+    assert!(x(&ui, "flex-red") < x(&ui, "flex-gold"));
+    ui.click("grid-valve");
+    require_text(&ui, "Picked Grid valve");
+
+    ui.click("width-rows");
+    assert_eq!(y(&ui, "flow-ash"), y(&ui, "flow-bay"));
+    assert!(y(&ui, "flow-fir") > y(&ui, "flow-bay"));
+    assert_eq!(x(&ui, "flow-ash"), x(&ui, "flow-fir"));
+    assert_eq!(y(&ui, "flex-blue"), y(&ui, "flex-red"));
+    assert!(y(&ui, "flex-gold") > y(&ui, "flex-red"));
+    assert_eq!(x(&ui, "flex-blue"), x(&ui, "flex-gold"));
+    ui.click("flow-fir");
+    require_text(&ui, "Picked Flow fir");
+    ui.click("flex-gold");
+    require_text(&ui, "Picked Flex gold");
+    require_text(&ui, "Layout clicks 6");
+    ui.click("width-rows");
+    assert_eq!(y(&ui, "flow-ash"), y(&ui, "flow-fir"));
+    assert_eq!(y(&ui, "flex-blue"), y(&ui, "flex-gold"));
+    require_text(&ui, "Layout clicks 6");
+}
+
+#[test]
+fn layout_workshop_mirrors_and_wraps_with_consistent_input_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_layout_workshop(MobileNavigation::new());
+    exercise_layout_workshop(interpreted_navigation()?);
     Ok(())
 }

@@ -1,17 +1,167 @@
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
-use winit::window::Window;
+use crate::Window;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 use xrack_runtime::{NativeDialogOptions, NativeDialogResult};
 
 #[cfg(target_os = "android")]
 mod android;
 #[cfg(target_os = "android")]
-pub(crate) use android::{SystemRequest as AndroidSystemRequest, present};
+pub(crate) use android::{
+    AndroidDialogResult, ImportedFiles, SystemRequest as AndroidSystemRequest, present,
+};
 
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg(target_os = "ios")]
-pub(crate) use ios::{DirectoryRequest, Transfer, TransferRequest, present};
+pub(crate) use ios::{
+    ColorRequest, DirectoryRequest, ModalQueue, PhotoRequest, Transfer, TransferRequest, present,
+};
+#[cfg(target_os = "ios")]
+pub use ios::{IosPhotoSelection, IosPhotoThumbnail};
+
+#[cfg(any(target_os = "ios", test))]
+async fn until_canceled<T>(
+    canceled: impl std::future::Future<Output = ()>,
+    operation: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    use std::{future::poll_fn, pin::pin, task::Poll};
+
+    let mut canceled = pin!(canceled);
+    let mut operation = pin!(operation);
+    poll_fn(|context| {
+        if canceled.as_mut().poll(context).is_ready() {
+            Poll::Ready(None)
+        } else {
+            operation.as_mut().poll(context).map(Some)
+        }
+    })
+    .await
+}
+
+#[cfg(any(target_os = "ios", test))]
+pub(super) async fn receive_color_with_preview(
+    mut result: tokio::sync::oneshot::Receiver<Result<xrack_runtime::Color, String>>,
+    mut previews: tokio::sync::watch::Receiver<xrack_runtime::Color>,
+    mut on_preview: impl FnMut(xrack_runtime::Color),
+) -> Result<xrack_runtime::Color, String> {
+    use std::{
+        future::poll_fn,
+        pin::{Pin, pin},
+        task::Poll,
+    };
+
+    enum Update {
+        Preview(Option<xrack_runtime::Color>),
+        Finished(Result<xrack_runtime::Color, String>),
+    }
+
+    let closed = || "the window closed before the color picker finished".to_owned();
+    loop {
+        let mut next = pin!(async {
+            previews.changed().await.ok()?;
+            Some(*previews.borrow_and_update())
+        });
+        let update = poll_fn(|context| {
+            if let Poll::Ready(value) = Pin::new(&mut result).poll(context) {
+                return Poll::Ready(Update::Finished(value.unwrap_or_else(|_| Err(closed()))));
+            }
+            next.as_mut().poll(context).map(Update::Preview)
+        })
+        .await;
+        match update {
+            Update::Finished(value) => return value,
+            Update::Preview(Some(color)) => on_preview(color),
+            Update::Preview(None) => return result.await.map_err(|_| closed())?,
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn color_preview_coalesces_updates_and_yields_to_the_final_result() {
+    use std::{
+        cell::RefCell,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+    use tokio::sync::{oneshot, watch};
+    use xrack_runtime::Color;
+
+    let previews = RefCell::new(Vec::new());
+    let (send, result) = oneshot::channel();
+    let (update, updates) = watch::channel(Color(0x10203080));
+    let mut selection = pin!(receive_color_with_preview(result, updates, |color| {
+        previews.borrow_mut().push(color);
+    }));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(selection.as_mut().poll(&mut context).is_pending());
+    assert!(previews.borrow().is_empty());
+
+    let latest = Color(0x30405080);
+    update.send(Color(0x20304080)).unwrap();
+    update.send(latest).unwrap();
+    assert!(selection.as_mut().poll(&mut context).is_pending());
+    assert_eq!(*previews.borrow(), [latest]);
+
+    update.send(Color(0x40506080)).unwrap();
+    let final_color = Color(0x50607080);
+    send.send(Ok(final_color)).unwrap();
+    assert_eq!(
+        selection.as_mut().poll(&mut context),
+        Poll::Ready(Ok(final_color))
+    );
+    assert_eq!(*previews.borrow(), [latest]);
+}
+
+#[cfg(test)]
+#[test]
+fn canceling_a_waiting_receiver_leaves_the_next_panel_queued() {
+    use std::{
+        future::Future,
+        pin::pin,
+        sync::Arc,
+        task::{Context, Poll, Waker},
+    };
+    use tokio::sync::{Mutex, oneshot};
+
+    let queue = Arc::new(Mutex::new(()));
+    let current = queue.clone().try_lock_owned().unwrap();
+    let (mut reply, receiver) = oneshot::channel::<()>();
+    let mut canceled = pin!(until_canceled(reply.closed(), queue.clone().lock_owned()));
+    let mut next = pin!(queue.lock_owned());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(canceled.as_mut().poll(&mut context).is_pending());
+    assert!(next.as_mut().poll(&mut context).is_pending());
+
+    drop(receiver);
+    assert!(matches!(
+        canceled.as_mut().poll(&mut context),
+        Poll::Ready(None)
+    ));
+    assert!(next.as_mut().poll(&mut context).is_pending());
+    drop(current);
+    assert!(next.as_mut().poll(&mut context).is_ready());
+}
+
+#[cfg(test)]
+#[test]
+fn cancellation_takes_priority_over_a_ready_panel_result() {
+    use std::{
+        cell::Cell,
+        future::ready,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
+    let polled = Cell::new(false);
+    let mut response = pin!(until_canceled(ready(()), async { polled.set(true) }));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(matches!(
+        response.as_mut().poll(&mut context),
+        Poll::Ready(None)
+    ));
+    assert!(!polled.get());
+}
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub(crate) async fn present(window: &Window, options: &NativeDialogOptions) -> NativeDialogResult {

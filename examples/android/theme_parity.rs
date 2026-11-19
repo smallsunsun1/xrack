@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 mod navigation_fixture;
 
 use mobile_navigation_ui::MobileNavigation;
@@ -5,8 +7,8 @@ use navigation_fixture::interpreted_navigation;
 use std::time::{Duration, Instant};
 use xrack_layout::{ChoiceKey, WindowEffects};
 use xrack_runtime::{
-    Color, Component, ControlAction, Font, ImageFit, ImagePlaybackQueue, Length, Node, RangeAction,
-    SpinAction, SpinDecimal,
+    Color, ColorScheme, Component, ControlAction, Font, ImageFit, ImagePlaybackQueue, Length, Node,
+    RangeAction, SpinAction, SpinDecimal,
 };
 use xrack_testing::{FixedText, Point, Size, TextMeasurer, UiDriver};
 
@@ -18,6 +20,26 @@ impl TextMeasurer for CatalogText {
     fn font_families(&self) -> &[String] {
         &self.0
     }
+}
+
+fn exercise_system_theme(component: impl Component) {
+    let mut ui = UiDriver::headless(component, Size::new(390.0, 750.0));
+    ui.click("settings");
+    assert_eq!(ui.scene().color_scheme(), Some(ColorScheme::Light));
+    ui.click("follow-theme");
+    assert_eq!(ui.scene().color_scheme(), Some(ColorScheme::System));
+    assert_eq!(ui.node("follow-theme").text("text"), Some("Use light"));
+    ui.click("follow-theme");
+    assert_eq!(ui.scene().color_scheme(), Some(ColorScheme::Light));
+    assert_eq!(ui.node("follow-theme").text("text"), Some("Follow system"));
+}
+
+#[test]
+fn system_theme_switch_has_the_same_binding_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_system_theme(MobileNavigation::new());
+    exercise_system_theme(interpreted_navigation()?);
+    Ok(())
 }
 
 fn locate(node: &Node, property: &str, value: &str) -> Option<Vec<usize>> {

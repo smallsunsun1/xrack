@@ -1,3 +1,7 @@
+#[cfg(target_os = "android")]
+use crate::android_host::{
+    ActiveEventLoop, AndroidEvent, ApplicationHandler, EventLoop, EventLoopProxy, Window,
+};
 use crate::system_tray::{self, TrayActivation, TrayHost};
 use crate::{Application, ClipboardPort, LocalExecutor, UserEvent, queue::EventQueue};
 use std::{
@@ -7,12 +11,13 @@ use std::{
     sync::{Arc, mpsc::TrySendError},
     time::Instant,
 };
+#[cfg(not(target_os = "android"))]
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    window::{Window, WindowId},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
+    window::Window,
 };
+use winit::{event::WindowEvent, event_loop::ControlFlow, window::WindowId};
 use xrack_renderer_femtovg::{RenderDevice, Renderer};
 use xrack_runtime::{
     Component, EventLoopError, EventLoopRegistration, LocaleContext, LocaleId,
@@ -88,8 +93,9 @@ impl WindowEvents {
     pub(crate) fn accessibility(
         &self,
         _event_loop: &ActiveEventLoop,
-        window: &winit::window::Window,
+        window: &Window,
     ) -> Result<crate::WindowAccessibility, &'static str> {
+        #[cfg(not(target_os = "android"))]
         let handler = AccessibilityEvents {
             events: self.clone(),
             window_id: window.id(),
@@ -97,7 +103,13 @@ impl WindowEvents {
         #[cfg(target_os = "ios")]
         return crate::ios::Accessibility::new(window, self.clone(), handler)
             .ok_or("the iOS window does not have an accessibility view");
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(target_os = "android")]
+        return Ok(crate::android_accessibility::Accessibility::new(
+            _event_loop.android_app().clone(),
+            self.clone(),
+            window.id(),
+        ));
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         Ok(accesskit_winit::Adapter::with_direct_handlers(
             _event_loop,
             window,
@@ -108,12 +120,14 @@ impl WindowEvents {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 #[derive(Clone)]
 struct AccessibilityEvents {
     events: WindowEvents,
     window_id: WindowId,
 }
 
+#[cfg(not(target_os = "android"))]
 impl AccessibilityEvents {
     fn post(&self, window_event: accesskit_winit::WindowEvent) {
         self.events
@@ -124,6 +138,7 @@ impl AccessibilityEvents {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl accesskit::ActivationHandler for AccessibilityEvents {
     fn request_initial_tree(&mut self) -> Option<accesskit::TreeUpdate> {
         self.post(accesskit_winit::WindowEvent::InitialTreeRequested);
@@ -131,12 +146,14 @@ impl accesskit::ActivationHandler for AccessibilityEvents {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl accesskit::ActionHandler for AccessibilityEvents {
     fn do_action(&mut self, request: accesskit::ActionRequest) {
         self.post(accesskit_winit::WindowEvent::ActionRequested(request));
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl accesskit::DeactivationHandler for AccessibilityEvents {
     fn deactivate_accessibility(&mut self) {
         self.post(accesskit_winit::WindowEvent::AccessibilityDeactivated);
@@ -149,13 +166,15 @@ pub(crate) struct DesktopGraphics {
 }
 
 impl DesktopGraphics {
-    fn new(event_loop: &ActiveEventLoop) -> Self {
+    fn new(_event_loop: &ActiveEventLoop) -> Self {
+        #[cfg(not(target_os = "android"))]
+        let descriptor = wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(
+            _event_loop.owned_display_handle(),
+        ));
+        #[cfg(target_os = "android")]
+        let descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
         Self {
-            instance: wgpu::Instance::new(
-                wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(
-                    event_loop.owned_display_handle(),
-                )),
-            ),
+            instance: wgpu::Instance::new(descriptor),
             devices: Vec::new(),
         }
     }
@@ -194,6 +213,8 @@ pub(crate) trait HostedWindow {
     fn take_close_request(&mut self) -> bool;
     #[cfg(target_os = "android")]
     fn begin_input_batch(&mut self, started_at: Instant);
+    #[cfg(target_os = "android")]
+    fn android_event(&mut self, event: AndroidEvent);
     fn tick(&mut self, now: Instant);
     fn refresh_deadline(&mut self, now: Instant) -> Option<Instant>;
     fn refresh_after_desktop_update(&mut self);
@@ -374,6 +395,87 @@ pub struct DesktopWindow {
 
 #[cfg(target_os = "ios")]
 impl DesktopWindow {
+    /// Present the iOS color picker and return its final color when dismissed.
+    /// With alpha controls hidden, the returned color keeps the initial alpha.
+    /// Dropping the future cancels the native request.
+    pub async fn select_color(
+        &self,
+        initial: xrack_runtime::Color,
+        show_alpha: bool,
+    ) -> Result<xrack_runtime::Color, String> {
+        self.request_color(initial, show_alpha, None)?
+            .await
+            .map_err(|_| "the window closed before the color picker finished")?
+    }
+
+    /// Present the iOS color picker with live color previews.
+    /// The callback runs in the task awaiting this future. Rapid updates may
+    /// be combined. The return value is the final color after dismissal.
+    /// Dropping this future cancels the request and stops the callback.
+    pub async fn select_color_with_preview(
+        &self,
+        initial: xrack_runtime::Color,
+        show_alpha: bool,
+        on_preview: impl FnMut(xrack_runtime::Color),
+    ) -> Result<xrack_runtime::Color, String> {
+        let (preview, updates) = tokio::sync::watch::channel(initial);
+        let result = self.request_color(initial, show_alpha, Some(preview))?;
+        crate::native_dialog::receive_color_with_preview(result, updates, on_preview).await
+    }
+
+    fn request_color(
+        &self,
+        initial: xrack_runtime::Color,
+        show_alpha: bool,
+        preview: Option<tokio::sync::watch::Sender<xrack_runtime::Color>>,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<xrack_runtime::Color, String>>, String> {
+        let events = self
+            .desktop
+            .0
+            .upgrade()
+            .ok_or("the XRack desktop is closed")?
+            .events(self.key);
+        let (reply, result) = tokio::sync::oneshot::channel();
+        if !events.post(UserEvent::IosSelectColor(
+            crate::native_dialog::ColorRequest {
+                initial,
+                show_alpha,
+                preview,
+                reply,
+            },
+        )) {
+            return Err("the XRack desktop is closed".into());
+        }
+        Ok(result)
+    }
+
+    /// Pick images from the iOS photo library. The selection limit must be positive.
+    /// The result owns app-local copies and returns `Ok(None)` on cancellation.
+    pub async fn select_photos(
+        &self,
+        selection_limit: usize,
+    ) -> Result<Option<crate::IosPhotoSelection>, String> {
+        let limit = isize::try_from(selection_limit)
+            .ok()
+            .filter(|limit| *limit > 0)
+            .ok_or("The photo selection limit must be a positive iOS integer.")?;
+        let events = self
+            .desktop
+            .0
+            .upgrade()
+            .ok_or("the XRack desktop is closed")?
+            .events(self.key);
+        let (reply, result) = tokio::sync::oneshot::channel();
+        if !events.post(UserEvent::IosSelectPhotos(
+            crate::native_dialog::PhotoRequest { limit, reply },
+        )) {
+            return Err("the XRack desktop is closed".into());
+        }
+        result
+            .await
+            .map_err(|_| "the window closed before the photo picker finished")?
+    }
+
     /// Present the iOS share sheet with text from this window.
     /// Returns false if the activity was canceled.
     pub async fn share_text(&self, text: impl Into<String>) -> Result<bool, String> {
@@ -384,7 +486,21 @@ impl DesktopWindow {
     /// Present the iOS share sheet for an existing file with an absolute path.
     /// Keep the source file available until this future completes.
     pub async fn share_file(&self, path: impl Into<std::path::PathBuf>) -> Result<bool, String> {
-        self.transfer(crate::native_dialog::Transfer::ShareFile(path.into()))
+        self.share_files([path.into()]).await
+    }
+
+    /// Present one iOS share sheet for a nonempty batch of existing local files.
+    /// Keep all source files available until this future completes.
+    /// Returns false if the activity was canceled.
+    pub async fn share_files(
+        &self,
+        paths: impl IntoIterator<Item = impl Into<std::path::PathBuf>>,
+    ) -> Result<bool, String> {
+        let paths: Vec<_> = paths.into_iter().map(Into::into).collect();
+        if paths.is_empty() {
+            return Err("Choose at least one file to share.".into());
+        }
+        self.transfer(crate::native_dialog::Transfer::ShareFiles(paths))
             .await
     }
 
@@ -392,7 +508,22 @@ impl DesktopWindow {
     /// Keep the source file available until this future completes.
     /// Returns false if the user canceled the export.
     pub async fn export_file(&self, path: impl Into<std::path::PathBuf>) -> Result<bool, String> {
-        self.transfer(crate::native_dialog::Transfer::ExportFile(path.into()))
+        self.export_files([path.into()]).await
+    }
+
+    /// Copy a nonempty batch of existing local files to a destination selected in Files.
+    /// Keep the source files available until this future completes.
+    /// Returns false if the folder picker is canceled and true after all copies are written.
+    /// Existing files are kept. Copies with conflicting names receive a numeric suffix.
+    pub async fn export_files(
+        &self,
+        paths: impl IntoIterator<Item = impl Into<std::path::PathBuf>>,
+    ) -> Result<bool, String> {
+        let paths: Vec<_> = paths.into_iter().map(Into::into).collect();
+        if paths.is_empty() {
+            return Err("Choose at least one file to export.".into());
+        }
+        self.transfer(crate::native_dialog::Transfer::ExportFiles(paths))
             .await
     }
 
@@ -574,7 +705,7 @@ impl DesktopRuntime {
             }),
             clipboard: Rc::new(RefCell::new(ClipboardPort::new(
                 #[cfg(target_os = "android")]
-                winit::platform::android::EventLoopExtAndroid::android_app(event_loop).clone(),
+                event_loop.android_app().clone(),
             ))),
             windows: BTreeMap::new(),
             trays: BTreeMap::new(),
@@ -808,10 +939,24 @@ impl DesktopRuntime {
 
 impl ApplicationHandler<DesktopEvent> for DesktopRuntime {
     #[cfg(target_os = "android")]
-    fn new_events(&mut self, _: &ActiveEventLoop, _: winit::event::StartCause) {
+    fn new_events(&mut self) {
         let started_at = Instant::now();
         for window in self.windows.values_mut() {
             window.begin_input_batch(started_at);
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    fn android_event(&mut self, event_loop: &ActiveEventLoop, event: AndroidEvent) {
+        if let Some(&key) = self.native.get(&WindowId::dummy())
+            && let Some(window) = self.windows.get_mut(&key)
+        {
+            window.android_event(event);
+            if let Some(error) = window.take_error() {
+                self.error.get_or_insert(error);
+                self.finish_close(key);
+            }
+            self.exit_if_empty(event_loop);
         }
     }
 
@@ -1007,16 +1152,10 @@ pub fn run_desktop(setup: impl FnOnce(&Desktop) -> Result<(), String>) -> Result
 /// Run an XRack component from the Android Activity's native entry point.
 #[cfg(target_os = "android")]
 pub fn run_android(
-    app: winit::platform::android::activity::AndroidApp,
+    app: android_activity::AndroidApp,
     setup: impl FnOnce(&Desktop) -> Result<(), String>,
 ) -> Result<(), String> {
-    use winit::platform::android::EventLoopBuilderExtAndroid;
-
-    let event_loop = EventLoop::with_user_event()
-        .with_android_app(app)
-        .build()
-        .map_err(|error| error.to_string())?;
-    run(event_loop, setup)
+    run(EventLoop::new(app), setup)
 }
 
 fn run(

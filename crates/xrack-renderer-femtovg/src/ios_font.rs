@@ -1,7 +1,11 @@
+use crate::color_glyphs::GlyphBitmap;
 use femtovg::{Canvas, FillRule, Paint, Path, renderer::WGPURenderer};
-use objc2_core_foundation::{CFRetained, CFString};
-use objc2_core_graphics::{CGPath, CGPathElement, CGPathElementType};
-use objc2_core_text::{CTFont, CTFontTableOptions};
+use objc2_core_foundation::{CFRetained, CFString, CGPoint};
+use objc2_core_graphics::{
+    CGBitmapContextCreate, CGColorSpace, CGImageAlphaInfo, CGImageByteOrderInfo, CGPath,
+    CGPathElement, CGPathElementType, kCGColorSpaceSRGB,
+};
+use objc2_core_text::{CTFont, CTFontOrientation, CTFontSymbolicTraits, CTFontTableOptions};
 use std::{cell::RefCell, collections::HashMap, ffi::c_void, ptr::NonNull, sync::Arc};
 use xrack_layout::Point;
 
@@ -12,8 +16,8 @@ pub(crate) struct NativeFont {
 }
 
 impl NativeFont {
-    pub(crate) fn ping_fang() -> Option<Self> {
-        let name = CFString::from_str("PingFangSC-Regular");
+    pub(crate) fn with_post_script_name(name: &str) -> Option<Self> {
+        let name = CFString::from_str(name);
         // SAFETY: The null transform is the identity transform.
         let font = unsafe { CTFont::with_name(&name, 1.0, std::ptr::null()) };
         // SAFETY: The font is a retained Core Text object.
@@ -52,17 +56,86 @@ impl NativeFont {
         canvas.fill_path(path, &paint.clone().with_fill_rule(FillRule::NonZero));
         canvas.restore();
     }
+
+    pub(crate) fn rasterize_color_glyph(&self, id: u16, pixels_per_em: u16) -> Option<GlyphBitmap> {
+        // SAFETY: The null transform and descriptor retain the original face.
+        let font = unsafe {
+            self.font
+                .copy_with_attributes(f64::from(pixels_per_em), std::ptr::null(), None)
+        };
+        let glyph = NonNull::from(&id);
+        // SAFETY: The single glyph is valid for the resized copy of the shaping face.
+        let bounds = unsafe {
+            font.bounding_rects_for_glyphs(
+                CTFontOrientation::Horizontal,
+                glyph,
+                std::ptr::null_mut(),
+                1,
+            )
+        };
+        let left = bounds.origin.x.floor() - 1.0;
+        let bottom = bounds.origin.y.floor() - 1.0;
+        let right = (bounds.origin.x + bounds.size.width).ceil() + 1.0;
+        let top = (bounds.origin.y + bounds.size.height).ceil() + 1.0;
+        let (width, height) = (right - left, top - bottom);
+        if !(1.0..=1024.0).contains(&width) || !(1.0..=1024.0).contains(&height) {
+            return None;
+        }
+        let (width, height) = (width as usize, height as usize);
+        let mut rgba = vec![0; width * height * 4];
+        // SAFETY: kCGColorSpaceSRGB is a system-owned string constant.
+        let color_space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))?;
+        let bitmap_info =
+            CGImageByteOrderInfo::Order32Big.0 | CGImageAlphaInfo::PremultipliedLast.0;
+        // SAFETY: The pixel buffer stays valid and exclusively owned until the context is released.
+        let context = unsafe {
+            CGBitmapContextCreate(
+                rgba.as_mut_ptr().cast(),
+                width,
+                height,
+                8,
+                width * 4,
+                Some(&color_space),
+                bitmap_info,
+            )
+        }?;
+        let origin = CGPoint::new(-left, -bottom);
+        // SAFETY: Both arrays contain one element and the context owns its drawing state.
+        unsafe { font.draw_glyphs(glyph, NonNull::from(&origin), 1, &context) };
+        drop(context);
+        // FemtoVG's color-glyph shader takes straight RGBA.
+        let mut visible = false;
+        for pixel in rgba.chunks_exact_mut(4) {
+            let alpha = u16::from(pixel[3]);
+            if alpha != 0 {
+                visible = true;
+                for channel in &mut pixel[..3] {
+                    *channel = ((u16::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+                }
+            }
+        }
+        visible.then_some(GlyphBitmap {
+            offset: [left as i32, -top as i32],
+            size: [width as u32, height as u32],
+            rgba,
+        })
+    }
 }
 
-/// Supply the same native face's OpenType layout tables to the shaper. Core
-/// Text supplies the outlines separately, including Apple's private formats.
+/// Supply the same native face's shaping tables. Core Text supplies the ink
+/// separately, so the large bitmap strikes don't need to be copied.
 fn layout_tables(font: &CTFont) -> Option<Vec<u8>> {
     let tags = [
         *b"GDEF", *b"GPOS", *b"GSUB", *b"OS/2", *b"cmap", *b"head", *b"hhea", *b"hmtx", *b"kern",
         *b"maxp", *b"name", *b"post",
     ];
-    let tables: Vec<_> = tags
+    // SAFETY: The retained face supplies its symbolic traits.
+    let color = unsafe { font.symbolic_traits() }.contains(CTFontSymbolicTraits::TraitColorGlyphs);
+    // Apple Color Emoji uses AAT substitutions for flags and ZWJ sequences.
+    let aat = [*b"ankr", *b"feat", *b"kerx", *b"morx", *b"trak"];
+    let mut tables: Vec<_> = tags
         .into_iter()
+        .chain(color.then_some(aat).into_iter().flatten())
         .filter_map(|tag| {
             // SAFETY: Each tag is a standard OpenType tag supported by Core Text.
             let data =
@@ -70,6 +143,7 @@ fn layout_tables(font: &CTFont) -> Option<Vec<u8>> {
             Some((tag, data.to_vec()))
         })
         .collect();
+    tables.sort_unstable_by_key(|(tag, _)| *tag);
     for required in [*b"cmap", *b"head", *b"hhea", *b"hmtx", *b"maxp"] {
         if !tables.iter().any(|(tag, _)| *tag == required) {
             return None;

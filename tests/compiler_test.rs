@@ -3270,23 +3270,206 @@ fn drag_areas_verify_action_types_and_generate_typed_event_routes() {
 }
 
 #[test]
-fn native_file_drop_uses_a_typed_string_list_event() {
+fn accessible_heading_level_requires_an_integer_on_plain_text() {
+    let source = r#"export component App inherits Window {
+        in property <int> heading-level: 2;
+        Text { text: "Maintenance"; accessible-heading-level: root.heading-level; }
+        Label { text: "Overview"; accessible-heading-level: 1; }
+    }"#;
+    let compiled = compile(source, "headings.xr").unwrap();
+    assert!(compiled.mlir.contains("accessible-heading-level"));
+    for invalid in [
+        source.replace("Text {", "Button {"),
+        source.replace(
+            "accessible-heading-level: 1",
+            "accessible-heading-level: true",
+        ),
+    ] {
+        assert!(compile(&invalid, "headings.xr").is_err());
+    }
+    let invalid = lower(source, "headings.xr")
+        .replace("name = \"text\"", "name = \"accessible-heading-level\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("accessible-heading-level requires an integer")
+    );
+}
+
+#[test]
+fn accessible_live_requires_a_supported_priority_on_plain_text() {
+    let source = r#"export component App inherits Window {
+        in property <AccessibleLive> priority;
+        Text {
+            text: "Connection lost";
+            accessible-live: root.priority == AccessibleLive.off ? assertive : root.priority;
+        }
+        Label {
+            text: "Upload complete";
+            accessible-live: polite;
+        }
+    }"#;
+    let compilation = compile(source, "live-region.xr").unwrap();
+    assert!(compilation.mlir.contains("!xr.accessiblelive"));
+    assert!(
+        compilation
+            .rust
+            .to_string()
+            .contains("AccessibleLive :: Assertive")
+    );
+    let raw = lower(source, "live-region.xr");
+    let invalid = raw.replace("name = \"text\"", "name = \"accessible-live\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("accessible-live")
+    );
+    let invalid = source.replace("accessible-live: polite", "accessible-live: urgent");
+    assert!(compile(&invalid, "live-region.xr").is_err());
+    let invalid = source.replace("Label", "Button");
+    assert!(compile(&invalid, "live-region.xr").is_err());
+}
+
+#[test]
+fn pull_to_refresh_has_boolean_properties_and_a_zero_argument_handler() {
+    let source = r#"
+        export component App inherits Window {
+            out property <int> requests: 0;
+            feed := ScrollView {
+                content-height: 320px;
+                pull-to-refresh: true;
+                refreshing: root.requests > 0;
+                refresh-requested() => { root.requests += 1; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "refresh.xr").unwrap();
+    for name in ["pull-to-refresh", "refreshing", "refresh-requested"] {
+        assert!(compiled.mlir.contains(name), "{name}");
+    }
+    let invalid = source.replace("pull-to-refresh: true", "pull-to-refresh: 1");
+    assert!(compile(&invalid, "refresh.xr").is_err());
+    let invalid = source.replace("refresh-requested()", "refresh-requested(reason)");
+    assert!(compile(&invalid, "refresh.xr").is_err());
+    let wrong_parent = r#"export component App inherits Window {
+        trigger := Button { refresh-requested() => {} }
+    }"#;
+    assert!(compile(wrong_parent, "refresh.xr").is_err());
+    let raw = lower(source, "refresh.xr");
+    let invalid = raw.replace("name = \"content-height\"", "name = \"pull-to-refresh\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("pull-to-refresh properties require booleans")
+    );
+}
+
+#[test]
+fn dismiss_keyboard_on_drag_requires_a_boolean_on_a_viewport() {
+    let source = r#"export component App inherits Window {
+        ScrollView { width: 200px; dismiss-keyboard-on-drag: true; }
+    }"#;
+    let compiled = compile(source, "keyboard-drag.xr").unwrap();
+    assert!(compiled.mlir.contains("dismiss-keyboard-on-drag"));
+    for invalid in [
+        source.replace("ScrollView", "Button"),
+        source.replace("true", "42"),
+    ] {
+        assert!(compile(&invalid, "keyboard-drag.xr").is_err());
+    }
+    let invalid = lower(source, "keyboard-drag.xr")
+        .replace("name = \"width\"", "name = \"dismiss-keyboard-on-drag\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("dismiss-keyboard-on-drag requires a boolean")
+    );
+}
+
+#[test]
+fn drag_auto_scroll_requires_a_boolean_on_a_list_view() {
+    let source = r#"export component App inherits Window {
+        ListView {
+            row-height: 54px;
+            drag-auto-scroll: true;
+            for label in ["Pump"] : Text { text: label; }
+        }
+    }"#;
+    assert!(
+        compile(source, "drag-scroll.xr")
+            .unwrap()
+            .mlir
+            .contains("drag-auto-scroll")
+    );
+    assert!(compile(&source.replace(": true", ": 1"), "drag-scroll.xr").is_err());
+    let raw = lower(source, "drag-scroll.xr");
+    let invalid = raw.replace("name = \"row-height\"", "name = \"drag-auto-scroll\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("drag-auto-scroll requires a boolean")
+    );
+}
+
+#[test]
+fn touch_drag_delay_requires_integer_milliseconds_on_a_drag_area() {
+    let source = r#"export component App inherits Window {
+        DragArea { width: 100px; allow-move: true; touch-drag-delay: 420; }
+    }"#;
+    assert!(
+        compile(source, "touch-drag.xr")
+            .unwrap()
+            .mlir
+            .contains("touch-drag-delay")
+    );
+    for invalid in [
+        source.replace("DragArea", "DropArea"),
+        source.replace(": 420", ": 420px"),
+    ] {
+        assert!(compile(&invalid, "touch-drag.xr").is_err());
+    }
+    let invalid =
+        lower(source, "touch-drag.xr").replace("name = \"width\"", "name = \"touch-drag-delay\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("touch-drag-delay requires integer milliseconds")
+    );
+}
+
+#[test]
+fn native_file_drop_uses_typed_success_and_failure_events() {
     let source = r#"export component App inherits Window {
         out property <[string]> selection: [];
+        out property <string> message: "";
         inbox := DropArea {
             accept-files: true;
             file-extensions: ["png", "jpg"];
             files-dropped(paths) => { root.selection = paths; }
+            files-failed(reason) => { root.message = reason; }
         }
     }"#;
     let compiled = compile(source, "files.xr").unwrap();
     assert!(compiled.mlir.contains("files-dropped"));
+    assert!(compiled.mlir.contains("files-failed"));
     assert!(
         compiled
             .rust
             .to_string()
             .contains(r#"("files-dropped" , :: xrack_runtime :: DragArguments :: Files"#)
     );
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains(r#"("files-failed" , :: xrack_runtime :: DragArguments :: Message"#)
+    );
+    let extra_parameter = source.replace("files-failed(reason)", "files-failed(reason, extra)");
+    assert!(compile(&extra_parameter, "files.xr").is_err());
+    let wrong_parent = r#"export component App inherits Window {
+        trigger := Button { files-failed(reason) => {} }
+    }"#;
+    assert!(compile(wrong_parent, "files.xr").is_err());
     let invalid = source.replace("accept-files: true", "accept-files: 1");
     assert!(
         compile(&invalid, "files.xr")
@@ -3302,6 +3485,12 @@ fn native_file_drop_uses_a_typed_string_list_event() {
             .contains("incorrect drag-and-drop property type")
     );
     let invalid = raw.replace("name = \"files-dropped\"", "name = \"dropped\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("invalid drag-and-drop event or signature")
+    );
+    let invalid = raw.replace("name = \"files-failed\"", "name = \"files-entered\"");
     assert!(
         mlir::process(&invalid)
             .unwrap_err()
@@ -5945,6 +6134,56 @@ fn return_key_hints_are_typed_and_limited_to_single_line_editors() {
     let raw = lower(source, "return-key.xr");
     assert!(mlir::process(&raw.replace("\"next\"", "\"previous\"")).is_err());
     assert!(mlir::process(&raw.replace("kind = \"TextInput\"", "kind = \"TextArea\"")).is_err());
+}
+
+#[test]
+fn input_purpose_has_a_typed_binding_and_a_verified_mlir_enum() {
+    let source = r#"
+        export component App inherits Window {
+            in property <InputPurpose> account-purpose: InputPurpose.username;
+            in property <InputPurpose> fallback;
+            LineEdit { input-type: email; input-purpose: root.account-purpose; }
+            TextInput { input-type: password; input-purpose: current-password; }
+            LineEdit { input-type: password; input-purpose: new-password; }
+            ComboBox { editable: true; input-purpose: one-time-code; }
+            LineEdit { input-purpose: root.fallback; }
+        }
+    "#;
+    let compilation = compile(source, "input-purpose.xr").unwrap();
+    assert!(compilation.mlir.contains("!xr.inputpurpose"));
+    for mode in [
+        "Username",
+        "CurrentPassword",
+        "NewPassword",
+        "OneTimeCode",
+        "Auto",
+    ] {
+        assert!(
+            compilation
+                .rust
+                .to_string()
+                .contains(&format!("InputPurpose :: {mode}")),
+            "{mode}"
+        );
+    }
+    let invalid_property = source.replace("ComboBox { editable: true;", "TextArea {");
+    assert!(compile(&invalid_property, "input-purpose.xr").is_err());
+    let wrong_type = source.replace(
+        "input-purpose: one-time-code",
+        "input-purpose: ReturnKey.done",
+    );
+    assert!(compile(&wrong_type, "input-purpose.xr").is_err());
+    let raw = lower(source, "input-purpose.xr");
+    assert!(mlir::process(&raw.replace("\"username\"", "\"nickname\"")).is_err());
+    let single_field = lower(
+        "export component App inherits Window { LineEdit { input-purpose: username; } }",
+        "input-purpose.xr",
+    );
+    assert!(
+        mlir::process(&single_field.replace("kind = \"LineEdit\"", "kind = \"TextArea\""))
+            .unwrap_err()
+            .contains("input-purpose requires an InputPurpose")
+    );
 }
 
 #[test]

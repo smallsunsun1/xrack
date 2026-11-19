@@ -10,7 +10,7 @@ use crate::{
     history::{EditHistories, EditorKey, Group, Record, TextHistory},
     hover_observers::HoverEntry,
     list_anchor::{ListAnchor, capture_list_anchors},
-    menu::{MenuPan, MenuPopup, TextMenu},
+    menu::{MenuPan, MenuPopup, NativeTextMenu, TextMenu},
     modal,
     overscroll::Overscroll,
     scroll_bar::snap_fraction,
@@ -39,9 +39,9 @@ use xrack_runtime::{
     Tumbler, Value, ViewportHandle, ViewportMotion, combo_editable, combo_index, decimal_separator,
     delay_millis, dialog_button_action, editable_table_cell, group_index, group_item,
     is_calendar_control, is_multiline_text_input, is_spin_box, is_text_input, is_toggle,
-    is_window_overlay, page_indicator_count, page_indicator_index, radio_value,
-    resizable_table_column, search_suggestion, spin_editable, spin_text, spin_text_is_valid,
-    text_input_value,
+    is_window_overlay, page_indicator_count, page_indicator_index, page_indicator_step,
+    radio_value, resizable_table_column, search_suggestion, spin_editable, spin_text,
+    spin_text_is_valid, text_input_value,
 };
 
 #[derive(Clone, Debug)]
@@ -1030,6 +1030,7 @@ enum ScrollInput<'a> {
         device: PanDevice,
         owners: &'a mut MotionOwners,
         flicking: bool,
+        touch_scene: Option<&'a Node>,
     },
 }
 
@@ -1037,6 +1038,7 @@ enum ScrollInput<'a> {
 struct AxisMotion {
     bounded: bool,
     elastic: bool,
+    dismiss_keyboard: bool,
 }
 
 impl AxisMotion {
@@ -1048,6 +1050,7 @@ impl AxisMotion {
 #[derive(Clone, Debug)]
 struct EditorClick {
     target: Target,
+    count: u8,
     sample: (Point, Instant),
 }
 
@@ -1069,6 +1072,7 @@ pub struct Interaction {
     hovered_scroll_bar: Option<ScrollTarget>,
     scroll_bar_press: Option<ScrollBarPress>,
     scroll_gesture: Option<ScrollGesture>,
+    scroll_keyboard_dismissal: bool,
     swipe_events: Vec<SwipeDelivery>,
     tumbler_wheel: Option<TumblerWheel>,
     tumbler_flick: Option<TumblerFlick>,
@@ -1147,6 +1151,7 @@ pub struct Interaction {
     tree_scroll_roots: BTreeMap<Vec<usize>, (i64, Option<RowKey>)>,
     pub(crate) scroll_anchors: BTreeMap<Vec<usize>, ListAnchor>,
     pub(crate) user_scroll_changes: Vec<UserScrollChange>,
+    pub(crate) refresh_request: Option<ViewportHandle>,
     text_offsets: BTreeMap<Vec<usize>, (Option<RowKey>, Point)>,
     dialogs: Vec<DialogFocus>,
     stack_focus: BTreeMap<StackFocusKey, Target>,
@@ -1682,6 +1687,74 @@ fn inspect_at(node: &Node, layout: &LayoutNode, point: Point, path: &mut Vec<usi
         .is_some_and(|point| layout.bounds.contains(point))
 }
 
+impl crate::FileDropScope {
+    /// Resolve a text drop with the same occlusion and transforms as a pointer press.
+    #[doc(hidden)]
+    pub fn text_target(&self, scene: &Node, layout: &LayoutNode, point: Point) -> Option<Target> {
+        let (target, node) = self.text_at(scene, layout, point)?;
+        (!node.text_read_only()).then_some(target)
+    }
+
+    #[doc(hidden)]
+    pub fn text_drag_source(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<Target> {
+        let (target, node) = self.text_at(scene, layout, point)?;
+        (!node.is_password()).then_some(target)
+    }
+
+    fn text_at<'a>(
+        &self,
+        scene: &'a Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<(Target, &'a Node)> {
+        if self.blocked || self.text_composing {
+            return None;
+        }
+        let scope = self.scope_at(layout, point);
+        let (node, item) = scene.at_path(scope).zip(layout.at_path(scope))?;
+        let Hit::Target(mut target) = hit(
+            node,
+            item,
+            point,
+            &mut scope.to_vec(),
+            &self.transitions,
+            HitPurpose::Button(xrack_runtime::PointerButton::Primary),
+        ) else {
+            return None;
+        };
+        if !target.focusable
+            || self
+                .swiping
+                .as_ref()
+                .is_some_and(|path| target.path.starts_with(path))
+        {
+            return None;
+        }
+        target.row_key = scene.row_key_at(&target.path);
+        let node = scene.interactive_at_path(&target.path)?;
+        if !valid(&target, scene, layout) {
+            return None;
+        }
+        if node.kind == "SearchField" || combo_editable(node) {
+            let item = layout.at_path(&target.path)?;
+            let part = if node.kind == "SearchField" {
+                SearchGeometry::for_layout(item).entry
+            } else {
+                ComboGeometry::for_control(node, item.bounds, item.layout_direction).entry
+            };
+            part.contains(item.map_from_window(point)?)
+                .then_some((target, node))
+        } else {
+            is_text_input(node.kind).then_some((target, node))
+        }
+    }
+}
+
 pub(crate) fn valid(target: &Target, scene: &Node, layout: &LayoutNode) -> bool {
     let Some(node) = target.node_in(scene) else {
         return false;
@@ -1886,6 +1959,37 @@ pub(crate) fn focus_reachable(
 fn scroll_target_visible(item: &LayoutNode) -> bool {
     let clip = item.clip_rect(item.bounds);
     item.visible && item.enabled && clip.width > 0.0 && clip.height > 0.0
+}
+
+fn primary_vertical_viewport(
+    node: &Node,
+    item: &LayoutNode,
+    path: &mut Vec<usize>,
+    transitions: &BTreeSet<Vec<usize>>,
+    primary: &mut Option<(f32, Vec<usize>)>,
+) {
+    if !item.visible || !item.enabled || transitions.contains(path) {
+        return;
+    }
+    if item
+        .scroll_on(Orientation::Vertical)
+        .is_some_and(|scroll| scroll.max_offset > 0.0)
+        && scroll_target_visible(item)
+    {
+        let bounds = item.visible_window_bounds(item.bounds);
+        let area = bounds.width * bounds.height;
+        if area > 0.0 && primary.as_ref().is_none_or(|(best, _)| area > *best) {
+            *primary = Some((area, path.clone()));
+        }
+        return;
+    }
+    for (index, child, child_layout) in item.children_in_scene_order(node) {
+        if !is_window_overlay(child.kind) {
+            path.push(index);
+            primary_vertical_viewport(child, child_layout, path, transitions, primary);
+            path.pop();
+        }
+    }
 }
 
 fn first_editable_tree_cell<'a>(
@@ -2491,6 +2595,27 @@ impl Interaction {
     }
 
     pub fn arm_drag(&mut self, scene: &Node, layout: &LayoutNode, point: Point) {
+        self.arm_drag_at(scene, layout, point, None);
+    }
+
+    #[doc(hidden)]
+    pub fn arm_touch_drag(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        now: Instant,
+    ) {
+        self.arm_drag_at(scene, layout, point, Some(now));
+    }
+
+    fn arm_drag_at(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        touch_started: Option<Instant>,
+    ) {
         if self.table_resize.is_some()
             || self.table_row_resize.is_some()
             || self.table_column_move.is_some()
@@ -2525,7 +2650,11 @@ impl Interaction {
         self.drag = if competing {
             None
         } else {
-            crate::drag::DragSession::arm(self.drag_context(scene, layout, point), point)
+            crate::drag::DragSession::arm(
+                self.drag_context(scene, layout, point),
+                point,
+                touch_started,
+            )
         };
     }
 
@@ -2536,11 +2665,28 @@ impl Interaction {
         point: Point,
         requested: Option<xrack_runtime::DragAction>,
     ) -> crate::DragUpdate {
+        self.drag_motion_at(scene, layout, point, requested, Instant::now())
+    }
+
+    #[doc(hidden)]
+    pub fn drag_motion_at(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        requested: Option<xrack_runtime::DragAction>,
+        now: Instant,
+    ) -> crate::DragUpdate {
         let Some(mut drag) = self.drag.take() else {
             return crate::DragUpdate::default();
         };
         let active = drag.active();
-        let (update, keep) = drag.motion(self.drag_context(scene, layout, point), point, requested);
+        let (update, keep) = drag.motion(
+            self.drag_context(scene, layout, point),
+            point,
+            requested,
+            now,
+        );
         self.drag = keep.then_some(drag);
         if update.captured && !active {
             self.cancel_press();
@@ -2589,6 +2735,34 @@ impl Interaction {
         self.drag.as_ref().map(|drag| drag.point)
     }
 
+    #[doc(hidden)]
+    pub fn drag_scroll_deadline(&self, scene: &Node, layout: &LayoutNode) -> Option<Instant> {
+        let drag = self.drag.as_ref()?;
+        drag.auto_scroll_offset(self.drag_context(scene, layout, drag.point))?;
+        drag.scroll_deadline()
+    }
+
+    #[doc(hidden)]
+    pub fn advance_drag_scroll(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) -> bool {
+        let Some(drag) = self.drag.as_ref() else {
+            return false;
+        };
+        if drag.scroll_deadline().is_none_or(|deadline| now < deadline) {
+            return false;
+        }
+        let Some((path, offset)) =
+            drag.auto_scroll_offset(self.drag_context(scene, layout, drag.point))
+        else {
+            return false;
+        };
+        let path = path.to_vec();
+        let scrolled = self.scroll_to_user_offset(layout, &path, Orientation::Vertical, offset);
+        if let Some(drag) = &mut self.drag {
+            drag.advance_scroll_deadline(now, scrolled);
+        }
+        scrolled
+    }
+
     pub fn drag_action(&self) -> Option<xrack_runtime::DragAction> {
         self.drag
             .as_ref()
@@ -2606,6 +2780,11 @@ impl Interaction {
             popups: self.popups(layout).map(<[usize]>::to_vec).collect(),
             transitions: self.transitioning_stacks.clone(),
             blocked: self.menu_open() || self.choice_open() || self.drag_action().is_some(),
+            text_composing: self.editor.as_ref().is_some_and(TextEdit::is_composing),
+            swiping: self
+                .swipe_page_motion
+                .as_ref()
+                .map(|motion| motion.page.target.path.clone()),
         }
     }
 
@@ -3358,6 +3537,41 @@ impl Interaction {
         self.open_context_menu_at(scene, layout, target, Some(point), true)
     }
 
+    #[doc(hidden)]
+    pub fn take_native_text_menu(&mut self) -> Option<NativeTextMenu> {
+        self.menu
+            .take_if(|menu| menu.touch && menu.text.is_some())
+            .map(NativeTextMenu)
+    }
+
+    #[doc(hidden)]
+    pub fn native_text_menu_is_current(
+        &self,
+        menu: &NativeTextMenu,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> bool {
+        self.menu.is_none() && self.menu_is_current(&menu.0, scene, layout)
+    }
+
+    #[doc(hidden)]
+    pub fn native_text_menu_input(
+        &self,
+        menu: NativeTextMenu,
+        scene: &Node,
+        layout: &LayoutNode,
+        entry: usize,
+    ) -> Option<ControlInput> {
+        if !self.native_text_menu_is_current(&menu, scene, layout)
+            || !menu.entries().any(|(index, _)| index == entry)
+        {
+            return None;
+        }
+        let mut path = menu.0.trigger.path.clone();
+        path.push(entry);
+        menu.0.input(path)
+    }
+
     fn open_context_menu_at(
         &mut self,
         scene: &Node,
@@ -3497,7 +3711,8 @@ impl Interaction {
         }
     }
 
-    pub(crate) fn text_command_availability(
+    #[doc(hidden)]
+    pub fn text_command_availability(
         &self,
         scene: &Node,
         target: &Target,
@@ -3719,7 +3934,7 @@ impl Interaction {
         self.pointer
     }
 
-    /// Start a click sequence only for a live editor that owned the primary press.
+    /// Return the click count for the live editor that owns the primary press.
     #[doc(hidden)]
     pub fn editor_mouse_press(
         &mut self,
@@ -3727,26 +3942,29 @@ impl Interaction {
         point: Point,
         now: Instant,
         selecting: bool,
-    ) -> bool {
+    ) -> u8 {
         let previous = self.last_editor_click.take();
         self.editor_press = None;
         if selecting
             || self.pressed.as_ref() != Some(target)
             || self.focused.as_ref() != Some(target)
         {
-            return false;
+            return 0;
         }
         let sample = (point, now);
-        let repeated = previous.is_some_and(|click| {
-            click.target == *target && crate::pointer_click_follows(click.sample, sample)
+        let count = previous
+            .filter(|click| {
+                click.count < 3
+                    && click.target == *target
+                    && crate::pointer_click_follows(click.sample, sample)
+            })
+            .map_or(1, |click| click.count + 1);
+        self.editor_press = Some(EditorClick {
+            target: target.clone(),
+            count,
+            sample,
         });
-        if !repeated {
-            self.editor_press = Some(EditorClick {
-                target: target.clone(),
-                sample,
-            });
-        }
-        repeated
+        count
     }
 
     #[doc(hidden)]
@@ -3843,6 +4061,38 @@ impl Interaction {
         offset: f32,
     ) -> bool {
         self.scroll_to_user_offset(layout, path, orientation, offset)
+    }
+
+    /// Return the primary vertical viewport in the active layer to its start.
+    pub fn scroll_to_top(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
+        if self.menu_open() || self.choice_open() {
+            return false;
+        }
+        let scope = self
+            .focused_popup(layout)
+            .or_else(|| self.active_dialog(layout))
+            .unwrap_or_default();
+        let Some((node, item)) = scene.at_path(scope).zip(layout.at_path(scope)) else {
+            return false;
+        };
+        if self
+            .transitioning_stacks
+            .iter()
+            .any(|path| scope.starts_with(path))
+        {
+            return false;
+        }
+        let mut primary = None;
+        primary_vertical_viewport(
+            node,
+            item,
+            &mut scope.to_vec(),
+            &self.transitioning_stacks,
+            &mut primary,
+        );
+        primary.is_some_and(|(_, path)| {
+            self.scroll_to_user_offset(layout, &path, Orientation::Vertical, 0.0)
+        })
     }
 
     fn scroll_to_user_offset(
@@ -4414,6 +4664,7 @@ impl Interaction {
             Orientation::Vertical => &mut self.scroll_offsets,
         };
         let mut elastic_owner = None;
+        let mut refresh_owner = None;
         // Only the portion the inner viewport could not consume reaches its ancestors.
         let last_depth = path.len();
         for depth in (scope_len..=last_depth).rev() {
@@ -4432,6 +4683,15 @@ impl Interaction {
             let Some(scroll) = item.scroll_on(orientation) else {
                 continue;
             };
+            if delta != 0.0
+                && let ScrollInput::Pan {
+                    touch_scene: Some(scene),
+                    ..
+                } = &input
+                && let Some(node) = scene.at_path(path)
+            {
+                result.dismiss_keyboard |= node.boolean("dismiss-keyboard-on-drag", false);
+            }
             let current = pending_scroll_offset(item, offsets, path, orientation)
                 .unwrap_or(scroll.offset)
                 .clamp(0.0, scroll.max_offset);
@@ -4444,6 +4704,18 @@ impl Interaction {
             let bounded = wanted.clamp(0.0, f64::from(scroll.max_offset));
             // Bubble any residual in the original physical direction.
             delta = (wanted - bounded) * sign;
+            if orientation == Orientation::Vertical
+                && delta < 0.0
+                && refresh_owner.is_none()
+                && let ScrollInput::Pan {
+                    touch_scene: Some(scene),
+                    ..
+                } = &input
+                && scene.at_path(path).is_some_and(Node::can_pull_to_refresh)
+                && item.viewport_handle.is_some()
+            {
+                refresh_owner = Some(item);
+            }
             if let ScrollInput::Pan { flicking, .. } = &input
                 && delta != 0.0
                 && scroll.max_offset > 0.0
@@ -4473,7 +4745,18 @@ impl Interaction {
                 break;
             }
         }
-        if let Some(item) = elastic_owner
+        if let Some(item) = refresh_owner
+            && delta < 0.0
+            && !self.overscroll.is_rebounding(orientation)
+            && self
+                .overscroll
+                .pull_to_refresh(item, delta, self.reduce_motion)
+        {
+            result.elastic = true;
+            if let ScrollInput::Pan { owners, .. } = &mut input {
+                record_motion(owners, item, orientation);
+            }
+        } else if let Some(item) = elastic_owner
             && !self.overscroll.is_rebounding(orientation)
             && self.overscroll.pull(item, orientation, delta)
         {
@@ -4619,6 +4902,7 @@ impl Interaction {
         kind: ScrollGestureKind,
         additive: bool,
     ) -> bool {
+        self.scroll_keyboard_dismissal = false;
         self.swipe_commit = None;
         if !point.x.is_finite() || !point.y.is_finite() {
             return false;
@@ -4779,11 +5063,17 @@ impl Interaction {
             if popup.0 || popup.1 {
                 return None;
             }
-            let path = Self::scroll_path(layout, point, &scope, |_, item| {
+            let path = Self::scroll_path(layout, point, &scope, |path, item| {
                 item.accepts_pan(orientation, pan_device)
-                    && item
-                        .scroll_on(orientation)
-                        .is_some_and(|scroll| scroll.max_offset > 0.0)
+                    && item.scroll_on(orientation).is_some_and(|scroll| {
+                        scroll.max_offset > 0.0
+                            || (touch
+                                && scene.at_path(path).is_some_and(|node| {
+                                    node.boolean("dismiss-keyboard-on-drag", false)
+                                        || (orientation == Orientation::Vertical
+                                            && node.can_pull_to_refresh())
+                                }))
+                    })
             })?;
             let row_key = scene.row_key_at(&path);
             let id = ElementId::of(scene.at_path(&path)?);
@@ -4929,7 +5219,7 @@ impl Interaction {
             .filter_map(|depth| SwipeTarget::new(scene, layout, &path[..depth], point))
             .collect::<Vec<_>>();
         if !targets.is_empty()
-            && crate::drag::DragSession::arm(self.drag_context(scene, layout, point), point)
+            && crate::drag::DragSession::arm(self.drag_context(scene, layout, point), point, None)
                 .is_some()
         {
             return None;
@@ -5135,6 +5425,10 @@ impl Interaction {
                     device: route.pan_device,
                     owners: &mut owners,
                     flicking,
+                    touch_scene: (!flicking
+                        && route.pan_device == PanDevice::Touch
+                        && movement.abs() >= [delta.y, delta.x][index].abs())
+                    .then_some(scene),
                 },
             )
         });
@@ -5149,6 +5443,7 @@ impl Interaction {
         device: PanDevice,
     ) -> Overscroll {
         let mut overscroll = std::mem::take(&mut self.overscroll);
+        overscroll.clear_refresh();
         overscroll.resume_drag(|axis, handle| {
             let Some(target) = &axes[usize::from(axis == Orientation::Vertical)] else {
                 return false;
@@ -5175,6 +5470,7 @@ impl Interaction {
         point: Point,
         now: Instant,
     ) -> bool {
+        self.scroll_keyboard_dismissal = false;
         if !point.x.is_finite() || !point.y.is_finite() {
             return false;
         }
@@ -5386,6 +5682,7 @@ impl Interaction {
                 return self.update_swipe_page_motion(page, scene, layout, point);
             }
             let (moved, owners) = self.scroll_captured(scene, layout, &gesture.route, delta, false);
+            self.scroll_keyboard_dismissal = moved.iter().any(|axis| axis.dismiss_keyboard);
             if moved.into_iter().any(AxisMotion::changed) {
                 self.viewport_motion
                     .update(owners, ViewportMotion::Dragging);
@@ -5398,6 +5695,12 @@ impl Interaction {
             self.scroll_gesture = Some(gesture);
         }
         scrolled || elastic_frame != self.overscroll.frame()
+    }
+
+    /// Whether the last direct scroll movement reached an opt-in viewport.
+    #[doc(hidden)]
+    pub fn take_scroll_keyboard_dismissal(&mut self) -> bool {
+        std::mem::take(&mut self.scroll_keyboard_dismissal)
     }
 
     fn update_swipe_page_motion(
@@ -5700,6 +6003,12 @@ impl Interaction {
         };
         let elastic_axes = [Orientation::Horizontal, Orientation::Vertical]
             .map(|axis| self.overscroll.owns_axis(axis));
+        if gesture.motion.dragging
+            && gesture.route.pan_device == PanDevice::Touch
+            && let Some(owner) = self.overscroll.armed_refresh()
+        {
+            self.refresh_request = Some(owner.clone());
+        }
         if transformed && elastic_axes.contains(&true) {
             axes = [false; 2];
         } else {
@@ -6234,6 +6543,17 @@ impl Interaction {
         }
     }
 
+    /// Whether the host has requested reduced motion.
+    pub fn reduce_motion(&self) -> bool {
+        self.reduce_motion
+    }
+
+    /// The pull distance as a fraction of the refresh threshold.
+    pub fn pull_to_refresh_progress(&self, node: &Node) -> Option<f32> {
+        self.overscroll
+            .refresh_progress(node.viewport_handle.as_ref()?)
+    }
+
     fn settle_swipe_page(&mut self, now: Instant) -> bool {
         if self.reduce_motion {
             self.swipe_commit = None;
@@ -6275,6 +6595,7 @@ impl Interaction {
     }
 
     fn cancel_scroll_gesture_with_wheel(&mut self, keep_wheel: bool) {
+        self.scroll_keyboard_dismissal = false;
         self.settle_swipe_page(Instant::now());
         self.finish_button_contact(ButtonContactSource::Gesture, false);
         if let Some(drag) = self
@@ -10437,8 +10758,8 @@ impl Interaction {
         let index = match key {
             NavigationKey::Home => 0,
             NavigationKey::End => last,
-            key if key == previous => current.map_or(0, |index| index.saturating_sub(1)),
-            key if key == next => current.map_or(0, |index| (index + 1).min(last)),
+            key if key == previous => page_indicator_step(node, false)?,
+            key if key == next => page_indicator_step(node, true)?,
             _ => return None,
         };
         (current != Some(index)).then(|| ControlInput {
@@ -10580,7 +10901,7 @@ impl Interaction {
         let calendar = &geometry.state;
         let day = |delta| {
             let date = geometry
-                .cursor()?
+                .navigation_origin()?
                 .add_days(delta)
                 .unwrap_or(if delta < 0 { Date::MIN } else { Date::MAX })
                 .clamp(calendar.minimum, calendar.maximum);

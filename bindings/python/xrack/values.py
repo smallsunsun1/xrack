@@ -3,6 +3,7 @@
 from typing import TypeAlias
 
 from ._native import (
+    AccessibleLive,
     Brush,
     ButtonDisplay,
     CheckState,
@@ -31,6 +32,7 @@ from ._native import (
     ImageRendering,
     ImageTileMode,
     ImageVerticalAlignment,
+    InputPurpose,
     InputType,
     InputValidity,
     KeyEvent,
@@ -73,6 +75,7 @@ from ._native import (
 )
 
 __all__ = [
+    "AccessibleLive",
     "Brush",
     "ButtonDisplay",
     "CheckState",
@@ -101,6 +104,7 @@ __all__ = [
     "ImageRendering",
     "ImageTileMode",
     "ImageVerticalAlignment",
+    "InputPurpose",
     "InputType",
     "InputValidity",
     "KeyEvent",
@@ -177,6 +181,7 @@ Value: TypeAlias = (
     | ButtonDisplay
     | ImageTileMode
     | ImageVerticalAlignment
+    | InputPurpose
     | InputType
     | InputValidity
     | KeyEvent
@@ -198,6 +203,7 @@ Value: TypeAlias = (
     | Record
     | RecordList
     | ReturnKey
+    | AccessibleLive
     | ScrollAlignment
     | ScrollBarPolicy
     | ScrollSnapMode

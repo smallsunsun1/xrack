@@ -197,6 +197,14 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         moved
     }
 
+    pub fn scroll_to_top(&mut self) -> bool {
+        let moved = self.input.scroll_to_top(&self.scene, &self.layout);
+        if moved {
+            self.refresh();
+        }
+        moved
+    }
+
     pub fn scroll_bar(&self, id: &str) -> Option<xrack_layout::ScrollBarGeometry> {
         let path = self.path(id);
         self.layout

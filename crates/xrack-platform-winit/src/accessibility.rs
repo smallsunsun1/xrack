@@ -17,11 +17,12 @@ use xrack_layout::{
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
-    CalendarAction, CalendarState, CheckState, ControlAction, DecimalSpinRange, DialogRole,
-    IndicatorState, InputType, ListMetrics, Node, Orientation, RangeAction, RowKey, ScrollBarRange,
-    SliderInterval, SliderRange, SpinRange, StandardButtonKind, SwipeSide, Value, button_text,
-    choice_identity, combo_editable, combo_text, group_index, indicator_state, is_calendar_control,
-    is_spin_box, is_window_overlay, spin_editable, text_input_value,
+    AccessibleLive, CalendarAction, CalendarState, CheckState, ControlAction, DecimalSpinRange,
+    DialogRole, IndicatorState, InputType, ListMetrics, Node, Orientation, RangeAction, RowKey,
+    ScrollBarRange, SliderInterval, SliderRange, SpinRange, StandardButtonKind, SwipeSide, Value,
+    button_text, choice_identity, combo_editable, combo_text, group_index, indicator_state,
+    is_calendar_control, is_spin_box, is_window_overlay, page_indicator_count,
+    page_indicator_index, page_indicator_step, spin_editable, text_input_value,
 };
 
 pub(crate) const EDIT_CELL_ACTION: i32 = 10;
@@ -170,6 +171,19 @@ struct Frame {
     scale: f64,
 }
 
+struct IosListScroll {
+    list: NodeId,
+    source: NodeId,
+    backward: bool,
+}
+
+fn ios_list_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "ListView" | "GridView" | "StandardListView" | "TreeView"
+    )
+}
+
 #[derive(Default)]
 pub(crate) struct Projection {
     frame: Option<Frame>,
@@ -177,6 +191,8 @@ pub(crate) struct Projection {
     routes: BTreeMap<NodeId, Route>,
     scroll_owners: BTreeMap<(NodeId, Action), NodeId>,
     documents: BTreeMap<NodeId, TextDocument>,
+    ios_list_scroll: Option<IosListScroll>,
+    ios_list_focus: Option<(NodeId, NodeId)>,
     next_id: u64,
 }
 
@@ -187,6 +203,8 @@ impl Projection {
         self.routes.clear();
         self.scroll_owners.clear();
         self.documents.clear();
+        self.ios_list_scroll = None;
+        self.ios_list_focus = None;
     }
 
     pub fn route(&self, id: NodeId) -> Option<Route> {
@@ -195,6 +213,67 @@ impl Projection {
 
     pub fn route_for_action(&self, id: NodeId, action: Action) -> Option<Route> {
         self.route(self.scroll_owners.get(&(id, action)).copied().unwrap_or(id))
+    }
+
+    #[cfg(any(target_os = "ios", test))]
+    pub fn follow_ios_list_scroll(&mut self, source: NodeId, action: Action, item: &LayoutNode) {
+        let (axis, backward) = match action {
+            Action::ScrollUp => (Orientation::Vertical, true),
+            Action::ScrollDown => (Orientation::Vertical, false),
+            Action::ScrollLeft => (Orientation::Horizontal, true),
+            Action::ScrollRight => (Orientation::Horizontal, false),
+            _ => return,
+        };
+        let list = self
+            .scroll_owners
+            .get(&(source, action))
+            .copied()
+            .unwrap_or(source);
+        self.ios_list_scroll = matches!(self.routes.get(&list), Some(Route::Element { kind, .. })
+            if ios_list_kind(kind))
+        .then_some(IosListScroll {
+            list,
+            source,
+            backward: backward ^ item.scroll_axis_reversed(axis),
+        });
+    }
+
+    fn ios_reading_focus(
+        &mut self,
+        nodes: &[(NodeId, AccessibleNode)],
+        input: &Interaction,
+    ) -> Option<NodeId> {
+        let find = |id| {
+            nodes
+                .iter()
+                .find_map(|(key, node)| (*key == id).then_some(node))
+        };
+        self.ios_list_focus = if let Some(scroll) = self.ios_list_scroll.take() {
+            find(scroll.list).and_then(|list| {
+                let items = list.controls();
+                if items.contains(&scroll.source) {
+                    return Some((scroll.list, scroll.source));
+                }
+                let mut rows = items
+                    .iter()
+                    .copied()
+                    .filter(|&id| find(id).is_some_and(|node| node.position_in_set().is_some()));
+                let row = if scroll.backward {
+                    rows.next_back()
+                } else {
+                    rows.next()
+                };
+                row.map(|row| (scroll.list, row))
+            })
+        } else {
+            self.ios_list_focus.filter(|(list, item)| {
+                self.frame
+                    .as_ref()
+                    .is_some_and(|frame| frame.focus == input.focused)
+                    && find(*list).is_some_and(|list| list.controls().contains(item))
+            })
+        };
+        self.ios_list_focus.map(|(_, item)| item)
     }
 
     pub fn text_selection(
@@ -208,6 +287,36 @@ impl Projection {
             return None;
         }
         document.decode(selection)
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn published_utf16_selection(&self, id: NodeId, node: &AccessibleNode) -> Option<[i32; 2]> {
+        let value = node.value()?;
+        let (anchor, focus) = self.text_selection(id, *node.text_selection()?, value)?;
+        let units = |offset| i32::try_from(value.get(..offset)?.encode_utf16().count()).ok();
+        Some([units(anchor)?, units(focus.offset)?])
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn text_selection_from_utf16(
+        &self,
+        id: NodeId,
+        value: &str,
+        anchor: usize,
+        focus: usize,
+    ) -> Option<accesskit::TextSelection> {
+        let document = self.documents.get(&id)?;
+        if !document.matches_value(&self.frame.as_ref()?.scene, value) {
+            return None;
+        }
+        let offset = |units| crate::text_indices::checked_byte_offset(value, units);
+        Some(document.selection_at(
+            offset(anchor)?,
+            TextPosition {
+                offset: offset(focus)?,
+                trailing: false,
+            },
+        ))
     }
 
     pub fn update(
@@ -263,6 +372,7 @@ impl Projection {
         if self.frame.as_ref().is_some_and(|frame| {
             Rc::ptr_eq(&frame.scene, scene)
                 && Rc::ptr_eq(&frame.layout, layout)
+                && self.ios_list_scroll.is_none()
                 && frame.focus == input.focused
                 && frame.editor == editor
                 && frame.delay == delay
@@ -371,6 +481,14 @@ impl Projection {
             documents,
             ..
         } = builder;
+        // A VoiceOver page scroll advances reading focus without changing keyboard focus.
+        let focus = if ios && popup.is_none() && menu_trigger.is_none() {
+            self.ios_reading_focus(&nodes, input).unwrap_or(focus)
+        } else {
+            self.ios_list_scroll = None;
+            self.ios_list_focus = None;
+            focus
+        };
         let update = TreeUpdate {
             nodes,
             tree: Some(TreeInfo {
@@ -643,8 +761,32 @@ impl Builder<'_> {
         let split = (node.kind == "SplitHandle")
             .then(|| self.layout.split_handle_range(path))
             .flatten();
+        let page_count =
+            (self.ios && node.kind == "PageIndicator").then(|| page_indicator_count(node));
+        if page_count == Some(0) {
+            return None;
+        }
+        let page_adjustments = [true, false].map(|forward| {
+            page_count.is_some() && item.enabled && page_indicator_step(node, forward).is_some()
+        });
+        let heading = match node.kind {
+            "Text" | "Label" => node
+                .int("accessible-heading-level")
+                .filter(|level| (1..=6).contains(level))
+                .and_then(|level| {
+                    ["accessible-name", "text"]
+                        .into_iter()
+                        .filter_map(|name| node.text(name))
+                        .find(|text| !text.trim().is_empty())
+                        // AccessKit levels are zero-based.
+                        .map(|text| ((level - 1) as usize, text))
+                }),
+            _ => None,
+        };
         let role = match (self.ios, node.kind) {
+            _ if heading.is_some() => Role::Heading,
             (true, "Tumbler") => Role::SpinButton,
+            (true, "PageIndicator") if page_adjustments.contains(&true) => Role::SpinButton,
             // AccessKit maps SpinButton to UIKit's Adjustable trait.
             (true, "PathView")
                 if item
@@ -661,6 +803,7 @@ impl Builder<'_> {
             {
                 Role::Slider
             }
+            (true, "SplitHandle") => Role::Splitter,
             _ => role(node, view),
         };
         let primary_pane = split.and_then(|split| {
@@ -691,8 +834,9 @@ impl Builder<'_> {
                     .into_iter()
                     .any(|action| child.supports_action(action))
             });
-        let label = node
-            .text("accessible-name")
+        let label = heading
+            .map(|(_, label)| label)
+            .or_else(|| node.text("accessible-name"))
             .or_else(|| {
                 primary_pane
                     .as_ref()
@@ -705,6 +849,7 @@ impl Builder<'_> {
                 Role::Tab if node.kind == "TabButton" => node.text("text"),
                 Role::Group if node.kind == "Calendar" => Some("Calendar"),
                 Role::Group if self.ios && node.kind == "SwipeView" => Some("Pages"),
+                _ if page_count.is_some() => Some("Pages"),
                 Role::Group if node.kind == "MonthGrid" => Some("Month grid"),
                 Role::Group if node.kind == "DayOfWeekRow" => Some("Days of week"),
                 Role::Group if node.kind == "WeekNumberColumn" => Some("Week numbers"),
@@ -724,7 +869,9 @@ impl Builder<'_> {
                     .first()
                     .and_then(|delegate| delegate.text("accessible-name")),
                 Role::Dialog | Role::MenuItem | Role::RadioGroup | Role::Tab => node.text("title"),
-                Role::TreeItem if self.ios => visible_tree_label(node, item),
+                Role::TreeItem if self.ios || cfg!(target_os = "android") => {
+                    visible_tree_label(node, item)
+                }
                 Role::Cell => node.text("text"),
                 _ => None,
             })
@@ -806,8 +953,46 @@ impl Builder<'_> {
             children.extend(self.calendar_labels(node, item, path, row));
         }
         let mut has_row_header = false;
+        if node.boolean("pull-to-refresh", false) && node.boolean("refreshing", false) {
+            accessible.set_busy();
+        }
         match role {
-            Role::Label => accessible.set_value(node.text("text").unwrap_or("")),
+            Role::Group | Role::SpinButton if let Some(count) = page_count => {
+                if let Some(index) = page_indicator_index(node) {
+                    accessible.set_value(format!("Page {} of {count}", index + 1));
+                    if role == Role::SpinButton {
+                        accessible.set_numeric_value((index + 1) as f64);
+                    }
+                } else {
+                    accessible.set_value("No page selected");
+                }
+                if role == Role::SpinButton {
+                    accessible.set_min_numeric_value(1.0);
+                    accessible.set_max_numeric_value(count as f64);
+                    accessible.set_numeric_value_step(1.0);
+                }
+            }
+            Role::Label | Role::Heading => {
+                let text = if let Some((level, label)) = heading {
+                    accessible.set_level(level);
+                    label
+                } else {
+                    let text = node.text("text").unwrap_or_default();
+                    accessible.set_value(text);
+                    text
+                };
+                if !text.trim().is_empty() {
+                    match node.properties.get("accessible-live") {
+                        Some(Value::AccessibleLive(AccessibleLive::Polite)) => {
+                            accessible.set_live(Live::Polite);
+                        }
+                        Some(Value::AccessibleLive(AccessibleLive::Assertive)) => {
+                            accessible.set_live(Live::Assertive);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             Role::CheckBox => accessible.set_toggled(match node.check_state() {
                 CheckState::Unchecked => Toggled::False,
                 CheckState::PartiallyChecked => Toggled::Mixed,
@@ -878,6 +1063,11 @@ impl Builder<'_> {
             {
                 if let Some(list) = node.list {
                     accessible.set_size_of_set(list.row_count);
+                    if node.kind == "GridView" {
+                        let columns = item.grid_view_columns(node);
+                        accessible.set_row_count(list.row_count.div_ceil(columns));
+                        accessible.set_column_count(columns);
+                    }
                 }
             }
             Role::ListBoxOption | Role::ListItem
@@ -887,10 +1077,24 @@ impl Builder<'_> {
                 if let Some((&slot, parent)) = path.split_last()
                     && let Some(list) = self.scene.at_path(parent).and_then(|node| node.list)
                 {
-                    accessible.set_position_in_set(list.first_row + slot);
+                    let index = list.first_row + slot;
+                    accessible.set_position_in_set(index);
+                    if view == Some("GridView")
+                        && let Some(columns) = self
+                            .layout
+                            .at_path(parent)
+                            .zip(self.scene.at_path(parent))
+                            .map(|(layout, view)| layout.grid_view_columns(view))
+                    {
+                        accessible.set_row_index(index / columns);
+                        accessible.set_column_index(index % columns);
+                    }
                 }
             }
             Role::Tree => {
+                if node.boolean("multi-select", false) {
+                    accessible.set_multiselectable();
+                }
                 if let Some(list) = node.list {
                     accessible.set_size_of_set(list.row_count);
                 }
@@ -923,6 +1127,9 @@ impl Builder<'_> {
                 }
             }
             Role::Table => {
+                if node.boolean("multi-select", false) {
+                    accessible.set_multiselectable();
+                }
                 if let Some(list) = node.list {
                     accessible.set_row_count(list.row_count);
                 }
@@ -1178,12 +1385,16 @@ impl Builder<'_> {
             };
             children.extend(runs.iter().map(|(id, _)| *id));
             self.nodes.extend(runs);
-            if let Some(editor) = editor {
+            let selection_available = if let Some(editor) = editor {
                 let text = accessible_text_value(node, input, path);
                 accessible.set_text_selection(document.selection(editor, &text));
-            }
+                editor.preedit.is_empty()
+                    || cfg!(target_os = "android") && editor.has_committed_suggestion(&text)
+            } else {
+                true
+            };
             self.documents.insert(id, document);
-            editor.is_none_or(|edit| edit.preedit.is_empty())
+            selection_available
         } else {
             false
         };
@@ -1249,6 +1460,29 @@ impl Builder<'_> {
             }
             if supports_click(node.kind) && !ios_container {
                 accessible.add_action(Action::Click);
+            }
+            #[cfg(target_os = "android")]
+            if self.input.focused.as_ref() == Some(&target)
+                && (self.input.is_text_editor(node, &target) || spin_editable(node))
+                && let Some(editor) = self.input.editor.as_ref()
+            {
+                let value = self.input.editor_value(node);
+                let settled = editor.preedit.is_empty();
+                if settled || editor.has_committed_suggestion(&value) {
+                    let selected = settled && !editor.selection(&value).is_empty();
+                    for (id, command, description) in
+                        crate::android_accessibility::CLIPBOARD_ACTIONS
+                    {
+                        if xrack_layout::TextEditContext::clipboard_allowed(node, command, selected)
+                        {
+                            accessible.add_action(Action::CustomAction);
+                            accessible.push_custom_action(CustomAction {
+                                id,
+                                description: description.into(),
+                            });
+                        }
+                    }
+                }
             }
             if role == Role::TreeItem {
                 let expanded = node.boolean("tree-expanded", false);
@@ -1323,6 +1557,14 @@ impl Builder<'_> {
             {
                 accessible.add_action(Action::Increment);
                 accessible.add_action(Action::Decrement);
+            }
+            for (available, action) in page_adjustments
+                .into_iter()
+                .zip([Action::Increment, Action::Decrement])
+            {
+                if available {
+                    accessible.add_action(action);
+                }
             }
             if role == Role::ScrollBar {
                 accessible.add_action(Action::SetValue);
@@ -1439,11 +1681,7 @@ impl Builder<'_> {
             siblings = std::mem::take(&mut children);
         }
         accessible.set_children(children);
-        if matches!(
-            node.kind,
-            "ListView" | "GridView" | "StandardListView" | "TreeView"
-        ) && node.list.is_some()
-        {
+        if ios_list_kind(node.kind) && node.list.is_some() {
             self.lists.push(id);
         }
         self.nodes.push((id, accessible));
@@ -2760,6 +2998,119 @@ mod tests {
             .iter()
             .find_map(|(id, node)| (node.label() == Some(label)).then_some((*id, node)))
             .unwrap()
+    }
+
+    #[test]
+    fn text_heading_projects_its_level_and_live_label_with_a_stable_id() {
+        let mut window = Node::new("Window", None);
+        let mut heading = Node::new("Label", Some("heading"));
+        length(&mut heading, "width", 180.0);
+        length(&mut heading, "height", 32.0);
+        heading
+            .properties
+            .insert("accessible-live", AccessibleLive::Polite.into());
+        window.children.push(heading);
+        let size = Size::new(200.0, 100.0);
+        let input = Interaction::default();
+        let mut projection = Projection::default();
+        let mut previous_id = None;
+        for (level, text, name, expected_level, expected_live) in [
+            (0_i64, "Ready", "", None, Some(Live::Polite)),
+            (1, "Inspection", "  ", Some(0), Some(Live::Polite)),
+            (
+                6,
+                "Summary",
+                "Inspection summary",
+                Some(5),
+                Some(Live::Polite),
+            ),
+            (7, "Done", "", None, Some(Live::Polite)),
+            (-1, "Again", "", None, Some(Live::Polite)),
+            (2, "  ", "", None, None),
+        ] {
+            let props = &mut window.children[0].properties;
+            props.insert("text", text.to_owned().into());
+            props.insert("accessible-name", name.to_owned().into());
+            props.insert("accessible-heading-level", level.into());
+            let scene = Rc::new(window.clone());
+            let frame = Rc::new(layout(&scene, size, &mut Text));
+            let update = projection
+                .update_tree(&scene, &frame, &input, 1.0, None, true)
+                .unwrap();
+            let (id, node) = if expected_level.is_some() {
+                let label = if name.trim().is_empty() { text } else { name };
+                let (id, node) = named(&update, label);
+                assert_eq!(node.role(), Role::Heading);
+                assert_eq!(node.value(), None);
+                (id, node)
+            } else {
+                let (id, node) = update
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.value() == Some(text))
+                    .unwrap();
+                assert_eq!(node.role(), Role::Label);
+                (*id, node)
+            };
+            assert_eq!(node.level(), expected_level);
+            assert_eq!(node.live(), expected_live);
+            assert!(!node.supports_action(Action::Focus));
+            if let Some(previous_id) = previous_id.replace(id) {
+                assert_eq!(id, previous_id);
+            }
+        }
+    }
+
+    #[test]
+    fn live_text_keeps_its_accessibility_identity_and_skips_empty_announcements() {
+        let mut window = Node::new("Window", None);
+        let mut status = Node::new("Label", Some("status"));
+        length(&mut status, "width", 180.0);
+        length(&mut status, "height", 32.0);
+        window.children.push(status);
+        let size = Size::new(200.0, 100.0);
+        let input = Interaction::default();
+        let mut projection = Projection::default();
+        let mut previous_id = None;
+        for (priority, message, live) in [
+            (AccessibleLive::Off, "Ready", None),
+            (
+                AccessibleLive::Polite,
+                "Upload complete",
+                Some(Live::Polite),
+            ),
+            (
+                AccessibleLive::Assertive,
+                "Connection lost",
+                Some(Live::Assertive),
+            ),
+            (AccessibleLive::Assertive, "  ", None),
+        ] {
+            let props = &mut window.children[0].properties;
+            props.insert("text", message.to_owned().into());
+            props.insert("accessible-live", priority.into());
+            let scene = Rc::new(window.clone());
+            let frame = Rc::new(layout(&scene, size, &mut Text));
+            let update = projection
+                .update_tree(&scene, &frame, &input, 1.0, None, true)
+                .unwrap();
+            let (id, node) = update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.value() == Some(message))
+                .unwrap();
+            assert_eq!(node.role(), Role::Label);
+            assert_eq!(node.live(), live);
+            assert_ne!(update.focus, *id);
+            if let Some(previous_id) = previous_id.replace(*id) {
+                assert_eq!(*id, previous_id);
+            }
+            assert!(
+                projection
+                    .update_tree(&scene, &frame, &input, 1.0, None, true)
+                    .is_none()
+            );
+        }
     }
 
     #[test]
@@ -4460,6 +4811,49 @@ mod tests {
     }
 
     #[test]
+    fn ios_date_picker_projects_an_available_day_without_moving_its_draft() {
+        use xrack_layout::NavigationKey;
+        use xrack_runtime::{Date, DatePopupState};
+
+        let date = |day| Date::new(2024, 3, day).unwrap();
+        let popup = DatePopupState::default();
+        let mut dialog = Node::new("Dialog", Some("picker"));
+        dialog.properties.insert("open", true.into());
+        dialog
+            .properties
+            .insert("disabled-dates", Value::DateList(vec![date(5)]));
+        dialog
+            .properties
+            .insert("accept-text", "Save date".to_owned().into());
+        popup.populate(&mut dialog, || date(5));
+        let mut window = Node::new("Window", None);
+        window.children.push(dialog);
+        let scene = Rc::new(window);
+        let layout = Rc::new(layout(&scene, Size::new(402.0, 812.0), &mut Text));
+        let mut input = Interaction::default();
+        input.reconcile(&scene, &layout);
+        let update = Projection::default()
+            .update_tree(&scene, &layout, &input, 1.0, None, true)
+            .unwrap();
+        let (_, excluded) = named(&update, "2024-03-05");
+        let (next, day) = named(&update, "2024-03-06");
+        assert!(excluded.is_disabled());
+        assert!(!excluded.supports_action(Action::Click));
+        assert_eq!(update.focus, next);
+        assert_eq!(day.toggled(), Some(Toggled::False));
+        assert!(named(&update, "Save date").1.is_disabled());
+        assert_eq!(scene.at_path(&[0, 0]).unwrap().date("date"), Some(date(5)));
+        let action = input
+            .calendar_key(&scene, &layout, NavigationKey::Right)
+            .unwrap();
+        assert_eq!(action.path, [0, 0]);
+        assert_eq!(
+            action.action,
+            ControlAction::Calendar(CalendarAction::Select(date(6)))
+        );
+    }
+
+    #[test]
     fn ios_date_picker_focus_stays_inside_the_modal_when_every_date_is_disabled() {
         use xrack_runtime::{Date, DatePopupState};
         let mut popup = Node::new("Dialog", Some("picker"));
@@ -4492,6 +4886,77 @@ mod tests {
             let (id, node) = named(&update, expected);
             assert!(node.supports_action(Action::Click));
             assert_eq!(update.focus, id);
+        }
+    }
+
+    #[test]
+    fn ios_page_indicator_reports_the_current_page_and_available_adjustments() {
+        for (count, index, interactive, enabled, value, increase, decrease) in [
+            (3, 0, true, true, "Page 1 of 3", true, false),
+            (3, 2, true, true, "Page 3 of 3", false, true),
+            (3, -1, true, true, "No page selected", true, true),
+            (1, 0, true, true, "Page 1 of 1", false, false),
+            (3, 1, false, true, "Page 2 of 3", false, false),
+            (3, 1, true, false, "Page 2 of 3", false, false),
+            (0, 0, true, true, "", false, false),
+        ] {
+            let mut indicator = Node::new("PageIndicator", Some("report-pages"));
+            indicator
+                .properties
+                .insert("accessible-name", "Report pages".to_owned().into());
+            indicator
+                .properties
+                .insert("count", i64::from(count).into());
+            indicator
+                .properties
+                .insert("current-index", i64::from(index).into());
+            indicator
+                .properties
+                .insert("interactive", interactive.into());
+            indicator.properties.insert("enabled", enabled.into());
+            length(&mut indicator, "width", 120.0);
+            length(&mut indicator, "height", 32.0);
+            let mut window = Node::new("Window", None);
+            window.children.push(indicator);
+            let scene = Rc::new(window);
+            let frame = Rc::new(layout(&scene, Size::new(200.0, 100.0), &mut Text));
+            let mut projection = Projection::default();
+            let tree = projection
+                .update_tree(&scene, &frame, &Interaction::default(), 1.0, None, true)
+                .unwrap();
+            if count == 0 {
+                assert!(
+                    !tree
+                        .nodes
+                        .iter()
+                        .any(|(_, node)| node.label() == Some("Report pages"))
+                );
+                continue;
+            }
+            let (id, node) = named(&tree, "Report pages");
+            assert_eq!(
+                node.role(),
+                if increase || decrease {
+                    Role::SpinButton
+                } else {
+                    Role::Group
+                }
+            );
+            assert_eq!(node.value(), Some(value));
+            assert_eq!(node.is_disabled(), !enabled);
+            assert_eq!(node.supports_action(Action::Increment), increase);
+            assert_eq!(node.supports_action(Action::Decrement), decrease);
+            if increase || decrease {
+                assert_eq!(node.min_numeric_value(), Some(1.0));
+                assert_eq!(node.max_numeric_value(), Some(f64::from(count)));
+                assert!(matches!(
+                    projection.route(id),
+                    Some(Route::Element {
+                        kind: "PageIndicator",
+                        ..
+                    })
+                ));
+            }
         }
     }
 
@@ -5446,7 +5911,7 @@ mod tests {
             (scene, layout)
         };
         let mut projection = Projection::default();
-        let input = Interaction::default();
+        let mut input = Interaction::default();
         let (scene, layout) = project(0);
         let update = projection
             .update_tree(&scene, &layout, &input, 1.0, None, true)
@@ -5483,18 +5948,60 @@ mod tests {
             })
         ));
 
+        projection.follow_ios_list_scroll(
+            valve,
+            Action::ScrollDown,
+            layout.at_path(&[0, 1]).unwrap(),
+        );
         let (scene, layout) = project(1);
         let update = projection
             .update_tree(&scene, &layout, &input, 1.0, None, true)
             .unwrap();
         assert_eq!(named(&update, "Valve").0, valve);
         assert_eq!(named(&update, "Cabinet").1.position_in_set(), Some(2));
+        assert_eq!(update.focus, valve);
+        assert!(input.focused.is_none());
         assert!(projection.route_for_action(pump, Action::Click).is_none());
         assert!(
             projection
                 .route_for_action(pump, Action::ScrollDown)
                 .is_none()
         );
+
+        projection.follow_ios_list_scroll(
+            valve,
+            Action::ScrollDown,
+            layout.at_path(&[0, 1]).unwrap(),
+        );
+        let (scene, layout) = project(3);
+        let update = projection
+            .update_tree(&scene, &layout, &input, 1.0, None, true)
+            .unwrap();
+        let meter = named(&update, "Meter").0;
+        assert_eq!(update.focus, meter);
+        projection.follow_ios_list_scroll(
+            meter,
+            Action::ScrollUp,
+            layout.at_path(&[0, 1]).unwrap(),
+        );
+        let (scene, layout) = project(1);
+        let update = projection
+            .update_tree(&scene, &layout, &input, 1.0, None, true)
+            .unwrap();
+        let cabinet = named(&update, "Cabinet").0;
+        assert_eq!(update.focus, cabinet);
+        let update = projection
+            .update_tree(&scene, &layout, &input, 2.0, None, true)
+            .unwrap();
+        assert_eq!(update.focus, cabinet);
+        let footer = input
+            .accessibility_target(&scene, &layout, &[0, 2])
+            .unwrap();
+        input.focus_target(&scene, &layout, footer);
+        let update = projection
+            .update_tree(&scene, &layout, &input, 2.0, None, true)
+            .unwrap();
+        assert_eq!(update.focus, named(&update, "After tasks").0);
     }
 
     #[test]
@@ -6063,19 +6570,25 @@ mod tests {
         let tree = projection
             .update_tree(&scene, &frame, &Interaction::default(), 1.0, None, true)
             .unwrap();
-        let (heading_id, heading) = named(&tree, "Service notes");
+        let static_text = |value| {
+            tree.nodes
+                .iter()
+                .find(|(_, node)| node.role() == Role::Label && node.value() == Some(value))
+                .unwrap()
+        };
+        let (heading_id, heading) = static_text("Service notes");
         assert!(heading.supports_action(Action::ScrollDown));
         assert!(!heading.supports_action(Action::ScrollUp));
         assert!(!heading.supports_action(Action::Click));
         assert!(matches!(
-            projection.route_for_action(heading_id, Action::ScrollDown),
+            projection.route_for_action(*heading_id, Action::ScrollDown),
             Some(Route::Element {
                 kind: "ScrollView",
                 ..
             })
         ));
         assert!(
-            !named(&tree, "Outside the viewport")
+            !static_text("Outside the viewport")
                 .1
                 .supports_action(Action::ScrollDown)
         );

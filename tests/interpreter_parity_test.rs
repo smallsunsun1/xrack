@@ -7917,6 +7917,108 @@ fn interpret_list_fixture(name: &str) -> Instance {
         .unwrap()
 }
 
+#[test]
+fn pull_to_refresh_handles_short_lists_and_rejects_duplicate_or_canceled_pulls() {
+    use std::time::{Duration, Instant};
+    use ui_driver::UiDriver;
+    use xrack_layout::{Interaction, Point, ScrollGestureKind, Size};
+
+    fn exercise(component: impl Component) {
+        let mut ui = UiDriver::headless(component, Size::new(390.0, 540.0));
+        assert_eq!(
+            ui.layout_at(&ui.path("feed"))
+                .unwrap()
+                .scroll
+                .unwrap()
+                .max_offset,
+            0.0
+        );
+        assert!(ui.node("feed").viewport_handle.is_some());
+        fn pull<C: Component>(ui: &mut UiDriver<C>, points: &[f32], cancel: bool) -> usize {
+            let scene = ui.scene().clone();
+            let mut layout = ui.layout().clone();
+            let bounds = layout.at_path(&ui.path("feed")).unwrap().bounds;
+            let start = Point {
+                x: bounds.x + bounds.width * 0.5,
+                y: bounds.y + 28.0,
+            };
+            let mut input = Interaction::default();
+            input.set_reduce_motion(true);
+            let time = Instant::now();
+            assert!(input.begin_scroll_gesture(
+                &scene,
+                &layout,
+                start,
+                time,
+                ScrollGestureKind::Touch
+            ));
+            let mut point = start;
+            for (sample, distance) in points.iter().enumerate() {
+                point.y = start.y + distance;
+                input.move_scroll_gesture(
+                    &scene,
+                    &layout,
+                    point,
+                    time + Duration::from_millis(50 * (sample as u64 + 1)),
+                );
+                layout = xrack_layout::layout_with_input(
+                    &scene,
+                    Size::new(390.0, 540.0),
+                    &mut FixedText,
+                    &input,
+                );
+                input.reconcile(&scene, &layout);
+            }
+            if cancel {
+                input.cancel_scroll_gesture();
+            } else {
+                input.end_scroll_gesture(&scene, &layout, point, time + Duration::from_millis(160));
+            }
+            let deliveries = input.take_scroll_events(&scene, &layout);
+            ui.update(|component| {
+                for event in &deliveries {
+                    assert!(event.apply(component, &scene));
+                }
+            });
+            deliveries.len()
+        }
+        fn finish_refresh<C: Component>(ui: &mut UiDriver<C>) {
+            ui.update(|component| {
+                let started = Instant::now();
+                let mut timers = xrack_runtime::TimerQueue::default();
+                sync_test_timers(&mut timers, component, started);
+                let deadline = started + Duration::from_millis(2200);
+                assert_eq!(timers.deadline(), Some(deadline));
+                assert!(timers.next_due(deadline).unwrap().fire());
+            });
+        }
+        let idle = ui.node("refresh-status").text("text");
+        assert_eq!(idle, Some("Completed refreshes: 0"));
+        assert_eq!(pull(&mut ui, &[40.0], false), 0);
+        assert_eq!(pull(&mut ui, &[110.0, 35.0], false), 0);
+        assert_eq!(pull(&mut ui, &[110.0], true), 0);
+        assert_eq!(pull(&mut ui, &[110.0], false), 1);
+        assert_eq!(ui.node("refresh-status").text("text"), Some("Refreshing…"));
+        assert_eq!(pull(&mut ui, &[110.0], false), 0);
+        finish_refresh(&mut ui);
+        assert_eq!(
+            ui.node("refresh-status").text("text"),
+            Some("Completed refreshes: 1")
+        );
+        assert_eq!(pull(&mut ui, &[110.0], false), 1);
+        finish_refresh(&mut ui);
+        assert_eq!(
+            ui.node("refresh-status").text("text"),
+            Some("Completed refreshes: 2")
+        );
+        ui.click("refresh-button");
+        assert_eq!(ui.node("refresh-status").text("text"), Some("Refreshing…"));
+    }
+
+    exercise(list_ui::RefreshDemo::new());
+    exercise(interpret_list_fixture("RefreshDemo"));
+}
+
 fn prepare_list(
     component: &impl Component,
     input: &xrack_layout::Interaction,
@@ -19681,6 +19783,143 @@ fn dialog_button_commands_and_drawer_opening_match_compiled_mode() {
     assert_eq!(actual.take_error(), None);
 }
 
+#[test]
+fn promised_file_drops_validate_loaded_paths_and_deliver_only_complete_batches() {
+    use std::sync::Arc;
+    use xrack_layout::{FileDragInput, Interaction, Point, Size};
+    use xrack_runtime::DragEvent;
+
+    const ERROR: &str = "Could not read one or more dropped files.";
+
+    fn exercise<C: Component>(mut ui: C, paths: Arc<[String]>) -> C {
+        let viewport = Size::new(320.0, 310.0);
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, viewport, &mut FixedText);
+        let mut input = Interaction::default();
+        let point = Point { x: 244.0, y: 110.0 };
+        let extensions: Arc<[Option<String>]> = [Some("TXT".to_owned()), None].into();
+        let scope = input.file_drop_scope(&layout);
+        let target = scope
+            .target_for_extensions(&scene, &layout, point, &extensions)
+            .unwrap();
+        assert_eq!(
+            target.node_in(&scene).unwrap().strings("file-extensions"),
+            [".txt", "md"]
+        );
+        assert!(
+            scope
+                .target_for_extensions(&scene, &layout, point, &[Some("png".into())])
+                .is_none()
+        );
+        let offered = |sequence| FileDragInput::Offered {
+            sequence,
+            point,
+            extensions: extensions.clone(),
+        };
+        let copied = |sequence, paths| FileDragInput::Copied {
+            sequence,
+            point,
+            paths,
+            target: target.clone(),
+        };
+        let preview = input.file_drag_event(&scene, &layout, offered(1));
+        assert!(
+            matches!(preview.events.as_slice(), [update] if matches!(update.event, DragEvent::Moved { .. }))
+        );
+        let wrong: Arc<[String]> = [std::env::temp_dir()
+            .join("mismatch.png")
+            .to_str()
+            .unwrap()
+            .to_owned()]
+        .into();
+        let rejected = input.file_drag_event(&scene, &layout, copied(1, wrong));
+        assert!(
+            matches!(rejected.events.as_slice(), [update] if matches!(update.event, DragEvent::Exited))
+        );
+        assert!(
+            input
+                .file_drag_event(&scene, &layout, copied(1, paths.clone()))
+                .events
+                .is_empty()
+        );
+
+        input.file_drag_event(&scene, &layout, offered(2));
+        input.file_drag_event(&scene, &layout, FileDragInput::Left { sequence: 2 });
+        let delivery = input.file_drag_event(&scene, &layout, copied(2, paths.clone()));
+        assert!(matches!(delivery.events.as_slice(), [enter, drop]
+            if matches!(&enter.event, DragEvent::FilesEntered(list) if list == &paths)
+                && matches!(&drop.event, DragEvent::FilesDropped(list) if list == &paths)));
+        for event in delivery.events {
+            assert!(event.apply(&mut ui, &scene));
+        }
+
+        let failed = |sequence| FileDragInput::Failed {
+            sequence,
+            point,
+            extensions: extensions.clone(),
+            target: target.clone(),
+            message: ERROR.into(),
+        };
+        let failure = input.file_drag_event(&scene, &layout, failed(3));
+        assert!(matches!(failure.events.as_slice(), [failure]
+            if matches!(&failure.event, DragEvent::FilesFailed(message) if message == ERROR)));
+        for event in failure.events {
+            assert!(event.apply(&mut ui, &scene));
+        }
+        assert!(
+            input
+                .file_drag_event(&scene, &layout, failed(3))
+                .events
+                .is_empty()
+        );
+        assert!(
+            input
+                .file_drag_event(&scene, &layout, copied(3, paths.clone()))
+                .events
+                .is_empty()
+        );
+
+        let mut changed_scene = scene.as_ref().clone();
+        let changed_target = target.path.iter().fold(&mut changed_scene, |node, &index| {
+            node.child_at_mut(index).unwrap()
+        });
+        changed_target.properties.insert("enabled", false.into());
+        let changed_layout = xrack_layout::layout(&changed_scene, viewport, &mut FixedText);
+        assert!(
+            input
+                .file_drag_event(&changed_scene, &changed_layout, copied(4, paths))
+                .events
+                .is_empty()
+        );
+        assert!(
+            input
+                .file_drag_event(&changed_scene, &changed_layout, failed(5))
+                .events
+                .is_empty()
+        );
+        ui
+    }
+
+    let paths: Arc<[String]> = ["巡检.TXT", "second.md"]
+        .map(|name| std::env::temp_dir().join(name).to_str().unwrap().to_owned())
+        .into();
+    let aot = exercise(form_ui::FileDropDemo::new(), paths.clone());
+    let interpreted = exercise(interpret_form_fixture("FileDropDemo"), paths.clone());
+    assert_eq!(aot.get_paths(), paths.as_ref());
+    assert_eq!(
+        interpreted.get("paths").unwrap(),
+        Value::StringList(paths.to_vec())
+    );
+    assert_eq!(aot.get_batches(), 1);
+    assert_eq!(interpreted.get("batches").unwrap(), Value::Int(1));
+    assert_eq!(aot.get_failure(), ERROR);
+    assert_eq!(
+        interpreted.get("failure").unwrap(),
+        Value::String(ERROR.into())
+    );
+    assert_same_scene(&interpreted.render(), &aot.render());
+}
+
 fn interpret_form_fixture(component: &str) -> Instance {
     let preview = xrack_compiler::prepare_preview(
         include_str!("../examples/form/form.xr"),
@@ -27923,7 +28162,16 @@ fn internal_and_file_drag_events_match_generated_components() {
     assert_eq!(expected.get_paths(), paths.as_ref());
     for ui in [&mut actual as &mut dyn Component, &mut expected] {
         let scene = ui.render_shared();
-        assert!(ui.drag_event_at(&scene, &[1], &DragEvent::FilesEntered(paths.clone())));
+        let layout = xrack_layout::layout(&scene, Size::new(536.0, 310.0), &mut FixedText);
+        let target = Interaction::default()
+            .file_drop_scope(&layout)
+            .target(&scene, &layout, Point { x: 120.0, y: 110.0 }, &paths)
+            .unwrap();
+        assert!(ui.drag_event_at(
+            &scene,
+            &target.path,
+            &DragEvent::FilesEntered(paths.clone())
+        ));
     }
     assert_eq!(actual.get("preview"), Ok(Value::StringList(paths.to_vec())));
     assert_eq!(expected.get_preview(), paths.as_ref());

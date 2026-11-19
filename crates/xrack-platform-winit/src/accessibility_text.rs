@@ -34,30 +34,61 @@ pub(crate) fn accessible_text_value<'a>(
     }
 }
 
+pub(crate) fn selection_positions(editor: &TextEdit, value: &str) -> (usize, TextPosition) {
+    if cfg!(target_os = "android")
+        && editor.has_committed_suggestion(value)
+        && let Some(cursor) = editor.preedit_cursor
+    {
+        // The replacement range is internal to the input method. Report the
+        // caret drawn within the unchanged composing text to Android instead.
+        let offset = editor.selection(value).start + cursor;
+        return (
+            offset,
+            TextPosition {
+                offset,
+                trailing: false,
+            },
+        );
+    }
+    (editor.anchor(value), editor.position(value))
+}
+
 #[derive(PartialEq)]
 pub(crate) struct EditorState {
     anchor: usize,
     focus: TextPosition,
     composing: bool,
+    #[cfg(target_os = "android")]
+    committed_suggestion: bool,
     horizontal_drag_scroll: Option<f32>,
-    cell_draft: Option<String>,
+    draft: Option<String>,
 }
 
 impl EditorState {
     pub fn focused(scene: &Node, input: &Interaction) -> Option<Self> {
         let target = input.focused.as_ref()?;
         let cell_editing = input.table_cell_editing(&target.path);
-        let node = scene
-            .at_path(&target.path)
-            .filter(|node| supports_ranges(node) || cell_editing)?;
+        let node = scene.at_path(&target.path)?;
+        let draft =
+            cell_editing || cfg!(target_os = "android") && xrack_runtime::spin_editable(node);
+        if !draft && !supports_ranges(node) {
+            return None;
+        }
         let editor = input.editor.as_ref()?;
-        let text = accessible_text_value(node, input, &target.path);
+        let text = if draft {
+            input.editor_value(node)
+        } else {
+            accessible_text_value(node, input, &target.path)
+        };
+        let (anchor, focus) = selection_positions(editor, &text);
         Some(Self {
-            anchor: editor.anchor(&text),
-            focus: editor.position(&text),
+            anchor,
+            focus,
             composing: !editor.preedit.is_empty(),
+            #[cfg(target_os = "android")]
+            committed_suggestion: editor.has_committed_suggestion(&text),
             horizontal_drag_scroll: editor.horizontal_drag_scroll(),
-            cell_draft: cell_editing.then(|| text.into_owned()),
+            draft: draft.then(|| text.into_owned()),
         })
     }
 }
@@ -114,8 +145,11 @@ impl TextDocument {
     }
 
     pub fn selection(&self, editor: &TextEdit, value: &str) -> TextSelection {
-        let position = editor.position(value);
-        let anchor = editor.anchor(value);
+        let (anchor, focus) = selection_positions(editor, value);
+        self.selection_at(anchor, focus)
+    }
+
+    pub fn selection_at(&self, anchor: usize, position: TextPosition) -> TextSelection {
         let focus = self.position(position);
         TextSelection {
             anchor: if anchor == position.offset {

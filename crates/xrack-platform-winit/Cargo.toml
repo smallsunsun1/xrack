@@ -26,7 +26,9 @@ unicode-segmentation.workspace = true
 arboard = { version = "=3.7.0", default-features = false, features = ["wayland-data-control"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "=0.6.1", features = ["native-activity"] }
 jni = { version = "=0.22.4", default-features = false }
+tempfile = "=3.27.0"
 tokio = { version = "=1.54.1", features = ["sync"] }
 winit = { workspace = true, features = ["android-native-activity"] }
 
@@ -34,9 +36,10 @@ winit = { workspace = true, features = ["android-native-activity"] }
 accesskit_ios = "=0.2.2"
 block2 = "=0.5.1"
 objc2 = "=0.5.3"
-objc2-foundation = { version = "=0.2.2", default-features = false, features = ["NSFileCoordinator", "NSNotification", "NSObject", "NSOperation", "NSString", "NSThread", "block2"] }
-objc2-ui-kit = { version = "=0.2.2", default-features = false, features = ["UIAccessibility", "UIAccessibilityCustomAction", "UIAccessibilityContainer", "UIAction", "UIActivity", "UIActivityViewController", "UIAlertController", "UIBarButtonItem", "UIBarItem", "UIControl", "UIContentSizeCategory", "UIDocumentPickerViewController", "UIFontMetrics", "UIKey", "UIKeyConstants", "UICommand", "UIPress", "UIPressesEvent", "UIKeyboardLayoutGuide", "UILayoutGuide", "UIMenuElement", "UIPasteboard", "UIPopoverPresentationController", "UIPresentationController", "UIResponder", "UIScrollView", "UITextField", "UITextInput", "UITextInputTraits", "UITextView", "UIToolbar", "UITrackingLayoutGuide", "UIView", "UIViewController", "UIViewControllerTransitionCoordinator", "UIWindow", "block2", "objc2-uniform-type-identifiers"] }
+objc2-foundation = { version = "=0.2.2", default-features = false, features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSFileCoordinator", "NSItemProvider", "NSProgress", "NSURL", "NSNotification", "NSObject", "NSOperation", "NSProcessInfo", "NSString", "NSThread", "NSUndoManager", "block2"] }
+objc2-ui-kit = { version = "=0.2.2", default-features = false, features = ["NSItemProvider_UIKitAdditions", "UIAccessibility", "UIAccessibilityCustomAction", "UIAccessibilityContainer", "UIAction", "UIActivity", "UIActivityViewController", "UIAlertController", "UIBarButtonItem", "UIBarItem", "UIBezierPath", "UIColor", "UIColorPickerViewController", "UIControl", "UIContentSizeCategory", "UIDocumentPickerViewController", "UIDragInteraction", "UIDragItem", "UIDragPreview", "UIDragSession", "UIDropInteraction", "UIInteraction", "UIEditMenuInteraction", "UIEvent", "UIFontMetrics", "UIGeometry", "UIGestureRecognizer", "UIGestureRecognizerSubclass", "UIHoverGestureRecognizer", "UIHoverStyle", "UIInterface", "UIKey", "UIKeyConstants", "UICommand", "UIPress", "UIPressesEvent", "UIKeyboardLayoutGuide", "UILabel", "UILayoutGuide", "UIMenu", "UIMenuElement", "UIPanGestureRecognizer", "UIPasteboard", "UIPinchGestureRecognizer", "UIPointerAccessory", "UIPointerInteraction", "UIPointerRegion", "UIPointerStyle", "UIPopoverPresentationController", "UIPresentationController", "UIResponder", "UIRotationGestureRecognizer", "UIScrollView", "UITextField", "UITextInput", "UITextInputTraits", "UITextView", "UIToolbar", "UITouch", "UITrackingLayoutGuide", "UITraitCollection", "UIView", "UIViewController", "UIViewControllerTransitionCoordinator", "UIWindow", "block2", "objc2-uniform-type-identifiers"] }
 objc2-uniform-type-identifiers = { version = "=0.2.2", default-features = false, features = ["UTCoreTypes", "UTType"] }
+tempfile = "=3.27.0"
 tokio = { version = "=1.54.1", features = ["sync"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]

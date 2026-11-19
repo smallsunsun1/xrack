@@ -10,6 +10,8 @@ from examples.android.simulator_ui_test import (
     Emulator,
     Label,
     Screen,
+    normalize,
+    pixels_rgb,
     test_input_method,
 )
 
@@ -25,7 +27,8 @@ class TableEmulator(Emulator):
         for label in screen.labels:
             match = re.fullmatch(
                 r"(Cells|Pump units|Selected|Cursor|Expanded|Collapsed|Changes|Browse width|Edit height"
-                r"|Taps|Starts|Finishes|Drops|Cancels|Offset X|Offset Y|Key|Index|Choices|Entries|Scrolls|Links)"
+                r"|Taps|Starts|Finishes|Drops|Cancels|Offset X|Offset Y|Key|Index|Choices|Entries|Scrolls|Links"
+                r"|Requests|Revision)"
                 r"(?: +|(?=-))(-?[0-9OoIl]+(?: +[0-9OoIl]+)*)",
                 label.text,
             )
@@ -38,6 +41,8 @@ class TableEmulator(Emulator):
                     + match[2].replace(" ", "").translate(str.maketrans("OoIl", "0011"))
                 )
             )
+            if normalize(text) == "deliverresuit":
+                text = "Deliver result"
             labels.append(Label(label.x, label.y, text))
         return Screen(screen.png, screen.width, screen.height, labels)
 
@@ -300,7 +305,31 @@ def exercise_split(ui: Emulator) -> None:
     divider = row_handle(saved, 120)
     with ui.drag_contact(divider, displaced(saved, divider, -20, -90)):
         state(166, 64, phase="Resizing rows")
-    narrow = state(166, 64, "Browse")
+        ui.call("shell", "input", "keyevent", "KEYCODE_HOME")
+        ui.wait_for(
+            "Android backgrounds the split workspace while the divider is held",
+            lambda screen: (
+                screen.find("Split workspace") is None
+                and screen.find("XRack Inventory") is None
+            ),
+        )
+    ui.call("shell", "am", "start", "-W", "-n", ACTIVITY)
+    narrow = ui.wait_for(
+        "the split keeps its last layout and releases the drag after resuming",
+        lambda screen: (
+            all(
+                screen.find(label)
+                for label in (
+                    "Browse width 166",
+                    "Edit height 64",
+                    "Split idle",
+                    "Browse",
+                )
+            )
+            and ui.window_accepts_touch(screen, ACTIVITY)
+        ),
+        timeout=75,
+    )
     handle = column_handle(narrow, 166)
     with ui.drag_contact(handle, displaced(narrow, handle, -112, 0)):
         state(80, 64, phase="Resizing columns")
@@ -538,6 +567,125 @@ def exercise_canvas(ui: Emulator) -> None:
     (ui.artifacts / "canvas-corner.png").write_bytes(corner.png)
 
 
+def exercise_refresh(ui: Emulator) -> None:
+    def tap_control(screen: Screen, text: str) -> None:
+        label = screen.require(text)
+        touch_cell(ui, (label.x, label.y))
+
+    for attempt in range(3):
+        entry = ui.wait_for(
+            "Android routes touch to the inventory window",
+            lambda screen: (
+                screen.find("Open refresh") is not None
+                and ui.window_accepts_touch(screen, ACTIVITY)
+            ),
+            timeout=75,
+        )
+        tap_control(entry, "Open refresh")
+        try:
+            ui.visible("Inspection readings", timeout=8)
+            break
+        except AssertionError:
+            if attempt == 2:
+                raise
+    initial = ui.visible(
+        "Inspection readings", "Readings ready", "Requests 0", "Revision 0"
+    )
+    densities = re.findall(
+        r"(?:Physical|Override) density:\s*(\d+)",
+        ui.call("shell", "wm", "density").decode(),
+    )
+    assert densities, "Android did not report its display density"
+    scale = int(densities[-1]) / 160
+    first_row_y = initial.require("Revision 0").y
+
+    def baseline(screen: Screen, label: str) -> bool:
+        row = screen.find(label)
+        return row is not None and abs(row.y - first_row_y) * screen.height < 4 * scale
+
+    def state(requests: int, revision: int, *, loading: bool = False) -> Screen:
+        label = f"Revision {revision}"
+        status = "Loading readings" if loading else "Readings ready"
+        return ui.wait_for(
+            f"{status}, Requests {requests}, {label} at the top",
+            lambda screen: (
+                baseline(screen, label)
+                and screen.find(status) is not None
+                and screen.find(f"Requests {requests}") is not None
+                and indicator_visible(screen) == loading
+            ),
+        )
+
+    def drag(distance: float) -> tuple[tuple[float, float], tuple[float, float]]:
+        start = (0.34, first_row_y)
+        return start, (start[0], start[1] + distance * scale / initial.height)
+
+    def pulled(requests: int, revision: int) -> Screen:
+        return ui.wait_for(
+            f"the pull draws the refresh arc with Requests {requests} before release",
+            lambda screen: (
+                screen.find(f"Revision {revision}") is not None
+                and screen.find("Readings ready") is not None
+                and screen.find(f"Requests {requests}") is not None
+                and indicator_visible(screen)
+            ),
+        )
+
+    def indicator_visible(screen: Screen) -> bool:
+        # The refresh arc is drawn above the rows in the light palette.
+        x = round(screen.width / 2 - 4 * scale)
+        y = round(first_row_y * screen.height)
+        radius = round(13 * scale)
+        step = max(1, round(scale))
+        points = tuple(
+            (column, row)
+            for column in range(x - radius, x + radius, step)
+            for row in range(y - radius, y + radius, step)
+        )
+        return (52, 86, 202) in pixels_rgb(screen.png, points)
+
+    with ui.drag_contact(*drag(38)):
+        pulled(0, 0)
+    state(0, 0)
+
+    with ui.drag_contact(*drag(116)):
+        armed = pulled(0, 0)
+        ui.call("shell", "input", "keyevent", "KEYCODE_HOME")
+        ui.wait_for(
+            "Android leaves the app while the pull is held",
+            lambda screen: (
+                screen.find("Inspection readings") is None
+                and screen.find("XRack Inventory") is None
+            ),
+        )
+    ui.call("shell", "am", "start", "-W", "-n", ACTIVITY)
+    ui.wait_for(
+        "Android restores the touch region after returning from Home",
+        lambda screen: (
+            screen.find("Inspection readings") is not None
+            and ui.window_accepts_touch(screen, ACTIVITY)
+        ),
+    )
+    state(0, 0)
+
+    with ui.drag_contact(*drag(116)):
+        pulled(0, 0)
+    loading = state(1, 0, loading=True)
+    with ui.drag_contact(*drag(116)):
+        state(1, 0, loading=True)
+    tap_control(state(1, 0, loading=True), "Deliver result")
+    state(1, 1)
+
+    with ui.drag_contact(*drag(116)):
+        pulled(1, 1)
+    tap_control(state(2, 1, loading=True), "Deliver result")
+    complete = state(2, 2)
+    ui.artifacts.mkdir(parents=True, exist_ok=True)
+    (ui.artifacts / "refresh-pulled.png").write_bytes(armed.png)
+    (ui.artifacts / "refresh-loading.png").write_bytes(loading.png)
+    (ui.artifacts / "refresh-completed.png").write_bytes(complete.png)
+
+
 def exercise_catalog(ui: Emulator) -> None:
     entry = ui.visible("XRack Inventory", "Window active", "Open catalog", timeout=75)
     for attempt in range(3):
@@ -707,18 +855,15 @@ def exercise_bulletin(ui: Emulator) -> None:
         label = screen.require(text)
         return label.x, label.y
 
-    def tap(screen: Screen, text: str) -> None:
-        touch_cell(ui, point(screen, text))
-
     initial = ui.visible(
         "Calibration", "Procedure", "Limits", "Links 0", "No selection"
     )
-    tap(initial, "Procedure")
+    ui.tap(initial, "Procedure")
     first = ui.visible("Target procedure", "Links 1", "Limits")
-    tap(first, "Limits")
+    ui.tap(first, "Limits")
     second = ui.visible("Target limits", "Links 2", "Compact text")
 
-    tap(second, "Compact text")
+    ui.tap(second, "Compact text")
     cropped = ui.wait_for(
         "both links disappear when the document is limited to one line",
         lambda screen: (
@@ -730,16 +875,16 @@ def exercise_bulletin(ui: Emulator) -> None:
     )
     touch_cell(ui, point(initial, "Procedure"))
     touch_cell(ui, point(initial, "Limits"))
-    tap(cropped, "Show full text")
+    ui.tap(cropped, "Show full text")
     restored = ui.visible("Procedure", "Limits", "Links 2", "Target limits")
-    tap(restored, "Procedure")
+    ui.tap(restored, "Procedure")
     ready = ui.visible("Target procedure", "Links 3", "Limits", "No selection")
 
     def copy_word(screen: Screen, word: str) -> Screen:
         with ui.press_contact(point(screen, word)):
             ui.visible(f"Selected {word}", "Target procedure", "Links 3")
         menu = ui.visible("Copy")
-        tap(menu, "Copy")
+        ui.tap(menu, "Copy")
         return ui.wait_for(
             "copy closes the read-only selection menu",
             lambda screen: (
@@ -748,7 +893,7 @@ def exercise_bulletin(ui: Emulator) -> None:
         )
 
     copied = copy_word(ready, "Limits")
-    tap(copied, "Paste copied word")
+    ui.tap(copied, "Paste copied word")
     ctrl(ui, "V")
     pasted = ui.visible("Pasted Limits", "Links 3", "Procedure")
 
@@ -780,6 +925,7 @@ def main() -> None:
     scenario.add_argument("--split-only", action="store_true")
     scenario.add_argument("--transfer-only", action="store_true")
     scenario.add_argument("--canvas-only", action="store_true")
+    scenario.add_argument("--refresh-only", action="store_true")
     scenario.add_argument("--catalog-only", action="store_true")
     scenario.add_argument("--log-only", action="store_true")
     scenario.add_argument("--bulletin-only", action="store_true")
@@ -790,6 +936,7 @@ def main() -> None:
             or args.split_only
             or args.transfer_only
             or args.canvas_only
+            or args.refresh_only
             or args.catalog_only
             or args.log_only
             or args.bulletin_only
@@ -827,6 +974,8 @@ def main() -> None:
                 exercise_transfer(ui)
             elif args.canvas_only:
                 exercise_canvas(ui)
+            elif args.refresh_only:
+                exercise_refresh(ui)
             elif args.catalog_only:
                 exercise_catalog(ui)
             elif args.log_only:

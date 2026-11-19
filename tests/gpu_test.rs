@@ -2,6 +2,50 @@
 
 mod gpu_text_scale;
 
+#[test]
+fn refresh_indicator_animates_in_both_backends_and_respects_reduced_motion() {
+    use std::time::Duration;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut aot = list_ui::RefreshDemo::new();
+    aot.invoke_refresh();
+    let interpreted = interpret_example("examples/list/list.xr")
+        .create("RefreshDemo")
+        .unwrap();
+    interpreted.invoke("refresh", &[]).unwrap();
+
+    let scene = aot.render_shared();
+    let mut input = Interaction::default();
+    let first = renderer
+        .snapshot_at(&scene, 390, 540, 1.0, &input, Duration::ZERO)
+        .unwrap();
+    let next = renderer
+        .snapshot_at(&scene, 390, 540, 1.0, &input, Duration::from_millis(600))
+        .unwrap();
+    assert_ne!(first.rgba, next.rgba);
+    let other = renderer
+        .snapshot_at(
+            &interpreted.render(),
+            390,
+            540,
+            1.0,
+            &input,
+            Duration::from_millis(600),
+        )
+        .unwrap();
+    assert_same_pixels(&next, &other);
+
+    input.set_reduce_motion(true);
+    let still = renderer
+        .snapshot_at(&scene, 390, 540, 1.0, &input, Duration::from_millis(600))
+        .unwrap();
+    assert_same_pixels(&still, &first);
+}
+
 use async_ui::AsyncDemo;
 use bundled_ui::BundledFontsDemo;
 use controls_ui::{
@@ -1822,16 +1866,14 @@ fn date_exclusions_guard_live_calendar_and_picker_routes_in_both_backends() {
         assert!(picker.is_visible());
         assert!(!layout.at_path(&[3, 1, 1]).unwrap().enabled);
         assert_eq!(picker.children[0].date("date"), Some(date(5)));
+        let grid =
+            CalendarGeometry::for_layout(&picker.children[0], layout.at_path(&[3, 0]).unwrap());
+        assert_eq!(grid.cursor(), Some(date(6)));
         press(&mut preview, renderer, "ArrowRight", true);
-        assert!(
-            preview
-                .inspect_frame()
-                .unwrap()
-                .1
-                .at_path(&[3, 1, 1])
-                .unwrap()
-                .enabled
-        );
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        assert_eq!(scene.at_path(&[3, 0]).unwrap().date("date"), Some(date(6)));
+        assert_eq!(scene.find("calendar").unwrap().date("date"), Some(date(5)));
+        assert!(layout.at_path(&[3, 1, 1]).unwrap().enabled);
         press(&mut preview, renderer, "Tab", true);
         press(&mut preview, renderer, "Tab", true);
         press(&mut preview, renderer, "Enter", true);
@@ -1983,6 +2025,95 @@ fn preview_double_press_selects_a_word_and_drag_extends_to_whole_words() {
     preview.finish_contact(contact, first, false, false);
     preview.render_animated(&mut renderer).unwrap();
     assert_eq!(ui.get_selected(), "alpha");
+}
+
+#[test]
+fn triple_click_and_paragraph_drag_match_both_backends() {
+    use form_ui::LongTextSelectionDemo;
+    use std::time::{Duration, Instant};
+    use xrack_layout::{FocusObservers, Interaction, TextPosition, layout};
+    use xrack_renderer_femtovg::{PointerCaret, TextSystem};
+
+    const DOCUMENT: &str = "First row\nSecond row 🚰\nLast row";
+
+    fn exercise<C: Component>(app: C, selected: impl Fn(&C) -> String) {
+        let mut text = TextSystem::system().unwrap();
+        let scene = app.render_shared();
+        let frame = layout(&scene, Size::new(496.0, 342.0), &mut text);
+        let mut input = Interaction::default();
+        let target = input.accessibility_target(&scene, &frame, &[0]).unwrap();
+        input.focus_target(&scene, &frame, target);
+        input.sync_editor(&scene);
+        let mut pointer_at = |offset| {
+            input.editor.as_mut().unwrap().set_selection(
+                DOCUMENT,
+                offset,
+                TextPosition {
+                    offset,
+                    trailing: false,
+                },
+            );
+            let caret = text
+                .editor_ime_area(&mut input, &scene, &frame, true)
+                .unwrap();
+            Point {
+                x: caret.x + 1.0,
+                y: caret.y + caret.height / 2.0,
+            }
+        };
+        let middle = pointer_at(DOCUMENT.find("Second").unwrap() + 2);
+        let last = pointer_at(DOCUMENT.find("Last").unwrap() + 1);
+        let first = pointer_at(1);
+        let mut focus = FocusObservers::default();
+        let start = Instant::now();
+        for (index, expected) in ["", "Second", "Second row 🚰"].into_iter().enumerate() {
+            input.pointer_move(&scene, &frame, middle);
+            input.pointer_press_in_scene(&scene, &frame);
+            let now = start + Duration::from_millis(index as u64 * 85);
+            assert!(
+                PointerCaret::from_pressed(&input, &scene, &frame, middle, false)
+                    .unwrap()
+                    .mouse_press(&mut input, now)
+                    .place(&text, &mut input, &scene, &frame)
+            );
+            focus.sync(&input, &scene, &frame, true);
+            assert_eq!(selected(&app), expected);
+            if index < 2 {
+                input.pointer_release_target();
+            }
+        }
+        for (point, expected) in [
+            (last, "Second row 🚰\nLast row"),
+            (first, "First row\nSecond row 🚰"),
+            (middle, "Second row 🚰"),
+        ] {
+            input.pointer_move(&scene, &frame, point);
+            assert!(
+                PointerCaret::from_pressed(&input, &scene, &frame, point, true)
+                    .unwrap()
+                    .during_drag()
+                    .place(&text, &mut input, &scene, &frame)
+            );
+            focus.sync(&input, &scene, &frame, true);
+            assert_eq!(selected(&app), expected);
+        }
+        input.pointer_release_target();
+    }
+
+    let mut aot = LongTextSelectionDemo::new();
+    aot.set_document(DOCUMENT.into());
+    exercise(aot, LongTextSelectionDemo::get_selected);
+    let program = interpret_example("examples/form/form.xr");
+    let interpreted = program.create("LongTextSelectionDemo").unwrap();
+    interpreted
+        .set("document", DOCUMENT.to_owned().into())
+        .unwrap();
+    exercise(interpreted, |component| {
+        match component.get("selected").unwrap() {
+            Value::String(text) => text,
+            value => panic!("expected string, got {value:?}"),
+        }
+    });
 }
 
 #[test]
@@ -3863,6 +3994,126 @@ fn indicators_use_explicit_snapshot_time_and_stop_requesting_frames_when_static(
     offscreen.children.push(indicator);
     sample(&mut renderer, &offscreen, later);
     assert!(!renderer.needs_redraw());
+}
+
+#[test]
+fn increased_contrast_strengthens_default_editor_edges_focus_and_scroll_thumb() {
+    use list_ui::ScrollBarsDemo;
+    use xrack_runtime::ColorScheme;
+
+    fn contrast(a: [u8; 4], b: [u8; 4]) -> f64 {
+        let luminance = |[r, g, b, _]: [u8; 4]| {
+            let linear = |value: u8| {
+                let value = f64::from(value) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = ThemeDemo::new();
+    let scene = ui.render_shared();
+    let input = Interaction::default();
+    for scheme in [ColorScheme::Light, ColorScheme::Dark] {
+        renderer.set_system_color_scheme(scheme);
+        let normal = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+        let mut editing = Interaction::default();
+        let field = editing
+            .accessibility_target(&scene, &normal.layout, &[5])
+            .unwrap();
+        editing.focus_target(&scene, &normal.layout, field);
+        assert!(editing.is_focused(&[5]));
+        let normal_focus = renderer.snapshot(&scene, 446, 318, 1.0, &editing).unwrap();
+        assert!(renderer.set_system_increased_contrast(true));
+        let high = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+        let high_focus = renderer.snapshot(&scene, 446, 318, 1.0, &editing).unwrap();
+        let background = normal.pixel(10, 130).unwrap();
+        let field_fill = normal.pixel(410, 130).unwrap();
+        // Sample a straight section of the left border, away from antialiased corners.
+        let edge_contrast = |edge| contrast(background, edge).min(contrast(field_fill, edge));
+        let normal_edge = (18..=23)
+            .map(|x| edge_contrast(normal.pixel(x, 130).unwrap()))
+            .fold(1.0, f64::max);
+        let high_edge = (18..=23)
+            .map(|x| edge_contrast(high.pixel(x, 130).unwrap()))
+            .fold(1.0, f64::max);
+        assert!(
+            high_edge >= 3.0 && high_edge > normal_edge + 0.5,
+            "{scheme:?}: {normal_edge} -> {high_edge}"
+        );
+        assert_eq!(normal.pixel(10, 130), high.pixel(10, 130));
+        assert_eq!(normal.pixel(410, 130), high.pixel(410, 130));
+        let focus_contrast = |pixel| contrast(field_fill, pixel);
+        let normal_ring = (21..=24)
+            .map(|x| focus_contrast(normal_focus.pixel(x, 130).unwrap()))
+            .fold(1.0, f64::max);
+        let high_ring = (21..=24)
+            .map(|x| focus_contrast(high_focus.pixel(x, 130).unwrap()))
+            .fold(1.0, f64::max);
+        assert!(
+            high_ring > normal_ring,
+            "{scheme:?} focus: {normal_ring} -> {high_ring}"
+        );
+        let heading_ink = |frame: &xrack_renderer_femtovg::Snapshot| {
+            (16..43)
+                .flat_map(|y| (20..176).map(move |x| (x, y)))
+                .map(|(x, y)| contrast(background, frame.pixel(x, y).unwrap()))
+                .fold(1.0, f64::max)
+        };
+        assert!(heading_ink(&high) >= 4.5 && heading_ink(&high) > heading_ink(&normal));
+        assert_eq!(normal.pixel(30, 72), high.pixel(30, 72));
+        assert_eq!(high.pixel(30, 282), Some([188, 80, 134, 255]));
+        assert!(std::rc::Rc::ptr_eq(&scene, &ui.render_shared()));
+        assert!(renderer.set_system_increased_contrast(false));
+        let restored = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+        assert_eq!(restored.pixel(20, 130), normal.pixel(20, 130));
+    }
+
+    let scroll = ScrollBarsDemo::new().render_shared();
+    let normal = renderer.snapshot(&scroll, 352, 272, 1.0, &input).unwrap();
+    assert!(renderer.set_system_increased_contrast(true));
+    let high = renderer.snapshot(&scroll, 352, 272, 1.0, &input).unwrap();
+    let thumb = |frame: &xrack_renderer_femtovg::Snapshot| {
+        contrast(
+            frame.pixel(295, 35).unwrap(),
+            frame.pixel(295, 190).unwrap(),
+        )
+    };
+    assert!(thumb(&high) >= 3.0 && thumb(&high) > thumb(&normal));
+
+    let mut ui = ThemeDemo::new();
+    ui.set_accent(Color(0xffffffff));
+    let scene = ui.render_shared();
+    let mut input = Interaction::default();
+    let closed = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+    input.pointer_move(&scene, &closed.layout, Point { x: 80.0, y: 181.0 });
+    input.pointer_press();
+    let target = input.pointer_release_target().unwrap();
+    assert!(input.open_choice_at_pointer(&scene, &closed.layout, target));
+    let choice = input.choice_menu(&scene, &closed.layout).unwrap();
+    let selected = choice.row_bounds(choice.highlighted.unwrap() - choice.first);
+    let menu = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+    let fill = menu
+        .pixel(
+            (selected.x + selected.width - 14.0) as u32,
+            (selected.y + selected.height * 0.5) as u32,
+        )
+        .unwrap();
+    assert!(
+        contrast([255; 4], fill) >= 4.5,
+        "readability on white accent: {fill:?}"
+    );
 }
 
 #[test]
@@ -13611,6 +13862,83 @@ fn rtl_feedback_mirrors_default_and_custom_indicators_in_both_backends() {
         );
     }
     assert_eq!(knobs[0], (knobs[1].1, knobs[1].0));
+}
+
+#[test]
+fn system_switch_labels_follow_state_and_direction_in_both_backends() {
+    use controls_ui::DirectionalFeedbackDemo;
+    use xrack_layout::ToggleGeometry;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = DirectionalFeedbackDemo::new();
+    let interpreter = interpret_example("examples/controls/controls.xr")
+        .create("DirectionalFeedbackDemo")
+        .unwrap();
+    let input = Interaction::default();
+    let path = [1, 1];
+    for (rtl, checked, enabled) in [
+        (false, true, true),
+        (false, false, true),
+        (true, true, false),
+        (true, false, true),
+    ] {
+        ui.set_rtl(rtl);
+        ui.set_wireless(checked);
+        ui.set_wireless_enabled(enabled);
+        interpreter.set("rtl", rtl.into()).unwrap();
+        interpreter.set("wireless", checked.into()).unwrap();
+        interpreter.set("wireless-enabled", enabled.into()).unwrap();
+        let scene = ui.render_shared();
+        let before = renderer.snapshot(&scene, 928, 620, 2.0, &input).unwrap();
+        let item = before.layout.at_path(&path).unwrap();
+        let track = ToggleGeometry::new(
+            scene.at_path(&path).unwrap(),
+            item.bounds,
+            item.layout_direction,
+        )
+        .indicator;
+        let marker_x = track.x + if rtl == checked { 27.0 } else { 9.0 };
+        let marker_y = track.y + 9.0;
+        let x = (marker_x * 2.0) as u32;
+        let y = (marker_y * 2.0) as u32;
+        let thumb_x = ((2.0 * track.x + track.width - marker_x) * 2.0) as u32;
+
+        assert!(renderer.set_system_switch_labels(true));
+        let labeled = renderer.snapshot(&scene, 928, 620, 2.0, &input).unwrap();
+        assert_eq!(
+            before.layout.at_path(&path).unwrap().bounds,
+            labeled.layout.at_path(&path).unwrap().bounds
+        );
+        assert_eq!(before.pixel(thumb_x, y), labeled.pixel(thumb_x, y));
+        if checked {
+            assert_ne!(before.pixel(x, y), labeled.pixel(x, y));
+            assert_eq!(before.pixel(x + 7, y), labeled.pixel(x + 7, y));
+        } else {
+            assert_eq!(before.pixel(x, y), labeled.pixel(x, y));
+            assert_ne!(before.pixel(x + 7, y), labeled.pixel(x + 7, y));
+        }
+        // The second switch in the demo supplies its own track and thumb.
+        let custom = before.layout.at_path(&[1, 7]).unwrap().bounds;
+        for y in (2.0 * custom.y) as u32..(2.0 * (custom.y + custom.height)) as u32 {
+            for x in (2.0 * custom.x) as u32..(2.0 * (custom.x + custom.width)) as u32 {
+                assert_eq!(before.pixel(x, y), labeled.pixel(x, y));
+            }
+        }
+        let interpreted = renderer
+            .snapshot(&interpreter.render(), 928, 620, 2.0, &input)
+            .unwrap();
+        assert_same_pixels(&labeled, &interpreted);
+        assert!(std::rc::Rc::ptr_eq(&scene, &ui.render_shared()));
+        assert_eq!(ui.get_wireless_changes(), 0);
+        assert!(!renderer.set_system_switch_labels(true));
+        assert!(renderer.set_system_switch_labels(false));
+        let restored = renderer.snapshot(&scene, 928, 620, 2.0, &input).unwrap();
+        assert_same_pixels(&restored, &before);
+    }
 }
 
 #[test]

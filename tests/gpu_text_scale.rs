@@ -1,6 +1,6 @@
 use super::{assert_same_pixels, interpret_example};
 use bundled_ui::BundledFontsDemo;
-use xrack_layout::{Interaction, Size};
+use xrack_layout::{Interaction, Size, TextPosition};
 use xrack_renderer_femtovg::{Renderer, TextSystem};
 use xrack_runtime::{Component, Length, Node};
 
@@ -62,4 +62,45 @@ fn platform_text_scaling_remeasures_and_paints_both_execution_backends() {
     let after_title = after.children[0].dialog_title_height(&window.children[0]);
     assert!(after_title > before_title);
     assert!(after.children[0].children[0].bounds.y > before.children[0].children[0].bounds.y);
+}
+
+#[test]
+fn platform_bold_text_remeasures_and_paints_both_execution_backends() {
+    let mut renderer = pollster::block_on(Renderer::with_text(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+        TextSystem::bundled_only(),
+    ))
+    .unwrap();
+    let source = BundledFontsDemo::new().render();
+    let interpreter = interpret_example("examples/layout/bundled.xr")
+        .create("BundledFontsDemo")
+        .unwrap();
+    let input = Interaction::default();
+    let entry = source.find("entry").unwrap();
+    let text = entry.text("text").unwrap();
+    let end = TextPosition {
+        offset: text.len(),
+        trailing: true,
+    };
+    let normal = renderer.snapshot(&source, 420, 190, 1.0, &input).unwrap();
+    let normal_caret = renderer.text.single_line_layout(entry, text).caret_x(end);
+
+    assert!(renderer.set_system_bold_text(true));
+    let bold = renderer.snapshot(&source, 420, 190, 1.0, &input).unwrap();
+    let bold_caret = renderer.text.single_line_layout(entry, text).caret_x(end);
+    assert!((bold_caret - normal_caret).abs() > 0.5);
+    assert!((bold_caret - renderer.text.advance_node(entry, text)).abs() < 0.1);
+    assert_ne!(normal.rgba, bold.rgba);
+    let interpreted = renderer
+        .snapshot(&interpreter.render(), 420, 190, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&bold, &interpreted);
+
+    assert!(!renderer.set_system_bold_text(true));
+    assert!(renderer.set_system_bold_text(false));
+    let restored = renderer.snapshot(&source, 420, 190, 1.0, &input).unwrap();
+    assert_same_pixels(&normal, &restored);
+    let restored_caret = renderer.text.single_line_layout(entry, text).caret_x(end);
+    assert!((restored_caret - normal_caret).abs() < 0.1);
 }

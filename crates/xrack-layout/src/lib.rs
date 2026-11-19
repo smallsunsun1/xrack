@@ -68,7 +68,7 @@ pub use drag::{DragDispatch, DragUpdate};
 #[doc(hidden)]
 pub use edit::selection_drag_axis;
 pub use edit::{EditAction, TextEdit, TextEditContext, TextPosition};
-pub use file_drop::{FileDragInput, FileDropScope};
+pub use file_drop::{FileDragInput, FileDropScope, TextDrop};
 pub use focus_observers::{FocusDelivery, FocusObservers};
 pub use geometry::{Point, Rect, Size};
 pub use group_box::group_header;
@@ -84,7 +84,7 @@ pub use keyboard::KeyRoute;
 pub use label::{
     LabelLayout, LabelLine, LabelPlan, PlannedLabelLine, TextAlignment, uses_label_layout,
 };
-pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow};
+pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow, NativeTextMenu};
 pub use modal::{dialog_title_height, drawer_grip};
 pub use overscroll::OverscrollFrame;
 pub use page_indicator::{PageIndicatorGeometry, PageMarker};
@@ -212,6 +212,7 @@ pub struct LayoutNode {
     middle_mouse_pan: bool,
     pan_axes: [bool; 2],
     elastic: Option<overscroll::ElasticOptions>,
+    pull_to_refresh: bool,
     pub table: Option<Box<TableGeometry>>,
     pub split: Option<Box<SplitGeometry>>,
     /// Header hit box of a tab, independent of the page visibility.
@@ -309,6 +310,12 @@ impl<'a> WindowEffects<'a> {
 }
 
 impl LayoutNode {
+    /// Number of columns shared with GridView's virtual cell layout.
+    #[doc(hidden)]
+    pub fn grid_view_columns(&self, node: &Node) -> usize {
+        ViewCells::new(node, self.bounds.width).columns
+    }
+
     pub fn list_section_headers(&self) -> &[ListSectionHeader] {
         self.list_section_headers.as_deref().unwrap_or_default()
     }
@@ -837,6 +844,18 @@ pub fn set_window_safe_area(scene: &mut Node, insets: [f64; 4]) {
             scene.properties.remove(edge);
         }
     }
+}
+
+/// Supply the host's mirrored layout default to a prepared window scene.
+#[doc(hidden)]
+pub fn apply_system_layout_direction(mut scene: Rc<Node>, direction: LayoutDirection) -> Rc<Node> {
+    if direction == LayoutDirection::RightToLeft && scene.layout_direction().is_none() {
+        Rc::make_mut(&mut scene).properties.insert(
+            "layout-direction",
+            xrack_runtime::Value::LayoutDirection(direction),
+        );
+    }
+    scene
 }
 
 fn window_safe_area(node: &Node, bounds: Rect) -> Rect {
@@ -1515,6 +1534,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 middle_mouse_pan: false,
                 pan_axes: [false; 2],
                 elastic: None,
+                pull_to_refresh: false,
                 table: None,
                 split: None,
                 tab_header: None,
@@ -1677,6 +1697,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 middle_mouse_pan: tabs.is_some(),
                 pan_axes: [tabs.is_some(); 2],
                 elastic: None,
+                pull_to_refresh: false,
                 table: None,
                 split: None,
                 tab_header: None,
@@ -2378,6 +2399,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 [true; 2]
             },
             elastic: overscroll::ElasticOptions::from_node(node),
+            pull_to_refresh: node.boolean("pull-to-refresh", false),
             table,
             split,
             tab_header: None,

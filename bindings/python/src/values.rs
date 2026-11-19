@@ -769,6 +769,7 @@ bridge_values! {
         WheelEvent => WheelEvent,
     }
     enums {
+        AccessibleLive { Off, Polite, Assertive },
         ButtonDisplay { IconOnly, TextOnly, TextBesideIcon, TextUnderIcon },
         CheckState { Unchecked, PartiallyChecked, Checked },
         ColorScheme { System, Light, Dark },
@@ -792,6 +793,7 @@ bridge_values! {
         ImageTileMode { Stretch, Repeat, Round },
         ImageVerticalAlignment { Top, Center, Bottom },
         InputType { Text, Password, Number, Decimal, Search, Email, Url, Tel },
+        InputPurpose { Auto, Username, CurrentPassword, NewPassword, OneTimeCode },
         ReturnKey { Auto, Next, Done },
         LayoutAlignment { Stretch, Center, Start, End, SpaceBetween, SpaceAround, SpaceEvenly },
         LayoutDirection { LeftToRight, RightToLeft },

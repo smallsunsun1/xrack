@@ -18,7 +18,9 @@ export component HostValues inherits Window {
     in-out property <LayoutDirection> direction: LayoutDirection.left-to-right;
     in-out property <ButtonDisplay> presentation;
     in-out property <InputType> input-mode: InputType.email;
+    in-out property <InputPurpose> input-hint: InputPurpose.username;
     in-out property <ReturnKey> enter-action: ReturnKey.next;
+    in-out property <AccessibleLive> status-priority: AccessibleLive.polite;
     in-out property <Date> date;
     in-out property <Time> time;
     in-out property <Font> font;
@@ -109,7 +111,9 @@ class BindingTest(unittest.TestCase):
             self.assertEqual(ui.get("ink"), ink)
             self.assertEqual(ui.get("presentation"), xrack.ButtonDisplay.TextBesideIcon)
             self.assertEqual(ui.get("input-mode"), xrack.InputType.Email)
+            self.assertEqual(ui.get("input-hint"), xrack.InputPurpose.Username)
             self.assertEqual(ui.get("enter-action"), xrack.ReturnKey.Next)
+            self.assertEqual(ui.get("status-priority"), xrack.AccessibleLive.Polite)
             self.assertEqual(ink.rgba, (0x12, 0x34, 0x56, 255))
             accent = xrack.Color(200, 100, 25)
             brush = xrack.Brush.linear(
@@ -126,7 +130,9 @@ class BindingTest(unittest.TestCase):
                 ("presentation", xrack.ButtonDisplay.TextUnderIcon),
                 ("input-mode", xrack.InputType.Url),
                 ("input-mode", xrack.InputType.Tel),
+                ("input-hint", xrack.InputPurpose.OneTimeCode),
                 ("enter-action", xrack.ReturnKey.Done),
+                ("status-priority", xrack.AccessibleLive.Assertive),
             )
             for name, value in properties:
                 ui.set(name, value)

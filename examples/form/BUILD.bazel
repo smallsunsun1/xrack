@@ -9,8 +9,16 @@ xr_ui_library(
 )
 
 exports_files(
-    ["form.xr", "widgets.xr"],
+    ["form.xr"],
     visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    ["widgets.xr"],
+    visibility = [
+        "//examples/android:__pkg__",
+        "//tests:__pkg__",
+    ],
 )
 
 rust_binary(

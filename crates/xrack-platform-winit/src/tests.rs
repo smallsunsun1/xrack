@@ -16,6 +16,19 @@ mod android_back;
 mod keyboard_touch;
 
 #[test]
+fn character_space_activates_controls_like_named_space() {
+    assert_eq!(
+        activation_key_value(&Key::Character(" ".into())),
+        Some(ActivationKey::Space)
+    );
+    assert_eq!(
+        activation_key_value(&Key::Named(NamedKey::Space)),
+        Some(ActivationKey::Space)
+    );
+    assert_eq!(activation_key_value(&Key::Character("x".into())), None);
+}
+
+#[test]
 fn native_cursor_resolution_prefers_resize_then_explicit_shapes_then_text() {
     use xrack_layout::{TextMeasurer, layout};
     use xrack_runtime::{HoverHandle, Length};

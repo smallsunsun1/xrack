@@ -18,6 +18,17 @@ pub enum InputType {
     Tel,
 }
 
+/// Native autofill hint for a single-line text editor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InputPurpose {
+    #[default]
+    Auto,
+    Username,
+    CurrentPassword,
+    NewPassword,
+    OneTimeCode,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReturnKey {
     #[default]
@@ -181,6 +192,14 @@ impl Node {
             ("TextInput" | "LineEdit", Some(Value::InputType(mode))) => *mode,
             ("ComboBox", Some(Value::InputType(mode))) if combo_editable(self) => *mode,
             _ => InputType::Text,
+        }
+    }
+
+    pub fn input_purpose(&self) -> InputPurpose {
+        match (self.kind, self.properties.get("input-purpose")) {
+            ("TextInput" | "LineEdit", Some(Value::InputPurpose(purpose))) => *purpose,
+            ("ComboBox", Some(Value::InputPurpose(purpose))) if combo_editable(self) => *purpose,
+            _ => InputPurpose::Auto,
         }
     }
 

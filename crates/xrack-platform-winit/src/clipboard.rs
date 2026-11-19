@@ -1,4 +1,6 @@
 use crate::{ClipboardShortcut, UserEvent, desktop::WindowEvents};
+#[cfg(target_os = "android")]
+use android_activity::AndroidApp;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 use std::{
     sync::{
@@ -9,8 +11,6 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-#[cfg(target_os = "android")]
-use winit::platform::android::activity::AndroidApp;
 use xrack_layout::{Interaction, TextEditContext};
 use xrack_runtime::{Node, TextCommand};
 

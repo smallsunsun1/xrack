@@ -1,11 +1,11 @@
 use crate::{
-    LayoutNode, Point, Target,
+    Interaction, LayoutNode, Point, Target, TextEditContext,
     drag::{Context, DragUpdate, send},
 };
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 use xrack_runtime::{DragAction, DragEvent, Length, Node, Value};
 
-/// Native file drags carry a whole pasteboard batch and a window-local position.
+/// Native file drags carry a batch and a window-local position.
 #[derive(Debug)]
 pub enum FileDragInput {
     Moved {
@@ -13,11 +13,32 @@ pub enum FileDragInput {
         point: Point,
         paths: Arc<[String]>,
     },
+    /// Promised files may expose extensions before they expose local paths.
+    Offered {
+        sequence: u64,
+        point: Point,
+        extensions: Arc<[Option<String>]>,
+    },
     Dropped {
         sequence: u64,
         point: Point,
         paths: Arc<[String]>,
         target: Target,
+    },
+    /// An asynchronous drop has copied its complete batch into local storage.
+    Copied {
+        sequence: u64,
+        point: Point,
+        paths: Arc<[String]>,
+        target: Target,
+    },
+    /// An accepted asynchronous drop could not prepare or copy its files.
+    Failed {
+        sequence: u64,
+        point: Point,
+        extensions: Arc<[Option<String>]>,
+        target: Target,
+        message: String,
     },
     Left {
         sequence: u64,
@@ -31,9 +52,84 @@ pub struct FileDropScope {
     pub(crate) popups: Vec<Vec<usize>>,
     pub(crate) transitions: BTreeSet<Vec<usize>>,
     pub(crate) blocked: bool,
+    pub(crate) text_composing: bool,
+    pub(crate) swiping: Option<Vec<usize>>,
+}
+
+/// The destination and editing state observed before a native provider starts loading.
+#[doc(hidden)]
+pub struct TextDrop {
+    target: Target,
+    point: Point,
+    text: String,
+    password: bool,
+    focus: Option<Target>,
+    editor: Option<TextEditContext>,
+}
+
+impl TextDrop {
+    pub fn capture(
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        target: Target,
+    ) -> Option<Self> {
+        if input
+            .file_drop_scope(layout)
+            .text_target(scene, layout, point)?
+            != target
+        {
+            return None;
+        }
+        let node = target.node_in(scene)?;
+        Some(Self {
+            text: input.editor_value(node).into_owned(),
+            password: node.is_password(),
+            focus: input.focused.clone(),
+            editor: TextEditContext::capture(input, scene),
+            target,
+            point,
+        })
+    }
+
+    pub fn destination(
+        &self,
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        scope: &FileDropScope,
+    ) -> Option<(&Target, Point)> {
+        let node = self.target.node_in(scene)?;
+        if input.focused != self.focus
+            || self
+                .editor
+                .as_ref()
+                .is_some_and(|editor| !editor.is_current(input, scene))
+            || input.editor_value(node) != self.text
+            || node.is_password() != self.password
+            || scope.text_target(scene, layout, self.point).as_ref() != Some(&self.target)
+        {
+            return None;
+        }
+        Some((&self.target, self.point))
+    }
 }
 
 impl FileDropScope {
+    pub(crate) fn scope_at(&self, layout: &LayoutNode, point: Point) -> &[usize] {
+        self.popups
+            .iter()
+            .find(|path| {
+                layout
+                    .at_path(path)
+                    .is_some_and(|item| item.bounds.contains(point))
+            })
+            .map(Vec::as_slice)
+            .or(self.modal.as_deref())
+            .unwrap_or_default()
+    }
+
     pub fn target(
         &self,
         scene: &Node,
@@ -41,10 +137,22 @@ impl FileDropScope {
         point: Point,
         paths: &[String],
     ) -> Option<Target> {
-        self.hit(scene, layout, point, paths).map(|hit| hit.target)
+        self.hit_paths(scene, layout, point, paths)
+            .map(|hit| hit.target)
     }
 
-    fn hit(
+    pub fn target_for_extensions(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        extensions: &[Option<String>],
+    ) -> Option<Target> {
+        self.hit_extensions(scene, layout, point, extensions)
+            .map(|hit| hit.target)
+    }
+
+    fn hit_paths(
         &self,
         scene: &Node,
         layout: &LayoutNode,
@@ -54,28 +162,56 @@ impl FileDropScope {
         if paths.is_empty() || paths.iter().any(|path| !Path::new(path).is_absolute()) {
             return None;
         }
-        let scope = self
-            .popups
-            .iter()
-            .find(|path| {
-                layout
-                    .at_path(path)
-                    .is_some_and(|item| item.bounds.contains(point))
+        self.hit(scene, layout, point, |filters| {
+            paths.iter().all(|path| {
+                accepts_extension(
+                    filters,
+                    Path::new(path).extension().and_then(|ext| ext.to_str()),
+                )
             })
-            .map(Vec::as_slice)
-            .or(self.modal.as_deref())
-            .unwrap_or_default();
+        })
+    }
+
+    fn hit_extensions(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        extensions: &[Option<String>],
+    ) -> Option<FileHit> {
+        if extensions.is_empty() {
+            return None;
+        }
+        self.hit(scene, layout, point, |filters| {
+            extensions.iter().all(|ext| {
+                ext.as_deref()
+                    .is_none_or(|ext| accepts_extension(filters, Some(ext)))
+            })
+        })
+    }
+
+    fn hit(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        extensions_match: impl Fn(&[String]) -> bool,
+    ) -> Option<FileHit> {
         let context = Context {
             scene,
             layout,
-            scope,
+            scope: self.scope_at(layout, point),
             modal: self.modal.as_deref(),
             transitions: &self.transitions,
             blocked: self.blocked,
         };
         let (target, local) = context.find(point, &|node, item| {
             let point = item.map_from_window(point)?;
-            accepts(node, paths).then_some(Point {
+            (node.kind == "DropArea"
+                && node.boolean("accept-files", false)
+                && !matches!(node.properties.get("drop-action"), Some(Value::DragAction(action)) if *action != DragAction::Copy)
+                && extensions_match(node.strings("file-extensions")))
+            .then_some(Point {
                 x: point.x - item.bounds.x,
                 y: point.y - item.bounds.y,
             })
@@ -84,24 +220,12 @@ impl FileDropScope {
     }
 }
 
-fn accepts(node: &Node, paths: &[String]) -> bool {
-    if node.kind != "DropArea"
-        || !node.boolean("accept-files", false)
-        || matches!(node.properties.get("drop-action"), Some(Value::DragAction(action)) if *action != DragAction::Copy)
-    {
-        return false;
-    }
-    let filters = node.strings("file-extensions");
+fn accepts_extension(filters: &[String], extension: Option<&str>) -> bool {
     filters.is_empty()
-        || paths.iter().all(|path| {
-            Path::new(path)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    filters.iter().any(|filter| {
-                        extension.eq_ignore_ascii_case(filter.trim_start_matches('.'))
-                    })
-                })
+        || extension.is_some_and(|extension| {
+            filters
+                .iter()
+                .any(|filter| extension.eq_ignore_ascii_case(filter.trim_start_matches('.')))
         })
 }
 
@@ -116,7 +240,28 @@ struct Hover {
     sequence: u64,
     point: Point,
     hit: FileHit,
-    paths: Arc<[String]>,
+    offer: Offer,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Offer {
+    Paths(Arc<[String]>),
+    Extensions(Arc<[Option<String>]>),
+}
+
+impl Offer {
+    fn hit(
+        &self,
+        scope: &FileDropScope,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<FileHit> {
+        match self {
+            Self::Paths(paths) => scope.hit_paths(scene, layout, point, paths),
+            Self::Extensions(extensions) => scope.hit_extensions(scene, layout, point, extensions),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -138,21 +283,43 @@ impl FileDrag {
         input: FileDragInput,
     ) -> DragUpdate {
         let mut update = DragUpdate::default();
+        let copied = matches!(input, FileDragInput::Copied { .. });
         match input {
             FileDragInput::Moved {
                 sequence,
                 point,
                 paths,
             } if self.completed != Some(sequence) => {
-                let next = scope.hit(scene, layout, point, &paths).map(|hit| Hover {
+                let offer = Offer::Paths(paths);
+                let next = offer.hit(scope, scene, layout, point).map(|hit| Hover {
                     sequence,
                     point,
                     hit,
-                    paths,
+                    offer,
+                });
+                self.update_hover(next, &mut update);
+            }
+            FileDragInput::Offered {
+                sequence,
+                point,
+                extensions,
+            } if self.completed != Some(sequence) => {
+                let offer = Offer::Extensions(extensions);
+                let next = offer.hit(scope, scene, layout, point).map(|hit| Hover {
+                    sequence,
+                    point,
+                    hit,
+                    offer,
                 });
                 self.update_hover(next, &mut update);
             }
             FileDragInput::Dropped {
+                sequence,
+                point,
+                paths,
+                target,
+            }
+            | FileDragInput::Copied {
                 sequence,
                 point,
                 paths,
@@ -164,8 +331,11 @@ impl FileDrag {
                         hover.sequence == sequence && hover.hit.target == target
                     }) {
                         self.hover = None;
-                    } else {
+                    } else if !copied {
                         self.update_hover(None, &mut update);
+                    }
+                    if copied {
+                        send(&mut update, &target, DragEvent::FilesEntered(paths.clone()));
                     }
                     send(&mut update, &target, DragEvent::FilesDropped(paths));
                 } else if self
@@ -174,6 +344,29 @@ impl FileDrag {
                     .is_some_and(|hover| hover.sequence == sequence)
                 {
                     self.update_hover(None, &mut update);
+                }
+            }
+            FileDragInput::Failed {
+                sequence,
+                point,
+                extensions,
+                target,
+                message,
+            } if self.completed != Some(sequence) => {
+                self.completed = Some(sequence);
+                if self
+                    .hover
+                    .as_ref()
+                    .is_some_and(|hover| hover.sequence == sequence)
+                {
+                    self.update_hover(None, &mut update);
+                }
+                if scope
+                    .target_for_extensions(scene, layout, point, &extensions)
+                    .as_ref()
+                    == Some(&target)
+                {
+                    send(&mut update, &target, DragEvent::FilesFailed(message));
                 }
             }
             FileDragInput::Left { sequence }
@@ -197,8 +390,10 @@ impl FileDrag {
     ) -> DragUpdate {
         let mut update = DragUpdate::default();
         if let Some(hover) = &self.hover
-            && scope
-                .target(scene, layout, hover.point, &hover.paths)
+            && hover
+                .offer
+                .hit(scope, scene, layout, hover.point)
+                .map(|hit| hit.target)
                 .as_ref()
                 != Some(&hover.hit.target)
         {
@@ -221,17 +416,19 @@ impl FileDrag {
             .is_some_and(|(old, new)| {
                 old.sequence == new.sequence
                     && old.hit.target == new.hit.target
-                    && (Arc::ptr_eq(&old.paths, &new.paths) || old.paths == new.paths)
+                    && old.offer == new.offer
             });
         if !same {
             if let Some(old) = &self.hover {
                 send(update, &old.hit.target, DragEvent::Exited);
             }
-            if let Some(new) = &next {
+            if let Some(new) = &next
+                && let Offer::Paths(paths) = &new.offer
+            {
                 send(
                     update,
                     &new.hit.target,
-                    DragEvent::FilesEntered(new.paths.clone()),
+                    DragEvent::FilesEntered(paths.clone()),
                 );
             }
         }

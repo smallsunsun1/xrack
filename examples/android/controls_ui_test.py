@@ -15,6 +15,7 @@ from examples.android.simulator_ui_test import (
     Screen,
     pixel_rgb,
     pixels_rgb,
+    test_input_method,
 )
 
 
@@ -35,7 +36,8 @@ class ControlsEmulator(Emulator):
                 r"|Zoom|Angle|Starts|Ends|Cancels|Taps"
                 r"|Dial|Dial releases|Released at|Bulk edits|Item edits"
                 r"|Folds|Groups|Saves|Presses|Holds|Steps|Step cancels|Step releases"
-                r"|Confirmations|Commands|Pairs|Paired after|Other taps) ([0-9OoIl]+)",
+                r"|Confirmations|Commands|Pairs|Paired after|Other taps"
+                r"|Range edits|Range releases|Finishes) ([0-9OoIl]+)",
                 label.text,
             )
             text = label.text
@@ -297,6 +299,8 @@ def exercise_dial(ui: Emulator, frame: Surface) -> None:
         )
 
     def move(dx: float, dy: float) -> None:
+        # Let Android sample each position of the held contact separately.
+        time.sleep(0.08)
         ui.send_touch(*frame.touch_position(point(dx, dy)))
 
     def state(
@@ -393,6 +397,93 @@ def exercise_dial(ui: Emulator, frame: Surface) -> None:
             screen.find("Open dial") is not None
             and screen.find("Lock inputs") is not None
             and screen.find("Dial controls") is None
+        ),
+    )
+
+
+def exercise_range_handles(ui: Emulator, initial: Screen, frame: Surface) -> None:
+    ui.tap(initial, "Open dial")
+    ui.tap(ui.visible("Dial controls", "Range"), "Range")
+
+    def state(
+        low: int, high: int, edits: int, *labels: str, releases: int | None = None
+    ) -> Screen:
+        return ui.visible(
+            "Range handles",
+            f"Band {low} to {high}",
+            f"Range edits {edits}",
+            f"Range releases {edits if releases is None else releases}",
+            "Callbacks ordered",
+            *labels,
+        )
+
+    idle = state(50, 50, 0, "Preview idle", "Drag the handles")
+    caption = idle.require("Drag the handles")
+    # The heading and track are centered in the panel. The track center is
+    # 59 logical pixels below the heading, and the 30px handle leaves 268px of travel.
+    y = round(caption.y * idle.height + 59 * frame.scale)
+
+    def point(position: float) -> tuple[int, int]:
+        return round(caption.x * idle.width + (position - 0.5) * 268 * frame.scale), y
+
+    def handles(screen: Screen, lower: float, upper: float) -> Screen:
+        def matches(candidate: Screen) -> bool:
+            return pixels_rgb(candidate.png, (point(lower), point(upper))) == (
+                (178, 79, 61),
+                (32, 121, 104),
+            )
+
+        if matches(screen):
+            return screen
+        return ui.wait_for(
+            f"lower and upper handles at {lower} and {upper}", matches, timeout=8
+        )
+
+    with pressed_contact(ui, frame, 0, point(0.5)):
+        x, row = point(0.5)
+        ui.send_touch(
+            *frame.touch_position(
+                (x + round(3 * frame.scale), row + round(5 * frame.scale))
+            )
+        )
+        state(50, 50, 0, "Preview idle")
+        ui.send_touch(*frame.touch_position(point(0.28)))
+        preview = handles(state(50, 50, 0, "Preview lower"), 0.28, 0.5)
+    committed = state(30, 50, 1, "Preview idle", "Mirror range")
+    handles(committed, 0.3, 0.5)
+
+    ui.tap(committed, "Mirror range")
+    mirrored = state(30, 50, 1, "Preview idle", "RTL range")
+    handles(mirrored, 0.7, 0.5)
+    with drag_contact(ui, frame, point(0.7), point(0.82)):
+        handles(state(30, 50, 1, "Preview lower"), 0.82, 0.5)
+        ui.call("shell", "input", "keyevent", "KEYCODE_HOME")
+        ui.wait_for(
+            "the window leaves the foreground while the range preview is held",
+            lambda screen: screen.find("Range handles") is None,
+        )
+    ui.call("shell", "am", "start", "-W", "-n", ACTIVITY)
+    restored = state(30, 50, 1, "Preview idle", "Reset range")
+    restored = handles(restored, 0.7, 0.5)
+    ui.tap(restored, "Reset range")
+    state(50, 50, 1, "Preview idle", "RTL range")
+    with drag_contact(ui, frame, point(0.5), point(0.28)):
+        handles(state(50, 50, 1, "Preview upper"), 0.5, 0.28)
+    final = handles(state(50, 70, 2, "Preview idle", "RTL range"), 0.5, 0.3)
+    with pressed_contact(ui, frame, 0, point(0.3)):
+        time.sleep(0.25)
+    state(50, 70, 2, "Preview idle", releases=3)
+
+    ui.artifacts.mkdir(parents=True, exist_ok=True)
+    (ui.artifacts / "range-preview.png").write_bytes(preview.png)
+    (ui.artifacts / "range-restored.png").write_bytes(restored.png)
+    (ui.artifacts / "range-rtl.png").write_bytes(final.png)
+    ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
+    ui.wait_for(
+        "Back closes only the range dialog",
+        lambda screen: (
+            screen.find("Dial controls") is not None
+            and screen.find("Range handles") is None
         ),
     )
 
@@ -552,6 +643,7 @@ def exercise_connection_profile(ui: Emulator, initial: Screen, frame: Surface) -
     )
     assert closed.find("Apply target") is None
     collapsed_gap = draft_gap(closed, "Draft empty")
+    restored_title_y = closed.require("Connection profile").y
     ui.tap(closed, "Advanced target")
     expanded = ui.visible(
         "Connection profile", "Server target", "Apply target", "Folds 1", "Draft empty"
@@ -592,21 +684,31 @@ def exercise_connection_profile(ui: Emulator, initial: Screen, frame: Surface) -
         "Disable delivery",
     )
     keyboard_visible(ui, False)
-    disabled = ui.visible(
-        "Connection profile",
-        "Delivery off",
-        "Delivery focus",
-        "Apply target",
-        "Draft devhost",
-        "Folds 3",
-        "Groups 0",
-        "Saves 0",
+    # Android can report the IME hidden before the dialog recenters.
+    disabled = ui.wait_for(
+        "delivery is disabled and the dialog has returned to its keyboard-free position",
+        lambda screen: (
+            (title := screen.find("Connection profile")) is not None
+            and abs(title.y - restored_title_y) * screen.height < 6 * frame.scale
+            and all(
+                screen.find(label) is not None
+                for label in (
+                    "Delivery off",
+                    "Delivery focus",
+                    "Apply target",
+                    "Draft devhost",
+                    "Folds 3",
+                    "Groups 0",
+                    "Saves 0",
+                )
+            )
+        ),
     )
     assert abs(draft_gap(disabled, "Draft devhost") - open_gap) < 4, (
         "Disabling the group moved its content"
     )
     ui.tap(disabled, "Apply target")
-    ui.visible("Delivery focus", "Delivery off", "Saves 0")
+    ui.visible("Delivery focus", "Delivery off", "Groups 0", "Saves 0")
     press("SPACE")
     enabled = ui.visible(
         "Delivery on",
@@ -757,7 +859,8 @@ def exercise_delay_confirmation(ui: Emulator, initial: Screen, frame: Surface) -
         return ui.call("exec-out", "screencap", "-p")
 
     ready = state(0, "Hold to verify", "Ready to hold", "Scroll guide")
-    anchor = point(ready, "Hold to verify")
+    initial_anchor = point(ready, "Hold to verify")
+    anchor = initial_anchor
     assert paint(ready.png, anchor) == (False, False)
     ui.tap(ready, "Hold to verify")
     state(0, "Ready to hold")
@@ -781,7 +884,36 @@ def exercise_delay_confirmation(ui: Emulator, initial: Screen, frame: Surface) -
             and paint(screen.png, anchor) == (False, False)
         ),
     )
+    started = time.monotonic()
     with ui.press_contact(point(canceled, "Hold to verify")):
+        before_background = capture_pending()
+        ui.call("shell", "input", "keyevent", "KEYCODE_HOME")
+        ui.wait_for(
+            "Android backgrounds the confirmation while the button is held",
+            lambda screen: (
+                screen.find("Hold confirmation") is None
+                and screen.find("XRack Controls") is None
+            ),
+        )
+        time.sleep(max(0.0, started + past_deadline - time.monotonic()))
+    assert paint(before_background, anchor) == (True, False), (
+        "No progress was painted before backgrounding"
+    )
+    ui.call("shell", "am", "start", "-W", "-n", ACTIVITY)
+    resumed = ui.wait_for(
+        "returning after the old deadline clears the fill and keeps confirmations at zero",
+        lambda screen: (
+            all(
+                screen.find(label)
+                for label in ("Hold to verify", "Ready to hold", "Confirmations 0")
+            )
+            and paint(screen.png, point(screen, "Hold to verify")) == (False, False)
+            and ui.window_accepts_touch(screen, ACTIVITY)
+        ),
+        timeout=75,
+    )
+    anchor = point(resumed, "Hold to verify")
+    with ui.press_contact(anchor):
         before_scroll = capture_pending()
         ui.move_contact(
             anchor, (anchor[0], anchor[1] - 125 * frame.scale / frame.height)
@@ -802,7 +934,7 @@ def exercise_delay_confirmation(ui: Emulator, initial: Screen, frame: Surface) -
         "the scroll view returns to the confirmation button",
         lambda screen: (
             screen.find("Hold to verify") is not None
-            and abs(point(screen, "Hold to verify")[1] - anchor[1]) < 0.009
+            and abs(point(screen, "Hold to verify")[1] - initial_anchor[1]) < 0.009
             and screen.find("Confirmations 0") is not None
         ),
     )
@@ -911,16 +1043,176 @@ def exercise_click_routes(ui: Emulator, initial: Screen, frame: Surface) -> None
     (ui.artifacts / "click-animation-canceled.png").write_bytes(canceled.png)
 
 
+def exercise_tag_format(ui: Emulator, initial: Screen, keyboard_apk: Path) -> None:
+    def key(label: str) -> None:
+        ui.tap(ui.visible(label), label)
+        ui.visible(f"{label} sent")
+
+    def read_buffer(report: str) -> None:
+        key("Read buffer")
+        # Vision can read the digit after the mask separator as a letter.
+        spellings = (
+            report,
+            report.replace("AB-1", "AB-I"),
+            report.replace("AB-1", "AB-l"),
+        )
+        ui.wait_for(report, lambda screen: any(screen.find(text) for text in spellings))
+
+    with test_input_method(ui, keyboard_apk):
+        ui.tap(initial, "Open dial")
+        ui.tap(ui.visible("Dial controls", "Tags"), "Tags")
+        ui.visible(
+            "Format asset tag", "AB1", "Tag empty", "Tag incomplete", "Compose ni"
+        )
+        # Traverse between the two fields so the keyboard may reflow the
+        # dialog without changing the target of a tap.
+        ui.call("shell", "input", "keyevent", "KEYCODE_TAB")
+        keyboard_visible(ui, False)
+        for letter in ("A", "C"):
+            ui.call(
+                "shell",
+                "input",
+                "keycombination",
+                "KEYCODE_CTRL_LEFT",
+                f"KEYCODE_{letter}",
+            )
+        ui.call("shell", "input", "keycombination", "KEYCODE_SHIFT_LEFT", "KEYCODE_TAB")
+        keyboard_visible(ui, True)
+        ui.call("shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_V")
+        ui.visible("Draft AB-1", "Tag incomplete")
+        read_buffer("At end with 4 chars AB-1")
+
+        key("Submit")
+        ui.visible("Draft AB-1", "Tag incomplete", "Saves 0", "Finishes 0")
+        keyboard_visible(ui, True)
+        key("Compose ni")
+        read_buffer("At end with 6 chars AB-1ni")
+        ui.visible("Draft AB-1", "Tag incomplete")
+        key("Commit Unicode")
+        read_buffer("At end with 4 chars AB-1")
+        ui.visible("Draft AB-1", "Tag incomplete", "Tag unsaved")
+
+        key("Commit number")
+        ui.visible("Draft AB-147", "Tag ready")
+        read_buffer("At end with 6 chars AB-147")
+        key("Reverse select")
+        read_buffer("Selected 6 chars AB-147")
+        key("Commit Unicode")
+        read_buffer("Selected 6 chars AB-147")
+        ui.visible("Draft AB-147", "Tag ready", "Saves 0", "Finishes 0")
+
+        # Done hides the keyboard, so its "sent" status can disappear before OCR.
+        ui.tap(ui.visible("Submit"), "Submit")
+        result = ("Saved AB-147", "Finished after save", "Saves 1", "Finishes 1")
+        ui.visible(*result)
+        keyboard_visible(ui, False)
+        saved = ui.wait_for(
+            "the formatted tag is saved once after the keyboard closes",
+            lambda screen: (
+                not screen.find("Compose ni")
+                and all(screen.find(text) for text in result)
+            ),
+        )
+        ui.artifacts.mkdir(parents=True, exist_ok=True)
+        (ui.artifacts / "tag-format-saved.png").write_bytes(saved.png)
+        ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
+        ui.wait_for(
+            "Back returns to the dial controls",
+            lambda screen: (
+                screen.find("Dial controls") is not None
+                and screen.find("Format asset tag") is None
+            ),
+        )
+
+
+def exercise_password_panel(ui: Emulator, initial: Screen) -> None:
+    ui.tap(initial, "Open holds")
+    ui.tap(ui.visible("Button holds", "Open privacy"), "Open privacy")
+
+    def ctrl(letter: str) -> None:
+        ui.call(
+            "shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", f"KEYCODE_{letter}"
+        )
+
+    def shows(screen: Screen, value: str) -> bool:
+        # Vision occasionally includes the input caret in the recognized text.
+        spellings = {value, value + "i", value + "l", value + "|"}
+        return any(
+            label.text.casefold().replace(" ", "") in spellings
+            for label in screen.labels
+        )
+
+    def masked(screen: Screen) -> bool:
+        return shows(screen, "xxxxx") and not shows(screen, "moss7")
+
+    ui.tap(ui.visible("Password privacy", "Probe sentinel", "checkpad"), "checkpad")
+    keyboard_visible(ui, True)
+    ctrl("A")
+    ctrl("C")
+    ui.tap(ui.visible("Clear probe", "Probe sentinel"), "Clear probe")
+    ui.visible("Probe empty")
+    ctrl("V")
+    ui.tap(ui.visible("Probe sentinel", "Clear probe"), "Clear probe")
+    ui.tap(ui.visible("Probe empty", "Test passphrase"), "Test passphrase")
+    ui.type_text("moss7")
+    ui.wait_for(
+        "the password binding receives the full value and the control paints five Xs",
+        lambda screen: screen.find("Bound match") is not None and masked(screen),
+    )
+
+    ctrl("A")
+    ctrl("C")
+    ctrl("X")
+    ui.tap(ui.visible("Bound match", "Reveal value"), "Reveal value")
+    ui.wait_for(
+        "reveal paints the bound value without changing it",
+        lambda screen: (
+            screen.find("Bound match") is not None
+            and screen.find("Mask value") is not None
+            and shows(screen, "moss7")
+        ),
+    )
+    ctrl("A")
+    ctrl("C")
+    ctrl("X")
+    ui.tap(ui.visible("Bound match", "Mask value"), "Mask value")
+    ui.tap(ui.visible("Reveal value", "Paste proof"), "Paste proof")
+    ctrl("V")
+    final = ui.wait_for(
+        "copy and cut preserve the password and clipboard in both visibility modes",
+        lambda screen: (
+            screen.find("Bound match") is not None
+            and screen.find("Probe sentinel") is not None
+            and masked(screen)
+        ),
+    )
+    ui.artifacts.mkdir(parents=True, exist_ok=True)
+    (ui.artifacts / "password-masked.png").write_bytes(final.png)
+    ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
+    keyboard_visible(ui, False)
+    ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
+    ui.wait_for(
+        "Back closes the password dialog after dismissing the keyboard",
+        lambda screen: (
+            screen.find("Button holds") is not None
+            and screen.find("Password privacy") is None
+        ),
+    )
+
+
 def exercise(
     ui: Emulator,
     apk: Path,
     *,
     dial_only: bool = False,
+    range_handles_only: bool = False,
     export_group_only: bool = False,
     connection_only: bool = False,
     button_holds_only: bool = False,
     delay_confirmation_only: bool = False,
     click_routes_only: bool = False,
+    password_only: bool = False,
+    format_keyboard: Path | None = None,
 ) -> None:
     rotation = ui.call("shell", "cmd", "window", "user-rotation").decode().split()
     try:
@@ -943,6 +1235,9 @@ def exercise(
         if dial_only:
             exercise_dial(ui, frame)
             return
+        if range_handles_only:
+            exercise_range_handles(ui, initial, frame)
+            return
         if export_group_only:
             exercise_export_group(ui, initial, frame)
             return
@@ -957,6 +1252,12 @@ def exercise(
             return
         if click_routes_only:
             exercise_click_routes(ui, initial, frame)
+            return
+        if password_only:
+            exercise_password_panel(ui, initial)
+            return
+        if format_keyboard is not None:
+            exercise_tag_format(ui, initial, format_keyboard)
             return
         drag(ui, frame, frame.slider(0.25), frame.slider(0.75))
         moved = ui.visible("Volume 75", "Releases 1")
@@ -1073,15 +1374,23 @@ def main() -> None:
     parser.add_argument("--adb", required=True, type=Path)
     scenario = parser.add_mutually_exclusive_group()
     scenario.add_argument("--dial-only", action="store_true")
+    scenario.add_argument("--range-handles-only", action="store_true")
     scenario.add_argument("--export-group-only", action="store_true")
     scenario.add_argument("--connection-only", action="store_true")
     scenario.add_argument("--button-holds-only", action="store_true")
     scenario.add_argument("--delay-confirmation-only", action="store_true")
     scenario.add_argument("--click-routes-only", action="store_true")
+    scenario.add_argument("--password-only", action="store_true")
+    scenario.add_argument("--tag-format-only", action="store_true")
+    parser.add_argument("--keyboard-apk", type=Path)
     args = parser.parse_args()
     adb = args.adb.resolve()
     if not adb.is_file() or not args.apk.is_file():
         parser.error("Both adb and the controls APK must exist")
+    if args.tag_format_only and (
+        args.keyboard_apk is None or not args.keyboard_apk.is_file()
+    ):
+        parser.error("The tag format test requires an existing --keyboard-apk")
     artifacts = Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "."))
     with tempfile.TemporaryDirectory() as temporary:
         recognize = Path(temporary) / "screen_text"
@@ -1101,11 +1410,14 @@ def main() -> None:
             ControlsEmulator(adb, args.serial, recognize, artifacts),
             args.apk.resolve(),
             dial_only=args.dial_only,
+            range_handles_only=args.range_handles_only,
             export_group_only=args.export_group_only,
             connection_only=args.connection_only,
             button_holds_only=args.button_holds_only,
             delay_confirmation_only=args.delay_confirmation_only,
             click_routes_only=args.click_routes_only,
+            password_only=args.password_only,
+            format_keyboard=args.keyboard_apk if args.tag_format_only else None,
         )
 
 

@@ -10,7 +10,7 @@ pub struct TextEdit {
     trailing: bool,
     preferred_x: Option<f32>,
     composition: Option<(u64, TextEditContext)>,
-    word_drag: Option<WordDrag>,
+    selection_drag: Option<SelectionDrag>,
     horizontal_drag_scroll: Option<f32>,
     pub(crate) password_echo: Option<crate::password::PasswordEcho>,
     pub preedit: String,
@@ -47,9 +47,47 @@ pub fn selection_drag_axis(
 }
 
 #[derive(Clone, Debug)]
-struct WordDrag {
+struct SelectionDrag {
+    unit: SelectionUnit,
     value: String,
     anchor: Range<usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SelectionUnit {
+    Word,
+    Paragraph,
+}
+
+impl SelectionUnit {
+    fn range(self, text: &str, position: TextPosition, password: bool) -> Range<usize> {
+        if password {
+            return 0..text.len();
+        }
+        match self {
+            Self::Word => TextEdit::word_at(text, position, false),
+            Self::Paragraph => {
+                let offset = boundary(text, position.offset);
+                let index = if position.trailing {
+                    text[..offset]
+                        .grapheme_indices(true)
+                        .next_back()
+                        .map_or(0, |(index, _)| index)
+                } else {
+                    offset
+                };
+                let separator = |c| matches!(c, '\n' | '\r' | '\u{2029}');
+                let start = text[..index]
+                    .char_indices()
+                    .rfind(|(_, character)| separator(*character))
+                    .map_or(0, |(index, character)| index + character.len_utf8());
+                let end = text[index..]
+                    .find(separator)
+                    .map_or(text.len(), |end| index + end);
+                start..end
+            }
+        }
+    }
 }
 
 /// A logical offset with affinity to the preceding grapheme at a bidi or wrap boundary.
@@ -206,7 +244,7 @@ impl TextEdit {
 
     pub fn place_caret(&mut self, text: &str, position: TextPosition, selecting: bool) {
         self.set_preedit(String::new(), None);
-        self.word_drag = None;
+        self.selection_drag = None;
         self.caret = boundary(text, position.offset);
         self.trailing = position.trailing;
         self.preferred_x = None;
@@ -218,6 +256,11 @@ impl TextEdit {
     pub fn set_selection(&mut self, text: &str, anchor: usize, focus: TextPosition) {
         self.place_caret(text, focus, false);
         self.anchor = boundary(text, anchor);
+    }
+
+    #[doc(hidden)]
+    pub fn has_committed_suggestion(&self, text: &str) -> bool {
+        !self.preedit.is_empty() && text[self.selection(text)] == self.preedit
     }
 
     pub(crate) fn word_at(text: &str, position: TextPosition, password: bool) -> Range<usize> {
@@ -252,8 +295,24 @@ impl TextEdit {
         password: bool,
         select_word: bool,
     ) {
-        let anchor = Self::word_at(text, position, password);
-        if select_word {
+        self.start_selection_drag(text, position, password, SelectionUnit::Word, select_word);
+    }
+
+    #[doc(hidden)]
+    pub fn start_paragraph_drag(&mut self, text: &str, position: TextPosition, password: bool) {
+        self.start_selection_drag(text, position, password, SelectionUnit::Paragraph, true);
+    }
+
+    fn start_selection_drag(
+        &mut self,
+        text: &str,
+        position: TextPosition,
+        password: bool,
+        unit: SelectionUnit,
+        select: bool,
+    ) {
+        let anchor = unit.range(text, position, password);
+        if select {
             self.set_selection(
                 text,
                 anchor.start,
@@ -265,22 +324,23 @@ impl TextEdit {
         } else {
             self.place_caret(text, position, false);
         }
-        self.word_drag = Some(WordDrag {
+        self.selection_drag = Some(SelectionDrag {
+            unit,
             value: text.to_owned(),
             anchor,
         });
     }
 
     #[doc(hidden)]
-    pub fn extend_word_drag(&mut self, text: &str, position: TextPosition) -> bool {
-        let Some(drag) = self.word_drag.take().filter(|drag| drag.value == text) else {
+    pub fn extend_selection_drag(&mut self, text: &str, position: TextPosition) -> bool {
+        let Some(drag) = self.selection_drag.take().filter(|drag| drag.value == text) else {
             return false;
         };
-        let word = Self::word_at(text, position, false);
-        let (anchor, caret, trailing) = if word.start < drag.anchor.start {
-            (drag.anchor.end, word.start, false)
+        let range = drag.unit.range(text, position, false);
+        let (anchor, caret, trailing) = if range.start < drag.anchor.start {
+            (drag.anchor.end, range.start, false)
         } else {
-            (drag.anchor.start, drag.anchor.end.max(word.end), true)
+            (drag.anchor.start, drag.anchor.end.max(range.end), true)
         };
         self.set_selection(
             text,
@@ -290,7 +350,7 @@ impl TextEdit {
                 trailing,
             },
         );
-        self.word_drag = Some(drag);
+        self.selection_drag = Some(drag);
         true
     }
 
@@ -360,7 +420,7 @@ impl TextEdit {
         overwrite: bool,
     ) -> Option<AppliedEdit> {
         self.set_preedit(String::new(), None);
-        self.word_drag = None;
+        self.selection_drag = None;
         self.preferred_x = None;
         self.trailing = matches!(
             action,
@@ -548,21 +608,23 @@ pub struct TextEditContext {
 }
 
 impl TextEditContext {
+    #[doc(hidden)]
+    pub fn clipboard_allowed(node: &Node, command: TextCommand, selected: bool) -> bool {
+        match command {
+            TextCommand::Copy => selected && !node.is_password(),
+            TextCommand::Cut => selected && !node.is_password() && !node.text_read_only(),
+            TextCommand::Paste => !node.text_read_only(),
+            _ => false,
+        }
+    }
+
     pub fn for_clipboard(input: &Interaction, scene: &Node, command: TextCommand) -> Option<Self> {
         let node = scene.interactive_at_path(&input.focused.as_ref()?.path)?;
-        if node.is_password() && command != TextCommand::Paste
-            || node.text_read_only() && command != TextCommand::Copy
-        {
+        if !Self::clipboard_allowed(node, command, true) {
             return None;
         }
         let context = Self::capture(input, scene)?;
-        match command {
-            TextCommand::Paste => Some(context),
-            TextCommand::Cut | TextCommand::Copy if !context.selection().is_empty() => {
-                Some(context)
-            }
-            _ => None,
-        }
+        Self::clipboard_allowed(node, command, !context.selection().is_empty()).then_some(context)
     }
 
     pub fn capture(input: &Interaction, scene: &Node) -> Option<Self> {
@@ -797,6 +859,33 @@ mod word_tests {
     }
 
     #[test]
+    fn pointer_paragraph_drag_keeps_paragraph_boundaries_in_both_directions() {
+        let text = "左端\r\nsecond e\u{301} 👩‍💻\u{2029}last line";
+        let second = text.find("second").unwrap();
+        let third = text.find("last").unwrap();
+        let position = |offset| TextPosition {
+            offset,
+            trailing: false,
+        };
+        let mut edit = TextEdit::default();
+        edit.start_paragraph_drag(text, position(second + 2), false);
+        assert_eq!(&text[edit.selection(text)], "second e\u{301} 👩‍💻");
+
+        assert!(edit.extend_selection_drag(text, position(third + 1)));
+        assert_eq!(
+            &text[edit.selection(text)],
+            "second e\u{301} 👩‍💻\u{2029}last line"
+        );
+        assert!(edit.extend_selection_drag(text, position(0)));
+        assert_eq!(&text[edit.selection(text)], "左端\r\nsecond e\u{301} 👩‍💻");
+        assert!(edit.extend_selection_drag(text, position(second)));
+        assert_eq!(&text[edit.selection(text)], "second e\u{301} 👩‍💻");
+
+        edit.start_paragraph_drag(text, position(0), true);
+        assert_eq!(edit.selection(text), 0..text.len());
+    }
+
+    #[test]
     fn pointer_word_drag_keeps_its_anchor_when_extending_and_reversing() {
         let text = "alpha e\u{301}clair 👩‍💻 猫";
         let selected = text.find('e').unwrap();
@@ -812,7 +901,7 @@ mod word_tests {
             true,
         );
         assert_eq!(&text[editor.selection(text)], "e\u{301}clair");
-        assert!(editor.extend_word_drag(
+        assert!(editor.extend_selection_drag(
             text,
             TextPosition {
                 offset: text.len(),
@@ -820,9 +909,9 @@ mod word_tests {
             }
         ));
         assert_eq!(&text[editor.selection(text)], "e\u{301}clair 👩‍💻 猫");
-        assert!(editor.extend_word_drag(text, TextPosition::default()));
+        assert!(editor.extend_selection_drag(text, TextPosition::default()));
         assert_eq!(&text[editor.selection(text)], "alpha e\u{301}clair");
-        assert!(editor.extend_word_drag(
+        assert!(editor.extend_selection_drag(
             text,
             TextPosition {
                 offset: selected,
@@ -830,7 +919,7 @@ mod word_tests {
             }
         ));
         assert_eq!(&text[editor.selection(text)], "e\u{301}clair");
-        assert!(!editor.extend_word_drag("replacement", TextPosition::default()));
+        assert!(!editor.extend_selection_drag("replacement", TextPosition::default()));
 
         editor.start_word_drag(text, TextPosition::default(), true, true);
         assert_eq!(editor.selection(text), 0..text.len());
@@ -841,7 +930,7 @@ mod word_tests {
         };
         editor.start_word_drag(text, position, false, false);
         assert_eq!(editor.selection(text), 2..2);
-        assert!(editor.extend_word_drag(
+        assert!(editor.extend_selection_drag(
             text,
             TextPosition {
                 offset: 3,

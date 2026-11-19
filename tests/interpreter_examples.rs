@@ -417,6 +417,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             NestedDataDemo,
             ItemDelegatesDemo,
             ListDemo,
+            RefreshDemo,
             ScrollBarsDemo,
             DirectionalScrollDemo,
             SectionedListDemo,

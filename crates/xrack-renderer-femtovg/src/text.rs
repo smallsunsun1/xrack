@@ -10,6 +10,11 @@ use xrack_layout::{
 };
 use xrack_runtime::{EmbeddedFonts, LayoutDirection, Node, TextStyle, TextWrap};
 
+#[cfg(target_os = "android")]
+use crate::{AndroidGlyphBitmap, android_emoji::Emoji};
+#[cfg(target_os = "ios")]
+use crate::{color_glyphs::ColorGlyphs, ios_font::NativeFont};
+
 pub(crate) fn fill_selected_text(
     canvas: &mut Canvas<WGPURenderer>,
     text_system: &TextSystem,
@@ -228,6 +233,13 @@ impl SceneFonts {
     }
 }
 
+#[cfg(target_os = "ios")]
+struct NativeFallback {
+    regular: (FontId, Rc<NativeFont>),
+    bold: Option<(FontId, Rc<NativeFont>)>,
+    bold_fonts: Vec<FontId>,
+}
+
 struct FontContext {
     identity: Rc<()>,
     families: Vec<String>,
@@ -235,8 +247,29 @@ struct FontContext {
     fallback: Vec<FontId>,
     catalog: RefCell<FontCatalog>,
     bundled: Option<RefCell<FontCatalog>>,
+    #[cfg(target_os = "android")]
+    emoji_font: Option<(FontId, std::path::PathBuf, u32)>,
     #[cfg(target_os = "ios")]
-    native_font: Option<(FontId, Rc<crate::ios_font::NativeFont>)>,
+    native_fallback: Option<NativeFallback>,
+    #[cfg(target_os = "ios")]
+    native_emoji: Option<(FontId, Rc<NativeFont>)>,
+}
+
+#[cfg(target_os = "android")]
+fn android_emoji_font(
+    db: &Database,
+    loaded: &HashMap<fontdb::ID, Option<FontId>>,
+) -> Option<(FontId, std::path::PathBuf, u32)> {
+    let id = db.query(&Query {
+        families: &[Family::Name("Noto Color Emoji")],
+        ..Default::default()
+    })?;
+    let font = loaded.get(&id).copied().flatten()?;
+    let face = db.face(id)?;
+    let fontdb::Source::File(path) = &face.source else {
+        return None;
+    };
+    Some((font, path.clone(), face.index))
 }
 
 impl FontContext {
@@ -259,6 +292,8 @@ impl FontContext {
         let mut db = Database::new();
         fonts.load(&mut db);
         let families = font_family_names(&system, Some(&db));
+        #[cfg(target_os = "android")]
+        let emoji_font = android_emoji_font(&system, &loaded);
         let catalog = RefCell::new(FontCatalog::new(system, loaded, fallback.first().copied()));
         let bundled = Some(RefCell::new(FontCatalog::new(db, HashMap::new(), None)));
         let result = Self {
@@ -268,12 +303,25 @@ impl FontContext {
             fallback,
             catalog,
             bundled,
+            #[cfg(target_os = "android")]
+            emoji_font,
             #[cfg(target_os = "ios")]
-            native_font: None,
+            native_fallback: None,
+            #[cfg(target_os = "ios")]
+            native_emoji: None,
         };
         #[cfg(target_os = "ios")]
-        let result = if let Some((_, native)) = &self.native_font {
-            result.with_native_font(native.clone())
+        let result = if let Some(native) = &self.native_fallback {
+            result.with_native_fallback(
+                native.regular.1.clone(),
+                native.bold.as_ref().map(|(_, font)| font.clone()),
+            )
+        } else {
+            result
+        };
+        #[cfg(target_os = "ios")]
+        let result = if let Some((_, emoji)) = &self.native_emoji {
+            result.with_native_emoji(emoji.clone())
         } else {
             result
         };
@@ -281,15 +329,65 @@ impl FontContext {
     }
 
     #[cfg(target_os = "ios")]
-    fn with_native_font(mut self, native: Rc<crate::ios_font::NativeFont>) -> Self {
-        if let Ok(id) = self
+    fn with_native_fallback(
+        mut self,
+        regular: Rc<NativeFont>,
+        bold: Option<Rc<NativeFont>>,
+    ) -> Self {
+        let Ok(regular_id) = self
             .context
-            .add_shared_font_with_index(native.data.clone(), 0)
-        {
-            self.fallback.insert(self.fallback.len().min(1), id);
-            self.fallback.truncate(8);
-            self.native_font = Some((id, native));
+            .add_shared_font_with_index(regular.data.clone(), 0)
+        else {
+            return self;
+        };
+        let position = self.fallback.len().min(1);
+        self.fallback.insert(position, regular_id);
+        self.fallback.truncate(8);
+        let bold = bold.and_then(|font| {
+            let id = self
+                .context
+                .add_shared_font_with_index(font.data.clone(), 0)
+                .ok()?;
+            Some((id, font))
+        });
+        let mut bold_fonts = self.fallback.clone();
+        if let Some((id, _)) = &bold {
+            bold_fonts[position] = *id;
         }
+        self.native_fallback = Some(NativeFallback {
+            regular: (regular_id, regular),
+            bold,
+            bold_fonts,
+        });
+        self
+    }
+
+    #[cfg(target_os = "ios")]
+    fn with_native_emoji(mut self, font: Rc<NativeFont>) -> Self {
+        let Ok(id) = self
+            .context
+            .add_shared_font_with_index(font.data.clone(), 0)
+        else {
+            return self;
+        };
+        let position = if self.native_fallback.is_some() { 2 } else { 1 };
+        let insert = |fonts: &mut Vec<FontId>| {
+            fonts.insert(position.min(fonts.len()), id);
+            fonts.truncate(8);
+        };
+        insert(&mut self.fallback);
+        if let Some(native) = &mut self.native_fallback {
+            insert(&mut native.bold_fonts);
+        }
+        let catalog = self.catalog.get_mut();
+        for face in catalog
+            .db
+            .faces()
+            .filter(|face| face.post_script_name == "AppleColorEmoji")
+        {
+            catalog.loaded.insert(face.id, Some(id));
+        }
+        self.native_emoji = Some((id, font));
         self
     }
 }
@@ -333,8 +431,13 @@ pub struct TextSystem {
     default_italic: bool,
     default_size: Option<f32>,
     text_scale: f32,
+    system_bold_text: bool,
     edit_layout: RefCell<Option<EditLayout>>,
     edit_line: RefCell<Option<EditLine>>,
+    #[cfg(target_os = "android")]
+    android_emoji: Option<RefCell<Emoji>>,
+    #[cfg(target_os = "ios")]
+    color_glyphs: RefCell<ColorGlyphs>,
 }
 
 impl TextSystem {
@@ -398,8 +501,19 @@ impl TextSystem {
         let mut fonts = Vec::new();
         let mut loaded = HashMap::new();
         let mut sources = Vec::new();
+        #[cfg(target_os = "ios")]
+        let color_emoji = NativeFont::with_post_script_name("AppleColorEmoji");
         // FemtoVG's fallback list holds at most eight font faces.
         for id in selected {
+            // Core Text supplies Apple Color Emoji's layout independently of the bitmap strikes.
+            #[cfg(target_os = "ios")]
+            if color_emoji.is_some()
+                && db
+                    .face(id)
+                    .is_some_and(|face| face.post_script_name == "AppleColorEmoji")
+            {
+                continue;
+            }
             if let Some(source) = db.with_face_data(id, |data, index| FallbackFace {
                 id: Some(id),
                 data: Arc::<[u8]>::from(data),
@@ -418,9 +532,19 @@ impl TextSystem {
         }
         let system = Self::new(db, context, fonts, loaded, sources);
         #[cfg(target_os = "ios")]
-        let system = if let Some(native) = crate::ios_font::NativeFont::ping_fang() {
+        let system = if let Some(regular) = NativeFont::with_post_script_name("PingFangSC-Regular")
+        {
             let mut system = system;
-            system.base = system.base.with_native_font(Rc::new(native));
+            let bold = NativeFont::with_post_script_name("PingFangSC-Semibold").map(Rc::new);
+            system.base = system.base.with_native_fallback(Rc::new(regular), bold);
+            system
+        } else {
+            system
+        };
+        #[cfg(target_os = "ios")]
+        let system = if let Some(emoji) = color_emoji {
+            let mut system = system;
+            system.base = system.base.with_native_emoji(Rc::new(emoji));
             system
         } else {
             system
@@ -465,6 +589,8 @@ impl TextSystem {
         fallback_sources: Vec<FallbackFace>,
     ) -> Self {
         let families = font_family_names(&db, None);
+        #[cfg(target_os = "android")]
+        let emoji_font = android_emoji_font(&db, &loaded);
         let catalog = RefCell::new(FontCatalog::new(db, loaded, fallback.first().copied()));
         Self {
             base: FontContext {
@@ -474,8 +600,12 @@ impl TextSystem {
                 fallback,
                 catalog,
                 bundled: None,
+                #[cfg(target_os = "android")]
+                emoji_font,
                 #[cfg(target_os = "ios")]
-                native_font: None,
+                native_fallback: None,
+                #[cfg(target_os = "ios")]
+                native_emoji: None,
             },
             fallback_sources,
             bundled: None,
@@ -485,8 +615,13 @@ impl TextSystem {
             default_italic: false,
             default_size: None,
             text_scale: 1.0,
+            system_bold_text: false,
             edit_layout: RefCell::default(),
             edit_line: RefCell::default(),
+            #[cfg(target_os = "android")]
+            android_emoji: None,
+            #[cfg(target_os = "ios")]
+            color_glyphs: RefCell::default(),
         }
     }
 
@@ -498,6 +633,24 @@ impl TextSystem {
         self.edit_layout.get_mut().take();
         self.edit_line.get_mut().take();
         true
+    }
+
+    pub(super) fn set_system_bold_text(&mut self, enabled: bool) -> bool {
+        if self.system_bold_text == enabled {
+            return false;
+        }
+        self.system_bold_text = enabled;
+        self.edit_layout.get_mut().take();
+        self.edit_line.get_mut().take();
+        true
+    }
+
+    fn effective_weight(&self, weight: u16) -> u16 {
+        if self.system_bold_text {
+            (weight + 200).min(900)
+        } else {
+            weight
+        }
     }
 
     pub fn set_window(&mut self, scene: &Node) {
@@ -545,6 +698,35 @@ impl TextSystem {
         &self.font_context().context
     }
 
+    #[cfg(target_os = "android")]
+    #[doc(hidden)]
+    pub fn set_android_glyph_rasterizer(
+        &mut self,
+        rasterize: impl Fn(&std::path::Path, u32, u16, u16) -> Option<AndroidGlyphBitmap> + 'static,
+    ) {
+        self.android_emoji = Some(RefCell::new(Emoji::new(Box::new(rasterize))));
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    pub(crate) fn begin_color_glyph_frame(&mut self, canvas_changed: bool) {
+        #[cfg(target_os = "android")]
+        if let Some(emoji) = &mut self.android_emoji {
+            emoji.get_mut().begin_frame(canvas_changed);
+        }
+        #[cfg(target_os = "ios")]
+        self.color_glyphs.get_mut().begin_frame(canvas_changed);
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    pub(crate) fn end_color_glyph_frame(&mut self, canvas: &mut Canvas<WGPURenderer>) {
+        #[cfg(target_os = "android")]
+        if let Some(emoji) = &mut self.android_emoji {
+            emoji.get_mut().end_frame(canvas);
+        }
+        #[cfg(target_os = "ios")]
+        self.color_glyphs.get_mut().end_frame(canvas);
+    }
+
     pub(crate) fn fill_text(
         &self,
         canvas: &mut Canvas<WGPURenderer>,
@@ -554,22 +736,40 @@ impl TextSystem {
         paint: &Paint,
     ) -> Result<TextMetrics, ErrorKind> {
         let metrics = canvas.fill_text(x, y, text, paint)?;
+        #[cfg(target_os = "android")]
+        if let Some((emoji, font)) = self
+            .android_emoji
+            .as_ref()
+            .zip(self.font_context().emoji_font.as_ref())
+        {
+            emoji.borrow_mut().draw(canvas, &metrics, paint, font);
+        }
         #[cfg(target_os = "ios")]
-        if let Some((font_id, font)) = &self.font_context().native_font {
-            for glyph in metrics
-                .glyphs
-                .iter()
-                .filter(|glyph| glyph.font_id == *font_id)
-            {
-                font.draw(
-                    canvas,
-                    glyph.glyph_id,
-                    Point {
-                        x: glyph.x,
-                        y: glyph.y,
-                    },
-                    paint,
-                );
+        if let Some((id, font)) = &self.font_context().native_emoji {
+            self.color_glyphs
+                .borrow_mut()
+                .draw(canvas, &metrics, paint, *id, |glyph, size| {
+                    font.rasterize_color_glyph(glyph, size)
+                });
+        }
+        #[cfg(target_os = "ios")]
+        if let Some(native) = &self.font_context().native_fallback {
+            for (font_id, font) in std::iter::once(&native.regular).chain(native.bold.as_ref()) {
+                for glyph in metrics
+                    .glyphs
+                    .iter()
+                    .filter(|glyph| glyph.font_id == *font_id)
+                {
+                    font.draw(
+                        canvas,
+                        glyph.glyph_id,
+                        Point {
+                            x: glyph.x,
+                            y: glyph.y,
+                        },
+                        paint,
+                    );
+                }
             }
         }
         Ok(metrics)
@@ -582,7 +782,7 @@ impl TextSystem {
     pub(crate) fn default_style(&self) -> (&str, u16, bool, Option<f32>) {
         (
             &self.default_family,
-            self.default_weight,
+            self.effective_weight(self.default_weight),
             self.default_italic,
             Some(self.default_size.unwrap_or(xrack_layout::DEFAULT_FONT_SIZE) * self.text_scale),
         )
@@ -609,6 +809,7 @@ impl TextSystem {
         });
         let family = if style.monospace { "monospace" } else { family };
         let weight = if style.bold { weight.max(700) } else { weight };
+        let weight = self.effective_weight(weight);
         let italic = italic || style.italic;
         let fonts = self.font_context();
         if family.is_empty() && weight == 400 && !italic && !fonts.fallback.is_empty() {
@@ -690,6 +891,13 @@ impl TextSystem {
     ) -> Paint {
         let mut paint = Paint::color(color);
         let fallback = &self.font_context().fallback;
+        #[cfg(target_os = "ios")]
+        let fallback = self
+            .font_context()
+            .native_fallback
+            .as_ref()
+            .filter(|_| self.system_bold_text)
+            .map_or(fallback, |native| &native.bold_fonts);
         if let Some(face) = face.and_then(|face| face.id) {
             let mut fonts = [face; 8];
             let fallback = fallback

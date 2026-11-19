@@ -1,4 +1,7 @@
 <resources>
+    <string name="xrack_mixed">部分选中</string>
+    <string name="xrack_expanded">已展开</string>
+    <string name="xrack_collapsed">已收起</string>
     <string name="xrack_dialog_yes">是</string>
     <string name="xrack_dialog_no">否</string>
 </resources>

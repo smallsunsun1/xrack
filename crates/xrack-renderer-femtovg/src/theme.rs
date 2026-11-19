@@ -73,6 +73,8 @@ pub(crate) enum PaletteRole {
 pub(crate) struct Palette {
     theme: Theme,
     light: bool,
+    increased_contrast: bool,
+    pub(crate) switch_labels: bool,
     accent: Option<Color>,
     on_accent: Option<Color>,
 }
@@ -86,7 +88,13 @@ impl Deref for Palette {
 }
 
 impl Palette {
-    pub(crate) fn resolve(fallback: Theme, scene: &Node, system: ColorScheme) -> Self {
+    pub(crate) fn resolve(
+        fallback: Theme,
+        scene: &Node,
+        system: ColorScheme,
+        increased_contrast: bool,
+        switch_labels: bool,
+    ) -> Self {
         let scheme = scene.color_scheme().map(|scheme| match scheme {
             ColorScheme::System => system,
             chosen => chosen,
@@ -97,19 +105,41 @@ impl Palette {
             Some(ColorScheme::Dark) => Theme::default(),
             Some(ColorScheme::System) | None => fallback,
         };
+        if increased_contrast {
+            (theme.text, theme.disabled_text, theme.button, theme.focus) = if light {
+                (
+                    Color(0x0b1324ff),
+                    Color(0x414f65ff),
+                    Color(0x19367fff),
+                    Color(0x1a397fff),
+                )
+            } else {
+                (
+                    Color(0xffffffff),
+                    Color(0xbccbe0ff),
+                    Color(0x9caeffff),
+                    Color(0xe4edffff),
+                )
+            };
+        }
         let accent = scene
             .color("accent-color")
             .map(|color| with_alpha(color, 255));
         if let Some(accent) = accent {
             theme.button = accent;
-            theme.focus = mix(accent, theme.text, 0.5);
+            if !increased_contrast {
+                theme.focus = mix(accent, theme.text, 0.5);
+            }
         }
-        let on_accent = (accent.is_some()
+        let on_accent = (increased_contrast
+            || accent.is_some()
             || matches!(scheme, Some(ColorScheme::Light | ColorScheme::Dark)))
         .then(|| contrasting_text(theme.button));
         Self {
             theme,
             light,
+            increased_contrast,
+            switch_labels,
             accent,
             on_accent,
         }
@@ -121,6 +151,10 @@ impl Palette {
 
     pub(crate) fn is_light(self) -> bool {
         self.light
+    }
+
+    pub(crate) fn outlines_fields(self) -> bool {
+        self.light || self.increased_contrast
     }
 
     pub(crate) fn editor_foreground(self, node: &Node, placeholder: bool, enabled: bool) -> Color {
@@ -173,17 +207,43 @@ impl Palette {
         };
         if let Some(accent) = self.accent {
             let surface = Color(if self.light { 0xffffffff } else { 0x27354dff });
+            // On dark surfaces, a bright accent must leave room for white text.
+            let (selection, active_column, text_selection, text_alpha, row_alpha) =
+                match (self.increased_contrast, self.light) {
+                    (true, true) => (0.36, 0.42, 0.60, 176, 88),
+                    (true, false) => (0.30, 0.32, 0.42, 176, 78),
+                    _ => (0.28, 0.36, 0.60, 155, 56),
+                };
             match role {
-                SelectedSurface | SelectedColumn => return mix(surface, accent, 0.28),
+                SelectedSurface | SelectedColumn => return mix(surface, accent, selection),
                 HoverSurface | InactiveSelection => return mix(surface, accent, 0.16),
-                ActiveColumn => return mix(surface, accent, 0.36),
-                TextSelection => return with_alpha(mix(surface, accent, 0.6), 155),
-                RowSelection => return with_alpha(accent, 56),
+                ActiveColumn => return mix(surface, accent, active_column),
+                TextSelection => {
+                    return with_alpha(mix(surface, accent, text_selection), text_alpha);
+                }
+                RowSelection => return with_alpha(accent, row_alpha),
                 SelectionOutline => return self.focus,
                 DelayProgress => return mix(accent, Color(0x000000ff), 0.22),
                 _ => {}
             }
         }
+        let (dark, light) = if self.increased_contrast {
+            match role {
+                Border | RaisedBorder => (0xbecee4ff, 0x414e64ff),
+                Divider | StrongDivider => (0x9aabc3ff, 0x58667cff),
+                Track | DialArc => (0x778caeff, 0x5e7196ff),
+                ScrollThumb | Grip => (0xe4edffff, 0x2c456cff),
+                SelectedSurface | SelectedColumn => (0x496492ff, 0xc0d5f8ff),
+                ActiveColumn => (0x506b9aff, 0xb1c9f1ff),
+                TextSelection => (0x355b98dc, 0xb6d0fce8),
+                RowSelection => (0x9ab8ff55, 0x3456ca3f),
+                SelectionOutline => return self.focus,
+                Disclosure => (0xe4edffff, 0x263b5dff),
+                _ => (dark, light),
+            }
+        } else {
+            (dark, light)
+        };
         Color(if self.light { light } else { dark })
     }
 }
@@ -201,7 +261,7 @@ fn mix(from: Color, to: Color, amount: f32) -> Color {
     Color(u32::from_be_bytes(bytes))
 }
 
-fn contrasting_text(color: Color) -> Color {
+pub(crate) fn contrasting_text(color: Color) -> Color {
     let [r, g, b, _] = color.0.to_be_bytes();
     let linear = |channel: u8| {
         let s = f64::from(channel) / 255.0;

@@ -1,4 +1,7 @@
 <resources>
     <string name="xrack_dialog_yes">Yes</string>
     <string name="xrack_dialog_no">No</string>
+    <string name="xrack_mixed">Partially checked</string>
+    <string name="xrack_expanded">Expanded</string>
+    <string name="xrack_collapsed">Collapsed</string>
 </resources>

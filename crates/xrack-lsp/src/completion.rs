@@ -1859,6 +1859,8 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                     items.add(event, FUNCTION, &detail);
                 } else if event == "editing-finished" {
                     items.add(event, FUNCTION, "event handler (string, bool)");
+                } else if event == "files-failed" {
+                    items.add(event, FUNCTION, "event handler (string)");
                 } else {
                     items.add(event, FUNCTION, "event handler");
                 }

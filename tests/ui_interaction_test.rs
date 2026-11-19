@@ -3895,6 +3895,8 @@ fn native_dialogs_snapshot_options_serialize_panels_and_discard_abandoned_result
     assert_eq!(options.mode, FileDialogMode::OpenFiles);
     assert_eq!(options.directory, "/workspace");
     assert!(options.file_name.is_empty());
+    assert!(queue.is_active_request_live(request.id));
+    assert!(!queue.is_active_request_live(second_scene.native_dialogs[0].id()));
     assert!(queue.begin_next().is_none());
     assert!(!queue.complete(
         second_scene.native_dialogs[0].id(),
@@ -3903,6 +3905,7 @@ fn native_dialogs_snapshot_options_serialize_panels_and_discard_abandoned_result
 
     queue.sync(&[&second_scene.native_dialogs[0]]);
     assert!(request.is_abandoned());
+    assert!(!queue.is_active_request_live(request.id));
     assert!(queue.complete(
         request.id,
         NativeDialogResult::Files(vec!["/stale.txt".into()])
@@ -3916,10 +3919,12 @@ fn native_dialogs_snapshot_options_serialize_panels_and_discard_abandoned_result
     };
     assert_eq!(options.mode, FileDialogMode::SaveFile);
     assert_eq!(options.file_name, "notes.txt");
+    assert!(queue.is_active_request_live(saving.id));
     assert!(queue.complete(
         saving.id,
         NativeDialogResult::Files(vec!["/notes.txt".into()])
     ));
+    assert!(!queue.is_active_request_live(saving.id));
     assert_eq!(second.get_paths(), ["/notes.txt"]);
     assert_eq!(second.get_status(), "已选择");
 

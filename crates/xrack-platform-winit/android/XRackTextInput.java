@@ -287,9 +287,10 @@ final class XRackTextInput extends View {
             }
             if (event.getAction() != KeyEvent.ACTION_DOWN) { return true; }
             if (event.getKeyCode() == KeyEvent.KEYCODE_DEL) {
-                if (composing()) {
-                    int first = Math.min(Selection.getSelectionStart(value), Selection.getSelectionEnd(value));
-                    int last = Math.max(Selection.getSelectionStart(value), Selection.getSelectionEnd(value));
+                int first = Math.min(Selection.getSelectionStart(value), Selection.getSelectionEnd(value));
+                int last = Math.max(Selection.getSelectionStart(value), Selection.getSelectionEnd(value));
+                // InputConnection's surrounding-text operations exclude the selection.
+                if (first != last || composing()) {
                     if (first == last && first > 0) {
                         first = Character.offsetByCodePoints(value, first, -1);
                     }

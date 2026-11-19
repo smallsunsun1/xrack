@@ -1,10 +1,11 @@
+use super::until_canceled;
 use crate::IosDirectory;
 use block2::RcBlock;
 use objc2::{
     ClassType, DeclaredClass, declare_class, msg_send_id,
     mutability::MainThreadOnly,
     rc::Retained,
-    runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject},
+    runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject},
 };
 use objc2_foundation::{
     CGPoint, CGRect, CGSize, MainThreadMarker, NSArray, NSBundle, NSError, NSString, NSURL,
@@ -18,22 +19,32 @@ use objc2_ui_kit::{
 use objc2_uniform_type_identifiers::{UTType, UTTypeFolder, UTTypeItem};
 use std::{
     cell::Cell,
+    future::Future,
     path::{Path, PathBuf},
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
 };
-use tokio::sync::oneshot;
+use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
 use winit::window::Window;
 use xrack_runtime::{
     FileDialogMode, FileDialogOptions, MessageButtons, MessageDialogOptions, NativeDialogOptions,
-    NativeDialogResult, StandardButtonKind,
+    NativeDialogPresentation, NativeDialogResult, StandardButtonKind,
 };
+
+mod color;
+mod photos;
+pub(crate) use color::ColorRequest;
+pub(crate) use photos::PhotoRequest;
+pub use photos::{IosPhotoSelection, IosPhotoThumbnail};
+
+// Rust requests and declarative dialogs share the presenting view controller.
+pub(crate) type ModalQueue = Arc<Mutex<()>>;
 
 pub(crate) enum Transfer {
     ShareText(String),
-    ShareFile(PathBuf),
-    ExportFile(PathBuf),
+    ShareFiles(Vec<PathBuf>),
+    ExportFiles(Vec<PathBuf>),
 }
 
 pub(crate) struct TransferRequest {
@@ -42,17 +53,33 @@ pub(crate) struct TransferRequest {
 }
 
 impl TransferRequest {
-    pub(crate) async fn present(self, window: Arc<Window>) {
-        if self.reply.is_closed() {
+    pub(crate) async fn present(mut self, window: Arc<Window>, queue: ModalQueue) {
+        let Some(permit) = until_canceled(self.reply.closed(), queue.lock_owned()).await else {
             return;
-        }
+        };
         let result = match self.operation {
-            Transfer::ShareText(text) => share(&window, &NSString::from_str(&text)).await,
-            Transfer::ShareFile(path) => match file_url(&path) {
-                Ok(url) => share(&window, &url).await,
+            Transfer::ShareText(text) => {
+                let text = Retained::into_super(NSString::from_str(&text));
+                share(
+                    &window,
+                    &NSArray::from_vec(vec![Retained::into_super(text)]),
+                    self.reply.closed(),
+                )
+                .await
+            }
+            Transfer::ShareFiles(paths) => match file_urls(&paths) {
+                Ok(urls) => {
+                    let items = urls
+                        .into_iter()
+                        .map(|url| Retained::into_super(Retained::into_super(url)))
+                        .collect();
+                    share(&window, &NSArray::from_vec(items), self.reply.closed()).await
+                }
                 Err(error) => Err(error),
             },
-            Transfer::ExportFile(path) => export_file(&window, &path).await,
+            Transfer::ExportFiles(paths) => {
+                export_files(&window, paths, permit, &mut self.reply).await
+            }
         };
         let _ = self.reply.send(result);
     }
@@ -63,16 +90,21 @@ pub(crate) struct DirectoryRequest {
 }
 
 impl DirectoryRequest {
-    pub(crate) async fn present(self, window: Arc<Window>) {
-        if self.reply.is_closed() {
+    pub(crate) async fn present(mut self, window: Arc<Window>, queue: ModalQueue) {
+        let Some(_permit) = until_canceled(self.reply.closed(), queue.lock_owned()).await else {
             return;
-        }
-        let result = select_directory(&window).await.map_err(str::to_owned);
+        };
+        let result = select_directory(&window, self.reply.closed())
+            .await
+            .map_err(str::to_owned);
         let _ = self.reply.send(result);
     }
 }
 
-async fn select_directory(window: &Window) -> Result<Option<IosDirectory>, &'static str> {
+async fn select_directory(
+    window: &Window,
+    canceled: impl Future<Output = ()>,
+) -> Result<Option<IosDirectory>, &'static str> {
     let (mtm, host) = presenter(window)?;
     // SAFETY: The controller is created on the UIKit main thread. In-place access
     // preserves the security-scoped URL supplied by the document provider.
@@ -83,15 +115,17 @@ async fn select_directory(window: &Window) -> Result<Option<IosDirectory>, &'sta
             false,
         )
     };
-    present_picker(mtm, &host, &picker)
-        .await?
+    let Some(directories) = present_picker(mtm, &host, &picker, canceled).await? else {
+        return Ok(None);
+    };
+    directories
         .into_iter()
         .next()
         .map(IosDirectory::new)
         .transpose()
 }
 
-fn file_url(path: &Path) -> Result<Retained<NSURL>, String> {
+fn source_path(path: &Path) -> Result<&str, String> {
     if !path.is_absolute() {
         return Err("The system operation requires an absolute path.".into());
     }
@@ -102,12 +136,25 @@ fn file_url(path: &Path) -> Result<Retained<NSURL>, String> {
     {
         return Err("The source must be a file.".into());
     }
-    let path = path.to_str().ok_or("The source path must be UTF-8.")?;
+    path.to_str()
+        .ok_or_else(|| "The source path must be UTF-8.".into())
+}
+
+fn file_url(path: &Path) -> Result<Retained<NSURL>, String> {
+    let path = source_path(path)?;
     // SAFETY: Construct a file URL from an immutable absolute path.
     Ok(unsafe { NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path), false) })
 }
 
-async fn share(window: &Window, item: &NSObject) -> Result<bool, String> {
+fn file_urls(paths: &[PathBuf]) -> Result<Vec<Retained<NSURL>>, String> {
+    paths.iter().map(|path| file_url(path)).collect()
+}
+
+async fn share(
+    window: &Window,
+    items: &NSArray,
+    canceled: impl Future<Output = ()>,
+) -> Result<bool, String> {
     let (mtm, host) = presenter(window)?;
     let anchor = host
         .view()
@@ -128,10 +175,9 @@ async fn share(window: &Window, item: &NSObject) -> Result<bool, String> {
     );
     // SAFETY: The share sheet is configured and presented on the UIKit main thread.
     let sheet = unsafe {
-        let items = NSArray::<AnyObject>::arrayWithObject(item.as_ref());
         let sheet = UIActivityViewController::initWithActivityItems_applicationActivities(
             mtm.alloc(),
-            &items,
+            items,
             None,
         );
         if let Some(popover) = sheet.popoverPresentationController() {
@@ -146,34 +192,59 @@ async fn share(window: &Window, item: &NSObject) -> Result<bool, String> {
             ));
         }
         sheet.setCompletionWithItemsHandler(std::ptr::from_ref(&*completed).cast_mut());
-        host.presentViewController_animated_completion(&sheet, true, None);
         sheet
     };
-    let result = receive
-        .await
-        .map_err(|_| "The share sheet closed without returning a result.")?;
-    wait_for_dismissal(&sheet).await;
-    result
+    match present_panel(&host, &sheet, until_canceled(canceled, receive)).await {
+        Some(result) => result.map_err(|_| "The share sheet closed without returning a result.")?,
+        None => Ok(false),
+    }
 }
 
-async fn export_file(window: &Window, path: &Path) -> Result<bool, String> {
-    let url = file_url(path)?;
-    let (mtm, host) = presenter(window)?;
-    // SAFETY: The picker and URL array are created for presentation on the UIKit main thread.
-    let picker = unsafe {
-        UIDocumentPickerViewController::initForExportingURLs_asCopy(
-            mtm.alloc(),
-            &NSArray::from_slice(&[&*url]),
-            true,
-        )
+async fn export_files(
+    window: &Window,
+    paths: Vec<PathBuf>,
+    permit: OwnedMutexGuard<()>,
+    reply: &mut oneshot::Sender<Result<bool, String>>,
+) -> Result<bool, String> {
+    for path in &paths {
+        source_path(path)?;
+    }
+    // Exporting through the document picker can leave a copy without a result URL.
+    // Select the destination first so the result comes from the coordinated copy.
+    let Some(directory) = select_directory(window, reply.closed()).await? else {
+        return Ok(false);
     };
-    Ok(!present_picker(mtm, &host, &picker).await?.is_empty())
+    drop(permit);
+    if reply.is_closed() {
+        return Ok(false);
+    }
+    let (send, receive) = oneshot::channel();
+    std::thread::Builder::new()
+        .name("xrack-ios-export".into())
+        .spawn(move || {
+            let _ = send.send(directory.copy_files(&paths));
+        })
+        .map_err(|error| format!("Cannot start the Files export: {error}"))?;
+    receive
+        .await
+        .map_err(|_| "The Files export worker stopped before reporting a result.")?
+        .map_err(|error| format!("Cannot save to Files: {error}"))?;
+    Ok(true)
 }
 
-pub(crate) async fn present(window: &Window, options: &NativeDialogOptions) -> NativeDialogResult {
-    let result = match options {
-        NativeDialogOptions::File(options) => open_file(window, options).await,
-        NativeDialogOptions::Message(options) => open_message(window, options).await,
+pub(crate) async fn present(
+    window: &Window,
+    request: &NativeDialogPresentation,
+    queue: ModalQueue,
+) -> NativeDialogResult {
+    let Some(_permit) = until_canceled(request.wait_until_abandoned(), queue.lock_owned()).await
+    else {
+        return NativeDialogResult::Abandoned;
+    };
+    let canceled = request.wait_until_abandoned();
+    let result = match request.options.as_ref() {
+        NativeDialogOptions::File(options) => open_file(window, options, canceled).await,
+        NativeDialogOptions::Message(options) => open_message(window, options, canceled).await,
     };
     result.unwrap_or_else(|message| NativeDialogResult::Failed(message.into()))
 }
@@ -196,6 +267,7 @@ fn presenter(
 async fn open_file(
     window: &Window,
     options: &FileDialogOptions,
+    canceled: impl Future<Output = ()>,
 ) -> Result<NativeDialogResult, &'static str> {
     let multiple = match options.mode {
         FileDialogMode::OpenFile => false,
@@ -239,7 +311,9 @@ async fn open_file(
         }
         picker
     };
-    let urls = present_picker(mtm, &host, &picker).await?;
+    let Some(urls) = present_picker(mtm, &host, &picker, canceled).await? else {
+        return Ok(NativeDialogResult::Abandoned);
+    };
     if urls.is_empty() {
         return Ok(NativeDialogResult::Canceled);
     }
@@ -258,7 +332,8 @@ async fn present_picker(
     mtm: MainThreadMarker,
     host: &UIViewController,
     picker: &UIDocumentPickerViewController,
-) -> Result<Vec<Retained<NSURL>>, &'static str> {
+    canceled: impl Future<Output = ()>,
+) -> Result<Option<Vec<Retained<NSURL>>>, &'static str> {
     let (result, finished) = oneshot::channel();
     let delegate = PickerDelegate::new(mtm, result);
     // SAFETY: The controller, delegate and window are confined to the UIKit main thread.
@@ -266,19 +341,19 @@ async fn present_picker(
         // Full-screen presentation uses the picker's Cancel button, including on iPad.
         picker.setModalPresentationStyle(UIModalPresentationStyle::UIModalPresentationFullScreen);
         picker.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        host.presentViewController_animated_completion(picker, true, None);
     }
-    let result = finished
-        .await
-        .map_err(|_| "The system did not return a file selection.");
+    let result = present_panel(host, picker, until_canceled(canceled, finished)).await;
     // UIKit keeps the delegate weakly. Hold it across the wait.
     drop(delegate);
     result
+        .transpose()
+        .map_err(|_| "The system did not return a file selection.")
 }
 
 async fn open_message(
     window: &Window,
     options: &MessageDialogOptions,
+    canceled: impl Future<Output = ()>,
 ) -> Result<NativeDialogResult, &'static str> {
     let (mtm, host) = presenter(window)?;
     let (title, message) = if options.title.is_empty() {
@@ -334,15 +409,54 @@ async fn open_message(
                 mtm,
             ));
         }
-        host.presentViewController_animated_completion(&alert, true, None);
         alert
     };
     drop(result);
-    let button = receive
-        .await
-        .map_err(|_| "The system did not return a button selection.")?;
-    wait_for_dismissal(&alert).await;
-    Ok(NativeDialogResult::Button(button))
+    match present_panel(&host, &alert, until_canceled(canceled, receive)).await {
+        Some(button) => button
+            .map(NativeDialogResult::Button)
+            .map_err(|_| "The system did not return a button selection."),
+        None => Ok(NativeDialogResult::Abandoned),
+    }
+}
+
+async fn present_panel<T>(
+    host: &UIViewController,
+    controller: &UIViewController,
+    result: impl Future<Output = T>,
+) -> T {
+    let (send, presented) = oneshot::channel();
+    let send = Cell::new(Some(send));
+    let complete = RcBlock::new(move || {
+        if let Some(send) = send.take() {
+            let _ = send.send(());
+        }
+    });
+    let _panel = PresentedPanel(controller);
+    // SAFETY: Both view controllers belong to the UIKit main thread.
+    unsafe { host.presentViewController_animated_completion(controller, true, Some(&complete)) };
+
+    let result = result.await;
+    // SAFETY: When a caller is canceled during presentation, wait until UIKit
+    // can dismiss the panel and finish its transition before passing the queue on.
+    if unsafe { controller.isBeingPresented() } {
+        let _ = presented.await;
+    }
+    wait_for_dismissal(controller).await;
+    result
+}
+
+struct PresentedPanel<'a>(&'a UIViewController);
+
+impl Drop for PresentedPanel<'_> {
+    fn drop(&mut self) {
+        // SAFETY: The window executor drops the guard on the UIKit main thread.
+        unsafe {
+            if self.0.presentingViewController().is_some() && !self.0.isBeingDismissed() {
+                self.0.dismissViewControllerAnimated_completion(false, None);
+            }
+        }
+    }
 }
 
 async fn wait_for_dismissal(controller: &UIViewController) {

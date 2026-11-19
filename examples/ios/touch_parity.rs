@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::{
     cell::Cell,
     rc::Rc,
@@ -399,7 +401,7 @@ fn import_notes<C: Component>(component: C) {
         (
             NativeDialogResult::Files(note_paths()),
             Some(StandardButtonKind::Cancel),
-            "Current notes kept",
+            "Replacement canceled",
         ),
         (NativeDialogResult::Canceled, None, "Import canceled"),
         (

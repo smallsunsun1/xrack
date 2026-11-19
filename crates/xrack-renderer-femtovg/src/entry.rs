@@ -1,7 +1,7 @@
 use crate::{
     TextSystem, color,
     text::fill_selected_text,
-    theme::{Palette, PaletteRole as Role},
+    theme::{Palette, PaletteRole as Role, contrasting_text},
 };
 use femtovg::{Canvas, Color, Paint, Path, renderer::WGPURenderer};
 use std::{
@@ -44,6 +44,7 @@ enum EditorPointerMode {
     Caret,
     Press,
     StartWord,
+    StartParagraph,
     Drag,
 }
 
@@ -83,6 +84,75 @@ impl TouchSelectionHandle {
 }
 
 impl TextSystem {
+    /// Visible highlight rectangles in the editor's layout coordinates.
+    #[doc(hidden)]
+    pub fn editor_selection_rects(
+        &self,
+        node: &Node,
+        item: &LayoutNode,
+        input: &Interaction,
+        target: &Target,
+    ) -> Vec<Rect> {
+        let Some(editor) = input.editor.as_ref() else {
+            return Vec::new();
+        };
+        let value = input.editor_value(node);
+        let selection = editor.selection(&value);
+        if selection.is_empty() || !item.visible || !item.enabled {
+            return Vec::new();
+        }
+        let bounds = editor_part(node, item).unwrap_or(item.bounds);
+        let direction = item.layout_direction_override();
+        let area = text_editor_viewport(node, bounds);
+        let size = self.font_size(node);
+        let collect = |line: &VisualTextLine, selection: Range<usize>, x, y, height| {
+            line.selection_spans(selection)
+                .into_iter()
+                .filter_map(move |span| {
+                    let rect =
+                        Rect::new(x + span.start, y, span.end - span.start, height).intersect(area);
+                    (rect.width > 0.0 && rect.height > 0.0).then_some(rect)
+                })
+        };
+        if is_multiline_text_input(node.kind) {
+            let geometry = self.text_area_layout_in_direction(node, bounds, &value, direction);
+            let scroll = geometry.clamp_scroll(input.text_scroll(&target.path));
+            geometry
+                .visible_lines(scroll)
+                .filter_map(|index| {
+                    let line = geometry.visual_line(index)?;
+                    let start = geometry.lines[index].start;
+                    let x = area.x + geometry.line_offset(index) - scroll.x;
+                    let y = area.y + index as f32 * geometry.line_height - scroll.y;
+                    let selection =
+                        selection.start.saturating_sub(start)..selection.end.saturating_sub(start);
+                    Some(collect(line, selection, x, y, geometry.line_height))
+                })
+                .flatten()
+                .collect()
+        } else {
+            let line = self.single_line_layout(node, &value);
+            let (x, _) = entry_origin(
+                node,
+                area,
+                &line,
+                Some(editor.position(&value)),
+                false,
+                direction,
+                editor.horizontal_drag_scroll(),
+            );
+            let height = size * 1.4;
+            collect(
+                &line,
+                selection,
+                x,
+                text_editor_line_bounds(area, height).y,
+                height,
+            )
+            .collect()
+        }
+    }
+
     #[doc(hidden)]
     pub fn touch_selection_handles(
         &self,
@@ -239,10 +309,10 @@ impl PointerCaret {
 
     #[doc(hidden)]
     pub fn mouse_press(mut self, input: &mut Interaction, now: Instant) -> Self {
-        self.mode = if input.editor_mouse_press(&self.target, self.point, now, self.selecting) {
-            EditorPointerMode::StartWord
-        } else {
-            EditorPointerMode::Press
+        self.mode = match input.editor_mouse_press(&self.target, self.point, now, self.selecting) {
+            2 => EditorPointerMode::StartWord,
+            3 => EditorPointerMode::StartParagraph,
+            _ => EditorPointerMode::Press,
         };
         self
     }
@@ -347,9 +417,9 @@ impl PointerCaret {
                     input.schedule_text_selection_scroll(&self.target, None, now);
                     return false;
                 }
-                EditorPointerMode::Press | EditorPointerMode::StartWord => {
-                    input.clear_editor_click()
-                }
+                EditorPointerMode::Press
+                | EditorPointerMode::StartWord
+                | EditorPointerMode::StartParagraph => input.clear_editor_click(),
                 EditorPointerMode::Caret => {}
             }
         }
@@ -433,6 +503,12 @@ impl PointerCaret {
             ) => {
                 editor.start_word_drag(&value, position, node.is_password(), true);
             }
+            (
+                EditorPointerMode::StartParagraph,
+                MouseSelectionMode::Characters | MouseSelectionMode::Words,
+            ) => {
+                editor.start_paragraph_drag(&value, position, node.is_password());
+            }
             (EditorPointerMode::Press, MouseSelectionMode::Words) => {
                 let anchor = if self.selecting {
                     let offset = editor.anchor(&value);
@@ -446,11 +522,11 @@ impl PointerCaret {
                 };
                 editor.start_word_drag(&value, anchor, node.is_password(), false);
                 if self.selecting {
-                    editor.extend_word_drag(&value, position);
+                    editor.extend_selection_drag(&value, position);
                 }
             }
             (EditorPointerMode::Drag, mode) => {
-                if !editor.extend_word_drag(&value, position)
+                if !editor.extend_selection_drag(&value, position)
                     && mode == MouseSelectionMode::Characters
                 {
                     editor.place_caret(&value, position, true);
@@ -1248,11 +1324,7 @@ pub(crate) fn toggle(
         if node.kind == "RadioButton" {
             crate::controls::radio_indicator(canvas, theme, node, geometry.indicator, enabled);
         } else {
-            let thumb =
-                (node.kind == "Switch" && node.control_part("SwitchThumb").is_none()).then(|| {
-                    geometry.switch_thumb(node.boolean("checked", false), layout.switch_position)
-                });
-            toggle_indicator(canvas, theme, node, geometry.indicator, thumb, enabled);
+            toggle_indicator(canvas, theme, node, &geometry, layout);
         }
     }
     crate::controls::leading_label(
@@ -1279,10 +1351,11 @@ fn toggle_indicator(
     canvas: &mut Canvas<WGPURenderer>,
     theme: Palette,
     node: &Node,
-    bounds: Rect,
-    thumb: Option<Rect>,
-    enabled: bool,
+    geometry: &ToggleGeometry,
+    layout: &LayoutNode,
 ) {
+    let bounds = geometry.indicator;
+    let enabled = layout.enabled;
     let Rect {
         x,
         y,
@@ -1319,7 +1392,14 @@ fn toggle_indicator(
         },
     );
     canvas.fill_path(&frame, &Paint::color(color(background)));
-    if let Some(thumb) = thumb {
+    if node.kind == "Switch" {
+        if theme.switch_labels {
+            switch_label(canvas, bounds, layout.layout_direction, checked, background);
+        }
+        if node.control_part("SwitchThumb").is_some() {
+            return;
+        }
+        let thumb = geometry.switch_thumb(checked, layout.switch_position);
         let mut knob = Path::new();
         knob.circle(
             thumb.x + thumb.width * 0.5,
@@ -1338,7 +1418,7 @@ fn toggle_indicator(
                 theme.disabled_text
             })),
         );
-    } else if node.kind != "Switch" && state != CheckState::Unchecked {
+    } else if state != CheckState::Unchecked {
         let y = y + (height - box_size) * 0.5;
         let mut mark = Path::new();
         mark.move_to(x + box_size * 0.20, y + box_size * 0.50);
@@ -1357,4 +1437,35 @@ fn toggle_indicator(
         paint.set_line_width(2.0);
         canvas.stroke_path(&mark, &paint);
     }
+}
+
+fn switch_label(
+    canvas: &mut Canvas<WGPURenderer>,
+    track: Rect,
+    direction: LayoutDirection,
+    checked: bool,
+    background: UiColor,
+) {
+    let end_radius = track.height * 0.5;
+    let radius = (track.height * 0.19).min((track.width - track.height) * 0.25);
+    if radius < 1.0 {
+        return;
+    }
+    // Place the mark at the end opposite the committed position of the thumb.
+    let center_x = if checked == (direction == LayoutDirection::LeftToRight) {
+        track.x + end_radius
+    } else {
+        track.x + track.width - end_radius
+    };
+    let center_y = track.y + end_radius;
+    let mut mark = Path::new();
+    if checked {
+        mark.move_to(center_x, center_y - radius);
+        mark.line_to(center_x, center_y + radius);
+    } else {
+        mark.circle(center_x, center_y, radius);
+    }
+    let mut paint = Paint::color(color(contrasting_text(background)));
+    paint.set_line_width(radius * 0.55);
+    canvas.stroke_path(&mark, &paint);
 }

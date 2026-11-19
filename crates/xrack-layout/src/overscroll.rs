@@ -5,6 +5,7 @@ use xrack_runtime::{
 };
 
 const AXES: [Orientation; 2] = [Orientation::Horizontal, Orientation::Vertical];
+const REFRESH_THRESHOLD: f64 = 72.0;
 
 /// Visual displacement only. Logical scroll ranges stay in ScrollLayout.
 pub type OverscrollFrame = [Option<(ViewportHandle, f32)>; 2];
@@ -64,6 +65,7 @@ struct ElasticAxis {
     limit: f64,
     options: ElasticOptions,
     reversed: bool,
+    refresh: bool,
     rebound: Option<Rebound>,
 }
 
@@ -163,7 +165,54 @@ impl Overscroll {
     }
 
     pub fn pull(&mut self, item: &LayoutNode, axis: Orientation, delta: f64) -> bool {
-        let (Some(owner), Some(options)) = (&item.viewport_handle, item.elastic) else {
+        item.elastic
+            .is_some_and(|options| self.pull_with(item, axis, delta, options, false))
+    }
+
+    pub fn pull_to_refresh(&mut self, item: &LayoutNode, delta: f64, reduced_motion: bool) -> bool {
+        let options = ElasticOptions {
+            behavior: FlickBoundsBehavior::DragOverBounds,
+            move_contents: !reduced_motion,
+            duration: if reduced_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(180)
+            },
+        };
+        self.pull_with(item, Orientation::Vertical, delta, options, true)
+    }
+
+    pub fn refresh_progress(&self, handle: &ViewportHandle) -> Option<f32> {
+        let lane = self.axes[1].as_ref()?;
+        (lane.refresh && lane.rebound.is_none() && &lane.owner == handle)
+            .then(|| (-lane.raw / REFRESH_THRESHOLD).clamp(0.0, 1.0) as f32)
+    }
+
+    pub fn armed_refresh(&self) -> Option<&ViewportHandle> {
+        let lane = self.axes[1].as_ref()?;
+        (lane.refresh && lane.rebound.is_none() && lane.raw <= -REFRESH_THRESHOLD)
+            .then_some(&lane.owner)
+    }
+
+    pub fn clear_refresh(&mut self) {
+        let slot = &mut self.axes[1];
+        if slot.as_ref().is_some_and(|lane| lane.refresh)
+            && let Some(lane) = slot.take()
+        {
+            lane.owner
+                .publish_overshoot(Orientation::Vertical, 0.0, false);
+        }
+    }
+
+    fn pull_with(
+        &mut self,
+        item: &LayoutNode,
+        axis: Orientation,
+        delta: f64,
+        options: ElasticOptions,
+        refresh: bool,
+    ) -> bool {
+        let Some(owner) = &item.viewport_handle else {
             return false;
         };
         let bounds = item.scroll_viewport(axis);
@@ -178,10 +227,9 @@ impl Overscroll {
         }
         let slot = &mut self.axes[index(axis)];
         let reversed = item.scroll_axis_reversed(axis);
-        if slot
-            .as_ref()
-            .is_some_and(|lane| &lane.owner != owner || lane.reversed != reversed)
-            && let Some(lane) = slot.take()
+        if slot.as_ref().is_some_and(|lane| {
+            &lane.owner != owner || lane.reversed != reversed || lane.refresh != refresh
+        }) && let Some(lane) = slot.take()
         {
             lane.owner.publish_overshoot(axis, 0.0, false);
         }
@@ -192,6 +240,7 @@ impl Overscroll {
             limit,
             options,
             reversed,
+            refresh,
             rebound: None,
         });
         lane.limit = limit;
@@ -268,6 +317,15 @@ impl Overscroll {
                 return None;
             }
             if item.viewport_handle.as_ref() == Some(&lane.owner) {
+                if lane.refresh {
+                    return (item.pull_to_refresh
+                        && axis == Orientation::Vertical
+                        && item.pan_axes[1]
+                        && item
+                            .scroll_on(axis)
+                            .is_some_and(|scroll| scroll.offset == 0.0))
+                    .then_some(lane.options);
+                }
                 return item.elastic.filter(|options| {
                     item.scroll_axis_reversed(axis) == lane.reversed
                         && (lane.rebound.is_some() || options.behavior.allows_overshoot(false))

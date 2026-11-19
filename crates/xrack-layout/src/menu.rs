@@ -149,6 +149,29 @@ pub(crate) struct MenuPopup {
     pub(crate) touch: bool,
 }
 
+/// A text menu presented by a native host instead of the scene renderer.
+#[doc(hidden)]
+pub struct NativeTextMenu(pub(crate) MenuPopup);
+
+impl NativeTextMenu {
+    pub fn session(&self) -> u64 {
+        self.0.session
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = (usize, &'static str)> + '_ {
+        self.0.text.iter().flat_map(|text| {
+            TEXT_ENTRIES
+                .iter()
+                .zip(&text.menu.children)
+                .enumerate()
+                .filter_map(|(index, (entry, row))| {
+                    let (_, label, _) = (*entry)?;
+                    enabled(row).then_some((index, label))
+                })
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct MenuPan {
     session: u64,

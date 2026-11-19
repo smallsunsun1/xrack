@@ -1,13 +1,17 @@
+use crate::Window;
 use std::time::{Duration, Instant};
-use winit::window::{Fullscreen, Window};
+#[cfg(not(target_os = "android"))]
+use winit::window::Fullscreen;
 use xrack_runtime::{WindowCommand, WindowStatus};
 
+#[cfg(not(target_os = "android"))]
 const FULL_SCREEN_SETTLE: Duration = Duration::from_secs(4);
 
 #[derive(Default)]
 pub(crate) struct WindowPresentation {
     observed: WindowStatus,
     full_screen_request: Option<(bool, Instant)>,
+    #[cfg(not(target_os = "android"))]
     maximize_after_exit: Option<bool>,
     #[cfg(target_os = "macos")]
     zoom_sample: Option<(
@@ -18,13 +22,16 @@ pub(crate) struct WindowPresentation {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(not(target_os = "android"))]
 struct Actions {
     minimized: Option<bool>,
     maximized: Option<bool>,
     full_screen: Option<bool>,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Actions {
+    #[cfg(not(target_os = "android"))]
     fn apply(self, window: &Window) {
         if self.minimized == Some(false) {
             window.set_minimized(false);
@@ -52,14 +59,19 @@ impl WindowPresentation {
     pub fn sample(&mut self, window: &Window) -> WindowStatus {
         #[cfg(target_os = "macos")]
         let (full_screen, maximized) = self.sample_macos_modes(window);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "android")))]
         let (full_screen, maximized) = {
             let full_screen = window.fullscreen().is_some();
             (full_screen, !full_screen && window.is_maximized())
         };
+        #[cfg(target_os = "android")]
+        let (full_screen, maximized) = (false, false);
         self.observed = WindowStatus {
             active: window.has_focus(),
+            #[cfg(not(target_os = "android"))]
             minimized: window.is_minimized(),
+            #[cfg(target_os = "android")]
+            minimized: None,
             maximized,
             full_screen,
         };
@@ -101,17 +113,25 @@ impl WindowPresentation {
         commands: Vec<WindowCommand>,
         now: Instant,
     ) -> WindowStatus {
-        let status = self.sample(window);
-        let actions = self.plan(status, window.fullscreen().is_some(), commands, now);
-        if actions == Actions::default() {
-            return status;
-        }
-        actions.apply(window);
-        #[cfg(target_os = "macos")]
+        #[cfg(target_os = "android")]
         {
-            self.zoom_sample = None;
+            let _ = (commands, now);
+            self.sample(window)
         }
-        self.sample(window)
+        #[cfg(not(target_os = "android"))]
+        {
+            let status = self.sample(window);
+            let actions = self.plan(status, window.fullscreen().is_some(), commands, now);
+            if actions == Actions::default() {
+                return status;
+            }
+            actions.apply(window);
+            #[cfg(target_os = "macos")]
+            {
+                self.zoom_sample = None;
+            }
+            self.sample(window)
+        }
     }
 
     pub fn deadline(&self, now: Instant) -> Option<Instant> {
@@ -123,6 +143,7 @@ impl WindowPresentation {
         self.full_screen_request.is_some()
     }
 
+    #[cfg(not(target_os = "android"))]
     fn plan(
         &mut self,
         status: WindowStatus,
@@ -194,7 +215,7 @@ impl WindowPresentation {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "android")))]
 mod tests {
     use super::*;
 

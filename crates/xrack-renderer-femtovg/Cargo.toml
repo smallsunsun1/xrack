@@ -21,5 +21,5 @@ rgb.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["CFString", "std"] }
-objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGPath", "std"] }
-objc2-core-text = { version = "=0.3.2", default-features = false, features = ["CTFont", "CTFontTraits", "objc2-core-graphics", "std"] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGPath", "std"] }
+objc2-core-text = { version = "=0.3.2", default-features = false, features = ["CTFont", "CTFontDescriptor", "CTFontTraits", "objc2-core-graphics", "std"] }

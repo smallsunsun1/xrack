@@ -205,7 +205,9 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::TextOverflow => ValueType::TextOverflow,
         Type::ColorScheme => ValueType::ColorScheme,
         Type::InputType => ValueType::InputType,
+        Type::InputPurpose => ValueType::InputPurpose,
         Type::ReturnKey => ValueType::ReturnKey,
+        Type::AccessibleLive => ValueType::AccessibleLive,
         Type::DialInputMode => ValueType::DialInputMode,
         Type::SwipeSide => ValueType::SwipeSide,
         Type::DragAction => ValueType::DragAction,
@@ -1052,6 +1054,11 @@ impl<'m> Loader<'m> {
         }) {
             self.focus_targets.insert(key.into());
         }
+        if op.children().any(|child| {
+            child.name() == "xr.bind" && child.attribute("name") == Some("pull-to-refresh")
+        }) {
+            self.viewport_targets.insert(key.into());
+        }
         for child in op.children() {
             match child.name() {
                 "xr.property" => self.property(key, child)?,
@@ -1070,7 +1077,7 @@ impl<'m> Loader<'m> {
                     {
                         self.button_press_targets.insert(key.into());
                     }
-                    if matches!(name, "scrolled" | "flicked") {
+                    if matches!(name, "scrolled" | "flicked" | "refresh-requested") {
                         self.viewport_targets.insert(key.into());
                     }
                     handlers.insert(name.into(), self.function(child)?);
@@ -2180,7 +2187,9 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         TextOverflow,
         ColorScheme,
         InputType,
+        InputPurpose,
         ReturnKey,
+        AccessibleLive,
         DialInputMode,
         LogLevel,
         ImageFit,
@@ -2463,11 +2472,15 @@ const PROPERTIES: &[&str] = &[
     "wrap",
     "overflow",
     "input-type",
+    "input-purpose",
     "return-key",
     "color-scheme",
     "accent-color",
     "content-width",
     "content-height",
+    "pull-to-refresh",
+    "dismiss-keyboard-on-drag",
+    "refreshing",
     "mouse-drag-pan-enabled",
     "reserve-scroll-bar-space",
     "auto-reveal-focus",
@@ -2478,6 +2491,8 @@ const PROPERTIES: &[&str] = &[
     "open-side",
     "data",
     "drag-key",
+    "touch-drag-delay",
+    "drag-auto-scroll",
     "allow-copy",
     "allow-move",
     "allow-link",
@@ -2509,6 +2524,8 @@ const PROPERTIES: &[&str] = &[
     "position",
     "accessible-name",
     "accessible-description",
+    "accessible-heading-level",
+    "accessible-live",
     "focus-on-click",
     "restore-focus",
     "focus-on-tab-navigation",

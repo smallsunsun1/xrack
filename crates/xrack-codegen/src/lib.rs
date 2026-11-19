@@ -108,7 +108,9 @@ fn ty(t: &Type) -> TokenStream {
         Type::TextVerticalAlignment => quote!(::xrack_runtime::TextVerticalAlignment),
         Type::TextOverflow => quote!(::xrack_runtime::TextOverflow),
         Type::InputType => quote!(::xrack_runtime::InputType),
+        Type::InputPurpose => quote!(::xrack_runtime::InputPurpose),
         Type::ReturnKey => quote!(::xrack_runtime::ReturnKey),
+        Type::AccessibleLive => quote!(::xrack_runtime::AccessibleLive),
         Type::CursorShape => quote!(::xrack_runtime::CursorShape),
         Type::ColorScheme => quote!(::xrack_runtime::ColorScheme),
         Type::FileDialogMode => quote!(::xrack_runtime::FileDialogMode),
@@ -1333,6 +1335,13 @@ impl<'a> Generator<'a> {
                 {
                     self.viewport_targets.insert(key);
                     self.scroll_observers.insert(key);
+                }
+                if children(op, "xr.bind")
+                    .any(|binding| binding.attribute("name") == Some("pull-to-refresh"))
+                    || children(op, "xr.handler")
+                        .any(|handler| handler.attribute("name") == Some("refresh-requested"))
+                {
+                    self.viewport_targets.insert(key);
                 }
                 if has_editing_finished(op)
                     || children(op, "xr.bind")
@@ -8144,7 +8153,7 @@ impl<'a> Generator<'a> {
                     row_count: ::xrack_runtime::ListModel::row_count(&*__xr_view_model), first_row: 0,
                 });
                 #name.standard_list_stamp = Some(__xr_view_model.positions().stamp());
-                if #source_scroll || #name.boolean("preserve-scroll-anchor", false) {
+                if #source_scroll || #name.boolean("preserve-scroll-anchor", false) || #name.boolean("drag-auto-scroll", false) {
                     #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(__xr_view_model.clone()));
                 }
                 #projected
@@ -8177,7 +8186,7 @@ impl<'a> Generator<'a> {
                     #projected
                     #sections
                     #search
-                    if #source_scroll || #name.boolean("preserve-scroll-anchor", false) {
+                    if #source_scroll || #name.boolean("preserve-scroll-anchor", false) || #name.boolean("drag-auto-scroll", false) {
                         #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(::std::rc::Rc::new(__xr_model.clone())));
                     }
                 });
@@ -8271,7 +8280,7 @@ impl<'a> Generator<'a> {
                     row_count: ::xrack_runtime::ListModel::row_count(&*__xr_view_model), first_row: 0,
                 });
                 #name.standard_list_stamp = Some(::xrack_runtime::ListModel::structure_stamp(&*__xr_view_model));
-                if #source_scroll || #name.boolean("preserve-scroll-anchor", false) {
+                if #source_scroll || #name.boolean("preserve-scroll-anchor", false) || #name.boolean("drag-auto-scroll", false) {
                     #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(__xr_view_model.clone()));
                 }
             });
@@ -9854,6 +9863,10 @@ impl<'a> Generator<'a> {
                         vec![quote!(__data.to_owned()), quote!(__action)],
                     ),
                     [Type::StringList] => (quote!(Files(__paths)), vec![quote!(__paths.to_vec())]),
+                    [Type::String] => (
+                        quote!(Message(__message)),
+                        vec![quote!(__message.to_owned())],
+                    ),
                     [Type::Length, Type::Length] => {
                         (quote!(Position(__x, __y)), vec![quote!(__x), quote!(__y)])
                     }

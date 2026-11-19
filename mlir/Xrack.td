@@ -58,7 +58,9 @@ def XR_TextHorizontalAlignment : XR_Type<"TextHorizontalAlignment", "texthorizon
 def XR_TextVerticalAlignment : XR_Type<"TextVerticalAlignment", "textverticalalignment">;
 def XR_TextOverflow : XR_Type<"TextOverflow", "textoverflow">;
 def XR_InputType : XR_Type<"InputMode", "inputtype">;
+def XR_InputPurpose : XR_Type<"InputPurpose", "inputpurpose">;
 def XR_ReturnKey : XR_Type<"ReturnKey", "returnkey">;
+def XR_AccessibleLive : XR_Type<"AccessibleLive", "accessiblelive">;
 def XR_CursorShape : XR_Type<"CursorShape", "cursorshape">;
 def XR_ColorScheme : XR_Type<"ColorScheme", "colorscheme">;
 def XR_FileDialogMode : XR_Type<"FileDialogMode", "filedialogmode">;
@@ -94,7 +96,7 @@ def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, X
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
                          XR_ImageHorizontalAlignment, XR_ImageVerticalAlignment, XR_ImageRendering, XR_ButtonDisplay, XR_LayoutAlignment, XR_CrossAxisAlignment,
-                         XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_LayoutDirection, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_MouseSelectionMode, XR_InputValidity, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_ReturnKey, XR_CursorShape, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_SelectionGesture, XR_Date, XR_Time, XR_Font]>;
+                         XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_LayoutDirection, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_MouseSelectionMode, XR_InputValidity, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_InputPurpose, XR_ReturnKey, XR_AccessibleLive, XR_CursorShape, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_SelectionGesture, XR_Date, XR_Time, XR_Font]>;
 def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
 
 class XR_Op<string mnemonic, list<Trait> traits = []> : Op<Xrack_Dialect, mnemonic, traits>;

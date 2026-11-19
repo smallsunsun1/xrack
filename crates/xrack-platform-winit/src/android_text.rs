@@ -1,4 +1,5 @@
 use crate::{UserEvent, desktop::WindowEvents, text_indices::byte_offset};
+use android_activity::AndroidApp;
 use jni::{
     EnvUnowned, JavaVM, NativeMethod, jni_sig, jni_str,
     objects::{JObject, JString, JValue},
@@ -12,7 +13,6 @@ use std::{
         atomic::{AtomicI64, Ordering},
     },
 };
-use winit::platform::android::activity::AndroidApp;
 use xrack_layout::Target;
 use xrack_runtime::{InputType, Node, ReturnKey, is_multiline_text_input};
 
@@ -29,6 +29,30 @@ pub(crate) struct Edit {
     pub preedit: String,
     pub selection: Range<usize>,
     pub anchor: Range<usize>,
+}
+
+impl Edit {
+    pub(crate) fn align_preedit(&mut self) {
+        let range = crate::text_indices::cover_graphemes(&self.value, self.anchor.clone());
+        if range == self.anchor {
+            return;
+        }
+        let (Some(prefix), Some(suffix)) = (
+            self.value.get(range.start..self.anchor.start),
+            self.value.get(self.anchor.end..range.end),
+        ) else {
+            return;
+        };
+        // Android can compose one scalar of an existing grapheme. Keep its
+        // untouched neighbors while replacing the complete grapheme in XRack.
+        let mut preedit = String::with_capacity(prefix.len() + self.preedit.len() + suffix.len());
+        preedit.push_str(prefix);
+        preedit.push_str(&self.preedit);
+        preedit.push_str(suffix);
+        self.selection = self.selection.start + prefix.len()..self.selection.end + prefix.len();
+        self.anchor = range;
+        self.preedit = preedit;
+    }
 }
 
 pub(crate) struct TextInput {
@@ -69,7 +93,7 @@ impl TextInput {
                     ime_insets as *mut std::ffi::c_void,
                 )
             };
-            // SAFETY: XRackActivity declares this native method with this descriptor.
+            // SAFETY: XRackActivity declares these native methods with the descriptors above.
             unsafe {
                 env.register_native_methods(&class, &[method, geometry])?;
             }

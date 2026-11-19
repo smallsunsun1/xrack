@@ -4024,6 +4024,7 @@ impl Instance {
                 xrack_runtime::DragArguments::Files(paths) => {
                     vec![Value::StringModel(paths.to_vec().into())]
                 }
+                xrack_runtime::DragArguments::Message(message) => vec![message.to_owned().into()],
                 xrack_runtime::DragArguments::Position(x, y) => vec![x.into(), y.into()],
             };
             self.execute(handler, &args, None)?;
@@ -6147,7 +6148,9 @@ impl ValueType {
                 | (Self::TextOverflow, Value::TextOverflow(_))
                 | (Self::ColorScheme, Value::ColorScheme(_))
                 | (Self::InputType, Value::InputType(_))
+                | (Self::InputPurpose, Value::InputPurpose(_))
                 | (Self::ReturnKey, Value::ReturnKey(_))
+                | (Self::AccessibleLive, Value::AccessibleLive(_))
                 | (Self::DialInputMode, Value::DialInputMode(_))
                 | (Self::Image, Value::Image(_) | Value::ImageAsset(_))
                 | (Self::LogLevel, Value::LogLevel(_))

@@ -5,24 +5,125 @@ use accesskit::{Action, ActionHandler, ActivationHandler, DeactivationHandler, T
 use accesskit_ios::SubclassingAdapter;
 use block2::RcBlock;
 use objc2::{
-    ClassType, DeclaredClass, declare_class, msg_send_id,
+    ClassType, DeclaredClass, class, declare_class, msg_send_id,
     mutability::MainThreadOnly,
     rc::Retained,
-    runtime::{Bool, NSObject, NSObjectProtocol},
+    runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject},
 };
 use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSNotificationCenter, NSOperationQueue, NSString,
+    CGPoint, CGSize, MainThreadMarker, NSArray, NSNotification, NSNotificationCenter,
+    NSOperationQueue, NSString,
 };
 use objc2_ui_kit::{
-    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityPageScrolledNotification,
+    NSObjectUIAccessibility, UIAccessibilityBoldTextStatusDidChangeNotification,
+    UIAccessibilityContrast, UIAccessibilityIsBoldTextEnabled,
+    UIAccessibilityIsOnOffSwitchLabelsEnabled, UIAccessibilityIsReduceMotionEnabled,
+    UIAccessibilityOnOffSwitchLabelsDidChangeNotification, UIAccessibilityPageScrolledNotification,
     UIAccessibilityPostNotification, UIAccessibilityReduceMotionStatusDidChangeNotification,
-    UIContentSizeCategoryDidChangeNotification, UIFontMetrics, UIView, UIViewAutoresizing,
+    UIContentSizeCategoryDidChangeNotification, UIFontMetrics, UIScrollView,
+    UIScrollViewContentInsetAdjustmentBehavior, UIScrollViewDelegate, UITraitChangeHandler,
+    UITraitCollection, UITraitEnvironment, UITraitEnvironmentLayoutDirection, UIUserInterfaceStyle,
+    UIView, UIViewAutoresizing,
 };
 use std::{cell::Cell, ptr::NonNull};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 use xrack_layout::{LayoutNode, Rect, ScrollLayout, StackTransitions, Target};
-use xrack_runtime::{Node, Orientation, PageIdentity, group_index, group_item};
+use xrack_runtime::{
+    ColorScheme, LayoutDirection, Node, Orientation, PageIdentity, group_index, group_item,
+};
+
+declare_class!(
+    struct StatusBarScrollView;
+
+    unsafe impl ClassType for StatusBarScrollView {
+        type Super = UIScrollView;
+        type Mutability = MainThreadOnly;
+        const NAME: &'static str = "XRackStatusBarScrollView";
+    }
+
+    impl DeclaredClass for StatusBarScrollView {
+        type Ivars = ();
+    }
+
+    unsafe impl NSObjectProtocol for StatusBarScrollView {}
+
+    unsafe impl StatusBarScrollView {
+        // UIKit finds this view for the status bar. XRack owns touch hit testing.
+        #[method(pointInside:withEvent:)]
+        fn point_inside(&self, _: CGPoint, _: Option<&AnyObject>) -> bool {
+            false
+        }
+    }
+);
+
+declare_class!(
+    struct ScrollToTopDelegate;
+
+    unsafe impl ClassType for ScrollToTopDelegate {
+        type Super = NSObject;
+        type Mutability = MainThreadOnly;
+        const NAME: &'static str = "XRackScrollToTopDelegate";
+    }
+
+    impl DeclaredClass for ScrollToTopDelegate {
+        type Ivars = WindowEvents;
+    }
+
+    unsafe impl NSObjectProtocol for ScrollToTopDelegate {}
+
+    unsafe impl UIScrollViewDelegate for ScrollToTopDelegate {
+        #[method(scrollViewShouldScrollToTop:)]
+        fn should_scroll_to_top(&self, _: &UIScrollView) -> bool {
+            self.ivars().post(UserEvent::IosScrollToTop);
+            false
+        }
+    }
+);
+
+pub(super) struct ScrollToTop {
+    scroll: Retained<StatusBarScrollView>,
+    _delegate: Retained<ScrollToTopDelegate>,
+}
+
+impl ScrollToTop {
+    pub(super) fn new(window: &Window, events: WindowEvents) -> Option<Self> {
+        let parent = view(window)?;
+        let mtm = MainThreadMarker::new()?;
+        let delegate = mtm.alloc::<ScrollToTopDelegate>().set_ivars(events);
+        let scroll = mtm.alloc::<StatusBarScrollView>().set_ivars(());
+        // SAFETY: The parent, scroll view and delegate are owned by the UIKit main thread.
+        unsafe {
+            let delegate: Retained<ScrollToTopDelegate> = msg_send_id![super(delegate), init];
+            let frame = parent.bounds();
+            let scroll: Retained<StatusBarScrollView> =
+                msg_send_id![super(scroll), initWithFrame: frame];
+            scroll.setAutoresizingMask(UIViewAutoresizing::FlexibleWidth);
+            scroll.setContentInsetAdjustmentBehavior(
+                UIScrollViewContentInsetAdjustmentBehavior::UIScrollViewContentInsetAdjustmentNever,
+            );
+            scroll.setShowsVerticalScrollIndicator(false);
+            scroll.setAccessibilityElementsHidden(true);
+            scroll.setScrollsToTop(true);
+            // UIKit ignores a scroll view already at its top. XRack owns the real offset.
+            scroll.setContentSize(CGSize::new(frame.size.width, frame.size.height + 64.0));
+            scroll.setContentOffset(CGPoint::new(0.0, 32.0));
+            scroll.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+            parent.addSubview(&scroll);
+            Some(Self {
+                scroll,
+                _delegate: delegate,
+            })
+        }
+    }
+}
+
+impl Drop for ScrollToTop {
+    fn drop(&mut self) {
+        // SAFETY: The host drops the bridge on the UIKit main thread.
+        unsafe { self.scroll.removeFromSuperview() };
+    }
+}
 
 pub(super) struct ScrollAnnouncement {
     pub(super) target: Target,
@@ -94,8 +195,12 @@ impl ScrollAnnouncement {
                 if scroll.offset == *previous || scroll.max_offset <= 0.0 {
                     return None;
                 }
-                let percent = 100.0 * scroll.offset / scroll.max_offset;
-                Some(format!("{percent:.1}% scrolled"))
+                let percent_at = |offset| 100.0 * f64::from(offset) / f64::from(scroll.max_offset);
+                let percent = percent_at(scroll.offset);
+                let difference = (percent - percent_at(*previous)).abs();
+                // Long virtual views can move by less than one percentage point per gesture.
+                let digits = (-difference.log10()).ceil().clamp(0.0, 6.0) as usize;
+                Some(format!("{percent:.digits$}% scrolled"))
             }
         }
     }
@@ -293,6 +398,80 @@ pub(super) fn view(window: &Window) -> Option<&UIView> {
     Some(unsafe { handle.ui_view.cast::<UIView>().as_ref() })
 }
 
+pub(super) fn software_keyboard_visible(window: &Window) -> bool {
+    view(window).is_some_and(|view| {
+        // SAFETY: The window's view and layout guide are used on the UIKit main thread.
+        unsafe {
+            let keyboard = view.keyboardLayoutGuide().layoutFrame();
+            let bounds = view.bounds();
+            let safe_bottom = bounds.origin.y + bounds.size.height - view.safeAreaInsets().bottom;
+            keyboard.size.width > 0.0
+                && keyboard.size.height > 0.0
+                && keyboard.origin.y < safe_bottom - 1.0
+        }
+    })
+}
+
+pub(super) struct SystemAppearance {
+    pub(super) scheme: ColorScheme,
+    pub(super) increased_contrast: bool,
+    pub(super) layout_direction: LayoutDirection,
+}
+
+pub(super) fn system_appearance(window: &Window) -> SystemAppearance {
+    // SAFETY: view() verifies that traits are read on the UIKit main thread.
+    unsafe {
+        let Some(view) = view(window) else {
+            return SystemAppearance {
+                scheme: ColorScheme::System,
+                increased_contrast: false,
+                layout_direction: LayoutDirection::LeftToRight,
+            };
+        };
+        let traits = view.traitCollection();
+        let scheme = match traits.userInterfaceStyle() {
+            UIUserInterfaceStyle::Light => ColorScheme::Light,
+            UIUserInterfaceStyle::Dark => ColorScheme::Dark,
+            _ => ColorScheme::System,
+        };
+        SystemAppearance {
+            scheme,
+            increased_contrast: traits.accessibilityContrast() == UIAccessibilityContrast::High,
+            layout_direction: if traits.layoutDirection()
+                == UITraitEnvironmentLayoutDirection::RightToLeft
+            {
+                LayoutDirection::RightToLeft
+            } else {
+                LayoutDirection::LeftToRight
+            },
+        }
+    }
+}
+
+pub(super) fn observe_system_appearance(window: &Window, events: WindowEvents) {
+    let Some(view) = view(window) else {
+        return;
+    };
+    let handler = RcBlock::new(
+        move |_: NonNull<ProtocolObject<dyn UITraitEnvironment>>, _: NonNull<UITraitCollection>| {
+            events.post(UserEvent::IosAppearanceChanged);
+        },
+    );
+    let handler: UITraitChangeHandler = std::ptr::from_ref(&*handler).cast_mut();
+    // SAFETY: These public iOS 17 selectors are missing from the generated bindings.
+    // UIKit copies the block and keeps the registration active for the view's lifetime.
+    unsafe {
+        let color_traits: Retained<NSArray<NSObject>> = msg_send_id![
+            UITraitCollection::class(),
+            systemTraitsAffectingColorAppearance
+        ];
+        let traits: Retained<NSArray<NSObject>> =
+            msg_send_id![&*color_traits, arrayByAddingObject: class!(UITraitLayoutDirection)];
+        let _registration: Retained<NSObject> =
+            msg_send_id![view, registerForTraitChanges: &*traits withHandler: handler];
+    }
+}
+
 pub(super) fn reduce_motion() -> bool {
     // SAFETY: The UIKit setting is read on the winit UI thread.
     unsafe { UIAccessibilityIsReduceMotionEnabled().as_bool() }
@@ -303,9 +482,19 @@ pub(super) fn text_scale() -> f32 {
     unsafe { UIFontMetrics::defaultMetrics().scaledValueForValue(1.0) as f32 }
 }
 
+pub(super) fn bold_text() -> bool {
+    // SAFETY: The UIKit setting is read on the winit UI thread.
+    unsafe { UIAccessibilityIsBoldTextEnabled().as_bool() }
+}
+
+pub(super) fn switch_labels() -> bool {
+    // SAFETY: The UIKit setting is read on the winit UI thread.
+    unsafe { UIAccessibilityIsOnOffSwitchLabelsEnabled().as_bool() }
+}
+
 pub(super) struct AccessibilityObserver {
     center: Retained<NSNotificationCenter>,
-    tokens: [Retained<NSObject>; 2],
+    tokens: [Retained<NSObject>; 4],
 }
 
 impl AccessibilityObserver {
@@ -320,6 +509,8 @@ impl AccessibilityObserver {
             let tokens = [
                 UIAccessibilityReduceMotionStatusDidChangeNotification,
                 UIContentSizeCategoryDidChangeNotification,
+                UIAccessibilityBoldTextStatusDidChangeNotification,
+                UIAccessibilityOnOffSwitchLabelsDidChangeNotification,
             ]
             .map(|name| {
                 center.addObserverForName_object_queue_usingBlock(

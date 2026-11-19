@@ -6,12 +6,19 @@ import tempfile
 import time
 from pathlib import Path
 
-from examples.android.controls_ui_test import Surface, drag, keyboard_visible
+from examples.android.controls_ui_test import (
+    Surface,
+    drag,
+    drag_contact,
+    keyboard_visible,
+)
 from examples.android.simulator_ui_test import (
     Emulator,
     Label,
     Screen,
     normalize,
+    pixels_rgb,
+    tap_leap_day,
     test_input_method,
 )
 
@@ -26,10 +33,11 @@ class NavigationEmulator(Emulator):
         labels: list[Label] = []
         for label in screen.labels:
             match = re.fullmatch(
-                r"((?:Tab|Swipe|Detail)\s+total|Depth|Drawer\s+(?:opens|closes)"
+                r"((?:Tab|Swipe|Detail|Pump|Valve|Meter)\s+total|Depth|Drawer\s+(?:opens|closes)"
                 r"|Mounts|Records|(?:Pressure|Flow)(?: samples)?|(?:North|South) count|Stale"
                 r"|Code|Picks|Accepts|Edits|Row|Searches|Opens|Closes|Actions"
-                r"|Outside|Calls|Groups|Denied|Entries|Blocks|Routes)"
+                r"|Outside|Calls|Groups|Denied|Entries|Blocks|Routes|Layout clicks|Tab (?:count|moves)"
+                r"|(?:Date|Time) commits)"
                 r"(?:\s+|(?=-))(-?[0-9OoIl]+)",
                 label.text,
                 flags=re.IGNORECASE,
@@ -39,6 +47,14 @@ class NavigationEmulator(Emulator):
                 text = (
                     match[1] + " " + match[2].translate(str.maketrans("OoIl", "0011"))
                 )
+            movement = re.fullmatch(r"Moved ([0-9OoIl]+) to ([0-9OoIl]+)", text)
+            if movement is not None:
+                digits = str.maketrans("OoIl", "0011")
+                text = f"Moved {movement[1].translate(digits)} to {movement[2].translate(digits)}"
+            # Vision can group the neighboring close glyph with a tab title.
+            tab = re.fullmatch(r"(?:[x×]\s+)?(Pump|Valve|Meter)(?:\s+[x×])?", text)
+            if tab is not None:
+                text = tab[1]
             # Vision recognizes the radio indicator as a leading O.
             radio = re.fullmatch(r"[O0●○◉]\s+(Balanced|Fast|Quiet)", text)
             if radio is not None:
@@ -68,7 +84,15 @@ def open_drawer_item(ui: Emulator, initial: Screen, item: str) -> None:
     for attempt in range(3):
         ui.tap(initial, "Open menu")
         try:
-            drawer = ui.visible("Navigation menu", item, timeout=8)
+            drawer = ui.wait_for(
+                f"the open drawer accepts touch on {item}",
+                lambda screen: (
+                    screen.find("Navigation menu") is not None
+                    and screen.find(item) is not None
+                    and ui.window_accepts_touch(screen, ACTIVITY)
+                ),
+                timeout=8,
+            )
             break
         except AssertionError:
             if attempt == 2:
@@ -410,10 +434,14 @@ def exercise_anchored_popup(ui: Emulator, initial: Screen) -> None:
     ui.tap(ui.visible("Modal popup", "Show actions"), "Show actions")
     ui.visible("Inspection actions", "Opens 4", "Closes 3")
     ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
-    popup_back = closed(4, 1, "Modal popup")
+    closed(4, 1, "Modal popup")
+    ui.call("shell", "input", "keyevent", "KEYCODE_ENTER")
+    ui.visible("Inspection actions", "Opens 5", "Closes 4")
+    ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
+    popup_back = closed(5, 1, "Modal popup")
     ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
     ui.wait_for(
-        "the second Back closes the workshop and leaves navigation at home",
+        "Back closes the workshop and leaves navigation at home",
         lambda screen: (
             all(
                 screen.find(text)
@@ -470,12 +498,14 @@ def exercise_workshop_menu(ui: Emulator, initial: Screen) -> None:
     ui.tap(selected, "Detail tool")
     ui.visible("Mode detail", "Tool detail", "Calls 2", "Groups 2", "Order ok")
     ui.call("shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_2")
+    ui.visible("Mode compact", "Tool compact", "Calls 3", "Groups 3", "Order ok")
+    ui.call("shell", "input", "keycombination", "KEYCODE_CTRL_RIGHT", "KEYCODE_1")
     shortcut = ui.visible(
-        "Mode compact", "Tool compact", "Calls 3", "Groups 3", "Order ok", "Lock modes"
+        "Mode detail", "Tool detail", "Calls 4", "Groups 4", "Order ok", "Lock modes"
     )
     ui.tap(shortcut, "Lock modes")
     locked = ui.visible("Modes locked", "Commands")
-    ui.call("shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_1")
+    ui.call("shell", "input", "keycombination", "KEYCODE_CTRL_RIGHT", "KEYCODE_2")
     ui.tap(locked, "Commands")
     ui.tap(ui.visible("View mode"), "View mode")
     disabled = ui.visible("Detailed", "Compact")
@@ -498,9 +528,9 @@ def exercise_workshop_menu(ui: Emulator, initial: Screen) -> None:
                 screen.find(text)
                 for text in (
                     "Command workshop",
-                    "Mode compact",
-                    "Calls 3",
-                    "Groups 3",
+                    "Mode detail",
+                    "Calls 4",
+                    "Groups 4",
                     "Order ok",
                     "Denied 0",
                 )
@@ -555,9 +585,11 @@ def exercise_focus_routes(ui: Emulator, initial: Screen) -> None:
     ui.visible("Focus memo", "Entries 1")
     press("F2")
     routed = ui.visible("Focus memo", "F2 routed", "Blocks 1", "Routes 1", "Entries 1")
-    ui.call("shell", "input", "keycombination", "KEYCODE_SHIFT_LEFT", "KEYCODE_TAB")
-    ui.visible("Focus code", "Entries 1")
-    press("TAB")
+    for shift in ("KEYCODE_SHIFT_LEFT", "KEYCODE_SHIFT_RIGHT"):
+        ui.call("shell", "input", "keycombination", shift, "KEYCODE_TAB")
+        ui.visible("Focus code", "Entries 1")
+        press("TAB")
+        ui.visible("Focus memo", "Entries 1")
     ui.tap(ui.visible("Focus memo", "Leave fields"), "Leave fields")
     keyboard_visible(ui, False)
     press("F2")
@@ -591,6 +623,344 @@ def exercise_focus_routes(ui: Emulator, initial: Screen) -> None:
     (ui.artifacts / "focus-disabled-fallback.png").write_bytes(fallback.png)
 
 
+def exercise_layout_workshop(ui: Emulator, initial: Screen) -> None:
+    open_drawer_item(ui, initial, "Open layouts")
+
+    def row(screen: Screen, *labels: str) -> None:
+        items = [screen.require(text) for text in labels]
+        assert max(item.y for item in items) - min(item.y for item in items) < 0.009, (
+            f"Expected one visible row for {labels}"
+        )
+        assert all(left.x < right.x for left, right in zip(items, items[1:])), (
+            f"Unexpected left-to-right position for {labels}"
+        )
+
+    def state(clicks: int, picked: str, *labels: str) -> Screen:
+        return ui.visible(
+            "Layout workshop", f"Layout clicks {clicks}", f"Picked {picked}", *labels
+        )
+
+    all_cells = (
+        "Grid pump",
+        "Grid valve",
+        "Flow ash",
+        "Flow bay",
+        "Flow fir",
+        "Flex red",
+        "Flex blue",
+        "Flex gold",
+    )
+    wide = state(0, "None", "Mirror rows", "Narrow rows", *all_cells)
+    row(wide, "Grid pump", "Grid valve")
+    row(wide, "Flow ash", "Flow bay", "Flow fir")
+    row(wide, "Flex gold", "Flex red", "Flex blue")
+    first_grid = wide.require("Grid pump")
+    original_cell = round(first_grid.x * wide.width), round(first_grid.y * wide.height)
+    ui.touch(*original_cell)
+    ui.tap(state(1, "Grid pump", "Flex blue"), "Flex blue")
+    state(2, "Flex blue")
+    ui.call("shell", "input", "keyevent", "KEYCODE_TAB")
+    ui.call("shell", "input", "keyevent", "KEYCODE_ENTER")
+    ui.tap(state(3, "Flex red", "Mirror rows"), "Mirror rows")
+
+    mirrored = state(3, "Flex red", "Use LTR", *all_cells)
+    row(mirrored, "Grid valve", "Grid pump")
+    row(mirrored, "Flow fir", "Flow bay", "Flow ash")
+    row(mirrored, "Flex blue", "Flex red", "Flex gold")
+    ui.touch(*original_cell)
+    ui.tap(state(4, "Grid valve", "Narrow rows"), "Narrow rows")
+
+    wrapped = state(4, "Grid valve", "Widen rows", *all_cells)
+    row(wrapped, "Flow bay", "Flow ash")
+    row(wrapped, "Flex blue", "Flex red")
+    for leading, following in (("Flow ash", "Flow fir"), ("Flex blue", "Flex gold")):
+        head = wrapped.require(leading)
+        tail = wrapped.require(following)
+        assert tail.y - head.y > 0.04, f"{following} did not wrap below {leading}"
+        assert abs(tail.x - head.x) < 0.022, f"{following} lost its line alignment"
+    ui.tap(wrapped, "Flow fir")
+    ui.tap(state(5, "Flow fir", "Flex gold"), "Flex gold")
+    ui.tap(state(6, "Flex gold", "Widen rows"), "Widen rows")
+    restored = state(6, "Flex gold", "Narrow rows", *all_cells)
+    row(restored, "Flow fir", "Flow bay", "Flow ash")
+    row(restored, "Flex blue", "Flex red", "Flex gold")
+    ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
+    ui.wait_for(
+        "Back returns from the layout workshop",
+        lambda screen: (
+            screen.find("Route home") is not None
+            and screen.find("Layout workshop") is None
+        ),
+    )
+    ui.artifacts.mkdir(parents=True, exist_ok=True)
+    (ui.artifacts / "layout-wide-ltr.png").write_bytes(wide.png)
+    (ui.artifacts / "layout-wrapped-rtl.png").write_bytes(wrapped.png)
+
+
+def exercise_document_tabs(ui: Emulator, initial: Screen) -> None:
+    frame = coordinates(ui, initial)
+    open_drawer_item(ui, initial, "Open cards")
+    ui.tap(ui.visible("Dynamic cards", "Open tabs"), "Open tabs")
+    ui.artifacts.mkdir(parents=True, exist_ok=True)
+
+    def position(screen: Screen, title: str) -> tuple[int, int]:
+        label = screen.require(title)
+        return round(label.x * screen.width), round(label.y * screen.height)
+
+    def order(screen: Screen, *titles: str) -> None:
+        locations = [screen.require(title).x for title in titles]
+        assert all(left < right for left, right in zip(locations, locations[1:])), (
+            titles
+        )
+
+    ready = ui.visible(
+        "Document tabs",
+        "Pump",
+        "Valve",
+        "Meter",
+        "Active Valve",
+        "Tab count 3",
+        "Tab moves 0",
+        "No move",
+        "Add Valve",
+    )
+    order(ready, "Pump", "Valve", "Meter")
+    ui.tap(ready, "Add Valve")
+    before = ui.visible("Valve total 1", "Valve", "Meter", "Tab moves 0")
+    start, end = position(before, "Valve"), position(before, "Meter")
+    with drag_contact(ui, frame, start, end):
+        holding = ui.visible("Active Valve", "Tab moves 0", "Valve total 1")
+        (ui.artifacts / "tabs-during-drag.png").write_bytes(holding.png)
+        ui.call("shell", "input", "keyevent", "KEYCODE_ESCAPE")
+    unchanged = ui.visible(
+        "Document tabs",
+        "Pump",
+        "Valve",
+        "Meter",
+        "Tab moves 0",
+        "No move",
+        "Valve total 1",
+    )
+    order(unchanged, "Pump", "Valve", "Meter")
+
+    with drag_contact(
+        ui, frame, position(unchanged, "Valve"), position(unchanged, "Meter")
+    ):
+        ui.visible("Document tabs", "Active Valve", "Tab moves 0", "Valve total 1")
+        ui.call("shell", "input", "keyevent", "KEYCODE_HOME")
+        ui.wait_for(
+            "Android backgrounds the document tabs while Valve is held",
+            lambda screen: (
+                screen.find("Document tabs") is None
+                and screen.find("XRack Navigation") is None
+            ),
+        )
+    ui.call("shell", "am", "start", "-W", "-n", ACTIVITY)
+    resumed = ui.wait_for(
+        "the interrupted reorder leaves the original tabs and selection intact",
+        lambda screen: (
+            all(
+                screen.find(title)
+                for title in (
+                    "Document tabs",
+                    "Pump",
+                    "Valve",
+                    "Meter",
+                    "Active Valve",
+                    "Valve total 1",
+                    "Tab count 3",
+                    "Tab moves 0",
+                    "No move",
+                )
+            )
+            and ui.window_accepts_touch(screen, ACTIVITY)
+        ),
+        timeout=75,
+    )
+    order(resumed, "Pump", "Valve", "Meter")
+
+    drag(ui, frame, position(resumed, "Valve"), position(resumed, "Meter"))
+    reordered = ui.visible(
+        "Active Valve",
+        "Valve total 1",
+        "Tab moves 1",
+        "Moved 1 to 2",
+        "Pump",
+        "Meter",
+        "Valve",
+    )
+    order(reordered, "Pump", "Meter", "Valve")
+    meter_x, meter_y = position(reordered, "Meter")
+    # The three headers fill the 298px row evenly. Meter's close glyph
+    # is 56 logical pixels to the right of the center of its title.
+    ui.touch(meter_x + round(56 * frame.scale), meter_y)
+    background_closed = ui.wait_for(
+        "closing a background tab leaves the Valve page and counter active",
+        lambda screen: (
+            all(
+                screen.find(text)
+                for text in (
+                    "Closed Meter",
+                    "Active Valve",
+                    "Valve total 1",
+                    "Tab count 2",
+                    "Tab moves 1",
+                )
+            )
+            and screen.find("Meter") is None
+        ),
+    )
+    ui.call("shell", "input", "keyevent", "KEYCODE_SPACE")
+    ui.tap(ui.visible("Valve total 2", "Valve"), "Valve")
+    ui.call("shell", "input", "keyevent", "KEYCODE_FORWARD_DEL")
+    final = ui.visible(
+        "Closed Valve", "Active Pump", "Pump total 0", "Tab count 1", "Tab moves 1"
+    )
+    ui.tap(final, "Add Pump")
+    ui.visible("Pump total 1", "Active Pump")
+    ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
+    ui.wait_for(
+        "Back returns to the cards workshop",
+        lambda screen: (
+            screen.find("Dynamic cards") is not None
+            and screen.find("Document tabs") is None
+        ),
+    )
+    (ui.artifacts / "tabs-reordered.png").write_bytes(reordered.png)
+    (ui.artifacts / "tabs-background-closed.png").write_bytes(background_closed.png)
+    (ui.artifacts / "tabs-current-closed.png").write_bytes(final.png)
+
+
+def exercise_calendar_fields(ui: Emulator, initial: Screen) -> None:
+    frame = coordinates(ui, initial)
+    open_drawer_item(ui, initial, "Open layouts")
+    ui.tap(ui.visible("Layout workshop", "Open fields"), "Open fields")
+    ui.visible("Date and time fields", "Stored date 2024-02-28", "Stored time 12:30:41")
+
+    def press(key: str) -> None:
+        ui.call("shell", "input", "keyevent", f"KEYCODE_{key}")
+
+    def touch_field(caption: str, *, picker: bool = False) -> None:
+        # The time caption is about 30 logical pixels below the center of
+        # the full screen after the keyboard's dismissal animation ends.
+        screen = ui.wait_for(
+            f"the fields are ready for {caption}",
+            lambda screen: (
+                screen.find(caption) is not None
+                and (
+                    not picker
+                    or (
+                        (bottom := screen.find("Visit time")) is not None
+                        and abs((bottom.y - 0.5) * screen.height / frame.scale - 30)
+                        < 24
+                    )
+                )
+            ),
+        )
+        label = screen.require(caption)
+        # Each imported field places its 100px picker button on the right.
+        x = screen.width / 2 + 93 * frame.scale if picker else label.x * screen.width
+        ui.touch(
+            round(x),
+            round(label.y * screen.height + 39 * frame.scale),
+        )
+        if not picker:
+            keyboard_visible(ui, True)
+
+    def confirm_picker() -> None:
+        screen = ui.screen()
+        # The portrait picker footer's accept button is the bottommost
+        # primary-color control in the trailing half of the popup.
+        points = tuple(
+            (x, y)
+            for y in range(screen.height // 2, screen.height * 7 // 8, 12)
+            for x in range(screen.width * 2 // 3, screen.width * 15 // 16, 12)
+        )
+        primary = [
+            point
+            for point, color in zip(points, pixels_rgb(screen.png, points))
+            if color == (52, 86, 202)
+        ]
+        assert primary, "The picker did not present an enabled confirm button"
+        bottom = max(y for _, y in primary)
+        candidates = [(x, y) for x, y in primary if bottom - 60 <= y <= bottom - 24]
+        assert candidates, "The picker confirmation did not have a full touch area"
+        ui.touch(
+            round(sum(x for x, _ in candidates) / len(candidates)),
+            round(sum(y for _, y in candidates) / len(candidates)),
+        )
+
+    def replace_draft(digits: str) -> None:
+        ui.call("shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A")
+        ui.type_text(digits)
+
+    def hide_keyboard() -> None:
+        if b"mInputShown=true" in ui.call("shell", "dumpsys", "input_method"):
+            press("BACK")
+        keyboard_visible(ui, False)
+
+    def choose_next_minute() -> None:
+        ui.tap(ui.visible("44", "45", "46"), "46")
+        ui.wait_for(
+            "minute 46 is selected in the picker",
+            lambda screen: (
+                (minute := screen.find("46")) is not None
+                and (hour := screen.find("13")) is not None
+                and abs(minute.y - hour.y) < 0.015
+            ),
+        )
+
+    touch_field("Visit date")
+    replace_draft("20240302")
+    invalid_date = ui.visible("Date draft 2024-03-02", "Date blocked", "Date commits 0")
+    press("ENTER")
+    ui.visible(
+        "Stored date 2024-02-28",
+        "Date draft 2024-03-02",
+        "Date blocked",
+        "Date commits 0",
+    )
+    press("ESCAPE")
+    ui.visible("Date draft 2024-02-28", "Date ready", "Date commits 0")
+    replace_draft("20240227")
+    ui.visible("Stored date 2024-02-28", "Date draft 2024-02-27", "Date ready")
+    press("ENTER")
+    ui.visible("Stored date 2024-02-27", "Date commits 1")
+    hide_keyboard()
+    touch_field("Visit date", picker=True)
+    calendar = ui.visible("2024-02", "29")
+    tap_leap_day(ui, calendar)
+    confirm_picker()
+    ui.visible("Stored date 2024-02-29", "Date draft 2024-02-29", "Date commits 2")
+
+    touch_field("Visit time")
+    replace_draft("2359")
+    ui.visible("Time draft 23:59", "Time blocked", "Time commits 0")
+    press("ENTER")
+    ui.visible("Stored time 12:30:41", "Time draft 23:59", "Time commits 0")
+    press("ESCAPE")
+    ui.visible("Time draft 12:30", "Time ready", "Time commits 0")
+    replace_draft("1345")
+    ui.visible("Stored time 12:30:41", "Time draft 13:45", "Time ready")
+    press("ENTER")
+    ui.visible("Stored time 13:45:41", "Time commits 1")
+    hide_keyboard()
+
+    touch_field("Visit time", picker=True)
+    choose_next_minute()
+    press("BACK")
+    ui.visible("Stored time 13:45:41", "Time draft 13:45", "Time commits 1")
+    touch_field("Visit time", picker=True)
+    choose_next_minute()
+    confirm_picker()
+    final = ui.visible(
+        "Stored time 13:46:41", "Time draft 13:46", "Time commits 2", "Date commits 2"
+    )
+    ui.artifacts.mkdir(parents=True, exist_ok=True)
+    (ui.artifacts / "date-field-rejected.png").write_bytes(invalid_date.png)
+    (ui.artifacts / "calendar-fields-committed.png").write_bytes(final.png)
+
+
 def exercise(
     ui: Emulator,
     apk: Path,
@@ -602,6 +972,9 @@ def exercise(
     popup_window_only: bool = False,
     command_menu_only: bool = False,
     focus_routes_only: bool = False,
+    layouts_only: bool = False,
+    document_tabs_only: bool = False,
+    calendar_fields_only: bool = False,
 ) -> None:
     rotation = ui.call("shell", "cmd", "window", "user-rotation").decode().split()
     try:
@@ -638,6 +1011,15 @@ def exercise(
         if focus_routes_only:
             exercise_focus_routes(ui, initial)
             return
+        if layouts_only:
+            exercise_layout_workshop(ui, initial)
+            return
+        if document_tabs_only:
+            exercise_document_tabs(ui, initial)
+            return
+        if calendar_fields_only:
+            exercise_calendar_fields(ui, initial)
+            return
         frame = coordinates(ui, initial)
         ui.tap(initial, "Fast")
         ui.visible("Mode Fast")
@@ -670,7 +1052,19 @@ def exercise(
         ui.visible("Card Alpha", "Swipe total 1")
 
         ui.tap(ui.visible("Open details"), "Open details")
-        ui.tap(ui.visible("Route details", "Depth 2", "Add Detail"), "Add Detail")
+        review_x, _ = frame.point(290, 632)
+        detail = ui.wait_for(
+            "the detail page reaches its final position",
+            lambda screen: (
+                all(
+                    screen.find(text)
+                    for text in ("Route details", "Depth 2", "Add Detail")
+                )
+                and (review := screen.find("Review")) is not None
+                and abs(review.x * frame.width - review_x) < 4 * frame.scale
+            ),
+        )
+        ui.tap(detail, "Add Detail")
         ui.tap(ui.visible("Detail total 1", "Review"), "Review")
         ui.visible("Review page", "Depth 3")
         ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
@@ -690,17 +1084,52 @@ def exercise(
         drawer = ui.visible("Navigation menu", "Drawer opens 1", "Show help")
         ui.artifacts.mkdir(parents=True, exist_ok=True)
         (ui.artifacts / "navigation-drawer.png").write_bytes(drawer.png)
-        ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
-        ui.visible("Route details", "Depth 2", "Drawer closes 1")
 
-        ui.tap(ui.visible("Open menu"), "Open menu")
-        ui.tap(ui.visible("Navigation menu", "Show help"), "Show help")
+        def drawer_closed(count: int) -> Screen:
+            return ui.wait_for(
+                f"drawer close {count} leaves the detail page visible",
+                lambda screen: (
+                    all(
+                        screen.find(label)
+                        for label in (
+                            "Route details",
+                            "Depth 2",
+                            f"Drawer closes {count}",
+                            "Open menu",
+                        )
+                    )
+                    and screen.find("Navigation menu") is None
+                    and screen.find("Navigation help") is None
+                ),
+            )
+
+        ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
+        ui.tap(drawer_closed(1), "Open menu")
+        first_help = drawer.require("Show help")
+        second_drawer = ui.wait_for(
+            "the second drawer opening settles at its final position",
+            lambda screen: (
+                screen.find("Navigation menu") is not None
+                and (help := screen.find("Show help")) is not None
+                and abs(help.x - first_help.x) < 0.02
+                and abs(help.y - first_help.y) < 0.01
+            ),
+        )
+        ui.tap(second_drawer, "Show help")
         help_dialog = ui.visible("Navigation help", "Close help")
         (ui.artifacts / "navigation-help.png").write_bytes(help_dialog.png)
         ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
-        ui.visible("Navigation menu", "Show help")
+        ui.wait_for(
+            "Back closes help while leaving the drawer open",
+            lambda screen: (
+                screen.find("Navigation menu") is not None
+                and screen.find("Show help") is not None
+                and screen.find("Navigation help") is None
+                and screen.find("Close help") is None
+            ),
+        )
         ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
-        ui.visible("Route details", "Depth 2", "Drawer closes 2")
+        drawer_closed(2)
         ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
         ui.visible("Route home", "Depth 1", "Tab total 1", "Swipe total 1")
         ui.call("shell", "input", "keyevent", "KEYCODE_HOME")
@@ -732,6 +1161,9 @@ def main() -> None:
     scenario.add_argument("--popup-window-only", action="store_true")
     scenario.add_argument("--command-menu-only", action="store_true")
     scenario.add_argument("--focus-routes-only", action="store_true")
+    scenario.add_argument("--layouts-only", action="store_true")
+    scenario.add_argument("--document-tabs-only", action="store_true")
+    scenario.add_argument("--calendar-fields-only", action="store_true")
     parser.add_argument("--keyboard-apk", type=Path)
     args = parser.parse_args()
     adb = args.adb.resolve()
@@ -768,6 +1200,9 @@ def main() -> None:
             popup_window_only=args.popup_window_only,
             command_menu_only=args.command_menu_only,
             focus_routes_only=args.focus_routes_only,
+            layouts_only=args.layouts_only,
+            document_tabs_only=args.document_tabs_only,
+            calendar_fields_only=args.calendar_fields_only,
         )
 
 

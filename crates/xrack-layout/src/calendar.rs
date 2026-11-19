@@ -221,16 +221,30 @@ impl CalendarGeometry {
             }
             return prior;
         }
-        if self.state.allows(self.state.selected)
-            && self.cells.contains(&Some(self.state.selected))
-            && (!self.state.fixed_month || self.state.selected.first_of_month() == self.state.month)
+        if let Some(date) = self
+            .selection_in_view()
+            .filter(|&date| self.state.allows(date))
         {
-            return Some(self.state.selected);
+            return Some(date);
         }
         self.days()
             .find(|day| day.enabled && day.in_month)
             .or_else(|| self.days().find(|day| day.enabled))
             .map(|day| day.date)
+    }
+
+    pub(crate) fn navigation_origin(&self) -> Option<Date> {
+        // A live exclusion leaves the draft in place. Start directional movement
+        // there so the selectable focus fallback isn't skipped a second time.
+        self.selection_in_view().or_else(|| self.cursor())
+    }
+
+    fn selection_in_view(&self) -> Option<Date> {
+        let date = self.state.selected;
+        let current_month_only = self.has_header() || self.state.fixed_month;
+        (self.cells.contains(&Some(date))
+            && (!current_month_only || date.first_of_month() == self.state.month))
+            .then_some(date)
     }
 
     pub fn day_action(&self, date: Date) -> CalendarAction {

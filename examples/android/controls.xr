@@ -37,6 +37,7 @@ component GesturePad inherits Rectangle {
 
             Rectangle {
                 width: 100%; height: 100%;
+                accessible-name: "Gesture canvas";
                 background: #e6eef8; border-radius: 10px; clip: true;
                 probe := Button {
                     x: 18px; y: 20px; width: 100px; height: 44px;
@@ -70,12 +71,74 @@ component GesturePad inherits Rectangle {
     }
 }
 
+component RangePanel inherits Rectangle {
+    private property <float> low: 50;
+    private property <float> high: 50;
+    private property <bool> mirrored: false;
+    private property <int> edits: 0;
+    private property <int> releases: 0;
+    private property <bool> ordered: true;
+    private property <bool> release-pending: false;
+
+    Text {
+        width: 298px; height: 30px;
+        text: "Drag the handles"; font-size: 17px; color: #173047;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    band := RangeSlider {
+        y: 48px; width: 298px; height: 52px;
+        minimum: 0; maximum: 100; step: 5;
+        live: false; snap-mode: ScrollSnapMode.on-release;
+        lower-value <=> root.low; upper-value <=> root.high;
+        layout-direction: root.mirrored ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        changed(low, high) => {
+            root.edits += 1;
+            root.ordered = root.ordered && root.low == low && root.high == high;
+            root.release-pending = true;
+        }
+        released(low, high) => {
+            root.releases += 1;
+            root.ordered = root.ordered && root.low == low && root.high == high;
+            root.release-pending = false;
+        }
+        RangeLowerHandle { width: 30px; height: 30px; border-radius: 6px; background: #b24f3d; }
+        RangeUpperHandle { width: 24px; height: 24px; border-radius: 6px; background: #207968; }
+    }
+    band-value := Text {
+        y: 111px; text: "Band " + root.low + " to " + root.high;
+        font-size: 17px; color: #173047;
+    }
+    band-preview := Text {
+        y: 142px; text: band.lower-position != root.low / 100.0 ? "Preview lower" :
+            band.upper-position != root.high / 100.0 ? "Preview upper" : "Preview idle";
+        font-size: 17px; color: #173047;
+    }
+    band-edits := Text { y: 173px; text: "Range edits " + root.edits; font-size: 17px; color: #173047; }
+    band-releases := Text { x: 154px; y: 173px; text: "Range releases " + root.releases; font-size: 17px; color: #173047; }
+    band-order := Text {
+        y: 204px; font-size: 17px; color: #173047;
+        text: !root.ordered ? "Callback error" : root.release-pending ? "Release pending" : "Callbacks ordered";
+    }
+    mirror-range := CheckBox {
+        y: 240px; width: 144px; height: 44px;
+        text: root.mirrored ? "RTL range" : "Mirror range";
+        checked <=> root.mirrored;
+    }
+    reset-range := Button {
+        x: 154px; y: 240px; width: 144px; height: 44px;
+        text: "Reset range";
+        clicked => { root.low = 50; root.high = 50; }
+    }
+}
+
 component DialPanel inherits Rectangle {
     private property <float> level: 75;
     private property <float> released-level: 75;
     private property <int> releases: 0;
     private property <DialInputMode> mode: circular;
     private property <bool> locked: false;
+    private property <bool> range-open: false;
+    private property <bool> format-open: false;
 
     gain-dial := Dial {
         x: 80px; y: 4px; width: 140px; height: 140px;
@@ -133,6 +196,28 @@ component DialPanel inherits Rectangle {
         x: 158px; y: 264px;
         text: "Released at " + Math.round(root.released-level);
         font-size: 17px; color: #173047;
+    }
+    open-tag-format := Button {
+        x: 0px; y: 52px; width: 76px; height: 44px; text: "Tags";
+        clicked => { root.format-open = true; }
+    }
+    open-range := Button {
+        x: 224px; y: 52px; width: 76px; height: 44px; text: "Range";
+        clicked => { root.range-open = true; }
+    }
+    Dialog {
+        open <=> root.range-open;
+        title: "Range handles";
+        width: 338px; height: 376px;
+        background: #ffffff; color: #173047;
+        RangePanel { width: 100%; height: 292px; }
+    }
+    Dialog {
+        open <=> root.format-open;
+        title: "Format asset tag";
+        width: 338px; height: 388px;
+        background: #ffffff; color: #173047;
+        TagFormatPanel { width: 100%; height: 304px; }
     }
 }
 
@@ -243,6 +328,55 @@ component ConnectionDraft inherits VerticalLayout {
         text: "Apply target";
         clicked => { root.saved(); }
     }
+}
+
+component TagFormatPanel inherits Rectangle {
+    private property <string> tag: "";
+    private property <string> saved: "";
+    private property <int> saves: 0;
+    private property <int> finishes: 0;
+    private property <string> finish-status: "No finished edit";
+
+    Text { text: "Asset tag"; font-size: 17px; color: #173047; }
+    asset-tag := LineEdit {
+        y: 26px; width: 298px; height: 44px;
+        placeholder-text: "Scan or type";
+        input-mask: "AA-999";
+        input-pattern: "[A-Z]{2}-[0-9]{3}";
+        return-key: done;
+        text <=> root.tag;
+        accepted => {
+            root.saved = root.tag;
+            root.saves += 1;
+        }
+        editing-finished(value, acceptable) => {
+            root.finishes += 1;
+            root.finish-status = !acceptable ? "Draft retained" :
+                root.saved == value ? "Finished after save" : "Finished without submit";
+        }
+    }
+    Text { y: 82px; text: "Scanner sample"; font-size: 17px; color: #173047; }
+    scan-sample := LineEdit {
+        y: 108px; width: 298px; height: 44px; read-only: true; text: "AB1";
+    }
+    tag-draft := Text {
+        y: 168px; text: root.tag == "" ? "Tag empty" : "Draft " + root.tag;
+        font-size: 17px; color: #173047;
+    }
+    tag-ready := Text {
+        x: 154px; y: 174px; text: asset-tag.acceptable-input ? "Tag ready" : "Tag incomplete";
+        font-size: 17px; color: #173047;
+    }
+    tag-saved := Text {
+        y: 202px; text: root.saved == "" ? "Tag unsaved" : "Saved " + root.saved;
+        font-size: 17px; color: #173047;
+    }
+    tag-saves := Text { y: 234px; text: "Saves " + root.saves; font-size: 17px; color: #173047; }
+    tag-finishes := Text {
+        x: 154px; y: 240px; text: "Finishes " + root.finishes;
+        font-size: 17px; color: #173047;
+    }
+    tag-finish := Text { y: 272px; text: root.finish-status; font-size: 17px; color: #173047; }
 }
 
 component ConnectionPanel inherits Rectangle {
@@ -439,6 +573,48 @@ component ClickRoutesPanel inherits Rectangle {
     pair-order := Text { y: 364px; text: root.order-ok ? "Order intact" : "Order error"; font-size: 17px; color: #173047; }
 }
 
+component PasswordPanel inherits Rectangle {
+    private property <string> value: "";
+    private property <string> probe: "checkpad";
+    private property <bool> revealed: false;
+
+    Text { text: "Password field"; font-size: 17px; color: #173047; }
+    password-entry := LineEdit {
+        y: 28px; width: 298px; height: 44px;
+        accessible-name: "Test passphrase";
+        input-type: password;
+        password-character: "X"; password-visible: root.revealed;
+        placeholder-text: "Test passphrase"; text <=> root.value;
+    }
+    reveal-password := Button {
+        y: 90px; width: 144px; height: 44px;
+        focus-on-click: false;
+        text: root.revealed ? "Mask value" : "Reveal value";
+        clicked => { root.revealed = !root.revealed; }
+    }
+    clear-probe := Button {
+        x: 154px; y: 90px; width: 144px; height: 44px;
+        focus-on-click: false;
+        text: "Clear probe";
+        clicked => { root.probe = ""; }
+    }
+    Text { y: 154px; text: "Clipboard probe"; font-size: 17px; color: #173047; }
+    clipboard-entry := TextInput {
+        y: 182px; width: 298px; height: 44px;
+        accessible-name: "Paste proof";
+        placeholder-text: "Paste proof";
+        text <=> root.probe;
+    }
+    password-result := Text {
+        y: 246px; font-size: 17px; color: #173047;
+        text: root.value == "moss7" ? "Bound match" : root.value == "" ? "Bound empty" : "Bound changed";
+    }
+    probe-result := Text {
+        y: 274px; font-size: 17px; color: #173047;
+        text: root.probe == "checkpad" ? "Probe sentinel" : root.probe == "" ? "Probe empty" : "Probe changed";
+    }
+}
+
 component ButtonHoldPanel inherits Rectangle {
     private property <int> presses: 0;
     private property <int> releases: 0;
@@ -452,6 +628,7 @@ component ButtonHoldPanel inherits Rectangle {
     private property <bool> order-ok: true;
     private property <bool> delay-open: false;
     private property <bool> clicks-open: false;
+    private property <bool> password-open: false;
 
     inspect-button := Button {
         width: 298px; height: 52px; text: "Inspect control";
@@ -511,6 +688,11 @@ component ButtonHoldPanel inherits Rectangle {
     repeat-release-count := Text {
         y: 322px; text: "Step releases " + root.repeat-releases; font-size: 17px; color: #173047;
     }
+    open-password := Button {
+        x: 154px; y: 304px; width: 144px; height: 44px;
+        text: "Open privacy";
+        clicked => { root.password-open = true; }
+    }
     repeat-state := Text {
         y: 352px;
         text: root.repeats == 0 ? "Steps ready" :
@@ -539,6 +721,13 @@ component ButtonHoldPanel inherits Rectangle {
         width: 338px; height: 482px;
         background: #ffffff; color: #173047;
         ClickRoutesPanel { width: 100%; height: 398px; }
+    }
+    Dialog {
+        open <=> root.password-open;
+        title: "Password privacy";
+        width: 338px; height: 392px;
+        background: #ffffff; color: #173047;
+        PasswordPanel { width: 100%; height: 308px; }
     }
 }
 
@@ -586,6 +775,7 @@ export component MobileControls inherits Window {
     volume-label := Text { color: #173047; font-size: 17px; x: 24px; y: 66px; text: "Volume " + root.volume; }
     volume-slider := Slider {
         x: 24px; y: 94px; width: 342px; height: 40px;
+        accessible-name: "Volume control";
         minimum: 0; maximum: 100; step: 5;
         snap-mode: ScrollSnapMode.always;
         value <=> root.volume;

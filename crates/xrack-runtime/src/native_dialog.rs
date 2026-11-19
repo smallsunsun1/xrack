@@ -3,8 +3,10 @@ use std::{
     cell::Cell,
     collections::VecDeque,
     fmt,
+    future::poll_fn,
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
+    task::{Poll, Waker},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -425,19 +427,49 @@ impl PartialEq for NativeDialogRegistration {
 
 struct ActiveDialog {
     registration: NativeDialogRegistration,
-    abandoned: Rc<Cell<bool>>,
+    abandonment: Rc<DialogAbandonment>,
+}
+
+#[derive(Default)]
+struct DialogAbandonment {
+    abandoned: Cell<bool>,
+    waiter: Cell<Option<Waker>>,
+}
+
+impl DialogAbandonment {
+    fn abandon(&self) {
+        if !self.abandoned.replace(true)
+            && let Some(waiter) = self.waiter.take()
+        {
+            waiter.wake();
+        }
+    }
 }
 
 #[doc(hidden)]
 pub struct NativeDialogPresentation {
     pub id: u64,
     pub options: Rc<NativeDialogOptions>,
-    abandoned: Rc<Cell<bool>>,
+    abandonment: Rc<DialogAbandonment>,
 }
 
 impl NativeDialogPresentation {
     pub fn is_abandoned(&self) -> bool {
-        self.abandoned.get()
+        self.abandonment.abandoned.get()
+    }
+
+    /// Wait until the request's owning component leaves the active scene.
+    /// A presentation has one asynchronous waiter on the UI thread.
+    pub async fn wait_until_abandoned(&self) {
+        poll_fn(|context| {
+            if self.is_abandoned() {
+                Poll::Ready(())
+            } else {
+                self.abandonment.waiter.set(Some(context.waker().clone()));
+                Poll::Pending
+            }
+        })
+        .await
     }
 }
 
@@ -462,7 +494,7 @@ impl NativeDialogQueue {
         if let Some(active) = &self.active
             && !is_live(active.registration.id())
         {
-            active.abandoned.set(true);
+            active.abandonment.abandon();
         }
         self.waiting.retain(|entry| {
             if !is_live(entry.id()) {
@@ -496,32 +528,40 @@ impl NativeDialogQueue {
             return None;
         }
         let registration = self.waiting.pop_front()?;
-        let abandoned = Rc::new(Cell::new(false));
+        let abandonment = Rc::new(DialogAbandonment::default());
         let request = NativeDialogPresentation {
             id: registration.id(),
             options: registration.options(),
-            abandoned: abandoned.clone(),
+            abandonment: abandonment.clone(),
         };
         self.active = Some(ActiveDialog {
             registration,
-            abandoned,
+            abandonment,
         });
         Some(request)
+    }
+
+    pub fn is_active_request_live(&self, id: u64) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            active.registration.id() == id && !active.abandonment.abandoned.get()
+        })
     }
 
     pub fn complete(&mut self, id: u64, result: NativeDialogResult) -> bool {
         let Some(active) = self.active.take_if(|active| {
             active.registration.id() == id
-                && (active.abandoned.get()
+                && (active.abandonment.abandoned.get()
                     || active.registration.request.options.accepts_result(&result))
         }) else {
             return false;
         };
-        active.registration.deliver(if active.abandoned.get() {
-            NativeDialogResult::Abandoned
-        } else {
-            result
-        });
+        active
+            .registration
+            .deliver(if active.abandonment.abandoned.get() {
+                NativeDialogResult::Abandoned
+            } else {
+                result
+            });
         true
     }
 }
@@ -532,6 +572,66 @@ mod tests {
         FileDialogOptions, FileDialogSelection, NativeDialogOptions, NativeDialogSlot, parse_filter,
     };
     use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    #[test]
+    fn abandoning_an_active_request_wakes_its_presenter_before_advancing_the_queue() {
+        use super::{NativeDialogQueue, NativeDialogResult};
+        use std::{
+            cell::RefCell,
+            pin::pin,
+            rc::Rc,
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+            task::{Context, Wake, Waker},
+        };
+
+        #[derive(Default)]
+        struct WakeCount(AtomicUsize);
+        impl Wake for WakeCount {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let result = Rc::new(RefCell::new(None));
+        let first = NativeDialogSlot::default();
+        first.open(|| NativeDialogOptions::File(FileDialogOptions::default()));
+        let first = first
+            .register({
+                let result = result.clone();
+                move |_, value| {
+                    result.replace(Some(value));
+                    true
+                }
+            })
+            .unwrap();
+        let next = NativeDialogSlot::default();
+        next.open(|| NativeDialogOptions::File(FileDialogOptions::default()));
+        let next = next.register(|_, _| true).unwrap();
+        let mut queue = NativeDialogQueue::default();
+        queue.sync(&[&first, &next]);
+        let active = queue.begin_next().unwrap();
+        let mut abandoned = pin!(active.wait_until_abandoned());
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(wakes.clone());
+        let mut context = Context::from_waker(&waker);
+
+        assert!(abandoned.as_mut().poll(&mut context).is_pending());
+        queue.sync(&[&next]);
+        queue.sync(&[&next]);
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+        assert!(abandoned.as_mut().poll(&mut context).is_ready());
+        assert!(queue.begin_next().is_none());
+
+        assert!(queue.complete(active.id, NativeDialogResult::Files(vec!["old.txt".into()])));
+        assert_eq!(
+            result.borrow().as_ref(),
+            Some(&NativeDialogResult::Abandoned)
+        );
+        assert_eq!(queue.begin_next().unwrap().id, next.id());
+    }
 
     #[test]
     fn failed_open_bindings_release_the_slot() {

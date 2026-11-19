@@ -307,8 +307,17 @@ pub fn control_part_parents(kind: &str) -> &'static [&'static str] {
 }
 
 pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
+    if name == "accessible-heading-level" {
+        return matches!(kind, "Text" | "Label").then_some(Type::Int);
+    }
+    if name == "accessible-live" {
+        return matches!(kind, "Text" | "Label").then_some(Type::AccessibleLive);
+    }
     if let Some(ty) = flick_motion_property(kind, name) {
         return Some(ty);
+    }
+    if name == "drag-auto-scroll" {
+        return selection_list(kind).then_some(Type::Bool);
     }
     if kind == "DynamicContainer" {
         return builtin_property("VerticalLayout", name);
@@ -438,6 +447,13 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         return Some(Type::Bool);
     }
     if name == "mouse-drag-pan-enabled" && viewport_kind(kind) {
+        return Some(Type::Bool);
+    }
+    if matches!(
+        name,
+        "pull-to-refresh" | "refreshing" | "dismiss-keyboard-on-drag"
+    ) && viewport_kind(kind)
+    {
         return Some(Type::Bool);
     }
     if name == "preserve-scroll-anchor" && viewport_kind(kind) && !content_viewport(kind) {
@@ -728,6 +744,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Bool
         }
         "data" | "drag-key" if kind == "DragArea" => Type::String,
+        "touch-drag-delay" if kind == "DragArea" => Type::Int,
         "allow-copy" | "allow-move" | "allow-link" if kind == "DragArea" => Type::Bool,
         "keys" if kind == "DropArea" => Type::StringList,
         "accept-files" if kind == "DropArea" => Type::Bool,
@@ -1033,6 +1050,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "overflow" if kind == "Text" => Type::TextOverflow,
         "max-lines" if kind == "Text" => Type::Int,
         "input-type" if builtins::text_submission_single_line(kind) => Type::InputType,
+        "input-purpose" if builtins::text_submission_single_line(kind) => Type::InputPurpose,
         "return-key" if builtins::text_submission_single_line(kind) => Type::ReturnKey,
         "password-visible" if matches!(kind, "TextInput" | "LineEdit") => Type::Bool,
         "password-character" if builtins::text_submission_single_line(kind) => Type::String,
@@ -1764,6 +1782,9 @@ fn control_event(kind: &str, event: &str) -> bool {
     if event == "flicked" {
         return kind == "Flickable";
     }
+    if event == "refresh-requested" {
+        return viewport_kind(kind);
+    }
     if kind == "TreeView" {
         return matches!(
             event,
@@ -1865,6 +1886,7 @@ fn control_event(kind: &str, event: &str) -> bool {
                     | "dropped"
                     | "files-entered"
                     | "files-dropped"
+                    | "files-failed"
             )
 }
 
@@ -1882,7 +1904,7 @@ pub fn event_parameters<'a>(
     span: Span,
 ) -> Result<&'a [Type]> {
     let kind = delegate_base(kind).unwrap_or(kind);
-    let scrolled = matches!(event, "scrolled" | "flicked");
+    let scrolled = matches!(event, "scrolled" | "flicked" | "refresh-requested");
     let key_handler = kind == "FocusScope" && key_handler(event);
     Ok(match kind {
         _ if scrolled => &[],
@@ -1920,6 +1942,7 @@ pub fn event_parameters<'a>(
         "DropArea" if matches!(event, "entered" | "dropped") => &[Type::String, Type::DragAction],
         "DropArea" if event == "position-changed" => &[Type::Length, Type::Length],
         "DropArea" if matches!(event, "files-entered" | "files-dropped") => &[Type::StringList],
+        "DropArea" if event == "files-failed" => &[Type::String],
         "SpinBox" | "TabWidget" | "TabBar" | "SwipeView" | "PageIndicator" | "ListView"
         | "GridView" | "StandardListView" | "TableView" | "StandardTableView" | "TreeView" => {
             &[Type::Int]
@@ -9330,7 +9353,9 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::TextVerticalAlignment => "top",
         Type::TextOverflow => "clip",
         Type::InputType => "text",
+        Type::InputPurpose => "auto",
         Type::ReturnKey => "auto",
+        Type::AccessibleLive => "off",
         Type::CursorShape => "auto",
         Type::ColorScheme => "system",
         Type::FileDialogMode => "open-file",
@@ -10032,7 +10057,9 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "TextVerticalAlignment"
                         | "TextOverflow"
                         | "InputType"
+                        | "InputPurpose"
                         | "ReturnKey"
+                        | "AccessibleLive"
                         | "CursorShape"
                         | "PointerEventKind"
                         | "PointerButton"

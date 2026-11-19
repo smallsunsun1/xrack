@@ -4,6 +4,163 @@ use winit::{
     keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey},
 };
 
+#[cfg(target_os = "android")]
+pub(crate) fn native_key(
+    app: &android_activity::AndroidApp,
+    event: &android_activity::input::KeyEvent<'_>,
+    accent: &mut Option<char>,
+) -> Option<(PhysicalKey, KeyEvent)> {
+    use android_activity::input::{KeyAction, KeyMapChar, Keycode as Code};
+    use winit::keyboard::{NativeKey, NativeKeyCode};
+
+    let code = event.key_code();
+    if matches!(code, Code::VolumeUp | Code::VolumeDown | Code::VolumeMute) {
+        return None;
+    }
+    let state = match event.action() {
+        KeyAction::Down => ElementState::Pressed,
+        KeyAction::Up => ElementState::Released,
+        _ => return None,
+    };
+    let physical = match code {
+        Code::ShiftLeft => Some(KeyCode::ShiftLeft),
+        Code::ShiftRight => Some(KeyCode::ShiftRight),
+        Code::CtrlLeft => Some(KeyCode::ControlLeft),
+        Code::CtrlRight => Some(KeyCode::ControlRight),
+        Code::AltLeft => Some(KeyCode::AltLeft),
+        Code::AltRight => Some(KeyCode::AltRight),
+        Code::MetaLeft => Some(KeyCode::SuperLeft),
+        Code::MetaRight => Some(KeyCode::SuperRight),
+        Code::Enter => Some(KeyCode::Enter),
+        Code::NumpadEnter => Some(KeyCode::NumpadEnter),
+        Code::Del => Some(KeyCode::Backspace),
+        Code::ForwardDel => Some(KeyCode::Delete),
+        Code::Tab => Some(KeyCode::Tab),
+        Code::Escape => Some(KeyCode::Escape),
+        _ => None,
+    }
+    .map(PhysicalKey::Code)
+    .unwrap_or(PhysicalKey::Unidentified(NativeKeyCode::Android(
+        code.into(),
+    )));
+    let map = app.device_key_character_map(event.device_id()).ok();
+    let mapped = map
+        .as_ref()
+        .and_then(|map| match map.get(code, event.meta_state()) {
+            Ok(KeyMapChar::Unicode(ch)) => {
+                let ch = if state == ElementState::Pressed
+                    && let Some(mark) = accent.take()
+                {
+                    map.get_dead_char(mark, ch).ok().flatten()
+                } else {
+                    Some(ch)
+                };
+                ch.map(|ch| Key::Character(ch.to_string().into()))
+            }
+            Ok(KeyMapChar::CombiningAccent(mark)) => {
+                if state == ElementState::Pressed {
+                    *accent = Some(mark);
+                }
+                Some(Key::Dead(Some(mark)))
+            }
+            Ok(KeyMapChar::None) => None,
+            Err(_) => {
+                *accent = None;
+                None
+            }
+        });
+    let logical_key = mapped.unwrap_or_else(|| {
+        // Android's key map can return no character for Ctrl+A–Z. Keep the
+        // letter identity so the editor and shortcut dispatcher can handle it.
+        let value = u32::from(code);
+        let first_letter = u32::from(Code::A);
+        if (first_letter..=u32::from(Code::Z)).contains(&value) {
+            let letter = char::from(b'a' + (value - first_letter) as u8);
+            return Key::Character(letter.to_string().into());
+        }
+        let first_digit = u32::from(Code::Keycode0);
+        if (first_digit..=u32::from(Code::Keycode9)).contains(&value) {
+            let digit = char::from(b'0' + (value - first_digit) as u8);
+            return Key::Character(digit.to_string().into());
+        }
+        let punctuation = match code {
+            Code::Star => "*",
+            Code::Pound => "#",
+            Code::Comma => ",",
+            Code::Period => ".",
+            Code::Grave => "`",
+            Code::Minus => "-",
+            Code::Equals => "=",
+            Code::LeftBracket => "[",
+            Code::RightBracket => "]",
+            Code::Backslash => "\\",
+            Code::Semicolon => ";",
+            Code::Apostrophe => "'",
+            Code::Slash => "/",
+            Code::At => "@",
+            Code::Plus => "+",
+            _ => "",
+        };
+        if !punctuation.is_empty() {
+            return Key::Character(punctuation.into());
+        }
+        let named = match code {
+            Code::Back => NamedKey::BrowserBack,
+            Code::Home => NamedKey::BrowserHome,
+            Code::DpadLeft => NamedKey::ArrowLeft,
+            Code::DpadRight => NamedKey::ArrowRight,
+            Code::DpadUp => NamedKey::ArrowUp,
+            Code::DpadDown => NamedKey::ArrowDown,
+            Code::DpadCenter | Code::Enter | Code::NumpadEnter => NamedKey::Enter,
+            Code::MoveHome => NamedKey::Home,
+            Code::MoveEnd => NamedKey::End,
+            Code::PageUp => NamedKey::PageUp,
+            Code::PageDown => NamedKey::PageDown,
+            Code::Space => NamedKey::Space,
+            Code::Tab => NamedKey::Tab,
+            Code::Del => NamedKey::Backspace,
+            Code::ForwardDel => NamedKey::Delete,
+            Code::Escape => NamedKey::Escape,
+            Code::Insert => NamedKey::Insert,
+            Code::Cut => NamedKey::Cut,
+            Code::Copy => NamedKey::Copy,
+            Code::Paste => NamedKey::Paste,
+            Code::Menu => NamedKey::ContextMenu,
+            Code::F1 => NamedKey::F1,
+            Code::F2 => NamedKey::F2,
+            Code::F3 => NamedKey::F3,
+            Code::F4 => NamedKey::F4,
+            Code::F5 => NamedKey::F5,
+            Code::F6 => NamedKey::F6,
+            Code::F7 => NamedKey::F7,
+            Code::F8 => NamedKey::F8,
+            Code::F9 => NamedKey::F9,
+            Code::F10 => NamedKey::F10,
+            Code::F11 => NamedKey::F11,
+            Code::F12 => NamedKey::F12,
+            Code::MediaPlayPause => NamedKey::MediaPlayPause,
+            Code::MediaStop => NamedKey::MediaStop,
+            Code::MediaNext => NamedKey::MediaTrackNext,
+            Code::MediaPrevious => NamedKey::MediaTrackPrevious,
+            _ => return Key::Unidentified(NativeKey::Android(code.into())),
+        };
+        Key::Named(named)
+    });
+    let text = (state == ElementState::Pressed)
+        .then(|| logical_key.to_text().map(str::to_owned))
+        .flatten();
+    Some((
+        physical,
+        KeyEvent {
+            unmodified_key: logical_key.clone(),
+            logical_key,
+            text,
+            state,
+            repeat: event.repeat_count() > 0,
+        },
+    ))
+}
+
 #[derive(Default)]
 pub(crate) struct Keyboard {
     held: u8,

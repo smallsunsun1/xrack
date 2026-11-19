@@ -1,18 +1,26 @@
-use crate::{UserEvent, desktop::WindowEvents, keyboard::KeyEvent};
+use crate::{UserEvent, desktop::WindowEvents, ios_text::TextActions, keyboard::KeyEvent};
 use objc2::{
-    ClassType, DeclaredClass, declare_class, msg_send, msg_send_id, mutability::MainThreadOnly,
-    rc::Retained, runtime::NSObjectProtocol,
+    ClassType, DeclaredClass, declare_class, msg_send, msg_send_id,
+    mutability::MainThreadOnly,
+    rc::Retained,
+    runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel},
+    sel,
 };
-use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSArray, NSSet};
+use objc2_foundation::{
+    CGPoint, CGRect, CGSize, MainThreadMarker, NSArray, NSRange, NSSet, NSString, NSUndoManager,
+};
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIKey, UIKeyModifierFlags, UIKeyboardHIDUsage, UIPress,
     UIPressesEvent, UITextField, UITextInput, UITextView, UIView,
 };
+use std::{cell::RefCell, rc::Rc};
 use winit::{
     event::ElementState,
     keyboard::{Key, ModifiersState, NamedKey},
     window::Window,
 };
+
+use xrack_runtime::TextCommand;
 
 pub(super) struct KeyboardInput(Retained<ControlResponder>);
 
@@ -106,8 +114,22 @@ impl ControlResponder {
     }
 }
 
-pub(super) fn text_field(mtm: MainThreadMarker, events: WindowEvents) -> Retained<UITextField> {
-    let allocated = mtm.alloc::<FieldResponder>().set_ivars(events);
+pub(super) type UndoManagerSlot = Rc<RefCell<Option<Retained<NSUndoManager>>>>;
+
+struct TextResponderState {
+    actions: TextActions,
+    undo_manager: UndoManagerSlot,
+}
+
+pub(super) fn text_field(
+    mtm: MainThreadMarker,
+    actions: TextActions,
+    undo_manager: UndoManagerSlot,
+) -> Retained<UITextField> {
+    let allocated = mtm.alloc::<FieldResponder>().set_ivars(TextResponderState {
+        actions,
+        undo_manager,
+    });
     // SAFETY: Initialize the declared subclass and upcast to its UIKit superclass.
     unsafe {
         let field: Retained<FieldResponder> = msg_send_id![super(allocated), init];
@@ -115,8 +137,17 @@ pub(super) fn text_field(mtm: MainThreadMarker, events: WindowEvents) -> Retaine
     }
 }
 
-pub(super) fn text_view(mtm: MainThreadMarker, events: WindowEvents) -> Retained<UITextView> {
-    let allocated = mtm.alloc::<MultilineResponder>().set_ivars(events);
+pub(super) fn text_view(
+    mtm: MainThreadMarker,
+    actions: TextActions,
+    undo_manager: UndoManagerSlot,
+) -> Retained<UITextView> {
+    let allocated = mtm
+        .alloc::<MultilineResponder>()
+        .set_ivars(TextResponderState {
+            actions,
+            undo_manager,
+        });
     // SAFETY: Initialize the declared subclass and upcast to its UIKit superclass.
     unsafe {
         let view: Retained<MultilineResponder> = msg_send_id![super(allocated), init];
@@ -124,81 +155,147 @@ pub(super) fn text_view(mtm: MainThreadMarker, events: WindowEvents) -> Retained
     }
 }
 
-declare_class!(
-    struct FieldResponder;
+fn command_for_action(action: Sel) -> Option<TextCommand> {
+    [
+        (sel!(cut:), TextCommand::Cut),
+        (sel!(copy:), TextCommand::Copy),
+        (sel!(paste:), TextCommand::Paste),
+        (sel!(select:), TextCommand::SelectWord),
+        (sel!(selectAll:), TextCommand::SelectAll),
+    ]
+    .into_iter()
+    .find_map(|(selector, command)| (selector == action).then_some(command))
+}
 
-    unsafe impl ClassType for FieldResponder {
-        type Super = UITextField;
-        type Mutability = MainThreadOnly;
-        const NAME: &'static str = "XRackKeyTextField";
-    }
-    impl DeclaredClass for FieldResponder { type Ivars = WindowEvents; }
-    unsafe impl NSObjectProtocol for FieldResponder {}
+macro_rules! text_responder {
+    ($name:ident, $superclass:ident, $class_name:literal, $multiline:literal) => {
+        declare_class!(
+            struct $name;
 
-    unsafe impl FieldResponder {
-        #[method(pressesBegan:withEvent:)]
-        fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
-            let unhandled = editor_keys(self.ivars(), presses, ElementState::Pressed,
-                unsafe { self.markedTextRange().is_some() }, MainThreadMarker::from(self));
-            if !unhandled.is_empty() {
-                unsafe { let _: () = msg_send![super(self), pressesBegan: &*unhandled withEvent: event]; }
+            unsafe impl ClassType for $name {
+                type Super = $superclass;
+                type Mutability = MainThreadOnly;
+                const NAME: &'static str = $class_name;
+            }
+            impl DeclaredClass for $name { type Ivars = TextResponderState; }
+            unsafe impl NSObjectProtocol for $name {}
+
+            unsafe impl $name {
+
+                #[method(canPerformAction:withSender:)]
+                fn can_perform_action(&self, action: Sel, sender: Option<&AnyObject>) -> bool {
+                    if let Some(command) = command_for_action(action) {
+                        self.editor_is_ready() && self.ivars().actions.can_run(command)
+                    } else {
+                        // SAFETY: Keep UIKit's behavior for actions outside XRack's edit commands.
+                        let allowed: Bool = unsafe { msg_send![super(self), canPerformAction: action withSender: sender] };
+                        allowed.as_bool()
+                    }
+                }
+
+                #[method(cut:)]
+                fn cut(&self, _: Option<&AnyObject>) {
+                    self.run_command(TextCommand::Cut);
+                }
+
+                #[method(copy:)]
+                fn copy(&self, _: Option<&AnyObject>) {
+                    self.run_command(TextCommand::Copy);
+                }
+
+                #[method(paste:)]
+                fn paste(&self, _: Option<&AnyObject>) {
+                    self.run_command(TextCommand::Paste);
+                }
+
+                #[method(select:)]
+                fn select(&self, _: Option<&AnyObject>) {
+                    self.run_command(TextCommand::SelectWord);
+                }
+
+                #[method(selectAll:)]
+                fn select_all(&self, _: Option<&AnyObject>) {
+                    self.run_command(TextCommand::SelectAll);
+                }
+
+                #[method(setMarkedText:selectedRange:)]
+                fn set_marked_text(&self, text: Option<&NSString>, range: NSRange) {
+                    self.update_marked_text(|| {
+                        // SAFETY: UIKit owns the responder and input data on its main thread.
+                        unsafe { let _: () = msg_send![super(self), setMarkedText: text selectedRange: range]; }
+                    });
+                }
+
+                #[method(unmarkText)]
+                fn unmark_text(&self) {
+                    self.update_marked_text(|| {
+                        // SAFETY: Only the UIKit superclass mutates the marked range.
+                        unsafe { let _: () = msg_send![super(self), unmarkText]; }
+                    });
+                }
+
+                #[method_id(undoManager)]
+                fn undo_manager(&self) -> Option<Retained<NSUndoManager>> {
+                    // SAFETY: UIKit queries this responder on the main thread.
+                    if unsafe { self.isFirstResponder() } {
+                        self.ivars().undo_manager.borrow().clone()
+                    } else {
+                        None
+                    }
+                }
+
+                #[method(pressesBegan:withEvent:)]
+                fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+                    let unhandled = editor_keys(&self.ivars().actions.events, presses, ElementState::Pressed,
+                        unsafe { self.markedTextRange().is_some() }, MainThreadMarker::from(self));
+                    if !unhandled.is_empty() {
+                        unsafe { let _: () = msg_send![super(self), pressesBegan: &*unhandled withEvent: event]; }
+                    }
+                }
+
+                #[method(pressesEnded:withEvent:)]
+                fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+                    let unhandled = editor_keys(&self.ivars().actions.events, presses, ElementState::Released,
+                        unsafe { self.markedTextRange().is_some() }, MainThreadMarker::from(self));
+                    if !unhandled.is_empty() {
+                        unsafe { let _: () = msg_send![super(self), pressesEnded: &*unhandled withEvent: event]; }
+                    }
+                }
+
+                #[method(pressesCancelled:withEvent:)]
+                fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+                    self.ivars().actions.events.post(UserEvent::IosKeyCancelled);
+                    unsafe { let _: () = msg_send![super(self), pressesCancelled: presses withEvent: event]; }
+                }
+            }
+        );
+
+        impl $name {
+            fn update_marked_text(&self, update: impl FnOnce()) {
+                let input = ProtocolObject::from_ref(&**self);
+                self.ivars().actions.update_marked_text($multiline, input, update, || {
+                    // SAFETY: Both UIKit responder classes expose text through this getter.
+                    let value: Option<Retained<NSString>> = unsafe { msg_send_id![self, text] };
+                    value.map_or_else(String::new, |text| text.to_string())
+                });
+            }
+
+            fn editor_is_ready(&self) -> bool {
+                // SAFETY: UIKit owns these responders on its main thread.
+                unsafe { self.isFirstResponder() && self.markedTextRange().is_none() }
+            }
+
+            fn run_command(&self, command: TextCommand) {
+                if self.editor_is_ready() {
+                    self.ivars().actions.run(command);
+                }
             }
         }
+    };
+}
 
-        #[method(pressesEnded:withEvent:)]
-        fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
-            let unhandled = editor_keys(self.ivars(), presses, ElementState::Released,
-                unsafe { self.markedTextRange().is_some() }, MainThreadMarker::from(self));
-            if !unhandled.is_empty() {
-                unsafe { let _: () = msg_send![super(self), pressesEnded: &*unhandled withEvent: event]; }
-            }
-        }
-
-        #[method(pressesCancelled:withEvent:)]
-        fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
-            self.ivars().post(UserEvent::IosKeyCancelled);
-            unsafe { let _: () = msg_send![super(self), pressesCancelled: presses withEvent: event]; }
-        }
-    }
-);
-
-declare_class!(
-    struct MultilineResponder;
-
-    unsafe impl ClassType for MultilineResponder {
-        type Super = UITextView;
-        type Mutability = MainThreadOnly;
-        const NAME: &'static str = "XRackKeyTextView";
-    }
-    impl DeclaredClass for MultilineResponder { type Ivars = WindowEvents; }
-    unsafe impl NSObjectProtocol for MultilineResponder {}
-
-    unsafe impl MultilineResponder {
-        #[method(pressesBegan:withEvent:)]
-        fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
-            let unhandled = editor_keys(self.ivars(), presses, ElementState::Pressed,
-                unsafe { self.markedTextRange().is_some() }, MainThreadMarker::from(self));
-            if !unhandled.is_empty() {
-                unsafe { let _: () = msg_send![super(self), pressesBegan: &*unhandled withEvent: event]; }
-            }
-        }
-
-        #[method(pressesEnded:withEvent:)]
-        fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
-            let unhandled = editor_keys(self.ivars(), presses, ElementState::Released,
-                unsafe { self.markedTextRange().is_some() }, MainThreadMarker::from(self));
-            if !unhandled.is_empty() {
-                unsafe { let _: () = msg_send![super(self), pressesEnded: &*unhandled withEvent: event]; }
-            }
-        }
-
-        #[method(pressesCancelled:withEvent:)]
-        fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
-            self.ivars().post(UserEvent::IosKeyCancelled);
-            unsafe { let _: () = msg_send![super(self), pressesCancelled: presses withEvent: event]; }
-        }
-    }
-);
+text_responder!(FieldResponder, UITextField, "XRackKeyTextField", false);
+text_responder!(MultilineResponder, UITextView, "XRackKeyTextView", true);
 
 fn editor_keys(
     events: &WindowEvents,
@@ -300,6 +397,22 @@ fn key_event(key: &UIKey, state: ElementState) -> (KeyEvent, ModifiersState) {
         UIKeyboardHIDUsage::KeyboardPageDown => Some(NamedKey::PageDown),
         _ => None,
     };
+    let text = characters.to_string();
+    let logical_key =
+        named.map_or_else(|| Key::Character(unmodified.to_string().into()), Key::Named);
+    (
+        KeyEvent {
+            unmodified_key: logical_key.clone(),
+            logical_key,
+            text: (state == ElementState::Pressed && !text.is_empty()).then_some(text),
+            state,
+            repeat: false,
+        },
+        modifiers(flags),
+    )
+}
+
+pub(super) fn modifiers(flags: UIKeyModifierFlags) -> ModifiersState {
     let mut modifiers = ModifiersState::empty();
     for (native, flag) in [
         (
@@ -321,17 +434,5 @@ fn key_event(key: &UIKey, state: ElementState) -> (KeyEvent, ModifiersState) {
     ] {
         modifiers.set(flag, flags.contains(native));
     }
-    let text = characters.to_string();
-    let logical_key =
-        named.map_or_else(|| Key::Character(unmodified.to_string().into()), Key::Named);
-    (
-        KeyEvent {
-            unmodified_key: logical_key.clone(),
-            logical_key,
-            text: (state == ElementState::Pressed && !text.is_empty()).then_some(text),
-            state,
-            repeat: false,
-        },
-        modifiers,
-    )
+    modifiers
 }

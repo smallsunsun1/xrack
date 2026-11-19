@@ -1490,6 +1490,10 @@ LogicalResult ElementOp::verify() {
             ((name == "keys" || name == "file-extensions") && !isa<StringListType>(type)) ||
             (name == "drop-action" && !isa<DragActionType>(type)))))
         return child.emitOpError("incorrect drag-and-drop property type");
+      if (name == "touch-drag-delay" && (kind != "DragArea" || !isa<IntType>(type)))
+        return child.emitOpError("touch-drag-delay requires integer milliseconds on a DragArea");
+      if (name == "drag-auto-scroll" && (!isSelectionList(kind) || !isa<BoolType>(type)))
+        return child.emitOpError("drag-auto-scroll requires a boolean on a list or grid");
       if ((name == "color-scheme" && (!isWindow(kind) || !isa<ColorSchemeType>(type))) ||
           (name == "accent-color" && (!isWindow(kind) || !isa<ColorType>(type))))
         return child.emitOpError("incorrect window palette property or type");
@@ -1529,6 +1533,8 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError("incorrect text font property or type");
       }
       const bool textEntry = singleLine || kind == "ComboBox";
+      if (name == "input-purpose" && (!textEntry || !isa<InputPurposeType>(type)))
+        return child.emitOpError("input-purpose requires an InputPurpose on a single-line text editor");
       if (name == "return-key" && (!textEntry || !isa<ReturnKeyType>(type)))
         return child.emitOpError("return-key requires a return key on a single-line text editor");
       if ((name == "input-type" && (!textEntry || !isa<InputModeType>(type))) ||
@@ -1612,6 +1618,13 @@ LogicalResult ElementOp::verify() {
       if ((name == "accessible-name" || name == "accessible-description") &&
           !isa<StringType>(bind.getInput().getType()))
         return child.emitOpError("accessibility labels require strings");
+      if (name == "accessible-live" &&
+          ((kind != "Text" && kind != "Label") ||
+           !isa<AccessibleLiveType>(bind.getInput().getType())))
+        return child.emitOpError("accessible-live requires an AccessibleLive on Text or Label");
+      if (name == "accessible-heading-level" &&
+          ((kind != "Text" && kind != "Label") || !isa<IntType>(bind.getInput().getType())))
+        return child.emitOpError("accessible-heading-level requires an integer on Text or Label");
       if (!validTransformBinding(kind, name, bind.getInput().getType()))
         return child.emitOpError("incorrect visual transform property or type");
       if (name == "clip" &&
@@ -1820,6 +1833,12 @@ LogicalResult ElementOp::verify() {
       if (name == "mouse-drag-pan-enabled" &&
           (!isViewport(kind) || !isa<BoolType>(bind.getInput().getType())))
         return child.emitOpError("mouse drag panning requires a boolean on a viewport");
+      if ((name == "pull-to-refresh" || name == "refreshing") &&
+          (!isViewport(kind) || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("pull-to-refresh properties require booleans on a viewport");
+      if (name == "dismiss-keyboard-on-drag" &&
+          (!isViewport(kind) || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("dismiss-keyboard-on-drag requires a boolean on a viewport");
       if (name == "preserve-scroll-anchor" &&
           (!isVirtualView(kind) || !isa<BoolType>(bind.getInput().getType())))
         return child.emitOpError("scroll anchoring requires a boolean on a virtual view");
@@ -3450,6 +3469,9 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
     } else if (handler.getName() == "flicked") {
       if (kind != "Flickable" || !args->empty() || !results.empty())
         return handler.emitOpError("requires flicked() on Flickable");
+    } else if (handler.getName() == "refresh-requested") {
+      if (!isViewport(kind) || !args->empty() || !results.empty())
+        return handler.emitOpError("requires refresh-requested() on a viewport");
     } else if (handler.getName() == "close-requested") {
       if (!isWindow(kind) || !isa<ComponentOp>(element->getParentOp()))
         return handler.emitOpError("close-requested requires the component's root Window");
@@ -3629,6 +3651,8 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
           !(handler.getName() == "changed" && arg && arg->getString("ty") == "SwipeSide" && arg->getString("name")))
         return handler.emitOpError("SwipeDelegate requires clicked() or changed(SwipeSide)");
     }
+    if (handler.getName() == "files-failed" && kind != "DropArea")
+      return handler.emitOpError("files-failed requires a DropArea");
     if (kind == "DragArea" || kind == "DropArea") {
       auto name = handler.getName();
       auto argIs = [&](size_t index, llvm::StringRef type) {
@@ -3645,6 +3669,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
                  argIs(0, "string") && argIs(1, "DragAction")) ||
                 ((name == "files-entered" || name == "files-dropped") &&
                  args->size() == 1 && argIs(0, "[string]")) ||
+                (name == "files-failed" && args->size() == 1 && argIs(0, "string")) ||
                 (name == "position-changed" && args->size() == 2 &&
                  argIs(0, "length") && argIs(1, "length"));
       if (!valid)
@@ -3679,7 +3704,8 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
     const bool indexView = kind == "TabWidget" || kind == "TabBar" || kind == "SwipeView" ||
                            kind == "PageIndicator" || usesListTemplate(kind) ||
                            kind == "StandardListView" || kind == "Tumbler" || kind == "PathView";
-    if (handler.getName() != "scrolled" && handler.getName() != "editing-finished" &&
+    if (handler.getName() != "scrolled" && handler.getName() != "refresh-requested" &&
+        handler.getName() != "editing-finished" &&
         handler.getName() != "column-moved" &&
         !((kind == "Tumbler" || kind == "PathView") && handler.getName() == "value-selected") &&
         handler.getName() != "tab-close-requested" && handler.getName() != "tab-moved" && handler.getName() != "page-moved" && handler.getName() != "row-moved" && handler.getName() != "current-cell-changed" && (scalarRange || spin ||
@@ -3923,8 +3949,13 @@ LogicalResult LiteralOp::verify() {
     valid = spelling == "text" || spelling == "password" || spelling == "number" ||
             spelling == "decimal" || spelling == "search" || spelling == "email" ||
             spelling == "url" || spelling == "tel";
+  } else if (isa<InputPurposeType>(type)) {
+    valid = spelling == "auto" || spelling == "username" || spelling == "current-password" ||
+            spelling == "new-password" || spelling == "one-time-code";
   } else if (isa<ReturnKeyType>(type)) {
     valid = spelling == "auto" || spelling == "next" || spelling == "done";
+  } else if (isa<AccessibleLiveType>(type)) {
+    valid = spelling == "off" || spelling == "polite" || spelling == "assertive";
   } else if (isa<ColorSchemeType>(type)) {
     valid = spelling == "system" || spelling == "light" || spelling == "dark";
   } else if (isa<FileDialogModeType>(type)) {
@@ -5466,7 +5497,7 @@ static bool recordScalarType(llvm::StringRef type) {
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
               "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "LayoutDirection", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap", "MouseSelectionMode", "InputValidity",
-              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "ReturnKey", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
+              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "InputPurpose", "ReturnKey", "AccessibleLive", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
               "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "WheelEvent", "PointerEvent", "PointerEventKind", "PointerButton", "PointerButtons", "TouchPoint", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "SelectionGesture", "Date", "Time", "Font", "CheckState"},
              true)
       .Default(false);

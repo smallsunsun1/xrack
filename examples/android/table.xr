@@ -47,6 +47,7 @@ component InspectionDirectory inherits Rectangle {
         }
         tree-changes := Text { text: "Changes " + root.selections; font-size: 16px; color: #173047; }
         directory := TreeView {
+            accessible-name: "Inspection folders";
             height: 302px;
             row-height: 46px;
             indentation: 44px;
@@ -372,6 +373,45 @@ component InspectionCanvas inherits Rectangle {
     }
 }
 
+component InspectionRefresh inherits Rectangle {
+    private property <bool> loading: false;
+    private property <int> requests: 0;
+    private property <int> updates: 0;
+
+    refresh-status := Text {
+        text: root.loading ? "Loading readings" : "Readings ready";
+        color: #173047; font-size: 17px;
+    }
+    refresh-requests := Text {
+        x: 182px; text: "Requests " + root.requests;
+        color: #173047; font-size: 17px;
+    }
+    refresh-feed := ListView {
+        y: 36px; width: 298px; height: 222px;
+        row-height: 48px;
+        accessible-name: "Recent inspection readings";
+        pull-to-refresh: true;
+        refreshing: root.loading;
+        refresh-requested() => {
+            root.requests += 1;
+            root.loading = true;
+        }
+        for reading in ["Revision " + root.updates, "Valve reading", "Seal reading"] : Rectangle {
+            background: #edf3f8;
+            Text { x: 12px; y: 13px; text: reading; color: #173047; font-size: 17px; }
+        }
+    }
+    finish-refresh := Button {
+        y: 270px; width: 150px; height: 44px;
+        text: "Deliver result";
+        enabled: root.loading;
+        clicked => {
+            root.updates += 1;
+            root.loading = false;
+        }
+    }
+}
+
 struct CatalogPart {
     key: int,
     name: string,
@@ -612,6 +652,7 @@ export component MobileTable inherits Window {
     private property <bool> catalog-open: false;
     private property <bool> log-open: false;
     private property <bool> bulletin-open: false;
+    private property <bool> refresh-open: false;
 
     Text { x: 24px; y: 16px; text: "XRack Inventory"; font-size: 25px; font-weight: 700; color: #173047; }
     Text {
@@ -627,6 +668,7 @@ export component MobileTable inherits Window {
     }
     inventory := StandardTableView {
         x: 24px; y: 94px; width: 342px; height: 224px;
+        accessible-name: "Inventory table";
         model: root.stock;
         row-key-field: "id";
         row-height: 44px;
@@ -703,6 +745,11 @@ export component MobileTable inherits Window {
         text: "Open bulletin";
         clicked => { root.bulletin-open = true; }
     }
+    open-refresh := Button {
+        x: 220px; y: 635px; width: 146px; height: 44px;
+        text: "Open refresh";
+        clicked => { root.refresh-open = true; }
+    }
     Dialog {
         open <=> root.tree-open;
         title: "Inspection directory";
@@ -751,5 +798,12 @@ export component MobileTable inherits Window {
         width: 338px; height: 424px;
         background: #ffffff; color: #173047;
         CalibrationNotes { width: 100%; height: 340px; }
+    }
+    Dialog {
+        open <=> root.refresh-open;
+        title: "Inspection readings";
+        width: 338px; height: 398px;
+        background: #ffffff; color: #173047;
+        InspectionRefresh { width: 100%; height: 314px; }
     }
 }

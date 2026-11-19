@@ -32,6 +32,7 @@ pub enum DragEvent {
     Exited,
     Dropped { data: String, action: DragAction },
     FilesDropped(Arc<[String]>),
+    FilesFailed(String),
 }
 
 /// Borrowed arguments for a DSL drag handler.
@@ -41,6 +42,7 @@ pub enum DragArguments<'a> {
     Action(DragAction),
     Data(&'a str, DragAction),
     Files(&'a [String]),
+    Message(&'a str),
     Position(Length, Length),
 }
 
@@ -55,6 +57,7 @@ impl DragEvent {
             Self::Dropped { data, action } => ("dropped", Data(data, *action)),
             Self::FilesEntered(paths) => ("files-entered", Files(paths)),
             Self::FilesDropped(paths) => ("files-dropped", Files(paths)),
+            Self::FilesFailed(message) => ("files-failed", Message(message)),
             Self::Moved { x, y } => ("position-changed", Position(*x, *y)),
             Self::Exited => ("exited", None),
         }

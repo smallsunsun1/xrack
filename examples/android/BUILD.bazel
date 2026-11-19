@@ -1,17 +1,34 @@
 load("@rules_android//android:rules.bzl", "android_binary")
-load("@rules_python//python:defs.bzl", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary")
 load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_test")
 load("//bazel:xrack.bzl", "xr_ui_library")
+load(":device_test.bzl", "android_device_test")
+
+py_binary(
+    name = "device_suite",
+    srcs = ["device_suite.py"],
+    args = ["--adb-runfile=$(rlocationpath @androidsdk//:platform-tools/adb)"],
+    data = ["@androidsdk//:platform-tools/adb"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    main = "device_suite.py",
+    python_version = "3.11",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = ["@rules_python//python/runfiles"],
+)
 
 _NAVIGATION_IMAGE_ASSETS = [
     "//examples/media:assets/pulse.gif",
     "//examples/media:assets/sprite-atlas.png",
 ]
 
+_NAVIGATION_SOURCES = ["//examples/form:widgets.xr"]
+
 xr_ui_library(
     name = "mobile_navigation_ui",
     src = "navigation.xr",
     assets = _NAVIGATION_IMAGE_ASSETS,
+    sources = _NAVIGATION_SOURCES,
 )
 
 rust_shared_library(
@@ -47,7 +64,7 @@ rust_test(
     ],
     compile_data = ["navigation.xr"],
     crate_root = "navigation_parity.rs",
-    data = _NAVIGATION_IMAGE_ASSETS,
+    data = _NAVIGATION_IMAGE_ASSETS + _NAVIGATION_SOURCES,
     edition = "2024",
     deps = [
         ":mobile_navigation_ui",
@@ -68,7 +85,7 @@ rust_test(
     ],
     compile_data = ["navigation.xr"],
     crate_root = "theme_parity.rs",
-    data = _NAVIGATION_IMAGE_ASSETS,
+    data = _NAVIGATION_IMAGE_ASSETS + _NAVIGATION_SOURCES,
     edition = "2024",
     deps = [
         ":mobile_navigation_ui",
@@ -80,7 +97,7 @@ rust_test(
     ],
 )
 
-py_test(
+android_device_test(
     name = "navigation_ui_test",
     size = "medium",
     srcs = [
@@ -88,6 +105,7 @@ py_test(
         "navigation_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "navigation_app",
     args = ["--adb=$(rootpath @androidsdk//:platform-tools/adb)"],
     data = [
         "screen_text.swift",
@@ -105,7 +123,7 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "loader_ui_test",
     size = "medium",
     srcs = [
@@ -113,6 +131,7 @@ py_test(
         "navigation_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "navigation_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--loader-only",
@@ -133,7 +152,7 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "dynamic_cards_ui_test",
     size = "medium",
     srcs = [
@@ -141,6 +160,7 @@ py_test(
         "navigation_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "navigation_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--dynamic-cards-only",
@@ -161,7 +181,7 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "combo_ime_ui_test",
     size = "medium",
     srcs = [
@@ -169,6 +189,7 @@ py_test(
         "navigation_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "navigation_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--combo-ime-only",
@@ -179,6 +200,7 @@ py_test(
     ],
     env = {"PYTHONDONTWRITEBYTECODE": "1"},
     env_inherit = ["HOME"],
+    extra_apks = {"keyboard-apk": "share_receiver"},
     main = "navigation_ui_test.py",
     python_version = "3.11",
     tags = [
@@ -189,7 +211,7 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "search_results_ui_test",
     size = "medium",
     srcs = [
@@ -197,6 +219,7 @@ py_test(
         "navigation_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "navigation_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--search-results-only",
@@ -217,7 +240,7 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "popup_window_ui_test",
     size = "medium",
     srcs = [
@@ -225,6 +248,7 @@ py_test(
         "navigation_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "navigation_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--popup-window-only",
@@ -245,7 +269,7 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "command_menu_ui_test",
     size = "medium",
     srcs = [
@@ -253,6 +277,7 @@ py_test(
         "navigation_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "navigation_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--command-menu-only",
@@ -273,7 +298,7 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "focus_routes_ui_test",
     size = "medium",
     srcs = [
@@ -281,6 +306,7 @@ py_test(
         "navigation_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "navigation_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--focus-routes-only",
@@ -301,7 +327,94 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
+    name = "layout_workshop_ui_test",
+    size = "medium",
+    srcs = [
+        "controls_ui_test.py",
+        "navigation_ui_test.py",
+        "simulator_ui_test.py",
+    ],
+    apk = "navigation_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--layouts-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    env_inherit = ["HOME"],
+    main = "navigation_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "document_tabs_ui_test",
+    size = "medium",
+    srcs = [
+        "controls_ui_test.py",
+        "navigation_ui_test.py",
+        "simulator_ui_test.py",
+    ],
+    apk = "navigation_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--document-tabs-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    env_inherit = ["HOME"],
+    main = "navigation_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "calendar_fields_ui_test",
+    size = "medium",
+    srcs = [
+        "controls_ui_test.py",
+        "navigation_ui_test.py",
+        "simulator_ui_test.py",
+    ],
+    apk = "navigation_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--calendar-fields-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    env_inherit = ["HOME"],
+    main = "navigation_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
     name = "theme_ui_test",
     size = "medium",
     srcs = [
@@ -310,6 +423,7 @@ py_test(
         "simulator_ui_test.py",
         "theme_ui_test.py",
     ],
+    apk = "navigation_app",
     args = ["--adb=$(rootpath @androidsdk//:platform-tools/adb)"],
     data = [
         "screen_text.swift",
@@ -327,7 +441,37 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
+    name = "system_appearance_ui_test",
+    size = "medium",
+    srcs = [
+        "controls_ui_test.py",
+        "navigation_ui_test.py",
+        "simulator_ui_test.py",
+        "theme_ui_test.py",
+    ],
+    apk = "navigation_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--system-appearance-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    env_inherit = ["HOME"],
+    main = "theme_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
     name = "images_ui_test",
     size = "medium",
     srcs = [
@@ -336,6 +480,7 @@ py_test(
         "simulator_ui_test.py",
         "theme_ui_test.py",
     ],
+    apk = "navigation_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--images-only",
@@ -356,7 +501,7 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "scan_ui_test",
     size = "medium",
     srcs = [
@@ -365,9 +510,40 @@ py_test(
         "simulator_ui_test.py",
         "theme_ui_test.py",
     ],
+    apk = "navigation_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--scan-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    env_inherit = ["HOME"],
+    main = "theme_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "motion_ui_test",
+    size = "medium",
+    srcs = [
+        "controls_ui_test.py",
+        "navigation_ui_test.py",
+        "simulator_ui_test.py",
+        "theme_ui_test.py",
+    ],
+    apk = "navigation_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--motion-only",
     ],
     data = [
         "screen_text.swift",
@@ -431,13 +607,14 @@ rust_test(
     ],
 )
 
-py_test(
+android_device_test(
     name = "controls_ui_test",
     size = "medium",
     srcs = [
         "controls_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "controls_app",
     args = ["--adb=$(rootpath @androidsdk//:platform-tools/adb)"],
     data = [
         "screen_text.swift",
@@ -455,13 +632,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "dial_ui_test",
     size = "medium",
     srcs = [
         "controls_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "controls_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--dial-only",
@@ -482,13 +660,42 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
+    name = "range_handles_ui_test",
+    size = "medium",
+    srcs = [
+        "controls_ui_test.py",
+        "simulator_ui_test.py",
+    ],
+    apk = "controls_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--range-handles-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    env_inherit = ["HOME"],
+    main = "controls_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
     name = "export_group_ui_test",
     size = "medium",
     srcs = [
         "controls_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "controls_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--export-group-only",
@@ -509,13 +716,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "connection_profile_ui_test",
     size = "medium",
     srcs = [
         "controls_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "controls_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--connection-only",
@@ -536,13 +744,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "button_holds_ui_test",
     size = "medium",
     srcs = [
         "controls_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "controls_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--button-holds-only",
@@ -563,13 +772,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "delay_confirmation_ui_test",
     size = "medium",
     srcs = [
         "controls_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "controls_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--delay-confirmation-only",
@@ -590,16 +800,74 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "click_routes_ui_test",
     size = "medium",
     srcs = [
         "controls_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "controls_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--click-routes-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    env_inherit = ["HOME"],
+    main = "controls_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "tag_format_ui_test",
+    size = "medium",
+    srcs = [
+        "controls_ui_test.py",
+        "simulator_ui_test.py",
+    ],
+    apk = "controls_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--tag-format-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    env_inherit = ["HOME"],
+    extra_apks = {"keyboard-apk": "share_receiver"},
+    main = "controls_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "password_panel_ui_test",
+    size = "medium",
+    srcs = [
+        "controls_ui_test.py",
+        "simulator_ui_test.py",
+    ],
+    apk = "controls_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--password-only",
     ],
     data = [
         "screen_text.swift",
@@ -662,13 +930,14 @@ rust_test(
     ],
 )
 
-py_test(
+android_device_test(
     name = "table_ui_test",
     size = "medium",
     srcs = [
         "simulator_ui_test.py",
         "table_ui_test.py",
     ],
+    apk = "table_app",
     args = ["--adb=$(rootpath @androidsdk//:platform-tools/adb)"],
     data = [
         "screen_text.swift",
@@ -676,6 +945,7 @@ py_test(
     ],
     env = {"PYTHONDONTWRITEBYTECODE": "1"},
     env_inherit = ["HOME"],
+    extra_apks = {"keyboard-apk": "share_receiver"},
     main = "table_ui_test.py",
     python_version = "3.11",
     tags = [
@@ -686,13 +956,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "tree_ui_test",
     size = "medium",
     srcs = [
         "simulator_ui_test.py",
         "table_ui_test.py",
     ],
+    apk = "table_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--tree-only",
@@ -713,13 +984,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "split_ui_test",
     size = "medium",
     srcs = [
         "simulator_ui_test.py",
         "table_ui_test.py",
     ],
+    apk = "table_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--split-only",
@@ -740,13 +1012,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "transfer_ui_test",
     size = "medium",
     srcs = [
         "simulator_ui_test.py",
         "table_ui_test.py",
     ],
+    apk = "table_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--transfer-only",
@@ -767,13 +1040,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "canvas_ui_test",
     size = "medium",
     srcs = [
         "simulator_ui_test.py",
         "table_ui_test.py",
     ],
+    apk = "table_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--canvas-only",
@@ -794,13 +1068,42 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
+    name = "refresh_ui_test",
+    size = "medium",
+    srcs = [
+        "simulator_ui_test.py",
+        "table_ui_test.py",
+    ],
+    apk = "table_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--refresh-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    env_inherit = ["HOME"],
+    main = "table_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
     name = "catalog_ui_test",
     size = "medium",
     srcs = [
         "simulator_ui_test.py",
         "table_ui_test.py",
     ],
+    apk = "table_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--catalog-only",
@@ -821,13 +1124,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "inspection_log_ui_test",
     size = "medium",
     srcs = [
         "simulator_ui_test.py",
         "table_ui_test.py",
     ],
+    apk = "table_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--log-only",
@@ -848,13 +1152,14 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "bulletin_ui_test",
     size = "medium",
     srcs = [
         "simulator_ui_test.py",
         "table_ui_test.py",
     ],
+    apk = "table_app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--bulletin-only",
@@ -903,6 +1208,121 @@ android_binary(
 )
 
 android_binary(
+    name = "accessibility_probe",
+    testonly = True,
+    srcs = ["testing/ControlsProbe.java"],
+    manifest = "testing/AccessibilityManifest.xml",
+    tags = ["manual"],
+)
+
+android_device_test(
+    name = "accessibility_ui_test",
+    size = "medium",
+    srcs = ["accessibility_ui_test.py"],
+    apk = "controls_app",
+    args = ["--adb=$(rootpath @androidsdk//:platform-tools/adb)"],
+    data = ["@androidsdk//:platform-tools/adb"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"probe-apk": "accessibility_probe"},
+    main = "accessibility_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "collections_accessibility_ui_test",
+    size = "medium",
+    srcs = ["accessibility_ui_test.py"],
+    apk = "table_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--inventory",
+    ],
+    data = ["@androidsdk//:platform-tools/adb"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"probe-apk": "accessibility_probe"},
+    main = "accessibility_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "text_accessibility_ui_test",
+    size = "medium",
+    srcs = ["accessibility_ui_test.py"],
+    apk = "app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--text",
+    ],
+    data = ["@androidsdk//:platform-tools/adb"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"probe-apk": "accessibility_probe"},
+    main = "accessibility_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "password_accessibility_ui_test",
+    size = "medium",
+    srcs = ["accessibility_ui_test.py"],
+    apk = "controls_app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--password",
+    ],
+    data = ["@androidsdk//:platform-tools/adb"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"probe-apk": "accessibility_probe"},
+    main = "accessibility_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "text_traversal_accessibility_ui_test",
+    size = "medium",
+    srcs = ["accessibility_ui_test.py"],
+    apk = "app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--traversal",
+    ],
+    data = ["@androidsdk//:platform-tools/adb"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"probe-apk": "accessibility_probe"},
+    main = "accessibility_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_binary(
     name = "share_receiver",
     testonly = True,
     srcs = [
@@ -914,10 +1334,11 @@ android_binary(
     tags = ["manual"],
 )
 
-py_test(
+android_device_test(
     name = "simulator_ui_test",
     size = "medium",
     srcs = ["simulator_ui_test.py"],
+    apk = "app",
     args = ["--adb=$(rootpath @androidsdk//:platform-tools/adb)"],
     data = [
         "screen_text.swift",
@@ -935,10 +1356,11 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "row_swipe_ui_test",
     size = "medium",
     srcs = ["simulator_ui_test.py"],
+    apk = "app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--row-swipes-only",
@@ -959,7 +1381,7 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "keyboard_ui_test",
     size = "medium",
     srcs = [
@@ -968,6 +1390,7 @@ py_test(
         "navigation_ui_test.py",
         "simulator_ui_test.py",
     ],
+    apk = "app",
     args = ["--adb=$(rootpath @androidsdk//:platform-tools/adb)"],
     data = [
         "screen_text.swift",
@@ -975,6 +1398,7 @@ py_test(
     ],
     env = {"PYTHONDONTWRITEBYTECODE": "1"},
     env_inherit = ["HOME"],
+    extra_apks = {"navigation-apk": "navigation_app"},
     main = "keyboard_ui_test.py",
     python_version = "3.11",
     tags = [
@@ -985,10 +1409,12 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "native_dialog_ui_test",
     size = "medium",
+    timeout = "long",
     srcs = ["simulator_ui_test.py"],
+    apk = "app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--dialogs-only",
@@ -1008,11 +1434,12 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "storage_ui_test",
     size = "medium",
     timeout = "long",
     srcs = ["simulator_ui_test.py"],
+    apk = "app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--storage-only",
@@ -1032,16 +1459,18 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "share_ui_test",
     size = "medium",
     srcs = ["simulator_ui_test.py"],
+    apk = "app",
     args = ["--adb=$(rootpath @androidsdk//:platform-tools/adb)"],
     data = [
         "screen_text.swift",
         "@androidsdk//:platform-tools/adb",
     ],
     env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"share-receiver-apk": "share_receiver"},
     main = "simulator_ui_test.py",
     python_version = "3.11",
     tags = [
@@ -1052,10 +1481,11 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
     name = "ime_ui_test",
     size = "medium",
     srcs = ["simulator_ui_test.py"],
+    apk = "app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--ime-only",
@@ -1065,6 +1495,7 @@ py_test(
         "@androidsdk//:platform-tools/adb",
     ],
     env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"share-receiver-apk": "share_receiver"},
     main = "simulator_ui_test.py",
     python_version = "3.11",
     tags = [
@@ -1075,10 +1506,111 @@ py_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-py_test(
+android_device_test(
+    name = "multiline_ime_ui_test",
+    size = "medium",
+    srcs = ["simulator_ui_test.py"],
+    apk = "app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--multiline-ime-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"share-receiver-apk": "share_receiver"},
+    main = "simulator_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "emoji_ui_test",
+    size = "medium",
+    srcs = ["simulator_ui_test.py"],
+    apk = "app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--emoji-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"share-receiver-apk": "share_receiver"},
+    main = "simulator_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "contact_ime_ui_test",
+    size = "medium",
+    srcs = ["simulator_ui_test.py"],
+    apk = "app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--contact-ime-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"share-receiver-apk": "share_receiver"},
+    main = "simulator_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
+    name = "numeric_ime_ui_test",
+    size = "medium",
+    srcs = ["simulator_ui_test.py"],
+    apk = "app",
+    args = [
+        "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
+        "--numeric-ime-only",
+    ],
+    data = [
+        "screen_text.swift",
+        "@androidsdk//:platform-tools/adb",
+    ],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    extra_apks = {"share-receiver-apk": "share_receiver"},
+    main = "simulator_ui_test.py",
+    python_version = "3.11",
+    tags = [
+        "external",
+        "local",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+android_device_test(
     name = "picker_ui_test",
     size = "medium",
     srcs = ["simulator_ui_test.py"],
+    apk = "app",
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--pickers-only",

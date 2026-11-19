@@ -1,4 +1,8 @@
 //! wgpu-backed 2D renderer. No windowing dependency and no compiler/MLIR dependency.
+#[cfg(target_os = "android")]
+mod android_emoji;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+mod color_glyphs;
 mod controls;
 mod entry;
 mod image;
@@ -15,6 +19,9 @@ mod styled_text;
 mod text;
 mod theme;
 mod vector;
+#[cfg(target_os = "android")]
+#[doc(hidden)]
+pub use color_glyphs::GlyphBitmap as AndroidGlyphBitmap;
 #[doc(hidden)]
 pub use entry::{PointerCaret, TouchSelectionHandle};
 use femtovg::{
@@ -150,6 +157,8 @@ pub struct Renderer {
     pub text: TextSystem,
     pub theme: Theme,
     system_color_scheme: ColorScheme,
+    system_increased_contrast: bool,
+    system_switch_labels: bool,
 }
 
 /// GPU resources that can back more than one independent renderer.
@@ -256,6 +265,8 @@ impl Renderer {
             text,
             theme: Theme::default(),
             system_color_scheme: ColorScheme::System,
+            system_increased_contrast: false,
+            system_switch_labels: false,
         })
     }
 
@@ -265,9 +276,23 @@ impl Renderer {
         if !self.text.set_text_scale(scale) {
             return false;
         }
+        self.invalidate_text_layout();
+        true
+    }
+
+    /// Select heavier faces for the platform's Bold Text setting.
+    /// Returns whether cached layouts need to be prepared again.
+    pub fn set_system_bold_text(&mut self, enabled: bool) -> bool {
+        if !self.text.set_system_bold_text(enabled) {
+            return false;
+        }
+        self.invalidate_text_layout();
+        true
+    }
+
+    fn invalidate_text_layout(&mut self) {
         self.row_layouts = Default::default();
         self.retained_layers.clear_images(&mut self.canvas);
-        true
     }
 
     pub fn layout(&mut self, scene: &Node, viewport: Size) -> LayoutNode {
@@ -314,8 +339,24 @@ impl Renderer {
         std::mem::replace(&mut self.system_color_scheme, scheme) != scheme
     }
 
+    /// Increase contrast in the default palette according to the host accessibility setting.
+    pub fn set_system_increased_contrast(&mut self, increased: bool) -> bool {
+        std::mem::replace(&mut self.system_increased_contrast, increased) != increased
+    }
+
+    /// Show on/off symbols in the built-in switch track according to the host preference.
+    pub fn set_system_switch_labels(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.system_switch_labels, enabled) != enabled
+    }
+
     fn palette(&self, scene: &Node) -> Palette {
-        Palette::resolve(self.theme, scene, self.system_color_scheme)
+        Palette::resolve(
+            self.theme,
+            scene,
+            self.system_color_scheme,
+            self.system_increased_contrast,
+            self.system_switch_labels,
+        )
     }
 
     /// Draw into a caller-owned render attachment, in logical pixels at the given scale.
@@ -423,7 +464,8 @@ impl Renderer {
             ..
         } = frame;
         self.text.set_window(scene);
-        if !Rc::ptr_eq(&self.canvas_font_context, self.text.context_key()) {
+        let canvas_changed = !Rc::ptr_eq(&self.canvas_font_context, self.text.context_key());
+        if canvas_changed {
             self.canvas = Canvas::new_with_text_context(
                 WGPURenderer::new(self.device.clone(), self.queue.clone()),
                 self.text.context().clone(),
@@ -433,6 +475,8 @@ impl Renderer {
             self.images = image::Images::default();
             self.retained_layers.reset_canvas();
         }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        self.text.begin_color_glyph_frame(canvas_changed);
         self.retained_layers.begin_frame(&mut self.canvas);
         self.retained_layers
             .sync_font_defaults(&mut self.canvas, self.text.default_style());
@@ -521,6 +565,8 @@ impl Renderer {
             self.canvas.stroke_path(&outline, &stroke);
         }
         self.queue.submit(self.canvas.flush_to_output(target));
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        self.text.end_color_glyph_frame(&mut self.canvas);
         self.images.end_frame(&mut self.canvas);
         self.retained_layers.finish_frame(&mut self.canvas);
         Ok(())
@@ -1099,7 +1145,7 @@ impl Renderer {
             .unwrap_or(
                 if node.kind == "ControlFrame"
                     || group_header.is_some()
-                    || field && theme.is_light()
+                    || field && theme.outlines_fields()
                 {
                     1.0
                 } else {
@@ -1864,6 +1910,31 @@ impl Renderer {
     ) -> Result<(), String> {
         let PaintFrame { input, theme, .. } = frame;
         let bounds = layout.bounds;
+        if layout.enabled && node.boolean("pull-to-refresh", false) {
+            let refreshing = node.boolean("refreshing", false);
+            let progress = if refreshing {
+                Some(0.27)
+            } else {
+                input.pull_to_refresh_progress(node)
+            };
+            if let Some(progress) = progress.filter(|progress| *progress > 0.0) {
+                let viewport = layout.scroll_viewport(Orientation::Vertical);
+                let phase = frame
+                    .indicator_phase
+                    .filter(|_| refreshing && !input.reduce_motion());
+                self.paint_group(viewport.intersect(layout.clip), 1.0, |renderer| {
+                    range::refresh_indicator(
+                        &mut renderer.canvas,
+                        theme,
+                        viewport,
+                        progress,
+                        phase,
+                    );
+                    Ok(())
+                })?;
+                self.needs_redraw |= phase.is_some();
+            }
+        }
         if let Some(marker) = input.tab_move_marker(node, layout, path) {
             let mut line = Path::new();
             line.rect(marker.x, marker.y, marker.width, marker.height);

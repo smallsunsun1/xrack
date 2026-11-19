@@ -1404,6 +1404,24 @@ pub fn page_indicator_index(node: &Node) -> Option<usize> {
     (index < page_indicator_count(node)).then_some(index)
 }
 
+/// Select the adjacent page in logical order. An invalid selection starts at the first page.
+#[doc(hidden)]
+pub fn page_indicator_step(node: &Node, forward: bool) -> Option<usize> {
+    if !node.boolean("interactive", false) || !node.boolean("enabled", true) {
+        return None;
+    }
+    let last = page_indicator_count(node).checked_sub(1)?;
+    let current = page_indicator_index(node);
+    let next = current.map_or(0, |index| {
+        if forward {
+            (index + 1).min(last)
+        } else {
+            index.saturating_sub(1)
+        }
+    });
+    (current != Some(next)).then_some(next)
+}
+
 /// Resolve an eligible option without giving each option independent selection state.
 fn navigation_item_kind(kind: &str) -> Option<&'static str> {
     match kind {

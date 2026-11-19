@@ -1,5 +1,8 @@
-use winit::window::{Window, WindowAttributes};
+use crate::Window;
+#[cfg(not(target_os = "android"))]
+use winit::window::WindowAttributes;
 
+#[cfg(not(target_os = "android"))]
 pub(crate) fn attributes(
     attributes: WindowAttributes,
     owner: Option<&Window>,

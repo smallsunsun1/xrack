@@ -210,24 +210,16 @@ impl LayoutNode {
 pub struct ScrollDelivery {
     target: ViewportHandle,
     path: Vec<usize>,
+    event: &'static str,
 }
 
 impl ScrollDelivery {
     pub fn apply(&self, component: &mut impl Component, scene: &Node) -> bool {
-        scene
-            .at_path(&self.path)
-            .filter(|node| node.viewport_handle.as_ref() == Some(&self.target))
-            .is_some_and(|node| {
-                component.dispatch_at(
-                    scene,
-                    &self.path,
-                    if node.kind == "Flickable" {
-                        "flicked"
-                    } else {
-                        "scrolled"
-                    },
-                )
-            })
+        scene.at_path(&self.path).is_some_and(|node| {
+            node.viewport_handle.as_ref() == Some(&self.target)
+                && (self.event != "refresh-requested" || node.can_pull_to_refresh())
+                && component.dispatch_at(scene, &self.path, self.event)
+        })
     }
 }
 
@@ -498,7 +490,7 @@ fn find_path(node: &Node, handle: &ViewportHandle, path: &mut Vec<usize>) -> boo
 impl Interaction {
     /// Resolve movement after layout clamps offsets and replaces virtual rows.
     pub fn take_scroll_events(&mut self, scene: &Node, layout: &LayoutNode) -> Vec<ScrollDelivery> {
-        std::mem::take(&mut self.user_scroll_changes)
+        let mut events: Vec<_> = std::mem::take(&mut self.user_scroll_changes)
             .into_iter()
             .filter_map(|change| {
                 let mut path = Vec::new();
@@ -518,14 +510,40 @@ impl Interaction {
                     });
                 moved.then_some(ScrollDelivery {
                     target: change.target,
+                    event: if scene
+                        .at_path(&path)
+                        .is_some_and(|node| node.kind == "Flickable")
+                    {
+                        "flicked"
+                    } else {
+                        "scrolled"
+                    },
                     path,
                 })
             })
-            .collect()
+            .collect();
+        if let Some(target) = self.refresh_request.take() {
+            let mut path = Vec::new();
+            if find_path(scene, &target, &mut path)
+                && self.allows_popup(layout, &path)
+                && layout
+                    .at_path(&path)
+                    .is_some_and(|item| item.visible && item.enabled)
+                && scene.at_path(&path).is_some_and(Node::can_pull_to_refresh)
+            {
+                events.push(ScrollDelivery {
+                    target,
+                    path,
+                    event: "refresh-requested",
+                });
+            }
+        }
+        events
     }
 
     pub fn clear_scroll_events(&mut self) {
         self.user_scroll_changes.clear();
+        self.refresh_request = None;
     }
 
     pub fn apply_scroll_requests(

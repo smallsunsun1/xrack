@@ -136,9 +136,9 @@ pub use controls::{
 };
 #[doc(hidden)]
 pub use controls::{
-    DialogEvent, TableHeaderAction, prepare_swipe_side, resolve_navigation_value, set_overlay_open,
-    try_prepare_swipe_side, try_resolve_navigation_value, try_resolve_swipe_index,
-    try_set_overlay_open,
+    DialogEvent, TableHeaderAction, page_indicator_step, prepare_swipe_side,
+    resolve_navigation_value, set_overlay_open, try_prepare_swipe_side,
+    try_resolve_navigation_value, try_resolve_swipe_index, try_set_overlay_open,
 };
 #[doc(hidden)]
 pub use controls::{PageIdentity, SwipePreview, SwipePreviewHandle};
@@ -301,7 +301,7 @@ pub use table_selection::{
     copy_table_text_while_current, try_copy_table_text_in_order, try_copy_table_text_in_view,
     try_copy_table_text_while_current,
 };
-pub use text_input::{InputType, ReturnKey};
+pub use text_input::{InputPurpose, InputType, ReturnKey};
 #[doc(hidden)]
 pub use text_input::{
     NumericTextLimits, SearchInput, SearchUpdate, text_input_validity, text_submission_is_valid,
@@ -1556,6 +1556,15 @@ impl Default for Brush {
     }
 }
 
+/// Priority of accessibility announcements for changes to a text label.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AccessibleLive {
+    #[default]
+    Off,
+    Polite,
+    Assertive,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     EventResult(EventResult),
@@ -1615,7 +1624,9 @@ pub enum Value {
     TextVerticalAlignment(TextVerticalAlignment),
     TextOverflow(TextOverflow),
     InputType(InputType),
+    InputPurpose(InputPurpose),
     ReturnKey(ReturnKey),
+    AccessibleLive(AccessibleLive),
     CursorShape(CursorShape),
     PointerEventKind(PointerEventKind),
     PointerButton(PointerButton),
@@ -1727,7 +1738,9 @@ value_from!(TextHorizontalAlignment, TextHorizontalAlignment);
 value_from!(TextVerticalAlignment, TextVerticalAlignment);
 value_from!(TextOverflow, TextOverflow);
 value_from!(InputType, InputType);
+value_from!(InputPurpose, InputPurpose);
 value_from!(ReturnKey, ReturnKey);
+value_from!(AccessibleLive, AccessibleLive);
 value_from!(CursorShape, CursorShape);
 value_from!(PointerEventKind, PointerEventKind);
 value_from!(PointerButton, PointerButton);
@@ -2024,7 +2037,9 @@ pub fn is_toggle(kind: &str) -> bool {
 /// Whether a handler can be invoked through dispatch without an event payload.
 #[doc(hidden)]
 pub fn supports_untyped_dispatch(kind: &str, event: &str) -> bool {
-    if matches!(event, "scrolled" | "flicked") || (kind == "SwipeDelegate" && event == "clicked") {
+    if matches!(event, "scrolled" | "flicked" | "refresh-requested")
+        || (kind == "SwipeDelegate" && event == "clicked")
+    {
         return true;
     }
     !matches!(
@@ -2516,6 +2531,11 @@ impl Node {
             }
             _ => self.length(name),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn can_pull_to_refresh(&self) -> bool {
+        self.boolean("pull-to-refresh", false) && !self.boolean("refreshing", false)
     }
 
     pub fn boolean(&self, name: &str, default: bool) -> bool {

@@ -1,3 +1,5 @@
+import { DateField, TimeField } from "../form/widgets.xr";
+
 component TapCounter inherits Rectangle {
     in property <string> caption;
     private property <int> count: 0;
@@ -121,6 +123,71 @@ component SampleCard inherits Button {
     clicked => { root.samples += 1; }
 }
 
+struct MobileTab {
+    title: string,
+}
+
+component TabWorkshop inherits Rectangle {
+    private property <[MobileTab]> documents: [
+        MobileTab { title: "Pump" },
+        MobileTab { title: "Valve" },
+        MobileTab { title: "Meter" },
+    ];
+    private property <string> selected: "Valve";
+    private property <int> moves: 0;
+    private property <string> last-move: "No move";
+    private property <string> last-close: "No close";
+    private property <int> fallback-index: -1;
+    private property <MobileTab> fallback-tab: Model.at(
+        root.documents, root.fallback-index, MobileTab { title: "" }
+    );
+
+    callback close-tab(int, bool);
+    close-tab(index, was-selected) => {
+        Model.remove(root.documents, index);
+        if (was-selected) {
+            root.fallback-index = Math.min(index, Model.count(root.documents) - 1);
+            root.selected = root.fallback-tab.title;
+        }
+    }
+
+    document-tabs := TabWidget {
+        width: 298px; height: 174px;
+        current-value <=> root.selected;
+        reorderable: true;
+        tabs-closable: true;
+        for doc in root.documents : Tab {
+            title: doc.title;
+            value: doc.title;
+            closable: doc.title != "Pump";
+            TapCounter { width: 100%; height: 100%; caption: doc.title; }
+        }
+        tab-moved(from, to) => {
+            root.moves += 1;
+            root.last-move = "Moved " + from + " to " + to;
+        }
+        tab-close-requested(index, value) => {
+            root.last-close = "Closed " + value;
+            root.close-tab(index, value == root.selected);
+        }
+    }
+    active-document := Text {
+        y: 190px; text: "Active " + root.selected; font-size: 17px; color: #173047;
+    }
+    document-count := Text {
+        x: 165px; y: 196px; text: "Tab count " + document-tabs.count; font-size: 17px; color: #173047;
+    }
+    document-moves := Text {
+        y: 222px; text: "Tab moves " + root.moves; font-size: 17px; color: #173047;
+    }
+    document-last-move := Text {
+        x: 165px; y: 228px; text: root.last-move; font-size: 17px; color: #173047;
+    }
+    document-last-close := Text {
+        y: 254px; text: root.last-close; font-size: 17px; color: #173047;
+    }
+}
+
 component CardWorkshop inherits Rectangle {
     private property <SampleCardHandle> north;
     private property <SampleCardHandle> south;
@@ -131,6 +198,7 @@ component CardWorkshop inherits Rectangle {
     private property <bool> checked-old: false;
     private property <int> old-result: 0;
     private property <int> mounts: 0;
+    private property <bool> tabs-open: false;
 
     remove-held-card := Timer {
         interval: 600;
@@ -192,6 +260,17 @@ component CardWorkshop inherits Rectangle {
             root.old-result = cards.call(root.north, "add-samples", -1, 7);
             root.checked-old = true;
         }
+    }
+    open-tab-workshop := Button {
+        x: 154px; y: 336px; width: 144px; height: 44px; text: "Open tabs";
+        clicked => { root.tabs-open = true; }
+    }
+    Dialog {
+        open <=> root.tabs-open;
+        title: "Document tabs";
+        width: 338px; height: 362px;
+        background: #ffffff; color: #173047;
+        TabWorkshop { width: 100%; height: 278px; }
     }
 }
 
@@ -674,11 +753,189 @@ component FocusWorkshop inherits Rectangle {
     Text { x: 154px; y: 276px; font-size: 16px; color: #173047; text: "Routes " + root.routes; }
 }
 
+component MotionTile inherits Rectangle {
+    in property <string> caption;
+    callback selected();
+
+    Rectangle { width: 100%; height: 12px; background: #1d775e; }
+    motion-target := Button {
+        y: 14px; width: 100%; height: 58px;
+        text: root.caption;
+        clicked => { root.selected(); }
+    }
+}
+
+component MotionWorkshop inherits Rectangle {
+    private property <bool> deployed: false;
+    private property <length> base-width: 72px;
+    private property <int> selections: 0;
+
+    Text {
+        width: 100%; height: 28px; horizontal-alignment: center; vertical-alignment: center;
+        text: "Motion panel"; font-size: 17px; color: #173047;
+    }
+    deck := MotionTile {
+        x: 16px; y: 70px; width: root.base-width; height: 72px;
+        caption: "Tile";
+        selected => { root.selections += 1; }
+    }
+    states [ wide when root.deployed: {
+        deck.x: 120px;
+        deck.width: 168px;
+        deck.caption: "Wide tile";
+        in-out {
+            animate deck.x { duration: 10000ms; easing: linear; }
+            animate deck.width { duration: 10000ms; easing: linear; }
+        }
+    } ]
+    move-deck := Button {
+        y: 170px; width: 144px; height: 44px;
+        text: root.deployed ? "Stow tile" : "Deploy tile";
+        clicked => { root.deployed = !root.deployed; }
+    }
+    widen-base := Button {
+        x: 154px; y: 170px; width: 144px; height: 44px;
+        text: "Widen base";
+        enabled: root.base-width == 72px;
+        clicked => { root.base-width = 96px; }
+    }
+    motion-picks := Text {
+        y: 230px; text: "Motion picks " + root.selections; font-size: 17px; color: #173047;
+    }
+    motion-base := Text {
+        y: 259px; text: root.base-width == 72px ? "Base narrow" : "Base wider";
+        font-size: 17px; color: #173047;
+    }
+}
+
+component DateTimeWorkshop inherits Rectangle {
+    private property <int> date-commits: 0;
+    private property <int> time-commits: 0;
+
+    Text { text: "Visit date"; font-size: 17px; color: #173047; }
+    visit-date := DateField {
+        y: 28px; width: 298px; height: 44px;
+        caption: "Visit date";
+        initial-date: Date { year: 2024, month: 2, day: 28 };
+        minimum-date: Date { year: 2024, month: 2, day: 26 };
+        maximum-date: Date { year: 2024, month: 3, day: 5 };
+        disabled-weekdays: [6, 7];
+        committed(value) => { root.date-commits += 1; }
+    }
+    stored-date := Text {
+        y: 83px; text: "Stored date " + visit-date.date; font-size: 17px; color: #173047;
+    }
+    date-draft := Text {
+        y: 111px; text: "Date draft " + visit-date.draft-text; font-size: 17px; color: #173047;
+    }
+    date-ready := Text {
+        y: 139px; text: visit-date.acceptable-input ? "Date ready" : "Date blocked";
+        font-size: 17px; color: #173047;
+    }
+    date-commit-count := Text {
+        x: 154px; y: 145px; text: "Date commits " + root.date-commits;
+        font-size: 17px; color: #173047;
+    }
+
+    Text { y: 179px; text: "Visit time"; font-size: 17px; color: #173047; }
+    visit-time := TimeField {
+        y: 207px; width: 298px; height: 44px;
+        caption: "Visit time";
+        initial-time: Time { hour: 12, minute: 30, second: 41 };
+        minimum-time: Time { hour: 8 };
+        maximum-time: Time { hour: 18 };
+        committed(value) => { root.time-commits += 1; }
+    }
+    stored-time := Text {
+        y: 262px; text: "Stored time " + Times.format-iso(visit-time.time, true);
+        font-size: 17px; color: #173047;
+    }
+    time-draft := Text {
+        y: 290px; text: "Time draft " + visit-time.draft-text; font-size: 17px; color: #173047;
+    }
+    time-ready := Text {
+        y: 318px; text: visit-time.acceptable-input ? "Time ready" : "Time blocked";
+        font-size: 17px; color: #173047;
+    }
+    time-commit-count := Text {
+        x: 154px; y: 324px; text: "Time commits " + root.time-commits;
+        font-size: 17px; color: #173047;
+    }
+}
+
+component LayoutWorkshop inherits Rectangle {
+    private property <bool> mirrored: false;
+    private property <bool> narrow: false;
+    private property <int> clicks: 0;
+    private property <string> last: "None";
+    private property <bool> fields-open: false;
+    callback picked(string);
+    picked(name) => { root.last = name; root.clicks += 1; }
+
+    mirror-rows := Button {
+        width: 144px; height: 44px;
+        text: root.mirrored ? "Use LTR" : "Mirror rows";
+        clicked => { root.mirrored = !root.mirrored; }
+    }
+    width-rows := Button {
+        x: 154px; width: 144px; height: 44px;
+        text: root.narrow ? "Widen rows" : "Narrow rows";
+        clicked => { root.narrow = !root.narrow; }
+    }
+    Rectangle {
+        y: 58px; width: 300px; height: 306px;
+        layout-direction: root.mirrored ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        GridLayout {
+            width: 300px; height: 44px; horizontal-spacing: 8px;
+            Row {
+                grid-pump := Button { text: "Grid pump"; clicked => { root.picked("Grid pump"); } }
+                grid-valve := Button { text: "Grid valve"; clicked => { root.picked("Grid valve"); } }
+            }
+        }
+        FlowLayout {
+            y: 62px; width: root.narrow ? 208px : 300px; height: 100px;
+            horizontal-spacing: 8px; vertical-spacing: 8px;
+            flow-ash := Button { text: "Flow ash"; width: 92px; height: 44px; clicked => { root.picked("Flow ash"); } }
+            flow-bay := Button { text: "Flow bay"; width: 92px; height: 44px; clicked => { root.picked("Flow bay"); } }
+            flow-fir := Button { text: "Flow fir"; width: 92px; height: 44px; clicked => { root.picked("Flow fir"); } }
+        }
+        FlexboxLayout {
+            y: 180px; width: root.narrow ? 208px : 300px; height: 104px;
+            flex-direction: row-reverse; flex-wrap: wrap;
+            alignment: start; cross-axis-line-alignment: start;
+            spacing-horizontal: 8px; spacing-vertical: 8px;
+            flex-red := Button { text: "Flex red"; width: 92px; height: 44px; clicked => { root.picked("Flex red"); } }
+            flex-blue := Button {
+                text: "Flex blue"; width: 92px; height: 44px; layout-order: -1;
+                clicked => { root.picked("Flex blue"); }
+            }
+            flex-gold := Button { text: "Flex gold"; width: 92px; height: 44px; clicked => { root.picked("Flex gold"); } }
+        }
+    }
+    layout-pick := Text {
+        y: 356px; text: "Picked " + root.last; font-size: 17px; color: #173047;
+    }
+    layout-clicks := Text {
+        y: 384px; text: "Layout clicks " + root.clicks; font-size: 17px; color: #173047;
+    }
+    open-fields := Button {
+        x: 165px; y: 356px; width: 133px; height: 44px;
+        text: "Open fields";
+        clicked => { root.fields-open = true; }
+    }
+    Dialog {
+        open <=> root.fields-open;
+        title: "Date and time fields";
+        width: 338px; height: 434px;
+        background: #ffffff; color: #173047;
+        DateTimeWorkshop { width: 100%; height: 350px; }
+    }
+}
+
 export component MobileNavigation inherits Window {
     title: "XRack Navigation";
     width: 390px; height: 750px;
-    color-scheme: light;
-    background: #f3f7fb;
+    color-scheme: root.follow-system ? ColorScheme.system : ColorScheme.light;
     in-out property <int> mode: 0;
     in-out property <int> tab: 0;
     in-out property <int> card: 0;
@@ -696,6 +953,9 @@ export component MobileNavigation inherits Window {
     private property <bool> commands-open: false;
     private property <bool> scan-open: false;
     private property <bool> focus-open: false;
+    private property <bool> motion-open: false;
+    private property <bool> layouts-open: false;
+    private property <bool> follow-system: false;
     in-out property <color> chosen-color: #4080c0;
     in-out property <Font> chosen-font: Font { family: "sans-serif", size: 18px, weight: 400, italic: false };
     out property <string> picker-status: "";
@@ -710,12 +970,12 @@ export component MobileNavigation inherits Window {
         activated => { root.hotkeys += 1; }
     }
 
-    Text { x: 24px; y: 16px; text: "XRack Navigation"; font-size: 25px; font-weight: 700; color: #173047; }
+    Text { x: 24px; y: 16px; text: "XRack Navigation"; font-size: 25px; font-weight: 700; }
     mode-status := Text {
-        x: 24px; y: 60px; font-size: 17px; color: #173047;
+        x: 24px; y: 60px; font-size: 17px;
         text: "Mode " + (root.mode == 0 ? "Balanced" : root.mode == 1 ? "Fast" : "Quiet");
     }
-    Text { x: 250px; y: 60px; text: "Hotkeys " + root.hotkeys; font-size: 17px; color: #173047; }
+    Text { x: 250px; y: 60px; text: "Hotkeys " + root.hotkeys; font-size: 17px; }
     modes := RadioGroup {
         x: 24px; y: 88px; width: 342px; height: 44px;
         orientation: horizontal;
@@ -735,16 +995,21 @@ export component MobileNavigation inherits Window {
         }
         settings := Tab {
             title: "Settings";
-            type-preview := Text { x: 16px; y: 12px; text: "Settings page"; font: root.chosen-font; color: #173047; }
+            type-preview := Text { x: 16px; y: 12px; text: "Settings page"; font: root.chosen-font; }
+            follow-theme := Button {
+                x: 146px; y: 3px; width: 132px; height: 36px;
+                text: root.follow-system ? "Use light" : "Follow system";
+                clicked => { root.follow-system = !root.follow-system; }
+            }
             paint-preview := Rectangle { x: 284px; y: 8px; width: 36px; height: 28px; background: root.chosen-color; border-radius: 4px; }
             pick-color := Button { x: 16px; y: 48px; width: 146px; height: 40px; text: "Pick color"; clicked => { root.color-open = true; } }
             pick-font := Button { x: 178px; y: 48px; width: 146px; height: 40px; text: "Pick font"; clicked => { root.font-open = true; } }
-            picker-result := Text { x: 16px; y: 96px; text: root.picker-status; font-size: 12px; color: #173047; }
+            picker-result := Text { x: 16px; y: 96px; text: root.picker-status; font-size: 12px; }
         }
         blocked := Tab { title: "Disabled"; enabled: false; }
     }
     card-status := Text {
-        x: 24px; y: 312px; font-size: 17px; color: #173047;
+        x: 24px; y: 312px; font-size: 17px;
         text: "Card " + (root.card == 0 ? "Alpha" : root.card == 1 ? "Beta" : "Gamma");
     }
     cards := SwipeView {
@@ -771,8 +1036,8 @@ export component MobileNavigation inherits Window {
         current-index <=> root.card;
         interactive: !root.locked;
     }
-    route-status := Text { x: 24px; y: 536px; text: "Route " + routes.current-page; font-size: 17px; color: #173047; }
-    depth-status := Text { x: 270px; y: 536px; text: "Depth " + routes.depth; font-size: 17px; color: #173047; }
+    route-status := Text { x: 24px; y: 536px; text: "Route " + routes.current-page; font-size: 17px; }
+    depth-status := Text { x: 270px; y: 536px; text: "Depth " + routes.depth; font-size: 17px; }
     routes := StackView {
         x: 24px; y: 564px; width: 342px; height: 116px;
         initial-page: "home";
@@ -807,7 +1072,7 @@ export component MobileNavigation inherits Window {
         text: "Open menu";
         clicked => { root.menu-open = true; }
     }
-    drawer-status := Text { x: 190px; y: 710px; text: "Drawer closes " + root.drawer-closes; font-size: 17px; color: #173047; }
+    drawer-status := Text { x: 190px; y: 710px; text: "Drawer closes " + root.drawer-closes; font-size: 17px; }
     drawer := Drawer {
         edge: left;
         width: 280px;
@@ -854,6 +1119,14 @@ export component MobileNavigation inherits Window {
         open-focus := Button {
             text: "Open focus"; height: 44px;
             clicked => { root.menu-open = false; root.focus-open = true; }
+        }
+        open-motion := Button {
+            text: "Open motion"; height: 44px;
+            clicked => { root.menu-open = false; root.motion-open = true; }
+        }
+        open-layouts := Button {
+            text: "Open layouts"; height: 44px;
+            clicked => { root.menu-open = false; root.layouts-open = true; }
         }
         close-menu := Button { text: "Close menu"; height: 44px; clicked => { root.menu-open = false; } }
         help := Dialog {
@@ -926,6 +1199,20 @@ export component MobileNavigation inherits Window {
         width: 338px; height: 388px;
         background: #ffffff; color: #173047;
         FocusWorkshop { width: 100%; height: 304px; }
+    }
+    Dialog {
+        open <=> root.motion-open;
+        title: "State transitions";
+        width: 338px; height: 364px;
+        background: #ffffff; color: #173047;
+        MotionWorkshop { width: 100%; height: 280px; }
+    }
+    Dialog {
+        open <=> root.layouts-open;
+        title: "Layout workshop";
+        width: 338px; height: 500px;
+        background: #ffffff; color: #173047;
+        LayoutWorkshop { width: 100%; height: 416px; }
     }
     paint := ColorPickerPopup {
         title: "Paint color";

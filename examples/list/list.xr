@@ -4,6 +4,63 @@ export struct DelegateSetting {
     enabled: bool,
 }
 
+export component RefreshDemo inherits Window {
+    title: "Inspection feed";
+    width: 390px;
+    height: 540px;
+    color-scheme: system;
+
+    out property <bool> refreshing: false;
+    out property <int> requests: 0;
+    out property <int> updates: 0;
+    callback refresh();
+
+    refresh() => {
+        if !root.refreshing {
+            root.requests += 1;
+            root.refreshing = true;
+            finish-refresh.restart();
+        }
+    }
+
+    finish-refresh := Timer {
+        interval: 2200;
+        triggered() => {
+            root.updates += 1;
+            root.refreshing = false;
+        }
+    }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        Label { text: "Inspection feed"; font-size: 24px; font-weight: 700; }
+        refresh-status := Label {
+            text: root.refreshing ? "Refreshing…" : "Completed refreshes: " + root.updates;
+            accessible-live: root.requests > 0 ? AccessibleLive.polite : AccessibleLive.off;
+        }
+        feed := ListView {
+            height: 280px;
+            row-height: 52px;
+            pull-to-refresh: true;
+            refreshing: root.refreshing;
+            accessible-name: "Inspection updates";
+            refresh-requested() => { root.refresh(); }
+            for entry in ["Pump pressure", "Door interlock", "Water temperature"] : Label {
+                text: entry;
+                vertical-alignment: center;
+            }
+        }
+        refresh-button := Button {
+            height: 44px;
+            text: "Refresh";
+            enabled: !root.refreshing;
+            clicked => { root.refresh(); }
+        }
+    }
+}
+
 export struct ListVisibilityFlags {
     shown: bool,
 }

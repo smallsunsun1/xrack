@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::time::{Duration, Instant};
 
 use mobile_table_ui::MobileTable;
@@ -438,6 +440,84 @@ fn mobile_canvas_keeps_pan_and_attached_scroll_bars_in_sync()
     exercise_canvas(MobileTable::new());
     let module = xrack_compiler::compile(include_str!("table.xr"), "table.xr")?;
     exercise_canvas(load_mlir(&module.mlir)?.create("MobileTable")?);
+    Ok(())
+}
+
+fn exercise_refresh(component: impl Component) {
+    let mut ui = UiDriver::headless(component, Size::new(390.0, 740.0));
+    ui.click("open-refresh");
+    let feed = ui.path("refresh-feed");
+    let item = ui.layout_at(&feed).unwrap();
+    assert_eq!(item.scroll.unwrap().max_offset, 0.0);
+    let start = Point {
+        x: item.bounds.x + item.bounds.width / 2.0,
+        y: item.bounds.y + 24.0,
+    };
+    let pull = |ui: &mut UiDriver<_>, distance, cancel, progress| {
+        let mut input = Interaction::default();
+        input.set_reduce_motion(true);
+        let scene = ui.scene().clone();
+        let now = Instant::now();
+        assert!(input.begin_scroll_gesture(
+            &scene,
+            ui.layout(),
+            start,
+            now,
+            ScrollGestureKind::Touch
+        ));
+        let end = Point {
+            y: start.y + distance,
+            ..start
+        };
+        input.move_scroll_gesture(&scene, ui.layout(), end, now + Duration::from_millis(70));
+        assert_eq!(
+            input.pull_to_refresh_progress(scene.at_path(&feed).unwrap()),
+            progress
+        );
+        assert!(input.take_scroll_events(&scene, ui.layout()).is_empty());
+        if cancel {
+            input.cancel_scroll_gesture();
+        } else {
+            input.end_scroll_gesture(&scene, ui.layout(), end, now + Duration::from_millis(200));
+        }
+        let deliveries = input.take_scroll_events(&scene, ui.layout());
+        ui.update(|component| {
+            for delivery in &deliveries {
+                assert!(delivery.apply(component, &scene));
+            }
+        });
+        deliveries.len()
+    };
+
+    assert_eq!(pull(&mut ui, 110.0, true, Some(1.0)), 0);
+    assert_eq!(pull(&mut ui, 110.0, false, Some(1.0)), 1);
+    assert_eq!(
+        ui.node("refresh-status").text("text"),
+        Some("Loading readings")
+    );
+    assert_eq!(pull(&mut ui, 110.0, false, None), 0);
+    assert_eq!(ui.node("refresh-requests").text("text"), Some("Requests 1"));
+    ui.click("finish-refresh");
+    assert_eq!(
+        ui.node("refresh-status").text("text"),
+        Some("Readings ready")
+    );
+    assert_eq!(
+        ui.node("refresh-feed")
+            .at_path(&[0, 0, 0])
+            .and_then(|text| text.text("text")),
+        Some("Revision 1")
+    );
+    assert_eq!(pull(&mut ui, 110.0, false, Some(1.0)), 1);
+    assert_eq!(ui.node("refresh-requests").text("text"), Some("Requests 2"));
+}
+
+#[test]
+fn mobile_refresh_uses_the_same_short_list_gesture_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    exercise_refresh(MobileTable::new());
+    let module = xrack_compiler::compile(include_str!("table.xr"), "table.xr")?;
+    exercise_refresh(load_mlir(&module.mlir)?.create("MobileTable")?);
     Ok(())
 }
 

@@ -799,6 +799,7 @@ impl Instance {
             }
         } else if self.definition().source_scroll_targets.contains(&view.key)
             || node.boolean("preserve-scroll-anchor", false)
+            || node.boolean("drag-auto-scroll", false)
             || node.boolean("movable-rows", false)
         {
             node.row_locator = model.locator();

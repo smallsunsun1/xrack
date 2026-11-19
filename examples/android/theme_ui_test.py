@@ -34,7 +34,9 @@ class ThemeEmulator(NavigationEmulator):
                 c.isdigit() for c in text
             ):
                 text = text.translate(str.maketrans("OoIl,", "0011."))
-            status = re.fullmatch(r"(Frame|Frames|Finished|Reports) ([0-9OoIl]+)", text)
+            status = re.fullmatch(
+                r"(Frame|Frames|Finished|Reports|Motion picks) ([0-9OoIl]+)", text
+            )
             if status is not None:
                 text = (
                     status[1] + " " + status[2].translate(str.maketrans("OoIl", "0011"))
@@ -327,14 +329,184 @@ def exercise_scan(ui: Emulator, initial: Screen, frame: Surface) -> None:
     ui.visible("Scan workshop", "Samples 4 of 4", "Reports 1", "Report queued")
     reactivated = ui.visible("Samples 4 of 4", "Reports 2", "Report saved")
     expect_indicators(reactivated, 4, (fill, fill, fill, fill))
+
+    ui.tap(ui.visible("Reports 2", "Queue report"), "Queue report")
+    ui.visible("Samples 4 of 4", "Reports 2", "Report queued")
+    ui.call("shell", "input", "keyevent", "KEYCODE_HOME")
+    ui.wait_for(
+        "Android backgrounds the scan workshop with its report still queued",
+        lambda screen: screen.find("Scan workshop") is None,
+    )
+    time.sleep(7)
+    ui.call("shell", "am", "start", "-W", "-n", ACTIVITY)
+    ui.wait_for(
+        "the report remains queued when the scan workshop returns to the foreground",
+        lambda screen: (
+            all(
+                screen.find(label)
+                for label in (
+                    "Scan workshop",
+                    "Samples 4 of 4",
+                    "Reports 2",
+                    "Report queued",
+                )
+            )
+            and ui.window_accepts_touch(screen, ACTIVITY)
+        ),
+        timeout=75,
+    )
+    resumed = ui.visible("Samples 4 of 4", "Reports 3", "Report saved")
+    expect_indicators(resumed, 4, (fill, fill, fill, fill))
     ui.artifacts.mkdir(parents=True, exist_ok=True)
     (ui.artifacts / "scan-halfway.png").write_bytes(halfway.png)
     (ui.artifacts / "scan-report-pending.png").write_bytes(spinning.png)
-    (ui.artifacts / "scan-report-complete.png").write_bytes(reactivated.png)
+    (ui.artifacts / "scan-report-complete.png").write_bytes(resumed.png)
+
+
+def exercise_motion(ui: Emulator, initial: Screen, frame: Surface) -> None:
+    open_drawer_item(ui, initial, "Open motion")
+    tint = (29, 119, 94)
+
+    def point(screen: Screen, x: float, y: float) -> tuple[int, int]:
+        anchor = screen.require("Motion panel")
+        # The 28dp label is centered in the 338dp dialog's padded content.
+        left = anchor.x * screen.width - 153 * frame.scale
+        top = anchor.y * screen.height - 14 * frame.scale
+        return round(left + x * frame.scale), round(top + y * frame.scale)
+
+    def strip(screen: Screen) -> tuple[int, int] | None:
+        if screen.find("Motion panel") is None:
+            return None
+        columns = range(4, 300, 2)
+        probes = tuple(point(screen, x, 76) for x in columns)
+        occupied = [
+            x for x, rgb in zip(columns, pixels_rgb(screen.png, probes)) if rgb == tint
+        ]
+        if not occupied:
+            return None
+        return occupied[0], occupied[-1] + 2 - occupied[0]
+
+    def at_shape(left: int, width: int, *labels: str) -> Screen:
+        def matches(screen: Screen) -> bool:
+            if not all(screen.find(label) for label in labels):
+                return False
+            geometry = strip(screen)
+            return geometry is not None and all(
+                abs(actual - expected) <= 4
+                for actual, expected in zip(geometry, (left, width))
+            )
+
+        return ui.wait_for(f"painted tile at {left}dp with width {width}dp", matches)
+
+    def in_motion(screen: Screen) -> bool:
+        geometry = strip(screen)
+        return (
+            geometry is not None
+            and 38 <= geometry[0] <= 76
+            and 92 <= geometry[1] <= 132
+        )
+
+    ready = at_shape(16, 72, "Deploy tile", "Motion picks 0", "Base narrow")
+    ui.touch(*point(ready, 52, 112))
+    ui.tap(ui.visible("Motion picks 1", "Deploy tile"), "Deploy tile")
+    halfway = ui.wait_for(
+        "the tile paints between the deployed and stowed endpoints",
+        lambda screen: screen.find("Stow tile") is not None and in_motion(screen),
+    )
+    # This position lies in the moving tile, between the two endpoint hitboxes.
+    ui.touch(*point(halfway, 106, 112))
+    ui.visible("Motion picks 2")
+    deployed = at_shape(120, 168, "Motion picks 2", "Wide tile", "Widen base")
+    ui.touch(*point(deployed, 52, 112))
+    ui.tap(ui.visible("Motion picks 2", "Widen base"), "Widen base")
+    wider = at_shape(120, 168, "Motion picks 2", "Base wider", "Wide tile")
+    ui.touch(*point(wider, 206, 112))
+    ui.tap(ui.visible("Motion picks 3", "Stow tile"), "Stow tile")
+    returning = ui.wait_for(
+        "stowing paints a frame between the two endpoints",
+        lambda screen: screen.find("Deploy tile") is not None and in_motion(screen),
+    )
+    restored = at_shape(16, 96, "Motion picks 3", "Base wider", "Tile")
+    ui.touch(*point(restored, 100, 112))
+    ui.visible("Motion picks 4", "Base wider")
+    ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
+    ui.wait_for(
+        "Back returns from state transitions",
+        lambda screen: (
+            screen.find("Route home") is not None
+            and screen.find("State transitions") is None
+        ),
+    )
+    ui.artifacts.mkdir(parents=True, exist_ok=True)
+    (ui.artifacts / "motion-halfway.png").write_bytes(halfway.png)
+    (ui.artifacts / "motion-returning.png").write_bytes(returning.png)
+    (ui.artifacts / "motion-restored.png").write_bytes(restored.png)
+
+
+def exercise_system_appearance(ui: Emulator, initial: Screen, frame: Surface) -> None:
+    original = ui.call("shell", "cmd", "uimode", "night").decode().strip()
+    mode = original.removeprefix("Night mode: ")
+    assert mode in {"yes", "no", "auto", "custom_schedule", "custom_bedtime"}, original
+
+    def scheme(
+        name: str, expected: tuple[tuple[int, int, int], tuple[int, int, int]]
+    ) -> Screen:
+        def matches(screen: Screen) -> bool:
+            if screen.find("Settings page") is None:
+                return False
+            samples = pixels_rgb(
+                screen.png, (frame.point(14, 580), frame.point(54, 250))
+            )
+            return all(
+                abs(actual - wanted) <= 4
+                for sample, color in zip(samples, expected)
+                for actual, wanted in zip(sample, color)
+            )
+
+        return ui.wait_for(
+            f"{name} palette reaches the live window and button", matches
+        )
+
+    # The toggle occupies the same rectangle with either caption.
+    toggle = frame.point(236, 203)
+    light = ((243, 246, 251), (52, 86, 202))
+    dark = ((24, 32, 43), (83, 109, 254))
+    try:
+        ui.call("shell", "cmd", "uimode", "night", "no")
+        ui.tap(initial, "Add Tab")
+        ui.tap(ui.visible("Tab total 1", "Settings"), "Settings")
+        scheme("explicit light", light)
+        ui.touch(*toggle)
+
+        ui.call("shell", "cmd", "uimode", "night", "yes")
+        dark_screen = scheme("system dark", dark)
+        ui.tap(dark_screen, "Overview")
+        ui.tap(ui.visible("Tab total 1", "Settings"), "Settings")
+        scheme("retained system dark", dark)
+        ui.touch(*toggle)
+        scheme("explicit light while Android is dark", light)
+        ui.touch(*toggle)
+        scheme("current system dark", dark)
+
+        ui.call("shell", "cmd", "uimode", "night", "no")
+        light_screen = scheme("restored system light", light)
+        ui.tap(light_screen, "Overview")
+        ui.visible("Tab total 1")
+        ui.artifacts.mkdir(parents=True, exist_ok=True)
+        (ui.artifacts / "system-theme-dark.png").write_bytes(dark_screen.png)
+        (ui.artifacts / "system-theme-light.png").write_bytes(light_screen.png)
+    finally:
+        ui.call("shell", "cmd", "uimode", "night", mode)
 
 
 def exercise(
-    ui: Emulator, apk: Path, *, images_only: bool = False, scan_only: bool = False
+    ui: Emulator,
+    apk: Path,
+    *,
+    images_only: bool = False,
+    scan_only: bool = False,
+    motion_only: bool = False,
+    system_appearance_only: bool = False,
 ) -> None:
     rotation = ui.call("shell", "cmd", "window", "user-rotation").decode().split()
     try:
@@ -349,6 +521,12 @@ def exercise(
             return
         if scan_only:
             exercise_scan(ui, initial, frame)
+            return
+        if motion_only:
+            exercise_motion(ui, initial, frame)
+            return
+        if system_appearance_only:
+            exercise_system_appearance(ui, initial, frame)
             return
         ui.tap(initial, "Settings")
         ui.wait_for(
@@ -472,7 +650,7 @@ def exercise(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Exercise Android pickers, images and progress indicators"
+        description="Exercise Android pickers, images, progress and state transitions"
     )
     parser.add_argument("--serial", required=True)
     parser.add_argument("--apk", required=True, type=Path)
@@ -480,6 +658,8 @@ def main() -> None:
     scenario = parser.add_mutually_exclusive_group()
     scenario.add_argument("--images-only", action="store_true")
     scenario.add_argument("--scan-only", action="store_true")
+    scenario.add_argument("--motion-only", action="store_true")
+    scenario.add_argument("--system-appearance-only", action="store_true")
     args = parser.parse_args()
     adb = args.adb.resolve()
     if not adb.is_file() or not args.apk.is_file():
@@ -504,6 +684,8 @@ def main() -> None:
             args.apk.resolve(),
             images_only=args.images_only,
             scan_only=args.scan_only,
+            motion_only=args.motion_only,
+            system_appearance_only=args.system_appearance_only,
         )
 
 
