@@ -48,7 +48,7 @@ impl SwipeDelegateGeometry {
     }
 
     pub fn toggle(&self) -> Option<(Rect, ControlAction)> {
-        if self.preview || self.widths == [0.0, 0.0] {
+        if !self.actions_available() {
             return None;
         }
         let content = self.region("SwipeContent").bounds.intersect(self.bounds);
@@ -68,6 +68,10 @@ impl SwipeDelegateGeometry {
             SwipeSide::Left
         };
         Some((rect, ControlAction::SwipeDelegate(side)))
+    }
+
+    pub(crate) fn actions_available(&self) -> bool {
+        !self.preview && self.widths != [0.0, 0.0]
     }
 
     fn position(&self, side: SwipeSide) -> f32 {

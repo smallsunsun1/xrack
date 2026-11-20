@@ -10,6 +10,7 @@ pub(crate) enum Source {
     #[default]
     Pointer,
     Focus,
+    Touch,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -28,10 +29,7 @@ pub(crate) struct TooltipKey {
 
 impl TooltipKey {
     fn new(scene: &Node, path: &[usize], source: Source) -> Option<Self> {
-        let (slot, _) = scene
-            .at_path(path)?
-            .materialized_children()
-            .find(|(_, node)| has_content(node))?;
+        let (slot, _) = attached(scene.at_path(path)?)?;
         Some(Self {
             owner: path.to_vec(),
             slot,
@@ -51,6 +49,18 @@ impl TooltipKey {
     }
 }
 
+fn attached(owner: &Node) -> Option<(usize, &Node)> {
+    owner
+        .materialized_children()
+        .find(|(_, node)| has_content(node))
+}
+
+#[doc(hidden)]
+pub fn tooltip_text(owner: &Node) -> Option<&str> {
+    let text = attached(owner)?.1.text("text")?.trim();
+    (!text.is_empty()).then_some(text)
+}
+
 fn has_content(node: &Node) -> bool {
     node.kind == "Tooltip"
         && node.is_visible()
@@ -65,6 +75,7 @@ pub(crate) fn hovered(
     layout: &LayoutNode,
     scope: &[usize],
     point: Point,
+    source: Source,
 ) -> Option<TooltipKey> {
     fn path_at(node: &Node, item: &LayoutNode, point: Point, path: &mut Vec<usize>) -> bool {
         if !item.contains_subtree_point(point) {
@@ -92,7 +103,7 @@ pub(crate) fn hovered(
     ) {
         return None;
     }
-    find_owner(scene, &path, scope.len(), Source::Pointer)
+    find_owner(scene, &path, scope.len(), source)
 }
 
 pub(crate) fn focused(scene: &Node, path: &[usize], scope: &[usize]) -> Option<TooltipKey> {
@@ -135,6 +146,31 @@ fn after(now: Instant, millis: i64) -> Instant {
 }
 
 impl TooltipState {
+    pub(crate) fn touch_key(&self, layout: &LayoutNode, scope: &[usize]) -> Option<TooltipKey> {
+        self.key
+            .as_ref()
+            .filter(|key| {
+                key.owner.starts_with(scope)
+                    && layout.at_path(&key.owner).is_some_and(|owner| {
+                        let bounds = owner.visible_window_bounds(owner.bounds);
+                        owner.visible && bounds.width > 0.0 && bounds.height > 0.0
+                    })
+            })
+            .cloned()
+    }
+
+    pub(crate) fn show_touch(&mut self, key: TouchTooltip, now: Instant) {
+        *self = Self {
+            source: Source::Touch,
+            key: Some(key.0),
+            phase: Some(Phase::Showing {
+                since: now,
+                anchor: Anchor::Focus,
+            }),
+            ..Self::default()
+        };
+    }
+
     pub(crate) fn focus_source(&mut self) {
         self.source = Source::Focus;
         self.suppress_next = false;
@@ -200,7 +236,7 @@ impl TooltipState {
                 self.deadline = Some(show);
             } else {
                 let anchor = match key.source {
-                    Source::Focus => Anchor::Focus,
+                    Source::Focus | Source::Touch => Anchor::Focus,
                     Source::Pointer => pointer.map_or(Anchor::Focus, Anchor::Pointer),
                 };
                 self.phase = Some(Phase::Showing { since: now, anchor });
@@ -246,6 +282,29 @@ impl TooltipState {
                 .layout_direction()
                 .or(owner.layout_direction_override()),
         })
+    }
+}
+
+#[doc(hidden)]
+#[derive(PartialEq, Eq)]
+pub struct TouchTooltip(TooltipKey);
+
+impl TouchTooltip {
+    pub(crate) fn at(
+        scene: &Node,
+        layout: &LayoutNode,
+        scope: &[usize],
+        point: Point,
+        now: Instant,
+    ) -> Option<(Self, Instant)> {
+        let key = hovered(scene, layout, scope, point, Source::Touch)?;
+        let node = key.node(scene)?;
+        if node.int("timeout") == Some(0) {
+            return None;
+        }
+        // A tooltip with no hover delay still requires a deliberate touch hold.
+        let deadline = after(now, node.int("delay").unwrap_or(600).max(500));
+        Some((Self(key), deadline))
     }
 }
 

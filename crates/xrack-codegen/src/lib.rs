@@ -109,6 +109,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::TextOverflow => quote!(::xrack_runtime::TextOverflow),
         Type::InputType => quote!(::xrack_runtime::InputType),
         Type::InputPurpose => quote!(::xrack_runtime::InputPurpose),
+        Type::KeyboardCapitalization => quote!(::xrack_runtime::KeyboardCapitalization),
         Type::ReturnKey => quote!(::xrack_runtime::ReturnKey),
         Type::AccessibleLive => quote!(::xrack_runtime::AccessibleLive),
         Type::CursorShape => quote!(::xrack_runtime::CursorShape),
@@ -10441,7 +10442,7 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         match element.attr("kind")? {
-            "TextInput" | "LineEdit" => {
+            "TextInput" | "LineEdit" | "TextEdit" | "TextArea" => {
                 let accepts = self.text_acceptance_expression(element)?;
                 out.extend(quote! {
                     [#(#path),*] => action == ::xrack_runtime::ControlAction::ValidateTextSubmission

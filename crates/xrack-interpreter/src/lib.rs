@@ -271,6 +271,7 @@ pub enum ValueType {
     ColorScheme,
     InputType,
     InputPurpose,
+    KeyboardCapitalization,
     ReturnKey,
     AccessibleLive,
     DialInputMode,

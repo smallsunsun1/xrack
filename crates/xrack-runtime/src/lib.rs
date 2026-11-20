@@ -37,6 +37,8 @@ mod inspection;
 pub use inspection::{InspectionInput, RecordedAction, WindowInspector};
 mod media;
 #[doc(hidden)]
+pub mod ui_trace;
+#[doc(hidden)]
 pub mod update_profile;
 pub use media::{
     MediaCommand, MediaFrame, MediaOptions, MediaQueue, MediaRegistration, MediaSession, MediaSlot,
@@ -301,7 +303,7 @@ pub use table_selection::{
     copy_table_text_while_current, try_copy_table_text_in_order, try_copy_table_text_in_view,
     try_copy_table_text_while_current,
 };
-pub use text_input::{InputPurpose, InputType, ReturnKey};
+pub use text_input::{InputPurpose, InputType, KeyboardCapitalization, ReturnKey};
 #[doc(hidden)]
 pub use text_input::{
     NumericTextLimits, SearchInput, SearchUpdate, text_input_validity, text_submission_is_valid,
@@ -335,6 +337,12 @@ pub use window_status::{WindowCommandMethod, WindowLifecycle, WindowMetric, Wind
 /// The backend-independent interface implemented by generated UI components.
 pub trait Component {
     fn render(&self) -> Node;
+
+    /// Revision of the source currently applied to this instance.
+    #[doc(hidden)]
+    fn source_generation(&self) -> u64 {
+        0
+    }
 
     #[doc(hidden)]
     fn window_inspector(&self, _scene: &Rc<Node>) -> Option<WindowInspector> {
@@ -557,6 +565,9 @@ impl<T: Component + ?Sized> Component for Box<T> {
 
     fn render(&self) -> Node {
         (**self).render()
+    }
+    fn source_generation(&self) -> u64 {
+        (**self).source_generation()
     }
     fn window_inspector(&self, scene: &Rc<Node>) -> Option<WindowInspector> {
         (**self).window_inspector(scene)
@@ -1625,6 +1636,7 @@ pub enum Value {
     TextOverflow(TextOverflow),
     InputType(InputType),
     InputPurpose(InputPurpose),
+    KeyboardCapitalization(KeyboardCapitalization),
     ReturnKey(ReturnKey),
     AccessibleLive(AccessibleLive),
     CursorShape(CursorShape),
@@ -1739,6 +1751,7 @@ value_from!(TextVerticalAlignment, TextVerticalAlignment);
 value_from!(TextOverflow, TextOverflow);
 value_from!(InputType, InputType);
 value_from!(InputPurpose, InputPurpose);
+value_from!(KeyboardCapitalization, KeyboardCapitalization);
 value_from!(ReturnKey, ReturnKey);
 value_from!(AccessibleLive, AccessibleLive);
 value_from!(CursorShape, CursorShape);

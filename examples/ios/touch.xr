@@ -5,6 +5,612 @@ export struct RoundTask {
     category: string,
 }
 
+export struct InspectionPhoto {
+    preview: image,
+    has-preview: bool,
+    details: string,
+}
+
+export component PointerInspectionDemo inherits Window {
+    title: "Pointer inspection";
+    width: 390px;
+    height: 520px;
+    private property <int> pointer-moves: 0;
+    private property <int> inspections: 0;
+    private property <int> sensor-log-opens: 0;
+    private property <int> wheel-events: 0;
+    private property <bool> log-entered: false;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        sensor := HoverHandler {
+            height: 52px;
+            moved => { root.pointer-moves += 1; }
+            ContextMenuArea {
+                width: 100%;
+                height: 100%;
+                inspect := Button {
+                    width: 100%;
+                    height: 100%;
+                    text: "Inspect sensor";
+                    background: sensor.hovered ? #2d6878 : #33516a;
+                    clicked => { root.inspections += 1; }
+                }
+                Menu {
+                    open-sensor-log := MenuItem {
+                        text: "Open sensor log";
+                        activated => { root.sensor-log-opens += 1; }
+                    }
+                }
+            }
+        }
+        pointer-state := Label { text: sensor.hovered ? "Sensor hovered" : "Sensor idle"; }
+        moved := Label { text: "Pointer moves " + root.pointer-moves; }
+        inspected := Label { text: "Inspections " + root.inspections; }
+        sensor-log-count := Label { text: "Sensor log opens " + root.sensor-log-opens; }
+        log := ScrollView {
+            accessible-name: "Inspection log";
+            width: 100%;
+            height: 180px;
+            content-height: 480px;
+            log-hover := HoverHandler {
+                width: 100%;
+                height: 480px;
+                entered => { root.log-entered = true; }
+                log-wheel := WheelHandler {
+                    width: 100%;
+                    height: 480px;
+                    wheel(event) => { root.wheel-events += 1; reject }
+                    Rectangle {
+                        width: 100%;
+                        height: 480px;
+                        background: log-hover.hovered ? #dce8e0 : #e8edea;
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 14px;
+                            alignment: start;
+                            for record[index] in ["Pump pressure", "Valve position", "Safety guard",
+                                "Filter status", "Motor temperature", "Cooling fan", "Flow rate",
+                                "Alarm history", "Meter calibration", "Inspection complete"] : Label {
+                                height: 30px;
+                                text: record;
+                                color: #203447;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        wheel-count := Label { text: "Wheel events " + root.wheel-events; }
+        log-hover-state := Label {
+            text: log-hover.hovered ? "Pointer over log" :
+                root.log-entered ? "Pointer left log" : "Pointer outside log";
+        }
+        log-position := Label { text: log.content-y == 0px ? "Log at top" : "Log scrolled"; }
+    }
+}
+
+export component FolderDialogDemo inherits Window {
+    title: "Directory import";
+    width: 390px;
+    height: 430px;
+    in property <string> starting-directory;
+    in-out property <string> status: "Choose a folder in Files";
+    private property <bool> multiple;
+    callback inspect-folders([string]);
+
+    folder-picker := FileDialog {
+        mode: root.multiple ? FileDialogMode.select-folders : FileDialogMode.select-folder;
+        directory: root.starting-directory;
+        accepted(paths) => { root.status = "Imported " + Model.count(paths); root.inspect-folders(paths); }
+        canceled => { root.status = "Folder selection canceled"; }
+        failed(reason) => { root.status = reason; }
+    }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        one := Button {
+            text: "Import one folder";
+            height: 48px;
+            enabled: !folder-picker.pending;
+            clicked => { root.multiple = false; folder-picker.open(); }
+        }
+        many := Button {
+            text: "Import folders";
+            height: 48px;
+            enabled: !folder-picker.pending;
+            clicked => { root.multiple = true; folder-picker.open(); }
+        }
+        result := Label { text: root.status; accessible-live: polite; }
+    }
+}
+
+export component NativeColorDemo inherits Window {
+    title: "Marker color";
+    width: 390px;
+    height: 360px;
+    in-out property <color> marker-color: #2D638880;
+    in-out property <string> color-readout: "#2D638880";
+    in-out property <color> preview-color: #2D638880;
+    in-out property <string> preview-readout: "#2D638880";
+    in-out property <string> picker-error: "";
+    in-out property <bool> show-alpha: true;
+    in-out property <bool> pending: false;
+    callback edit-color();
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        swatch := Rectangle {
+            height: 96px;
+            background: root.pending ? root.preview-color : root.marker-color;
+            border-radius: 12px;
+        }
+        readout := Label { text: root.pending ? "Preview " + root.preview-readout : root.color-readout; }
+        alpha := CheckBox {
+            text: "Edit opacity";
+            checked <=> root.show-alpha;
+            enabled: !root.pending;
+        }
+        edit := Button {
+            text: "Edit marker color";
+            height: 44px;
+            enabled: !root.pending;
+            clicked => { root.edit-color(); }
+        }
+        Label {
+            text: root.picker-error;
+            accessible-live: polite;
+            visible: root.picker-error != "";
+        }
+    }
+}
+
+component PageScopedPanel inherits Rectangle {
+    in property <bool> opens-files;
+    callback reported-result();
+    callback show-files();
+    show-files => { picker.open(); }
+    callback show-message();
+    show-message => { message.open(); }
+
+    picker := FileDialog {
+        mode: open-file;
+        accepted(paths) => { root.reported-result(); }
+        canceled => { root.reported-result(); }
+        failed(reason) => { root.reported-result(); }
+    }
+
+    message := MessageDialog {
+        title: "Inspection page notice";
+        text: "This dialog belongs to the active page.";
+        finished(button) => { root.reported-result(); }
+        failed(reason) => { root.reported-result(); }
+    }
+
+    show-inspection-dialog := Button {
+        text: "Show inspection dialog";
+        width: 100%;
+        height: 100%;
+        clicked => {
+            if root.opens-files {
+                root.show-files();
+            } else {
+                root.show-message();
+            }
+        }
+    }
+}
+
+export component NativePanelQueueDemo inherits Window {
+    title: "System panels";
+    width: 390px;
+    height: 360px;
+    in-out property <int> panels-left: 0;
+    in-out property <string> files-status: "";
+    in-out property <string> photos-status: "";
+    in-out property <string> share-status: "";
+    private property <string> notice-status: "";
+    private property <int> timeouts-left: 0;
+    private property <bool> page-active: false;
+    private property <bool> page-opens-files: false;
+    private property <string> page-status: "";
+    private property <bool> panel-idle: root.panels-left == 0 && root.timeouts-left == 0 &&
+        !root.page-active && !notice.pending;
+    callback queue-panels(timed: bool);
+    callback abort-panel(files: bool);
+    callback show-timeout-notice();
+    show-timeout-notice => { notice.open(); }
+    callback open-inspection-page(files: bool);
+    open-inspection-page(files) => {
+        root.page-opens-files = files;
+        root.notice-status = "";
+        root.page-status = "Inspection page open";
+        root.page-active = true;
+        remove-page.restart();
+    }
+
+    notice := MessageDialog {
+        title: "System panel queue";
+        text: "Close each panel to continue.";
+        accepted => { root.notice-status = "Notice completed"; }
+        failed(message) => { root.notice-status = message; }
+    }
+
+    queue-delay := Timer {
+        interval: 250;
+        repeat: false;
+        triggered => { root.queue-panels(false); }
+    }
+
+    panel-timeout := Timer {
+        interval: 6500;
+        repeat: true;
+        running: root.timeouts-left > 0;
+        triggered => {
+            root.abort-panel(root.timeouts-left == 2);
+            root.timeouts-left -= 1;
+            if root.timeouts-left == 0 {
+                root.show-timeout-notice();
+            }
+        }
+    }
+
+    remove-page := Timer {
+        interval: 7500;
+        repeat: false;
+        triggered => {
+            root.page-active = false;
+            root.page-status = "Inspection page closed";
+            notice.open();
+        }
+    }
+
+    VerticalLayout {
+        alignment: start;
+        padding: 20px;
+        spacing: 12px;
+        start := Button {
+            text: "Open panel queue";
+            height: 44px;
+            enabled: root.panel-idle;
+            clicked => {
+                root.panels-left = 3;
+                root.notice-status = "Waiting for notice";
+                root.files-status = "Files queued";
+                root.photos-status = "Photos queued";
+                root.share-status = "Share queued";
+                notice.open();
+                queue-delay.start();
+            }
+        }
+        timed := Button {
+            text: "Open timed panels";
+            height: 44px;
+            enabled: root.panel-idle;
+            clicked => {
+                root.panels-left = 2;
+                root.timeouts-left = 2;
+                root.notice-status = "";
+                root.files-status = "Files queued";
+                root.photos-status = "";
+                root.share-status = "Share queued";
+                root.queue-panels(true);
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            open-page-notice := Button {
+                text: "Open page notice";
+                height: 44px;
+                enabled: root.panel-idle;
+                clicked => { root.open-inspection-page(false); }
+            }
+            open-page-files := Button {
+                text: "Open page Files";
+                height: 44px;
+                enabled: root.panel-idle;
+                clicked => { root.open-inspection-page(true); }
+            }
+        }
+        if root.page-active : PageScopedPanel {
+            height: 44px;
+            opens-files: root.page-opens-files;
+            reported-result => { root.page-status = "Inspection page received a reply"; }
+        }
+        page-status := Label { text: root.page-status; }
+        Label { text: root.notice-status; }
+        Label { text: root.files-status; }
+        Label { text: root.photos-status; }
+        Label { text: root.share-status; }
+    }
+}
+
+export component PhotoPickerDemo inherits Window {
+    title: "Inspection photos";
+    width: 390px;
+    height: 540px;
+    background: #f3f6f1;
+    in-out property <bool> pending: false;
+    in-out property <[InspectionPhoto]> photos: [];
+    in-out property <int> current-photo: 0;
+    out property <int> photo-count: Model.count(root.photos);
+    in-out property <string> photo-status: "No photos selected";
+    callback choose-photos();
+    callback save-original(int);
+    callback save-all();
+    callback share-originals();
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 14px;
+        alignment: start;
+        Text {
+            text: "Inspection photos";
+            font-size: 27px;
+            font-weight: 700;
+            accessible-heading-level: 1;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            choose := Button {
+                text: "Choose photos";
+                height: 44px;
+                horizontal-stretch: 1;
+                enabled: !root.pending;
+                clicked => { root.choose-photos(); }
+            }
+            share-originals := Button {
+                text: "Share originals";
+                height: 44px;
+                visible: root.photo-count > 0;
+                enabled: !root.pending;
+                clicked => { root.share-originals(); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            cross-axis-alignment: center;
+            import-status := Label {
+                horizontal-stretch: 1;
+                text: root.photo-status;
+                accessible-live: polite;
+            }
+            photo-position := Label {
+                text: "Photo " + (root.current-photo + 1) + " of " + root.photo-count;
+                visible: root.photo-count > 0;
+            }
+        }
+        gallery := SwipeView {
+            width: 100%;
+            min-height: 64px;
+            vertical-stretch: 1;
+            visible: root.photo-count > 0;
+            accessible-name: "Imported photo gallery";
+            current-index <=> root.current-photo;
+            transition-duration: 160;
+            for photo[index] in root.photos : SwipePage {
+                VerticalLayout {
+                    width: 100%;
+                    height: 100%;
+                    spacing: 6px;
+                    alignment: start;
+                    Image {
+                        width: 100%;
+                        min-height: 0px;
+                        vertical-stretch: 1;
+                        source: photo.preview;
+                        image-fit: contain;
+                        visible: photo.has-preview;
+                        accessible-name: "Photo preview " + (index + 1);
+                    }
+                    Label { text: photo.details; }
+                }
+            }
+        }
+        HorizontalLayout {
+            visible: root.photo-count > 0;
+            spacing: 8px;
+            cross-axis-alignment: center;
+            photo-pages := PageIndicator {
+                width: 86px;
+                height: 44px;
+                visible: root.photo-count > 1;
+                accessible-name: "Imported photos";
+                count: root.photo-count;
+                current-index <=> root.current-photo;
+                interactive: !root.pending;
+            }
+            save := Button {
+                height: 44px;
+                text: "Save original";
+                enabled: !root.pending && root.current-photo >= 0 && root.current-photo < root.photo-count;
+                clicked => { root.save-original(root.current-photo); }
+            }
+            save-all := Button {
+                height: 44px;
+                text: "Save all";
+                visible: root.photo-count > 1;
+                enabled: !root.pending;
+                clicked => { root.save-all(); }
+            }
+        }
+    }
+}
+
+struct QueueCheck {
+    id: int,
+    caption: string,
+}
+
+component ReorderQueueRow inherits DropArea {
+    in property <string> caption;
+    in property <string> payload;
+    in property <bool> selected;
+    in property <bool> can-move-up;
+    in property <bool> can-move-down;
+    private property <bool> marked: false;
+    private property <bool> dragging: false;
+    private property <bool> previewed: false;
+    callback choose();
+    callback reorder(string);
+    callback move-by(int);
+    callback preview-delta(int);
+    callback clear-preview();
+    clear-preview() => {
+        if root.previewed {
+            root.previewed = false;
+            root.preview-delta(-1);
+        }
+    }
+
+    keys: ["inspection-queue"];
+    drop-action: move;
+    width: 100%;
+    height: 56px;
+    entered(data, action) => {
+        if !root.previewed {
+            root.previewed = true;
+            root.preview-delta(1);
+        }
+    }
+    exited() => { root.clear-preview(); }
+    dropped(data, action) => {
+        root.clear-preview();
+        root.reorder(data);
+    }
+
+    HorizontalLayout {
+        padding: 4px;
+        spacing: 6px;
+        cross-axis-alignment: center;
+        drag-row := DragArea {
+            horizontal-stretch: 1;
+            height: 48px;
+            data: root.payload;
+            drag-key: "inspection-queue";
+            allow-move: true;
+            touch-drag-delay: 420;
+            opacity: root.dragging ? 0.6 : 1.0;
+            drag-started => { root.dragging = true; }
+            drag-finished(action) => { root.dragging = false; }
+            mark-row := Button {
+                width: 100%;
+                height: 100%;
+                text: root.caption + (root.marked ? " · marked" : "");
+                background: root.previewed ? #f7e8c4 : root.selected ? #d5eddf : #ffffff;
+                clicked => {
+                    root.marked = !root.marked;
+                    root.choose();
+                }
+            }
+        }
+        up := Button {
+            width: 44px;
+            height: 44px;
+            text: "↑";
+            accessible-name: "Move " + root.caption + " up";
+            enabled: root.can-move-up;
+            clicked => { root.move-by(-1); }
+        }
+        down := Button {
+            width: 44px;
+            height: 44px;
+            text: "↓";
+            accessible-name: "Move " + root.caption + " down";
+            enabled: root.can-move-down;
+            clicked => { root.move-by(1); }
+        }
+    }
+}
+
+export component ListReorderDemo inherits Window {
+    title: "Reorder inspection queue";
+    width: 390px;
+    height: 540px;
+    background: #f3f6f1;
+
+    private property <[QueueCheck]> checks: [
+        QueueCheck { id: 11, caption: "Pump pressure" },
+        QueueCheck { id: 12, caption: "Door interlock" },
+        QueueCheck { id: 13, caption: "Water temperature" },
+        QueueCheck { id: 14, caption: "Exhaust airflow" },
+        QueueCheck { id: 15, caption: "Filter seals" },
+        QueueCheck { id: 16, caption: "Emergency lighting" },
+        QueueCheck { id: 17, caption: "Cooling fan" },
+    ];
+    in-out property <int> selected-row: 0;
+    out property <int> moves: 0;
+    out property <int> active-previews: 0;
+
+    callback move-check(from: int, to: int);
+    move-check(from, to) => {
+        if from != to && from >= 0 && to >= 0 &&
+           from < Model.count(root.checks) && to < Model.count(root.checks) {
+            if root.selected-row == from {
+                root.selected-row = to;
+            } else if from < root.selected-row && root.selected-row <= to {
+                root.selected-row -= 1;
+            } else if to <= root.selected-row && root.selected-row < from {
+                root.selected-row += 1;
+            }
+            Model.move(root.checks, from, to);
+            root.moves += 1;
+        }
+    }
+    callback drop-check(payload: string, destination: int);
+    drop-check(payload, destination) => {
+        for check[index] in root.checks {
+            if "" + check.id == payload {
+                root.move-check(index, destination);
+            }
+        }
+    }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        Text {
+            text: "Inspection order";
+            font-size: 27px;
+            font-weight: 700;
+            accessible-heading-level: 1;
+        }
+        Text { text: "Hold a row to move it. Swipe to browse."; }
+        check-queue := ListView {
+            height: 236px;
+            row-height: 56px;
+            accessible-name: "Inspection queue";
+            drag-auto-scroll: true;
+            current-index <=> root.selected-row;
+            for check[index] in root.checks : ReorderQueueRow {
+                caption: check.caption;
+                payload: "" + check.id;
+                selected: index == root.selected-row;
+                can-move-up: index > 0;
+                can-move-down: index + 1 < Model.count(root.checks);
+                choose => { root.selected-row = index; }
+                reorder(data) => { root.drop-check(data, index); }
+                move-by(step) => { root.move-check(index, index + step); }
+                preview-delta(change) => { root.active-previews += change; }
+            }
+        }
+        order-status := Label {
+            text: "Moves: " + root.moves + " · Selected row: " + (root.selected-row + 1);
+        }
+        Label {
+            text: "Drop to place the inspection";
+            visible: root.active-previews > 0;
+        }
+    }
+}
+
 component ChecklistMark inherits Rectangle {
     width: 41px;
     height: 41px;

@@ -963,7 +963,16 @@ impl TextSystem {
     }
 
     pub fn single_line_layout(&self, node: &Node, text: &str) -> Rc<VisualTextLine> {
-        let size = self.font_size(node);
+        self.single_line_layout_at_size(node, text, self.font_size(node))
+    }
+
+    #[doc(hidden)]
+    pub fn single_line_layout_at_size(
+        &self,
+        node: &Node,
+        text: &str,
+        size: f32,
+    ) -> Rc<VisualTextLine> {
         let face = self.face(Some(node), TextStyle::default());
         if let Some(last) = &*self.edit_line.borrow()
             && last.size == size
@@ -1093,6 +1102,10 @@ impl TextMeasurer for TextSystem {
         self.default_size
     }
 
+    fn text_scale(&self) -> f32 {
+        self.text_scale
+    }
+
     fn layout_styled_text(&mut self, node: &Node, available: Size) -> Option<StyledTextLayout> {
         crate::styled_text::layout(self, node, available, true)
     }
@@ -1118,6 +1131,10 @@ impl TextMeasurer for TextSystem {
 
     fn measure_node(&mut self, node: &Node, text: &str, max_width: f32) -> Size {
         let size = self.font_size(node);
+        self.measure_node_at_size(node, text, size, max_width)
+    }
+
+    fn measure_node_at_size(&mut self, node: &Node, text: &str, size: f32, max_width: f32) -> Size {
         let paint = self.paint_node_at_size(node, size, Color::white(), false);
         self.measure_painted(text, &paint, size, max_width)
     }

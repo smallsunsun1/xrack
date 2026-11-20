@@ -6,10 +6,24 @@ use crate::{
 use xrack_runtime::{LayoutDirection, Node, Orientation, group_index};
 
 pub const TAB_LABEL_SIZE: f32 = 14.0;
-const TAB_CLOSE_RESERVE: f32 = 28.0;
 
-pub(crate) fn tab_close_rect(header: Rect, direction: LayoutDirection) -> Option<Rect> {
-    let size = (header.height.min(header.width) - 6.0).min(24.0);
+#[doc(hidden)]
+pub fn tab_font_size(tab: &Node, text: &impl TextMeasurer, height: f32) -> f32 {
+    crate::popup::PopupTypography::from_text(text)
+        .size(tab, TAB_LABEL_SIZE)
+        .min((height / 1.4).max(1.0))
+}
+
+fn close_target(enlarged: bool) -> f32 {
+    if enlarged { 44.0 } else { 24.0 }
+}
+
+pub(crate) fn tab_close_rect(
+    header: Rect,
+    direction: LayoutDirection,
+    enlarged: bool,
+) -> Option<Rect> {
+    let size = (header.height.min(header.width) - 6.0).min(close_target(enlarged));
     if size < 1.0 {
         return None;
     }
@@ -20,6 +34,37 @@ pub(crate) fn tab_close_rect(header: Rect, direction: LayoutDirection) -> Option
         size,
     );
     Some(place_in_direction(rect, header, direction))
+}
+
+fn scaled_tab_height(group: &Node, tab: &Node, text: &impl TextMeasurer) -> f32 {
+    let minimum = if xrack_runtime::tab_is_closable(group, tab) {
+        50.0
+    } else {
+        44.0
+    };
+    (tab_font_size(tab, text, f32::INFINITY) * 1.4 + 8.0).max(minimum)
+}
+
+fn tab_strip_height(node: &Node, text: &impl TextMeasurer, baseline: f32) -> f32 {
+    if text.text_scale() <= 1.0 {
+        return baseline;
+    }
+    node.children
+        .iter()
+        .filter(|tab| tab.is_visible())
+        .map(|tab| scaled_tab_height(node, tab, text))
+        .fold(baseline, f32::max)
+}
+
+pub(crate) fn preferred_tab_view_size(node: &Node, text: &impl TextMeasurer) -> Size {
+    match (node.kind, node.orientation()) {
+        ("TabBar", Orientation::Horizontal) => Size::new(240.0, tab_strip_height(node, text, 38.0)),
+        ("TabBar", Orientation::Vertical) => Size::new(132.0, 144.0),
+        ("TabWidget", Orientation::Horizontal) => {
+            Size::new(240.0, 102.0 + tab_strip_height(node, text, 34.0))
+        }
+        _ => Size::new(240.0, 136.0),
+    }
 }
 
 /// Reserve the logical trailing strip for a close button.
@@ -62,6 +107,7 @@ pub(crate) fn tab_bar(
     let size = Size::new(bounds.width, bounds.height);
     let extent = axis.extent(size);
     let cross_extent = axis.other().extent(size);
+    let enlarged = text.text_scale() > 1.0;
     let spacing = node.length("spacing").unwrap_or(0.0).max(0.0);
     let widget = node.kind == "TabWidget";
     let mut sizes: Vec<_> = node
@@ -72,13 +118,17 @@ pub(crate) fn tab_bar(
                 return None;
             }
             let explicit = if widget {
-                (axis == Axis::Vertical).then_some(36.0)
+                (axis == Axis::Vertical && !enlarged).then_some(36.0)
             } else {
                 tab.relative_length(size_property, extent)
             };
             let close_space =
                 if axis == Axis::Horizontal && xrack_runtime::tab_is_closable(node, tab) {
-                    TAB_CLOSE_RESERVE
+                    if enlarged {
+                        (cross_extent - 6.0).clamp(0.0, close_target(true)) + 4.0
+                    } else {
+                        28.0
+                    }
                 } else {
                     0.0
                 };
@@ -102,13 +152,17 @@ pub(crate) fn tab_bar(
                         let label = tab
                             .text(if widget { "title" } else { "text" })
                             .unwrap_or("");
-                        let font_size = text
-                            .default_font_size()
-                            .unwrap_or(TAB_LABEL_SIZE)
-                            .clamp(1.0, (cross_extent / 1.4).max(1.0));
-                        (text.measure(label, font_size, f32::INFINITY).width + 24.0).max(48.0)
-                            + close_space
+                        let font_size = tab_font_size(tab, text, cross_extent);
+                        let natural = (text.measure(label, font_size, f32::INFINITY).width + 24.0)
+                            .max(48.0)
+                            + close_space;
+                        if enlarged {
+                            natural.min(extent)
+                        } else {
+                            natural
+                        }
                     }
+                    Axis::Vertical if enlarged => scaled_tab_height(node, tab, text),
                     Axis::Vertical => 36.0,
                 }
             });
@@ -218,10 +272,21 @@ pub(crate) struct TabGeometry {
 }
 
 impl TabGeometry {
-    pub(crate) fn new(bounds: Rect, orientation: Orientation, direction: LayoutDirection) -> Self {
-        let (bar, content) = match orientation {
+    pub(crate) fn new(
+        node: &Node,
+        bounds: Rect,
+        direction: LayoutDirection,
+        text: &impl TextMeasurer,
+    ) -> Self {
+        let (bar, content) = match node.orientation() {
             Orientation::Horizontal => {
-                let height = bounds.height.min(34.0);
+                // A short, explicitly sized widget must still leave room for its page.
+                let page_minimum = if text.text_scale() > 1.0 {
+                    (bounds.height - 34.0).clamp(0.0, 44.0)
+                } else {
+                    0.0
+                };
+                let height = (bounds.height - page_minimum).min(tab_strip_height(node, text, 34.0));
                 (
                     Rect::new(bounds.x, bounds.y, bounds.width, height),
                     Rect::new(

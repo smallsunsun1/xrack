@@ -87,7 +87,44 @@ XRACK_REPLAY_FILE=/absolute/path/recording.json \
   bazel run //tests:ui_replay_test -- replay_recorded_actions
 ```
 
-异步搜索回归以固定的响应数据回放。解释器用示例的调整版布局验证请求在重载中延续。AOT 跑同一组输入和业务断言，并验证编译时布局。录制中的重载标记只存版本号，示例回放使用预设的布局改动。要复现其他源码改动，可把改动作为测试夹具加入。
+### 回放异步搜索场景
+
+异步搜索的 [回归场景](../tests/async_search_scene.json) 先后查询 `cloud` 和 `sensor`，再把结果行从 30px 改成 42px。场景先交付请求 2 的结果，然后交付迟到的请求 1。两种后端在每步都对照查询、加载状态与结果。在解释器中，源码版本 1 保存重载后的 42px 布局。Rust AOT 执行相同的输入和业务断言，使用它构建时生成的布局。
+
+```sh
+mkdir -p .tools
+XRACK_REPLAY_FILE="$PWD/tests/async_search_scene.json" \
+XRACK_REPLAY_REPORT="$PWD/.tools/async-search-replay.html" \
+  bazel run //tests:ui_replay_test -- replay_recorded_actions --exact
+```
+
+用浏览器打开生成的 HTML。拖动滑块或按左右方向键，查看同一步的两个后端、实际物化结果的标签和行高。报告里的列表根据走过布局流程的节点生成，适合核对文本和状态。
+
+展开 **Changes and update counters**，可以把当前操作与前后的 `query`、`loading`、`result-query` 和 `results` 关联起来。报告同时记录该步骤的实际属性求值、缓存命中、无窗口布局次数、行实例化和命名视觉绑定读取。旧请求被拒绝的那一步可以直接检查属性差异为空，且没有重新布局。
+
+**Structured events** 显示同一步收到的 `tracing` 事件。可以沿 `request_id` 查询请求发出与处理时的源码代次、处理结果、宿主调用了哪些属性写入，以及对应的更新计数。写入事件记录属性名和 Rust 调用位置，实际前后值从步骤快照读取。
+
+可从 **Copy Recording** 导出的 JSON 开始制作新场景。将 `version` 设为 `2`，给每次 `complete_search` 指定从 1 开始的请求编号，按想复现的顺序填入 `rows`。用 `expect_searches` 确认请求顺序，再加上 `expect_property` 和 `expect_results` 断言。给 `reload_layout` 写入 `edits` 列表，每项用 `before` 和 `after` 指定一个在当前源码中唯一的替换位置。保存 JSON 即可重新执行，也可以作为测试夹具提交。原来的版本 1 录制文件仍可直接回放。
+
+### 检查实时搜索请求
+
+```sh
+XRACK_LIVE_PROJECT="$PWD" XRACK_TRACE_UI=1 bazel run //examples/async_demo:async_demo_live
+```
+
+附加运行中的应用后，在 **Request traces** 里选择请求编号，检查后台完成、UI 处理结果和属性写入。终端会输出同一个 `xrack::diagnostics` 事件流。窗口合并多次结果写入时，一条 UI 更新会列出当批次关联的请求编号。该模式也会开启窗口更新采样。事件字段包括请求编号、源码代次、处理结果及写入的属性名和源码位置。
+
+### 查看动效逐帧布局
+
+动效时间轴使用 [AnimationsDemo](../examples/layout/layout.xr) 中的线性条和延迟缓动条。XRack 按 10 毫秒采样过渡，检查两个后端的布局坐标一致，再用 GPU 导出解释器画面。拖动滑块可以查看该时刻的原始渲染和两个元素的布局边界。
+
+```sh
+mkdir -p .tools
+XRACK_MOTION_REPORT="$PWD/.tools/motion-timeline.html" \
+  bazel run //tests:ui_motion_timeline_test -- sample_animation_timeline --exact
+```
+
+每个采样帧的表格也会显示插值、布局、绘制与 GPU 读回、PNG 编码的耗时。绘制与读回按整段操作的墙钟时间计，包括 CPU 提交和等待。修改示例中 `animate` 的时长、延迟或 `cubic-bezier` 后，可重新生成报告进行对照。调用常规 `bazel test //tests:ui_motion_timeline_test` 会验证采样坐标。
 
 **UI updates** 和 MCP 的 `get_update_profile` 显示当前源码版本的 MLIR 计划和窗口更新样本。选择节点后可以查看该 ID 对应的编译决策和最近更新中的命名视觉绑定读取、行实例化数。窗口样本还包含属性实际求值数、缓存命中数、布局执行与复用次数，以及更新阶段的 CPU 耗时。视觉绑定读取包含取缓存的调用，CPU 耗时不含 GPU 绘制。列表行计数累加本次布局的实例化工作，同一行可能在多次准备中出现。
 

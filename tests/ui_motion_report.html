@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XRack Motion Timeline</title>
+<style>
+    :root { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; }
+    body { max-width: 44rem; margin: 2.5rem auto; padding: 0 1rem; }
+    .timeline { display: flex; align-items: center; gap: .75rem; }
+    input { flex: 1; min-width: 6rem; }
+    img { display: block; width: 100%; max-width: 546px; border-radius: .5rem; }
+    table { border-collapse: collapse; margin-top: 1rem; font-variant-numeric: tabular-nums; }
+    th, td { text-align: left; padding: .3rem 1rem .3rem 0; }
+    thead { border-bottom: 1px solid GrayText; }
+</style>
+<h1>XRack Motion Timeline</h1>
+<div class="timeline">
+    <input id="position" type="range" min="0" value="0" aria-label="Animation frame">
+    <output id="time" for="position"></output>
+</div>
+<img id="frame" width="546" height="288" alt="XRack animation at the selected frame">
+<table aria-label="Layout bounds in logical pixels">
+    <thead><tr><th scope="col">Element</th><th scope="col">X</th><th scope="col">Y</th><th scope="col">Width</th><th scope="col">Height</th></tr></thead>
+    <tbody id="bounds"></tbody>
+</table>
+<table aria-label="Time to generate the selected frame">
+    <thead><tr><th scope="col">Frame stage</th><th scope="col">Time (μs)</th></tr></thead>
+    <tbody id="timings"></tbody>
+</table>
+<script id="motion" type="application/json"><!--XRACK_MOTION--></script>
+<script>
+    'use strict';
+    const frames = JSON.parse(document.getElementById('motion').textContent);
+    const slider = document.getElementById('position');
+    const clock = document.getElementById('time');
+    const image = document.getElementById('frame');
+    const table = document.getElementById('bounds');
+    const timings = document.getElementById('timings');
+    let previousUrl;
+    slider.max = frames.length - 1;
+
+    function show() {
+        const frame = frames[Number(slider.value)];
+        clock.value = frame.ms + ' ms';
+        slider.setAttribute('aria-valuetext', clock.value);
+        const url = URL.createObjectURL(new Blob([Uint8Array.from(frame.png)], { type: 'image/png' }));
+        image.src = url;
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+        previousUrl = url;
+        table.replaceChildren(...['linear', 'eased'].map(name => {
+            const row = document.createElement('tr');
+            const title = document.createElement('th');
+            title.scope = 'row';
+            title.textContent = name;
+            row.append(title);
+            for (const value of frame[name]) {
+                const cell = document.createElement('td');
+                cell.textContent = value.toFixed(1);
+                row.append(cell);
+            }
+            return row;
+        }));
+        const labels = {
+            motion_interpolated: 'Interpolate',
+            ui_update: 'Layout',
+            motion_render_readback: 'Render and GPU readback (wall time)',
+            motion_png_encoded: 'Encode PNG',
+        };
+        timings.replaceChildren(...frame.events.map(event => {
+            const row = document.createElement('tr');
+            const stage = document.createElement('th');
+            stage.scope = 'row';
+            stage.textContent = labels[event.event];
+            const time = document.createElement('td');
+            time.textContent = String(event.wall_micros ?? event.cpu_micros);
+            row.append(stage, time);
+            return row;
+        }));
+    }
+
+    slider.addEventListener('input', show);
+    show();
+</script>

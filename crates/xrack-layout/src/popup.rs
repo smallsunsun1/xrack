@@ -1,6 +1,41 @@
 use crate::{Rect, Size, TextMeasurer, linear};
 use xrack_runtime::{Node, PopupPlacement, Value};
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PopupTypography {
+    default_size: Option<f32>,
+    pub scale: f32,
+}
+
+impl Default for PopupTypography {
+    fn default() -> Self {
+        Self {
+            default_size: None,
+            scale: 1.0,
+        }
+    }
+}
+
+impl PopupTypography {
+    pub(crate) fn from_text(text: &impl TextMeasurer) -> Self {
+        let scale = text.text_scale();
+        Self {
+            default_size: text
+                .default_font_size()
+                .filter(|size| size.is_finite() && *size > 0.0),
+            scale: if scale.is_finite() && scale > 0.0 {
+                scale
+            } else {
+                1.0
+            },
+        }
+    }
+
+    pub(crate) fn size(self, node: &Node, fallback: f32) -> f32 {
+        (node.font_size().or(self.default_size).unwrap_or(fallback) * self.scale).clamp(1.0, 512.0)
+    }
+}
+
 pub(crate) fn bounds(
     node: &Node,
     anchor: Rect,

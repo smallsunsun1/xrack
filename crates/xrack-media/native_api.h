@@ -59,4 +59,7 @@ typedef struct XrackMediaApi {
 } XrackMediaApi;
 
 const XrackMediaApi *xrack_media_api_v3(void);
+int xrack_voice_open_v1(AVFormatContext **context, const char *format_name,
+                       const char *source, AVDictionary **options);
+typedef __typeof__(&xrack_voice_open_v1) XrackVoiceOpen;
 #endif

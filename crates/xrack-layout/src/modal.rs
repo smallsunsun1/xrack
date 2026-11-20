@@ -1,3 +1,4 @@
+use crate::label::{LabelPlan, TitleLayout};
 use crate::{LayoutNode, Point, Rect, Size, TextMeasurer, font_size, linear, place_in_direction};
 use xrack_runtime::{DrawerEdge, LayoutDirection, Node, is_modal_overlay, is_window_overlay};
 
@@ -6,6 +7,8 @@ pub(crate) struct OverlayIndex {
     pub open: Vec<Vec<usize>>,
     pub modal: Vec<Vec<usize>>,
     pub drawers: Vec<Vec<usize>>,
+    pub popup_typography: crate::popup::PopupTypography,
+    pub floating_keyboard: Option<Rect>,
 }
 
 pub fn dialog_title_height(node: &Node) -> f32 {
@@ -20,6 +23,71 @@ pub(crate) fn title_height(node: &Node, size: f32) -> f32 {
     }
 }
 
+pub(crate) fn title_layout(
+    node: &Node,
+    available: Size,
+    direction: LayoutDirection,
+    text: &mut impl TextMeasurer,
+) -> Option<TitleLayout> {
+    let title = node.text("title").filter(|title| !title.is_empty())?;
+    if !is_modal_overlay(node.kind) {
+        return None;
+    }
+    const HORIZONTAL_INSET: f32 = 16.0;
+    const TOP_INSET: f32 = 12.0;
+    const VERTICAL_INSET: f32 = 20.0;
+    const MIN_BODY_HEIGHT: f32 = 44.0;
+    let preferred_size = text.font_size(node);
+    let body = if node.children.iter().any(Node::is_visible) {
+        MIN_BODY_HEIGHT + linear::Padding::read(node).size().height
+    } else {
+        0.0
+    };
+    let title_budget = available.height - body - VERTICAL_INSET;
+    // Fit the accessibility enlargement without reducing a standard-size heading.
+    let standard_size = preferred_size / text.text_scale().max(1.0);
+    let size = preferred_size.min((title_budget / 1.4).max(standard_size));
+    let line_height = size * 1.4;
+    // Date and time dialogs already adapt their picker and action dock to the available height.
+    let max_lines = if picker_parts(node).is_none() && title_budget >= 2.0 * line_height {
+        2
+    } else {
+        1
+    };
+    let mut plan = LabelPlan::leading_title(
+        node,
+        title,
+        (available.width - 2.0 * HORIZONTAL_INSET).max(0.0),
+        size,
+        direction,
+        max_lines,
+        text,
+    );
+    for line in &mut plan.lines {
+        line.origin.x += HORIZONTAL_INSET;
+        line.origin.y += TOP_INSET;
+    }
+    Some(TitleLayout {
+        height: (VERTICAL_INSET + plan.size.height.max(line_height)).min(available.height),
+        font_size: size,
+        lines: plan.lines,
+    })
+}
+
+pub(crate) fn measured_title_height(
+    node: &Node,
+    available: Size,
+    text: &mut impl TextMeasurer,
+) -> f32 {
+    title_layout(
+        node,
+        available,
+        node.layout_direction().unwrap_or_default(),
+        text,
+    )
+    .map_or(0.0, |title| title.height)
+}
+
 pub(crate) fn bounds(node: &Node, viewport: Rect, text: &mut impl TextMeasurer) -> Rect {
     if node.kind == "Drawer" {
         return drawer_bounds(node, viewport);
@@ -28,7 +96,7 @@ pub(crate) fn bounds(node: &Node, viewport: Rect, text: &mut impl TextMeasurer) 
     let width = node
         .relative_length("width", viewport.width)
         .or_else(|| node.relative_length("preferred-width", viewport.width))
-        .unwrap_or(440.0)
+        .unwrap_or_else(|| picker_width(node, area, text))
         .clamp(0.0, area.width);
     let height = node
         .relative_length("height", viewport.height)
@@ -59,6 +127,32 @@ pub(crate) fn bounds(node: &Node, viewport: Rect, text: &mut impl TextMeasurer) 
         width,
         height,
     )
+}
+
+fn picker_width(node: &Node, area: Rect, text: &mut impl TextMeasurer) -> f32 {
+    const DEFAULT: f32 = 440.0;
+    if area.width <= DEFAULT || text.text_scale() <= 1.0 {
+        return DEFAULT;
+    }
+    let Some((picker, footer)) = picker_parts(node) else {
+        return DEFAULT;
+    };
+    if !matches!(picker.kind, "Calendar" | "TimePicker") {
+        return DEFAULT;
+    }
+
+    let padding = linear::Padding::read(node);
+    let inner = padding.inner_rect(area);
+    let body = linear::measure(picker, Size::new(inner.width, inner.height), text);
+    let (inline, stacked) = picker_actions_size(footer, inner, text);
+    let gap = linear::spacing(node);
+    let title = measured_title_height(node, Size::new(DEFAULT, area.height), text);
+    let height = body.y.preferred + inline.height + gap + title;
+    if height > inner.height {
+        DEFAULT.max(body.x.preferred + stacked.width + gap + padding.size().width)
+    } else {
+        DEFAULT
+    }
 }
 
 pub(crate) fn picker_children(
@@ -197,6 +291,17 @@ pub(crate) fn drawer_extent(edge: DrawerEdge, bounds: Rect) -> f32 {
     }
 }
 
+pub(crate) fn drawer_revealed_bounds(edge: DrawerEdge, mut panel: Rect, reveal: f32) -> Rect {
+    let hidden = drawer_extent(edge, panel) * (1.0 - reveal);
+    match edge {
+        DrawerEdge::Left => panel.x -= hidden,
+        DrawerEdge::Right => panel.x += hidden,
+        DrawerEdge::Top => panel.y -= hidden,
+        DrawerEdge::Bottom => panel.y += hidden,
+    }
+    panel
+}
+
 pub(crate) fn drawer_margin(node: &Node, bounds: Rect) -> f32 {
     node.length("drag-margin")
         .unwrap_or(0.0)
@@ -259,7 +364,12 @@ pub(crate) fn opposite(edge: DrawerEdge) -> DrawerEdge {
     }
 }
 
-pub(crate) fn index_overlays(scene: &Node, layout: &mut LayoutNode) {
+pub(crate) fn index_overlays(
+    scene: &Node,
+    layout: &mut LayoutNode,
+    popup_typography: crate::popup::PopupTypography,
+    floating_keyboard: Option<Rect>,
+) {
     fn visit(
         scene: &Node,
         layout: &LayoutNode,
@@ -293,8 +403,15 @@ pub(crate) fn index_overlays(scene: &Node, layout: &mut LayoutNode) {
             path.pop();
         }
     }
-    let mut overlays = OverlayIndex::default();
+    let mut overlays = OverlayIndex {
+        popup_typography,
+        floating_keyboard,
+        ..OverlayIndex::default()
+    };
     visit(scene, layout, &mut Vec::new(), &mut overlays);
-    layout.overlays =
-        (!overlays.open.is_empty() || !overlays.drawers.is_empty()).then(|| Box::new(overlays));
+    layout.overlays = (!overlays.open.is_empty()
+        || !overlays.drawers.is_empty()
+        || floating_keyboard.is_some()
+        || popup_typography != crate::popup::PopupTypography::default())
+    .then(|| Box::new(overlays));
 }

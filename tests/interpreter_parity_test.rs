@@ -8011,6 +8011,27 @@ fn pull_to_refresh_handles_short_lists_and_rejects_duplicate_or_canceled_pulls()
             ui.node("refresh-status").text("text"),
             Some("Completed refreshes: 2")
         );
+
+        let mut input = Interaction::default();
+        let scene = ui.scene().clone();
+        let viewport = ui.node("feed").viewport_handle.clone().unwrap();
+        assert!(!input.request_viewport_refresh(
+            &scene,
+            ui.layout(),
+            &xrack_runtime::ViewportHandle::default(),
+        ));
+        assert!(input.request_viewport_refresh(&scene, ui.layout(), &viewport));
+        assert!(!input.request_viewport_refresh(&scene, ui.layout(), &viewport));
+        let deliveries = input.take_scroll_events(&scene, ui.layout());
+        assert_eq!(deliveries.len(), 1);
+        ui.update(|component| assert!(deliveries[0].apply(component, &scene)));
+        assert_eq!(ui.node("refresh-status").text("text"), Some("Refreshing…"));
+        assert!(!input.request_viewport_refresh(ui.scene(), ui.layout(), &viewport));
+        finish_refresh(&mut ui);
+        assert_eq!(
+            ui.node("refresh-status").text("text"),
+            Some("Completed refreshes: 3")
+        );
         ui.click("refresh-button");
         assert_eq!(ui.node("refresh-status").text("text"), Some("Refreshing…"));
     }

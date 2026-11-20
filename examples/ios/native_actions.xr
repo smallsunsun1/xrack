@@ -3,6 +3,852 @@ struct Sample {
     location: string,
 }
 
+export component KeyboardOptionsDemo inherits Dialog {
+    title: "Keyboard assistance";
+    in-out property <bool> shown: true;
+    open <=> root.shown;
+    width: 350px; height: 320px;
+    private property <bool> identifier-mode: false;
+    callback focus-title();
+    focus-title => { draft-title.focus(); }
+
+    VerticalLayout {
+        spacing: 8px;
+        draft-title := LineEdit {
+            accessible-name: "Draft title";
+            text: "Survey";
+            return-key: next;
+            keyboard-capitalization: root.identifier-mode ? KeyboardCapitalization.characters : KeyboardCapitalization.words;
+            auto-correct: !root.identifier-mode;
+            spell-check: !root.identifier-mode;
+        }
+        review-note := TextArea {
+            height: 66px;
+            accessible-name: "Review note";
+            keyboard-navigation: true;
+            minimum-length: 2;
+            keyboard-capitalization: none;
+            auto-correct: false;
+            spell-check: true;
+        }
+        draft-secret := LineEdit {
+            accessible-name: "Access code";
+            input-type: password;
+            return-key: done;
+            keyboard-navigation: false;
+            keyboard-capitalization: characters;
+            auto-correct: true;
+            spell-check: true;
+        }
+        toggle-keyboard := Button {
+            text: root.identifier-mode ? "Use prose keyboard" : "Use identifier keyboard";
+            focus-on-click: false;
+            clicked => { root.identifier-mode = !root.identifier-mode; }
+        }
+        edit-code := Button {
+            text: "Edit access code";
+            clicked => { draft-secret.focus(); }
+        }
+    }
+    DialogButton { text: "Save drafts"; role: accept; }
+}
+
+component NavigationInstrument inherits Button {
+    in property <string> caption;
+    callback recorded();
+    text: "Record " + root.caption;
+    clicked => { root.recorded(); }
+}
+
+export component LongNoteDemo inherits Dialog {
+    title: "Inspection narrative";
+    in-out property <bool> shown: true;
+    open <=> root.shown;
+    width: 350px;
+    height: 310px;
+    private property <string> draft: "";
+
+    callback focus-note();
+    focus-note => { long-note.focus(); }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 4px;
+        Label {
+            height: 24px;
+            text: root.draft == "" ? "Ready to write" :
+                note-viewport.content-y < -24px ? "Showing later lines" : "Showing first lines";
+        }
+        note-viewport := ScrollView {
+            width: 100%;
+            vertical-stretch: 1;
+            content-height: 520px;
+            horizontal-scroll-bar-policy: always-off;
+            long-note := TextArea {
+                accessible-name: "Inspection narrative text";
+                text <=> root.draft;
+                width: 100%;
+                height: 520px;
+                font-size: 18px;
+            }
+        }
+    }
+}
+
+export component ChoicePopupDemo inherits Dialog {
+    title: "Inspection choices";
+    width: 356px;
+    height: 340px;
+    in-out property <bool> shown: true;
+    open <=> root.shown;
+    private property <string> query: "";
+    out property <string> submitted: "";
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+        alignment: start;
+        category := ComboBox {
+            accessible-name: "Inspection category";
+            model: ["Boilers", "Cabinets", "Drains", "Filters", "Gauges", "Hoses",
+                    "Intakes", "Meters", "Pipes", "Pumps", "Sensors", "Tanks", "Valves"];
+            current-index: 0;
+            min-height: 44px;
+        }
+        lookup := SearchField {
+            accessible-name: "Search inspections";
+            text <=> root.query;
+            suggestions: ["Pump 01", "Pump 02", "Pump 03", "Pump 04", "Pump 05", "Pump 06",
+                          "Pump 07", "Pump 08", "Pump 09", "Pump 10", "Pump 11", "Pump 12"];
+            suggestions-for: root.query;
+            accepted(value) => { root.submitted = value; }
+            min-height: 44px;
+        }
+        submitted-choice := Label {
+            text: root.submitted == "" ? "Choose a suggestion" : "Submitted: " + root.submitted;
+        }
+    }
+}
+
+export component AdjustableValuesDemo inherits Dialog {
+    title: "Instrument settings";
+    width: 348px;
+    height: 360px;
+    in-out property <bool> shown: true;
+    open <=> root.shown;
+
+    VerticalLayout {
+        spacing: 6px;
+        alignment: start;
+        gain := Slider {
+            accessible-name: "Sensor gain";
+            minimum: 0; maximum: 2; step: 1; value: 0;
+            height: 36px;
+        }
+        band := RangeSlider {
+            accessible-name: "Recording band";
+            minimum: 0; maximum: 10; step: 2;
+            lower-value: 4; upper-value: 6;
+            height: 36px;
+        }
+        offset := DoubleSpinBox {
+            accessible-name: "Calibrated offset";
+            minimum: 0; maximum: 1; step-size: 0.25; value: 0.75;
+            decimals: 2; decimal-separator: ",";
+            height: 38px;
+        }
+        fixed-count := SpinBox {
+            accessible-name: "Fixed sample count";
+            minimum: 7; maximum: 7; value: 7;
+            read-only: true;
+            height: 38px;
+        }
+        clock := TimePicker {
+            time: Time { hour: 14, minute: 59 };
+            height: 86px;
+        }
+        transfer := ProgressIndicator {
+            accessible-name: "Sample transfer";
+            minimum: 100;
+            maximum: 900;
+            progress: gain.value == 2 ? 920 : 380;
+            indeterminate: gain.value == 1;
+            width: 100%;
+            height: 12px;
+        }
+    }
+}
+
+export component NativeNavigationDemo inherits VerticalLayout {
+    width: 100%; height: 100%;
+    padding: 20px; spacing: 8px; alignment: start;
+    private property <bool> tool-active: true;
+    private property <string> tool: "pressure";
+    private property <string> reading: "No samples";
+    private property <bool> back-locked: false;
+    private property <int> blocked: 0;
+    private property <bool> dialog-open: false;
+    callback closed();
+
+    tool-state := Label { text: "Tool " + instrument.status; }
+    latest-reading := Label { text: root.reading; }
+    HorizontalLayout {
+        spacing: 8px;
+        load-flow := Button {
+            text: "Load flow tool";
+            clicked => { root.tool = "flow"; root.tool-active = true; }
+        }
+        unload-tool := Button { text: "Unload tool"; clicked => { root.tool-active = false; } }
+    }
+    instrument := Loader {
+        height: 44px;
+        active: root.tool-active;
+        asynchronous: true;
+        source: root.tool;
+        loaded => { self.focus(); }
+        pressure := NavigationInstrument { caption: "pressure"; recorded => { root.reading = "Pressure recorded"; } }
+        flow := NavigationInstrument { caption: "flow"; recorded => { root.reading = "Flow recorded"; } }
+    }
+    page-state := Label { text: "Page " + navigation.current-page; }
+    back-status := Label { text: "Blocked returns " + root.blocked; }
+    navigation := StackView {
+        height: 154px;
+        summary := StackPage {
+            open-detail := Button { width: 100%; height: 44px; text: "Open inspection detail"; clicked => { navigation.push("detail"); } }
+        }
+        detail := StackPage {
+            leave-requested(destination, removing) => {
+                if root.back-locked { root.blocked += 1; }
+                !root.back-locked
+            }
+            VerticalLayout {
+                alignment: start;
+                spacing: 8px;
+                lock-back := Button {
+                    text: root.back-locked ? "Unlock return" : "Lock return";
+                    clicked => { root.back-locked = !root.back-locked; }
+                }
+                open-dialog := Button {
+                    text: "Open review overlay";
+                    clicked => { root.dialog-open = true; }
+                }
+            }
+        }
+    }
+    close-demo := Button { text: "Close navigation demo"; clicked => { root.closed(); } }
+    review-overlay := Dialog {
+        open <=> root.dialog-open;
+        width: 300px; height: 150px;
+        title: "Review overlay";
+        close-on-escape: !root.back-locked;
+        dismiss-overlay := Button { text: "Dismiss review overlay"; clicked => { root.dialog-open = false; } }
+    }
+}
+
+export component HardwareCommandsDemo inherits Window {
+    title: "Hardware commands";
+    width: 390px;
+    height: 430px;
+    private property <int> refreshes;
+    private property <int> releases;
+    private property <int> snapshots;
+    private property <int> runbooks;
+    private property <string> last-key: "Ready";
+
+    Shortcut { sequence: "F2"; activated => { root.refreshes += 1; } }
+    Shortcut { sequence: "Primary+F12"; activated => { root.snapshots += 1; } }
+
+    command-scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        capture-key-pressed(event) => {
+            root.last-key = event.key;
+            reject
+        }
+        capture-key-released(event) => {
+            if event.key == "F2" && event.text == "" { root.releases += 1; }
+            reject
+        }
+        VerticalLayout {
+            padding: 20px;
+            spacing: 10px;
+            alignment: start;
+            field := LineEdit { accessible-name: "Command draft"; text: "Draft"; }
+            ContextMenuArea {
+                height: 44px;
+                commands := Button { width: 100%; height: 100%; text: "Inspection commands"; }
+                Menu {
+                    runbook := MenuItem { text: "Open runbook"; activated => { root.runbooks += 1; } }
+                }
+            }
+            pressed := Label { text: "Last key " + root.last-key; }
+            refresh-count := Label { text: "Refreshes " + root.refreshes; }
+            release-count := Label { text: "F2 releases " + root.releases; }
+            snapshot-count := Label { text: "Snapshots " + root.snapshots; }
+            runbook-count := Label { text: "Runbooks " + root.runbooks; }
+        }
+    }
+}
+
+export component TouchTooltipDemo inherits Window {
+    title: "Inspection controls";
+    width: 390px;
+    height: 500px;
+    private property <int> inspections: 0;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        count := Label { text: "Inspections " + root.inspections; }
+        view := ScrollView {
+            content-height: 1520px;
+            inspect := Button {
+                x: 12px;
+                y: 12px;
+                width: 155px;
+                height: 48px;
+                text: "Inspect sensor";
+                clicked => { root.inspections += 1; }
+                Tooltip {
+                    text: "Capture the current reading";
+                    background: #22df72;
+                    color: #10251c;
+                    delay: 650;
+                    timeout: 5000;
+                }
+            }
+            Label { x: 12px; y: 690px; text: "Service history"; }
+        }
+    }
+}
+
+export component ClipboardAuthorizationDemo inherits Window {
+    title: "Cross-app paste";
+    width: 390px;
+    height: 320px;
+    private property <string> draft: "A🧪B";
+    private property <int> edits: 0;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        draft-field := LineEdit {
+            accessible-name: "Paste destination";
+            text <=> root.draft;
+            edited => { root.edits += 1; }
+        }
+        selection := Label {
+            text: draft-field.selected-text == "" ? "No selection" : "Selected " + draft-field.selected-text;
+        }
+        edit-count := Label { text: "Edits " + root.edits; }
+        select-emoji := Button {
+            text: "Select emoji";
+            focus-on-click: false;
+            clicked => { draft-field.focus(); draft-field.set-selection-offsets(1, 5); }
+        }
+        paste := Button {
+            text: "Paste into selection";
+            focus-on-click: false;
+            clicked => { draft-field.paste(); }
+        }
+        undo := Button {
+            text: "Undo edit";
+            focus-on-click: false;
+            enabled: draft-field.can-undo;
+            clicked => { draft-field.undo(); }
+        }
+    }
+}
+
+export component TextDropDemo inherits Window {
+    title: "Text drop";
+    width: 440px;
+    height: 400px;
+    private property <string> draft: "A🧪B";
+    private property <string> notes: "";
+    private property <int> edits: 0;
+
+    ScrollView {
+        width: 100%;
+        height: 100%;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 8px;
+            alignment: start;
+            Label { text: "Drag selected text from another app"; }
+            draft := LineEdit {
+                accessible-name: "Drop title";
+                text <=> root.draft;
+                edited => { root.edits += 1; }
+            }
+            notes := TextArea {
+                height: 78px;
+                accessible-name: "Drop notes";
+                text <=> root.notes;
+                edited(value) => { root.edits += 1; }
+            }
+            read-only := LineEdit {
+                accessible-name: "Read-only drop target";
+                text: "Locked";
+                read-only: true;
+            }
+            disabled := LineEdit {
+                accessible-name: "Disabled drop target";
+                text: "Disabled";
+                enabled: false;
+            }
+            edit-count := Label { text: "Drop edits " + root.edits; }
+            HorizontalLayout {
+                spacing: 8px;
+                change-title := Button {
+                    text: "Change title";
+                    focus-on-click: false;
+                    clicked => { root.draft = "Updated"; }
+                }
+                undo-title := Button {
+                    text: "Undo title";
+                    focus-on-click: false;
+                    enabled: draft.can-undo;
+                    clicked => { draft.undo(); }
+                }
+            }
+        }
+    }
+}
+
+export component PointerStyleDemo inherits Window {
+    title: "Inspection workspace";
+    width: 390px;
+    height: 460px;
+    background: #f1f5fa;
+    private property <string> inspection-name: "Pump inspection";
+    private property <string> last-input: "";
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        alignment: start;
+        Label {
+            text: "Inspection workspace";
+            color: #142c44;
+            font-size: 24px;
+            font-weight: 700;
+        }
+        name-field := LineEdit {
+            accessible-name: "Inspection name";
+            text <=> root.inspection-name;
+        }
+        selection := Label {
+            text: name-field.selected-text == "" ? "No text selected" : "Selected " + name-field.selected-text;
+            color: #335671;
+        }
+        columns := SplitView {
+            height: 180px;
+            handle-size: 8px;
+            handle-hit-size: 24px;
+            SplitHandle {
+                background: #6482a6;
+                border-radius: 4px;
+            }
+            Rectangle {
+                min-width: 90px;
+                preferred-width: 138px;
+                background: #dcecf4;
+                border-radius: 8px;
+                canvas := HoverHandler {
+                    width: 100%;
+                    height: 100%;
+                    cursor-shape: crosshair;
+                    Label {
+                        width: 100%;
+                        height: 100%;
+                        text: canvas.hovered ? "Canvas hovered" : "Align sensor";
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        color: #153c55;
+                    }
+                }
+            }
+            rows := SplitView {
+                orientation: vertical;
+                min-width: 100px;
+                handle-size: 8px;
+                handle-hit-size: 24px;
+                SplitHandle {
+                    background: #6482a6;
+                    border-radius: 4px;
+                }
+                Rectangle {
+                    min-height: 50px;
+                    preferred-height: 80px;
+                    background: #e3f0e7;
+                    border-radius: 8px;
+                    Label { x: 12px; y: 12px; text: "Sensors"; color: #194b3c; }
+                }
+                Rectangle {
+                    min-height: 50px;
+                    background: #f4eadc;
+                    border-radius: 8px;
+                    Label { x: 12px; y: 12px; text: "Readings"; color: #584329; }
+                }
+            }
+        }
+        clear-name := Button {
+            text: "Clear inspection name";
+            clicked => { root.inspection-name = ""; }
+        }
+        input-probe := TouchArea {
+            height: 36px;
+            accessible-name: "Test input source";
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.last-input = event.is-touch ? "Touch" : "Mouse";
+                }
+            }
+            Rectangle {
+                width: 100%; height: 100%;
+                background: #dcecf4;
+                border-radius: 8px;
+                Label {
+                    width: 100%; height: 100%;
+                    text: "Click or tap here";
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    color: #153c55;
+                }
+            }
+        }
+        input-source := Label {
+            text: root.last-input == "" ? "Waiting for input" : "Input " + root.last-input;
+            color: #335671;
+        }
+    }
+}
+
+export component TextDragDemo inherits Window {
+    title: "Drag selected text";
+    width: 390px;
+    height: 410px;
+
+    ScrollView {
+        width: 100%;
+        height: 100%;
+        VerticalLayout {
+            padding: 16px;
+            spacing: 6px;
+            alignment: start;
+            Label { text: "Hold the highlighted text and drag it to another app"; }
+            sample := LineEdit {
+                accessible-name: "Drag sample";
+                text: "A🧪B";
+            }
+            notes := TextArea {
+                height: 58px;
+                accessible-name: "Drag notes";
+                text: "Pump\nCheck";
+            }
+            locked := LineEdit {
+                accessible-name: "Read-only source";
+                text: "Locked";
+                read-only: true;
+            }
+            protected := LineEdit {
+                accessible-name: "Password source";
+                text: "Secret sample";
+                input-type: password;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                select-sample := Button {
+                    text: "Select sample";
+                    focus-on-click: false;
+                    clicked => { sample.focus(); sample.set-selection-offsets(1, 5); }
+                }
+                select-notes := Button {
+                    text: "Select notes";
+                    focus-on-click: false;
+                    clicked => { notes.focus(); notes.set-selection-offsets(0, 10); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                select-locked := Button {
+                    text: "Select read-only";
+                    focus-on-click: false;
+                    clicked => { locked.focus(); locked.set-selection-offsets(0, 6); }
+                }
+                select-protected := Button {
+                    text: "Select password";
+                    focus-on-click: false;
+                    clicked => { protected.focus(); protected.set-selection-offsets(0, 6); }
+                }
+            }
+        }
+    }
+}
+
+export component SystemDirectionDemo inherits Window {
+    title: "Inspection sequence";
+    width: 390px;
+    height: 380px;
+    private property <string> selected: "None";
+    private property <float> progress: 25;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        Label { text: "Inspection sequence"; font-size: 24px; }
+        inherited-row := HorizontalLayout {
+            spacing: 8px;
+            first := Button {
+                text: "Review";
+                clicked => { root.selected = "Review"; }
+            }
+            second := Button {
+                text: "Complete";
+                clicked => { root.selected = "Complete"; }
+            }
+        }
+        Label { text: "Serial number order"; }
+        serial-row := HorizontalLayout {
+            layout-direction: left-to-right;
+            spacing: 8px;
+            Label { text: "Batch number"; }
+            Label { text: "Check digit"; }
+        }
+        progress-slider := Slider {
+            height: 44px;
+            accessible-name: "Inspection progress";
+            minimum: 0;
+            maximum: 100;
+            step: 5;
+            value <=> root.progress;
+        }
+        status := Label { text: "Selected: " + root.selected; }
+    }
+}
+
+export component EmojiDemo inherits Window {
+    title: "Inspection notes";
+    width: 390px;
+    height: 460px;
+    background: #15202b;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 16px;
+        alignment: start;
+        Label { text: "Inspection notes"; font-size: 24px; color: #ffffff; }
+        sample := LineEdit {
+            accessible-name: "Emoji editor";
+            text: "A🧪B";
+        }
+        Label { text: "Compass, skin tone and flag"; color: #ffffff; }
+        HorizontalLayout {
+            spacing: 12px;
+            compass := Label {
+                text: "🧭";
+                font-size: 40px;
+                color: #ffffff;
+            }
+            technician := Label {
+                text: "👩🏽‍💻";
+                font-size: 40px;
+                color: #ffffff;
+            }
+            flag := Label {
+                text: "🇨🇳";
+                font-size: 40px;
+                color: #ffffff;
+            }
+        }
+    }
+}
+
+export component NativeSelectionDemo inherits Window {
+    title: "Keyboard selection";
+    width: 390px;
+    height: 480px;
+    private property <string> line-value: "A🧪B";
+    private property <string> notes-value: "First\nA🧪B";
+    private property <int> line-edits: 0;
+    private property <int> notes-edits: 0;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        alignment: start;
+        focus-line := Button {
+            text: "Focus line";
+            clicked => { line.focus(); }
+        }
+        line := LineEdit {
+            accessible-name: "Selection line";
+            text <=> root.line-value;
+            edited => { root.line-edits += 1; }
+        }
+        line-selection := Label {
+            text: "Line selection: " + line.selected-text + " [" +
+                line.selection-start-offset + ", " + line.selection-end-offset + ")";
+        }
+        line-edit-count := Label { text: "Line edits: " + root.line-edits; }
+        line-copy-state := Label { text: line.can-copy ? "Line copy available" : "Line copy blocked"; }
+        focus-notes := Button {
+            text: "Focus notes";
+            clicked => { notes.focus(); }
+        }
+        notes := TextEdit {
+            accessible-name: "Selection notes";
+            height: 62px;
+            text <=> root.notes-value;
+            edited(value) => { root.notes-edits += 1; }
+        }
+        notes-selection := Label {
+            text: "Notes selection: " + notes.selected-text + " [" +
+                notes.selection-start-offset + ", " + notes.selection-end-offset + ")";
+        }
+        notes-edit-count := Label { text: "Notes edits: " + root.notes-edits; }
+        notes-copy-state := Label { text: notes.can-copy ? "Notes copy available" : "Notes copy blocked"; }
+        HorizontalLayout {
+            spacing: 8px;
+            replace-line := TouchArea {
+                height: 36px;
+                accessible-name: "Replace line";
+                clicked => { root.line-value = "Updated line"; }
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: #dae6f3;
+                    border-radius: 6px;
+                    Label { text: "Replace line"; }
+                }
+            }
+            replace-notes := TouchArea {
+                height: 36px;
+                accessible-name: "Replace notes";
+                clicked => { root.notes-value = "Updated notes"; }
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: #dae6f3;
+                    border-radius: 6px;
+                    Label { text: "Replace notes"; }
+                }
+            }
+        }
+    }
+}
+
+export component MobileAppearance inherits Window {
+    title: "System appearance";
+    width: 390px;
+    height: 520px;
+
+    in-out property <ColorScheme> scheme: ColorScheme.system;
+    in-out property <string> draft: "Inspection draft";
+    private property <bool> reminders: false;
+    private property <bool> show-details: false;
+
+    color-scheme: root.scheme;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        Text {
+            text: "Appearance settings";
+            font-size: 24px;
+            font-weight: 700;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            system-mode := Button {
+                text: "System";
+                height: 44px;
+                horizontal-stretch: 1;
+                clicked => {
+                    root.scheme = ColorScheme.system;
+                }
+            }
+            light-mode := Button {
+                text: "Light";
+                height: 44px;
+                horizontal-stretch: 1;
+                clicked => {
+                    root.scheme = ColorScheme.light;
+                }
+            }
+            dark-mode := Button {
+                text: "Dark";
+                height: 44px;
+                horizontal-stretch: 1;
+                clicked => {
+                    root.scheme = ColorScheme.dark;
+                }
+            }
+        }
+        appearance-draft := LineEdit {
+            accessible-name: "Draft notes";
+            height: 44px;
+            text <=> root.draft;
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Rectangle {
+                accessible-name: "Fixed swatch";
+                width: 32px;
+                height: 32px;
+                background: #bc5086;
+            }
+            Label {
+                text: "Custom accent sample";
+                vertical-alignment: center;
+            }
+            Label {
+                text: "颜色示例";
+                vertical-alignment: center;
+            }
+        }
+        reminders-switch := Switch {
+            text: "Inspection reminders";
+            height: 44px;
+            checked <=> root.reminders;
+        }
+        required-switch := Switch {
+            text: "Required reminders";
+            height: 44px;
+            checked: true;
+            enabled: false;
+        }
+        appearance-details := Button {
+            text: "Appearance details";
+            height: 44px;
+            clicked => {
+                root.show-details = true;
+            }
+        }
+    }
+
+    appearance-dialog := Dialog {
+        title: "Appearance details";
+        open <=> root.show-details;
+        width: 300px;
+        height: 164px;
+        Text {
+            text: "The dialog follows the window palette.";
+        }
+        DialogButton {
+            text: "Close appearance details";
+            role: reject;
+        }
+    }
+}
+
 struct InspectionTab {
     title: string,
     key: string,
@@ -15,11 +861,351 @@ struct InspectionBranch {
     note: string,
 }
 
-component InspectionTabContent inherits Rectangle {
+struct InspectionListEntry {
+    group: string,
+    title: string,
+}
+
+export component MenuPagingDemo inherits Window {
+    title: "Menu paging";
+    width: 390px;
+    height: 540px;
+    private property <string> result: "Ready";
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        ContextMenuArea {
+            height: 44px;
+            review-commands := Button {
+                text: "Review commands";
+                width: 100%; height: 100%;
+            }
+            Menu {
+                title: "Review menu";
+                Menu {
+                    title: "Archive filters";
+                    MenuItem { text: "Archive 01"; }
+                    MenuItem { text: "Archive 02"; }
+                    MenuItem { text: "Archive 03"; }
+                    MenuItem { text: "Archive 04"; }
+                    MenuItem { text: "Archive 05"; }
+                    MenuItem { text: "Archive 06"; }
+                    MenuItem { text: "Archive 07"; }
+                    MenuItem { text: "Archive 08"; }
+                    MenuItem { text: "Archive 09"; }
+                    MenuItem { text: "Archive 10"; }
+                    MenuItem { text: "Archive 11"; }
+                    MenuItem { text: "Archive 12"; }
+                    MenuItem { text: "Archive 13"; }
+                    MenuItem { text: "Archive 14"; }
+                    MenuItem { text: "Archive 15"; }
+                    MenuItem { text: "Archive 16"; }
+                    apply-archive := MenuItem {
+                        text: "Apply archive filter";
+                        activated => { root.result = "Filter applied"; }
+                    }
+                }
+                MenuItem { text: "Review 01"; enabled: false; }
+                MenuItem { text: "Review 02"; }
+                MenuItem { text: "Review 03"; }
+                MenuItem { text: "Review 04"; }
+                MenuItem { text: "Review 05"; }
+                MenuItem { text: "Review 06"; }
+                MenuItem { text: "Review 07"; }
+                MenuItem { text: "Review 08"; }
+                MenuItem { text: "Review 09"; }
+                MenuItem { text: "Review 10"; }
+                MenuItem { text: "Review 11"; }
+                MenuItem { text: "Review 12"; }
+                MenuItem { text: "Review 13"; }
+                MenuItem { text: "Review 14"; }
+                MenuItem { text: "Review 15"; }
+                MenuItem { text: "Review 16"; }
+                apply-review := MenuItem {
+                    text: "Apply review";
+                    activated => { root.result = "Review applied"; }
+                }
+            }
+        }
+        menu-paging-status := Label { text: root.result; }
+    }
+}
+
+component SwipeDocumentRow inherits SwipeDelegate {
+    in property <string> document-name;
+    in property <bool> can-pin;
+    private property <SwipeSide> side: closed;
+    callback action(string);
+
+    width: 100%;
+    height: 64px;
+    accessible-name: root.document-name;
+    open-side <=> root.side;
+    clicked => { root.action("Reviewed"); }
+
+    SwipeContent {
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #283a51;
+            Label {
+                x: 14px;
+                height: 100%;
+                text: root.document-name;
+                color: #edf3ff;
+                vertical-alignment: center;
+            }
+        }
+    }
+    SwipeLeft {
+        visible: root.can-pin;
+        width: 108px;
+        pin-document := Button {
+            width: 100%; height: 100%;
+            text: "Pin";
+            accessible-name: "Pin document";
+            clicked => { root.side = closed; root.action("Pinned"); }
+        }
+    }
+    SwipeRight {
+        width: 108px;
+        archive-document := Button {
+            width: 100%; height: 100%;
+            text: "Archive";
+            accessible-name: "Archive document";
+            clicked => { root.side = closed; root.action("Archived"); }
+        }
+    }
+}
+
+export component SwipeActionsDemo inherits Window {
+    title: "Document actions";
+    width: 390px;
+    height: 500px;
+    private property <string> result: "Ready";
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        documents := ListView {
+            height: 160px;
+            row-height: 64px;
+            accessible-name: "Documents";
+            for name in ["Review document", "Next document"]: SwipeDocumentRow {
+                document-name: name;
+                can-pin: name == "Review document";
+                action(result) => { root.result = result; }
+            }
+        }
+        swipe-result := Label { text: root.result; }
+    }
+}
+
+export component GroupTitlesDemo inherits Window {
+    title: "Group titles";
+    width: 390px;
+    height: 620px;
+
+    private property <bool> checked: true;
+    private property <string> result: "Ready";
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        alignment: start;
+        inspection-options := Expander {
+            title: "Inspection options";
+            width: 278px;
+            record-inspection := Button {
+                text: "Record";
+                height: 44px;
+                clicked => { root.result = "Recorded"; }
+            }
+        }
+        network-settings := GroupBox {
+            title: "Network settings";
+            width: 278px;
+            layout-direction: LayoutDirection.right-to-left;
+            checkable: true;
+            checked <=> root.checked;
+            check-network := Button {
+                text: "Check network";
+                height: 44px;
+                clicked => { root.result = "Network checked"; }
+            }
+        }
+        group-result := Label { text: root.result; }
+    }
+}
+
+export component ModalTitlesDemo inherits Window {
+    title: "Modal titles";
+    width: 390px;
+    height: 520px;
+
+    private property <bool> review-open: false;
+    private property <bool> evidence-open: false;
+    private property <string> result: "Ready";
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 8px;
+        alignment: start;
+        review-trigger := Button {
+            text: "Open calibration";
+            height: 44px;
+            clicked => { root.review-open = true; }
+        }
+        evidence-trigger := Button {
+            text: "Open evidence";
+            height: 44px;
+            clicked => { root.evidence-open = true; }
+        }
+        result-label := Label { text: root.result; }
+    }
+
+    review-dialog := Dialog {
+        title: "Calibration review";
+        width: 248px;
+        height: 232px;
+        open <=> root.review-open;
+        accepted => { root.result = "Review saved"; }
+        save-review := DialogButton {
+            text: "Save review";
+            role: accept;
+            height: 44px;
+        }
+    }
+
+    evidence-drawer := Drawer {
+        title: "Required inspection evidence";
+        edge: bottom;
+        width: 230px;
+        height: 130px;
+        open <=> root.evidence-open;
+        keep-evidence := Button {
+            text: "Keep evidence";
+            height: 44px;
+            clicked => {
+                root.evidence-open = false;
+                root.result = "Evidence kept";
+            }
+        }
+    }
+}
+
+export component CompactTogglesDemo inherits Window {
+    title: "Inspection toggles";
+    width: 390px;
+    height: 480px;
+
+    private property <bool> include: false;
+    private property <bool> alerts: false;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 8px;
+        alignment: start;
+        Label { text: "Inspection toggles"; }
+        include-check := CheckBox {
+            width: 250px;
+            height: 44px;
+            text: "Include scheduled maintenance";
+            checked <=> root.include;
+        }
+        alerts-switch := Switch {
+            width: 250px;
+            height: 44px;
+            text: "Receive inspection notifications";
+            checked <=> root.alerts;
+        }
+        region := RadioGroup {
+            width: 250px;
+            height: 88px;
+            layout-direction: LayoutDirection.right-to-left;
+            orientation: Orientation.vertical;
+            current-index: 0;
+            east := RadioButton {
+                height: 44px;
+                text: "الفرع الشرقي للتفتيش الدوري";
+            }
+            west := RadioButton {
+                height: 44px;
+                text: "الفرع الغربي للتفتيش الدوري";
+            }
+        }
+        blocked := CheckBox {
+            width: 250px;
+            height: 44px;
+            text: "Keep required inspection records";
+            checked: true;
+            enabled: false;
+        }
+    }
+}
+
+export component CompactRowsDemo inherits Window {
+    title: "Inspection rows";
+    width: 390px;
+    height: 520px;
+    private property <int> selected: 0;
+    private property <[InspectionListEntry]> inspections: [
+        InspectionListEntry { group: "Daily inspections requiring follow-up", title: "Pump calibration due tomorrow" },
+        InspectionListEntry { group: "Daily inspections requiring follow-up", title: "Replace the intake valve filter" },
+        InspectionListEntry { group: "Scheduled maintenance", title: "Review the cooling station checklist" },
+    ];
+    private property <[InspectionBranch]> branches: [
+        InspectionBranch { id: 1, parent: -1, title: "Cooling system", note: "" },
+        InspectionBranch { id: 2, parent: 1, title: "Intake valve", note: "Verify the pressure calibration" },
+        InspectionBranch { id: 3, parent: 1, title: "Return valve", note: "Replace the seal" },
+    ];
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        alignment: start;
+        Label { text: "Inspection rows"; }
+        inspections-list := StandardListView {
+            accessible-name: "Inspection list";
+            height: 126px;
+            row-height: 32px;
+            section-height: 28px;
+            section-field: "group";
+            text-role: "title";
+            model: root.inspections;
+            current-index <=> root.selected;
+        }
+        selected-item := Label { text: "Selected " + root.selected; }
+        hierarchy := TreeView {
+            accessible-name: "Inspection tree";
+            height: 144px;
+            row-height: 38px;
+            for branch in root.branches: TreeRow {
+                key: branch.id;
+                parent-key: branch.parent;
+                TreeCell {
+                    width: 140px;
+                    text: branch.title;
+                }
+                if branch.parent >= 0: TreeCell {
+                    text <=> branch.note;
+                }
+            }
+        }
+    }
+}
+
+component InspectionTabContent inherits VerticalLayout {
     in property <string> caption;
+    padding: 12px;
+    alignment: start;
     Button {
-        x: 12px; y: 22px; width: 164px; height: 44px;
-        text: root.caption + " content";
+        min-height: 44px;
+        text: root.caption;
+        accessible-name: root.caption + " content";
     }
 }
 
@@ -52,11 +1238,29 @@ export component NativeActionsDemo inherits Window {
     private property <bool> show-overflow-tabs: false;
     private property <bool> show-inspection-cards: false;
     private property <bool> show-service-log: false;
+    private property <bool> show-report-pages: false;
+    private property <bool> show-sign-in: false;
+    private property <bool> show-keyboard-options: false;
+    private property <bool> show-popup-choices: false;
+    private property <bool> show-adjustable-values: false;
+    private property <bool> resize-table-headers: false;
+    private property <bool> show-long-note: false;
+    private property <bool> show-native-navigation: false;
+    private property <bool> report-pages-enabled: true;
+    private property <int> report-page: 0;
+    private property <int> report-page-changes: 0;
     private property <bool> cards-mirrored: false;
     private property <int> card-index: 0;
     private property <int> card-changes: 0;
     private property <bool> overflow-draft-visible: true;
     private property <string> overflow-selected: "overview";
+    private property <string> overflow-movement: "No tabs moved";
+    private property <[InspectionTab]> overflow-documents: [
+        InspectionTab { title: "Overview", key: "overview" },
+        InspectionTab { title: "Draft", key: "draft" },
+        InspectionTab { title: "Results", key: "results" },
+        InspectionTab { title: "Archive", key: "archive" },
+    ];
     private property <string> selected-tab: "draft";
     private property <[InspectionTab]> tabs: [
         InspectionTab { title: "Pinned", key: "pinned" },
@@ -66,27 +1270,64 @@ export component NativeActionsDemo inherits Window {
     out property <int> reviews: 0;
     out property <string> movement: "No rows moved";
 
+    if root.show-native-navigation : navigation-demo := NativeNavigationDemo {
+        closed => { root.show-native-navigation = false; }
+    }
+    adjustable-values := AdjustableValuesDemo { shown <=> root.show-adjustable-values; }
     VerticalLayout {
+        visible: !root.show-native-navigation;
         padding: 20px;
         spacing: 12px;
         alignment: start;
 
-        Text { text: "Inspection queue"; font-size: 26px; font-weight: 700; color: #173e32; }
+        Text {
+            text: "Inspection queue";
+            accessible-heading-level: 1;
+            font-size: 26px;
+            font-weight: 700;
+            color: #173e32;
+        }
         ContextMenuArea {
             height: 44px;
             review-trigger := Button {
-                width: 100%; height: 100%;
+                width: 100%;
+                height: 100%;
                 text: "Review options";
-                background: #266451; color: #ffffff; border-radius: 9px;
+                background: #266451;
+                color: #ffffff;
+                border-radius: 9px;
+                Tooltip {
+                    text: root.reviews == 0 ? "Record or browse an inspection review" : "Choose how to follow up on the review";
+                }
             }
             Menu {
                 record-review := MenuItem {
                     text: "Record review";
-                    activated => { root.reviews += 1; }
+                    activated => {
+                        root.reviews += 1;
+                    }
+                }
+                navigate-accessibly := MenuItem {
+                    text: "Test accessible navigation";
+                    activated => { root.show-native-navigation = true; }
+                }
+                MenuItem {
+                    text: "Adjust instrument values";
+                    activated => { root.show-adjustable-values = true; }
+                }
+                keyboard-assistance := MenuItem {
+                    text: "Configure keyboard assistance";
+                    activated => { root.show-keyboard-options = true; keyboard-options.focus-title(); }
+                }
+                MenuItem {
+                    text: "Write long note";
+                    activated => { root.show-long-note = true; long-note-demo.focus-note(); }
                 }
                 manage-tabs := MenuItem {
                     text: "Manage tabs";
-                    activated => { root.show-tabs = true; }
+                    activated => {
+                        root.show-tabs = true;
+                    }
                 }
                 disclosure-options := MenuItem {
                     text: "Disclosure controls";
@@ -99,7 +1340,9 @@ export component NativeActionsDemo inherits Window {
                 }
                 tools-entry := MenuItem {
                     text: "Open tools drawer";
-                    activated => { root.tools-open = true; }
+                    activated => {
+                        root.tools-open = true;
+                    }
                 }
                 browse-tabs := MenuItem {
                     text: "Browse narrow tabs";
@@ -120,11 +1363,37 @@ export component NativeActionsDemo inherits Window {
                 }
                 MenuItem {
                     text: "Read service log";
-                    activated => { root.show-service-log = true; }
+                    activated => {
+                        root.show-service-log = true;
+                    }
+                }
+                MenuItem {
+                    text: "Report page controls";
+                    activated => {
+                        root.report-page = 0;
+                        root.report-page-changes = 0;
+                        root.report-pages-enabled = true;
+                        root.show-report-pages = true;
+                    }
+                }
+                MenuItem {
+                    text: "Inspect popup choices";
+                    activated => { root.show-popup-choices = true; }
+                }
+                MenuItem {
+                    text: "Sign-in fields";
+                    activated => {
+                        root.show-sign-in = true;
+                        sign-in-account.focus();
+                    }
                 }
             }
         }
-        review-count := Text { text: "Reviews " + root.reviews; font-size: 17px; color: #173e32; }
+        review-count := Text {
+            text: "Reviews " + root.reviews;
+            font-size: 17px;
+            color: #173e32;
+        }
         instrument-table := StandardTableView {
             height: 196px;
             row-height: 43px;
@@ -132,38 +1401,145 @@ export component NativeActionsDemo inherits Window {
             row-header-width: 46px;
             accessible-name: "Inspection instruments";
             movable-rows: true;
+            movable-columns: true;
+            resizable-rows: root.resize-table-headers;
+            resizable-columns: root.resize-table-headers;
             auto-sort: true;
             edit-on-click: true;
             model: root.samples;
             row-moved(model-row, from, to) => {
                 root.movement = "Moved row " + (from + 1) + " to " + (to + 1);
             }
-            TableColumn { title: "Instrument"; field: "instrument"; width: 120px; }
-            TableColumn { title: "Location"; field: "location"; width: 144px; sortable: false; editable: true; }
+            column-moved(column, position) => {
+                root.movement = "Moved column " + (column + 1) + " to " + (position + 1);
+            }
+            TableColumn {
+                title: "Instrument";
+                field: "instrument";
+                width: 120px;
+                min-width: 112px;
+                max-width: 124px;
+            }
+            TableColumn { title: "Internal name"; field: "instrument"; visible: false; }
+            TableColumn {
+                title: "Location";
+                field: "location";
+                width: 144px;
+                sortable: false;
+                resizable: false;
+                editable: true;
+            }
         }
-        row-movement := Text { text: root.movement; font-size: 17px; color: #173e32; }
-        reset-sort := Button {
-            text: "Clear sort";
+        row-movement := Text {
+            text: root.movement;
+            font-size: 17px;
+            color: #173e32;
+        }
+        HorizontalLayout {
             height: 44px;
-            enabled: instrument-table.current-sort-column >= 0;
-            clicked => { instrument-table.clear-sort(); }
+            spacing: 8px;
+            alignment: start;
+            reset-sort := Button {
+                text: "Clear sort";
+                accessible-description: "Restore the original instrument order";
+                height: 44px;
+                enabled: instrument-table.current-sort-column >= 0;
+                Tooltip { text: "Return to the original row order"; }
+                clicked => {
+                    instrument-table.clear-sort();
+                }
+            }
+            resize-headers := CheckBox {
+                text: "Resize table headers";
+                height: 44px;
+                checked <=> root.resize-table-headers;
+            }
         }
         tool-closures := Text {
             visible: root.drawer-closes > 0;
             text: "Tool closures " + root.drawer-closes;
-            font-size: 17px; color: #173e32;
+            font-size: 17px;
+            color: #173e32;
         }
-        Text { text: "Inspection hierarchy"; font-size: 18px; font-weight: 700; color: #173e32; }
+        Text {
+            text: "Inspection hierarchy";
+            font-size: 18px;
+            font-weight: 700;
+            color: #173e32;
+        }
         inspection-tree := TreeView {
             accessible-name: "Inspection hierarchy";
             height: 156px;
             row-height: 38px;
-            for branch in root.branches : TreeRow {
+            for branch in root.branches: TreeRow {
                 key: branch.id;
                 parent-key: branch.parent;
-                TreeCell { width: 140px; text: branch.title; }
-                if branch.parent >= 0 : TreeCell { text <=> branch.note; }
+                TreeCell {
+                    width: 140px;
+                    text: branch.title;
+                }
+                if branch.parent >= 0: TreeCell {
+                    text <=> branch.note;
+                }
             }
+        }
+    }
+
+    keyboard-options := KeyboardOptionsDemo { shown <=> root.show-keyboard-options; }
+    popup-choices := ChoicePopupDemo { shown <=> root.show-popup-choices; }
+    long-note-demo := LongNoteDemo { shown <=> root.show-long-note; }
+
+    sign-in-dialog := Dialog {
+        title: "Sign-in fields";
+        open <=> root.show-sign-in;
+        width: 344px;
+        height: 350px;
+
+        VerticalLayout {
+            spacing: 8px;
+            sign-in-account := LineEdit {
+                height: 38px;
+                accessible-name: "Account email";
+                placeholder-text: "Account email";
+                input-type: email;
+                input-purpose: username;
+                return-key: next;
+            }
+            sign-in-password := TextInput {
+                height: 38px;
+                accessible-name: "Current password";
+                placeholder-text: "Current password";
+                input-type: password;
+                input-purpose: current-password;
+                return-key: next;
+            }
+            sign-in-new-password := LineEdit {
+                height: 38px;
+                accessible-name: "New password";
+                placeholder-text: "New password";
+                input-type: password;
+                input-purpose: new-password;
+                return-key: next;
+            }
+            verification-code := LineEdit {
+                height: 38px;
+                accessible-name: "Verification code";
+                placeholder-text: "Verification code";
+                input-type: number;
+                input-purpose: one-time-code;
+                maximum-length: 6;
+                return-key: next;
+            }
+            sign-in-note := LineEdit {
+                height: 38px;
+                accessible-name: "Sign-in note";
+                placeholder-text: "Sign-in note";
+                return-key: done;
+            }
+        }
+        DialogButton {
+            text: "Close sign-in fields";
+            role: reject;
         }
     }
 
@@ -171,18 +1547,20 @@ export component NativeActionsDemo inherits Window {
         title: "Inspection tabs";
         open <=> root.show-tabs;
         width: 346px;
-        height: 224px;
+        min-height: 224px;
         tabs-view := TabWidget {
             width: 100%;
-            height: 154px;
+            min-height: 154px;
             current-value <=> root.selected-tab;
             tabs-closable: true;
-            for entry in root.tabs : Tab {
+            reorderable: true;
+            for entry in root.tabs: Tab {
                 title: entry.title;
                 value: entry.key;
                 closable: entry.key != "pinned";
                 InspectionTabContent {
-                    width: 100%; height: 100%;
+                    width: 100%;
+                    height: 100%;
                     caption: entry.title;
                 }
             }
@@ -201,17 +1579,23 @@ export component NativeActionsDemo inherits Window {
         width: 346px;
         height: 176px;
         overflow-tabs := TabBar {
-            x: 12px; y: 0px; width: 184px; height: 46px;
+            x: 12px;
+            y: 0px;
+            width: 184px;
+            height: 46px;
             accessible-name: "Scrollable tab strip";
             current-value <=> root.overflow-selected;
-            TabButton { width: 92px; text: "Overview"; value: "overview"; }
-            TabButton {
-                width: 92px; text: "Draft"; value: "draft";
-                visible: root.overflow-draft-visible;
-                closable: true;
+            reorderable: true;
+            for document in root.overflow-documents: TabButton {
+                width: 92px;
+                text: document.title;
+                value: document.key;
+                visible: document.key != "draft" || root.overflow-draft-visible;
+                closable: document.key == "draft";
             }
-            TabButton { width: 92px; text: "Results"; value: "results"; }
-            TabButton { width: 92px; text: "Archive"; value: "archive"; }
+            tab-moved(from, to) => {
+                root.overflow-movement = "Moved tab " + (from + 1) + " to " + (to + 1);
+            }
             tab-close-requested(index, value) => {
                 if value == "draft" {
                     root.overflow-draft-visible = false;
@@ -220,8 +1604,14 @@ export component NativeActionsDemo inherits Window {
             }
         }
         Text {
-            x: 12px; y: 58px;
+            x: 12px;
+            y: 58px;
             text: "Current tab: " + root.overflow-selected;
+        }
+        overflow-status := Text {
+            x: 12px;
+            y: 90px;
+            text: root.overflow-movement;
         }
     }
 
@@ -234,32 +1624,55 @@ export component NativeActionsDemo inherits Window {
         VerticalLayout {
             spacing: 8px;
             inspection-cards := SwipeView {
-                width: 100%; height: 124px;
+                width: 100%;
+                height: 124px;
                 accessible-name: "Inspection pages";
                 current-index <=> root.card-index;
                 layout-direction: root.cards-mirrored ? right-to-left : left-to-right;
                 transition-duration: 180;
-                changed(index) => { root.card-changes += 1; }
+                changed(index) => {
+                    root.card-changes += 1;
+                }
 
                 SwipePage {
                     ScrollView {
-                        width: 100%; height: 100%;
+                        width: 100%;
+                        height: 100%;
                         content-height: 288px;
                         card-summary := Button {
-                            x: 8px; y: 8px; width: 184px; height: 44px;
+                            x: 8px;
+                            y: 8px;
+                            width: 184px;
+                            height: 44px;
                             text: "Card summary";
                         }
                         card-notes := Button {
-                            x: 8px; y: 144px; width: 184px; height: 44px;
+                            x: 8px;
+                            y: 144px;
+                            width: 184px;
+                            height: 44px;
                             text: "Card notes";
                         }
                     }
                 }
-                SwipePage { visible: false; Button { text: "Hidden card"; } }
-                SwipePage { enabled: false; Button { text: "Disabled card"; } }
+                SwipePage {
+                    visible: false;
+                    Button {
+                        text: "Hidden card";
+                    }
+                }
+                SwipePage {
+                    enabled: false;
+                    Button {
+                        text: "Disabled card";
+                    }
+                }
                 SwipePage {
                     card-finish := Button {
-                        x: 8px; y: 8px; width: 184px; height: 44px;
+                        x: 8px;
+                        y: 8px;
+                        width: 184px;
+                        height: 44px;
                         text: "Finish inspection";
                     }
                 }
@@ -267,9 +1680,13 @@ export component NativeActionsDemo inherits Window {
             mirror-cards := Button {
                 height: 44px;
                 text: root.cards-mirrored ? "Restore card direction" : "Mirror cards";
-                clicked => { root.cards-mirrored = !root.cards-mirrored; }
+                clicked => {
+                    root.cards-mirrored = !root.cards-mirrored;
+                }
             }
-            card-status := Text { text: "Card changes: " + root.card-changes; }
+            card-status := Text {
+                text: "Card changes: " + root.card-changes;
+            }
         }
     }
 
@@ -280,20 +1697,110 @@ export component NativeActionsDemo inherits Window {
         height: 248px;
 
         log-viewport := ScrollView {
-            width: 100%; height: 100%;
+            width: 100%;
+            height: 100%;
             content-height: 410px;
             accessible-name: "Service records";
 
-            log-heading := Text { x: 8px; y: 8px; text: "Shift notes"; font-weight: 700; }
+            log-heading := Text {
+                x: 8px;
+                y: 8px;
+                text: "Shift notes";
+                accessible-heading-level: 2;
+                font-weight: 700;
+            }
             log-hours := ScrollView {
-                x: 8px; y: 45px; width: 152px; height: 44px;
+                x: 8px;
+                y: 45px;
+                width: 152px;
+                height: 44px;
                 content-width: 308px;
                 accessible-name: "Service shifts";
-                log-morning := Text { x: 4px; y: 4px; width: 118px; text: "Morning shift"; }
-                log-night := Text { x: 170px; y: 4px; width: 118px; text: "Night shift"; }
+                log-morning := Text {
+                    x: 4px;
+                    y: 4px;
+                    width: 118px;
+                    text: "Morning shift";
+                }
+                log-night := Text {
+                    x: 170px;
+                    y: 4px;
+                    width: 118px;
+                    text: "Night shift";
+                }
             }
-            log-parts := Text { x: 8px; y: 194px; text: "Parts replaced"; font-weight: 700; }
-            Text { x: 8px; y: 356px; text: "Service log complete"; }
+            log-parts := Text {
+                x: 8px;
+                y: 194px;
+                text: "Parts replaced";
+                accessible-heading-level: 2;
+                font-weight: 700;
+            }
+            Text {
+                x: 8px;
+                y: 356px;
+                text: "Service log complete";
+            }
+        }
+    }
+
+    report-dialog := Dialog {
+        title: "Inspection report";
+        open <=> root.show-report-pages;
+        width: 346px;
+        height: 276px;
+
+        VerticalLayout {
+            spacing: 8px;
+            report-cards := SwipeView {
+                width: 100%;
+                height: 80px;
+                layout-direction: right-to-left;
+                current-index <=> root.report-page;
+                SwipePage {
+                    Label {
+                        x: 8px;
+                        y: 8px;
+                        text: "Report overview";
+                    }
+                }
+                SwipePage {
+                    Label {
+                        x: 8px;
+                        y: 8px;
+                        text: "Report findings";
+                    }
+                }
+                SwipePage {
+                    Label {
+                        x: 8px;
+                        y: 8px;
+                        text: "Report sign-off";
+                    }
+                }
+            }
+            report-markers := PageIndicator {
+                accessible-name: "Report pages";
+                width: 160px;
+                height: 36px;
+                layout-direction: right-to-left;
+                count: report-cards.count;
+                current-index <=> root.report-page;
+                interactive: root.report-pages-enabled;
+                changed(index) => {
+                    root.report-page-changes += 1;
+                }
+            }
+            report-page-lock := Button {
+                text: root.report-pages-enabled ? "Lock page changes" : "Unlock page changes";
+                height: 44px;
+                clicked => {
+                    root.report-pages-enabled = !root.report-pages-enabled;
+                }
+            }
+            report-page-status := Text {
+                text: "Page changes: " + root.report-page-changes;
+            }
         }
     }
 
@@ -311,7 +1818,9 @@ export component NativeActionsDemo inherits Window {
                 network-details := Button {
                     height: 44px;
                     text: "Network details";
-                    clicked => { root.checks += 1; }
+                    clicked => {
+                        root.checks += 1;
+                    }
                 }
             }
             optional := GroupBox {
@@ -322,10 +1831,15 @@ export component NativeActionsDemo inherits Window {
                 test-settings := Button {
                     height: 44px;
                     text: "Test settings";
-                    clicked => { root.checks += 1; }
+                    clicked => {
+                        root.checks += 1;
+                    }
                 }
             }
-            checks-status := Text { text: "Checks " + root.checks; }
+            checks-status := Text {
+                text: "Checks " + root.checks;
+                accessible-live: root.checks > 0 ? AccessibleLive.polite : AccessibleLive.off;
+            }
         }
     }
 
@@ -335,14 +1849,24 @@ export component NativeActionsDemo inherits Window {
         height: 214px;
         drag-margin: 20px;
         open <=> root.tools-open;
-        opened => { root.drawer-opens += 1; }
-        closed => { root.drawer-closes += 1; }
-        Text { text: "Tool gestures " + root.drawer-opens; }
+        opened => {
+            root.drawer-opens += 1;
+        }
+        closed => {
+            root.drawer-closes += 1;
+        }
+        Text {
+            text: "Tool gestures " + root.drawer-opens;
+        }
         run-tool := Button {
             text: "Check instrument";
             height: 44px;
-            clicked => { root.tool-runs += 1; }
+            clicked => {
+                root.tool-runs += 1;
+            }
         }
-        Text { text: "Tool runs " + root.tool-runs; }
+        Text {
+            text: "Tool runs " + root.tool-runs;
+        }
     }
 }

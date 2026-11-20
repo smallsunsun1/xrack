@@ -20,6 +20,7 @@ struct State {
     locale: RefCell<Option<LocaleContext>>,
     window_status: Cell<WindowStatus>,
     replaced: Cell<bool>,
+    generation: Cell<u64>,
     #[cfg(all(feature = "live-reload", unix))]
     inspector: xrack_runtime::WindowInspector,
 }
@@ -33,6 +34,7 @@ impl ReloadableInstance {
             locale: RefCell::default(),
             window_status: Cell::default(),
             replaced: Cell::default(),
+            generation: Cell::default(),
             #[cfg(all(feature = "live-reload", unix))]
             inspector: xrack_runtime::WindowInspector::default(),
         }))
@@ -93,6 +95,9 @@ impl ReloadableInstance {
         self.inspector().advance_generation();
         let previous = self.0.current.replace(next);
         self.0.replaced.set(true);
+        let generation = self.0.generation.get() + 1;
+        self.0.generation.set(generation);
+        xrack_runtime::ui_trace::reload_committed(generation);
         drop(previous);
         Ok(true)
     }
@@ -104,6 +109,9 @@ impl ReloadableInstance {
 #[macro_export]
 macro_rules! __xr_forward_component_methods {
     ($this:ident, $access:ident) => {
+        fn source_generation(&$this) -> ::core::primitive::u64 {
+            $this.$access().source_generation()
+        }
         fn window_inspector(
             &$this,
             scene: &::std::rc::Rc<$crate::__live_runtime::Node>,
@@ -157,6 +165,10 @@ macro_rules! __xr_forward_component_methods {
 impl Component for ReloadableInstance {
     fn render(&self) -> Node {
         self.render_shared().as_ref().clone()
+    }
+
+    fn source_generation(&self) -> u64 {
+        self.0.generation.get()
     }
 
     #[cfg(all(feature = "live-reload", unix))]

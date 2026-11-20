@@ -361,9 +361,19 @@ pub(crate) fn measure_with_width(
         let padding = Padding::read(node);
         let mut inner = padding.inner_size(available);
         let font_size = text.font_size(node);
-        let group_title = crate::group_box::title_height(node, font_size);
+        let group_title = crate::group_box::title_layout(
+            node,
+            available,
+            node.layout_direction().unwrap_or_default(),
+            text,
+        )
+        .map_or_else(
+            || crate::group_box::title_height(node, font_size),
+            |title| title.height,
+        );
         let radio_title = crate::selection::radio_title_height(node, font_size);
-        let title_height = radio_title + crate::modal::title_height(node, font_size) + group_title;
+        let title_height =
+            radio_title + crate::modal::measured_title_height(node, available, text) + group_title;
         inner.height = (inner.height - title_height).max(0.0);
         let mut main = AxisInfo::fixed(0.0);
         let mut cross = AxisInfo::flexible(0.0);
@@ -586,16 +596,14 @@ pub(crate) fn measure_with_width(
                 )
             }
             "ComboBox" => crate::ComboGeometry::preferred_size(node, available, text),
-            "Calendar" => Size::new(294.0, 300.0),
-            "MonthGrid" => Size::new(294.0, 216.0),
-            "DayOfWeekRow" => Size::new(294.0, 32.0),
-            "WeekNumberColumn" => Size::new(44.0, 216.0),
-            "Tumbler" => Size::new(112.0, 148.0),
+            "Calendar" | "MonthGrid" | "DayOfWeekRow" | "WeekNumberColumn" => {
+                crate::calendar::preferred_size(node, text)
+            }
+            "Tumbler" => crate::tumbler::preferred_size(node, text),
             "PathView" => Size::new(320.0, 160.0),
-            "TabWidget" | "SwipeView" | "StackView" => Size::new(240.0, 136.0),
+            "TabBar" | "TabWidget" => crate::selection::preferred_tab_view_size(node, text),
+            "SwipeView" | "StackView" => Size::new(240.0, 136.0),
             "Page" => crate::page::preferred_size(node, available, text),
-            "TabBar" if node.orientation() == Orientation::Vertical => Size::new(132.0, 144.0),
-            "TabBar" => Size::new(240.0, 38.0),
             "PageIndicator" => crate::PageIndicatorGeometry::preferred_size(node),
             "ListView" | "StandardListView" | "TreeView" => Size::new(180.0, 144.0),
             "GridView" => Size::new(320.0, 200.0),

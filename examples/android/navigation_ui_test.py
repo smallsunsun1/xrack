@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -373,7 +374,17 @@ def exercise_search_responses(ui: Emulator, initial: Screen) -> None:
     (ui.artifacts / "search-query-submitted.png").write_bytes(submitted.png)
 
 
-def exercise_anchored_popup(ui: Emulator, initial: Screen) -> None:
+def exercise_anchored_popup(
+    ui: Emulator, initial: Screen
+) -> list[dict[str, str | int | bool]]:
+    def count(screen: Screen, prefix: str) -> int:
+        return next(
+            int(label.text.removeprefix(prefix))
+            for label in screen.labels
+            if label.text.startswith(prefix)
+            and label.text.removeprefix(prefix).isdigit()
+        )
+
     open_drawer_item(ui, initial, "Open popup")
     ready = ui.visible(
         "Popup workshop", "Opens 0", "Closes 0", "Count outside", "Show actions"
@@ -434,9 +445,9 @@ def exercise_anchored_popup(ui: Emulator, initial: Screen) -> None:
     ui.tap(ui.visible("Modal popup", "Show actions"), "Show actions")
     ui.visible("Inspection actions", "Opens 4", "Closes 3")
     ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
-    closed(4, 1, "Modal popup")
+    before_enter = closed(4, 1, "Modal popup")
     ui.call("shell", "input", "keyevent", "KEYCODE_ENTER")
-    ui.visible("Inspection actions", "Opens 5", "Closes 4")
+    reopened = ui.visible("Inspection actions", "Opens 5", "Closes 4")
     ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
     popup_back = closed(5, 1, "Modal popup")
     ui.call("shell", "input", "keyevent", "KEYCODE_BACK")
@@ -453,6 +464,62 @@ def exercise_anchored_popup(ui: Emulator, initial: Screen) -> None:
     ui.artifacts.mkdir(parents=True, exist_ok=True)
     (ui.artifacts / "popup-flipped.png").write_bytes(flipped.png)
     (ui.artifacts / "popup-back.png").write_bytes(popup_back.png)
+    return [
+        {
+            "step": "open",
+            "below_anchor": first.y > below.require("Show actions").y,
+            "opens": count(below, "Opens "),
+        },
+        {
+            "step": "move_anchor",
+            "above_anchor": flipped.require("Inspection actions").y
+            < flipped.require("Show actions").y,
+            "opens": count(flipped, "Opens "),
+            "closes": count(flipped, "Closes "),
+        },
+        {
+            "step": "dismiss_outside",
+            "actions": count(passed_through, "Actions "),
+            "outside": count(passed_through, "Outside "),
+            "closes": count(passed_through, "Closes "),
+            "popup_visible": passed_through.find("Inspection actions") is not None,
+        },
+        {
+            "step": "back_then_enter",
+            "open_delta": count(reopened, "Opens ") - count(before_enter, "Opens "),
+            "popup_visible": reopened.find("Inspection actions") is not None,
+        },
+    ]
+
+
+def compare_popup_checkpoints(
+    ui: Emulator, parity: Path, android: list[dict[str, str | int | bool]]
+) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        desktop_path = Path(directory) / "desktop.json"
+        subprocess.run(
+            [
+                parity,
+                "anchored_popup_repositions_and_restores_focus_in_both_backends",
+                "--exact",
+            ],
+            env={**os.environ, "XRACK_POPUP_REPLAY_REPORT": str(desktop_path)},
+            check=True,
+            timeout=45,
+        )
+        desktop = json.loads(desktop_path.read_text(encoding="utf-8"))
+    report = {**desktop, "android": android}
+    (ui.artifacts / "popup-replay-comparison.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
+    for backend, observed in desktop.items():
+        assert observed == android, (
+            f"{backend} and Android differ: {observed!r} != {android!r}"
+        )
+    print(
+        "PASS desktop AOT, desktop interpreter and Android agree at the popup checkpoints",
+        flush=True,
+    )
 
 
 def exercise_workshop_menu(ui: Emulator, initial: Screen) -> None:
@@ -970,6 +1037,7 @@ def exercise(
     combo_keyboard_apk: Path | None = None,
     search_results_only: bool = False,
     popup_window_only: bool = False,
+    popup_parity: Path | None = None,
     command_menu_only: bool = False,
     focus_routes_only: bool = False,
     layouts_only: bool = False,
@@ -1003,7 +1071,9 @@ def exercise(
             exercise_search_responses(ui, initial)
             return
         if popup_window_only:
-            exercise_anchored_popup(ui, initial)
+            checkpoints = exercise_anchored_popup(ui, initial)
+            if popup_parity is not None:
+                compare_popup_checkpoints(ui, popup_parity, checkpoints)
             return
         if command_menu_only:
             exercise_workshop_menu(ui, initial)
@@ -1165,6 +1235,7 @@ def main() -> None:
     scenario.add_argument("--document-tabs-only", action="store_true")
     scenario.add_argument("--calendar-fields-only", action="store_true")
     parser.add_argument("--keyboard-apk", type=Path)
+    parser.add_argument("--popup-parity", type=Path)
     args = parser.parse_args()
     adb = args.adb.resolve()
     if not adb.is_file() or not args.apk.is_file():
@@ -1198,6 +1269,9 @@ def main() -> None:
             else None,
             search_results_only=args.search_results_only,
             popup_window_only=args.popup_window_only,
+            popup_parity=args.popup_parity.resolve(strict=True)
+            if args.popup_parity
+            else None,
             command_menu_only=args.command_menu_only,
             focus_routes_only=args.focus_routes_only,
             layouts_only=args.layouts_only,

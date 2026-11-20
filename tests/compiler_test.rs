@@ -6110,6 +6110,66 @@ fn text_editor_constraints_are_verified_in_semantics_and_mlir() {
 }
 
 #[test]
+fn keyboard_assistance_is_typed_and_verified_in_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            in property <KeyboardCapitalization> capitalization: KeyboardCapitalization.words;
+            LineEdit { keyboard-capitalization: root.capitalization; auto-correct: false; }
+            TextArea { keyboard-capitalization: characters; spell-check: true; }
+        }
+    "#;
+    let compilation = compile(source, "keyboard.xr").unwrap();
+    assert!(compilation.mlir.contains("!xr.keyboardcapitalization"));
+    for name in ["Words", "Characters"] {
+        assert!(
+            compilation
+                .rust
+                .to_string()
+                .contains(&format!("KeyboardCapitalization :: {name}"))
+        );
+    }
+    assert!(compile(&source.replace("TextArea", "Rectangle"), "keyboard.xr").is_err());
+    let raw = lower(source, "keyboard.xr");
+    assert!(mlir::process(&raw.replace("\"characters\"", "\"uppercase\"")).is_err());
+    assert!(mlir::process(&raw.replace("kind = \"TextArea\"", "kind = \"Rectangle\"")).is_err());
+}
+
+#[test]
+fn keyboard_navigation_is_a_boolean_for_text_editors() {
+    let source = r#"
+        export component App inherits Window {
+            in property <bool> navigate: true;
+            TextArea { keyboard-navigation: root.navigate; }
+            LineEdit { return-key: next; keyboard-navigation: false; }
+        }
+    "#;
+    let compilation = compile(source, "keyboard-navigation.xr").unwrap();
+    assert!(compilation.mlir.contains("name = \"keyboard-navigation\""));
+    assert!(
+        compile(
+            &source.replace("root.navigate", "1"),
+            "keyboard-navigation.xr"
+        )
+        .is_err()
+    );
+    assert!(
+        compile(
+            &source.replace("TextArea", "Rectangle"),
+            "keyboard-navigation.xr"
+        )
+        .is_err()
+    );
+
+    let raw = lower(source, "keyboard-navigation.xr");
+    let invalid = raw.replace("kind = \"TextArea\"", "kind = \"Rectangle\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("keyboard-navigation requires a boolean")
+    );
+}
+
+#[test]
 fn return_key_hints_are_typed_and_limited_to_single_line_editors() {
     let source = r#"
         export component App inherits Window {

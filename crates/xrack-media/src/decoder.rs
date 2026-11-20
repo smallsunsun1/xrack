@@ -7,12 +7,12 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::{
     ff,
-    native::{load, media_function},
+    native::{load, media_function, voice_open},
 };
 
 #[derive(Debug)]
@@ -97,12 +97,16 @@ impl Interrupt {
     fn elapsed_ms(&self) -> u64 {
         self.origin.elapsed().as_millis() as u64
     }
+
+    fn expired(&self) -> bool {
+        let deadline = self.deadline_ms.load(Ordering::Relaxed);
+        deadline > 0 && self.elapsed_ms() >= deadline
+    }
 }
 
 unsafe extern "C" fn interrupt(opaque: *mut c_void) -> c_int {
     let io = unsafe { &*opaque.cast::<Interrupt>() };
-    let deadline = io.deadline_ms.load(Ordering::Relaxed);
-    i32::from(io.cancelled.load(Ordering::Relaxed) || deadline > 0 && io.elapsed_ms() >= deadline)
+    i32::from(io.cancelled.load(Ordering::Relaxed) || io.expired())
 }
 
 pub(crate) fn is_network(path: &Path) -> bool {
@@ -119,6 +123,18 @@ impl Options {
             "configure media input",
         )
     }
+}
+
+enum PreparedInput<'a> {
+    Media {
+        source: &'a CStr,
+        network: bool,
+    },
+    Voice {
+        format: &'a CStr,
+        source: Option<&'a CStr>,
+        open: ff::XrackVoiceOpen,
+    },
 }
 
 impl Drop for Options {
@@ -150,6 +166,7 @@ pub struct VideoDecoder {
     title: String,
     hls_seek_target: Option<f64>,
     packet_bytes: u64,
+    capture: bool,
 }
 
 impl VideoDecoder {
@@ -296,6 +313,50 @@ impl VideoDecoder {
         } else {
             options.set(c"protocol_whitelist", c"file,crypto")?;
         }
+        Self::open_prepared(
+            PreparedInput::Media {
+                source: &path,
+                network,
+            },
+            media_type,
+            track,
+            variant,
+            options,
+            cancelled,
+        )
+    }
+
+    pub(crate) fn open_voice(
+        format: &CStr,
+        source: Option<&CStr>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self, MediaError> {
+        let open = voice_open()?;
+        Self::open_prepared(
+            PreparedInput::Voice {
+                format,
+                source,
+                open,
+            },
+            ff::AVMediaType_AVMEDIA_TYPE_AUDIO,
+            -1,
+            0,
+            Options(ptr::null_mut()),
+            cancelled,
+        )?
+        .ok_or_else(|| MediaError("voice input did not provide an audio stream".into()))
+    }
+
+    fn open_prepared(
+        input: PreparedInput<'_>,
+        media_type: ff::AVMediaType,
+        track: i64,
+        variant: usize,
+        mut options: Options,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Option<Self>, MediaError> {
+        let network = matches!(input, PreparedInput::Media { network: true, .. });
+        let capture = matches!(input, PreparedInput::Voice { .. });
         let mut decoder = Self {
             format: ptr::null_mut(),
             codec: ptr::null_mut(),
@@ -308,7 +369,7 @@ impl VideoDecoder {
             duration: 0.0,
             draining: false,
             io: Box::new(Interrupt::new(cancelled)),
-            seekable: !network,
+            seekable: !network && !capture,
             hls: false,
             live: false,
             variant: 0,
@@ -319,6 +380,7 @@ impl VideoDecoder {
             title: String::new(),
             hls_seek_target: None,
             packet_bytes: 0,
+            capture,
         };
 
         // All allocations are owned by the decoder immediately, including failed opens.
@@ -336,20 +398,41 @@ impl VideoDecoder {
                     opaque: (&mut *decoder.io as *mut Interrupt).cast(),
                 });
             decoder.io.arm();
-            check(
-                media_function!(avformat_open_input)(
-                    &mut decoder.format,
-                    path.as_ptr(),
-                    ptr::null(),
-                    &mut options.0,
-                ),
-                "open media",
-            )?;
-            decoder.io.arm();
-            check(
-                media_function!(avformat_find_stream_info)(decoder.format, ptr::null_mut()),
-                "read stream metadata",
-            )?;
+            match input {
+                PreparedInput::Media { source, .. } => {
+                    check(
+                        media_function!(avformat_open_input)(
+                            &mut decoder.format,
+                            source.as_ptr(),
+                            ptr::null(),
+                            &mut options.0,
+                        ),
+                        "open media",
+                    )?;
+                    decoder.io.arm();
+                    check(
+                        media_function!(avformat_find_stream_info)(decoder.format, ptr::null_mut()),
+                        "read stream metadata",
+                    )?;
+                }
+                PreparedInput::Voice {
+                    format,
+                    source,
+                    open,
+                } => {
+                    let open =
+                        open.ok_or_else(|| MediaError("missing voice input entry".into()))?;
+                    check(
+                        open(
+                            &mut decoder.format,
+                            format.as_ptr(),
+                            source.map_or(ptr::null(), CStr::as_ptr),
+                            &mut options.0,
+                        ),
+                        "open voice input",
+                    )?;
+                }
+            }
             let format = decoder.format.cast::<u8>();
             let count = *format
                 .add(ff::XRACK_FFMPEG_STREAM_COUNT_OFFSET as usize)
@@ -742,6 +825,9 @@ impl VideoDecoder {
     pub(crate) fn receive(&mut self) -> Result<bool, MediaError> {
         // FFmpeg guarantees that send and receive cannot both report EAGAIN.
         // The packet is unreferenced after each send and each skipped stream.
+        if self.capture {
+            self.io.arm();
+        }
         unsafe {
             loop {
                 let received = media_function!(avcodec_receive_frame)(self.codec, self.frame);
@@ -758,7 +844,7 @@ impl VideoDecoder {
                     ff::XRACK_FFMPEG_EOF => return Ok(false),
                     ff::XRACK_FFMPEG_AGAIN => {}
                     code => {
-                        check(code, "decode video frame")?;
+                        check(code, "decode media frame")?;
                     }
                 }
                 if self.draining {
@@ -767,8 +853,23 @@ impl VideoDecoder {
                     ));
                 }
                 loop {
-                    self.io.arm();
+                    if self.capture {
+                        if self.io.cancelled.load(Ordering::Relaxed) {
+                            return Ok(false);
+                        }
+                        if self.io.expired() {
+                            return Err(MediaError(
+                                "voice input timed out waiting for audio".into(),
+                            ));
+                        }
+                    } else {
+                        self.io.arm();
+                    }
                     let code = media_function!(av_read_frame)(self.format, self.packet);
+                    if self.capture && code == ff::XRACK_FFMPEG_AGAIN {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
                     if code == ff::XRACK_FFMPEG_EOF {
                         check(
                             media_function!(avcodec_send_packet)(self.codec, ptr::null()),

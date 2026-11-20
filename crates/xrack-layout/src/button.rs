@@ -12,6 +12,7 @@ pub struct ButtonContent<'a> {
     pub label: &'a str,
     pub icon: Option<(ImageAsset, f32)>,
     pub padding: f32,
+    authored_padding: bool,
     display: ButtonDisplay,
     spacing: f32,
 }
@@ -35,14 +36,12 @@ impl<'a> ButtonContent<'a> {
         } else {
             button_text(node)
         };
+        let padding = dimension(node, "padding");
         Self {
             label,
             icon,
-            padding: dimension(node, "padding").unwrap_or(if node.kind == "ToolButton" {
-                8.0
-            } else {
-                10.0
-            }),
+            padding: padding.unwrap_or(if node.kind == "ToolButton" { 8.0 } else { 10.0 }),
+            authored_padding: padding.is_some(),
             display,
             spacing: dimension(node, "spacing").unwrap_or(6.0).max(0.0),
         }
@@ -85,6 +84,48 @@ impl<'a> ButtonContent<'a> {
         self.icon
             .as_ref()
             .map_or(0.0, |(_, size)| size.min(area.width).min(height).max(0.0))
+    }
+
+    /// Fit enlarged text inside a button whose allocated height may be fixed.
+    #[doc(hidden)]
+    pub fn scaled_label_metrics(&self, bounds: Rect, font_size: f32) -> (Rect, f32) {
+        let mut area = bounds.inset(self.padding);
+        if self.label.is_empty() {
+            return (area, font_size);
+        }
+        let line = font_size * 1.4;
+        let icon = if self.stacked() {
+            self.icon
+                .as_ref()
+                .map_or(0.0, |(_, size)| size.min(area.width))
+        } else {
+            0.0
+        };
+        let gap = if icon > 0.0 { self.gap() } else { 0.0 };
+        let preferred = line + icon + gap;
+        if preferred > area.height && !self.authored_padding {
+            let padding =
+                ((bounds.height - preferred) * 0.5).clamp(self.padding.min(4.0), self.padding);
+            area.y = bounds.y + padding;
+            area.height = (bounds.height - 2.0 * padding).max(0.0);
+        }
+        if preferred <= area.height {
+            return (area, font_size);
+        }
+        // Scale the text and the stacked icon together when they cannot fit at
+        // their requested sizes, so both can still appear in a compact button.
+        let label_height = (area.height - gap).max(0.0) * (line / (line + icon));
+        (area, (label_height / 1.4).max(1.0))
+    }
+
+    #[doc(hidden)]
+    pub fn label_height(&self, area: Rect, line_height: f32) -> f32 {
+        let icon = self.fitted_icon(area, line_height);
+        if self.stacked() && icon > 0.0 {
+            (area.height - icon - self.gap()).max(0.0)
+        } else {
+            area.height
+        }
     }
 
     pub fn label_width(&self, area: Rect, line_height: f32) -> f32 {

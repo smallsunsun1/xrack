@@ -794,6 +794,7 @@ bridge_values! {
         ImageVerticalAlignment { Top, Center, Bottom },
         InputType { Text, Password, Number, Decimal, Search, Email, Url, Tel },
         InputPurpose { Auto, Username, CurrentPassword, NewPassword, OneTimeCode },
+        KeyboardCapitalization { Auto, #[pyo3(name = "None_")] None, Words, Sentences, Characters },
         ReturnKey { Auto, Next, Done },
         LayoutAlignment { Stretch, Center, Start, End, SpaceBetween, SpaceAround, SpaceEvenly },
         LayoutDirection { LeftToRight, RightToLeft },

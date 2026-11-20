@@ -1,7 +1,9 @@
 use crate::{
     LayoutNode, Point, Rect, Size, Target, TextMeasurer, input::valid, place_in_direction,
+    popup::PopupTypography, window_safe_area,
 };
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
@@ -53,7 +55,7 @@ pub(crate) fn completion_value<'a>(node: &'a Node, draft: &str) -> Option<Cow<'a
 
 #[cfg(test)]
 mod tests {
-    use super::{LayoutDirection, Node, Rect, completion_value, geometry};
+    use super::{LayoutDirection, Node, PopupTypography, Rect, completion_value, geometry};
 
     #[test]
     fn completion_skips_partial_graphemes_and_single_line_control_characters() {
@@ -90,6 +92,8 @@ mod tests {
             Rect::new(10.0, 10.0, 100.0, 35.0),
             Rect::new(0.0, 0.0, 180.0, 80.0),
             LayoutDirection::LeftToRight,
+            PopupTypography::default(),
+            None,
         )
         .unwrap();
         assert_eq!(popup.bounds, Rect::new(10.0, 45.0, 100.0, 35.0));
@@ -108,10 +112,36 @@ mod tests {
             Rect::new(10.0, 10.0, 100.0, 20.0),
             Rect::new(0.0, 0.0, 180.0, 80.0),
             LayoutDirection::LeftToRight,
+            PopupTypography::default(),
+            None,
         )
         .unwrap();
         assert_eq!(popup.bounds, Rect::new(10.0, 30.0, 125.0, 40.0));
         assert_eq!(popup.rows.height, 32.0);
+    }
+
+    #[test]
+    fn choice_popup_moves_sideways_when_it_can_fit_more_complete_rows() {
+        let mut combo = Node::new("ComboBox", None);
+        combo
+            .properties
+            .insert("model", vec!["one".to_owned(); 10].into());
+        let viewport = Rect::new(0.0, 0.0, 400.0, 210.0);
+        let anchor = Rect::new(120.0, 60.0, 100.0, 40.0);
+        let keyboard = Rect::new(140.0, 30.0, 160.0, 160.0);
+        let popup = geometry(
+            &combo,
+            anchor,
+            viewport,
+            LayoutDirection::LeftToRight,
+            PopupTypography::default(),
+            Some(keyboard),
+        )
+        .unwrap();
+        assert!(popup.bounds.x + popup.bounds.width <= keyboard.x);
+        assert_eq!(popup.bounds.y, anchor.y + anchor.height);
+        assert_eq!(popup.bounds.width, anchor.width);
+        assert_eq!(popup.visible, 3);
     }
 }
 
@@ -337,6 +367,9 @@ pub struct ChoiceMenu<'a> {
     pub first: usize,
     pub highlighted: Option<usize>,
     pub selected: Option<usize>,
+    pub font_size: f32,
+    rows_bounds: Rect,
+    metrics: PopupMetrics,
 }
 
 impl ChoiceMenu<'_> {
@@ -346,16 +379,11 @@ impl ChoiceMenu<'_> {
     }
 
     pub fn rows_bounds(&self) -> Rect {
-        let metrics = PopupMetrics::new(self.popup_style());
-        metrics.rows(
-            self.bounds,
-            choice_count(self.control) > self.rows.len(),
-            self.layout_direction,
-        )
+        self.rows_bounds
     }
 
     pub fn scroll_indicator(&self) -> Option<Rect> {
-        let metrics = PopupMetrics::new(self.popup_style());
+        let metrics = &self.metrics;
         let total = choice_count(self.control);
         let visible = self.rows.len();
         if !metrics.scroll_indicator || visible == 0 || visible >= total {
@@ -390,6 +418,15 @@ impl ChoiceMenu<'_> {
         offset < self.rows.len() && choice_enabled(self.control, self.first + offset)
     }
 
+    #[doc(hidden)]
+    pub fn can_scroll(&self, backward: bool) -> bool {
+        if backward {
+            self.first > 0
+        } else {
+            self.first + self.rows.len() < choice_count(self.control)
+        }
+    }
+
     pub fn row_bounds(&self, offset: usize) -> Rect {
         let rows = self.rows_bounds();
         let height = rows.height / self.rows.len() as f32;
@@ -410,13 +447,18 @@ struct PopupMetrics {
 }
 
 impl PopupMetrics {
-    fn new(style: Option<&Node>) -> Self {
+    fn new(style: Option<&Node>, font_size: f32, scale: f32) -> Self {
         let positive = |name| {
             style
                 .and_then(|style| style.length(name))
                 .filter(|&value| value > 0.0)
         };
-        let row_height = positive("row-height").unwrap_or(ROW_HEIGHT).max(1.0);
+        let height = positive("row-height").unwrap_or(ROW_HEIGHT);
+        let row_height = if scale > 1.0 {
+            (height * scale).max(font_size * 1.4 + 8.0)
+        } else {
+            height.max(1.0)
+        };
         let padding = positive("padding").unwrap_or(0.0);
         Self {
             row_height,
@@ -464,6 +506,8 @@ pub(crate) struct ChoiceGeometry {
     rows: Rect,
     visible: usize,
     direction: LayoutDirection,
+    metrics: PopupMetrics,
+    font_size: f32,
 }
 
 impl ChoiceGeometry {
@@ -481,15 +525,16 @@ fn geometry(
     anchor: Rect,
     viewport: Rect,
     direction: LayoutDirection,
+    typography: PopupTypography,
+    floating_keyboard: Option<Rect>,
 ) -> Option<ChoiceGeometry> {
     let len = choice_count(node);
     if len == 0 || viewport.width <= 0.0 || viewport.height <= 0.0 {
         return None;
     }
-    let below = (viewport.y + viewport.height - anchor.y - anchor.height).max(0.0);
-    let above = (anchor.y - viewport.y).max(0.0);
     let style = popup_style(node);
-    let metrics = PopupMetrics::new(style);
+    let font_size = typography.size(node, 14.0);
+    let metrics = PopupMetrics::new(style, font_size, typography.scale);
     let dimension = |name, reference| {
         style
             .and_then(|style| style.relative_length(name, reference))
@@ -500,33 +545,93 @@ fn geometry(
         .min(viewport.height);
     let desired =
         (metrics.row_height * len as f32 + 2.0 * metrics.vertical_padding(limit)).min(limit);
-    let down = below >= desired || below >= above;
-    let space = if down { below } else { above };
-    let available = space.min(limit).max(metrics.row_height.min(limit));
-    let padding = 2.0 * metrics.vertical_padding(available);
-    let visible = (((available - padding) / metrics.row_height) as usize).clamp(1, len);
-    let height = (visible as f32 * metrics.row_height + padding).min(available);
     let width = dimension("width", anchor.width)
-        .unwrap_or_else(|| anchor.width.max(96.0))
+        .unwrap_or_else(|| anchor.width.max(96.0) * typography.scale.max(1.0))
         .min(viewport.width);
-    let x = if direction == LayoutDirection::RightToLeft {
+    let aligned_x = if direction == LayoutDirection::RightToLeft {
         anchor.x + anchor.width - width
     } else {
         anchor.x
     };
-    let x = x.clamp(viewport.x, viewport.x + viewport.width - width);
-    let y = if down {
-        anchor.y + anchor.height
-    } else {
-        anchor.y - height
+    let place = |area: Rect, avoid_anchor: bool| {
+        if area.width < width || area.height <= 0.0 {
+            return None;
+        }
+        let bottom = area.y + area.height;
+        let below = (bottom - (anchor.y + anchor.height).max(area.y)).max(0.0);
+        let above = (anchor.y.min(bottom) - area.y).max(0.0);
+        let down = below >= desired || below >= above;
+        let space = if down { below } else { above };
+        let min_row = metrics.row_height.min(limit);
+        if avoid_anchor && space < min_row {
+            return None;
+        }
+        let available = space.min(limit).max(min_row);
+        let padding = 2.0 * metrics.vertical_padding(available);
+        let visible = (((available - padding) / metrics.row_height) as usize).clamp(1, len);
+        let height = (visible as f32 * metrics.row_height + padding).min(available);
+        let x = aligned_x.clamp(area.x, area.x + (area.width - width));
+        let y = if down {
+            anchor.y + anchor.height
+        } else {
+            anchor.y - height
+        };
+        let y = y.clamp(area.y, area.y + (area.height - height).max(0.0));
+        Some((Rect::new(x, y, width, height), visible))
     };
-    let y = y.clamp(viewport.y, viewport.y + viewport.height - height);
-    let bounds = Rect::new(x, y, width, height);
+    let (original, visible) = place(viewport, false)?;
+    let keyboard = floating_keyboard.map(|keyboard| keyboard.intersect(viewport));
+    let (bounds, visible) = if let Some(keyboard) = keyboard.filter(|keyboard| {
+        let covered = original.intersect(*keyboard);
+        covered.width > 0.0 && covered.height > 0.0
+    }) {
+        let right = keyboard.x + keyboard.width;
+        let bottom = keyboard.y + keyboard.height;
+        let free_areas = [
+            Rect::new(
+                viewport.x,
+                viewport.y,
+                viewport.width,
+                keyboard.y - viewport.y,
+            ),
+            Rect::new(
+                viewport.x,
+                bottom,
+                viewport.width,
+                viewport.y + viewport.height - bottom,
+            ),
+            Rect::new(
+                viewport.x,
+                viewport.y,
+                keyboard.x - viewport.x,
+                viewport.height,
+            ),
+            Rect::new(
+                right,
+                viewport.y,
+                viewport.x + viewport.width - right,
+                viewport.height,
+            ),
+        ];
+        let distance = |bounds: Rect| (bounds.x - original.x).abs() + (bounds.y - original.y).abs();
+        free_areas
+            .into_iter()
+            .filter_map(|area| place(area, true))
+            .max_by(|(left, left_rows), (right, right_rows)| {
+                left_rows
+                    .cmp(right_rows)
+                    .then_with(|| distance(*right).total_cmp(&distance(*left)))
+            })?
+    } else {
+        (original, visible)
+    };
     Some(ChoiceGeometry {
         bounds,
         rows: metrics.rows(bounds, len > visible, direction),
         visible,
         direction,
+        metrics,
+        font_size,
     })
 }
 
@@ -540,6 +645,35 @@ pub(crate) struct ChoicePopup {
     first: usize,
     press: Option<(usize, ChoiceIdentity)>,
     handle: Option<ComboPopupHandle>,
+    session: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChoicePan {
+    session: u64,
+    remainder: f32,
+}
+
+impl ChoicePan {
+    pub(crate) fn advance(
+        &mut self,
+        popup: &mut ChoicePopup,
+        scene: &Node,
+        layout: &LayoutNode,
+        delta: f32,
+    ) -> bool {
+        if self.session != popup.session {
+            return false;
+        }
+        let Some((_, geometry)) = popup.resolve(scene, layout) else {
+            return false;
+        };
+        let row_height = geometry.rows.height / geometry.visible as f32;
+        self.remainder += delta;
+        let rows = (self.remainder / row_height).trunc() as isize;
+        self.remainder %= row_height;
+        rows != 0 && popup.scroll(scene, layout, rows)
+    }
 }
 
 impl ChoicePopup {
@@ -550,6 +684,7 @@ impl ChoicePopup {
     }
 
     pub fn open(target: Target, scene: &Node, layout: &LayoutNode) -> Option<Self> {
+        static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
         let kind = scene.at_path(&target.path)?.kind;
         if !matches!(kind, "ComboBox" | "SearchField") {
             return None;
@@ -563,6 +698,7 @@ impl ChoicePopup {
             first: 0,
             press: None,
             handle: None,
+            session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
         };
         let node = popup.node(scene, layout)?;
         if node.kind == "SearchField" {
@@ -627,8 +763,28 @@ impl ChoicePopup {
         let anchor = item.window_bounds(item.bounds);
         Some((
             node,
-            geometry(node, anchor, layout.bounds, item.layout_direction)?,
+            geometry(
+                node,
+                anchor,
+                window_safe_area(scene, layout.bounds),
+                item.layout_direction,
+                layout.popup_typography(),
+                layout.floating_keyboard(),
+            )?,
         ))
+    }
+
+    pub(crate) fn pan_at(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<ChoicePan> {
+        let (_, geometry) = self.resolve(scene, layout)?;
+        geometry.bounds.contains(point).then_some(ChoicePan {
+            session: self.session,
+            remainder: 0.0,
+        })
     }
 
     pub fn view<'a>(&self, scene: &'a Node, layout: &LayoutNode) -> Option<ChoiceMenu<'a>> {
@@ -649,6 +805,9 @@ impl ChoicePopup {
             selected: (node.kind == "ComboBox")
                 .then(|| combo_index(node))
                 .flatten(),
+            font_size: geo.font_size,
+            rows_bounds: geo.rows,
+            metrics: geo.metrics,
         })
     }
 
@@ -775,10 +934,11 @@ impl ChoicePopup {
         self.highlighted(self.resolve(scene, layout)?.0)
     }
 
-    pub fn scroll(&mut self, scene: &Node, layout: &LayoutNode, rows: isize) {
+    pub fn scroll(&mut self, scene: &Node, layout: &LayoutNode, rows: isize) -> bool {
         let Some((node, geo)) = self.resolve(scene, layout) else {
-            return;
+            return false;
         };
+        let before = self.first;
         self.first = self
             .first
             .saturating_add_signed(rows)
@@ -800,6 +960,7 @@ impl ChoicePopup {
         }
         self.press = None;
         self.publish(node);
+        self.first != before
     }
 }
 

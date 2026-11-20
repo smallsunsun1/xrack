@@ -4,6 +4,7 @@ mod navigation_fixture;
 
 use mobile_navigation_ui::MobileNavigation;
 use navigation_fixture::interpreted_navigation;
+use serde_json::{Value as Json, json};
 use std::time::{Duration, Instant};
 use xrack_interpreter::HostValue;
 use xrack_layout::{
@@ -780,8 +781,23 @@ fn search_rejects_late_responses_and_undoes_selection_in_both_backends()
     Ok(())
 }
 
-fn exercise_anchored_popup<C: Component>(app: C) {
+fn popup_counter(node: &Node, name: &str) -> Option<u32> {
+    node.text("text")
+        .and_then(|text| text.strip_prefix(name))
+        .and_then(|number| number.trim().parse().ok())
+        .or_else(|| {
+            node.children
+                .iter()
+                .find_map(|child| popup_counter(child, name))
+        })
+}
+
+fn exercise_anchored_popup<C: Component>(app: C) -> Vec<Json> {
     let mut ui = UiDriver::headless(app, Size::new(390.0, 750.0));
+    let count = |ui: &UiDriver<C>, label: &str| {
+        popup_counter(ui.scene(), label).unwrap_or_else(|| panic!("missing popup counter {label}"))
+    };
+    let mut checkpoints = Vec::new();
     ui.click("open-menu");
     ui.click("open-popup-workshop");
     ui.click("popup-anchor");
@@ -791,6 +807,11 @@ fn exercise_anchored_popup<C: Component>(app: C) {
     assert_eq!(ui.focused(), Some("move-popup-anchor"));
     assert_eq!(ui.layout().dialog_paths().len(), 1);
     require_text(&ui, "Opens 1");
+    checkpoints.push(json!({
+        "step": "open",
+        "below_anchor": below_popup.y > above_anchor.y,
+        "opens": count(&ui, "Opens"),
+    }));
     ui.click("move-popup-anchor");
     let lower_anchor = ui.bounds("popup-anchor");
     let flipped = ui.bounds("inspection-popup");
@@ -798,12 +819,25 @@ fn exercise_anchored_popup<C: Component>(app: C) {
     assert!(flipped.x > below_popup.x && flipped.x + flipped.width <= 390.0);
     require_text(&ui, "Opens 1");
     require_text(&ui, "Closes 0");
+    checkpoints.push(json!({
+        "step": "move_anchor",
+        "above_anchor": flipped.y + flipped.height < lower_anchor.y,
+        "opens": count(&ui, "Opens"),
+        "closes": count(&ui, "Closes"),
+    }));
     ui.click("apply-popup-action");
     require_text(&ui, "Actions 1");
     ui.click("outside-action");
     require_text(&ui, "Closes 1");
     require_text(&ui, "Outside 1");
     assert!(ui.find_path("apply-popup-action").is_err());
+    checkpoints.push(json!({
+        "step": "dismiss_outside",
+        "actions": count(&ui, "Actions"),
+        "outside": count(&ui, "Outside"),
+        "closes": count(&ui, "Closes"),
+        "popup_visible": ui.find_path("apply-popup-action").is_ok(),
+    }));
 
     ui.click("modal-mode");
     ui.click("popup-anchor");
@@ -824,17 +858,31 @@ fn exercise_anchored_popup<C: Component>(app: C) {
     ui.escape();
     require_text(&ui, "Closes 4");
     assert_eq!(ui.focused(), Some("popup-anchor"));
+    let opens = count(&ui, "Opens");
+    assert!(ui.activate(ActivationKey::Enter));
+    checkpoints.push(json!({
+        "step": "back_then_enter",
+        "open_delta": count(&ui, "Opens") - opens,
+        "popup_visible": ui.find_path("apply-popup-action").is_ok(),
+    }));
+    ui.escape();
     assert_eq!(ui.layout().dialog_paths().len(), 1);
     ui.escape();
     assert!(ui.layout().dialog_paths().is_empty());
     assert!(ui.can_hit("open-menu"));
+    checkpoints
 }
 
 #[test]
 fn anchored_popup_repositions_and_restores_focus_in_both_backends()
 -> Result<(), Box<dyn std::error::Error>> {
-    exercise_anchored_popup(MobileNavigation::new());
-    exercise_anchored_popup(interpreted_navigation()?);
+    let aot = exercise_anchored_popup(MobileNavigation::new());
+    let interpreter = exercise_anchored_popup(interpreted_navigation()?);
+    assert_eq!(aot, interpreter);
+    if let Some(path) = std::env::var_os("XRACK_POPUP_REPLAY_REPORT") {
+        let report = json!({"desktop_aot": aot, "desktop_interpreter": interpreter});
+        std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+    }
     Ok(())
 }
 

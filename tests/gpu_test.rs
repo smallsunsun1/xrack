@@ -6116,6 +6116,9 @@ fn styled_combo_popup_paints_the_panel_border_and_scroll_indicator() {
     assert_eq!(start.pixel(x, y + 1), Some([0xde, 0x9f, 0x53, 0xff]));
     assert_eq!(start.pixel(x, y + 5), Some([0x26, 0x39, 0x53, 0xff]));
     let thumb = menu.scroll_indicator().unwrap();
+    let normal_width = menu.bounds.width;
+    let normal_rows = menu.rows.len();
+    let normal_row = menu.row_bounds(0);
     let indicator_pixel = ((thumb.x + thumb.width * 0.5) as u32, (thumb.y + 8.0) as u32);
     assert_ne!(
         start.pixel(indicator_pixel.0, indicator_pixel.1),
@@ -6131,6 +6134,33 @@ fn styled_combo_popup_paints_the_panel_border_and_scroll_indicator() {
     assert_eq!(
         end.pixel(indicator_pixel.0, indicator_pixel.1),
         Some([0x26, 0x39, 0x53, 0xff])
+    );
+
+    generated.choice_key(ChoiceKey::Home);
+    interpreted.choice_key(ChoiceKey::Home);
+    assert!(renderer.set_text_scale(2.0));
+    let larger = draw(&mut renderer, generated.scene(), generated.input());
+    let large_menu = generated
+        .input()
+        .choice_menu(generated.scene(), &larger.layout)
+        .unwrap();
+    assert_eq!(large_menu.rows[0], "Alpha");
+    assert_eq!(large_menu.row_bounds(0).height, 64.0);
+    assert_eq!(large_menu.bounds.width, normal_width);
+    assert!(large_menu.bounds.height <= 120.0);
+    assert!(large_menu.rows.len() < normal_rows);
+    let ink = |frame: &xrack_renderer_femtovg::Snapshot, row: xrack_layout::Rect| {
+        let left = row.x as u32;
+        ((row.y + 4.0) as u32..(row.y + row.height - 4.0) as u32)
+            .filter(|&y| {
+                (left + 10..left + 106).any(|x| frame.pixel(x, y) != frame.pixel(left + 6, y))
+            })
+            .count()
+    };
+    assert!(ink(&larger, large_menu.row_bounds(0)) * 2 > ink(&start, normal_row) * 3);
+    assert_same_pixels(
+        &larger,
+        &draw(&mut renderer, interpreted.scene(), interpreted.input()),
     );
 }
 
@@ -8579,6 +8609,34 @@ fn drawer_swipe_opens_the_panel_and_shades_the_window() {
     let before = renderer.snapshot(&scene, 640, 390, 1.0, &input).unwrap();
     let now = Instant::now();
     let from = Point { x: 4.0, y: 120.0 };
+    let short = Point { x: 44.0, y: 120.0 };
+    assert!(input.begin_scroll_gesture(
+        &scene,
+        &before.layout,
+        from,
+        now,
+        ScrollGestureKind::Touch
+    ));
+    assert!(input.move_scroll_gesture(
+        &scene,
+        &before.layout,
+        short,
+        now + Duration::from_millis(30)
+    ));
+    let opening = renderer.snapshot(&scene, 640, 390, 1.0, &input).unwrap();
+    assert!(opening.layout.dialog_paths().is_empty());
+    assert_eq!(ui.get_drawer_opens(), 0);
+    assert_ne!(opening.pixel(8, 376), before.pixel(8, 376));
+    assert_ne!(opening.pixel(630, 376), before.pixel(630, 376));
+    let cancelled = input.end_scroll_gesture(
+        &scene,
+        &opening.layout,
+        short,
+        now + Duration::from_millis(50),
+    );
+    assert!(cancelled.scrolled && !cancelled.tap && cancelled.control.is_none());
+    let restored = renderer.snapshot(&scene, 640, 390, 1.0, &input).unwrap();
+    assert_same_pixels(&restored, &before);
     assert!(input.begin_scroll_gesture(
         &scene,
         &before.layout,
@@ -8608,7 +8666,20 @@ fn drawer_swipe_opens_the_panel_and_shades_the_window() {
     assert_eq!(input.focused.as_ref().unwrap().id, Some("drawer-rename"));
     let frame = renderer.snapshot(&opened, 640, 390, 1.0, &input).unwrap();
     assert_eq!(frame.pixel(8, 376), Some([0x27, 0x37, 0x51, 255]));
+    assert_eq!(opening.pixel(8, 376), frame.pixel(8, 376));
     assert_ne!(frame.pixel(630, 376), before.pixel(630, 376));
+    assert_ne!(frame.pixel(630, 376), opening.pixel(630, 376));
+    let from = Point { x: 314.0, y: 120.0 };
+    let short = Point { x: 284.0, y: 120.0 };
+    assert!(input.begin_scroll_gesture(&opened, &layout, from, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&opened, &layout, short, now + Duration::from_millis(30)));
+    let closing = renderer.snapshot(&opened, 640, 390, 1.0, &input).unwrap();
+    assert_eq!(closing.layout.at_path(&path).unwrap().bounds.x, -30.0);
+    assert_ne!(closing.pixel(306, 376), frame.pixel(306, 376));
+    assert_eq!(ui.get_drawer_closes(), 0);
+    input.cancel_scroll_gesture();
+    let restored = renderer.snapshot(&opened, 640, 390, 1.0, &input).unwrap();
+    assert_same_pixels(&restored, &frame);
     if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
         frame
             .save_png(std::path::Path::new(&path).join("drawer.png"))

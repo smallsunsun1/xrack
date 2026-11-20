@@ -84,6 +84,25 @@ impl TouchSelectionHandle {
 }
 
 impl TextSystem {
+    /// Use the same row-constrained font size for the cell value and its editor.
+    #[doc(hidden)]
+    pub fn entry_font_size(&self, node: &Node, bounds: Rect) -> f32 {
+        if matches!(node.kind, "TableCell" | "TreeCell") {
+            self.row_label_font_size(node, bounds.height)
+        } else {
+            self.font_size(node)
+        }
+    }
+
+    pub(crate) fn row_label_font_size(&self, node: &Node, height: f32) -> f32 {
+        let size = self.font_size(node);
+        if self.text_scale() > 1.0 {
+            size.min(((height - 4.0) / 1.4).max(1.0))
+        } else {
+            size
+        }
+    }
+
     /// Visible highlight rectangles in the editor's layout coordinates.
     #[doc(hidden)]
     pub fn editor_selection_rects(
@@ -104,7 +123,7 @@ impl TextSystem {
         let bounds = editor_part(node, item).unwrap_or(item.bounds);
         let direction = item.layout_direction_override();
         let area = text_editor_viewport(node, bounds);
-        let size = self.font_size(node);
+        let size = self.entry_font_size(node, bounds);
         let collect = |line: &VisualTextLine, selection: Range<usize>, x, y, height| {
             line.selection_spans(selection)
                 .into_iter()
@@ -131,7 +150,7 @@ impl TextSystem {
                 .flatten()
                 .collect()
         } else {
-            let line = self.single_line_layout(node, &value);
+            let line = self.single_line_layout_at_size(node, &value, size);
             let (x, _) = entry_origin(
                 node,
                 area,
@@ -242,8 +261,9 @@ impl TextSystem {
                 .collect()
         } else {
             let area = text_editor_viewport(node, bounds);
-            let line = self.single_line_layout(node, &value);
-            let line_bounds = text_editor_line_bounds(area, self.font_size(node) * 1.4);
+            let size = self.entry_font_size(node, bounds);
+            let line = self.single_line_layout_at_size(node, &value, size);
+            let line_bounds = text_editor_line_bounds(area, size * 1.4);
             let (x, _) = entry_origin(
                 node,
                 area,
@@ -693,8 +713,11 @@ impl TextSystem {
             let mask = node
                 .password_masked()
                 .then(|| PasswordMask::for_editor(node, &value, Some(editor)));
-            let visual =
-                self.single_line_layout(node, mask.as_ref().map_or(&value, PasswordMask::display));
+            let visual = self.single_line_layout_at_size(
+                node,
+                mask.as_ref().map_or(&value, PasswordMask::display),
+                self.entry_font_size(node, item.bounds),
+            );
             let display_offset = |offset| {
                 mask.as_ref()
                     .map_or(offset, |mask| mask.display_offset(offset))
@@ -845,7 +868,8 @@ impl TextSystem {
             .password_masked()
             .then(|| PasswordMask::for_editor(node, value, editor));
         let display = mask.as_ref().map_or(value, PasswordMask::display);
-        let layout = self.single_line_layout(node, display);
+        let layout =
+            self.single_line_layout_at_size(node, display, self.entry_font_size(node, bounds));
         let caret = editor.map(|edit| {
             let mut caret = edit.position(value);
             if let Some(mask) = &mask {
@@ -926,7 +950,11 @@ impl TextSystem {
     ) -> f32 {
         let display = display_text(node, value, editor, true);
         let area = text_editor_viewport(node, bounds);
-        let layout = self.single_line_layout(node, &display.content);
+        let layout = self.single_line_layout_at_size(
+            node,
+            &display.content,
+            self.entry_font_size(node, bounds),
+        );
         let (x, caret) = entry_origin(
             node,
             area,
@@ -996,8 +1024,55 @@ impl TextSystem {
         (layout, caret)
     }
 
+    /// Return the visible part of the active multiline caret in layout coordinates.
+    #[doc(hidden)]
+    pub fn visible_multiline_caret_rect(
+        &self,
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<Rect> {
+        let target = input.focused.as_ref()?;
+        let node = scene.interactive_at_path(&target.path)?;
+        if !is_multiline_text_input(node.kind) || node.text_read_only() {
+            return None;
+        }
+        let editor = input.displayed_editor(node, &target.path)?;
+        let item = layout.at_path(&target.path)?;
+        let (geometry, caret) = self.text_area_caret_in_direction(
+            node,
+            item.bounds,
+            Some(editor),
+            item.layout_direction_override(),
+        );
+        let caret = caret?;
+        let scroll = geometry.clamp_scroll(input.text_scroll(&target.path));
+        let area = geometry.area;
+        let rect = area.intersect(Rect::new(
+            area.x + caret.x - scroll.x,
+            area.y + caret.y - scroll.y,
+            1.0,
+            geometry.line_height,
+        ));
+        (rect.width > 0.0 && rect.height > 0.0).then_some(rect)
+    }
+
     /// Return the editor caret in window coordinates for the platform input method.
     pub fn editor_ime_area(
+        &self,
+        input: &mut Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        follow_caret: bool,
+    ) -> Option<Rect> {
+        let caret = self.editor_caret_rect(input, scene, layout, follow_caret)?;
+        let item = layout.at_path(&input.focused.as_ref()?.path)?;
+        Some(item.window_bounds(caret))
+    }
+
+    /// Compute the active caret in the editor's layout coordinates.
+    #[doc(hidden)]
+    pub fn editor_caret_rect(
         &self,
         input: &mut Interaction,
         scene: &Node,
@@ -1027,14 +1102,14 @@ impl TextSystem {
                     scroll = geometry.keep_visible(scroll, caret);
                 }
                 let area = geometry.area;
-                layout.window_bounds(Rect::new(
+                Rect::new(
                     area.x + (caret.x - scroll.x).clamp(0.0, area.width),
                     area.y
                         + (caret.y - scroll.y)
                             .clamp(0.0, (area.height - geometry.line_height).max(0.0)),
                     1.0,
                     geometry.line_height,
-                ))
+                )
             });
             input.set_text_scroll(&target.clone(), scroll);
             rect
@@ -1053,9 +1128,9 @@ impl TextSystem {
             );
             let line = text_editor_line_bounds(
                 text_editor_viewport(node, bounds),
-                self.font_size(node) * 1.4,
+                self.entry_font_size(node, bounds) * 1.4,
             );
-            Some(layout.window_bounds(Rect::new(x, line.y, 1.0, line.height.max(1.0))))
+            Some(Rect::new(x, line.y, 1.0, line.height.max(1.0)))
         }
     }
 }
@@ -1103,7 +1178,7 @@ pub(crate) fn draw(
     enabled: bool,
 ) -> Result<bool, String> {
     let DisplayText {
-        content,
+        mut content,
         selection,
         composition,
         caret,
@@ -1113,10 +1188,22 @@ pub(crate) fn draw(
     if area.width <= 0.0 || area.height <= 0.0 {
         return Ok(false);
     }
-    let size = text_system.font_size(node);
+    let size = text_system.entry_font_size(node, bounds);
     let height = size * 1.4;
     let y = text_editor_line_bounds(area, height).y;
-    let layout = text_system.single_line_layout(node, &content);
+    let foreground = theme.editor_foreground(node, placeholder, enabled);
+    let paint = text_system.paint_node_at_size(node, size, color(foreground), false);
+    if matches!(node.kind, "TableCell" | "TreeCell")
+        && text_system.text_scale() > 1.0
+        && text.editor.is_none()
+        && !text.active
+        && let Cow::Owned(shortened) = xrack_layout::elide_to_width(&content, area.width, |value| {
+            text_system.advance_painted(value, &paint)
+        })
+    {
+        content = Cow::Owned(shortened);
+    }
+    let layout = text_system.single_line_layout_at_size(node, &content, size);
     let (aligned_x, caret_x) = entry_origin(
         node,
         area,
@@ -1164,8 +1251,6 @@ pub(crate) fn draw(
             color(theme.focus),
         );
     }
-    let foreground = theme.editor_foreground(node, placeholder, enabled);
-    let paint = text_system.paint_node(node, color(foreground), false);
     fill_selected_text(
         canvas,
         text_system,
@@ -1327,7 +1412,15 @@ pub(crate) fn toggle(
             toggle_indicator(canvas, theme, node, &geometry, layout);
         }
     }
-    crate::controls::leading_label(
+    let tint = if enabled {
+        node.color("color").unwrap_or(theme.text)
+    } else {
+        theme.disabled_text
+    };
+    if let Some((size, lines)) = layout.group_title() {
+        return crate::controls::draw_title(canvas, text_system, node, bounds, tint, size, lines);
+    }
+    crate::controls::row_label(
         canvas,
         text_system,
         node,
@@ -1338,11 +1431,7 @@ pub(crate) fn toggle(
             "text"
         })
         .unwrap_or(""),
-        if enabled {
-            node.color("color").unwrap_or(theme.text)
-        } else {
-            theme.disabled_text
-        },
+        tint,
         direction,
     )
 }

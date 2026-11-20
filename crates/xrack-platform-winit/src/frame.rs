@@ -1,5 +1,5 @@
 use std::{collections::BTreeMap, rc::Rc};
-use xrack_layout::{Interaction, LayoutNode, OverscrollFrame, Size};
+use xrack_layout::{Interaction, LayoutNode, OverscrollFrame, Rect, Size};
 use xrack_runtime::{ChangeSignal, Node, Property, RowKey};
 
 struct FrameInput {
@@ -11,7 +11,9 @@ struct FrameInput {
     slider_preview: Option<(Vec<usize>, f64)>,
     switch_preview: Option<(Vec<usize>, Option<RowKey>, f32)>,
     swipe_preview: Option<(Vec<usize>, Option<RowKey>, f32)>,
+    drawer_preview: Option<(Vec<usize>, f32)>,
     overscroll: OverscrollFrame,
+    floating_keyboard: Option<Rect>,
     keyboard_avoidance: Option<(Vec<usize>, f32)>,
 }
 
@@ -49,13 +51,16 @@ impl FrameCache {
         let tumbler_preview = input.tumbler_preview();
         let switch_preview = input.switch_preview();
         let swipe_preview = input.swipe_preview();
+        let drawer_preview = input.drawer_preview();
         let overscroll = input.overscroll_frame();
+        let floating_keyboard = input.floating_keyboard();
         let keyboard_avoidance = input.keyboard_avoidance();
         let same_geometry_inputs = self.input.as_ref().is_some_and(|last| {
             last.viewport == viewport
                 && &last.offsets == offsets
                 && &last.horizontal_offsets == horizontal_offsets
                 && last.overscroll == overscroll
+                && last.floating_keyboard == floating_keyboard
                 && last
                     .keyboard_avoidance
                     .as_ref()
@@ -77,6 +82,11 @@ impl FrameCache {
                     .as_ref()
                     .map(|(path, key, offset)| (path.as_slice(), *key, *offset))
                     == swipe_preview
+                && last
+                    .drawer_preview
+                    .as_ref()
+                    .map(|(path, reveal)| (path.as_slice(), *reveal))
+                    == drawer_preview
         });
         if same_geometry_inputs && let Some(last) = &mut self.input {
             if !Rc::ptr_eq(&last.scene, &scene) {
@@ -94,6 +104,7 @@ impl FrameCache {
                 offsets: offsets.clone(),
                 horizontal_offsets: horizontal_offsets.clone(),
                 overscroll,
+                floating_keyboard,
                 keyboard_avoidance: keyboard_avoidance.map(|(path, shift)| (path.to_vec(), shift)),
                 tumbler_preview: tumbler_preview.map(|(path, offset)| (path.to_vec(), offset)),
                 slider_preview: input
@@ -103,6 +114,7 @@ impl FrameCache {
                     .map(|(path, key, position)| (path.to_vec(), key, position)),
                 swipe_preview: swipe_preview
                     .map(|(path, key, offset)| (path.to_vec(), key, offset)),
+                drawer_preview: drawer_preview.map(|(path, reveal)| (path.to_vec(), reveal)),
             });
             self.input_changed.notify();
         }

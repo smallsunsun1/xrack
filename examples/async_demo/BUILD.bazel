@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//bazel:xrack.bzl", "xr_ui_library")
 
 xr_ui_library(
@@ -9,7 +9,36 @@ xr_ui_library(
 
 exports_files(
     ["async.xr"],
-    visibility = ["//bindings/python:__pkg__", "//tests:__pkg__"],
+    visibility = [
+        "//bindings/python:__pkg__",
+        "//tests:__pkg__",
+    ],
+)
+
+rust_library(
+    name = "search_completion",
+    srcs = ["search.rs"],
+    crate_root = "search.rs",
+    edition = "2024",
+    visibility = ["//tests:__pkg__"],
+    deps = [
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:tracing",
+    ],
+)
+
+rust_library(
+    name = "trace_capture",
+    srcs = ["trace_capture.rs"],
+    crate_root = "trace_capture.rs",
+    edition = "2024",
+    visibility = ["//tests:__pkg__"],
+    deps = [
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:serde_json",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
+    ],
 )
 
 rust_binary(
@@ -18,8 +47,13 @@ rust_binary(
     edition = "2024",
     deps = [
         ":async_ui",
+        ":search_completion",
+        ":trace_capture",
         "//crates/xrack-platform-winit:xrack_platform_winit",
+        "//crates/xrack-runtime:xrack_runtime",
         "@crates//:tokio",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
     ],
 )
 
@@ -36,7 +70,12 @@ rust_binary(
     edition = "2024",
     deps = [
         ":async_ui_live",
+        ":search_completion",
+        ":trace_capture",
         "//crates/xrack-platform-winit:xrack_platform_winit",
+        "//crates/xrack-runtime:xrack_runtime",
         "@crates//:tokio",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
     ],
 )

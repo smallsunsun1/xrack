@@ -1,4 +1,4 @@
-use crate::{LayoutNode, Point, Rect, place_in_direction};
+use crate::{LayoutNode, Point, Rect, Size, TextMeasurer, place_in_direction};
 use xrack_runtime::{
     CalendarAction, CalendarHighlight, CalendarHighlightDay, CalendarState, Date, LayoutDirection,
     Node,
@@ -15,6 +15,24 @@ enum CalendarPart {
 }
 
 impl CalendarPart {
+    fn dimensions(self) -> (usize, usize) {
+        match self {
+            Self::Calendar => (7, 8),
+            Self::MonthGrid => (7, 6),
+            Self::DayOfWeekRow => (7, 1),
+            Self::WeekNumberColumn => (1, 6),
+        }
+    }
+
+    fn from_node(node: &Node) -> Self {
+        match node.kind {
+            "MonthGrid" => Self::MonthGrid,
+            "DayOfWeekRow" => Self::DayOfWeekRow,
+            "WeekNumberColumn" => Self::WeekNumberColumn,
+            _ => Self::Calendar,
+        }
+    }
+
     fn cell(
         self,
         bounds: Rect,
@@ -23,14 +41,9 @@ impl CalendarPart {
         span: usize,
         direction: LayoutDirection,
     ) -> Rect {
-        let (columns, rows) = match self {
-            Self::Calendar => (7.0, 8.0),
-            Self::MonthGrid => (7.0, 6.0),
-            Self::DayOfWeekRow => (7.0, 1.0),
-            Self::WeekNumberColumn => (1.0, 6.0),
-        };
-        let width = bounds.width / columns;
-        let height = bounds.height / rows;
+        let (columns, rows) = self.dimensions();
+        let width = bounds.width / columns as f32;
+        let height = bounds.height / rows as f32;
         let rect = Rect::new(
             bounds.x + width * column as f32,
             bounds.y + height * row as f32,
@@ -39,6 +52,21 @@ impl CalendarPart {
         );
         place_in_direction(rect, bounds, direction)
     }
+}
+
+pub(crate) fn preferred_size(node: &Node, text: &impl TextMeasurer) -> Size {
+    let part = CalendarPart::from_node(node);
+    let mut size = match part {
+        CalendarPart::Calendar => Size::new(294.0, 300.0),
+        CalendarPart::MonthGrid => Size::new(294.0, 216.0),
+        CalendarPart::DayOfWeekRow => Size::new(294.0, 32.0),
+        CalendarPart::WeekNumberColumn => Size::new(44.0, 216.0),
+    };
+    if text.text_scale() > 1.0 {
+        let row_height = (text.font_size(node) * 1.8 + 4.0).max(44.0);
+        size.height = size.height.max(row_height * part.dimensions().1 as f32);
+    }
+    size
 }
 
 pub(crate) fn month_cell(bounds: Rect, slot: usize, direction: LayoutDirection) -> Rect {
@@ -87,12 +115,7 @@ impl CalendarGeometry {
     fn with_layout_direction(node: &Node, bounds: Rect, direction: LayoutDirection) -> Self {
         let state = CalendarState::from_node(node);
         let week_start = node.int("week-start").unwrap_or(1).clamp(1, 7);
-        let part = match node.kind {
-            "MonthGrid" => CalendarPart::MonthGrid,
-            "DayOfWeekRow" => CalendarPart::DayOfWeekRow,
-            "WeekNumberColumn" => CalendarPart::WeekNumberColumn,
-            _ => CalendarPart::Calendar,
-        };
+        let part = CalendarPart::from_node(node);
         let cells = if part == CalendarPart::DayOfWeekRow {
             [None; 42]
         } else {

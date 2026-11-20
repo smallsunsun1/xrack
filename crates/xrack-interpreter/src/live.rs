@@ -175,7 +175,7 @@ impl<T: LiveUi> LiveComponent<T> {
                     component.inspector().configure_observation(
                         enabled("XRACK_RECORD_UI"),
                         capture_values,
-                        enabled("XRACK_PROFILE_UI"),
+                        enabled("XRACK_PROFILE_UI") || enabled("XRACK_TRACE_UI"),
                         enabled("XRACK_CONTROL_UI"),
                     );
                     Some(session)

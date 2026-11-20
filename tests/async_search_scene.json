@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "steps": [
+    { "type": "fill", "id": "query-field", "text": "cloud" },
+    { "type": "fill", "id": "query-field", "text": "sensor" },
+    { "type": "expect_searches", "queries": ["cloud", "sensor"] },
+    {
+      "type": "reload_layout",
+      "generation": 1,
+      "edits": [{ "before": "row-height: 30px;", "after": "row-height: 42px;" }],
+      "row_height": 42
+    },
+    { "type": "expect_property", "name": "loading", "value": true },
+    { "type": "complete_search", "request": 2, "rows": ["sensor readings", "sensor status"] },
+    { "type": "expect_property", "name": "result-query", "value": "sensor" },
+    { "type": "complete_search", "request": 1, "rows": ["cloud storage"] },
+    { "type": "expect_property", "name": "loading", "value": false },
+    { "type": "expect_property", "name": "query", "value": "sensor" },
+    { "type": "expect_property", "name": "result-query", "value": "sensor" },
+    { "type": "expect_results", "rows": ["sensor readings", "sensor status"] },
+    { "type": "expect_searches", "queries": ["cloud", "sensor"] }
+  ]
+}

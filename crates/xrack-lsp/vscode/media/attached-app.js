@@ -17,6 +17,7 @@
     let callsState;
     let selectedCall;
     let updateState;
+    let diagnosticState;
 
     function element(tag, text, className) {
         const node = document.createElement(tag);
@@ -190,6 +191,38 @@
         renderStack();
     });
 
+    function requestIds(event) {
+        if (Number.isSafeInteger(event.request_id)) return [String(event.request_id)];
+        return typeof event.requests === 'string' ? event.requests.match(/\d+/g) ?? [] : [];
+    }
+
+    function showDiagnostics(records) {
+        const events = Array.isArray(records) ? records.filter(record => typeof record?.event === 'string') : [];
+        const section = byId('diagnostics-section');
+        section.hidden = !events.length;
+        const selector = byId('diagnostic-request');
+        const signature = JSON.stringify([events, selector.value]);
+        if (diagnosticState === signature) return;
+        diagnosticState = signature;
+        const selected = selector.value;
+        const requests = [...new Set(events.flatMap(requestIds))];
+        const option = id => {
+            const item = element('option', id || 'All requests');
+            item.value = id;
+            return item;
+        };
+        selector.replaceChildren(...['', ...requests].map(option));
+        selector.value = requests.includes(selected) ? selected : '';
+        const list = events.filter(event => !selector.value || requestIds(event).includes(selector.value));
+        byId('diagnostic-events').replaceChildren(...list.slice().reverse().map(({ event, ...fields }) => {
+            const item = element('li', event.replaceAll('_', ' '));
+            item.append(values(Object.entries(fields).map(([name, value]) => ({ name, value }))));
+            return item;
+        }));
+    }
+
+    byId('diagnostic-request').addEventListener('change', () => showDiagnostics(snapshot?.diagnostics));
+
     function showUpdates(node) {
         const plan = snapshot.updatePlan;
         byId('update-section').hidden = !plan;
@@ -305,6 +338,7 @@
         showTree(nodes);
         select();
         showCalls(data.trace);
+        showDiagnostics(data.diagnostics);
         if (nativePick) buttons.get(selected)?.scrollIntoView({ block: 'nearest' });
     });
     vscode.postMessage({ type: 'ready' });

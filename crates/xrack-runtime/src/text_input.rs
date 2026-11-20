@@ -29,6 +29,17 @@ pub enum InputPurpose {
     OneTimeCode,
 }
 
+/// Native keyboard capitalization requested by a text editor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyboardCapitalization {
+    #[default]
+    Auto,
+    None,
+    Words,
+    Sentences,
+    Characters,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReturnKey {
     #[default]
@@ -203,12 +214,24 @@ impl Node {
         }
     }
 
+    pub fn keyboard_capitalization(&self) -> KeyboardCapitalization {
+        match self.properties.get("keyboard-capitalization") {
+            Some(Value::KeyboardCapitalization(mode)) => *mode,
+            _ => KeyboardCapitalization::Auto,
+        }
+    }
+
     pub fn return_key(&self) -> ReturnKey {
         match (self.kind, self.properties.get("return-key")) {
             ("TextInput" | "LineEdit", Some(Value::ReturnKey(key))) => *key,
             ("ComboBox", Some(Value::ReturnKey(key))) if combo_editable(self) => *key,
             _ => ReturnKey::Auto,
         }
+    }
+
+    /// Whether to show the keyboard's previous and next field controls.
+    pub fn keyboard_navigation(&self) -> bool {
+        self.boolean("keyboard-navigation", self.return_key() != ReturnKey::Auto)
     }
 
     /// Check a proposed user edit, allowing incomplete numeric drafts.

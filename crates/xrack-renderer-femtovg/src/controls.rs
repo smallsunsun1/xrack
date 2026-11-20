@@ -75,6 +75,55 @@ pub(crate) fn color_plane(canvas: &mut Canvas<WGPURenderer>, node: &Node, bounds
     }
 }
 
+fn picker_label_size(
+    text: &TextSystem,
+    node: &Node,
+    rect: Rect,
+    label: &str,
+    height_ratio: f32,
+) -> f32 {
+    let mut size = text
+        .font_size(node)
+        .min((rect.height * height_ratio).max(1.0));
+    if text.text_scale() > 1.0 {
+        let width = (rect.width - 4.0).max(1.0);
+        let paint = text.paint_node_at_size(node, size, femtovg::Color::white(), false);
+        let advance = text.advance_painted(label, &paint);
+        if advance > width {
+            size = (size * width / advance).max(1.0);
+        }
+    }
+    size
+}
+
+fn draw_picker_label(
+    canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
+    node: &Node,
+    rect: Rect,
+    label: &str,
+    tint: femtovg::Color,
+    size: f32,
+) -> Result<(), String> {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return Ok(());
+    }
+    let paint = text.paint_node_at_size(node, size, tint, true);
+    canvas.save();
+    canvas.intersect_scissor(rect.x, rect.y, rect.width, rect.height);
+    let result = text.fill_text(
+        canvas,
+        rect.x + rect.width * 0.5,
+        rect.y + ((rect.height - size * 1.4) * 0.5).max(0.0),
+        label,
+        &paint,
+    );
+    canvas.restore();
+    result
+        .map(|_| ())
+        .map_err(|error| format!("picker label drawing failed: {error}"))
+}
+
 pub(crate) fn calendar(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
@@ -83,25 +132,9 @@ pub(crate) fn calendar(
     geometry: &CalendarGeometry,
     enabled: bool,
 ) -> Result<(), String> {
-    let draw = |canvas: &mut Canvas<WGPURenderer>, rect: Rect, label: &str, tint: Color| {
-        if rect.width <= 0.0 || rect.height <= 0.0 {
-            return Ok(());
-        }
-        let size = text.font_size(node).min((rect.height * 0.56).max(1.0));
-        let paint = text.paint_node_at_size(node, size, color(tint), true);
-        canvas.save();
-        canvas.intersect_scissor(rect.x, rect.y, rect.width, rect.height);
-        let result = text.fill_text(
-            canvas,
-            rect.x + rect.width * 0.5,
-            rect.y + ((rect.height - size * 1.4) * 0.5).max(0.0),
-            label,
-            &paint,
-        );
-        canvas.restore();
-        result
-            .map(|_| ())
-            .map_err(|error| format!("calendar label drawing failed: {error}"))
+    let draw = |canvas: &mut Canvas<WGPURenderer>, rect, label: &str, tint| {
+        let size = picker_label_size(text, node, rect, label, 0.56);
+        draw_picker_label(canvas, text, node, rect, label, color(tint), size)
     };
     if geometry.has_header() {
         let month = geometry.state.month;
@@ -125,8 +158,23 @@ pub(crate) fn calendar(
             draw(canvas, rect, label, tint)?;
         }
     }
+    let weekday_size = (text.text_scale() > 1.0).then(|| {
+        geometry
+            .weekdays(node)
+            .map(|(rect, label)| picker_label_size(text, node, rect, label, 0.56))
+            .fold(f32::INFINITY, f32::min)
+    });
     for (rect, label) in geometry.weekdays(node) {
-        draw(canvas, rect, label, theme.disabled_text)?;
+        let size = weekday_size.unwrap_or_else(|| picker_label_size(text, node, rect, label, 0.56));
+        draw_picker_label(
+            canvas,
+            text,
+            node,
+            rect,
+            label,
+            color(theme.disabled_text),
+            size,
+        )?;
     }
     for week in geometry.weeks() {
         draw(
@@ -271,9 +319,6 @@ pub(crate) fn tumbler_row(
     row: &xrack_layout::TumblerRow,
     enabled: bool,
 ) -> Result<(), String> {
-    let size = text
-        .font_size(node)
-        .min((row.bounds.height * 0.64).max(1.0));
     let mut tint = color(if enabled {
         let foreground = if row.displacement.abs() < 0.5 {
             theme.on_accent(theme.text)
@@ -285,25 +330,14 @@ pub(crate) fn tumbler_row(
         theme.disabled_text
     });
     tint.a *= (1.0 - 0.22 * row.displacement.abs()).max(0.38);
-    let paint = text.paint_node_at_size(node, size, tint, true);
-    canvas.save();
-    canvas.intersect_scissor(
+    let bounds = Rect::new(
         row.bounds.x + 4.0,
         row.bounds.y,
         (row.bounds.width - 8.0).max(0.0),
         row.bounds.height,
     );
-    let result = text.fill_text(
-        canvas,
-        row.bounds.x + row.bounds.width * 0.5,
-        row.bounds.y + ((row.bounds.height - size * 1.4) * 0.5).max(0.0),
-        &row.label,
-        &paint,
-    );
-    canvas.restore();
-    result
-        .map(|_| ())
-        .map_err(|error| format!("tumbler label drawing failed: {error}"))
+    let size = picker_label_size(text, node, bounds, &row.label, 0.64);
+    draw_picker_label(canvas, text, node, bounds, &row.label, tint, size)
 }
 
 pub(crate) fn split_handle(
@@ -373,7 +407,7 @@ pub(crate) fn menu_header(
     } else {
         theme.disabled_text
     };
-    leading_label(
+    row_label(
         canvas,
         text,
         node,
@@ -429,12 +463,7 @@ pub(crate) fn menu_panel(
             } else {
                 theme.disabled_text
             };
-            let size = row
-                .node
-                .font_size()
-                .or_else(|| text.default_font_size())
-                .unwrap_or(15.0)
-                .clamp(1.0, (rect.height / 1.4).max(1.0));
+            let size = row.font_size.min((rect.height / 1.4).max(1.0));
             let paint = text.paint_node_at_size(row.node, size, color(tint), false);
             if let Some(image) = &row.icon {
                 images.draw_icon(
@@ -450,10 +479,9 @@ pub(crate) fn menu_panel(
             let trailing = rect.width - 12.0;
             let mut label_end = trailing - if row.submenu { 10.0 } else { 0.0 };
             if let Some(shortcut) = &row.shortcut {
-                let width = text
-                    .advance_painted(shortcut, &paint)
-                    .min((trailing - label_start).max(0.0) * 0.65);
-                if width > 0.0 {
+                let width = text.advance_painted(shortcut, &paint);
+                let label_width = text.advance_painted(row.label, &paint);
+                if width > 0.0 && label_width + width + 12.0 <= label_end - label_start {
                     let area = panel.row_content_bounds(slot, trailing - width, width);
                     let mut shortcut_paint = paint.clone();
                     let x = if rtl {
@@ -474,7 +502,10 @@ pub(crate) fn menu_panel(
             } else {
                 area.x
             };
-            draw_label(canvas, text, area, row.label, size, x, &label_paint)?;
+            let label = xrack_layout::elide_to_width(row.label, area.width, |value| {
+                text.advance_painted(value, &label_paint)
+            });
+            draw_label(canvas, text, area, &label, size, x, &label_paint)?;
             let mut mark = Path::new();
             if row.checked == Some(true) {
                 let start = panel.row_content_bounds(slot, 9.0, 10.0).x;
@@ -567,10 +598,13 @@ pub(crate) fn tree_indicator(
     direction: LayoutDirection,
     expanded: bool,
     enabled: bool,
+    text_scale: f32,
 ) {
     let x = bounds.x + bounds.width * 0.5;
     let y = bounds.y + bounds.height * 0.5;
-    let extent = 5.0_f32.min(bounds.width * 0.5).min(bounds.height * 0.5);
+    let extent = (5.0 * text_scale.max(1.0))
+        .min(bounds.width * 0.5)
+        .min(bounds.height * 0.5);
     let mut arrow = Path::new();
     if expanded {
         arrow.move_to(x - extent, y - extent * 0.5);
@@ -643,19 +677,25 @@ pub(crate) fn table_header(
         if title.width > 0.0 && title.height > 0.0 {
             canvas.save();
             canvas.intersect_scissor(title.x, title.y, title.width, title.height);
-            let size = text
-                .default_font_size()
-                .unwrap_or(15.0)
+            let size = xrack_layout::table_heading_font_size(text)
                 .clamp(1.0, (bounds.height / 1.4).max(1.0));
             let mut paint = text.paint(size, color(theme.text), false);
             if geometry.mirrored() {
                 paint.set_text_align(Align::Right);
             }
+            let caption = column.text("title").unwrap_or("");
+            let caption = if text.text_scale() > 1.0 {
+                xrack_layout::elide_to_width(caption, title_width, |value| {
+                    text.advance_painted(value, &paint)
+                })
+            } else {
+                std::borrow::Cow::Borrowed(caption)
+            };
             let result = text.fill_text(
                 canvas,
                 origin,
                 bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
-                column.text("title").unwrap_or(""),
+                &caption,
                 &paint,
             );
             canvas.restore();
@@ -734,17 +774,11 @@ pub(crate) fn table_row_headers(
             };
             fill(canvas, visible, 0.0, theme.role(role));
         }
-        let size = text
-            .default_font_size()
-            .unwrap_or(15.0)
-            .clamp(1.0, (bounds.height / 1.4).max(1.0));
-        let label_clip = Rect::new(
-            bounds.x + 6.0,
-            bounds.y,
-            (bounds.width - 12.0).max(0.0),
-            bounds.height,
-        )
-        .intersect(visible);
+        let mut size =
+            xrack_layout::table_heading_font_size(text).clamp(1.0, (bounds.height / 1.4).max(1.0));
+        let label_width = (bounds.width - 12.0).max(0.0);
+        let label_clip =
+            Rect::new(bounds.x + 6.0, bounds.y, label_width, bounds.height).intersect(visible);
         if label_clip.width > 0.0 {
             canvas.save();
             canvas.intersect_scissor(
@@ -759,6 +793,13 @@ pub(crate) fn table_row_headers(
                 theme.disabled_text
             };
             let mut paint = text.paint(size, color(tint), false);
+            if text.text_scale() > 1.0 {
+                let advance = text.advance_painted(label, &paint);
+                if advance > label_width {
+                    size = (size * label_width / advance).max(1.0);
+                    paint.set_font_size(size);
+                }
+            }
             let x = if table.mirrored() {
                 paint.set_text_align(Align::Right);
                 bounds.x + bounds.width - 6.0
@@ -979,25 +1020,25 @@ pub(crate) fn choice_row(
             theme.role(Role::InactiveSelection),
         );
     }
-    let size = menu
-        .control
-        .font_size()
-        .or_else(|| text.default_font_size())
-        .unwrap_or(14.0)
-        .clamp(1.0, (row.height / 1.4).max(1.0));
+    let size = menu.font_size.min((row.height / 1.4).max(1.0));
     let foreground = if menu.row_enabled(offset) {
         theme.text
     } else {
         theme.disabled_text
     };
     let mut paint = text.paint_node_at_size(menu.control, size, color(foreground), false);
+    let pad = (row.width * 0.5).min(10.0);
+    let label_bounds = Rect::new(row.x + pad, row.y, row.width - 2.0 * pad, row.height);
     let x = if menu.layout_direction == LayoutDirection::RightToLeft {
         paint.set_text_align(Align::Right);
-        row.x + row.width - 10.0
+        label_bounds.x + label_bounds.width
     } else {
-        row.x + 10.0
+        label_bounds.x
     };
-    draw_label(canvas, text, row, &menu.rows[offset], size, x, &paint)
+    let label = xrack_layout::elide_to_width(&menu.rows[offset], label_bounds.width, |value| {
+        text.advance_painted(value, &paint)
+    });
+    draw_label(canvas, text, label_bounds, &label, size, x, &paint)
 }
 
 pub(crate) fn label(
@@ -1031,6 +1072,33 @@ pub(crate) fn leading_label(
         bounds.x
     };
     draw_label(canvas, text, bounds, value, size, x, &paint)
+}
+
+pub(crate) fn row_label(
+    canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
+    node: &Node,
+    bounds: Rect,
+    value: &str,
+    tint: Color,
+    direction: LayoutDirection,
+) -> Result<(), String> {
+    let size = text.row_label_font_size(node, bounds.height);
+    let mut paint = text.paint_node_at_size(node, size, color(tint), false);
+    let x = if direction == LayoutDirection::RightToLeft {
+        paint.set_text_align(Align::Right);
+        bounds.x + bounds.width
+    } else {
+        bounds.x
+    };
+    let value = if text.text_scale() > 1.0 {
+        xrack_layout::elide_to_width(value, bounds.width, |label| {
+            text.advance_painted(label, &paint)
+        })
+    } else {
+        std::borrow::Cow::Borrowed(value)
+    };
+    draw_label(canvas, text, bounds, &value, size, x, &paint)
 }
 
 fn draw_label(
@@ -1129,6 +1197,30 @@ pub(crate) fn radio_indicator(
     }
 }
 
+pub(crate) fn draw_title(
+    canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
+    node: &Node,
+    bounds: Rect,
+    tint: Color,
+    size: f32,
+    lines: &[xrack_layout::PlannedLabelLine],
+) -> Result<(), String> {
+    let title = node.text("title").unwrap_or_default();
+    let paint = text.paint_node_at_size(node, size, color(tint), false);
+    for line in lines {
+        text.fill_text(
+            canvas,
+            bounds.x + line.origin.x,
+            bounds.y + line.origin.y,
+            &line.text(title),
+            &paint,
+        )
+        .map_err(|error| format!("title drawing failed: {error}"))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn expander_header(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
@@ -1163,6 +1255,9 @@ pub(crate) fn expander_header(
     let mut paint = Paint::color(color(foreground));
     paint.set_line_width(1.5);
     canvas.stroke_path(&chevron, &paint);
+    if let Some((size, lines)) = layout.group_title() {
+        return draw_title(canvas, text, node, header, foreground, size, lines);
+    }
     let mut paint = text.paint_node(node, color(foreground), false);
     let size = text.font_size(node);
     if rtl {
@@ -1225,6 +1320,7 @@ pub(crate) struct TabAppearance {
     pub focused: bool,
     pub close: Option<Rect>,
     pub close_hovered: bool,
+    pub direction: LayoutDirection,
 }
 
 pub(crate) fn tab(
@@ -1278,24 +1374,30 @@ pub(crate) fn tab(
     if node.kind == "TabButton" && node.control_part("ButtonContent").is_some() {
         return Ok(());
     }
-    label(
-        canvas,
-        text,
-        node,
-        Rect::new(
-            content.x + 10.0,
-            content.y,
-            (content.width - 20.0).max(0.0),
-            content.height,
-        ),
-        title,
-        text.default_font_size()
-            .unwrap_or(xrack_layout::TAB_LABEL_SIZE)
-            .clamp(1.0, (bounds.height / 1.4).max(1.0)),
-        if appearance.enabled {
-            theme.text
-        } else {
-            theme.disabled_text
-        },
-    )
+    let label_bounds = Rect::new(
+        content.x + 10.0,
+        content.y,
+        (content.width - 20.0).max(0.0),
+        content.height,
+    );
+    let size = xrack_layout::tab_font_size(node, text, bounds.height);
+    let tint = if appearance.enabled {
+        theme.text
+    } else {
+        theme.disabled_text
+    };
+    if text.text_scale() <= 1.0 {
+        return label(canvas, text, node, label_bounds, title, size, tint);
+    }
+    let mut paint = text.paint_node_at_size(node, size, color(tint), false);
+    let x = if appearance.direction == LayoutDirection::RightToLeft {
+        paint.set_text_align(Align::Right);
+        label_bounds.x + label_bounds.width
+    } else {
+        label_bounds.x
+    };
+    let title = xrack_layout::elide_to_width(title, label_bounds.width, |value| {
+        text.advance_painted(value, &paint)
+    });
+    draw_label(canvas, text, label_bounds, &title, size, x, &paint)
 }

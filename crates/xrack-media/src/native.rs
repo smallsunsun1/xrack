@@ -1,6 +1,6 @@
 use crate::{
     MediaError,
-    ff::{XrackAudioDevice, XrackMediaApi},
+    ff::{XrackAudioDevice, XrackMediaApi, XrackVoiceOpen},
 };
 use std::{
     ffi::c_void,
@@ -46,7 +46,7 @@ impl<T> Drop for AudioDevice<T> {
 }
 
 struct Native {
-    _library: libloading::Library,
+    library: libloading::Library,
     api: &'static XrackMediaApi,
 }
 
@@ -179,10 +179,7 @@ fn initialize() -> Result<Native, String> {
                 path.display()
             ));
         }
-        Ok(Native {
-            _library: library,
-            api,
-        })
+        Ok(Native { library, api })
     }
 }
 
@@ -192,6 +189,23 @@ pub fn load() -> Result<(), &'static str> {
         .as_ref()
         .map(|_| ())
         .map_err(String::as_str)
+}
+
+pub(crate) fn voice_open() -> Result<XrackVoiceOpen, MediaError> {
+    let native = NATIVE
+        .get_or_init(initialize)
+        .as_ref()
+        .map_err(|error| MediaError(error.clone()))?;
+    // The file and the versioned symbol live for the duration of the process.
+    unsafe {
+        native
+            .library
+            .get::<XrackVoiceOpen>(b"xrack_voice_open_v1\0")
+    }
+    .map(|symbol| *symbol)
+    .map_err(|_| {
+        MediaError("the XRack media library does not provide desktop voice capture".into())
+    })
 }
 
 #[expect(

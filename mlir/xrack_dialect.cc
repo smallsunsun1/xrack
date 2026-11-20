@@ -1537,6 +1537,14 @@ LogicalResult ElementOp::verify() {
         return child.emitOpError("input-purpose requires an InputPurpose on a single-line text editor");
       if (name == "return-key" && (!textEntry || !isa<ReturnKeyType>(type)))
         return child.emitOpError("return-key requires a return key on a single-line text editor");
+      if (name == "keyboard-capitalization" &&
+          (!isTextEditor(kind) || !isa<KeyboardCapitalizationType>(type)))
+        return child.emitOpError("keyboard-capitalization requires a KeyboardCapitalization on a text editor");
+      if ((name == "auto-correct" || name == "spell-check") &&
+          (!isTextEditor(kind) || !isa<BoolType>(type)))
+        return child.emitOpError("auto-correct and spell-check require booleans on a text editor");
+      if (name == "keyboard-navigation" && (!isTextEditor(kind) || !isa<BoolType>(type)))
+        return child.emitOpError("keyboard-navigation requires a boolean on a text editor");
       if ((name == "input-type" && (!textEntry || !isa<InputModeType>(type))) ||
           (name == "password-visible" && (!singleLine || !isa<BoolType>(type))) ||
           (name == "password-character" && (!textEntry || !isa<StringType>(type))) ||
@@ -3952,6 +3960,9 @@ LogicalResult LiteralOp::verify() {
   } else if (isa<InputPurposeType>(type)) {
     valid = spelling == "auto" || spelling == "username" || spelling == "current-password" ||
             spelling == "new-password" || spelling == "one-time-code";
+  } else if (isa<KeyboardCapitalizationType>(type)) {
+    valid = spelling == "auto" || spelling == "none" || spelling == "words" ||
+            spelling == "sentences" || spelling == "characters";
   } else if (isa<ReturnKeyType>(type)) {
     valid = spelling == "auto" || spelling == "next" || spelling == "done";
   } else if (isa<AccessibleLiveType>(type)) {
@@ -5497,7 +5508,7 @@ static bool recordScalarType(llvm::StringRef type) {
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
               "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "LayoutDirection", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap", "MouseSelectionMode", "InputValidity",
-              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "InputPurpose", "ReturnKey", "AccessibleLive", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
+              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "InputPurpose", "KeyboardCapitalization", "ReturnKey", "AccessibleLive", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
               "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "WheelEvent", "PointerEvent", "PointerEventKind", "PointerButton", "PointerButtons", "TouchPoint", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "SelectionGesture", "Date", "Time", "Font", "CheckState"},
              true)
       .Default(false);

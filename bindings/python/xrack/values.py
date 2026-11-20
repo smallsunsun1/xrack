@@ -35,6 +35,7 @@ from ._native import (
     InputPurpose,
     InputType,
     InputValidity,
+    KeyboardCapitalization,
     KeyEvent,
     KeyModifiers,
     LayoutAlignment,
@@ -107,6 +108,7 @@ __all__ = [
     "InputPurpose",
     "InputType",
     "InputValidity",
+    "KeyboardCapitalization",
     "KeyEvent",
     "KeyModifiers",
     "LayoutAlignment",
@@ -184,6 +186,7 @@ Value: TypeAlias = (
     | InputPurpose
     | InputType
     | InputValidity
+    | KeyboardCapitalization
     | KeyEvent
     | KeyModifiers
     | LayoutAlignment

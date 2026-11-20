@@ -10,7 +10,7 @@
 
 在 iOS 点按系统状态栏，当前页面或活动弹层中可见面积最大的外层纵向滚动区会立即回到顶部。横向位置和其他滚动区的偏移会保留，焦点沿用该滚动容器的常规规则。
 
-`ScrollView`、`Flickable`、列表、网格、树和表格可用 `pull-to-refresh: true;` 启用下拉刷新。在内容顶部向下拉超过 72 个逻辑像素后松手，触发一次 `refresh-requested()`。短内容也可以下拉。绑定 `refreshing: root.loading;`，在回调里开始加载，并在异步工作结束后清除加载状态。加载期间显示刷新指示器，应用可将同一个刷新回调用在普通按钮上。减弱动态效果时，指示器仍会显示，滚动内容的位置保持稳定。
+`ScrollView`、`Flickable`、列表、网格、树和表格可用 `pull-to-refresh: true;` 启用下拉刷新。在内容顶部向下拉超过 72 个逻辑像素后松手，触发一次 `refresh-requested()`。短内容也可以下拉。绑定 `refreshing: root.loading;`，在回调里开始加载，并在异步工作结束后清除加载状态。加载期间显示刷新指示器，应用可将同一个刷新回调用在普通按钮上。iOS 的无障碍元素提供 **Refresh** 操作，加载中暂停该操作。减弱动态效果时，指示器仍会显示，滚动内容的位置保持稳定。
 
 `ScrollView`、`Flickable`、列表、网格、树和表格可以设置 `dismiss-keyboard-on-drag: true;`。iOS 在滚动容器接管触摸拖动时收起软键盘及输入工具栏，保留当前字段焦点、草稿和选区。内容未撑满视口时也可以拖动收起。点回输入框可继续输入。正在组字时保留键盘，属性默认关闭。
 
@@ -80,6 +80,8 @@ Android 库存示例的 **Open canvas** 可以用触摸对照双轴拖动、自�
 
 `ListView` 和 `StandardListView` 可用 `section-field: "group";` 给相邻且字段值相同的记录加一个分段标题。字段路径须为常量，值须为字符串。先应用记录可见性，再按显示顺序生成分段。空字符串对应无标题的区段。标题高度默认 28 个逻辑像素，可用 `section-height` 调整。`sticky-section-headers: true;` 会将当前段标题固定在视口顶部，下一段到达时将其推走。标题有独立的无障碍标题角色，列表索引、选区和定位命令仍按记录计数。
 
+iOS 增大系统字号时，标准列表行和内置分段标题会按固定行高调整字号。长标题用省略号提示，VoiceOver 可读取完整名称。自定义行和分段模板沿用自己的布局。
+
 需要自定义样式时，在列表内声明一个 `SectionHeader`。只读参数 `section-label`、`section-first-index`、`section-count` 和 `section-pinned` 分别提供组名、首条记录的显示索引、该组过滤后的记录数和实际吸顶状态。标题的尺寸由 `section-height` 和列表宽度决定，`accessible-name` 可提供自定义读屏名称。模板只为可见标题求值。运行 `bazel run //examples/list:list -- --sections` 对比默认和自定义标题。
 
 虚拟视图可用 `preserve-scroll-anchor: true;` 保留阅读位置。模型插入、删除、排序、树折叠或网格列数变化时，视口优先保留首个可见记录及其相对视口的位置。该记录消失后，尝试保留原来同屏的下一条记录。无可用记录时沿用现有偏移并按新边界裁剪。选中项跟随和显式定位仍可移动视口。绑定了 `content-y` 的轴由绑定源决定，行锚定本身也不会触发 `scrolled()`。默认关闭。运行 `bazel run //examples/list:list -- --anchor` 可比较两种行为。
@@ -91,6 +93,8 @@ Android 库存示例的 **Open log** 演示自定义分段标题随触摸滚动�
 Android 库存示例的 **Open catalog** 演示按业务键选择零件。卡片滚出视口、在模型中移动或暂时被过滤后，卡片内的收藏状态仍随原记录保留。运行 `//examples/android:catalog_ui_test` 验证触摸交互，构建和运行方式见 [Android 示例](../examples/android/README.md#零件网格回归)。
 
 `SwipeDelegate` 用一个 `SwipeContent` 声明行内容，再用 `SwipeLeft` 和 `SwipeRight` 声明一侧或两侧的操作区。操作区可设宽度，也可按子项尺寸测量。触摸或鼠标从行内容横向拖动时会预览操作区，松手时越过半宽才展开。纵向手势交给外层列表，预览期间操作按钮不能点击。聚焦行后可用左右方向键滑动，Escape 收起。行末的三点按钮也可用鼠标或辅助技术展开和收起，优先展开右侧。`open-side` 可双向绑定 `SwipeSide`，用户提交切换时触发 `changed(side)`。虚拟列表中的展开状态随记录标识保留。运行 `bazel run //examples/delegates:delegates -- --swipe` 体验。
+
+iOS 上，行本身的 VoiceOver 操作列表提供 **Show left actions**、**Show right actions** 和 **Hide swipe actions**。只显示当前可执行的操作，展开后的按钮紧跟对应的行供用户浏览和激活。
 
 SwipeContent 和操作区可以包含按钮。短按仍交给按钮，横向拖动会寻找所在的最近一层 SwipeDelegate，纵向拖动交给外层滚动容器。手势开始后换掉同一虚拟位置上的记录时，旧手势会取消。iOS 的无障碍树会单独公开展开按钮和已露出的操作区，让辅助技术可以直接选中操作按钮。见 [Pocket Tasks](../examples/ios/README.md) 的任务列表。
 
@@ -128,7 +132,9 @@ Android 导航示例的 **Open popup** 覆盖打开时移动锚点、边缘翻�
 
 `DialogButtonBox` 接收 `StandardButton`、`DialogButton` 或普通 `Button`。它按角色排列按钮，确认和取消的默认相对顺序随平台变化。空间不足时会换行，Tab 和无障碍按布局顺序遍历。可用 `layout-order` 覆盖单个按钮的位置，或设置 `wrap: false;`。运行 `bazel run //examples/dialog:dialog -- --standard` 体验。
 
-`Drawer` 是贴靠窗口边缘的模态抽屉。`edge` 可取 `left`、`right`、`top` 或 `bottom`，`open` 可双向绑定。设置 `drag-margin: 18px;` 后，可从窗口边缘向内滑动打开，从面板内侧边缘反向滑动关闭。桌面可用中键执行同样的手势，滑动达到阈值后在松手时提交。手势开启触发 `opened()`，手势、Escape 或遮罩关闭触发 `closed()`。遮罩关闭默认启用。抽屉与对话框共用模态栈和焦点恢复，关闭时延迟构建抽屉内容。 在有系统安全区的窗口中，打开手势从安全区边缘开始。iOS 底部抽屉可以从 Home 指示条上方往上滑，也可用 UIKit 无障碍取消动作关闭。 抽屉的可见标题作为独立标题公开，模态期间系统只遍历面板内的控件。运行 `bazel run //examples/dialog:dialog` 体验。
+`Drawer` 是贴靠窗口边缘的模态抽屉。`edge` 可取 `left`、`right`、`top` 或 `bottom`，`open` 可双向绑定。设置 `drag-margin: 18px;` 后，可从窗口边缘向内滑动打开，从面板内侧边缘反向滑动关闭。桌面可用中键执行同样的手势。拖动时面板和遮罩跟随手势，打开预览只绘制面板和拉手，确认打开后才构建内部控件。未达到阈值的拖动在松手时恢复原位。
+
+打开手势提交后触发 `opened()`。关闭手势提交时或通过 Escape、遮罩关闭时触发 `closed()`。遮罩关闭默认启用。抽屉与对话框共用模态栈和焦点恢复。打开手势从安全区边缘开始，iOS 底部抽屉可从 Home 指示条上方往上滑，也可用 UIKit 无障碍取消动作关闭。抽屉的可见标题作为独立标题公开，模态期间系统只遍历面板内的控件。运行 `bazel run //examples/dialog:dialog` 体验。
 
 `Page` 可以单独使用，也可以放进 `SwipePage` 或 `StackPage`。直接声明可选的 `PageHeader` 和 `PageFooter`，各最多一个。两端占满页宽，默认按内部垂直布局的首选高度排布，也可设置 `height`。普通子项在中间区域按局部坐标布局，`padding` 作用于正文，`spacing` 留出正文与可见页眉和页脚之间的间距。正文可放一个 `width: 100%; height: 100%;` 的 `ScrollView`，滚动时两端保持固定。`title` 为无障碍提供页面名称。Tab 和无障碍按页眉、正文、页脚遍历，各区内部保持声明顺序。运行 `bazel run //examples/navigation:navigation -- --page` 体验。
 
@@ -210,6 +216,8 @@ iOS 在系统无障碍树中提供树节点名称、展开状态以及 **Expand*
 
 `TreeRow` 可在布局中组合类型化编辑器。`TreeCell { text <=> record.label; }` 编辑字符串，`SpinBox { value <=> record.quota; }` 编辑整数，`Slider { value <=> record.load; }` 编辑浮点数，`CheckBox { checked <=> record.active; }` 或 `Switch` 编辑布尔值。绑定目标是可写列表中当前记录的字段。布局可用 `if` 条件显示，编辑器的路径需保持稳定。
 
+iOS 增大系统字号时，`TreeCell` 的可见文本按行高绘制，窄单元格用省略号提示。编辑时可水平滚动，文字、光标和触摸位置使用同一字号。
+
 双击文本单元格或按 F2 开始重命名，Enter 提交，Escape 放弃。聚焦树并选定当前行后，按 Tab 可进入该行可用的复选框、数字框或滑块。重排后仍在视口内的记录会保留草稿，折叠隐藏记录或外部修改被编辑字段会丢弃草稿。树和表格的编辑器共用字段提交逻辑，核对行标识和字段原值后再合并到最新记录。
 
 `ListView` 的 `for` 也可直接实例化匿名行组件。组件可接收模型项和索引作为输入，包含输入框、按钮或其他控件。行状态按模型标识保留，滚出视口或因插入而移动时会跟随原行。已访问过的行组件保留到模型删除该行或替换模型。
@@ -228,6 +236,8 @@ iOS 在系统无障碍树中提供树节点名称、展开状态以及 **Expand*
 
 表格可用 `movable-columns: true;` 开启表头拖动，默认关闭。拖到目标列的前半或后半时会显示插入位置，松手后提交。靠近表头可见边缘时会自动横向滚动。列宽拖柄和短按排序仍按原操作处理。回调可调用 `table.move-column(0, 2)` 移动显示位置，两个参数都是从零开始的显示索引。`column-moved(column, position)` 给出被移动的声明列索引和新的显示索引。排序、单元格编辑和既有选区保留声明列，键盘导航、Shift 选区和无障碍阅读使用显示顺序。运行 `bazel run //examples/table:table -- --standard` 可试用表头拖动和程序化移动。
 
+iOS 上，可移动的表头提供 **Move column left** 和 **Move column right**。方向与屏幕上的左右一致，动作跨过隐藏列，并在需要时滚动以显示移动后的表头。到达边界时仅提供可执行的方向。
+
 表格支持 `frozen-columns: 1;`。它冻结当前显示顺序中的前 N 个可见列，列重排或可见性变化后重新计算。冻结列随整表纵向滚动，横向滚动条和翻页只覆盖后面的滚动区。两区共享行标识、选区和编辑状态。窗口较窄且内容溢出时，布局减少实际冻结列数，为滚动区保留空间。默认值为 0。运行 `bazel run //examples/table:table -- --frozen` 可试用，Shift 加滚轮可横向滚动。
 
 表格继承 `layout-direction`。RTL 下列从右向左排列，冻结列和行标题位于右侧。水平滚动条、方向键、列宽拖动和列重排都按显示位置操作，模型字段和 `content-x` 使用逻辑坐标。运行 `bazel run //examples/table -- --rtl-table` 切换体验。
@@ -239,6 +249,8 @@ iOS 在系统无障碍树中提供树节点名称、展开状态以及 **Expand*
 表格可用 `row-header-width: 64px;` 显示左侧行标题，默认显示从 1 开始的显示行号。自定义表格在 `TableRow` 里绑定 `row-header-text`。标准表格用 `row-header-field: "name";` 投影记录字段，也接受点分路径。行标题复用可见行和行高，横向滚动时固定在左侧，启用行高调整后可在标题分隔线上拖动。点击标题可选中整行，单元格多选时选择该行所有单元格，列选择模式下保留已选列并移动当前行。辅助技术可读取可见的行标题及其行号。运行 `bazel run //examples/table:table -- --row-headers` 查看记录名称和冻结列，或用 `--row-numbers` 查看行号。
 
 iOS 上可在启用行移动的表格行标题中使用 **Move row up** 和 **Move row down**。到达边界后仅提供可执行的方向，重排后同一条记录保留自己的无障碍身份。
+
+iOS 的可调尺寸表头还提供 **Increase/Decrease column width** 和 **Increase/Decrease row height**。每步调整 8 个逻辑像素，最后一步停在对应的尺寸边界。UIKit 可读取当前尺寸，列标题仍显示排序状态。
 
 iOS 的可编辑单元格提供 **Edit cell** 无障碍动作。编辑期间，UIKit 文本输入和无障碍值使用当前草稿，**Save edit** 提交后写回原记录，**Cancel edit** 或系统无障碍取消动作丢弃草稿。结束编辑后，无障碍焦点保留在同一记录的单元格。
 
@@ -253,6 +265,8 @@ iOS 上，可排序列标题作为按钮出现在 UIKit 无障碍树中。其值
 基于记录模型的 `ListView`、`StandardListView`、`TreeView`、`TableView` 和 `StandardTableView` 可以用 `row-height-field: "height";` 指定行高字段。字段名须为常量，字段类型须为 `length`。非正或非有限值使用默认 `row-height`，正值裁剪到 12–512 个逻辑像素。用户拖动或命令设置的表格行高优先，清除覆盖后恢复记录中的最新高度。字段修改只更新对应记录的投影，树按展开后的顺序计算几何。运行 `bazel run //examples/table:table -- --row-field` 可查看共享模型的表格与列表，并对比记录修改和手动覆盖。
 
 `StandardTableView` 可直接绑定记录列表，例如 `model: root.inventory; TableColumn { title: "设备"; field: "name"; }`。`field` 是编译期校验的字段名，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。控件为可见行生成文本单元格，复用固定表头、列宽调整、选择和排序回调。默认将程序选中的行滚入视口，可通过 `follow-current: false;` 关闭。辅助技术可读取可见的表头、行列位置和单元格值。运行 `bazel run //examples/table:table -- --standard` 体验五万行库存表。
+
+iOS 增大系统字号时，默认表头可加高，并给数据行留出空间。声明的表头高度、行高和列宽仍约束布局。内置表头和单元格按可用高度调整字号，放不下的文本用省略号提示，VoiceOver 仍可读取完整值。编辑中的单元格可水平滚动，文字、光标和输入位置共用同一字号。
 
 标准表格的列可用 `editable: true;` 或布尔绑定启用内置文本编辑器。声明可编辑列时，`model` 须直接引用可写的记录列表属性。编辑器按 `field` 的类型解析文本，也支持嵌套字段。整数和有限浮点数接受十进制文本，布尔值接受 `true`、`false`、`1` 和 `0`，日期和时间使用 `YYYY-MM-DD` 与 `HH:MM:SS`。无效草稿显示错误边框，按 Enter 或 Tab 后仍可修正。提交核对行标识与原字段值，只修改目标字段。辅助技术设置单元格值时使用同一写回路径。运行 `bazel run //examples/table:table -- --editable` 体验。
 

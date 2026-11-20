@@ -5,8 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use xrack_layout::Affine;
 use xrack_layout::{
     ComboGeometry, Interaction, PasswordMask, Point, Rect, TextAlignment, TextAreaLayout, TextEdit,
-    TextMeasurer, TextPosition, VisualTextLine, font_size, text_editor_line_bounds,
-    text_editor_viewport,
+    TextPosition, VisualTextLine, font_size, text_editor_line_bounds, text_editor_viewport,
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
@@ -65,12 +64,12 @@ pub(crate) struct EditorState {
 }
 
 impl EditorState {
-    pub fn focused(scene: &Node, input: &Interaction) -> Option<Self> {
+    pub fn focused(scene: &Node, input: &Interaction, ios: bool) -> Option<Self> {
         let target = input.focused.as_ref()?;
         let cell_editing = input.table_cell_editing(&target.path);
         let node = scene.at_path(&target.path)?;
-        let draft =
-            cell_editing || cfg!(target_os = "android") && xrack_runtime::spin_editable(node);
+        let draft = cell_editing
+            || (ios || cfg!(target_os = "android")) && xrack_runtime::spin_editable(node);
         if !draft && !supports_ranges(node) {
             return None;
         }
@@ -205,7 +204,6 @@ pub(crate) fn project_text(
         .as_ref()
         .map_or(source, PasswordMask::display);
     let scroll = input.text_scroll(path);
-    let size = text_system.map_or_else(|| font_size(node), |system| system.font_size(node));
     let rect = if combo_editable(node) {
         ComboGeometry::for_control(node, rect, direction.unwrap_or_default()).entry
     } else if node.kind == "SearchField" {
@@ -214,6 +212,10 @@ pub(crate) fn project_text(
     } else {
         rect
     };
+    let size = text_system.map_or_else(
+        || font_size(node),
+        |system| system.entry_font_size(node, rect),
+    );
     let viewport = text_editor_viewport(node, rect);
     let multiline = is_multiline_text_input(node.kind);
     let layout = multiline.then(|| {
@@ -238,7 +240,7 @@ pub(crate) fn project_text(
     let single_geometry = if multiline {
         None
     } else {
-        text_system.map(|system| system.single_line_layout(node, measured))
+        text_system.map(|system| system.single_line_layout_at_size(node, measured, size))
     };
     let (origin, height) = if let Some(layout) = &layout {
         let scroll = layout.clamp_scroll(scroll);

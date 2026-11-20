@@ -11,8 +11,8 @@ use objc2::{
     runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject},
 };
 use objc2_foundation::{
-    CGPoint, CGSize, MainThreadMarker, NSArray, NSNotification, NSNotificationCenter,
-    NSOperationQueue, NSString,
+    CGPoint, CGSize, MainThreadMarker, NSArray, NSNotification, NSNotificationCenter, NSNumber,
+    NSNumberFormatter, NSNumberFormatterStyle, NSOperationQueue, NSString,
 };
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIAccessibilityBoldTextStatusDidChangeNotification,
@@ -167,11 +167,7 @@ impl ScrollAnnouncement {
         let Some(status) = self.status(scene, layout) else {
             return;
         };
-        let status = NSString::from_str(&status);
-        // SAFETY: The completed frame and its accessibility notification run on the UIKit thread.
-        unsafe {
-            UIAccessibilityPostNotification(UIAccessibilityPageScrolledNotification, Some(&status))
-        };
+        announce_accessibility_scroll(&status);
     }
 
     fn status(&self, scene: &Node, layout: &LayoutNode) -> Option<String> {
@@ -204,6 +200,14 @@ impl ScrollAnnouncement {
             }
         }
     }
+}
+
+pub(super) fn announce_accessibility_scroll(status: &str) {
+    let status = NSString::from_str(status);
+    // SAFETY: Accessibility scroll updates and notifications run on the UIKit thread.
+    unsafe {
+        UIAccessibilityPostNotification(UIAccessibilityPageScrolledNotification, Some(&status))
+    };
 }
 
 fn scroll_position(item: &LayoutNode, axis: Orientation) -> Option<ScrollLayout> {
@@ -317,22 +321,29 @@ declare_class!(
             let Some(request) = self.ivars().escape.take() else {
                 return Bool::NO;
             };
-            Bool::new(self.ivars().events.post(UserEvent::IosAccessibilityEscape(request)))
+            Bool::new(self.ivars().events.post(UserEvent::IosBackRequested(request)))
         }
     }
 );
+
+#[derive(Clone, Copy)]
+pub(super) enum KeyboardOcclusion {
+    None,
+    Docked,
+    Floating(Rect),
+}
 
 /// Physical touch positions and the Metal layer use the full window. UIKit
 /// reports the safe content rectangle separately through winit's inner bounds.
 pub(super) fn content_geometry(
     window: &Window,
     editor: Option<&crate::ios_text::TextInput>,
-) -> ([f64; 4], Option<Rect>) {
+) -> ([f64; 4], KeyboardOcclusion) {
     let Ok(inner) = window.inner_position() else {
-        return ([0.0; 4], None);
+        return ([0.0; 4], KeyboardOcclusion::None);
     };
     let Ok(outer) = window.outer_position() else {
-        return ([0.0; 4], None);
+        return ([0.0; 4], KeyboardOcclusion::None);
     };
     let left = inner.x.saturating_sub(outer.x).max(0) as u32;
     let top = inner.y.saturating_sub(outer.y).max(0) as u32;
@@ -346,7 +357,7 @@ pub(super) fn content_geometry(
         .saturating_sub(content.height.saturating_add(top));
     let mut insets =
         [left, top, right, bottom].map(|pixels| f64::from(pixels) / window.scale_factor());
-    let mut floating = None;
+    let mut occlusion = KeyboardOcclusion::None;
     if let Some(view) = view(window) {
         // SAFETY: view() verifies the UIKit main thread and keeps the window borrowed.
         let keyboard = unsafe { view.keyboardLayoutGuide().layoutFrame() };
@@ -365,6 +376,9 @@ pub(super) fn content_geometry(
                         && accessory.origin.y + accessory.size.height >= keyboard.origin.y - 1.0
                 })
                 .map_or(keyboard.origin.y, |accessory| accessory.origin.y);
+            if bottom - top > insets[3] + 1.0 {
+                occlusion = KeyboardOcclusion::Docked;
+            }
             insets[3] = insets[3].max(bottom - top);
         } else if keyboard.origin.y < bottom - insets[3] - 1.0 {
             let window = Rect::new(
@@ -381,11 +395,11 @@ pub(super) fn content_geometry(
             )
             .intersect(window);
             if keyboard.width > 0.0 && keyboard.height > 0.0 {
-                floating = Some(keyboard);
+                occlusion = KeyboardOcclusion::Floating(keyboard);
             }
         }
     }
-    (insets, floating)
+    (insets, occlusion)
 }
 
 pub(super) fn view(window: &Window) -> Option<&UIView> {
@@ -480,6 +494,18 @@ pub(super) fn reduce_motion() -> bool {
 pub(super) fn text_scale() -> f32 {
     // SAFETY: UIFontMetrics reads the user's current Dynamic Type category.
     unsafe { UIFontMetrics::defaultMetrics().scaledValueForValue(1.0) as f32 }
+}
+
+pub(super) fn progress_value(position: f64) -> String {
+    let number = NSNumber::numberWithDouble(position);
+    // SAFETY: Foundation receives a live NSNumber and a defined formatter style.
+    unsafe {
+        NSNumberFormatter::localizedStringFromNumber_numberStyle(
+            &number,
+            NSNumberFormatterStyle::NSNumberFormatterPercentStyle,
+        )
+    }
+    .to_string()
 }
 
 pub(super) fn bold_text() -> bool {

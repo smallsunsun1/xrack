@@ -65,12 +65,20 @@ cc_binary(
     name = "libxrack_media_ffmpeg.dylib",
     srcs = ["native_api.c"],
     defines = HLS_DEFINES,
+    linkopts = [
+        "-framework AVFoundation",
+        "-framework CoreGraphics",
+        "-framework CoreMedia",
+        "-framework CoreVideo",
+        "-framework Foundation",
+    ],
     linkshared = True,
     linkstatic = True,
     tags = ["manual"],
     deps = [
         ":audio_device",
         ":ffmpeg_api",
+        "@ffmpeg//:avdevice",
     ],
 )
 
@@ -84,6 +92,7 @@ cc_binary(
     deps = [
         ":audio_device",
         ":ffmpeg_api",
+        "@ffmpeg//:avdevice",
     ],
 )
 
@@ -91,12 +100,21 @@ cc_binary(
     name = "xrack_media_ffmpeg.dll",
     srcs = ["native_api.c"],
     defines = HLS_DEFINES,
+    linkopts = [
+        "-defaultlib:ole32.lib",
+        "-defaultlib:oleaut32.lib",
+        "-defaultlib:psapi.lib",
+        "-defaultlib:shlwapi.lib",
+        "-defaultlib:strmiids.lib",
+        "-defaultlib:uuid.lib",
+    ],
     linkshared = True,
     linkstatic = True,
     tags = ["manual"],
     deps = [
         ":audio_device",
         ":ffmpeg_api",
+        "@ffmpeg//:avdevice",
     ],
 )
 
@@ -117,7 +135,7 @@ rust_bindgen(
         "--allowlist-var",
         "XRACK_FFMPEG_.*",
         "--allowlist-type",
-        "XrackMediaApi|AVStream|AVProgram|AVInputFormat|AVIOContext|AVIOInterruptCB|AVSampleFormat|SwsFlags",
+        "XrackMediaApi|XrackVoiceOpen|AVStream|AVProgram|AVInputFormat|AVIOContext|AVIOInterruptCB|AVSampleFormat|SwsFlags",
         "--no-include-path-detection",
         "--no-layout-tests",
         "--no-doc-comments",
@@ -170,6 +188,7 @@ rust_library(
         "src/player.rs",
         "src/sound.rs",
         "src/subtitles.rs",
+        "src/voice.rs",
     ],
     crate_features = MEDIA_FEATURES,
     crate_root = "src/lib.rs",

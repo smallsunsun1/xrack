@@ -14,7 +14,8 @@ pub(crate) use android::{
 mod ios;
 #[cfg(target_os = "ios")]
 pub(crate) use ios::{
-    ColorRequest, DirectoryRequest, ModalQueue, PhotoRequest, Transfer, TransferRequest, present,
+    ColorRequest, DirectoryRequest, ImportedFolders, IosDialogResult, ModalQueue, PhotoRequest,
+    Transfer, TransferRequest, present,
 };
 #[cfg(target_os = "ios")]
 pub use ios::{IosPhotoSelection, IosPhotoThumbnail};

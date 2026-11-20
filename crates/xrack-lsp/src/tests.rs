@@ -3930,6 +3930,68 @@ fn single_line_text_editors_complete_the_string_input_mask() {
 }
 
 #[test]
+fn keyboard_assistance_completes_and_checks_editor_properties() {
+    for source in [
+        "component App inherits Window { TextArea { keyboard-capitalization: |",
+        "component App inherits Window { LineEdit { keyboard-capitalization: KeyboardCapitalization.|",
+    ] {
+        let values = complete_at(source);
+        for mode in ["auto", "none", "words", "sentences", "characters"] {
+            assert!(
+                values.iter().any(|item| item["label"] == mode),
+                "{values:?}"
+            );
+        }
+    }
+    let props = complete_at("component App inherits Window { SearchField { |");
+    for name in ["auto-correct", "spell-check"] {
+        assert!(
+            props
+                .iter()
+                .any(|item| item["label"] == name && item["detail"] == "bool"),
+            "{props:?}"
+        );
+    }
+    let source = "component App inherits Window { TextArea { keyboard-capitalization: words; auto-correct: false; spell-check: true; } }";
+    let report = analysis::analyze(URI, source, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    let invalid = source.replace("TextArea", "Rectangle");
+    let report = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(report[URI].iter().any(|item| {
+        item["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("keyboard-capitalization"))
+    }));
+}
+
+#[test]
+fn keyboard_navigation_completes_only_on_text_editors() {
+    for (kind, available) in [
+        ("TextArea", true),
+        ("SearchField", true),
+        ("Rectangle", false),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ keyboard-n|"
+        ));
+        assert_eq!(
+            items
+                .iter()
+                .any(|item| item["label"] == "keyboard-navigation" && item["detail"] == "bool"),
+            available,
+            "{items:?}"
+        );
+    }
+
+    let source = "component App inherits Window { TextArea { keyboard-navigation: true; } }";
+    let report = analysis::analyze(URI, source, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    let invalid = source.replace("true", "3");
+    let report = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(!report[URI].is_empty());
+}
+
+#[test]
 fn return_key_hints_complete_with_or_without_enum_qualification() {
     for source in [
         "component App inherits Window { LineEdit { return-key: |",

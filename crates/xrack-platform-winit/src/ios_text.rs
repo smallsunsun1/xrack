@@ -13,8 +13,8 @@ use objc2::{
     sel,
 };
 use objc2_foundation::{
-    CGPoint, CGRect, CGSize, MainThreadMarker, NSArray, NSNotification, NSNotificationCenter,
-    NSObject, NSOperationQueue, NSString, NSUndoManager,
+    CGPoint, CGRect, CGSize, MainThreadMarker, NSArray, NSBundle, NSNotification,
+    NSNotificationCenter, NSObject, NSOperationQueue, NSString, NSUndoManager,
 };
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIBarButtonItem, UIBarButtonItemStyle, UIBarButtonSystemItem,
@@ -36,8 +36,8 @@ use std::{
 use winit::window::Window;
 use xrack_layout::{Target, TextEdit, TextPosition};
 use xrack_runtime::{
-    InputPurpose, InputType, Node, ReturnKey, TableCellEditor, TextCommand,
-    TextCommandAvailability, is_multiline_text_input,
+    InputPurpose, InputType, KeyboardCapitalization, Node, ReturnKey, TableCellEditor, TextCommand,
+    TextCommandAvailability, Value, is_multiline_text_input,
 };
 
 pub(crate) struct NativeEdit {
@@ -56,8 +56,20 @@ pub(super) enum NativeInput {
         value: String,
         selection: Range<usize>,
     },
+    Dismissed {
+        committed: Option<(String, Range<usize>)>,
+    },
     Command(TextCommand),
     Submit,
+    NavigateField {
+        reverse: bool,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct EditorKeyboard {
+    pub(super) return_key: ReturnKey,
+    pub(super) fields: Option<[bool; 2]>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -153,6 +165,60 @@ impl Mode {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct KeyboardAssistance {
+    capitalization: UITextAutocapitalizationType,
+    correction: UITextAutocorrectionType,
+    spelling: UITextSpellCheckingType,
+}
+
+impl KeyboardAssistance {
+    fn for_node(node: &Node, mode: Mode, purpose: InputPurpose) -> Self {
+        if mode == Mode::Password
+            || matches!(
+                purpose,
+                InputPurpose::CurrentPassword
+                    | InputPurpose::NewPassword
+                    | InputPurpose::OneTimeCode
+            )
+        {
+            return Self {
+                capitalization: UITextAutocapitalizationType::None,
+                correction: UITextAutocorrectionType::No,
+                spelling: UITextSpellCheckingType::No,
+            };
+        }
+        let prose = purpose == InputPurpose::Auto
+            && matches!(mode, Mode::SingleLine | Mode::Multiline | Mode::Search);
+        let capitalization = match node.keyboard_capitalization() {
+            KeyboardCapitalization::Auto if prose => UITextAutocapitalizationType::Sentences,
+            KeyboardCapitalization::Auto | KeyboardCapitalization::None => {
+                UITextAutocapitalizationType::None
+            }
+            KeyboardCapitalization::Words => UITextAutocapitalizationType::Words,
+            KeyboardCapitalization::Sentences => UITextAutocapitalizationType::Sentences,
+            KeyboardCapitalization::Characters => UITextAutocapitalizationType::AllCharacters,
+        };
+        let correction = match node.properties.get("auto-correct") {
+            Some(Value::Bool(true)) => UITextAutocorrectionType::Yes,
+            Some(Value::Bool(false)) => UITextAutocorrectionType::No,
+            _ if prose => UITextAutocorrectionType::Default,
+            _ => UITextAutocorrectionType::No,
+        };
+        let spelling = match node.properties.get("spell-check") {
+            Some(Value::Bool(true)) => UITextSpellCheckingType::Yes,
+            Some(Value::Bool(false)) => UITextSpellCheckingType::No,
+            _ if prose => UITextSpellCheckingType::Default,
+            _ => UITextSpellCheckingType::No,
+        };
+        Self {
+            capitalization,
+            correction,
+            spelling,
+        }
+    }
+}
+
 #[derive(Clone)]
 enum Responder {
     Field(Retained<UITextField>),
@@ -196,11 +262,30 @@ impl Responder {
             }
         }
     }
+
+    fn set_accessory_view(&self, accessory: Option<&UIView>) -> bool {
+        // SAFETY: Both responders and their shared toolbar belong to the UIKit main thread.
+        unsafe {
+            match self {
+                Self::Field(field)
+                    if field.inputAccessoryView().is_some() != accessory.is_some() =>
+                {
+                    field.setInputAccessoryView(accessory);
+                }
+                Self::View(view) if view.inputAccessoryView().is_some() != accessory.is_some() => {
+                    view.setInputAccessoryView(accessory);
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
 }
 
 #[derive(Default)]
 struct Revision {
     active: Cell<Option<Mode>>,
+    ended: Cell<bool>,
     epoch: Cell<u64>,
     serial: Cell<u64>,
     marked: Cell<bool>,
@@ -227,6 +312,7 @@ impl CopyRevision {
         self.revision.epoch.get() == self.epoch
             && self.revision.serial.get() == self.serial
             && self.revision.active.get().is_some()
+            && !self.revision.ended.get()
             && !self.revision.marked.get()
             && self.revision.commands.get().copy
     }
@@ -243,7 +329,7 @@ impl TextActions {
 
     pub(super) fn can_run(&self, command: TextCommand) -> bool {
         let revision = &self.revision;
-        if revision.active.get().is_none() || revision.marked.get() {
+        if revision.active.get().is_none() || revision.ended.get() || revision.marked.get() {
             return false;
         }
         let commands = revision.commands.get();
@@ -270,13 +356,23 @@ impl TextActions {
     }
 
     fn submit(&self) {
-        if self
-            .revision
-            .active
-            .get()
-            .is_some_and(|mode| mode != Mode::Multiline)
+        if !self.revision.ended.get()
+            && self
+                .revision
+                .active
+                .get()
+                .is_some_and(|mode| mode != Mode::Multiline)
         {
             self.post(NativeInput::Submit);
+        }
+    }
+
+    fn navigate_field(&self, reverse: bool) {
+        if !self.revision.ended.get()
+            && !self.revision.marked.get()
+            && self.revision.active.get().is_some()
+        {
+            self.post(NativeInput::NavigateField { reverse });
         }
     }
 
@@ -302,13 +398,7 @@ impl TextActions {
         input: &ProtocolObject<dyn UITextInput>,
         read_value: impl FnOnce() -> String,
     ) {
-        if self.revision.updating_marked_text.get()
-            || !self
-                .revision
-                .active
-                .get()
-                .is_some_and(|mode| (mode == Mode::Multiline) == multiline)
-        {
+        if self.revision.updating_marked_text.get() || !self.active_editor(multiline) {
             return;
         }
         let value = read_value();
@@ -331,6 +421,38 @@ impl TextActions {
         let serial = self.revision.serial.get().wrapping_add(1);
         self.revision.serial.set(serial);
         self.post(update);
+    }
+
+    fn active_editor(&self, multiline: bool) -> bool {
+        !self.revision.ended.get()
+            && self
+                .revision
+                .active
+                .get()
+                .is_some_and(|mode| (mode == Mode::Multiline) == multiline)
+    }
+
+    fn finish_editing(
+        &self,
+        multiline: bool,
+        input: &ProtocolObject<dyn UITextInput>,
+        read_value: impl FnOnce() -> String,
+    ) {
+        if !self.active_editor(multiline) {
+            return;
+        }
+        // Latch UIKit's resignation before a keyboard-frame notification can relayout.
+        self.revision.ended.set(true);
+        // SAFETY: UIKit calls this delegate on the main thread after editing ends.
+        let committed = unsafe { input.markedTextRange().is_none() }.then(|| {
+            let value = read_value();
+            let selection = selected_bytes(input, &value);
+            (value, selection)
+        });
+        self.revision
+            .serial
+            .set(self.revision.serial.get().wrapping_add(1));
+        self.post(NativeInput::Dismissed { committed });
     }
 }
 
@@ -409,6 +531,16 @@ declare_class!(
         fn submit_from_toolbar(&self, _: &UIBarButtonItem) {
             self.ivars().submit();
         }
+
+        #[method(previousField:)]
+        fn previous_field(&self, _: &UIBarButtonItem) {
+            self.ivars().navigate_field(true);
+        }
+
+        #[method(nextField:)]
+        fn next_field(&self, _: &UIBarButtonItem) {
+            self.ivars().navigate_field(false);
+        }
     }
 
     #[allow(non_snake_case)]
@@ -427,6 +559,14 @@ declare_class!(
                 unsafe { field.text() }.map_or_else(String::new, |value| value.to_string())
             });
         }
+
+        #[method(textFieldDidEndEditing:)]
+        unsafe fn textFieldDidEndEditing(&self, field: &UITextField) {
+            self.ivars().finish_editing(false, ProtocolObject::from_ref(field), || {
+                // SAFETY: UIKit owns the field during this main-thread delegate call.
+                unsafe { field.text() }.map_or_else(String::new, |value| value.to_string())
+            });
+        }
     }
 
     unsafe impl UIScrollViewDelegate for TextDelegate {}
@@ -437,6 +577,14 @@ declare_class!(
         unsafe fn textViewDidChangeSelection(&self, view: &UITextView) {
             self.ivars().capture(true, ProtocolObject::from_ref(view), || {
                 // SAFETY: UIKit owns the view for this main-thread delegate call.
+                unsafe { view.text() }.to_string()
+            });
+        }
+
+        #[method(textViewDidEndEditing:)]
+        unsafe fn textViewDidEndEditing(&self, view: &UITextView) {
+            self.ivars().finish_editing(true, ProtocolObject::from_ref(view), || {
+                // SAFETY: UIKit owns the view during this main-thread delegate call.
                 unsafe { view.text() }.to_string()
             });
         }
@@ -455,8 +603,9 @@ pub(super) struct TextInput {
     applied: u64,
     focused: Option<(Target, Mode)>,
     observed_value: String,
-    return_key: ReturnKey,
+    keyboard: EditorKeyboard,
     purpose: InputPurpose,
+    assistance: Option<KeyboardAssistance>,
 }
 
 impl TextInput {
@@ -534,8 +683,12 @@ impl TextInput {
                 applied: 0,
                 focused: None,
                 observed_value: String::new(),
-                return_key: ReturnKey::Auto,
+                keyboard: EditorKeyboard {
+                    return_key: ReturnKey::Auto,
+                    fields: None,
+                },
                 purpose: InputPurpose::Auto,
+                assistance: None,
             })
         }
     }
@@ -566,8 +719,15 @@ impl TextInput {
         }
 
         // A change from XRack supersedes this native session and its queued edits.
+        let ended = self.revision.ended.get();
         self.revision.active.set(None);
         self.invalidate_edits();
+        if ended {
+            self.revision.ended.set(true);
+            self.delegate
+                .ivars()
+                .post(NativeInput::Dismissed { committed: None });
+        }
         if marked {
             // SAFETY: This main-thread call may notify UIKit delegates immediately.
             // Capture is disabled while the composition is cleared.
@@ -580,23 +740,32 @@ impl TextInput {
         &mut self,
         target: &Target,
         node: &Node,
-        return_key: ReturnKey,
+        keyboard: EditorKeyboard,
         value: &str,
         selection: Range<usize>,
         commands: TextCommandAvailability,
     ) -> bool {
         let mode = Mode::for_node(node);
         let purpose = node.input_purpose();
+        let assistance = KeyboardAssistance::for_node(node, mode, purpose);
         let changed = self
             .focused
             .as_ref()
             .is_none_or(|(current, kind)| current != target || *kind != mode);
+        if !changed && self.revision.ended.get() {
+            // The queued end-edit event still owns the editor until it is reconciled.
+            return true;
+        }
         if changed {
             self.revision.active.set(None);
             if let Some((_, previous)) = self.focused.take() {
+                let previous_responder = self.responder(previous);
                 // SAFETY: Clear the old UIKit composition on the main thread before handing over focus.
-                unsafe { self.responder(previous).input().unmarkText() };
-                self.responder(previous).set_value("");
+                unsafe { previous_responder.input().unmarkText() };
+                previous_responder.set_value("");
+                if (previous == Mode::Multiline) != (mode == Mode::Multiline) {
+                    previous_responder.set_accessory_view(None);
+                }
             }
             self.focused = Some((target.clone(), mode));
             self.invalidate_edits();
@@ -625,13 +794,20 @@ impl TextInput {
 
         // The keyboard can be reloaded after a composition commits.
         let purpose_changed = self.purpose != purpose;
-        let update_traits = (changed || self.return_key != return_key || purpose_changed)
-            // SAFETY: The responder is owned and used by the UIKit main thread.
-            && unsafe { self.responder(mode).input().markedTextRange().is_none() };
+        // SAFETY: The responder is owned and used by the UIKit main thread.
+        let marked = unsafe { self.responder(mode).input().markedTextRange().is_some() };
+        let update_traits = !marked
+            && (changed
+                || self.keyboard != keyboard
+                || purpose_changed
+                || self.assistance != Some(assistance));
         if update_traits {
-            self.return_key = return_key;
+            self.keyboard = keyboard;
             self.purpose = purpose;
+            self.assistance = Some(assistance);
         }
+        self.submit_toolbar
+            .set_navigation_enabled(self.keyboard.fields, !marked);
         let responder = self.responder(mode);
         let input = responder.input();
         // UIKit can notify its text observers during selection synchronization.
@@ -640,45 +816,32 @@ impl TextInput {
         // SAFETY: All responder access is on the UIKit main thread.
         let active = unsafe {
             if update_traits {
-                if let Responder::Field(field) = responder {
-                    let keyboard = mode.keyboard();
-                    let key_type = mode.return_key(return_key);
-                    let content_type = mode.content_type(purpose);
-                    let secure = mode == Mode::Password;
-                    let secure_changed = input.isSecureTextEntry() != secure;
-                    let needs_reload = input.keyboardType() != keyboard
-                        || input.returnKeyType() != key_type
-                        || secure_changed
-                        || purpose_changed;
-                    if secure_changed {
-                        input.setSecureTextEntry(secure);
-                    }
-                    input.setKeyboardType(keyboard);
-                    input.setReturnKeyType(key_type);
-                    input.setTextContentType(content_type);
-                    if content_type.is_some() {
-                        input.setAutocapitalizationType(UITextAutocapitalizationType::None);
-                        input.setAutocorrectionType(UITextAutocorrectionType::No);
-                        input.setSpellCheckingType(UITextSpellCheckingType::No);
-                    } else {
-                        input.setAutocapitalizationType(UITextAutocapitalizationType::Sentences);
-                        input.setAutocorrectionType(UITextAutocorrectionType::Default);
-                        input.setSpellCheckingType(UITextSpellCheckingType::Default);
-                    }
-                    field.setInputAccessoryView(mode.has_done_toolbar().then(|| {
-                        self.submit_toolbar
-                            .view
-                            .setItems(Some(if return_key == ReturnKey::Next {
-                                &self.submit_toolbar.next
-                            } else {
-                                &self.submit_toolbar.done
-                            }));
-                        let toolbar: &UIView = &self.submit_toolbar.view;
-                        toolbar
-                    }));
-                    if needs_reload && field.isFirstResponder() {
-                        field.reloadInputViews();
-                    }
+                let keyboard_type = mode.keyboard();
+                let key_type = mode.return_key(keyboard.return_key);
+                let content_type = mode.content_type(purpose);
+                let secure = mode == Mode::Password;
+                let secure_changed = input.isSecureTextEntry() != secure;
+                let mut needs_reload = input.keyboardType() != keyboard_type
+                    || input.returnKeyType() != key_type
+                    || secure_changed
+                    || purpose_changed
+                    || input.autocapitalizationType() != assistance.capitalization
+                    || input.autocorrectionType() != assistance.correction
+                    || input.spellCheckingType() != assistance.spelling;
+                if secure_changed {
+                    input.setSecureTextEntry(secure);
+                }
+                input.setKeyboardType(keyboard_type);
+                input.setReturnKeyType(key_type);
+                input.setTextContentType(content_type);
+                input.setAutocapitalizationType(assistance.capitalization);
+                input.setAutocorrectionType(assistance.correction);
+                input.setSpellCheckingType(assistance.spelling);
+                let uses_toolbar = self.submit_toolbar.configure(mode, keyboard);
+                let toolbar: &UIView = &self.submit_toolbar.view;
+                needs_reload |= responder.set_accessory_view(uses_toolbar.then_some(toolbar));
+                if needs_reload && responder.view().isFirstResponder() {
+                    responder.view().reloadInputViews();
                 }
             }
             // Preserve UIKit's marked text and any newer edit waiting in the event loop.
@@ -721,6 +884,7 @@ impl TextInput {
         let responder = self.responder(mode);
         // SAFETY: Responder changes are confined to the UIKit main thread.
         unsafe { responder.view().resignFirstResponder() };
+        responder.set_accessory_view(None);
         responder.set_value("");
     }
 
@@ -758,7 +922,7 @@ impl TextInput {
             .revision
             .active
             .get()
-            .is_some_and(Mode::has_done_toolbar)
+            .is_some_and(|mode| mode.has_done_toolbar() || self.keyboard.fields.is_some())
         {
             return None;
         }
@@ -777,6 +941,7 @@ impl TextInput {
 
     fn invalidate_edits(&mut self) {
         self.undo_manager.take();
+        self.revision.ended.set(false);
         self.revision.marked.set(false);
         self.revision
             .commands
@@ -821,8 +986,60 @@ impl Drop for TextInput {
 
 struct SubmitToolbar {
     view: Retained<UIToolbar>,
-    done: Retained<NSArray<UIBarButtonItem>>,
-    next: Retained<NSArray<UIBarButtonItem>>,
+    previous: Retained<UIBarButtonItem>,
+    following: Retained<UIBarButtonItem>,
+    done: Retained<UIBarButtonItem>,
+    submit_next: Retained<UIBarButtonItem>,
+    space: Retained<UIBarButtonItem>,
+    arrangement: Cell<Option<(bool, Option<ReturnKey>)>>,
+}
+
+impl SubmitToolbar {
+    fn configure(&self, mode: Mode, keyboard: EditorKeyboard) -> bool {
+        let show_navigation = keyboard.fields.is_some();
+        let submit = mode
+            .has_done_toolbar()
+            .then_some(if keyboard.return_key == ReturnKey::Next {
+                ReturnKey::Next
+            } else {
+                ReturnKey::Done
+            });
+        let show = show_navigation || submit.is_some();
+        let requested = show.then_some((show_navigation, submit));
+        if self.arrangement.replace(requested) != requested && show {
+            let mut items = Vec::new();
+            if show_navigation {
+                items.push(&*self.previous);
+                if submit != Some(ReturnKey::Next) {
+                    items.push(&*self.following);
+                }
+            }
+            if let Some(submit) = submit {
+                items.push(&*self.space);
+                items.push(if submit == ReturnKey::Next {
+                    &*self.submit_next
+                } else {
+                    &*self.done
+                });
+            }
+            // SAFETY: The toolbar and its items belong to the UIKit main thread.
+            unsafe { self.view.setItems(Some(&NSArray::from_slice(&items))) };
+        }
+        show
+    }
+
+    fn set_navigation_enabled(&self, fields: Option<[bool; 2]>, ready: bool) {
+        let [previous, next] = fields.unwrap_or_default();
+        // SAFETY: UIKit owns these toolbar items on the application's main thread.
+        unsafe {
+            for (item, enabled) in [(&self.previous, previous), (&self.following, next)] {
+                let enabled = ready && enabled;
+                if item.isEnabled() != enabled {
+                    item.setEnabled(enabled);
+                }
+            }
+        }
+    }
 }
 
 fn submit_toolbar(mtm: MainThreadMarker, delegate: &TextDelegate) -> SubmitToolbar {
@@ -836,13 +1053,18 @@ fn submit_toolbar(mtm: MainThreadMarker, delegate: &TextDelegate) -> SubmitToolb
             Some(delegate),
             action,
         );
-        let next = UIBarButtonItem::initWithTitle_style_target_action(
-            mtm.alloc(),
-            Some(&NSString::from_str("Next")),
-            UIBarButtonItemStyle::Plain,
-            Some(delegate),
-            action,
-        );
+        let bundle = NSBundle::mainBundle();
+        let button = |name, action| {
+            let title =
+                bundle.localizedStringForKey_value_table(&NSString::from_str(name), None, None);
+            UIBarButtonItem::initWithTitle_style_target_action(
+                mtm.alloc(),
+                Some(&title),
+                UIBarButtonItemStyle::Plain,
+                Some(delegate),
+                Some(action),
+            )
+        };
         let space = UIBarButtonItem::initWithBarButtonSystemItem_target_action(
             mtm.alloc(),
             UIBarButtonSystemItem::FlexibleSpace,
@@ -852,8 +1074,12 @@ fn submit_toolbar(mtm: MainThreadMarker, delegate: &TextDelegate) -> SubmitToolb
         toolbar.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(320.0, 44.0)));
         SubmitToolbar {
             view: toolbar,
-            done: NSArray::from_slice(&[&*space, &*done]),
-            next: NSArray::from_slice(&[&*space, &*next]),
+            previous: button("Previous field", sel!(previousField:)),
+            following: button("Next field", sel!(nextField:)),
+            done,
+            submit_next: button("Next", sel!(submitFromToolbar:)),
+            space,
+            arrangement: Cell::new(None),
         }
     }
 }

@@ -445,6 +445,8 @@ rust_test(
     ],
     compile_data = [
         "async_search_replay.json",
+        "async_search_scene.json",
+        "ui_replay_report.html",
         "//examples/async_demo:async.xr",
     ],
     edition = "2024",
@@ -455,8 +457,39 @@ rust_test(
         "//crates/xrack-runtime:xrack_runtime",
         "//crates/xrack-testing:xrack_testing",
         "//examples/async_demo:async_ui",
+        "//examples/async_demo:search_completion",
+        "//examples/async_demo:trace_capture",
         "@crates//:serde",
         "@crates//:serde_json",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
+    ],
+)
+
+rust_test(
+    name = "ui_motion_timeline_test",
+    size = "small",
+    srcs = ["ui_motion_timeline_test.rs"],
+    compile_data = [
+        "ui_motion_report.html",
+        "//examples/layout:layout.xr",
+    ],
+    edition = "2024",
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
+        "//examples/async_demo:trace_capture",
+        "//examples/layout:layout_ui",
+        "@crates//:pollster",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
+        "@crates//:wgpu",
     ],
 )
 

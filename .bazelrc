@@ -7,7 +7,7 @@ build --jobs=auto
 # GitHub Actions overrides this local default from setup-bazel's home RC.
 build --disk_cache=~/.cache/bazel/xrack
 # LLVM/MLIR and the native/cross-target Rust builds share this budget.
-build --experimental_disk_cache_gc_max_size=60G
+build --experimental_disk_cache_gc_max_size=20G
 build --experimental_disk_cache_gc_max_age=30d
 # Reuse the JDK that runs Bazel to generate the ANTLR Rust sources.
 build --java_runtime_version=local_jdk
@@ -19,8 +19,11 @@ build --repo_env=ASPECT_TOOLS_TELEMETRY=-all
 build --enable_platform_specific_config
 build:linux --host_platform=//bazel:linux_gnu --platforms=//bazel:linux_gnu
 build:linux --cxxopt=-std=c++20 --host_cxxopt=-std=c++20
+build:linux --@ffmpeg//:enable_alsa_indev=true
 build:macos --cxxopt=-std=c++20 --host_cxxopt=-std=c++20
+build:macos --@ffmpeg//:enable_avfoundation_indev=true
 build:windows --cxxopt=/std:c++20 --host_cxxopt=/std:c++20
+build:windows --@ffmpeg//:enable_dshow_indev=true
 build:windows --cxxopt=/bigobj --host_cxxopt=/bigobj
 build:windows --enable_runfiles
 # The Windows LLVM toolchain uses clang-cl and cannot assemble the MASM payload.
@@ -91,6 +94,15 @@ build:media --//crates/xrack-media:enabled
 
 # Apple Silicon iOS Simulator. Apple rules select the simulator SDK from Xcode.
 build:ios-sim --ios_multi_cpus=sim_arm64
+
+# Native iPhone and iPad packages use Xcode's device SDK and the arm64 Rust target.
+build:ios-device --ios_multi_cpus=arm64
+# Link the device executables directly for checks without a provisioning profile.
+build:ios-device-check --config=ios-device
+build:ios-device-check --platforms=@apple_support//platforms:ios_arm64
+build:ios-device-check --apple_platform_type=ios
+build:ios-device-check --cpu=ios_arm64
+build:ios-device-check --ios_minimum_os=18.2
 
 # Android arm64 APK. The NDK supplies the target linker and sysroot.
 build:android --platforms=//bazel:arm64-v8a

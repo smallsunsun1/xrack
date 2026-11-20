@@ -25,6 +25,8 @@ mod ios;
 #[cfg(target_os = "ios")]
 mod ios_accessibility_actions;
 #[cfg(target_os = "ios")]
+mod ios_back;
+#[cfg(target_os = "ios")]
 mod ios_directory;
 #[cfg(target_os = "ios")]
 mod ios_edit_menu;
@@ -112,8 +114,8 @@ use xrack_layout::{
     FocusObservers, HoverObservers, Interaction, LayoutNode, MenuKey, MenuShortcut, NavigationKey,
     Point, PointerDelivery, PointerSequence, RangeInput, ScrollBarUpdate, ScrollGestureKind,
     ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SplitResize, StackTransitions,
-    TableEditCommit, TableEditTarget, TablePasteDestination, Target, TextAreaMotion, TumblerScroll,
-    ViewportObservers, WheelAdjustment, WindowEffects,
+    TableEditCommit, TableEditTarget, TablePasteDestination, Target, TextAreaMotion, TouchTooltip,
+    TumblerScroll, ViewportObservers, WheelAdjustment, WindowEffects,
 };
 #[cfg(any(not(target_os = "android"), test))]
 use xrack_layout::{ComboGeometry, SpinGeometry};
@@ -134,6 +136,8 @@ pub use {android_activity::AndroidApp, desktop::run_android};
 
 #[cfg(feature = "media")]
 pub use xrack_media::install as install_media;
+#[cfg(feature = "media")]
+pub use xrack_media::voice;
 
 #[cfg(target_os = "ios")]
 type WindowAccessibility = ios::Accessibility;
@@ -141,6 +145,13 @@ type WindowAccessibility = ios::Accessibility;
 type WindowAccessibility = android_accessibility::Accessibility;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 type WindowAccessibility = accesskit_winit::Adapter;
+
+#[derive(PartialEq, Eq)]
+enum CaretFollow {
+    None,
+    Editor,
+    Viewports,
+}
 
 struct WindowState {
     surface: wgpu::Surface<'static>,
@@ -177,11 +188,13 @@ struct WindowState {
     #[cfg(target_os = "ios")]
     ios_modal_queue: native_dialog::ModalQueue,
     #[cfg(target_os = "ios")]
+    ios_imported_folders: Vec<tempfile::TempDir>,
+    #[cfg(target_os = "ios")]
     ios_text: Option<ios_text::TextInput>,
     #[cfg(target_os = "ios")]
     ios_edit_menu: Option<ios_edit_menu::EditMenu>,
     #[cfg(target_os = "ios")]
-    ios_floating_keyboard: Option<xrack_layout::Rect>,
+    ios_keyboard_occlusion: ios::KeyboardOcclusion,
     #[cfg(target_os = "ios")]
     ios_keyboard: Option<ios_keyboard::KeyboardInput>,
     #[cfg(target_os = "ios")]
@@ -191,9 +204,11 @@ struct WindowState {
     #[cfg(target_os = "ios")]
     _ios_scroll_to_top: Option<ios::ScrollToTop>,
     #[cfg(target_os = "ios")]
+    ios_edge_back: Option<ios_back::EdgeBack>,
+    #[cfg(target_os = "ios")]
     ios_spin_step_focus: Option<Target>,
     #[cfg(target_os = "ios")]
-    ios_drag_dismissed_focus: Option<Target>,
+    ios_keyboard_dismissed_focus: Option<Target>,
     #[cfg(target_os = "ios")]
     ios_scroll_announcement: Option<ios::ScrollAnnouncement>,
 }
@@ -407,11 +422,13 @@ impl WindowState {
             #[cfg(target_os = "ios")]
             ios_modal_queue: native_dialog::ModalQueue::default(),
             #[cfg(target_os = "ios")]
+            ios_imported_folders: Vec::new(),
+            #[cfg(target_os = "ios")]
             ios_text: None,
             #[cfg(target_os = "ios")]
             ios_edit_menu: None,
             #[cfg(target_os = "ios")]
-            ios_floating_keyboard: None,
+            ios_keyboard_occlusion: ios::KeyboardOcclusion::None,
             #[cfg(target_os = "ios")]
             ios_keyboard: None,
             #[cfg(target_os = "ios")]
@@ -421,9 +438,11 @@ impl WindowState {
             #[cfg(target_os = "ios")]
             _ios_scroll_to_top: None,
             #[cfg(target_os = "ios")]
+            ios_edge_back: None,
+            #[cfg(target_os = "ios")]
             ios_spin_step_focus: None,
             #[cfg(target_os = "ios")]
-            ios_drag_dismissed_focus: None,
+            ios_keyboard_dismissed_focus: None,
             #[cfg(target_os = "ios")]
             ios_scroll_announcement: None,
             #[cfg(target_os = "android")]
@@ -547,7 +566,7 @@ pub(crate) enum UserEvent {
     #[cfg(target_os = "ios")]
     IosScrollToTop,
     #[cfg(target_os = "ios")]
-    IosAccessibilityEscape(AccessibilityEscape),
+    IosBackRequested(AccessibilityEscape),
     #[cfg(target_os = "ios")]
     IosTransfer(native_dialog::TransferRequest),
     #[cfg(target_os = "ios")]
@@ -568,6 +587,11 @@ pub(crate) enum UserEvent {
     NativeDialogFinished {
         id: u64,
         result: NativeDialogResult,
+    },
+    #[cfg(target_os = "ios")]
+    IosFoldersImported {
+        id: u64,
+        folders: native_dialog::ImportedFolders,
     },
     #[cfg(target_os = "android")]
     AndroidDocumentsImported {
@@ -600,6 +624,13 @@ pub(crate) enum UserEvent {
     },
     #[cfg(target_os = "ios")]
     IosTextDragStarted(WindowId),
+    #[cfg(target_os = "ios")]
+    IosSelectedTextHeld {
+        window: WindowId,
+        target: Target,
+        context: xrack_layout::TextEditContext,
+        point: Point,
+    },
     #[cfg(not(target_os = "android"))]
     Accessibility(accesskit_winit::Event),
     #[cfg(target_os = "android")]
@@ -617,7 +648,7 @@ pub(crate) enum AccessibilityEscape {
     },
     Choice(Target),
     CellEdit(Target),
-    Overlay {
+    Control {
         target: Target,
         action: ControlAction,
     },
@@ -715,15 +746,16 @@ struct CapturedPointer {
     sequence: PointerSequence,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum TouchHoldKind {
-    Editor,
-    ContextMenu,
+    Editor(Target),
+    ContextMenu(Target),
+    Tooltip(TouchTooltip),
 }
+
+const TOUCH_HOLD_SLOP: f32 = 8.0;
 
 struct TouchHold {
     contact: PointerContact,
-    target: Target,
     origin: Point,
     deadline: Option<Instant>,
     kind: TouchHoldKind,
@@ -954,8 +986,10 @@ impl<C: Component> Application<C> {
                 false
             }
             #[cfg(target_os = "ios")]
-            UserEvent::IosAccessibilityEscape(request) => {
-                self.perform_accessibility_escape(request);
+            UserEvent::IosBackRequested(request) => {
+                if self.ios_application_active {
+                    self.perform_accessibility_escape(request);
+                }
                 false
             }
             #[cfg(target_os = "ios")]
@@ -1004,6 +1038,22 @@ impl<C: Component> Application<C> {
             }
             UserEvent::NativeDialogFinished { id, result } => {
                 self.native_dialogs.complete(id, result)
+            }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosFoldersImported { id, folders } => {
+                if let Some(state) = self.state.as_mut() {
+                    let live = self.native_dialogs.is_active_request_live(id);
+                    let completed = self
+                        .native_dialogs
+                        .complete(id, NativeDialogResult::Files(folders.paths));
+                    if live && completed {
+                        state.ios_imported_folders.push(folders.directory);
+                    }
+                    completed
+                } else {
+                    self.native_dialogs
+                        .complete(id, NativeDialogResult::Abandoned)
+                }
             }
             #[cfg(target_os = "android")]
             UserEvent::AndroidDocumentsImported { id, mut files } => {
@@ -1097,6 +1147,27 @@ impl<C: Component> Application<C> {
                 }
                 false
             }
+            #[cfg(target_os = "ios")]
+            UserEvent::IosSelectedTextHeld {
+                window,
+                target,
+                context,
+                point,
+            } => {
+                if self.ios_application_active
+                    && self.state.as_ref().is_some_and(|state| {
+                        state.window.id() == window && state.window.has_focus()
+                    })
+                    && context.is_current(&self.input, &self.scene)
+                {
+                    self.cancel_drag();
+                    self.cancel_direct_scroll();
+                    self.input.set_touch_selection_handles(true);
+                    self.open_touch_selection_menu(target, point);
+                    self.update_editor();
+                }
+                false
+            }
             #[cfg(not(target_os = "android"))]
             UserEvent::Accessibility(event) => {
                 self.accessibility_event(event);
@@ -1131,6 +1202,20 @@ impl<C: Component> Application<C> {
             return;
         };
         let scale_factor = state.window.scale_factor();
+        #[cfg(target_os = "ios")]
+        if let Some(back) = &state.ios_edge_back {
+            let request = escape.clone().filter(|request| {
+                self.ios_application_active
+                    && (!matches!(
+                        request,
+                        AccessibilityEscape::Control {
+                            action: ControlAction::StackBack { .. },
+                            ..
+                        }
+                    ) || !layout.has_leading_edge_drawer(&self.scene))
+            });
+            back.prepare(layout.layout_direction, request);
+        }
         #[cfg(target_os = "ios")]
         state.accessibility.prepare(scale_factor, escape);
         if state.accessibility_active
@@ -1251,6 +1336,27 @@ impl<C: Component> Application<C> {
                 state.projection.clear();
             }
             AccessEvent::ActionRequested(request) if request.target_tree == TreeId::ROOT => {
+                #[cfg(target_os = "ios")]
+                if request.action == AccessibleAction::CustomAction
+                    && matches!(
+                        request.data,
+                        Some(ActionData::CustomAction(
+                            accessibility::REFRESH_VIEWPORT_ACTION
+                        ))
+                    )
+                {
+                    let viewport = state.projection.refresh_owner(request.target_node).cloned();
+                    if let Some(viewport) = viewport
+                        && let Some(layout) = &self.layout
+                        && self
+                            .input
+                            .request_viewport_refresh(&self.scene, layout, &viewport)
+                    {
+                        self.refresh_editor(false);
+                        self.refresh_after_update_with_caret(false, false);
+                    }
+                    return;
+                }
                 if let Some(route) = state
                     .projection
                     .route_for_action(request.target_node, request.action)
@@ -1271,6 +1377,7 @@ impl<C: Component> Application<C> {
             | Route::SplitHandle { target, .. }
             | Route::Choice { target, .. }
             | Route::ControlPart { target, .. }
+            | Route::TableColumnHeader { target, .. }
             | Route::TableRowHeader(target) => target,
             Route::TabClose(target) => {
                 if request.action == AccessibleAction::Click
@@ -1349,6 +1456,36 @@ impl<C: Component> Application<C> {
                         *session,
                     );
                     self.update_editor();
+                    return;
+                }
+                #[cfg(target_os = "ios")]
+                if matches!(
+                    request.action,
+                    AccessibleAction::ScrollUp | AccessibleAction::ScrollDown
+                ) && self.input.accessibility_menu_page(
+                    &self.scene,
+                    layout,
+                    trigger,
+                    path,
+                    *session,
+                    request.action == AccessibleAction::ScrollUp,
+                ) {
+                    self.update_editor();
+                    if let Some(layout) = &self.layout
+                        && let Some(panel) = self
+                            .input
+                            .menu_panels(&self.scene, layout)
+                            .into_iter()
+                            .find(|panel| panel.session() == *session && panel.path() == path)
+                    {
+                        let range = panel.visible_range();
+                        ios::announce_accessibility_scroll(&format!(
+                            "Menu rows {} to {} of {}",
+                            range.start + 1,
+                            range.end,
+                            panel.row_count(),
+                        ));
+                    }
                 }
                 return;
             }
@@ -1414,6 +1551,20 @@ impl<C: Component> Application<C> {
                         RowSelection::Replace,
                     ),
                     (AccessibleAction::CustomAction, Some(ActionData::CustomAction(id))) => {
+                        if let Some((_, increase, _)) = accessibility::TABLE_ROW_RESIZE_ACTIONS
+                            .iter()
+                            .find(|action| action.0 == id)
+                        {
+                            if let Some(action) = self.input.table_row_header_resize(
+                                &self.scene,
+                                layout,
+                                &target,
+                                *increase,
+                            ) {
+                                self.apply_accessible_layout_change(action, |_, _, _, _| false);
+                            }
+                            return;
+                        }
                         accessibility::TABLE_ROW_MOVE_ACTIONS
                             .iter()
                             .find(|action| action.0 == id)
@@ -1437,6 +1588,65 @@ impl<C: Component> Application<C> {
                     self.apply_control(action);
                 }
             }
+            Route::TableColumnHeader { target, column } => match (request.action, request.data) {
+                (AccessibleAction::Click, _)
+                    if node
+                        .table_header
+                        .as_ref()
+                        .and_then(|header| header.next_sort(column))
+                        .is_some()
+                        && layout.at_path(&target.path).is_some_and(|item| {
+                            item.table.as_ref().is_some_and(|table| {
+                                table
+                                    .header_cell_bounds(column, item.clip_rect(table.header))
+                                    .is_some()
+                            })
+                        }) =>
+                {
+                    self.input.accessibility_focus(target.clone());
+                    self.apply_control(ControlInput {
+                        path: target.path,
+                        action: ControlAction::SortColumn(column),
+                    });
+                }
+                (AccessibleAction::CustomAction, Some(ActionData::CustomAction(id))) => {
+                    let action = accessibility::TABLE_COLUMN_MOVE_ACTIONS
+                        .iter()
+                        .find(|action| action.0 == id)
+                        .and_then(|(_, direction, _)| {
+                            self.input.table_column_header_move(
+                                &self.scene,
+                                layout,
+                                &target,
+                                column,
+                                *direction,
+                            )
+                        })
+                        .or_else(|| {
+                            let (_, increase, _) = accessibility::TABLE_COLUMN_RESIZE_ACTIONS
+                                .iter()
+                                .find(|action| action.0 == id)?;
+                            self.input.table_column_header_resize(
+                                &self.scene,
+                                layout,
+                                &target,
+                                column,
+                                *increase,
+                            )
+                        });
+                    if let Some(action) = action {
+                        self.apply_accessible_layout_change(
+                            action,
+                            |input, scene, layout, path| {
+                                target.node_in(scene).zip(layout.at_path(path)).is_some_and(
+                                    |(_, item)| input.reveal_table_column(path, item, column),
+                                )
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            },
             Route::ControlPart { target, action } => {
                 if request.action == AccessibleAction::Click
                     && let Some(item) = layout.at_path(&target.path)
@@ -1456,17 +1666,6 @@ impl<C: Component> Application<C> {
                                     .map(|entry| entry.bounds.intersect(item.bounds))
                             })
                         }
-                        ControlAction::SortColumn(index) if node.kind == "TableView" => node
-                            .table_header
-                            .as_ref()
-                            .and_then(|header| header.next_sort(index))
-                            .and(item.table.as_ref())
-                            .and_then(|table| {
-                                table
-                                    .columns
-                                    .get(index)
-                                    .map(|column| column.intersect(table.header))
-                            }),
                         ControlAction::SubmitSearch | ControlAction::ClearSearch
                             if node.kind == "SearchField" =>
                         {
@@ -1499,23 +1698,36 @@ impl<C: Component> Application<C> {
                 value,
                 record,
             } => {
-                if request.action == AccessibleAction::Click
-                    && self.input.choice_is_open_for(&target.path)
+                if self.input.choice_is_open_for(&target.path)
                     && let Some(menu) = self.input.choice_menu(&self.scene, layout)
                     && let Some(offset) = index.checked_sub(menu.first)
                     && menu.rows.get(offset) == Some(&value)
-                    && menu.row_enabled(offset)
                     && xrack_runtime::choice_identity(node, index)
                         .is_some_and(|current| current.record == record)
                 {
-                    self.input.dismiss_choice();
-                    if node.kind != "SearchField" {
-                        self.input.editor = None;
+                    match request.action {
+                        AccessibleAction::Click if menu.row_enabled(offset) => {
+                            self.input.dismiss_choice();
+                            if node.kind != "SearchField" {
+                                self.input.editor = None;
+                            }
+                            self.apply_control(ControlInput {
+                                path: target.path,
+                                action: ControlAction::Select(index),
+                            });
+                        }
+                        #[cfg(target_os = "ios")]
+                        AccessibleAction::ScrollUp | AccessibleAction::ScrollDown => {
+                            if self.input.choice_page(
+                                &self.scene,
+                                layout,
+                                request.action == AccessibleAction::ScrollUp,
+                            ) {
+                                self.update_editor();
+                            }
+                        }
+                        _ => {}
                     }
-                    self.apply_control(ControlInput {
-                        path: target.path,
-                        action: ControlAction::Select(index),
-                    });
                 }
             }
             Route::Element {
@@ -1528,6 +1740,51 @@ impl<C: Component> Application<C> {
                 AccessibleAction::Focus => {
                     self.input.focus_target(&self.scene, layout, target);
                     self.update_editor();
+                }
+                #[cfg(target_os = "ios")]
+                AccessibleAction::CustomAction if kind == "SwipeDelegate" => {
+                    if let Some(ActionData::CustomAction(id)) = request.data
+                        && let Some((_, side, _)) = accessibility::SWIPE_DELEGATE_ACTIONS
+                            .iter()
+                            .find(|action| action.0 == id)
+                        && let Some(action) = self.input.swipe_delegate_accessibility_side(
+                            &self.scene,
+                            layout,
+                            &target,
+                            *side,
+                        )
+                    {
+                        self.input.accessibility_focus(target);
+                        self.apply_control(action);
+                    }
+                }
+                #[cfg(target_os = "ios")]
+                AccessibleAction::CustomAction if matches!(kind, "Tab" | "TabButton") => {
+                    if let Some(row) = target.row_key
+                        && let Some(ActionData::CustomAction(id)) = request.data
+                        && let Some((_, direction, _)) = accessibility::TAB_MOVE_ACTIONS
+                            .iter()
+                            .find(|action| action.0 == id)
+                        && let Some(action) = self
+                            .input
+                            .tab_move_target(&self.scene, layout, &target, *direction)
+                            .flatten()
+                    {
+                        self.apply_accessible_layout_change(
+                            action,
+                            |input, scene, layout, path| {
+                                let Some((bar, item)) =
+                                    scene.interactive_at_path(path).zip(layout.at_path(path))
+                                else {
+                                    return false;
+                                };
+                                bar.children
+                                    .iter()
+                                    .position(|tab| tab.row_key == Some(row))
+                                    .is_some_and(|index| input.reveal_tab(bar, item, path, index))
+                            },
+                        );
+                    }
                 }
                 #[cfg(target_os = "android")]
                 AccessibleAction::CustomAction => {
@@ -1898,9 +2155,9 @@ impl<C: Component> Application<C> {
         let insets = {
             #[cfg(target_os = "ios")]
             let insets = {
-                let (insets, floating) =
+                let (insets, occlusion) =
                     ios::content_geometry(&state.window, state.ios_text.as_ref());
-                state.ios_floating_keyboard = floating;
+                state.ios_keyboard_occlusion = occlusion;
                 insets
             };
             #[cfg(target_os = "android")]
@@ -1922,7 +2179,14 @@ impl<C: Component> Application<C> {
             .then(|| base.clone())
         });
         #[cfg(target_os = "ios")]
-        let floating_base = (state.ios_floating_keyboard.is_some()
+        let floating_keyboard = match state.ios_keyboard_occlusion {
+            ios::KeyboardOcclusion::Floating(keyboard) => Some(keyboard),
+            _ => None,
+        };
+        #[cfg(target_os = "ios")]
+        self.input.set_floating_keyboard(floating_keyboard);
+        #[cfg(target_os = "ios")]
+        let floating_base = (floating_keyboard.is_some()
             || self.input.keyboard_avoidance().is_some())
         .then(|| base.clone());
         let elastic_input = self
@@ -1944,19 +2208,26 @@ impl<C: Component> Application<C> {
                 .prepare_scene(&self.component, prepare_base(base), viewport, &self.input)
         });
         #[cfg(target_os = "ios")]
-        if let Some(base) = floating_base
-            && self
-                .input
-                .avoid_floating_keyboard(&scene, &layout, state.ios_floating_keyboard)
-        {
-            (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
-                state.renderer.prepare_scene(
-                    &self.component,
-                    prepare_base(base),
-                    viewport,
-                    &self.input,
-                )
+        if let Some(base) = floating_base {
+            let caret = floating_keyboard.and_then(|_| {
+                state
+                    .renderer
+                    .text
+                    .visible_multiline_caret_rect(&self.input, &scene, &layout)
             });
+            if self
+                .input
+                .avoid_floating_keyboard(&scene, &layout, floating_keyboard, caret)
+            {
+                (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
+                    state.renderer.prepare_scene(
+                        &self.component,
+                        prepare_base(base),
+                        viewport,
+                        &self.input,
+                    )
+                });
+            }
         }
         if self
             .layout
@@ -2496,10 +2767,19 @@ impl<C: Component> Application<C> {
         {
             return Some(AccessibilityEscape::CellEdit(target.clone()));
         }
-        let next = self.input.dialog_escape(&self.scene, layout)?;
+        let next = self.input.dialog_escape(&self.scene, layout).or_else(|| {
+            if layout
+                .overlay_paths()
+                .iter()
+                .any(|path| self.input.allows_popup(layout, path))
+            {
+                return None;
+            }
+            self.input.stack_back_in_window(&self.scene, layout)
+        })?;
         let node = self.scene.at_path(&next.path)?;
         let row = self.scene.row_key_at(&next.path);
-        Some(AccessibilityEscape::Overlay {
+        Some(AccessibilityEscape::Control {
             target: Target::from_node(next.path, node, false, row),
             action: next.action,
         })
@@ -2525,7 +2805,7 @@ impl<C: Component> Application<C> {
                 self.choice_key(&key);
             }
             AccessibilityEscape::CellEdit(_) => self.cancel_table_edit(),
-            AccessibilityEscape::Overlay { target, action } => {
+            AccessibilityEscape::Control { target, action } => {
                 self.apply_control(ControlInput {
                     path: target.path,
                     action,
@@ -2561,6 +2841,10 @@ impl<C: Component> Application<C> {
     }
 
     fn refresh_after_update(&mut self, redraw_input: bool) {
+        self.refresh_after_update_with_caret(redraw_input, true);
+    }
+
+    fn refresh_after_update_with_caret(&mut self, redraw_input: bool, follow_caret: bool) {
         let needs_update = redraw_input
             || self.component.scene_dirty()
             || self
@@ -2575,27 +2859,32 @@ impl<C: Component> Application<C> {
             .window_inspector(&self.base_scene)
             .filter(|inspector| needs_update && inspector.profiling());
         if let Some(inspector) = inspector {
-            if let Some(sample) = xrack_runtime::update_profile::measure(|| {
-                self.refresh_after_update_inner(redraw_input);
-            }) {
-                inspector.push_sample(sample);
-            }
+            inspector.measure_update(|| {
+                self.refresh_after_update_inner(redraw_input, follow_caret);
+            });
         } else {
-            self.refresh_after_update_inner(redraw_input);
+            self.refresh_after_update_inner(redraw_input, follow_caret);
         }
     }
 
-    fn refresh_after_update_inner(&mut self, redraw_input: bool) {
+    fn refresh_after_update_inner(&mut self, redraw_input: bool, follow_caret: bool) {
         self.flush_swipe_events(None);
-        if self.sync_base_scene() {
-            self.relayout();
-        } else if self.prepare_frame(self.transition_epoch.elapsed()) {
-            self.layout_changed(true);
-        } else if redraw_input
+        let scene_changed = self.sync_base_scene();
+        if self.prepare_frame(self.transition_epoch.elapsed())
+            || scene_changed
+            || redraw_input
             || !self.focus_requests.is_empty()
             || !self.scroll_requests.is_empty()
         {
-            self.update_editor();
+            // Reactive layout updates, including scroll position observers, can run
+            // after manual scrolling. Only an input update should reveal the caret
+            // through the surrounding viewports again.
+            let reveal = match (follow_caret, redraw_input) {
+                (false, _) => CaretFollow::None,
+                (true, false) => CaretFollow::Editor,
+                (true, true) => CaretFollow::Viewports,
+            };
+            self.refresh_editor_with_caret(reveal);
         }
     }
 
@@ -2757,6 +3046,14 @@ impl<C: Component> Application<C> {
     }
 
     fn refresh_editor(&mut self, follow_caret: bool) {
+        self.refresh_editor_with_caret(if follow_caret {
+            CaretFollow::Viewports
+        } else {
+            CaretFollow::None
+        });
+    }
+
+    fn refresh_editor_with_caret(&mut self, reveal: CaretFollow) {
         self.flush_swipe_events(None);
         if self.layout.is_some() && self.loader_events_scene.as_ptr() != Rc::as_ptr(&self.scene) {
             let _focus = self.focus_requests.enter();
@@ -2783,14 +3080,6 @@ impl<C: Component> Application<C> {
             }
         }
         let edited_focused = self.apply_focus_and_text_requests();
-        #[cfg(target_os = "ios")]
-        if self
-            .state
-            .as_ref()
-            .is_some_and(|state| state.ios_floating_keyboard.is_some())
-        {
-            self.prepare_frame(self.transition_epoch.elapsed());
-        }
         if let Some(layout) = &self.layout {
             self.input.remember_focus_scope(&self.scene, layout);
         }
@@ -2807,6 +3096,18 @@ impl<C: Component> Application<C> {
             if let Some(editor) = &mut self.input.editor {
                 editor.set_preedit(String::new(), None);
             }
+        }
+        #[cfg(target_os = "ios")]
+        if ((reveal == CaretFollow::Viewports || edited_focused)
+            && self.reveal_ios_keyboard_caret())
+            || self.state.as_ref().is_some_and(|state| {
+                matches!(
+                    state.ios_keyboard_occlusion,
+                    ios::KeyboardOcclusion::Floating(_)
+                )
+            })
+        {
+            self.prepare_frame(self.transition_epoch.elapsed());
         }
         self.publish_focus();
         self.publish_hover();
@@ -2874,13 +3175,13 @@ impl<C: Component> Application<C> {
             if state.ios_spin_step_focus != focused {
                 state.ios_spin_step_focus = None;
             }
-            if state.ios_drag_dismissed_focus != focused {
-                state.ios_drag_dismissed_focus = None;
+            if state.ios_keyboard_dismissed_focus != focused {
+                state.ios_keyboard_dismissed_focus = None;
             }
             ime_allowed
                 && self.ios_application_active
                 && state.ios_spin_step_focus.is_none()
-                && state.ios_drag_dismissed_focus.is_none()
+                && state.ios_keyboard_dismissed_focus.is_none()
         };
         #[cfg(target_os = "ios")]
         if ime_allowed && state.ios_text.is_none() {
@@ -2892,7 +3193,31 @@ impl<C: Component> Application<C> {
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let native_active = false;
         #[cfg(any(target_os = "ios", target_os = "android"))]
-        let return_key = match field.map_or(ReturnKey::Auto, Node::return_key) {
+        let requested_return_key = field.map_or(ReturnKey::Auto, Node::return_key);
+        #[cfg(target_os = "ios")]
+        let keyboard = {
+            let show_navigation = field.is_some_and(Node::keyboard_navigation);
+            let neighbors = if show_navigation || requested_return_key == ReturnKey::Next {
+                self.layout.as_ref().map_or([false, false], |layout| {
+                    self.input
+                        .adjacent_text_fields(&self.scene, layout)
+                        .map(|target| target.is_some())
+                })
+            } else {
+                [false, false]
+            };
+            let return_key = if requested_return_key == ReturnKey::Next && !neighbors[1] {
+                ReturnKey::Done
+            } else {
+                requested_return_key
+            };
+            ios_text::EditorKeyboard {
+                return_key,
+                fields: show_navigation.then_some(neighbors),
+            }
+        };
+        #[cfg(target_os = "android")]
+        let return_key = match requested_return_key {
             ReturnKey::Next
                 if self.layout.as_ref().is_none_or(|layout| {
                     self.input.next_text_field(&self.scene, layout).is_none()
@@ -2946,7 +3271,7 @@ impl<C: Component> Application<C> {
                     &value,
                     !selection.is_empty(),
                 );
-                native.focus(target, node, return_key, &value, selection, commands)
+                native.focus(target, node, keyboard, &value, selection, commands)
             } else {
                 false
             }
@@ -2971,7 +3296,7 @@ impl<C: Component> Application<C> {
                     &mut self.input,
                     &self.scene,
                     layout,
-                    follow_caret || edited_focused,
+                    reveal != CaretFollow::None || edited_focused,
                 )
                 .or(list_caret)
         {
@@ -2986,6 +3311,39 @@ impl<C: Component> Application<C> {
         state.window.request_redraw();
         #[cfg(target_os = "ios")]
         self.sync_ios_text_drag();
+    }
+
+    #[cfg(target_os = "ios")]
+    fn reveal_ios_keyboard_caret(&mut self) -> bool {
+        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
+            return false;
+        };
+        if matches!(state.ios_keyboard_occlusion, ios::KeyboardOcclusion::None)
+            || state.ios_keyboard_dismissed_focus.is_some()
+            || !self.ios_application_active
+            || !state.window.has_focus()
+            || !self
+                .input
+                .focused
+                .as_ref()
+                .and_then(|target| target.node_in(&self.scene))
+                .is_some_and(|node| is_multiline_text_input(node.kind) && !node.text_read_only())
+        {
+            return false;
+        }
+        self.input.sync_editor(&self.scene);
+        let caret =
+            state
+                .renderer
+                .text
+                .editor_caret_rect(&mut self.input, &self.scene, layout, true);
+        // Floating keyboards move the viewport's contents temporarily in
+        // prepare_frame. Only a docked keyboard changes normal scroll offsets.
+        matches!(state.ios_keyboard_occlusion, ios::KeyboardOcclusion::Docked)
+            && caret.is_some_and(|caret| {
+                self.input
+                    .reveal_focused_editor_caret(&self.scene, layout, caret)
+            })
     }
 
     fn apply_focus_and_text_requests(&mut self) -> bool {
@@ -3294,7 +3652,7 @@ impl<C: Component> Application<C> {
         if !editor.accept(&target, &edit) {
             return;
         }
-        let (mut value, selection) = match edit.input {
+        let committed = match edit.input {
             ios_text::NativeInput::Command(command) => {
                 if self.ios_application_active {
                     if self.run_text_command(command) {
@@ -3307,6 +3665,10 @@ impl<C: Component> Application<C> {
             }
             ios_text::NativeInput::Submit => {
                 self.submit_editor_action(&target);
+                return;
+            }
+            ios_text::NativeInput::NavigateField { reverse } => {
+                self.submit_editor_action_with_navigation(&target, Some(reverse));
                 return;
             }
             ios_text::NativeInput::Preedit {
@@ -3324,11 +3686,28 @@ impl<C: Component> Application<C> {
                 }
                 return;
             }
-            ios_text::NativeInput::Commit { value, selection } => (value, selection),
+            ios_text::NativeInput::Commit { value, selection } => Some((value, selection)),
+            ios_text::NativeInput::Dismissed { committed } => {
+                if self.ios_application_active
+                    && let Some(state) = &mut self.state
+                    && state.window.has_focus()
+                {
+                    state.ios_keyboard_dismissed_focus = Some(target.clone());
+                    if let Some(menu) = &state.ios_edit_menu {
+                        menu.dismiss();
+                    }
+                }
+                self.pending_clipboard = None;
+                committed
+            }
         };
         if let Some(editor) = &mut self.input.editor {
             editor.set_preedit(String::new(), None);
         }
+        let Some((mut value, selection)) = committed else {
+            self.update_editor();
+            return;
+        };
         let Some(node) = self.scene.at_path(&target.path) else {
             return;
         };
@@ -3366,6 +3745,10 @@ impl<C: Component> Application<C> {
     }
 
     fn submit_editor_action(&mut self, target: &Target) {
+        self.submit_editor_action_with_navigation(target, None);
+    }
+
+    fn submit_editor_action_with_navigation(&mut self, target: &Target, navigation: Option<bool>) {
         let Some(node) = target
             .node_in(&self.scene)
             .filter(|_| self.input.focused.as_ref() == Some(target))
@@ -3382,12 +3765,24 @@ impl<C: Component> Application<C> {
             return;
         }
         if self.input.table_cell_editing(&target.path) {
-            self.commit_table_edit();
+            if navigation.is_none() {
+                self.commit_table_edit();
+            }
             return;
         }
         let search =
             node.kind == "SearchField" || node.input_type() == xrack_runtime::InputType::Search;
         let return_key = node.return_key();
+        if let Some(reverse) = navigation {
+            if !node.keyboard_navigation()
+                || self.layout.as_ref().is_none_or(|layout| {
+                    let [previous, next] = self.input.adjacent_text_fields(&self.scene, layout);
+                    (if reverse { previous } else { next }).is_none()
+                })
+            {
+                return;
+            }
+        }
         let dismiss_after_submit = spin_editable(node)
             || search
             || matches!(
@@ -3396,13 +3791,14 @@ impl<C: Component> Application<C> {
                     | xrack_runtime::InputType::Decimal
                     | xrack_runtime::InputType::Tel
             );
-        if matches!(node.kind, "TextInput" | "LineEdit")
-            && !self.component.control_at(
-                &self.scene,
-                &target.path,
-                ControlAction::ValidateTextSubmission,
-            )
-        {
+        if matches!(
+            node.kind,
+            "TextInput" | "LineEdit" | "TextEdit" | "TextArea"
+        ) && !self.component.control_at(
+            &self.scene,
+            &target.path,
+            ControlAction::ValidateTextSubmission,
+        ) {
             return;
         }
         let submitted = if spin_editable(node) {
@@ -3421,16 +3817,20 @@ impl<C: Component> Application<C> {
             self.apply_control(action);
             true
         } else {
-            self.submit_text(target, return_key == ReturnKey::Auto)
+            self.submit_text(
+                target,
+                navigation.is_none() && return_key == ReturnKey::Auto,
+            )
         };
         if !submitted || self.input.focused.as_ref() != Some(target) {
             return;
         }
-        if return_key == ReturnKey::Next
-            && let Some(revealed) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| self.input.focus_next_text_field(&self.scene, layout))
+        if let Some(reverse) =
+            navigation.or_else(|| (return_key == ReturnKey::Next).then_some(false))
+            && let Some(revealed) = self.layout.as_ref().and_then(|layout| {
+                self.input
+                    .focus_adjacent_text_field(&self.scene, layout, reverse)
+            })
         {
             if revealed {
                 self.relayout();
@@ -3439,7 +3839,7 @@ impl<C: Component> Application<C> {
             }
             return;
         }
-        if dismiss_after_submit || return_key != ReturnKey::Auto {
+        if navigation.is_none() && (dismiss_after_submit || return_key != ReturnKey::Auto) {
             self.input.clear_focus();
             self.update_editor();
         }
@@ -3525,6 +3925,12 @@ impl<C: Component> Application<C> {
         if combo_editable(node) {
             self.input.dismiss_choice();
         }
+        // UIKit sends the full draft and selection together. Reveal the caret after
+        // commit_ios_text restores that selection, not at the end of the replacement.
+        let follow_caret = !(cfg!(target_os = "ios")
+            && source == EditSource::Ime
+            && is_multiline_text_input(node.kind)
+            && matches!(action, EditAction::ReplaceAll(_)));
         if self.input.edit_text(
             &mut self.component,
             &self.scene,
@@ -3532,14 +3938,14 @@ impl<C: Component> Application<C> {
             source,
             Instant::now(),
         ) {
-            self.refresh_scene();
+            self.refresh_after_update_with_caret(true, follow_caret);
             if let Some(inspector) = self.component.window_inspector(&self.base_scene)
                 && self.input.focused.as_ref() == Some(&target)
             {
                 inspector.record_fill(&self.scene, &target.path);
             }
         } else {
-            self.update_editor();
+            self.refresh_editor(follow_caret);
         }
     }
 
@@ -4099,6 +4505,29 @@ impl<C: Component> Application<C> {
         } else {
             self.update_editor();
         }
+    }
+
+    fn apply_accessible_layout_change(
+        &mut self,
+        input: ControlInput,
+        reveal: impl FnOnce(&mut Interaction, &Node, &LayoutNode, &[usize]) -> bool,
+    ) {
+        if !self
+            .component
+            .control_at(&self.scene, &input.path, input.action)
+        {
+            self.refresh_after_update_with_caret(false, false);
+            return;
+        }
+        self.sync_base_scene();
+        self.prepare_frame(self.transition_epoch.elapsed());
+        // Reveal the affected control before UIKit receives the new accessibility tree.
+        if let Some(layout) = &self.layout
+            && reveal(&mut self.input, &self.scene, layout, &input.path)
+        {
+            self.prepare_frame(self.transition_epoch.elapsed());
+        }
+        self.layout_changed(false);
     }
 
     fn commit_spin(&mut self) {
@@ -5607,7 +6036,7 @@ impl<C: Component> Application<C> {
                 #[cfg(target_os = "ios")]
                 if let Some(state) = &mut self.state {
                     if !_step_pressed && self.input.hovered == self.input.focused {
-                        state.ios_drag_dismissed_focus = None;
+                        state.ios_keyboard_dismissed_focus = None;
                     }
                     state.ios_spin_step_focus = self
                         .input
@@ -5931,7 +6360,7 @@ impl<C: Component> Application<C> {
         let (Some(state), Some(target)) = (&mut self.state, &self.input.focused) else {
             return false;
         };
-        if state.ios_drag_dismissed_focus.is_some()
+        if state.ios_keyboard_dismissed_focus.is_some()
             || !state
                 .ios_text
                 .as_ref()
@@ -5940,7 +6369,7 @@ impl<C: Component> Application<C> {
         {
             return false;
         }
-        state.ios_drag_dismissed_focus = Some(target.clone());
+        state.ios_keyboard_dismissed_focus = Some(target.clone());
         true
     }
 
@@ -6041,6 +6470,7 @@ impl<C: Component> Application<C> {
             || self.input.tumbler_preview().is_some()
             || self.input.has_switch_preview()
             || self.input.has_swipe_preview()
+            || self.input.drawer_preview().is_some()
             || self.input.has_overscroll();
         let table_drag = self.input.cancel_scroll_table_drag();
         match (self.layout.as_ref(), key) {
@@ -6117,6 +6547,9 @@ impl<C: Component> Application<C> {
         now: Instant,
     ) {
         let contact = PointerContact::Touch(device, id);
+        if phase == TouchPhase::Started {
+            self.dismiss_tooltip();
+        }
         if self.update_selection_handle_drag(contact, phase, point) {
             return;
         }
@@ -6326,17 +6759,19 @@ impl<C: Component> Application<C> {
             .and_then(|state| state.file_drop.as_ref())
             .is_some_and(|bridge| bridge.can_drag_text_at(point))
         {
+            // UIKit can cancel winit's touch when lifting selected text. The
+            // native recognizer follows the hold through the finger's release.
             self.touch_hold = None;
             return;
         }
         self.touch_hold = self.layout.as_ref().and_then(|layout| {
-            let (target, kind) = if let Some(target) =
+            let hold_deadline = now + Duration::from_millis(500);
+            let (kind, deadline) = if let Some(target) =
                 self.input
                     .touch_context_menu_target(&self.scene, layout, point)
             {
-                (target, TouchHoldKind::ContextMenu)
-            } else {
-                let target = self.input.touch_text_target(&self.scene, layout, point)?;
+                (TouchHoldKind::ContextMenu(target), hold_deadline)
+            } else if let Some(target) = self.input.touch_text_target(&self.scene, layout, point) {
                 PointerCaret::new(
                     &self.input,
                     &self.scene,
@@ -6346,13 +6781,17 @@ impl<C: Component> Application<C> {
                     point,
                     false,
                 )?;
-                (target, TouchHoldKind::Editor)
+                (TouchHoldKind::Editor(target), hold_deadline)
+            } else {
+                let (tooltip, deadline) =
+                    self.input
+                        .touch_tooltip_at(&self.scene, layout, point, now)?;
+                (TouchHoldKind::Tooltip(tooltip), deadline)
             };
             Some(TouchHold {
                 contact,
-                target,
                 origin: point,
-                deadline: Some(now + Duration::from_millis(500)),
+                deadline: Some(deadline),
                 kind,
             })
         });
@@ -6380,31 +6819,54 @@ impl<C: Component> Application<C> {
         {
             return;
         }
-        if selection.kind == TouchHoldKind::ContextMenu {
-            if self.input.delay_deadline().is_none()
-                && self.input.button_hold_deadline().is_none()
-                && self.layout.as_ref().is_some_and(|layout| {
-                    self.input.open_touch_context_menu(
+        let target = match selection.kind {
+            TouchHoldKind::ContextMenu(target) => {
+                if self.input.delay_deadline().is_none()
+                    && self.input.button_hold_deadline().is_none()
+                    && self.layout.as_ref().is_some_and(|layout| {
+                        self.input.open_touch_context_menu(
+                            &self.scene,
+                            layout,
+                            target,
+                            selection.origin,
+                        )
+                    })
+                {
+                    self.cancel_drag();
+                    self.cancel_direct_scroll();
+                    self.update_editor();
+                }
+                return;
+            }
+            TouchHoldKind::Tooltip(candidate) => {
+                if self.input.delay_deadline().is_none()
+                    && self.input.button_hold_deadline().is_none()
+                    && self.input.table_touch_hold_deadline().is_none()
+                    && let Some(layout) = &self.layout
+                    && self.input.show_touch_tooltip(
                         &self.scene,
                         layout,
-                        selection.target,
+                        candidate,
                         selection.origin,
+                        now,
                     )
-                })
-            {
-                self.cancel_drag();
-                self.cancel_direct_scroll();
-                self.update_editor();
+                {
+                    self.cancel_direct_scroll();
+                    if let Some(state) = &self.state {
+                        state.window.request_redraw();
+                    }
+                }
+                return;
             }
-            return;
-        }
+            TouchHoldKind::Editor(target) => target,
+        };
         self.cancel_drag();
         self.cancel_direct_scroll();
-        if self.input.focused.as_ref() != Some(&selection.target) {
+        if self.input.focused.as_ref() != Some(&target) {
             self.commit_spin();
         }
         #[cfg(target_os = "android")]
-        if self.input.focused.as_ref() == Some(&selection.target) {
+        if self.input.focused.as_ref() == Some(&target) {
             self.finish_committed_suggestion();
         }
         let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
@@ -6414,7 +6876,7 @@ impl<C: Component> Application<C> {
             .input
             .touch_text_target(&self.scene, layout, selection.origin)
             .as_ref()
-            != Some(&selection.target)
+            != Some(&target)
         {
             return;
         }
@@ -6422,7 +6884,7 @@ impl<C: Component> Application<C> {
             &self.input,
             &self.scene,
             layout,
-            &selection.target,
+            &target,
             selection.origin,
             selection.origin,
             false,
@@ -6431,7 +6893,7 @@ impl<C: Component> Application<C> {
         };
         if self
             .input
-            .focus_text_from_touch(&self.scene, layout, selection.target.clone())
+            .focus_text_from_touch(&self.scene, layout, target.clone())
             && caret.place(&state.renderer.text, &mut self.input, &self.scene, layout)
         {
             self.pending_clipboard = None;
@@ -6440,6 +6902,7 @@ impl<C: Component> Application<C> {
             self.input.set_touch_selection_handles(true);
             self.touch_hold = Some(TouchHold {
                 deadline: None,
+                kind: TouchHoldKind::Editor(target),
                 ..selection
             });
             self.update_editor();
@@ -6468,7 +6931,9 @@ impl<C: Component> Application<C> {
         if selection.deadline.is_some() {
             // A queued release or swipe can arrive after the clock deadline.
             // Only the event-loop timer can activate a hold while contact continues.
-            if distance > 8.0 || matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+            if distance > TOUCH_HOLD_SLOP
+                || matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled)
+            {
                 self.touch_hold = None;
             }
             return false;
@@ -6476,16 +6941,19 @@ impl<C: Component> Application<C> {
         let Some(selection) = self.touch_hold.take() else {
             return false;
         };
+        let TouchHoldKind::Editor(target) = &selection.kind else {
+            return false;
+        };
         if let (Some(state), Some(layout)) = (&self.state, &self.layout)
-            && self.input.focused.as_ref() == Some(&selection.target)
+            && self.input.focused.as_ref() == Some(target)
         {
             if matches!(phase, TouchPhase::Moved | TouchPhase::Ended)
-                && distance > 8.0
+                && distance > TOUCH_HOLD_SLOP
                 && let Some(caret) = PointerCaret::new(
                     &self.input,
                     &self.scene,
                     layout,
-                    &selection.target,
+                    target,
                     selection.origin,
                     point,
                     true,
@@ -6494,8 +6962,8 @@ impl<C: Component> Application<C> {
                 caret.place(&state.renderer.text, &mut self.input, &self.scene, layout);
             }
         }
-        if phase == TouchPhase::Ended && self.input.focused.as_ref() == Some(&selection.target) {
-            self.open_touch_selection_menu(selection.target.clone(), point);
+        if phase == TouchPhase::Ended && self.input.focused.as_ref() == Some(target) {
+            self.open_touch_selection_menu(target.clone(), point);
         }
         if phase == TouchPhase::Moved {
             self.touch_hold = Some(selection);
@@ -6819,7 +7287,13 @@ impl<C: Component> Application<C> {
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 let result = native_dialog::present(&parent, &request.options).await;
                 #[cfg(target_os = "ios")]
-                let result = native_dialog::present(&parent, &request, queue).await;
+                let result = match native_dialog::present(&parent, &request, queue).await {
+                    native_dialog::IosDialogResult::Ready(result) => result,
+                    native_dialog::IosDialogResult::ImportedFolders(folders) => {
+                        events.post(UserEvent::IosFoldersImported { id, folders });
+                        return;
+                    }
+                };
                 #[cfg(target_os = "android")]
                 let result = match native_dialog::present(&parent, &request.options).await {
                     native_dialog::AndroidDialogResult::Ready(result) => result,
@@ -7260,6 +7734,7 @@ impl<C: Component> HostedWindow for Application<C> {
             state._ios_accessibility_observer =
                 Some(ios::AccessibilityObserver::new(events.clone()));
             state._ios_scroll_to_top = ios::ScrollToTop::new(&state.window, events.clone());
+            state.ios_edge_back = ios_back::EdgeBack::new(&state.window, events.clone());
             ios::observe_system_appearance(&state.window, events.clone());
             state.ios_keyboard = ios_keyboard::KeyboardInput::new(&state.window, events.clone());
             state.ios_pointer = ios_pointer::PointerInput::new(&state.window, events.clone());

@@ -20,11 +20,13 @@ use objc2_uniform_type_identifiers::{UTType, UTTypeFolder, UTTypeItem};
 use std::{
     cell::Cell,
     future::Future,
+    io,
     path::{Path, PathBuf},
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
 };
+use tempfile::TempDir;
 use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
 use winit::window::Window;
 use xrack_runtime::{
@@ -105,17 +107,7 @@ async fn select_directory(
     window: &Window,
     canceled: impl Future<Output = ()>,
 ) -> Result<Option<IosDirectory>, &'static str> {
-    let (mtm, host) = presenter(window)?;
-    // SAFETY: The controller is created on the UIKit main thread. In-place access
-    // preserves the security-scoped URL supplied by the document provider.
-    let picker = unsafe {
-        UIDocumentPickerViewController::initForOpeningContentTypes_asCopy(
-            mtm.alloc(),
-            &NSArray::from_slice(&[UTTypeFolder]),
-            false,
-        )
-    };
-    let Some(directories) = present_picker(mtm, &host, &picker, canceled).await? else {
+    let Some(directories) = select_folder_urls(window, "", false, canceled).await? else {
         return Ok(None);
     };
     directories
@@ -123,6 +115,27 @@ async fn select_directory(
         .next()
         .map(IosDirectory::new)
         .transpose()
+}
+
+async fn select_folder_urls(
+    window: &Window,
+    directory: &str,
+    multiple: bool,
+    canceled: impl Future<Output = ()>,
+) -> Result<Option<Vec<Retained<NSURL>>>, &'static str> {
+    let (mtm, host) = presenter(window)?;
+    // SAFETY: The controller is created on the UIKit main thread. In-place access
+    // preserves the security-scoped URL supplied by the document provider.
+    let picker = unsafe {
+        let picker = UIDocumentPickerViewController::initForOpeningContentTypes_asCopy(
+            mtm.alloc(),
+            &NSArray::from_slice(&[UTTypeFolder]),
+            false,
+        );
+        configure_picker(&picker, directory, multiple);
+        picker
+    };
+    present_picker(mtm, &host, &picker, canceled).await
 }
 
 fn source_path(path: &Path) -> Result<&str, String> {
@@ -236,17 +249,171 @@ pub(crate) async fn present(
     window: &Window,
     request: &NativeDialogPresentation,
     queue: ModalQueue,
-) -> NativeDialogResult {
-    let Some(_permit) = until_canceled(request.wait_until_abandoned(), queue.lock_owned()).await
+) -> IosDialogResult {
+    let Some(permit) = until_canceled(request.wait_until_abandoned(), queue.lock_owned()).await
     else {
-        return NativeDialogResult::Abandoned;
+        return IosDialogResult::Ready(NativeDialogResult::Abandoned);
     };
-    let canceled = request.wait_until_abandoned();
     let result = match request.options.as_ref() {
-        NativeDialogOptions::File(options) => open_file(window, options, canceled).await,
-        NativeDialogOptions::Message(options) => open_message(window, options, canceled).await,
+        NativeDialogOptions::File(options) => {
+            let selection = open_file(window, options, request).await;
+            drop(permit);
+            match selection {
+                Ok(FileSelection::Folders(urls)) => copy_selected_folders(request, urls).await,
+                Ok(FileSelection::Ready(result)) => Ok(IosDialogResult::Ready(result)),
+                Err(error) => Err(error.to_owned()),
+            }
+        }
+        NativeDialogOptions::Message(options) => {
+            open_message(window, options, request.wait_until_abandoned())
+                .await
+                .map(IosDialogResult::Ready)
+                .map_err(str::to_owned)
+        }
     };
-    result.unwrap_or_else(|message| NativeDialogResult::Failed(message.into()))
+    result.unwrap_or_else(|message| IosDialogResult::Ready(NativeDialogResult::Failed(message)))
+}
+
+pub(crate) enum IosDialogResult {
+    Ready(NativeDialogResult),
+    ImportedFolders(ImportedFolders),
+}
+
+pub(crate) struct ImportedFolders {
+    pub(crate) paths: Vec<String>,
+    pub(crate) directory: TempDir,
+}
+
+enum FileSelection {
+    Ready(NativeDialogResult),
+    Folders(Vec<Retained<NSURL>>),
+}
+
+#[derive(Clone, Copy)]
+enum FolderChoice {
+    Add,
+    Import,
+    Cancel,
+}
+
+async fn choose_folders(
+    window: &Window,
+    options: &FileDialogOptions,
+    request: &NativeDialogPresentation,
+) -> Result<FileSelection, &'static str> {
+    let multiple = options.mode == FileDialogMode::SelectFolders;
+    let mut chosen = Vec::new();
+    loop {
+        let Some(urls) = select_folder_urls(
+            window,
+            &options.directory,
+            multiple,
+            request.wait_until_abandoned(),
+        )
+        .await?
+        else {
+            return Ok(FileSelection::Ready(NativeDialogResult::Abandoned));
+        };
+        if urls.is_empty() {
+            return Ok(FileSelection::Ready(NativeDialogResult::Canceled));
+        }
+        if !multiple {
+            return Ok(FileSelection::Folders(urls));
+        }
+        for url in urls {
+            if !chosen.contains(&url) {
+                chosen.push(url);
+            }
+        }
+        // In folder-only views, Files may show only Open for the current folder.
+        // A confirmation panel lets the user collect a batch across those views.
+        let names = chosen
+            .iter()
+            .filter_map(|url| {
+                // SAFETY: Each immutable URL is retained from the delegate callback.
+                unsafe { url.lastPathComponent() }.map(|name| name.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let choice = choose_alert(
+            window,
+            "Selected folders",
+            &names,
+            &[
+                (
+                    "Import selected folders",
+                    FolderChoice::Import,
+                    UIAlertActionStyle::Default,
+                ),
+                (
+                    "Add another folder",
+                    FolderChoice::Add,
+                    UIAlertActionStyle::Default,
+                ),
+                ("Cancel", FolderChoice::Cancel, UIAlertActionStyle::Cancel),
+            ],
+            request.wait_until_abandoned(),
+        )
+        .await?;
+        match choice {
+            Some(FolderChoice::Add) => {}
+            Some(FolderChoice::Import) => return Ok(FileSelection::Folders(chosen)),
+            Some(FolderChoice::Cancel) => {
+                return Ok(FileSelection::Ready(NativeDialogResult::Canceled));
+            }
+            None => return Ok(FileSelection::Ready(NativeDialogResult::Abandoned)),
+        }
+    }
+}
+
+async fn copy_selected_folders(
+    request: &NativeDialogPresentation,
+    urls: Vec<Retained<NSURL>>,
+) -> Result<IosDialogResult, String> {
+    if request.is_abandoned() {
+        return Ok(IosDialogResult::Ready(NativeDialogResult::Abandoned));
+    }
+    let (send, receive) = oneshot::channel();
+    std::thread::Builder::new()
+        .name("xrack-ios-folder-import".into())
+        .spawn(move || {
+            let result = copy_folders(urls, || send.is_closed());
+            let _ = send.send(result);
+        })
+        .map_err(|error| format!("Cannot start the Files import: {error}"))?;
+    let Some(result) = until_canceled(request.wait_until_abandoned(), receive).await else {
+        return Ok(IosDialogResult::Ready(NativeDialogResult::Abandoned));
+    };
+    result
+        .map_err(|_| "The Files import worker stopped before reporting a result.".to_owned())?
+        .map(IosDialogResult::ImportedFolders)
+        .map_err(|error| format!("Cannot import the selected folders: {error}"))
+}
+
+fn copy_folders(
+    urls: Vec<Retained<NSURL>>,
+    canceled: impl Fn() -> bool,
+) -> io::Result<ImportedFolders> {
+    let directory = tempfile::Builder::new().prefix("xrack-import-").tempdir()?;
+    let mut paths = Vec::with_capacity(urls.len());
+    for (index, url) in urls.into_iter().enumerate() {
+        if canceled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Folder selection canceled",
+            ));
+        }
+        let source = IosDirectory::new(url).map_err(io::Error::other)?;
+        let staging = directory.path().join(index.to_string());
+        std::fs::create_dir(&staging)?;
+        let path = source.import_copy(&staging)?;
+        paths.push(
+            path.into_os_string()
+                .into_string()
+                .map_err(|_| io::Error::other("The copied folder path is not UTF-8"))?,
+        );
+    }
+    Ok(ImportedFolders { paths, directory })
 }
 
 fn presenter(
@@ -267,18 +434,18 @@ fn presenter(
 async fn open_file(
     window: &Window,
     options: &FileDialogOptions,
-    canceled: impl Future<Output = ()>,
-) -> Result<NativeDialogResult, &'static str> {
+    request: &NativeDialogPresentation,
+) -> Result<FileSelection, &'static str> {
     let multiple = match options.mode {
         FileDialogMode::OpenFile => false,
         FileDialogMode::OpenFiles => true,
+        FileDialogMode::SelectFolder | FileDialogMode::SelectFolders => {
+            return choose_folders(window, options, request).await;
+        }
         FileDialogMode::SaveFile => {
             return Err(
                 "The iOS Files picker imports existing files. This dialog cannot choose a path for a new file.",
             );
-        }
-        FileDialogMode::SelectFolder | FileDialogMode::SelectFolders => {
-            return Err("The iOS Files picker cannot return directories as ordinary file paths.");
         }
     };
     let filters = options.filters()?;
@@ -297,25 +464,21 @@ async fn open_file(
                 .ok_or("The system cannot identify a file type from the specified extension.")?;
             NSArray::from_vec(types)
         };
-        // Copy mode gives XRack an app-local URL that can be used after the native callback.
+        // File imports receive a local copy owned by the application.
         let picker = UIDocumentPickerViewController::initForOpeningContentTypes_asCopy(
             mtm.alloc(),
             &types,
             true,
         );
-        picker.setAllowsMultipleSelection(multiple);
-        if !options.directory.is_empty() {
-            let directory =
-                NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&options.directory), true);
-            picker.setDirectoryURL(Some(&directory));
-        }
+        configure_picker(&picker, &options.directory, multiple);
         picker
     };
-    let Some(urls) = present_picker(mtm, &host, &picker, canceled).await? else {
-        return Ok(NativeDialogResult::Abandoned);
+    let Some(urls) = present_picker(mtm, &host, &picker, request.wait_until_abandoned()).await?
+    else {
+        return Ok(FileSelection::Ready(NativeDialogResult::Abandoned));
     };
     if urls.is_empty() {
-        return Ok(NativeDialogResult::Canceled);
+        return Ok(FileSelection::Ready(NativeDialogResult::Canceled));
     }
     let paths = urls
         .iter()
@@ -325,7 +488,18 @@ async fn open_file(
         })
         .collect::<Option<Vec<_>>>()
         .ok_or("The picker returned an invalid file URL.")?;
-    Ok(NativeDialogResult::Files(paths))
+    Ok(FileSelection::Ready(NativeDialogResult::Files(paths)))
+}
+
+fn configure_picker(picker: &UIDocumentPickerViewController, directory: &str, multiple: bool) {
+    // SAFETY: Both the picker and its starting directory are configured on the main thread.
+    unsafe {
+        picker.setAllowsMultipleSelection(multiple);
+        if !directory.is_empty() {
+            let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(directory), true);
+            picker.setDirectoryURL(Some(&url));
+        }
+    }
 }
 
 async fn present_picker(
@@ -355,7 +529,6 @@ async fn open_message(
     options: &MessageDialogOptions,
     canceled: impl Future<Output = ()>,
 ) -> Result<NativeDialogResult, &'static str> {
-    let (mtm, host) = presenter(window)?;
     let (title, message) = if options.title.is_empty() {
         (options.text.as_str(), options.informative_text.clone())
     } else {
@@ -366,10 +539,6 @@ async fn open_message(
             .join("\n\n");
         (options.title.as_str(), message)
     };
-    let title = (!title.is_empty()).then(|| NSString::from_str(title));
-    let message = (!message.is_empty()).then(|| NSString::from_str(&message));
-    let (send, receive) = oneshot::channel();
-    let result = Rc::new(Cell::new(Some(send)));
     let ok = ("OK", StandardButtonKind::Ok, UIAlertActionStyle::Default);
     let yes = ("Yes", StandardButtonKind::Yes, UIAlertActionStyle::Default);
     let no = ("No", StandardButtonKind::No, UIAlertActionStyle::Default);
@@ -384,6 +553,23 @@ async fn open_message(
         MessageButtons::YesNo => &[yes, no],
         MessageButtons::YesNoCancel => &[yes, no, cancel],
     };
+    Ok(choose_alert(window, title, &message, buttons, canceled)
+        .await?
+        .map_or(NativeDialogResult::Abandoned, NativeDialogResult::Button))
+}
+
+async fn choose_alert<T: Copy + 'static>(
+    window: &Window,
+    title: &str,
+    message: &str,
+    buttons: &[(&str, T, UIAlertActionStyle)],
+    canceled: impl Future<Output = ()>,
+) -> Result<Option<T>, &'static str> {
+    let (mtm, host) = presenter(window)?;
+    let title = (!title.is_empty()).then(|| NSString::from_str(title));
+    let message = (!message.is_empty()).then(|| NSString::from_str(message));
+    let (send, receive) = oneshot::channel();
+    let result = Rc::new(Cell::new(Some(send)));
     // SAFETY: The alert and its action handlers run on the UIKit main thread.
     let alert = unsafe {
         let alert = UIAlertController::alertControllerWithTitle_message_preferredStyle(
@@ -412,12 +598,10 @@ async fn open_message(
         alert
     };
     drop(result);
-    match present_panel(&host, &alert, until_canceled(canceled, receive)).await {
-        Some(button) => button
-            .map(NativeDialogResult::Button)
-            .map_err(|_| "The system did not return a button selection."),
-        None => Ok(NativeDialogResult::Abandoned),
-    }
+    present_panel(&host, &alert, until_canceled(canceled, receive))
+        .await
+        .transpose()
+        .map_err(|_| "The system did not return a button selection.")
 }
 
 async fn present_panel<T>(

@@ -32,7 +32,7 @@ def native_inputs(bin_dir, external, host, directory):
     payload = directory / "media-library.xz"
     with library.open("rb") as source, lzma.open(payload, "wb", preset=6) as target:
         shutil.copyfileobj(source, target)
-    return [
+    inputs = [
         (payload, "media/library.xz"),
         (native / BINDINGS, "media/" + BINDINGS),
         (external / "ffmpeg+" / "COPYING.LGPLv2.1", "licenses/media/FFmpeg-LGPL-2.1.txt"),
@@ -41,6 +41,10 @@ def native_inputs(bin_dir, external, host, directory):
         (external / "bzip2+" / "LICENSE", "licenses/media/bzip2.txt"),
         (external / "openssl+" / "LICENSE.txt", "licenses/media/OpenSSL.txt"),
     ]
+    alsa_license = external / "alsa_lib+" / "COPYING"
+    if "linux" in host and alsa_license.is_file():
+        inputs.append((alsa_license, "licenses/media/ALSA-LGPL.txt"))
+    return inputs
 
 
 def stage_bundle(workspace, archive, host):
@@ -129,13 +133,16 @@ def source_archive(external, bin_dir, destination):
             bundle.add(ROOT / name, arcname="xrack-build/" + name)
         for name in (
             "ffmpeg_hls_window.patch",
+            "ffmpeg_capture_interrupt.patch",
             "ffmpeg_windows_probes.patch",
             "openssl_windows_ssize_max.patch",
             "openssl_windows_winstore.patch",
         ):
             bundle.add(ROOT / "bazel" / name, arcname="xrack-build/bazel/" + name)
-        for name in ("zlib+", "bzip2+", "openssl+"):
+        for name in ("zlib+", "bzip2+", "openssl+", "alsa_lib+"):
             directory = external / name
+            if name == "alsa_lib+" and not directory.is_dir():
+                continue
             for path in sorted(directory.iterdir()):
                 if not path.name.startswith((".", "bazel-")):
                     bundle.add(path, arcname=f"{name[:-1]}/{path.name}")

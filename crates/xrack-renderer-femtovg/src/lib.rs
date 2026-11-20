@@ -492,6 +492,12 @@ impl Renderer {
         if !is_window_overlay(scene.kind) {
             self.paint(scene, layout, &mut Vec::new(), frame, false)?;
         }
+        let scrim_bounds = Rect::new(
+            0.0,
+            0.0,
+            size.width as f32 / scale,
+            size.height as f32 / scale,
+        );
         for path in input.overlay_layers(layout) {
             let (Some(node), Some(item)) = (scene.at_path(path), layout.at_path(path)) else {
                 continue;
@@ -500,17 +506,34 @@ impl Renderer {
                 continue;
             }
             if node.boolean("dim", node.is_modal()) {
-                let mut backdrop = Path::new();
-                backdrop.rect(
-                    0.0,
-                    0.0,
-                    size.width as f32 / scale,
-                    size.height as f32 / scale,
-                );
-                self.canvas
-                    .fill_path(&backdrop, &Paint::color(color(theme.role(Role::Scrim))));
+                let reveal = input.closing_drawer_scrim(scene, layout, path);
+                self.paint_overlay_scrim(scrim_bounds, theme, reveal);
             }
             self.paint(node, item, &mut path.to_vec(), frame, false)?;
+        }
+        if let Some((node, viewport, reveal)) = input.opening_drawer_preview(scene, layout) {
+            if node.boolean("dim", node.is_modal()) {
+                self.paint_overlay_scrim(scrim_bounds, theme, reveal);
+            }
+            let (shell, item, displacement) =
+                xrack_layout::layout_drawer_opening(node, viewport, reveal, &mut self.text);
+            self.canvas.save();
+            self.canvas
+                .intersect_scissor(viewport.x, viewport.y, viewport.width, viewport.height);
+            self.canvas.translate(displacement.x, displacement.y);
+            let result = self.paint(
+                &shell,
+                &item,
+                &mut Vec::new(),
+                PaintFrame {
+                    input: &Interaction::default(),
+                    transitions: None,
+                    ..frame
+                },
+                false,
+            );
+            self.canvas.restore();
+            result?;
         }
         if let Some(menu) = input.choice_menu(scene, layout) {
             self.paint_choice_menu(&menu, frame)?;
@@ -669,6 +692,14 @@ impl Renderer {
         self.paint_group(content, opacity, |renderer| {
             renderer.paint_element(node, layout, path, frame, in_layout)
         })
+    }
+
+    fn paint_overlay_scrim(&mut self, bounds: Rect, theme: Palette, reveal: f32) {
+        let mut backdrop = Path::new();
+        backdrop.rect(bounds.x, bounds.y, bounds.width, bounds.height);
+        let mut tint = color(theme.role(Role::Scrim));
+        tint.a *= reveal;
+        self.canvas.fill_path(&backdrop, &Paint::color(tint));
     }
 
     fn paint_group(
@@ -1093,21 +1124,25 @@ impl Renderer {
             }
             self.needs_redraw |= pending && layout.enabled;
         }
-        if layout.dialog_title_height(node) > 0.0 {
-            let paint = self.text.paint_node(
-                node,
-                color(node.color("color").unwrap_or(theme.text)),
-                false,
+        if let Some(size) = layout.dialog_title_font_size() {
+            self.canvas.save();
+            self.canvas.intersect_scissor(
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                layout.dialog_title_height(node),
             );
-            self.text
-                .fill_text(
-                    &mut self.canvas,
-                    bounds.x + 16.0,
-                    bounds.y + 12.0,
-                    node.text("title").unwrap_or(""),
-                    &paint,
-                )
-                .map_err(|error| format!("dialog title drawing failed: {error}"))?;
+            let result = controls::draw_title(
+                &mut self.canvas,
+                &self.text,
+                node,
+                bounds,
+                node.color("color").unwrap_or(theme.text),
+                size,
+                layout.dialog_title_lines(),
+            );
+            self.canvas.restore();
+            result?;
         }
         if let Some(header) =
             group_header.filter(|header| header.width > 0.0 && header.height > 0.0)
@@ -1120,22 +1155,34 @@ impl Renderer {
             } else if node.group_checkable() {
                 entry::toggle(&mut self.canvas, &self.text, theme, node, header, layout)
             } else {
-                let size = self.text.font_size(node);
                 let foreground = if layout.enabled {
                     node.color("color").unwrap_or(theme.text)
                 } else {
                     theme.disabled_text
                 };
-                self.text
-                    .fill_text(
+                if let Some((size, lines)) = layout.group_title() {
+                    controls::draw_title(
                         &mut self.canvas,
-                        header.x,
-                        header.y + ((header.height - size * 1.4) * 0.5).max(0.0),
-                        node.text("title").unwrap_or(""),
-                        &self.text.paint_node(node, color(foreground), false),
+                        &self.text,
+                        node,
+                        header,
+                        foreground,
+                        size,
+                        lines,
                     )
-                    .map(|_| ())
-                    .map_err(|error| format!("group title drawing failed: {error}"))
+                } else {
+                    let size = self.text.font_size(node);
+                    self.text
+                        .fill_text(
+                            &mut self.canvas,
+                            header.x,
+                            header.y + ((header.height - size * 1.4) * 0.5).max(0.0),
+                            node.text("title").unwrap_or(""),
+                            &self.text.paint_node(node, color(foreground), false),
+                        )
+                        .map(|_| ())
+                        .map_err(|error| format!("group title drawing failed: {error}"))
+                }
             };
             self.canvas.restore();
             result?;
@@ -1274,6 +1321,7 @@ impl Renderer {
                             focused: input.is_focused(path),
                             close: page.tab_close,
                             close_hovered: input.tab_close_hovered(path),
+                            direction: page.layout_direction,
                         },
                     )
                 });
@@ -1372,7 +1420,7 @@ impl Renderer {
             self.needs_redraw |=
                 range::indicator(&mut self.canvas, theme, node, layout, indicator, phase);
         } else if node.kind == "StandardListItem" {
-            controls::label(
+            controls::row_label(
                 &mut self.canvas,
                 &self.text,
                 node,
@@ -1383,11 +1431,15 @@ impl Renderer {
                     bounds.height,
                 ),
                 node.text("text").unwrap_or("").lines().next().unwrap_or(""),
-                self.text.font_size(node),
                 if layout.enabled {
                     theme.text
                 } else {
                     theme.disabled_text
+                },
+                if self.text.text_scale() > 1.0 {
+                    layout.layout_direction
+                } else {
+                    xrack_runtime::LayoutDirection::LeftToRight
                 },
             )?;
         } else if node.kind == "RadioButton" || is_toggle(node.kind) {
@@ -1546,32 +1598,60 @@ impl Renderer {
             } else {
                 node.color("color").unwrap_or(button_text_color)
             };
-            let area = button
+            let mut area = button
                 .as_ref()
                 .map_or(bounds, |button| bounds.inset(button.padding));
+            let mut label_font_size = self.text.font_size(node);
+            let scaled_button = button.as_ref().filter(|_| self.text.text_scale() > 1.0);
+            if let Some(button) = scaled_button {
+                (area, label_font_size) = button.scaled_label_metrics(bounds, label_font_size);
+            }
             let centered = is_button && !item_delegate;
             let right_aligned = is_button
                 && !centered
                 && layout.layout_direction == xrack_runtime::LayoutDirection::RightToLeft;
-            let mut paint = self.text.paint_node(node, color(text_color), centered);
+            let mut paint =
+                self.text
+                    .paint_node_at_size(node, label_font_size, color(text_color), centered);
             if right_aligned {
                 paint.set_text_align(femtovg::Align::Right);
             }
-            let line_height = self.text.font_size(node) * 1.4;
+            let line_height = label_font_size * 1.4;
             let label_width = button
                 .as_ref()
                 .map_or(area.width, |button| button.label_width(area, line_height));
             let lines = self.text.lines(text, &paint, label_width);
-            let (label, clip) = if let Some(button) = button {
+            let visible_lines = scaled_button.map_or(lines.len(), |button| {
+                let height = button.label_height(area, line_height);
+                (((height + 0.01) / line_height) as usize).min(lines.len())
+            });
+            let last = (visible_lines > 0 && visible_lines < lines.len()).then(|| {
+                let last = text[lines[visible_lines - 1].clone()].trim_end();
+                let preview = format!("{last}…");
+                xrack_layout::elide_to_width(&preview, label_width, |line| {
+                    self.text.advance_painted(line, &paint)
+                })
+                .into_owned()
+            });
+            let shown_line = |index: usize| {
+                if index + 1 == visible_lines
+                    && let Some(last) = last.as_deref()
+                {
+                    last
+                } else {
+                    &text[lines[index].clone()]
+                }
+            };
+            let (label, clip) = if let Some(button) = button.as_ref() {
                 let width = if button.icon.is_some() {
-                    lines
-                        .iter()
-                        .map(|range| self.text.advance_painted(&text[range.clone()], &paint))
+                    (0..visible_lines)
+                        .map(|index| self.text.advance_painted(shown_line(index), &paint))
                         .fold(0.0_f32, f32::max)
                 } else {
                     label_width
                 };
-                let size = Size::new(width, line_height * lines.len() as f32);
+                let size = Size::new(width, line_height * visible_lines as f32);
+                let clip = scaled_button.is_some() || size.height > area.height;
                 let placed =
                     button.place(area, size, line_height, centered, layout.layout_direction);
                 if let (Some((image, _)), Some(bounds)) = (button.icon.as_ref(), placed.icon) {
@@ -1585,10 +1665,7 @@ impl Renderer {
                             .then(|| color(text_color)),
                     )?;
                 }
-                (
-                    placed.label,
-                    placed.icon.is_some() || size.height > area.height,
-                )
+                (placed.label, placed.icon.is_some() || clip)
             } else {
                 (bounds, false)
             };
@@ -1605,13 +1682,13 @@ impl Renderer {
                 label.x
             };
             let result = (|| {
-                for (i, range) in lines.iter().enumerate() {
+                for i in 0..visible_lines {
                     let y = label.y + i as f32 * line_height;
                     if y >= label.y + label.height {
                         break;
                     }
                     self.text
-                        .fill_text(&mut self.canvas, x, y, &text[range.clone()], &paint)
+                        .fill_text(&mut self.canvas, x, y, shown_line(i), &paint)
                         .map_err(|e| format!("text drawing failed: {e}"))?;
                 }
                 Ok::<(), String>(())
@@ -2019,6 +2096,7 @@ impl Renderer {
                     layout.layout_direction,
                     node.boolean("tree-expanded", false),
                     layout.enabled,
+                    self.text.text_scale(),
                 );
             }
         }

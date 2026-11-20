@@ -1,5 +1,5 @@
 use crate::{
-    Point, Size, font_size,
+    Point, Size, TextMeasurer, font_size,
     text_area::{fitting_prefix, grapheme_boundaries, paragraphs},
 };
 use std::{borrow::Cow, ops::Range};
@@ -188,10 +188,32 @@ fn line_text(text: &str, range: Range<usize>, ellipsis: bool) -> Cow<'_, str> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlannedLabelLine {
     pub range: Range<usize>,
     pub ellipsis: bool,
     pub origin: Point,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TitleLayout {
+    pub height: f32,
+    pub font_size: f32,
+    pub lines: Vec<PlannedLabelLine>,
+}
+
+impl PlannedLabelLine {
+    pub fn text<'a>(&self, source: &'a str) -> Cow<'a, str> {
+        line_text(source, self.range.clone(), self.ellipsis)
+    }
+}
+
+struct LabelStyle {
+    horizontal: TextAlignment,
+    vertical: TextVerticalAlignment,
+    wrap: TextWrap,
+    elide: bool,
+    max_lines: usize,
 }
 
 /// Text ranges shared by plain and styled labels, independent of the shaping backend.
@@ -215,13 +237,12 @@ impl LabelPlan {
         available: Size,
         size: f32,
         direction: Option<LayoutDirection>,
-        mut advance: impl FnMut(Range<usize>, bool) -> f32,
+        advance: impl FnMut(Range<usize>, bool) -> f32,
     ) -> Self {
         use TextHorizontalAlignment as Horizontal;
         use TextVerticalAlignment as Vertical;
 
         let text = node.text("text").unwrap_or("");
-        let line_height = size * 1.4;
         let elide =
             node.properties.get("overflow") == Some(&Value::TextOverflow(TextOverflow::Elide));
         let default = if matches!(node.kind, "Label" | "StyledText") {
@@ -239,6 +260,75 @@ impl LabelPlan {
             .and_then(|count| usize::try_from(count).ok())
             .filter(|&count| count > 0)
             .unwrap_or(usize::MAX);
+        Self::plan(
+            text,
+            available,
+            size,
+            LabelStyle {
+                horizontal,
+                vertical,
+                wrap: wrap(node),
+                elide,
+                max_lines,
+            },
+            advance,
+        )
+    }
+
+    pub(crate) fn leading_title(
+        node: &Node,
+        title: &str,
+        width: f32,
+        size: f32,
+        direction: LayoutDirection,
+        max_lines: usize,
+        text: &mut impl TextMeasurer,
+    ) -> Self {
+        let preferred_size = text.font_size(node);
+        Self::plan(
+            title,
+            Size::new(width, f32::INFINITY),
+            size,
+            LabelStyle {
+                horizontal: TextAlignment {
+                    mode: TextHorizontalAlignment::Start,
+                    direction: Some(direction),
+                },
+                vertical: TextVerticalAlignment::Top,
+                wrap: TextWrap::WordWrap,
+                elide: true,
+                max_lines,
+            },
+            |range, ellipsis| {
+                let value = line_text(title, range, ellipsis);
+                if size == preferred_size {
+                    text.measure_node(node, &value, f32::MAX).width
+                } else {
+                    text.measure_node_at_size(node, &value, size, f32::MAX)
+                        .width
+                }
+            },
+        )
+    }
+
+    fn plan(
+        text: &str,
+        available: Size,
+        size: f32,
+        style: LabelStyle,
+        mut advance: impl FnMut(Range<usize>, bool) -> f32,
+    ) -> Self {
+        use TextHorizontalAlignment as Horizontal;
+        use TextVerticalAlignment as Vertical;
+
+        let LabelStyle {
+            horizontal,
+            vertical,
+            wrap,
+            elide,
+            max_lines,
+        } = style;
+        let line_height = size * 1.4;
         let by_height = available.height / line_height;
         let by_height = if elide {
             // The measured height is a rounded product of the line count and height.
@@ -255,10 +345,9 @@ impl LabelPlan {
         }
 
         let mut raw = Vec::new();
-        let wrap = wrap(node);
         'paragraphs: for range in paragraphs(text) {
             let content = &text[range.clone()];
-            let rtl = direction.is_none()
+            let rtl = horizontal.direction.is_none()
                 && matches!(horizontal.mode, Horizontal::Start | Horizontal::End)
                 && get_base_direction(content) == Direction::Rtl;
             if wrap == TextWrap::NoWrap || content.is_empty() {
@@ -356,6 +445,22 @@ impl LabelPlan {
 
 fn trim_trailing_space(text: &str, range: Range<usize>) -> Range<usize> {
     range.start..range.start + text[range.clone()].trim_end().len()
+}
+
+/// Fit a single line to the available width without splitting a grapheme.
+#[doc(hidden)]
+pub fn elide_to_width(
+    text: &str,
+    width: f32,
+    mut advance: impl FnMut(&str) -> f32,
+) -> Cow<'_, str> {
+    if advance(text) <= width {
+        return Cow::Borrowed(text);
+    }
+    let (range, ellipsis) = elided(text, 0..text.len(), width, &mut |range, ellipsis| {
+        advance(&line_text(text, range, ellipsis))
+    });
+    line_text(text, range, ellipsis)
 }
 
 fn elided(

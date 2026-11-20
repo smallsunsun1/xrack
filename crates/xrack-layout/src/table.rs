@@ -1,11 +1,11 @@
 use crate::{
-    LayoutNode, Point, Rect, ScrollLayout, TransformSpace,
+    LayoutNode, Point, Rect, ScrollLayout, TextMeasurer, TransformSpace,
     linear::{AxisInfo, fit_axis},
     place_in_direction,
 };
 use std::sync::Arc;
 use xrack_runtime::{
-    LayoutDirection, Node, TableColumnOrder, TableColumnWindow, resizable_table_column,
+    LayoutDirection, ListMetrics, Node, TableColumnOrder, TableColumnWindow, resizable_table_column,
 };
 
 /// Shared by the row layout, header painting, and header hit testing.
@@ -49,21 +49,26 @@ pub(crate) fn column_limits(column: &Node, viewport_width: f32) -> (f32, f32) {
     (min, max)
 }
 
-pub(crate) fn list_viewport(node: &Node, bounds: Rect) -> Rect {
-    let header = if node.table_header.is_some() {
-        node.length("header-height")
-            .unwrap_or(34.0)
-            .clamp(16.0, 128.0)
-            .min(bounds.height)
+#[doc(hidden)]
+pub fn table_heading_font_size(text: &impl TextMeasurer) -> f32 {
+    (text.default_font_size().unwrap_or(15.0) * text.text_scale()).clamp(1.0, 512.0)
+}
+
+pub(crate) fn header_height(node: &Node, height: f32, preferred: f32) -> f32 {
+    const BASELINE: f32 = 34.0;
+    if let Some(explicit) = node.length("header-height") {
+        return explicit.clamp(16.0, 128.0).min(height);
+    }
+    // Keep room for a row when the default header grows in a short viewport.
+    let available = if preferred > BASELINE {
+        height
+            - (height - BASELINE)
+                .max(0.0)
+                .min(ListMetrics::row_height(node))
     } else {
-        0.0
+        height
     };
-    Rect::new(
-        bounds.x,
-        bounds.y + header,
-        bounds.width,
-        bounds.height - header,
-    )
+    preferred.clamp(16.0, 128.0).min(available)
 }
 
 impl TableGeometry {
@@ -74,6 +79,7 @@ impl TableGeometry {
             bounds,
             0.0,
             node.layout_direction().unwrap_or_default(),
+            header_height(node, bounds.height, 34.0),
         )
     }
 
@@ -83,9 +89,15 @@ impl TableGeometry {
         clip: Rect,
         requested: f32,
         direction: LayoutDirection,
+        header_height: f32,
     ) -> Option<Self> {
         let header = node.table_header.as_ref()?;
-        let rows = list_viewport(node, bounds);
+        let rows = Rect::new(
+            bounds.x,
+            bounds.y + header_height,
+            bounds.width,
+            bounds.height - header_height,
+        );
         let gutter = node
             .relative_length("row-header-width", bounds.width)
             .filter(|width| width.is_finite())
@@ -221,6 +233,16 @@ impl TableGeometry {
 
     pub fn row_header_cell(&self, row: Rect) -> Rect {
         Rect::new(self.row_header.x, row.y, self.row_header.width, row.height)
+    }
+
+    /// Visible part of a column heading, constrained to its table pane.
+    #[doc(hidden)]
+    pub fn header_cell_bounds(&self, column: usize, clip: Rect) -> Option<Rect> {
+        let cell = self
+            .columns
+            .get(column)?
+            .intersect(self.column_clip(column, self.header.intersect(clip)));
+        (cell.width > 0.0 && cell.height > 0.0).then_some(cell)
     }
 
     pub fn visual_columns(&self) -> impl DoubleEndedIterator<Item = usize> + ExactSizeIterator {

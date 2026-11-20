@@ -82,7 +82,8 @@ pub use input::{
 };
 pub use keyboard::KeyRoute;
 pub use label::{
-    LabelLayout, LabelLine, LabelPlan, PlannedLabelLine, TextAlignment, uses_label_layout,
+    LabelLayout, LabelLine, LabelPlan, PlannedLabelLine, TextAlignment, elide_to_width,
+    uses_label_layout,
 };
 pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow, NativeTextMenu};
 pub use modal::{dialog_title_height, drawer_grip};
@@ -97,7 +98,7 @@ pub use scale_rotate::{ScaleRotateTarget, TouchTransform, touch_centroid};
 pub use scroll_bar::ScrollBarGeometry;
 pub use scroll_gesture::{ScrollGestureEnd, ScrollGestureKind};
 pub use search::SearchGeometry;
-pub use selection::{TAB_LABEL_SIZE, tab_content_rect};
+pub use selection::{TAB_LABEL_SIZE, tab_content_rect, tab_font_size};
 pub use shortcut::{MenuShortcut, ShortcutKey, ShortcutModifiers, ShortcutOutcome};
 pub use spin::SpinGeometry;
 pub use split::{SplitGeometry, SplitHandle, SplitHandleRange};
@@ -106,11 +107,11 @@ use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 pub use styled_text::{StyledFragment, StyledTextLayout};
 pub use swipe_delegate::SwipeDelegateGeometry;
 pub use swipe_gesture::SwipeDelivery;
-pub use table::TableGeometry;
+pub use table::{TableGeometry, table_heading_font_size};
 pub use text_area::{
     TextAreaLayout, TextAreaMotion, text_editor_line_bounds, text_editor_viewport,
 };
-pub use tooltip::{TooltipPopup, layout_tooltip};
+pub use tooltip::{TooltipPopup, TouchTooltip, layout_tooltip, tooltip_text};
 pub use transform::Affine;
 use transform::TransformSpace;
 pub use tree::TreeRowGeometry;
@@ -145,6 +146,12 @@ pub trait TextMeasurer {
         None
     }
 
+    /// Scale applied to text by the host's accessibility settings.
+    #[doc(hidden)]
+    fn text_scale(&self) -> f32 {
+        1.0
+    }
+
     fn font_size(&self, node: &Node) -> f32 {
         node.font_size()
             .or_else(|| self.default_font_size())
@@ -154,6 +161,17 @@ pub trait TextMeasurer {
 
     fn measure_node(&mut self, node: &Node, text: &str, max_width: f32) -> Size {
         self.measure(text, self.font_size(node), max_width)
+    }
+
+    #[doc(hidden)]
+    fn measure_node_at_size(
+        &mut self,
+        _node: &Node,
+        text: &str,
+        size: f32,
+        max_width: f32,
+    ) -> Size {
+        self.measure(text, size, max_width)
     }
 
     fn layout_styled_text(&mut self, node: &Node, available: Size) -> Option<StyledTextLayout> {
@@ -227,6 +245,8 @@ pub struct LayoutNode {
     #[doc(hidden)]
     pub swipe_preview: Option<Box<LayoutNode>>,
     pub styled_text: Option<Box<StyledTextLayout>>,
+    modal_title: Option<Box<label::TitleLayout>>,
+    group_title: Option<Box<label::TitleLayout>>,
     font_size: f32,
     overlays: Option<Box<modal::OverlayIndex>>,
     paint_order: Option<xrack_runtime::ScenePlanSlice<usize>>,
@@ -310,6 +330,20 @@ impl<'a> WindowEffects<'a> {
 }
 
 impl LayoutNode {
+    pub(crate) fn popup_typography(&self) -> popup::PopupTypography {
+        self.overlays
+            .as_ref()
+            .map_or_else(popup::PopupTypography::default, |index| {
+                index.popup_typography
+            })
+    }
+
+    pub(crate) fn floating_keyboard(&self) -> Option<Rect> {
+        self.overlays
+            .as_ref()
+            .and_then(|index| index.floating_keyboard)
+    }
+
     /// Number of columns shared with GridView's virtual cell layout.
     #[doc(hidden)]
     pub fn grid_view_columns(&self, node: &Node) -> usize {
@@ -486,12 +520,35 @@ impl LayoutNode {
     }
 
     /// Reserved title height using the text metrics prepared for this layout.
-    pub fn dialog_title_height(&self, node: &Node) -> f32 {
-        modal::title_height(node, self.font_size)
+    pub fn dialog_title_height(&self, _node: &Node) -> f32 {
+        self.modal_title.as_ref().map_or(0.0, |title| title.height)
+    }
+
+    #[doc(hidden)]
+    pub fn dialog_title_lines(&self) -> &[label::PlannedLabelLine] {
+        self.modal_title
+            .as_ref()
+            .map_or(&[], |title| title.lines.as_slice())
+    }
+
+    #[doc(hidden)]
+    pub fn dialog_title_font_size(&self) -> Option<f32> {
+        self.modal_title.as_ref().map(|title| title.font_size)
     }
 
     pub fn group_header(&self, node: &Node) -> Rect {
-        group_box::header_with_font_size(node, self.bounds, self.font_size)
+        if let Some(title) = &self.group_title {
+            group_box::header_bounds(node, self.bounds, title.height)
+        } else {
+            group_box::header_with_font_size(node, self.bounds, self.font_size)
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn group_title(&self) -> Option<(f32, &[PlannedLabelLine])> {
+        self.group_title
+            .as_ref()
+            .map(|title| (title.font_size, title.lines.as_slice()))
     }
 
     pub(crate) fn tab_viewport(&self) -> Rect {
@@ -546,6 +603,25 @@ impl LayoutNode {
         self.overlays
             .as_ref()
             .map_or(&[], |overlays| overlays.drawers.as_slice())
+    }
+
+    /// A closed drawer can reserve the window's leading edge for its own gesture.
+    #[doc(hidden)]
+    pub fn has_leading_edge_drawer(&self, scene: &Node) -> bool {
+        let leading = match self.layout_direction {
+            LayoutDirection::LeftToRight => xrack_runtime::DrawerEdge::Left,
+            LayoutDirection::RightToLeft => xrack_runtime::DrawerEdge::Right,
+        };
+        let viewport = window_safe_area(scene, self.bounds);
+        self.drawer_paths().iter().any(|path| {
+            scene
+                .control_target(path, xrack_runtime::ControlAction::Drawer(true))
+                .is_some_and(|node| {
+                    !node.boolean("open", false)
+                        && node.drawer_edge() == leading
+                        && modal::drawer_margin(node, modal::drawer_bounds(node, viewport)) > 0.0
+                })
+        })
     }
 
     /// Look up a laid-out child by its logical scene index.
@@ -821,7 +897,12 @@ fn layout_current_window(
         viewport: safe_viewport,
     }
     .place(scene, bounds, bounds, true, true, None);
-    modal::index_overlays(scene, &mut layout);
+    modal::index_overlays(
+        scene,
+        &mut layout,
+        popup::PopupTypography::from_text(text),
+        input.and_then(Interaction::floating_keyboard),
+    );
     layout
 }
 
@@ -896,6 +977,32 @@ pub fn layout_choice_option(
         viewport: bounds,
     }
     .place(node, bounds, bounds, true, enabled, None)
+}
+
+/// Prepare only the chrome of a closed drawer for an opening gesture.
+#[doc(hidden)]
+pub fn layout_drawer_opening(
+    node: &Node,
+    viewport: Rect,
+    reveal: f32,
+    text: &mut impl TextMeasurer,
+) -> (Node, LayoutNode, Point) {
+    let mut shell = node.clone();
+    shell.properties.insert("open", true.into());
+    shell.children.clear();
+    let item = layout_choice_option(
+        &shell,
+        viewport,
+        node.layout_direction().unwrap_or_default(),
+        true,
+        text,
+    );
+    let shown = modal::drawer_revealed_bounds(node.drawer_edge(), item.bounds, reveal);
+    let displacement = Point {
+        x: shown.x - item.bounds.x,
+        y: shown.y - item.bounds.y,
+    };
+    (shell, item, displacement)
 }
 
 /// Resolve virtual rows after laying out the viewport containers. Row contents
@@ -995,7 +1102,12 @@ fn prepare_scene_with_offsets(
             viewport,
         }
         .populate_lists(component, Rc::make_mut(&mut scene), &mut layout);
-        modal::index_overlays(&scene, &mut layout);
+        modal::index_overlays(
+            &scene,
+            &mut layout,
+            popup::PopupTypography::from_text(text),
+            input.and_then(Interaction::floating_keyboard),
+        );
     }
     scroll_bar::attach(&scene, &mut layout, text);
     (scene, layout)
@@ -1453,7 +1565,22 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 self.viewport,
             )
         } else if visible && is_modal_overlay(node.kind) {
-            (modal::bounds(node, self.viewport, self.text), self.viewport)
+            let panel = modal::bounds(node, self.viewport, self.text);
+            let reveal = (node.kind == "Drawer")
+                .then(|| {
+                    self.input?.closing_drawer_reveal(
+                        node,
+                        &self.path,
+                        self.row_key,
+                        self.viewport,
+                        panel,
+                    )
+                })
+                .flatten();
+            let panel = reveal.map_or(panel, |reveal| {
+                modal::drawer_revealed_bounds(node.drawer_edge(), panel, reveal)
+            });
+            (panel, self.viewport)
         } else {
             (bounds, clip)
         };
@@ -1545,6 +1672,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 swipe_delegate: None,
                 swipe_preview: None,
                 styled_text: None,
+                modal_title: None,
+                group_title: None,
                 font_size,
                 overlays: None,
                 paint_order: None,
@@ -1559,12 +1688,18 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             };
         }
         let table = if visible && node.table_header.is_some() {
+            let preferred_header = if self.text.text_scale() > 1.0 {
+                (table_heading_font_size(self.text) * 1.4 + 8.0).max(34.0)
+            } else {
+                34.0
+            };
             TableGeometry::with_offset(
                 node,
                 bounds,
                 clip,
                 self.requested_scroll(node, Orientation::Horizontal),
                 self.layout_direction.unwrap_or_default(),
+                table::header_height(node, bounds.height, preferred_header),
             )
             .map(Box::new)
         } else {
@@ -1596,9 +1731,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         {
             let tabs = (node.kind == "TabWidget").then(|| {
                 selection::TabGeometry::new(
+                    node,
                     bounds,
-                    node.orientation(),
                     self.layout_direction.unwrap_or_default(),
+                    self.text,
                 )
             });
             let stack_layout = node.kind == "StackLayout";
@@ -1618,7 +1754,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 let requested = self.scroll_request(node, orientation);
                 let reveal = requested.is_none()
                     || self.input.is_some_and(|input| {
-                        input.scroll_selection_changed(node, &self.path, 1, direction)
+                        input.scroll_selection_changed(
+                            node,
+                            &self.path,
+                            1,
+                            direction,
+                            self.text.text_scale(),
+                        )
                     });
                 selection::tab_bar(node, geometry.bar, self.text, direction, requested, reveal)
             });
@@ -1658,9 +1800,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     {
                         page.tab_header = rects.get(index).copied();
                         if xrack_runtime::tab_is_closable(node, tab) {
-                            page.tab_close = page
-                                .tab_header
-                                .and_then(|header| selection::tab_close_rect(header, direction));
+                            page.tab_close = page.tab_header.and_then(|header| {
+                                selection::tab_close_rect(
+                                    header,
+                                    direction,
+                                    self.text.text_scale() > 1.0,
+                                )
+                            });
                         }
                     }
                     page
@@ -1708,6 +1854,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 swipe_delegate: None,
                 swipe_preview,
                 styled_text: None,
+                modal_title: None,
+                group_title: None,
                 font_size,
                 overlays: None,
                 paint_order: None,
@@ -1776,6 +1924,28 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 )
             })
             .flatten();
+        let modal_title = if visible && is_modal_overlay(node.kind) {
+            modal::title_layout(
+                node,
+                Size::new(bounds.width, bounds.height),
+                self.layout_direction.unwrap_or_default(),
+                self.text,
+            )
+            .map(Box::new)
+        } else {
+            None
+        };
+        let group_title = if visible {
+            group_box::title_layout(
+                node,
+                Size::new(bounds.width, bounds.height),
+                self.layout_direction.unwrap_or_default(),
+                self.text,
+            )
+            .map(Box::new)
+        } else {
+            None
+        };
         let placements = if !visible {
             (0..node.children.len())
                 .map(|_| grid::Placement::plain(Rect::new(bounds.x, bounds.y, 0.0, 0.0)))
@@ -2085,7 +2255,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             let requested = self.scroll_request(node, orientation);
             let reveal = requested.is_none()
                 || self.input.is_some_and(|input| {
-                    input.scroll_selection_changed(node, &self.path, 1, direction)
+                    input.scroll_selection_changed(
+                        node,
+                        &self.path,
+                        1,
+                        direction,
+                        self.text.text_scale(),
+                    )
                 });
             let (rects, axis) =
                 selection::tab_bar(node, bounds, self.text, direction, requested, reveal);
@@ -2128,8 +2304,11 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 content_bounds
             };
             let title = (selection::radio_title_height(node, font_size)
-                + modal::title_height(node, font_size)
-                + group_box::title_height(node, font_size))
+                + modal_title.as_ref().map_or(0.0, |title| title.height)
+                + group_title.as_ref().map_or_else(
+                    || group_box::title_height(node, font_size),
+                    |title| title.height,
+                ))
             .min(bounds.height);
             content.y += title;
             content.height -= title;
@@ -2298,6 +2477,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     child.tab_close = selection::tab_close_rect(
                         placement.bounds,
                         self.layout_direction.unwrap_or_default(),
+                        self.text.text_scale() > 1.0,
                     );
                 }
                 if let Some(shapes) = outer_shapes {
@@ -2334,7 +2514,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                         self.layout_direction.unwrap_or_default(),
                     )?
                 } else {
-                    TumblerGeometry::new(&wheel, bounds, offset)
+                    TumblerGeometry::new(
+                        &wheel,
+                        bounds,
+                        offset,
+                        tumbler::scaled_row_height(node, self.text),
+                    )
                 };
                 if let Some(renderer) = &node.combo_option_renderer {
                     let clip = clip.intersect(bounds);
@@ -2421,6 +2606,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             } else {
                 None
             },
+            modal_title,
+            group_title,
             font_size,
             overlays: None,
             paint_order: sibling_paint_order(node, children.len()),
@@ -2483,6 +2670,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                                     &self.path,
                                     cells.columns,
                                     self.layout_direction.unwrap_or_default(),
+                                    self.text.text_scale(),
                                 )
                             })
                         }

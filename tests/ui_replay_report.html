@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XRack UI Replay</title>
+<style>
+    :root { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; }
+    body { max-width: 65rem; margin: 2.5rem auto; padding: 0 1rem; }
+    .controls { display: flex; gap: .75rem; align-items: center; }
+    input { flex: 1; min-width: 6rem; }
+    button { font: inherit; padding: .25rem .65rem; }
+    main { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 23rem), 1fr)); gap: 1rem; }
+    article { border: 1px solid GrayText; border-radius: .6rem; padding: 1rem; overflow-wrap: anywhere; }
+    h2 { margin: 0; font-size: 1.15rem; }
+    dl { display: grid; grid-template-columns: auto 1fr; column-gap: 1rem; }
+    dt { color: GrayText; }
+    dd { margin: 0; font-family: ui-monospace, monospace; }
+    ul { list-style: none; padding: 0; border-block-start: 1px solid GrayText; }
+    li { box-sizing: border-box; min-height: var(--row-height); padding: 0 .5rem; border-block-end: 1px solid GrayText; }
+</style>
+<h1>XRack UI Replay</h1>
+<div class="controls">
+    <button id="previous" type="button">Previous</button>
+    <input id="step" type="range" min="0" value="0" aria-label="Replay step">
+    <button id="next" type="button">Next</button>
+</div>
+<p id="caption" aria-live="polite"></p>
+<main id="frames"></main>
+<script id="trace" type="application/json"><!--XRACK_TRACE--></script>
+<script>
+    'use strict';
+    const trace = JSON.parse(document.getElementById('trace').textContent);
+    const step = document.getElementById('step');
+    const previous = document.getElementById('previous');
+    const next = document.getElementById('next');
+    const caption = document.getElementById('caption');
+    const frames = document.getElementById('frames');
+    step.max = trace.interpreter.length - 1;
+
+    function element(tag, text) {
+        const node = document.createElement(tag);
+        if (text !== undefined) node.textContent = text;
+        return node;
+    }
+
+    function panel(title, frame, previousFrame) {
+        const article = element('article');
+        const state = element('dl');
+        for (const [name, value] of [
+            ['Source revision', frame.generation],
+            ['Query', frame.query],
+            ['Loading', frame.loading ? 'Yes' : 'No'],
+            ['Result query', frame.result_query],
+            ['Model rows', frame.results.length],
+            ['Row height', frame.row_height == null ? '—' : frame.row_height + ' px'],
+        ]) {
+            state.append(element('dt', name), element('dd', value === '' ? '—' : String(value)));
+        }
+        const rows = element('ul');
+        rows.style.setProperty('--row-height', (frame.row_height ?? 30) + 'px');
+        for (const label of frame.visible_labels) rows.append(element('li', label));
+        article.append(element('h2', title), state, element('h3', 'Materialized result labels'),
+            rows.childElementCount ? rows : element('p', 'No rows'));
+        if (previousFrame && frame.update) {
+            const details = element('details');
+            details.open = true;
+            details.append(element('summary', 'Changes and update counters'));
+            const changes = element('dl');
+            for (const name of ['query', 'loading', 'result_query', 'results']) {
+                const before = JSON.stringify(previousFrame[name]);
+                const after = JSON.stringify(frame[name]);
+                if (before !== after) {
+                    changes.append(element('dt', name), element('dd', before + ' → ' + after));
+                }
+            }
+            details.append(changes.childElementCount ? changes : element('p', 'No tracked properties changed.'));
+            const stats = element('dl');
+            for (const [name, value] of [
+                ['Binding evaluations', frame.update.evaluations],
+                ['Property cache hits', frame.update.cache_hits],
+                ['Headless layouts', frame.update.layout_runs],
+                ['Materialized rows', frame.update.materialized_rows],
+            ]) {
+                stats.append(element('dt', name), element('dd', String(value)));
+            }
+            details.append(stats);
+            if (frame.update.binding_reads.length) {
+                const reads = element('p', 'Visual reads · ' + frame.update.binding_reads
+                    .map(([id, property, count]) => id + '.' + property + ' × ' + count).join(', '));
+                details.append(reads);
+            }
+            if (frame.update.binding_reads_truncated) details.append(element('p', 'More visual reads omitted.'));
+            article.append(details);
+        }
+        if (frame.events.length) {
+            const trace = element('details');
+            trace.open = true;
+            trace.append(element('summary', 'Structured events'));
+            const entries = element('ol');
+            for (const item of frame.events) {
+                const { event, ...fields } = item;
+                const entry = element('li', event.replaceAll('_', ' '));
+                const data = element('dl');
+                for (const [name, value] of Object.entries(fields)) {
+                    data.append(element('dt', name), element('dd', String(value)));
+                }
+                entry.append(data);
+                entries.append(entry);
+            }
+            trace.append(entries);
+            article.append(trace);
+        }
+        return article;
+    }
+
+    function show() {
+        const index = Number(step.value);
+        const frame = trace.interpreter[index];
+        previous.disabled = index === 0;
+        next.disabled = index === Number(step.max);
+        caption.textContent = 'Step ' + index + ' / ' + step.max + ' · ' + frame.label;
+        step.setAttribute('aria-valuetext', caption.textContent);
+        frames.replaceChildren(
+            panel('Interpreter', frame, trace.interpreter[index - 1]),
+            panel('Rust AOT', trace.aot[index], trace.aot[index - 1]),
+        );
+    }
+
+    step.addEventListener('input', show);
+    previous.addEventListener('click', () => { step.stepDown(); show(); });
+    next.addEventListener('click', () => { step.stepUp(); show(); });
+    show();
+</script>

@@ -64,7 +64,9 @@ fn reload_keeps_in_flight_host_state_and_does_not_restart_named_one_shot() {
         Ok(false)
     );
     assert_eq!(ui.render_shared().text("title"), Some("Before"));
+    assert_eq!(ui.source_generation(), 0);
     ui.reload(&program(&revised)).unwrap();
+    assert_eq!(ui.source_generation(), 1);
     assert!(ui.scene_dirty());
     let frame = ui.render_shared();
     assert_eq!(frame.text("title"), Some("After"));
@@ -89,6 +91,7 @@ fn reload_keeps_in_flight_host_state_and_does_not_restart_named_one_shot() {
         "callback search(string); in property <bool> extra;",
     );
     assert!(ui.reload(&program(&incompatible)).is_err());
+    assert_eq!(ui.source_generation(), 1);
     assert_eq!(ui.render_shared().text("title"), Some("After"));
     assert_eq!(
         ui.current().get("heading"),

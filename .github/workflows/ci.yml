@@ -149,10 +149,11 @@ jobs:
             "$GITHUB_WORKSPACE/examples/inspection-workbench/src/lib.rs" \
             "$GITHUB_WORKSPACE/examples/inspection-workbench/src/main.rs" \
             "$GITHUB_WORKSPACE/examples/inspection-workbench/tests/workflows.rs"
-      - name: Test media playback and sound effects
+      - name: Test media playback, sound effects, and voice audio
         run: >-
           bazel test --config=media --lockfile_mode=update --nocache_test_results --keep_going
           //crates/xrack-media:media_test //tests:media_player_test //tests:sound_effect_test
+          //examples/voice:voice
       - name: Test compiler, MLIR passes, and generated Rust
         # Bazel extension digests can differ between the local installation and hosted runners.
         run: >-
@@ -160,6 +161,7 @@ jobs:
           //tests:compiler_test //tests:mlir_pass_test //tests:expressions_test
           //tests:mlir_filecheck_test //tests:mlir_lsp_test //tests:ui_log_test //tests:interpreter_parity_test
           //tests:ui_scenario_test //tests:ui_interaction_test //tests:ui_replay_test
+          //tests:ui_motion_timeline_test
           //crates/xrack-interpreter:interpreter_test
           //crates/xrack-preview:preview_test //crates/xrack-lsp:xrack_lsp_test
       - name: Run Clippy through Bazel

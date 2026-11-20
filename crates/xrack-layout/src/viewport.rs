@@ -488,6 +488,25 @@ fn find_path(node: &Node, handle: &ViewportHandle, path: &mut Vec<usize>) -> boo
 }
 
 impl Interaction {
+    /// Queue the same refresh event as a completed pull gesture.
+    #[doc(hidden)]
+    pub fn request_viewport_refresh(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        viewport: &ViewportHandle,
+    ) -> bool {
+        let mut path = Vec::new();
+        if self.refresh_request.is_some()
+            || !find_path(scene, viewport, &mut path)
+            || self.refresh_viewport(scene, layout, &path) != Some(viewport)
+        {
+            return false;
+        }
+        self.refresh_request = Some(viewport.clone());
+        true
+    }
+
     /// Resolve movement after layout clamps offsets and replaces virtual rows.
     pub fn take_scroll_events(&mut self, scene: &Node, layout: &LayoutNode) -> Vec<ScrollDelivery> {
         let mut events: Vec<_> = std::mem::take(&mut self.user_scroll_changes)
@@ -525,11 +544,7 @@ impl Interaction {
         if let Some(target) = self.refresh_request.take() {
             let mut path = Vec::new();
             if find_path(scene, &target, &mut path)
-                && self.allows_popup(layout, &path)
-                && layout
-                    .at_path(&path)
-                    .is_some_and(|item| item.visible && item.enabled)
-                && scene.at_path(&path).is_some_and(Node::can_pull_to_refresh)
+                && self.refresh_viewport(scene, layout, &path) == Some(&target)
             {
                 events.push(ScrollDelivery {
                     target,
@@ -833,6 +848,7 @@ pub(crate) fn plan_keyboard_avoidance(
     mut field: Rect,
     keyboard: Rect,
     previous: Option<(&[usize], f32)>,
+    require_visible: bool,
 ) -> Option<(Vec<usize>, f32)> {
     const GAP: f32 = 8.0;
     let previous = previous.and_then(|(path, offset)| {
@@ -870,6 +886,10 @@ pub(crate) fn plan_keyboard_avoidance(
         }
         let mut bounds = item.visible_window_bounds(item.scroll_viewport(Orientation::Vertical));
         bounds.y -= applied_shift(path);
+        let visible = bounds.intersect(field);
+        if require_visible && (visible.width <= 0.0 || visible.height <= 0.0) {
+            continue;
+        }
         let shifts = [
             keyboard.y - GAP - field.y - field.height,
             keyboard.y + keyboard.height + GAP - field.y,

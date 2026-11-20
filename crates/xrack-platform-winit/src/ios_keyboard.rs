@@ -308,17 +308,10 @@ fn editor_keys(
     for press in presses {
         // SAFETY: UIKit owns these keys during the main-thread press callback.
         let routed = unsafe { press.key(mtm) }.filter(|key| {
-            let usage = unsafe { key.keyCode() };
+            let named = named_key(unsafe { key.keyCode() });
             let modifier = matches!(
-                usage,
-                UIKeyboardHIDUsage::KeyboardLeftShift
-                    | UIKeyboardHIDUsage::KeyboardRightShift
-                    | UIKeyboardHIDUsage::KeyboardLeftControl
-                    | UIKeyboardHIDUsage::KeyboardRightControl
-                    | UIKeyboardHIDUsage::KeyboardLeftAlt
-                    | UIKeyboardHIDUsage::KeyboardRightAlt
-                    | UIKeyboardHIDUsage::KeyboardLeftGUI
-                    | UIKeyboardHIDUsage::KeyboardRightGUI
+                named,
+                Some(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Super)
             );
             if composing && !modifier {
                 return false;
@@ -327,23 +320,13 @@ fn editor_keys(
             let command = flags.intersects(
                 UIKeyModifierFlags::UIKeyModifierControl | UIKeyModifierFlags::UIKeyModifierCommand,
             );
-            let navigation = matches!(
-                unsafe { key.keyCode() },
-                UIKeyboardHIDUsage::KeyboardTab
-                    | UIKeyboardHIDUsage::KeyboardEscape
-                    | UIKeyboardHIDUsage::KeyboardLeftArrow
-                    | UIKeyboardHIDUsage::KeyboardRightArrow
-                    | UIKeyboardHIDUsage::KeyboardUpArrow
-                    | UIKeyboardHIDUsage::KeyboardDownArrow
-                    | UIKeyboardHIDUsage::KeyboardHome
-                    | UIKeyboardHIDUsage::KeyboardEnd
-                    | UIKeyboardHIDUsage::KeyboardPageUp
-                    | UIKeyboardHIDUsage::KeyboardPageDown
-                    | UIKeyboardHIDUsage::KeyboardReturnOrEnter
-                    | UIKeyboardHIDUsage::KeyboardReturn
-                    | UIKeyboardHIDUsage::KeypadEnter
-            );
-            command || navigation || modifier
+            let control = named.is_some_and(|key| {
+                !matches!(
+                    key,
+                    NamedKey::Space | NamedKey::Backspace | NamedKey::Delete
+                )
+            });
+            command || control
         });
         if let Some(key) = routed {
             let (event, modifiers) = key_event(&key, state);
@@ -356,17 +339,27 @@ fn editor_keys(
     unsafe { NSSet::setWithArray(&NSArray::from_slice(&unhandled)) }
 }
 
-fn key_event(key: &UIKey, state: ElementState) -> (KeyEvent, ModifiersState) {
-    // SAFETY: The UIKey is borrowed from the UIKit responder callback.
-    let (usage, flags, characters, unmodified) = unsafe {
-        (
-            key.keyCode(),
-            key.modifierFlags(),
-            key.characters(),
-            key.charactersIgnoringModifiers(),
-        )
-    };
-    let named = match usage {
+fn command_key(usage: UIKeyboardHIDUsage) -> Option<NamedKey> {
+    Some(match usage {
+        UIKeyboardHIDUsage::KeyboardF1 => NamedKey::F1,
+        UIKeyboardHIDUsage::KeyboardF2 => NamedKey::F2,
+        UIKeyboardHIDUsage::KeyboardF3 => NamedKey::F3,
+        UIKeyboardHIDUsage::KeyboardF4 => NamedKey::F4,
+        UIKeyboardHIDUsage::KeyboardF5 => NamedKey::F5,
+        UIKeyboardHIDUsage::KeyboardF6 => NamedKey::F6,
+        UIKeyboardHIDUsage::KeyboardF7 => NamedKey::F7,
+        UIKeyboardHIDUsage::KeyboardF8 => NamedKey::F8,
+        UIKeyboardHIDUsage::KeyboardF9 => NamedKey::F9,
+        UIKeyboardHIDUsage::KeyboardF10 => NamedKey::F10,
+        UIKeyboardHIDUsage::KeyboardF11 => NamedKey::F11,
+        UIKeyboardHIDUsage::KeyboardF12 => NamedKey::F12,
+        UIKeyboardHIDUsage::KeyboardApplication => NamedKey::ContextMenu,
+        _ => return None,
+    })
+}
+
+fn named_key(usage: UIKeyboardHIDUsage) -> Option<NamedKey> {
+    match usage {
         UIKeyboardHIDUsage::KeyboardLeftShift | UIKeyboardHIDUsage::KeyboardRightShift => {
             Some(NamedKey::Shift)
         }
@@ -395,16 +388,33 @@ fn key_event(key: &UIKey, state: ElementState) -> (KeyEvent, ModifiersState) {
         UIKeyboardHIDUsage::KeyboardEnd => Some(NamedKey::End),
         UIKeyboardHIDUsage::KeyboardPageUp => Some(NamedKey::PageUp),
         UIKeyboardHIDUsage::KeyboardPageDown => Some(NamedKey::PageDown),
-        _ => None,
-    };
-    let text = characters.to_string();
-    let logical_key =
-        named.map_or_else(|| Key::Character(unmodified.to_string().into()), Key::Named);
+        _ => command_key(usage),
+    }
+}
+
+fn key_event(key: &UIKey, state: ElementState) -> (KeyEvent, ModifiersState) {
+    // SAFETY: The UIKey is borrowed from the UIKit responder callback.
+    let (usage, flags) = unsafe { (key.keyCode(), key.modifierFlags()) };
+    let logical_key = named_key(usage).map_or_else(
+        // SAFETY: UIKit supplies localized characters for printable keys.
+        || {
+            Key::Character(
+                unsafe { key.charactersIgnoringModifiers() }
+                    .to_string()
+                    .into(),
+            )
+        },
+        Key::Named,
+    );
+    let text = (state == ElementState::Pressed && command_key(usage).is_none())
+        // SAFETY: The native event stays valid during this callback.
+        .then(|| unsafe { key.characters() }.to_string())
+        .filter(|text| !text.is_empty());
     (
         KeyEvent {
             unmodified_key: logical_key.clone(),
             logical_key,
-            text: (state == ElementState::Pressed && !text.is_empty()).then_some(text),
+            text,
             state,
             repeat: false,
         },

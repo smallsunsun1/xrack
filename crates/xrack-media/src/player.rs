@@ -1164,15 +1164,21 @@ pub(super) struct AudioDecoder {
     resample: *mut ff::SwrContext,
     cursor: u64,
     initialized: bool,
+    channels: usize,
 }
 
 impl AudioDecoder {
     pub(super) fn new(decoder: VideoDecoder) -> Self {
+        Self::with_channels(decoder, CHANNELS)
+    }
+
+    pub(super) fn with_channels(decoder: VideoDecoder, channels: usize) -> Self {
         Self {
             decoder,
             resample: ptr::null_mut(),
             cursor: 0,
             initialized: false,
+            channels,
         }
     }
 
@@ -1196,7 +1202,7 @@ impl AudioDecoder {
                     && self.resample.is_null()
                 {
                     let mut layout = std::mem::zeroed();
-                    media_function!(av_channel_layout_default)(&mut layout, CHANNELS as i32);
+                    media_function!(av_channel_layout_default)(&mut layout, self.channels as i32);
                     check(
                         media_function!(swr_alloc_set_opts2)(
                             &mut self.resample,
@@ -1222,7 +1228,7 @@ impl AudioDecoder {
                 if capacity > RATE as i32 * 2 {
                     return Err(MediaError("excessive audio frame size".into()));
                 }
-                let mut samples = vec![0.0f32; capacity as usize * CHANNELS];
+                let mut samples = vec![0.0f32; capacity as usize * self.channels];
                 let mut output = samples.as_mut_ptr().cast();
                 let input = frame
                     .map_or(ptr::null_mut(), |frame| frame.extended_data)
@@ -1248,7 +1254,7 @@ impl AudioDecoder {
                     }
                     return Ok(None);
                 }
-                samples.truncate(written as usize * CHANNELS);
+                samples.truncate(written as usize * self.channels);
                 let start = self.cursor;
                 self.cursor += written as u64;
                 return Ok(Some(AudioBlock { start, samples }));

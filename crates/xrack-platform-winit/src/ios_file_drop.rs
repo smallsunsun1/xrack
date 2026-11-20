@@ -1,20 +1,25 @@
-use crate::{Application, UserEvent, desktop::WindowEvents, ios, ios_text::CopyRevision};
+use crate::{
+    Application, TOUCH_HOLD_SLOP, UserEvent, desktop::WindowEvents, ios, ios_text::CopyRevision,
+};
 use block2::RcBlock;
 use objc2::{
     ClassType, DeclaredClass, declare_class, msg_send, msg_send_id,
     mutability::MainThreadOnly,
     rc::Retained,
     runtime::{NSObjectProtocol, ProtocolObject},
+    sel,
 };
 use objc2_foundation::{
-    CGRect, CGSize, MainThreadMarker, NSArray, NSError, NSItemProvider, NSItemProviderFileOptions,
-    NSItemProviderReading, NSObject, NSProgress, NSSecureCoding, NSString, NSURL,
+    CGPoint, CGRect, CGSize, MainThreadMarker, NSArray, NSError, NSItemProvider,
+    NSItemProviderFileOptions, NSItemProviderReading, NSObject, NSProgress, NSSecureCoding,
+    NSString, NSURL,
 };
 use objc2_ui_kit::{
     NSItemProviderUIKitAdditions, UIColor, UIDragDropSession, UIDragInteraction,
     UIDragInteractionDelegate, UIDragItem, UIDragPreview, UIDragSession, UIDropInteraction,
-    UIDropInteractionDelegate, UIDropOperation, UIDropProposal, UIDropSession, UIInteraction,
-    UILabel, UIPreferredPresentationStyle, UIView,
+    UIDropInteractionDelegate, UIDropOperation, UIDropProposal, UIDropSession, UIGestureRecognizer,
+    UIGestureRecognizerDelegate, UIGestureRecognizerState, UIInteraction, UILabel,
+    UILongPressGestureRecognizer, UIPreferredPresentationStyle, UITouch, UITouchType, UIView,
 };
 use objc2_uniform_type_identifiers::{
     UTType, UTTypeData, UTTypeFileURL, UTTypePlainText, UTTypeURL,
@@ -36,6 +41,7 @@ use xrack_renderer_femtovg::PointerCaret;
 use xrack_runtime::{Component as UiComponent, Node, TextCommand};
 
 type Session = ProtocolObject<dyn UIDropSession>;
+type DragSession = ProtocolObject<dyn UIDragSession>;
 
 enum Payload {
     Text(Vec<Retained<NSItemProvider>>),
@@ -50,7 +56,7 @@ struct Snapshot {
 
 pub(super) struct TextDragSource {
     target: Target,
-    text: String,
+    context: TextEditContext,
     highlights: Vec<Rect>,
     native: Option<CopyRevision>,
 }
@@ -88,11 +94,18 @@ struct Drag {
     performed: bool,
 }
 
+struct TextHold {
+    origin: Point,
+    target: Target,
+    context: TextEditContext,
+}
+
 struct DelegateState {
     window: WindowId,
     events: WindowEvents,
     snapshot: RefCell<Option<Snapshot>>,
     text_source: RefCell<Option<TextDragSource>>,
+    text_hold: RefCell<Option<TextHold>>,
     sequence: Cell<u64>,
     drag: Cell<Option<Drag>>,
 }
@@ -112,41 +125,43 @@ declare_class!(
 
     unsafe impl NSObjectProtocol for FileDropDelegate {}
 
+    unsafe impl UIGestureRecognizerDelegate for FileDropDelegate {
+        #[method(gestureRecognizer:shouldReceiveTouch:)]
+        fn receives_text_hold(&self, recognizer: &UIGestureRecognizer, touch: &UITouch) -> bool {
+            // SAFETY: UIKit supplies the touch and its view on the main thread.
+            unsafe { touch.r#type() == UITouchType::Direct && recognizer.view().is_some_and(|view| {
+                self.with_text_source(view_point(&view, touch.locationInView(Some(&view))), |_| ()).is_some()
+            }) }
+        }
+
+        #[method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:)]
+        fn allow_text_drag(&self, _: &UIGestureRecognizer, _: &UIGestureRecognizer) -> bool {
+            true
+        }
+    }
+
+    unsafe impl FileDropDelegate {
+        #[method(xrackSelectedTextHeld:)]
+        fn selected_text_held(&self, recognizer: &UILongPressGestureRecognizer) {
+            self.update_text_hold(recognizer);
+        }
+    }
+
     unsafe impl UIDragInteractionDelegate for FileDropDelegate {
         #[method_id(dragInteraction:itemsForBeginningSession:)]
-        fn start_text_drag(&self, interaction: &UIDragInteraction, session: &ProtocolObject<dyn UIDragSession>) -> Retained<NSArray<UIDragItem>> {
-            // SAFETY: UIKit supplies the attached view and session on its main thread.
-            let Some(view) = (unsafe { interaction.view() }) else { return NSArray::new() };
-            let position = unsafe { session.locationInView(&view) };
-            let origin = view.bounds().origin;
-            let point = Point { x: (position.x - origin.x) as f32, y: (position.y - origin.y) as f32 };
-            let state = self.ivars();
-            let snapshot = state.snapshot.borrow();
-            let source = state.text_source.borrow();
-            let Some(source) = source.as_ref().filter(|source| snapshot.as_ref().is_some_and(|frame| source.contains(frame, point)))
-            else { return NSArray::new() };
-            // SAFETY: This callback is main-thread-only and NSString implements NSItemProviderWriting.
-            unsafe {
-                let mtm = MainThreadMarker::new_unchecked();
-                let text = NSString::from_str(&source.text);
-                let provider = NSItemProvider::initWithObject(NSItemProvider::alloc(), ProtocolObject::from_ref(&*text));
-                provider.setPreferredPresentationStyle(UIPreferredPresentationStyle::Inline);
-                let item = UIDragItem::initWithItemProvider(mtm.alloc(), &provider);
-                let preview_text: String = source.text.chars().take(120).collect();
-                let preview = RcBlock::new(move || text_preview(&preview_text));
-                item.setPreviewProvider(Some(&preview));
-                NSArray::from_vec(vec![item])
-            }
+        fn start_text_drag(&self, interaction: &UIDragInteraction, session: &DragSession) -> Retained<NSArray<UIDragItem>> {
+            self.drag_items(interaction, session)
         }
 
         #[method(dragInteraction:sessionAllowsMoveOperation:)]
-        fn copy_only(&self, _: &UIDragInteraction, _: &ProtocolObject<dyn UIDragSession>) -> bool {
+        fn copy_only(&self, _: &UIDragInteraction, _: &DragSession) -> bool {
             false
         }
 
         #[method(dragInteraction:sessionWillBegin:)]
-        fn text_drag_began(&self, _: &UIDragInteraction, _: &ProtocolObject<dyn UIDragSession>) {
+        fn text_drag_began(&self, _: &UIDragInteraction, _: &DragSession) {
             let state = self.ivars();
+            state.text_hold.replace(None);
             state.events.post(UserEvent::IosTextDragStarted(state.window));
         }
     }
@@ -255,7 +270,100 @@ fn text_preview(text: &str) -> *mut UIDragPreview {
     }
 }
 
+fn view_point(view: &UIView, position: CGPoint) -> Point {
+    let origin = view.bounds().origin;
+    Point {
+        x: (position.x - origin.x) as f32,
+        y: (position.y - origin.y) as f32,
+    }
+}
+
 impl FileDropDelegate {
+    fn with_text_source<T>(
+        &self,
+        point: Point,
+        read: impl FnOnce(&TextDragSource) -> T,
+    ) -> Option<T> {
+        let state = self.ivars();
+        let snapshot = state.snapshot.borrow();
+        let snapshot = snapshot.as_ref()?;
+        let source = state.text_source.borrow();
+        source
+            .as_ref()
+            .filter(|source| source.contains(snapshot, point))
+            .map(read)
+    }
+
+    fn drag_items(
+        &self,
+        interaction: &UIDragInteraction,
+        session: &DragSession,
+    ) -> Retained<NSArray<UIDragItem>> {
+        // SAFETY: UIKit supplies the attached view and session on its main thread.
+        let Some(view) = (unsafe { interaction.view() }) else {
+            return NSArray::new();
+        };
+        let point = view_point(&view, unsafe { session.locationInView(&view) });
+        let Some(selection) =
+            self.with_text_source(point, |source| source.context.selection().to_owned())
+        else {
+            return NSArray::new();
+        };
+        // SAFETY: This callback is main-thread-only and NSString implements NSItemProviderWriting.
+        unsafe {
+            let mtm = MainThreadMarker::new_unchecked();
+            let text = NSString::from_str(&selection);
+            let provider =
+                NSItemProvider::initWithObject(mtm.alloc(), ProtocolObject::from_ref(&*text));
+            provider.setPreferredPresentationStyle(UIPreferredPresentationStyle::Inline);
+            let item = UIDragItem::initWithItemProvider(mtm.alloc(), &provider);
+            let preview_text: String = selection.chars().take(120).collect();
+            let preview = RcBlock::new(move || text_preview(&preview_text));
+            item.setPreviewProvider(Some(&preview));
+            NSArray::from_vec(vec![item])
+        }
+    }
+
+    fn update_text_hold(&self, recognizer: &UILongPressGestureRecognizer) {
+        let state = self.ivars();
+        // SAFETY: UIKit calls the target on its main thread while the view is attached.
+        let (phase, point) = unsafe {
+            let Some(view) = recognizer.view() else {
+                return;
+            };
+            (
+                recognizer.state(),
+                view_point(&view, recognizer.locationInView(Some(&view))),
+            )
+        };
+        let mut hold = state.text_hold.borrow_mut();
+        match phase {
+            UIGestureRecognizerState::Began => {
+                *hold = self.with_text_source(point, |source| TextHold {
+                    origin: point,
+                    target: source.target.clone(),
+                    context: source.context.clone(),
+                });
+            }
+            UIGestureRecognizerState::Changed | UIGestureRecognizerState::Ended => {
+                hold.take_if(|hold| {
+                    (point.x - hold.origin.x).hypot(point.y - hold.origin.y) > TOUCH_HOLD_SLOP
+                });
+                if phase == UIGestureRecognizerState::Ended
+                    && let Some(hold) = hold.take()
+                {
+                    state.events.post(UserEvent::IosSelectedTextHeld {
+                        window: state.window,
+                        target: hold.target,
+                        context: hold.context,
+                        point: hold.origin,
+                    });
+                }
+            }
+            _ => *hold = None,
+        }
+    }
+
     fn drag(&self, session: &Session) -> Drag {
         let identity = std::ptr::from_ref(session) as usize;
         if let Some(drag) = self
@@ -675,6 +783,7 @@ pub(crate) struct FileDropBridge {
     view: Retained<UIView>,
     interaction: Retained<UIDropInteraction>,
     drag: Retained<UIDragInteraction>,
+    text_hold: Retained<UILongPressGestureRecognizer>,
     delegate: Retained<FileDropDelegate>,
     directories: Vec<Arc<TempDir>>,
 }
@@ -691,6 +800,7 @@ impl FileDropBridge {
             events,
             snapshot: RefCell::default(),
             text_source: RefCell::default(),
+            text_hold: RefCell::default(),
             sequence: Cell::default(),
             drag: Cell::default(),
         });
@@ -709,10 +819,20 @@ impl FileDropBridge {
             );
             drag.setEnabled(false);
             view.addInteraction(ProtocolObject::from_ref(&*drag));
+            let text_hold = UILongPressGestureRecognizer::initWithTarget_action(
+                mtm.alloc(),
+                Some(&delegate),
+                Some(sel!(xrackSelectedTextHeld:)),
+            );
+            text_hold.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+            text_hold.setAllowableMovement(f64::from(TOUCH_HOLD_SLOP));
+            text_hold.setCancelsTouchesInView(false);
+            view.addGestureRecognizer(&text_hold);
             Ok(Self {
                 view,
                 interaction,
                 drag,
+                text_hold,
                 delegate,
                 directories: Vec::new(),
             })
@@ -739,14 +859,7 @@ impl FileDropBridge {
     }
 
     pub(super) fn can_drag_text_at(&self, point: Point) -> bool {
-        let state = self.delegate.ivars();
-        state.text_source.borrow().as_ref().is_some_and(|source| {
-            state
-                .snapshot
-                .borrow()
-                .as_ref()
-                .is_some_and(|frame| source.contains(frame, point))
-        })
+        self.delegate.with_text_source(point, |_| ()).is_some()
     }
 
     pub(crate) fn keep(&mut self, directory: Arc<TempDir>) {
@@ -762,6 +875,7 @@ impl Drop for FileDropBridge {
                 .removeInteraction(ProtocolObject::from_ref(&*self.interaction));
             self.view
                 .removeInteraction(ProtocolObject::from_ref(&*self.drag));
+            self.view.removeGestureRecognizer(&self.text_hold);
         };
     }
 }
@@ -803,7 +917,7 @@ impl<C: UiComponent> Application<C> {
                     .editor_selection_rects(node, item, &self.input, target);
             (!highlights.is_empty()).then_some(TextDragSource {
                 target: target.clone(),
-                text: context.selection().to_owned(),
+                context,
                 highlights,
                 native,
             })

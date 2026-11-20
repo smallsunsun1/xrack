@@ -5577,7 +5577,10 @@ impl Instance {
         }
         self.handle_result(match action {
             ControlAction::ValidateTextSubmission
-                if matches!(node.kind, "TextInput" | "LineEdit") =>
+                if matches!(
+                    node.kind,
+                    "TextInput" | "LineEdit" | "TextEdit" | "TextArea"
+                ) =>
             {
                 input.try_available(|| {
                     let Some(Value::String(text)) = instance.control_value(element, "text")? else {
@@ -6149,6 +6152,10 @@ impl ValueType {
                 | (Self::ColorScheme, Value::ColorScheme(_))
                 | (Self::InputType, Value::InputType(_))
                 | (Self::InputPurpose, Value::InputPurpose(_))
+                | (
+                    Self::KeyboardCapitalization,
+                    Value::KeyboardCapitalization(_)
+                )
                 | (Self::ReturnKey, Value::ReturnKey(_))
                 | (Self::AccessibleLive, Value::AccessibleLive(_))
                 | (Self::DialInputMode, Value::DialInputMode(_))

@@ -303,6 +303,8 @@ APK 安装后名为 XRack Navigation。测试覆盖单选与禁用项、标签�
 
 在普通模式下，点 **Count outside** 会关闭弹层并增加背景计数。打开 **Modal popup** 后，同一个触点会关闭弹层，背景计数保持原值。测试按 Android 返回键关闭弹层后，再按 Enter 验证锚点恢复了键盘焦点。沿用导航 APK 和设备参数运行 `//examples/android:popup_window_ui_test`，产物为 `popup-flipped.png` 和 `popup-back.png`。宿主的 `//examples/android:navigation_parity_test` 也会对照布局和焦点恢复。
 
+同一个设备目标还会执行桌面的无窗口弹层回归。产物 `popup-replay-comparison.json` 并列记录桌面 AOT、桌面解释器和 Android 的四个检查点，包含弹层的锚定方向、动作与关闭计数，以及返回后用 Enter 再打开的结果。Android 值从实际设备画面读取，桌面值来自运行时场景和布局。
+
 ## 触摸菜单栏回归
 
 在 **XRack Navigation** 中从 **Open menu** 进入 **Open commands**，点 **Commands** 打开菜单栏弹层。主菜单和 **View mode** 子菜单的触摸行高都是 44 个逻辑像素。**Compact**、工具栏按钮和 Ctrl+2 通过同一命令组更新选中值与工具栏状态。**Lock modes** 禁用组内的命令入口。

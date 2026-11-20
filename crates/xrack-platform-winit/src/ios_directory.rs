@@ -2,7 +2,7 @@ use block2::RcBlock;
 use objc2::{rc::Retained, rc::autoreleasepool, runtime::Bool};
 use objc2_foundation::{
     NSData, NSFileCoordinator, NSFileCoordinatorReadingOptions, NSFileCoordinatorWritingOptions,
-    NSString, NSURL, NSURLBookmarkCreationOptions, NSURLBookmarkResolutionOptions,
+    NSFileManager, NSString, NSURL, NSURLBookmarkCreationOptions, NSURLBookmarkResolutionOptions,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -131,6 +131,31 @@ impl IosDirectory {
                 io::ErrorKind::PermissionDenied,
                 "Files did not grant access to the selected directory",
             )
+        })
+    }
+
+    pub(crate) fn import_copy(&self, staging: &Path) -> io::Result<PathBuf> {
+        self.with_read_access("", |source| {
+            if !source.symlink_metadata()?.is_dir() {
+                return Err(io::Error::other("Files did not return a directory"));
+            }
+            let name = source
+                .file_name()
+                .ok_or_else(|| io::Error::other("The selected directory has no name"))?;
+            let destination = staging.join(name);
+            let path = |path: &Path| {
+                path.to_str()
+                    .map(NSString::from_str)
+                    .ok_or_else(|| io::Error::other("The folder path is not UTF-8"))
+            };
+            let original = path(source)?;
+            let target = path(&destination)?;
+            // SAFETY: The source is coordinated and security-scoped for the duration of the copy.
+            unsafe {
+                NSFileManager::defaultManager().copyItemAtPath_toPath_error(&original, &target)
+            }
+            .map_err(|error| io::Error::other(error.localizedDescription().to_string()))?;
+            Ok(destination)
         })
     }
 

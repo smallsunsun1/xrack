@@ -1,6 +1,6 @@
 use crate::{
-    Affine, ControlInput, LayoutNode, Point, Rect, Target, input::valid, path_view::MeasuredPath,
-    scroll_gesture::SCROLL_FRAME_INTERVAL,
+    Affine, ControlInput, LayoutNode, Point, Rect, Size, Target, TextMeasurer, input::valid,
+    path_view::MeasuredPath, scroll_gesture::SCROLL_FRAME_INTERVAL,
 };
 use std::time::{Duration, Instant};
 use xrack_runtime::{
@@ -41,6 +41,7 @@ pub struct TumblerGeometry {
     pub center: Rect,
     pub rows: Vec<TumblerRow>,
     pub selected: Option<usize>,
+    pub(crate) visible: usize,
     path: Option<PathLayout>,
 }
 
@@ -54,8 +55,18 @@ struct PathLayout {
 }
 
 impl TumblerGeometry {
-    pub(crate) fn new(wheel: &Tumbler<'_>, bounds: Rect, offset: f32) -> Self {
-        let height = bounds.height / wheel.visible() as f32;
+    pub(crate) fn new(
+        wheel: &Tumbler<'_>,
+        bounds: Rect,
+        offset: f32,
+        row_height: Option<f32>,
+    ) -> Self {
+        let visible = row_height.map_or(wheel.visible(), |height| {
+            let fit = ((bounds.height / height) as usize).clamp(1, wheel.visible());
+            // Keep a centered row with the same number of slots on either side.
+            (fit - 1) | 1
+        });
+        let height = bounds.height / visible as f32;
         let center = Rect::new(
             bounds.x,
             bounds.y + (bounds.height - height) * 0.5,
@@ -63,7 +74,7 @@ impl TumblerGeometry {
             height,
         );
         let rows = if height > 0.0 && bounds.width > 0.0 {
-            visible_options(wheel, offset)
+            visible_options(wheel, visible, offset)
                 .filter_map(|(index, displacement)| {
                     let bounds = Rect::new(
                         center.x,
@@ -81,6 +92,7 @@ impl TumblerGeometry {
             center,
             rows,
             selected: wheel.selected(),
+            visible,
             path: None,
         }
     }
@@ -122,7 +134,7 @@ impl TumblerGeometry {
         let centered =
             |point: Point| Rect::new(point.x - width * 0.5, point.y - height * 0.5, width, height);
         let closed = path.closed();
-        let mut rows: Vec<_> = visible_options(wheel, offset)
+        let mut rows: Vec<_> = visible_options(wheel, wheel.visible(), offset)
             .filter_map(|(index, displacement)| {
                 let progress = 0.5 + displacement / wheel.visible() as f32;
                 if !(0.0..=1.0).contains(&progress) || (closed && progress == 1.0) {
@@ -143,6 +155,7 @@ impl TumblerGeometry {
             center: centered(path.point_at(0.5)),
             rows,
             selected: wheel.selected(),
+            visible: wheel.visible(),
             path: Some(PathLayout {
                 commands: commands.to_owned(),
                 bounds: view_box,
@@ -184,20 +197,33 @@ impl TumblerGeometry {
     }
 }
 
+pub(crate) fn scaled_row_height(node: &Node, text: &impl TextMeasurer) -> Option<f32> {
+    (text.text_scale() > 1.0 && node.combo_option_renderer.is_none())
+        .then(|| (text.font_size(node) * 1.6 + 4.0).max(44.0))
+}
+
+pub(crate) fn preferred_size(node: &Node, text: &impl TextMeasurer) -> Size {
+    let preferred = scaled_row_height(node, text).map_or(148.0, |height| {
+        height * Tumbler::from_node(node).visible() as f32
+    });
+    Size::new(112.0, preferred)
+}
+
 fn visible_options<'a>(
     wheel: &'a Tumbler<'a>,
+    visible: usize,
     offset: f32,
 ) -> impl Iterator<Item = (usize, f32)> + 'a {
     let middle = offset.round() as i64;
     let slots = if wheel.wraps() {
-        (wheel.visible() + 2).min(wheel.count())
+        (visible + 2).min(wheel.count())
     } else {
-        wheel.visible() + 2
+        visible + 2
     };
     let first = middle - (slots / 2) as i64;
     (first..first + slots as i64).filter_map(move |step| {
         let displacement = step as f32 - offset;
-        if displacement.abs() >= (wheel.visible() + 1) as f32 * 0.5 {
+        if displacement.abs() >= (visible + 1) as f32 * 0.5 {
             return None;
         }
         let index = wheel.index_at(wheel.selected()? as i64 + step)?;

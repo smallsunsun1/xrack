@@ -10,7 +10,7 @@
 
 Android 的 Activity 把系统夜间模式变化转发给 Rust，由 Rust 更新窗口调色板。示例在 Manifest 的 `android:configChanges` 中声明 `uiMode`，让原窗口接收配色变化并保留页面状态。 [Android 系统配色回归](../examples/android/README.md#颜色与字体回归)
 
-iOS 的 `system` 模式读取 UIKit 当前窗口的外观，应用运行中切换浅色或深色时会刷新调色板，回到前台时也会重新读取。
+iOS 的 `system` 模式读取 UIKit 当前窗口的外观，应用运行中切换浅色或深色时会刷新调色板，回到前台时也会重新读取。[iOS 系统外观示例](../examples/ios/README.md#系统外观示例) 演示了这一过程。
 
 iOS 开启「增强对比度」后，默认文字、输入边框、焦点指示、选中态和滚动滑块使用对比更强的配色。`system`、`light` 和 `dark` 都会响应这个设置，控件显式指定的颜色仍由其属性决定。
 
@@ -79,6 +79,8 @@ Label {
 
 `RangeSlider` 可独立声明 `RangeLowerHandle` 和 `RangeUpperHandle`，省略的一侧使用默认手柄。控件根据两个部件的尺寸确定共同的轨道范围。绘制、命中和无障碍边界使用同一位置，`live: false;` 时部件也跟随拖动预览。两个端点保留独立的键盘焦点和无障碍数值。运行 `bazel run //examples/slots -- --range-handles`，体验横向下限和纵向上限定制。
 
+iOS 增大系统字号时，按钮会按文字测量所需空间。显式限制高度时，内置标签可收紧默认上下内边距，再按可用空间调整字号。能容纳的整行会完整绘制，放不下的内容用省略号提示。无障碍树保留完整按钮名。替换的 `ButtonContent` 使用自己的布局。
+
 `TabButton` 也可使用 `ButtonContent`，包括通过 `for` 创建的标签。标签会用替换内容测量它在横排或竖排中的长度，显式的 `width` 或 `height` 优先。保留 `text` 或 `accessible-name` 给辅助技术使用。选中态、键盘导航和滚动仍由 `TabBar` 处理。运行 `bazel run //examples/slots -- --tab-content` 查看同一个视觉组件在按钮和标签间的复用。
 
 `bazel run //examples/slots:slots` 展示有内容插槽的设置面板、带计数的按钮内容和自定义音量手柄。用 Tab 切换焦点，Space 激活按钮，方向键调整音量。
@@ -114,11 +116,21 @@ Android 示例的 **Open holds → Open privacy** 可体验自定义遮罩和显
 
 `input-type: email;`、`url` 和 `tel` 可用于 `TextInput`、`LineEdit` 和可编辑的 `ComboBox`。在 iOS 和 Android 上，它们分别选择邮箱、网址和电话键盘。iOS 也把用途提供给 UIKit 的文本内容提示。三种类型沿用普通文本的编辑和校验规则，可用 `input-pattern` 或 `minimum-length` 声明表单约束。示例见 [iOS 巡检表单](../examples/ios/README.md)。
 
-`TextInput`、`LineEdit` 和可编辑的 `ComboBox` 可用 `input-purpose` 为 iOS AutoFill 声明用途。它接受 `InputPurpose` 的 `auto`、`username`、`current-password`、`new-password` 和 `one-time-code`。默认 `auto` 使用 `input-type` 原有的系统提示。用途可以和键盘类型组合，例如 `input-type: email; input-purpose: username;`。用 `input-type: password;` 开启密码遮罩，用 `input-type: number;` 限定验证码为数字。系统建议取决于设备设置、可用凭据和应用配置。
+`TextInput`、`LineEdit` 和可编辑的 `ComboBox` 可用 `input-purpose` 为 iOS AutoFill 声明用途。它接受 `InputPurpose` 的 `auto`、`username`、`current-password`、`new-password` 和 `one-time-code`。默认 `auto` 使用 `input-type` 原有的系统提示。用途可以和键盘类型组合，例如 `input-type: email; input-purpose: username;`。用 `input-type: password;` 开启密码遮罩，用 `input-type: number;` 限定验证码为数字。系统建议取决于设备设置、可用凭据和应用配置。示例见 [iOS 登录字段](../examples/ios/README.md#登录与验证码字段)。
+
+iOS 的 `TextInput`、`LineEdit`、`TextEdit`、`TextArea`、`SearchField` 和可编辑的 `ComboBox` 可以绑定 `keyboard-capitalization`、`auto-correct` 和 `spell-check`。`KeyboardCapitalization` 提供 `auto`、`none`、`words`、`sentences` 和 `characters`。普通文本默认按句首大写，自动更正和拼写检查沿用系统设置。技术字段默认关闭辅助输入。两个布尔属性可分别覆盖默认行为，密码和验证码字段始终关闭这三项。绑定变化会在当前组字结束后生效。[iOS 键盘辅助输入示例](../examples/ios/README.md#键盘辅助输入)
 
 iOS 的单行编辑器会根据 `input-type` 选择系统键盘。数字和电话字段的 **Done**、搜索字段的系统搜索键和外接键盘的 Return 使用同一套提交规则。通过校验时提交并收起数字、电话或搜索键盘，未通过时保留焦点供继续修改。其他单行字段的回车触发 `accepted`，多行字段的回车插入换行。
 
 `TextInput`、`LineEdit` 和可编辑的 `ComboBox` 支持 `return-key: next;` 和 `return-key: done;`。按键先校验当前值并触发原有提交回调。`next` 沿当前窗口或弹层的 Tab 顺序移动到下一个可编辑字段，跳过隐藏、禁用和只读字段。没有下一项时结束编辑。`done` 直接结束编辑。校验失败会保留焦点。默认的 `auto` 沿用输入类型原有的回车行为。iOS 会设置系统键盘上的 Next 或 Done，数字和电话键盘通过工具栏提供相应按钮。Android 使用系统输入法的对应操作。
+
+iOS 对使用 `return-key: next;` 或 `done;` 的字段默认提供键盘工具栏导航。文本编辑器可以用 `keyboard-navigation: true;` 手动开启，例如让 `TextArea` 显示字段导航，同时保留 Return 换行。`keyboard-navigation: false;` 隐藏导航按钮，回车动作仍由 `return-key` 决定。
+
+**Previous field** 和 **Next field** 先校验并提交当前字段，再沿同一焦点范围移动。到达首尾时，相应按钮不可用。校验失败时保留草稿和焦点，组字期间暂停导航。数字和电话键盘上的 **Next** 也可以直接移到下一项。
+
+iOS 停靠键盘打开时，`TextEdit` 和 `TextArea` 会随输入和光标移动，按需滚动启用了 `auto-reveal-focus` 的外层 `ScrollView` 或 `Flickable`，以显示当前行。iPad 浮动键盘盖住可见光标时，表单内容会暂时移开。键盘移走后恢复原位置，滚动绑定保留原值。[长备注示例](../examples/ios/README.md#键盘辅助输入)
+
+iPad 的系统「收起键盘」按钮会保留当前字段的草稿和逻辑焦点。窗口尺寸变化后键盘继续保持收起，点进原字段可恢复编辑。
 
 [Android 联系人表单回归](../examples/android/README.md#模拟器测试) 检查邮件、电话和网址的系统键盘类型，以及 Next／Done 的校验、焦点切换和收起行为。
 
@@ -191,6 +203,10 @@ Android 示例的 **Open dial → Tags** 可用同一字段测试粘贴格式化
 
 只生成栈顶页面的场景，已声明页面的组件状态在返回时可继续使用。焦点位于导航栈内时，切页会记住原页面的焦点。Alt+左方向键或系统返回键可返回上一层。返回请求携带场景中的栈版本，提交时会核对实时版本。运行 `bazel run //examples/navigation:navigation -- --stack` 体验。
 
+iOS 将 `StackView` 的当前页提供给 UIKit。VoiceOver 的返回动作先处理菜单、选项和弹层，再根据焦点确定应返回的栈。焦点在栈外时，只有一个可返回的可见栈时才执行。弹层禁用 Escape 时，返回停在该弹层。页面返回沿用 `leave-requested` 守卫。
+
+iOS 也支持从屏幕起始边缘向内滑动，松手后执行同一套返回流程。RTL 布局从右边缘开始。短滑、取消或连续操作改变了原返回目标时会保留当前页。配置为从同一边缘打开的 `Drawer` 可以继续使用自己的拖动手势。
+
 在 `StackView` 设置 `transition-duration: 220;` 可启用 220 毫秒的横向切页过渡。返回到当前路径上的祖先页面时从左侧进入，其他切页从右侧进入。离场页沿用已布局的绘制内容，栈顶状态和键盘焦点立即切换。过渡期间暂停该区域的鼠标与触摸操作，连续导航会从正在显示的页面片段开始下一次过渡。默认立即切页，时长为零或负数时也是如此。过渡期间视口几何变化会直接显示当前页。
 
 ## 按需加载组件
@@ -221,6 +237,8 @@ Loader {
 Android 导航示例的 **Open tools** 演示在手指仍按住时替换候选。松手不会点击占据相同位置的新实例，父组件保留已提交的数据。设备回归目标为 `//examples/android:loader_ui_test`。[Android 示例](../examples/android/README.md#动态加载回归)
 
 `Loader` 在每个轴上分别采用显式尺寸或内容的自然尺寸。挂载后，子组件占用 Loader 的内容区域，`padding` 留在内容区域之外。`loaded()` 在新实例进入场景后触发一次。`self.focus()` 会把焦点交给当前内容中第一个可聚焦项。卸载后，该实例的焦点和指向旧实例的输入事件随之失效。
+
+iOS 将已挂载的 `Loader` 作为 UIKit 无障碍容器。切换来源会更新容器里的元素，辅助技术可激活当前实例中的控件。[iOS 动态导航示例](../examples/ios/README.md#动态加载与无障碍返回)
 
 Rust AOT 可以通过 `ui.loader_item::<Details>("area")` 取得已挂载候选的类型化句柄。解释器的 `Instance::loader_item("area")` 返回解释器实例的句柄。`upgrade()` 在原挂载仍有效时返回实例，卸载后返回 `None`。外部组件的句柄使用 `xrack::interpreter::Instance` 类型。
 
@@ -288,7 +306,7 @@ iOS 开启「开启／关闭标签」后，`Switch` 和 `SwitchDelegate` 的默�
 
 `ProgressIndicator` 可分别声明一个 `ProgressTrack` 和一个 `ProgressFill`。轨道铺满控件，填充随进度伸缩并在 RTL 下从右侧开始。不定进度时，自定义填充会在轨道内移动。用父控件设置进度和尺寸，部件可以包含文字、图形或图片。辅助技术从进度条本身读取当前进度。运行 `bazel run //examples/controls -- --custom-progress` 查看示例。
 
-`ProgressIndicator` 可以用 `minimum`、`maximum` 和 `progress` 直接接收业务单位。默认范围是 0 到 1，也可在该范围使用百分比。超出范围的值会截断到端点，空区间的进度为 0。只读的 `position` 返回 0 到 1 的比例，`visual-position` 在 RTL 下返回镜像位置。无障碍数值按配置的范围报告。
+`ProgressIndicator` 可以用 `minimum`、`maximum` 和 `progress` 直接接收业务单位。默认范围是 0 到 1，也可在该范围使用百分比。超出范围的值会截断到端点，空区间的进度为 0。只读的 `position` 返回 0 到 1 的比例，`visual-position` 在 RTL 下返回镜像位置。无障碍数值按配置的范围报告。iOS 的 UIKit 读值使用系统区域格式的完成百分比，进度未知时保留控件名称。
 
 `CheckBox` 支持布尔 `checked`，也可使用类型化的 `check-state`。三种状态是 `CheckState.unchecked`、`CheckState.partially-checked` 和 `CheckState.checked`。设置 `tristate: true;` 后，用户交互会循环三种状态。默认交互会把部分选中切到已选中。三态模式选择 `check-state` 或 `tristate`，布尔模式使用 `checked`。
 
@@ -419,6 +437,8 @@ PathView {
 
 在 `ComboBox` 内声明一个 `ComboPopup`，可绑定 `width`、`max-height`、`row-height`、`padding`、`background`、`border-color`、`border-width` 和 `border-radius`。`max-height` 包含内边距，弹层根据窗口剩余空间向上或向下展开。`width` 的百分比相对于控件宽度，`max-height` 的百分比相对于窗口高度。默认行高是 28px，默认最多显示八行，默认宽度取控件宽度与 96px 中较大者。设置 `scroll-indicator: true` 后，内容溢出时会在逻辑末端显示滚动位置，滚轮和键盘仍用于浏览选项。运行 `bazel run //examples/selection -- --popup-style` 体验。
 
+iOS 和 iPadOS 的 `ComboBox` 下拉项及 `SearchField` 建议会随系统文字大小调整字号和行高。`row-height` 是常规字号下的基准，显式弹层宽度和最大高度仍约束布局。弹层避开系统安全区、停靠键盘和浮动键盘。键盘移开后，仍打开的弹层会恢复位置。选项过多时可在弹层里滑动或用 VoiceOver 翻页。点击下拉选项会更新选值，点击搜索建议会填入输入框，随后可用搜索按钮或键盘搜索键提交。
+
 回调中可调用 `choice.open-popup()` 或 `choice.close-popup()`。窗口处理请求时会检查控件的可见性、启用状态和当前模态范围。打开后可绑定只读的 `popup-open` 和 `highlighted-index`，下标从 0 开始，弹层关闭或没有高亮项时为 `-1`。高亮随键盘、鼠标或滚动更新，确认选项时才提交选择。运行 `bazel run //examples/selection -- --popup-control` 查看示例。
 
 `editable: true;` 让 `ComboBox` 的文字区域支持输入、IME、剪贴板和撤销。草稿可用 `edit-text <=> root.draft;` 双向绑定，修改时触发 `edited(string)`。点击箭头或按 F4 可打开列表，列表优先定位到与草稿精确匹配或具有相同前缀的项。关闭列表后按 Enter 提交草稿并触发 `accepted(string)`。精确匹配时更新选项，自定义文本以 `current-index: -1` 表示或写入 `current-value`。运行 `bazel run //examples/selection:selection -- --editable-combo` 体验。
@@ -469,7 +489,11 @@ Android 的 `//examples/android:navigation_app` 展示单选组、标签页、�
 
 `TabBar` 独立排列 `TabButton`，可与 `SwipeView` 双向绑定同一个 `current-index`。标签可逐项声明，也可用一个 `for` 从模型生成。横排默认按文字测量宽度，可用 `width` 固定某项。竖排使用 `height`。超出视口时可用滚动条、触摸或沿排列方向滚动浏览。方向键和 Home / End 跳过隐藏或禁用项，绑定变化后会把新的选中项滚入视口。隐藏的标签保留声明索引。运行 `bazel run //examples/navigation:navigation -- --tab-bar` 体验。
 
+iOS 增大系统字号后，`TabBar` 和 `TabWidget` 的标签按新字号重新测量，并把当前选中的标签带回视口。可用空间足够时，独立关闭按钮使用 44 × 44 点的触控区域。显式尺寸仍可约束布局。空间紧张的标题会缩略，VoiceOver 仍可读取完整名称。
+
 在 `TabBar` 或 `TabWidget` 上为模型生成的标签设置 `reorderable: true`，即可拖动标签调整顺序。把焦点放在标签上，也可用 Ctrl + Shift + 方向键重排，macOS 上使用 Command + Shift。拖动时插入线显示落点，靠近溢出边缘会自动滚动。标签必须由一个 `for` 直接读取可写列表属性。释放鼠标或触屏后会移动模型中的原行，复用该行的页面状态，随后触发 `tab-moved(from, to)`，参数为移动前后的索引。按 Escape 可取消，拖动期间模型变化也会取消本次移动。Rust 宿主可用 `VecModel::move_row(from, to)` 移动同一个模型中的行。运行 `bazel run //examples/navigation:navigation -- --model-swipe` 体验共享模型、页面状态和标签重排。
+
+iOS 的 VoiceOver 操作列表也可移动标签。水平栏提供左右移动，垂直栏提供上下移动。动作跳过隐藏或禁用的标签，必要时滚动以显示移动后的标签，并保留当前选中的页。
 
 `TabWidget` 的标签尺寸会保留可读的标题宽度和可点击的行高。标题超出空间后可沿标签栏触摸滑动或滚动。横排可以用横向滚轮或 Shift + 滚轮，竖排使用上下滚动。只有标题栏滚动，页内内容的位置保持稳定。键盘选中超出视口的标签会将它滚入视野。运行 `bazel run //examples/navigation:navigation -- --model-tabs`，开启「窄标签栏」试用拖动、滚动和重排。
 
@@ -541,7 +565,11 @@ SwipeView {
 
 `TimePickerPopup` 通过 `open` 打开，打开时读取一次 `time` 作为草稿。确认后写回并触发 `accepted(time)`，取消或按 Escape 触发 `canceled()`。可用 `title`、`accept-text` 和 `cancel-text` 自定义文字。`minimum-time` 和 `maximum-time` 可限制弹层的确认范围。滚轮可以经过超出范围的中间值，小于下限或大于上限时禁止确认。运行 `bazel run //examples/controls:controls -- --time` 体验。
 
+在 iOS 上，VoiceOver 读取滑块、步进器和时间滚轮的当前值，只开放会实际改变值的调节方向。双手柄滑块分别调节上下限，小数步进器按界面的小数位数和分隔符读值，固定或只读值仍可读取。时间滚轮拖动预览时保留已提交的当前值，落位后更新。
+
 日期和时间弹层会根据可用尺寸排布内容。确认和取消按钮为触控预留至少 44 个逻辑像素的宽高。横屏高度紧张且宽度足够时，按钮移到选择区旁边，给日历格和时间滚轮保留更多高度。窄屏通常把按钮放在选择区下方，较长的按钮文字可以分行排列。iOS 的无障碍树会公开单个日期、翻月和操作按钮，并把时间滚轮公开为可调节控件。见 [Pocket Tasks 的巡检页](../examples/ios/README.md)。
+
+iOS 用户增大系统字号时，日历会尽量加高日期格，紧凑窗口仍显示整个月份网格。时间滚轮会增大行高，空间不足时减少同屏行数。拖动和键盘翻页按重新布局后的行高和行数工作。已打开的弹层会随系统设置重新布局并保留当前草稿。
 
 iOS 日期弹层翻月时，无障碍焦点会跟到当前月的可选日期。翻月本身保留草稿，按回车可选择当前焦点日期。当月没有可选日期时，焦点落到可用的翻月按钮。如果翻月也不可用，焦点落到取消按钮。关闭弹层后，焦点回到打开它的控件。
 
@@ -563,7 +591,9 @@ Android 的基础编辑快捷键沿用共享编辑器语义，包括全选、复
 
 Android 宿主通过 `XRackActivity` 接入系统文档选择器，支持 `open-file`、`open-files` 和扩展名过滤。选中文档后，宿主在后台复制到应用私有缓存，再把可读取的本地路径交给 `accepted`。应用可自行保存需要长期保留的内容。Rust 宿主还可通过 `DesktopWindow.export_file()` 导出现有文件，通过 `select_directory()` 获取 `AndroidDirectory`，在工作线程列举和读取授权目录中的文档。DSL 的 `FileDialog.save-file`、`select-folder` 和 `select-folders` 仍待接入。构建和设备回归命令见 [Android 示例](../examples/android/README.md)。
 
-iOS 上的 `open-file` 和 `open-files` 打开系统 Files 选择器。扩展名过滤和起始目录由系统处理，界面标题由 Files 提供。选择的文件会复制到应用沙盒，应用可以在 `accepted` 后读取本地副本，需要长期保留时应移到应用管理的位置。iOS 上的 `save-file`、`select-folder` 和 `select-folders` 会触发 `failed`。
+iOS 的 `open-file`、`open-files`、`select-folder` 和 `select-folders` 打开系统 Files 选择器。扩展名过滤和起始目录由系统处理，界面标题由 Files 提供。使用 `select-folders` 时，可继续添加目录，确认后再导入整批。`accepted` 返回沙盒副本的普通路径，保留目录中的子目录与文件。目录副本随窗口关闭清理，长期使用的内容可移到应用管理的位置。若其中一个目录复制失败，整个批次触发 `failed`。[iOS 目录导入示例](../examples/ios/README.md#声明式目录导入)
+
+iOS 的 `save-file` 仍会触发 `failed`。导出现有文件可用 Rust 宿主的 `DesktopWindow::export_file()`。
 
 `MessageDialog` 也通过 `open()` 打开系统对话框，可设置 `title`、`text`、`informative-text` 和 `level`。`buttons` 可取 `ok`、`ok-cancel`、`yes-no` 或 `yes-no-cancel`。确认和拒绝分别触发 `accepted()` 与 `rejected()`，随后 `finished(StandardButtonKind)` 报告具体结果。系统关闭或取消返回 `cancel`，宿主检测到的打开错误通过 `failed(string)` 返回。文件面板与消息对话框按请求顺序共用窗口的异步队列。运行 `bazel run //examples/form:form -- --message` 体验。
 
@@ -618,21 +648,25 @@ SplitView {
 
 `MenuBar` 和 `ContextMenuArea` 分别通过顶部菜单和右键打开 `Menu`。菜单支持嵌套子菜单、禁用项、分隔线和可勾选的 `MenuItem`。`activated()` 在选中可用菜单项时触发。方向键导航，Escape 逐层关闭。右键菜单也可用 Shift+F10 打开。
 
-触屏上，按住 `ContextMenuArea` 约 500 毫秒会打开同一个菜单，松手不会触发底层控件的点击。手指先滑动时，滚动和拖拽仍由原来的控件处理。触摸菜单的行高为 44 个逻辑像素，菜单过长时可在面板内滑动浏览，不会带动底部列表。默认文本编辑菜单和显式 `ContextMenuArea` 共用长按手势，控件有自定义菜单时优先打开它。用 [Pocket Tasks](../examples/ios/README.md) 长按任务行体验。
+触屏上，按住 `ContextMenuArea` 约 500 毫秒会打开同一个菜单，松手不会触发底层控件的点击。手指先滑动时，滚动和拖拽仍由原来的控件处理。触摸菜单的基准行高为 44 个逻辑像素，菜单过长时可在面板内滑动浏览，不会带动底部列表。默认文本编辑菜单和显式 `ContextMenuArea` 共用长按手势，控件有自定义菜单时优先打开它。用 [Pocket Tasks](../examples/ios/README.md) 长按任务行体验。
 
-触摸点按 `MenuBar` 打开的菜单及其子菜单也使用 44 个逻辑像素行高。Android 导航示例的 **Open commands** 覆盖行高、共享命令和返回键关闭层级。[Android 示例](../examples/android/README.md#触摸菜单栏回归)
+触摸点按 `MenuBar` 打开的菜单及其子菜单也使用 44 个逻辑像素的基准行高。Android 导航示例的 **Open commands** 覆盖行高、共享命令和返回键关闭层级。[Android 示例](../examples/android/README.md#触摸菜单栏回归)
 
 菜单继承 `layout-direction`。RTL 下菜单栏从右向左排列，弹层和文字按起始侧对齐，图标、勾选标记和快捷键栏随布局换边。左键进入子菜单，右键返回。子菜单优先向左展开，空间不足时换边。运行 `bazel run //examples/menu -- --rtl-menu` 切换体验。
 
-在 iOS 上，具有上下文菜单的控件会在 VoiceOver 的「操作」转子中提供 **Show context menu**。打开后可以逐项选择菜单内容，使用系统的无障碍取消动作返回。
+在 iOS 上，具有上下文菜单的控件会在 VoiceOver 的「操作」转子中提供 **Show context menu**。打开后可以逐项选择菜单内容，从当前菜单项发起无障碍翻页，或使用系统的无障碍取消动作返回。子菜单单独翻页，翻页后 UIKit 收到当前可见范围。
+
+iOS 和 iPadOS 的菜单项会随系统文本大小调整字号及点击区域。菜单在窗口安全区内滚动，横向空间不足时显示省略号，VoiceOver 仍可读取完整名称。
 
 单行、多行、搜索框、可编辑下拉框、数字输入框和正在编辑的表格或树单元格提供默认编辑菜单。右键、Shift+F10 或辅助技术均可打开。菜单与键盘共用选区、剪贴板和撤销记录。只读框可复制，密码框禁用复制和剪切。数字框的撤销和重做作用于草稿，提交时再更新绑定的数值。`ContextMenuArea` 优先，`context-menu-enabled: false` 可关闭默认菜单。菜单打开后，外部修改当前文本或选区会使旧操作失效。运行 `bazel run //examples/form:form -- --editor-menus` 体验。
 
-`MenuItem` 的 `shortcut: "Primary+Shift+E";` 会在菜单中显示组合键，并与点击共用 `activated()`。`Primary` 在 macOS 上表示 Command，在其他平台表示 Ctrl。也可以组合 `Ctrl`、`Alt`、`Shift` 和 `Super`，主键支持英文字母、数字和 F1 到 F12。字母和数字需要 Ctrl、Alt、Super 或 Primary 中的一个修饰键。无效字符串不会注册快捷键，可将绑定设为空字符串清除快捷键。
+`MenuItem` 的 `shortcut: "Primary+Shift+E";` 与点击共用 `activated()`。菜单在正文和快捷键都能完整放下时显示组合键。`Primary` 在 macOS 上表示 Command，在其他平台表示 Ctrl。也可以组合 `Ctrl`、`Alt`、`Shift` 和 `Super`，主键支持英文字母、数字和 F1 到 F12。字母和数字需要 Ctrl、Alt、Super 或 Primary 中的一个修饰键。无效字符串不会注册快捷键，可将绑定设为空字符串清除快捷键。
 
 菜单栏快捷键在当前窗口或最上层模态区域内生效。打开右键菜单时，只处理该菜单内的快捷键。隐藏和禁用项不参与匹配，同一作用域内的重复组合键不会触发命令。文本编辑保留选择、剪贴板和撤销重做快捷键。运行 `bazel run //examples/menu:menu` 可体验。
 
 `Shortcut` 可声明在布局或对话框内，不占空间。用 `sequence: "Primary+K, Primary+P";` 声明最多四段组合键，相邻两段须在一秒内输入。`sequences` 可提供多个别名，`focus-within: true;` 将范围缩到父元素的焦点子树，`auto-repeat: true;` 允许单段快捷键随按住重复触发。不同命令匹配同一序列时，独立 `Shortcut` 会收到 `activated-ambiguously()`。短序列同时是长序列的前缀时，短序列报告冲突，长序列可以继续输入。用 `action` 复用命令时，未指定序列会采用命令的 `shortcut`，同一命令的多个入口只执行一次。运行 `bazel run //examples/menu:menu -- --shortcuts` 体验。
+
+iOS 和 iPadOS 上，外接键盘的 F1–F12 可触发 `Shortcut`，并进入焦点作用域的按下和释放回调。例如，编辑草稿时也可使用 `F2` 和 `Primary+F12` 执行命令。Application 键和 Shift+F10 可打开当前焦点控件的上下文菜单。[iOS 功能键示例](../examples/ios/README.md#外接键盘功能键)
 
 在组件根部声明命名的 `Action` 后，`Button`、`ToolButton`、`MenuItem` 和虚拟列表中的 `ItemDelegate` 可以通过 `action: command-id;` 共享命令。命令集中声明 `text`、`icon`、`shortcut`、`enabled`、`checkable`、`checked` 和 `activated()`。可勾选命令先切换 `checked` 再执行回调，也可用 `checked <=> root.some-flag;` 关联组件属性。控件可以覆盖显示文本和图标，也可额外限制自身的 `enabled`。同一命令的多个控件共用一个快捷键，按钮单独展示时也可以触发命令。每个组件实例独立持有命令状态。
 
@@ -649,6 +683,10 @@ SplitView {
 `RoundButton` 沿用按钮的文字、图标、键盘激活和 `Action` 绑定。默认半径为宽高中较短边的一半，正方形尺寸会绘制为圆形，也可用 `radius` 指定半径。绘制和指针命中共用圆角几何，透明角落会把点击交给下层。`ToolSeparator` 默认绘制竖线，可在纵向工具栏里设 `orientation: horizontal`。`stroke-width`、`padding` 和 `color` 分别控制线宽、端部留白和颜色。分隔线参与布局，点击可以穿过它。运行 `bazel run //examples/menu:menu -- --round-tools` 可试用。
 
 在控件或视觉元素内声明 `Tooltip { text: "操作说明"; }`，可在悬停或通过 Tab 聚焦后显示提示。每个元素可附加一个 `Tooltip`，内容可用纯文本或单个自定义布局。`delay` 默认 600 毫秒，`timeout` 默认持续到离开、失焦或发生输入。提示浮在窗口内，靠近边缘时会避让，点击会穿过浮层。菜单和模态作用域会限制提示显示。
+
+触摸设备也可长按显示提示，等待时间取 `delay` 和 500 毫秒中的较长者。长按显示后松开不会激活控件。提示保留到下一次触摸、其他输入或 `timeout` 到期。文本选择、上下文菜单和专用长按手势优先。计时完成前滑动仍可滚动容器。[iOS 长按示例](../examples/ios/README.md#长按提示)
+
+iOS 会把 `visible` 为真的纯文本 `Tooltip` 提供给 VoiceOver，作为所属控件的提示。文本绑定更新时，提示也随之更新。控件的 `accessible-description` 和框架已有的操作提示优先。自定义布局的提示可在所属控件上用 `accessible-description` 提供朗读内容。
 
 ## 图像和路径
 
@@ -738,6 +776,8 @@ HLS 点播和直播都支持动态码率。多码率源从低码率开始，在�
 
 `FocusScope` 可包裹复合控件。用 `initial-focus: editor;` 指定首次进入时优先选择的后代。作用域默认记住最后聚焦的有效子控件，`restore-focus: false;` 可让每次进入都采用初始目标。Tab 和 Shift+Tab 可以离开作用域。`focus-on-tab-navigation` 和 `focus-on-click` 控制作用域本身是否接管这两种入口，子控件保留各自的输入行为。
 
+iOS 将有可访问子控件的 `FocusScope` 作为 UIKit 无障碍容器。辅助技术可逐个聚焦、编辑或激活其中的控件。
+
 事件处理器可以调用 `scope.focus()` 或 `scope.clear-focus()`。窗口在回调结束后用当前布局处理命令。隐藏、禁用或被模态弹层挡住的目标不会获得焦点。每个组件实例保存独立的请求身份和焦点记录。运行 `bazel run //examples/layout:layout -- --focus-scopes`，在两个编辑区域之间跳转，按 Escape 清除当前区域的焦点。
 
 `has-focus` 表示当前控件直接持有键盘焦点。`FocusScope` 的 `focus-within` 在作用域或其子控件持有焦点时为真。同一区域内切换子控件时，依赖 `focus-within` 的样式保持有效。窗口失活会清除这两个读值，重新激活后恢复有效的逻辑焦点。`focus-gained(reason)`、`focus-lost(reason)`、`focus-changed-event(reason)` 和 `focus-within-changed(focused, reason)` 可读取有类型的 `FocusReason`。回调运行时，失焦和得焦两侧的读值均已发布。
@@ -766,7 +806,7 @@ HLS 点播和直播都支持动态码率。多码率源从低码率开始，在�
 
 macOS 上，`DropArea { accept-files: true; }` 也可接收 Finder 或其他应用拖入的本地文件。`file-extensions: ["png", "jpg"];` 可筛选扩展名，匹配忽略大小写，可带前导点。整个批次必须符合规则。`files-entered([string])` 和 `files-dropped([string])` 收到有序的 UTF-8 路径列表。外部文件操作按复制处理，应用按收到的路径自行读取文件。运行 `bazel run //examples/form:form -- --drop-files`，分别向图片区和文档区拖入一个或多个文件。
 
-iOS 使用同一套 `DropArea` 接收系统文件拖放。拖动时可用 `position-changed` 和 `exited` 提供反馈。系统给出的扩展名用于预判，缺少扩展名时以实际文件为准。松手后，宿主异步复制整批文件并复查原目标。复制成功才依次触发 `files-entered` 和 `files-dropped`，并按原顺序提供沙箱副本的路径。窗口关闭时清理这些副本。应用需要长期保存的文件应复制到自己的存储目录。
+iOS 使用同一套 `DropArea` 接收系统文件拖放。拖动时可用 `position-changed` 和 `exited` 提供反馈。系统给出的扩展名用于预判，缺少扩展名时以实际文件为准。松手后，宿主异步复制整批文件并复查原目标。复制成功才依次触发 `files-entered` 和 `files-dropped`，并按原顺序提供沙箱副本的路径。窗口关闭时清理这些副本。应用需要长期保存的文件应复制到自己的存储目录。[iPad 文件拖放示例](../examples/ios/README.md#文件拖放)
 
 如果 iOS 已接受释放，随后读取或保存文件失败，仍有效的原接收区域会收到一次 `files-failed(string)`。回调参数用于显示失败原因。文件批次按整体交付，应用可以保留上一次成功接收的内容。
 

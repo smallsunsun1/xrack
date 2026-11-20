@@ -1,4 +1,4 @@
-//! FFmpeg-backed local media playback.
+//! FFmpeg-backed media playback and desktop voice input.
 #[cfg(feature = "ffmpeg")]
 mod decoder;
 #[cfg(feature = "ffmpeg")]
@@ -9,6 +9,8 @@ mod player;
 mod sound;
 #[cfg(feature = "ffmpeg")]
 mod subtitles;
+#[cfg(feature = "ffmpeg")]
+pub mod voice;
 
 #[cfg(feature = "ffmpeg")]
 pub use decoder::{MediaError, VideoDecoder, VideoFrame};

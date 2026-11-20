@@ -75,6 +75,11 @@ function page(webview, media) {
   <h2 id="update-title">UI updates</h2>
   <div id="update-details"></div>
 </section>
+<section id="diagnostics-section" hidden aria-labelledby="diagnostics-title">
+  <h2 id="diagnostics-title">Request traces</h2>
+  <label>Request <select id="diagnostic-request"></select></label>
+  <ol id="diagnostic-events"></ol>
+</section>
 </main>
 <script nonce="${nonce}" src="${script}"></script>
 </body></html>`;
@@ -166,6 +171,7 @@ function registerAttach(context) {
             trace: snapshot?.trace,
             updatePlan: snapshot?.updatePlan,
             updates: snapshot?.updates,
+            diagnostics: snapshot?.diagnostics,
             recording: snapshot?.recording && {
                 count: snapshot.recording.steps.length, truncated: snapshot.recording.truncated,
             },

@@ -5,7 +5,10 @@ xr_ui_library(
     name = "form_ui",
     src = "form.xr",
     sources = ["widgets.xr"],
-    visibility = ["//tests:__pkg__"],
+    visibility = [
+        "//examples/ios:__pkg__",
+        "//tests:__pkg__",
+    ],
 )
 
 exports_files(

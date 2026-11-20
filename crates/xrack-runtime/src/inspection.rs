@@ -1,4 +1,7 @@
-use crate::{Node, update_profile::UpdateSample};
+use crate::{
+    Node, ui_trace,
+    update_profile::{self, UpdateSample},
+};
 
 const MAX_ACTIONS: usize = 48;
 const MAX_SAMPLES: usize = 24;
@@ -48,6 +51,8 @@ struct State {
     control: bool,
     input: Option<InspectionInput>,
     samples: VecDeque<(u64, u64, UpdateSample)>,
+    diagnostics: Option<ui_trace::Buffer>,
+    updated_requests: Vec<u64>,
     generation: u64,
     next_sample: u64,
 }
@@ -141,6 +146,49 @@ impl WindowInspector {
         let id = state.next_sample;
         let generation = state.generation;
         state.samples.push_back((id, generation, sample));
+    }
+
+    pub fn set_trace_buffer(&self, buffer: ui_trace::Buffer) {
+        self.0.borrow_mut().diagnostics = Some(buffer);
+    }
+
+    pub fn trace_events(&self) -> Option<Vec<ui_trace::Fields>> {
+        self.0
+            .borrow()
+            .diagnostics
+            .as_ref()
+            .map(ui_trace::Buffer::snapshot)
+    }
+
+    /// Associate a result write with the next batched native window update.
+    pub fn trace_update_from(&self, request: u64) {
+        let mut state = self.0.borrow_mut();
+        if state.diagnostics.is_some()
+            && state.updated_requests.len() < MAX_ACTIONS
+            && !state.updated_requests.contains(&request)
+        {
+            state.updated_requests.push(request);
+        }
+    }
+
+    pub fn measure_update(&self, update: impl FnOnce()) {
+        let (generation, requests) = {
+            let mut state = self.0.borrow_mut();
+            (
+                state.generation,
+                std::mem::take(&mut state.updated_requests),
+            )
+        };
+        let span = tracing::debug_span!(
+            target: ui_trace::TARGET,
+            "window_update",
+            generation,
+            // Several result writes can be coalesced in one native frame.
+            requests = ?requests
+        );
+        if let Some(sample) = span.in_scope(|| update_profile::measure(update)) {
+            self.push_sample(sample);
+        }
     }
 
     pub fn samples(&self) -> Option<Vec<(u64, u64, UpdateSample)>> {

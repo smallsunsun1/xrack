@@ -27,6 +27,7 @@ single_version_override(
     module_name = "ffmpeg",
     patches = [
         "//bazel:ffmpeg_hls_window.patch",
+        "//bazel:ffmpeg_capture_interrupt.patch",
         "//bazel:ffmpeg_windows_probes.patch",
     ],
     patch_strip = 1,
@@ -117,6 +118,7 @@ osx.frameworks(names = [
     "Metal",
     "OSLog",
     "OpenGL",
+    "PrintCore",
     "QuartzCore",
     "Security",
     "SystemConfiguration",
@@ -133,6 +135,7 @@ rust.toolchain(
     rust_analyzer_version = "1.99.1",
     extra_target_triples = [
         "aarch64-apple-darwin",
+        "aarch64-apple-ios",
         "aarch64-apple-ios-sim",
         "aarch64-linux-android",
         "aarch64-unknown-linux-gnu",
@@ -203,6 +206,7 @@ crate.from_cargo(
     host_tools = "@xrack_rust_host_tools",
     supported_platform_triples = [
         "aarch64-apple-darwin",
+        "aarch64-apple-ios",
         "aarch64-apple-ios-sim",
         "aarch64-linux-android",
         "aarch64-pc-windows-msvc",

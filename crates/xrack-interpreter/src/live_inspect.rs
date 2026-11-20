@@ -210,6 +210,27 @@ pub(crate) fn snapshot(ui: &ReloadableInstance, versions: SourceVersions) -> Jso
         payload["trace"] = trace.snapshot();
     }
     let inspector = ui.inspector();
+    if let Some(events) = inspector.trace_events() {
+        payload["diagnostics"] = Json::Array(
+            events
+                .into_iter()
+                .map(|event| {
+                    Json::Object(
+                        event
+                            .into_iter()
+                            .map(|(key, value)| {
+                                let value = match value {
+                                    xrack_runtime::ui_trace::Field::Number(value) => json!(value),
+                                    xrack_runtime::ui_trace::Field::Text(value) => json!(value),
+                                };
+                                (key.into(), value)
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+        );
+    }
     if let Some((actions, truncated, text_capture)) = inspector.recording() {
         let steps: Vec<_> = actions
             .into_iter()

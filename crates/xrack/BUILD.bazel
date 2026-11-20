@@ -8,9 +8,15 @@ _RUNTIME_DEPS = [
     "//crates/xrack-runtime:xrack_runtime",
 ]
 
+_MEDIA_FEATURES = select({
+    "//crates/xrack-media:enabled_config": ["media"],
+    "//conditions:default": [],
+})
+
 rust_library(
     name = "xrack",
     srcs = ["src/lib.rs"],
+    crate_features = _MEDIA_FEATURES,
     edition = "2024",
     version = "0.7.0",
     visibility = ["//visibility:public"],
@@ -20,7 +26,7 @@ rust_library(
 rust_library(
     name = "xrack_with_interpreter",
     srcs = ["src/lib.rs"],
-    crate_features = ["interpreter"],
+    crate_features = ["interpreter"] + _MEDIA_FEATURES,
     crate_name = "xrack",
     edition = "2024",
     version = "0.7.0",

@@ -42,7 +42,7 @@ fn calendar_arrows_start_at_the_disabled_selection_and_skip_excluded_days() {
 }
 
 #[test]
-fn next_text_field_skips_unavailable_controls_and_stops_in_the_dialog() {
+fn adjacent_text_fields_skip_unavailable_controls_and_stop_in_the_dialog() {
     let mut window = node("Window", "root");
     let mut dialog = node("Dialog", "form");
     boolean(&mut dialog, "open", true);
@@ -75,9 +75,15 @@ fn next_text_field_skips_unavailable_controls_and_stops_in_the_dialog() {
     let mut input = Interaction::default();
     input.reconcile(&window, &frame);
     assert!(input.is_focused(&[0, 0, 0]));
+    assert_eq!(input.focus_adjacent_text_field(&window, &frame, true), None);
     assert_eq!(input.focus_next_text_field(&window, &frame), Some(false));
     assert!(input.is_focused(&[0, 0, 5]));
     assert_eq!(input.focus_next_text_field(&window, &frame), None);
+    assert_eq!(
+        input.focus_adjacent_text_field(&window, &frame, true),
+        Some(false)
+    );
+    assert!(input.is_focused(&[0, 0, 0]));
 }
 
 #[test]
@@ -325,6 +331,59 @@ fn button_content_measures_and_places_display_modes() {
     assert_eq!(ButtonContent::new(&button).label, "");
     button.properties.remove("icon");
     assert_eq!(ButtonContent::new(&button).label, "Grid");
+}
+
+#[test]
+fn enlarged_button_content_fits_fixed_height_and_keeps_stacked_icons() {
+    use xrack_runtime::{ButtonDisplay, Image, ImageFormat};
+
+    let mut button = node("Button", "review");
+    button
+        .properties
+        .insert("text", "Review options".to_owned().into());
+    let bounds = Rect::new(0.0, 0.0, 200.0, 44.0);
+    let content = ButtonContent::new(&button);
+    let (area, size) = content.scaled_label_metrics(bounds, 40.0);
+    assert_eq!(area, Rect::new(10.0, 4.0, 180.0, 36.0));
+    assert!((size * 1.4 - 36.0).abs() < 0.01);
+    let spacious = Rect::new(0.0, 0.0, 200.0, 90.0);
+    assert_eq!(
+        content.scaled_label_metrics(spacious, 40.0),
+        (spacious.inset(10.0), 40.0)
+    );
+
+    length(&mut button, "padding", 10.0);
+    let (area, size) = ButtonContent::new(&button).scaled_label_metrics(bounds, 40.0);
+    assert_eq!(area, bounds.inset(10.0));
+    assert!((size * 1.4 - 24.0).abs() < 0.01);
+    button.properties.remove("padding");
+    button
+        .properties
+        .insert("display", ButtonDisplay::TextUnderIcon.into());
+    button.properties.insert(
+        "icon",
+        Image::Embedded {
+            format: ImageFormat::Svg,
+            bytes: b"<svg/>",
+            size: [24, 24],
+        }
+        .into(),
+    );
+    let content = ButtonContent::new(&button);
+    let (area, size) = content.scaled_label_metrics(bounds, 40.0);
+    let line = size * 1.4;
+    let placed = content.place(
+        area,
+        Size::new(80.0, line),
+        line,
+        true,
+        LayoutDirection::LeftToRight,
+    );
+    let icon = placed.icon.unwrap();
+    assert!(icon.height > 0.0);
+    assert!((placed.label.height - line).abs() < 0.01);
+    assert!(icon.y + icon.height <= placed.label.y);
+    assert!(placed.label.y + placed.label.height <= area.y + area.height + 0.01);
 }
 
 #[test]
@@ -1236,6 +1295,44 @@ fn table_positioning_uses_the_scrollable_pane_and_latest_queued_offset() {
 }
 
 #[test]
+fn enlarged_default_table_header_keeps_room_for_rows_and_respects_fixed_height() {
+    struct Scaled(f32);
+    impl TextMeasurer for Scaled {
+        fn text_scale(&self) -> f32 {
+            self.0
+        }
+        fn measure(&mut self, value: &str, size: f32, width: f32) -> Size {
+            Text.measure(value, size, width)
+        }
+    }
+
+    let mut table = node("TableView", "table");
+    let mut column = node("TableColumn", "instrument");
+    length(&mut column, "width", 120.0);
+    table.table_header = Some(Box::new(xrack_runtime::TableHeader {
+        columns: vec![column],
+        sort: None,
+        column_widths: vec![],
+    }));
+    let size = Size::new(180.0, 140.0);
+    let regular = layout(&table, size, &mut Scaled(1.0));
+    let enlarged = layout(&table, size, &mut Scaled(2.6));
+    let normal = regular.table.as_ref().unwrap();
+    let large = enlarged.table.as_ref().unwrap();
+    assert_eq!(normal.header.height, 34.0);
+    assert!(large.header.height >= 60.0);
+    assert_eq!(large.body.y, large.header.y + large.header.height);
+    assert_eq!(large.columns[0].width, normal.columns[0].width);
+    assert_eq!(large.column_at(Point { x: 70.0, y: 51.0 }), Some(0));
+
+    let compact = layout(&table, Size::new(180.0, 60.0), &mut Scaled(2.6));
+    assert_eq!(compact.table.as_ref().unwrap().body.height, 26.0);
+    length(&mut table, "header-height", 40.0);
+    let fixed = layout(&table, size, &mut Scaled(2.6));
+    assert_eq!(fixed.table.as_ref().unwrap().header.height, 40.0);
+}
+
+#[test]
 fn table_header_drop_targets_only_shown_columns_in_full_permutation_order() {
     use xrack_runtime::TableHeader;
 
@@ -1704,6 +1801,53 @@ fn overflowing_tab_widget_scrolls_only_the_header_and_reveals_keyboard_selection
 }
 
 #[test]
+fn tab_reflow_reveals_the_selection_after_the_system_text_size_changes() {
+    struct Scaled(f32);
+    impl TextMeasurer for Scaled {
+        fn text_scale(&self) -> f32 {
+            self.0
+        }
+        fn measure(&mut self, label: &str, size: f32, width: f32) -> Size {
+            Text.measure(label, size, width)
+        }
+    }
+
+    let size = Size::new(168.0, 156.0);
+    let mut tabs = node("TabWidget", "tabs");
+    tabs.properties.insert("current-index", 3_i64.into());
+    tabs.properties.insert("tabs-closable", true.into());
+    for title in ["Summary", "Measurements", "Settings", "Results"] {
+        let mut page = Node::new("Tab", None);
+        page.properties.insert("title", title.to_owned().into());
+        tabs.children.push(page);
+    }
+    let mut input = Interaction::default();
+    let initial = layout_with_input(&tabs, size, &mut Scaled(1.0), &input);
+    assert!(input.accessibility_scroll_to(&initial, &[], Orientation::Horizontal, 0.0));
+    let browsed = layout_with_input(&tabs, size, &mut Scaled(1.0), &input);
+    input.reconcile(&tabs, &browsed);
+    assert!(browsed.children[3].tab_header.unwrap().x >= size.width);
+
+    let scaled = layout_with_input(&tabs, size, &mut Scaled(2.75), &input);
+    let header = scaled.children[3].tab_header.unwrap();
+    let close = scaled.children[3].tab_close.unwrap();
+    assert_eq!(header.intersect(scaled.tab_viewport()), header);
+    assert!(header.height > initial.children[3].tab_header.unwrap().height);
+    assert_eq!((close.width, close.height), (44.0, 44.0));
+    assert_eq!(tabs.int("current-index"), Some(3));
+
+    let short = layout_with_input(&tabs, Size::new(168.0, 72.0), &mut Scaled(2.75), &input);
+    assert!(short.children[3].bounds.height >= 38.0);
+
+    let mut bar = tabs.clone();
+    bar.kind = "TabBar";
+    assert!(
+        selection::preferred_tab_view_size(&bar, &Scaled(2.75)).height
+            > selection::preferred_tab_view_size(&bar, &Scaled(1.0)).height
+    );
+}
+
+#[test]
 fn rtl_tab_reorder_scrolls_toward_hidden_tabs_and_skips_disabled_targets() {
     use std::time::{Duration, Instant};
     use xrack_runtime::{ControlAction, LayoutDirection, VecModel};
@@ -1890,6 +2034,7 @@ fn styled_label_keeps_graphemes_and_ellipsizes_the_last_fitting_line() {
         .insert("overflow", TextOverflow::Elide.into());
     length(&mut label, "font-size", 10.0);
     let advance = |text: &str| text.graphemes(true).count() as f32 * 10.0;
+    assert_eq!(elide_to_width("A👩‍💻BCD", 30.0, advance), "A👩‍💻…");
     let elided = LabelLayout::new(&label, Size::new(30.0, 20.0), advance);
     assert_eq!(elided.lines[0].text, "A👩‍💻…");
     assert_eq!(elided.size.width, 30.0);
@@ -3122,6 +3267,30 @@ fn dialog_stack_uses_open_order_and_splices_closed_return_targets() {
     boolean(&mut root.children[1], "open", false);
     input.reconcile(&root, &layout(&root, viewport, &mut Text));
     assert_eq!(input.focused.as_ref().unwrap().id, Some("opener"));
+}
+
+#[test]
+fn leading_edge_drawer_reserves_back_only_on_its_physical_edge() {
+    use xrack_runtime::DrawerEdge;
+
+    let mut window = node("Window", "root");
+    let mut drawer = node("Drawer", "actions");
+    length(&mut drawer, "drag-margin", 24.0);
+    drawer.properties.insert("edge", DrawerEdge::Left.into());
+    window.children.push(drawer);
+    let viewport = Size::new(360.0, 660.0);
+    let reserves_edge =
+        |scene: &Node| layout(scene, viewport, &mut Text).has_leading_edge_drawer(scene);
+    assert!(reserves_edge(&window));
+    window
+        .properties
+        .insert("layout-direction", LayoutDirection::RightToLeft.into());
+    assert!(!reserves_edge(&window));
+    let drawer = &mut window.children[0];
+    drawer.properties.insert("edge", DrawerEdge::Right.into());
+    assert!(reserves_edge(&window));
+    boolean(&mut window.children[0], "enabled", false);
+    assert!(!reserves_edge(&window));
 }
 
 #[test]

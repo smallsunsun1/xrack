@@ -1,0 +1,31 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+rust_binary(
+    name = "voice",
+    srcs = ["main.rs"],
+    compile_data = select({
+        "@platforms//os:macos": ["VoiceInfo.plist"],
+        "//conditions:default": [],
+    }),
+    edition = "2024",
+    rustc_flags = select({
+        "@platforms//os:macos": [
+            "-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath :VoiceInfo.plist)",
+        ],
+        "//conditions:default": [],
+    }),
+    tags = ["manual"],
+    target_compatible_with = select({
+        "//crates/xrack-media:enabled_config": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }) + select({
+        "@platforms//os:linux": [],
+        "@platforms//os:macos": [],
+        "@platforms//os:windows": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        "//crates/xrack",
+        "@crates//:clap",
+    ],
+)

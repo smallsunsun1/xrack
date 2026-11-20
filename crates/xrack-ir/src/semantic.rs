@@ -1052,6 +1052,10 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "input-type" if builtins::text_submission_single_line(kind) => Type::InputType,
         "input-purpose" if builtins::text_submission_single_line(kind) => Type::InputPurpose,
         "return-key" if builtins::text_submission_single_line(kind) => Type::ReturnKey,
+        "keyboard-capitalization" if builtins::text_editor(kind) => Type::KeyboardCapitalization,
+        "auto-correct" | "spell-check" | "keyboard-navigation" if builtins::text_editor(kind) => {
+            Type::Bool
+        }
         "password-visible" if matches!(kind, "TextInput" | "LineEdit") => Type::Bool,
         "password-character" if builtins::text_submission_single_line(kind) => Type::String,
         "password-mask-delay" if builtins::text_submission_single_line(kind) => Type::Int,
@@ -9354,6 +9358,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::TextOverflow => "clip",
         Type::InputType => "text",
         Type::InputPurpose => "auto",
+        Type::KeyboardCapitalization => "auto",
         Type::ReturnKey => "auto",
         Type::AccessibleLive => "off",
         Type::CursorShape => "auto",
@@ -10058,6 +10063,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "TextOverflow"
                         | "InputType"
                         | "InputPurpose"
+                        | "KeyboardCapitalization"
                         | "ReturnKey"
                         | "AccessibleLive"
                         | "CursorShape"

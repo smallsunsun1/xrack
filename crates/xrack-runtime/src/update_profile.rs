@@ -39,6 +39,16 @@ pub fn measure(update: impl FnOnce()) -> Option<UpdateSample> {
         update();
         let mut sample = current.take()?;
         sample.cpu_micros = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        tracing::debug!(
+            target: crate::ui_trace::TARGET,
+            event = "ui_update",
+            evaluations = sample.property_evaluations as u64,
+            cache_hits = sample.property_cache_hits as u64,
+            layout_runs = sample.layout_runs as u64,
+            layout_reuses = sample.layout_reuses as u64,
+            materialized_rows = sample.materialized_rows as u64,
+            cpu_micros = sample.cpu_micros,
+        );
         Some(sample)
     })
 }

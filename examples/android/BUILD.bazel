@@ -73,6 +73,7 @@ rust_test(
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
         "//crates/xrack-testing:xrack_testing",
+        "@crates//:serde_json",
     ],
 )
 
@@ -252,8 +253,10 @@ android_device_test(
     args = [
         "--adb=$(rootpath @androidsdk//:platform-tools/adb)",
         "--popup-window-only",
+        "--popup-parity=$(rootpath :navigation_parity_test)",
     ],
     data = [
+        ":navigation_parity_test",
         "screen_text.swift",
         "@androidsdk//:platform-tools/adb",
     ],

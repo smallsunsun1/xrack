@@ -1,7 +1,7 @@
 use crate::input::ElementId;
 use crate::{
     ControlInput, LayoutNode, MenuShortcut, Point, Rect, Target, edit::SelectionState,
-    input::valid, place_in_direction,
+    input::valid, place_in_direction, popup::PopupTypography, window_safe_area,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use xrack_runtime::{
@@ -12,6 +12,19 @@ use xrack_runtime::{
 const ROW_HEIGHT: f32 = 28.0;
 const TOUCH_ROW_HEIGHT: f32 = 44.0;
 const MAX_VISIBLE_ROWS: usize = 14;
+const DEFAULT_MENU_FONT_SIZE: f32 = 15.0;
+
+fn menu_viewport(scene: &Node, layout: &LayoutNode) -> Rect {
+    window_safe_area(scene, layout.clip).inset(4.0)
+}
+
+fn row_height(menu: &Node, touch: bool, typography: PopupTypography) -> f32 {
+    let minimum = if touch { TOUCH_ROW_HEIGHT } else { ROW_HEIGHT };
+    rows(menu)
+        .filter(|(_, row)| row.kind != "MenuSeparator")
+        .map(|(_, row)| typography.size(row, DEFAULT_MENU_FONT_SIZE) * 1.4 + 6.0)
+        .fold(minimum, f32::max)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuKey {
@@ -28,6 +41,7 @@ pub enum MenuKey {
 pub struct MenuRow<'a> {
     pub node: &'a Node,
     pub label: &'a str,
+    pub font_size: f32,
     pub icon: Option<ImageAsset>,
     pub shortcut: Option<String>,
     pub enabled: bool,
@@ -44,6 +58,8 @@ pub struct MenuPanel<'a> {
     pub rows: Vec<MenuRow<'a>>,
     pub highlighted: Option<usize>,
     icon_column: bool,
+    first: usize,
+    row_count: usize,
     path: Vec<usize>,
     session: u64,
 }
@@ -64,6 +80,24 @@ impl MenuPanel<'_> {
 
     pub fn session(&self) -> u64 {
         self.session
+    }
+
+    pub fn can_scroll(&self, backward: bool) -> bool {
+        if backward {
+            self.first > 0
+        } else {
+            self.first + self.rows.len() < self.row_count
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn visible_range(&self) -> std::ops::Range<usize> {
+        self.first..self.first + self.rows.len()
+    }
+
+    #[doc(hidden)]
+    pub fn row_count(&self) -> usize {
+        self.row_count
     }
 
     pub fn row_index(&self, slot: usize) -> usize {
@@ -126,6 +160,7 @@ struct Level {
     path: Vec<usize>,
     first: usize,
     highlight: Option<usize>,
+    scrolled: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -193,11 +228,15 @@ impl MenuPan {
         let Some(depth) = menu.levels.iter().position(|level| level.path == self.path) else {
             return false;
         };
-        let row_height = menu.row_height();
+        let Some(node) = menu_at(scene, menu.text.as_ref(), &self.path) else {
+            return false;
+        };
+        let height = menu_viewport(scene, layout).height.max(1.0);
+        let row_height = row_height(node, menu.touch, layout.popup_typography()).min(height);
         self.remainder += delta;
         let rows = (self.remainder / row_height).trunc() as isize;
         self.remainder %= row_height;
-        rows != 0 && menu.scroll_level(scene, layout, depth, rows)
+        rows != 0 && menu.scroll_level(scene, layout, depth, rows, false)
     }
 }
 
@@ -442,6 +481,7 @@ impl MenuPopup {
                 path,
                 first: 0,
                 highlight: None,
+                scrolled: false,
             }],
             pressed: None,
             session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
@@ -484,17 +524,9 @@ impl MenuPopup {
             .min(count)
     }
 
-    fn row_height(&self) -> f32 {
-        if self.touch {
-            TOUCH_ROW_HEIGHT
-        } else {
-            ROW_HEIGHT
-        }
-    }
-
     pub fn panels<'a>(&'a self, scene: &'a Node, layout: &LayoutNode) -> Vec<MenuPanel<'a>> {
-        let viewport = layout.clip.inset(4.0);
-        let row_height = self.row_height();
+        let viewport = menu_viewport(scene, layout);
+        let typography = layout.popup_typography();
         let show_shortcuts = !self.touch;
         if viewport.width <= 0.0 || viewport.height <= 0.0 || !valid(&self.trigger, scene, layout) {
             return Vec::new();
@@ -520,13 +552,18 @@ impl MenuPopup {
             if count == 0 {
                 break;
             }
+            let row_height = row_height(menu, self.touch, typography);
             let visible = Self::visible_count(viewport, count, row_height);
             let first = level.first.min(count - visible);
             let icon_column = rows(menu).any(|(_, row)| icon(row).is_some());
             let width = rows(menu)
                 .map(|(_, row)| {
+                    let text_scale =
+                        typography.size(row, DEFAULT_MENU_FONT_SIZE) / DEFAULT_MENU_FONT_SIZE;
                     let shortcut_width = if show_shortcuts {
-                        shortcut(row).map_or(0.0, |key| key.to_string().len() as f32 * 8.0 + 14.0)
+                        shortcut(row).map_or(0.0, |key| {
+                            key.to_string().len() as f32 * 8.0 * text_scale + 14.0
+                        })
                     } else {
                         0.0
                     };
@@ -534,6 +571,7 @@ impl MenuPopup {
                         .chars()
                         .map(|ch| if ch.is_ascii() { 8.0 } else { 16.0 })
                         .sum::<f32>()
+                        * text_scale
                         + 54.0
                         + if icon_column { 22.0 } else { 0.0 }
                         + shortcut_width
@@ -559,6 +597,8 @@ impl MenuPopup {
                 layout_direction: direction,
                 highlighted: level.highlight,
                 icon_column,
+                first,
+                row_count: count,
                 path: level.path.clone(),
                 session: self.session,
                 rows: rows(menu)
@@ -568,6 +608,7 @@ impl MenuPopup {
                         index,
                         node: row,
                         label: label(row),
+                        font_size: typography.size(row, DEFAULT_MENU_FONT_SIZE),
                         icon: icon(row),
                         shortcut: show_shortcuts
                             .then(|| shortcut(row).map(|key| key.to_string()))
@@ -603,21 +644,22 @@ impl MenuPopup {
     }
 
     pub fn reconcile(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
-        let viewport = layout.clip.inset(4.0);
-        let row_height = self.row_height();
+        let viewport = menu_viewport(scene, layout);
+        let typography = layout.popup_typography();
         for level in &mut self.levels {
             let Some(menu) = menu_at(scene, self.text.as_ref(), &level.path) else {
                 break;
             };
             let count = rows(menu).count();
-            let visible = Self::visible_count(viewport, count, row_height);
+            let visible =
+                Self::visible_count(viewport, count, row_height(menu, self.touch, typography));
             level.first = level.first.min(count.saturating_sub(visible));
             if !level.highlight.is_some_and(|index| {
                 menu.children
                     .get(index)
                     .is_some_and(|row| row.is_visible() && enabled(row))
             }) {
-                let (first, limit) = if self.touch {
+                let (first, limit) = if self.touch || level.scrolled {
                     (level.first, visible)
                 } else {
                     (0, count)
@@ -731,6 +773,7 @@ impl MenuPopup {
                     path,
                     first: 0,
                     highlight: None,
+                    scrolled: false,
                 });
                 self.reconcile(scene, layout);
                 None
@@ -788,6 +831,37 @@ impl MenuPopup {
         self.pressed = None;
         self.levels.truncate(depth);
         Some(depth == 0)
+    }
+
+    pub fn accessibility_page(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        trigger: &Target,
+        path: &[usize],
+        session: u64,
+        backward: bool,
+    ) -> bool {
+        if &self.trigger != trigger || self.session != session {
+            return false;
+        }
+        let panels = self.panels(scene, layout);
+        let Some((depth, panel)) = panels
+            .iter()
+            .enumerate()
+            .find(|(_, panel)| panel.path == path && panel.can_scroll(backward))
+        else {
+            return false;
+        };
+        let page = panel.rows.len() as isize;
+        self.pressed = None;
+        self.scroll_level(
+            scene,
+            layout,
+            depth,
+            if backward { -page } else { page },
+            backward,
+        )
     }
 
     pub fn enter_submenu(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
@@ -874,7 +948,7 @@ impl MenuPopup {
         else {
             return;
         };
-        self.scroll_level(scene, layout, depth, delta);
+        self.scroll_level(scene, layout, depth, delta, false);
     }
 
     fn scroll_level(
@@ -883,22 +957,32 @@ impl MenuPopup {
         layout: &LayoutNode,
         depth: usize,
         delta: isize,
+        focus_last: bool,
     ) -> bool {
-        let row_height = self.row_height();
         let level = &mut self.levels[depth];
         let Some(menu) = menu_at(scene, self.text.as_ref(), &level.path) else {
             return false;
         };
         let count = rows(menu).count();
-        let visible = Self::visible_count(layout.clip.inset(4.0), count, row_height);
+        let visible = Self::visible_count(
+            menu_viewport(scene, layout),
+            count,
+            row_height(menu, self.touch, layout.popup_typography()),
+        );
         let first = level.first;
         let highlight = level.highlight;
         level.first = first.saturating_add_signed(delta).min(count - visible);
-        level.highlight = rows(menu)
+        level.scrolled |= level.first != first;
+        let mut choices = rows(menu)
             .skip(level.first)
             .take(visible)
-            .find(|(_, row)| enabled(row))
+            .filter(|(_, row)| enabled(row))
             .map(|(index, _)| index);
+        level.highlight = if focus_last {
+            choices.last()
+        } else {
+            choices.next()
+        };
         let changed = level.first != first || level.highlight != highlight;
         let removed = self.levels.len() > depth + 1;
         self.levels.truncate(depth + 1);

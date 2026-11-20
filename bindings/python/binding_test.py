@@ -19,6 +19,7 @@ export component HostValues inherits Window {
     in-out property <ButtonDisplay> presentation;
     in-out property <InputType> input-mode: InputType.email;
     in-out property <InputPurpose> input-hint: InputPurpose.username;
+    in-out property <KeyboardCapitalization> keyboard-case: KeyboardCapitalization.words;
     in-out property <ReturnKey> enter-action: ReturnKey.next;
     in-out property <AccessibleLive> status-priority: AccessibleLive.polite;
     in-out property <Date> date;
@@ -112,6 +113,7 @@ class BindingTest(unittest.TestCase):
             self.assertEqual(ui.get("presentation"), xrack.ButtonDisplay.TextBesideIcon)
             self.assertEqual(ui.get("input-mode"), xrack.InputType.Email)
             self.assertEqual(ui.get("input-hint"), xrack.InputPurpose.Username)
+            self.assertEqual(ui.get("keyboard-case"), xrack.KeyboardCapitalization.Words)
             self.assertEqual(ui.get("enter-action"), xrack.ReturnKey.Next)
             self.assertEqual(ui.get("status-priority"), xrack.AccessibleLive.Polite)
             self.assertEqual(ink.rgba, (0x12, 0x34, 0x56, 255))
@@ -131,6 +133,7 @@ class BindingTest(unittest.TestCase):
                 ("input-mode", xrack.InputType.Url),
                 ("input-mode", xrack.InputType.Tel),
                 ("input-hint", xrack.InputPurpose.OneTimeCode),
+                ("keyboard-case", xrack.KeyboardCapitalization.None_),
                 ("enter-action", xrack.ReturnKey.Done),
                 ("status-priority", xrack.AccessibleLive.Assertive),
             )
