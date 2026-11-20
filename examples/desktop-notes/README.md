@@ -35,7 +35,7 @@ bazel build //examples/desktop-notes:notes_ui
 ```sh
 sh tools/bundle-macos-app.sh \
   .tools/cargo-build/release/xrack-desktop-notes \
-  ".tools/desktop-notes/XRack Notes.app" dev.xrack.notes 0.7.0
+  ".tools/desktop-notes/XRack Notes.app" dev.xrack.notes 0.8.0
 open ".tools/desktop-notes/XRack Notes.app"
 ```
 

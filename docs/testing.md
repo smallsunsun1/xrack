@@ -10,7 +10,7 @@
 
 ```toml
 [dev-dependencies]
-xrack-testing = "=0.7.0"
+xrack-testing = "=0.8.0"
 ```
 
 将下面的代码放在 `tests/ui_test.rs`。例子使用 [Counter](../examples/cargo-consumer/ui/counter.xr) 的控件 ID `increment`，由 `build.rs` 生成组件。运行 `cargo test`。

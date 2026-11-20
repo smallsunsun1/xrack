@@ -84,7 +84,7 @@ python3 tools/package_vscode.py package --host "$host" --archives .tools/dist --
 ### Configure Trusted Publishing
 
 1. Sign in to [Visual Studio Marketplace publisher management](https://marketplace.visualstudio.com/manage/publishers/) and create or select the publisher. Its ID must match `publisher` in this extension's `package.json`, currently `SunJiahe`.
-2. In [the GitHub repository's Environments settings](https://github.com/smallsunsun1/xrack/settings/environments), create `vscode-marketplace`. If you restrict deployments to selected branches and tags, allow release tags such as `v0.7.0`.
+2. In [the GitHub repository's Environments settings](https://github.com/smallsunsun1/xrack/settings/environments), create `vscode-marketplace`. If you restrict deployments to selected branches and tags, allow release tags such as `v0.8.0`.
 3. In the Marketplace publisher, open **Trusted Publishing** and create the following policy.
 
    | Field | Value |
@@ -103,8 +103,8 @@ Set the extension version in `package.json` and `package-lock.json` to match the
 
 ```sh
 git fetch origin
-git tag -a v0.7.0 origin/main -m "XRack 0.7.0"
-git push origin v0.7.0
+git tag -a v0.8.0 origin/main -m "XRack 0.8.0"
+git push origin v0.8.0
 ```
 
 **Release XRack** checks the tag and downloads the verified artifacts from the successful native matrix on that exact commit. If an upload fails after some targets have been published, rerun the failed jobs to finish the release.

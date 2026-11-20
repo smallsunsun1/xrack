@@ -10,8 +10,8 @@ publish = false
 live-ui = ["xrack/live-reload", "xrack-build/live-reload"]
 
 [dependencies]
-xrack = "=0.7.0"
+xrack = "=0.8.0"
 tokio = { version = "1.54", features = ["rt-multi-thread", "time"] }
 
 [build-dependencies]
-xrack-build = "=0.7.0"
+xrack-build = "=0.8.0"

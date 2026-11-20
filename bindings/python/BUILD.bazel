@@ -147,7 +147,7 @@ py_wheel(
     project_urls = {"Repository": "https://github.com/smallsunsun1/xrack"},
     strip_path_prefixes = ["bindings/python"],
     summary = "Declarative native UI for Python with XRack",
-    version = "0.7.0",
+    version = "0.8.0",
     deps = [":native", ":python_types", ":xrack"],
 )
 

@@ -1,4 +1,4 @@
-module(name = "xrack", version = "0.7.0")
+module(name = "xrack", version = "0.8.0")
 
 bazel_dep(name = "llvm", version = "0.8.26")
 bazel_dep(name = "apple_support", version = "2.9.1")

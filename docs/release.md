@@ -2,6 +2,14 @@
 
 [返回项目首页](../README.md)
 
+## 0.8.0 发布说明草稿
+
+- `.xr` 回调支持 `if`、`for` 和记录字段更新，AOT 与解释器共用相同的语言语义。
+- Android 使用 Rust 的 `android-activity` 宿主。Bazel 可构建固定的一组 APK 并运行设备回归，覆盖导航、控件、输入法、无障碍和系统文件操作。
+- iOS 扩展 UIKit 文本编辑、外接键盘与指针、拖放和无障碍。加入 ARM64 真机编译链接目标，签名安装与真机交互仍待验收。
+- 异步 UI 场景可以记录、回放并保存为回归测试。实时调试按请求关联热重载代次、属性写入和窗口更新。动效时间轴展示采样画面、布局坐标和各阶段耗时。
+- 可选媒体功能增加基于 FFmpeg 的桌面录音和音频输入设备发现，并提供录制示例。
+
 ## 准备发布包
 
 `python3 tools/package_xrackc.py` 用 Bazel 构建当前宿主平台的 `xrackc` 和原生 MLIR 静态库，在 `.tools/dist/` 生成压缩包和 SHA-256 校验文件。压缩包也携带生成的 Rust 绑定、ANTLR 解析器源码和许可证。编译器和 MLIR 的 Cargo 包暂存模板分别在 `bundles/compiler` 和 `bundles/mlir`。

@@ -35,7 +35,7 @@ Build a native wheel with `bazel build //bindings/python:wheel`. Bazel generates
 ```sh
 bazel build //bindings/python:wheel
 python3.11 -m venv /tmp/xrack-python-venv
-/tmp/xrack-python-venv/bin/pip install bazel-bin/bindings/python/xrack-0.7.0-cp311-abi3-macosx_13_0_arm64.whl
+/tmp/xrack-python-venv/bin/pip install bazel-bin/bindings/python/xrack-0.8.0-cp311-abi3-macosx_13_0_arm64.whl
 /tmp/xrack-python-venv/bin/python bindings/python/async_demo.py examples/async_demo/async.xr
 ```
 

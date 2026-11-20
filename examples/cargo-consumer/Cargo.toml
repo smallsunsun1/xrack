@@ -1,16 +1,16 @@
 [package]
 name = "xrack-cargo-example"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 publish = false
 
 [workspace]
 
 [dependencies]
-xrack = "=0.7.0"
+xrack = "=0.8.0"
 
 [build-dependencies]
-xrack-build = "=0.7.0"
+xrack-build = "=0.8.0"
 
 [dev-dependencies]
-xrack-testing = "=0.7.0"
+xrack-testing = "=0.8.0"

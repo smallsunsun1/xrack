@@ -25,6 +25,6 @@ python3 tools/test_cargo_consumer.py .tools/dist aarch64-apple-darwin --inspecti
 ```sh
 sh tools/bundle-macos-app.sh \
   .tools/cargo-build/release/xrack-inspection-workbench \
-  ".tools/inspection-workbench/Inspection Workbench.app" dev.xrack.inspections 0.7.0
+  ".tools/inspection-workbench/Inspection Workbench.app" dev.xrack.inspections 0.8.0
 open ".tools/inspection-workbench/Inspection Workbench.app"
 ```

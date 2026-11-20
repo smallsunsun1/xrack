@@ -1,8 +1,7 @@
 diff --git a/libavdevice/avfoundation.m b/libavdevice/avfoundation.m
 --- a/libavdevice/avfoundation.m
 +++ b/libavdevice/avfoundation.m
-@@ -686,6 +686,9 @@ static int get_audio_config(AVFormatContext *s)
- 
+@@ -687,4 +687,7 @@ static int get_audio_config(AVFormatContext *s)
      // Take stream info from the first frame.
      while (ctx->audio_frames_captured < 1) {
 +        if (s->interrupt_callback.callback &&
@@ -10,7 +9,6 @@ diff --git a/libavdevice/avfoundation.m b/libavdevice/avfoundation.m
 +            return AVERROR_EXIT;
          CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, YES);
      }
- 
 diff --git a/BUILD.bazel b/BUILD.bazel
 --- a/BUILD.bazel
 +++ b/BUILD.bazel
