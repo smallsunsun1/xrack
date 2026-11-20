@@ -15,6 +15,7 @@ pub extern "C" fn xrack_ios_main() -> i32 {
         Some("--group-titles") => run(native_actions_ui::GroupTitlesDemo::new()),
         Some("--swipe-actions") => run(native_actions_ui::SwipeActionsDemo::new()),
         Some("--menu-paging") => run(native_actions_ui::MenuPagingDemo::new()),
+        Some("--button-shapes") => run(native_actions_ui::ButtonShapesDemo::new()),
         Some("--native-selection") => run(native_actions_ui::NativeSelectionDemo::new()),
         Some("--system-direction") => run(native_actions_ui::SystemDirectionDemo::new()),
         Some("--emoji") => run(native_actions_ui::EmojiDemo::new()),

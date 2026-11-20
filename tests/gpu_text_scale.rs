@@ -7,6 +7,69 @@ use xrack_runtime::{Component, Length, Node};
 use xrack_testing::UiDriver;
 
 #[test]
+fn system_button_shapes_outline_transparent_buttons_without_relayout() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut window = Node::new("Window", None);
+    window
+        .properties
+        .insert("background", xrack_runtime::Color(0x203047ff).into());
+    for (id, y, enabled) in [("active", 12.0, true), ("disabled", 62.0, false)] {
+        let mut button = Node::new("Button", Some(id));
+        button.properties.insert("x", Length(12.0).into());
+        button.properties.insert("y", Length(y).into());
+        button.properties.insert("width", Length(164.0).into());
+        button.properties.insert("height", Length(44.0).into());
+        button.properties.insert("border-width", Length(0.0).into());
+        button
+            .properties
+            .insert("background", xrack_runtime::Color(0).into());
+        button.properties.insert("enabled", enabled.into());
+        if enabled {
+            button.properties.insert("padding", Length(0.0).into());
+            let mut content = Node::new("ButtonContent", None);
+            let mut surface = Node::new("Rectangle", None);
+            surface.properties.insert("width", Length(164.0).into());
+            surface.properties.insert("height", Length(44.0).into());
+            surface
+                .properties
+                .insert("background", xrack_runtime::Color(0x203047ff).into());
+            content.children.push(surface);
+            button.children.push(content);
+        }
+        window.children.push(button);
+    }
+    let input = Interaction::default();
+    let before = renderer.snapshot(&window, 220, 126, 1.0, &input).unwrap();
+    assert!(renderer.set_system_button_shapes(true));
+    let after = renderer.snapshot(&window, 220, 126, 1.0, &input).unwrap();
+    assert_eq!(before.layout, after.layout);
+    let offset = |y: usize| (y * 220 + 80) * 4;
+    for y in [12, 62] {
+        let index = offset(y);
+        assert_ne!(
+            &before.rgba[index..index + 4],
+            &after.rgba[index..index + 4]
+        );
+        let interior = offset(y + 16);
+        assert_eq!(
+            &before.rgba[interior..interior + 4],
+            &after.rgba[interior..interior + 4]
+        );
+    }
+    assert_ne!(
+        &after.rgba[offset(12)..offset(12) + 4],
+        &after.rgba[offset(62)..offset(62) + 4]
+    );
+    assert!(renderer.set_system_button_shapes(false));
+    let restored = renderer.snapshot(&window, 220, 126, 1.0, &input).unwrap();
+    assert_same_pixels(&before, &restored);
+}
+
+#[test]
 fn platform_text_scaling_remeasures_and_paints_both_execution_backends() {
     let mut renderer = pollster::block_on(Renderer::with_text(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),

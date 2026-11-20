@@ -170,6 +170,8 @@ xcrun simctl launch --terminate-running-process <设备标识> dev.xrack.ios-con
 
 ### 系统外观示例
 
+用 `--button-shapes` 启动透明按钮示例。在 iOS「辅助功能 → 显示与文字大小」切换 **Button Shapes**，返回应用后可对照按钮轮廓。命中区域和禁用状态沿用原控件逻辑。HID 回归使用 `--test_arg=--button-shapes`，并恢复模拟器原设置。
+
 用 `--appearance` 启动 **XRack Controls** 后，可以切换 **System**、**Light** 和 **Dark**。System 模式跟随 UIKit 外观。切换系统深色时，默认控件和已打开的对话框应用当前调色板，输入框保留草稿。
 
 ```sh

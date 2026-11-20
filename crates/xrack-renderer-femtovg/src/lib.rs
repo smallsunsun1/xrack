@@ -159,6 +159,7 @@ pub struct Renderer {
     system_color_scheme: ColorScheme,
     system_increased_contrast: bool,
     system_switch_labels: bool,
+    system_button_shapes: bool,
 }
 
 /// GPU resources that can back more than one independent renderer.
@@ -267,6 +268,7 @@ impl Renderer {
             system_color_scheme: ColorScheme::System,
             system_increased_contrast: false,
             system_switch_labels: false,
+            system_button_shapes: false,
         })
     }
 
@@ -349,6 +351,11 @@ impl Renderer {
         std::mem::replace(&mut self.system_switch_labels, enabled) != enabled
     }
 
+    /// Outline buttons when the host requests visible button shapes.
+    pub fn set_system_button_shapes(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.system_button_shapes, enabled) != enabled
+    }
+
     fn palette(&self, scene: &Node) -> Palette {
         Palette::resolve(
             self.theme,
@@ -356,6 +363,7 @@ impl Renderer {
             self.system_color_scheme,
             self.system_increased_contrast,
             self.system_switch_labels,
+            self.system_button_shapes,
         )
     }
 
@@ -1921,6 +1929,19 @@ impl Renderer {
             };
             path.pop();
             result?;
+        }
+        if theme.button_shapes && is_button(node.kind) {
+            let radii = corner_radii(node, bounds);
+            let outline_width = 1.5_f32.min(bounds.width.min(bounds.height) * 0.5);
+            let outline = if layout.enabled {
+                theme.text
+            } else {
+                theme.disabled_text
+            };
+            self.canvas.fill_path(
+                &border_path(bounds, radii, outline_width),
+                &Paint::color(color(outline)),
+            );
         }
         Ok(())
     }

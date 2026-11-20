@@ -2358,10 +2358,13 @@ impl<C: Component> Application<C> {
     fn sync_ios_accessibility_preferences(&mut self) -> bool {
         let reduced = self.set_reduce_motion(ios::reduce_motion());
         let text_changed = self.state.as_mut().is_some_and(|state| {
-            if state
+            let labels_changed = state
                 .renderer
-                .set_system_switch_labels(ios::switch_labels())
-            {
+                .set_system_switch_labels(ios::switch_labels());
+            let shapes_changed = state
+                .renderer
+                .set_system_button_shapes(ios::button_shapes());
+            if labels_changed || shapes_changed {
                 state.window.request_redraw();
             }
             let scale_changed = state.renderer.set_text_scale(ios::text_scale());

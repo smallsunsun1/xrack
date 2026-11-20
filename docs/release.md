@@ -6,7 +6,7 @@
 
 - `.xr` 回调支持 `if`、`for` 和记录字段更新，AOT 与解释器共用相同的语言语义。
 - Android 使用 Rust 的 `android-activity` 宿主。Bazel 可构建固定的一组 APK 并运行设备回归，覆盖导航、控件、输入法、无障碍和系统文件操作。
-- iOS 扩展 UIKit 文本编辑、外接键盘与指针、拖放和无障碍。加入 ARM64 真机编译链接目标，签名安装与真机交互仍待验收。
+- iOS 扩展 UIKit 文本编辑、外接键盘与指针、拖放和无障碍，并响应系统 Button Shapes 设置。加入 ARM64 真机编译链接目标，签名安装与真机交互仍待验收。
 - 异步 UI 场景可以记录、回放并保存为回归测试。实时调试按请求关联热重载代次、属性写入和窗口更新。动效时间轴展示采样画面、布局坐标和各阶段耗时。
 - 可选媒体功能增加基于 FFmpeg 的桌面录音和音频输入设备发现，并提供录制示例。
 
@@ -32,6 +32,10 @@ Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 c
 稳定版本和 Cargo 使用同一个 `vX.Y.Z` tag。先同步 Cargo workspace 与 `crates/xrack-lsp/vscode/package.json` 的版本，并确保该提交的 main CI 通过。发布工作流复用 CI 的五个平台 VSIX，通过 `vscode-marketplace` 环境和 Marketplace 的 GitHub OIDC 信任策略发布。 [Release XRack](../.github/workflows/release-crates.yml) · [Marketplace](https://marketplace.visualstudio.com/items?itemName=SunJiahe.xrack)
 
 如果 Cargo 已发布而 Marketplace 需要补发，可以从 `main` 手动运行 **Release XRack**，输入同一个稳定版本并勾选 **Publish the verified VSIX packages for an existing stable Cargo release**。补发使用原 tag 对应的 CI 产物，并检查该 tag 已成功发布 Cargo。手动运行期间，`vscode-marketplace` 环境需要允许 `main` 部署。
+
+## PyPI
+
+推送 `vX.Y.Z` 前，确认目标提交在 `main` 上的 **Python wheels** 工作流已经通过。稳定 tag 触发 [Python wheels](../.github/workflows/python.yml) 的发布任务，复用该提交的五个平台 wheel，校验版本和平台后通过 `pypi` 环境的 Trusted Publishing 上传。
 
 ## GitHub Actions
 

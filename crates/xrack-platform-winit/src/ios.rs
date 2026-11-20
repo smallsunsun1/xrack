@@ -16,10 +16,12 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIAccessibilityBoldTextStatusDidChangeNotification,
-    UIAccessibilityContrast, UIAccessibilityIsBoldTextEnabled,
-    UIAccessibilityIsOnOffSwitchLabelsEnabled, UIAccessibilityIsReduceMotionEnabled,
-    UIAccessibilityOnOffSwitchLabelsDidChangeNotification, UIAccessibilityPageScrolledNotification,
-    UIAccessibilityPostNotification, UIAccessibilityReduceMotionStatusDidChangeNotification,
+    UIAccessibilityButtonShapesEnabled,
+    UIAccessibilityButtonShapesEnabledStatusDidChangeNotification, UIAccessibilityContrast,
+    UIAccessibilityIsBoldTextEnabled, UIAccessibilityIsOnOffSwitchLabelsEnabled,
+    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityOnOffSwitchLabelsDidChangeNotification,
+    UIAccessibilityPageScrolledNotification, UIAccessibilityPostNotification,
+    UIAccessibilityReduceMotionStatusDidChangeNotification,
     UIContentSizeCategoryDidChangeNotification, UIFontMetrics, UIScrollView,
     UIScrollViewContentInsetAdjustmentBehavior, UIScrollViewDelegate, UITraitChangeHandler,
     UITraitCollection, UITraitEnvironment, UITraitEnvironmentLayoutDirection, UIUserInterfaceStyle,
@@ -518,9 +520,14 @@ pub(super) fn switch_labels() -> bool {
     unsafe { UIAccessibilityIsOnOffSwitchLabelsEnabled().as_bool() }
 }
 
+pub(super) fn button_shapes() -> bool {
+    // SAFETY: The UIKit setting is read on the UI thread. This API is available on iOS 18.
+    unsafe { UIAccessibilityButtonShapesEnabled().as_bool() }
+}
+
 pub(super) struct AccessibilityObserver {
     center: Retained<NSNotificationCenter>,
-    tokens: [Retained<NSObject>; 4],
+    tokens: [Retained<NSObject>; 5],
 }
 
 impl AccessibilityObserver {
@@ -537,6 +544,7 @@ impl AccessibilityObserver {
                 UIContentSizeCategoryDidChangeNotification,
                 UIAccessibilityBoldTextStatusDidChangeNotification,
                 UIAccessibilityOnOffSwitchLabelsDidChangeNotification,
+                UIAccessibilityButtonShapesEnabledStatusDidChangeNotification,
             ]
             .map(|name| {
                 center.addObserverForName_object_queue_usingBlock(

@@ -4809,6 +4809,23 @@ fn accessible_table_resizes_obey_limits_and_follow_the_row_key_in_both_backends(
 }
 
 #[test]
+fn transparent_buttons_keep_input_and_disabled_state_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn exercise(component: impl Component) {
+        let mut ui = UiDriver::headless(component, Size::new(390.0, 600.0));
+        assert!(ui.can_hit("plain-action"));
+        assert!(!ui.can_hit("unavailable-action"));
+        ui.click("plain-action");
+        assert_eq!(ui.node("shape-status").text("text"), Some("Actions 1"));
+    }
+
+    let module = xrack_compiler::compile(include_str!("native_actions.xr"), "native_actions.xr")?;
+    exercise(native_actions_ui::ButtonShapesDemo::new());
+    exercise(load_mlir(&module.mlir)?.create("ButtonShapesDemo")?);
+    Ok(())
+}
+
+#[test]
 fn menu_paging_preserves_the_scope_and_command_in_both_backends()
 -> Result<(), Box<dyn std::error::Error>> {
     fn exercise(component: impl Component) {

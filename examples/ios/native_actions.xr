@@ -866,6 +866,37 @@ struct InspectionListEntry {
     title: string,
 }
 
+export component ButtonShapesDemo inherits Window {
+    title: "Button shapes";
+    width: 390px;
+    height: 480px;
+    background: #203047;
+    private property <int> actions: 0;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+        alignment: start;
+        plain-action := Button {
+            text: "Plain action";
+            width: 210px;
+            height: 44px;
+            background: #00000000;
+            border-width: 0px;
+            clicked => { root.actions += 1; }
+        }
+        unavailable-action := Button {
+            text: "Unavailable action";
+            width: 210px;
+            height: 44px;
+            background: #00000000;
+            border-width: 0px;
+            enabled: false;
+        }
+        shape-status := Label { text: "Actions " + root.actions; }
+    }
+}
+
 export component MenuPagingDemo inherits Window {
     title: "Menu paging";
     width: 390px;

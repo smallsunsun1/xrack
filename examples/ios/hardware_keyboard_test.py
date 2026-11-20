@@ -710,6 +710,77 @@ def exercise_tab_dynamic_type(ui: Simulator) -> None:
         ui.simctl(*setting, original)
 
 
+def exercise_button_shapes(ui: Simulator) -> None:
+    label: str = "Button Shapes"
+
+    def open_setting() -> str:
+        ui.simctl(
+            "openurl",
+            ui.udid,
+            "App-prefs:root=ACCESSIBILITY&path=DISPLAY_AND_TEXT_SIZE",
+        )
+        rows: list[dict[str, Any]] = ui.wait(
+            "the accessibility setting in Settings",
+            lambda rows: (
+                ui.has(rows, "Settings")
+                and any(
+                    ui.has(rows, item)
+                    for item in (label, "Display & Text Size", "Accessibility")
+                )
+            ),
+        )
+        if not ui.has(rows, label):
+            if not ui.has(rows, "Display & Text Size"):
+                ui.tap("Accessibility")
+            ui.tap("Display & Text Size")
+        rows = ui.wait(
+            "the Button Shapes switch",
+            lambda rows: any(
+                row.get("AXLabel") == label and row.get("AXValue") in ("0", "1")
+                for row in rows
+            ),
+        )
+        return next(
+            row["AXValue"]
+            for row in rows
+            if row.get("AXLabel") == label and row.get("AXValue") in ("0", "1")
+        )
+
+    def set_setting(value: str) -> None:
+        if open_setting() != value:
+            ui.tap(label, right_inset=40)
+            ui.value(label, value)
+
+    original: str = open_setting()
+    try:
+        set_setting("0")
+        process: str = ui.launch("Plain action", "--button-shapes")
+        original_frame: dict[str, float] = ui.frame("Plain action")
+        output: Path = Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "."))
+        output.mkdir(parents=True, exist_ok=True)
+        ui.simctl("io", ui.udid, "screenshot", str(output / "button-shapes-off.png"))
+        set_setting("1")
+        resumed: str = ui.simctl("launch", ui.udid, ui.bundle)
+        assert resumed == process, (process, resumed)
+        assert ui.frame("Plain action") == original_frame
+        ui.simctl("io", ui.udid, "screenshot", str(output / "button-shapes-on.png"))
+        ui.tap("Plain action")
+        ui.label("Actions 1")
+        ui.wait(
+            "the disabled control to keep its UIKit state",
+            lambda rows: any(
+                row.get("AXLabel") == "Unavailable action"
+                and not row.get("enabled", True)
+                for row in rows
+            ),
+        )
+        print(
+            "PASS: toggled Button Shapes and captured the same running app with unchanged hit bounds"
+        )
+    finally:
+        set_setting(original)
+
+
 def exercise_button_dynamic_type(ui: Simulator) -> None:
     setting: tuple[str, ...] = ("ui", ui.udid, "content_size")
     original: str = ui.simctl(*setting)
@@ -2035,6 +2106,11 @@ def main() -> None:
         help="Enlarge a tab strip while open and verify selection, reveal and closing",
     )
     mode.add_argument(
+        "--button-shapes",
+        action="store_true",
+        help="Switch the iOS Button Shapes preference and capture transparent buttons",
+    )
+    mode.add_argument(
         "--button-dynamic-type",
         action="store_true",
         help="Capture and activate a fixed-height button at maximum Dynamic Type",
@@ -2113,6 +2189,8 @@ def main() -> None:
             exercise_drawer_preview(ui)
         elif args.tab_dynamic_type:
             exercise_tab_dynamic_type(ui)
+        elif args.button_shapes:
+            exercise_button_shapes(ui)
         elif args.button_dynamic_type:
             exercise_button_dynamic_type(ui)
         elif args.group_title_dynamic_type:
@@ -2178,6 +2256,8 @@ def main() -> None:
             if args.toggle_dynamic_type
             else "Open calibration"
             if args.modal_title_dynamic_type
+            else "Plain action"
+            if args.button_shapes
             else "Inspection options"
             if args.group_title_dynamic_type
             else "保存布局"
@@ -2191,6 +2271,8 @@ def main() -> None:
             if args.toggle_dynamic_type
             else ("--modal-titles",)
             if args.modal_title_dynamic_type
+            else ("--button-shapes",)
+            if args.button_shapes
             else ("--group-titles",)
             if args.group_title_dynamic_type
             else ()
