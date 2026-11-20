@@ -114,7 +114,7 @@ def install_library(archive, host, directory):
     raise ValueError(f"{archive}: missing native media library")
 
 
-def source_archive(external, bin_dir, destination):
+def source_archive(external: Path, bin_dir: Path, destination: Path) -> None:
     """Archive the exact patched Bazel source tree and native configuration."""
     ffmpeg = external / "ffmpeg+"
     miniaudio = external / "+http_archive+miniaudio"
@@ -143,6 +143,8 @@ def source_archive(external, bin_dir, destination):
             directory = external / name
             if name == "alsa_lib+" and not directory.is_dir():
                 continue
+            # ALSA ships include/alsa -> ., which would recurse if dereferenced.
+            bundle.dereference = name != "alsa_lib+"
             for path in sorted(directory.iterdir()):
                 if not path.name.startswith((".", "bazel-")):
                     bundle.add(path, arcname=f"{name[:-1]}/{path.name}")
