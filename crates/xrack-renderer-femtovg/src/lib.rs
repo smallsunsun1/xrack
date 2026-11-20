@@ -850,6 +850,19 @@ impl Renderer {
         } else {
             self.paint_children(node, layout, path, frame)?;
         }
+        if frame.theme.button_shapes && is_button(node.kind) {
+            let bounds = layout.bounds;
+            let width = 1.5_f32.min(bounds.width.min(bounds.height) * 0.5);
+            let tint = if layout.enabled {
+                frame.theme.text
+            } else {
+                frame.theme.disabled_text
+            };
+            self.canvas.fill_path(
+                &border_path(bounds, corner_radii(node, bounds), width),
+                &Paint::color(color(tint)),
+            );
+        }
         for header in layout.list_section_headers() {
             let clip = content.intersect(header.bounds);
             if clip.width > 0.0 && clip.height > 0.0 {
@@ -1929,19 +1942,6 @@ impl Renderer {
             };
             path.pop();
             result?;
-        }
-        if theme.button_shapes && is_button(node.kind) {
-            let radii = corner_radii(node, bounds);
-            let outline_width = 1.5_f32.min(bounds.width.min(bounds.height) * 0.5);
-            let outline = if layout.enabled {
-                theme.text
-            } else {
-                theme.disabled_text
-            };
-            self.canvas.fill_path(
-                &border_path(bounds, radii, outline_width),
-                &Paint::color(color(outline)),
-            );
         }
         Ok(())
     }
