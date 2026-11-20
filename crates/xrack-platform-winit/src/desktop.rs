@@ -1,5 +1,5 @@
 #[cfg(target_os = "android")]
-use crate::android_host::{
+use crate::android::host::{
     ActiveEventLoop, AndroidEvent, ApplicationHandler, EventLoop, EventLoopProxy, Window,
 };
 use crate::system_tray::{self, TrayActivation, TrayHost};
@@ -104,7 +104,7 @@ impl WindowEvents {
         return crate::ios::Accessibility::new(window, self.clone(), handler)
             .ok_or("the iOS window does not have an accessibility view");
         #[cfg(target_os = "android")]
-        return Ok(crate::android_accessibility::Accessibility::new(
+        return Ok(crate::android::accessibility::Accessibility::new(
             _event_loop.android_app().clone(),
             self.clone(),
             window.id(),

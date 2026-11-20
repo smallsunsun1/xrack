@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <XCTest/XCTest.h>
+#import <objc/message.h>
 
 static XCUIElement *FindDivider(XCUIApplication *app, BOOL vertical) {
   XCUIElementQuery *all = [app descendantsMatchingType:XCUIElementTypeAny];
@@ -54,10 +55,176 @@ static BOOL ShowsTooltip(XCUIApplication *app, CGRect owner) {
   return green > 300;
 }
 
+static void SetSoftwareKeyboardAutomaticMinimizationInSimulator(BOOL enabled) {
+#if TARGET_OS_SIMULATOR
+  // XCTest can expose an off-screen keyboard tree when the simulator minimizes it.
+  Class implementation = NSClassFromString(@"UIKeyboardImpl");
+  SEL sharedInstance = NSSelectorFromString(@"sharedInstance");
+  SEL setMinimization = NSSelectorFromString(@"setAutomaticMinimizationEnabled:");
+  if ([implementation respondsToSelector:sharedInstance]) {
+    id keyboard = ((id (*)(id, SEL))objc_msgSend)(implementation, sharedInstance);
+    if ([keyboard respondsToSelector:setMinimization]) {
+      ((void (*)(id, SEL, BOOL))objc_msgSend)(keyboard, setMinimization, enabled);
+    }
+  }
+#endif
+}
+
+static BOOL SoftwareKeyboardVisible(XCUIApplication *app) {
+  XCUIElement *keyboard = app.keyboards.firstMatch;
+  XCUIElement *letter = [keyboard.keys matchingPredicate:
+      [NSPredicate predicateWithFormat:@"label ==[c] %@", @"q"]].firstMatch;
+  return keyboard.exists && CGRectIntersectsRect(app.frame, keyboard.frame) && letter.hittable;
+}
+
 @interface XRackPointerDragTest : XCTestCase
 @end
 
 @implementation XRackPointerDragTest
+
+- (void)testLandscapeKeyboardKeepsTheScrollableDialogAndItsSaveActionUsable {
+  self.continueAfterFailure = NO;
+  SetSoftwareKeyboardAutomaticMinimizationInSimulator(NO);
+  XCUIDevice *device = [XCUIDevice sharedDevice];
+  device.orientation = UIDeviceOrientationPortrait;
+  [self addTeardownBlock:^{ device.orientation = UIDeviceOrientationPortrait; }];
+  XCUIApplication *app = [[XCUIApplication alloc] init];
+  app.launchArguments = @[@"--keyboard-layout", @"-AppleLanguages", @"(en)", @"-AppleLocale", @"en_US"];
+  [app launch];
+
+  XCUIElementQuery *items = [app descendantsMatchingType:XCUIElementTypeAny];
+  XCUIElement *title = items[@"Draft title"];
+  XCUIElement *save = app.buttons[@"Save drafts"];
+  XCTAssertTrue([title waitForExistenceWithTimeout:15], @"%@", app.debugDescription);
+  [title tap];
+  NSPredicate *softwareKeyboardVisible = [NSPredicate predicateWithBlock:^BOOL(XCUIApplication *screen, NSDictionary *bindings) {
+    return SoftwareKeyboardVisible(screen);
+  }];
+  XCTNSPredicateExpectation *softwareKeyboard = [[XCTNSPredicateExpectation alloc]
+      initWithPredicate:softwareKeyboardVisible object:app];
+  XCTAssertEqual([XCTWaiter waitForExpectations:@[softwareKeyboard] timeout:12], XCTWaiterResultCompleted,
+                 @"The simulator must show the onscreen keyboard before rotating. %@", app.debugDescription);
+  XCUIElement *continueButton = app.buttons[@"Continue"];
+  if (continueButton.exists) {
+    [continueButton tap];
+  }
+
+  device.orientation = UIDeviceOrientationLandscapeLeft;
+  NSPredicate *fits = [NSPredicate predicateWithBlock:^BOOL(NSString *label, NSDictionary *bindings) {
+    XCUIElement *entry = items[label];
+    return CGRectGetWidth(app.frame) > CGRectGetHeight(app.frame) &&
+        [softwareKeyboardVisible evaluateWithObject:app] &&
+        entry.exists && CGRectGetHeight(entry.frame) >= 28 && save.hittable &&
+        CGRectGetMaxY(save.frame) <= CGRectGetMinY(app.keyboards.firstMatch.frame) + 1;
+  }];
+  XCTNSPredicateExpectation *titleFits = [[XCTNSPredicateExpectation alloc] initWithPredicate:fits object:@"Draft title"];
+  XCTWaiterResult titleResult = [XCTWaiter waitForExpectations:@[titleFits] timeout:10];
+  if (titleResult != XCTWaiterResultCompleted) {
+    XCUIElement *keyboard = app.keyboards.firstMatch;
+    XCTAttachment *screenshot = [XCTAttachment attachmentWithScreenshot:XCUIScreen.mainScreen.screenshot];
+    screenshot.lifetime = XCTAttachmentLifetimeKeepAlways;
+    [self addAttachment:screenshot];
+    XCTFail(@"Landscape frames: window %@, keyboard %@, title %@, save %@. %@",
+            NSStringFromCGRect(app.frame), keyboard.exists ? NSStringFromCGRect(keyboard.frame) : @"missing",
+            items[@"Draft title"].exists ? NSStringFromCGRect(items[@"Draft title"].frame) : @"missing",
+            save.exists ? NSStringFromCGRect(save.frame) : @"missing", app.debugDescription);
+  }
+  XCTAssertEqualObjects(items[@"Draft title"].value, @"Survey");
+
+  XCUIElement *next = app.buttons[@"Next field"];
+  XCTAssertTrue([next waitForExistenceWithTimeout:5], @"%@", app.debugDescription);
+  [next tap];
+  XCUIElement *note = items[@"Review note"];
+  [self expectationForPredicate:fits evaluatedWithObject:@"Review note" handler:nil];
+  [self waitForExpectationsWithTimeout:10 handler:nil];
+  for (NSString *letter in @[@"a", @"i"]) {
+    XCUIElement *key = [app.keyboards.firstMatch.keys matchingPredicate:
+        [NSPredicate predicateWithFormat:@"label ==[c] %@", letter]].firstMatch;
+    XCTAssertTrue([key waitForExistenceWithTimeout:5], @"%@", app.debugDescription);
+    [key tap];
+  }
+  [self expectationForPredicate:[NSPredicate predicateWithFormat:@"value ==[c] %@", @"ai"]
+           evaluatedWithObject:note handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+  [save tap];
+  XCTAssertTrue([app.staticTexts[@"Keyboard dialog closed"] waitForExistenceWithTimeout:5]);
+  XCTAssertFalse(save.exists);
+}
+
+- (void)testTouchScrollingKeepsTheHardwareKeyboardAccessoryAndEditorActive {
+  self.continueAfterFailure = NO;
+  SetSoftwareKeyboardAutomaticMinimizationInSimulator(YES);
+  XCUIDevice *device = [XCUIDevice sharedDevice];
+  device.orientation = UIDeviceOrientationLandscapeLeft;
+  [self addTeardownBlock:^{ device.orientation = UIDeviceOrientationPortrait; }];
+  XCUIApplication *app = [[XCUIApplication alloc] init];
+  app.launchArguments = @[@"--keyboard-layout", @"-AppleLanguages", @"(en)", @"-AppleLocale", @"en_US"];
+  [app launch];
+
+  XCUIElementQuery *items = [app descendantsMatchingType:XCUIElementTypeAny];
+  XCUIElement *title = items[@"Draft title"];
+  XCTAssertTrue([title waitForExistenceWithTimeout:15], @"%@", app.debugDescription);
+  [title tap];
+  XCUIElement *next = app.buttons[@"Next field"];
+  XCTAssertTrue([next waitForExistenceWithTimeout:8], @"%@", app.debugDescription);
+  XCTSkipIf(SoftwareKeyboardVisible(app), @"This case requires the hardware keyboard with only its accessory toolbar visible.");
+  XCUIElement *toolbar = app.toolbars.firstMatch;
+  XCUIElement *save = app.buttons[@"Save drafts"];
+  XCTAssertTrue([toolbar waitForExistenceWithTimeout:5], @"%@", app.debugDescription);
+  XCTAssertTrue(next.hittable);
+  XCTAssertGreaterThan(CGRectGetWidth(app.frame), CGRectGetHeight(app.frame));
+  XCTAssertLessThanOrEqual(CGRectGetMaxY(save.frame), CGRectGetMinY(toolbar.frame) + 1,
+      @"The save button should be above the accessory even with zero bottom safe-area inset.");
+  XCUIElement *form = items[@"Keyboard setup form"];
+  XCUIElement *code = items[@"Access code"];
+  XCTAssertFalse(code.hittable, @"Access code should initially be below the scroll viewport.");
+  [[form coordinateWithNormalizedOffset:CGVectorMake(0.88, 0.86)]
+      pressForDuration:0.05
+      thenDragToCoordinate:[form coordinateWithNormalizedOffset:CGVectorMake(0.88, 0.16)]];
+  XCTAssertTrue(app.buttons[@"Next field"].hittable, @"Scrolling must keep the hardware editor's toolbar. %@", app.debugDescription);
+  XCTAssertTrue([code waitForExistenceWithTimeout:5], @"The form should scroll. %@", app.debugDescription);
+  XCTAssertTrue(code.hittable, @"The form should scroll to the access code. %@", app.debugDescription);
+  XCTAssertFalse(SoftwareKeyboardVisible(app));
+  [app.buttons[@"Next field"] tap];
+
+  XCUIElement *note = items[@"Review note"];
+  XCTAssertTrue([note waitForExistenceWithTimeout:5], @"%@", app.debugDescription);
+  [app typeKey:@"a" modifierFlags:XCUIKeyModifierNone];
+  [app typeKey:@"i" modifierFlags:XCUIKeyModifierNone];
+  [self expectationForPredicate:[NSPredicate predicateWithFormat:@"value ==[c] %@", @"ai"]
+           evaluatedWithObject:note handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+  [save tap];
+  XCTAssertTrue([app.staticTexts[@"Keyboard dialog closed"] waitForExistenceWithTimeout:5]);
+}
+
+- (void)testTextSelectionScrollsWhileTheFingerHoldsAtTheEdge {
+  self.continueAfterFailure = NO;
+  [XCUIDevice sharedDevice].orientation = UIDeviceOrientationPortrait;
+  XCUIApplication *app = [[XCUIApplication alloc] init];
+  app.launchArguments = @[@"--selection-scroll"];
+  [app launch];
+  XCUIElement *notes = [app descendantsMatchingType:XCUIElementTypeAny][@"Scrollable inspection notes"];
+  XCTAssertTrue([notes waitForExistenceWithTimeout:15], @"%@", app.debugDescription);
+  XCTAssertTrue(app.staticTexts[@"Selected characters 0"].exists);
+  XCUICoordinate *firstLine = [[notes coordinateWithNormalizedOffset:CGVectorMake(0, 0)]
+      coordinateWithOffset:CGVectorMake(28, 14)];
+  XCUICoordinate *bottom = [[notes coordinateWithNormalizedOffset:CGVectorMake(0, 1)]
+      coordinateWithOffset:CGVectorMake(260, 42)];
+  [firstLine pressForDuration:0.72 thenDragToCoordinate:bottom
+    withVelocity:XCUIGestureVelocityFast thenHoldForDuration:1.45];
+  XCTAssertTrue([app.staticTexts[@"End of notes selected"] waitForExistenceWithTimeout:5],
+                @"%@", app.debugDescription);
+  XCUIElement *count = [app.staticTexts matchingPredicate:
+      [NSPredicate predicateWithFormat:@"label BEGINSWITH %@", @"Selected characters "]].firstMatch;
+  NSString *released = count.label;
+  NSPredicate *changed = [NSPredicate predicateWithBlock:^BOOL(XCUIElement *label, NSDictionary *bindings) {
+    return ![label.label isEqualToString:released];
+  }];
+  XCTestExpectation *remains = [self expectationForPredicate:changed evaluatedWithObject:count handler:nil];
+  remains.inverted = YES;
+  [self waitForExpectationsWithTimeout:0.6 handler:nil];
+}
 
 - (void)testTouchTooltipPaintsWithoutActivatingAndAllowsTapAndScroll {
   self.continueAfterFailure = NO;

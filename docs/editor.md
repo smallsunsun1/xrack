@@ -18,6 +18,8 @@ C++ 使用 clangd。运行 **Bazel: Generate compile_commands.json** 或 `python
 
 本工作区从 `PATH` 选择 clangd。macOS 上请使用与当前 Xcode / SDK 兼容的 clangd，可用 `clangd --version` 检查。过旧的 clangd 可能无法解析 SDK 的 libc++ 头文件，即使 Bazel 构建正常也会出现连带诊断。更改 clangd 路径后，重启 VS Code 的 clangd 服务即可重新诊断。
 
+Android Java 使用推荐的 Red Hat Java 扩展。打开仓库根目录，运行 **Bazel: Set up Android Java IntelliSense**，也可执行 `python3 tools/android_java_editor.py`。任务把 Bazel 选定的 `android.jar` 和生成的 Android 资源类 JAR 写到 `.tools/android-java/`，并生成缺少的本机 Java 项目文件。Java 语言服务器通过仓库根目录的 `.project` 和 `.classpath` 索引桥接代码与测试应用，解析 `android.*` 和生成的 `R` 类。项目过滤 Bazel 输出和其他本地工具目录，避免索引外部依赖。更新 Android SDK 或资源声明后重新运行任务。
+
 默认构建任务是 **Bazel: Build Counter**；**Bazel: Run Counter** 打开窗口，**Bazel: Test workspace** 运行常规测试，**Bazel: Test native GPU** 运行需要显卡和字体的测试。F5 使用 **XRack: Debug Counter** 构建调试版本并启动 CodeLLDB。保存时不会执行 Cargo 检查。
 
 ### 调试生成的 MLIR

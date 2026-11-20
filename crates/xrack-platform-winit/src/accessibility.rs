@@ -1,7 +1,7 @@
 //! Project the prepared XRack scene into the native accessibility tree.
 use crate::accessibility_text::{
-    EditorState, TextDocument, accessible_text_value, project_styled_text, project_text,
-    supports_ranges,
+    EditorState, IosTextActions, TextDocument, accessible_text_value, project_styled_text,
+    project_text, supports_ranges,
 };
 use accesskit::{
     Action, ActionData, CustomAction, HasPopup, Invalid, Live, Node as AccessibleNode, NodeId,
@@ -20,10 +20,11 @@ use xrack_runtime::{
     AccessibleLive, CalendarAction, CalendarState, CheckState, ControlAction, DecimalSpinRange,
     DialogRole, IndicatorState, InputType, ListMetrics, Node, Orientation, RangeAction, RowKey,
     ScrollBarRange, SliderInterval, SliderRange, SpinAction, SpinRange, StandardButtonKind,
-    SwipeSide, Tumbler, Value, ViewportHandle, button_text, choice_identity, combo_editable,
-    combo_text, decimal_spin_value_after, group_index, indicator_state, is_calendar_control,
-    is_spin_box, is_window_overlay, page_indicator_count, page_indicator_index,
-    page_indicator_step, spin_editable, spin_text, spin_value_after, text_input_value,
+    SwipeSide, TextCommand, Tumbler, Value, ViewportHandle, button_text, choice_identity,
+    combo_editable, combo_text, decimal_spin_value_after, group_index, indicator_state,
+    is_calendar_control, is_spin_box, is_window_overlay, page_indicator_count,
+    page_indicator_index, page_indicator_step, spin_editable, spin_text, spin_value_after,
+    text_input_value,
 };
 
 pub(crate) const EDIT_CELL_ACTION: i32 = 10;
@@ -42,6 +43,14 @@ pub(crate) const SWIPE_DELEGATE_ACTIONS: [(i32, SwipeSide, &str); 3] = [
     (18, SwipeSide::Left, "Show left actions"),
     (19, SwipeSide::Right, "Show right actions"),
     (20, SwipeSide::Closed, "Hide swipe actions"),
+];
+pub(super) const IOS_TEXT_ACTIONS: [(i32, TextCommand, &str); 6] = [
+    (21, TextCommand::SelectAll, "Select All"),
+    (22, TextCommand::Copy, "Copy"),
+    (23, TextCommand::Cut, "Cut"),
+    (24, TextCommand::Paste, "Paste"),
+    (25, TextCommand::Undo, "Undo"),
+    (26, TextCommand::Redo, "Redo"),
 ];
 
 const ROOT: NodeId = NodeId(0);
@@ -95,6 +104,7 @@ pub(crate) enum Route {
     TabClose(Target),
     Choice {
         target: Target,
+        session: u64,
         index: usize,
         value: String,
         record: Option<(RowKey, Value)>,
@@ -137,7 +147,7 @@ struct Key {
     option: Option<(usize, String)>,
     row_option: Option<RowKey>,
     text_run: Option<(usize, String)>,
-    menu_session: Option<u64>,
+    popup_session: Option<u64>,
     split_handle: Option<(usize, bool)>,
 }
 
@@ -164,7 +174,7 @@ impl Key {
                 .map(|kind| (0, kind.label().to_owned())),
             row_option: None,
             text_run: None,
-            menu_session: None,
+            popup_session: None,
             split_handle: None,
         }
     }
@@ -172,6 +182,7 @@ impl Key {
 
 #[derive(PartialEq)]
 struct PopupState {
+    session: u64,
     bounds: Rect,
     first: usize,
     len: usize,
@@ -387,6 +398,7 @@ impl Projection {
             .delay_accessibility()
             .map(|(target, ready)| (target.clone(), ready));
         let popup = input.choice_menu(scene, layout).map(|menu| PopupState {
+            session: menu.session(),
             bounds: menu.bounds,
             first: menu.first,
             len: menu.rows.len(),
@@ -431,6 +443,7 @@ impl Projection {
             scale,
             text_system,
             ios,
+            ios_text_actions: editor.as_ref().and_then(|editor| editor.ios_actions),
             previous_ids: &self.ids,
             next_id: &mut self.next_id,
             ids: BTreeMap::new(),
@@ -565,6 +578,7 @@ struct Builder<'a> {
     scale: f64,
     text_system: Option<&'a TextSystem>,
     ios: bool,
+    ios_text_actions: Option<IosTextActions>,
     previous_ids: &'a BTreeMap<Key, NodeId>,
     next_id: &'a mut u64,
     ids: BTreeMap<Key, NodeId>,
@@ -1514,8 +1528,23 @@ impl Builder<'_> {
                     }
                 }
             }
-            if supports_click(node.kind) && !ios_container {
+            if !ios_container
+                && (supports_click(node.kind) || self.ios && supports_ios_edit_activation(node))
+            {
                 accessible.add_action(Action::Click);
+            }
+            if self.input.focused.as_ref() == Some(&target)
+                && let Some(actions) = self.ios_text_actions
+            {
+                for (id, command, description) in IOS_TEXT_ACTIONS {
+                    if actions.allows(command) {
+                        accessible.add_action(Action::CustomAction);
+                        accessible.push_custom_action(CustomAction {
+                            id,
+                            description: description.into(),
+                        });
+                    }
+                }
             }
             if self.ios && role == Role::Tab {
                 for (id, direction, description) in TAB_MOVE_ACTIONS {
@@ -1543,7 +1572,7 @@ impl Builder<'_> {
                 if settled || editor.has_committed_suggestion(&value) {
                     let selected = settled && !editor.selection(&value).is_empty();
                     for (id, command, description) in
-                        crate::android_accessibility::CLIPBOARD_ACTIONS
+                        crate::android::accessibility::CLIPBOARD_ACTIONS
                     {
                         if xrack_layout::TextEditContext::clipboard_allowed(node, command, selected)
                         {
@@ -2715,6 +2744,7 @@ impl Builder<'_> {
             let index = menu.first + offset;
             let mut key = Key::element(node, &target.path, row);
             key.kind = "ChoiceOption";
+            key.popup_session = Some(menu.session());
             let choice = choice_identity(node, index);
             let identity = if let Some((row, key)) =
                 choice.as_ref().and_then(|choice| choice.record.as_ref())
@@ -2731,6 +2761,8 @@ impl Builder<'_> {
             option.set_label(value.as_str());
             option.set_bounds(bounds(menu.row_bounds(offset), self.scale));
             option.set_selected(menu.selected == Some(index));
+            option.set_position_in_set(index);
+            option.set_size_of_set(menu.row_count());
             if menu.row_enabled(offset) {
                 option.add_action(Action::Click);
             } else {
@@ -2749,6 +2781,7 @@ impl Builder<'_> {
                     id,
                     Route::Choice {
                         target: target.clone(),
+                        session: menu.session(),
                         index,
                         value: choice.label,
                         record: choice.record,
@@ -2760,6 +2793,11 @@ impl Builder<'_> {
                 highlight = Some(id);
             }
             options.push(id);
+        }
+        // A page can consist entirely of disabled options. Keep the reading
+        // cursor in the popup without creating a keyboard selection.
+        if self.ios && node.kind == "ComboBox" && highlight.is_none() {
+            highlight = options.first().copied();
         }
         // UIKit treats the combo box as a leaf. Its popup rows are exposed
         // directly under the window so each row is reachable through UIKit.
@@ -2798,7 +2836,7 @@ impl Builder<'_> {
                 let node = row_data.node;
                 let mut key = Key::element(node, &entry.path, row);
                 key.kind = "PopupMenuRow";
-                key.menu_session = Some(panel.session());
+                key.popup_session = Some(panel.session());
                 key.option = Some((panel.row_index(slot), entry.label.clone()));
                 let id = self.id(key);
                 let role = if row_data.checked.is_some() {
@@ -2858,7 +2896,7 @@ impl Builder<'_> {
             let menu = panel.menu;
             let mut key = Key::element(menu, panel.path(), row);
             key.kind = "PopupMenu";
-            key.menu_session = Some(panel.session());
+            key.popup_session = Some(panel.session());
             let id = self.id(key);
             let mut popup = AccessibleNode::new(Role::Menu);
             popup.set_label(menu.text("title").unwrap_or("Context menu"));
@@ -3250,6 +3288,10 @@ pub(crate) fn supports_click(kind: &str) -> bool {
     )
 }
 
+pub(crate) fn supports_ios_edit_activation(node: &Node) -> bool {
+    (xrack_runtime::is_text_input(node.kind) && !node.text_read_only()) || spin_editable(node)
+}
+
 pub(crate) fn supports_text_value(node: &Node) -> bool {
     (xrack_runtime::is_text_input(node.kind)
         || combo_editable(node)
@@ -3314,6 +3356,47 @@ mod tests {
             assert_eq!(scope.supports_action(Action::Focus), !ios);
             assert!(node.supports_action(Action::Focus));
             assert!(node.supports_action(Action::Click));
+        }
+    }
+
+    #[test]
+    fn ios_projects_activation_only_for_writable_enabled_editors() {
+        for (kind, enabled, read_only, editable, activates) in [
+            ("TextInput", true, false, true, true),
+            ("LineEdit", true, false, true, true),
+            ("TextEdit", true, false, true, true),
+            ("TextArea", true, false, true, true),
+            ("SearchField", true, false, true, true),
+            ("SpinBox", true, false, true, true),
+            ("DoubleSpinBox", true, false, true, true),
+            ("TextArea", true, true, true, false),
+            ("LineEdit", false, false, true, false),
+            ("DoubleSpinBox", true, false, false, false),
+        ] {
+            let mut window = Node::new("Window", None);
+            let mut field = Node::new(kind, Some("editor"));
+            field
+                .properties
+                .insert("accessible-name", "Draft".to_owned().into());
+            field.properties.insert("enabled", enabled.into());
+            field.properties.insert("read-only", read_only.into());
+            field.properties.insert("editable", editable.into());
+            length(&mut field, "width", 180.0);
+            length(&mut field, "height", 44.0);
+            window.children.push(field);
+            let scene = Rc::new(window);
+            let frame = Rc::new(layout(&scene, Size::new(200.0, 60.0), &mut Text));
+            for ios in [true, false] {
+                let tree = Projection::default()
+                    .update_tree(&scene, &frame, &Interaction::default(), 1.0, None, ios)
+                    .unwrap();
+                let (_, editor) = named(&tree, "Draft");
+                assert_eq!(
+                    editor.supports_action(Action::Click),
+                    ios && activates,
+                    "{kind}, enabled={enabled}, read-only={read_only}, editable={editable}, iOS={ios}"
+                );
+            }
         }
     }
 
@@ -8030,6 +8113,81 @@ mod tests {
     }
 
     #[test]
+    fn ios_choice_paging_keeps_reading_focus_and_rejects_old_popup_ids() {
+        let rows = VecModel::from(
+            (0..9)
+                .map(|index| (format!("Option {index}"), !(3..6).contains(&index)))
+                .collect::<Vec<_>>(),
+        );
+        let model = xrack_runtime::ComboItems::with_enabled(
+            rows,
+            |row| &row.0,
+            |row| row.0.clone().into(),
+            |row| row.1,
+        );
+        let mut window = Node::new("Window", None);
+        let mut choice = Node::new("ComboBox", Some("choice"));
+        length(&mut choice, "width", 150.0);
+        length(&mut choice, "height", 36.0);
+        choice
+            .properties
+            .insert("model", Value::ComboModel(model.snapshot(0, None)));
+        let mut style = Node::new("ComboPopup", None);
+        length(&mut style, "row-height", 32.0);
+        length(&mut style, "max-height", 96.0);
+        choice.children.push(style);
+        window.children.push(choice);
+        let scene = Rc::new(window);
+        let layout = Rc::new(layout(&scene, Size::new(240.0, 220.0), &mut Text));
+        let mut input = Interaction::default();
+        let target = input.accessibility_target(&scene, &layout, &[0]).unwrap();
+        assert!(input.open_choice(&scene, &layout, target.clone()));
+        let mut tree = Projection::default();
+        let update = |tree: &mut Projection, input: &Interaction| {
+            tree.update_tree(&scene, &layout, input, 1.0, None, true)
+                .unwrap()
+        };
+        let first_page = update(&mut tree, &input);
+        let (first, option) = named(&first_page, "Option 0");
+        assert_eq!(first_page.focus, first);
+        assert!(!option.supports_action(Action::ScrollUp));
+        assert!(option.supports_action(Action::ScrollDown));
+
+        assert!(input.choice_page(&scene, &layout, false));
+        let locked_page = update(&mut tree, &input);
+        let (locked, option) = named(&locked_page, "Option 3");
+        assert_eq!(locked_page.focus, locked);
+        assert!(option.is_disabled());
+        assert!(option.supports_action(Action::ScrollUp));
+        assert!(option.supports_action(Action::ScrollDown));
+        assert!(!option.supports_action(Action::Click));
+        assert_eq!(option.position_in_set(), Some(3));
+        assert_eq!(option.size_of_set(), Some(9));
+        assert_eq!(input.focused.as_ref(), Some(&target));
+        assert!(
+            input
+                .choice_key(&scene, &layout, ChoiceKey::Accept)
+                .is_none()
+        );
+
+        assert!(input.choice_page(&scene, &layout, false));
+        let last_page = update(&mut tree, &input);
+        let (next, option) = named(&last_page, "Option 6");
+        assert_eq!(last_page.focus, next);
+        assert!(option.supports_action(Action::Click));
+        assert!(!option.supports_action(Action::ScrollDown));
+
+        assert!(input.open_choice(&scene, &layout, target.clone()));
+        let reopened = update(&mut tree, &input);
+        let (old, _) = named(&reopened, "Option 0");
+        assert!(input.open_choice(&scene, &layout, target));
+        let reopened = update(&mut tree, &input);
+        let (current, _) = named(&reopened, "Option 0");
+        assert_ne!(old, current);
+        assert!(tree.route(old).is_none());
+    }
+
+    #[test]
     fn combo_popup_exposes_visible_options_and_highlighted_focus() {
         let mut root = Node::new("Window", None);
         let mut combo = Node::new("ComboBox", Some("choice"));
@@ -8094,6 +8252,76 @@ mod tests {
         input.choice_key(&scene, &layout, ChoiceKey::Down);
         let update = tree.update(&scene, &layout, &input, 1.0, None).unwrap();
         assert_eq!(update.focus, named(&update, "Beta").0);
+    }
+
+    #[test]
+    fn ios_text_edit_actions_follow_focus_selection_and_composition() {
+        let mut window = Node::new("Window", None);
+        for (index, label) in ["Document", "Read only", "Passcode"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut entry = Node::new("LineEdit", None);
+            length(&mut entry, "y", index as f64 * 48.0);
+            length(&mut entry, "width", 180.0);
+            length(&mut entry, "height", 36.0);
+            entry
+                .properties
+                .insert("accessible-name", label.to_owned().into());
+            entry.properties.insert("text", "A🧪B".to_owned().into());
+            if index == 1 {
+                entry.properties.insert("read-only", true.into());
+            }
+            if index == 2 {
+                entry
+                    .properties
+                    .insert("input-type", InputType::Password.into());
+            }
+            window.children.push(entry);
+        }
+        let scene = Rc::new(window);
+        let layout = Rc::new(layout(&scene, Size::new(240.0, 200.0), &mut Text));
+        let mut input = Interaction::default();
+        let mut tree = Projection::default();
+        let actions = |tree: &mut Projection, input: &Interaction, label| {
+            let update = tree
+                .update_tree(&scene, &layout, input, 1.0, None, true)
+                .unwrap();
+            named(&update, label)
+                .1
+                .custom_actions()
+                .iter()
+                .map(|action| action.description.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(actions(&mut tree, &input, "Document").is_empty());
+        let target = input.accessibility_target(&scene, &layout, &[0]).unwrap();
+        input.focus_target(&scene, &layout, target);
+        input.sync_editor(&scene);
+        assert_eq!(
+            actions(&mut tree, &input, "Document"),
+            ["Select All", "Paste"]
+        );
+        input.apply_text_selection(&scene, TextCommand::SelectAll);
+        assert_eq!(
+            actions(&mut tree, &input, "Document"),
+            ["Copy", "Cut", "Paste"]
+        );
+        assert!(input.begin_text_composition(&scene, 1));
+        assert!(input.editor.as_ref().unwrap().preedit.is_empty());
+        assert!(actions(&mut tree, &input, "Document").is_empty());
+
+        let target = input.accessibility_target(&scene, &layout, &[1]).unwrap();
+        input.focus_target(&scene, &layout, target);
+        input.sync_editor(&scene);
+        input.apply_text_selection(&scene, TextCommand::SelectAll);
+        assert_eq!(actions(&mut tree, &input, "Read only"), ["Copy"]);
+
+        let target = input.accessibility_target(&scene, &layout, &[2]).unwrap();
+        input.focus_target(&scene, &layout, target);
+        input.sync_editor(&scene);
+        input.apply_text_selection(&scene, TextCommand::SelectAll);
+        assert_eq!(actions(&mut tree, &input, "Passcode"), ["Paste"]);
     }
 
     #[test]

@@ -755,6 +755,52 @@ ios_ui_test(
     deps = [":pointer_ui_test_source"],
 )
 
+objc_library(
+    name = "pointer_scroll_test_source",
+    testonly = True,
+    srcs = ["pointer_scroll_test.m"],
+    hdrs = ["accessibility_test_support.h"],
+    sdk_frameworks = [
+        "UIKit",
+        "XCTest",
+    ],
+    target_compatible_with = ["@platforms//os:ios"],
+)
+
+ios_unit_test(
+    name = "simulator_pointer_scroll_test",
+    size = "medium",
+    args = ["--command_line_args=--ipad-pointer"],
+    minimum_os_version = "18.2",
+    runner = ":pointer_simulator_runner",
+    tags = ["manual"],
+    test_host = ":simulator",
+    deps = [":pointer_scroll_test_source"],
+)
+
+objc_library(
+    name = "edit_menu_escape_test_source",
+    testonly = True,
+    srcs = ["edit_menu_escape_test.m"],
+    hdrs = ["accessibility_test_support.h"],
+    sdk_frameworks = [
+        "UIKit",
+        "XCTest",
+    ],
+    target_compatible_with = ["@platforms//os:ios"],
+)
+
+ios_unit_test(
+    name = "simulator_edit_menu_escape_test",
+    size = "medium",
+    env = {"XRACK_CONTROLS_DEMO": "--edit-menu-escape"},
+    minimum_os_version = "18.2",
+    runner = ":pointer_simulator_runner",
+    tags = ["manual"],
+    test_host = ":controls_simulator",
+    deps = [":edit_menu_escape_test_source"],
+)
+
 py_test(
     name = "simulator_hardware_keyboard_test",
     size = "medium",

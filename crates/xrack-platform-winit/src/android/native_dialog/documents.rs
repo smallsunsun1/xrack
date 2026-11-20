@@ -1,5 +1,5 @@
 use super::intent::Intent;
-use crate::android_directory::{close_resource, content_resolver, parse_uri, with_activity};
+use crate::android::directory::{close_resource, content_resolver, parse_uri, with_activity};
 use android_activity::AndroidApp;
 use jni::{
     Env, bind_java_type, jni_sig, jni_str,

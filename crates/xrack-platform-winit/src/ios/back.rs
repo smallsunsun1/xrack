@@ -1,4 +1,4 @@
-use crate::{AccessibilityEscape, UserEvent, desktop::WindowEvents, ios};
+use crate::{AccessibilityEscape, UserEvent, desktop::WindowEvents};
 use objc2::{
     ClassType, DeclaredClass, declare_class, msg_send_id,
     mutability::MainThreadOnly,
@@ -110,14 +110,14 @@ declare_class!(
     }
 );
 
-pub(super) struct EdgeBack {
+pub(crate) struct EdgeBack {
     gesture: Retained<UIPanGestureRecognizer>,
     target: Retained<BackTarget>,
 }
 
 impl EdgeBack {
-    pub(super) fn new(window: &Window, events: WindowEvents) -> Option<Self> {
-        let parent = ios::view(window)?;
+    pub(crate) fn new(window: &Window, events: WindowEvents) -> Option<Self> {
+        let parent = super::view(window)?;
         let mtm = MainThreadMarker::new()?;
         let target = mtm.alloc::<BackTarget>().set_ivars(BackTargetState {
             events,
@@ -142,7 +142,7 @@ impl EdgeBack {
         }
     }
 
-    pub(super) fn prepare(&self, direction: LayoutDirection, request: Option<AccessibilityEscape>) {
+    pub(crate) fn prepare(&self, direction: LayoutDirection, request: Option<AccessibilityEscape>) {
         let state = self.target.ivars();
         let enabled = request.is_some();
         state.available.replace(request);

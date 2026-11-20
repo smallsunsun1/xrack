@@ -1,4 +1,4 @@
-use crate::{UserEvent, desktop::WindowEvents, ios, scale_rotate::TrackpadDelta};
+use crate::{UserEvent, desktop::WindowEvents, scale_rotate::TrackpadDelta};
 use objc2::{
     ClassType, DeclaredClass, declare_class, msg_send, msg_send_id,
     mutability::MainThreadOnly,
@@ -10,7 +10,7 @@ use objc2_foundation::{CGPoint, MainThreadMarker, NSArray, NSProcessInfo, NSSet}
 use objc2_ui_kit::{
     UIAxis, UIBezierPath, UIEvent, UIEventButtonMask, UIEventType, UIGestureRecognizer,
     UIGestureRecognizerDelegate, UIGestureRecognizerState, UIHoverGestureRecognizer, UIInteraction,
-    UIKeyModifierFlags, UIPanGestureRecognizer, UIPinchGestureRecognizer, UIPointerAccessory,
+    UIPanGestureRecognizer, UIPinchGestureRecognizer, UIPointerAccessory,
     UIPointerAccessoryPositionBottom, UIPointerAccessoryPositionLeft,
     UIPointerAccessoryPositionRight, UIPointerAccessoryPositionTop, UIPointerInteraction,
     UIPointerInteractionDelegate, UIPointerRegion, UIPointerRegionRequest, UIPointerShape,
@@ -47,12 +47,20 @@ pub(crate) enum PointerInputEvent {
         position: LogicalPosition<f64>,
         delta: LogicalPosition<f64>,
         phase: TouchPhase,
+        modifiers: ModifiersState,
     },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ButtonPress {
+    pub(crate) physical: MouseButton,
+    pub(crate) routed: MouseButton,
 }
 
 struct PointerTargetState {
     events: WindowEvents,
     translation: Cell<CGPoint>,
+    scroll_modifiers: Cell<Option<ModifiersState>>,
     scale: Cell<f64>,
     rotation: Cell<f64>,
     style: RefCell<Option<Retained<UIPointerStyle>>>,
@@ -78,11 +86,22 @@ declare_class!(
         #[method(gestureRecognizer:shouldReceiveEvent:)]
         unsafe fn gestureRecognizer_shouldReceiveEvent(
             &self,
-            _: &UIGestureRecognizer,
+            recognizer: &UIGestureRecognizer,
             event: &UIEvent,
         ) -> bool {
             // SAFETY: UIKit provides the live event on its main thread.
-            unsafe { event.r#type() == UIEventType::Transform }
+            unsafe {
+                let scroll: Bool = msg_send![recognizer, isKindOfClass: UIPanGestureRecognizer::class()];
+                let kind = event.r#type();
+                if scroll.as_bool() {
+                    if kind == UIEventType::Scroll {
+                        self.ivars().scroll_modifiers.set(Some(super::keyboard::modifiers(event.modifierFlags())));
+                    }
+                    true
+                } else {
+                    kind == UIEventType::Transform
+                }
+            }
         }
 
         #[method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:)]
@@ -155,7 +174,7 @@ declare_class!(
                 (phase, Some(position)) => {
                     // SAFETY: UIKit owns this recognizer during the action callback.
                     let flags = unsafe { press.modifierFlags() };
-                    let modifiers = crate::ios_keyboard::modifiers(flags);
+                    let modifiers = super::keyboard::modifiers(flags);
                     PointerInputEvent::Button {
                         button, position, phase, modifiers,
                         at: state.click_at.get().unwrap_or_else(Instant::now),
@@ -217,6 +236,11 @@ declare_class!(
         fn scroll_changed(&self, scroll: &UIPanGestureRecognizer) {
             let Some(phase) = gesture_phase(scroll) else { return };
             let state = self.ivars();
+            // The raw scroll event can carry flags that the recognizer drops.
+            let modifiers = state.scroll_modifiers.take().unwrap_or_else(|| {
+                // SAFETY: UIKit owns the recognizer during its action callback.
+                super::keyboard::modifiers(unsafe { scroll.modifierFlags() })
+            });
             // SAFETY: UIKit invokes this action on the main thread and owns the view.
             let translation = scroll.translationInView(unsafe { scroll.view() }.as_deref());
             let previous = state.translation.replace(if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
@@ -231,7 +255,9 @@ declare_class!(
             };
             let Some(position) = gesture_location(scroll) else { return };
             if delta.x.is_finite() && delta.y.is_finite() {
-                state.events.post(UserEvent::IosPointer(PointerInputEvent::Scroll { position, delta, phase }));
+                state.events.post(UserEvent::IosPointer(PointerInputEvent::Scroll {
+                    position, delta, phase, modifiers,
+                }));
             }
         }
     }
@@ -274,13 +300,9 @@ declare_class!(
             unsafe {
                 event.r#type() == UIEventType::Touches && {
                     let mask = event.buttonMask();
-                    let control_click = event.modifierFlags() == UIKeyModifierFlags::UIKeyModifierControl;
                     match self.ivars().button {
-                        MouseButton::Left => mask == UIEventButtonMask::Primary && !control_click,
-                        MouseButton::Right => {
-                            mask == UIEventButtonMask::Secondary
-                                || (mask == UIEventButtonMask::Primary && control_click)
-                        }
+                        MouseButton::Left => mask == UIEventButtonMask::Primary,
+                        MouseButton::Right => mask == UIEventButtonMask::Secondary,
                         _ => false,
                     }
                 }
@@ -417,7 +439,7 @@ fn pointer_style(cursor: CursorIcon, mtm: MainThreadMarker) -> Option<Retained<U
     }
 }
 
-pub(super) struct PointerInput {
+pub(crate) struct PointerInput {
     hover: Retained<UIHoverGestureRecognizer>,
     scroll: Retained<UIPanGestureRecognizer>,
     presses: [Retained<PointerPress>; 2],
@@ -428,12 +450,13 @@ pub(super) struct PointerInput {
 }
 
 impl PointerInput {
-    pub(super) fn new(window: &Window, events: WindowEvents) -> Option<Self> {
-        let view = ios::view(window)?;
+    pub(crate) fn new(window: &Window, events: WindowEvents) -> Option<Self> {
+        let view = super::view(window)?;
         let mtm = MainThreadMarker::new()?;
         let target = mtm.alloc::<PointerTarget>().set_ivars(PointerTargetState {
             events,
             translation: Cell::new(CGPoint::ZERO),
+            scroll_modifiers: Cell::new(None),
             scale: Cell::new(1.0),
             rotation: Cell::new(0.0),
             style: RefCell::new(None),
@@ -455,6 +478,7 @@ impl PointerInput {
             scroll.setAllowedScrollTypesMask(UIScrollTypeMask::All);
             scroll.setAllowedTouchTypes(&NSArray::from_slice(&[]));
             scroll.setCancelsTouchesInView(false);
+            scroll.setDelegate(Some(ProtocolObject::from_ref(&*target)));
             view.addGestureRecognizer(&hover);
             view.addGestureRecognizer(&scroll);
             let presses = [MouseButton::Left, MouseButton::Right].map(|button| {
@@ -504,7 +528,7 @@ impl PointerInput {
         }
     }
 
-    pub(super) fn set_cursor(&self, cursor: CursorIcon) {
+    pub(crate) fn set_cursor(&self, cursor: CursorIcon) {
         let style = pointer_style(cursor, MainThreadMarker::from(&*self.target));
         let custom = style.is_some();
         let previous = self.target.ivars().style.replace(style);

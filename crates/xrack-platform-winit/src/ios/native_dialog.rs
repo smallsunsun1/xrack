@@ -1,5 +1,5 @@
-use super::until_canceled;
 use crate::IosDirectory;
+use crate::native_dialog::until_canceled;
 use block2::RcBlock;
 use objc2::{
     ClassType, DeclaredClass, declare_class, msg_send_id,

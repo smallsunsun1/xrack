@@ -1,6 +1,5 @@
-use crate::{
-    Application, TOUCH_HOLD_SLOP, UserEvent, desktop::WindowEvents, ios, ios_text::CopyRevision,
-};
+use super::text::CopyRevision;
+use crate::{Application, TOUCH_HOLD_SLOP, UserEvent, desktop::WindowEvents};
 use block2::RcBlock;
 use objc2::{
     ClassType, DeclaredClass, declare_class, msg_send, msg_send_id,
@@ -54,7 +53,7 @@ struct Snapshot {
     scope: FileDropScope,
 }
 
-pub(super) struct TextDragSource {
+pub(crate) struct TextDragSource {
     target: Target,
     context: TextEditContext,
     highlights: Vec<Rect>,
@@ -659,7 +658,7 @@ impl Representation {
                                     return None;
                                 }
                                 let url = unsafe { &*std::ptr::from_ref(item).cast::<NSURL>() };
-                                crate::ios_directory::with_file_url_access(url, |url| {
+                                super::directory::with_file_url_access(url, |url| {
                                     batch.copy(index, url, None)
                                 })
                             });
@@ -790,7 +789,7 @@ pub(crate) struct FileDropBridge {
 
 impl FileDropBridge {
     pub(crate) fn new(window: &Window, events: WindowEvents) -> Result<Self, String> {
-        let view = ios::view(window).ok_or("iOS window has no UIKit view")?;
+        let view = super::view(window).ok_or("iOS window has no UIKit view")?;
         // SAFETY: The window supplies the live view, which is retained by the bridge.
         let view = unsafe { Retained::retain(std::ptr::from_ref(view).cast_mut()) }
             .ok_or("could not retain the UIKit view")?;
@@ -847,7 +846,7 @@ impl FileDropBridge {
         }));
     }
 
-    pub(super) fn sync_text_source(&self, source: Option<TextDragSource>) {
+    pub(crate) fn sync_text_source(&self, source: Option<TextDragSource>) {
         let enabled = source.is_some();
         self.delegate.ivars().text_source.replace(source);
         // SAFETY: The bridge is owned by the UIKit main thread.
@@ -858,7 +857,7 @@ impl FileDropBridge {
         }
     }
 
-    pub(super) fn can_drag_text_at(&self, point: Point) -> bool {
+    pub(crate) fn can_drag_text_at(&self, point: Point) -> bool {
         self.delegate.with_text_source(point, |_| ()).is_some()
     }
 
@@ -881,7 +880,7 @@ impl Drop for FileDropBridge {
 }
 
 impl<C: UiComponent> Application<C> {
-    pub(super) fn sync_ios_text_drag(&self) {
+    pub(crate) fn sync_ios_text_drag(&self) {
         let Some(state) = &self.state else { return };
         let Some(bridge) = &state.file_drop else {
             return;
@@ -925,7 +924,7 @@ impl<C: UiComponent> Application<C> {
         bridge.sync_text_source(source);
     }
 
-    pub(super) fn start_ios_text_drop(
+    pub(crate) fn start_ios_text_drop(
         &mut self,
         window: WindowId,
         sequence: u64,
@@ -945,7 +944,7 @@ impl<C: UiComponent> Application<C> {
         });
     }
 
-    pub(super) fn finish_ios_text_drop(
+    pub(crate) fn finish_ios_text_drop(
         &mut self,
         window: WindowId,
         sequence: u64,

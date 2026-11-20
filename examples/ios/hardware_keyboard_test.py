@@ -547,6 +547,42 @@ def open_review_menu(ui: Simulator) -> None:
     )
 
 
+def exercise_edit_menu_escape(ui: Simulator) -> None:
+    note: str = "Draft text"
+    ui.launch(note, "--edit-menu-escape")
+    ui.tap("Select draft")
+    ui.label("Selected Survey")
+    ui.value(note, "Survey")
+
+    def open_edit_menu() -> None:
+        field: dict[str, float] = ui.frame(note)
+        ui.ui(
+            "tap",
+            str(round(field["x"] + 22)),
+            str(round(field["y"] + field["height"] / 2)),
+            "--duration",
+            "0.85",
+        )
+        ui.label("Copy")
+
+    open_edit_menu()
+    ui.ui("key", "41", "--duration", "0.95")  # Hold Escape over the edit menu.
+    ui.label("Copy", present=False)
+    ui.value(note, "Survey")
+    ui.label("Selected Survey")
+
+    open_edit_menu()
+    ui.ui("swipe", "3", "424", "180", "424", "--duration", "0.5", "--delta", "5")
+    ui.label("Copy", present=False)
+    ui.value(note, "Survey")
+    ui.label("Selected Survey")
+
+    ui.key(41)
+    ui.label(note, present=False)
+    ui.label("Draft closed")
+    print("PASS: Escape and edge back close the edit menu before its dialog")
+
+
 def exercise_edge_back(ui: Simulator) -> None:
     ui.launch("Review options", "--native-actions")
     open_review_menu(ui)
@@ -710,56 +746,51 @@ def exercise_tab_dynamic_type(ui: Simulator) -> None:
         ui.simctl(*setting, original)
 
 
+def open_display_accessibility_switch(ui: Simulator, label: str) -> str:
+    ui.simctl("launch", ui.udid, "com.apple.Preferences")
+    rows: list[dict[str, Any]] = ui.wait(
+        "the Settings application", lambda rows: ui.has(rows, "Settings")
+    )
+    for _ in range(5):
+        value: str | None = next(
+            (
+                row["AXValue"]
+                for row in rows
+                if row.get("AXLabel") == label and row.get("AXValue") in ("0", "1")
+            ),
+            None,
+        )
+        if value is not None:
+            return value
+        if ui.has(rows, "Display & Text Size"):
+            ui.tap("Display & Text Size")
+        elif ui.has(rows, "Accessibility"):
+            ui.tap("Accessibility")
+        else:
+            ui.simctl("openurl", ui.udid, "App-prefs:root=ACCESSIBILITY")
+        # Settings exposes the destination's AX rows while the push animation is still active.
+        time.sleep(0.5)
+        rows = ui.tree()
+    raise AssertionError(f"Could not open the {label} switch in Settings")
+
+
+def set_display_accessibility_switch(ui: Simulator, label: str, value: str) -> None:
+    if open_display_accessibility_switch(ui, label) != value:
+        ui.tap(label, right_inset=40)
+        ui.value(label, value)
+
+
 def exercise_button_shapes(ui: Simulator) -> None:
     label: str = "Button Shapes"
-
-    def open_setting() -> str:
-        ui.simctl(
-            "openurl",
-            ui.udid,
-            "App-prefs:root=ACCESSIBILITY&path=DISPLAY_AND_TEXT_SIZE",
-        )
-        rows: list[dict[str, Any]] = ui.wait(
-            "the accessibility setting in Settings",
-            lambda rows: (
-                ui.has(rows, "Settings")
-                and any(
-                    ui.has(rows, item)
-                    for item in (label, "Display & Text Size", "Accessibility")
-                )
-            ),
-        )
-        if not ui.has(rows, label):
-            if not ui.has(rows, "Display & Text Size"):
-                ui.tap("Accessibility")
-            ui.tap("Display & Text Size")
-        rows = ui.wait(
-            "the Button Shapes switch",
-            lambda rows: any(
-                row.get("AXLabel") == label and row.get("AXValue") in ("0", "1")
-                for row in rows
-            ),
-        )
-        return next(
-            row["AXValue"]
-            for row in rows
-            if row.get("AXLabel") == label and row.get("AXValue") in ("0", "1")
-        )
-
-    def set_setting(value: str) -> None:
-        if open_setting() != value:
-            ui.tap(label, right_inset=40)
-            ui.value(label, value)
-
-    original: str = open_setting()
+    original: str = open_display_accessibility_switch(ui, label)
     try:
-        set_setting("0")
+        set_display_accessibility_switch(ui, label, "0")
         process: str = ui.launch("Plain action", "--button-shapes")
         original_frame: dict[str, float] = ui.frame("Plain action")
         output: Path = Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "."))
         output.mkdir(parents=True, exist_ok=True)
         ui.simctl("io", ui.udid, "screenshot", str(output / "button-shapes-off.png"))
-        set_setting("1")
+        set_display_accessibility_switch(ui, label, "1")
         resumed: str = ui.simctl("launch", ui.udid, ui.bundle)
         assert resumed == process, (process, resumed)
         assert ui.frame("Plain action") == original_frame
@@ -778,7 +809,49 @@ def exercise_button_shapes(ui: Simulator) -> None:
             "PASS: toggled Button Shapes and captured the same running app with unchanged hit bounds"
         )
     finally:
-        set_setting(original)
+        set_display_accessibility_switch(ui, label, original)
+
+
+def exercise_selection_marks(ui: Simulator) -> None:
+    label: str = "Differentiate Without Color"
+    original: str = open_display_accessibility_switch(ui, label)
+    output: Path = Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "."))
+    output.mkdir(parents=True, exist_ok=True)
+
+    def screenshot(name: str) -> None:
+        ui.simctl(
+            "io", ui.udid, "screenshot", str(output / f"selection-marks-{name}.png")
+        )
+
+    try:
+        set_display_accessibility_switch(ui, label, "0")
+        process: str = ui.launch("Selection markers", "--selection-marks")
+        ui.tap("Review interval")
+        original_frame: dict[str, float] = ui.frame("Daily")
+        screenshot("off")
+
+        set_display_accessibility_switch(ui, label, "1")
+        resumed: str = ui.simctl("launch", ui.udid, ui.bundle)
+        assert resumed == process, (process, resumed)
+        rows: list[dict[str, Any]] = ui.wait(
+            "selection markers fixture", lambda rows: ui.has(rows, "Overview selected")
+        )
+        if not ui.has(rows, "Daily"):
+            ui.tap("Review interval")
+        assert ui.frame("Daily") == original_frame
+        screenshot("on")
+        ui.key(81)  # Down
+        ui.key(40)  # Return
+        ui.value("Review interval", "Weekly")
+        ui.tap("Activity")
+        ui.label("Activity selected")
+        ui.key(80)  # Left
+        ui.label("Overview selected")
+        print(
+            "PASS: system selection markers preserve popup bounds, touch and keyboard navigation"
+        )
+    finally:
+        set_display_accessibility_switch(ui, label, original)
 
 
 def exercise_button_dynamic_type(ui: Simulator) -> None:
@@ -2096,6 +2169,11 @@ def main() -> None:
         help="Swipe from the leading edge through a dialog and guarded StackView",
     )
     mode.add_argument(
+        "--edit-menu-escape",
+        action="store_true",
+        help="Dismiss the UIKit edit menu before its dialog using Escape and edge back",
+    )
+    mode.add_argument(
         "--drawer-preview",
         action="store_true",
         help="Check the bottom drawer while an opening or closing touch is still active",
@@ -2109,6 +2187,11 @@ def main() -> None:
         "--button-shapes",
         action="store_true",
         help="Switch the iOS Button Shapes preference and capture transparent buttons",
+    )
+    mode.add_argument(
+        "--selection-marks",
+        action="store_true",
+        help="Switch Differentiate Without Color and exercise tabs and choice rows",
     )
     mode.add_argument(
         "--button-dynamic-type",
@@ -2185,12 +2268,16 @@ def main() -> None:
             exercise_native_actions(ui)
         elif args.edge_back:
             exercise_edge_back(ui)
+        elif args.edit_menu_escape:
+            exercise_edit_menu_escape(ui)
         elif args.drawer_preview:
             exercise_drawer_preview(ui)
         elif args.tab_dynamic_type:
             exercise_tab_dynamic_type(ui)
         elif args.button_shapes:
             exercise_button_shapes(ui)
+        elif args.selection_marks:
+            exercise_selection_marks(ui)
         elif args.button_dynamic_type:
             exercise_button_dynamic_type(ui)
         elif args.group_title_dynamic_type:
@@ -2258,6 +2345,10 @@ def main() -> None:
             if args.modal_title_dynamic_type
             else "Plain action"
             if args.button_shapes
+            else "Selection markers"
+            if args.selection_marks
+            else "Draft text"
+            if args.edit_menu_escape
             else "Inspection options"
             if args.group_title_dynamic_type
             else "保存布局"
@@ -2273,6 +2364,10 @@ def main() -> None:
             if args.modal_title_dynamic_type
             else ("--button-shapes",)
             if args.button_shapes
+            else ("--selection-marks",)
+            if args.selection_marks
+            else ("--edit-menu-escape",)
+            if args.edit_menu_escape
             else ("--group-titles",)
             if args.group_title_dynamic_type
             else ()

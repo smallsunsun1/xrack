@@ -1213,7 +1213,7 @@ android_binary(
 android_binary(
     name = "accessibility_probe",
     testonly = True,
-    srcs = ["testing/ControlsProbe.java"],
+    srcs = ["testing/dev/xrack/accessibility_test/ControlsProbe.java"],
     manifest = "testing/AccessibilityManifest.xml",
     tags = ["manual"],
 )
@@ -1329,8 +1329,8 @@ android_binary(
     name = "share_receiver",
     testonly = True,
     srcs = [
-        "testing/ShareReceiverActivity.java",
-        "testing/TestInputMethodService.java",
+        "testing/dev/xrack/share_test/ShareReceiverActivity.java",
+        "testing/dev/xrack/share_test/TestInputMethodService.java",
     ],
     manifest = "testing/AndroidManifest.xml",
     resource_files = ["testing/res/xml/xrack_test_ime.xml"],

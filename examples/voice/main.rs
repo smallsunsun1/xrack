@@ -1,8 +1,8 @@
 use clap::Parser;
-use std::{
-    error::Error,
-    io,
-    time::{Duration, Instant},
+use std::{error::Error, io, time::Duration};
+use tokio::{
+    runtime::Builder,
+    time::{Instant, timeout},
 };
 use xrack::voice::{CaptureStatus, SAMPLE_RATE, VoiceCapture, VoicePlayback, VoicePlaybackSender};
 
@@ -30,11 +30,16 @@ struct CaptureReport {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
+    let runtime = Builder::new_current_thread().enable_time().build()?;
     let playback = args.monitor.then(VoicePlayback::open).transpose()?;
     let sender = playback.as_ref().map(VoicePlayback::sender);
     let capture = VoiceCapture::start(args.device.as_deref())?;
     eprintln!("Opening microphone...");
-    let report = measure(&capture, sender.as_ref(), Duration::from_secs(args.seconds));
+    let report = runtime.block_on(measure(
+        &capture,
+        sender.as_ref(),
+        Duration::from_secs(args.seconds),
+    ));
     capture.stop();
     let released = capture.wait_stopped(Duration::from_secs(1));
     let report = report?;
@@ -51,14 +56,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn measure(
+async fn measure(
     capture: &VoiceCapture,
     output: Option<&VoicePlaybackSender>,
     duration: Duration,
 ) -> io::Result<CaptureReport> {
-    let mut frame = capture
-        .wait_frame(Duration::from_secs(10))
-        .ok_or_else(|| capture_error(capture.status(), "opening microphone"))?;
+    let mut frame = match timeout(Duration::from_secs(10), capture.recv()).await {
+        Ok(Ok(Some(frame))) => frame,
+        Ok(Err(error)) => return Err(io::Error::other(format!("opening microphone: {error}"))),
+        Ok(Ok(None)) | Err(_) => return Err(capture_error(capture.status(), "opening microphone")),
+    };
     let deadline = Instant::now() + duration;
     let mut report = CaptureReport::default();
     loop {
@@ -78,12 +85,17 @@ fn measure(
         if remaining.is_zero() {
             return Ok(report);
         }
-        match capture.wait_frame(remaining.min(Duration::from_secs(1))) {
-            Some(next) => frame = next,
-            None if Instant::now() >= deadline && capture.status() == CaptureStatus::Capturing => {
+        match timeout(remaining.min(Duration::from_secs(1)), capture.recv()).await {
+            Ok(Ok(Some(next))) => frame = next,
+            Ok(Err(error)) => return Err(io::Error::other(format!("reading microphone: {error}"))),
+            Err(_)
+                if Instant::now() >= deadline && capture.status() == CaptureStatus::Capturing =>
+            {
                 return Ok(report);
             }
-            None => return Err(capture_error(capture.status(), "reading microphone")),
+            Ok(Ok(None)) | Err(_) => {
+                return Err(capture_error(capture.status(), "reading microphone"));
+            }
         }
     }
 }

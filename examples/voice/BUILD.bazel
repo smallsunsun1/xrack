@@ -27,5 +27,6 @@ rust_binary(
     deps = [
         "//crates/xrack",
         "@crates//:clap",
+        "@crates//:tokio",
     ],
 )

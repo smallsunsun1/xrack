@@ -1,6 +1,6 @@
-use crate::android_text_traversal::{Traversal, traverse};
+use crate::android::text_traversal::{Traversal, traverse};
 use crate::{
-    ClipboardShortcut, UserEvent, accessibility::Projection, android_directory::with_activity,
+    ClipboardShortcut, UserEvent, accessibility::Projection, android::directory::with_activity,
     desktop::WindowEvents,
 };
 use accesskit::{

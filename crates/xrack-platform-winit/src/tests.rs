@@ -12,7 +12,6 @@ use std::{
 };
 use xrack_runtime::Value;
 
-mod android_back;
 mod keyboard_touch;
 
 #[test]
@@ -676,6 +675,65 @@ fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
 }
 
 #[test]
+fn native_edit_menu_consumes_one_escape_press_and_its_repeats_until_release() {
+    use EditMenuEscapeKey::{Consume, Continue, Dismiss};
+
+    let mut event = KeyEvent {
+        logical_key: Key::Named(NamedKey::Escape),
+        unmodified_key: Key::Named(NamedKey::Escape),
+        text: None,
+        state: ElementState::Pressed,
+        repeat: false,
+    };
+    let mut held = false;
+    assert_eq!(
+        edit_menu_escape_key(&event, true, &mut held, Some(41)),
+        Continue
+    );
+    assert!(!held);
+    assert_eq!(
+        edit_menu_escape_key(&event, false, &mut held, Some(41)),
+        Dismiss(41)
+    );
+    assert_eq!(
+        edit_menu_escape_key(&event, false, &mut held, None),
+        Consume
+    );
+    assert_eq!(
+        edit_menu_escape_key(&event, false, &mut held, Some(42)),
+        Consume
+    );
+
+    event.state = ElementState::Released;
+    assert_eq!(
+        edit_menu_escape_key(&event, false, &mut held, Some(42)),
+        Consume
+    );
+    assert!(!held);
+    event.state = ElementState::Pressed;
+    assert_eq!(
+        edit_menu_escape_key(&event, false, &mut held, None),
+        Continue
+    );
+    event.repeat = true;
+    assert_eq!(
+        edit_menu_escape_key(&event, false, &mut held, Some(42)),
+        Consume
+    );
+    event.state = ElementState::Released;
+    assert_eq!(
+        edit_menu_escape_key(&event, false, &mut held, Some(42)),
+        Consume
+    );
+    event.state = ElementState::Pressed;
+    event.repeat = false;
+    assert_eq!(
+        edit_menu_escape_key(&event, false, &mut held, Some(42)),
+        Dismiss(42)
+    );
+}
+
+#[test]
 fn accessibility_escape_respects_topmost_overlay_policy_and_restores_focus() {
     use xrack_layout::TextMeasurer;
     use xrack_runtime::{DialogRole, Length};
@@ -760,6 +818,18 @@ fn accessibility_escape_respects_topmost_overlay_policy_and_restores_focus() {
     prepare(&mut app);
     assert!(app.input.is_focused(&[1, 0]));
     let outer = app.accessibility_escape().unwrap();
+    let menu = app.accessibility_escape_with_native_menu(Some(41)).unwrap();
+    assert_eq!(menu, AccessibilityEscape::NativeTextMenu(41));
+    assert_eq!(
+        app.accessibility_escape_with_native_menu(Some(42)),
+        Some(AccessibilityEscape::NativeTextMenu(42))
+    );
+    app.perform_accessibility_escape(menu);
+    assert_eq!(
+        app.component.rejected, 0,
+        "a stale native request cannot close the dialog"
+    );
+    assert_eq!(app.accessibility_escape(), Some(outer.clone()));
     app.component.inner = true;
     app.component.inner_locked = true;
     prepare(&mut app);
@@ -2855,6 +2925,67 @@ fn touch_drag_claims_one_contact_and_dispatches_drop_or_cancel() {
             .iter()
             .any(|event| matches!(event, DragEvent::Dropped { .. }))
     );
+}
+
+#[test]
+fn replacing_text_stops_an_active_touch_selection_scroll() {
+    struct Notes(&'static str);
+    impl Component for Notes {
+        fn render(&self) -> Node {
+            let mut node = Node::new("TextArea", Some("notes"));
+            node.properties.insert("text", self.0.to_owned().into());
+            node
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    for dragging_handle in [false, true] {
+        let mut app = Application::new(Notes("original notes"), LocalExecutor::new(|| {}));
+        let target = Target::from_node(vec![], &app.scene, true, None);
+        app.input.focused = Some(target.clone());
+        app.input.sync_editor(&app.scene);
+        app.input.set_touch_selection_handles(true);
+        let contact = PointerContact::Touch(DeviceId::dummy(), 1);
+        let origin = Point::default();
+        let value = app.component.0.to_owned();
+        if dragging_handle {
+            app.selection_handle_drag = Some(SelectionHandleDrag {
+                contact,
+                target: target.clone(),
+                origin,
+                finger_offset: origin,
+                value,
+            });
+        } else {
+            app.touch_hold = Some(TouchHold {
+                contact,
+                origin,
+                deadline: None,
+                kind: TouchHoldKind::SelectingText {
+                    target: target.clone(),
+                    value,
+                },
+            });
+        }
+        let now = Instant::now();
+        app.input.schedule_text_selection_scroll(
+            &target,
+            Some(Point { x: 20.0, y: 70.0 }),
+            Some(origin),
+            now,
+        );
+        assert!(app.input.text_selection_scroll_deadline().is_some());
+        app.refresh_deadline(now);
+        assert!(app.input.text_selection_scroll_deadline().is_some());
+
+        app.component.0 = "replacement notes";
+        app.scene = Rc::new(app.component.render());
+        app.refresh_deadline(now);
+        assert_eq!(app.input.focused.as_ref(), Some(&target));
+        assert!(app.input.text_selection_scroll_deadline().is_none());
+    }
 }
 
 #[test]

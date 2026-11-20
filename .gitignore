@@ -12,3 +12,5 @@
 /.cache
 /.rules_rust_analyzer
 __pycache__/
+/.project
+/.classpath

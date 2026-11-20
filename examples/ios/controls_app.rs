@@ -9,6 +9,7 @@ pub extern "C" fn xrack_ios_main() -> i32 {
         .or_else(|| std::env::args().nth(1));
     let result = match demo.as_deref() {
         Some("--native-actions") => run(native_actions_ui::NativeActionsDemo::new()),
+        Some("--keyboard-layout") => run(native_actions_ui::KeyboardLayoutDemo::new()),
         Some("--compact-rows") => run(native_actions_ui::CompactRowsDemo::new()),
         Some("--compact-toggles") => run(native_actions_ui::CompactTogglesDemo::new()),
         Some("--modal-titles") => run(native_actions_ui::ModalTitlesDemo::new()),
@@ -16,7 +17,10 @@ pub extern "C" fn xrack_ios_main() -> i32 {
         Some("--swipe-actions") => run(native_actions_ui::SwipeActionsDemo::new()),
         Some("--menu-paging") => run(native_actions_ui::MenuPagingDemo::new()),
         Some("--button-shapes") => run(native_actions_ui::ButtonShapesDemo::new()),
+        Some("--selection-marks") => run(native_actions_ui::SelectionMarksDemo::new()),
         Some("--native-selection") => run(native_actions_ui::NativeSelectionDemo::new()),
+        Some("--selection-scroll") => run(native_actions_ui::SelectionScrollDemo::new()),
+        Some("--edit-menu-escape") => run(native_actions_ui::EditMenuEscapeDemo::new()),
         Some("--system-direction") => run(native_actions_ui::SystemDirectionDemo::new()),
         Some("--emoji") => run(native_actions_ui::EmojiDemo::new()),
         Some("--clipboard-authorization") => {

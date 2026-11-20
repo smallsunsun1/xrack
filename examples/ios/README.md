@@ -12,6 +12,8 @@ iOS 无障碍树会逐项公开可见任务的标题、位置和当前状态。�
 
 用 `--menu-paging` 打开 **Menu paging**。在 **Review commands** 按钮的 VoiceOver 操作中打开菜单，可从当前菜单项翻页找到 **Apply review**。返回首页打开 **Archive filters** 后，可在子菜单中独立翻页。回归目标为 `//examples/ios:simulator_menu_accessibility_test`。
 
+同一示例的 **Paging interval** 下拉框中间一页是禁用项。开启 VoiceOver 后，可从当前项翻过这一页，到最后一页激活 **Annual**。翻页会把当前位置发给 UIKit，激活前保留原来的 **Daily**。同一回归目标也覆盖下拉框翻页、边界和重新打开后的选项身份。
+
 连接外接键盘后，可以用 Tab / Shift+Tab 移动焦点，回车或空格激活按钮。在任务行或行内按钮上，左方向键展开操作区，右方向键或 Escape 收起，展开和收起本身不会完成任务。文本框支持方向键移动光标、Shift 扩展选区和 Command+A 全选；iOS 的 `Primary` 快捷键使用 Command。输入法正在组字时，文字和候选选择继续交给 UIKit。
 
 完成或重新打开任务时，进度条会用 800 毫秒过渡到新值。iOS「设置 → 辅助功能 → 动态效果」开启 **减弱动态效果** 后，进度条直接显示新值，关闭后后续操作恢复动画。应用在回到前台时也会重新读取设置。
@@ -24,6 +26,8 @@ iOS 无障碍树会逐项公开可见任务的标题、位置和当前状态。�
 
 在备注里长按一个词可选中文字，也可保持手指接触并拖动来扩展选区。松手后可以重新拖动选区两端的手柄，也可以从编辑菜单复制、剪切、粘贴或全选。只读时仍可调整选区并复制。
 
+用 `--selection-scroll` 启动 **XRack Controls**，长按首行文本后拖到编辑区下缘并停住。选区会随着文字滚动而延伸，停到末行可看到 **End of notes selected**。拖动已有选区手柄时也可向边缘滚动。`//examples/ios:simulator_pointer_drag_test` 覆盖长按拖选和松手后的停止行为。
+
 UIKit 直接移动光标或改变选区时，XRack 会同步更新选区绑定和绘制，只改选区时不会触发 `edited`。用 `--native-selection` 启动 XRack Controls，分别点 **Focus line** 和 **Focus notes**，可以在单行和多行示例里观察光标、选中文字和编辑次数。宿主将 UIKit 的 UTF-16 位置转换为示例显示的 UTF-8 字节偏移。 在选中文字后开始输入候选词，预编辑显示在原选区。候选词可以反复更新，确认后才替换原文并增加一次编辑计数。 组字时点 **Replace line** 或 **Replace notes**，应用会写入新值并结束本次组字，输入框保持焦点。
 
 UIKit 向当前输入框请求撤销或重做时，使用与 XRack 编辑菜单相同的文本历史。单行和多行输入都有独立历史。焦点切换使旧的系统撤销请求失效，输入法组字期间会暂停这两个命令。 UIKit 的选词、全选、剪切、复制和粘贴也使用同一编辑状态。组字期间暂停这些命令，密码字段禁止剪切和复制。粘贴可用性只查询剪贴板的类型，执行粘贴时才读取内容。
@@ -31,6 +35,12 @@ UIKit 向当前输入框请求撤销或重做时，使用与 XRack 编辑菜单�
 从其他应用复制文字后，可以在备注或任务输入框选择 **Paste**。出现 iOS 授权弹窗时，点允许粘贴会继续替换原选区，拒绝则保留原文。
 
 用 `--clipboard-authorization` 启动 XRack Controls，可以单独测试跨应用粘贴。在另一个应用复制文字，返回示例，点 **Select emoji** 和 **Paste into selection**。同意后会替换原选区，点 **Undo edit** 可恢复原文。拒绝后，原文和选区都保留。
+
+开启 VoiceOver 后，在 **Paste destination** 进入编辑，再从「操作」转子选择全选、拷贝、剪切、粘贴、撤销或重做。可用操作随选区和编辑历史变化。`//examples/ios:simulator_native_actions_test` 通过 UIKit 验证这些操作，包括含 emoji 的选区和密码输入限制。
+
+用 `--edit-menu-escape` 启动 **XRack Controls**，选中并长按草稿文字打开编辑菜单。按 Escape 或从屏幕起始边缘滑动会收起菜单，文本、选区和对话框仍保留。HID 回归使用 `controls_simulator.ipa` 和 `--test_arg=--edit-menu-escape`，UIKit 无障碍取消由 `//examples/ios:simulator_edit_menu_escape_test` 验证。
+
+在同一个示例里点 **Select draft** 和 **Move draft**，随即长按选区打开菜单。草稿字段会在稍后向右移，原生菜单跟着选区移动。专用 UIKit 回归也会在菜单打开后触发布局变化，再核对关闭顺序。
 
 两个原生测试分别在新模拟器内安装独立的 Clipboard Fixture，并从系统授权弹窗选择允许或拒绝。
 
@@ -74,6 +84,14 @@ bazel test --config=ios-sim --local_test_jobs=1 --test_timeout=360 \
 bazel run --config=ios-sim //examples/ios:simulator \
   --@rules_apple//apple/build_settings:ios_simulator_device="iPhone 16 Pro" \
   --@rules_apple//apple/build_settings:ios_simulator_version=18.2
+```
+
+交互运行会优先复用匹配的模拟器。需要固定设备时，用 `xcrun simctl list devices available` 找到 UDID，再给 `bazel run` 加上 `--run_env=BAZEL_APPLE_DEVICE_UDID=<UDID>`。如果只想打开应用并让终端返回，加上 `--run_env=BAZEL_SIMCTL_LAUNCH_FLAGS=`。默认会在终端继续显示应用日志。
+
+Xcode 27 的 Device Hub 如果停留在其他设备，应用启动后可用终端打印的模拟器 UDID 打开对应窗口。
+
+```sh
+open "devices://device/open?id=<UDID>"
 ```
 
 可以按本机的 `xcrun simctl list devices available` 结果修改设备和版本。用 `bazel build --config=ios-sim //examples/ios:simulator` 可单独构建应用包。用 `bazel cquery --config=ios-sim --output=files //examples/ios:simulator` 查看 `simulator.ipa` 的实际路径。解包后的 `Payload/PocketTasks.app` 可由 `xcrun simctl install` 安装，再用 `xcrun simctl launch <设备标识> dev.xrack.ios-demo` 启动。
@@ -172,6 +190,8 @@ xcrun simctl launch --terminate-running-process <设备标识> dev.xrack.ios-con
 
 用 `--button-shapes` 启动透明按钮示例。在 iOS「辅助功能 → 显示与文字大小」切换 **Button Shapes**，返回应用后可对照按钮轮廓。命中区域和禁用状态沿用原控件逻辑。HID 回归使用 `--test_arg=--button-shapes`，并恢复模拟器原设置。
 
+用 `--selection-marks` 启动选择示例。在同一设置页切换 **Differentiate Without Color**，回到应用后查看当前标签的下划线、下拉框的选中勾标和键盘高亮轮廓。HID 回归使用 `controls_simulator.ipa` 和 `--test_arg=--selection-marks`，验证设置切换、选项命中区域和键盘选择，并恢复模拟器原设置。
+
 用 `--appearance` 启动 **XRack Controls** 后，可以切换 **System**、**Light** 和 **Dark**。System 模式跟随 UIKit 外观。切换系统深色时，默认控件和已打开的对话框应用当前调色板，输入框保留草稿。
 
 ```sh
@@ -263,6 +283,8 @@ xcrun simctl launch --terminate-running-process <设备标识> dev.xrack.ios-dem
 ### iPad 鼠标与触控板
 
 用 `--ipad-pointer` 启动 Pocket Tasks。将指针移入 **Inspect sensor** 可以看到悬停反馈。右击、Control-click 或手指长按按钮会打开菜单。选择 **Open sensor log** 后可看到 **Sensor log opens** 计数。普通点击只更新 **Inspections** 计数。将指针移到 **Inspection log** 上，用滚轮或双指滚动可浏览巡检记录。列表也支持手指划动。
+
+按住 Command 在 **Inspection log** 上滚动，可以切换记录字号并保留滚动位置。松开 Command 后，滚动继续浏览记录。`//examples/ios:simulator_pointer_scroll_test` 将带修饰键和普通滚动样本送入 UIKit 桥接。`//examples/ios:simulator_pointer_test` 覆盖模拟器鼠标滚动、右击、Control-click 和触摸。
 
 打开 XRack Controls 的 **Open gestures**，可以在 **Gesture canvas** 上用触控板捏合或旋转。两种动作可以组合。松手后保留图形变换，失去焦点时取消本次操作。该面板也可直接用两指触屏，单指仍可点 **Tap pad**。
 
@@ -372,9 +394,15 @@ bazel test --config=ios-sim //examples/ios:simulator_text_drop_test \
 
 ### 键盘辅助输入
 
+用 `--keyboard-layout` 启动 **XRack Controls**，可直接打开键盘设置表单。弹出软键盘后旋转到横屏，用 **Next field** 切换到备注。正文会滚动显示当前字段，**Save drafts** 保持可用。空间较矮且宽度允许时，操作区移到正文侧边。`//examples/ios:simulator_pointer_drag_test` 包含这项横屏回归。
+
+在 iPhone SE 模拟器的横屏模式下，键盘仅显示输入工具栏时，可以拖动同一表单。**Next field** 保持可用，可以继续用外接键盘输入并保存。
+
 用 `--native-actions` 启动 **XRack Controls**，从 **Review options** 打开 **Configure keyboard assistance**。标题输入框默认按单词首字母大写，可用 **Use identifier keyboard** 切换到全大写并关闭自动更正和拼写检查。正在组字时，键盘会在提交后切换。
 
 在 **Review note** 中可以用 Return 换行。输入至少两个字符后，可用键盘工具栏上的 **Previous field** 回到标题，或用 **Next field** 前往访问码。访问码字段隐藏导航工具栏，保留 **Done** 和密码键盘策略。
+
+启用 VoiceOver 后，聚焦 **Review note** 并双击即可编辑。收起键盘后再次双击，原草稿保留。原生回归调用与 VoiceOver 双击相同的 UIKit 激活入口。
 
 从 **Review options** 打开 **Write long note**，可以体验长备注。停靠键盘打开后，输入或移动光标会按需滚动外层表单，让当前行留在键盘上方。手动滚动表单时可以查看其他段落，下一次编辑会带回当前行。
 

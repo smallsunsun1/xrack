@@ -1,6 +1,15 @@
-use crate::{
-    AccessibilityEscape, UserEvent, desktop::WindowEvents, ios_accessibility_actions::NativeActions,
-};
+mod accessibility_actions;
+pub(super) mod back;
+pub(super) mod directory;
+pub(super) mod edit_menu;
+pub(super) mod file_drop;
+pub(super) mod keyboard;
+pub(super) mod native_dialog;
+pub(super) mod pointer;
+pub(super) mod text;
+
+use self::accessibility_actions::NativeActions;
+use crate::{AccessibilityEscape, UserEvent, desktop::WindowEvents};
 use accesskit::{Action, ActionHandler, ActivationHandler, DeactivationHandler, TreeUpdate};
 use accesskit_ios::SubclassingAdapter;
 use block2::RcBlock;
@@ -11,8 +20,8 @@ use objc2::{
     runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject},
 };
 use objc2_foundation::{
-    CGPoint, CGSize, MainThreadMarker, NSArray, NSNotification, NSNotificationCenter, NSNumber,
-    NSNumberFormatter, NSNumberFormatterStyle, NSOperationQueue, NSString,
+    CGPoint, CGRect, CGSize, MainThreadMarker, NSArray, NSNotification, NSNotificationCenter,
+    NSNumber, NSNumberFormatter, NSNumberFormatterStyle, NSOperationQueue, NSString,
 };
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIAccessibilityBoldTextStatusDidChangeNotification,
@@ -22,6 +31,8 @@ use objc2_ui_kit::{
     UIAccessibilityIsReduceMotionEnabled, UIAccessibilityOnOffSwitchLabelsDidChangeNotification,
     UIAccessibilityPageScrolledNotification, UIAccessibilityPostNotification,
     UIAccessibilityReduceMotionStatusDidChangeNotification,
+    UIAccessibilityShouldDifferentiateWithoutColor,
+    UIAccessibilityShouldDifferentiateWithoutColorDidChangeNotification,
     UIContentSizeCategoryDidChangeNotification, UIFontMetrics, UIScrollView,
     UIScrollViewContentInsetAdjustmentBehavior, UIScrollViewDelegate, UITraitChangeHandler,
     UITraitCollection, UITraitEnvironment, UITraitEnvironmentLayoutDirection, UIUserInterfaceStyle,
@@ -335,11 +346,20 @@ pub(super) enum KeyboardOcclusion {
     Floating(Rect),
 }
 
+impl KeyboardOcclusion {
+    pub(super) fn floating(self) -> Option<Rect> {
+        match self {
+            Self::Floating(bounds) => Some(bounds),
+            Self::Docked | Self::None => None,
+        }
+    }
+}
+
 /// Physical touch positions and the Metal layer use the full window. UIKit
 /// reports the safe content rectangle separately through winit's inner bounds.
 pub(super) fn content_geometry(
     window: &Window,
-    editor: Option<&crate::ios_text::TextInput>,
+    editor: Option<&text::TextInput>,
 ) -> ([f64; 4], KeyboardOcclusion) {
     let Ok(inner) = window.inner_position() else {
         return ([0.0; 4], KeyboardOcclusion::None);
@@ -414,17 +434,30 @@ pub(super) fn view(window: &Window) -> Option<&UIView> {
     Some(unsafe { handle.ui_view.cast::<UIView>().as_ref() })
 }
 
-pub(super) fn software_keyboard_visible(window: &Window) -> bool {
+pub(super) fn software_keyboard_visible(window: &Window, editor: &text::TextInput) -> bool {
     view(window).is_some_and(|view| {
+        let rect = |frame: CGRect| {
+            Rect::new(
+                frame.origin.x as f32,
+                frame.origin.y as f32,
+                frame.size.width as f32,
+                frame.size.height as f32,
+            )
+        };
         // SAFETY: The window's view and layout guide are used on the UIKit main thread.
-        unsafe {
-            let keyboard = view.keyboardLayoutGuide().layoutFrame();
-            let bounds = view.bounds();
-            let safe_bottom = bounds.origin.y + bounds.size.height - view.safeAreaInsets().bottom;
-            keyboard.size.width > 0.0
-                && keyboard.size.height > 0.0
-                && keyboard.origin.y < safe_bottom - 1.0
+        let occupied = unsafe {
+            let mut content = rect(view.bounds());
+            content.height = (content.height - view.safeAreaInsets().bottom as f32).max(0.0);
+            rect(view.keyboardLayoutGuide().layoutFrame()).intersect(content)
+        };
+        if occupied.width <= 1.0 || occupied.height <= 1.0 {
+            return false;
         }
+        // UIKit can report only our input accessory when a hardware keyboard is active.
+        editor.accessory_frame(view).is_none_or(|accessory| {
+            let overlap = occupied.intersect(rect(accessory));
+            occupied.width - overlap.width > 1.0 || occupied.height - overlap.height > 1.0
+        })
     })
 }
 
@@ -525,9 +558,14 @@ pub(super) fn button_shapes() -> bool {
     unsafe { UIAccessibilityButtonShapesEnabled().as_bool() }
 }
 
+pub(super) fn differentiate_without_color() -> bool {
+    // SAFETY: The UIKit setting is read on the winit UI thread.
+    unsafe { UIAccessibilityShouldDifferentiateWithoutColor().as_bool() }
+}
+
 pub(super) struct AccessibilityObserver {
     center: Retained<NSNotificationCenter>,
-    tokens: [Retained<NSObject>; 5],
+    tokens: [Retained<NSObject>; 6],
 }
 
 impl AccessibilityObserver {
@@ -545,6 +583,7 @@ impl AccessibilityObserver {
                 UIAccessibilityBoldTextStatusDidChangeNotification,
                 UIAccessibilityOnOffSwitchLabelsDidChangeNotification,
                 UIAccessibilityButtonShapesEnabledStatusDidChangeNotification,
+                UIAccessibilityShouldDifferentiateWithoutColorDidChangeNotification,
             ]
             .map(|name| {
                 center.addObserverForName_object_queue_usingBlock(

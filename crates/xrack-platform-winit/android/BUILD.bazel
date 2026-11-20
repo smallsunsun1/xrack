@@ -1,11 +1,12 @@
 load("@rules_android//android:rules.bzl", "android_library")
+load(":editor_classpath.bzl", "android_editor_classpath")
 
 android_library(
     name = "activity",
     srcs = [
-        "XRackAccessibility.java",
-        "XRackActivity.java",
-        "XRackTextInput.java",
+        "dev/xrack/platform/XRackAccessibility.java",
+        "dev/xrack/platform/XRackActivity.java",
+        "dev/xrack/platform/XRackTextInput.java",
     ],
     custom_package = "dev.xrack.platform",
     exports_manifest = 1,
@@ -14,4 +15,11 @@ android_library(
     tags = ["manual"],
     target_compatible_with = ["@platforms//os:android"],
     visibility = ["//visibility:public"],
+)
+
+android_editor_classpath(
+    name = "editor_classpath",
+    activity = ":activity",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:android"],
 )

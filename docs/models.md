@@ -12,7 +12,7 @@
 
 `ScrollView`、`Flickable`、列表、网格、树和表格可用 `pull-to-refresh: true;` 启用下拉刷新。在内容顶部向下拉超过 72 个逻辑像素后松手，触发一次 `refresh-requested()`。短内容也可以下拉。绑定 `refreshing: root.loading;`，在回调里开始加载，并在异步工作结束后清除加载状态。加载期间显示刷新指示器，应用可将同一个刷新回调用在普通按钮上。iOS 的无障碍元素提供 **Refresh** 操作，加载中暂停该操作。减弱动态效果时，指示器仍会显示，滚动内容的位置保持稳定。
 
-`ScrollView`、`Flickable`、列表、网格、树和表格可以设置 `dismiss-keyboard-on-drag: true;`。iOS 在滚动容器接管触摸拖动时收起软键盘及输入工具栏，保留当前字段焦点、草稿和选区。内容未撑满视口时也可以拖动收起。点回输入框可继续输入。正在组字时保留键盘，属性默认关闭。
+`ScrollView`、`Flickable`、列表、网格、树和表格可以设置 `dismiss-keyboard-on-drag: true;`。iOS 在滚动容器接管触摸拖动时收起软键盘及输入工具栏，保留当前字段焦点、草稿和选区。内容未撑满视口时也可以拖动收起。点回输入框可继续输入。外接键盘只显示当前字段的工具栏时，拖动仍保留原生编辑器和工具栏。正在组字时也保留键盘。属性默认关闭。
 
 在 `ScrollView` 上设置 `reserve-scroll-bar-space: true;` 可为内建滚动条预留空间。视口、内容裁剪、翻页距离和附着滚动条都使用扣除预留区后的矩形。布局一起判断两个轴的策略，并在某一轴占用空间后重新测量另一个轴。默认采用覆盖式滚动条。只读的 `effective-scroll-bar-width` 和 `effective-scroll-bar-height` 分别报告纵向与横向内建滚动条的厚度，未显示时为零。开启预留空间时，`visible-width` 和 `visible-height` 报告扣除预留区后的视口尺寸。运行 `bazel run //examples/list:list -- --scroll-gutters`，可切换预留区、RTL 和固定内容宽度。
 

@@ -996,12 +996,25 @@ pub(crate) fn choice_indicator(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, 
     fill(canvas, bounds, bounds.width * 0.5, theme.disabled_text);
 }
 
+pub(crate) fn choice_content_bounds(menu: &ChoiceMenu<'_>, theme: Palette, offset: usize) -> Rect {
+    let mut row = menu.row_bounds(offset);
+    if theme.differentiate_without_color && menu.selected.is_some() {
+        let gutter = (row.width * 0.25).min(20.0);
+        row.width -= gutter;
+        if menu.layout_direction == LayoutDirection::RightToLeft {
+            row.x += gutter;
+        }
+    }
+    row
+}
+
 pub(crate) fn choice_row(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
     theme: Palette,
     menu: &ChoiceMenu<'_>,
     offset: usize,
+    content: Rect,
 ) -> Result<(), String> {
     let row = menu.row_bounds(offset);
     let index = menu.first + offset;
@@ -1027,8 +1040,13 @@ pub(crate) fn choice_row(
         theme.disabled_text
     };
     let mut paint = text.paint_node_at_size(menu.control, size, color(foreground), false);
-    let pad = (row.width * 0.5).min(10.0);
-    let label_bounds = Rect::new(row.x + pad, row.y, row.width - 2.0 * pad, row.height);
+    let pad = (content.width * 0.5).min(10.0);
+    let label_bounds = Rect::new(
+        content.x + pad,
+        content.y,
+        content.width - 2.0 * pad,
+        content.height,
+    );
     let x = if menu.layout_direction == LayoutDirection::RightToLeft {
         paint.set_text_align(Align::Right);
         label_bounds.x + label_bounds.width
@@ -1039,6 +1057,48 @@ pub(crate) fn choice_row(
         text.advance_painted(value, &paint)
     });
     draw_label(canvas, text, label_bounds, &label, size, x, &paint)
+}
+
+pub(crate) fn choice_selection_marks(
+    canvas: &mut Canvas<WGPURenderer>,
+    theme: Palette,
+    menu: &ChoiceMenu<'_>,
+    offset: usize,
+    content: Rect,
+) {
+    let row = menu.row_bounds(offset);
+    let index = Some(menu.first + offset);
+    if index == menu.highlighted && row.width > 6.0 && row.height > 6.0 {
+        let rect = row.inset(2.5);
+        let mut outline = Path::new();
+        outline.rounded_rect(rect.x, rect.y, rect.width, rect.height, 4.0);
+        let mut paint = Paint::color(color(theme.text));
+        paint.set_line_width(1.5);
+        canvas.stroke_path(&outline, &paint);
+    }
+    if index != menu.selected {
+        return;
+    }
+    let gutter = row.width - content.width;
+    let radius = (gutter * 0.3).min(row.height * 0.25).min(5.0);
+    let x = if menu.layout_direction == LayoutDirection::RightToLeft {
+        row.x + gutter * 0.5
+    } else {
+        row.x + row.width - gutter * 0.5
+    };
+    let y = row.y + row.height * 0.5;
+    let mut check = Path::new();
+    check.move_to(x - radius, y);
+    check.line_to(x - radius * 0.25, y + radius * 0.65);
+    check.line_to(x + radius, y - radius * 0.65);
+    let tint = if menu.row_enabled(offset) {
+        theme.text
+    } else {
+        theme.disabled_text
+    };
+    let mut paint = Paint::color(color(tint));
+    paint.set_line_width(1.6_f32.min(radius * 0.5));
+    canvas.stroke_path(&check, &paint);
 }
 
 pub(crate) fn label(
@@ -1321,6 +1381,31 @@ pub(crate) struct TabAppearance {
     pub close: Option<Rect>,
     pub close_hovered: bool,
     pub direction: LayoutDirection,
+}
+
+pub(crate) fn tab_selection_mark(
+    canvas: &mut Canvas<WGPURenderer>,
+    bounds: Rect,
+    theme: Palette,
+    enabled: bool,
+) {
+    let width = (bounds.width * 0.6).min((bounds.width - 4.0).max(0.0));
+    let height = (bounds.height * 0.2).min(3.0);
+    let bottom = (bounds.height * 0.2).min(3.0);
+    let mark = Rect::new(
+        bounds.x + (bounds.width - width) * 0.5,
+        bounds.y + bounds.height - height - bottom,
+        width,
+        height,
+    );
+    if width > 0.0 && height > 0.0 {
+        let tint = if enabled {
+            theme.text
+        } else {
+            theme.disabled_text
+        };
+        fill(canvas, mark, height * 0.5, tint);
+    }
 }
 
 pub(crate) fn tab(

@@ -358,7 +358,7 @@ fn dispatch_input<T>(
         }
         InputEvent::KeyEvent(key) => {
             if let Some((physical, event)) =
-                crate::android_keyboard::native_key(&active.app, key, accent)
+                crate::android::keyboard::native_key(&active.app, key, accent)
             {
                 handler.android_event(active, AndroidEvent::Key(physical, event));
                 InputStatus::Handled

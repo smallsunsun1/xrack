@@ -1,7 +1,6 @@
 use crate::{
     UserEvent,
     desktop::WindowEvents,
-    ios,
     text_indices::{byte_offset, cover_graphemes},
 };
 use block2::RcBlock;
@@ -43,10 +42,10 @@ use xrack_runtime::{
 pub(crate) struct NativeEdit {
     epoch: u64,
     serial: u64,
-    pub(super) input: NativeInput,
+    pub(crate) input: NativeInput,
 }
 
-pub(super) enum NativeInput {
+pub(crate) enum NativeInput {
     Preedit {
         value: String,
         marked: Range<usize>,
@@ -67,9 +66,9 @@ pub(super) enum NativeInput {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct EditorKeyboard {
-    pub(super) return_key: ReturnKey,
-    pub(super) fields: Option<[bool; 2]>,
+pub(crate) struct EditorKeyboard {
+    pub(crate) return_key: ReturnKey,
+    pub(crate) fields: Option<[bool; 2]>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -296,19 +295,19 @@ struct Revision {
 }
 
 #[derive(Clone)]
-pub(super) struct TextActions {
+pub(crate) struct TextActions {
     revision: Rc<Revision>,
-    pub(super) events: WindowEvents,
+    pub(crate) events: WindowEvents,
 }
 
-pub(super) struct CopyRevision {
+pub(crate) struct CopyRevision {
     revision: Rc<Revision>,
     epoch: u64,
     serial: u64,
 }
 
 impl CopyRevision {
-    pub(super) fn is_current(&self) -> bool {
+    pub(crate) fn is_current(&self) -> bool {
         self.revision.epoch.get() == self.epoch
             && self.revision.serial.get() == self.serial
             && self.revision.active.get().is_some()
@@ -327,7 +326,7 @@ impl TextActions {
         }));
     }
 
-    pub(super) fn can_run(&self, command: TextCommand) -> bool {
+    pub(crate) fn can_run(&self, command: TextCommand) -> bool {
         let revision = &self.revision;
         if revision.active.get().is_none() || revision.ended.get() || revision.marked.get() {
             return false;
@@ -349,7 +348,7 @@ impl TextActions {
         }
     }
 
-    pub(super) fn run(&self, command: TextCommand) {
+    pub(crate) fn run(&self, command: TextCommand) {
         if self.can_run(command) {
             self.post(NativeInput::Command(command));
         }
@@ -376,7 +375,7 @@ impl TextActions {
         }
     }
 
-    pub(super) fn update_marked_text(
+    pub(crate) fn update_marked_text(
         &self,
         multiline: bool,
         input: &ProtocolObject<dyn UITextInput>,
@@ -591,12 +590,12 @@ declare_class!(
     }
 );
 
-pub(super) struct TextInput {
+pub(crate) struct TextInput {
     field: Responder,
     multiline: Responder,
     submit_toolbar: SubmitToolbar,
     delegate: Retained<TextDelegate>,
-    undo_manager: crate::ios_keyboard::UndoManagerSlot,
+    undo_manager: super::keyboard::UndoManagerSlot,
     center: Retained<NSNotificationCenter>,
     observers: [Retained<NSObject>; 3],
     revision: Rc<Revision>,
@@ -609,8 +608,8 @@ pub(super) struct TextInput {
 }
 
 impl TextInput {
-    pub(super) fn new(window: &Window, events: &WindowEvents) -> Option<Self> {
-        let view = ios::view(window)?;
+    pub(crate) fn new(window: &Window, events: &WindowEvents) -> Option<Self> {
+        let view = super::view(window)?;
         let mtm = MainThreadMarker::new()?;
         let revision = Rc::new(Revision::default());
 
@@ -622,14 +621,13 @@ impl TextInput {
                 revision: revision.clone(),
                 events: events.clone(),
             };
-            let field = crate::ios_keyboard::text_field(mtm, actions.clone(), undo_manager.clone());
+            let field = super::keyboard::text_field(mtm, actions.clone(), undo_manager.clone());
             let delegate = mtm.alloc::<TextDelegate>().set_ivars(actions.clone());
             let delegate: Retained<TextDelegate> = msg_send_id![super(delegate), init];
             field.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             let submit_toolbar = submit_toolbar(mtm, &delegate);
             let field = Responder::Field(field);
-            let multiline =
-                crate::ios_keyboard::text_view(mtm, actions.clone(), undo_manager.clone());
+            let multiline = super::keyboard::text_view(mtm, actions.clone(), undo_manager.clone());
             multiline.setScrollsToTop(false);
             multiline.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             let multiline = Responder::View(multiline);
@@ -700,7 +698,7 @@ impl TextInput {
         }
     }
 
-    pub(super) fn discard_stale_edits(&mut self, target: &Target, value: &str) -> bool {
+    pub(crate) fn discard_stale_edits(&mut self, target: &Target, value: &str) -> bool {
         let Some((_, mode)) = self
             .focused
             .as_ref()
@@ -736,7 +734,7 @@ impl TextInput {
         true
     }
 
-    pub(super) fn focus(
+    pub(crate) fn focus(
         &mut self,
         target: &Target,
         node: &Node,
@@ -874,7 +872,7 @@ impl TextInput {
         active
     }
 
-    pub(super) fn clear_focus(&mut self) {
+    pub(crate) fn clear_focus(&mut self) {
         let Some((_, mode)) = self.focused.take() else {
             return;
         };
@@ -888,7 +886,7 @@ impl TextInput {
         responder.set_value("");
     }
 
-    pub(super) fn editing(&self, target: &Target) -> bool {
+    pub(crate) fn editing(&self, target: &Target) -> bool {
         self.revision.active.get().is_some()
             && self
                 .focused
@@ -896,7 +894,16 @@ impl TextInput {
                 .is_some_and(|(focused, _)| focused == target)
     }
 
-    pub(super) fn copy_revision(&self) -> Option<CopyRevision> {
+    pub(crate) fn retains_focus(&self, target: &Target) -> bool {
+        self.editing(target)
+            && !self.revision.ended.get()
+            && self.focused.as_ref().is_some_and(|(_, mode)| {
+                // SAFETY: The responder belongs to the UIKit main thread.
+                unsafe { self.responder(*mode).view().isFirstResponder() }
+            })
+    }
+
+    pub(crate) fn copy_revision(&self) -> Option<CopyRevision> {
         let revision = CopyRevision {
             revision: self.revision.clone(),
             epoch: self.revision.epoch.get(),
@@ -905,7 +912,7 @@ impl TextInput {
         revision.is_current().then_some(revision)
     }
 
-    pub(super) fn can_dismiss_for_scroll(&self, target: &Target) -> bool {
+    pub(crate) fn can_dismiss_for_scroll(&self, target: &Target) -> bool {
         if self.applied != self.revision.serial.get() {
             return false;
         }
@@ -917,7 +924,7 @@ impl TextInput {
         })
     }
 
-    pub(super) fn accessory_frame(&self, view: &UIView) -> Option<CGRect> {
+    pub(crate) fn accessory_frame(&self, view: &UIView) -> Option<CGRect> {
         if !self
             .revision
             .active
@@ -954,7 +961,7 @@ impl TextInput {
         self.applied = self.revision.serial.get();
     }
 
-    pub(super) fn accept(&mut self, target: &Target, edit: &NativeEdit) -> bool {
+    pub(crate) fn accept(&mut self, target: &Target, edit: &NativeEdit) -> bool {
         if self
             .focused
             .as_ref()
@@ -1094,7 +1101,7 @@ fn text_changes(
     })
 }
 
-pub(super) fn apply_marked_text(
+pub(crate) fn apply_marked_text(
     editor: &mut TextEdit,
     committed: &str,
     value: &str,

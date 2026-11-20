@@ -368,11 +368,22 @@ pub struct ChoiceMenu<'a> {
     pub highlighted: Option<usize>,
     pub selected: Option<usize>,
     pub font_size: f32,
+    session: u64,
     rows_bounds: Rect,
     metrics: PopupMetrics,
 }
 
 impl ChoiceMenu<'_> {
+    #[doc(hidden)]
+    pub fn session(&self) -> u64 {
+        self.session
+    }
+
+    #[doc(hidden)]
+    pub fn row_count(&self) -> usize {
+        choice_count(self.control)
+    }
+
     #[doc(hidden)]
     pub fn popup_style(&self) -> Option<&Node> {
         popup_style(self.control)
@@ -384,7 +395,7 @@ impl ChoiceMenu<'_> {
 
     pub fn scroll_indicator(&self) -> Option<Rect> {
         let metrics = &self.metrics;
-        let total = choice_count(self.control);
+        let total = self.row_count();
         let visible = self.rows.len();
         if !metrics.scroll_indicator || visible == 0 || visible >= total {
             return None;
@@ -423,7 +434,7 @@ impl ChoiceMenu<'_> {
         if backward {
             self.first > 0
         } else {
-            self.first + self.rows.len() < choice_count(self.control)
+            self.first + self.rows.len() < self.row_count()
         }
     }
 
@@ -806,6 +817,7 @@ impl ChoicePopup {
                 .then(|| combo_index(node))
                 .flatten(),
             font_size: geo.font_size,
+            session: self.session,
             rows_bounds: geo.rows,
             metrics: geo.metrics,
         })

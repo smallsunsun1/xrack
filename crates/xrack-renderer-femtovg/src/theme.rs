@@ -76,6 +76,7 @@ pub(crate) struct Palette {
     increased_contrast: bool,
     pub(crate) switch_labels: bool,
     pub(crate) button_shapes: bool,
+    pub(crate) differentiate_without_color: bool,
     accent: Option<Color>,
     on_accent: Option<Color>,
 }
@@ -96,6 +97,7 @@ impl Palette {
         increased_contrast: bool,
         switch_labels: bool,
         button_shapes: bool,
+        differentiate_without_color: bool,
     ) -> Self {
         let scheme = scene.color_scheme().map(|scheme| match scheme {
             ColorScheme::System => system,
@@ -143,6 +145,7 @@ impl Palette {
             increased_contrast,
             switch_labels,
             button_shapes,
+            differentiate_without_color,
             accent,
             on_accent,
         }

@@ -46,6 +46,7 @@ enum EditorPointerMode {
     StartWord,
     StartParagraph,
     Drag,
+    TouchDrag,
 }
 
 /// A pointer hit bound to the editor that owned the press.
@@ -116,9 +117,29 @@ impl TextSystem {
             return Vec::new();
         };
         let value = input.editor_value(node);
-        let selection = editor.selection(&value);
+        let display = display_text(node, &value, Some(editor), true);
+        let selection = display.selection;
         if selection.is_empty() || !item.visible || !item.enabled {
             return Vec::new();
+        }
+        if node.selectable_styled_text() {
+            return item
+                .styled_text
+                .iter()
+                .flat_map(|plan| &plan.fragments)
+                .flat_map(|fragment| {
+                    crate::styled_text::selection_spans(fragment, &selection)
+                        .into_iter()
+                        .map(move |span| {
+                            Rect::new(
+                                item.bounds.x + fragment.bounds.x + span.start,
+                                item.bounds.y + fragment.bounds.y,
+                                span.end - span.start,
+                                fragment.bounds.height,
+                            )
+                        })
+                })
+                .collect();
         }
         let bounds = editor_part(node, item).unwrap_or(item.bounds);
         let direction = item.layout_direction_override();
@@ -134,7 +155,8 @@ impl TextSystem {
                 })
         };
         if is_multiline_text_input(node.kind) {
-            let geometry = self.text_area_layout_in_direction(node, bounds, &value, direction);
+            let geometry =
+                self.text_area_layout_in_direction(node, bounds, &display.content, direction);
             let scroll = geometry.clamp_scroll(input.text_scroll(&target.path));
             geometry
                 .visible_lines(scroll)
@@ -150,12 +172,12 @@ impl TextSystem {
                 .flatten()
                 .collect()
         } else {
-            let line = self.single_line_layout_at_size(node, &value, size);
+            let line = self.single_line_layout_at_size(node, &display.content, size);
             let (x, _) = entry_origin(
                 node,
                 area,
                 &line,
-                Some(editor.position(&value)),
+                display.caret,
                 false,
                 direction,
                 editor.horizontal_drag_scroll(),
@@ -170,6 +192,50 @@ impl TextSystem {
             )
             .collect()
         }
+    }
+
+    /// Anchor a native edit menu to visible editor geometry in window coordinates.
+    #[doc(hidden)]
+    pub fn editor_menu_anchor(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        input: &mut Interaction,
+        floating_keyboard: Option<Rect>,
+    ) -> Option<Rect> {
+        let target = input.focused.as_ref()?;
+        let node = target.node_in(scene)?;
+        let item = layout
+            .at_path(&target.path)
+            .filter(|item| item.enabled && item.visible)?;
+        let editor = input
+            .editor
+            .as_ref()
+            .filter(|editor| !editor.is_composing())?;
+        let value = input.editor_value(node);
+        let selection = editor.selection(&value);
+        let rects = if selection.is_empty()
+            || value[selection]
+                .bytes()
+                .all(|byte| matches!(byte, b'\n' | b'\r'))
+        {
+            if node.selectable_styled_text() {
+                vec![item.bounds]
+            } else {
+                self.editor_caret_rect(input, scene, layout, false)
+                    .into_iter()
+                    .collect()
+            }
+        } else {
+            self.editor_selection_rects(node, item, input, target)
+        };
+        rects
+            .into_iter()
+            .filter_map(|rect| {
+                let visible = item.visible_window_bounds(rect).intersect(layout.bounds);
+                unobstructed_menu_anchor(visible, floating_keyboard)
+            })
+            .max_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)))
     }
 
     #[doc(hidden)]
@@ -289,6 +355,29 @@ impl TextSystem {
     }
 }
 
+fn unobstructed_menu_anchor(rect: Rect, keyboard: Option<Rect>) -> Option<Rect> {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return None;
+    }
+    let Some(covered) = keyboard
+        .map(|keyboard| rect.intersect(keyboard))
+        .filter(|covered| covered.width > 0.0 && covered.height > 0.0)
+    else {
+        return Some(rect);
+    };
+    let right = covered.x + covered.width;
+    let bottom = covered.y + covered.height;
+    [
+        Rect::new(rect.x, rect.y, rect.width, covered.y - rect.y),
+        Rect::new(rect.x, bottom, rect.width, rect.y + rect.height - bottom),
+        Rect::new(rect.x, rect.y, covered.x - rect.x, rect.height),
+        Rect::new(right, rect.y, rect.x + rect.width - right, rect.height),
+    ]
+    .into_iter()
+    .filter(|part| part.width > 0.0 && part.height > 0.0)
+    .max_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)))
+}
+
 impl PointerCaret {
     pub fn new(
         input: &Interaction,
@@ -340,6 +429,12 @@ impl PointerCaret {
     #[doc(hidden)]
     pub fn during_drag(mut self) -> Self {
         self.mode = EditorPointerMode::Drag;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn during_touch_drag(mut self) -> Self {
+        self.mode = EditorPointerMode::TouchDrag;
         self
     }
 
@@ -405,13 +500,19 @@ impl PointerCaret {
         layout: &LayoutNode,
         now: Instant,
     ) -> bool {
-        let Some((point, elapsed)) = input.take_text_selection_scroll(now) else {
+        let Some((point, elapsed, touch_origin)) = input.take_text_selection_scroll(now) else {
             return false;
         };
-        Self::from_pressed(input, scene, layout, point, true).is_some_and(|pointer| {
-            pointer
-                .during_drag()
-                .place_with_scroll(text_system, input, scene, layout, now, elapsed)
+        let pointer = if let Some(origin) = touch_origin {
+            input
+                .touch_selection_target()
+                .and_then(|target| Self::new(input, scene, layout, target, origin, point, true))
+                .map(Self::during_touch_drag)
+        } else {
+            Self::from_pressed(input, scene, layout, point, true).map(Self::during_drag)
+        };
+        pointer.is_some_and(|pointer| {
+            pointer.place_with_scroll(text_system, input, scene, layout, now, elapsed)
         })
     }
 
@@ -434,18 +535,22 @@ impl PointerCaret {
         if mode == MouseSelectionMode::Caret {
             match self.mode {
                 EditorPointerMode::Drag => {
-                    input.schedule_text_selection_scroll(&self.target, None, now);
+                    input.schedule_text_selection_scroll(&self.target, None, None, now);
                     return false;
                 }
                 EditorPointerMode::Press
                 | EditorPointerMode::StartWord
                 | EditorPointerMode::StartParagraph => input.clear_editor_click(),
-                EditorPointerMode::Caret => {}
+                EditorPointerMode::Caret | EditorPointerMode::TouchDrag => {}
             }
         }
         input.sync_editor(scene);
         let value = editor_text(input, node);
-        let dragging = matches!(self.mode, EditorPointerMode::Drag);
+        let touch_origin = matches!(self.mode, EditorPointerMode::TouchDrag).then_some(self.origin);
+        let dragging = matches!(
+            self.mode,
+            EditorPointerMode::Drag | EditorPointerMode::TouchDrag
+        );
         let mut drag_scroll = None;
         let (position, reveal) = if node.selectable_styled_text() {
             let local = Point {
@@ -472,6 +577,7 @@ impl PointerCaret {
                 input.schedule_text_selection_scroll(
                     &self.target,
                     pending.then_some(self.point),
+                    touch_origin,
                     now,
                 );
             }
@@ -506,6 +612,7 @@ impl PointerCaret {
                 input.schedule_text_selection_scroll(
                     &self.target,
                     hit.pending.then_some(self.point),
+                    touch_origin,
                     now,
                 );
                 drag_scroll = hit.drag_scroll;
@@ -552,6 +659,7 @@ impl PointerCaret {
                     editor.place_caret(&value, position, true);
                 }
             }
+            (EditorPointerMode::TouchDrag, _) => editor.place_caret(&value, position, true),
             (pointer, mode) => editor.place_caret(
                 &value,
                 position,

@@ -17,6 +17,7 @@ ffmpeg = [
     "dep:lzma-rust2",
     "dep:sha2",
     "dep:tempfile",
+    "dep:tokio",
     "dep:xrack-media-bin-aarch64-apple-darwin",
     "dep:xrack-media-bin-aarch64-pc-windows-msvc",
     "dep:xrack-media-bin-aarch64-unknown-linux-gnu",
@@ -28,6 +29,7 @@ bazel_bindings = ["ffmpeg"]
 [dependencies]
 libloading.workspace = true
 tempfile = { version = "3.27", optional = true }
+tokio = { version = "=1.54.1", features = ["sync"], optional = true }
 xrack-runtime.workspace = true
 
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"], optional = true }

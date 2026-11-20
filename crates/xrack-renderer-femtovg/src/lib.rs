@@ -160,6 +160,7 @@ pub struct Renderer {
     system_increased_contrast: bool,
     system_switch_labels: bool,
     system_button_shapes: bool,
+    system_differentiate_without_color: bool,
 }
 
 /// GPU resources that can back more than one independent renderer.
@@ -269,6 +270,7 @@ impl Renderer {
             system_increased_contrast: false,
             system_switch_labels: false,
             system_button_shapes: false,
+            system_differentiate_without_color: false,
         })
     }
 
@@ -356,6 +358,11 @@ impl Renderer {
         std::mem::replace(&mut self.system_button_shapes, enabled) != enabled
     }
 
+    /// Mark selected tabs and choices with shapes when requested by the host.
+    pub fn set_system_differentiate_without_color(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.system_differentiate_without_color, enabled) != enabled
+    }
+
     fn palette(&self, scene: &Node) -> Palette {
         Palette::resolve(
             self.theme,
@@ -364,6 +371,7 @@ impl Renderer {
             self.system_increased_contrast,
             self.system_switch_labels,
             self.system_button_shapes,
+            self.system_differentiate_without_color,
         )
     }
 
@@ -776,8 +784,8 @@ impl Renderer {
                 renderer.canvas.clip_path(&panel, FillRule::NonZero);
             }
             for offset in 0..menu.rows.len() {
+                let bounds = controls::choice_content_bounds(menu, frame.theme, offset);
                 if let Some(node) = artwork.as_mut().and_then(Iterator::next).flatten() {
-                    let bounds = menu.row_bounds(offset);
                     let layout = xrack_layout::layout_choice_option(
                         &node,
                         bounds,
@@ -788,15 +796,25 @@ impl Renderer {
                     renderer.paint_group(bounds, 1.0, |renderer| {
                         renderer.paint(&node, &layout, &mut Vec::new(), option_frame, false)
                     })?;
-                    continue;
+                } else {
+                    controls::choice_row(
+                        &mut renderer.canvas,
+                        &renderer.text,
+                        frame.theme,
+                        menu,
+                        offset,
+                        bounds,
+                    )?;
                 }
-                controls::choice_row(
-                    &mut renderer.canvas,
-                    &renderer.text,
-                    frame.theme,
-                    menu,
-                    offset,
-                )?;
+                if frame.theme.differentiate_without_color {
+                    controls::choice_selection_marks(
+                        &mut renderer.canvas,
+                        frame.theme,
+                        menu,
+                        offset,
+                        bounds,
+                    );
+                }
             }
             if let Some(indicator) = menu.scroll_indicator() {
                 controls::choice_indicator(&mut renderer.canvas, indicator, frame.theme);
@@ -862,6 +880,26 @@ impl Renderer {
                 &border_path(bounds, corner_radii(node, bounds), width),
                 &Paint::color(color(tint)),
             );
+        }
+        if frame.theme.differentiate_without_color
+            && matches!(node.kind, "TabWidget" | "TabBar")
+            && let Some(index) = group_index(node)
+            && let Some(tab) = node.children.get(index)
+            && let Some(page) = layout.child_at(index)
+            && let Some(header) = page
+                .tab_header
+                .or_else(|| (node.kind == "TabBar" && page.visible).then_some(page.bounds))
+        {
+            let clip = header.intersect(content);
+            self.paint_group(clip, tab.opacity(), |renderer| {
+                controls::tab_selection_mark(
+                    &mut renderer.canvas,
+                    header,
+                    frame.theme,
+                    page.enabled,
+                );
+                Ok(())
+            })?;
         }
         for header in layout.list_section_headers() {
             let clip = content.intersect(header.bounds);

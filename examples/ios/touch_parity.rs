@@ -1570,19 +1570,42 @@ fn exercise_pointer_inspection<C: Component>(component: C) {
         Some("Pointer over log")
     );
 
-    let scene = ui.scene().clone();
-    let wheel = xrack_runtime::WheelEvent {
-        delta_y: xrack_runtime::Length(60.0),
-        ..Default::default()
-    };
-    let route = input.wheel_route(&scene, ui.layout(), wheel).unwrap();
-    ui.update(|component| {
-        assert_eq!(
-            route.dispatch(component, &scene),
-            xrack_runtime::EventResult::Reject
-        );
-    });
-    assert_eq!(ui.node("wheel-count").text("text"), Some("Wheel events 1"));
+    for (command, delta, result, size) in [
+        (
+            true,
+            60.0,
+            xrack_runtime::EventResult::Accept,
+            "Log text enlarged",
+        ),
+        (
+            true,
+            -60.0,
+            xrack_runtime::EventResult::Accept,
+            "Log text standard",
+        ),
+        (
+            false,
+            60.0,
+            xrack_runtime::EventResult::Reject,
+            "Log text standard",
+        ),
+    ] {
+        let scene = ui.scene().clone();
+        let wheel = xrack_runtime::WheelEvent {
+            delta_y: xrack_runtime::Length(delta),
+            modifiers: xrack_runtime::KeyModifiers {
+                primary: command,
+                meta: command,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let route = input.wheel_route(&scene, ui.layout(), wheel).unwrap();
+        ui.update(|component| assert_eq!(route.dispatch(component, &scene), result));
+        assert_eq!(ui.node("log-text-size").text("text"), Some(size));
+    }
+    assert_eq!(ui.node("wheel-count").text("text"), Some("Wheel events 3"));
+    assert_eq!(ui.node("log-position").text("text"), Some("Log at top"));
     assert!(ui.scroll("log", Point { x: 0.0, y: 60.0 }));
     assert_eq!(ui.node("log-position").text("text"), Some("Log scrolled"));
 
@@ -2600,6 +2623,14 @@ fn exercise_clipboard_authorization_demo<C: Component>(component: C) {
     ui.update(|_| {});
     assert_eq!(text_input_value(ui.node("draft-field")), "A🧪B");
     assert_eq!(ui.node("selection").text("text"), Some("Selected 🧪"));
+    input.apply_text_selection(ui.scene(), TextCommand::SelectAll);
+    let copy = xrack_layout::TextEditContext::for_clipboard(&input, ui.scene(), TextCommand::Copy)
+        .unwrap();
+    assert_eq!(copy.selection(), "A🧪B");
+    assert!(!context.is_current(&input, ui.scene()));
+    focus.sync(&input, ui.scene(), ui.layout(), true);
+    ui.update(|_| {});
+    assert_eq!(ui.node("selection").text("text"), Some("Selected A🧪B"));
 }
 
 #[test]
@@ -2669,6 +2700,88 @@ fn keyboard_assistance_bindings_match_in_both_backends() -> Result<(), Box<dyn s
     exercise_keyboard_options(native_actions_ui::KeyboardOptionsDemo::new());
     let module = xrack_compiler::compile(include_str!("native_actions.xr"), "native_actions.xr")?;
     exercise_keyboard_options(load_mlir(&module.mlir)?.create("KeyboardOptionsDemo")?);
+    Ok(())
+}
+
+#[test]
+fn compact_keyboard_dialog_keeps_fields_and_save_reachable_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn exercise(component: impl Component) {
+        let mut ui = UiDriver::headless(component, Size::new(874.0, 139.0));
+        let body = ui.bounds("form-viewport");
+        let save = ui.bounds("save-drafts");
+        assert!(body.height >= 44.0 && body.x + body.width <= save.x);
+        assert!(
+            save.height >= 44.0 && ui.can_hit("save-drafts"),
+            "Save bounds: {save:?}"
+        );
+        ui.click("draft-title");
+        for _ in 0..3 {
+            ui.tab();
+        }
+        assert_eq!(ui.focused(), Some("review-note"));
+        ui.fill_focused("Checked");
+        assert_eq!(ui.node("review-note").text("text"), Some("Checked"));
+        let viewport = ui.path("form-viewport");
+        assert!(
+            ui.layout_at(&viewport)
+                .unwrap()
+                .scroll_on(xrack_runtime::Orientation::Vertical)
+                .unwrap()
+                .offset
+                > 0.0
+        );
+        assert!(ui.can_hit("review-note"));
+        assert_eq!(ui.bounds("save-drafts"), save);
+        ui.click("save-drafts");
+        assert!(!ui.node("options").boolean("open", true));
+    }
+
+    let module = xrack_compiler::compile(include_str!("native_actions.xr"), "native_actions.xr")?;
+    exercise(native_actions_ui::KeyboardLayoutDemo::new());
+    exercise(load_mlir(&module.mlir)?.create("KeyboardLayoutDemo")?);
+    Ok(())
+}
+
+#[test]
+fn edit_menu_dismissal_keeps_the_draft_selection_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn exercise(component: impl Component) {
+        let mut ui = UiDriver::headless(component, Size::new(390.0, 480.0));
+        let scene = ui.scene().clone();
+        let layout = ui.layout();
+        let path = ui.path("entry");
+        let mut input = Interaction::default();
+        let target = input.accessibility_target(&scene, layout, &path).unwrap();
+        input.focus_target(&scene, layout, target.clone());
+        input.sync_editor(&scene);
+        input.apply_text_selection(&scene, TextCommand::SelectAll);
+        let bounds = layout.at_path(&path).unwrap().bounds;
+        let point = Point {
+            x: bounds.x + 22.0,
+            y: bounds.y + bounds.height / 2.0,
+        };
+        assert!(input.open_touch_text_menu(&scene, layout, target.clone(), point));
+        let menu = input.take_native_text_menu().unwrap();
+        assert!(menu.entries().any(|(_, title)| title == "Copy"));
+        assert!(input.native_text_menu_is_current(&menu, &scene, layout));
+        let session = menu.session();
+        drop(menu);
+        assert_eq!(input.focused.as_ref(), Some(&target));
+        assert_eq!(input.editor.as_ref().unwrap().selection("Survey"), 0..6);
+        assert!(input.open_touch_text_menu(&scene, layout, target, point));
+        let menu = input.take_native_text_menu().unwrap();
+        assert_ne!(menu.session(), session);
+        drop(menu);
+
+        let close = input.dialog_escape(&scene, layout).unwrap();
+        ui.update(|app| assert!(app.control_at(&scene, &close.path, close.action)));
+        assert!(!ui.node("draft").boolean("open", true));
+    }
+
+    let module = xrack_compiler::compile(include_str!("native_actions.xr"), "native_actions.xr")?;
+    exercise(native_actions_ui::EditMenuEscapeDemo::new());
+    exercise(load_mlir(&module.mlir)?.create("EditMenuEscapeDemo")?);
     Ok(())
 }
 
@@ -4826,6 +4939,33 @@ fn transparent_buttons_keep_input_and_disabled_state_in_both_backends()
 }
 
 #[test]
+fn selection_marks_demo_keeps_touch_and_keyboard_selection_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn exercise(component: impl Component) {
+        let mut ui = UiDriver::headless(component, Size::new(390.0, 480.0));
+        ui.click("activity-tab");
+        assert_eq!(
+            ui.node("selection-status").text("text"),
+            Some("Activity selected")
+        );
+        assert!(ui.group_key(NavigationKey::Left));
+        assert_eq!(
+            ui.node("selection-status").text("text"),
+            Some("Overview selected")
+        );
+        ui.click("marked-choice");
+        ui.choice_key(xrack_layout::ChoiceKey::Down);
+        ui.choice_key(xrack_layout::ChoiceKey::Accept);
+        assert_eq!(ui.node("marked-choice").int("current-index"), Some(1));
+    }
+
+    let module = xrack_compiler::compile(include_str!("native_actions.xr"), "native_actions.xr")?;
+    exercise(native_actions_ui::SelectionMarksDemo::new());
+    exercise(load_mlir(&module.mlir)?.create("SelectionMarksDemo")?);
+    Ok(())
+}
+
+#[test]
 fn menu_paging_preserves_the_scope_and_command_in_both_backends()
 -> Result<(), Box<dyn std::error::Error>> {
     fn exercise(component: impl Component) {
@@ -4898,6 +5038,63 @@ fn menu_paging_preserves_the_scope_and_command_in_both_backends()
         assert_eq!(
             ui.node("menu-paging-status").text("text"),
             Some("Filter applied")
+        );
+    }
+
+    let module = xrack_compiler::compile(include_str!("native_actions.xr"), "native_actions.xr")?;
+    exercise(native_actions_ui::MenuPagingDemo::new());
+    exercise(load_mlir(&module.mlir)?.create("MenuPagingDemo")?);
+    Ok(())
+}
+
+#[test]
+fn choice_paging_skips_no_pages_and_commits_only_an_available_option_in_both_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn exercise(component: impl Component) {
+        let mut ui = UiDriver::headless(component, Size::new(390.0, 540.0));
+        let scene = ui.component().render_shared();
+        let layout = ui.layout();
+        let mut input = Interaction::default();
+        let target = input
+            .accessibility_target(&scene, layout, &ui.path("paging-choice"))
+            .unwrap();
+        assert!(input.open_choice(&scene, layout, target));
+        assert!(input.choice_page(&scene, layout, false));
+        let menu = input.choice_menu(&scene, layout).unwrap();
+        assert_eq!(
+            (menu.first, menu.row_count(), menu.highlighted),
+            (3, 9, None)
+        );
+        assert!((0..menu.rows.len()).all(|offset| !menu.row_enabled(offset)));
+        assert!(
+            input
+                .choice_key(&scene, layout, xrack_layout::ChoiceKey::Accept)
+                .is_none()
+        );
+        assert_eq!(
+            ui.node("interval-status").text("text"),
+            Some("Interval: Daily")
+        );
+
+        assert!(input.choice_page(&scene, layout, false));
+        assert!(!input.choice_page(&scene, layout, false));
+        let menu = input.choice_menu(&scene, layout).unwrap();
+        assert_eq!(menu.rows.last().map(String::as_str), Some("Annual"));
+        let bounds = menu.row_bounds(menu.rows.len() - 1);
+        input.pointer_move(
+            &scene,
+            layout,
+            Point {
+                x: bounds.x + 10.0,
+                y: bounds.y + 10.0,
+            },
+        );
+        assert!(input.choice_press(&scene, layout));
+        let action = input.choice_release(&scene, layout).unwrap();
+        ui.update(|app| assert!(app.control_at(&scene, &action.path, action.action)));
+        assert_eq!(
+            ui.node("interval-status").text("text"),
+            Some("Interval: Annual")
         );
     }
 

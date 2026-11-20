@@ -1,4 +1,4 @@
-use crate::android_directory::with_activity;
+use crate::android::directory::with_activity;
 use android_activity::AndroidApp;
 use jni::{
     Env, jni_sig, jni_str,

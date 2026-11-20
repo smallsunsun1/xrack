@@ -22,7 +22,7 @@ let playback = VoicePlayback::open()?;
 let remote_audio = playback.sender();
 ```
 
-`VoiceCapture::start` 会在工作线程打开设备。用 `status()` 查看设备状态，用 `try_frame()` 取帧或在后台用 `wait_frame(timeout)` 等待。Tokio 应用可以在 `spawn_blocking` 里取帧，通过有界 channel 交给异步网络任务。`VoiceFrame::sequence` 可用于发现积压时被丢弃的帧。停止通话时调用 `stop()`，或者释放采集句柄。如果要在重开设备前确认上一次采集已退出，可在后台用 `wait_stopped(timeout)` 等待。保持 `VoicePlayback` 存活，把可克隆的 `remote_audio` 交给收包线程，调用 `push(&frame)` 播放。采集和播放队列各保留最多 12 帧。
+`VoiceCapture::start` 会在工作线程打开设备。异步任务可以用 `recv().await` 取帧，设备停止时收到 `Ok(None)`，打开设备或采集失败时收到错误。等待收帧期间，Tokio 可以继续处理网络 I/O。同步调用可用 `try_frame()` 或在后台用 `wait_frame(timeout)`。用 `status()` 可以查看设备状态。`VoiceFrame::sequence` 可用于发现积压时被丢弃的帧。停止通话时调用 `stop()`，或者释放采集句柄。如果要在重开设备前确认上一次采集已退出，可在后台用 `wait_stopped(timeout)` 等待。保持 `VoicePlayback` 存活，把可克隆的 `remote_audio` 交给收包线程，调用 `push(&frame)` 播放。采集和播放队列各保留最多 12 帧。
 
 macOS 使用 AVFoundation，`None` 选择系统默认麦克风，显式名称可用设备名或序号。Windows 使用 DirectShow，自动选择可用音频输入，也可传入音频设备名。Linux 使用 ALSA，支持例如 `default` 或 `hw:0,0`。macOS 应用包的 `Info.plist` 需要 `NSMicrophoneUsageDescription`，启用 App Sandbox 时还需音频输入 entitlement。 [Apple 麦克风权限](https://developer.apple.com/documentation/bundleresources/information-property-list/nsmicrophoneusagedescription)
 

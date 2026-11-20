@@ -285,7 +285,7 @@ async fn open(
         },
     );
     let _pending = Pending(token);
-    crate::android_directory::with_activity(app, |env, activity| {
+    crate::android::directory::with_activity(app, |env, activity| {
         let class = env.get_object_class(activity)?;
         // SAFETY: Both callbacks use the instance JNI ABI declared by XRackActivity.
         let methods = unsafe {

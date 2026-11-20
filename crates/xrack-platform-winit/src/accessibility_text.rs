@@ -9,8 +9,8 @@ use xrack_layout::{
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
-    LayoutDirection, Node, TextWrap, combo_editable, is_multiline_text_input, is_text_input,
-    text_input_value,
+    LayoutDirection, Node, TextCommand, TextCommandAvailability, TextWrap, combo_editable,
+    is_multiline_text_input, is_text_input, spin_editable, text_input_value,
 };
 
 // AccessKit represents word start indices with u8. Runs on the same visual
@@ -61,6 +61,53 @@ pub(crate) struct EditorState {
     committed_suggestion: bool,
     horizontal_drag_scroll: Option<f32>,
     draft: Option<String>,
+    pub(super) ios_actions: Option<IosTextActions>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct IosTextActions {
+    commands: TextCommandAvailability,
+    select_all: bool,
+    paste: bool,
+}
+
+impl IosTextActions {
+    pub(super) fn focused(scene: &Node, input: &Interaction) -> Option<Self> {
+        let target = input.focused.as_ref()?;
+        let node = target.node_in(scene)?;
+        if input.menu_open() || !(input.is_text_editor(node, target) || spin_editable(node)) {
+            return None;
+        }
+        let editor = input
+            .editor
+            .as_ref()
+            .filter(|editor| !editor.is_composing())?;
+        let value = input.editor_value(node);
+        let selection = editor.selection(&value);
+        Some(Self {
+            commands: input.text_command_availability(
+                scene,
+                target,
+                node,
+                &value,
+                !selection.is_empty(),
+            ),
+            select_all: selection.len() < value.len(),
+            paste: !node.text_read_only(),
+        })
+    }
+
+    pub(super) fn allows(self, command: TextCommand) -> bool {
+        match command {
+            TextCommand::SelectAll => self.select_all,
+            TextCommand::Copy => self.commands.copy,
+            TextCommand::Cut => self.commands.cut,
+            TextCommand::Paste => self.paste,
+            TextCommand::Undo => self.commands.undo,
+            TextCommand::Redo => self.commands.redo,
+            _ => false,
+        }
+    }
 }
 
 impl EditorState {
@@ -88,6 +135,11 @@ impl EditorState {
             committed_suggestion: editor.has_committed_suggestion(&text),
             horizontal_drag_scroll: editor.horizontal_drag_scroll(),
             draft: draft.then(|| text.into_owned()),
+            ios_actions: if ios {
+                IosTextActions::focused(scene, input)
+            } else {
+                None
+            },
         })
     }
 }

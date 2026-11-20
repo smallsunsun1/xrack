@@ -23,6 +23,13 @@
       "problemMatcher": []
     },
     {
+      "label": "Bazel: Set up Android Java IntelliSense",
+      "type": "process",
+      "command": "python3",
+      "args": ["${workspaceFolder}/tools/android_java_editor.py"],
+      "problemMatcher": []
+    },
+    {
       "label": "Bazel: Build XRack MLIR LSP",
       "type": "process",
       "command": "bazel",

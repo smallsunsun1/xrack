@@ -57,4 +57,36 @@ static BOOL OpenContextMenu(id trigger) {
   XCTAssertNil(AccessibleElement(host, @"Review applied"));
 }
 
+- (void)testChoicePagesPastDisabledOptionsAndRejectsStaleElements {
+  self.continueAfterFailure = NO;
+  id trigger = [self waitForLabel:@"Paging interval"];
+  XCTAssertTrue([trigger accessibilityActivate]);
+  id first = [self waitForLabel:@"Daily"];
+  XCTAssertFalse([first accessibilityScroll:UIAccessibilityScrollDirectionDown]);
+  XCTAssertTrue([first accessibilityScroll:UIAccessibilityScrollDirectionUp]);
+
+  id disabled = [self waitForLabel:@"Paused A"];
+  XCTAssertTrue(([disabled accessibilityTraits] & UIAccessibilityTraitNotEnabled) != 0);
+  XCTAssertFalse([disabled accessibilityActivate]);
+  XCTAssertFalse([first accessibilityScroll:UIAccessibilityScrollDirectionUp]);
+  XCTAssertTrue([disabled accessibilityScroll:UIAccessibilityScrollDirectionUp]);
+  id last = [self waitForLabel:@"Annual"];
+  XCTAssertFalse([last accessibilityScroll:UIAccessibilityScrollDirectionUp]);
+  XCTAssertTrue([last accessibilityScroll:UIAccessibilityScrollDirectionDown]);
+
+  id previous = [self waitForLabel:@"Paused C"];
+  XCTAssertTrue([previous accessibilityScroll:UIAccessibilityScrollDirectionUp]);
+  id reopenedRow = [self waitForLabel:@"Annual"];
+  XCTAssertFalse([last accessibilityActivate]);
+  [self waitForLabel:@"Interval: Daily"];
+  XCTAssertTrue([reopenedRow accessibilityActivate]);
+  [self waitForLabel:@"Interval: Annual"];
+  XCTAssertNil(AccessibleElement(WindowAccessibilityHost(), @"Annual"));
+
+  XCTAssertTrue([trigger accessibilityActivate]);
+  id current = [self waitForLabel:@"Annual"];
+  XCTAssertFalse([reopenedRow accessibilityActivate]);
+  XCTAssertTrue([current accessibilityActivate]);
+}
+
 @end

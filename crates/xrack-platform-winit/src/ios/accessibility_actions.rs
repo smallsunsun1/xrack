@@ -17,7 +17,7 @@ use winit::window::WindowId;
 const NODE_PREFIX: &str = "xrack-action-";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum NativeAction {
+pub(crate) enum NativeAction {
     ContextMenu,
     Expand,
     Collapse,
@@ -67,14 +67,14 @@ impl Drop for AttachedActions {
     }
 }
 
-pub(super) struct NativeActions {
+pub(crate) struct NativeActions {
     window_id: WindowId,
     events: WindowEvents,
     attached: BTreeMap<NodeId, AttachedActions>,
 }
 
 impl NativeActions {
-    pub(super) fn new(window_id: WindowId, events: WindowEvents) -> Self {
+    pub(crate) fn new(window_id: WindowId, events: WindowEvents) -> Self {
         Self {
             window_id,
             events,
@@ -82,11 +82,11 @@ impl NativeActions {
         }
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.attached.clear();
     }
 
-    pub(super) fn project(update: &mut TreeUpdate) -> BTreeMap<NodeId, Vec<NativeAction>> {
+    pub(crate) fn project(update: &mut TreeUpdate) -> BTreeMap<NodeId, Vec<NativeAction>> {
         let mut projected = BTreeMap::new();
         for (id, node) in &mut update.nodes {
             if node.is_disabled() {
@@ -124,7 +124,7 @@ impl NativeActions {
         projected
     }
 
-    pub(super) fn update(
+    pub(crate) fn update(
         &mut self,
         host: &NSObject,
         mut pending: BTreeMap<NodeId, Vec<NativeAction>>,

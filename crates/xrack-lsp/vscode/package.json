@@ -10,21 +10,37 @@
     "url": "https://github.com/smallsunsun1/xrack.git",
     "directory": "crates/xrack-lsp/vscode"
   },
-  "bugs": { "url": "https://github.com/smallsunsun1/xrack/issues" },
+  "bugs": {
+    "url": "https://github.com/smallsunsun1/xrack/issues"
+  },
   "icon": "media/xrack.png",
-  "engines": { "vscode": "^1.82.0" },
-  "categories": ["Programming Languages"],
-  "activationEvents": ["onLanguage:xrack"],
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
   "main": "./extension.js",
-  "capabilities": { "untrustedWorkspaces": { "supported": false } },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
   "contributes": {
     "languages": [
       {
         "id": "xrack",
-        "aliases": ["XRack"],
-        "extensions": [".xr"],
+        "aliases": [
+          "XRack"
+        ],
+        "extensions": [
+          ".xr"
+        ],
         "configuration": "./language-configuration.json",
-        "icon": { "light": "./media/file-light.svg", "dark": "./media/file-dark.svg" }
+        "icon": {
+          "light": "./media/file-light.svg",
+          "dark": "./media/file-dark.svg"
+        }
       }
     ],
     "grammars": [
@@ -38,7 +54,10 @@
       {
         "command": "xrack.openPreview",
         "title": "XRack: Open Live Preview",
-        "icon": { "light": "./media/preview-light.svg", "dark": "./media/preview-dark.svg" }
+        "icon": {
+          "light": "./media/preview-light.svg",
+          "dark": "./media/preview-dark.svg"
+        }
       },
       {
         "command": "xrack.attachRunningApp",
@@ -55,26 +74,52 @@
     ],
     "menus": {
       "editor/title": [
-        { "command": "xrack.openPreview", "when": "editorLangId == xrack && resourceScheme == file", "group": "navigation" }
+        {
+          "command": "xrack.openPreview",
+          "when": "editorLangId == xrack && resourceScheme == file",
+          "group": "navigation"
+        }
       ]
     },
     "configurationDefaults": {
-      "[xrack]": { "editor.semanticHighlighting.enabled": true }
+      "[xrack]": {
+        "editor.semanticHighlighting.enabled": true
+      }
     },
     "semanticTokenScopes": [
       {
         "language": "xrack",
         "scopes": {
-          "class.defaultLibrary": ["support.type.xrack"],
-          "type.defaultLibrary": ["support.type.xrack"],
-          "struct": ["entity.name.type.xrack"],
-          "enum": ["entity.name.type.xrack"],
-          "enumMember": ["constant.other.enum.xrack"],
-          "property": ["variable.other.property.xrack"],
-          "parameter": ["variable.parameter.xrack"],
-          "function.defaultLibrary": ["support.function.xrack"],
-          "function": ["entity.name.function.callback.xrack"],
-          "event": ["entity.name.function.handler.xrack"]
+          "class.defaultLibrary": [
+            "support.type.xrack"
+          ],
+          "type.defaultLibrary": [
+            "support.type.xrack"
+          ],
+          "struct": [
+            "entity.name.type.xrack"
+          ],
+          "enum": [
+            "entity.name.type.xrack"
+          ],
+          "enumMember": [
+            "constant.other.enum.xrack"
+          ],
+          "property": [
+            "variable.other.property.xrack"
+          ],
+          "parameter": [
+            "variable.parameter.xrack"
+          ],
+          "function.defaultLibrary": [
+            "support.function.xrack"
+          ],
+          "function": [
+            "entity.name.function.callback.xrack"
+          ],
+          "event": [
+            "entity.name.function.handler.xrack"
+          ]
         }
       }
     ],
@@ -94,5 +139,7 @@
       }
     }
   },
-  "dependencies": { "vscode-languageclient": "9.0.1" }
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  }
 }

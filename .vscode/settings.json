@@ -6,6 +6,19 @@
   "rust-analyzer.cargo.buildScripts.enable": false,
   "rust-analyzer.lens.run.enable": false,
   "rust-analyzer.lens.debug.enable": false,
+  "java.server.launchMode": "Standard",
+  "java.import.maven.enabled": false,
+  "java.import.gradle.enabled": false,
+  "java.import.exclusions": [
+    "**/node_modules/**",
+    "**/.metadata/**",
+    "**/archetype-resources/**",
+    "**/META-INF/maven/**",
+    "**/bazel-*",
+    "**/bazel-*/**",
+    "**/.tools",
+    "**/.tools/**"
+  ],
   "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
     "editor.formatOnSave": true

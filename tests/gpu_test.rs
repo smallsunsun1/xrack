@@ -2577,6 +2577,213 @@ fn long_text_drag_autoscrolls_without_more_pointer_events_in_both_backends() {
 }
 
 #[test]
+fn touch_selection_handles_autoscroll_until_the_finger_leaves_or_lifts() {
+    use form_ui::LongTextSelectionDemo;
+    use std::time::{Duration, Instant};
+    use xrack_layout::{FocusObservers, Rect, TextPosition, layout};
+    use xrack_renderer_femtovg::{PointerCaret, TextSystem};
+    use xrack_runtime::{MouseSelectionMode, text_input_value};
+
+    fn exercise(app: impl Component, selected: impl Fn(bool) -> String) {
+        let mut text = TextSystem::system().unwrap();
+        let scene = app.render_shared();
+        let layout = layout(&scene, Size::new(496.0, 342.0), &mut text);
+        for (path, horizontal) in [([0], false), ([1], true)] {
+            let mut input = Interaction::default();
+            let mut focus = FocusObservers::default();
+            let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+            input.focus_target(&scene, &layout, target.clone());
+            input.sync_editor(&scene);
+            let value = text_input_value(target.node_in(&scene).unwrap());
+            input.editor.as_mut().unwrap().set_selection(
+                value,
+                0,
+                TextPosition {
+                    offset: 2,
+                    trailing: true,
+                },
+            );
+            input.set_touch_selection_handles(true);
+            let handle = text
+                .touch_selection_handles(&scene, &layout, &input)
+                .pop()
+                .unwrap();
+            let Rect {
+                x,
+                y,
+                width,
+                height,
+            } = layout.at_path(&path).unwrap().bounds;
+            let edge = if horizontal {
+                Point {
+                    x: x + width + 75.0,
+                    y: handle.caret.y,
+                }
+            } else {
+                Point {
+                    x: x + width / 2.0,
+                    y: y + height + 75.0,
+                }
+            };
+            let place = |input: &mut Interaction, point| {
+                PointerCaret::new(input, &scene, &layout, &target, handle.caret, point, true)
+                    .unwrap()
+                    .during_touch_drag()
+                    .place(&text, input, &scene, &layout)
+            };
+            assert!(input.pressed.is_none());
+            assert!(place(&mut input, edge));
+            focus.sync(&input, &scene, &layout, true);
+            let initial = selected(horizontal);
+            for _ in 0..5 {
+                let now =
+                    input.text_selection_scroll_deadline().unwrap() + Duration::from_millis(15);
+                assert!(PointerCaret::advance_drag_scroll(
+                    &text, &mut input, &scene, &layout, now
+                ));
+            }
+            focus.sync(&input, &scene, &layout, true);
+            let extended = selected(horizontal);
+            assert!(extended.len() > initial.len() && extended.starts_with(&initial));
+            assert_eq!(extended.contains('\n'), !horizontal);
+            if horizontal {
+                assert!(place(&mut input, handle.caret));
+                assert!(input.text_selection_scroll_deadline().is_none());
+                assert!(place(&mut input, edge));
+            }
+            input.finish_touch_selection_scroll();
+            focus.sync(&input, &scene, &layout, true);
+            let released = selected(horizontal);
+            assert!(!PointerCaret::advance_drag_scroll(
+                &text,
+                &mut input,
+                &scene,
+                &layout,
+                Instant::now() + Duration::from_secs(1)
+            ));
+            focus.sync(&input, &scene, &layout, true);
+            assert_eq!(selected(horizontal), released);
+        }
+    }
+
+    let mut generated = LongTextSelectionDemo::new();
+    generated.set_mouse_mode(MouseSelectionMode::Caret);
+    let component = generated.as_weak().upgrade().unwrap();
+    exercise(generated, |line| {
+        if line {
+            component.get_line_selected()
+        } else {
+            component.get_selected()
+        }
+    });
+    let module = interpret_example("examples/form/form.xr");
+    let interpreted = module.create("LongTextSelectionDemo").unwrap();
+    interpreted
+        .set("mouse-mode", MouseSelectionMode::Caret.into())
+        .unwrap();
+    let state = interpreted.clone();
+    exercise(interpreted, |line| {
+        match state
+            .get(if line { "line-selected" } else { "selected" })
+            .unwrap()
+        {
+            Value::String(value) => value,
+            value => panic!("expected selected text, got {value:?}"),
+        }
+    });
+}
+
+#[test]
+fn native_edit_menu_tracks_visible_selection_after_relayout_in_both_backends() {
+    use form_ui::LongTextSelectionDemo;
+    use xrack_layout::{Rect, TextPosition, layout};
+    use xrack_renderer_femtovg::TextSystem;
+    use xrack_runtime::{Length, text_input_value};
+
+    fn exercise(component: impl Component) {
+        let mut text = TextSystem::system().unwrap();
+        let mut scene = component.render();
+        let size = Size::new(496.0, 346.0);
+        let frame = layout(&scene, size, &mut text);
+        let mut input = Interaction::default();
+        let target = input.accessibility_target(&scene, &frame, &[0]).unwrap();
+        input.focus_target(&scene, &frame, target.clone());
+        input.sync_editor(&scene);
+        let selection = 0..6;
+        let caret = TextPosition {
+            offset: selection.end,
+            trailing: true,
+        };
+        input.editor.as_mut().unwrap().set_selection(
+            text_input_value(&scene.children[0]),
+            selection.start,
+            caret,
+        );
+        let first = text
+            .editor_menu_anchor(&scene, &frame, &mut input, None)
+            .unwrap();
+        assert!(first.width > 1.0 && first.height > 1.0);
+
+        let editor = &mut scene.children[0];
+        editor.properties.insert("x", Length(49.0).into());
+        editor.properties.insert("y", Length(60.0).into());
+        let moved = layout(&scene, size, &mut text);
+        let anchor = text
+            .editor_menu_anchor(&scene, &moved, &mut input, None)
+            .unwrap();
+        assert!((anchor.x - first.x - 29.0).abs() < 0.1);
+        assert!((anchor.y - first.y - 42.0).abs() < 0.1);
+
+        let keyboard = Rect::new(
+            anchor.x - 4.0,
+            anchor.y - 4.0,
+            anchor.width / 2.0 + 4.0,
+            anchor.height + 8.0,
+        );
+        let visible = text
+            .editor_menu_anchor(&scene, &moved, &mut input, Some(keyboard))
+            .unwrap();
+        assert_eq!(visible.intersect(anchor), visible);
+        assert_eq!(visible.intersect(keyboard).width, 0.0);
+        assert!(
+            text.editor_menu_anchor(&scene, &moved, &mut input, Some(anchor))
+                .is_none()
+        );
+        assert_eq!(input.focused.as_ref(), Some(&target));
+        assert_eq!(
+            input
+                .editor
+                .as_ref()
+                .unwrap()
+                .selection(text_input_value(&scene.children[0])),
+            selection
+        );
+
+        input.apply_text_selection(&scene, xrack_runtime::TextCommand::ClearSelection);
+        let caret_anchor = text
+            .editor_menu_anchor(&scene, &moved, &mut input, None)
+            .unwrap();
+        assert_eq!(caret_anchor.width, 1.0);
+
+        scene.children[0]
+            .properties
+            .insert("y", Length(370.0).into());
+        let clipped = layout(&scene, size, &mut text);
+        assert!(
+            text.editor_menu_anchor(&scene, &clipped, &mut input, None)
+                .is_none()
+        );
+    }
+
+    exercise(LongTextSelectionDemo::new());
+    exercise(
+        interpret_example("examples/form/form.xr")
+            .create("LongTextSelectionDemo")
+            .unwrap(),
+    );
+}
+
+#[test]
 fn single_line_drag_scrolls_ltr_and_rtl_in_both_backends() {
     use form_ui::LongTextSelectionDemo;
     use std::time::{Duration, Instant};
@@ -6162,6 +6369,69 @@ fn styled_combo_popup_paints_the_panel_border_and_scroll_indicator() {
         &larger,
         &draw(&mut renderer, interpreted.scene(), interpreted.input()),
     );
+}
+
+#[test]
+fn system_choice_marks_separate_the_selection_from_keyboard_highlight_in_both_directions() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let program = interpret_example("examples/selection/selection.xr");
+    for rtl in [false, true] {
+        let viewport = Size::new(420.0, 304.0);
+        let mut native = selection_ui::ComboPopupStyleDemo::new();
+        native.set_rtl(rtl);
+        let interpreted = program.create("ComboPopupStyleDemo").unwrap();
+        interpreted.set("rtl", rtl.into()).unwrap();
+        let mut native = UiDriver::headless(native, viewport);
+        let mut interpreted = UiDriver::headless(interpreted, viewport);
+        native.click("popup-choice");
+        interpreted.click("popup-choice");
+        native.choice_key(ChoiceKey::Down);
+        interpreted.choice_key(ChoiceKey::Down);
+        let snapshot = |renderer: &mut Renderer| {
+            renderer
+                .snapshot(native.scene(), 420, 304, 1.0, native.input())
+                .unwrap()
+        };
+        let plain = snapshot(&mut renderer);
+        let menu = native
+            .input()
+            .choice_menu(native.scene(), &plain.layout)
+            .unwrap();
+        assert_eq!((menu.selected, menu.highlighted), (Some(0), Some(1)));
+        let selected = menu.row_bounds(0);
+        let highlighted = menu.row_bounds(1);
+
+        assert!(renderer.set_system_differentiate_without_color(true));
+        let marked = snapshot(&mut renderer);
+        assert_eq!(plain.layout, marked.layout);
+        assert_same_pixels(
+            &marked,
+            &renderer
+                .snapshot(interpreted.scene(), 420, 304, 1.0, interpreted.input())
+                .unwrap(),
+        );
+        let mark_x = if rtl {
+            selected.x + 10.0
+        } else {
+            selected.x + selected.width - 10.0
+        } as u32;
+        let changed_at_mark = |row: xrack_layout::Rect| {
+            let center_y = (row.y + row.height * 0.5) as u32;
+            (center_y - 4..center_y + 5).any(|y| plain.pixel(mark_x, y) != marked.pixel(mark_x, y))
+        };
+        assert!(changed_at_mark(selected));
+        assert!(!changed_at_mark(highlighted));
+        let center = (highlighted.x + highlighted.width * 0.5) as u32;
+        let edge = (highlighted.y + 2.0) as u32;
+        assert_ne!(plain.pixel(center, edge), marked.pixel(center, edge));
+
+        assert!(renderer.set_system_differentiate_without_color(false));
+        assert_same_pixels(&plain, &snapshot(&mut renderer));
+    }
 }
 
 #[test]
@@ -13836,6 +14106,23 @@ fn rtl_tab_headers_paint_on_the_selected_logical_side_in_both_backends() {
                 (widget.bounds.y + widget.bounds.height - 5.0) as u32
             ),
         );
+        assert!(renderer.set_system_differentiate_without_color(true));
+        let marked = renderer
+            .snapshot(&native.render(), 624, 264, 1.0, &input)
+            .unwrap();
+        assert_eq!(expected.layout, marked.layout);
+        assert_same_pixels(
+            &marked,
+            &renderer
+                .snapshot(&interpreted.render(), 624, 264, 1.0, &input)
+                .unwrap(),
+        );
+        for rect in [header, selected] {
+            let x = (rect.x + rect.width * 0.5) as u32;
+            let y = (rect.y + rect.height - 4.0) as u32;
+            assert_ne!(actual.pixel(x, y), marked.pixel(x, y));
+        }
+        assert!(renderer.set_system_differentiate_without_color(false));
     }
 }
 

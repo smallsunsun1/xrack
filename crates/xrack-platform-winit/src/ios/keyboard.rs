@@ -1,4 +1,5 @@
-use crate::{UserEvent, desktop::WindowEvents, ios_text::TextActions, keyboard::KeyEvent};
+use super::text::TextActions;
+use crate::{UserEvent, desktop::WindowEvents, keyboard::KeyEvent};
 use objc2::{
     ClassType, DeclaredClass, declare_class, msg_send, msg_send_id,
     mutability::MainThreadOnly,
@@ -22,11 +23,11 @@ use winit::{
 
 use xrack_runtime::TextCommand;
 
-pub(super) struct KeyboardInput(Retained<ControlResponder>);
+pub(crate) struct KeyboardInput(Retained<ControlResponder>);
 
 impl KeyboardInput {
-    pub(super) fn new(window: &Window, events: WindowEvents) -> Option<Self> {
-        let view = crate::ios::view(window)?;
+    pub(crate) fn new(window: &Window, events: WindowEvents) -> Option<Self> {
+        let view = super::view(window)?;
         let mtm = MainThreadMarker::new()?;
         let allocated = mtm.alloc::<ControlResponder>().set_ivars(events);
         // SAFETY: Initialize a main-thread UIView subclass with its Rust ivars.
@@ -41,7 +42,7 @@ impl KeyboardInput {
         Some(Self(responder))
     }
 
-    pub(super) fn focus(&self, active: bool) {
+    pub(crate) fn focus(&self, active: bool) {
         // SAFETY: WindowState and the responder belong to the UIKit main thread.
         unsafe {
             if active && !self.0.isFirstResponder() {
@@ -107,21 +108,21 @@ impl ControlResponder {
             let Some(key) = (unsafe { press.key(MainThreadMarker::from(self)) }) else {
                 continue;
             };
-            let (event, modifiers) = key_event(&key, state);
+            let (event, modifiers, modifier_key) = key_event(&key, state);
             self.ivars()
-                .post(UserEvent::IosControlKey(event, modifiers));
+                .post(UserEvent::IosControlKey(event, modifiers, modifier_key));
         }
     }
 }
 
-pub(super) type UndoManagerSlot = Rc<RefCell<Option<Retained<NSUndoManager>>>>;
+pub(crate) type UndoManagerSlot = Rc<RefCell<Option<Retained<NSUndoManager>>>>;
 
 struct TextResponderState {
     actions: TextActions,
     undo_manager: UndoManagerSlot,
 }
 
-pub(super) fn text_field(
+pub(crate) fn text_field(
     mtm: MainThreadMarker,
     actions: TextActions,
     undo_manager: UndoManagerSlot,
@@ -137,7 +138,7 @@ pub(super) fn text_field(
     }
 }
 
-pub(super) fn text_view(
+pub(crate) fn text_view(
     mtm: MainThreadMarker,
     actions: TextActions,
     undo_manager: UndoManagerSlot,
@@ -329,8 +330,8 @@ fn editor_keys(
             command || control
         });
         if let Some(key) = routed {
-            let (event, modifiers) = key_event(&key, state);
-            events.post(UserEvent::IosControlKey(event, modifiers));
+            let (event, modifiers, modifier_key) = key_event(&key, state);
+            events.post(UserEvent::IosControlKey(event, modifiers, modifier_key));
         } else {
             unhandled.push(press);
         }
@@ -392,7 +393,51 @@ fn named_key(usage: UIKeyboardHIDUsage) -> Option<NamedKey> {
     }
 }
 
-fn key_event(key: &UIKey, state: ElementState) -> (KeyEvent, ModifiersState) {
+#[derive(Clone, Copy)]
+pub(crate) struct ModifierKey(u8);
+
+impl ModifierKey {
+    fn from_usage(usage: UIKeyboardHIDUsage) -> Option<Self> {
+        let index = u8::try_from(usage.0 - UIKeyboardHIDUsage::KeyboardLeftControl.0).ok()?;
+        (index < 8).then_some(Self(index))
+    }
+
+    pub(crate) fn flag(self) -> ModifiersState {
+        MODIFIER_FLAGS[usize::from(self.0 % 4)]
+    }
+}
+
+// The HID modifier usages are ordered Control, Shift, Option and Command for each side.
+const MODIFIER_FLAGS: [ModifiersState; 4] = [
+    ModifiersState::CONTROL,
+    ModifiersState::SHIFT,
+    ModifiersState::ALT,
+    ModifiersState::SUPER,
+];
+
+#[derive(Default)]
+pub(crate) struct HeldModifiers(u8);
+
+impl HeldModifiers {
+    pub(crate) fn update(&mut self, key: ModifierKey, state: ElementState) {
+        let mask = 1 << key.0;
+        if state == ElementState::Pressed {
+            self.0 |= mask;
+        } else {
+            self.0 &= !mask;
+        }
+    }
+
+    pub(crate) fn flags(&self) -> ModifiersState {
+        let mut flags = ModifiersState::empty();
+        for (index, flag) in MODIFIER_FLAGS.into_iter().enumerate() {
+            flags.set(flag, self.0 & (0b0001_0001 << index) != 0);
+        }
+        flags
+    }
+}
+
+fn key_event(key: &UIKey, state: ElementState) -> (KeyEvent, ModifiersState, Option<ModifierKey>) {
     // SAFETY: The UIKey is borrowed from the UIKit responder callback.
     let (usage, flags) = unsafe { (key.keyCode(), key.modifierFlags()) };
     let logical_key = named_key(usage).map_or_else(
@@ -419,10 +464,11 @@ fn key_event(key: &UIKey, state: ElementState) -> (KeyEvent, ModifiersState) {
             repeat: false,
         },
         modifiers(flags),
+        ModifierKey::from_usage(usage),
     )
 }
 
-pub(super) fn modifiers(flags: UIKeyModifierFlags) -> ModifiersState {
+pub(crate) fn modifiers(flags: UIKeyModifierFlags) -> ModifiersState {
     let mut modifiers = ModifiersState::empty();
     for (native, flag) in [
         (

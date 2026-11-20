@@ -5,7 +5,7 @@ use crate::{
 };
 use femtovg::{Canvas, Paint, Path, renderer::WGPURenderer};
 use std::{collections::HashMap, ops::Range};
-use xrack_layout::{LayoutNode, Point, Size, StyledTextLayout, TextMeasurer};
+use xrack_layout::{LayoutNode, Point, Size, StyledFragment, StyledTextLayout, TextMeasurer};
 use xrack_runtime::{Node, TextStyle};
 
 pub(crate) fn layout(
@@ -39,6 +39,22 @@ pub(crate) fn layout(
     Some(layout)
 }
 
+pub(crate) fn selection_spans(
+    fragment: &StyledFragment,
+    selection: &Range<usize>,
+) -> Vec<Range<f32>> {
+    let Some((visual, range, prefix)) = fragment.selection_geometry() else {
+        return Vec::new();
+    };
+    let start = selection.start.max(range.start);
+    let end = selection.end.min(range.end);
+    if start < end {
+        visual.selection_spans(start - range.start + prefix..end - range.start + prefix)
+    } else {
+        Vec::new()
+    }
+}
+
 pub(crate) fn draw(
     canvas: &mut Canvas<WGPURenderer>,
     system: &TextSystem,
@@ -63,20 +79,7 @@ pub(crate) fn draw(
         .measure_font(&base)
         .map_or_else(|_| system.font_size(node), |metrics| metrics.ascender());
     for fragment in &plan.fragments {
-        let spans =
-            fragment
-                .selection_geometry()
-                .map_or_else(Vec::new, |(visual, range, prefix)| {
-                    let start = selection.start.max(range.start);
-                    let end = selection.end.min(range.end);
-                    if start < end {
-                        visual.selection_spans(
-                            start - range.start + prefix..end - range.start + prefix,
-                        )
-                    } else {
-                        Vec::new()
-                    }
-                });
+        let spans = selection_spans(fragment, &selection);
         let x = bounds.x + fragment.bounds.x;
         let y = bounds.y + fragment.bounds.y;
         if !spans.is_empty() {

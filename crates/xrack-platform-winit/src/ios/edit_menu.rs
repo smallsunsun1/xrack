@@ -1,4 +1,4 @@
-use crate::{UserEvent, desktop::WindowEvents, ios};
+use crate::{UserEvent, desktop::WindowEvents};
 use block2::RcBlock;
 use objc2::{
     ClassType, DeclaredClass, declare_class, msg_send, msg_send_id,
@@ -6,19 +6,20 @@ use objc2::{
     rc::Retained,
     runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject},
 };
-use objc2_foundation::{CGPoint, MainThreadMarker, NSArray, NSString};
+use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSArray, NSString};
 use objc2_ui_kit::{
     UIAction, UIEditMenuConfiguration, UIEditMenuInteraction, UIEditMenuInteractionAnimating,
     UIEditMenuInteractionDelegate, UIInteraction, UIMenu, UIMenuElement,
 };
 use std::{cell::RefCell, ptr::NonNull};
 use winit::window::Window;
-use xrack_layout::{NativeTextMenu, Point};
+use xrack_layout::{NativeTextMenu, Rect};
 
 struct PresentedMenu {
     model: NativeTextMenu,
     identifier: Retained<NSString>,
     menu: Retained<UIMenu>,
+    anchor: Rect,
 }
 
 impl PresentedMenu {
@@ -65,6 +66,23 @@ declare_class!(
                 .map(|active| active.menu.clone())
         }
 
+        #[method(editMenuInteraction:targetRectForConfiguration:)]
+        fn editMenuInteraction_targetRectForConfiguration(
+            &self,
+            _: &UIEditMenuInteraction,
+            configuration: &UIEditMenuConfiguration,
+        ) -> CGRect {
+            let active = self.ivars().active.borrow();
+            if let Some(menu) = active.as_ref().filter(|menu| menu.matches(configuration)) {
+                let rect = menu.anchor;
+                CGRect::new(CGPoint::new(f64::from(rect.x), f64::from(rect.y)),
+                            CGSize::new(f64::from(rect.width), f64::from(rect.height)))
+            } else {
+                // SAFETY: UIKit supplies its live configuration on the main thread.
+                CGRect::new(unsafe { configuration.sourcePoint() }, CGSize::ZERO)
+            }
+        }
+
         #[method(editMenuInteraction:willDismissMenuForConfiguration:animator:)]
         fn editMenuInteraction_willDismissMenuForConfiguration_animator(
             &self,
@@ -86,14 +104,14 @@ declare_class!(
     }
 );
 
-pub(super) struct EditMenu {
+pub(crate) struct EditMenu {
     interaction: Retained<UIEditMenuInteraction>,
     delegate: Retained<EditMenuDelegate>,
 }
 
 impl EditMenu {
-    pub(super) fn new(window: &Window, events: WindowEvents) -> Option<Self> {
-        let view = ios::view(window)?;
+    pub(crate) fn new(window: &Window, events: WindowEvents) -> Option<Self> {
+        let view = super::view(window)?;
         let mtm = MainThreadMarker::new()?;
         let delegate = mtm.alloc::<EditMenuDelegate>().set_ivars(DelegateState {
             events,
@@ -114,7 +132,7 @@ impl EditMenu {
         }
     }
 
-    pub(super) fn present(&self, model: NativeTextMenu, point: Point) {
+    pub(crate) fn present(&self, model: NativeTextMenu, anchor: Rect) {
         self.dismiss();
         let Some(mtm) = MainThreadMarker::new() else {
             return;
@@ -143,20 +161,24 @@ impl EditMenu {
             let menu = UIMenu::menuWithChildren(&NSArray::from_vec(children), mtm);
             let configuration = UIEditMenuConfiguration::configurationWithIdentifier_sourcePoint(
                 Some(ProtocolObject::from_ref(&*identifier)),
-                CGPoint::new(f64::from(point.x), f64::from(point.y)),
+                CGPoint::new(
+                    f64::from(anchor.x + anchor.width * 0.5),
+                    f64::from(anchor.y + anchor.height * 0.5),
+                ),
                 mtm,
             );
             state.active.replace(Some(PresentedMenu {
                 model,
                 identifier,
                 menu,
+                anchor,
             }));
             self.interaction
                 .presentEditMenuWithConfiguration(&configuration);
         }
     }
 
-    pub(super) fn take(&self, session: u64) -> Option<NativeTextMenu> {
+    pub(crate) fn take(&self, session: u64) -> Option<NativeTextMenu> {
         self.delegate
             .ivars()
             .active
@@ -165,20 +187,34 @@ impl EditMenu {
             .map(|menu| menu.model)
     }
 
-    pub(super) fn retain_if(&self, current: impl FnOnce(&NativeTextMenu) -> bool) {
-        let expired = self
-            .delegate
+    pub(crate) fn session(&self) -> Option<u64> {
+        self.delegate
             .ivars()
             .active
             .borrow()
             .as_ref()
-            .is_some_and(|menu| !current(&menu.model));
-        if expired {
+            .map(|menu| menu.model.session())
+    }
+
+    pub(crate) fn sync_anchor(&self, anchor: impl FnOnce(&NativeTextMenu) -> Option<Rect>) {
+        let mut active = self.delegate.ivars().active.borrow_mut();
+        let Some(menu) = active.as_mut() else { return };
+        if let Some(rect) = anchor(&menu.model) {
+            if menu.anchor == rect {
+                return;
+            }
+            menu.anchor = rect;
+            // Release the model borrow before UIKit calls the delegate for the rectangle.
+            drop(active);
+            // SAFETY: The interaction belongs to this UIKit thread.
+            unsafe { self.interaction.updateVisibleMenuPositionAnimated(false) };
+        } else {
+            drop(active);
             self.dismiss();
         }
     }
 
-    pub(super) fn dismiss(&self) {
+    pub(crate) fn dismiss(&self) {
         if self.delegate.ivars().active.take().is_some() {
             // SAFETY: This interaction is only used on the UIKit main thread.
             unsafe { self.interaction.dismissMenu() };

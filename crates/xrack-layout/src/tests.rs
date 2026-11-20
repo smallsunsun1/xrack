@@ -174,6 +174,127 @@ fn platform_safe_area_keeps_window_padding_and_centers_the_dialog_in_available_s
 }
 
 #[test]
+fn scrollable_dialog_places_actions_at_the_trailing_side_only_in_short_wide_space() {
+    for boxed in [false, true] {
+        let mut window = node("Window", "root");
+        let mut dialog = node("Dialog", "dialog");
+        boolean(&mut dialog, "open", true);
+        length(&mut dialog, "width", 350.0);
+        length(&mut dialog, "height", 320.0);
+        dialog.properties.insert("title", "Form".to_owned().into());
+
+        let mut body = node("ScrollView", "body");
+        body.properties.insert("vertical-stretch", 1.0.into());
+        let mut field = node("LineEdit", "entry");
+        length(&mut field, "height", 44.0);
+        body.children.push(field);
+        let action = |kind, id| {
+            let mut button = node(kind, id);
+            length(&mut button, "width", 80.0);
+            length(&mut button, "height", 44.0);
+            button
+        };
+        let mut footer = if boxed {
+            let mut footer = node("DialogButtonBox", "footer");
+            footer.children.extend([
+                action("StandardButton", "accept"),
+                action("StandardButton", "cancel"),
+            ]);
+            footer
+        } else {
+            action("DialogButton", "footer")
+        };
+        footer.properties.insert("text", "Save".to_owned().into());
+        dialog.children.extend([body, footer]);
+        window.children.push(dialog);
+
+        let portrait = layout(&window, Size::new(390.0, 480.0), &mut Text);
+        let before = portrait.at_path(&[0, 0]).unwrap().bounds;
+        let below = portrait.at_path(&[0, 1]).unwrap().bounds;
+        assert!(before.height >= 44.0 && before.y + before.height <= below.y);
+
+        for direction in [LayoutDirection::LeftToRight, LayoutDirection::RightToLeft] {
+            window
+                .properties
+                .insert("layout-direction", direction.into());
+            for height in [139.0, 160.0] {
+                let short = layout(&window, Size::new(680.0, height), &mut Text);
+                let body = short.at_path(&[0, 0]).unwrap().bounds;
+                let actions = short.at_path(&[0, 1]).unwrap().bounds;
+                assert!(body.width >= 120.0 && body.height >= 44.0, "{body:?}");
+                assert_eq!(actions.height, 44.0);
+                assert_eq!(body.y + body.height, actions.y + actions.height);
+                assert!(match direction {
+                    LayoutDirection::LeftToRight => body.x + body.width <= actions.x,
+                    LayoutDirection::RightToLeft => actions.x + actions.width <= body.x,
+                });
+                if boxed {
+                    for index in 0..2 {
+                        let button = short.at_path(&[0, 1, index]).unwrap().bounds;
+                        assert_eq!(button.intersect(actions), button);
+                    }
+                }
+            }
+        }
+
+        let narrow = layout(&window, Size::new(165.0, 160.0), &mut Text);
+        let body = narrow.at_path(&[0, 0]).unwrap().bounds;
+        let actions = narrow.at_path(&[0, 1]).unwrap().bounds;
+        assert!(body.y + body.height <= actions.y);
+    }
+}
+
+#[test]
+fn live_native_editor_retains_focus_through_clipping_but_not_disabled_or_hidden_state() {
+    let mut window = node("Window", "root");
+    let mut dialog = node("Dialog", "form");
+    boolean(&mut dialog, "open", true);
+    length(&mut dialog, "width", 350.0);
+    length(&mut dialog, "height", 320.0);
+    dialog.properties.insert("title", "Form".to_owned().into());
+    let mut body = node("ScrollView", "body");
+    body.properties.insert("vertical-stretch", 1.0.into());
+    let mut field = node("LineEdit", "entry");
+    length(&mut field, "height", 44.0);
+    body.children.push(field);
+    let mut action = node("DialogButton", "save");
+    length(&mut action, "height", 44.0);
+    dialog.children.extend([body, action]);
+    window.children.push(dialog);
+
+    let full = layout(&window, Size::new(720.0, 360.0), &mut Text);
+    let short = layout(&window, Size::new(720.0, 96.0), &mut Text);
+    let path = [0, 0, 0];
+    let mut input = Interaction::default();
+    input.reconcile(&window, &full);
+    let target = input.accessibility_target(&window, &full, &path).unwrap();
+    input.focus_target(&window, &full, target.clone());
+    assert!(input.accessibility_target(&window, &short, &path).is_none());
+
+    let mut without_native = input.clone();
+    without_native.reconcile(&window, &short);
+    assert_ne!(without_native.focused.as_ref(), Some(&target));
+
+    input.reconcile_with_native_editor(&window, &short, Some(&target));
+    assert_eq!(input.focused.as_ref(), Some(&target));
+    input.reconcile_with_native_editor(&window, &full, Some(&target));
+    assert_eq!(input.focused.as_ref(), Some(&target));
+
+    for property in ["enabled", "visible"] {
+        let mut changed = window.clone();
+        boolean(
+            &mut changed.children[0].children[0].children[0],
+            property,
+            false,
+        );
+        let changed_layout = layout(&changed, Size::new(720.0, 96.0), &mut Text);
+        let mut without_editor = input.clone();
+        without_editor.reconcile_with_native_editor(&changed, &changed_layout, Some(&target));
+        assert_ne!(without_editor.focused.as_ref(), Some(&target));
+    }
+}
+
+#[test]
 fn narrow_picker_with_long_labels_preserves_wheel_height_and_stacks_actions() {
     let mut window = node("Window", "root");
     let mut dialog = node("Dialog", "picker");

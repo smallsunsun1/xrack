@@ -2334,6 +2334,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 self.text,
             ) {
                 rects
+            } else if let Some(rects) = modal::scrollable_dialog_children(
+                node,
+                content,
+                self.layout_direction.unwrap_or_default(),
+                self.text,
+            ) {
+                rects
             } else if flow::uses_flow(node) {
                 flow::children(
                     node,

@@ -4,24 +4,20 @@ use crate::Window;
 use xrack_runtime::{NativeDialogOptions, NativeDialogResult};
 
 #[cfg(target_os = "android")]
-mod android;
-#[cfg(target_os = "android")]
-pub(crate) use android::{
+pub(crate) use crate::android::native_dialog::{
     AndroidDialogResult, ImportedFiles, SystemRequest as AndroidSystemRequest, present,
 };
 
 #[cfg(target_os = "ios")]
-mod ios;
-#[cfg(target_os = "ios")]
-pub(crate) use ios::{
+pub(crate) use crate::ios::native_dialog::{
     ColorRequest, DirectoryRequest, ImportedFolders, IosDialogResult, ModalQueue, PhotoRequest,
     Transfer, TransferRequest, present,
 };
 #[cfg(target_os = "ios")]
-pub use ios::{IosPhotoSelection, IosPhotoThumbnail};
+pub use crate::ios::native_dialog::{IosPhotoSelection, IosPhotoThumbnail};
 
 #[cfg(any(target_os = "ios", test))]
-async fn until_canceled<T>(
+pub(super) async fn until_canceled<T>(
     canceled: impl std::future::Future<Output = ()>,
     operation: impl std::future::Future<Output = T>,
 ) -> Option<T> {

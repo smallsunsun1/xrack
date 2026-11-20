@@ -215,7 +215,8 @@ fn boundary(text: &str, position: usize) -> usize {
 }
 
 impl TextEdit {
-    pub(crate) fn is_composing(&self) -> bool {
+    #[doc(hidden)]
+    pub fn is_composing(&self) -> bool {
         self.composition.is_some() || !self.preedit.is_empty()
     }
 

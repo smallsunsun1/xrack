@@ -1096,6 +1096,7 @@ struct EditorClick {
 struct TextSelectionScroll {
     target: Target,
     point: Point,
+    touch_origin: Option<Point>,
     due: Instant,
 }
 
@@ -4079,37 +4080,68 @@ impl Interaction {
         &mut self,
         target: &Target,
         point: Option<Point>,
+        touch_origin: Option<Point>,
         now: Instant,
     ) {
         self.text_selection_scroll = point
-            .filter(|_| self.pressed.as_ref() == Some(target) && self.editor_active(&target.path))
+            .filter(|_| self.text_selection_scroll_active(target, touch_origin.is_some()))
             .map(|point| TextSelectionScroll {
                 target: target.clone(),
                 point,
+                touch_origin,
                 due: self
                     .text_selection_scroll
                     .as_ref()
-                    .filter(|scroll| &scroll.target == target)
+                    .filter(|scroll| {
+                        &scroll.target == target && scroll.touch_origin == touch_origin
+                    })
                     .map_or(now + SCROLL_FRAME_INTERVAL, |scroll| scroll.due),
             });
+    }
+
+    fn text_selection_scroll_active(&self, target: &Target, touch: bool) -> bool {
+        let owner = if touch {
+            self.touch_selection_target()
+        } else {
+            self.pressed.as_ref()
+        };
+        owner == Some(target) && self.editor_active(&target.path)
+    }
+
+    #[doc(hidden)]
+    pub fn finish_touch_selection_scroll(&mut self) {
+        if self
+            .text_selection_scroll
+            .as_ref()
+            .is_some_and(|scroll| scroll.touch_origin.is_some())
+        {
+            self.text_selection_scroll = None;
+        }
     }
 
     #[doc(hidden)]
     pub fn text_selection_scroll_deadline(&self) -> Option<Instant> {
         let scroll = self.text_selection_scroll.as_ref()?;
-        (self.pressed.as_ref() == Some(&scroll.target) && self.editor_active(&scroll.target.path))
+        self.text_selection_scroll_active(&scroll.target, scroll.touch_origin.is_some())
             .then_some(scroll.due)
     }
 
     #[doc(hidden)]
-    pub fn take_text_selection_scroll(&mut self, now: Instant) -> Option<(Point, Duration)> {
+    pub fn take_text_selection_scroll(
+        &mut self,
+        now: Instant,
+    ) -> Option<(Point, Duration, Option<Point>)> {
         let Some(due) = self.text_selection_scroll_deadline() else {
             self.text_selection_scroll = None;
             return None;
         };
         let elapsed = now.checked_duration_since(due)? + SCROLL_FRAME_INTERVAL;
         let scroll = self.text_selection_scroll.take()?;
-        Some((scroll.point, elapsed.min(3 * SCROLL_FRAME_INTERVAL)))
+        Some((
+            scroll.point,
+            elapsed.min(3 * SCROLL_FRAME_INTERVAL),
+            scroll.touch_origin,
+        ))
     }
 
     pub fn text_scroll(&self, path: &[usize]) -> Point {
@@ -12441,6 +12473,17 @@ impl Interaction {
         }
     }
     pub fn reconcile(&mut self, scene: &Node, layout: &LayoutNode) {
+        self.reconcile_with_native_editor(scene, layout, None);
+    }
+
+    /// Preserve a native first responder while its editor is temporarily clipped by the viewport.
+    #[doc(hidden)]
+    pub fn reconcile_with_native_editor(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        native_editor: Option<&Target>,
+    ) {
         if self
             .swipe_page_motion
             .as_ref()
@@ -12622,7 +12665,11 @@ impl Interaction {
         if let Some(current) = self
             .focused
             .as_ref()
-            .filter(|t| !valid(t, scene, layout) && !self.drawer_retains_focus(t, scene, layout))
+            .filter(|t| {
+                !valid(t, scene, layout)
+                    && !self.drawer_retains_focus(t, scene, layout)
+                    && !self.native_editor_retains_focus(t, native_editor, scene, layout)
+            })
             .cloned()
         {
             if let Some(next) = self.restore_stack_focus(&current, scene, layout) {
@@ -13320,6 +13367,23 @@ impl Interaction {
         (self.allows_popup(layout, &target.path)
             && (self.is_text_editor(node, target) || spin_editable(node)))
         .then_some(target)
+    }
+
+    fn native_editor_retains_focus(
+        &self,
+        target: &Target,
+        native_editor: Option<&Target>,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> bool {
+        native_editor == Some(target)
+            && self.focused_editor_in(scene, layout) == Some(target)
+            && target
+                .node_in(scene)
+                .is_some_and(|node| !node.text_read_only())
+            && layout
+                .at_path(&target.path)
+                .is_some_and(|item| item.visible && item.enabled)
     }
 
     fn reveal_focus_target(&mut self, scene: &Node, layout: &LayoutNode, target: &Target) -> bool {

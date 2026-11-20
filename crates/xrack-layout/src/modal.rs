@@ -2,6 +2,8 @@ use crate::label::{LabelPlan, TitleLayout};
 use crate::{LayoutNode, Point, Rect, Size, TextMeasurer, font_size, linear, place_in_direction};
 use xrack_runtime::{DrawerEdge, LayoutDirection, Node, is_modal_overlay, is_window_overlay};
 
+const MIN_SCROLLABLE_DIALOG_BODY_HEIGHT: f32 = 44.0;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct OverlayIndex {
     pub open: Vec<Vec<usize>>,
@@ -92,12 +94,25 @@ pub(crate) fn bounds(node: &Node, viewport: Rect, text: &mut impl TextMeasurer) 
     if node.kind == "Drawer" {
         return drawer_bounds(node, viewport);
     }
-    let area = viewport.inset(16.0);
+    let mut area = viewport.inset(16.0);
     let width = node
         .relative_length("width", viewport.width)
         .or_else(|| node.relative_length("preferred-width", viewport.width))
         .unwrap_or_else(|| picker_width(node, area, text))
         .clamp(0.0, area.width);
+    if scrollable_dialog_parts(node).is_some() {
+        let title = measured_title_height(node, Size::new(width, area.height), text);
+        let minimum_height =
+            title + linear::Padding::read(node).size().height + MIN_SCROLLABLE_DIALOG_BODY_HEIGHT;
+        if area.height < minimum_height {
+            // Recover vertical margin before shrinking the scroll viewport below one field.
+            // The supplied viewport already excludes the safe area and docked keyboard.
+            area.height = (viewport.height - 16.0)
+                .max(minimum_height.ceil())
+                .min(viewport.height);
+            area.y = viewport.y + (viewport.height - area.height) * 0.5;
+        }
+    }
     let height = node
         .relative_length("height", viewport.height)
         .unwrap_or_else(|| {
@@ -213,6 +228,81 @@ pub(crate) fn picker_children(
             inner.y + inner.height - footer_height,
             inner.width,
             footer_height,
+        ),
+    ])
+}
+
+fn scrollable_dialog_parts(node: &Node) -> Option<(&Node, &Node)> {
+    let [body, actions] = node.children.as_slice() else {
+        return None;
+    };
+    if node.kind != "Dialog"
+        || !matches!(body.kind, "ScrollView" | "Flickable")
+        || !matches!(actions.kind, "DialogButton" | "DialogButtonBox")
+        || !body.is_visible()
+        || !actions.is_visible()
+        || linear::item_order(node, body) > linear::item_order(node, actions)
+    {
+        return None;
+    }
+    Some((body, actions))
+}
+
+pub(crate) fn scrollable_dialog_children(
+    node: &Node,
+    bounds: Rect,
+    direction: LayoutDirection,
+    text: &mut impl TextMeasurer,
+) -> Option<Vec<Rect>> {
+    let (body, actions) = scrollable_dialog_parts(node)?;
+    let stacked = linear::children(node, linear::Axis::Vertical, bounds, direction, text);
+    if stacked[0].height >= MIN_SCROLLABLE_DIALOG_BODY_HEIGHT {
+        return Some(stacked);
+    }
+
+    let inner = linear::Padding::read(node).inner_rect(bounds);
+    let available = Size::new(inner.width, inner.height);
+    let gap = linear::spacing(node);
+    let body_size = linear::measure(body, available, text);
+    let actions_size = linear::measure(actions, available, text);
+    let minimum_width = body_size.x.min.max(120.0);
+    let action_width = actions_size
+        .x
+        .preferred
+        .min(inner.width - minimum_width - gap);
+    let body_height = inner.height.min(body_size.y.max);
+    if body_height < body_size.y.min.max(MIN_SCROLLABLE_DIALOG_BODY_HEIGHT)
+        || body_size.x.max < minimum_width
+        || action_width < actions_size.x.min
+        || action_width <= 0.0
+        || actions.kind == "DialogButtonBox"
+            && !crate::flow::uses_flow(actions)
+            && action_width < actions_size.x.preferred
+    {
+        return Some(stacked);
+    }
+    let action_height = linear::measure_with_width(actions, available, Some(action_width), text)
+        .y
+        .preferred;
+    if action_height <= 0.0 || action_height > inner.height {
+        return Some(stacked);
+    }
+    let body_width = (inner.width - action_width - gap).min(body_size.x.max);
+    Some(vec![
+        place_in_direction(
+            Rect::new(inner.x, inner.y, body_width, body_height),
+            inner,
+            direction,
+        ),
+        place_in_direction(
+            Rect::new(
+                inner.x + inner.width - action_width,
+                inner.y + inner.height - action_height,
+                action_width,
+                action_height,
+            ),
+            inner,
+            direction,
         ),
     ])
 }

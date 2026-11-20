@@ -87,6 +87,17 @@ static UIScrollView *StatusBarScrollBridge(UIView *parent) {
                  @"Expected accessible label %@", label);
 }
 
+- (void)waitForEditor:(id)element toHaveValue:(NSString *)value action:(NSString *)name {
+  NSPredicate *ready = [NSPredicate predicateWithBlock:^BOOL(id editor, NSDictionary *bindings) {
+    NSString *current = [editor accessibilityValue] ?: @"";
+    return (value == nil || [current isEqualToString:value]) && ActionNamed(editor, name) != nil;
+  }];
+  XCTNSPredicateExpectation *expectation = [[XCTNSPredicateExpectation alloc] initWithPredicate:ready
+                                                                                          object:element];
+  XCTAssertEqual([XCTWaiter waitForExpectations:@[expectation] timeout:5], XCTWaiterResultCompleted,
+                 @"Expected value %@ and action %@", value, name);
+}
+
 - (void)testUIKitOpensTheContextMenuAndRevokesAnOldAction {
   UIView *host = [self waitForHost];
   XCTAssertNotNil(host);
@@ -134,6 +145,61 @@ static UIScrollView *StatusBarScrollBridge(UIView *parent) {
   [self waitForLabel:@"Review options" inHost:host];
 }
 
+- (void)testUIKitActivatesAnEditableFieldAndCanReopenItsKeyboard {
+  self.continueAfterFailure = NO;
+  UIView *host = [self waitForHost];
+  XCTAssertNotNil(host);
+  XCTAssertTrue(Invoke(ActionNamed(AccessibleElement(host, @"Review options"), @"Show context menu")));
+  [self waitForLabel:@"Configure keyboard assistance" inHost:host];
+  XCTAssertTrue([AccessibleElement(host, @"Configure keyboard assistance") accessibilityActivate]);
+  [self waitForLabel:@"Review note" inHost:host];
+  XCTAssertNotNil([self waitForInputPurpose:nil inHost:host]);
+
+  id review = AccessibleElement(host, @"Review note");
+  XCTAssertTrue([review accessibilityActivate], @"The projected text area should accept UIKit activation.");
+  NSPredicate *editingNote = [NSPredicate predicateWithBlock:^BOOL(UIView *view, NSDictionary *bindings) {
+    return ActiveTextResponder(view.window, UITextView.class) != nil;
+  }];
+  [self expectationForPredicate:editingNote evaluatedWithObject:host handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+  UITextView *note = (UITextView *)ActiveTextResponder(host.window, UITextView.class);
+  NSString *original = note.text ?: @"";
+  note.selectedRange = NSMakeRange(0, original.length);
+  [note insertText:@"Checked"];
+  [self expectationForPredicate:[NSPredicate predicateWithFormat:@"accessibilityValue == %@", @"Checked"]
+           evaluatedWithObject:review handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+
+  note.selectedRange = NSMakeRange(1, 4);
+  [self waitForEditor:review toHaveValue:@"Checked" action:@"Copy"];
+  XCTAssertTrue([note resignFirstResponder]);
+  NSPredicate *editingDismissed = [NSPredicate predicateWithBlock:^BOOL(UITextView *input, NSDictionary *bindings) {
+    return !input.isFirstResponder && input.inputAccessoryView == nil;
+  }];
+  [self expectationForPredicate:editingDismissed evaluatedWithObject:note handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+  XCTAssertTrue([AccessibleElement(host, @"Review note") accessibilityActivate]);
+  [self expectationForPredicate:editingNote evaluatedWithObject:host handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+  XCTAssertEqualObjects(note.text, @"Checked");
+  XCTAssertTrue(NSEqualRanges(note.selectedRange, NSMakeRange(1, 4)));
+
+  note.selectedRange = NSMakeRange(0, note.text.length);
+  if (original.length == 0) {
+    [note deleteBackward];
+  } else {
+    [note insertText:original];
+  }
+  [self expectationForPredicate:[NSPredicate predicateWithBlock:^BOOL(id element, NSDictionary *bindings) {
+    return [([element accessibilityValue] ?: @"") isEqualToString:original];
+  }] evaluatedWithObject:review handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+
+  XCTAssertTrue([host accessibilityPerformEscape]);
+  [self waitForLabel:@"Review options" inHost:host];
+  XCTAssertFalse([review accessibilityActivate], @"A dismissed field must not regain native focus.");
+}
+
 - (void)testUIKitAppliesKeyboardAssistanceWithoutInterruptingMarkedText {
   self.continueAfterFailure = NO;
   UIView *host = [self waitForHost];
@@ -155,6 +221,7 @@ static UIScrollView *StatusBarScrollBridge(UIView *parent) {
   NSString *composed = field.text;
   XCTAssertTrue([AccessibleElement(host, @"Use identifier keyboard") accessibilityActivate]);
   [self waitForLabel:@"Use prose keyboard" inHost:host];
+  XCTAssertNil(ActionNamed(AccessibleElement(host, @"Draft title"), @"Paste"));
   XCTAssertEqual(ActiveTextField(host.window), field);
   XCTAssertNotNil(field.markedTextRange);
   XCTAssertEqual(field.autocapitalizationType, UITextAutocapitalizationTypeWords);
@@ -226,6 +293,67 @@ static UIScrollView *StatusBarScrollBridge(UIView *parent) {
   XCTAssertEqual(field.spellCheckingType, UITextSpellCheckingTypeNo);
   XCTAssertEqual(field.returnKeyType, UIReturnKeyDone);
   XCTAssertNil(field.inputAccessoryView);
+  XCTAssertTrue([host accessibilityPerformEscape]);
+  [self waitForLabel:@"Review options" inHost:host];
+}
+
+- (void)testUIKitTextEditingActionsUseTheCurrentSelectionAndHistory {
+  self.continueAfterFailure = NO;
+  UIView *host = [self waitForHost];
+  XCTAssertTrue(Invoke(ActionNamed(AccessibleElement(host, @"Review options"), @"Show context menu")));
+  [self waitForLabel:@"Configure keyboard assistance" inHost:host];
+  XCTAssertTrue([AccessibleElement(host, @"Configure keyboard assistance") accessibilityActivate]);
+  [self waitForLabel:@"Draft title" inHost:host];
+  UITextField *field = [self waitForInputPurpose:nil inHost:host];
+  XCTAssertNotNil(field);
+  id title = AccessibleElement(host, @"Draft title");
+  XCTAssertTrue(Invoke(ActionNamed(title, @"Select All")));
+  [self waitForEditor:title toHaveValue:field.text action:@"Copy"];
+  [field insertText:@"A🧪B"];
+  [self waitForEditor:title toHaveValue:@"A🧪B" action:@"Select All"];
+  XCTAssertTrue(Invoke(ActionNamed(title, @"Select All")));
+  [self waitForEditor:title toHaveValue:@"A🧪B" action:@"Cut"];
+  XCTAssertEqualObjects([field textInRange:field.selectedTextRange], @"A🧪B");
+
+  UIAccessibilityCustomAction *copy = ActionNamed(title, @"Copy");
+  NSInteger clipboardRevision = UIPasteboard.generalPasteboard.changeCount;
+  XCTAssertTrue(Invoke(copy));
+  [self expectationForPredicate:[NSPredicate predicateWithBlock:^BOOL(UIPasteboard *board, NSDictionary *bindings) {
+    return board.changeCount > clipboardRevision;
+  }] evaluatedWithObject:UIPasteboard.generalPasteboard handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+  XCTAssertEqualObjects(UIPasteboard.generalPasteboard.string, @"A🧪B");
+
+  XCTAssertTrue(Invoke(ActionNamed(title, @"Cut")));
+  [self waitForEditor:title toHaveValue:@"" action:@"Undo"];
+  XCTAssertNil(ActionNamed(title, @"Copy"));
+  XCTAssertFalse(Invoke(copy));
+  XCTAssertTrue(Invoke(ActionNamed(title, @"Undo")));
+  [self waitForEditor:title toHaveValue:@"A🧪B" action:@"Redo"];
+  XCTAssertTrue(Invoke(ActionNamed(title, @"Redo")));
+  [self waitForEditor:title toHaveValue:@"" action:@"Paste"];
+  XCTAssertTrue(Invoke(ActionNamed(title, @"Paste")));
+  [self waitForEditor:title toHaveValue:@"A🧪B" action:@"Undo"];
+
+  UIAccessibilityCustomAction *paste = ActionNamed(title, @"Paste");
+  XCTAssertTrue([AccessibleElement(host, @"Edit access code") accessibilityActivate]);
+  id password = AccessibleElement(host, @"Access code");
+  [self expectationForPredicate:[NSPredicate predicateWithBlock:^BOOL(id editor, NSDictionary *bindings) {
+    return ActionNamed(editor, @"Paste") != nil;
+  }] evaluatedWithObject:password handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+  XCTAssertFalse(Invoke(paste));
+  [ActiveTextField(host.window) insertText:@"1357"];
+  [self waitForEditor:password toHaveValue:nil action:@"Select All"];
+  XCTAssertTrue(Invoke(ActionNamed(password, @"Select All")));
+  [self expectationForPredicate:[NSPredicate predicateWithBlock:^BOOL(id editor, NSDictionary *bindings) {
+    return ActionNamed(editor, @"Select All") == nil && ActionNamed(editor, @"Paste") != nil;
+  }] evaluatedWithObject:password handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+  XCTAssertFalse([[password accessibilityValue] isEqualToString:@"1357"]);
+  XCTAssertNil(ActionNamed(password, @"Copy"));
+  XCTAssertNil(ActionNamed(password, @"Cut"));
+  UIPasteboard.generalPasteboard.items = @[];
   XCTAssertTrue([host accessibilityPerformEscape]);
   [self waitForLabel:@"Review options" inHost:host];
 }
@@ -960,6 +1088,7 @@ static UIScrollView *StatusBarScrollBridge(UIView *parent) {
 
   id fixed = [self waitForValue:@"7" ofControl:@"Fixed sample count" inHost:host];
   XCTAssertEqual([fixed accessibilityTraits] & UIAccessibilityTraitAdjustable, 0);
+  XCTAssertFalse([fixed accessibilityActivate]);
   [fixed accessibilityIncrement];
   XCTAssertEqualObjects([fixed accessibilityValue], @"7");
 
@@ -970,6 +1099,28 @@ static UIScrollView *StatusBarScrollBridge(UIView *parent) {
   [minute accessibilityDecrement];
   [self waitForValue:@"59" ofControl:@"Minute" inHost:host];
   XCTAssertEqualObjects([AccessibleElement(host, @"Hour") accessibilityValue], @"14");
+
+  XCTAssertTrue([offset accessibilityActivate]);
+  UITextField *number = [self waitForInputPurpose:nil inHost:host];
+  XCTAssertNotNil(number);
+  XCTAssertEqual(number.keyboardType, UIKeyboardTypeDecimalPad);
+  XCTAssertEqual(number.returnKeyType, UIReturnKeyDone);
+  number.selectedTextRange = [number textRangeFromPosition:number.beginningOfDocument
+                                                    toPosition:number.endOfDocument];
+  [number insertText:@"0,50"];
+  [self waitForValue:@"0,50" ofControl:@"Calibrated offset" inHost:host];
+  UIToolbar *numberToolbar = (UIToolbar *)number.inputAccessoryView;
+  XCTAssertTrue([numberToolbar isKindOfClass:UIToolbar.class]);
+  XCTAssertTrue(PressAccessoryButton(numberToolbar.items.lastObject));
+  NSPredicate *numberDismissed = [NSPredicate predicateWithBlock:^BOOL(UITextField *field, NSDictionary *bindings) {
+    return !field.isFirstResponder && field.inputAccessoryView == nil;
+  }];
+  [self expectationForPredicate:numberDismissed evaluatedWithObject:number handler:nil];
+  [self waitForExpectationsWithTimeout:5 handler:nil];
+  [self waitForValue:@"0,50" ofControl:@"Calibrated offset" inHost:host];
+  [offset accessibilityIncrement];
+  [self waitForValue:@"0,75" ofControl:@"Calibrated offset" inHost:host];
+
   XCTAssertTrue([host accessibilityPerformEscape]);
   [self waitForLabel:@"Review options" inHost:host];
 }

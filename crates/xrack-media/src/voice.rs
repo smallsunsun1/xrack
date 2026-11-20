@@ -15,6 +15,7 @@ use std::{
     },
     time::Duration,
 };
+use tokio::sync::Notify;
 
 pub const SAMPLE_RATE: u32 = RATE;
 pub const SAMPLES_PER_FRAME: usize = SAMPLE_RATE as usize / 100;
@@ -38,6 +39,10 @@ pub enum CaptureStatus {
 }
 
 impl CaptureStatus {
+    fn is_reading(&self) -> bool {
+        matches!(self, Self::Opening | Self::Capturing)
+    }
+
     fn is_terminal(&self) -> bool {
         matches!(self, Self::Stopped | Self::Failed(_))
     }
@@ -51,9 +56,15 @@ struct CaptureData {
 struct CaptureQueue {
     data: Mutex<CaptureData>,
     changed: Condvar,
+    ready: Notify,
 }
 
 impl CaptureQueue {
+    fn notify_readers(&self) {
+        self.changed.notify_all();
+        self.ready.notify_waiters();
+    }
+
     fn set_status(&self, status: CaptureStatus) {
         let mut data = self
             .data
@@ -64,7 +75,8 @@ impl CaptureQueue {
             (CaptureStatus::Stopping, CaptureStatus::Failed(_)) => CaptureStatus::Stopped,
             (_, status) => status,
         };
-        self.changed.notify_all();
+        drop(data);
+        self.notify_readers();
     }
 
     fn push(&self, frame: VoiceFrame, cancelled: &AtomicBool) {
@@ -79,7 +91,8 @@ impl CaptureQueue {
             data.frames.pop_front();
         }
         data.frames.push_back(frame);
-        self.changed.notify_all();
+        drop(data);
+        self.notify_readers();
     }
 }
 
@@ -97,17 +110,22 @@ impl VoiceCapture {
         Self::start_source(format, source)
     }
 
-    fn start_source(format: &'static CStr, source: Option<CString>) -> Result<Self, MediaError> {
-        let capture = Self {
+    fn opening() -> Self {
+        Self {
             queue: Arc::new(CaptureQueue {
                 data: Mutex::new(CaptureData {
                     status: CaptureStatus::Opening,
                     frames: VecDeque::with_capacity(QUEUE_FRAMES),
                 }),
                 changed: Condvar::new(),
+                ready: Notify::new(),
             }),
             cancelled: Arc::default(),
-        };
+        }
+    }
+
+    fn start_source(format: &'static CStr, source: Option<CString>) -> Result<Self, MediaError> {
+        let capture = Self::opening();
         let queue = capture.queue.clone();
         let cancelled = capture.cancelled.clone();
         std::thread::Builder::new()
@@ -140,6 +158,39 @@ impl VoiceCapture {
         self.wait_frame(Duration::ZERO)
     }
 
+    /// Receive the oldest available frame without blocking the executor.
+    ///
+    /// After queued frames are drained, returns `Ok(None)` on shutdown or the
+    /// capture error on failure. Calling [`Self::stop`] discards queued frames
+    /// and wakes pending receivers immediately. Dropping a pending receive does
+    /// not consume a frame. Each frame is delivered to at most one receiver.
+    pub async fn recv(&self) -> Result<Option<VoiceFrame>, MediaError> {
+        loop {
+            // Register before inspecting the queue so a push or stop racing
+            // with this inspection also wakes the future's first poll.
+            let ready = self.queue.ready.notified();
+            {
+                let mut data = self
+                    .queue
+                    .data
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if self.cancelled.load(Ordering::Relaxed) {
+                    return Ok(None);
+                }
+                if let Some(frame) = data.frames.pop_front() {
+                    return Ok(Some(frame));
+                }
+                match &data.status {
+                    CaptureStatus::Opening | CaptureStatus::Capturing => {}
+                    CaptureStatus::Stopping | CaptureStatus::Stopped => return Ok(None),
+                    CaptureStatus::Failed(reason) => return Err(MediaError(reason.clone())),
+                }
+            }
+            ready.await;
+        }
+    }
+
     /// Wait on a worker thread for a frame, the timeout, or the end of capture.
     pub fn wait_frame(&self, timeout: Duration) -> Option<VoiceFrame> {
         let data = self
@@ -152,10 +203,7 @@ impl VoiceCapture {
             .changed
             .wait_timeout_while(data, timeout, |data| {
                 data.frames.is_empty()
-                    && matches!(
-                        data.status,
-                        CaptureStatus::Opening | CaptureStatus::Capturing
-                    )
+                    && data.status.is_reading()
                     && !self.cancelled.load(Ordering::Relaxed)
             })
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -173,14 +221,12 @@ impl VoiceCapture {
             .data
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(
-            data.status,
-            CaptureStatus::Opening | CaptureStatus::Capturing
-        ) {
+        if data.status.is_reading() {
             data.status = CaptureStatus::Stopping;
         }
         data.frames.clear();
-        self.queue.changed.notify_all();
+        drop(data);
+        self.queue.notify_readers();
     }
 
     /// Wait on a worker thread for capture to release the device.
@@ -337,7 +383,67 @@ unsafe extern "C" fn render_voice(user: *mut c_void, output: *mut f32, frames: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::{
+        future::Future,
+        io::Write,
+        task::{Context, Poll, Wake, Waker},
+    };
+
+    struct ReceiveWake(AtomicBool);
+
+    impl Wake for ReceiveWake {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn async_receive_wakes_on_frame_failure_and_explicit_stop() {
+        let capture = VoiceCapture::opening();
+        let notification = Arc::new(ReceiveWake(AtomicBool::new(false)));
+        let waker = Waker::from(notification.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut discarded = Box::pin(capture.recv());
+        assert!(discarded.as_mut().poll(&mut cx).is_pending());
+        drop(discarded);
+
+        let mut receive = Box::pin(capture.recv());
+        assert!(receive.as_mut().poll(&mut cx).is_pending());
+        capture.queue.push(
+            VoiceFrame {
+                sequence: 3,
+                samples: [0.25; SAMPLES_PER_FRAME],
+            },
+            &capture.cancelled,
+        );
+        assert!(notification.0.swap(false, Ordering::Relaxed));
+        assert!(matches!(
+            receive.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(Some(VoiceFrame { sequence: 3, .. })))
+        ));
+
+        let mut receive = Box::pin(capture.recv());
+        assert!(receive.as_mut().poll(&mut cx).is_pending());
+        capture
+            .queue
+            .set_status(CaptureStatus::Failed("device disconnected".into()));
+        assert!(notification.0.swap(false, Ordering::Relaxed));
+        assert!(matches!(
+            receive.as_mut().poll(&mut cx),
+            Poll::Ready(Err(MediaError(reason))) if reason == "device disconnected"
+        ));
+
+        let capture = VoiceCapture::opening();
+        let mut receive = Box::pin(capture.recv());
+        assert!(receive.as_mut().poll(&mut cx).is_pending());
+        capture.stop();
+        assert!(notification.0.load(Ordering::Relaxed));
+        assert!(matches!(
+            receive.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(None))
+        ));
+        assert_eq!(capture.status(), CaptureStatus::Stopping);
+    }
 
     #[test]
     fn ffmpeg_input_becomes_10ms_mono_frames_without_opening_a_microphone() {
@@ -393,16 +499,7 @@ mod tests {
 
     #[test]
     fn stop_clears_frames_and_prevents_a_late_open_from_reviving_capture() {
-        let capture = VoiceCapture {
-            queue: Arc::new(CaptureQueue {
-                data: Mutex::new(CaptureData {
-                    status: CaptureStatus::Opening,
-                    frames: VecDeque::new(),
-                }),
-                changed: Condvar::new(),
-            }),
-            cancelled: Arc::default(),
-        };
+        let capture = VoiceCapture::opening();
         let frame = VoiceFrame {
             sequence: 0,
             samples: [0.5; SAMPLES_PER_FRAME],

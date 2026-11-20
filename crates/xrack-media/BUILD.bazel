@@ -201,6 +201,7 @@ rust_library(
         ":xrack_ffmpeg_sys",
         "//crates/xrack-runtime:xrack_runtime",
         "@crates//:libloading",
+        "@crates//:tokio",
         "@rules_rust//rust/runfiles",
     ],
 )

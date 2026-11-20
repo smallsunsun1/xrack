@@ -94,6 +94,8 @@ build:media --//crates/xrack-media:enabled
 
 # Apple Silicon iOS Simulator. Apple rules select the simulator SDK from Xcode.
 build:ios-sim --ios_multi_cpus=sim_arm64
+# Keep the simulator and its Device Hub connection across interactive runs.
+run:ios-sim --run_env=BAZEL_APPLE_PREFER_PERSISTENT_SIMS=1
 
 # Native iPhone and iPad packages use Xcode's device SDK and the arm64 Rust target.
 build:ios-device --ios_multi_cpus=arm64

@@ -14,6 +14,8 @@ iOS 的 `system` 模式读取 UIKit 当前窗口的外观，应用运行中切�
 
 iOS 开启「增强对比度」后，默认文字、输入边框、焦点指示、选中态和滚动滑块使用对比更强的配色。`system`、`light` 和 `dark` 都会响应这个设置，控件显式指定的颜色仍由其属性决定。
 
+iOS 开启「不以颜色区分」后，`TabBar` 和 `TabWidget` 为当前标签加下划线，`ComboBox` 为已选项加勾标，并用轮廓标出当前键盘高亮项。自定义选项内容会为勾标留出空间，整个选项仍可点击。应用运行中切换设置或返回前台时会刷新标记。[iOS 选择示例](../examples/ios/README.md#系统外观示例)
+
 `HorizontalLayout` 和 `VerticalLayout` 支持四边 `padding-*`、`spacing`、`min-*`、`preferred-*`、`max-*`、双轴伸缩与对齐。组件实例可以在使用处声明这些尺寸约束和子项属性，实例上的绑定通过 `xr.layout_bind` 进入场景树。主轴对齐支持 `stretch`、`start`、`center`、`end`、`space-between`、`space-around` 和 `space-evenly`。交叉轴可用 `cross-axis-self-alignment` 覆盖单个子项。`layout-order` 改变视觉位置，键盘焦点按声明顺序移动。
 
 `GridLayout` 支持 `Row`、`row`、`col`、`rowspan`、`colspan` 和分轴间距。尺寸绑定可使用相对父容器内容区域的百分比，例如 `width: 50%;`。`animate width { duration: 220ms; }` 可对相同类型的视觉属性值做线性过渡。
@@ -130,6 +132,10 @@ iOS 对使用 `return-key: next;` 或 `done;` 的字段默认提供键盘工具�
 
 iOS 停靠键盘打开时，`TextEdit` 和 `TextArea` 会随输入和光标移动，按需滚动启用了 `auto-reveal-focus` 的外层 `ScrollView` 或 `Flickable`，以显示当前行。iPad 浮动键盘盖住可见光标时，表单内容会暂时移开。键盘移走后恢复原位置，滚动绑定保留原值。[长备注示例](../examples/ios/README.md#键盘辅助输入)
 
+表单对话框可以把输入项放进一个 `ScrollView` 或 `Flickable`，再把 `DialogButton` 或 `DialogButtonBox` 作为紧随其后的直接子项。纵向空间足够时按钮留在正文下方。键盘或小视口让正文不足一行时，弹层会在安全区内收紧上下外边距。横向有余量时，按钮移到逻辑末端，正文继续滚动。RTL 下操作区移到左侧。[键盘表单示例](../examples/ios/README.md#键盘辅助输入)
+
+iOS 的编辑器在旋转和停靠键盘调整视口期间会保留仍有效的 UIKit 编辑焦点。布局稳定后，滚动视口会继续显示当前字段。控件被隐藏、禁用或移出当前弹层时，焦点正常转移。
+
 iPad 的系统「收起键盘」按钮会保留当前字段的草稿和逻辑焦点。窗口尺寸变化后键盘继续保持收起，点进原字段可恢复编辑。
 
 [Android 联系人表单回归](../examples/android/README.md#模拟器测试) 检查邮件、电话和网址的系统键盘类型，以及 Next／Done 的校验、焦点切换和收起行为。
@@ -146,7 +152,17 @@ iOS 的系统字体回退使用 Core Text 绘制简体中文苹方字形。常�
 
 iOS 长按选词或拖完选区手柄后使用 UIKit 编辑菜单。菜单动作沿用 XRack 的选区、只读、密码保护和撤销历史，键盘可保持打开。iOS 跨应用粘贴可由系统弹窗请求授权。允许后，XRack 会在恢复活跃时核对原字段、文字和选区，再完成这次粘贴。拒绝授权会保留原文，应用真正进入后台时会取消尚未完成的粘贴。
 
+iOS 编辑菜单打开时，Escape、无障碍取消或从屏幕起始边缘返回会先关闭菜单，保留文本选区及当前对话框。下一次独立的取消操作会处理下层控件。
+
+iOS 原生编辑菜单使用当前可见的文字选区定位，空选区使用光标。编辑器重新布局后，菜单会跟随当前位置。浮动键盘盖住部分选区时使用仍可见的部分，选区完全不可见时菜单会收起。
+
+iOS 的 VoiceOver「操作」转子为正在编辑的文本控件提供全选、拷贝、剪切、粘贴、撤销和重做。操作随选区和编辑历史更新。只读字段可全选和拷贝，密码字段隐藏拷贝与剪切，输入法组字期间暂停这些操作。[iOS 编辑示例](../examples/ios/README.md)
+
+iOS 上可用 VoiceOver 双击可编辑的单行、多行、搜索或数值输入框，进入 UIKit 编辑。收起键盘后，可以双击当前字段继续输入，草稿和选区会保留。
+
 在 `TextArea` 或 `TextEdit` 中按住鼠标拖出编辑区域时，内容会沿该方向自动滚动并继续扩展选区。离边缘越远，滚动越快。不换行的长行也可向左右拖选。松开鼠标、移回编辑区域或失去焦点时停止滚动。运行 `bazel run //examples/form:form -- --long-text-selection` 可体验字素和词段两种拖选方式。
+
+触摸长按选词后，可保持手指接触并拖到编辑区边缘，让长文本持续滚动并扩展选区。已显示的选区手柄也支持同样的操作。移回编辑区、松手或目标文本被替换时停止滚动。[iOS 选区示例](../examples/ios/README.md)
 
 `TextInput`、`LineEdit`、`SearchField` 和可编辑的 `ComboBox` 也支持横向拖选。单行控件在按住期间逐步移动可见范围。松开后保留显示位置，下次按键编辑或移动光标时恢复光标跟随。在同一个示例中，可以用下方的单行控件试用。
 
@@ -324,6 +340,8 @@ Android 可构建 `//examples/android:controls_app` 体验触摸拖动、吸附�
 
 `Slider`、`RangeSlider`、`Dial`、`SpinBox` 和 `DoubleSpinBox` 可设置 `wheel-enabled: true`。滚轮向上或向右增加数值，`RangeSlider` 调整靠近指针的手柄。滚轮按系统报告的行增量计步，触控板每 28 个逻辑像素累计为一步。一次输入的多步合并提交，数值变化时触发 `changed` 或 `edited`。上层 `WheelHandler` 仍可先消费输入。非循环控件到达边界后，同方向的后续滚轮会交回外层视口。带修饰键的滚轮沿用原路由。运行 `bazel run //examples/controls:controls -- --wheel` 可试用。
 
+iPadOS 的鼠标滚轮与触控板滚动会将本次手势的修饰键传给 `WheelHandler`。Command 对应 `event.modifiers.primary`。控件可以消费组合滚动，后续普通滚动仍交给外层视口处理。[iPad 指针示例](../examples/ios/README.md#ipad-鼠标与触控板)
+
 `Pane` 提供主题背景，`ControlFrame` 另有一像素的主题边框。两者默认内边距为 12 个逻辑像素，可分别设置四边。子元素的坐标相对于内边距内的内容区，也可以放入布局容器。未指定外部尺寸时会测量可见内容，`content-width/height` 可覆盖隐式内容尺寸。`available-width/height` 是布局完成后发布的只读内容区尺寸，子元素可用百分比尺寸填满内容区。空白区域拦截点击，`enabled: false` 会禁用其中的交互，`clip: true` 会按圆角裁剪子元素。运行 `bazel run //examples/controls:controls -- --panes` 可试用。
 
 `Dial` 的 `value` 同样可双向绑定。输入模式使用 `DialInputMode`，可取 `circular`、`horizontal` 或 `vertical`。圆形模式按角度定位，直线模式按水平或垂直位移相对调节。方向键按 `step` 调节，Home 和 End 移到端点。默认使用 280 度限位圆弧，`wrap: true;` 使用整圈并允许跨过端点。可用 `start-angle` 和 `end-angle` 自定义以十二点方向为零、顺时针递增的角度。事件 `changed(value)` 和 `released(value)` 与 `Slider` 相同。
@@ -427,7 +445,7 @@ PathView {
 
 记录模型可用 `text-role` 指定显示字段，用 `value-role` 指定业务值字段。角色由编译器校验，`current-value` 和 `value-selected` 采用该字段的类型，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。`selected(string)` 返回显示标签。按值选择会在模型重排后查找相同业务值，弹层高亮随行标识移动。可编辑的记录下拉框按显示标签匹配，提交未匹配的自由文本时可在 `accepted(string)` 中处理。运行 `bazel run //examples/selection:selection -- --record-combo` 体验。
 
-记录下拉框可以用 `enabled-role: "access.available";` 指定布尔字段。禁用项仍显示，鼠标、键盘、补全和辅助技术会跳过它，提交时重新核对当前模型。程序可保留指向禁用项的当前值。非编辑下拉框支持按前缀定位，短时间连续输入会合成前缀，重复按同一个字符会在匹配项之间循环。弹层关闭时直接选中，打开时只移动高亮，按 Enter 才提交。
+记录下拉框可以用 `enabled-role: "access.available";` 指定布尔字段。禁用项仍显示并向辅助技术标记为不可用，鼠标、键盘和补全也无法提交该项。提交时会重新核对当前模型。程序可保留指向禁用项的当前值。非编辑下拉框支持按前缀定位，短时间连续输入会合成前缀，重复按同一个字符会在匹配项之间循环。弹层关闭时直接选中，打开时只移动高亮，按 Enter 才提交。
 
 给 `ComboBox` 添加一个匿名的 `ComboOption` 子项，可以为字符串模型和记录模型定制下拉选项的外观。模板使用只读的 `option-text`、`option-index`（从 0 开始）、`option-enabled`、`option-selected` 和 `option-highlighted`。每个可见选项都使用自身的数据和状态绘制，鼠标、键盘和辅助技术仍通过下拉框提交原选项。重复列表中的下拉框可把模板放在各自的组件内。运行 `bazel run //examples/selection -- --record-combo` 查看示例。
 
@@ -438,6 +456,8 @@ PathView {
 在 `ComboBox` 内声明一个 `ComboPopup`，可绑定 `width`、`max-height`、`row-height`、`padding`、`background`、`border-color`、`border-width` 和 `border-radius`。`max-height` 包含内边距，弹层根据窗口剩余空间向上或向下展开。`width` 的百分比相对于控件宽度，`max-height` 的百分比相对于窗口高度。默认行高是 28px，默认最多显示八行，默认宽度取控件宽度与 96px 中较大者。设置 `scroll-indicator: true` 后，内容溢出时会在逻辑末端显示滚动位置，滚轮和键盘仍用于浏览选项。运行 `bazel run //examples/selection -- --popup-style` 体验。
 
 iOS 和 iPadOS 的 `ComboBox` 下拉项及 `SearchField` 建议会随系统文字大小调整字号和行高。`row-height` 是常规字号下的基准，显式弹层宽度和最大高度仍约束布局。弹层避开系统安全区、停靠键盘和浮动键盘。键盘移开后，仍打开的弹层会恢复位置。选项过多时可在弹层里滑动或用 VoiceOver 翻页。点击下拉选项会更新选值，点击搜索建议会填入输入框，随后可用搜索按钮或键盘搜索键提交。
+
+iOS 的 VoiceOver 可从可见选项发起翻页，UIKit 会收到可见的选项范围和总数。`ComboBox` 整页禁用时仍可浏览和继续翻页。只有激活可用选项才会改变已选值。[iOS 翻页示例](../examples/ios/README.md)
 
 回调中可调用 `choice.open-popup()` 或 `choice.close-popup()`。窗口处理请求时会检查控件的可见性、启用状态和当前模态范围。打开后可绑定只读的 `popup-open` 和 `highlighted-index`，下标从 0 开始，弹层关闭或没有高亮项时为 `-1`。高亮随键盘、鼠标或滚动更新，确认选项时才提交选择。运行 `bazel run //examples/selection -- --popup-control` 查看示例。
 
