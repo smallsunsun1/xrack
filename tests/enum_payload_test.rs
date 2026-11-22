@@ -4,13 +4,11 @@ use xrack_runtime::{Component, RecordValue, Value};
 
 const SOURCE: &str = include_str!("enum_payload.xr");
 
-fn interpreted() -> Instance {
-    let preview =
-        xrack_compiler::prepare_preview(SOURCE, "enum_payload.xr", Default::default()).unwrap();
-    Program::from_module(&preview.module)
-        .unwrap()
-        .create("EnumPayloadDemo")
-        .unwrap()
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+fn interpreted() -> TestResult<Instance> {
+    let preview = xrack_compiler::prepare_preview(SOURCE, "enum_payload.xr", Default::default())?;
+    Ok(Program::from_module(&preview.module)?.create("EnumPayloadDemo")?)
 }
 
 fn record(name: &str, fields: &[(&str, Value)]) -> Value {
@@ -30,9 +28,9 @@ fn job(tag: i64, payload: &[(&str, Value)]) -> Value {
 }
 
 #[test]
-fn rust_enum_payload_and_interpreter_have_the_same_state_and_output() {
+fn rust_enum_payload_and_interpreter_have_the_same_state_and_output() -> TestResult {
     let mut aot = EnumPayloadDemo::new();
-    let mut interpreter = interpreted();
+    let mut interpreter = interpreted()?;
 
     assert!(matches!(Job::default(), Job::Pending(ref text) if text.is_empty()));
     assert_eq!(aot.get_summary(), "pending ");
@@ -115,11 +113,12 @@ fn rust_enum_payload_and_interpreter_have_the_same_state_and_output() {
             Some("disk true")
         );
     }
+    Ok(())
 }
 
 #[test]
-fn host_rejects_invalid_tag_and_inactive_or_ill_typed_payload() {
-    let interpreter = interpreted();
+fn host_rejects_invalid_tag_and_inactive_or_ill_typed_payload() -> TestResult {
+    let interpreter = interpreted()?;
     for value in [
         job(-1, &[]),
         job(99, &[]),
@@ -141,6 +140,7 @@ fn host_rejects_invalid_tag_and_inactive_or_ill_typed_payload() {
             Ok(Value::String("pending ".into()))
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -232,8 +232,8 @@ fn table_history_replays_enum_tag_and_payload_together() {
 }
 
 #[test]
-fn interpreter_rejects_invalid_variant_from_host_callback_or_raw_mlir() {
-    let interpreter = interpreted();
+fn interpreter_rejects_invalid_variant_from_host_callback_or_raw_mlir() -> TestResult {
+    let interpreter = interpreted()?;
     interpreter
         .on("sample", std::rc::Rc::new(|_| Ok(Some(job(4, &[])))))
         .unwrap();
@@ -250,4 +250,5 @@ fn interpreter_rejects_invalid_variant_from_host_callback_or_raw_mlir() {
     assert!(mlir.contains("tag = 1 : i64"));
     let invalid = mlir.replacen("tag = 1 : i64", "tag = 400 : i64", 1);
     assert!(xrack_interpreter::load_mlir(&invalid).is_err());
+    Ok(())
 }

@@ -1,3 +1,12 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "Shared AOT and interpreter test helpers use these calls as assertions"
+    )
+)]
+
 use runfiles::{Runfiles, rlocation};
 use std::{
     cell::RefCell,
