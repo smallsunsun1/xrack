@@ -14,6 +14,8 @@ mod ios;
 use ios::file_drop;
 mod keyboard;
 mod local_task;
+#[cfg(target_os = "macos")]
+mod metal_presentation;
 mod native_dialog;
 mod queue;
 mod scale_rotate;
@@ -53,7 +55,6 @@ pub use native_dialog::{IosPhotoSelection, IosPhotoThumbnail};
 #[cfg(not(target_os = "android"))]
 use std::cell::Cell;
 use std::{
-    borrow::Cow,
     cell::RefCell,
     rc::Rc,
     sync::Arc,
@@ -330,23 +331,15 @@ impl WindowState {
             .instance
             .create_surface(window.clone())
             .map_err(|e| e.to_string())?;
-        let mut renderer = graphics.renderer(&surface)?;
+        let renderer = graphics.renderer(&surface)?;
         #[cfg(target_os = "ios")]
         let appearance = ios::system_appearance(&window);
-        #[cfg(target_os = "ios")]
-        {
-            renderer.set_system_color_scheme(appearance.scheme);
-            renderer.set_system_increased_contrast(appearance.increased_contrast);
-        }
         #[cfg(target_os = "android")]
-        {
-            if let Some(scheme) = android_color_scheme(&android_app) {
-                renderer.set_system_color_scheme(scheme);
-            }
+        let renderer = {
+            let mut renderer = renderer;
             android::emoji::install(&android_app, &mut renderer.text);
-        }
-        #[cfg(not(any(target_os = "ios", target_os = "android")))]
-        renderer.set_system_color_scheme(color_scheme(window.theme()));
+            renderer
+        };
         let size = drawable_size(&window);
         let mut config = surface
             .get_default_config(&renderer.adapter, size.width.max(1), size.height.max(1))
@@ -801,10 +794,13 @@ impl PointerClick {
 }
 
 type ViewportHandler<C> = Box<dyn FnMut(&mut C, Size)>;
+type SystemColorSchemeHandler<C> = Box<dyn FnMut(&mut C, ColorScheme)>;
 
 struct Application<C> {
     component: C,
     viewport_handler: Option<ViewportHandler<C>>,
+    system_color_scheme_handler: Option<SystemColorSchemeHandler<C>>,
+    system_color_scheme: Option<ColorScheme>,
     base_scene: Rc<Node>,
     scene: Rc<Node>,
     transition: SceneTransition,
@@ -831,6 +827,7 @@ struct Application<C> {
     touch_hold: Option<TouchHold>,
     #[cfg(target_os = "android")]
     input_batch_started_at: Option<Instant>,
+    profile_input_at: Option<Instant>,
     selection_handle_drag: Option<SelectionHandleDrag>,
     additional_touch_captures: Vec<CapturedPointer>,
     next_touch_finger_id: i64,
@@ -869,6 +866,8 @@ impl<C: Component> Application<C> {
         Self {
             component,
             viewport_handler: None,
+            system_color_scheme_handler: None,
+            system_color_scheme: None,
             base_scene: scene.clone(),
             scene,
             transition: SceneTransition::default(),
@@ -895,6 +894,7 @@ impl<C: Component> Application<C> {
             touch_hold: None,
             #[cfg(target_os = "android")]
             input_batch_started_at: None,
+            profile_input_at: None,
             selection_handle_drag: None,
             additional_touch_captures: Vec::new(),
             next_touch_finger_id: 1,
@@ -2256,10 +2256,7 @@ impl<C: Component> Application<C> {
             }
             insets
         };
-        let base = match self.transition.frame(&self.base_scene, elapsed) {
-            Cow::Borrowed(_) => self.base_scene.clone(),
-            Cow::Owned(frame) => Rc::new(frame),
-        };
+        let base = self.transition.sample_shared(&self.base_scene, elapsed);
         #[cfg(target_os = "ios")]
         let resized_base = self.layout.as_ref().and_then(|layout| {
             (previous_insets != insets
@@ -2455,6 +2452,20 @@ impl<C: Component> Application<C> {
         {
             state.window.request_redraw();
         }
+        if self.publish_system_color_scheme(scheme) && self.layout.is_some() {
+            self.refresh_after_update(false);
+        }
+    }
+
+    fn publish_system_color_scheme(&mut self, scheme: ColorScheme) -> bool {
+        if self.system_color_scheme.replace(scheme) == Some(scheme) {
+            return false;
+        }
+        let Some(handler) = &mut self.system_color_scheme_handler else {
+            return false;
+        };
+        handler(&mut self.component, scheme);
+        true
     }
 
     #[cfg(target_os = "ios")]
@@ -5264,12 +5275,9 @@ impl<C: Component> Application<C> {
     }
 
     fn shortcut_key(&mut self, event: &KeyEvent) -> bool {
-        if event.state != ElementState::Pressed {
+        if event.state != ElementState::Pressed || self.layout.is_none() {
             return false;
         }
-        let Some(layout) = &self.layout else {
-            return false;
-        };
         let key = event.unmodified_key.clone();
         let key = match key {
             Key::Character(text) => {
@@ -5293,6 +5301,7 @@ impl<C: Component> Application<C> {
             Key::Named(NamedKey::F11) => ShortcutKey::Function(11),
             Key::Named(NamedKey::F12) => ShortcutKey::Function(12),
             Key::Named(NamedKey::Escape) => ShortcutKey::Escape,
+            Key::Named(NamedKey::Tab) => ShortcutKey::Tab,
             Key::Named(
                 NamedKey::Control
                 | NamedKey::Alt
@@ -5336,9 +5345,16 @@ impl<C: Component> Application<C> {
             self.input.cancel_shortcut_sequence();
             return false;
         };
+        self.route_shortcut(key, event.repeat)
+    }
+
+    fn route_shortcut(&mut self, key: MenuShortcut, repeat: bool) -> bool {
+        let Some(layout) = &self.layout else {
+            return false;
+        };
         match self
             .input
-            .shortcut_press(&self.scene, layout, key, event.repeat, Instant::now())
+            .shortcut_press(&self.scene, layout, key, repeat, Instant::now())
         {
             ShortcutOutcome::Unmatched => false,
             ShortcutOutcome::Consumed => true,
@@ -5649,6 +5665,15 @@ impl<C: Component> Application<C> {
     fn default_key_input(&mut self, event: &KeyEvent, is_synthetic: bool) -> bool {
         #[cfg(target_os = "android")]
         if self.android_back_key(event) {
+            return true;
+        }
+        if !is_synthetic
+            && event.logical_key == Key::Named(NamedKey::Tab)
+            && self
+                .modifiers
+                .intersects(ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SUPER)
+            && self.shortcut_key(event)
+        {
             return true;
         }
         if event.state == ElementState::Pressed
@@ -7340,15 +7365,17 @@ impl<C: Component> Application<C> {
     fn apply_scale_rotate_in(&mut self, scene: &Node, event: scale_rotate::Delivery) {
         if event.event == "started" {
             let mut cancels_scroll = true;
-            if let Some(pair) = self.scale_rotate.captured_touch_pair() {
+            let handoff = self.scale_rotate.exclusive_handoff();
+            if let scale_rotate::GrabHandoff::Contacts(pair) = handoff {
                 let contacts = pair
                     .map(|scale_rotate::ContactId(device, id)| PointerContact::Touch(device, id));
                 for contact in contacts {
                     self.cancel_pointer_contact(contact);
                 }
-                cancels_scroll = self
-                    .scroll_contact
-                    .is_some_and(|scroll| contacts.contains(&PointerContact::for_scroll(scroll)));
+                cancels_scroll = self.scroll_contact.is_some_and(|scroll| {
+                    matches!(PointerContact::for_scroll(scroll), PointerContact::Touch(device, id)
+                        if handoff.includes(scale_rotate::ContactId(device, id)))
+                });
             } else {
                 self.cancel_all_pointers();
             }
@@ -7689,33 +7716,57 @@ impl<C: Component> Application<C> {
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
-        let (frame, suboptimal) = match state.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                state.window.request_redraw();
-                return Ok(());
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                state.resize()?;
-                self.relayout();
-                return Ok(());
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                state.surface = state
-                    .renderer
-                    .instance
-                    .create_surface(state.window.clone())
-                    .map_err(|e| e.to_string())?;
-                state.resize()?;
-                self.relayout();
-                return Ok(());
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                return Err("GPU surface validation failed".into());
+        let inspector = self.component.window_inspector(&self.base_scene);
+        let profile = inspector.as_ref().filter(|inspector| inspector.profiling());
+        state
+            .renderer
+            .set_scene_observation(self.component.source_generation(), profile.is_some());
+        #[cfg(target_os = "macos")]
+        let metal_frame =
+            if std::env::var_os("XRACK_PROFILE_PRESENT").is_some_and(|value| value == "1") {
+                metal_presentation::acquire(&state.surface, &state.renderer.device)
+            } else {
+                None
+            };
+        #[cfg(target_os = "macos")]
+        let native = metal_frame.is_some();
+        #[cfg(not(target_os = "macos"))]
+        let native = false;
+        let (frame, suboptimal) = if native {
+            (None, false)
+        } else {
+            match state.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(frame) => (Some(frame), false),
+                wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (Some(frame), true),
+                wgpu::CurrentSurfaceTexture::Timeout => {
+                    state.window.request_redraw();
+                    return Ok(());
+                }
+                wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+                wgpu::CurrentSurfaceTexture::Outdated => {
+                    state.resize()?;
+                    self.relayout();
+                    return Ok(());
+                }
+                wgpu::CurrentSurfaceTexture::Lost => {
+                    state.surface = state
+                        .renderer
+                        .instance
+                        .create_surface(state.window.clone())
+                        .map_err(|e| e.to_string())?;
+                    state.resize()?;
+                    self.relayout();
+                    return Ok(());
+                }
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    return Err("GPU surface validation failed".into());
+                }
             }
         };
+        let target = frame.as_ref().map(|frame| &frame.texture);
+        #[cfg(target_os = "macos")]
+        let target = target.or_else(|| metal_frame.as_ref().map(|frame| &frame.texture));
+        let target = target.ok_or("missing window drawable")?;
         self.stack_transitions.advance(Instant::now());
         let layout = self
             .layout
@@ -7725,22 +7776,35 @@ impl<C: Component> Application<C> {
         if pointer_changed {
             self.input.reconcile(&self.scene, layout);
         }
-        let outline = self
-            .component
-            .window_inspector(&self.base_scene)
+        let outline = inspector
+            .as_ref()
             .and_then(|inspector| inspector.selected_path())
             .and_then(|path| layout.at_path(&path))
             .filter(|item| item.visible)
             .map(|item| item.visible_window_bounds(item.bounds));
         state.renderer.set_inspection_outline(outline);
-        state.renderer.draw_with_transitions(
-            &self.scene,
-            layout,
-            &frame.texture,
-            state.window.scale_factor() as f32,
-            &self.input,
-            &self.stack_transitions,
-        )?;
+        let mut draw = || {
+            state
+                .renderer
+                .draw_window_prepared(
+                    &self.scene,
+                    layout,
+                    target,
+                    state.window.scale_factor() as f32,
+                    &self.input,
+                    &self.stack_transitions,
+                )
+                .map(|_| ())
+        };
+        let render_sample = if profile.is_some() {
+            let mut result = Ok(());
+            let sample = xrack_runtime::update_profile::measure(|| result = draw());
+            result?;
+            sample
+        } else {
+            draw()?;
+            None
+        };
         if animating {
             self.animation_wake = match self.transition.next_frame(elapsed) {
                 Some(next) if next > elapsed => self.transition_epoch.checked_add(next),
@@ -7765,7 +7829,36 @@ impl<C: Component> Application<C> {
         }
         #[cfg(not(target_os = "android"))]
         state.window.pre_present_notify();
-        state.renderer.queue.present(frame);
+        let feedback = profile.map(|inspector| inspector.presentation_feedback());
+        if let Some(frame) = frame {
+            state.renderer.queue.present(frame);
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(frame) = metal_frame {
+            frame.present(
+                &state.renderer.device,
+                &state.renderer.queue,
+                feedback,
+                self.profile_input_at,
+            )?;
+            if profile.is_none() {
+                self.profile_input_at = None;
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = feedback;
+        if let (Some(inspector), Some(sample)) = (profile, render_sample) {
+            let micros = self
+                .profile_input_at
+                .take()
+                .and_then(|start| u64::try_from(start.elapsed().as_micros()).ok());
+            inspector.push_render_sample(
+                sample,
+                micros,
+                state.frame.revision(),
+                state.renderer.scene_changes(),
+            );
+        }
         if self.loader_frame_scene.as_ptr() != Rc::as_ptr(&self.scene) {
             self.loader_frame_scene = Rc::downgrade(&self.scene);
             if xrack_runtime::finish_loader_frame(&self.scene) {
@@ -7830,7 +7923,11 @@ impl<C: Component> HostedWindow for Application<C> {
         if let Some(inspector) = self.component.window_inspector(&self.base_scene)
             && let Some(input) = inspector.take_input()
         {
+            let started_at = Instant::now();
             let result = self.apply_inspection_input(&inspector, input.action);
+            if result.is_ok() && inspector.profiling() {
+                self.profile_input_at = Some(started_at);
+            }
             let _ = input.reply.send(result);
         }
         if let Some(state) = &mut self.state {
@@ -7965,7 +8062,13 @@ impl<C: Component> HostedWindow for Application<C> {
         self.input.set_editor_window_active(self.focus_active);
         self.component
             .publish_window_status(state.sample_window_status());
+        #[cfg(target_os = "android")]
+        let scheme = android_color_scheme(&state.android_app).unwrap_or_default();
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        let scheme = color_scheme(state.window.theme());
         self.state = Some(state);
+        #[cfg(not(target_os = "ios"))]
+        self.update_system_appearance(scheme, None);
         #[cfg(target_os = "ios")]
         {
             self.sync_ios_appearance();
@@ -8078,6 +8181,7 @@ impl<C: Component> HostedWindow for Application<C> {
     #[cfg(target_os = "android")]
     fn begin_input_batch(&mut self, started_at: Instant) {
         self.input_batch_started_at = Some(started_at);
+        self.profile_input_at = Some(started_at);
     }
 
     #[cfg(target_os = "android")]
@@ -8567,6 +8671,16 @@ impl<C: Component> Application<C> {
     }
 
     fn handle_window_event(&mut self, event: WindowEvent, at: Instant) {
+        if matches!(
+            &event,
+            WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Ime(_)
+                | WindowEvent::Touch(_)
+        ) {
+            self.profile_input_at = Some(at);
+        }
         if self.state.is_none() {
             return;
         }
@@ -8871,12 +8985,21 @@ impl<C: Component> Application<C> {
                 }
             }
             WindowEvent::MouseInput {
-                button: MouseButton::Back,
+                button: button @ (MouseButton::Back | MouseButton::Forward),
                 state: ElementState::Released,
                 ..
             } => {
                 self.cancel_direct_scroll();
-                self.back_in_stack();
+                let key = if button == MouseButton::Back {
+                    ShortcutKey::MouseBack
+                } else {
+                    ShortcutKey::MouseForward
+                };
+                let handled = MenuShortcut::new(key, ShortcutModifiers::default())
+                    .is_some_and(|shortcut| self.route_shortcut(shortcut, false));
+                if !handled && button == MouseButton::Back {
+                    self.back_in_stack();
+                }
             }
             WindowEvent::MouseInput {
                 button: MouseButton::Middle,
@@ -9081,7 +9204,7 @@ impl<C: Component> Application<C> {
 
 /// Open a native window and run a generated component on the main thread.
 pub fn run<C: Component + 'static>(component: C) -> Result<(), String> {
-    desktop::run_window(component, None)
+    desktop::run_window(component, None, None)
 }
 
 /// Run one window and report its logical content size before the initial layout
@@ -9091,5 +9214,27 @@ pub fn run_with_viewport<C: Component + 'static>(
     component: C,
     handler: impl FnMut(&mut C, Size) + 'static,
 ) -> Result<(), String> {
-    desktop::run_window(component, Some(Box::new(handler)))
+    desktop::run_window(component, Some(Box::new(handler)), None)
+}
+
+/// Run a window and report the system color scheme before initial layout and whenever it changes.
+/// `System` indicates that the host does not report a specific scheme.
+pub fn run_with_system_color_scheme<C: Component + 'static>(
+    component: C,
+    handler: impl FnMut(&mut C, ColorScheme) + 'static,
+) -> Result<(), String> {
+    desktop::run_window(component, None, Some(Box::new(handler)))
+}
+
+/// Run one window with both logical viewport and system appearance notifications.
+pub fn run_with_viewport_and_system_color_scheme<C: Component + 'static>(
+    component: C,
+    viewport_handler: impl FnMut(&mut C, Size) + 'static,
+    color_scheme_handler: impl FnMut(&mut C, ColorScheme) + 'static,
+) -> Result<(), String> {
+    desktop::run_window(
+        component,
+        Some(Box::new(viewport_handler)),
+        Some(Box::new(color_scheme_handler)),
+    )
 }

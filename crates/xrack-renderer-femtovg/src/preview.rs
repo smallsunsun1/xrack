@@ -5,7 +5,6 @@ use crate::{
     preview_pointer::{Captures, Context as PointerContext},
 };
 use std::{
-    borrow::Cow,
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
@@ -16,7 +15,7 @@ use xrack_layout::{
     MenuKey, MenuShortcut, NavigationKey, Point, RangeInput, Rect, ScrollBarUpdate,
     ScrollGestureKind, ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SplitResize,
     StackTransitions, TableEditCommit, TableEditTarget, TablePasteDestination, TextAreaMotion,
-    TextEditContext, TumblerScroll, WheelAdjustment, WindowEffects,
+    TextEditContext, TextMeasurer, TumblerScroll, WheelAdjustment, WindowEffects,
     scale_rotate_gestures::{self, TouchPhase},
 };
 use xrack_runtime::{
@@ -80,7 +79,8 @@ pub struct PreviewScene {
     pointer_carets: Vec<PointerCaret>,
     ime_area: Option<Rect>,
     reveal_editor_caret: bool,
-    frame: Option<(Rc<Node>, LayoutNode)>,
+    frame: Option<(Rc<Node>, Rc<LayoutNode>)>,
+    frame_cache: xrack_layout::FrameCache,
     dimensions: (u32, u32),
     png: Vec<u8>,
     target: Option<Rc<Node>>,
@@ -97,6 +97,7 @@ pub struct PreviewScene {
     renderer_needs_redraw: bool,
     loader_redraw: bool,
     pointer_capture: Option<PointerCapture>,
+    widget_contact: Option<u64>,
     last_button_click: Option<ButtonClick<bool>>,
     pending_button_double_click: Option<ButtonClick<bool>>,
     pending_button_click: Option<xrack_layout::Target>,
@@ -134,6 +135,7 @@ impl PreviewScene {
             ime_area: None,
             reveal_editor_caret: false,
             frame: None,
+            frame_cache: xrack_layout::FrameCache::default(),
             dimensions: (0, 0),
             png: Vec::new(),
             target: None,
@@ -150,6 +152,7 @@ impl PreviewScene {
             renderer_needs_redraw: false,
             loader_redraw: false,
             pointer_capture: None,
+            widget_contact: None,
             last_button_click: None,
             pending_button_double_click: None,
             pending_button_click: None,
@@ -243,6 +246,12 @@ impl PreviewScene {
                 || activation.is_some_and(|key| {
                     self.release_delay_key(key) || self.activate_key_target(key, false)
                 });
+        }
+        if event.key == "Tab"
+            && (event.modifiers.control || event.modifiers.alt || event.modifiers.meta)
+            && self.shortcut_key(event)
+        {
+            return true;
         }
         if matches!(event.key.as_str(), "Tab" | "Escape") {
             self.input.cancel_shortcut_sequence();
@@ -716,6 +725,8 @@ impl PreviewScene {
             .then(|| {
                 let key = if event.key == "Escape" {
                     ShortcutKey::Escape
+                } else if event.key == "Tab" {
+                    ShortcutKey::Tab
                 } else if let Some(function) =
                     event.key.strip_prefix('F').filter(|_| event.key.len() > 1)
                 {
@@ -1306,6 +1317,7 @@ impl PreviewScene {
                     captured = true;
                 }
             }
+            self.widget_contact = self.pointer_capture.is_some().then_some(contact.id);
         }
 
         if matches!(
@@ -1415,6 +1427,9 @@ impl PreviewScene {
         } else {
             TouchPhase::Ended
         };
+        if self.widget_contact == Some(contact.id) {
+            self.widget_contact = None;
+        }
         if self.touch_scale_rotate(contact, point, phase)
             || self.finish_drag_contact(contact, point, canceled)
         {
@@ -1504,8 +1519,13 @@ impl PreviewScene {
         true
     }
 
-    fn cancel_contact_capture(&mut self, contacts: impl IntoIterator<Item = u64>) {
-        self.cancel_widget_capture();
+    fn cancel_contact_capture<const N: usize>(&mut self, contacts: [u64; N]) {
+        if self
+            .widget_contact
+            .is_none_or(|owner| contacts.contains(&owner))
+        {
+            self.cancel_widget_capture();
+        }
         let Some((scene, layout)) = &self.frame else {
             return;
         };
@@ -1564,13 +1584,20 @@ impl PreviewScene {
             .iter()
             .flatten()
             .any(|event| event.event == "started")
+            && let scale_rotate_gestures::GrabHandoff::Contacts(pair) =
+                self.scale_rotate.exclusive_handoff()
         {
-            let pair = self
-                .scale_rotate
-                .captured_touch_pair()
-                .into_iter()
-                .flatten();
-            self.cancel_contact_capture(pair.map(|id| id.1));
+            let contacts = pair.map(|id| id.1);
+            if self
+                .drag_contact
+                .as_ref()
+                .is_some_and(|drag| contacts.contains(&drag.id))
+            {
+                self.drag_contact = None;
+                let update = self.input.cancel_drag();
+                self.dispatch_drag(update, &scene);
+            }
+            self.cancel_contact_capture(contacts);
         }
         for delivery in deliveries.into_iter().flatten() {
             delivery.apply(&mut self.component, &scene);
@@ -2102,6 +2129,7 @@ impl PreviewScene {
     }
 
     fn cancel_widget_capture(&mut self) -> bool {
+        self.widget_contact = None;
         match self.pointer_capture.take() {
             Some(PointerCapture::Split) => self.finish_split_drag(),
             Some(PointerCapture::ScrollGesture) => {
@@ -2609,7 +2637,7 @@ impl PreviewScene {
         let scale = scale.clamp(1.0, 4.0).min(pixel_budget).min(texture_limit);
         let snapshot = renderer.snapshot_prepared_with_transitions(
             &scene,
-            layout,
+            layout.as_ref().clone(),
             [
                 (width as f32 * scale).ceil() as u32,
                 (height as f32 * scale).ceil() as u32,
@@ -2624,7 +2652,7 @@ impl PreviewScene {
         self.input
             .set_painted_combo_completion(renderer.take_painted_combo_completion());
         self.loader_redraw |= xrack_runtime::finish_loader_frame(&scene);
-        self.frame = Some((scene, snapshot.layout));
+        self.frame = Some((scene, layout));
         Ok(&self.png)
     }
 
@@ -2715,17 +2743,14 @@ impl PreviewScene {
             self.transition.retarget(previous, &target, self.sampled_at);
         }
         self.target = Some(target.clone());
-        match self.transition.frame(&target, self.sampled_at) {
-            Cow::Borrowed(_) => target,
-            Cow::Owned(scene) => Rc::new(scene),
-        }
+        self.transition.sample_shared(&target, self.sampled_at)
     }
 
     fn prepare_frame(
         &mut self,
         renderer: &mut Renderer,
         animated: bool,
-    ) -> (Rc<Node>, LayoutNode, u32, u32) {
+    ) -> (Rc<Node>, Rc<LayoutNode>, u32, u32) {
         let scene = self.scene(animated);
         let dimension = |name, default| {
             scene
@@ -2737,7 +2762,11 @@ impl PreviewScene {
         };
         let (width, height) = (dimension("width", 640.0), dimension("height", 480.0));
         let size = Size::new(width as f32, height as f32);
-        let (scene, layout) = renderer.prepare_scene(&self.component, scene, size, &self.input);
+        self.frame_cache
+            .update_typography(renderer.text.typography_revision());
+        let (scene, layout) = self.frame_cache.prepare(scene, size, &self.input, |base| {
+            renderer.prepare_scene(&self.component, base, size, &self.input)
+        });
         (scene, layout, width, height)
     }
 
@@ -2745,7 +2774,7 @@ impl PreviewScene {
         &mut self,
         renderer: &mut Renderer,
         animated: bool,
-    ) -> (Rc<Node>, LayoutNode, u32, u32) {
+    ) -> (Rc<Node>, Rc<LayoutNode>, u32, u32) {
         let (mut scene, mut layout, mut width, mut height) = self.prepare_frame(renderer, animated);
         self.input.reconcile(&scene, &layout);
         let deliveries = self.input.take_scroll_events(&scene, &layout);
@@ -3072,8 +3101,8 @@ impl PreviewScene {
         &mut self,
         renderer: &mut Renderer,
         animated: bool,
-        mut frame: (Rc<Node>, LayoutNode, u32, u32),
-    ) -> (Rc<Node>, LayoutNode, u32, u32) {
+        mut frame: (Rc<Node>, Rc<LayoutNode>, u32, u32),
+    ) -> (Rc<Node>, Rc<LayoutNode>, u32, u32) {
         for _ in 0..8 {
             for request in self.focus.drain_commands() {
                 let request = match request {

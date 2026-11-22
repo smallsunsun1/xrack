@@ -1,0 +1,158 @@
+import { Palette } from "theme.xr";
+
+export component HistoricalPromptDialog inherits Dialog {
+    in property <bool> can-fork;
+    in property <bool> conversation-archived;
+    in-out property <string> draft;
+    in property <string> fork-error;
+    in property <bool> fork-pending;
+    in property <string> historical-prompt-error;
+    in property <bool> historical-prompt-fork-requested;
+    in property <bool> historical-prompt-has-attachments;
+    in-out property <bool> historical-prompt-open;
+    in-out property <string> historical-prompt-text;
+    in property <string> historical-prompt-turn;
+    in property <bool> switching;
+    callback end-composer-recall();
+    callback focus-composer();
+    callback fork-historical-prompt(turn: string, text: string);
+    callback focus-prompt();
+    focus-prompt => { historical-prompt-input.focus(); }
+
+    title: @tr("edit-earlier-prompt");
+    open <=> root.historical-prompt-open;
+    width: 526px;
+    height: 326px + (root.historical-prompt-has-attachments ? 24px : 0px) +
+        (root.historical-prompt-error != "" || root.historical-prompt-fork-requested && root.fork-error != "" ? 44px : 0px);
+    close-on-escape: !root.fork-pending;
+    close-on-outside: false;
+    VerticalLayout {
+        alignment: start;
+        padding: 12px;
+        spacing: 8px;
+        historical-prompt-input := TextArea {
+            height: 170px;
+            accessible-name: @tr("edit-prompt-text");
+            text <=> root.historical-prompt-text;
+            read-only: root.fork-pending;
+            wrap: word-wrap;
+            padding: 9px;
+            border-radius: 7px;
+        }
+        Label {
+            text: @tr("the-fork-starts-before-this-prompt-and-keeps-your-edits-as-a-new-draft");
+            visible: root.historical-prompt-turn != "";
+            color: Palette.muted;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+        Label {
+            text: @tr("you-can-reattach-previous-files-to-the-draft");
+            visible: root.historical-prompt-has-attachments;
+            color: Palette.muted;
+            font-size: 11px;
+        }
+        Label {
+            text: root.historical-prompt-error != "" ? root.historical-prompt-error :
+                root.historical-prompt-fork-requested ? root.fork-error : "";
+            height: 36px;
+            visible: root.historical-prompt-error != "" || root.historical-prompt-fork-requested && root.fork-error != "";
+            color: Palette.error;
+            wrap: char-wrap;
+            font-size: 11px;
+        }
+        HorizontalLayout {
+            alignment: end;
+            height: 33px;
+            spacing: 8px;
+            cancel-historical-prompt := Button {
+                text: @tr("cancel");
+                height: 33px;
+                padding: 6px;
+                flat: true;
+                enabled: !root.fork-pending;
+                clicked => { root.historical-prompt-open = false; }
+            }
+            append-historical-prompt := Button {
+                text: @tr("add-to-current-draft");
+                height: 33px;
+                padding: 6px;
+                flat: true;
+                enabled: !root.fork-pending && !root.switching && !root.conversation-archived && Strings.trim(root.historical-prompt-text) != "";
+                clicked => {
+                    root.end-composer-recall();
+                    root.draft = root.draft == "" ? root.historical-prompt-text : root.draft + "\n\n" + root.historical-prompt-text;
+                    root.historical-prompt-open = false;
+                    root.focus-composer();
+                }
+            }
+            fork-historical-prompt-button := Button {
+                text: root.fork-pending ? @tr("creating") : @tr("create-fork-with-draft");
+                height: 33px;
+                padding: 6px;
+                primary: true;
+                visible: root.historical-prompt-turn != "";
+                enabled: root.can-fork && Strings.trim(root.historical-prompt-text) != "";
+                clicked => { root.fork-historical-prompt(root.historical-prompt-turn, root.historical-prompt-text); }
+            }
+        }
+    }
+}
+
+export component MessageQuoteDialog inherits Dialog {
+    in property <bool> conversation-archived;
+    in property <styled-text> message-quote-body;
+    in-out property <bool> message-quote-open;
+    in property <bool> switching;
+    callback quote-message(selected: string);
+    callback focus-selection();
+    focus-selection => { message-quote-text.focus(); }
+
+    title: @tr("quote-reply");
+    open <=> root.message-quote-open;
+    width: 620px;
+    height: 390px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        ScrollView {
+            vertical-stretch: 1;
+            horizontal-scroll-bar-policy: always-off;
+            VerticalLayout {
+                width: 100%;
+                alignment: start;
+                padding: 6px;
+                message-quote-text := StyledText {
+                    text: root.message-quote-body;
+                    accessible-name: @tr("select-reply-text-to-quote");
+                    color: Palette.text;
+                    selectable: true;
+                    persistent-selection: true;
+                    vertical-alignment: top;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            height: 33px;
+            spacing: 8px;
+            cancel-message-quote := Button {
+                text: @tr("cancel");
+                height: 33px;
+                padding: 6px;
+                flat: true;
+                clicked => { root.message-quote-open = false; }
+            }
+            quote-selection := Button {
+                text: @tr("add-selection-to-draft");
+                height: 33px;
+                padding: 6px;
+                primary: true;
+                focus-on-click: false;
+                enabled: Strings.trim(message-quote-text.selected-text) != "" && !root.switching && !root.conversation-archived;
+                clicked => { root.quote-message(message-quote-text.selected-text); }
+            }
+        }
+    }
+}

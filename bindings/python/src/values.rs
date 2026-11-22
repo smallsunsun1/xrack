@@ -101,6 +101,55 @@ struct_value!(Font {
     weight: i64,
     italic: bool
 });
+struct_value!(Point2D {
+    x: Length,
+    y: Length
+});
+struct_value!(Vector2D {
+    x: Length,
+    y: Length
+});
+owned_value!(Transform2D, rt::Transform2D);
+
+#[pymethods]
+impl Transform2D {
+    #[new]
+    fn new() -> Self {
+        Self(rt::Transform2D::IDENTITY)
+    }
+
+    #[staticmethod]
+    fn translation(x: Length, y: Length) -> Self {
+        Self(rt::Transform2D::translation(x.0, y.0))
+    }
+
+    #[staticmethod]
+    fn rotation(degrees: f64) -> Self {
+        Self(rt::Transform2D::rotation(degrees))
+    }
+
+    #[staticmethod]
+    fn scale(x: f64, y: f64) -> Self {
+        Self(rt::Transform2D::scale(x, y))
+    }
+
+    fn then(&self, next: Self) -> Self {
+        Self(self.0.then(next.0))
+    }
+
+    fn around(&self, point: Point2D) -> Self {
+        Self(self.0.around(point.0))
+    }
+
+    fn map_point(&self, point: Point2D) -> Point2D {
+        Point2D(self.0.map_point(point.0))
+    }
+
+    fn map_vector(&self, vector: Vector2D) -> Vector2D {
+        Vector2D(self.0.map_vector(vector.0))
+    }
+}
+
 struct_value!(KeyModifiers {
     control: bool,
     shift: bool,
@@ -757,6 +806,7 @@ bridge_values! {
         KeyModifiers => KeyModifiers,
         Length => Length,
         Percent => Percent,
+        Point2D => Point2D,
         PointerButtons => PointerButtons,
         PointerEvent => PointerEvent,
         Record => Record,
@@ -766,6 +816,8 @@ bridge_values! {
         Time => Time,
         TouchPoint => TouchPoint,
         TouchPoints => TouchPoints,
+        Transform2D => Transform2D,
+        Vector2D => Vector2D,
         WheelEvent => WheelEvent,
     }
     enums {

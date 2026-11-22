@@ -7,6 +7,9 @@ pub enum Literal {
     Bool(bool),
     Float(f64),
     Length(Length),
+    Point2D(runtime::Point2D),
+    Vector2D(runtime::Vector2D),
+    Transform2D(runtime::Transform2D),
     Percent(Percent),
     String(String),
     Color(Color),
@@ -24,12 +27,25 @@ impl Literal {
             Self::Bool(value) => Value::Bool(value),
             Self::Float(value) => Value::Float(value),
             Self::Length(value) => Value::Length(value),
+            Self::Point2D(value) => Value::Point2D(value),
+            Self::Vector2D(value) => Value::Vector2D(value),
+            Self::Transform2D(value) => Value::Transform2D(value),
             Self::Percent(value) => Value::Percent(value),
             Self::String(value) => Value::String(value),
             Self::Color(value) => Value::Color(value),
             Self::Enum { value, .. } | Self::Default(value) => value,
         }
     }
+}
+
+fn coordinates<const N: usize>(spelling: &str) -> Result<[f64; N], String> {
+    let invalid = || format!("invalid geometry literal `{spelling}`");
+    let values = spelling
+        .split(' ')
+        .filter(|part| !part.is_empty())
+        .map(|part| xrack_mlir::parse_float_literal(part).ok_or_else(invalid))
+        .collect::<Result<Vec<_>, _>>()?;
+    values.try_into().map_err(|_| invalid())
 }
 
 pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
@@ -59,6 +75,17 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
         ),
         Type::Float => Literal::Float(number()?),
         Type::Length => Literal::Length(Length(number()?)),
+        Type::Point2D => {
+            let [x, y] = coordinates(spelling)?;
+            Literal::Point2D(runtime::Point2D::new(Length(x), Length(y)))
+        }
+        Type::Vector2D => {
+            let [x, y] = coordinates(spelling)?;
+            Literal::Vector2D(runtime::Vector2D::new(Length(x), Length(y)))
+        }
+        Type::Transform2D => Literal::Transform2D(runtime::Transform2D::from_coefficients(
+            coordinates(spelling)?,
+        )),
         Type::Percent => Literal::Percent(Percent(number()? / 100.0)),
         Type::String => {
             Literal::String(serde_json::from_str(spelling).map_err(|error| error.to_string())?)

@@ -1,0 +1,282 @@
+load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_cc//cc:objc_library.bzl", "objc_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_static_library", "rust_test")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+WORKBENCH_SOURCES = [
+    "ui/branches.xr",
+    "ui/composer.xr",
+    "ui/handoff.xr",
+    "ui/header.xr",
+    "ui/message_dialogs.xr",
+    "ui/pull_request.xr",
+    "ui/review.xr",
+    "ui/review_dialogs.xr",
+    "ui/settings.xr",
+    "ui/sidebar.xr",
+    "ui/terminal.xr",
+    "ui/theme.xr",
+    "ui/transcript.xr",
+    "ui/workspace.xr",
+    "ui/workspace_dialogs.xr",
+    "ui/worktree.xr",
+]
+
+WORKBENCH_TRANSLATIONS = [
+    "i18n/catalog.toml",
+    "i18n/en-US.ftl",
+    "i18n/zh-CN.ftl",
+]
+
+xr_ui_library(
+    name = "workbench_ui",
+    src = "workbench.xr",
+    assets = WORKBENCH_TRANSLATIONS,
+    sources = WORKBENCH_SOURCES,
+)
+
+rust_library(
+    name = "session",
+    srcs = [
+        "code_review.rs",
+        "context.rs",
+        "drafts.rs",
+        "followup.rs",
+        "models.rs",
+        "project_index.rs",
+        "prompt.rs",
+        "protocol.rs",
+        "questions.rs",
+        "session.rs",
+        "skills.rs",
+        "tab_store.rs",
+        "thread_index.rs",
+        "turn_diff.rs",
+    ],
+    crate_root = "session.rs",
+    edition = "2024",
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+rust_library(
+    name = "transcript_search",
+    srcs = ["transcript_search.rs"],
+    edition = "2024",
+    deps = [
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:pulldown-cmark",
+        "@crates//:unicode-segmentation",
+    ],
+)
+
+rust_test(
+    name = "transcript_search_test",
+    size = "small",
+    crate = ":transcript_search",
+)
+
+_APP_SOURCES = [
+    "activity.rs",
+    "appearance.rs",
+    "attachments.rs",
+    "chat_find.rs",
+    "command_groups.rs",
+    "composer_drafts.rs",
+    "conversation_tabs.rs",
+    "environment.rs",
+    "external_open.rs",
+    "file_references.rs",
+    "handoff.rs",
+    "main.rs",
+    "mention.rs",
+    "notifications.rs",
+    "palette.rs",
+    "project_sidebar.rs",
+    "prompt_history.rs",
+    "queued_editor.rs",
+    "review.rs",
+    "review/branches.rs",
+    "review/commit.rs",
+    "review/comparison.rs",
+    "review/find.rs",
+    "review/hunks.rs",
+    "review/line_edit.rs",
+    "review/notes.rs",
+    "review/pull_request.rs",
+    "review/push.rs",
+    "review/revert.rs",
+    "review/split.rs",
+    "review_reports.rs",
+    "settings.rs",
+    "sidebar_actions.rs",
+    "terminal.rs",
+    "terminal/actions.rs",
+    "terminal/process.rs",
+    "terminal/screen.rs",
+    "turn_activity.rs",
+    "workspace_files.rs",
+    "workspace_files/editor.rs",
+    "worktree_include.rs",
+    "worktrees.rs",
+]
+
+_APP_DEPS = [
+    ":session",
+    ":transcript_search",
+    ":workbench_ui",
+    "//crates/xrack-assets:xrack_assets",
+    "//crates/xrack-platform-winit:xrack_platform_winit",
+    "//crates/xrack-runtime:xrack_runtime",
+    "@crates//:arboard",
+    "@crates//:clap",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:tempfile",
+    "@crates//:tokio",
+    "@crates//:toml",
+    "@terminal_crates//:portable-pty",
+    "@terminal_crates//:vt100",
+]
+
+rust_binary(
+    name = "agent_workbench",
+    srcs = _APP_SOURCES,
+    edition = "2024",
+    link_deps = select({
+        "@platforms//os:macos": [":notification_center"],
+        "//conditions:default": [],
+    }),
+    target_compatible_with = select({
+        "@platforms//os:linux": [],
+        "@platforms//os:macos": [],
+        "@platforms//os:windows": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = _APP_DEPS,
+)
+
+objc_library(
+    name = "notification_center",
+    srcs = ["notification_center.mm"],
+    sdk_frameworks = [
+        "Foundation",
+        "UserNotifications",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+rust_static_library(
+    name = "workbench_macos_core",
+    srcs = _APP_SOURCES,
+    crate_features = ["macos-bundle"],
+    crate_root = "main.rs",
+    edition = "2024",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = _APP_DEPS,
+)
+
+macos_application(
+    name = "agent_workbench_macos_bundle",
+    bundle_id = "dev.xrack.agent-workbench",
+    bundle_name = "XRack Agent Workbench",
+    executable_name = "agent_workbench",
+    features = ["use_cpp_variables_for_objc_executable"],
+    infoplists = ["WorkbenchInfo.plist"],
+    # These system dependencies are normally linked by rustc for rust_binary.
+    linkopts = [
+        "-framework AppKit",
+        "-framework ApplicationServices",
+        "-framework Carbon",
+        "-framework ColorSync",
+        "-framework CoreFoundation",
+        "-framework CoreGraphics",
+        "-framework CoreServices",
+        "-framework CoreVideo",
+        "-framework Metal",
+        "-framework QuartzCore",
+        "-framework UniformTypeIdentifiers",
+        "-liconv",
+        "-lobjc",
+    ],
+    minimum_os_version = "13.0",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        ":notification_center",
+        ":workbench_macos_core",
+    ],
+)
+
+sh_binary(
+    name = "agent_workbench_macos",
+    srcs = ["launch_macos.sh"],
+    args = ["$(rlocationpath :agent_workbench_macos_bundle.zip)"],
+    data = [":agent_workbench_macos_bundle.zip"],
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+    use_bash_launcher = True,
+)
+
+rust_test(
+    name = "review_test",
+    size = "small",
+    crate = ":agent_workbench",
+    deps = [
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-testing:xrack_testing",
+    ],
+)
+
+rust_test(
+    name = "session_test",
+    size = "small",
+    crate = ":session",
+    deps = ["@crates//:tempfile"],
+)
+
+rust_test(
+    name = "workbench_parity_test",
+    size = "small",
+    srcs = ["workbench_test.rs"],
+    data = ["workbench.xr"] + WORKBENCH_SOURCES + WORKBENCH_TRANSLATIONS,
+    edition = "2024",
+    env = {"XRACK_WORKBENCH_SOURCE": "$(rlocationpath workbench.xr)"},
+    deps = [
+        ":transcript_search",
+        ":workbench_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-testing:xrack_testing",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+rust_test(
+    name = "workbench_render_test",
+    size = "small",
+    srcs = [
+        "file_references.rs",
+        "render_test.rs",
+    ],
+    crate_root = "render_test.rs",
+    edition = "2024",
+    tags = ["manual"],
+    deps = [
+        ":transcript_search",
+        ":workbench_ui",
+        "//crates/xrack-assets:xrack_assets",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:pollster",
+        "@crates//:wgpu",
+    ],
+)

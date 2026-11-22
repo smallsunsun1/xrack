@@ -38,7 +38,7 @@ async function activate(context) {
     registerPreview(context);
     registerAttach(context);
     const command = serverCommand(context);
-    const watcher = vscode.workspace.createFileSystemWatcher('**/*.xr');
+    const watcher = vscode.workspace.createFileSystemWatcher('**/{*.xr,xrack-module.json}');
     context.subscriptions.push(watcher);
     client = new LanguageClient(
         'xrack',

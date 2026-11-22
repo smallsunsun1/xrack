@@ -24,26 +24,63 @@ fn error(span: Span, message: impl Into<String>) -> Diagnostic {
     }
 }
 
-fn slot(members: &[Member], found: &mut Option<Span>, conditional_or_repeated: bool) -> Result<()> {
+type SlotContents = BTreeMap<String, Vec<Member>>;
+type SlotDeclarations = BTreeMap<String, Vec<String>>;
+
+fn collect_slots(
+    members: &[Member],
+    declared: &mut SlotDeclarations,
+    repeat_parameters: &BTreeSet<String>,
+    conditional_or_repeated: bool,
+) -> Result<()> {
     for member in members {
-        match member {
-            Member::Children(span) => {
-                if conditional_or_repeated {
-                    return Err(error(
-                        *span,
-                        "@children requires an unconditional, non-repeated parent",
-                    ));
+        let (name, arguments, span) = match member {
+            Member::Children(span) => ("", &[][..], *span),
+            Member::SlotMarker {
+                name,
+                arguments,
+                span,
+            } => (name.as_str(), arguments.as_slice(), *span),
+            Member::Element(element) => {
+                let mut available = repeat_parameters.clone();
+                if let Some(repeat) = &element.repeat {
+                    available.insert(repeat.item.clone());
+                    available.extend(repeat.index.iter().cloned());
                 }
-                if found.replace(*span).is_some() {
-                    return Err(error(*span, "a component can declare @children only once"));
-                }
+                collect_slots(
+                    &element.members,
+                    declared,
+                    &available,
+                    conditional_or_repeated
+                        || element.condition.is_some()
+                        || element.repeat.is_some(),
+                )?;
+                continue;
             }
-            Member::Element(element) => slot(
-                &element.members,
-                found,
-                conditional_or_repeated || element.condition.is_some() || element.repeat.is_some(),
-            )?,
-            _ => {}
+            _ => continue,
+        };
+        if name.is_empty() && conditional_or_repeated {
+            return Err(error(
+                span,
+                "@children requires an unconditional, non-repeated parent",
+            ));
+        }
+        if let Some(argument) = arguments
+            .iter()
+            .find(|arg| !repeat_parameters.contains(*arg))
+        {
+            return Err(error(
+                span,
+                format!("slot argument {argument} must be a surrounding repeat item or index"),
+            ));
+        }
+        if declared.insert(name.into(), arguments.to_vec()).is_some() {
+            let message = if name.is_empty() {
+                "a component can declare @children only once".into()
+            } else {
+                format!("duplicate slot {name}")
+            };
+            return Err(error(span, message));
         }
     }
     Ok(())
@@ -54,9 +91,9 @@ fn slot(members: &[Member], found: &mut Option<Span>, conditional_or_repeated: b
 pub(crate) fn place(components: Vec<Component>) -> Result<Vec<PlacedComponent>> {
     let mut definitions = BTreeMap::new();
     for component in &components {
-        let mut marker = None;
-        slot(&component.members, &mut marker, false)?;
-        definitions.insert(component.name.as_str(), (component, marker.is_some()));
+        let mut slots = SlotDeclarations::new();
+        collect_slots(&component.members, &mut slots, &BTreeSet::new(), false)?;
+        definitions.insert(component.name.as_str(), (component, slots));
     }
     components
         .iter()
@@ -80,7 +117,7 @@ pub(crate) fn place(components: Vec<Component>) -> Result<Vec<PlacedComponent>> 
 }
 
 struct Placement<'a> {
-    definitions: &'a BTreeMap<&'a str, (&'a Component, bool)>,
+    definitions: &'a BTreeMap<&'a str, (&'a Component, SlotDeclarations)>,
     scopes: Vec<Names>,
     active: Vec<String>,
 }
@@ -91,15 +128,30 @@ impl Placement<'_> {
         members: Vec<Member>,
         parent: &str,
         scope: usize,
-        mut supplied: Option<&mut Vec<Member>>,
+        mut supplied: Option<&mut SlotContents>,
     ) -> Result<Vec<Member>> {
         let mut result = Vec::new();
         for member in members {
             match member {
                 Member::Children(_) => {
-                    if let Some(supplied) = &mut supplied {
-                        result.append(supplied);
+                    if let Some(items) = supplied.as_deref_mut().and_then(|slots| slots.remove(""))
+                    {
+                        result.extend(items);
                     }
+                }
+                Member::SlotMarker { name, .. } => {
+                    if let Some(items) = supplied
+                        .as_deref_mut()
+                        .and_then(|slots| slots.remove(&name))
+                    {
+                        result.extend(items);
+                    }
+                }
+                Member::SlotFill { span, .. } => {
+                    return Err(error(
+                        span,
+                        "slot content requires a user component instance",
+                    ));
                 }
                 Member::Element(element) => {
                     let element = self.element(
@@ -123,7 +175,7 @@ impl Placement<'_> {
         parent: &str,
         scope: usize,
         index: usize,
-        supplied: Option<&mut Vec<Member>>,
+        supplied: Option<&mut SlotContents>,
     ) -> Result<Element> {
         let key = match &element.id {
             Some(id) if scope == 0 => id.clone(),
@@ -140,7 +192,7 @@ impl Placement<'_> {
             }
             None => format!("__{parent}_{index}"),
         };
-        let Some(&(definition, explicit)) = self.definitions.get(element.ty.as_str()) else {
+        let Some((definition, declarations)) = self.definitions.get(element.ty.as_str()) else {
             if !is_builtin(&element.ty) && supplied.is_some() {
                 return Err(error(
                     element.span,
@@ -156,6 +208,7 @@ impl Placement<'_> {
                     source_component: None,
                     caller: None,
                     caller_members: BTreeSet::new(),
+                    slot_parameters: BTreeMap::new(),
                 });
             }
             return Ok(element);
@@ -167,10 +220,15 @@ impl Placement<'_> {
                 "global declarations cannot be instantiated as elements",
             ));
         }
-        let has_content = element
-            .members
-            .iter()
-            .any(|member| matches!(member, Member::Element(_) | Member::Children(_)));
+        let has_content = element.members.iter().any(|member| {
+            matches!(
+                member,
+                Member::Element(_)
+                    | Member::Children(_)
+                    | Member::SlotMarker { .. }
+                    | Member::SlotFill { .. }
+            )
+        });
         if !has_content {
             if scope != 0 {
                 element.placement_scope = Some(PlacementScope {
@@ -180,6 +238,7 @@ impl Placement<'_> {
                     source_component: None,
                     caller: None,
                     caller_members: BTreeSet::new(),
+                    slot_parameters: BTreeMap::new(),
                 });
             }
             return Ok(element);
@@ -191,41 +250,98 @@ impl Placement<'_> {
             ));
         }
 
-        let mut content = Vec::new();
+        let mut content = SlotContents::new();
+        let mut slot_parameters = BTreeMap::new();
         let mut overrides = Vec::new();
         for member in element.members {
             match member {
-                Member::Element(_) | Member::Children(_) => content.push(member),
+                Member::Element(_) | Member::Children(_) | Member::SlotMarker { .. } => {
+                    content.entry(String::new()).or_default().push(member);
+                }
+                Member::SlotFill {
+                    name,
+                    parameters,
+                    members,
+                    span,
+                } => {
+                    let arguments = declarations.get(&name).ok_or_else(|| {
+                        error(span, format!("component {} has no slot {name}", element.ty))
+                    })?;
+                    if arguments.len() != parameters.len() {
+                        return Err(error(
+                            span,
+                            format!("slot {name} expects {} parameters", arguments.len()),
+                        ));
+                    }
+                    let mut aliases = BTreeMap::new();
+                    for ((parameter, span), argument) in parameters.into_iter().zip(arguments) {
+                        crate::semantic::check_name(&parameter, span)?;
+                        if aliases
+                            .insert(parameter.clone(), (argument.clone(), span))
+                            .is_some()
+                        {
+                            return Err(error(
+                                span,
+                                format!("duplicate slot parameter {parameter}"),
+                            ));
+                        }
+                    }
+                    slot_parameters.insert(name.clone(), aliases);
+                    if content.insert(name.clone(), members).is_some() {
+                        return Err(error(
+                            span,
+                            format!("slot {name} was supplied more than once"),
+                        ));
+                    }
+                }
                 _ => overrides.push(member),
             }
         }
         // Resolve supplied children in the caller's scope, including any forwarded slot.
         // Use a separate key prefix for anonymous content before giving it a physical parent.
-        let content_parent = format!("__content_{key}");
-        let mut content = self.members(content, &content_parent, scope, supplied)?;
-        for (index, child) in content.iter_mut().enumerate() {
-            if let Member::Element(child) = child {
-                if let Some(placement) = &mut child.placement_scope {
-                    if placement.lexical_parent.as_deref() == Some(&content_parent) {
-                        placement.lexical_parent = Some(parent.into());
+        let mut supplied = supplied;
+        for (name, items) in &mut content {
+            let content_parent = if name.is_empty() {
+                format!("__content_{key}")
+            } else {
+                format!("__content_{key}_slot_{name}")
+            };
+            *items = self.members(
+                std::mem::take(items),
+                &content_parent,
+                scope,
+                supplied.as_deref_mut(),
+            )?;
+            for (index, child) in items.iter_mut().enumerate() {
+                if let Member::Element(child) = child {
+                    if let Some(placement) = &mut child.placement_scope {
+                        if placement.lexical_parent.as_deref() == Some(&content_parent) {
+                            placement.lexical_parent = Some(parent.into());
+                        }
+                        if let Some((_, caller_parent)) = &mut placement.caller
+                            && *caller_parent == content_parent
+                        {
+                            *caller_parent = parent.into();
+                        }
+                    } else {
+                        child.placement_scope = Some(PlacementScope {
+                            key: child
+                                .id
+                                .clone()
+                                .unwrap_or_else(|| format!("__{content_parent}_{index}")),
+                            lexical_scope: scope,
+                            lexical_parent: Some(parent.into()),
+                            source_component: None,
+                            caller: None,
+                            caller_members: BTreeSet::new(),
+                            slot_parameters: BTreeMap::new(),
+                        });
                     }
-                    if let Some((_, caller_parent)) = &mut placement.caller
-                        && *caller_parent == content_parent
+                    if let Some(placement) = &mut child.placement_scope
+                        && let Some(parameters) = slot_parameters.get(name)
                     {
-                        *caller_parent = parent.into();
+                        placement.slot_parameters.extend(parameters.clone());
                     }
-                } else {
-                    child.placement_scope = Some(PlacementScope {
-                        key: child
-                            .id
-                            .clone()
-                            .unwrap_or_else(|| format!("__{content_parent}_{index}")),
-                        lexical_scope: scope,
-                        lexical_parent: Some(parent.into()),
-                        source_component: None,
-                        caller: None,
-                        caller_members: BTreeSet::new(),
-                    });
                 }
             }
         }
@@ -238,8 +354,8 @@ impl Placement<'_> {
         let mut members =
             self.members(definition.members.clone(), &key, inner, Some(&mut content))?;
         self.active.pop();
-        if !explicit {
-            members.append(&mut content);
+        if let Some(default) = content.remove("") {
+            members.extend(default);
         }
         let source_component = Some(std::mem::replace(&mut element.ty, definition.base.clone()));
         let caller_members = apply_inputs(&mut members, overrides)?;
@@ -251,6 +367,7 @@ impl Placement<'_> {
             source_component,
             caller: Some((scope, parent.into())),
             caller_members,
+            slot_parameters: BTreeMap::new(),
         });
         Ok(element)
     }

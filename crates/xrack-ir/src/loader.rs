@@ -62,7 +62,9 @@ fn elaborate_loader(members: &mut Vec<Member>, span: Span) -> Result<(), Diagnos
             {
                 return Err(error(property.span, "property name is reserved by Loader"));
             }
-            Member::Children(span) => {
+            Member::Children(span)
+            | Member::SlotMarker { span, .. }
+            | Member::SlotFill { span, .. } => {
                 return Err(error(
                     span,
                     "Loader requires explicitly declared component candidates",

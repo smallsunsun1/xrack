@@ -1,0 +1,161 @@
+import { Palette } from "theme.xr";
+
+export component WorktreeStartContent inherits VerticalLayout {
+    in property <[string]> choices;
+    in-out property <string> base;
+    in property <string> commit-id;
+    in property <bool> can-copy;
+    in property <int> include-count;
+    in-out property <bool> copy;
+    in property <bool> loading;
+    in property <string> error;
+    in property <[string]> environments;
+    in-out property <string> environment;
+    in property <string> script;
+    callback select-base();
+    callback select-environment();
+    callback configure(isolated: bool);
+    callback cancel();
+
+    padding: 14px;
+    spacing: 8px;
+    alignment: start;
+    Label {
+        text: root.loading ? @tr("reading-git") : @tr("worktree-first-send-note");
+        color: Palette.muted;
+        font-size: 12px;
+        height: 22px;
+        overflow: elide;
+    }
+    worktree-start-branch-choice := ComboBox {
+        model: root.choices;
+        current-value <=> root.base;
+        accessible-name: @tr("worktree-starting-branch");
+        placeholder-text: @tr("worktree-starting-branch");
+        height: 35px;
+        enabled: !root.loading && Model.count(root.choices) > 0;
+        selected(value) => { root.select-base(); }
+    }
+    worktree-start-commit-label := Label {
+        text: @tr("worktree-at-commit", revision: root.commit-id);
+        visible: root.commit-id != "";
+        color: Palette.muted;
+        font-size: 11px;
+        font-family: "monospace";
+        height: 17px;
+    }
+    worktree-start-copy-option := CheckBox {
+        text: @tr("include-tracked-changes-from-the-original-worktree");
+        checked <=> root.copy;
+        enabled: root.can-copy && !root.loading;
+        height: 27px;
+    }
+    worktree-include-status := Label {
+        text: @tr("worktree-include-summary", count: root.include-count);
+        visible: root.include-count > 0;
+        height: 20px;
+        font-size: 11px;
+        color: Palette.muted;
+    }
+    HorizontalLayout {
+        visible: Model.count(root.environments) > 0;
+        height: 35px;
+        spacing: 5px;
+        worktree-environment-choice := ComboBox {
+            model: root.environments;
+            current-value <=> root.environment;
+            accessible-name: @tr("optional-worktree-environment");
+            placeholder-text: @tr("optional-worktree-environment");
+            height: 35px;
+            horizontal-stretch: 1;
+            enabled: !root.loading;
+            selected(value) => { root.select-environment(); }
+        }
+        clear-worktree-environment := Button {
+            text: @tr("clear-worktree-environment");
+            flat: true;
+            enabled: root.environment != "";
+            height: 35px;
+            clicked => {
+                root.environment = "";
+                root.select-environment();
+            }
+        }
+    }
+    worktree-environment-script := TextArea {
+        visible: root.script != "";
+        height: 93px;
+        read-only: true;
+        accessible-name: @tr("worktree-setup-script");
+        text: root.script;
+        font-family: "monospace";
+        wrap: char-wrap;
+    }
+    Label {
+        text: root.error;
+        visible: root.error != "";
+        color: Palette.error;
+        font-size: 11px;
+        height: 38px;
+        wrap: word-wrap;
+        overflow: elide;
+        max-lines: 2;
+    }
+    HorizontalLayout {
+        height: 33px;
+        spacing: 7px;
+        cross-axis-alignment: center;
+        use-local-composer := Button {
+            text: @tr("use-local-conversation");
+            flat: true;
+            padding: 5px;
+            clicked => { root.configure(false); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        cancel-worktree-start := Button {
+            text: @tr("cancel");
+            flat: true;
+            padding: 5px;
+            clicked => { root.cancel(); }
+        }
+        use-worktree-composer := Button {
+            text: @tr("use-worktree-conversation");
+            primary: true;
+            border-radius: 6px;
+            padding: 6px;
+            enabled: !root.loading && root.commit-id != "";
+            clicked => { root.configure(true); }
+        }
+    }
+}
+
+
+export component WorktreeSetupLog inherits Dialog {
+    in-out property <bool> log-open;
+    in property <string> output;
+
+    title: @tr("worktree-setup-output");
+    open <=> root.log-open;
+    width: 595px;
+    height: 345px;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+        worktree-setup-log-text := TextArea {
+            vertical-stretch: 1;
+            read-only: true;
+            accessible-name: @tr("worktree-setup-output");
+            text: root.output;
+            font-family: "monospace";
+            wrap: char-wrap;
+        }
+        HorizontalLayout {
+            height: 33px;
+            alignment: end;
+            close-worktree-setup-log := Button {
+                text: @tr("close");
+                clicked => { root.log-open = false; }
+            }
+        }
+    }
+}

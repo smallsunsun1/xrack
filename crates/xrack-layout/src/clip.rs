@@ -1,8 +1,8 @@
-use crate::{Affine, Point, Rect, transform::TransformSpace};
+use crate::{Point, Rect, Transform2D, WindowSpace, transform::TransformSpace};
 use std::sync::Arc;
 use xrack_runtime::{Node, is_button, is_pane, is_text_input};
 
-/// A child clip in window coordinates, with corners clockwise from the top left.
+/// A child clip in its owner's layout coordinates, with radii from the top left.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoundedClip {
     pub bounds: Rect,
@@ -82,7 +82,7 @@ impl ClipChain {
     pub(crate) fn contains(&self, window: Point) -> bool {
         let inverse = match &self.space {
             Some(space) => space.inverse,
-            None => Some(Affine::IDENTITY),
+            None => Some(Transform2D::IDENTITY),
         };
         inverse.is_some_and(|inverse| self.shape.contains(inverse.map_point(window)))
             && self
@@ -91,16 +91,25 @@ impl ClipChain {
                 .is_none_or(|parent| parent.contains(window))
     }
 
-    pub(crate) fn clip_rect(&self, rect: Rect, world: Affine, inverse: Affine) -> Rect {
+    pub(crate) fn clip_window_rect(&self, rect: Rect) -> Rect {
+        let identity = Transform2D::<WindowSpace, WindowSpace>::IDENTITY;
+        self.clip_rect(rect, identity, identity)
+    }
+
+    pub(crate) fn clip_rect<Space: Copy>(
+        &self,
+        rect: Rect,
+        world: Transform2D<Space, WindowSpace>,
+        inverse: Transform2D<WindowSpace, Space>,
+    ) -> Rect {
         let rect = match &self.space {
-            None if world == Affine::IDENTITY => self.shape.clip_rect(rect),
-            Some(space) if space.world == world => self.shape.clip_rect(rect),
+            None if world.is_identity() => self.shape.clip_rect(rect),
+            Some(space) if space.world.same_coefficients(&world) => self.shape.clip_rect(rect),
             space => {
-                let (clip_world, clip_inverse) = space
-                    .as_ref()
-                    .map_or((Affine::IDENTITY, Some(Affine::IDENTITY)), |space| {
-                        (space.world, space.inverse)
-                    });
+                let (clip_world, clip_inverse) = space.as_ref().map_or(
+                    (Transform2D::IDENTITY, Some(Transform2D::IDENTITY)),
+                    |space| (space.world, space.inverse),
+                );
                 let Some(clip_inverse) = clip_inverse else {
                     return Rect::default();
                 };

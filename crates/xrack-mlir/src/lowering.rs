@@ -18,6 +18,7 @@ struct Builder<'a> {
     filename: String,
     source_files: &'a [String],
     state_selectors: BTreeMap<String, ffi::MlirValue>,
+    locals: BTreeMap<String, ffi::MlirValue>,
 }
 
 impl Builder<'_> {
@@ -196,6 +197,19 @@ impl Builder<'_> {
     }
 
     fn expr(&self, expr: &ir::Expr) -> BuildResult<ffi::MlirValue> {
+        if expr.op == "local_read" {
+            return self
+                .locals
+                .get(&expr.value)
+                .copied()
+                .ok_or_else(|| Diagnostic {
+                    span: expr.span,
+                    message: format!("unresolved local binding {}", expr.value),
+                });
+        }
+        if expr.op == "enum_match" {
+            return self.enum_match(expr);
+        }
         let operands = self.operands(&expr.args)?;
         let ty = self.result_type(&expr.ty, expr.span)?;
         let mut attrs = if expr.op == "translate" {
@@ -206,6 +220,18 @@ impl Builder<'_> {
                 })?;
             let mut attrs = self.strings(&[("value", id)]);
             attrs.push(self.string_array("arg_names", names));
+            attrs
+        } else if expr.op == "enum_construct" {
+            let (tag, fields): (i64, Vec<&str>) =
+                serde_json::from_str(&expr.value).map_err(|error| Diagnostic {
+                    span: expr.span,
+                    message: format!("invalid enum constructor: {error}"),
+                })?;
+            let mut attrs = self.strings(&[("value", "")]);
+            attrs.extend([
+                self.integer("tag", tag),
+                self.string_array("fields", fields),
+            ]);
             attrs
         } else if expr.op == "update_record" {
             let mut attrs = self.strings(&[("value", "")]);
@@ -220,6 +246,45 @@ impl Builder<'_> {
         let op = self.emit(&expr.op, expr.span, &operands, &[ty], &attrs)?;
         // All XR expressions in the semantic stream produce exactly one result.
         Ok(unsafe { ffi::mlirOperationGetResult(op, 0) })
+    }
+
+    fn enum_match(&self, expr: &ir::Expr) -> BuildResult<ffi::MlirValue> {
+        let Some((subject, branches)) = expr.args.split_first() else {
+            return Err(Diagnostic {
+                span: expr.span,
+                message: "missing enum scrutinee".into(),
+            });
+        };
+        let operand = self.expr(subject)?;
+        let result = self.result_type(&expr.ty, expr.span)?;
+        let attrs = self.strings(&[("value", "")]);
+        let operation = self.emit("enum_match", expr.span, &[operand], &[result], &attrs)?;
+        let mut cases = Self {
+            context: self.context,
+            blocks: Vec::new(),
+            filename: self.filename.clone(),
+            source_files: self.source_files,
+            state_selectors: self.state_selectors.clone(),
+            locals: self.locals.clone(),
+        };
+        cases.enter_region(operation, 0, expr.span);
+        for (ordinal, branch) in branches.iter().enumerate() {
+            let [value] = branch.args.as_slice() else {
+                return Err(Diagnostic {
+                    span: branch.span,
+                    message: "missing enum branch value".into(),
+                });
+            };
+            let mut attrs = cases.strings(&[("name", &branch.value)]);
+            attrs.push(cases.integer("ordinal", ordinal as i64));
+            let arm = cases.emit("enum_case", branch.span, &[], &[], &attrs)?;
+            cases.enter_region(arm, 0, branch.span);
+            let result = cases.expr(value)?;
+            cases.emit("enum_result", value.span, &[result], &[], &[])?;
+            cases.close()?;
+        }
+        cases.close()?;
+        Ok(unsafe { ffi::mlirOperationGetResult(operation, 0) })
     }
 
     fn consume(
@@ -258,6 +323,7 @@ impl Builder<'_> {
             }
         }
         self.open(op, callback.span, &attrs)?;
+        self.locals.clear();
         self.statements(&callback.body)?;
         if let Some(result) = &callback.result {
             self.consume("return", "result", result, &[], result.span)?;
@@ -268,6 +334,15 @@ impl Builder<'_> {
     fn statements(&mut self, statements: &[ir::Statement]) -> BuildResult<()> {
         for statement in statements {
             match statement {
+                ir::Statement::Let { local, value, span } => {
+                    let input = self.expr(value)?;
+                    let ty = self.result_type(&value.ty, *span)?;
+                    let attrs = self.strings(&[("name", local)]);
+                    let operation = self.emit("local", *span, &[input], &[ty], &attrs)?;
+                    self.locals.insert(local.clone(), unsafe {
+                        ffi::mlirOperationGetResult(operation, 0)
+                    });
+                }
                 ir::Statement::If {
                     condition,
                     then_body,
@@ -767,6 +842,7 @@ pub fn lower_module(doc: &Document, filename: &str) -> Result<Module, Vec<Diagno
         filename: filename.into(),
         source_files: &doc.source_files,
         state_selectors: BTreeMap::new(),
+        locals: BTreeMap::new(),
     };
     for font in &doc.fonts {
         let path: String = serde_json::from_str(&font.path).map_err(|error| {
@@ -809,7 +885,36 @@ pub fn lower_module(doc: &Document, filename: &str) -> Result<Module, Vec<Diagno
                 message: error.to_string(),
             }]
         })?;
-        let attrs = builder.strings(&[("sym_name", &record.name), ("fields", &fields)]);
+        let mut attrs = builder.strings(&[("sym_name", &record.name), ("fields", &fields)]);
+        if !record.variants.is_empty() {
+            attrs.push(builder.string_array(
+                "variants",
+                record.variants.iter().map(|variant| &variant.name),
+            ));
+            let variants: Vec<_> = record
+                .variants
+                .iter()
+                .map(|variant| xrack_syntax::ast::EnumVariantSchema {
+                    name: variant.name.clone(),
+                    shape: variant.shape,
+                    fields: variant
+                        .fields
+                        .iter()
+                        .map(|field| xrack_syntax::ast::Parameter {
+                            name: field.name.clone(),
+                            ty: field.ty.clone(),
+                        })
+                        .collect(),
+                })
+                .collect();
+            let variants = serde_json::to_string(&variants).map_err(|error| {
+                vec![Diagnostic {
+                    span: record.span,
+                    message: error.to_string(),
+                }]
+            })?;
+            attrs.extend(builder.strings(&[("variant_payloads", &variants)]));
+        }
         builder
             .emit("record_decl", record.span, &[], &[], &attrs)
             .map_err(|error| vec![error])?;

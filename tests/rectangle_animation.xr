@@ -1,0 +1,157 @@
+export component RectangleAnimation inherits Window {
+    width: 96px;
+    height: 72px;
+    background: #e7e9ee;
+    in property <bool> shifted: false;
+    in property <bool> rounded: false;
+    in property <float> group-opacity: 1.0;
+    in property <length> round-offset: 0px;
+
+    Rectangle {
+        x: 8px + root.round-offset;
+        y: 6px;
+        width: 76px;
+        height: 58px;
+        background: #323945;
+        clip: true;
+        opacity: root.group-opacity;
+
+        for index in 10 : Rectangle {
+            x: (index * 8 - 4) * 1px;
+            y: (5 + index % 3 * 4) * 1px;
+            width: 14px;
+            height: 22px;
+            border-radius: root.rounded ? 3px : 0px;
+            border-top-left-radius: root.rounded ? 4px : 0px;
+            background: index % 2 == 0 ? #d54b26 : #149fc6c0;
+            opacity: index % 3 == 0 ? 1.0 : 0.67;
+        }
+
+        Rectangle {
+            x: 23.25px;
+            y: 14px;
+            width: 24.5px;
+            height: 29px;
+            background: #fae8a0;
+            border-radius: 4px;
+            opacity: 0.78;
+        }
+
+        for index in 10 : Rectangle {
+            x: root.shifted && index == 1 ? 12px : (index * 8 - 4) * 1px;
+            y: (24 + index % 3 * 4) * 1px;
+            width: 14px;
+            height: 22px;
+            border-radius: root.rounded ? 2px : 0px;
+            background: root.shifted && index == 1 ? #8e38df : (index % 2 == 0 ? #37b06f : #149fc6c0);
+            opacity: index % 3 == 0 ? 1.0 : 0.67;
+        }
+
+        // A control keeps this group on the temporary opacity-layer path.
+        Button { visible: false; }
+    }
+}
+
+export component LayerMotion inherits Window {
+    width: 96px;
+    height: 72px;
+    background: #e7e9ee;
+    in property <length> offset: 8px;
+    in property <length> card-width: 49px;
+    in property <float> fade: 0.61;
+    in property <bool> edited: false;
+    in property <bool> cache-layer: false;
+    in property <bool> shadowed: false;
+    in property <color> shadow-tint: #10172666;
+
+    Rectangle {
+        x: root.offset;
+        y: root.shadowed ? 22px : 7px;
+        width: root.card-width;
+        height: 43px;
+        background: #263854;
+        opacity: root.fade;
+        cache-rendering-hint: root.cache-layer;
+        border-radius: 5px;
+        drop-shadow-color: root.shadowed ? root.shadow-tint : #00000000;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 2px;
+
+        Text {
+            x: 6px;
+            y: 4px;
+            width: 38px;
+            height: 14px;
+            font-size: 10px;
+            text: "Load";
+            color: #fff;
+        }
+
+        Rectangle {
+            x: 7px;
+            y: 18px;
+            width: 31px;
+            height: 18px;
+            background: root.edited ? #b84c75 : #639be7;
+            border-radius: 2px;
+        }
+        Rectangle {
+            x: 28px;
+            y: 25px;
+            width: 19px;
+            height: 14px;
+            opacity: 0.62;
+            background: #5eb99e;
+        }
+    }
+}
+
+export component TransientOpacityAtlasDemo inherits Window {
+    width: 128px;
+    height: 96px;
+    background: #e7e9ee;
+    in property <int> revision: 0;
+    in property <length> first-x: 8px;
+
+    Rectangle {
+        x: root.first-x;
+        y: 10px + root.revision * 0.35px;
+        width: 76px;
+        height: 52px;
+        opacity: 0.61;
+        background: #263854;
+        Text { x: 4px; y: 4px; width: 68px; height: 14px; text: "First " + root.revision; color: #fff; }
+        for index in 10 : Rectangle {
+            x: (3 + (index % 5) * 14) * 1px;
+            y: (21 + (index / 5) * 12) * 1px;
+            width: 12px; height: 10px;
+            border-radius: 3px;
+            background: index % 2 == 0 ? #ff8288 : #67d1bc;
+        }
+    }
+
+    // This new persistent layer flushes the already recorded temporary slot.
+    if root.revision == 2 : Rectangle {
+        x: 20px; y: 50px; width: 64px; height: 30px;
+        opacity: 0.52;
+        background: #c27b47;
+        Text { x: 4px; y: 3px; width: 53px; height: 14px; text: "Overlay"; color: #fff; }
+    }
+
+    Rectangle {
+        x: 48px;
+        y: 32px + root.revision * 0.125px;
+        width: 71px;
+        height: 52px;
+        opacity: 0.42;
+        background: #572c64;
+        Text { x: 4px; y: 3px; width: 62px; height: 14px; text: "Second " + root.revision; color: #fff; }
+        for index in 10 : Rectangle {
+            x: (3 + (index % 5) * 13) * 1px;
+            y: (20 + (index / 5) * 13) * 1px;
+            width: 11px; height: 9px;
+            border-radius: 2px;
+            background: index % 2 == 0 ? #f2bc60 : #659be7;
+        }
+    }
+}

@@ -1,5 +1,5 @@
 use crate::{Brush, Color, GradientStop, Length, Node, Percent, Value};
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc, time::Duration};
+use std::{borrow::Cow, collections::BTreeMap, rc::Rc, sync::Arc, time::Duration};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Easing(Option<[f64; 4]>);
@@ -112,6 +112,14 @@ pub struct SceneTransition {
 }
 
 impl SceneTransition {
+    /// Resolve the visual scene at an explicit frame time for any frame driver.
+    pub fn sample_shared(&self, target: &Rc<Node>, elapsed: Duration) -> Rc<Node> {
+        match self.frame(target, elapsed) {
+            Cow::Borrowed(_) => Rc::clone(target),
+            Cow::Owned(scene) => Rc::new(scene),
+        }
+    }
+
     pub fn between(previous: &Node, next: &Node) -> Self {
         let mut result = Self::default();
         result.retarget(previous, next, Duration::ZERO);

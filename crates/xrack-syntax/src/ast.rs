@@ -46,8 +46,62 @@ pub struct RecordDef {
     pub name: String,
     pub exported: bool,
     pub fields: Vec<RecordField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<EnumVariantDef>,
     pub span: Span,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnumVariant {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnumShape {
+    #[default]
+    Unit,
+    Tuple,
+    Named,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnumVariantDef {
+    pub name: String,
+    pub span: Span,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<RecordField>,
+    pub shape: EnumShape,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnumVariantSchema {
+    pub name: String,
+    pub shape: EnumShape,
+    pub fields: Vec<Parameter>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnumPattern {
+    pub variant: EnumVariant,
+    pub shape: EnumShape,
+    pub fields: Vec<EnumPatternField>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnumPatternField {
+    pub name: String,
+    pub span: Span,
+    pub binding: String,
+    pub binding_span: Span,
+}
+
+pub fn tuple_field(index: usize) -> String {
+    format!("_{index}")
+}
+
+pub const ENUM_TAG_FIELD: &str = "discriminant";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordField {
@@ -110,6 +164,17 @@ pub enum Member {
     Animation(Animation),
     States(StateBlock),
     Children(Span),
+    SlotMarker {
+        name: String,
+        arguments: Vec<String>,
+        span: Span,
+    },
+    SlotFill {
+        name: String,
+        parameters: Vec<(String, Span)>,
+        members: Vec<Member>,
+        span: Span,
+    },
 }
 
 impl Member {
@@ -122,7 +187,9 @@ impl Member {
             Self::Element(x) => x.span,
             Self::Animation(x) => x.span,
             Self::States(x) => x.span,
-            Self::Children(span) => *span,
+            Self::Children(span) | Self::SlotMarker { span, .. } | Self::SlotFill { span, .. } => {
+                *span
+            }
         }
     }
 }
@@ -182,6 +249,9 @@ pub enum Type {
     Record(Box<str>),
     RecordList(Box<str>),
     Length,
+    Point2D,
+    Vector2D,
+    Transform2D,
     Percent,
     Color,
     Brush,
@@ -257,6 +327,8 @@ impl Type {
             | Self::KeyModifiers
             | Self::WheelEvent
             | Self::PointerEvent
+            | Self::Point2D
+            | Self::Vector2D
             | Self::TouchPoint => self.builtin_field(field).map(|(_, ty)| ty),
             _ => None,
         }
@@ -285,6 +357,9 @@ impl Type {
             Self::Record(name) => return Cow::Owned(format!("record<\"{name}\">")),
             Self::RecordList(name) => return Cow::Owned(format!("recordlist<\"{name}\">")),
             Self::Length => "length",
+            Self::Point2D => "point2d",
+            Self::Vector2D => "vector2d",
+            Self::Transform2D => "transform2d",
             Self::Percent => "percent",
             Self::Color => "color",
             Self::Brush => "brush",
@@ -362,6 +437,9 @@ impl Type {
             "intlist" | "[int]" => Self::IntList,
             "datelist" | "[Date]" => Self::DateList,
             "length" => Self::Length,
+            "point2d" | "Point2D" => Self::Point2D,
+            "vector2d" | "Vector2D" => Self::Vector2D,
+            "transform2d" | "Transform2D" => Self::Transform2D,
             "percent" => Self::Percent,
             "color" => Self::Color,
             "brush" => Self::Brush,
@@ -728,6 +806,13 @@ pub struct Handler {
 #[serde(untagged)]
 pub enum Statement {
     Assignment(Assignment),
+    Let {
+        local: String,
+        value: Expr,
+        span: Span,
+        #[serde(skip)]
+        name_span: Span,
+    },
     Call(Call),
     If {
         condition: Expr,
@@ -767,12 +852,15 @@ pub struct PlacementScope {
     pub source_component: Option<String>,
     pub caller: Option<(usize, String)>,
     pub caller_members: std::collections::BTreeSet<String>,
+    pub slot_parameters: std::collections::BTreeMap<String, (String, Span)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Element {
     #[serde(skip)]
     pub placement_scope: Option<PlacementScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_match: Option<ViewMatch>,
     pub id: Option<String>,
     pub ty: String,
     #[serde(skip)]
@@ -783,6 +871,14 @@ pub struct Element {
     pub condition: Option<Expr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat: Option<Repeat>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ViewMatch {
+    pub selector: Box<Expr>,
+    pub pattern: EnumPattern,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<Expr>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -815,6 +911,16 @@ pub enum ExprKind {
         edges: Vec<String>,
     },
     Markdown(String),
+    EnumValue {
+        name: String,
+        variant: EnumVariant,
+        shape: EnumShape,
+        fields: Vec<RecordValue>,
+    },
+    Match {
+        selector: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
     Translation {
         id: String,
         arguments: Vec<RecordValue>,
@@ -849,6 +955,12 @@ pub enum ExprKind {
         yes: Box<Expr>,
         no: Box<Expr>,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MatchArm {
+    pub pattern: EnumPattern,
+    pub result: Expr,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

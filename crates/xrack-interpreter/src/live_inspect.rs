@@ -255,11 +255,35 @@ pub(crate) fn snapshot(ui: &ReloadableInstance, versions: SourceVersions) -> Jso
             "propertyCacheHits": sample.property_cache_hits, "layoutRuns": sample.layout_runs,
             "layoutReuses": sample.layout_reuses, "materializedRows": sample.materialized_rows,
             "cpuMicros": sample.cpu_micros,
+            "modelRowsScanned": sample.model_rows_scanned,
+            "modelRowsCloned": sample.model_rows_cloned,
             "viewRows": sample.view_rows.into_iter().map(|(id, rows)| json!({"id": id, "rows": rows})).collect::<Vec<_>>(),
             "visualBindingReads": sample.visual_binding_reads.into_iter().map(|(id, property, reads)| json!({
                 "id": id, "property": property, "reads": reads,
             })).collect::<Vec<_>>(),
             "visualBindingReadsTruncated": sample.visual_binding_reads_truncated,
+        })).collect::<Vec<_>>());
+        payload["renderSamples"] = json!(inspector.render_samples().into_iter().map(|render| {
+            let sample = render.update;
+            let changes = render.scene;
+            json!({
+            "frame": render.frame, "generation": render.generation, "cpuMicros": sample.cpu_micros,
+            "preparedRevision": render.prepared_revision,
+            "inputToPresentSubmitMicros": render.input_to_submit_micros,
+            "primitiveDispatches": sample.draw_primitives, "quadBatches": sample.quad_batches,
+            "glyphBatches": sample.glyph_batches, "queueSubmissions": sample.gpu_submissions,
+            "batchedVertexBytes": sample.vertex_bytes, "imageUploadBytes": sample.texture_upload_bytes,
+            "geometryUploadBytes": sample.geometry_upload_bytes, "geometryReuses": sample.geometry_reuses,
+            "sceneChanges": {
+                "inserted": changes.inserted, "removed": changes.removed, "moved": changes.moved,
+                "pooledRows": changes.pooled_rows, "reusedRows": changes.reused_rows,
+                "measure": changes.measure, "transform": changes.transform, "clip": changes.clip,
+                "paint": changes.paint, "input": changes.input,
+            },
+        })}).collect::<Vec<_>>());
+        payload["presentedFrames"] = json!(inspector.presentations().into_iter().map(|sample| json!({
+            "frame": sample.frame, "generation": sample.generation, "hostMicros": sample.host_micros,
+            "inputToPresentedMicros": sample.input_to_present_micros,
         })).collect::<Vec<_>>());
     }
     match instance.try_render() {
@@ -498,6 +522,9 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
         Value::Float(value) => ("Float", json!(value.to_string())),
         Value::String(value) => ("String", json!(shortened(value))),
         Value::Length(value) => ("Length", json!(format!("{}px", value.0))),
+        Value::Point2D(value) => ("Point2D", json!({"x": value.x.0, "y": value.y.0})),
+        Value::Vector2D(value) => ("Vector2D", json!({"x": value.x.0, "y": value.y.0})),
+        Value::Transform2D(value) => ("Transform2D", json!(value.coefficients())),
         Value::Percent(value) => ("Percent", json!(format!("{}%", value.0 * 100.0))),
         Value::Color(value) => ("Color", json!(format!("#{:08x}", value.0))),
         Value::IntList(items) if depth > 0 => {

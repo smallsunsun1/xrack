@@ -435,10 +435,10 @@
         },
         {
           "name": "support.function.xrack",
-          "match": "@(?:image-url|markdown|tr|linear-gradient|radial-gradient|children)(?![A-Za-z_0-9-])"
+          "match": "@(?:image-url|markdown|tr|linear-gradient|radial-gradient|children|slot)(?![A-Za-z_0-9-])"
         },
         {
-          "match": "(?<![A-Za-z_0-9.-])(Math|Strings|Model|Colors|Dates|Times|I18n|Log)(\\.)([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(?=\\s*\\()",
+          "match": "(?<![A-Za-z_0-9.-])(Math|Strings|Model|Colors|Dates|Times|I18n|Log|Point2D|Vector2D|Transform2D)(\\.)([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(?=\\s*\\()",
           "captures": {
             "1": {
               "name": "support.class.xrack"
@@ -479,11 +479,11 @@
       "patterns": [
         {
           "name": "keyword.control.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:export|import|translations|from|as|inherits|if|else|for|in-out|in|out|private|pure|animate|states|when)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])(?:export|import|translations|from|as|inherits|if|else|for|let|match|slot|in-out|in|out|private|pure|animate|states|when)(?![A-Za-z_0-9-])"
         },
         {
           "name": "storage.type.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:component|global|struct|property|callback)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])(?:component|global|struct|enum|property|callback|function)(?![A-Za-z_0-9-])"
         },
         {
           "name": "variable.language.xrack",
@@ -494,12 +494,26 @@
     "references": {
       "patterns": [
         {
-          "name": "support.type.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:int|float|bool|string|styled-text|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|ButtonDisplay|LayoutAlignment|CrossAxisAlignment|Orientation|FlickDirection|FlickBoundsBehavior|FlickBoundsMovement|LayoutDirection|FlexboxLayoutDirection|FlexboxLayoutWrap|DialInputMode|ScrollBarPolicy|ScrollSnapMode|ScrollAlignment|TextWrap|MouseSelectionMode|InputValidity|TextHorizontalAlignment|TextVerticalAlignment|TextOverflow|InputType|InputPurpose|KeyboardCapitalization|ReturnKey|AccessibleLive|CheckState|ColorScheme|Date|DialogRole|DragAction|DrawerEdge|EventResult|FocusReason|KeyEvent|KeyModifiers|FileDialogMode|MessageButtons|LogLevel|MessageLevel|PopupPlacement|SelectionTarget|StandardButtonKind|SwipeSide|Time)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)\\s*(::)\\s*([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.enum.xrack"
+            },
+            "2": {
+              "name": "punctuation.separator.namespace.xrack"
+            },
+            "3": {
+              "name": "constant.other.enum.xrack"
+            }
+          }
         },
         {
           "name": "support.type.xrack",
-          "match": "(?<![A-Za-z_0-9.-])(?:TumblerOption|PathView|PathViewOption|SelectionStartHandle|SelectionEndHandle|StackLayout|StackItem)(?=\\s*\\{)"
+          "match": "(?<![A-Za-z_0-9-])(?:int|float|bool|string|styled-text|length|point2d|vector2d|transform2d|Point2D|Vector2D|Transform2D|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|ButtonDisplay|LayoutAlignment|CrossAxisAlignment|Orientation|FlickDirection|FlickBoundsBehavior|FlickBoundsMovement|LayoutDirection|FlexboxLayoutDirection|FlexboxLayoutWrap|DialInputMode|ScrollBarPolicy|ScrollSnapMode|ScrollAlignment|TextWrap|MouseSelectionMode|InputValidity|TextHorizontalAlignment|TextVerticalAlignment|TextOverflow|InputType|InputPurpose|KeyboardCapitalization|ReturnKey|AccessibleLive|CheckState|ColorScheme|Date|DialogRole|DragAction|DrawerEdge|EventResult|FocusReason|KeyEvent|KeyModifiers|FileDialogMode|MessageButtons|LogLevel|MessageLevel|PopupPlacement|SelectionTarget|StandardButtonKind|SwipeSide|Time)(?![A-Za-z_0-9-])"
+        },
+        {
+          "name": "support.type.xrack",
+          "match": "(?<![A-Za-z_0-9.-])(?:TumblerOption|PathView|PathViewOption|SelectionStartHandle|SelectionEndHandle|StackLayout|StackItem|CustomRender)(?=\\s*\\{)"
         },
         {
           "name": "entity.name.type.xrack",

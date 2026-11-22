@@ -620,17 +620,62 @@ impl Interaction {
                         );
                     }
                 }
-                ScrollAction::ToChild {
-                    target,
-                    horizontal,
-                    vertical,
-                } => {
+                action @ (ScrollAction::ToChild { .. } | ScrollAction::ToStyledText { .. }) => {
+                    let (target, text, horizontal, vertical) = match action {
+                        ScrollAction::ToChild {
+                            target,
+                            horizontal,
+                            vertical,
+                        } => (Some(target), None, horizontal, vertical),
+                        ScrollAction::ToStyledText { paragraph, offset } => (
+                            None,
+                            Some((paragraph, offset)),
+                            ScrollAlignment::Visible,
+                            ScrollAlignment::Center,
+                        ),
+                        _ => unreachable!(),
+                    };
                     let viewport_depth = path.len();
-                    if !find_scroll_child(node, target, &mut path) || path.len() <= viewport_depth {
+                    let mut paragraph_index = 0;
+                    if !find_scroll_child(node, &mut path, &mut |node| {
+                        if let Some((paragraph, _)) = text {
+                            if node.kind == "StyledText" {
+                                paragraph_index += 1;
+                                return paragraph_index - 1 == paragraph;
+                            }
+                            false
+                        } else {
+                            node.geometry_handle
+                                .iter()
+                                .chain(node.instance_geometry_handle.iter())
+                                .any(|handle| {
+                                    target.is_some_and(|id| handle.matches_scroll_target(id))
+                                })
+                        }
+                    }) || path.len() <= viewport_depth
+                    {
                         continue;
                     }
                     let Some(item) = layout.at_path(&path).filter(|item| item.visible) else {
                         continue;
+                    };
+                    let rect = if let Some((_, offset)) = text {
+                        let Some(fragment) = item.styled_text.as_ref().and_then(|text| {
+                            text.fragments
+                                .iter()
+                                .find(|fragment| fragment.contains_text_offset(offset))
+                        }) else {
+                            continue;
+                        };
+                        let bounds = fragment.bounds;
+                        Rect::new(
+                            item.bounds.x + bounds.x,
+                            item.bounds.y + bounds.y,
+                            bounds.width,
+                            bounds.height,
+                        )
+                    } else {
+                        item.bounds
                     };
                     let mode = RevealMode::Child {
                         viewport_depth,
@@ -640,7 +685,7 @@ impl Interaction {
                     let plan = plan_scroll(
                         (scene, layout),
                         &path,
-                        item.bounds,
+                        rect,
                         mode,
                         |path, item, axis, layout_offset| {
                             self.current_viewport_offset(path, item, axis)
@@ -934,21 +979,20 @@ fn independent_content(node: &Node) -> bool {
         || matches!(node.kind, "Menu" | "Tooltip" | "Shortcut")
 }
 
-fn find_scroll_child(node: &Node, target: u64, path: &mut Vec<usize>) -> bool {
-    if independent_content(node) {
+fn find_scroll_child(
+    node: &Node,
+    path: &mut Vec<usize>,
+    matches: &mut impl FnMut(&Node) -> bool,
+) -> bool {
+    if independent_content(node) || !node.is_visible() {
         return false;
     }
-    if node
-        .geometry_handle
-        .iter()
-        .chain(node.instance_geometry_handle.iter())
-        .any(|handle| handle.matches_scroll_target(target))
-    {
+    if matches(node) {
         return true;
     }
     for (index, child) in node.materialized_children() {
         path.push(index);
-        if find_scroll_child(child, target, path) {
+        if find_scroll_child(child, path, matches) {
             return true;
         }
         path.pop();

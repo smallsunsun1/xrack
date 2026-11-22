@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -33,6 +34,7 @@ void addScenePlanPasses(mlir::OpPassManager &passes);
 #define GEN_PASS_DEF_XRFOLDCONSTANTS
 #define GEN_PASS_DEF_XRFOLDRECORDPROJECTIONS
 #define GEN_PASS_DEF_XRSIMPLIFYEXPRESSIONS
+#define GEN_PASS_DEF_XRFUSESTRINGCONCATS
 #define GEN_PASS_DEF_XRSIMPLIFYVISUALS
 #define GEN_PASS_DEF_XRPRUNEEXPRESSIONS
 #define GEN_PASS_DEF_XRPRUNECONSTANTSTATES
@@ -427,6 +429,151 @@ struct FoldMathFunction : OpRewritePattern<MathFunctionOp> {
   }
 };
 
+using GeometryNumbers = llvm::SmallVector<double, 6>;
+constexpr double identity2D[] = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+
+std::optional<GeometryNumbers> geometryNumbers(Value value) {
+  auto literal = value.getDefiningOp<LiteralOp>();
+  if (!literal)
+    return std::nullopt;
+  if (isa<LengthType, FloatType>(value.getType())) {
+    if (auto number = parseFloatLiteral(literal.getValue()))
+      return GeometryNumbers{*number};
+    return std::nullopt;
+  }
+  return parseGeometryLiteral(value.getType(), literal.getValue());
+}
+
+bool isIdentity2D(llvm::ArrayRef<double> values) {
+  return values == llvm::ArrayRef<double>(identity2D);
+}
+
+// Evaluate the same separate multiply/add steps as the Rust matrix operations.
+double geometryDot(double a, double b, double c, double d,
+                   std::optional<double> bias = std::nullopt) {
+  constexpr auto rounding = llvm::APFloat::rmNearestTiesToEven;
+  llvm::APFloat first(a), second(c);
+  first.multiply(llvm::APFloat(b), rounding);
+  second.multiply(llvm::APFloat(d), rounding);
+  first.add(second, rounding);
+  if (bias)
+    first.add(llvm::APFloat(*bias), rounding);
+  return first.convertToDouble();
+}
+
+GeometryNumbers compose2D(const GeometryNumbers &a, const GeometryNumbers &b) {
+  if (isIdentity2D(a))
+    return b;
+  if (isIdentity2D(b))
+    return a;
+  return {geometryDot(b[0], a[0], b[2], a[1]),
+          geometryDot(b[1], a[0], b[3], a[1]),
+          geometryDot(b[0], a[2], b[2], a[3]),
+          geometryDot(b[1], a[2], b[3], a[3]),
+          geometryDot(b[0], a[4], b[2], a[5], b[4]),
+          geometryDot(b[1], a[4], b[3], a[5], b[5])};
+}
+
+LogicalResult replaceGeometryLiteral(PatternRewriter &rewriter, Operation *op,
+                                     llvm::ArrayRef<double> values) {
+  llvm::SmallString<128> spelling;
+  for (double value : values) {
+    if (!std::isfinite(value))
+      return failure();
+    llvm::SmallString<32> coordinate;
+    llvm::APFloat(value).toString(coordinate);
+    if (!spelling.empty())
+      spelling += ' ';
+    spelling += coordinate;
+  }
+  replaceLiteral(rewriter, op, spelling);
+  return success();
+}
+
+struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(GeometryFunctionOp op, PatternRewriter &rewriter) const override {
+    auto operation = op.getValue();
+    auto inputs = op.getInputs();
+    if (operation == "identity")
+      return replaceGeometryLiteral(rewriter, op, identity2D);
+    if (inputs.empty())
+      return failure();
+    auto a = geometryNumbers(inputs[0]);
+    auto b = inputs.size() == 2 ? geometryNumbers(inputs[1]) : std::nullopt;
+    if (operation == "compose") {
+      if (a && isIdentity2D(*a)) {
+        rewriter.replaceOp(op, inputs[1]);
+        return success();
+      }
+      if (b && isIdentity2D(*b)) {
+        rewriter.replaceOp(op, inputs[0]);
+        return success();
+      }
+    }
+    if (operation == "map-point" && a && isIdentity2D(*a)) {
+      rewriter.replaceOp(op, inputs[1]);
+      return success();
+    }
+    if (operation == "map-vector" && a &&
+        llvm::ArrayRef<double>(*a).take_front(4) ==
+            llvm::ArrayRef<double>(identity2D).take_front(4)) {
+      rewriter.replaceOp(op, inputs[1]);
+      return success();
+    }
+    if (!a || (inputs.size() == 2 && !b))
+      return failure();
+
+    GeometryNumbers result;
+    if (operation == "point" || operation == "vector") {
+      result = {(*a)[0], (*b)[0]};
+    } else if (operation == "translation") {
+      result = {1.0, 0.0, 0.0, 1.0, (*a)[0], (*b)[0]};
+    } else if (operation == "scale") {
+      result = {(*a)[0], 0.0, 0.0, (*b)[0], 0.0, 0.0};
+    } else if (operation == "rotation") {
+      double degrees = std::fmod((*a)[0], 360.0);
+      if (degrees < 0.0)
+        degrees += 360.0;
+      double radians = degrees * (std::numbers::pi / 180.0);
+      auto snap = [](double value) { return std::abs(value) < 1e-12 ? 0.0 : value; };
+      double sin = snap(std::sin(radians)), cos = snap(std::cos(radians));
+      result = {cos, sin, -sin, cos, 0.0, 0.0};
+    } else if (operation == "compose") {
+      result = compose2D(*a, *b);
+    } else if (operation == "around") {
+      if (isIdentity2D(*a))
+        return replaceGeometryLiteral(rewriter, op, identity2D);
+      auto [x, y] = std::pair{(*b)[0], (*b)[1]};
+      result = compose2D(compose2D({1.0, 0.0, 0.0, 1.0, -x, -y}, *a),
+                         {1.0, 0.0, 0.0, 1.0, x, y});
+    } else if (operation == "map-point" || operation == "map-vector") {
+      auto [x, y] = std::pair{(*b)[0], (*b)[1]};
+      auto &m = *a;
+      auto bias = [&](size_t axis) -> std::optional<double> {
+        return operation == "map-point" ? std::optional(m[axis + 4]) : std::nullopt;
+      };
+      result = {geometryDot(m[0], x, m[2], y, bias(0)),
+                geometryDot(m[1], x, m[3], y, bias(1))};
+    } else {
+      return failure();
+    }
+    return replaceGeometryLiteral(rewriter, op, result);
+  }
+};
+
+template <typename Field>
+struct FoldGeometryField : OpRewritePattern<Field> {
+  using OpRewritePattern<Field>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Field op, PatternRewriter &rewriter) const override {
+    if (auto coordinates = geometryNumbers(op.getInput()))
+      return replaceFloatLiteral(rewriter, op, llvm::APFloat((*coordinates)[op.getValue() == "y"]));
+    return failure();
+  }
+};
+
 struct FoldRound : OpRewritePattern<RoundOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -550,7 +697,9 @@ LogicalResult foldConstants(ModuleOp module, const PropertyAnalysis &properties)
   auto *context = module.getContext();
   for (;;) {
     RewritePatternSet patterns(context);
-    patterns.add<FoldUnary, FoldBinary, FoldCast, FoldMathFunction, FoldRound, FoldToRatio, FoldStringify>(context);
+    patterns.add<FoldUnary, FoldBinary, FoldCast, FoldMathFunction, FoldGeometryFunction,
+                 FoldGeometryField<Point2DFieldOp>, FoldGeometryField<Vector2DFieldOp>,
+                 FoldRound, FoldToRatio, FoldStringify>(context);
     patterns.add<FoldBuiltinField<DateFieldOp, MakeDateOp>,
                  FoldBuiltinField<TimeFieldOp, MakeTimeOp>,
                  FoldBuiltinField<FontFieldOp, MakeFontOp>>(context, properties);
@@ -845,6 +994,45 @@ struct SimplifyExpressions
     patterns.add<SimplifyUnary, SimplifyBinary, SimplifyBooleanSelect>(&getContext());
     if (failed(rewriteExpressions(getOperation(), std::move(patterns))))
       signalPassFailure();
+  }
+};
+
+// Leave explicitly planned invariant operands intact. Consuming them as a
+// single operand keeps their original cache and its lazy evaluation scope.
+struct FuseStringConcats : impl::XrFuseStringConcatsBase<FuseStringConcats> {
+  void runOnOperation() override {
+    IRRewriter rewriter(&getContext());
+    getOperation()->walk([&](BinaryOp add) {
+      if (add.getValue() != "+" || !isa<StringType>(add.getResult().getType()))
+        return;
+      llvm::SmallVector<Value> parts;
+      llvm::SmallVector<Value> pending{add.getRhs(), add.getLhs()};
+      while (!pending.empty()) {
+        Value value = pending.pop_back_val();
+        if (auto *def = value.getDefiningOp();
+            def && !def->hasAttr("xr.repeat_subexpression_group")) {
+          if (auto binary = dyn_cast<BinaryOp>(def); binary && binary.getValue() == "+" &&
+              isa<StringType>(binary.getResult().getType())) {
+            pending.push_back(binary.getRhs());
+            pending.push_back(binary.getLhs());
+            continue;
+          }
+          if (auto concat = dyn_cast<ConcatOp>(def)) {
+            llvm::append_range(pending, llvm::reverse(concat.getParts()));
+            continue;
+          }
+        }
+        parts.push_back(value);
+      }
+      if (parts.size() <= 2)
+        return;
+      rewriter.setInsertionPoint(add);
+      auto concat = rewriter.create<ConcatOp>(add.getLoc(), add.getResult().getType(),
+                                              parts, rewriter.getStringAttr(""));
+      for (auto attr : add->getDiscardableAttrs())
+        concat->setDiscardableAttr(attr.getName(), attr.getValue());
+      rewriter.replaceOp(add, concat.getResult());
+    });
   }
 };
 
@@ -1160,5 +1348,7 @@ void buildPipeline(OpPassManager &passes) {
   passes.addPass(std::make_unique<SpecializeHiddenVisuals>());
   addScenePlanPasses(passes);
   addVisualCachePasses(passes);
+  passes.addPass(std::make_unique<FuseStringConcats>());
+  passes.addPass(std::make_unique<PruneExpressions>());
 }
 } // namespace xrack::dialect

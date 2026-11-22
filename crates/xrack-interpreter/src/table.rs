@@ -233,7 +233,7 @@ impl Instance {
         node.table_header = Some(Box::new(TableHeader {
             columns: view
                 .table_columns()
-                .map(|column| self.render_element(column))
+                .map(|column| self.render_element(column).map(Node::into_shared))
                 .collect::<Result<_>>()?,
             sort: state.table_state().sort.get(|| None),
             column_widths: state.table_state().widths.get(Vec::new),

@@ -47,6 +47,7 @@ from ._native import (
     MouseSelectionMode,
     Orientation,
     Percent,
+    Point2D,
     PointerButton,
     PointerButtons,
     PointerEvent,
@@ -72,6 +73,8 @@ from ._native import (
     Time,
     TouchPoint,
     TouchPoints,
+    Transform2D,
+    Vector2D,
     WheelEvent,
 )
 
@@ -120,6 +123,7 @@ __all__ = [
     "MouseSelectionMode",
     "Orientation",
     "Percent",
+    "Point2D",
     "PointerButton",
     "PointerButtons",
     "PointerEvent",
@@ -145,6 +149,8 @@ __all__ = [
     "Time",
     "TouchPoint",
     "TouchPoints",
+    "Transform2D",
+    "Vector2D",
     "WheelEvent",
     "Value",
 ]
@@ -198,6 +204,7 @@ Value: TypeAlias = (
     | MouseSelectionMode
     | Orientation
     | Percent
+    | Point2D
     | PointerButton
     | PointerButtons
     | PointerEvent
@@ -223,5 +230,7 @@ Value: TypeAlias = (
     | Time
     | TouchPoint
     | TouchPoints
+    | Transform2D
+    | Vector2D
     | WheelEvent
 )

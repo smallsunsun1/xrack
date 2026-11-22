@@ -47,6 +47,14 @@ macro_rules! builtin_value_fields {
                 "start-y" => start_y: Length,
                 "inside" => inside: Bool,
             }
+            Point2D, "point2d_field" {
+                "x" => x: Length,
+                "y" => y: Length,
+            }
+            Vector2D, "vector2d_field" {
+                "x" => x: Length,
+                "y" => y: Length,
+            }
             Date, "date_field" {
                 "year" => year: Int,
                 "month" => month: Int,

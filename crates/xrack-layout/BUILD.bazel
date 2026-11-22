@@ -11,6 +11,7 @@ rust_library(
     deps = [
         "//crates/xrack-assets:xrack_assets",
         "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:nalgebra",
         "@crates//:unicode-bidi",
         "@crates//:unicode-segmentation",
     ],

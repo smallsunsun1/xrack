@@ -1,0 +1,396 @@
+import { CenteredWorkbenchIcon, ConversationMenuAction, Palette, WorkbenchIcon } from "theme.xr";
+import { ExternalOpenButton } from "workspace.xr";
+
+export component ConversationHeader inherits HorizontalLayout {
+    in property <bool> can-fork;
+    in property <bool> can-manage-current-conversation;
+    in property <bool> can-open-handoff;
+    in property <bool> can-open-palette;
+    in property <bool> can-pin-session;
+    in property <bool> can-start-code-review;
+    in property <bool> can-travel;
+    in property <bool> conversation-archived;
+    in-out property <bool> conversation-menu-open;
+    in property <bool> conversation-pinned;
+    in property <string> conversation-title;
+    in property <bool> external-open-pending;
+    in property <bool> external-project-in-menu;
+    in property <bool> files-active;
+    in property <bool> git-branch-in-menu;
+    in property <bool> git-checkout-detached;
+    in property <string> git-checkout-label;
+    in property <bool> navigation-back;
+    in property <bool> navigation-forward;
+    in property <bool> palette-open;
+    in property <bool> renamable;
+    in-out property <string> rename-draft;
+    in-out property <bool> rename-open;
+    in property <bool> review-open;
+    in-out property <bool> sessions-open;
+    in property <bool> show-header-code-review;
+    in property <bool> show-navigation;
+    in property <bool> switching;
+    in property <bool> terminal-open;
+    in property <string> workspace;
+    callback close-inspector();
+    callback navigate-conversation(forward: bool);
+    callback open-fork(cutoff: string);
+    callback open-git-branches();
+    callback open-handoff();
+    callback open-review-scope();
+    callback present-external(origin: string, path: string, line: int, column: int);
+    callback set-session-archived(archived: bool);
+    callback set-session-pinned(pinned: bool);
+    callback show-workspace-files();
+    callback toggle-review();
+    callback toggle-terminal();
+    callback focus-rename();
+
+    height: 56px;
+    padding-left: 14px;
+    padding-right: 14px;
+    spacing: 8px;
+    cross-axis-alignment: center;
+    toggle-sessions := Button {
+        text: @tr("conversations");
+        accessible-name: root.sessions-open ? @tr("hide-conversation-sidebar") : @tr("show-conversation-sidebar");
+        width: 31px;
+        height: 30px;
+        flat: true;
+        padding: 4px;
+        border-radius: 6px;
+        ButtonContent {
+            CenteredWorkbenchIcon {
+                shape: "M3 5 H21 V19 H3 Z M9 5 V19 M5 9 H7 M5 12 H7";
+            }
+        }
+        Tooltip { text: root.sessions-open ? @tr("hide-conversation-sidebar") : @tr("show-conversation-sidebar"); }
+        clicked => { root.sessions-open = !root.sessions-open; }
+    }
+    navigation-back-button := Button {
+        text: @tr("back");
+        accessible-name: @tr("go-to-previous-conversation");
+        visible: root.show-navigation && !root.review-open;
+        enabled: root.can-travel && root.navigation-back;
+        width: 25px;
+        height: 28px;
+        flat: true;
+        padding: 2px;
+        ButtonContent {
+            CenteredWorkbenchIcon {
+                tint: root.navigation-back ? Palette.text : Palette.offline;
+                shape: "M19 12 H5 M11 6 L5 12 L11 18";
+            }
+        }
+        clicked => { root.navigate-conversation(false); }
+    }
+    navigation-forward-button := Button {
+        text: @tr("forward");
+        accessible-name: @tr("go-to-next-conversation");
+        visible: root.show-navigation && !root.review-open;
+        enabled: root.can-travel && root.navigation-forward;
+        width: 25px;
+        height: 28px;
+        flat: true;
+        padding: 2px;
+        ButtonContent {
+            CenteredWorkbenchIcon {
+                tint: root.navigation-forward ? Palette.text : Palette.offline;
+                shape: "M5 12 H19 M13 6 L19 12 L13 18";
+            }
+        }
+        clicked => { root.navigate-conversation(true); }
+    }
+    conversation-heading := VerticalLayout {
+        min-width: 0px;
+        horizontal-stretch: 1;
+        alignment: center;
+        spacing: 2px;
+        header-title := Label {
+            min-width: 0px;
+            text: root.conversation-title;
+            color: Palette.text;
+            font-size: 15px;
+            font-weight: 700;
+            overflow: elide;
+        }
+        HorizontalLayout {
+            min-width: 0px;
+            spacing: 4px;
+            cross-axis-alignment: center;
+            WorkbenchIcon {
+                visible: root.workspace != "";
+                width: 12px;
+                height: 12px;
+                shape: "M3 7 H10 L12 9 H21 V19 H3 Z";
+            }
+            header-workspace := Label {
+                min-width: 0px;
+                horizontal-stretch: 1;
+                text: root.workspace == "" ? @tr("no-workspace-selected") : root.workspace;
+                color: Palette.muted;
+                font-size: 11px;
+                overflow: elide;
+            }
+            git-branch-pill := Button {
+                text: root.git-checkout-detached ? @tr("git-detached-chip", revision: root.git-checkout-label) :
+                    root.git-checkout-label;
+                accessible-name: root.git-checkout-detached ? @tr("commit-detached-head", revision: root.git-checkout-label) :
+                    @tr("commit-current-branch", branch: root.git-checkout-label);
+                visible: root.workspace != "" && !root.git-branch-in-menu && root.git-checkout-label != "";
+                enabled: root.can-open-palette;
+                width: 126px;
+                height: 22px;
+                padding: 3px;
+                font-size: 11px;
+                flat: true;
+                border-radius: 5px;
+                background: Palette.rail;
+                ButtonContent {
+                    HorizontalLayout {
+                        padding-left: 5px;
+                        padding-right: 4px;
+                        spacing: 4px;
+                        cross-axis-alignment: center;
+                        WorkbenchIcon {
+                            width: 12px;
+                            height: 12px;
+                            shape: "M6 4 H9 V8 H6 Z M6 16 H9 V20 H6 Z M15 4 H18 V8 H15 Z M7.5 8 V16 M16.5 8 Q16.5 13 7.5 13";
+                        }
+                        Label {
+                            text: root.git-checkout-detached ? @tr("git-detached-chip", revision: root.git-checkout-label) :
+                                root.git-checkout-label;
+                            font-size: 11px;
+                            color: Palette.text;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        WorkbenchIcon {
+                            width: 10px;
+                            height: 10px;
+                            shape: "M6 10 L12 16 L18 10";
+                        }
+                    }
+                }
+                Tooltip { text: root.git-checkout-label; }
+                clicked => { root.open-git-branches(); }
+            }
+        }
+    }
+    conversation-menu-trigger := Button {
+        text: @tr("conversation-actions");
+        accessible-name: @tr("conversation-actions");
+        width: 34px;
+        height: 32px;
+        flat: true;
+        padding: 3px;
+        border-radius: 7px;
+        background: root.conversation-menu-open || self.pressed ? Palette.selection : #00000000;
+        enabled: !root.switching;
+        visible: root.renamable || root.show-header-code-review || root.external-project-in-menu || root.git-branch-in-menu;
+        clicked => {
+            root.conversation-menu-open = !root.conversation-menu-open;
+        }
+        ButtonContent {
+            CenteredWorkbenchIcon {
+                shape: "M4 12 H7 M10.5 12 H13.5 M17 12 H20";
+                tint: Palette.text;
+            }
+        }
+        Tooltip { text: @tr("conversation-actions"); }
+        conversation-menu := PopupWindow {
+            open <=> root.conversation-menu-open;
+            accessible-name: @tr("actions-for-this-conversation");
+            close-on-outside: true;
+            placement: below;
+            anchor-gap: 6px;
+            x: -174px;
+            width: 208px;
+            background: #00000000;
+            Pane {
+                background: Palette.surface;
+                border-color: Palette.border;
+                border-width: 1px;
+                border-radius: 9px;
+                padding: 0px;
+                VerticalLayout {
+                    padding: 7px;
+                    spacing: 2px;
+                    alignment: start;
+                    rename-session := ConversationMenuAction {
+                        label: @tr("rename");
+                        glyph: "M4 16 L15 5 L19 9 L8 20 H4 Z M13 7 L17 11";
+                        visible: root.renamable;
+                        available: root.can-manage-current-conversation;
+                        action => {
+                            root.conversation-menu-open = false;
+                            root.rename-draft = root.conversation-title;
+                            root.rename-open = true;
+                            root.focus-rename();
+                        }
+                    }
+                    pin-session := ConversationMenuAction {
+                        label: root.conversation-pinned ? @tr("unpin") : @tr("pin");
+                        glyph: "M8 4 H16 L15 10 L18 14 H6 L9 10 Z M12 14 V21";
+                        visible: root.renamable && !root.conversation-archived;
+                        available: root.can-pin-session && !root.palette-open;
+                        action => {
+                            root.conversation-menu-open = false;
+                            root.set-session-pinned(!root.conversation-pinned);
+                        }
+                    }
+                    fork-session := ConversationMenuAction {
+                        label: @tr("create-fork");
+                        glyph: "M7 6 V19 M17 6 V10 L7 15 M5 4 H9 V8 H5 Z M15 4 H19 V8 H15 Z M5 17 H9 V21 H5 Z";
+                        visible: root.renamable && !root.conversation-archived;
+                        available: root.can-fork;
+                        action => {
+                            root.conversation-menu-open = false;
+                            root.open-fork("");
+                        }
+                    }
+                    header-code-review := ConversationMenuAction {
+                        label: @tr("start-code-review");
+                        glyph: "M5 4 H14 L19 9 V20 H5 Z M13 4 V10 H19 M8 14 L10 16 L15 12";
+                        visible: root.show-header-code-review;
+                        available: root.can-start-code-review;
+                        action => {
+                            root.conversation-menu-open = false;
+                            root.open-review-scope();
+                        }
+                    }
+                    external-open-project-menu := ConversationMenuAction {
+                        label: @tr("open-workspace-in-editor");
+                        glyph: "M13 4 H20 V11 M20 4 L10 14 M10 5 H4 V20 H19 V14";
+                        visible: root.external-project-in-menu;
+                        available: root.can-open-palette && !root.external-open-pending;
+                        action => {
+                            root.conversation-menu-open = false;
+                            root.present-external("project", "", 0, 0);
+                        }
+                    }
+                    git-branches-menu := ConversationMenuAction {
+                        label: @tr("local-git-branches");
+                        glyph: "M7 6 V18 M7 6 C20 6 16 16 12 16 M7 4 H9 V8 H5 V4 Z M7 16 H9 V20 H5 V16 Z";
+                        visible: root.git-branch-in-menu;
+                        available: root.can-open-palette;
+                        action => {
+                            root.conversation-menu-open = false;
+                            root.open-git-branches();
+                        }
+                    }
+                    handoff-session := ConversationMenuAction {
+                        label: @tr("handoff-conversation");
+                        glyph: "M4 7 H17 M13 3 L17 7 L13 11 M20 17 H7 M11 13 L7 17 L11 21";
+                        visible: root.renamable && root.workspace != "";
+                        available: root.can-open-handoff;
+                        action => {
+                            root.conversation-menu-open = false;
+                            root.open-handoff();
+                        }
+                    }
+                    Rectangle {
+                        visible: root.renamable && !root.conversation-archived;
+                        height: 1px;
+                        background: Palette.border;
+                    }
+                    archive-session := ConversationMenuAction {
+                        label: root.conversation-archived ? @tr("restore-conversation") : @tr("archive-conversation");
+                        glyph: root.conversation-archived ? "M4 12 H10 V6 M4 12 C8 5 18 7 19 14 C19 18 15 20 12 20" : "M4 4 H20 V9 H4 Z M6 9 V20 H18 V9 M10 13 H14";
+                        destructive: !root.conversation-archived;
+                        visible: root.renamable;
+                        available: root.can-manage-current-conversation;
+                        action => {
+                            root.conversation-menu-open = false;
+                            root.set-session-archived(!root.conversation-archived);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    workspace-tools := Rectangle {
+        width: root.workspace != "" && !root.external-project-in-menu ? 146px : 110px;
+        height: 34px;
+        background: Palette.surface;
+        border-color: Palette.border;
+        border-width: 1px;
+        border-radius: 8px;
+        HorizontalLayout {
+            width: 100%;
+            height: 100%;
+            padding: 2px;
+            spacing: 2px;
+            cross-axis-alignment: center;
+            external-open-project := ExternalOpenButton {
+                visible: root.workspace != "" && !root.external-project-in-menu;
+                available: root.can-open-palette && !root.external-open-pending;
+                label: @tr("open-workspace-in-editor");
+                activate => { root.present-external("project", "", 0, 0); }
+            }
+            open-files := Button {
+                text: @tr("files");
+                accessible-name: root.review-open && root.files-active ? @tr("close-files-panel") : @tr("browse-workspace-files");
+                width: 34px;
+                height: 30px;
+                enabled: root.workspace != "";
+                flat: true;
+                padding: 3px;
+                border-radius: 6px;
+                background: root.review-open && root.files-active || self.pressed ? Palette.selection : #00000000;
+                ButtonContent {
+                    CenteredWorkbenchIcon {
+                        tint: root.review-open && root.files-active ? Palette.accent : Palette.muted;
+                        shape: "M3 6 H10 L12 8 H21 V19 H3 Z M3 10 H21";
+                    }
+                }
+                Tooltip { text: @tr("files-ctrl-shift-e"); }
+                clicked => {
+                    if root.review-open && root.files-active {
+                        root.close-inspector();
+                    } else {
+                        root.show-workspace-files();
+                    }
+                }
+            }
+            open-review := Button {
+                text: @tr("changes");
+                accessible-name: root.review-open && !root.files-active ? @tr("close-changes-panel") : @tr("view-workspace-changes");
+                width: 34px;
+                height: 30px;
+                enabled: root.workspace != "";
+                flat: true;
+                padding: 3px;
+                border-radius: 6px;
+                background: root.review-open && !root.files-active || self.pressed ? Palette.selection : #00000000;
+                ButtonContent {
+                    CenteredWorkbenchIcon {
+                        tint: root.review-open && !root.files-active ? Palette.accent : Palette.muted;
+                        shape: "M6 4 H15 L19 8 V20 H6 Z M14 4 V9 H19 M9 12 H13 M11 10 V14 M9 17 H15";
+                    }
+                }
+                Tooltip { text: @tr("changes-ctrl-shift-d"); }
+                clicked => { root.toggle-review(); }
+            }
+            open-terminal := Button {
+                text: @tr("terminal");
+                accessible-name: root.terminal-open ? @tr("hide-terminal") : @tr("open-workspace-terminal");
+                width: 34px;
+                height: 30px;
+                enabled: root.workspace != "";
+                flat: true;
+                padding: 3px;
+                border-radius: 6px;
+                background: root.terminal-open || self.pressed ? Palette.selection : #00000000;
+                ButtonContent {
+                    CenteredWorkbenchIcon {
+                        tint: root.terminal-open ? Palette.accent : Palette.muted;
+                        shape: "M3 5 H21 V19 H3 Z M7 9 L10 12 L7 15 M12 15 H17";
+                    }
+                }
+                Tooltip { text: @tr("terminal-ctrl-j"); }
+                clicked => { root.toggle-terminal(); }
+            }
+        }
+    }
+}

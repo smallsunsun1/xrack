@@ -1,0 +1,341 @@
+import { Palette, WorkbenchIcon } from "theme.xr";
+
+export component PromptSuggestion inherits Button {
+    in property <string> heading;
+    in property <string> detail;
+    callback choose();
+    clicked => { root.choose(); }
+    text: root.heading;
+    height: 66px;
+    border-radius: 11px;
+    border-width: 1px;
+    border-color: Palette.border;
+    background: self.pressed ? Palette.hover : Palette.surface;
+    ButtonContent {
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 12px;
+            spacing: 12px;
+            cross-axis-alignment: center;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 4px;
+                Label { text: root.heading; color: Palette.text; font-weight: 650; }
+                Label { text: root.detail; color: Palette.muted; font-size: 12px; overflow: elide; }
+            }
+            WorkbenchIcon {
+                tint: Palette.accent;
+                shape: "M5 12 H18 M13 7 L18 12 L13 17";
+            }
+        }
+    }
+}
+
+export component AttachmentTile inherits Rectangle {
+    in property <string> name;
+    in property <string> kind;
+    in property <image> preview;
+    in property <bool> has-preview;
+    in property <bool> can-remove;
+    callback show();
+    callback remove();
+
+    height: 39px;
+    border-radius: 6px;
+    background: Palette.rail;
+    HorizontalLayout {
+        padding-left: 7px;
+        padding-right: 4px;
+        spacing: 6px;
+        cross-axis-alignment: center;
+        Image {
+            width: 40px;
+            height: 30px;
+            source: root.preview;
+            image-fit: contain;
+            visible: root.has-preview && root.kind == "图片";
+        }
+        Label {
+            text: root.kind == "skill" ? @tr("skill-attachment-kind") : root.kind;
+            font-size: 11px;
+            color: Palette.accent;
+        }
+        Label {
+            text: root.name;
+            color: Palette.text;
+            font-size: 12px;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        preview-file-action := Button {
+            text: @tr("preview");
+            accessible-name: (@tr("preview-attachment") + " ") + root.name;
+            height: 27px;
+            padding: 5px;
+            flat: true;
+            visible: root.has-preview;
+            clicked => { root.show(); }
+        }
+        remove-file-action := Button {
+            text: @tr("remove");
+            accessible-name: (@tr("remove-attachment") + " ") + root.name;
+            height: 27px;
+            padding: 5px;
+            flat: true;
+            enabled: root.can-remove;
+            clicked => { root.remove(); }
+        }
+    }
+}
+
+export component QueuedTile inherits Rectangle {
+    in property <string> prompt;
+    in property <bool> can-edit;
+    in property <bool> can-start;
+    in property <bool> has-editable-text;
+    in property <bool> can-move-up;
+    in property <bool> can-move-down;
+    callback remove();
+    callback start();
+    callback open-editor();
+    callback move(step: int);
+
+    height: 31px;
+    background: Palette.rail;
+    border-radius: 6px;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 5px;
+        spacing: 5px;
+        cross-axis-alignment: center;
+        Label {
+            text: root.prompt;
+            font-size: 12px;
+            color: Palette.text;
+            overflow: elide;
+            min-width: 0px;
+            horizontal-stretch: 1;
+        }
+        edit-queue-row := Button {
+            text: root.has-editable-text ? @tr("edit") : @tr("preview");
+            accessible-name: root.has-editable-text ? @tr("edit-queued-message") : @tr("preview-queued-message");
+            height: 25px;
+            padding: 4px;
+            flat: true;
+            enabled: root.can-edit;
+            clicked => { root.open-editor(); }
+        }
+        move-queue-up := Button {
+            text: "↑";
+            accessible-name: @tr("move-queued-message-up");
+            width: 24px;
+            height: 25px;
+            padding: 3px;
+            flat: true;
+            visible: root.can-move-up || root.can-move-down;
+            enabled: root.can-edit && root.can-move-up;
+            Tooltip { text: @tr("move-queued-message-up"); }
+            clicked => { root.move(-1); }
+        }
+        move-queue-down := Button {
+            text: "↓";
+            accessible-name: @tr("move-queued-message-down");
+            width: 24px;
+            height: 25px;
+            padding: 3px;
+            flat: true;
+            visible: root.can-move-up || root.can-move-down;
+            enabled: root.can-edit && root.can-move-down;
+            Tooltip { text: @tr("move-queued-message-down"); }
+            clicked => { root.move(1); }
+        }
+        start-queue-row := Button {
+            text: @tr("send");
+            accessible-name: @tr("send-queued-message");
+            height: 25px;
+            padding: 4px;
+            flat: true;
+            visible: root.can-start;
+            enabled: root.can-edit;
+            clicked => { root.start(); }
+        }
+        remove-queue-row := Button {
+            text: @tr("remove");
+            accessible-name: @tr("remove-queued-message");
+            height: 25px;
+            padding: 4px;
+            flat: true;
+            enabled: root.can-edit;
+            clicked => { root.remove(); }
+        }
+    }
+}
+
+export component QueuedEditorContent inherits VerticalLayout {
+    in-out property <string> body;
+    in property <bool> is-read-only;
+    in property <bool> has-attachments;
+    in property <bool> stale;
+    in property <bool> saving;
+    in property <string> error;
+    in property <bool> can-save;
+    callback save();
+    callback close-editor();
+    callback focus-input();
+    focus-input => { queued-edit-input.focus(); }
+
+    padding: 14px;
+    spacing: 10px;
+    queued-edit-input := TextArea {
+        text <=> root.body;
+        accessible-name: @tr("queued-message-text");
+        read-only: root.is-read-only || root.saving;
+        vertical-stretch: 1;
+        padding: 8px;
+    }
+    Label {
+        text: root.is-read-only ? @tr("queued-message-structured") : @tr("queued-message-preserves-attachments");
+        visible: root.is-read-only || root.has-attachments;
+        color: Palette.muted;
+        font-size: 12px;
+        height: 36px;
+        wrap: word-wrap;
+    }
+    queued-edit-warning := Label {
+        text: root.stale ? @tr("queued-message-changed") :
+            @tr("queued-message-save-error", detail: root.error);
+        visible: root.stale || root.error != "";
+        color: Palette.error;
+        font-size: 12px;
+        height: 36px;
+        wrap: word-wrap;
+    }
+    HorizontalLayout {
+        height: 33px;
+        spacing: 7px;
+        alignment: end;
+        close-queued-edit := Button {
+            text: root.is-read-only || root.stale ? @tr("close") : @tr("cancel");
+            padding: 5px;
+            flat: true;
+            enabled: !root.saving;
+            clicked => { root.close-editor(); }
+        }
+        save-queued-edit-button := Button {
+            text: root.saving ? @tr("saving-file-state") : @tr("save");
+            primary: true;
+            border-radius: 7px;
+            padding: 5px;
+            visible: !root.is-read-only;
+            enabled: root.can-save;
+            clicked => { root.save(); }
+        }
+    }
+}
+
+export component AttachmentPreview inherits VerticalLayout {
+    in property <image> attachment-preview-image;
+    in property <bool> attachment-preview-is-text;
+    in-out property <bool> attachment-preview-open;
+    in property <styled-text> attachment-preview-text;
+
+    padding: 12px;
+    spacing: 8px;
+    Image {
+        source: root.attachment-preview-image;
+        image-fit: contain;
+        vertical-stretch: 1;
+        visible: !root.attachment-preview-is-text;
+    }
+    terminal-output-preview := ScrollView {
+        vertical-stretch: 1;
+        visible: root.attachment-preview-is-text;
+        horizontal-scroll-bar-policy: always-off;
+        accessible-name: @tr("terminal-attachment");
+        VerticalLayout {
+            width: 100%;
+            padding: 8px;
+            alignment: start;
+            StyledText {
+                text: root.attachment-preview-text;
+                vertical-alignment: top;
+                font-family: "monospace";
+                font-size: 12px;
+                color: Palette.text;
+                wrap: char-wrap;
+                selectable: true;
+            }
+        }
+    }
+    HorizontalLayout {
+        alignment: end;
+        height: 33px;
+        close-attachment-preview := Button {
+            text: @tr("close-preview");
+            height: 33px;
+            padding: 5px;
+            clicked => { root.attachment-preview-open = false; }
+        }
+    }
+}
+
+export component ContextUsageContent inherits VerticalLayout {
+    in property <bool> can-compact-context;
+    callback compact-context();
+    in property <float> context-fraction;
+    in property <bool> context-known;
+    in-out property <bool> context-open;
+    in property <string> context-recent;
+    in property <string> context-summary;
+    in property <string> context-total;
+    in property <bool> context-window-known;
+
+    padding: 12px;
+    alignment: start;
+    spacing: 8px;
+    Label {
+        text: root.context-summary;
+        font-size: 14px;
+        font-weight: 650;
+        color: Palette.text;
+    }
+    context-meter := ProgressIndicator {
+        visible: root.context-window-known;
+        height: 5px;
+        progress: root.context-fraction;
+        color: Palette.accent;
+        track-color: Palette.border;
+        accessible-name: @tr("context-used");
+    }
+    VerticalLayout {
+        visible: root.context-known;
+        spacing: 5px;
+        Label { text: @tr("latest-measurement"); color: Palette.accent; font-size: 11px; }
+        Label { text: root.context-recent; color: Palette.text; font-size: 12px; }
+        Rectangle { height: 1px; background: Palette.border; }
+        Label { text: @tr("session-total"); color: Palette.accent; font-size: 11px; }
+        Label { text: root.context-total; color: Palette.text; font-size: 12px; }
+    }
+    HorizontalLayout {
+        alignment: end;
+        height: 33px;
+        spacing: 8px;
+        close-context := Button {
+            text: @tr("close");
+            height: 33px;
+            padding: 6px;
+            flat: true;
+            clicked => { root.context-open = false; }
+        }
+        compact-context-button := Button {
+            text: @tr("compact-context");
+            height: 33px;
+            padding: 6px;
+            border-radius: 7px;
+            primary: true;
+            enabled: root.can-compact-context;
+            clicked => { root.compact-context(); }
+        }
+    }
+}

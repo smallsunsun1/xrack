@@ -1,15 +1,24 @@
 grammar Xrack;
 
-document: (importDecl | fontImport | translationsDecl)* (recordDecl | component)+ EOF;
+document: (importDecl | fontImport | translationsDecl)* (recordDecl | enumDecl | component)+ EOF;
 importDecl: 'import' '{' importName (',' importName)* ','? '}' 'from' STRING ';';
 fontImport: 'import' STRING ';';
 translationsDecl: 'translations' STRING ';';
 importName: identifier ('as' identifier)?;
 recordDecl: 'export'? 'struct' identifier '{' recordField (',' recordField)* ','? '}';
 recordField: identifier ':' typeName;
+enumDecl: 'export'? 'enum' identifier '{' enumVariant (',' enumVariant)* ','? '}';
+enumVariant: identifier enumFieldTypes?;
+enumFieldTypes: '(' typeName (',' typeName)* ','? ')' | '{' recordField (',' recordField)* ','? '}';
 component: 'export'? ('component' identifier 'inherits' identifier '{' member* '}'
                      | 'global' identifier '{' member* '}');
-member: property | callback | binding | handler | element | animation | stateBlock | '@children' ';'?;
+member: property | callback | binding | handler | element | animation | stateBlock | '@children' ';'? | slotMarker | slotFill | functionDecl | viewMatch;
+viewMatch: 'match' expression ':' '{' viewArm (',' viewArm)* ','? '}';
+viewArm: enumPattern '=>' element;
+functionDecl: 'pure' 'function' identifier '(' (namedParameter (',' namedParameter)* ','?)? ')' '->' typeName '{' statement* expression ';'? '}';
+namedParameter: identifier ':' typeName;
+slotMarker: '@slot' '(' identifier (',' identifier)* ')' ';'?;
+slotFill: 'slot' identifier ('(' (identifier (',' identifier)*)? ')')? '{' member* '}';
 animation: 'animate' identifier (',' identifier)* animationBody;
 animationBody: '{' animationField* '}';
 animationField: ('duration' | identifier) ':' (NUMBER 'ms' | expression) ';';
@@ -25,7 +34,8 @@ callback: 'pure'? 'callback' identifier ('<=>' reference | '(' (parameter (',' p
 parameter: (identifier ':')? typeName;
 binding: identifier (':' expression | '<=>' reference) ';';
 handler: identifier ('(' (identifier (',' identifier)*)? ')')? '=>' '{' statement* (expression ';'?)? '}';
-statement: (reference assignmentOp expression | call) ';' | ifStatement | forStatement;
+statement: (reference assignmentOp expression | call) ';' | ifStatement | forStatement | letStatement;
+letStatement: 'let' identifier '=' expression ';';
 statementBlock: '{' statement* '}';
 ifStatement: 'if' expression statementBlock ('else' (ifStatement | statementBlock))?;
 forStatement: iteration statementBlock;
@@ -44,7 +54,14 @@ comparison: additive (('<' | '<=' | '>' | '>=') additive)*;
 additive: multiplicative (('+' | '-') multiplicative)*;
 multiplicative: unary (('*' | '/' | '%') unary)*;
 unary: ('!' | '-' | '+') unary | primary;
-primary: NUMBER (UNIT | '%')? | STRING | COLOR | 'true' | 'false' | gradient | imageUrl | markdown | translation | arrayLiteral | recordLiteral | call | reference | '(' expression ')';
+primary: NUMBER (UNIT | '%')? | STRING | COLOR | 'true' | 'false' | gradient | imageUrl | markdown | translation | arrayLiteral | recordLiteral | enumValue | matchExpression | call | reference | '(' expression ')';
+enumValue: identifier '::' identifier enumArguments?;
+enumArguments: '(' expression (',' expression)* ','? ')' | '{' recordValue (',' recordValue)* ','? '}';
+matchExpression: 'match' expression '{' matchArm (',' matchArm)* ','? '}';
+matchArm: enumPattern '=>' expression;
+enumPattern: identifier enumPatternFields?;
+enumPatternFields: '(' identifier (',' identifier)* ','? ')' | '{' namedPatternField (',' namedPatternField)* ','? '}';
+namedPatternField: identifier (':' identifier)?;
 call: reference '(' (expression (',' expression)* ','?)? ')';
 arrayLiteral: '[' (expression (',' expression)* ','?)? ']';
 recordLiteral: identifier '{' (recordValue (',' recordValue)* (',' recordBase?)? | recordBase)? '}';
@@ -62,7 +79,7 @@ gradientStop: expression (NUMBER '%')?;
 reference: ('root' | 'self' | identifier) ('.' identifier)*;
 // Type words are contextual: `color: ...` is an ordinary element binding.
 identifier: IDENT | 'int' | 'float' | 'bool' | 'string' | 'length' | 'color' | 'brush' | 'image'
-          | 'ImageFit' | 'LayoutAlignment' | 'CrossAxisAlignment' | 'Orientation' | 'DialInputMode' | 'ScrollBarPolicy' | 'TextWrap' | 'DialogRole' | 'DrawerEdge' | 'SelectionTarget' | 'circle' | 'deg' | 'duration' | 'ms' | 'as' | 'from' | 'pure' | 'struct' | 'states' | 'when' | 'translations' | 'else';
+          | 'ImageFit' | 'LayoutAlignment' | 'CrossAxisAlignment' | 'Orientation' | 'DialInputMode' | 'ScrollBarPolicy' | 'TextWrap' | 'DialogRole' | 'DrawerEdge' | 'SelectionTarget' | 'circle' | 'deg' | 'duration' | 'ms' | 'as' | 'from' | 'pure' | 'struct' | 'states' | 'when' | 'translations' | 'else' | 'let' | 'slot' | 'enum' | 'match' | 'function';
 
 UNIT: 'px';
 COLOR: '#' [0-9a-fA-F]+;

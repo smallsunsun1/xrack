@@ -53,7 +53,7 @@ impl ColorGlyphs {
         rasterize: impl Fn(u16, u16) -> Option<GlyphBitmap>,
     ) {
         let font_size = paint.font_size();
-        let pixels_per_em = (font_size * canvas.transform().average_scale())
+        let pixels_per_em = (font_size * crate::transform::glyph_raster_scale(canvas))
             .ceil()
             .clamp(1.0, 256.0) as u16;
         let scale = font_size / f32::from(pixels_per_em);

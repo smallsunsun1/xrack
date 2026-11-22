@@ -1,9 +1,10 @@
 use crate::{OperationRef, RepeatRef, ValueRef, scene_children};
-use xrack_syntax::ast::{Parameter, Type};
+use xrack_syntax::ast::{EnumShape, EnumVariantSchema, Parameter, Type};
 
 pub struct RecordDeclRef<'m> {
     pub name: &'m str,
     pub fields: Vec<Parameter>,
+    pub variants: Vec<EnumVariantSchema>,
 }
 
 impl<'m> RecordDeclRef<'m> {
@@ -14,9 +15,31 @@ impl<'m> RecordDeclRef<'m> {
                 op.name()
             ));
         }
+        let names = op.string_array_attribute("variants").unwrap_or_default();
+        let variants: Vec<EnumVariantSchema> =
+            if let Some(payloads) = op.attribute("variant_payloads") {
+                serde_json::from_str(payloads).map_err(|error| error.to_string())?
+            } else {
+                names
+                    .iter()
+                    .map(|name| EnumVariantSchema {
+                        name: (*name).into(),
+                        shape: EnumShape::Unit,
+                        fields: Vec::new(),
+                    })
+                    .collect()
+            };
+        if !variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .eq(names)
+        {
+            return Err("enum payloads must match the declared variants".into());
+        }
         Ok(Self {
             name: op.attr("sym_name")?,
             fields: serde_json::from_str(op.attr("fields")?).map_err(|error| error.to_string())?,
+            variants,
         })
     }
 }

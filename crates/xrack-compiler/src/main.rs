@@ -15,6 +15,8 @@ enum Emit {
     RustLive,
     /// Print verified, optimized MLIR for loading at runtime.
     Mlir,
+    /// Package the UI library, source inputs and runtime artifacts into a new directory.
+    Package,
     /// Print the lowered MLIR before native verification and optimization.
     MlirRaw,
     /// Report source-linked paint, binding and row cache decisions as JSON.
@@ -128,6 +130,13 @@ fn run(args: Args) -> Result<(), CompilerError> {
         (args.restrict_assets || !args.assets.is_empty()).then_some(args.assets.as_slice());
     let sources =
         (args.restrict_sources || !args.sources.is_empty()).then_some(args.sources.as_slice());
+    if matches!(args.emit, Emit::Package) && !args.check {
+        let output = args.output.as_deref().ok_or_else(|| {
+            CompilerError::Resources("--emit package requires --output DIRECTORY".into())
+        })?;
+        xrack_compiler::pack_module(std::path::Path::new(&args.input), output, sources, assets)?;
+        return Ok(());
+    }
     if args.cargo {
         let compile = if args.live_reload {
             compile_live_with_inputs
@@ -174,7 +183,9 @@ fn run(args: Args) -> Result<(), CompilerError> {
             Some(output) => export_mlir_to(&doc, &args.input, assets, output)?,
             None => export_mlir(&doc, &args.input, assets)?,
         },
-        Emit::Preview | Emit::LiveModule => unreachable!("handled before reading the input file"),
+        Emit::Preview | Emit::LiveModule | Emit::Package => {
+            unreachable!("handled before emitting text")
+        }
         Emit::Rust => {
             let tokens = generate_document(&doc, &args.input, assets)?;
             rust_source(tokens)

@@ -392,6 +392,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             FocusScopesDemo,
             ScopedKeysDemo,
             StyledTextDemo,
+            RepeatedLinkDemo,
             CompositingDemo,
             RectangleShadowDemo,
             ClippingDemo,

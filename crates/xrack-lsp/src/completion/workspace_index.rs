@@ -386,6 +386,13 @@ impl Index {
         let mut dirty = Vec::new();
         let mut removed_paths = false;
         for (path, deleted) in changes {
+            if path
+                .file_name()
+                .is_some_and(|name| name == "xrack-module.json")
+            {
+                dirty.extend(self.modules.keys().cloned());
+                continue;
+            }
             // VS Code sends paths using the workspace spelling. Match the
             // canonical root while keeping the final name for delete events.
             let Some((parent, name)) = path.parent().zip(path.file_name()) else {

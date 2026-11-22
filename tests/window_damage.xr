@@ -1,0 +1,104 @@
+export component DamageDemo inherits Window {
+    in property <length> tile-x: 34px;
+    in property <bool> show-tile: true;
+    in property <bool> show-custom: false;
+
+    width: 320px;
+    height: 200px;
+    background: #18202b;
+
+    Rectangle {
+        width: 320px;
+        height: 200px;
+        Text {
+            x: 195px; y: 145px; width: 100px; height: 24px;
+            text: "Static label";
+        }
+        Button {
+            x: 14px; y: 10px; width: 100px; height: 32px;
+            text: "Hover";
+        }
+        if root.show-tile : Rectangle {
+            x: root.tile-x; y: 56px; width: 48px; height: 26px;
+            background: #fca914;
+            opacity: 70%;
+            drop-shadow-color: #0009;
+            drop-shadow-blur: 4px;
+            drop-shadow-offset-x: 4px;
+            drop-shadow-offset-y: 2px;
+        }
+        Rectangle {
+            x: 51px; y: 63px; width: 70px; height: 38px;
+            background: #2d70e0aa;
+            border-radius: 8px;
+        }
+        Rectangle {
+            x: 122px; y: 69px; width: 8px; height: 20px;
+            background: #42936588;
+            border-radius: 5px;
+        }
+        Rectangle {
+            x: 133px; y: 70px; width: 10px; height: 20px;
+            background: #70a93399;
+            border-radius: 5px;
+        }
+        LineEdit {
+            x: 148px; y: 24px; width: 130px; height: 32px;
+            text: "Caret";
+        }
+        if root.show-custom : CustomRender {
+            x: 148px; y: 80px; width: 32px; height: 32px;
+        }
+    }
+}
+
+export component MixedDamageDemo inherits Window {
+    width: 400px;
+    height: 240px;
+    background: #18202b;
+    in property <[string]> rows: ["One", "Two", "Three", "Four"];
+
+    left-action := Button {
+        x: 12px; y: 44px; width: 100px; height: 32px;
+        text: "Left";
+    }
+    right-action := Button {
+        x: 288px; y: 44px; width: 100px; height: 32px;
+        text: "Right";
+    }
+    scroll-region := ScrollView {
+        x: 132px; y: 16px; width: 136px; height: 112px;
+        Rectangle {
+            width: 112px; height: 272px;
+            background: #35495e;
+            Text { x: 8px; y: 12px; text: "Visible first"; }
+            Text { x: 8px; y: 172px; text: "Visible later"; }
+        }
+    }
+    edge-action := Button {
+        x: 110px; y: 104px; width: 38px; height: 20px;
+        text: "Edge";
+    }
+    table-region := TableView {
+        x: 20px; y: 145px; width: 220px; height: 78px;
+        row-height: 22px;
+        header-height: 22px;
+        TableColumn { title: "Name"; }
+        for name in root.rows : TableRow {
+            TableCell { text: name; }
+        }
+    }
+    list-region := ListView {
+        x: 255px; y: 145px; width: 125px; height: 78px;
+        row-height: 22px;
+        for name in root.rows : Text { text: name; }
+    }
+    // Enough bounded primitives to exercise the retained spatial index.
+    Rectangle {
+        x: 20px; y: 227px; width: 360px; height: 10px;
+        for index in 72 : Rectangle {
+            x: index * 5px; width: 4px; height: 8px;
+            background: #60778f;
+        }
+    }
+}

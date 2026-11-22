@@ -6,6 +6,67 @@ use xrack_interpreter::HostValue;
 use xrack_runtime::{Component, VecModel};
 use xrack_testing::{ActivationKey, TableEditCommit, TargetError, UiDriver};
 
+#[test]
+fn module_package_can_move_with_its_sources_resources_and_aot_output()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::{fs, path::PathBuf};
+
+    let root = std::env::var_os("TEST_TMPDIR")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join(format!("xrack-module-{}", std::process::id()));
+    fs::create_dir(&root)?;
+    let source = root.join("source");
+    fs::create_dir(&source)?;
+    fs::write(
+        source.join("icon.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>"#,
+    )?;
+    fs::write(
+        source.join("body.xr"),
+        r#"
+        export component Card inherits Rectangle {
+            Image { source: @image-url("icon.svg"); }
+        }
+    "#,
+    )?;
+    let entry = source.join("library.xr");
+    fs::write(
+        &entry,
+        r#"
+        import { Card } from "body.xr";
+        export component Badge inherits Card {
+            out property <int> answer: 42;
+        }
+    "#,
+    )?;
+    let staging = root.join("build");
+    let manifest = xrack_compiler::pack_module(&entry, &staging, None, None)?;
+    assert_eq!(manifest.components, ["Badge"]);
+    assert!(staging.join(&manifest.rust).is_file());
+    let installed = root.join("installed");
+    fs::rename(&staging, &installed)?;
+    fs::remove_dir_all(&source)?;
+
+    let program = xrack_interpreter::load_module_package(&installed)?;
+    let instance = program.create("Badge")?;
+    assert_eq!(instance.get("answer")?, HostValue::Int(42));
+    assert!(
+        instance.render().children[0]
+            .image_asset("source")
+            .is_some()
+    );
+    let importer = r#"
+        import { Badge as AppBadge } from "installed/xrack-module.json";
+        export component UI inherits Window { AppBadge {} }
+    "#;
+    let dependent = root.join("app.xr");
+    fs::write(&dependent, importer)?;
+    let compiled = xrack_compiler::compile(importer, &dependent.to_string_lossy())?;
+    assert!(compiled.rust.to_string().contains("UI"));
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
 fn exercise_table<C: Component>(
     component: C,
     rows: VecModel<String>,

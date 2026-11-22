@@ -6149,7 +6149,7 @@ impl Interaction {
         let transformed = gesture.route.axes.iter().flatten().any(|target| {
             layout
                 .at_path(&target.path)
-                .is_some_and(|item| item.world_transform() != crate::Affine::IDENTITY)
+                .is_some_and(|item| !item.world_transform().is_identity())
         });
         let mut axes = if transformed {
             [true, true]
@@ -13676,6 +13676,23 @@ impl Interaction {
         self.key_pressed = None;
         self.range_keys.clear();
     }
+
+    /// Targets whose mutable interaction can affect the window's paint.
+    #[doc(hidden)]
+    pub fn window_paint_targets(&self) -> impl Iterator<Item = &[usize]> {
+        [
+            self.hovered.as_ref(),
+            self.pressed.as_ref(),
+            self.focused.as_ref(),
+            self.key_pressed.as_ref().map(|(_, target)| target),
+            self.button_hold.as_ref().map(|hold| &hold.target),
+            self.table_edit.as_ref().map(|edit| &edit.target),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|target| target.path.as_slice())
+    }
+
     pub fn is_hovered(&self, path: &[usize]) -> bool {
         self.hovered.as_ref().is_some_and(|t| t.path == path)
     }

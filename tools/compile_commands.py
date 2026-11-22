@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Export first-party C/C++ compile actions for the MLIR and media libraries."""
+"""Export first-party C/C++ and Objective-C compile actions."""
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -51,12 +52,18 @@ def macos_driver(args, action, execution_root):
 
 
 def main():
-    # Materialize TableGen outputs and third-party headers before indexing.
-    subprocess.run(["bazel", "build", "--config=media", MLIR_TARGETS, *MEDIA_TARGETS], cwd=ROOT, check=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--append-target", action="append", metavar="LABEL",
+        help="Update entries for this target while retaining the existing database",
+    )
+    options = parser.parse_args()
+    targets = options.append_target or (MLIR_TARGETS, *MEDIA_TARGETS)
+    config = [] if options.append_target else ["--config=media"]
+    subprocess.run(["bazel", "build", *config, *targets], cwd=ROOT, check=True)
     execution_root = Path(bazel("info", "execution_root").strip())
-    targets = " + ".join((MLIR_TARGETS, *MEDIA_TARGETS))
-    query = f'mnemonic("CppCompile", deps({targets}))'
-    graph = json.loads(bazel("aquery", "--config=media", query, "--output=jsonproto", "--include_param_files"))
+    query = f'mnemonic("CppCompile|ObjcCompile", deps({" + ".join(targets)}))'
+    graph = json.loads(bazel("aquery", *config, query, "--output=jsonproto", "--include_param_files"))
     commands = {}
     for action in graph.get("actions", []):
         args = expand_arguments(action)
@@ -79,6 +86,10 @@ def main():
     if not commands:
         raise SystemExit("Bazel did not report any XRack C/C++ compile actions")
     result = ROOT / "compile_commands.json"
+    if options.append_target and result.exists():
+        previous = {entry["file"]: entry for entry in json.loads(result.read_text())}
+        previous.update(commands)
+        commands = previous
     temporary = result.with_suffix(".json.tmp")
     temporary.write_text(json.dumps([commands[key] for key in sorted(commands)], indent=2) + "\n")
     temporary.replace(result)

@@ -1,4 +1,7 @@
-use crate::{Affine, Interaction, LayoutNode, Point, scale_rotate::gesture_target_live};
+use crate::{
+    Interaction, LayoutNode, LayoutSpace, Point, Transform2D, WindowSpace,
+    scale_rotate::gesture_target_live,
+};
 use xrack_runtime::{Component, Length, Node, RowKey, SwipeHandle, SwipeSample};
 
 pub(crate) fn has_swipe_directions(node: &Node) -> bool {
@@ -17,7 +20,7 @@ pub(crate) struct SwipeTarget {
     path: Vec<usize>,
     handle: SwipeHandle,
     row: Option<RowKey>,
-    to_local: Affine,
+    to_local: Transform2D<WindowSpace, LayoutSpace>,
     origin: Point,
     sample: SwipeSample,
 }
@@ -74,7 +77,7 @@ impl SwipeTarget {
             return None;
         }
         let item = layout.at_path(path)?;
-        let to_local = item.world_transform().inverse()?;
+        let to_local = item.inverse_transform()?;
         let local = to_local.map_point(point);
         if !item.visible
             || !item.enabled

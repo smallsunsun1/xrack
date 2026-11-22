@@ -1179,6 +1179,7 @@ fn run(
 pub(crate) fn run_window<C: Component + 'static>(
     component: C,
     viewport_handler: Option<crate::ViewportHandler<C>>,
+    system_color_scheme_handler: Option<crate::SystemColorSchemeHandler<C>>,
 ) -> Result<(), String> {
     #[cfg(feature = "media")]
     xrack_media::install();
@@ -1192,6 +1193,7 @@ pub(crate) fn run_window<C: Component + 'static>(
         desktop.clipboard.clone(),
     );
     window.viewport_handler = viewport_handler;
+    window.system_color_scheme_handler = system_color_scheme_handler;
     desktop.windows.insert(key, Box::new(window));
     event_loop
         .run_app(&mut desktop)

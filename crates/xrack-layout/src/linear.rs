@@ -1,8 +1,9 @@
 use crate::{ButtonContent, Rect, Size, TextMeasurer, dimension, flow, participates_in_flow};
+use std::collections::{HashMap, VecDeque};
 use xrack_runtime::{
     ControlAction, CrossAxisAlignment, DialogCommand, DialogRole, LayoutAlignment, Node,
-    Orientation, Value, dialog_button_action, is_modal_overlay, is_multiline_text_input, is_pane,
-    is_text_input, is_toggle,
+    Orientation, RowKey, Value, dialog_button_action, is_modal_overlay, is_multiline_text_input,
+    is_pane, is_text_input, is_toggle,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -95,7 +96,7 @@ impl Axis {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct AxisInfo {
     pub(crate) min: f32,
     pub(crate) preferred: f32,
@@ -265,9 +266,96 @@ impl Padding {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Metrics {
     pub(crate) x: AxisInfo,
     pub(crate) y: AxisInfo,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Constraints {
+    reference: Size,
+    width: Option<f32>,
+}
+
+struct RowMeasurements {
+    scene: Node,
+    sizes: Vec<(Constraints, Metrics)>,
+    depends_on_height: bool,
+}
+
+impl RowMeasurements {
+    fn new(node: &Node) -> Self {
+        Self {
+            scene: node.clone(),
+            sizes: Vec::new(),
+            depends_on_height: reads_available_height(node),
+        }
+    }
+
+    fn constraints(&self, mut input: Constraints) -> Constraints {
+        if !self.depends_on_height {
+            input.reference.height = 0.0;
+        }
+        input
+    }
+}
+
+fn reads_available_height(node: &Node) -> bool {
+    // The supported row kinds propagate height to their children, but their
+    // intrinsic sizing uses width and text metrics. Relative lengths can add
+    // a dependency on the height assigned to the enclosing layout.
+    node.properties.iter().any(|(&name, value)| {
+        matches!(value, Value::Percent(_))
+            && !matches!(
+                name,
+                "width" | "min-width" | "preferred-width" | "max-width" | "x"
+            )
+    }) || node.children.iter().any(reads_available_height)
+}
+
+/// Intrinsic measurements of immutable repeat rows for one font configuration.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct IntrinsicMeasurements {
+    rows: HashMap<RowKey, RowMeasurements>,
+    order: VecDeque<RowKey>,
+}
+
+impl IntrinsicMeasurements {
+    fn get(&self, key: RowKey, node: &Node, constraints: Constraints) -> Option<Metrics> {
+        let row = self.rows.get(&key)?;
+        if !row.scene.shares_storage_with(node) {
+            return None;
+        }
+        let constraints = row.constraints(constraints);
+        row.sizes
+            .iter()
+            .find_map(|&(last, metrics)| (last == constraints).then_some(metrics))
+    }
+
+    fn insert(&mut self, key: RowKey, node: &Node, constraints: Constraints, metrics: Metrics) {
+        if !self.rows.contains_key(&key) {
+            if self.rows.len() == 512
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.rows.remove(&oldest);
+            }
+            self.order.push_back(key);
+        }
+        let row = self
+            .rows
+            .entry(key)
+            .or_insert_with(|| RowMeasurements::new(node));
+        if !row.scene.shares_storage_with(node) {
+            *row = RowMeasurements::new(node);
+        }
+        let constraints = row.constraints(constraints);
+        if row.sizes.len() == 8 {
+            row.sizes.remove(0);
+        }
+        row.sizes.push((constraints, metrics));
+    }
 }
 
 impl Metrics {
@@ -302,6 +390,34 @@ pub(crate) fn measurement_width(node: &Node, reference: Size) -> f32 {
 }
 
 pub(crate) fn measure_with_width(
+    node: &Node,
+    reference: Size,
+    assigned_width: Option<f32>,
+    text: &mut impl TextMeasurer,
+) -> Metrics {
+    let Some(key) = node.row_key.filter(|_| node.has_shared_storage()) else {
+        return compute_measurement(node, reference, assigned_width, text);
+    };
+    let constraints = Constraints {
+        reference,
+        width: assigned_width,
+    };
+    let Some(cache) = text.intrinsic_measurements() else {
+        return compute_measurement(node, reference, assigned_width, text);
+    };
+    if let Some(metrics) = cache.get(key, node, constraints) {
+        return metrics;
+    }
+    let metrics = compute_measurement(node, reference, assigned_width, text);
+    if crate::row_layout::cacheable_shared_row(node)
+        && let Some(cache) = text.intrinsic_measurements()
+    {
+        cache.insert(key, node, constraints, metrics);
+    }
+    metrics
+}
+
+fn compute_measurement(
     node: &Node,
     reference: Size,
     assigned_width: Option<f32>,
@@ -375,7 +491,12 @@ pub(crate) fn measure_with_width(
         let title_height =
             radio_title + crate::modal::measured_title_height(node, available, text) + group_title;
         inner.height = (inner.height - title_height).max(0.0);
-        let mut main = AxisInfo::fixed(0.0);
+        let [
+            mut main_min,
+            mut main_preferred,
+            mut main_max,
+            mut main_stretch,
+        ] = [0.0_f64; 4];
         let mut cross = AxisInfo::flexible(0.0);
         cross.stretch = f32::INFINITY;
         let mut count = 0usize;
@@ -395,10 +516,10 @@ pub(crate) fn measure_with_width(
             if remeasure {
                 line_infos.push(main_info(child, axis, alignment, legacy, child_main));
             }
-            main.min += child_main.min;
-            main.preferred += child_main.preferred;
-            main.max += child_main.max;
-            main.stretch += child_main.stretch;
+            main_min += f64::from(child_main.min);
+            main_preferred += f64::from(child_main.preferred);
+            main_max += f64::from(child_main.max);
+            main_stretch += f64::from(child_main.stretch);
             cross.min = cross.min.max(child_cross.min);
             cross.preferred = cross.preferred.max(child_cross.preferred);
             let child_alignment = match cross_alignment(child, "cross-axis-self-alignment") {
@@ -414,14 +535,17 @@ pub(crate) fn measure_with_width(
             cross.stretch = cross.stretch.min(child_cross.stretch);
             count += 1;
         }
-        let gaps = spacing(node) * count.saturating_sub(1) as f32;
+        let gaps = f64::from(spacing(node)) * count.saturating_sub(1) as f64;
         let mut padding = padding.size();
         padding.height += title_height;
-        let main_extra = gaps + axis.extent(padding);
+        let main_extra = gaps + f64::from(axis.extent(padding));
         let cross_extra = axis.other().extent(padding);
-        main.min += main_extra;
-        main.preferred += main_extra;
-        main.max += main_extra;
+        let mut main = AxisInfo {
+            min: (main_min + main_extra) as f32,
+            preferred: (main_preferred + main_extra) as f32,
+            max: (main_max + main_extra) as f32,
+            stretch: main_stretch as f32,
+        };
         cross.min += cross_extra;
         cross.preferred += cross_extra;
         cross.max += cross_extra;
@@ -445,9 +569,10 @@ pub(crate) fn measure_with_width(
         }
         if remeasure {
             // Wrapped items may need more height after their siblings take their widths.
-            let (widths, _, _) = fit_line(
+            let (widths, _, _) = fit_padded_line(
                 line_infos.into_iter(),
-                inner.width,
+                available.width,
+                padding.width,
                 spacing(node),
                 alignment,
             );
@@ -794,13 +919,36 @@ pub(crate) fn fit_line(
     gap: f32,
     alignment: LayoutAlignment,
 ) -> (Vec<f32>, f32, f32) {
-    let count = infos.len() as f32;
-    let preferred = infos.clone().map(|item| item.preferred).sum::<f32>();
-    let slack = available - preferred;
-    let free = slack - gap * (count - 1.0);
-    if alignment == LayoutAlignment::Stretch || free <= 0.0 {
-        return (fit_axis(infos, available - gap * (count - 1.0)), 0.0, gap);
+    fit_padded_line(infos, available, 0.0, gap, alignment)
+}
+
+fn fit_padded_line(
+    infos: impl ExactSizeIterator<Item = AxisInfo> + Clone,
+    available: f32,
+    padding: f32,
+    gap: f32,
+    alignment: LayoutAlignment,
+) -> (Vec<f32>, f32, f32) {
+    let count = infos.len() as f64;
+    let preferred = infos
+        .clone()
+        .map(|item| f64::from(item.preferred))
+        .sum::<f64>();
+    let gaps = f64::from(gap) * (count - 1.0);
+    // Measurement returns the natural extent rounded to f32. If that extent
+    // fits, keep each preferred size instead of distributing the rounding
+    // error to every child and invalidating their layouts.
+    let padding = f64::from(padding);
+    if available == (preferred + (gaps + padding)) as f32 {
+        return (infos.map(|item| item.preferred).collect(), 0.0, gap);
     }
+    let available = (f64::from(available) - padding).max(0.0);
+    let slack = available - preferred;
+    let free = slack - gaps;
+    if alignment == LayoutAlignment::Stretch || free <= 0.0 {
+        return (fit_axis(infos, (available - gaps) as f32), 0.0, gap);
+    }
+    let gap = f64::from(gap);
     let (offset, spacing) = match alignment {
         LayoutAlignment::Stretch | LayoutAlignment::Start => (0.0, gap),
         LayoutAlignment::Center => (free * 0.5, gap),
@@ -810,7 +958,11 @@ pub(crate) fn fit_line(
         LayoutAlignment::SpaceAround => (slack / (2.0 * count), slack / count),
         LayoutAlignment::SpaceEvenly => (slack / (count + 1.0), slack / (count + 1.0)),
     };
-    (infos.map(|item| item.preferred).collect(), offset, spacing)
+    (
+        infos.map(|item| item.preferred).collect(),
+        offset as f32,
+        spacing as f32,
+    )
 }
 
 pub(crate) fn fit_axis(infos: impl IntoIterator<Item = AxisInfo>, available: f32) -> Vec<f32> {
@@ -882,9 +1034,9 @@ pub(crate) fn children(
     direction: xrack_runtime::LayoutDirection,
     text: &mut impl TextMeasurer,
 ) -> Vec<Rect> {
-    let inner = Padding::read(node).inner_rect(bounds);
+    let padding = Padding::read(node);
+    let inner = padding.inner_rect(bounds);
     let available = Size::new(inner.width, inner.height);
-    let main_available = axis.extent(available);
     let cross_available = axis.other().extent(available);
     let gap = spacing(node);
     let alignment = layout_alignment(node);
@@ -931,12 +1083,14 @@ pub(crate) fn children(
         return result;
     }
 
-    let (sizes, mut cursor, spacing) = fit_line(
+    let (sizes, cursor, spacing) = fit_padded_line(
         items.iter().map(|item| item.main),
-        main_available,
+        axis.extent(Size::new(bounds.width, bounds.height)),
+        axis.extent(padding.size()),
         gap,
         alignment,
     );
+    let mut cursor = f64::from(cursor);
     for (item, size) in items.into_iter().zip(sizes) {
         let child = &node.children[item.index];
         let reflows = reflows_at_width(child) && size != measurement_width(child, available);
@@ -952,7 +1106,7 @@ pub(crate) fn children(
         };
         let (offset, extent) = cross_geometry(cross, item.cross_alignment, cross_available);
         let mut rect = crate::place_in_direction(
-            axis.rect(inner, cursor, offset, size, extent),
+            axis.rect(inner, cursor as f32, offset, size, extent),
             inner,
             direction,
         );
@@ -961,7 +1115,7 @@ pub(crate) fn children(
             rect.y += child.length("y").unwrap_or(0.0);
         }
         result[item.index] = rect;
-        cursor += size + spacing;
+        cursor += f64::from(size) + f64::from(spacing);
     }
     result
 }

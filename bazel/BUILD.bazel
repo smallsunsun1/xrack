@@ -23,6 +23,7 @@ exports_files([
     "ffmpeg_windows_probes.patch",
     "openssl_windows_ssize_max.patch",
     "openssl_windows_winstore.patch",
+    "rules_apple_macos_linking.patch",
     "rust_llvm_msvc_linker.patch",
     "xrack.bzl",
 ])

@@ -15,6 +15,32 @@ use xrack_runtime::Value;
 mod keyboard_touch;
 
 #[test]
+fn reports_initial_system_scheme_and_skips_duplicate_notifications() {
+    #[derive(Default)]
+    struct View(Vec<ColorScheme>);
+
+    impl Component for View {
+        fn render(&self) -> Node {
+            Node::new("Window", None)
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let mut application = Application::new(View::default(), LocalExecutor::new(|| {}));
+    application.system_color_scheme_handler = Some(Box::new(|view, scheme| view.0.push(scheme)));
+    assert!(application.publish_system_color_scheme(ColorScheme::Dark));
+    assert!(!application.publish_system_color_scheme(ColorScheme::Dark));
+    assert!(application.publish_system_color_scheme(ColorScheme::Light));
+    assert_eq!(
+        application.component.0,
+        [ColorScheme::Dark, ColorScheme::Light]
+    );
+}
+
+#[test]
 fn character_space_activates_controls_like_named_space() {
     assert_eq!(
         activation_key_value(&Key::Character(" ".into())),
@@ -672,6 +698,89 @@ fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
     );
     assert_eq!(app.input.scroll_offsets().get(&[0][..]), Some(&330.0));
     assert!(!app.input.scroll_offsets().contains_key(&[][..]));
+}
+
+#[test]
+fn modified_tab_runs_shortcut_and_plain_tab_moves_focus() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::Length;
+
+    #[derive(Default)]
+    struct View(usize);
+
+    impl Component for View {
+        fn render(&self) -> Node {
+            let button = |id, x| {
+                let mut node = Node::new("Button", Some(id));
+                node.properties.insert("x", Length(x).into());
+                node.properties.insert("width", Length(70.0).into());
+                node.properties.insert("height", Length(30.0).into());
+                node
+            };
+            let mut window = Node::new("Window", None);
+            let mut shortcut = Node::new("Shortcut", Some("next-tab"));
+            shortcut
+                .properties
+                .insert("sequence", "Ctrl+Tab".to_owned().into());
+            window
+                .children
+                .extend([button("first", 0.0), button("second", 80.0), shortcut]);
+            window
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+
+        fn control_at(&mut self, _: &Node, path: &[usize], action: ControlAction) -> bool {
+            assert_eq!(path, [2]);
+            assert_eq!(action, ControlAction::ActivateShortcut);
+            self.0 += 1;
+            true
+        }
+    }
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(32.0, 16.0)
+        }
+    }
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
+    let layout = Rc::new(layout(&app.scene, Size::new(230.0, 90.0), &mut Measure));
+    app.layout = Some(layout.clone());
+    let first = app
+        .input
+        .accessibility_target(&app.scene, &layout, &[0])
+        .unwrap();
+    app.input.focus_target(&app.scene, &layout, first);
+    let event = KeyEvent {
+        logical_key: Key::Named(NamedKey::Tab),
+        unmodified_key: Key::Named(NamedKey::Tab),
+        text: None,
+        state: ElementState::Pressed,
+        repeat: false,
+    };
+    app.modifiers = ModifiersState::CONTROL;
+    assert!(app.default_key_input(&event, false));
+    assert_eq!(app.component.0, 1);
+    assert_eq!(
+        app.input
+            .focused
+            .as_ref()
+            .and_then(|focus| focus.element_id()),
+        Some("first")
+    );
+    app.modifiers = ModifiersState::empty();
+    assert!(app.default_key_input(&event, false));
+    assert_eq!(app.component.0, 1);
+    assert_eq!(
+        app.input
+            .focused
+            .as_ref()
+            .and_then(|focus| focus.element_id()),
+        Some("second")
+    );
 }
 
 #[test]

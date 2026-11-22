@@ -107,3 +107,8 @@ def XrPlanStaticGrid : Pass<"xr-plan-static-grid", "::mlir::ModuleOp"> {
 def XrCacheStaticGradients : Pass<"xr-cache-static-gradients", "::mlir::ModuleOp"> {
   let summary = "Reuse immutable gradient stops for constant brushes";
 }
+
+
+def XrFuseStringConcats : Pass<"xr-fuse-string-concats", "::mlir::ModuleOp"> {
+  let summary = "Collect adjacent string additions in evaluation order";
+}

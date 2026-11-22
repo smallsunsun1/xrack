@@ -5853,6 +5853,9 @@ fn wide_table_draws_newly_materialized_columns_beside_its_frozen_column() {
     let end = scrolled.at_path(&[1, 0, 0, 11]).unwrap();
     assert_eq!(end.text("text"), Some("1 / 12"));
     let after = renderer.snapshot(&scrolled, 620, 320, 1.0, &input).unwrap();
+    renderer.set_display_batching_enabled(false);
+    let direct = renderer.snapshot(&scrolled, 620, 320, 1.0, &input).unwrap();
+    assert_eq!(after.rgba, direct.rgba);
     let fixed = layout.at_path(&[1, 0, 0, 0]).unwrap().bounds;
     let moving = layout.at_path(&[1, 0, 0, 11]).unwrap().bounds;
     let changes = |rect: xrack_layout::Rect| {
@@ -5863,6 +5866,68 @@ fn wide_table_draws_newly_materialized_columns_beside_its_frozen_column() {
     };
     assert!(!changes(fixed));
     assert!(changes(moving));
+}
+
+#[test]
+fn table_header_dividers_share_a_batch_with_identical_pixels() {
+    use xrack_layout::Point;
+    use xrack_runtime::{ColorScheme, Length, Node, Orientation, TableHeader, TableSort};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut scene = Node::new("TableView", None);
+    scene
+        .properties
+        .insert("color-scheme", ColorScheme::System.into());
+    scene.properties.insert("frozen-columns", 2_i64.into());
+    scene.properties.insert("resizable-columns", true.into());
+    scene.table_header = Some(Box::new(TableHeader {
+        columns: (0..18)
+            .map(|index| {
+                let mut column = Node::new("TableColumn", None);
+                column.properties.insert("width", Length(46.0).into());
+                column
+                    .properties
+                    .insert("title", format!("列 {index}").into());
+                column
+            })
+            .collect(),
+        sort: Some(TableSort {
+            column: 6,
+            descending: false,
+        }),
+        column_widths: Vec::new(),
+    }));
+    let viewport = Size::new(620.0, 160.0);
+    let mut input = Interaction::default();
+    let layout = renderer.layout_with_input(&scene, viewport, &input);
+    assert!(input.accessibility_scroll_to(&layout, &[], Orientation::Horizontal, 12.5));
+    let layout = renderer.layout_with_input(&scene, viewport, &input);
+    input.pointer_move(&scene, &layout, Point { x: 44.0, y: 12.0 });
+    input.pointer_press();
+    renderer.set_system_color_scheme(ColorScheme::Dark);
+    let before = renderer.rectangle_batch_draws();
+    let uploads = renderer.rectangle_palette_uploads();
+    let batched = renderer.snapshot(&scene, 1240, 320, 2.0, &input).unwrap();
+    assert!(renderer.rectangle_batch_draws() > before);
+    assert_eq!(renderer.rectangle_palette_uploads(), uploads + 1);
+    let repeated = renderer.snapshot(&scene, 1240, 320, 2.0, &input).unwrap();
+    assert_eq!(repeated.rgba, batched.rgba);
+    assert_eq!(renderer.rectangle_palette_uploads(), uploads + 1);
+    renderer.set_display_batching_enabled(false);
+    let direct = renderer.snapshot(&scene, 1240, 320, 2.0, &input).unwrap();
+    assert_eq!(batched.rgba, direct.rgba);
+    renderer.set_display_batching_enabled(true);
+    renderer.set_system_color_scheme(ColorScheme::Light);
+    let light = renderer.snapshot(&scene, 1240, 320, 2.0, &input).unwrap();
+    assert_eq!(renderer.rectangle_palette_uploads(), uploads + 2);
+    renderer.set_display_batching_enabled(false);
+    let direct_light = renderer.snapshot(&scene, 1240, 320, 2.0, &input).unwrap();
+    assert_eq!(light.rgba, direct_light.rgba);
+    assert_ne!(light.rgba, batched.rgba);
 }
 
 #[test]
@@ -10110,6 +10175,3674 @@ fn stack_slide_rebases_on_the_presented_frame_and_preserves_keyboard_navigation(
 }
 
 #[test]
+fn retained_vector_paths_follow_paint_and_geometry_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, StaticVectorPath, VectorSegment};
+
+    const COMMANDS: &str = "M2 2 H22 V22 H2 Z";
+    static TRIANGLE: StaticVectorPath = StaticVectorPath {
+        commands: COMMANDS,
+        bounds: [2.0, 2.0, 20.0, 20.0],
+        segments: &[
+            VectorSegment::MoveTo([2.0, 2.0]),
+            VectorSegment::LineTo([22.0, 2.0]),
+            VectorSegment::LineTo([2.0, 22.0]),
+            VectorSegment::Close,
+        ],
+    };
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut renderer = Renderer::with_device(gpu.clone())?;
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    let mut path = Node::new("Path", None);
+    path.properties
+        .insert("commands", COMMANDS.to_owned().into());
+    path.properties.insert("width", Length(72.0).into());
+    path.properties.insert("height", Length(72.0).into());
+    path.properties.insert("fill", Color(0x526ff4ff).into());
+    path.properties.insert("viewbox-width", 24.0_f64.into());
+    path.properties.insert("viewbox-height", 24.0_f64.into());
+    scene.children.push(path);
+
+    let first = renderer.snapshot(&scene, 100, 90, 1.0, &input)?;
+    assert_eq!(first.pixel(28, 28), Some([0x52, 0x6f, 0xf4, 0xff]));
+
+    scene.children[0]
+        .properties
+        .insert("fill", Color(0xf9775cff).into());
+    let recolored = renderer.snapshot(&scene, 100, 90, 1.0, &input)?;
+    assert_eq!(recolored.pixel(28, 28), Some([0xf9, 0x77, 0x5c, 0xff]));
+    assert_eq!(recolored.layout.bounds, first.layout.bounds);
+
+    scene.children[0].set_precompiled_path(&TRIANGLE);
+    let replaced = renderer.snapshot(&scene, 100, 90, 1.0, &input)?;
+    assert_eq!(replaced.pixel(16, 16), Some([0xf9, 0x77, 0x5c, 0xff]));
+    assert_ne!(replaced.pixel(57, 57), recolored.pixel(57, 57));
+
+    let path = &mut scene.children[0];
+    path.properties.insert("x", Length(9.0).into());
+    path.properties.insert("viewbox-width", 32.0_f64.into());
+    path.properties.insert("stroke", Color(0x121728ff).into());
+    path.properties.insert("stroke-width", Length(2.0).into());
+
+    let warmed = renderer.snapshot(&scene, 200, 180, 2.0, &input)?;
+    let mut fresh = Renderer::with_device(gpu)?;
+    fresh.set_vector_path_cache_enabled(false);
+    let expected = fresh.snapshot(&scene, 200, 180, 2.0, &input)?;
+    assert_ne!(warmed.rgba, recolored.rgba);
+    assert_same_pixels(&expected, &warmed);
+    assert_same_pixels(
+        &expected,
+        &renderer.snapshot(&scene, 200, 180, 2.0, &input)?,
+    );
+    Ok(())
+}
+
+#[test]
+fn vector_masks_match_translucent_paint_and_clipping() -> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Brush, Color, GradientStop, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut cached = Renderer::with_device(gpu.clone())?;
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_vector_mask_cache_enabled(false);
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0x334f79ff).into());
+    let mut parent = Node::new("Rectangle", None);
+    parent.properties.insert("width", Length(87.0).into());
+    parent.properties.insert("height", Length(38.0).into());
+    parent.properties.insert("clip", true.into());
+    let commands =
+        "M3 8 C3 1 22 1 22 8 C24 10 17 16 21 22 C10 26 1 24 4 16 C7 13 3 13 3 8 Z ".repeat(5);
+    for x in [4.0, 39.0, 71.0] {
+        let mut node = Node::new("Path", None);
+        node.properties.insert("commands", commands.clone().into());
+        node.properties.insert("x", Length(x).into());
+        node.properties.insert("y", Length(4.0).into());
+        node.properties.insert("width", Length(32.0).into());
+        node.properties.insert("height", Length(32.0).into());
+        node.properties.insert("viewbox-width", 24.0_f64.into());
+        node.properties.insert("viewbox-height", 24.0_f64.into());
+        node.properties.insert("fill", Color(0xf0856599).into());
+        node.properties.insert("stroke", Color(0x54deb97a).into());
+        node.properties.insert("stroke-width", Length(1.5).into());
+        parent.children.push(node);
+    }
+    scene.children.push(parent);
+
+    let assert_close = |case: &str,
+                        before: &xrack_renderer_femtovg::Snapshot,
+                        after: &xrack_renderer_femtovg::Snapshot| {
+        assert_eq!(before.rgba.len(), after.rgba.len());
+        let max_diff = before
+            .rgba
+            .iter()
+            .zip(&after.rgba)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max();
+        assert!(
+            // An 8-bit mask introduces rounding before the final blend.
+            max_diff.is_some_and(|error| error <= 3),
+            "{case}: largest channel error: {max_diff:?}"
+        );
+    };
+    for scale in [1.0, 2.0] {
+        let first = &mut scene.children[0].children[0];
+        first.properties.insert("fill", Color(0xf0856599).into());
+        first.properties.insert("stroke", Color(0x54deb97a).into());
+        let size = (96.0 * scale) as u32;
+        let height = (46.0 * scale) as u32;
+        let stats = cached.vector_mask_stats();
+        let expected = direct.snapshot(&scene, size, height, scale, &input)?;
+        let actual = cached.snapshot(&scene, size, height, scale, &input)?;
+        assert_close("clipped masks", &expected, &actual);
+        assert_eq!(cached.vector_mask_stats().rasterized - stats.rasterized, 2);
+        assert!(cached.vector_mask_stats().reused > stats.reused);
+
+        let changed = &mut scene.children[0].children[0];
+        changed.properties.insert("fill", Color(0xffe77b99).into());
+        changed
+            .properties
+            .insert("stroke", Color(0x2815d57a).into());
+        let stats = cached.vector_mask_stats();
+        let expected = direct.snapshot(&scene, size, height, scale, &input)?;
+        let recolored = cached.snapshot(&scene, size, height, scale, &input)?;
+        assert_close("recolored masks", &expected, &recolored);
+        assert_ne!(actual.rgba, recolored.rgba);
+        assert_eq!(cached.vector_mask_stats().rasterized, stats.rasterized);
+    }
+
+    for node in &mut scene.children[0].children {
+        node.properties.insert("stroke", Color(0x2815d5cc).into());
+    }
+    let stats = cached.vector_mask_stats();
+    let expected = direct.snapshot(&scene, 192, 92, 2.0, &input)?;
+    let different_alpha = cached.snapshot(&scene, 192, 92, 2.0, &input)?;
+    assert_close("updated source alpha", &expected, &different_alpha);
+    assert_eq!(cached.vector_mask_stats().rasterized - stats.rasterized, 2);
+
+    let parent = &mut scene.children[0];
+    parent.properties.insert("opacity", 0.6_f64.into());
+    let expected = direct.snapshot(&scene, 192, 92, 2.0, &input)?;
+    let grouped = cached.snapshot(&scene, 192, 92, 2.0, &input)?;
+    assert_close("group opacity", &expected, &grouped);
+    assert_ne!(different_alpha.rgba, grouped.rgba);
+
+    scene.children[0]
+        .properties
+        .insert("border-radius", Length(12.0).into());
+    let stats = cached.vector_mask_stats();
+    let expected = direct.snapshot(&scene, 192, 92, 2.0, &input)?;
+    let rounded = cached.snapshot(&scene, 192, 92, 2.0, &input)?;
+    assert_same_pixels(&expected, &rounded);
+    assert_eq!(cached.vector_mask_stats().direct - stats.direct, 3);
+
+    let parent = &mut scene.children[0];
+    parent.properties.remove("opacity");
+    parent.properties.remove("border-radius");
+    cached.snapshot(&scene, 192, 92, 2.0, &input)?;
+    let parent = &mut scene.children[0];
+    let original_fill = parent.children[0]
+        .properties
+        .insert(
+            "fill",
+            Brush::Linear {
+                angle_degrees: 45.0,
+                stops: [
+                    GradientStop {
+                        color: Color(0x1742ee99),
+                        offset: 0.0,
+                    },
+                    GradientStop {
+                        color: Color(0xd438ae99),
+                        offset: 0.38,
+                    },
+                    GradientStop {
+                        color: Color(0xfad94499),
+                        offset: 1.0,
+                    },
+                ]
+                .into(),
+            }
+            .into(),
+        )
+        .ok_or("path should have a solid fill")?;
+    let original_stroke = parent.children[1]
+        .properties
+        .insert(
+            "stroke",
+            Brush::Radial {
+                stops: [
+                    GradientStop {
+                        color: Color(0x4adcb3cc),
+                        offset: 0.0,
+                    },
+                    GradientStop {
+                        color: Color(0x282368cc),
+                        offset: 1.0,
+                    },
+                ]
+                .into(),
+            }
+            .into(),
+        )
+        .ok_or("path should have a solid stroke")?;
+
+    let stats = cached.vector_mask_stats();
+    let expected = direct.snapshot(&scene, 192, 92, 2.0, &input)?;
+    let gradients = cached.snapshot(&scene, 192, 92, 2.0, &input)?;
+    assert_close("linear fill and radial stroke", &expected, &gradients);
+    assert_eq!(cached.vector_mask_stats().direct, stats.direct);
+    assert_eq!(cached.vector_mask_stats().rasterized, stats.rasterized);
+    assert!(cached.vector_mask_stats().reused > stats.reused);
+
+    let parent = &mut scene.children[0];
+    parent.children[0].properties.insert("fill", original_fill);
+    parent.children[1]
+        .properties
+        .insert("stroke", original_stroke);
+    let fill = parent.children[0]
+        .properties
+        .insert(
+            "fill",
+            Brush::Linear {
+                angle_degrees: 45.0,
+                stops: [
+                    GradientStop {
+                        color: Color(0x552ceaff),
+                        offset: 0.0,
+                    },
+                    GradientStop {
+                        color: Color(0xfa940a89),
+                        offset: 1.0,
+                    },
+                ]
+                .into(),
+            }
+            .into(),
+        )
+        .ok_or("path should have a solid fill")?;
+    let stats = cached.vector_mask_stats();
+    let expected = direct.snapshot(&scene, 192, 92, 2.0, &input)?;
+    let gradient = cached.snapshot(&scene, 192, 92, 2.0, &input)?;
+    assert_close("varying-alpha gradient fallback", &expected, &gradient);
+    assert_eq!(cached.vector_mask_stats().direct - stats.direct, 1);
+    scene.children[0].children[0]
+        .properties
+        .insert("fill", fill);
+
+    scene.children[0].children[0]
+        .properties
+        .insert("x", Length(4.25).into());
+    scene.children[0].children[1]
+        .properties
+        .insert("transform-rotation", 12.0_f64.into());
+    let stats = cached.vector_mask_stats();
+    let expected = direct.snapshot(&scene, 192, 92, 2.0, &input)?;
+    let adjusted = cached.snapshot(&scene, 192, 92, 2.0, &input)?;
+    assert_close("fractional origin and rotation", &expected, &adjusted);
+    assert_eq!(cached.vector_mask_stats().direct - stats.direct, 2);
+
+    scene.children[0]
+        .properties
+        .insert("width", Length(87.25).into());
+    let stats = cached.vector_mask_stats();
+    let expected = direct.snapshot(&scene, 192, 92, 2.0, &input)?;
+    let fractional_clip = cached.snapshot(&scene, 192, 92, 2.0, &input)?;
+    assert_same_pixels(&expected, &fractional_clip);
+    assert_eq!(cached.vector_mask_stats().direct - stats.direct, 3);
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual GPU measurement for animated fills on fixed vector paths"]
+fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{Brush, Color, GradientStop, Length, Node, Value};
+
+    let gradient = std::env::var_os("XRACK_VECTOR_BENCH_GRADIENT").is_some();
+    let viewport = Size::new(640.0, 480.0);
+    let mut scene = Node::new("Window", None);
+    for row in 0..12 {
+        for column in 0..16 {
+            let mut icon = Node::new("Path", None);
+            for (name, length) in [
+                ("x", f64::from(column * 40 + 2)),
+                ("y", f64::from(row * 40 + 2)),
+                ("width", 36.0),
+                ("height", 36.0),
+            ] {
+                icon.properties.insert(name, Length(length).into());
+            }
+            icon.properties.insert("viewbox-width", 24.0_f64.into());
+            icon.properties.insert("viewbox-height", 24.0_f64.into());
+            icon.properties.insert("stroke-width", Length(1.0).into());
+            icon.properties.insert("stroke", Color(0x121728ff).into());
+            scene.children.push(icon);
+        }
+    }
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let input = Interaction::default();
+    let layout = renderer.layout_with_input(&scene, viewport, &input);
+    let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Vector geometry benchmark"),
+        size: wgpu::Extent3d {
+            width: 1280,
+            height: 960,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    for shapes in [1, 12] {
+        // Explicit subpath starts keep the single-shape case compatible with Qt Quick and Slint.
+        let commands: Vec<_> = (0..shapes).map(|index| {
+            let control = 17.0 + index as f32 / 4.0;
+            format!("M12 4 C{control} 1 23 7 20 12 C23 17 17 23 12 20 C7 23 1 17 4 12 C1 7 7 1 12 4 Z ").repeat(8)
+        }).collect();
+        for (index, icon) in scene.children.iter_mut().enumerate() {
+            icon.properties
+                .insert("commands", commands[index % shapes].clone().into());
+        }
+        for (mode, retained, masks) in [
+            ("direct", false, false),
+            ("paths", true, false),
+            ("masks", true, true),
+        ] {
+            renderer.set_vector_path_cache_enabled(retained);
+            renderer.set_vector_mask_cache_enabled(masks);
+            let before = renderer.vector_mask_stats();
+            let mut submit = Vec::with_capacity(60);
+            let mut total = Vec::with_capacity(60);
+            for index in 0..70 {
+                let rgb = if index % 2 == 0 {
+                    0x526ff4ff
+                } else {
+                    0xf9775cff
+                };
+                let fill: Value = if gradient {
+                    Brush::Linear {
+                        angle_degrees: 90.0,
+                        stops: [
+                            GradientStop {
+                                color: Color(rgb),
+                                offset: 0.0,
+                            },
+                            GradientStop {
+                                color: Color(0x663aacff),
+                                offset: 0.45,
+                            },
+                            GradientStop {
+                                color: Color(0xf5e7afff),
+                                offset: 1.0,
+                            },
+                        ]
+                        .into(),
+                    }
+                    .into()
+                } else {
+                    Color(rgb).into()
+                };
+                for icon in &mut scene.children {
+                    icon.properties.insert("fill", fill.clone());
+                }
+                let start = Instant::now();
+                renderer.draw_with_layout(&scene, &layout, &texture, 2.0, &input)?;
+                let submitted = start.elapsed();
+                renderer.device.poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(Duration::from_secs(10)),
+                })?;
+                if index >= 10 {
+                    submit.push(submitted);
+                    total.push(start.elapsed());
+                }
+            }
+            for (label, samples) in [("submit", &mut submit), ("GPU completion", &mut total)] {
+                samples.sort_unstable();
+                println!(
+                    "vector geometry shapes={shapes} gradient={gradient} mode={mode} {label}: p50={:.2}ms p95={:.2}ms",
+                    samples[29].as_secs_f64() * 1000.0,
+                    samples[56].as_secs_f64() * 1000.0,
+                );
+            }
+            let after = renderer.vector_mask_stats();
+            if masks {
+                assert_eq!(after.rasterized - before.rasterized, shapes as u64 * 2);
+                assert!(after.reused - before.reused > 10_000);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn long_styled_text_markdown(paragraphs: usize) -> Result<String, std::fmt::Error> {
+    use std::fmt::Write;
+    let mut source = String::new();
+    for index in 0..paragraphs {
+        writeln!(
+            source,
+            "**{index:04}** 构建日志 · `cargo test` · [source](https://example.invalid/{index}) · שלום 🌐\n"
+        )?;
+    }
+    Ok(source)
+}
+
+fn long_styled_text_scene(
+    size: Size,
+    paragraphs: usize,
+) -> Result<xrack_runtime::Node, Box<dyn std::error::Error>> {
+    use xrack_runtime::{Color, Length, Node, StyledText};
+
+    let mut document = Node::new("StyledText", None);
+    document.properties.insert(
+        "text",
+        StyledText::from_markdown(&long_styled_text_markdown(paragraphs)?)?.into(),
+    );
+    document
+        .properties
+        .insert("width", Length(f64::from(size.width - 40.0)).into());
+    document.properties.insert("selectable", true.into());
+    document
+        .properties
+        .insert("color", Color(0x18233dff).into());
+    let mut scroll = Node::new("ScrollView", None);
+    scroll
+        .properties
+        .insert("width", Length(f64::from(size.width)).into());
+    scroll
+        .properties
+        .insert("height", Length(f64::from(size.height)).into());
+    scroll.children.push(document);
+    let mut scene = Node::new("Window", None);
+    scene.children.push(scroll);
+    Ok(scene)
+}
+
+#[test]
+fn clipped_long_styled_text_preserves_selection_ink_through_transforms()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Length, Orientation, TextCommand};
+
+    let size = Size::new(480.0, 320.0);
+    let mut scene = long_styled_text_scene(size, 300)?;
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut renderer = Renderer::with_device(gpu.clone())?;
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_styled_text_culling_enabled(false);
+
+    for (scale, rotation, scale_x, scale_y, nested_rotation) in [
+        (1.0, 0.0, 1.0, 1.0, 0.0),
+        (2.0, 0.0, 1.0, 1.0, 0.0),
+        (2.0, 12.0, 1.0, 1.0, 0.0),
+        (1.5, -8.0, 0.82, 1.24, -3.0),
+        (1.0, 0.0, -0.77, 1.225, 0.0),
+        (1.25, 7.5, 1.18, -0.86, 0.0),
+        (2.0, 0.0, 0.56, 0.56, 0.0),
+    ] {
+        let viewport = &mut scene.children[0];
+        viewport
+            .properties
+            .insert("transform-rotation", rotation.into());
+        viewport
+            .properties
+            .insert("transform-scale-x", scale_x.into());
+        viewport
+            .properties
+            .insert("transform-scale-y", scale_y.into());
+        let document = &mut viewport.children[0];
+        document
+            .properties
+            .insert("transform-rotation", nested_rotation.into());
+        document
+            .properties
+            .insert("transform-origin-y", Length(365.25).into());
+        scene.properties.insert(
+            "default-font-size",
+            Length(12.0 + 2.0 * f64::from(scale)).into(),
+        );
+        let mut input = Interaction::default();
+        let initial = renderer.layout_with_input(&scene, size, &input);
+        let target = input
+            .accessibility_target(&scene, &initial, &[0, 0])
+            .ok_or("missing text selection target")?;
+        input.focus_target(&scene, &initial, target);
+        input.sync_editor(&scene);
+        let text = scene.children[0].children[0]
+            .text("text")
+            .ok_or("missing rich text")?;
+        input.apply_text_selection(
+            &scene,
+            TextCommand::SetSelection {
+                anchor: 0,
+                focus: text.len() as i64,
+            },
+        );
+        let selected = input
+            .displayed_editor(&scene.children[0].children[0], &[0, 0])
+            .ok_or("missing styled-text selection")?;
+        assert_eq!(selected.selection(text), 0..text.len());
+        for offset in [365.25, 939.5, 117.0] {
+            assert!(input.accessibility_scroll_to(&initial, &[0], Orientation::Vertical, offset));
+            let width = (size.width * scale) as u32;
+            let height = (size.height * scale) as u32;
+            let expected = direct.snapshot(&scene, width, height, scale, &input)?;
+            let before = renderer.styled_text_culled_fragments();
+            let clipped = renderer.snapshot(&scene, width, height, scale, &input)?;
+            assert_same_pixels(&clipped, &expected);
+            assert_eq!(clipped.layout, expected.layout);
+            if !cfg!(any(target_os = "ios", target_os = "android")) {
+                assert!(renderer.styled_text_culled_fragments() > before + 100);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn batched_rectangles_preserve_clipping_and_paint_order() -> Result<(), Box<dyn std::error::Error>>
+{
+    use rectangle_animation_ui::RectangleAnimation;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Component, Length};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut optimized = Renderer::with_device(gpu.clone())?;
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_rectangle_optimization_enabled(false);
+    let input = Interaction::default();
+    let mut aot = RectangleAnimation::new();
+    let program = interpret_example("tests/rectangle_animation.xr");
+    let interpreter = program.create("RectangleAnimation")?;
+    for (rounded, opacity, shifted, offset) in [
+        (false, 1.0, false, 0.0),
+        (false, 1.0, true, 0.0),
+        (true, 1.0, false, 0.0),
+        (true, 1.0, true, 0.0),
+        (true, 0.64, false, 0.0),
+        (true, 0.64, true, 0.0),
+        (true, 1.0, false, 0.25),
+        (true, 0.64, true, 0.173),
+    ] {
+        aot.set_rounded(rounded);
+        aot.set_group_opacity(opacity);
+        aot.set_shifted(shifted);
+        aot.set_round_offset(Length(offset));
+        interpreter.set("rounded", rounded.into())?;
+        interpreter.set("group-opacity", opacity.into())?;
+        interpreter.set("shifted", shifted.into())?;
+        interpreter.set("round-offset", Length(offset).into())?;
+        let window = Component::render(&aot);
+        let expected = direct.snapshot(&window, 192, 144, 2.0, &input)?;
+        let batch_draws = |renderer: &Renderer| {
+            if rounded {
+                renderer.rounded_rectangle_batch_draws()
+            } else {
+                renderer.rectangle_batch_draws()
+            }
+        };
+        let before = batch_draws(&optimized);
+        let actual = optimized.snapshot(&window, 192, 144, 2.0, &input)?;
+        assert_eq!(
+            batch_draws(&optimized) - before,
+            2,
+            "rounded={rounded}, opacity={opacity}, x={offset}"
+        );
+        assert_eq!(actual.layout, expected.layout);
+        let interpreted = optimized.snapshot(&interpreter.render(), 192, 144, 2.0, &input)?;
+        assert_eq!(batch_draws(&optimized) - before, 4);
+        assert_same_pixels(&actual, &interpreted);
+        for (index, (actual_pixel, expected_pixel)) in actual
+            .rgba
+            .chunks_exact(4)
+            .zip(expected.rgba.chunks_exact(4))
+            .enumerate()
+        {
+            // The color atlas and the general painter's offscreen layer round
+            // RGBA8 at different points before source-over blending.
+            assert!(
+                actual_pixel
+                    .iter()
+                    .zip(expected_pixel)
+                    .all(|(a, b)| a.abs_diff(*b) <= 2),
+                "rounded={rounded}, opacity={opacity}, shifted={shifted}, x={offset}, pixel ({}, {}): {actual_pixel:?} vs {expected_pixel:?}",
+                index % 192,
+                index / 192,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn rounded_atlas_reuses_fractional_tiles_across_frames() -> Result<(), Box<dyn std::error::Error>> {
+    use rectangle_animation_ui::RectangleAnimation;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Component, Length};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut retained = Renderer::with_device(gpu.clone())?;
+    let mut reset = Renderer::with_device(gpu)?;
+    reset.set_fractional_rounded_tile_retention_enabled(false);
+    let mut aot = RectangleAnimation::new();
+    aot.set_rounded(true);
+    aot.set_group_opacity(0.64);
+    let input = Interaction::default();
+    for phase in [0, 0].into_iter().chain(1..16).chain([12, 15, 15]) {
+        aot.set_round_offset(Length(f64::from(2 * phase + 1) / 64.0));
+        let scene = aot.render_shared();
+        let actual = retained.snapshot(&scene, 192, 144, 2.0, &input)?;
+        let expected = reset.snapshot(&scene, 192, 144, 2.0, &input)?;
+        assert_same_pixels(&actual, &expected);
+    }
+    assert!(reset.rounded_tile_rasterizations() > 0);
+    assert_eq!(retained.rounded_tile_rasterizations(), 0);
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual GPU measurement of rectangle motion and opacity"]
+fn benchmark_rectangle_animation() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{Color, Length, Node};
+
+    let viewport = Size::new(640.0, 480.0);
+    let rounded = std::env::var_os("XRACK_RECTANGLE_BENCH_ROUNDED").is_some();
+    let subpixel = std::env::var_os("XRACK_RECTANGLE_BENCH_SUBPIXEL").is_some();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let input = Interaction::default();
+    let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Rectangle animation benchmark"),
+        size: wgpu::Extent3d {
+            width: 1280,
+            height: 960,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xffff_ffff).into());
+    for index in 0..600 {
+        let mut tile = Node::new("Rectangle", None);
+        tile.properties.insert("width", Length(16.0).into());
+        tile.properties.insert("height", Length(14.0).into());
+        if rounded {
+            tile.properties.insert("border-radius", Length(2.0).into());
+        }
+        tile.properties.insert(
+            "background",
+            Color([0x2868_d4ff, 0xb83c_5aff, 0x25a7_6aff, 0xdd9b_28ff][index % 4]).into(),
+        );
+        scene.children.push(tile);
+    }
+    let update = |scene: &mut Node, phase, fading| {
+        for (n, tile) in scene.children.iter_mut().enumerate() {
+            let shift = if subpixel {
+                ((phase * 137 + n * 27) % 1000) as f64 * 0.001
+            } else {
+                0.0
+            };
+            let x = ((n % 30) * 21 + 3 + (phase + n) % 5) as f64 + shift;
+            let y = ((n / 30) * 22 + 3 + (phase / 3 + n * 3) % 5) as f64 + shift;
+            tile.properties.insert("x", Length(x).into());
+            tile.properties.insert("y", Length(y).into());
+            let alpha = if fading {
+                0.50 + ((phase + n) % 8) as f64 * 0.05
+            } else {
+                1.0
+            };
+            tile.properties.insert("opacity", alpha.into());
+        }
+    };
+    update(&mut scene, 0, false);
+    let proof = renderer.snapshot(&scene, 1280, 960, 2.0, &input)?;
+    assert_eq!(proof.pixel(12, 12), Some([0x28, 0x68, 0xd4, 255]));
+    update(&mut scene, 1, true);
+    let proof = renderer.snapshot(&scene, 1280, 960, 2.0, &input)?;
+    let blended = proof.pixel(12, 12).ok_or("missing animated tile")?;
+    assert!(blended[0] > 0x28 && blended[0] < 0xff);
+    for fading in [false, true] {
+        let mut samples = [Vec::new(), Vec::new(), Vec::new()];
+        for phase in 0..70 {
+            let start = Instant::now();
+            update(&mut scene, phase, fading);
+            let layout = renderer.layout_with_input(&scene, viewport, &input);
+            let prepared = start.elapsed();
+            renderer.draw_with_layout(&scene, &layout, &texture, 2.0, &input)?;
+            let submitted = start.elapsed();
+            renderer.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(10)),
+            })?;
+            if phase >= 10 {
+                for (series, elapsed) in
+                    samples
+                        .iter_mut()
+                        .zip([prepared, submitted - prepared, start.elapsed()])
+                {
+                    series.push(elapsed);
+                }
+            }
+        }
+        for (stage, samples) in ["prepare", "submit", "total"].into_iter().zip(&mut samples) {
+            samples.sort_unstable();
+            println!(
+                "rectangle animation fading={fading} {stage}: p50={:.3}ms p95={:.3}ms",
+                samples[29].as_secs_f64() * 1000.0,
+                samples[56].as_secs_f64() * 1000.0,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn opaque_window_background_clear_matches_the_regular_painter() {
+    use xrack_runtime::{Brush, Color, Length, Node};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    let mut child = Node::new("Rectangle", None);
+    child.properties.insert("x", Length(8.0).into());
+    child.properties.insert("y", Length(4.0).into());
+    child.properties.insert("width", Length(24.0).into());
+    child.properties.insert("height", Length(18.0).into());
+    child
+        .properties
+        .insert("background", Color(0x33dd_6677).into());
+    scene.children.push(child);
+    for (color, opacity, radius, viewport) in [
+        (Color(0x2255_88ff), 1.0, 0.0, Size::new(80.0, 48.0)),
+        (Color(0x2255_8880), 1.0, 0.0, Size::new(80.0, 48.0)),
+        (Color(0x2255_88ff), 0.6, 0.0, Size::new(80.0, 48.0)),
+        (Color(0x2255_88ff), 1.0, 10.0, Size::new(80.0, 48.0)),
+        (Color(0x2255_88ff), 1.0, 0.0, Size::new(60.0, 40.0)),
+    ] {
+        scene.properties.insert("opacity", opacity.into());
+        scene
+            .properties
+            .insert("border-radius", Length(radius).into());
+        scene
+            .properties
+            .insert("background", Brush::Solid(color).into());
+        let mut layout = renderer.layout_with_input(&scene, viewport, &input);
+        let solid = renderer
+            .snapshot_prepared(&scene, layout.clone(), 160, 96, 2.0, &input)
+            .unwrap();
+
+        // Clipping one device-pixel column makes the same brush use the
+        // regular painter and leaves the rest of the frame comparable.
+        layout.clip.width = layout.clip.width.min(79.5);
+        let reference = renderer
+            .snapshot_prepared(&scene, layout, 160, 96, 2.0, &input)
+            .unwrap();
+        let backdrop = xrack_renderer_femtovg::Theme::default()
+            .window
+            .0
+            .to_be_bytes();
+        assert_eq!(reference.pixel(159, 50), Some(backdrop));
+        for (actual, expected) in solid
+            .rgba
+            .chunks_exact(640)
+            .zip(reference.rgba.chunks_exact(640))
+        {
+            assert_eq!(&actual[..636], &expected[..636]);
+        }
+        if opacity == 1.0 && color.0 & 0xff == 0xff && radius == 0.0 && viewport.width == 80.0 {
+            assert_eq!(solid.pixel(159, 50), Some(color.0.to_be_bytes()));
+        }
+    }
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn outline_labels_batch_around_clipped_labels_with_matching_pixels() {
+    use xrack_runtime::{Color, Length, Node, TextHorizontalAlignment, TextVerticalAlignment};
+
+    let mut renderer = pollster::block_on(Renderer::with_text(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+        xrack_renderer_femtovg::TextSystem::bundled_only(),
+    ))
+    .unwrap();
+    let mut scene = Node::new("Window", None);
+    scene.fonts = BundledFontsDemo::new().render().fonts;
+    scene
+        .properties
+        .insert("default-font-family", "XRack Demo".to_owned().into());
+    for (x, width) in [(4.0, 20.0), (28.0, 4.0), (52.0, 20.0), (76.0, 20.0)] {
+        let mut label = Node::new("Label", None);
+        for (name, value) in [
+            ("x", x),
+            ("y", 4.0),
+            ("width", width),
+            ("height", 24.0),
+            ("font-size", 8.0),
+        ] {
+            label.properties.insert(name, Length(value).into());
+        }
+        label.properties.insert(
+            "horizontal-alignment",
+            TextHorizontalAlignment::Center.into(),
+        );
+        label
+            .properties
+            .insert("vertical-alignment", TextVerticalAlignment::Center.into());
+        label.properties.insert("color", Color(0x70db_57cc).into());
+        label.properties.insert("text", "WW".to_owned().into());
+        scene.children.push(label);
+    }
+    let input = Interaction::default();
+    for (x, runs) in [(76.0, 3), (28.0, 2)] {
+        for (scale, shift) in [
+            (1.0, 0.0),
+            (1.25, 0.0),
+            (2.0, 0.0),
+            (1.3, 0.125),
+            (2.0, 0.125),
+        ] {
+            for (label, x) in scene.children.iter_mut().zip([4.0, 28.0, 52.0, x]) {
+                label.properties.insert("x", Length(x + shift).into());
+            }
+            let (width, height) = ((100.0 * scale) as u32, (32.0 * scale) as u32);
+            renderer.set_display_batching_enabled(true);
+            let before = renderer.display_batch_stats();
+            let batched = renderer
+                .snapshot(&scene, width, height, scale, &input)
+                .unwrap();
+            let after = renderer.display_batch_stats();
+            assert_eq!(
+                after.glyph_batches - before.glyph_batches,
+                1,
+                "scale {scale}, shift {shift}, x {x}"
+            );
+            assert_eq!(
+                after.text_runs - before.text_runs,
+                runs,
+                "scale {scale}, shift {shift}, x {x}"
+            );
+            renderer.set_display_batching_enabled(false);
+            let direct = renderer
+                .snapshot(&scene, width, height, scale, &input)
+                .unwrap();
+            assert_same_pixels(&batched, &direct);
+        }
+    }
+}
+
+#[test]
+fn retained_label_layout_matches_fresh_rendering_after_text_style_and_size_changes() {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, LayoutDirection, Length, Node, TextOverflow, TextWrap};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut renderer = Renderer::with_device(gpu.clone()).unwrap();
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    let mut label = Node::new("Label", None);
+    label.properties.insert("width", Length(54.0).into());
+    label.properties.insert("height", Length(28.0).into());
+    label.properties.insert("font-size", Length(11.0).into());
+    label
+        .properties
+        .insert("text", "A title with overflow".to_owned().into());
+    label
+        .properties
+        .insert("overflow", TextOverflow::Elide.into());
+    scene.children.push(label);
+
+    let layout = renderer.layout_with_input(&scene, Size::new(80.0, 50.0), &input);
+    let first = renderer
+        .snapshot_prepared(&scene, layout.clone(), 160, 100, 2.0, &input)
+        .unwrap();
+    scene.children[0]
+        .properties
+        .insert("text", "New words change the ellipsis".to_owned().into());
+    let changed = renderer
+        .snapshot_prepared(&scene, layout, 160, 100, 2.0, &input)
+        .unwrap();
+    assert_ne!(first.rgba, changed.rgba);
+    let mut fresh = Renderer::with_device(gpu.clone()).unwrap();
+    let expected = fresh.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    assert_same_pixels(&changed, &expected);
+    scene.children[0]
+        .properties
+        .insert("color", Color(0xffbe_52ff).into());
+    let tinted = renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    assert_ne!(changed.rgba, tinted.rgba);
+    assert_same_pixels(
+        &tinted,
+        &fresh.snapshot(&scene, 160, 100, 2.0, &input).unwrap(),
+    );
+
+    for (width, wrap, direction, scale, bold) in [
+        (
+            54.0,
+            TextWrap::WordWrap,
+            LayoutDirection::LeftToRight,
+            1.0,
+            false,
+        ),
+        (
+            38.0,
+            TextWrap::WordWrap,
+            LayoutDirection::LeftToRight,
+            1.0,
+            false,
+        ),
+        (
+            54.0,
+            TextWrap::NoWrap,
+            LayoutDirection::RightToLeft,
+            1.0,
+            false,
+        ),
+        (
+            54.0,
+            TextWrap::NoWrap,
+            LayoutDirection::RightToLeft,
+            1.2,
+            true,
+        ),
+    ] {
+        let label = &mut scene.children[0];
+        label.properties.insert("width", Length(width).into());
+        label.properties.insert("wrap", wrap.into());
+        scene
+            .properties
+            .insert("layout-direction", direction.into());
+        renderer.set_text_scale(scale);
+        renderer.set_system_bold_text(bold);
+        let mut fresh = Renderer::with_device(gpu.clone()).unwrap();
+        fresh.set_text_scale(scale);
+        fresh.set_system_bold_text(bold);
+        let expected = fresh.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+        let actual = renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+        assert_same_pixels(&actual, &expected);
+    }
+}
+
+#[test]
+fn distinct_pngs_share_an_image_batch_without_changing_pixels() {
+    use xrack_runtime::{
+        Color, Image, ImageFit, ImageFormat, ImageRendering, Length, LoadedImage, Node, Orientation,
+    };
+
+    // Two 3×5 PNGs with distinct colors and alternating alpha levels.
+    const RED: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 3, 0, 0, 0, 5, 8, 6,
+        0, 0, 0, 128, 113, 86, 162, 0, 0, 0, 31, 73, 68, 65, 84, 120, 156, 99, 120, 38, 233, 246,
+        31, 136, 29, 128, 120, 21, 3, 140, 1, 18, 100, 128, 49, 64, 130, 12, 56, 149, 1, 0, 164,
+        164, 28, 153, 64, 188, 218, 32, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    const BLUE: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 3, 0, 0, 0, 5, 8, 6,
+        0, 0, 0, 128, 113, 86, 162, 0, 0, 0, 31, 73, 68, 65, 84, 120, 156, 99, 144, 171, 61, 251,
+        31, 136, 29, 128, 120, 21, 3, 140, 1, 18, 100, 128, 49, 64, 130, 12, 56, 149, 1, 0, 212,
+        176, 30, 166, 15, 240, 97, 2, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0x241e_34ff).into());
+    for (x, bytes) in [(3.0, RED), (8.0, BLUE), (16.0, RED)] {
+        let mut image = Node::new("Image", None);
+        let asset = Image::Loaded(LoadedImage::new(ImageFormat::Png, bytes.to_vec(), [3, 5]));
+        image.properties.insert("source", asset.into());
+        image.properties.insert("x", Length(x).into());
+        image.properties.insert("y", Length(2.0).into());
+        image.properties.insert("width", Length(9.0).into());
+        image.properties.insert("height", Length(15.0).into());
+        scene.children.push(image);
+    }
+    // Keep the differently sampled image outside the linear batch.
+    scene.children[2]
+        .properties
+        .insert("image-rendering", ImageRendering::Pixelated.into());
+    let input = Interaction::default();
+    let compare = |renderer: &mut Renderer,
+                   scene: &Node,
+                   input: &Interaction,
+                   [width, height]: [u32; 2],
+                   quads: u64| {
+        let before = renderer.display_batch_stats();
+        renderer.set_display_batching_enabled(true);
+        let batched = renderer.snapshot(scene, width, height, 2.0, input).unwrap();
+        let after = renderer.display_batch_stats();
+        assert_eq!(
+            after.image_batches - before.image_batches,
+            u64::from(quads > 0)
+        );
+        assert_eq!(after.images - before.images, quads);
+        renderer.set_display_batching_enabled(false);
+        let direct = renderer.snapshot(scene, width, height, 2.0, input).unwrap();
+        assert_eq!(batched.layout, direct.layout);
+        assert_same_pixels(&batched, &direct);
+        batched
+    };
+    for x in [3.0, 2.0] {
+        scene.children[0].properties.insert("x", Length(x).into());
+        compare(&mut renderer, &scene, &input, [56, 40], 2);
+    }
+
+    // An inactive conditional slot is retained in the scene for routing.
+    let mut sparse = scene.clone();
+    sparse.children.insert(1, Node::hidden());
+    compare(&mut renderer, &sparse, &input, [56, 40], 2);
+
+    let mut grouped = scene.clone();
+    for child in &mut grouped.children {
+        let mut cell = Node::new("Rectangle", None);
+        cell.properties.insert("width", Length(28.0).into());
+        cell.properties.insert("height", Length(20.0).into());
+        cell.children.push(child.clone());
+        let mut wrapper = cell.clone();
+        wrapper.children = vec![cell];
+        *child = wrapper;
+    }
+    compare(&mut renderer, &grouped, &input, [56, 40], 2);
+
+    // Reject the second group after finding its first image. The first
+    // group's queued image must keep its place and the second must paint once.
+    let mut decoration = Node::new("Rectangle", None);
+    decoration.properties.insert("x", Length(6.0).into());
+    decoration.properties.insert("y", Length(8.0).into());
+    decoration.properties.insert("width", Length(10.0).into());
+    decoration.properties.insert("height", Length(4.0).into());
+    decoration
+        .properties
+        .insert("border-width", Length(1.0).into());
+    decoration
+        .properties
+        .insert("background", Color(0x40eb_65a0).into());
+    grouped.children[1].children.push(decoration);
+    compare(&mut renderer, &grouped, &input, [56, 40], 0);
+
+    let mut mixed = scene.clone();
+    for (index, child) in mixed.children.iter_mut().enumerate() {
+        let mut cell = Node::new("Rectangle", None);
+        cell.properties
+            .insert("x", Length(index as f64 * 18.0).into());
+        cell.properties.insert("width", Length(16.0).into());
+        cell.properties.insert("height", Length(20.0).into());
+        let mut background = Node::new("Rectangle", None);
+        background.properties.insert("width", Length(16.0).into());
+        background.properties.insert("height", Length(20.0).into());
+        background
+            .properties
+            .insert("background", Color(0x38b1_a9aa).into());
+        let mut image = child.clone();
+        image.properties.insert("x", Length(3.0).into());
+        cell.children = vec![background, image];
+        *child = cell;
+    }
+    compare(&mut renderer, &mixed, &input, [108, 40], 2);
+    let mut two_rows = mixed.clone();
+    two_rows.children.truncate(2);
+    for child in &mixed.children[..2] {
+        let mut next_row = child.clone();
+        next_row.properties.insert("y", Length(20.0).into());
+        two_rows.children.push(next_row);
+    }
+    compare(&mut renderer, &two_rows, &input, [108, 80], 4);
+
+    let mut labeled = two_rows.clone();
+    for cell in &mut labeled.children {
+        let mut label = Node::new("Label", None);
+        for (name, value) in [
+            ("x", 2.0),
+            ("y", 9.0),
+            ("width", 11.0),
+            ("height", 8.0),
+            ("font-size", 7.0),
+        ] {
+            label.properties.insert(name, Length(value).into());
+        }
+        label
+            .properties
+            .insert("text", "A clipped title".to_owned().into());
+        label.properties.insert("color", Color(0xffe3_73ff).into());
+        cell.children.push(label);
+    }
+    compare(&mut renderer, &labeled, &input, [108, 80], 4);
+    let mut fractional = labeled.clone();
+    for (index, cell) in fractional.children.iter_mut().enumerate() {
+        let x = (index % 2) as f64 * 18.0 + if index % 2 == 0 { 0.125 } else { 0.0 };
+        cell.properties.insert("x", Length(x).into());
+    }
+    // At 2×, quarter-pixel edges miss the AA fringe.
+    compare(&mut renderer, &fractional, &input, [108, 80], 4);
+
+    let mut coverage = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    for (phase, (scale, [shift_x, shift_y])) in [
+        (2.0, [0.25, 0.25]),
+        (2.0, [0.268, 0.234]),
+        (2.0, [0.21, 0.281]),
+        (1.0, [0.5, 0.5]),
+        (1.25, [0.421875, 0.3]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (index, cell) in fractional.children.iter_mut().enumerate() {
+            let x = (index % 2) as f64 * 18.0 + shift_x;
+            let y = (index / 2) as f64 * 20.0 + shift_y;
+            cell.properties.insert("x", Length(x).into());
+            cell.properties.insert("y", Length(y).into());
+        }
+        if phase == 2 {
+            fractional.children[1]
+                .properties
+                .insert("x", Length(5.268).into());
+        }
+        let width = (54.0 * scale) as u32;
+        let height = (42.0 * scale) as u32;
+        coverage.set_display_batching_enabled(true);
+        let before = coverage.display_batch_stats();
+        let actual = coverage
+            .snapshot(&fractional, width, height, scale, &input)
+            .unwrap();
+        let after = coverage.display_batch_stats();
+        if phase != 2 {
+            assert_eq!(
+                after.image_batches - before.image_batches,
+                1,
+                "phase {phase}"
+            );
+            assert_eq!(after.images - before.images, 4, "phase {phase}");
+        }
+        coverage.set_display_batching_enabled(false);
+        let expected = coverage
+            .snapshot(&fractional, width, height, scale, &input)
+            .unwrap();
+        assert_eq!(expected.layout, actual.layout);
+        for (index, (actual, expected)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                actual.abs_diff(*expected) <= 1,
+                "phase {phase}, pixel ({}, {}), channel {}: {actual} vs {expected}",
+                index / 4 % width as usize,
+                index / 4 / width as usize,
+                index % 4
+            );
+        }
+    }
+    labeled.children.truncate(2);
+    labeled.children[1]
+        .properties
+        .insert("x", Length(6.0).into());
+    compare(&mut renderer, &labeled, &input, [108, 40], 0);
+
+    // The second cell's background now covers part of the first image.
+    mixed.children[1].properties.insert("x", Length(6.0).into());
+    compare(&mut renderer, &mixed, &input, [108, 40], 0);
+
+    let mut scrolled = scene.clone();
+    let mut view = Node::new("Flickable", None);
+    for (name, length) in [
+        ("x", 3.0),
+        ("y", 4.0),
+        ("width", 28.0),
+        ("height", 12.0),
+        ("content-height", 48.0),
+    ] {
+        view.properties.insert(name, Length(length).into());
+    }
+    view.children = std::mem::take(&mut scrolled.children);
+    view.children[0]
+        .properties
+        .insert("width", Length(12.0).into());
+    view.children[0]
+        .properties
+        .insert("image-fit", ImageFit::Cover.into());
+    scrolled.children.push(view);
+    let mut scroll_input = Interaction::default();
+    let mut frame = compare(&mut renderer, &scrolled, &scroll_input, [72, 48], 2);
+    for (offset, quads) in [(4.0, 2), (5.5, 2), (5.25, 0)] {
+        assert!(scroll_input.accessibility_scroll_to(
+            &frame.layout,
+            &[0],
+            Orientation::Vertical,
+            offset
+        ));
+        let next = compare(&mut renderer, &scrolled, &scroll_input, [72, 48], quads);
+        assert_ne!(frame.rgba, next.rgba);
+        frame = next;
+    }
+
+    // A scaled subtree has a projected ancestor clip as well as a different
+    // canvas transform. The PNGs align to device pixels in both axes.
+    let mut grid = Node::new("Rectangle", None);
+    for (name, length) in [
+        ("x", 3.0),
+        ("y", 2.0),
+        ("width", 28.0),
+        ("height", 20.0),
+        ("transform-origin-x", 0.0),
+        ("transform-origin-y", 0.0),
+    ] {
+        grid.properties.insert(name, Length(length).into());
+    }
+    grid.properties.insert("transform-scale-x", 2.0_f64.into());
+    grid.properties.insert("transform-scale-y", 1.5_f64.into());
+    grid.children = std::mem::take(&mut scene.children);
+    scene.children.push(grid);
+    let square = compare(&mut renderer, &scene, &input, [128, 72], 2);
+
+    scene.children[0].properties.insert("clip", true.into());
+    scene.children[0]
+        .properties
+        .insert("border-radius", Length(10.0).into());
+    let rounded = compare(&mut renderer, &scene, &input, [128, 72], 2);
+    assert_ne!(square.rgba, rounded.rgba);
+
+    // Fractional device edges and rotated parents keep the path painter's AA.
+    scene.children[0]
+        .properties
+        .insert("x", Length(3.25).into());
+    compare(&mut renderer, &scene, &input, [128, 72], 0);
+    scene.children[0]
+        .properties
+        .insert("transform-rotation", 20.0_f64.into());
+    compare(&mut renderer, &scene, &input, [128, 72], 0);
+}
+
+#[test]
+fn full_image_atlas_recycles_retired_tiles_without_overwriting_current_draws() {
+    use xrack_runtime::{Color, Image, ImageFormat, Length, LoadedImage, Node};
+
+    // Solid 64×64 grayscale PNGs. The atlas fits 15×15 tiles including gutters.
+    const DARK: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 64, 0, 0, 0, 64, 8,
+        0, 0, 0, 0, 143, 2, 46, 2, 0, 0, 0, 42, 73, 68, 65, 84, 120, 156, 237, 204, 65, 17, 0, 0,
+        12, 2, 32, 131, 216, 63, 167, 33, 246, 219, 65, 0, 210, 163, 8, 4, 2, 129, 64, 32, 16, 8,
+        4, 2, 129, 64, 32, 248, 30, 12, 229, 136, 192, 16, 151, 126, 19, 123, 0, 0, 0, 0, 73, 69,
+        78, 68, 174, 66, 96, 130,
+    ];
+    const LIGHT: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 64, 0, 0, 0, 64, 8,
+        0, 0, 0, 0, 143, 2, 46, 2, 0, 0, 0, 42, 73, 68, 65, 84, 120, 156, 237, 204, 65, 17, 0, 0,
+        12, 2, 32, 251, 167, 52, 138, 33, 246, 219, 65, 0, 210, 163, 8, 4, 2, 129, 64, 32, 16, 8,
+        4, 2, 129, 64, 32, 248, 30, 12, 186, 218, 0, 211, 0, 109, 180, 183, 0, 0, 0, 0, 73, 69, 78,
+        68, 174, 66, 96, 130,
+    ];
+    const SIDE: usize = 15;
+    const TILES: usize = SIDE * SIDE;
+    let gpu = pollster::block_on(xrack_renderer_femtovg::RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut renderer = Renderer::with_device(gpu.clone()).unwrap();
+    let mut direct = Renderer::with_device(gpu).unwrap();
+    direct.set_display_batching_enabled(false);
+    let asset =
+        |bytes: &[u8]| Image::Loaded(LoadedImage::new(ImageFormat::Png, bytes.to_vec(), [64, 64]));
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xffff_ffff).into());
+    for index in 0..TILES {
+        let mut tile = Node::new("Image", None);
+        tile.properties
+            .insert("x", Length((index % SIDE * 6) as f64).into());
+        tile.properties
+            .insert("y", Length((index / SIDE * 6) as f64).into());
+        tile.properties.insert("width", Length(4.0).into());
+        tile.properties.insert("height", Length(4.0).into());
+        tile.properties.insert("source", asset(DARK).into());
+        scene.children.push(tile);
+    }
+
+    let input = Interaction::default();
+    for frame in 0..3 {
+        if frame > 0 {
+            // Interleave new content with cached tiles so each later upload
+            // happens while earlier atlas quads are still queued for drawing.
+            let pixels = if frame == 1 { LIGHT } else { DARK };
+            for tile in scene.children.iter_mut().skip(frame % 2).step_by(2) {
+                tile.properties.insert("source", asset(pixels).into());
+            }
+        }
+        let before = renderer.display_batch_stats();
+        let actual = renderer.snapshot(&scene, 180, 180, 2.0, &input).unwrap();
+        let after = renderer.display_batch_stats();
+        assert_eq!(
+            after.image_batches - before.image_batches,
+            1,
+            "frame {frame}"
+        );
+        assert_eq!(after.images - before.images, TILES as u64, "frame {frame}");
+        let expected = direct.snapshot(&scene, 180, 180, 2.0, &input).unwrap();
+        assert_same_pixels(&actual, &expected);
+    }
+}
+
+#[test]
+#[ignore = "manual GPU measurement; XRACK_IMAGE_BENCH_ASSETS contains numbered 16×16 PNGs"]
+fn benchmark_moving_image_grid() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{
+        path::PathBuf,
+        rc::Rc,
+        time::{Duration, Instant},
+    };
+    use xrack_runtime::{
+        Color, Component, Image, ImageFormat, Length, LoadedImage, Node, Orientation,
+    };
+
+    struct GridScene(Rc<Node>);
+    impl Component for GridScene {
+        fn render(&self) -> Node {
+            self.0.as_ref().clone()
+        }
+
+        fn render_shared(&self) -> Rc<Node> {
+            self.0.clone()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let assets = PathBuf::from(
+        std::env::var_os("XRACK_IMAGE_BENCH_ASSETS").ok_or("set XRACK_IMAGE_BENCH_ASSETS")?,
+    );
+    const TILES: usize = 600;
+    const FRAMES: usize = 70;
+    let scaled = std::env::var_os("XRACK_IMAGE_BENCH_SCALED").is_some();
+    let scrolling = std::env::var_os("XRACK_IMAGE_BENCH_SCROLL").is_some();
+    let hidden_slots = std::env::var_os("XRACK_IMAGE_BENCH_HIDDEN").is_some();
+    let labeled = std::env::var_os("XRACK_IMAGE_BENCH_LABELED").is_some();
+    let label_room = std::env::var_os("XRACK_IMAGE_BENCH_LABEL_ROOM").is_some();
+    let subpixel = std::env::var_os("XRACK_IMAGE_BENCH_SUBPIXEL");
+    let continuous = subpixel.as_deref().is_some_and(|mode| mode == "continuous");
+    let subpixel = subpixel.is_some();
+    let labels_only = labeled && std::env::var_os("XRACK_IMAGE_BENCH_LABELS_ONLY").is_some();
+    let mixed = labeled || std::env::var_os("XRACK_IMAGE_BENCH_MIXED").is_some();
+    let grouped = mixed || std::env::var_os("XRACK_IMAGE_BENCH_GROUPED").is_some();
+    let prepare_scene = std::env::var_os("XRACK_IMAGE_BENCH_PREPARED").is_some();
+    let factor = if scaled { 2.0 } else { 1.0 };
+    // Keep the first tile visible and scroll by 100 images each frame. This
+    // requires 7,500 assets and eventually fills the atlas with retired images.
+    let advance = if std::env::var_os("XRACK_IMAGE_BENCH_CHURN").is_some() {
+        100
+    } else {
+        0
+    };
+    let images = (0..TILES + (FRAMES - 1) * advance)
+        .map(|index| {
+            let bytes = std::fs::read(assets.join(format!("{index}.png")))?;
+            Ok(Image::Loaded(LoadedImage::new(
+                ImageFormat::Png,
+                bytes,
+                [16, 16],
+            )))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+    let viewport = Size::new(640.0, 480.0);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut input = Interaction::default();
+    let target = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Moving image grid benchmark"),
+        size: wgpu::Extent3d {
+            width: 1280,
+            height: 960,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xffff_ffff).into());
+    if scaled || scrolling {
+        let mut grid = Node::new(if scrolling { "Flickable" } else { "Rectangle" }, None);
+        for (name, value) in [
+            ("width", 640.0 / factor),
+            ("height", if scrolling { 350.0 } else { 480.0 } / factor),
+            ("transform-origin-x", 0.0),
+            ("transform-origin-y", 0.0),
+        ] {
+            grid.properties.insert(name, Length(value).into());
+        }
+        if scrolling {
+            grid.properties
+                .insert("content-height", Length(480.0 / factor).into());
+        }
+        grid.properties.insert("transform-scale", factor.into());
+        scene.children.push(grid);
+    }
+    let tiles = if scaled || scrolling {
+        &mut scene.children[0].children
+    } else {
+        &mut scene.children
+    };
+    for (index, asset) in images[..TILES].iter().enumerate() {
+        let mut image = Node::new("Image", None);
+        image.properties.insert("source", asset.clone().into());
+        image
+            .properties
+            .insert("width", Length(16.0 / factor).into());
+        image
+            .properties
+            .insert("height", Length(16.0 / factor).into());
+        let mut tile = if grouped {
+            let mut cell = Node::new("Rectangle", None);
+            cell.properties
+                .insert("width", Length(16.0 / factor).into());
+            cell.properties
+                .insert("height", Length(16.0 / factor).into());
+            if mixed {
+                let mut background = Node::new("Rectangle", None);
+                background
+                    .properties
+                    .insert("width", Length(16.0 / factor).into());
+                background
+                    .properties
+                    .insert("height", Length(16.0 / factor).into());
+                background
+                    .properties
+                    .insert("background", Color(0x2038_6266).into());
+                cell.children.push(background);
+            }
+            if !labels_only {
+                cell.children.push(image);
+            }
+            if labeled {
+                let mut label = Node::new("Label", None);
+                let (y, height) = if label_room { (2.0, 14.0) } else { (8.0, 8.0) };
+                for (name, value) in [
+                    ("x", 1.0),
+                    ("y", y),
+                    ("width", 14.0),
+                    ("height", height),
+                    ("font-size", 7.0),
+                ] {
+                    label.properties.insert(name, Length(value / factor).into());
+                }
+                label
+                    .properties
+                    .insert("text", (index % 10).to_string().into());
+                label.properties.insert("color", Color(0x1929_5aff).into());
+                cell.children.push(label);
+            }
+            cell
+        } else {
+            image
+        };
+        if scrolling {
+            let x = (index % 30) * 21 + 3;
+            let y = (index / 30) * 22 + 3;
+            tile.properties
+                .insert("x", Length(x as f64 / factor).into());
+            tile.properties
+                .insert("y", Length(y as f64 / factor).into());
+        }
+        tiles.push(tile);
+        if hidden_slots && index + 1 < TILES {
+            tiles.push(Node::hidden());
+        }
+    }
+    let mut grid = GridScene(Rc::new(if prepare_scene {
+        scene.into_shared()
+    } else {
+        scene
+    }));
+    let mut layout = renderer.layout_with_input(&grid.0, viewport, &input);
+    let mut samples = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    let before = renderer.display_batch_stats();
+    for phase in 0..FRAMES {
+        let start = Instant::now();
+        if scrolling && phase > 0 {
+            let offset = ((phase * 3) % 120) as f32 / factor as f32;
+            assert!(input.accessibility_scroll_to(&layout, &[0], Orientation::Vertical, offset));
+        }
+        if !scrolling || advance != 0 {
+            let scene = Rc::make_mut(&mut grid.0);
+            let tiles = if scaled || scrolling {
+                &mut scene.children[0].children
+            } else {
+                &mut scene.children
+            };
+            for (index, tile) in tiles
+                .iter_mut()
+                .filter(|tile| tile.kind != "Empty")
+                .enumerate()
+            {
+                if !scrolling {
+                    let shift = if continuous {
+                        (phase as f64 * 0.137 + index as f64 * 0.027).fract()
+                    } else if subpixel {
+                        ((phase + index) % 4) as f64 * 0.125
+                    } else {
+                        0.0
+                    };
+                    let x = ((index % 30) * 21 + 3 + (phase + index) % 5) as f64 + shift;
+                    let y = ((index / 30) * 22 + 3 + (phase / 3 + index * 3) % 5) as f64 + shift;
+                    tile.properties.insert("x", Length(x / factor).into());
+                    tile.properties.insert("y", Length(y / factor).into());
+                }
+                if index != 0 && advance != 0 && !labels_only {
+                    let image = if grouped {
+                        &mut tile.children[usize::from(mixed)]
+                    } else {
+                        tile
+                    };
+                    image
+                        .properties
+                        .insert("source", images[phase * advance + index].clone().into());
+                }
+            }
+        }
+        let scene;
+        (scene, layout) = if prepare_scene {
+            renderer.prepare_scene(&grid, grid.render_shared(), viewport, &input)
+        } else {
+            (
+                grid.render_shared(),
+                renderer.layout_with_input(&grid.0, viewport, &input),
+            )
+        };
+        let prepared = start.elapsed();
+        renderer.draw_with_layout(&scene, &layout, &target, 2.0, &input)?;
+        let submitted = start.elapsed();
+        renderer.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(10)),
+        })?;
+        let completed = start.elapsed();
+        if phase == 0 {
+            println!(
+                "moving images first frame: submit={:.3}ms render={:.3}ms total={:.3}ms",
+                (submitted - prepared).as_secs_f64() * 1000.0,
+                (completed - prepared).as_secs_f64() * 1000.0,
+                completed.as_secs_f64() * 1000.0,
+            );
+        }
+        if phase >= 10 {
+            for (series, elapsed) in samples.iter_mut().zip([
+                prepared,
+                submitted - prepared,
+                completed - prepared,
+                completed,
+            ]) {
+                series.push(elapsed);
+            }
+        }
+    }
+    let after = renderer.display_batch_stats();
+    println!(
+        "moving images: {} quads in {} batches over 70 frames",
+        after.images - before.images,
+        after.image_batches - before.image_batches
+    );
+    if labeled {
+        println!(
+            "moving labels: {} runs in {} glyph batches over 70 frames",
+            after.text_runs - before.text_runs,
+            after.glyph_batches - before.glyph_batches,
+        );
+    }
+    for (stage, samples) in ["prepare", "submit", "render", "total"]
+        .into_iter()
+        .zip(&mut samples)
+    {
+        samples.sort_unstable();
+        println!(
+            "moving images {stage}: p50={:.3}ms p95={:.3}ms",
+            samples[29].as_secs_f64() * 1000.0,
+            samples[56].as_secs_f64() * 1000.0,
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn moving_opacity_layers_match_fresh_rasters_and_refresh_after_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use rectangle_animation_ui::LayerMotion;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Component, Length};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut aot_renderer = Renderer::with_device(gpu.clone())?;
+    let mut interpreter_renderer = Renderer::with_device(gpu.clone())?;
+    let mut fresh = Renderer::with_device(gpu)?;
+    let input = Interaction::default();
+    let mut aot = LayerMotion::new();
+    let program = interpret_example("tests/rectangle_animation.xr");
+    let interpreter = program.create("LayerMotion")?;
+
+    for (offset, width, fade, edited, rasterized, reused) in [
+        (8.0, 49.0, 0.61, false, true, false),
+        (13.5, 49.0, 0.73, false, false, true),
+        (21.0, 49.0, 0.56, false, false, true),
+        (21.25, 49.0, 0.66, false, true, false),
+        (24.25, 49.0, 0.58, false, false, true),
+        (-4.0, 49.0, 0.75, false, true, false),
+        (9.0, 49.0, 0.73, false, true, false),
+        (10.0, 51.0, 0.61, false, false, false),
+        (17.0, 51.0, 0.66, false, true, false),
+        (20.0, 51.0, 0.66, true, false, false),
+        (14.0, 51.0, 0.78, true, true, false),
+    ] {
+        let mobile = cfg!(any(target_os = "ios", target_os = "android"));
+        let reused = reused || mobile && matches!(offset, 17.0 | 14.0);
+        let rasterized = !reused && (mobile || rasterized);
+        aot.set_offset(Length(offset));
+        aot.set_card_width(Length(width));
+        aot.set_fade(fade);
+        aot.set_edited(edited);
+        interpreter.set("offset", Length(offset).into())?;
+        interpreter.set("card-width", Length(width).into())?;
+        interpreter.set("fade", fade.into())?;
+        interpreter.set("edited", edited.into())?;
+        let viewport = Size::new(96.0, 72.0);
+        let (scene, prepared) =
+            aot_renderer.prepare_scene(&aot, aot.render_shared(), viewport, &input);
+        let before = aot_renderer.opacity_layer_stats();
+        let actual = aot_renderer.snapshot(&scene, 192, 144, 2.0, &input)?;
+        assert_eq!(prepared, actual.layout);
+        let after = aot_renderer.opacity_layer_stats();
+        assert_eq!(
+            after.reused - before.reused,
+            u64::from(reused),
+            "x={offset}"
+        );
+        assert_eq!(
+            after.rasterized - before.rasterized,
+            u64::from(rasterized),
+            "x={offset}"
+        );
+        let (interpreted_scene, interpreted_layout) = interpreter_renderer.prepare_scene(
+            &interpreter,
+            interpreter.render_shared(),
+            viewport,
+            &input,
+        );
+        let interpreted =
+            interpreter_renderer.snapshot(&interpreted_scene, 192, 144, 2.0, &input)?;
+        assert_eq!(interpreted_layout, interpreted.layout);
+        assert_eq!(
+            interpreter_renderer.opacity_layer_stats().reused,
+            after.reused
+        );
+        assert_same_pixels(&actual, &interpreted);
+
+        fresh.set_layer_budget(32 * 1024 * 1024);
+        let expected = fresh.snapshot(&scene, 192, 144, 2.0, &input)?;
+        assert_eq!(actual.layout, expected.layout);
+        assert_same_pixels(&actual, &expected);
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn groups_with_changing_pixel_phases_share_a_capture_and_retain_after_settling()
+-> Result<(), Box<dyn std::error::Error>> {
+    use rectangle_animation_ui::LayerMotion;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Component, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut compiled_renderer = Renderer::with_device(gpu.clone())?;
+    let mut interpreted_renderer = Renderer::with_device(gpu.clone())?;
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_opacity_atlas_enabled(false);
+    let input = Interaction::default();
+    let mut compiled = LayerMotion::new();
+    let program = interpret_example("tests/rectangle_animation.xr");
+    let interpreter = program.create("LayerMotion")?;
+
+    let pair = |mut scene: Node| {
+        let mut card = scene.children[0].clone();
+        let x = f64::from(card.length("x").unwrap());
+        card.properties.insert("x", Length(x + 22.0).into());
+        card.properties.insert("y", Length(25.0).into());
+        card.properties.insert("opacity", 0.72_f64.into());
+        scene.children.push(card);
+        scene
+    };
+
+    for (frame, x) in [8.0, 8.25, 8.375, 8.0625, 8.4375, 8.4375, 8.9375]
+        .into_iter()
+        .enumerate()
+    {
+        let offset = Length(x);
+        compiled.set_offset(offset);
+        interpreter.set("offset", offset.into())?;
+        let scene = pair(compiled.render());
+        let interpreted_scene = pair(interpreter.render());
+        let before_layers = compiled_renderer.opacity_layer_stats();
+        let before_atlas = compiled_renderer.opacity_atlas_stats();
+        let actual = compiled_renderer.snapshot(&scene, 192, 144, 2.0, &input)?;
+        let native = interpreted_renderer.snapshot(&interpreted_scene, 192, 144, 2.0, &input)?;
+        assert_same_pixels(&actual, &native);
+        let after_layers = compiled_renderer.opacity_layer_stats();
+        let after_atlas = compiled_renderer.opacity_atlas_stats();
+        match frame {
+            2..=4 => {
+                assert_eq!(after_layers.rasterized - before_layers.rasterized, 0);
+                assert_eq!(after_atlas.groups - before_atlas.groups, 2);
+                assert_eq!(after_atlas.submissions - before_atlas.submissions, 1);
+            }
+            5 => assert_eq!(after_layers.rasterized - before_layers.rasterized, 2),
+            6 => assert_eq!(after_layers.reused - before_layers.reused, 2),
+            _ => {}
+        }
+        let expected = direct.snapshot(&scene, 192, 144, 2.0, &input)?;
+        assert_eq!(actual.layout, expected.layout);
+        for (i, (a, b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                a.abs_diff(*b) <= 1,
+                "offset {x}, pixel ({}, {}), channel {}: {a} vs {b}",
+                i / 4 % 192,
+                i / 4 / 192,
+                i % 4,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn hinted_layer_reuses_fractional_translation_and_refreshes_content()
+-> Result<(), Box<dyn std::error::Error>> {
+    use rectangle_animation_ui::LayerMotion;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Component, Length};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut aot_renderer = Renderer::with_device(gpu.clone())?;
+    let mut interpreter_renderer = Renderer::with_device(gpu)?;
+    let mut aot = LayerMotion::new();
+    let program = interpret_example("tests/rectangle_animation.xr");
+    let interpreter = program.create("LayerMotion")?;
+    aot.set_cache_layer(true);
+    interpreter.set("cache-layer", true.into())?;
+    let input = Interaction::default();
+    let mut initial = None;
+    for (offset, edited, opacity, reused) in [
+        (8.0, false, 1.0, false),
+        (12.125, false, 1.0, true),
+        (20.381, false, 0.61, true),
+        (27.25, true, 0.61, false),
+        (23.4375, true, 0.61, false),
+        (18.125, true, 0.61, true),
+        (-4.25, true, 0.61, true),
+    ] {
+        aot.set_offset(Length(offset));
+        aot.set_edited(edited);
+        aot.set_fade(opacity);
+        interpreter.set("offset", Length(offset).into())?;
+        interpreter.set("edited", edited.into())?;
+        interpreter.set("fade", opacity.into())?;
+        let before = aot_renderer.opacity_layer_stats();
+        let actual = aot_renderer.snapshot(&aot.render_shared(), 192, 144, 2.0, &input)?;
+        let interpreted =
+            interpreter_renderer.snapshot(&interpreter.render_shared(), 192, 144, 2.0, &input)?;
+        assert_same_pixels(&actual, &interpreted);
+        assert_eq!(
+            aot_renderer.opacity_layer_stats().reused - before.reused,
+            u64::from(reused),
+            "x={offset}",
+        );
+        let pixel = actual.pixel(((offset + 18.0) * 2.0) as u32, 59).unwrap();
+        if edited {
+            assert!(pixel[0] > pixel[2], "x={offset} pixel={pixel:?}");
+        } else {
+            assert!(pixel[0] < pixel[2], "x={offset} pixel={pixel:?}");
+        }
+        let edge = actual.pixel(((offset + 45.0) * 2.0) as u32, 95).unwrap();
+        assert!(edge[0] < 200, "x={offset} edge={edge:?}");
+        assert_eq!(actual.pixel(170, 60), Some([0xe7, 0xe9, 0xee, 0xff]));
+        if offset == 8.0 {
+            initial = Some(actual);
+        } else if offset == 12.125 {
+            // The opaque rectangle's interior is unchanged after resampling.
+            let source = initial.as_ref().and_then(|frame| frame.pixel(52, 59));
+            assert_eq!(Some(pixel), source);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn hinted_layers_share_textures_without_sharing_placement_or_lifetime()
+-> Result<(), Box<dyn std::error::Error>> {
+    use rectangle_animation_ui::LayerMotion;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut shared = Renderer::with_device(gpu.clone())?;
+    let mut separate = Renderer::with_device(gpu)?;
+    separate.set_hinted_layer_sharing_enabled(false);
+    let mut aot = LayerMotion::new();
+    aot.set_cache_layer(true);
+    let mut scene = aot.render();
+    let mut front = scene.children[0].clone();
+    front.set_instance_layout_property("x", Length(41.5).into());
+    front.set_instance_layout_property("opacity", 0.42_f64.into());
+    scene.children.push(front);
+    let input = Interaction::default();
+    let capture =
+        |renderer: &mut Renderer, scene: &Node| renderer.snapshot(scene, 192, 144, 2.0, &input);
+    assert_same_pixels(
+        &capture(&mut shared, &scene)?,
+        &capture(&mut separate, &scene)?,
+    );
+    assert_eq!(shared.opacity_layer_stats().rasterized, 1);
+    assert_eq!(shared.opacity_layer_stats().reused, 1);
+    assert_eq!(separate.opacity_layer_stats().rasterized, 2);
+
+    // The front layer continues to draw after the original owner is released.
+    scene.children[0].properties.insert("visible", false.into());
+    for x in [40.125, 35.375] {
+        scene.children[1].set_instance_layout_property("x", Length(x).into());
+        assert_same_pixels(
+            &capture(&mut shared, &scene)?,
+            &capture(&mut separate, &scene)?,
+        );
+    }
+    assert_eq!(shared.opacity_layer_stats().rasterized, 1);
+
+    scene.children[0].properties.insert("visible", true.into());
+    scene.children[0]
+        .properties
+        .insert("background", Color(0xb84c75ff).into());
+    assert_same_pixels(
+        &capture(&mut shared, &scene)?,
+        &capture(&mut separate, &scene)?,
+    );
+    assert_eq!(shared.opacity_layer_stats().rasterized, 2);
+
+    // Equal paint at a different initial pixel phase needs its own texture.
+    let mut fractional = scene.children[1].clone();
+    fractional.set_instance_layout_property("x", Length(16.375).into());
+    scene.children.push(fractional);
+    assert_same_pixels(
+        &capture(&mut shared, &scene)?,
+        &capture(&mut separate, &scene)?,
+    );
+    assert_eq!(shared.opacity_layer_stats().rasterized, 3);
+    Ok(())
+}
+
+#[test]
+fn cached_layer_compositor_preserves_order_across_mixed_display_lists()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_layout::Rect;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{
+        Color, Image, ImageFit, ImageFormat, Length, LoadedImage, Node, update_profile,
+    };
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut batched = Renderer::with_device(gpu.clone())?;
+    let mut separate = Renderer::with_device(gpu)?;
+    separate.set_cached_layer_compositing_enabled(false);
+    let rect = |[x, y, width, height]: [f64; 4], color: u32| {
+        let mut node = Node::new("Rectangle", None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node.properties.insert("background", Color(color).into());
+        node.properties.insert("border-radius", Length(3.0).into());
+        node
+    };
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xe7e9eeff).into());
+    for index in 0..16 {
+        let x = 3.0 + (index % 4) as f64 * 29.0;
+        let y = 4.0 + (index / 4) as f64 * 27.0;
+        let tint = [0x263854ff, 0x3e7c65ff][index % 2];
+        let mut card = rect([x, y, 24.0, 21.0], tint);
+        card.properties.insert("cache-rendering-hint", true.into());
+        card.properties
+            .insert("opacity", (0.5 + index as f64 * 0.06).into());
+        card.children.push(rect([4.0, 4.0, 14.0, 12.0], 0xebaa58cf));
+        scene.children.push(card);
+    }
+    let mut behind = rect([1.0, 1.0, 101.0, 24.0], 0x315d9fa1);
+    let mut between = rect([18.0, 49.0, 69.0, 22.0], 0xa3426bdd);
+    let mut in_front = rect([20.0, 76.0, 49.0, 34.0], 0xf2975880);
+    for item in [&mut behind, &mut between, &mut in_front] {
+        item.properties.insert("visible", false.into());
+    }
+    let mask = Image::Loaded(LoadedImage::new(
+        ImageFormat::Png,
+        std::fs::read("examples/media/assets/color-mask.png")?,
+        [16, 12],
+    ));
+    let sprite = Image::Loaded(LoadedImage::new(
+        ImageFormat::Png,
+        std::fs::read("examples/media/assets/sprite-atlas.png")?,
+        [8, 8],
+    ));
+    let image = |source: Image, x: f64, y: f64| {
+        let mut node = Node::new("Image", None);
+        for (name, value) in [("x", x), ("y", y), ("width", 12.75), ("height", 10.375)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node.properties.insert("source", source.into());
+        node.properties.insert("image-fit", ImageFit::Fill.into());
+        node.properties.insert("visible", false.into());
+        node
+    };
+    scene.children.splice(
+        0..0,
+        [
+            behind,
+            image(mask.clone(), 11.25, 6.25),
+            image(sprite.clone(), 40.25, 7.25),
+        ],
+    );
+    scene.children.splice(
+        11..11,
+        [
+            between,
+            image(sprite.clone(), 21.25, 57.25),
+            image(mask, 76.25, 62.25),
+        ],
+    );
+    scene.children.push(in_front);
+    let input = Interaction::default();
+    for (frame, expected_batches) in [
+        (0, 0),
+        (1, 2),
+        (2, 2),
+        (3, 0),
+        (4, 2),
+        (5, 2),
+        (6, 0),
+        (7, 0),
+        (8, 0),
+        (9, 0),
+    ] {
+        let x = match frame {
+            0 => 3.0,
+            2 | 3 => 24.375,
+            _ => 3.125,
+        };
+        scene.children[3].properties.insert("x", Length(x).into());
+        for slot in [0, 11, 22] {
+            if frame <= 6 {
+                scene.children[slot]
+                    .properties
+                    .insert("visible", (frame == 3 || frame >= 6).into());
+            }
+        }
+        for slot in [1, 2, 12, 13] {
+            scene.children[slot]
+                .properties
+                .insert("visible", (frame == 3).into());
+        }
+        if frame == 5 {
+            let outline = Rect::new(7.0, 7.0, 16.0, 14.0);
+            batched.set_inspection_outline(Some(outline));
+            separate.set_inspection_outline(Some(outline));
+        } else if frame == 9 {
+            scene.children[11]
+                .properties
+                .insert("background", Color(0xc16268dd).into());
+        }
+        let before = batched.display_batch_stats();
+        let mut result = None;
+        let sample = update_profile::measure(|| {
+            result = Some(batched.snapshot(&scene, 256, 224, 2.0, &input));
+        })
+        .unwrap();
+        let actual = result.unwrap()?;
+        let expected = separate.snapshot(&scene, 256, 224, 2.0, &input)?;
+        let cached_rectangles = matches!(frame, 7 | 8);
+        if !cached_rectangles {
+            assert_same_pixels(&actual, &expected);
+        } else {
+            for (index, (actual, expected)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+                assert!(
+                    actual.abs_diff(*expected) <= 1,
+                    "channel {index}: {actual} vs {expected}"
+                );
+            }
+        }
+        let image_batches = batched.display_batch_stats().image_batches - before.image_batches;
+        assert_eq!(image_batches, if frame == 3 { 2 } else { 0 });
+        if !cached_rectangles {
+            assert_eq!(
+                sample.quad_batches,
+                expected_batches + image_batches as usize,
+                "frame {frame}"
+            );
+        } else {
+            assert!(
+                (1..19).contains(&sample.quad_batches),
+                "frame {frame}: {} draw batches",
+                sample.quad_batches,
+            );
+        }
+        if frame != 0 && frame != 7 {
+            assert_eq!(sample.gpu_submissions, 1, "frame {frame}");
+        }
+    }
+
+    for slot in [1, 2, 12, 13] {
+        let image = &mut scene.children[slot];
+        for name in ["x", "y"] {
+            let length = f64::from(image.length(name).unwrap()).round();
+            image.properties.insert(name, Length(length).into());
+        }
+        image.properties.insert("width", Length(13.0).into());
+        image.properties.insert("height", Length(10.0).into());
+        image.properties.insert("visible", true.into());
+    }
+    let mut label = Node::new("Label", None);
+    for (name, value) in [
+        ("x", 18.0),
+        ("y", 64.0),
+        ("width", 60.0),
+        ("height", 16.0),
+        ("font-size", 12.0),
+    ] {
+        label.properties.insert(name, Length(value).into());
+    }
+    label.properties.insert("text", "Ready".to_owned().into());
+    label.properties.insert("color", Color(0xfffffff0).into());
+    scene.children.push(label);
+
+    for revision in 0..4 {
+        match revision {
+            1 => {
+                scene.children[1]
+                    .properties
+                    .insert("source", sprite.clone().into());
+            }
+            2 => {
+                scene.children[23]
+                    .properties
+                    .insert("text", "Updated".to_owned().into());
+            }
+            3 => {
+                assert!(batched.set_text_scale(1.25));
+                assert!(separate.set_text_scale(1.25));
+            }
+            _ => {}
+        }
+        for frame in 0..4 {
+            let mut result = None;
+            let sample = update_profile::measure(|| {
+                result = Some(batched.snapshot(&scene, 256, 224, 2.0, &input));
+            })
+            .unwrap();
+            let actual = result.unwrap()?;
+            let expected = separate.snapshot(&scene, 256, 224, 2.0, &input)?;
+            assert_eq!(actual.layout, expected.layout);
+            for (index, (actual, expected)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+                assert!(
+                    actual.abs_diff(*expected) <= 1,
+                    "revision {revision} frame {frame} channel {index}: {actual} vs {expected}"
+                );
+            }
+            if frame == 3 {
+                assert!(
+                    (3..24).contains(&sample.quad_batches),
+                    "revision {revision}"
+                );
+                assert_eq!(sample.gpu_submissions, 1, "revision {revision}");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cached_layers_flatten_nested_panels_in_paint_order() -> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, update_profile};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let node = |kind, [x, y, width, height]: [f64; 4]| {
+        let mut item = Node::new(kind, None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            item.properties.insert(name, Length(value).into());
+        }
+        item
+    };
+    let make_panel = |x: f64, z: f64, tint: u32| {
+        let mut panel = node("Rectangle", [x, 6.0, 64.0, 84.0]);
+        panel.properties.insert("background", Color(tint).into());
+        panel.properties.insert("z", z.into());
+        let mut layout = node("VerticalLayout", [2.0, 2.0, 60.0, 80.0]);
+        layout.properties.insert("padding", Length(2.0).into());
+        layout.properties.insert("spacing", Length(2.0).into());
+        for row in 0..4 {
+            let mut card = node("Rectangle", [0.0, 0.0, 54.0, 16.0]);
+            card.properties
+                .insert("background", Color(0x263854ff).into());
+            card.properties.insert("border-radius", Length(4.0).into());
+            card.properties.insert("cache-rendering-hint", true.into());
+            card.properties
+                .insert("opacity", (0.55 + f64::from(row) * 0.08).into());
+            let mut mark = node("Rectangle", [5.0, 5.0, 19.0, 7.0]);
+            mark.properties
+                .insert("background", Color(0x81b4e8ff).into());
+            card.children.push(mark);
+            layout.children.push(card);
+        }
+        let mut badge = layout.children[0].clone();
+        badge.properties.insert("x", Length(2.0).into());
+        badge.properties.insert("y", Length(54.0).into());
+        badge.properties.insert("width", Length(16.0).into());
+        badge.children[0]
+            .properties
+            .insert("width", Length(6.0).into());
+        panel.children.push(layout);
+        panel.children.push(badge);
+        panel
+    };
+    for track_nodes in [false, true] {
+        let mut batched = Renderer::with_device(gpu.clone())?;
+        let mut separate = Renderer::with_device(gpu.clone())?;
+        batched.set_retained_geometry_enabled(track_nodes);
+        separate.set_retained_geometry_enabled(track_nodes);
+        separate.set_cached_layer_compositing_enabled(false);
+        let mut scene = Node::new("Window", None);
+        scene
+            .properties
+            .insert("background", Color(0xe7e9eeff).into());
+        scene.children = vec![
+            make_panel(55.0, 1.0_f64, 0xa0805cc0),
+            make_panel(4.0, -1.0_f64, 0x82badbdd),
+        ];
+        let input = Interaction::default();
+        let mut old_mark = None;
+        let mut old_corner = None;
+        for frame in 0..28 {
+            if frame == 4 {
+                scene.children[0].children[0].children[0]
+                    .properties
+                    .insert("opacity", 0.9_f64.into());
+                scene.children[0].children[1]
+                    .properties
+                    .insert("x", Length(2.123).into());
+            } else if matches!(frame, 5 | 6 | 7) {
+                let x = [57.123, 66.125, 2.123][frame - 5];
+                scene.children[0].children[1]
+                    .properties
+                    .insert("x", Length(x).into());
+            } else if frame == 8 {
+                scene.children[0]
+                    .properties
+                    .insert("background", Color(0x465c9ec0).into());
+            } else if frame == 10 {
+                let badge = &mut scene.children[0].children[1];
+                badge.properties.insert("x", Length(57.123).into());
+                badge.children[0]
+                    .properties
+                    .insert("background", Color(0xfc783eff).into());
+            } else if frame == 11 {
+                scene.children[0].properties.insert("clip", true.into());
+                scene.children[0]
+                    .properties
+                    .insert("border-radius", Length(7.0).into());
+            } else if matches!(frame, 12 | 15 | 16 | 17) {
+                let (x, y) = match frame {
+                    15 => (57.123, 1.125),
+                    16 => (66.125, 1.125),
+                    _ => (2.123, 54.0),
+                };
+                let badge = &mut scene.children[0].children[1];
+                badge.properties.insert("x", Length(x).into());
+                badge.properties.insert("y", Length(y).into());
+            } else if frame == 18 {
+                let panel = &mut scene.children[0];
+                let mut viewport = node("Rectangle", [2.0, 2.0, 60.0, 80.0]);
+                viewport.properties.insert("clip", true.into());
+                viewport
+                    .properties
+                    .insert("border-radius", Length(9.0).into());
+                viewport
+                    .properties
+                    .insert("border-top-left-radius", Length(14.0).into());
+                let mut layout = std::mem::replace(&mut panel.children[0], viewport);
+                layout.properties.insert("x", Length(0.0).into());
+                layout.properties.insert("y", Length(0.0).into());
+                panel.children[0].children.push(layout);
+            } else if frame == 23 {
+                scene.children[0].children[0]
+                    .properties
+                    .insert("border-top-left-radius", Length(18.0).into());
+            }
+            let before = batched.opacity_layer_stats();
+            let mut result = None;
+            let sample = update_profile::measure(|| {
+                result = Some(batched.snapshot(&scene, 256, 192, 2.0, &input));
+            })
+            .unwrap();
+            let actual = result.unwrap()?;
+            let expected = separate.snapshot(&scene, 256, 192, 2.0, &input)?;
+            assert_eq!(actual.layout, expected.layout);
+            for (byte, (actual, expected)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+                assert!(
+                    actual.abs_diff(*expected) <= 1,
+                    "frame {frame} byte {byte}: {actual} vs {expected}"
+                );
+            }
+            if (3..=7).contains(&frame) || (15..=17).contains(&frame) || matches!(frame, 22 | 27) {
+                assert!(sample.quad_batches > 0, "frame {frame}");
+                assert_eq!(sample.gpu_submissions, 1, "frame {frame}");
+                assert_eq!(batched.opacity_layer_stats().rasterized, before.rasterized);
+                assert_eq!(
+                    actual.pixel(244, 129),
+                    Some([0xe7, 0xe9, 0xee, 0xff]),
+                    "frame {frame}"
+                );
+            } else if matches!(frame, 8 | 10 | 11) {
+                assert_eq!(sample.quad_batches, 0, "frame {frame}");
+            }
+            if frame == 5 {
+                old_mark = actual.pixel(236, 133);
+            } else if frame == 10 {
+                assert_ne!(actual.pixel(236, 133), old_mark);
+            } else if frame == 22 {
+                old_corner = actual.pixel(122, 26);
+            } else if frame == 27 {
+                assert_ne!(actual.pixel(122, 26), old_corner);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn moving_opacity_tiles_require_equal_paint_and_pixel_phase() {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut shared = Renderer::with_device(gpu.clone()).unwrap();
+    let mut separate = Renderer::with_device(gpu).unwrap();
+    separate.set_opacity_tile_sharing_enabled(false);
+    let input = Interaction::default();
+    let rect = |kind, [x, y, width, height]: [f64; 4]| {
+        let mut node = Node::new(kind, None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node
+    };
+    for (frame, x) in [8.0, 8.25, 8.375, 8.0625, 8.4375].into_iter().enumerate() {
+        let mut scene = Node::new("Window", None);
+        scene
+            .properties
+            .insert("background", Color(0xe7e9eeff).into());
+        let mut a = rect("Rectangle", [x, 7.0, 49.0, 43.0]);
+        a.properties.insert("background", Color(0x263854ff).into());
+        a.properties.insert("border-radius", Length(5.0).into());
+        a.properties.insert("opacity", 0.61_f64.into());
+        let mut text = rect("Text", [6.0, 4.0, 38.0, 14.0]);
+        text.properties.insert("text", "Load".to_owned().into());
+        text.properties.insert("color", Color(0xffffffff).into());
+        text.properties.insert("font-size", Length(10.0).into());
+        a.children.push(text);
+        let mut b = a.clone();
+        let phase_shift = if frame == 4 { 0.125 } else { 0.0 };
+        b.properties
+            .insert("x", Length(x + 22.0 + phase_shift).into());
+        b.properties.insert("y", Length(25.0).into());
+        b.properties.insert("opacity", 0.72_f64.into());
+        if frame == 3 {
+            b.children[0]
+                .properties
+                .insert("text", "Busy".to_owned().into());
+        }
+        scene.children = vec![a, b];
+        let before = shared.opacity_atlas_stats();
+        let actual = shared.snapshot(&scene, 192, 144, 2.0, &input).unwrap();
+        let expected = separate.snapshot(&scene, 192, 144, 2.0, &input).unwrap();
+        let after = shared.opacity_atlas_stats();
+        assert_eq!(
+            after.reused_tiles - before.reused_tiles,
+            u64::from(frame == 2),
+            "frame {frame}"
+        );
+        if frame >= 2 {
+            assert_eq!(after.groups - before.groups, 2);
+        }
+        assert_eq!(actual.layout, expected.layout);
+        for (index, (a, b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                a.abs_diff(*b) <= 1,
+                "frame {frame}, channel {index}: {a} vs {b}"
+            );
+        }
+    }
+}
+
+#[test]
+fn shadowed_groups_reuse_filtered_pixels_and_track_visible_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use rectangle_animation_ui::LayerMotion;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Component, Length};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut compiled_renderer = Renderer::with_device(gpu.clone())?;
+    let mut interpreter_renderer = Renderer::with_device(gpu.clone())?;
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_layer_budget(0);
+    let input = Interaction::default();
+    let mut compiled = LayerMotion::new();
+    compiled.set_shadowed(true);
+    let program = interpret_example("tests/rectangle_animation.xr");
+    let interpreter = program.create("LayerMotion")?;
+    interpreter.set("shadowed", true.into())?;
+
+    for (x, width, fade, tint, edited, rasterized, reused, masks) in [
+        (22.0, 49.0, 1.0, 0x1017_2666, false, 1, 0, 1),
+        (23.0, 49.0, 0.61, 0x1017_2666, false, 0, 1, 1),
+        (26.0, 49.0, 1.0, 0x1017_2666, false, 0, 1, 1),
+        (26.0, 49.0, 0.77, 0x7f70_2e66, false, 0, 0, 1),
+        (24.0, 49.0, 0.78, 0x7f70_2e66, false, 1, 0, 1),
+        (-3.0, 49.0, 0.71, 0x7f70_2e66, false, 1, 0, 1),
+        (22.0, 49.0, 0.64, 0x7f70_2e66, true, 0, 0, 1),
+        (24.0, 49.0, 0.72, 0x7f70_2e66, false, 0, 0, 1),
+        (25.25, 49.0, 0.72, 0x7f70_2e66, true, 0, 0, 1),
+        (26.173, 49.0, 0.72, 0x7f70_2e66, true, 0, 0, 1),
+        (23.0, 49.0, 0.88, 0x7f70_2e66, true, 1, 0, 1),
+        (24.0, 53.0, 0.88, 0x7f70_2e66, true, 0, 0, 2),
+        (26.0, 53.0, 0.72, 0x7f70_2e66, true, 1, 0, 2),
+    ] {
+        compiled.set_offset(Length(x));
+        compiled.set_card_width(Length(width));
+        compiled.set_fade(fade);
+        compiled.set_edited(edited);
+        compiled.set_shadow_tint(Color(tint));
+        interpreter.set("offset", Length(x).into())?;
+        interpreter.set("card-width", Length(width).into())?;
+        interpreter.set("fade", fade.into())?;
+        interpreter.set("edited", edited.into())?;
+        interpreter.set("shadow-tint", Color(tint).into())?;
+        let scene = compiled.render_shared();
+        let (pixel_width, pixel_height) = (248, 192);
+        let before = compiled_renderer.opacity_layer_stats();
+        let actual = compiled_renderer.snapshot(&scene, pixel_width, pixel_height, 2.0, &input)?;
+        let after = compiled_renderer.opacity_layer_stats();
+        assert_eq!(after.rasterized - before.rasterized, rasterized, "x={x}");
+        assert_eq!(after.reused - before.reused, reused, "x={x}");
+        assert_eq!(
+            compiled_renderer.shadow_mask_stats().rasterized,
+            masks,
+            "x={x}"
+        );
+        let interpreted = interpreter_renderer.snapshot(
+            &interpreter.render(),
+            pixel_width,
+            pixel_height,
+            2.0,
+            &input,
+        )?;
+        assert_same_pixels(&actual, &interpreted);
+
+        let expected = direct.snapshot(&scene, pixel_width, pixel_height, 2.0, &input)?;
+        assert_eq!(actual.layout, expected.layout);
+        for (index, (a, b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                a.abs_diff(*b) <= 2,
+                "x={x} pixel ({}, {}) channel {}: {a} vs {b}",
+                (index / 4) % pixel_width as usize,
+                (index / 4) / pixel_width as usize,
+                index % 4,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn fractional_rectangles_share_the_transient_opacity_atlas() {
+    use xrack_runtime::{Color, Length, Node};
+
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0x314567ff).into());
+    for index in 0..12 {
+        let mut rectangle = Node::new("Rectangle", None);
+        for (name, value) in [
+            ("x", 12.125 + f64::from(index % 4) * 22.25),
+            ("y", 10.375 + f64::from(index / 4) * 19.125),
+            ("width", 25.125),
+            ("height", 17.625),
+        ] {
+            rectangle.properties.insert(name, Length(value).into());
+        }
+        rectangle.properties.insert(
+            "background",
+            Color([0x2a68d6ff, 0xec7847b9, 0x62d439ff][index as usize % 3]).into(),
+        );
+        rectangle
+            .properties
+            .insert("opacity", (0.47 + f64::from(index % 3) * 0.18).into());
+        scene.children.push(rectangle);
+    }
+    let mut clipped = Node::new("Window", None);
+    clipped.properties = scene.properties.clone();
+    let mut viewport = Node::new("Rectangle", None);
+    for (name, value) in [
+        ("x", 4.375),
+        ("y", 3.625),
+        ("width", 100.3125),
+        ("height", 60.1875),
+    ] {
+        viewport.properties.insert(name, Length(value).into());
+    }
+    viewport.properties.insert("clip", true.into());
+    viewport.children = scene.children.clone();
+    clipped.children.push(viewport);
+    for scale in [1.0, 1.25, 2.0, 3.0] {
+        let mut renderer = pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+        .unwrap();
+        let width = (124.0 * scale) as u32;
+        let height = (84.0 * scale) as u32;
+        let input = Interaction::default();
+        renderer.set_rectangle_optimization_enabled(false);
+        renderer.set_opacity_atlas_enabled(false);
+        let original = renderer
+            .snapshot(&scene, width, height, scale, &input)
+            .unwrap();
+        renderer.set_opacity_atlas_enabled(true);
+        let before = renderer.opacity_atlas_stats().groups;
+        let shortcut = renderer
+            .snapshot(&scene, width, height, scale, &input)
+            .unwrap();
+        assert!(renderer.opacity_atlas_stats().groups >= before + 2);
+        let max_error = original
+            .rgba
+            .iter()
+            .zip(&shortcut.rgba)
+            .map(|(&first, &second)| first.abs_diff(second))
+            .max()
+            .unwrap();
+        assert!(max_error <= 1, "RGBA error at {scale}x: {max_error}");
+
+        renderer.set_rectangle_optimization_enabled(true);
+        let before = renderer.rectangle_batch_draws();
+        let groups = renderer.opacity_atlas_stats().groups;
+        let batched = renderer
+            .snapshot(&scene, width, height, scale, &input)
+            .unwrap();
+        assert_eq!(renderer.rectangle_batch_draws() - before, 1);
+        assert_eq!(renderer.opacity_atlas_stats().groups, groups);
+        let check = |actual: &xrack_renderer_femtovg::Snapshot,
+                     expected: &xrack_renderer_femtovg::Snapshot| {
+            assert_eq!(actual.layout, expected.layout);
+            for (index, (actual, expected)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+                assert!(
+                    actual.abs_diff(*expected) <= 1,
+                    "batched opacity at {scale}x, pixel ({}, {}), channel {}: {actual} vs {expected}",
+                    index / 4 % width as usize,
+                    index / 4 / width as usize,
+                    index % 4,
+                );
+            }
+        };
+        check(&batched, &original);
+
+        renderer.set_rectangle_optimization_enabled(false);
+        let clipped_original = renderer
+            .snapshot(&clipped, width, height, scale, &input)
+            .unwrap();
+        renderer.set_rectangle_optimization_enabled(true);
+        let before = renderer.rectangle_batch_draws();
+        let clipped_batch = renderer
+            .snapshot(&clipped, width, height, scale, &input)
+            .unwrap();
+        assert!(renderer.rectangle_batch_draws() > before);
+        check(&clipped_batch, &clipped_original);
+    }
+}
+
+#[test]
+fn fractional_square_backgrounds_batch_without_reusing_pixel_phases() {
+    use xrack_runtime::{Color, Length, Node};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0x3145_67ff).into());
+    for index in 0..24 {
+        let x = if index == 1 {
+            // Blend through the first tile at a different pixel phase.
+            13.25
+        } else {
+            4.125 + f64::from(index % 6) * 16.0 + f64::from(index) / 128.0
+        };
+        let y = 4.375 + f64::from(index / 6) * 16.0 - f64::from(index) / 256.0;
+        let width = 12.0 + f64::from(index % 7) / 64.0;
+        let height = 12.0 + f64::from(index % 5) / 32.0;
+        let mut cell = Node::new("Rectangle", None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            cell.properties.insert(name, Length(value).into());
+        }
+        let mut background = Node::new("Rectangle", None);
+        background.properties.insert("width", Length(width).into());
+        background
+            .properties
+            .insert("height", Length(height).into());
+        background.properties.insert(
+            "background",
+            Color(if index % 2 == 0 {
+                0xec78_47b9
+            } else {
+                0x39b5_ceaa
+            })
+            .into(),
+        );
+        cell.children.push(background);
+        scene.children.push(cell);
+    }
+    let input = Interaction::default();
+    for scale in [1.0, 1.25, 2.0] {
+        let (width, height) = ((102.0 * scale) as u32, (72.0 * scale) as u32);
+        renderer.set_rectangle_optimization_enabled(true);
+        renderer.set_display_batching_enabled(true);
+        let before = renderer.rectangle_batch_draws();
+        let actual = renderer
+            .snapshot(&scene, width, height, scale, &input)
+            .unwrap();
+        assert_eq!(renderer.rectangle_batch_draws() - before, 1);
+        renderer.set_rectangle_optimization_enabled(false);
+        renderer.set_display_batching_enabled(false);
+        let expected = renderer
+            .snapshot(&scene, width, height, scale, &input)
+            .unwrap();
+        assert_eq!(actual.layout, expected.layout);
+        let (index, max_error) = actual
+            .rgba
+            .iter()
+            .zip(&expected.rgba)
+            .map(|(actual, expected)| actual.abs_diff(*expected))
+            .enumerate()
+            .max_by_key(|(_, error)| *error)
+            .unwrap();
+        assert!(
+            max_error <= 1,
+            "fractional fill at {scale}x differs by {max_error} at ({}, {}) channel {}: {} vs {}",
+            index / 4 % width as usize,
+            index / 4 / width as usize,
+            index % 4,
+            actual.rgba[index],
+            expected.rgba[index]
+        );
+    }
+}
+
+#[test]
+fn shadow_masks_preserve_fractional_coverage_across_device_scales()
+-> Result<(), Box<dyn std::error::Error>> {
+    use rectangle_animation_ui::LayerMotion;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Component, Length};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut cached = Renderer::with_device(gpu.clone())?;
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_layer_budget(0);
+    let input = Interaction::default();
+    let mut ui = LayerMotion::new();
+    ui.set_shadowed(true);
+    ui.set_card_width(Length(49.35));
+    ui.set_fade(0.83);
+
+    for (scale, alpha, new_masks) in [
+        (1.0_f32, 0xff, 4),
+        (1.4, 0x66, 4),
+        (2.0, 0xff, 4),
+        (2.0, 0x66, 1),
+    ] {
+        ui.set_shadow_tint(Color(0x110d_3500 | alpha));
+        let width = (124.0 * scale).round() as u32;
+        let height = (96.0 * scale).round() as u32;
+        let before = cached.shadow_mask_stats().rasterized;
+        for x in [22.0, 23.125, 24.25, 25.431] {
+            ui.set_offset(Length(x));
+            let scene = ui.render_shared();
+            let actual = cached.snapshot(&scene, width, height, scale, &input)?;
+            let expected = direct.snapshot(&scene, width, height, scale, &input)?;
+            assert_eq!(actual.layout, expected.layout);
+            for (index, (a, b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+                assert!(
+                    a.abs_diff(*b) <= 2,
+                    "scale={scale} x={x} pixel ({}, {}) channel {}: {a} vs {b}",
+                    index / 4 % width as usize,
+                    index / 4 / width as usize,
+                    index % 4,
+                );
+            }
+        }
+        assert_eq!(cached.shadow_mask_stats().rasterized - before, new_masks);
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn transient_opacity_atlas_preserves_order_across_an_interleaved_capture()
+-> Result<(), Box<dyn std::error::Error>> {
+    use rectangle_animation_ui::TransientOpacityAtlasDemo;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Component, Length, Node, update_profile};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut optimized = Renderer::with_device(gpu.clone())?;
+    let mut interpreted = Renderer::with_device(gpu.clone())?;
+    interpreted.set_atlas_batching_enabled(false);
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_opacity_atlas_enabled(false);
+    let input = Interaction::default();
+    let snapshot = |renderer: &mut Renderer, scene: &Node| {
+        let mut result = None;
+        let sample = update_profile::measure(|| {
+            result = Some(renderer.snapshot(scene, 256, 192, 2.0, &input));
+        })
+        .unwrap();
+        result.unwrap().map(|frame| (frame, sample.gpu_submissions))
+    };
+    let mut aot = TransientOpacityAtlasDemo::new();
+    let program = interpret_example("tests/rectangle_animation.xr");
+    let interpreter = program.create("TransientOpacityAtlasDemo")?;
+    for (revision, x, groups, submissions) in [
+        (0, 8.0, 0, 0),
+        (1, 10.25, 0, 0),
+        (2, -6.375, 2, 2),
+        (3, 23.125, 2, 1),
+    ] {
+        aot.set_revision(revision);
+        aot.set_first_x(Length(x));
+        interpreter.set("revision", revision.into())?;
+        interpreter.set("first-x", Length(x).into())?;
+        let scene = aot.render_shared();
+        let before = optimized.opacity_atlas_stats();
+        let (actual, batched_submissions) = snapshot(&mut optimized, &scene)?;
+        let after = optimized.opacity_atlas_stats();
+        assert_eq!(after.groups - before.groups, groups, "revision={revision}");
+        assert_eq!(
+            after.submissions - before.submissions,
+            submissions,
+            "revision={revision}"
+        );
+        let (native, separate_submissions) = snapshot(&mut interpreted, &interpreter.render())?;
+        if groups > 0 {
+            assert!(
+                batched_submissions < separate_submissions,
+                "revision={revision} batched={batched_submissions} separate={separate_submissions}"
+            );
+        }
+        assert_same_pixels(&actual, &native);
+        let expected = direct.snapshot(&scene, 256, 192, 2.0, &input)?;
+        assert_eq!(actual.layout, expected.layout);
+        for (index, (a, b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                a.abs_diff(*b) <= 2,
+                "revision={revision} pixel ({}, {}) channel {}: {a} vs {b}",
+                index / 4 % 256,
+                index / 4 / 256,
+                index % 4
+            );
+        }
+    }
+    assert!(optimized.rounded_rectangle_batch_draws() > 0);
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual GPU measurement of animated groups with static contents"]
+fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{
+        rc::Rc,
+        time::{Duration, Instant},
+    };
+    use xrack_runtime::{
+        Color, Component, Image, ImageFit, ImageFormat, Length, LoadedImage, Node,
+    };
+
+    struct Cards;
+    impl Component for Cards {
+        fn render(&self) -> Node {
+            Node::hidden()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let shadow_mode = std::env::var("XRACK_CARD_BENCH_SHADOW").ok();
+    let shadow = shadow_mode.is_some();
+    let fading = shadow_mode.as_deref() != Some("opaque");
+    let dynamic = std::env::var_os("XRACK_CARD_BENCH_DYNAMIC").is_some();
+    let cache_layers = std::env::var_os("XRACK_CARD_BENCH_CACHE_LAYERS").is_some();
+    let rounded_clip = std::env::var_os("XRACK_CARD_BENCH_ROUNDED_CLIP").is_some();
+    let clipped = rounded_clip || std::env::var_os("XRACK_CARD_BENCH_CLIPPED").is_some();
+    let nested = clipped || std::env::var_os("XRACK_CARD_BENCH_NESTED").is_some();
+    let widgets = nested || std::env::var_os("XRACK_CARD_BENCH_WIDGETS").is_some();
+    let mixed = widgets || std::env::var_os("XRACK_CARD_BENCH_MIXED").is_some();
+    let subpixel = std::env::var("XRACK_CARD_BENCH_SUBPIXEL").ok();
+    let card_count = std::env::var("XRACK_CARD_BENCH_COUNT")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(24);
+    if !(1..=24).contains(&card_count) {
+        return Err("XRACK_CARD_BENCH_COUNT must be between 1 and 24".into());
+    }
+
+    let rect = |[x, y, width, height, radius]: [f64; 5], color| {
+        let mut node = Node::new("Rectangle", None);
+        for (name, length) in [
+            ("x", x),
+            ("y", y),
+            ("width", width),
+            ("height", height),
+            ("border-radius", radius),
+        ] {
+            node.properties.insert(name, Length(length).into());
+        }
+        node.properties.insert("background", Color(color).into());
+        node
+    };
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xffff_ffff).into());
+    for index in 0..card_count {
+        let width = if shadow { 94.0 } else { 100.0 };
+        let mut card = rect([0.0, 0.0, width, 93.0, 8.0], 0x2638_54ff);
+        if cache_layers {
+            card.properties.insert("cache-rendering-hint", true.into());
+        }
+        if shadow {
+            card.properties
+                .insert("drop-shadow-blur", Length(12.0).into());
+            card.properties
+                .insert("drop-shadow-offset-y", Length(4.0).into());
+            card.properties
+                .insert("drop-shadow-color", Color(0x1017_2666).into());
+        }
+        let mut title = Node::new("Text", None);
+        for (name, value) in [
+            ("x", 7.0),
+            ("y", 5.0),
+            ("width", 88.0),
+            ("height", 16.0),
+            ("font-size", 12.0),
+        ] {
+            title.properties.insert(name, Length(value).into());
+        }
+        title
+            .properties
+            .insert("font-family", "Menlo".to_owned().into());
+        title
+            .properties
+            .insert("text", "CPU load".to_owned().into());
+        title.mark_paint_only("text");
+        title.properties.insert("color", Color(0xffff_ffff).into());
+        card.children.push(title);
+        for dot in 0..25 {
+            let x = (dot % 5 * 18 + 7) as f64;
+            let y = (dot / 5 * 12 + 26) as f64;
+            let color = [0x659b_e7ff, 0xc778_9aff, 0x5eb9_9eff, 0xf2bc_60ff][(index + dot) % 4];
+            card.children.push(rect([x, y, 14.0, 9.0, 2.0], color));
+        }
+        scene.children.push(card);
+    }
+    if mixed {
+        let mut divider = rect([5.0, 196.0, 630.0, 41.0, 4.0], 0x722a648c);
+        divider.set_static_id(Some("divider"));
+        scene.children.insert(card_count / 2, divider);
+    }
+    if widgets {
+        let mut label = Node::new("Label", Some("status"));
+        for (name, value) in [
+            ("x", 28.0),
+            ("y", 208.0),
+            ("width", 176.0),
+            ("height", 18.0),
+            ("font-size", 12.0),
+        ] {
+            label.properties.insert(name, Length(value).into());
+        }
+        label
+            .properties
+            .insert("text", "Ready · 24 panels".to_owned().into());
+        label
+            .properties
+            .insert("font-family", "Menlo".to_owned().into());
+        label.properties.insert("color", Color(0xffffffff).into());
+        label.properties.insert(
+            "vertical-alignment",
+            xrack_runtime::TextVerticalAlignment::Top.into(),
+        );
+
+        let mut image = Node::new("Image", Some("badge"));
+        for (name, value) in [
+            ("x", 560.0),
+            ("y", 202.0),
+            ("width", 32.0),
+            ("height", 24.0),
+        ] {
+            image.properties.insert(name, Length(value).into());
+        }
+        let source = Image::Loaded(LoadedImage::new(
+            ImageFormat::Png,
+            std::fs::read("examples/media/assets/color-mask.png")?,
+            [16, 12],
+        ));
+        image.properties.insert("source", source.into());
+        image.properties.insert("image-fit", ImageFit::Fill.into());
+        let after_divider = card_count / 2 + 1;
+        scene
+            .children
+            .splice(after_divider..after_divider, [label, image]);
+    }
+    if nested {
+        let last_cards = scene.children.split_off(card_count / 2 + 3);
+        let decorations = scene.children.split_off(card_count / 2);
+        let panel = |children, y, height| {
+            let mut panel = Node::new("Rectangle", Some("panel"));
+            let width = if clipped { 629.0 } else { 640.0 };
+            for (name, value) in [("y", y), ("width", width), ("height", height)] {
+                panel.properties.insert(name, Length(value).into());
+            }
+            if clipped {
+                panel.properties.insert("clip", true.into());
+            }
+            if rounded_clip {
+                panel
+                    .properties
+                    .insert("border-radius", Length(32.0).into());
+            }
+            panel.children = children;
+            panel
+        };
+        let first = panel(std::mem::take(&mut scene.children), 0.0, 220.0);
+        scene.children.push(first);
+        scene.children.extend(decorations);
+        scene.children.push(panel(last_cards, 220.0, 260.0));
+    }
+    let update_card = |card: &mut Node, index: usize, origin_y: f64, frame: usize, moving| {
+        let (dx, dy) = if moving {
+            if let Some(mode) = &subpixel {
+                let phase_offset = if mode == "independent" {
+                    (index % 4) as f64 * 0.63
+                } else {
+                    0.0
+                };
+                let phase = frame as f64 * 0.14 + phase_offset;
+                (2.0 + 1.75 * phase.sin(), 2.0 + 1.65 * phase.cos())
+            } else {
+                (
+                    ((frame + index) % 5) as f64,
+                    ((frame / 3 + index) % 5) as f64,
+                )
+            }
+        } else {
+            (0.0, 0.0)
+        };
+        let (left, top, stride_x, stride_y) = if shadow {
+            (22, 22, 100, 106)
+        } else {
+            (2, 6, 105, 111)
+        };
+        let x = ((index % 6) * stride_x + left) as f64 + dx;
+        let y = ((index / 6) * stride_y + top) as f64 + dy - origin_y;
+        card.properties.insert("x", Length(x).into());
+        card.properties.insert("y", Length(y).into());
+        card.properties.insert(
+            "opacity",
+            (if fading {
+                0.55 + ((frame + index) % 5) as f64 * 0.08
+            } else {
+                1.0
+            })
+            .into(),
+        );
+        if dynamic {
+            card.children[0]
+                .properties
+                .insert("text", format!("CPU {frame:02}%").into());
+        }
+    };
+    let update = |scene: &mut Node, frame, moving| {
+        let mut index = 0;
+        for node in &mut scene.children {
+            match node.element_id() {
+                None => {
+                    update_card(node, index, 0.0, frame, moving);
+                    index += 1;
+                }
+                Some("panel") => {
+                    let y = f64::from(node.length("y").unwrap());
+                    for card in &mut node.children {
+                        update_card(card, index, y, frame, moving);
+                        index += 1;
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+    };
+    let viewport = Size::new(640.0, 480.0);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    renderer
+        .set_opacity_atlas_enabled(std::env::var_os("XRACK_CARD_BENCH_NO_OPACITY_ATLAS").is_none());
+    renderer.set_opacity_tile_sharing_enabled(
+        std::env::var_os("XRACK_CARD_BENCH_NO_TILE_SHARING").is_none(),
+    );
+    renderer.set_atlas_batching_enabled(std::env::var_os("XRACK_CARD_BENCH_EAGER_ATLAS").is_none());
+    renderer.set_cached_layer_compositing_enabled(
+        std::env::var_os("XRACK_CARD_BENCH_NO_LAYER_COMPOSITING").is_none(),
+    );
+    renderer.set_hinted_layer_sharing_enabled(
+        std::env::var_os("XRACK_CARD_BENCH_NO_LAYER_SHARING").is_none(),
+    );
+    renderer.set_fractional_rounded_tile_retention_enabled(
+        std::env::var_os("XRACK_CARD_BENCH_NO_ROUNDED_RETENTION").is_none(),
+    );
+    let input = Interaction::default();
+    let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Card animation benchmark"),
+        size: wgpu::Extent3d {
+            width: 1280,
+            height: 960,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    update(&mut scene, 0, false);
+    let start = Instant::now();
+    let proof = renderer.snapshot(&scene, 1280, 960, 2.0, &input)?;
+    if rounded_clip {
+        assert_eq!(proof.pixel(9, 21), Some([255; 4]));
+    }
+    println!(
+        "card animation first frame: {:.3}ms, layer captures={}",
+        start.elapsed().as_secs_f64() * 1000.0,
+        renderer.opacity_layer_stats().rasterized
+    );
+    for (point, source) in [
+        ((64, 54), [0x26_u8, 0x38, 0x54]),
+        ((30, 69), [0x65, 0x9b, 0xe7]),
+    ] {
+        let point = if shadow {
+            (point.0 + 40, point.1 + 32)
+        } else {
+            point
+        };
+        let actual = proof.pixel(point.0, point.1).ok_or("missing card pixel")?;
+        for (actual, source) in actual.iter().zip(source) {
+            let opacity = if fading { 0.55 } else { 1.0 };
+            let expected = (f32::from(source) * opacity + 255.0 * (1.0 - opacity)).round() as u8;
+            assert!(
+                actual.abs_diff(expected) <= 2,
+                "{point:?}: {actual} vs {expected}"
+            );
+        }
+    }
+    if shadow {
+        let shadow_pixel = proof.pixel(138, 246).ok_or("missing shadow pixel")?;
+        assert!(
+            shadow_pixel[0] < 250 && shadow_pixel[0] > 150,
+            "{shadow_pixel:?}"
+        );
+    }
+    let mut base = Rc::new(scene);
+    let paint_frame = |renderer: &mut Renderer,
+                       base: &mut Rc<Node>,
+                       frame,
+                       moving|
+     -> Result<[Duration; 3], Box<dyn std::error::Error>> {
+        let start = Instant::now();
+        update(Rc::make_mut(base), frame, moving);
+        let (scene, layout) = renderer.prepare_scene(&Cards, base.clone(), viewport, &input);
+        let prepared = start.elapsed();
+        renderer.draw_with_layout(&scene, &layout, &texture, 2.0, &input)?;
+        let submitted = start.elapsed();
+        renderer.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(10)),
+        })?;
+        Ok([prepared, submitted - prepared, start.elapsed()])
+    };
+    for moving in [false, true] {
+        let before = renderer.opacity_layer_stats();
+        let before_masks = renderer.shadow_mask_stats();
+        let before_atlas = renderer.opacity_atlas_stats();
+        let mut samples = [Vec::new(), Vec::new(), Vec::new()];
+        let mut rounded_tiles = 0;
+        for frame in 0..70 {
+            let elapsed = paint_frame(&mut renderer, &mut base, frame, moving)?;
+            if frame >= 10 {
+                rounded_tiles += renderer.rounded_tile_rasterizations();
+                for (series, duration) in samples.iter_mut().zip(elapsed) {
+                    series.push(duration);
+                }
+            }
+        }
+        let after = renderer.opacity_layer_stats();
+        let after_masks = renderer.shadow_mask_stats();
+        let after_atlas = renderer.opacity_atlas_stats();
+        println!("card animation moving={moving} rounded tiles rasterized={rounded_tiles}");
+        println!(
+            "card animation moving={moving} dynamic={dynamic} rasterizations={} reuses={}",
+            after.rasterized - before.rasterized,
+            after.reused - before.reused
+        );
+        if shadow {
+            println!(
+                "card animation moving={moving} shadow masks rasterized={} reused={}",
+                after_masks.rasterized - before_masks.rasterized,
+                after_masks.reused - before_masks.reused
+            );
+        }
+        println!(
+            "card animation moving={moving} opacity atlas groups={} submissions={}",
+            after_atlas.groups - before_atlas.groups,
+            after_atlas.submissions - before_atlas.submissions
+        );
+        println!(
+            "card animation moving={moving} opacity tiles reused={}",
+            after_atlas.reused_tiles - before_atlas.reused_tiles,
+        );
+        for (stage, samples) in ["prepare", "submit", "total"].into_iter().zip(&mut samples) {
+            samples.sort_unstable();
+            println!(
+                "card animation moving={moving} {stage}: p50={:.3}ms p95={:.3}ms",
+                samples[29].as_secs_f64() * 1000.0,
+                samples[56].as_secs_f64() * 1000.0
+            );
+        }
+    }
+    if shadow {
+        for cache in [false, true] {
+            let budget = if cache { 32 * 1024 * 1024 } else { 0 };
+            let mut samples = Vec::new();
+            for frame in 0..24 {
+                renderer.set_layer_budget(budget);
+                let [_, _, total] = paint_frame(&mut renderer, &mut base, frame, true)?;
+                if frame >= 4 {
+                    samples.push(total);
+                }
+            }
+            samples.sort_unstable();
+            println!(
+                "shadow frame with empty layer cache enabled={cache}: p50={:.3}ms p95={:.3}ms",
+                samples[9].as_secs_f64() * 1000.0,
+                samples[18].as_secs_f64() * 1000.0,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual GPU measurement of clipped long rich-text output"]
+fn benchmark_long_styled_text_paint() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::Orientation;
+
+    let size = Size::new(640.0, 480.0);
+    let scene = long_styled_text_scene(size, 1200)?;
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Long rich-text paint benchmark"),
+        size: wgpu::Extent3d {
+            width: 1280,
+            height: 960,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    for enabled in [false, true] {
+        renderer.set_styled_text_culling_enabled(enabled);
+        let mut input = Interaction::default();
+        let mut layout = renderer.layout_with_input(&scene, size, &input);
+        let mut prepare = Vec::with_capacity(40);
+        let mut submission = Vec::with_capacity(40);
+        let mut completed = Vec::with_capacity(40);
+        let before = renderer.styled_text_culled_fragments();
+        for index in 0..50 {
+            let start = Instant::now();
+            assert!(input.accessibility_scroll_to(
+                &layout,
+                &[0],
+                Orientation::Vertical,
+                720.0 + index as f32 * 62.0,
+            ));
+            layout = renderer.layout_with_input(&scene, size, &input);
+            let prepared = start.elapsed();
+            renderer.draw_with_layout(&scene, &layout, &texture, 2.0, &input)?;
+            let submitted = start.elapsed();
+            renderer.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(10)),
+            })?;
+            if index == 0 {
+                println!(
+                    "long rich-text culling={enabled} first frame after layout: {:.2}ms",
+                    (start.elapsed() - prepared).as_secs_f64() * 1000.0
+                );
+            } else if index >= 10 {
+                prepare.push(prepared);
+                submission.push(submitted - prepared);
+                completed.push(start.elapsed());
+            }
+        }
+        for (stage, samples) in [
+            ("layout", &mut prepare),
+            ("submit", &mut submission),
+            ("total", &mut completed),
+        ] {
+            samples.sort_unstable();
+            println!(
+                "long rich-text culling={enabled} 1200 paragraphs {stage}: p50={:.2}ms p95={:.2}ms",
+                samples[19].as_secs_f64() * 1000.0,
+                samples[37].as_secs_f64() * 1000.0,
+            );
+        }
+        let culled = renderer.styled_text_culled_fragments() - before;
+        println!("long rich-text culling={enabled} skipped fragments: {culled}");
+        if enabled && !cfg!(any(target_os = "ios", target_os = "android")) {
+            assert!(culled > 100_000);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn styled_text_incremental_layout_matches_fresh_renders_after_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Orientation, StyledText};
+
+    let size = Size::new(640.0, 480.0);
+    let prefix = long_styled_text_markdown(200)?;
+    let mut scene = long_styled_text_scene(size, 200)?;
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut renderer = Renderer::with_device(gpu.clone())?;
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_styled_text_incremental_enabled(false);
+
+    let original = format!("{prefix}尾段 · **build** · שלום");
+    let appended = format!("{original}，接着输出 \r\n\r\n[结尾](end.xr#15) · 😀");
+    let latin = "test **bidirectional layout** before\u{2029}after a separator\n\n".repeat(200);
+    let mixed = format!("{latin}first right-to-left paragraph: שלום");
+    let cases = [
+        (original, false),
+        (appended.clone(), true),
+        (format!("{appended} · 完成报告"), true),
+        (appended.replacen("**0000**", "*0000*", 1), false),
+        (
+            appended.replacen("example.invalid/0", "example.invalid/updated", 1),
+            false,
+        ),
+        (latin, false),
+        (mixed, true),
+    ];
+    for (source, should_reuse) in cases {
+        scene.children[0].children[0]
+            .properties
+            .insert("text", StyledText::from_markdown(&source)?.into());
+        let before = renderer.styled_text_reused_fragments();
+        let mut input = Interaction::default();
+        let layout = renderer.layout_with_input(&scene, size, &input);
+        let end = layout
+            .at_path(&[0])
+            .and_then(|viewport| viewport.scroll_on(Orientation::Vertical))
+            .ok_or("missing rich-text viewport")?
+            .max_offset;
+        for offset in [720.25, end - 2.25] {
+            assert!(input.accessibility_scroll_to(&layout, &[0], Orientation::Vertical, offset));
+            let optimized = renderer.snapshot(&scene, 1280, 960, 2.0, &input)?;
+            let expected = direct.snapshot(&scene, 1280, 960, 2.0, &input)?;
+            assert_eq!(optimized.layout, expected.layout);
+            assert_same_pixels(&optimized, &expected);
+        }
+        assert_eq!(
+            renderer.styled_text_reused_fragments() > before,
+            should_reuse
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn large_styled_text_keeps_culling_and_selection_when_the_tail_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Length, Orientation, StyledText, TextCommand, ViewportHandle};
+
+    let size = Size::new(480.0, 320.0);
+    let mut source = long_styled_text_markdown(6000)?;
+    let mut scene = long_styled_text_scene(size, 6000)?;
+    let handle = ViewportHandle::default();
+    handle.bind_offset(
+        Orientation::Vertical,
+        || Length(-f64::from(f32::MAX)),
+        |_| {},
+    );
+    scene.children[0].viewport_handle = Some(handle);
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut optimized = Renderer::with_device(gpu.clone())?;
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_styled_text_culling_enabled(false);
+    direct.set_styled_text_incremental_enabled(false);
+
+    for appended in [false, true] {
+        if appended {
+            source.push_str("**Latest update** · [build](out.xr:4) · שלום 🌐\n");
+            scene.children[0].children[0]
+                .properties
+                .insert("text", StyledText::from_markdown(&source)?.into());
+        }
+        let culling_before = optimized.styled_text_culled_fragments();
+        let reuse_before = optimized.styled_text_reused_fragments();
+        let mut input = Interaction::default();
+        let layout = optimized.layout_with_input(&scene, size, &input);
+        let target = input
+            .accessibility_target(&scene, &layout, &[0, 0])
+            .ok_or("missing text selection target")?;
+        input.focus_target(&scene, &layout, target);
+        input.sync_editor(&scene);
+        let text = scene.children[0].children[0]
+            .text("text")
+            .ok_or("missing rich text")?;
+        let anchor = text
+            .trim_end()
+            .rfind('\n')
+            .ok_or("missing final paragraph")?
+            + 1;
+        input.apply_text_selection(
+            &scene,
+            TextCommand::SetSelection {
+                anchor: anchor as i64,
+                focus: text.len() as i64,
+            },
+        );
+        let actual = optimized.snapshot(&scene, 960, 640, 2.0, &input)?;
+        let expected = direct.snapshot(&scene, 960, 640, 2.0, &input)?;
+        assert_eq!(actual.layout, expected.layout);
+        assert_same_pixels(&actual, &expected);
+        assert!(optimized.styled_text_culled_fragments() - culling_before > 32_768);
+        if appended {
+            assert!(optimized.styled_text_reused_fragments() - reuse_before > 32_768);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual timing of rich-text links and selection near the end of a document"]
+fn benchmark_long_styled_text_interaction() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{hint::black_box, time::Instant};
+    use xrack_layout::{TextAreaMotion, TextEdit};
+    use xrack_runtime::{Length, Orientation, ViewportHandle};
+
+    let size = Size::new(640.0, 480.0);
+    let mut scene = long_styled_text_scene(size, 10_000)?;
+    let handle = ViewportHandle::default();
+    handle.bind_offset(
+        Orientation::Vertical,
+        || Length(-f64::from(f32::MAX)),
+        |_| {},
+    );
+    scene.children[0].viewport_handle = Some(handle);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+
+    fn measure(stage: &str, mut action: impl FnMut(usize)) {
+        let mut samples = Vec::with_capacity(200);
+        for index in 0..210 {
+            let start = Instant::now();
+            action(index);
+            if index >= 10 {
+                samples.push(start.elapsed());
+            }
+        }
+        samples.sort_unstable();
+        println!(
+            "{stage}: p50={:.3}ms p95={:.3}ms",
+            samples[99].as_secs_f64() * 1000.0,
+            samples[189].as_secs_f64() * 1000.0
+        );
+    }
+
+    for angle in [0.0, 7.0] {
+        scene.children[0]
+            .properties
+            .insert("transform-rotation", angle.into());
+        let mut input = Interaction::default();
+        let layout = renderer.layout_with_input(&scene, size, &input);
+        let item = layout.at_path(&[0, 0]).ok_or("missing rich-text layout")?;
+        let plan = item.styled_text.as_ref().ok_or("missing text geometry")?;
+        let text = scene.children[0].children[0]
+            .text("text")
+            .ok_or("missing rich text")?;
+        let points: Vec<_> = item
+            .text_link_regions()
+            .filter_map(|(link, rect)| {
+                let center = Point {
+                    x: rect.x + rect.width * 0.5,
+                    y: rect.y + rect.height * 0.5,
+                };
+                let window = item.map_to_window(center);
+                (item.contains_clip_point(window)
+                    && window.x >= 0.0
+                    && window.x < size.width
+                    && window.y >= 0.0
+                    && window.y < size.height)
+                    .then_some((
+                        link,
+                        window,
+                        Point {
+                            x: center.x - item.bounds.x,
+                            y: center.y - item.bounds.y,
+                        },
+                    ))
+            })
+            .collect();
+        assert!(points.len() > 3 && points[0].0 > 9900);
+        let mut editor = TextEdit::default();
+        editor.place_caret(
+            text,
+            plan.selection_hit(points[points.len() / 2].2)
+                .ok_or("missing caret")?,
+            false,
+        );
+        println!(
+            "rich-text interaction: rotation={angle}, fragments={}, visible links={}",
+            plan.fragments.len(),
+            points.len()
+        );
+        measure("link regions", |_| {
+            black_box(item.text_link_regions().count());
+        });
+        measure("pointer move", |i| {
+            let (link, point, _) = points[i % points.len()];
+            input.pointer_move(&scene, &layout, point);
+            assert_eq!(
+                input
+                    .hovered
+                    .as_ref()
+                    .and_then(|target| target.text_link_index()),
+                Some(link)
+            );
+        });
+        measure("tab focus", |_| {
+            black_box(input.focus_next(&scene, &layout, false));
+        });
+        assert!(
+            input
+                .focused
+                .as_ref()
+                .and_then(|target| target.text_link_index())
+                .is_some()
+        );
+        measure("selection hit", |i| {
+            black_box(plan.selection_hit(points[i % points.len()].2));
+        });
+        measure("caret step", |i| {
+            let motion = if i % 2 == 0 {
+                TextAreaMotion::Right
+            } else {
+                TextAreaMotion::Left
+            };
+            assert!(plan.move_selection(text, &mut editor, motion, false));
+        });
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual GPU measurement of continuously updated rich-text output"]
+fn benchmark_styled_text_append() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{
+        fmt::Write as _,
+        time::{Duration, Instant},
+    };
+    use xrack_runtime::{Length, Orientation, StyledText, ViewportHandle};
+
+    let paragraphs = std::env::var("XRACK_STYLED_TEXT_PARAGRAPHS")
+        .map_or(Ok(1200_usize), |value| value.parse())?;
+    if !(100..=12_000).contains(&paragraphs) {
+        return Err("XRACK_STYLED_TEXT_PARAGRAPHS must be between 100 and 12000".into());
+    }
+    let modes: &[bool] = if std::env::var_os("XRACK_STYLED_TEXT_OPTIMIZED_ONLY").is_some() {
+        &[true]
+    } else {
+        &[false, true]
+    };
+    let follow_latest = std::env::var_os("XRACK_STYLED_TEXT_LATEST").is_some();
+    let transform = std::env::var("XRACK_STYLED_TEXT_TRANSFORM").unwrap_or_default();
+    if !matches!(transform.as_str(), "" | "rotate" | "zoom") {
+        return Err("XRACK_STYLED_TEXT_TRANSFORM must be rotate or zoom".into());
+    }
+    let size = Size::new(640.0, 480.0);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Rich-text append benchmark"),
+        size: wgpu::Extent3d {
+            width: 1280,
+            height: 960,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    println!(
+        "rich-text append: {paragraphs} paragraphs, follow_latest={follow_latest}, transform={transform}"
+    );
+    for &enabled in modes {
+        renderer.set_styled_text_incremental_enabled(enabled);
+        let before = renderer.styled_text_reused_fragments();
+        let before_culling = renderer.styled_text_culled_fragments();
+        let mut source = long_styled_text_markdown(paragraphs)?;
+        let mut scene = long_styled_text_scene(size, paragraphs)?;
+        if follow_latest {
+            let handle = ViewportHandle::default();
+            handle.bind_offset(
+                Orientation::Vertical,
+                || Length(-f64::from(f32::MAX)),
+                |_| {},
+            );
+            scene.children[0].viewport_handle = Some(handle);
+        }
+        let mut input = Interaction::default();
+        let mut layout = renderer.layout_with_input(&scene, size, &input);
+        let mut stats = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for index in 0..35 {
+            let start = Instant::now();
+            let viewport = &mut scene.children[0];
+            match transform.as_str() {
+                "rotate" => {
+                    let angle = 7.0 * (f64::from(index) * 0.17).sin();
+                    viewport
+                        .properties
+                        .insert("transform-rotation", angle.into());
+                }
+                "zoom" => {
+                    let scale = 0.75 + f64::from(index) / 68.0;
+                    viewport.properties.insert("transform-scale", scale.into());
+                }
+                _ => {}
+            }
+            writeln!(
+                source,
+                "**{index}** 继续输出 · `bazel test` · [报告](report-{index}) · שלום\n"
+            )?;
+            scene.children[0].children[0]
+                .properties
+                .insert("text", StyledText::from_markdown(&source)?.into());
+            let parsed = start.elapsed();
+            if !follow_latest {
+                assert!(input.accessibility_scroll_to(
+                    &layout,
+                    &[0],
+                    Orientation::Vertical,
+                    720.0 + index as f32 * 33.0,
+                ));
+            }
+            layout = renderer.layout_with_input(&scene, size, &input);
+            let prepared = start.elapsed();
+            renderer.draw_with_layout(&scene, &layout, &texture, 2.0, &input)?;
+            let submitted = start.elapsed();
+            renderer.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(10)),
+            })?;
+            if index >= 5 {
+                for (samples, value) in stats.iter_mut().zip([
+                    parsed,
+                    prepared - parsed,
+                    submitted - prepared,
+                    start.elapsed(),
+                ]) {
+                    samples.push(value);
+                }
+            }
+        }
+        if follow_latest {
+            let scroll = layout.children[0]
+                .scroll_on(Orientation::Vertical)
+                .ok_or("missing rich-text viewport")?;
+            assert!(scroll.max_offset > 0.0 && scroll.offset == scroll.max_offset);
+        }
+        for (stage, samples) in ["markdown", "layout", "submit", "total"]
+            .into_iter()
+            .zip(&mut stats)
+        {
+            samples.sort_unstable();
+            println!(
+                "rich-text append incremental={enabled} {stage}: p50={:.2}ms p95={:.2}ms",
+                samples[14].as_secs_f64() * 1000.0,
+                samples[28].as_secs_f64() * 1000.0
+            );
+        }
+        let reused = renderer.styled_text_reused_fragments() - before;
+        println!(
+            "rich-text append incremental={enabled} reused fragments: {reused}, culled fragments: {}",
+            renderer.styled_text_culled_fragments() - before_culling
+        );
+        if enabled && paragraphs == 1200 {
+            assert!(reused > 100_000);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 #[ignore = "manual GPU performance measurement"]
 fn benchmark_stack_compositing() {
     use std::time::{Duration, Instant};
@@ -10334,6 +14067,182 @@ fn benchmark_scroll_row_layout() {
     );
 }
 
+#[test]
+#[ignore = "manual GPU measurement of a large table's horizontal scroll"]
+fn benchmark_wide_table_scroll() {
+    benchmark_wide_table(false);
+}
+
+#[test]
+#[ignore = "manual GPU measurement of a large table's column resizing"]
+fn benchmark_wide_table_resize() {
+    benchmark_wide_table(true);
+}
+
+fn benchmark_wide_table(resize: bool) {
+    use std::rc::Rc;
+    use xrack_runtime::{
+        Component, ControlAction, LayoutDirection, Length, ListMetrics, ListRowRenderer, Node,
+        Orientation, Property, TableColumnWindow, TableHeader, TableRowOrder,
+        TextHorizontalAlignment, VecModel, project_standard_table_rows, resize_table_column,
+    };
+
+    struct Sheet(Rc<Node>);
+    impl Component for Sheet {
+        fn render(&self) -> Node {
+            (*self.0).clone()
+        }
+        fn render_shared(&self) -> Rc<Node> {
+            self.0.clone()
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let proof = std::env::var_os("XRACK_TABLE_BENCH_PIXELS").is_some();
+    for (count, step) in [(512, 137.0), (8192, 1229.0)] {
+        let model = Rc::new(VecModel::from((0..50_000).collect::<Vec<usize>>()));
+        let rows = TableRowOrder::default().rows(model);
+        let mut table = Node::new("TableView", None);
+        table.properties.insert("__standard-table", true.into());
+        if proof && std::env::var_os("XRACK_TABLE_BENCH_RTL").is_some() {
+            table
+                .properties
+                .insert("layout-direction", LayoutDirection::RightToLeft.into());
+        }
+        table.properties.insert("frozen-columns", 2_i64.into());
+        table.properties.insert("row-height", Length(24.0).into());
+        table.properties.insert("resizable-columns", true.into());
+        table.list = Some(ListMetrics {
+            row_count: 50_000,
+            first_row: 0,
+        });
+        table.table_header = Some(Box::new(TableHeader {
+            columns: (0..count)
+                .map(|index| {
+                    let mut column = Node::new("TableColumn", None);
+                    column
+                        .properties
+                        .insert("width", Length(80.0 + (index % 5) as f64).into());
+                    column
+                        .properties
+                        .insert("title", format!("Field {index}").into());
+                    column
+                        .properties
+                        .insert("visible", (index % 19 != 7).into());
+                    column.into_shared()
+                })
+                .collect(),
+            sort: None,
+            column_widths: Vec::new(),
+        }));
+        table.list_row_renderer = Some(ListRowRenderer::with_columns(
+            move |range, columns: &TableColumnWindow| {
+                let mut projected = project_standard_table_rows(
+                    &rows,
+                    range,
+                    columns,
+                    count,
+                    |_| None,
+                    |row, column| {
+                        if proof {
+                            format!("{row}:{column} שלום · 构建")
+                        } else {
+                            format!("{row}:{column}")
+                        }
+                    },
+                    |_| None,
+                );
+                if proof {
+                    for row in &mut projected {
+                        for (index, cell) in row.children.iter_mut().enumerate() {
+                            if columns.logical_index(index) % 2 == 0 {
+                                cell.properties.insert(
+                                    "horizontal-alignment",
+                                    TextHorizontalAlignment::Center.into(),
+                                );
+                            }
+                        }
+                    }
+                }
+                assert!(projected.len() <= 25);
+                assert!(projected.iter().all(|row| row.children.len() <= 15));
+                projected
+            },
+        ));
+        let viewport = Size::new(950.0, 580.0);
+        let sheet = Sheet(Rc::new(table));
+        if resize {
+            let widths = Property::default();
+            let mut grip = None;
+            profile_frames(
+                &format!("50,000 rows x {count} columns, resize"),
+                &sheet,
+                viewport,
+                |input, scene, layout, frame| {
+                    let (start, direction) = *grip.get_or_insert_with(|| {
+                        let table = layout.table.as_ref().unwrap();
+                        let column = table.columns[0];
+                        let rtl = sheet.0.layout_direction() == Some(LayoutDirection::RightToLeft);
+                        let point = xrack_layout::Point {
+                            x: if rtl {
+                                column.x + 1.0
+                            } else {
+                                column.x + column.width - 1.0
+                            },
+                            y: table.header.y + 12.0,
+                        };
+                        input.pointer_move(scene, layout, point);
+                        assert_eq!(input.table_resize_column(&[]), Some(0));
+                        input.pointer_press();
+                        (point, if rtl { -1.0 } else { 1.0 })
+                    });
+                    let phase = ((frame - 1) % 60 + 1) as i32;
+                    let delta = (30 - (30 - phase).abs()) * 3 + 3;
+                    assert_eq!(layout.table.as_ref().unwrap().columns[0].width, {
+                        widths
+                            .get(Vec::new)
+                            .first()
+                            .copied()
+                            .flatten()
+                            .unwrap_or(80) as f32
+                    });
+                    input.pointer_move(
+                        scene,
+                        layout,
+                        xrack_layout::Point {
+                            x: start.x + direction * delta as f32,
+                            y: start.y,
+                        },
+                    );
+                    let action = input.table_resize_drag(scene, layout).unwrap().action;
+                    assert_eq!(
+                        action,
+                        ControlAction::ResizeColumn {
+                            column: 0,
+                            width: (80 + delta) as u32,
+                        }
+                    );
+                    assert!(resize_table_column(&widths, 0, (80 + delta) as u32));
+                    let mut table = sheet.render();
+                    table.table_header.as_mut().unwrap().column_widths = widths.get(Vec::new);
+                    Rc::new(table)
+                },
+            );
+        } else {
+            profile_scroll_frames(
+                &format!("50,000 rows x {count} columns"),
+                &sheet,
+                viewport,
+                &[],
+                Orientation::Horizontal,
+                step,
+            );
+        }
+    }
+}
+
 fn profile_scroll_frames(
     label: &str,
     component: &impl xrack_runtime::Component,
@@ -10341,6 +14250,24 @@ fn profile_scroll_frames(
     path: &[usize],
     axis: xrack_runtime::Orientation,
     pixels_per_frame: f32,
+) {
+    let base = component.render_shared();
+    profile_frames(label, component, viewport, |input, _, layout, step| {
+        assert!(input.accessibility_scroll_to(layout, path, axis, step as f32 * pixels_per_frame));
+        base.clone()
+    });
+}
+
+fn profile_frames(
+    label: &str,
+    component: &impl xrack_runtime::Component,
+    viewport: Size,
+    mut update: impl FnMut(
+        &mut Interaction,
+        &xrack_runtime::Node,
+        &xrack_layout::LayoutNode,
+        usize,
+    ) -> std::rc::Rc<xrack_runtime::Node>,
 ) {
     use std::time::{Duration, Instant};
 
@@ -10351,7 +14278,7 @@ fn profile_scroll_frames(
     .unwrap();
     let scale = 2.0;
     let target = renderer.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("XRack scroll frame profile"),
+        label: Some("XRack frame profile"),
         size: wgpu::Extent3d {
             width: (viewport.width * scale) as u32,
             height: (viewport.height * scale) as u32,
@@ -10364,14 +14291,17 @@ fn profile_scroll_frames(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
-    let base = component.render_shared();
+    let mut base = component.render_shared();
     let mut input = Interaction::default();
+    let mut scene = base.clone();
     let mut layout = renderer.layout_with_input(&base, viewport, &input);
-    let mut samples: [Vec<f64>; 4] = std::array::from_fn(|_| Vec::new());
+    let mut samples: [Vec<f64>; 5] = std::array::from_fn(|_| Vec::new());
     for step in 1..=120 {
-        assert!(input.accessibility_scroll_to(&layout, path, axis, step as f32 * pixels_per_frame));
         let start = Instant::now();
-        let (scene, next) = renderer.prepare_scene(component, base.clone(), viewport, &input);
+        base = update(&mut input, &scene, &layout, step);
+        let updated = Instant::now();
+        let next;
+        (scene, next) = renderer.prepare_scene(component, base.clone(), viewport, &input);
         input.reconcile(&scene, &next);
         let prepared = Instant::now();
         renderer
@@ -10388,7 +14318,8 @@ fn profile_scroll_frames(
         let complete = Instant::now();
         if step > 20 {
             for (samples, elapsed) in samples.iter_mut().zip([
-                prepared - start,
+                updated - start,
+                prepared - updated,
                 submitted - prepared,
                 complete - submitted,
                 complete - start,
@@ -10398,13 +14329,28 @@ fn profile_scroll_frames(
         }
         layout = next;
     }
-    let [prepare, submit, gpu_wait, total] = samples.map(|mut samples| {
+    let [update, prepare, submit, gpu_wait, total] = samples.map(|mut samples| {
         samples.sort_by(f64::total_cmp);
         samples[(samples.len() * 95).div_ceil(100) - 1]
     });
     println!(
-        "{label} frame p95 at 2x: prepare {prepare:.3} ms, submit {submit:.3} ms, GPU wait {gpu_wait:.3} ms, total {total:.3} ms"
+        "{label} frame p95 at 2x: update {update:.3} ms, prepare {prepare:.3} ms, submit {submit:.3} ms, GPU wait {gpu_wait:.3} ms, total {total:.3} ms"
     );
+    if let Some(directory) = std::env::var_os("XRACK_TABLE_BENCH_PIXELS") {
+        let (scene, layout) = renderer.prepare_scene(component, base, viewport, &input);
+        let snapshot = renderer
+            .snapshot_prepared(
+                &scene,
+                layout,
+                target.width(),
+                target.height(),
+                scale,
+                &input,
+            )
+            .unwrap();
+        let path = std::path::PathBuf::from(directory).join(format!("{label}.rgba"));
+        std::fs::write(path, snapshot.rgba).unwrap();
+    }
 }
 
 #[test]
@@ -11674,6 +15620,9 @@ fn media_renders_embedded_images_and_vector_paths() {
     let scene = demo.render();
     let interpreted_scene = interpreted.try_render().unwrap();
     let input = Interaction::default();
+    // Compare the geometry producers on the direct path, independently of
+    // whether their first frame would populate an 8-bit coverage texture.
+    renderer.set_vector_mask_cache_enabled(false);
     let snapshot = renderer.snapshot(&scene, 660, 376, 1.0, &input).unwrap();
     let interpreted_snapshot = renderer
         .snapshot(&interpreted_scene, 660, 376, 1.0, &input)
@@ -11776,6 +15725,29 @@ fn media_renders_embedded_images_and_vector_paths() {
     assert_eq!(hidpi.layout.bounds, snapshot.layout.bounds);
     assert_eq!(hidpi.pixel(660, 372), Some([0xff, 0xe5, 0x96, 255]));
     assert_eq!(hidpi.pixel(1074, 376), Some(card));
+
+    renderer.set_vector_mask_cache_enabled(true);
+    let cold = renderer.snapshot(&scene, 660, 376, 1.0, &input).unwrap();
+    assert_same_pixels(&cold, &snapshot);
+    let stats = renderer.vector_mask_stats();
+    let warmed = renderer.snapshot(&scene, 660, 376, 1.0, &input).unwrap();
+    assert_eq!(
+        renderer.vector_mask_stats().rasterized - stats.rasterized,
+        2
+    );
+    let warmed_interpreter = renderer
+        .snapshot(&interpreted_scene, 660, 376, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&warmed_interpreter, &warmed);
+    assert!(renderer.vector_mask_stats().reused > stats.reused);
+    assert!(
+        warmed
+            .rgba
+            .iter()
+            .zip(&snapshot.rgba)
+            .all(|(a, b)| a.abs_diff(*b) <= 3)
+    );
+
     if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
         snapshot
             .save_png(std::path::Path::new(&path).join("media-demo.png"))
@@ -12669,10 +16641,15 @@ fn whole_subtree_opacity_and_sibling_z_match_gpu_and_input() {
         .insert("background", xrack_runtime::Color(0xffff00ff).into());
     let refreshed = renderer.snapshot(&changed, 460, 292, 1.0, &input).unwrap();
     assert_rgb(refreshed.pixel(78, 91), [76, 81, 28, 255]);
-    assert_eq!(
-        renderer.opacity_layer_stats().rasterized,
-        stats.rasterized + 1
-    );
+    if cfg!(any(target_os = "ios", target_os = "android")) {
+        assert_eq!(
+            renderer.opacity_layer_stats().rasterized,
+            stats.rasterized + 1
+        );
+    } else {
+        assert_eq!(renderer.opacity_layer_stats().rasterized, stats.rasterized);
+        assert_eq!(renderer.opacity_atlas_stats().groups, 0);
+    }
 
     ui.set_fade(0.0);
     let clear = ui.render_shared();
@@ -12989,6 +16966,78 @@ fn transformed_controls_keep_layout_geometry_and_share_exact_hit_coordinates() {
     input.reconcile(&collapsed, &snapshot.layout);
     input.pointer_move(&collapsed, &snapshot.layout, mapped);
     assert!(input.hovered.is_none());
+}
+
+#[test]
+fn transformed_clip_pixels_and_input_match_between_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut aot = layout_ui::TransformDemo::new();
+    let mut interpreted = interpret_example("examples/layout/layout.xr").create("TransformDemo")?;
+    let mut clicks = 0;
+    for (angle, zoom, dpi) in [(90.0, 1.0, 1), (37.0, 0.75, 2), (37.0, 0.0, 2)] {
+        aot.set_angle(angle);
+        aot.set_scale_factor(zoom);
+        interpreted.set("angle", angle.into())?;
+        interpreted.set("scale-factor", zoom.into())?;
+        let aot_scene = aot.render_shared();
+        let interpreter_scene = interpreted.render_shared();
+        let input = Interaction::default();
+        let compiled = renderer.snapshot(&aot_scene, 460 * dpi, 286 * dpi, dpi as f32, &input)?;
+        let dynamic =
+            renderer.snapshot(&interpreter_scene, 460 * dpi, 286 * dpi, dpi as f32, &input)?;
+        assert_same_pixels(&compiled, &dynamic);
+
+        let path = [1, 0, 0];
+        let layout = compiled.layout.at_path(&path).ok_or("missing AOT button")?;
+        let mirror = dynamic
+            .layout
+            .at_path(&path)
+            .ok_or("missing interpreter button")?;
+        assert_eq!(
+            layout.visible_window_bounds(layout.bounds),
+            mirror.visible_window_bounds(mirror.bounds)
+        );
+        assert_eq!(layout.visible, zoom > 0.0);
+        let local = Point {
+            x: layout.bounds.x + layout.bounds.width / 2.0,
+            y: layout.bounds.y + layout.bounds.height / 2.0,
+        };
+        let window = layout.map_to_window(local);
+        assert_eq!(window, mirror.map_to_window(local));
+        if zoom == 0.0 {
+            assert!(layout.map_from_window(window).is_none());
+            assert!(mirror.map_from_window(window).is_none());
+            continue;
+        }
+        for (component, scene, frame) in [
+            (&mut aot as &mut dyn Component, &aot_scene, &compiled.layout),
+            (
+                &mut interpreted as &mut dyn Component,
+                &interpreter_scene,
+                &dynamic.layout,
+            ),
+        ] {
+            let mut input = Interaction::default();
+            input.pointer_move(scene, frame, window);
+            input.pointer_press_in_scene(scene, frame);
+            let target = input
+                .pointer_release_target()
+                .ok_or("transformed button missed input")?;
+            assert_eq!(target.path, path);
+            assert!(component.dispatch_at(scene, &target.path, "clicked"));
+        }
+        clicks += 1;
+        assert_eq!(aot.get_clicks(), clicks);
+        assert_eq!(
+            interpreted.get("clicks")?,
+            xrack_runtime::Value::Int(clicks)
+        );
+    }
+    Ok(())
 }
 
 #[test]

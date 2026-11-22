@@ -75,10 +75,6 @@ impl Element {
     }
 }
 
-fn capture(before: &RecordValue, after: &RecordValue, patch: &mut TableRowPatch<RecordValue>) {
-    patch.record_changes(before, after);
-}
-
 pub(crate) fn capture_string(before: &String, after: &String, patch: &mut TableRowPatch<String>) {
     patch.record(
         before,
@@ -122,7 +118,7 @@ trait EditableRow: Clone + PartialEq + 'static {
     fn row_value(&self) -> Value;
     fn field_value(&self, path: &[String]) -> Option<Value>;
     fn replace_field(&self, path: &[String], value: Value) -> Option<Self>;
-    fn capture(before: &Self, after: &Self, patch: &mut TableRowPatch<Self>);
+    fn capture(program: &Program, before: &Self, after: &Self, patch: &mut TableRowPatch<Self>);
 }
 
 impl EditableRow for RecordValue {
@@ -135,8 +131,8 @@ impl EditableRow for RecordValue {
     fn replace_field(&self, path: &[String], value: Value) -> Option<Self> {
         replace_field(self, path, value)
     }
-    fn capture(before: &Self, after: &Self, patch: &mut TableRowPatch<Self>) {
-        capture(before, after, patch);
+    fn capture(program: &Program, before: &Self, after: &Self, patch: &mut TableRowPatch<Self>) {
+        patch.record_changes_with(before, after, |name| program.is_enum_record(name));
     }
 }
 
@@ -153,7 +149,7 @@ impl EditableRow for String {
             _ => None,
         }
     }
-    fn capture(before: &Self, after: &Self, patch: &mut TableRowPatch<Self>) {
+    fn capture(_: &Program, before: &Self, after: &Self, patch: &mut TableRowPatch<Self>) {
         capture_string(before, after, patch);
     }
 }
@@ -395,7 +391,7 @@ impl Instance {
             target.key,
             record_history,
             update,
-            capture,
+            |before, after, patch| RecordValue::capture(self.program(), before, after, patch),
         ))
     }
 
@@ -599,7 +595,7 @@ impl Instance {
                 *next = updated;
                 Ok(Some(()))
             },
-            T::capture,
+            |before, after, patch| T::capture(self.program(), before, after, patch),
         )?;
         Ok(changed.unwrap_or(false))
     }

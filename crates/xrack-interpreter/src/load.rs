@@ -16,7 +16,7 @@ use xrack_resources::visual::{
 use xrack_runtime::{self as runtime, Percent};
 use xrack_syntax::{
     ast::{Parameter, Type},
-    builtins::{ColorFunction, MathFunction, StringFunction, builtin_element},
+    builtins::{ColorFunction, GeometryFunction, MathFunction, StringFunction, builtin_element},
 };
 
 /// Load XR dialect text without consulting the filesystem.
@@ -53,7 +53,23 @@ pub(crate) fn program(
                         })
                     })
                     .collect::<Result<_>>()?;
-                Ok((record.name.to_owned(), fields))
+                let variants = record
+                    .variants
+                    .into_iter()
+                    .map(|variant| {
+                        variant
+                            .fields
+                            .into_iter()
+                            .map(|field| {
+                                Ok(RecordField {
+                                    name: field.name,
+                                    ty: kind(op, &field.ty)?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .collect::<Result<_>>()?;
+                Ok((record.name.to_owned(), RecordSchema { fields, variants }))
             })
             .collect::<Result<BTreeMap<_, _>>>()?,
     );
@@ -168,6 +184,9 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::Int => ValueType::Int,
         Type::Float => ValueType::Float,
         Type::Length => ValueType::Length,
+        Type::Point2D => ValueType::Point2D,
+        Type::Vector2D => ValueType::Vector2D,
+        Type::Transform2D => ValueType::Transform2D,
         Type::Percent => ValueType::Percent,
         Type::Color => ValueType::Color,
         Type::Brush => ValueType::Brush,
@@ -298,6 +317,7 @@ struct Loader<'m> {
     text_selection_targets: BTreeSet<String>,
     text_command_targets: BTreeSet<String>,
     row_parameters: Vec<(String, Option<String>)>,
+    enum_bindings: Vec<String>,
     in_split_handle: bool,
     in_day_cell: bool,
     in_section_header: bool,
@@ -459,6 +479,8 @@ impl<'m> Loader<'m> {
             result,
             body,
             pure: op.attribute("pure") == Some("true"),
+            cache_default: op.attribute("xr.cache_callback_default") == Some("true"),
+            inline_default: op.attribute("xr.inline_callback_default") == Some("true"),
             alias: None,
         })
     }
@@ -469,10 +491,19 @@ impl<'m> Loader<'m> {
         parameters: &[Parameter],
     ) -> Result<Vec<Statement>> {
         let mut body = Vec::new();
+        let mut locals = parameters.to_vec();
         for statement in operations {
+            let parameters = locals.as_slice();
             let expression =
                 |this: &mut Self, index| this.expression(operand(statement, index)?, parameters);
             match statement.name() {
+                "xr.local" => {
+                    body.push(Statement::Local(expression(self, 0)?));
+                    locals.push(Parameter {
+                        name: attribute(statement, "name")?.into(),
+                        ty: value_type(statement, operand(statement, 0)?)?,
+                    });
+                }
                 "xr.if" => {
                     let condition = expression(self, 0)?;
                     let mut branches = statement.regions().map(|region| {
@@ -1249,7 +1280,10 @@ impl<'m> Loader<'m> {
                         name,
                         expression,
                         paint_only: self.use_visual_plan
-                            && child.attribute("xr.update_effect") == Some("paint"),
+                            && matches!(
+                                child.attribute("xr.update_effect"),
+                                Some("paint" | "accessibility")
+                            ),
                         vector_path,
                     });
                 }
@@ -1501,7 +1535,7 @@ impl<'m> Loader<'m> {
     fn record_fields(&self, op: Op<'m>, name: &str) -> Result<&[RecordField]> {
         self.records
             .get(name)
-            .map(Vec::as_slice)
+            .map(|schema| schema.fields.as_slice())
             .ok_or_else(|| invalid(op, format_args!("unknown record {name}")))
     }
 
@@ -1804,8 +1838,12 @@ impl<'m> Loader<'m> {
                     xrack_resources::nine_slice_edges(op).map_err(|error| invalid(op, error))?;
                 Expression::NineSlice(argument(self, 0)?, edges)
             }
-            "xr.loop_param" => {
-                let name = spelling()?;
+            "xr.local" | "xr.loop_param" => {
+                let name = if op.name() == "xr.local" {
+                    attribute(op, "name")?
+                } else {
+                    spelling()?
+                };
                 Expression::Param(
                     parameters
                         .iter()
@@ -1855,10 +1893,113 @@ impl<'m> Loader<'m> {
                 }
                 Expression::Unary(operator, input)
             }
+            "xr.concat" => {
+                let parts = (0..op.operand_count())
+                    .map(|index| {
+                        let input = argument(self, index)?;
+                        Ok(match input.as_ref() {
+                            Expression::Literal(Value::String(text)) => {
+                                crate::TextPart::Static(Rc::from(text.as_str()))
+                            }
+                            _ => crate::TextPart::Dynamic(input),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Expression::Concat(parts)
+            }
             "xr.binary" => Expression::Binary(
                 BinaryOperator::from_operation(op).map_err(|error| invalid(op, error))?,
                 argument(self, 0)?,
                 argument(self, 1)?,
+            ),
+            "xr.enum_parameter" => {
+                let name = spelling()?;
+                let index = self
+                    .enum_bindings
+                    .iter()
+                    .rposition(|binding| binding == name)
+                    .ok_or_else(|| invalid(op, format_args!("unknown enum binding {name}")))?;
+                Expression::Param(parameters.len() + index)
+            }
+            "xr.enum_construct" => {
+                let Type::Record(name) = ty else {
+                    return Err(invalid(op, "expected enum result"));
+                };
+                let tag = op
+                    .integer_attribute("tag")
+                    .ok_or_else(|| invalid(op, "missing enum tag"))?;
+                let names = op
+                    .string_array_attribute("fields")
+                    .ok_or_else(|| invalid(op, "missing enum payload fields"))?;
+                if names.len() != op.operand_count() {
+                    return Err(invalid(op, "enum field count mismatch"));
+                }
+                let mut fields = vec![(
+                    xrack_syntax::ast::ENUM_TAG_FIELD.into(),
+                    Rc::new(Expression::Literal(Value::Int(tag))),
+                )];
+                for (index, field) in names.into_iter().enumerate() {
+                    fields.push((field.into(), argument(self, index)?));
+                }
+                Expression::Record {
+                    name: name.into(),
+                    fields,
+                    base: None,
+                }
+            }
+            "xr.enum_match" => {
+                let subject = operand(op, 0)?;
+                let Type::Record(name) = value_type(op, subject)? else {
+                    return Err(invalid(op, "expected enum scrutinee"));
+                };
+                let schema = self
+                    .records
+                    .get(name.as_ref())
+                    .ok_or_else(|| invalid(op, "unknown enum schema"))?;
+                let mut cases = Vec::new();
+                for case in op.children().filter(|op| op.name() == "xr.enum_case") {
+                    let ordinal = case
+                        .integer_attribute("ordinal")
+                        .and_then(|tag| usize::try_from(tag).ok())
+                        .ok_or_else(|| invalid(case, "invalid enum case ordinal"))?;
+                    let fields = schema
+                        .variants
+                        .get(ordinal)
+                        .ok_or_else(|| invalid(case, "unknown enum case variant"))?;
+                    let scope = attribute(case, "name")?;
+                    let names: Vec<_> = fields.iter().map(|field| field.name.clone()).collect();
+                    let result = case
+                        .children()
+                        .find(|child| child.name() == "xr.enum_result")
+                        .ok_or_else(|| invalid(case, "missing enum case result"))?;
+                    cases.push((names, result, scope));
+                }
+                let cases = cases
+                    .into_iter()
+                    .map(|(fields, op, scope)| {
+                        let input = operand(op, 0)?;
+                        let enclosing = self.enum_bindings.len();
+                        self.enum_bindings
+                            .extend((0..fields.len()).map(|index| format!("{scope}_{index}")));
+                        let result = self.expression(input, parameters);
+                        self.enum_bindings.truncate(enclosing);
+                        Ok(EnumCase {
+                            fields,
+                            result: result?,
+                        })
+                    })
+                    .collect::<Result<_>>()?;
+                Expression::EnumMatch {
+                    name: name.into(),
+                    subject: argument(self, 0)?,
+                    cases,
+                }
+            }
+            "xr.match_enum" => Expression::MatchEnum(
+                argument(self, 0)?,
+                (1..op.operand_count())
+                    .map(|index| argument(self, index))
+                    .collect::<Result<_>>()?,
             ),
             "xr.select" => {
                 Expression::Select(argument(self, 0)?, argument(self, 1)?, argument(self, 2)?)
@@ -1869,10 +2010,24 @@ impl<'m> Loader<'m> {
                     .ok_or_else(|| invalid(op, "unknown math function"))?;
                 Expression::MathFunction(kind, arguments(self)?)
             }
+            "xr.geometry_function" => {
+                let kind = GeometryFunction::parse(spelling()?)
+                    .ok_or_else(|| invalid(op, "unknown geometry function"))?;
+                Expression::GeometryFunction(kind, arguments(self)?)
+            }
             "xr.string_function" => {
                 let kind = StringFunction::parse(spelling()?)
                     .ok_or_else(|| invalid(op, "unknown string function"))?;
                 Expression::StringFunction(kind, arguments(self)?)
+            }
+            "xr.model_filter" | "xr.model_lookup" | "xr.model_sort_by" => {
+                Expression::ModelProjection {
+                    model: argument(self, 0)?,
+                    field: spelling()?.split('.').map(str::to_owned).collect(),
+                    option: argument(self, 1)?,
+                    filter: op.name() != "xr.model_sort_by",
+                    exact: op.name() == "xr.model_lookup",
+                }
             }
             "xr.model_count" => Expression::ModelCount(argument(self, 0)?),
             "xr.model_is_empty" => Expression::ModelIsEmpty(argument(self, 0)?),
@@ -2008,6 +2163,8 @@ impl<'m> Loader<'m> {
             "xr.date_field"
             | "xr.time_field"
             | "xr.font_field"
+            | "xr.point2d_field"
+            | "xr.vector2d_field"
             | "xr.key_field"
             | "xr.wheel_field"
             | "xr.pointer_field"
@@ -2102,10 +2259,13 @@ pub(super) fn default_value(
 ) -> std::result::Result<Value, String> {
     match ty {
         ValueType::Record(name) => {
-            let fields = records
+            let schema = records
                 .get(name.as_ref())
-                .ok_or_else(|| format!("unknown record {name}"))?
+                .ok_or_else(|| format!("unknown record {name}"))?;
+            let fields = schema
+                .fields
                 .iter()
+                .chain(schema.variants.first().into_iter().flatten())
                 .map(|field| Ok((field.name.clone(), default_value(records, &field.ty)?)))
                 .collect::<std::result::Result<_, String>>()?;
             Ok(Value::Record(RecordValue::new(name.clone(), fields)))
@@ -2133,6 +2293,9 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         };
     }
     Some(defaults!(
+        Point2D,
+        Vector2D,
+        Transform2D,
         EventResult,
         FocusReason,
         DialogRole,
@@ -2288,6 +2451,7 @@ const PROPERTIES: &[&str] = &[
     "stroke-width",
     "fit",
     "opacity",
+    "cache-rendering-hint",
     "z",
     "clip",
     "title",
@@ -2496,6 +2660,8 @@ const PROPERTIES: &[&str] = &[
     "handle-swipe-down",
     "open-side",
     "data",
+    "renderer",
+    "revision",
     "drag-key",
     "touch-drag-delay",
     "drag-auto-scroll",
@@ -2569,6 +2735,7 @@ const PROPERTIES: &[&str] = &[
     "inner-shadow-offset-x",
     "inner-shadow-offset-y",
     "transform-rotation",
+    "transform",
     "transform-scale",
     "transform-scale-x",
     "transform-scale-y",

@@ -2998,6 +2998,28 @@ fn styled_text_and_link_callback_match_generated_component() {
 }
 
 #[test]
+fn repeated_text_links_bind_the_clicked_row_in_both_engines() {
+    use xrack_runtime::ControlAction::ActivateTextLink;
+
+    let source = include_str!("../examples/layout/layout.xr");
+    let preview = xrack_compiler::prepare_preview(source, "layout.xr", Default::default()).unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("RepeatedLinkDemo")
+        .unwrap();
+    let mut generated = layout_ui::RepeatedLinkDemo::new();
+    let scene = interpreted.try_render().unwrap();
+    let expected = generated.render();
+    assert_same_scene(&scene, &expected);
+    for (row, path) in [(0, "counter.rs#source"), (1, "layout.rs#source")] {
+        assert!(interpreted.control_at(&scene, &[0, 0, row], ActivateTextLink(0)));
+        assert!(generated.control_at(&expected, &[0, 0, row], ActivateTextLink(0)));
+        assert_eq!(interpreted.get("last-link"), Ok(path.to_owned().into()));
+        assert_eq!(generated.get_last_link(), path);
+    }
+}
+
+#[test]
 fn styled_text_rejects_a_link_whose_destination_changed_since_render() {
     use xrack_runtime::{ControlAction::ActivateTextLink, StyledText};
 
@@ -3201,6 +3223,68 @@ fn static_repeat_snapshots_match_dynamic_rendering_and_keep_row_keys() {
     assert_eq!(after.children[0].text("text"), Some("After"));
     assert!(before.children[1].shares_storage_with(&after.children[1]));
     assert!(generated_before.children[1].shares_storage_with(&generated_after.children[1]));
+}
+
+#[test]
+fn ordinary_row_scene_cache_handles_visibility_reorder_and_routes_the_live_row() {
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let component = preview
+        .module
+        .operations()
+        .find(|op| op.attribute("sym_name") == Some("OrdinaryRowSceneCache"))
+        .unwrap();
+    let template = component
+        .children()
+        .find(|op| op.attribute("kind") == Some("Window"))
+        .unwrap()
+        .children()
+        .find(|op| op.attribute("kind") == Some("VerticalLayout"))
+        .unwrap();
+    assert_eq!(template.attribute("xr.row_scene_cache"), Some("indexed"));
+
+    let program = Program::from_module(&preview.module).unwrap();
+    let mut interpreted = program.create("OrdinaryRowSceneCache").unwrap();
+    let mut generated = expressions_ui::OrdinaryRowSceneCache::new();
+    let interpreted_rows = interpreted.string_model("rows").unwrap();
+    let generated_rows = generated.model_rows();
+    let render = |interpreted: &Instance, generated: &expressions_ui::OrdinaryRowSceneCache| {
+        let actual = interpreted.try_render().unwrap();
+        let compiled = generated.render_shared();
+        assert_same_scene(&actual, &compiled);
+        [actual, compiled]
+    };
+    let before = render(&interpreted, &generated);
+    for rows in [&interpreted_rows, &generated_rows] {
+        assert!(rows.set_row(1, String::new()));
+    }
+    let hidden = render(&interpreted, &generated);
+    for (before, hidden) in before.iter().zip(&hidden) {
+        assert!(
+            before.children[0].children[0].shares_storage_with(&hidden.children[0].children[0])
+        );
+        assert_eq!(hidden.children[0].children[1].children[0].kind, "Empty");
+    }
+    for rows in [&interpreted_rows, &generated_rows] {
+        assert!(rows.set_row(1, "streamed".into()));
+        assert!(rows.move_row(1, 0));
+    }
+    interpreted.set("suffix", "?".to_owned().into()).unwrap();
+    generated.set_suffix("?".into());
+    let moved = render(&interpreted, &generated);
+    for (before, moved) in before.iter().zip(&moved) {
+        let row = &moved.children[0].children[0];
+        assert_eq!(row.row_key, before.children[0].children[1].row_key);
+        assert_eq!(row.children[0].text("text"), Some("0:streamed?"));
+    }
+    assert!(interpreted.dispatch_at(&moved[0], &[0, 1, 0], "clicked"));
+    assert!(generated.dispatch_at(&moved[1], &[0, 1, 0], "clicked"));
+    assert_eq!(interpreted.get("clicked-index").unwrap(), 1_i64.into());
+    assert_eq!(generated.get_clicked_index(), 1);
 }
 
 #[test]
@@ -9248,6 +9332,10 @@ fn wide_tables_materialize_only_current_logical_columns() {
     use xrack_layout::{Interaction, Size};
     use xrack_runtime::{ControlAction, RowSelection, TableSelectionAction};
 
+    fn columns(scene: &xrack_runtime::Node) -> &[xrack_runtime::Node] {
+        &scene.children[1].table_header.as_ref().unwrap().columns
+    }
+
     let mut interpreted = interpret_table_fixture("WideTableDemo");
     let mut generated = WideTableDemo::new();
     let size = Size::new(620.0, 320.0);
@@ -9264,8 +9352,13 @@ fn wide_tables_materialize_only_current_logical_columns() {
         assert!(interpreted.control_at(&actual, &[1], action));
         assert!(generated.control_at(&expected, &[1], action));
     }
+    let before = [actual, expected];
     let (actual, _) = prepare_list(&interpreted, &input, size);
     let (expected, _) = prepare_list(&generated, &input, size);
+    for (before, current) in before.iter().zip([&actual, &expected]) {
+        assert!(columns(before)[1].shares_storage_with(&columns(current)[1]));
+        assert!(columns(before)[11].shares_storage_with(&columns(current)[11]));
+    }
     let select = ControlAction::TableSelection(TableSelectionAction::Cell {
         row: 0,
         column: 11,
@@ -9277,8 +9370,14 @@ fn wide_tables_materialize_only_current_logical_columns() {
     interpreted.set("show-february", false.into()).unwrap();
     generated.set_show_number(false);
     generated.set_show_february(false);
+    let before_hide = [actual, expected];
     let (actual, actual_layout) = prepare_list(&interpreted, &input, size);
     let (expected, expected_layout) = prepare_list(&generated, &input, size);
+    for (before, current) in before_hide.iter().zip([&actual, &expected]) {
+        assert!(columns(before)[0].is_visible());
+        assert!(!columns(current)[0].is_visible());
+        assert!(columns(before)[1].shares_storage_with(&columns(current)[1]));
+    }
     let indices = |layout: &xrack_layout::LayoutNode| {
         layout
             .at_path(&[1])
@@ -34801,4 +34900,147 @@ fn explicit_child_positioning_centers_nested_content_in_both_engines() {
     }
     assert_eq!(aot.focused(), Some("locate"));
     assert_eq!(interpreted.focused(), Some("locate"));
+}
+
+#[test]
+fn language_composition_matches_for_enums_locals_slots_and_model_projections() {
+    use expressions_ui::{CompositionMode, LanguageCompositionParity};
+    fn ordinal(value: CompositionMode) -> i64 {
+        match value {
+            CompositionMode::Idle => 0,
+            CompositionMode::Active => 1,
+            CompositionMode::Failed => 2,
+        }
+    }
+    assert_eq!(ordinal(CompositionMode::Active), 1);
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("LanguageCompositionParity")
+        .unwrap();
+    let mut generated = LanguageCompositionParity::new();
+
+    assert_eq!(generated.get_summary(), "[idle]");
+    assert_eq!(
+        interpreted.get("summary"),
+        Ok(Value::String("[idle]".into()))
+    );
+    generated.set_mode(CompositionMode::Active);
+    for tag in [-1_i64, 3, i64::MAX] {
+        let invalid = xrack_runtime::RecordValue::new(
+            "CompositionMode",
+            [("discriminant".into(), Value::Int(tag))]
+                .into_iter()
+                .collect(),
+        );
+        let error = interpreted.set("mode", Value::Record(invalid)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid CompositionMode variant")
+        );
+    }
+    let source = interpreted.record_model("rows").unwrap();
+    let visible = interpreted.record_model("shown").unwrap();
+    assert_eq!(visible.model().row_key(0), source.model().row_key(0));
+    generated.set_query(" AL ".into());
+    interpreted
+        .set("query", Value::String(" AL ".into()))
+        .unwrap();
+    let projected = generated.model_shown();
+    assert_eq!(projected.row_key(0), generated.model_rows().row_key(2));
+    assert!(!projected.move_row(0, 1));
+    let visible = interpreted.record_model("shown").unwrap();
+    assert_eq!(visible.model().row_key(0), source.model().row_key(2));
+
+    for (scene, title) in [
+        (generated.render(), "[active]"),
+        (interpreted.render(), "[idle]"),
+    ] {
+        let panel = scene.find("entries").unwrap();
+        let mut pending = vec![panel];
+        let mut labels = Vec::new();
+        while let Some(node) = pending.pop() {
+            labels.extend(node.text("text"));
+            pending.extend(node.children.iter().rev());
+        }
+        let action = if title == "[active]" {
+            "Working"
+        } else {
+            "Waiting"
+        };
+        assert_eq!(labels, [title, action, "0:Alpine", "1:Alpha", "Results 2"]);
+    }
+    let generated_source = generated.model_rows();
+    let mut row = generated_source.row(0).unwrap();
+    row.title = "Albatross".into();
+    assert!(generated_source.set_row(0, row));
+    let row = source
+        .model()
+        .row(0)
+        .unwrap()
+        .with_field(&["title".into()], Value::String("Albatross".into()))
+        .unwrap();
+    assert!(source.model().set_row(0, row));
+    let visible = interpreted.record_model("shown").unwrap();
+    assert_eq!(visible.model().len(), 3);
+    assert_eq!(visible.model().row_key(0), source.model().row_key(0));
+    assert_eq!(generated.model_shown().len(), 3);
+    assert_eq!(
+        generated.model_shown().row_key(0),
+        generated_source.row_key(0)
+    );
+
+    assert_eq!(generated.invoke_calculate(), 2);
+    assert_eq!(generated.get_calls(), 5);
+    assert_eq!(
+        interpreted.invoke("calculate", &[]),
+        Ok(Some(Value::Int(2)))
+    );
+    assert_eq!(interpreted.get("calls"), Ok(Value::Int(5)));
+}
+
+#[test]
+fn callback_loops_traverse_full_counts_and_models() {
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("CallbackIterationParity")
+        .unwrap();
+    let mut generated = expressions_ui::CallbackIterationParity::new();
+
+    for runs in 1..=2 {
+        generated.invoke_run();
+        interpreted.invoke("run", &[]).unwrap();
+        for (name, value, expected) in [
+            ("outer", generated.get_outer(), runs * 5003),
+            ("inner", generated.get_inner(), runs * 5003 * 3),
+            ("completed", generated.get_completed(), runs),
+        ] {
+            assert_eq!(value, expected);
+            assert_eq!(interpreted.get(name), Ok(Value::Int(expected)));
+        }
+    }
+
+    let items = vec![1; 4104];
+    generated.set_items(items.clone());
+    interpreted.set("items", Value::IntList(items)).unwrap();
+    generated.invoke_traverse();
+    interpreted.invoke("traverse", &[]).unwrap();
+    assert_eq!(generated.get_visited(), 4104);
+    assert_eq!(
+        interpreted.get("visited"),
+        Ok(Value::Int(generated.get_visited()))
+    );
 }

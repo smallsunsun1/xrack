@@ -425,6 +425,8 @@ pub fn layout_tooltip(
         layout_direction,
         anchor: None,
         resolved_list_scroll: None,
+        resolved_table: None,
+        cache_table_sizes: false,
         row_layouts: None,
         ancestor_shapes: None,
         space: None,

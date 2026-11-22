@@ -262,9 +262,12 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
                     .or_insert_with(|| Rc::new(Row::new(index, key)))
                     .clone();
                 row.sync(resolved, index, key);
-                let mut node = row
-                    .scene
-                    .try_get(|| render_row(index, &row.context, &row.state))?;
+                let mut node = row.scene.try_get(|| {
+                    let mut node = render_row(index, &row.context, &row.state)?;
+                    node.set_row_key(Some(key));
+                    Ok(node.into_shared())
+                })?;
+                // A position can switch to an equal-valued row with a new key.
                 node.set_row_key(Some(key));
                 Ok(node)
             },

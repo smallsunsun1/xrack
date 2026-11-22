@@ -17,7 +17,34 @@ fn load(source: ExternalSource) -> Result<LoadedExternal, String> {
         .split('?')
         .next()
         .unwrap_or(&source.location);
-    let module = if resource.ends_with(".mlir") {
+    let packaged = Path::new(resource)
+        .file_name()
+        .is_some_and(|name| name == "xrack-module.json");
+    let package_ir;
+    let mut package_inputs = None;
+    let filename = if packaged {
+        let path = source
+            .path
+            .as_deref()
+            .ok_or("module packages require a local manifest")?;
+        let manifest = xrack_ir::modules::read_package_manifest(path)?;
+        let root = path.parent().ok_or("module package has no directory")?;
+        package_ir = xrack_syntax::module_manifest::ModuleManifest::resolve(root, &manifest.mlir)?;
+        package_inputs = Some(
+            manifest
+                .inputs
+                .iter()
+                .map(|input| xrack_syntax::module_manifest::ModuleManifest::resolve(root, input))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        package_ir.as_path()
+    } else {
+        filename
+    };
+    let module = if packaged {
+        let text = std::fs::read_to_string(filename).map_err(|error| error.to_string())?;
+        xrack_mlir::Module::parse(&text)?
+    } else if resource.ends_with(".mlir") {
         xrack_mlir::Module::parse(&source.text)?
     } else if resource.ends_with(".xr") {
         let document = xrack_parser::parse(&source.text).map_err(|diagnostics| {
@@ -60,7 +87,7 @@ fn load(source: ExternalSource) -> Result<LoadedExternal, String> {
                 .join("\n")
         })?
     } else {
-        return Err("external Loader source must end in .xr or .mlir".into());
+        return Err("external Loader source must be .xr, .mlir or xrack-module.json".into());
     };
 
     let selected = match source.component {
@@ -101,11 +128,17 @@ fn load(source: ExternalSource) -> Result<LoadedExternal, String> {
         return Err("external Loader requires an embeddable component".into());
     }
     let program = if source.path.is_some() {
+        let assets = package_inputs.as_deref();
         let (module, translations) =
-            xrack_resources::prepare_module(module, filename, None, &BTreeMap::new())
+            xrack_resources::prepare_module(module, filename, assets, &BTreeMap::new())
                 .map_err(|error| error.to_string())?;
-        Program::from_module_with_file_resources(&module, filename, translations.catalog)
-            .map(|(program, _)| program)
+        Program::from_module_with_declared_resources(
+            &module,
+            filename,
+            translations.catalog,
+            assets,
+        )
+        .map(|(program, _)| program)
     } else {
         module.verify()?;
         Program::from_module(&module.optimize()?)

@@ -702,6 +702,18 @@ export component StyledTextDemo inherits Window {
     }
 }
 
+export component RepeatedLinkDemo inherits Window {
+    in-out property <[string]> filenames: ["counter.rs", "layout.rs"];
+    out property <string> last-link: "";
+
+    VerticalLayout {
+        for filename in root.filenames : StyledText {
+            text: @markdown("[源码](#source)");
+            link-activated(target) => { root.last-link = filename + target; }
+        }
+    }
+}
+
 export component CompositingDemo inherits Window {
     title: "XRack · 叠放与整组透明度";
     width: 460px; height: 292px;

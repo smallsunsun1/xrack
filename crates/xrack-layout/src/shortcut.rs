@@ -23,6 +23,9 @@ pub enum ShortcutKey {
     Character(char),
     Function(u8),
     Escape,
+    Tab,
+    MouseBack,
+    MouseForward,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,12 +42,18 @@ impl MenuShortcut {
     pub fn new(key: ShortcutKey, modifiers: ShortcutModifiers) -> Option<Self> {
         let key = match key {
             ShortcutKey::Character(key)
-                if key.is_ascii_alphanumeric()
+                if (key.is_ascii_alphanumeric() || matches!(key, '[' | ']'))
                     && (modifiers.ctrl || modifiers.alt || modifiers.super_key) =>
             {
                 ShortcutKey::Character(key.to_ascii_uppercase())
             }
             ShortcutKey::Function(1..=12) | ShortcutKey::Escape => key,
+            ShortcutKey::Tab if modifiers.ctrl || modifiers.alt || modifiers.super_key => key,
+            ShortcutKey::MouseBack | ShortcutKey::MouseForward
+                if modifiers == ShortcutModifiers::default() =>
+            {
+                key
+            }
             _ => return None,
         };
         Some(Self { key, modifiers })
@@ -59,6 +68,12 @@ impl FromStr for MenuShortcut {
         let key = parts.next_back().ok_or(())?.trim();
         let key = if key.eq_ignore_ascii_case("Escape") {
             ShortcutKey::Escape
+        } else if key.eq_ignore_ascii_case("Tab") {
+            ShortcutKey::Tab
+        } else if key.eq_ignore_ascii_case("MouseBack") {
+            ShortcutKey::MouseBack
+        } else if key.eq_ignore_ascii_case("MouseForward") {
+            ShortcutKey::MouseForward
         } else if let Some(function) = key.strip_prefix(['F', 'f']).filter(|_| key.len() > 1) {
             ShortcutKey::Function(function.parse().map_err(|_| ())?)
         } else {
@@ -116,6 +131,9 @@ impl fmt::Display for MenuShortcut {
             ShortcutKey::Character(key) => write!(f, "{key}"),
             ShortcutKey::Function(key) => write!(f, "F{key}"),
             ShortcutKey::Escape => f.write_str("Escape"),
+            ShortcutKey::Tab => f.write_str("Tab"),
+            ShortcutKey::MouseBack => f.write_str("MouseBack"),
+            ShortcutKey::MouseForward => f.write_str("MouseForward"),
         }
     }
 }
@@ -330,6 +348,52 @@ fn resolve(exact: Vec<Binding>, has_prefix: bool, repeat: bool) -> ShortcutOutco
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_shortcuts_require_a_non_shift_modifier() {
+        for sequence in ["Ctrl+Tab", "Ctrl+Shift+Tab", "Alt+Tab", "Primary+Tab"] {
+            assert_eq!(
+                sequence.parse::<MenuShortcut>().unwrap().key,
+                ShortcutKey::Tab
+            );
+        }
+        for reserved in ["Tab", "Shift+Tab"] {
+            assert!(reserved.parse::<MenuShortcut>().is_err());
+        }
+        assert_eq!(
+            "Ctrl+Shift+Tab"
+                .parse::<MenuShortcut>()
+                .unwrap()
+                .to_string(),
+            "Ctrl+Shift+Tab"
+        );
+    }
+
+    #[test]
+    fn brackets_require_a_modifier_and_mouse_navigation_is_bound_by_itself() {
+        for bracket in ['[', ']'] {
+            assert!(format!("Primary+{bracket}").parse::<MenuShortcut>().is_ok());
+            assert!(
+                MenuShortcut::new(
+                    ShortcutKey::Character(bracket),
+                    ShortcutModifiers::default()
+                )
+                .is_none()
+            );
+        }
+        for (name, key) in [
+            ("MouseBack", ShortcutKey::MouseBack),
+            ("MouseForward", ShortcutKey::MouseForward),
+        ] {
+            let binding = name.parse::<MenuShortcut>().unwrap();
+            assert_eq!(
+                Some(binding),
+                MenuShortcut::new(key, ShortcutModifiers::default())
+            );
+            assert_eq!(binding.to_string(), name);
+            assert!(format!("Primary+{name}").parse::<MenuShortcut>().is_err());
+        }
+    }
 
     #[test]
     fn a_complete_sequence_that_is_also_a_prefix_reports_ambiguity() {

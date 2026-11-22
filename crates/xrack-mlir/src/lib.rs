@@ -26,9 +26,10 @@ pub use visual::{
     AnimationRef, CallbackForward, ClipboardParserRef, ComponentAnalysis, GradientRef,
     InstanceBinding, InstanceBindings, InstanceStateInput, PropertyForward, RepeatRef,
     RowSceneCache, StackRead, StateCaseRef, TableClipboardRef, TablePasteRef, TableRead,
-    TranslationRef, VisualCacheGroup, VisualCacheKey, has_button_check_state, host_element_id,
-    nine_slice_edges, repeat_is_positioned, repeat_uses_row_identity, scene_children,
-    split_fill_slot, split_pane_names, visual_cache_operand,
+    TranslationRef, VisualCacheGroup, VisualCacheKey, has_button_check_state,
+    has_text_link_handler, host_element_id, nine_slice_edges, repeat_is_positioned,
+    repeat_uses_row_identity, scene_children, split_fill_slot, split_pane_names,
+    visual_cache_operand,
 };
 
 mod record;

@@ -1,0 +1,26 @@
+diff --git a/apple/internal/compilation_support.bzl b/apple/internal/compilation_support.bzl
+--- a/apple/internal/compilation_support.bzl
++++ b/apple/internal/compilation_support.bzl
+@@ -296,5 +296,6 @@
+     # TODO: Delete feature check and else branch when we drop Bazel 8 support (see f4a3fa40)
+-    if cc_common.is_enabled(
++    # A target can opt in when its modular toolchain uses C++ link variables.
++    if "use_cpp_variables_for_objc_executable" in ctx.features or cc_common.is_enabled(
+         feature_configuration = feature_configuration,
+         feature_name = "use_cpp_variables_for_objc_executable",
+     ):
+@@ -452,5 +453,12 @@
+-    # Why does linker_input not expose linkstamp?  This needs to be fixed.
++    if hasattr(cc_linking_context, "linkstamps"):
++        linkstamps = cc_linking_context.linkstamps()
++    else:
++        linkstamps = depset([
++            linkstamp
++            for linker_input in cc_linking_context.linker_inputs.to_list()
++            for linkstamp in linker_input.linkstamps
++        ])
+     linker_inputs.append(cc_common.create_linker_input(
+-        linkstamps = cc_linking_context.linkstamps(),
++        linkstamps = linkstamps,
+         owner = owner,
+     ))

@@ -75,6 +75,7 @@ pub(crate) struct State {
     visual_cache: RefCell<BTreeMap<VisualSlot, Rc<Property<Value>>>>,
     action_flags: RefCell<ActionFlagCache>,
     callbacks: BTreeMap<Member, CallbackSlot<CallbackBinding>>,
+    callback_defaults: BTreeMap<Member, Property<Option<Value>>>,
     controls: BTreeMap<Member, Property<Option<Value>>>,
     pub(crate) layout: viewport::Handles,
     combo_items: RefCell<BTreeMap<String, Rc<Property<xrack_runtime::ComboItems>>>>,
@@ -372,6 +373,14 @@ impl Program {
                     .filter(|member| keys.contains(member.owner.as_str()))
                     .cloned()
                     .map(|member| (member, CallbackSlot::default()))
+                    .collect(),
+                callback_defaults: definition
+                    .callbacks
+                    .iter()
+                    .filter(|(member, function)| {
+                        function.cache_default && keys.contains(member.owner.as_str())
+                    })
+                    .map(|(member, _)| (member.clone(), Property::default()))
                     .collect(),
                 controls,
                 layout,
@@ -1125,7 +1134,11 @@ impl Instance {
                             &state.table_state().history,
                             history,
                             update,
-                            |before, after, patch| patch.record_changes(before, after),
+                            |before, after, patch| {
+                                patch.record_changes_with(before, after, |name| {
+                                    self.program().is_enum_record(name)
+                                })
+                            },
                             project,
                         ))
                     } else {
@@ -1606,7 +1619,23 @@ impl Instance {
         )?;
         let slot = &self.0.callbacks[member];
         let execute = || {
-            let result = self.execute_body(function, &arguments, Some(slot))?;
+            let result = if function.cache_default
+                && function.pure
+                && function.parameters.is_empty()
+                && !slot.has_handler()
+                && let Some(cache) = self.0.callback_defaults.get(member)
+            {
+                slot.track();
+                cache.try_get(|| self.execute_body(function, &arguments, Some(slot)))?
+            } else if function.inline_default
+                && !slot.has_handler()
+                && let [Statement::Return(expression)] = function.body.as_slice()
+            {
+                slot.track();
+                Some(self.evaluate(expression, &arguments)?)
+            } else {
+                self.execute_body(function, &arguments, Some(slot))?
+            };
             self.program().validate_callback_result(
                 &member.name,
                 function.result.as_ref(),
@@ -1714,7 +1743,7 @@ impl Instance {
         let result = match slot.and_then(CallbackSlot::get) {
             Some(callback) => callback(args)?,
             None => fallback
-                .map(|expression| self.evaluate(expression, args))
+                .map(|(expression, locals)| self.evaluate(expression, &locals))
                 .transpose()?,
         };
         if slot.is_some() {
@@ -1728,13 +1757,19 @@ impl Instance {
         }
     }
 
-    fn execute_statements<'a>(
+    fn execute_statements<'body, 'args>(
         &self,
-        body: &'a [Statement],
-        args: &[Value],
-    ) -> Result<Option<&'a Expr>> {
+        body: &'body [Statement],
+        args: &'args [Value],
+    ) -> Result<Option<(&'body Expr, std::borrow::Cow<'args, [Value]>)>> {
+        let mut locals = std::borrow::Cow::Borrowed(args);
         for statement in body {
+            let args = locals.as_ref();
             match statement {
+                Statement::Local(expression) => {
+                    let value = self.evaluate(expression, args)?;
+                    locals.to_mut().push(value);
+                }
                 Statement::If { condition, yes, no } => {
                     let Value::Bool(condition) = self.evaluate(condition, args)? else {
                         return Err(evaluation("if condition must be a bool"));
@@ -1943,7 +1978,7 @@ impl Instance {
                         .ok_or_else(|| evaluation("invalid window command arguments"))?;
                     self.0.window.request(command);
                 }
-                Statement::Return(expression) => return Ok(Some(expression)),
+                Statement::Return(expression) => return Ok(Some((expression, locals))),
             }
         }
         Ok(None)
@@ -1989,6 +2024,23 @@ impl Instance {
             visit(index as i64, item)?;
         }
         Ok(())
+    }
+
+    fn borrow_text_argument(&self, expression: &Expr) -> Result<Option<Rc<Value>>> {
+        if let Expression::Read(member) = expression.as_ref()
+            && member.owner == "root"
+            && !self.0.incoming.contains_key(member)
+            && let Some(storage) = self.0.values.get(member)
+            && let property = self.property(member)?
+            && property.ty == ValueType::String
+            && let PropertySource::Initial(initial) = &property.source
+        {
+            storage
+                .try_get_shared(|| self.evaluate(initial, &[]))
+                .map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     fn arguments(&self, expressions: &[Expr], args: &[Value]) -> Result<Vec<Value>> {
@@ -2187,6 +2239,47 @@ impl Instance {
                     _ => Err(evaluation("invalid unary operand")),
                 }
             }
+            Concat(parts) => {
+                enum Fragment<'a> {
+                    Static(&'a str),
+                    Owned(String),
+                    Shared(Rc<Value>),
+                }
+                impl AsRef<str> for Fragment<'_> {
+                    fn as_ref(&self) -> &str {
+                        match self {
+                            Self::Static(text) => text,
+                            Self::Owned(text) => text,
+                            Self::Shared(value) => match value.as_ref() {
+                                Value::String(text) => text,
+                                _ => {
+                                    unreachable!("string type checked when preparing the fragment")
+                                }
+                            },
+                        }
+                    }
+                }
+
+                let parts = parts
+                    .iter()
+                    .map(|part| match part {
+                        crate::TextPart::Static(text) => Ok(Fragment::Static(text.as_ref())),
+                        crate::TextPart::Dynamic(expression) => {
+                            let Some(value) = self.borrow_text_argument(expression)? else {
+                                return match self.evaluate(expression, args)? {
+                                    Value::String(text) => Ok(Fragment::Owned(text)),
+                                    _ => Err(evaluation("string concatenation requires strings")),
+                                };
+                            };
+                            if !matches!(value.as_ref(), Value::String(_)) {
+                                return Err(evaluation("string concatenation requires strings"));
+                            }
+                            Ok(Fragment::Shared(value))
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Value::String(xrack_runtime::concat_text(parts)))
+            }
             Binary(operator, lhs, rhs) => {
                 let left = self.evaluate(lhs, args)?;
                 if (*operator == BinaryOperator::And && left == Value::Bool(false))
@@ -2195,6 +2288,46 @@ impl Instance {
                     return Ok(left);
                 }
                 binary(self.program(), *operator, left, self.evaluate(rhs, args)?)
+            }
+            EnumMatch {
+                name,
+                subject,
+                cases,
+            } => {
+                let value = self.evaluate(subject, args)?;
+                self.program().validate_host_value(
+                    &ValueType::Record(name.clone()),
+                    &value,
+                    "match scrutinee",
+                )?;
+                let Value::Record(record) = value else {
+                    return Err(evaluation("enum match requires a record value"));
+                };
+                let case = crate::host::enum_index(&record)
+                    .and_then(|index| cases.get(index))
+                    .ok_or_else(|| evaluation("invalid enum variant discriminant"))?;
+                if case.fields.is_empty() {
+                    return self.evaluate(&case.result, args);
+                }
+                let mut locals = Vec::with_capacity(args.len() + case.fields.len());
+                locals.extend_from_slice(args);
+                for field in &case.fields {
+                    let value = record
+                        .field(field)
+                        .ok_or_else(|| evaluation("missing enum payload value"))?;
+                    locals.push(value.clone());
+                }
+                self.evaluate(&case.result, &locals)
+            }
+            MatchEnum(discriminant, arms) => {
+                let Value::Int(discriminant) = self.evaluate(discriminant, args)? else {
+                    return Err(evaluation("enum discriminant must be an int"));
+                };
+                let arm = usize::try_from(discriminant)
+                    .ok()
+                    .and_then(|index| arms.get(index))
+                    .ok_or_else(|| evaluation("invalid enum variant discriminant"))?;
+                self.evaluate(arm, args)
             }
             Select(condition, yes, no) => match self.evaluate(condition, args)? {
                 Value::Bool(true) => self.evaluate(yes, args),
@@ -2207,7 +2340,98 @@ impl Instance {
                 _ => Err(evaluation("invalid cast operand")),
             },
             MathFunction(kind, inputs) => math_function(*kind, &self.arguments(inputs, args)?),
-            StringFunction(kind, inputs) => string_function(*kind, &self.arguments(inputs, args)?),
+            GeometryFunction(kind, inputs) => {
+                geometry_function(*kind, &self.arguments(inputs, args)?)
+            }
+            StringFunction(kind, inputs) => {
+                let mut owned = [None, None, None];
+                let mut shared = [None, None, None];
+                let mut refs = [&Value::Bool(false); 3];
+                if inputs.len() > refs.len() {
+                    return Err(evaluation("invalid string function arity"));
+                }
+                for (index, input) in inputs.iter().enumerate() {
+                    if let Some(value) = self.borrow_text_argument(input)? {
+                        shared[index] = Some(value);
+                    } else {
+                        owned[index] = Some(self.evaluate(input, args)?);
+                    }
+                }
+                for index in 0..inputs.len() {
+                    refs[index] = shared[index]
+                        .as_deref()
+                        .or(owned[index].as_ref())
+                        .unwrap_or(&Value::Bool(false));
+                }
+                string_function(*kind, &refs[..inputs.len()])
+            }
+            ModelProjection {
+                model,
+                field,
+                option,
+                filter,
+                exact,
+            } => {
+                let Value::RecordList(rows) = self.evaluate(model, args)? else {
+                    return Err(evaluation("model projection requires a record model"));
+                };
+                fn read_field<'a>(
+                    row: &'a xrack_runtime::RecordValue,
+                    field: &[String],
+                ) -> Option<&'a str> {
+                    match row.field_path(field) {
+                        Some(Value::String(text)) => Some(text.as_str()),
+                        _ => None,
+                    }
+                }
+                let projected = match self.evaluate(option, args)? {
+                    Value::String(query) if *filter => {
+                        if *exact {
+                            let path = field.clone();
+                            rows.model()
+                                .lookup_text(&field.join("."), &query, move |row| {
+                                    read_field(row, &path)
+                                })
+                        } else {
+                            let path = field.clone();
+                            rows.model()
+                                .filter_text_indexed(&field.join("."), &query, move |row| {
+                                    read_field(row, &path)
+                                })
+                        }
+                    }
+                    Value::Bool(descending) if !*filter => {
+                        let model = rows.model();
+                        if model
+                            .inspect_rows(0, 1, |row| read_field(row, field).is_some())
+                            .1
+                            == [true]
+                        {
+                            let path = field.clone();
+                            return Ok(Value::RecordList(xrack_runtime::RecordList::from_model(
+                                rows.name(),
+                                model.sorted_text_indexed(
+                                    &field.join("."),
+                                    descending,
+                                    move |row| read_field(row, &path),
+                                ),
+                            )));
+                        }
+                        model.sorted(descending, |a, b| {
+                            match (a.field_path(field), b.field_path(field)) {
+                                (Some(Value::String(a)), Some(Value::String(b))) => a.cmp(b),
+                                (Some(Value::Int(a)), Some(Value::Int(b))) => a.cmp(b),
+                                _ => std::cmp::Ordering::Equal,
+                            }
+                        })
+                    }
+                    _ => return Err(evaluation("invalid model projection argument")),
+                };
+                Ok(Value::RecordList(xrack_runtime::RecordList::from_model(
+                    rows.name(),
+                    projected,
+                )))
+            }
             ModelCount(input) | ModelIsEmpty(input) => {
                 let count = match self.evaluate(input, args)? {
                     Value::StringList(rows) => rows.len(),
@@ -6122,6 +6346,9 @@ impl ValueType {
                 | (Self::Font, Value::Font(_))
                 | (Self::CheckState, Value::CheckState(_))
                 | (Self::StyledText, Value::StyledText(_))
+                | (Self::Point2D, Value::Point2D(_))
+                | (Self::Vector2D, Value::Vector2D(_))
+                | (Self::Transform2D, Value::Transform2D(_))
                 | (Self::LayoutAlignment, Value::LayoutAlignment(_))
                 | (Self::Orientation, Value::Orientation(_))
                 | (Self::ScrollSnapMode, Value::ScrollSnapMode(_))
@@ -6327,6 +6554,35 @@ fn binary(program: &Program, operator: BinaryOperator, lhs: Value, rhs: Value) -
     }
 }
 
+fn geometry_function(
+    kind: xrack_syntax::builtins::GeometryFunction,
+    inputs: &[Value],
+) -> Result<Value> {
+    use xrack_runtime::{Point2D, Transform2D, Vector2D};
+    use xrack_syntax::builtins::GeometryFunction::*;
+    Ok(match (kind, inputs) {
+        (Point, [Value::Length(x), Value::Length(y)]) => Point2D::new(*x, *y).into(),
+        (Vector, [Value::Length(x), Value::Length(y)]) => Vector2D::new(*x, *y).into(),
+        (Identity, []) => Transform2D::IDENTITY.into(),
+        (Translation, [Value::Length(x), Value::Length(y)]) => {
+            Transform2D::translation(*x, *y).into()
+        }
+        (Rotation, [Value::Float(degrees)]) => Transform2D::rotation(*degrees).into(),
+        (Scale, [Value::Float(x), Value::Float(y)]) => Transform2D::scale(*x, *y).into(),
+        (Compose, [Value::Transform2D(a), Value::Transform2D(b)]) => a.then(*b).into(),
+        (Around, [Value::Transform2D(transform), Value::Point2D(point)]) => {
+            transform.around(*point).into()
+        }
+        (MapPoint, [Value::Transform2D(transform), Value::Point2D(point)]) => {
+            transform.map_point(*point).into()
+        }
+        (MapVector, [Value::Transform2D(transform), Value::Vector2D(vector)]) => {
+            transform.map_vector(*vector).into()
+        }
+        _ => return Err(evaluation("invalid geometry operands")),
+    })
+}
+
 fn math_function(kind: xrack_syntax::builtins::MathFunction, inputs: &[Value]) -> Result<Value> {
     use xrack_syntax::builtins::MathFunction::*;
 
@@ -6388,7 +6644,7 @@ fn math_function(kind: xrack_syntax::builtins::MathFunction, inputs: &[Value]) -
 
 fn string_function(
     kind: xrack_syntax::builtins::StringFunction,
-    inputs: &[Value],
+    inputs: &[&Value],
 ) -> Result<Value> {
     use xrack_syntax::builtins::StringFunction::*;
     match (kind, inputs) {

@@ -78,10 +78,37 @@ impl RecordValue {
 impl TableRowPatch<RecordValue> {
     /// Save changed leaf fields so replay preserves independent changes to the same record.
     pub fn record_changes(&mut self, before: &RecordValue, after: &RecordValue) {
-        self.record_record(before, after, &mut Vec::new());
+        self.record_changes_with(before, after, |_| false);
     }
 
-    fn record_record(&mut self, before: &RecordValue, after: &RecordValue, path: &mut Vec<String>) {
+    /// Values with a variant tag and its payload must be recorded together.
+    #[doc(hidden)]
+    pub fn record_changes_with(
+        &mut self,
+        before: &RecordValue,
+        after: &RecordValue,
+        atomic: impl Fn(&str) -> bool,
+    ) {
+        if atomic(before.name()) {
+            self.record(
+                before,
+                after,
+                |record| record,
+                PartialEq::eq,
+                TableHistoryPayload::history_payload_bytes,
+            );
+        } else {
+            self.record_record(before, after, &mut Vec::new(), &atomic);
+        }
+    }
+
+    fn record_record(
+        &mut self,
+        before: &RecordValue,
+        after: &RecordValue,
+        path: &mut Vec<String>,
+        atomic: &impl Fn(&str) -> bool,
+    ) {
         if Rc::ptr_eq(&before.fields, &after.fields) {
             return;
         }
@@ -90,8 +117,10 @@ impl TableRowPatch<RecordValue> {
                 continue;
             };
             path.push(name.clone());
-            if let (Value::Record(before), Value::Record(after)) = (before, after) {
-                self.record_record(before, after, path);
+            if let (Value::Record(before), Value::Record(after)) = (before, after)
+                && !atomic(before.name())
+            {
+                self.record_record(before, after, path, atomic);
             } else if !same_field(before, after) {
                 let field = path.clone();
                 self.record_with(
@@ -131,6 +160,14 @@ fn same_field(before: &Value, after: &Value) -> bool {
         }
 }
 
+impl TableHistoryPayload for RecordValue {
+    fn history_payload_bytes(&self) -> usize {
+        self.fields().fold(0, |size, (_, value)| {
+            size.saturating_add(field_bytes(value))
+        })
+    }
+}
+
 fn field_bytes(value: &Value) -> usize {
     match value {
         Value::String(value) => value.history_payload_bytes(),
@@ -138,6 +175,7 @@ fn field_bytes(value: &Value) -> usize {
         Value::KeyEvent(value) => value.history_payload_bytes(),
         Value::StyledText(value) => value.history_payload_bytes(),
         Value::Brush(value) => value.history_payload_bytes(),
+        Value::Record(record) => record.history_payload_bytes(),
         _ => 0,
     }
 }

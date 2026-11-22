@@ -411,10 +411,31 @@ impl ComponentLifetime {
     }
 }
 
+enum PropertyValue<T> {
+    Owned(T),
+    Shared(Rc<T>),
+}
+
+impl<T> PropertyValue<T> {
+    fn value(&self) -> &T {
+        match self {
+            Self::Owned(value) => value,
+            Self::Shared(value) => value,
+        }
+    }
+
+    fn into_shared(self) -> Rc<T> {
+        match self {
+            Self::Owned(value) => Rc::new(value),
+            Self::Shared(value) => value,
+        }
+    }
+}
+
 enum Stored<T> {
     Unset,
-    Explicit(T),
-    Cached(T),
+    Explicit(PropertyValue<T>),
+    Cached(PropertyValue<T>),
 }
 
 /// Stores an explicit value or a lazily computed binding result.
@@ -442,7 +463,7 @@ impl<T> Property<T> {
     }
 
     pub fn set(&self, value: T) {
-        self.replace(Stored::Explicit(value), true);
+        self.replace(Stored::Explicit(PropertyValue::Owned(value)), true);
     }
 
     /// Inspect whether a cached binding needs reevaluation without tracking a read.
@@ -453,8 +474,8 @@ impl<T> Property<T> {
     /// Inspect the current explicit or clean cached value without evaluating a binding.
     pub(crate) fn matches_current(&self, predicate: impl FnOnce(&T) -> bool) -> bool {
         match &*self.value.borrow() {
-            Stored::Explicit(value) => predicate(value),
-            Stored::Cached(value) if !self.dependency.dirty.get() => predicate(value),
+            Stored::Explicit(value) => predicate(value.value()),
+            Stored::Cached(value) if !self.dependency.dirty.get() => predicate(value.value()),
             _ => false,
         }
     }
@@ -478,15 +499,17 @@ impl<T> Property<T> {
     pub fn set_if_changed_by(&self, value: T, equal: impl FnOnce(&T, &T) -> bool) {
         let changed = match &*self.value.borrow() {
             Stored::Explicit(current) => {
-                if equal(current, &value) {
+                if equal(current.value(), &value) {
                     return;
                 }
                 true
             }
-            Stored::Cached(current) if !self.dependency.dirty.get() => !equal(current, &value),
+            Stored::Cached(current) if !self.dependency.dirty.get() => {
+                !equal(current.value(), &value)
+            }
             Stored::Unset | Stored::Cached(_) => true,
         };
-        self.replace(Stored::Explicit(value), changed);
+        self.replace(Stored::Explicit(PropertyValue::Owned(value)), changed);
     }
 }
 
@@ -502,8 +525,8 @@ impl<T: Clone> Property<T> {
     #[doc(hidden)]
     pub fn cached_value(&self) -> Option<T> {
         match &*self.value.borrow() {
-            Stored::Explicit(value) => Some(value.clone()),
-            Stored::Cached(value) if !self.dependency.dirty.get() => Some(value.clone()),
+            Stored::Explicit(value) => Some(value.value().clone()),
+            Stored::Cached(value) if !self.dependency.dirty.get() => Some(value.value().clone()),
             _ => None,
         }
     }
@@ -512,7 +535,7 @@ impl<T: Clone> Property<T> {
     pub fn explicit_value(&self) -> Option<T> {
         self.dependency.track();
         match &*self.value.borrow() {
-            Stored::Explicit(value) => Some(value.clone()),
+            Stored::Explicit(value) => Some(value.value().clone()),
             _ => None,
         }
     }
@@ -531,6 +554,59 @@ impl<T: Clone> Property<T> {
         })
     }
 
+    /// Get an immutable value handle without cloning its payload. Shared
+    /// handles retain the previous value when the property is updated.
+    #[doc(hidden)]
+    pub fn get_shared(&self, default: impl FnOnce() -> T) -> Rc<T> {
+        self.try_get_shared(|| Ok::<_, std::convert::Infallible>(default()))
+            .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn try_get_shared<E>(&self, default: impl FnOnce() -> Result<T, E>) -> Result<Rc<T>, E> {
+        assert!(
+            !self.dependency.evaluating.get(),
+            "cyclic property evaluation"
+        );
+        self.dependency.track();
+        if let Some(value) = self.share_current() {
+            crate::update_profile::property(false);
+            return Ok(value);
+        }
+        let value = Rc::new(self.evaluate_binding(|| match &self.binding {
+            Some(binding) => Ok(binding()),
+            None => default(),
+        })?);
+        if !self.dependency.dirty.get() {
+            self.value
+                .replace(Stored::Cached(PropertyValue::Shared(value.clone())));
+        }
+        Ok(value)
+    }
+
+    fn share_current(&self) -> Option<Rc<T>> {
+        let mut stored = self.value.borrow_mut();
+        match &*stored {
+            Stored::Unset => return None,
+            Stored::Cached(_) if self.dependency.dirty.get() => return None,
+            Stored::Explicit(PropertyValue::Shared(value))
+            | Stored::Cached(PropertyValue::Shared(value)) => return Some(value.clone()),
+            _ => {}
+        }
+        let (explicit, value) = match std::mem::replace(&mut *stored, Stored::Unset) {
+            Stored::Explicit(value) => (true, value.into_shared()),
+            Stored::Cached(value) => (false, value.into_shared()),
+            Stored::Unset => return None,
+        };
+        let shared = PropertyValue::Shared(value.clone());
+        *stored = if explicit {
+            Stored::Explicit(shared)
+        } else {
+            Stored::Cached(shared)
+        };
+        Some(value)
+    }
+
     fn try_get_with<E>(&self, read: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
         assert!(
             !self.dependency.evaluating.get(),
@@ -538,32 +614,32 @@ impl<T: Clone> Property<T> {
         );
         self.dependency.track();
         match &*self.value.borrow() {
-            Stored::Explicit(value) => return Ok(value.clone()),
+            Stored::Explicit(value) => return Ok(value.value().clone()),
             Stored::Cached(value) if !self.dependency.dirty.get() => {
                 crate::update_profile::property(false);
-                return Ok(value.clone());
+                return Ok(value.value().clone());
             }
             Stored::Unset | Stored::Cached(_) => {}
         }
 
-        crate::update_profile::property(true);
-        let value = self.dependency.evaluate(read);
-        let value = match value {
-            Ok(value) => value,
-            Err(error) => {
-                if !self.dependency.dirty.replace(true) {
-                    self.dependency.notify();
-                }
-                return Err(error);
-            }
-        };
+        let value = self.evaluate_binding(read)?;
         if !self.dependency.dirty.get() {
             let cached = value.clone();
             if !self.dependency.dirty.get() {
-                self.value.replace(Stored::Cached(cached));
+                self.value
+                    .replace(Stored::Cached(PropertyValue::Owned(cached)));
             }
         }
         Ok(value)
+    }
+
+    fn evaluate_binding<E>(&self, read: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        crate::update_profile::property(true);
+        self.dependency.evaluate(read).inspect_err(|_| {
+            if !self.dependency.dirty.replace(true) {
+                self.dependency.notify();
+            }
+        })
     }
 }
 
@@ -650,6 +726,17 @@ impl<T> InputProperty<T> {
 }
 
 impl<T: Clone> InputProperty<T> {
+    #[doc(hidden)]
+    pub fn get_shared(&self, default: impl FnOnce() -> T) -> Rc<T> {
+        match self {
+            Self::Local(property) => property.get_shared(default),
+            Self::Linked { read, .. } => Rc::new(read().unwrap_or_else(default)),
+            Self::State { value, read, base } => {
+                value.get_shared(|| read().unwrap_or_else(|| base.get(default)))
+            }
+        }
+    }
+
     pub fn get(&self, default: impl FnOnce() -> T) -> T {
         match self {
             Self::Local(property) => property.get(default),
@@ -684,6 +771,25 @@ impl<T: PartialEq> InputProperty<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_string_reads_reuse_the_cached_buffer_until_invalidated() {
+        let input = Property::default();
+        let binding = Property::default();
+        input.set("first value".to_string());
+        let first = binding.get_shared(|| input.get(String::new));
+        let same = binding.get_shared(|| panic!("shared value was already computed"));
+        assert!(Rc::ptr_eq(&first, &same));
+        assert_eq!(binding.get(String::new), "first value");
+
+        input.set("second value".to_string());
+        assert!(binding.is_dirty());
+        let second = binding.get_shared(|| input.get(String::new));
+        assert!(!Rc::ptr_eq(&first, &second));
+        assert_eq!(first.as_str(), "first value");
+        assert_eq!(second.as_str(), "second value");
+    }
+
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     #[test]

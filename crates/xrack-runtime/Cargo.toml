@@ -12,6 +12,7 @@ fluent-bundle.workspace = true
 fluent-langneg.workspace = true
 icu_decimal.workspace = true
 icu_locale_core.workspace = true
+nalgebra.workspace = true
 writeable.workspace = true
 unic-langid.workspace = true
 pulldown-cmark.workspace = true

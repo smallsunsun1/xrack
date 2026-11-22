@@ -2,10 +2,10 @@
 use accesskit::{Node as AccessibleNode, NodeId, Role, TextDirection, TextSelection};
 use std::{borrow::Cow, ops::Range};
 use unicode_segmentation::UnicodeSegmentation;
-use xrack_layout::Affine;
 use xrack_layout::{
-    ComboGeometry, Interaction, PasswordMask, Point, Rect, TextAlignment, TextAreaLayout, TextEdit,
-    TextPosition, VisualTextLine, font_size, text_editor_line_bounds, text_editor_viewport,
+    ComboGeometry, Interaction, LayoutSpace, PasswordMask, Point, Rect, TextAlignment,
+    TextAreaLayout, TextEdit, TextPosition, Transform2D, VisualTextLine, WindowSpace, font_size,
+    text_editor_line_bounds, text_editor_viewport,
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
@@ -237,7 +237,12 @@ pub(crate) fn project_text(
     rect: Rect,
     path: &[usize],
     input: &Interaction,
-    (scale, transform, direction, clip): (f64, Affine, Option<LayoutDirection>, Rect),
+    (scale, transform, direction, clip): (
+        f64,
+        Transform2D<LayoutSpace, WindowSpace>,
+        Option<LayoutDirection>,
+        Rect,
+    ),
     text_system: Option<&TextSystem>,
     mut allocate_id: impl FnMut(usize, &str) -> NodeId,
 ) -> (TextDocument, Vec<(NodeId, AccessibleNode)>) {
@@ -613,7 +618,7 @@ fn publish_geometry(
     origin: Point,
     height: f32,
     scale: f64,
-    transform: Affine,
+    transform: Transform2D<LayoutSpace, WindowSpace>,
 ) {
     let (Some(first), Some(last)) = (cells.first(), cells.last()) else {
         return;
@@ -632,9 +637,11 @@ fn publish_geometry(
     } else {
         TextDirection::LeftToRight
     });
-    let [a, b, c, d, _, _] = transform.0;
-    if b == 0.0 && c == 0.0 && a > 0.0 && d > 0.0 {
-        let scale = scale as f32 * a;
+    if let Some([sx, sy]) = transform.axis_scales()
+        && sx > 0.0
+        && sy > 0.0
+    {
+        let scale = scale as f32 * sx;
         run.set_character_positions(
             cells
                 .iter()
@@ -723,7 +730,7 @@ mod tests {
             Point::default(),
             12.0,
             1.0,
-            Affine::IDENTITY,
+            Transform2D::IDENTITY,
         );
         assert_eq!(node.text_direction(), Some(TextDirection::RightToLeft));
         assert_eq!(
@@ -747,7 +754,7 @@ mod tests {
             &Interaction::default(),
             (
                 1.0,
-                Affine::IDENTITY,
+                Transform2D::IDENTITY,
                 None,
                 Rect::new(0.0, 0.0, 800.0, 32.0),
             ),

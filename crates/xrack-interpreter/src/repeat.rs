@@ -256,6 +256,19 @@ impl RepeatState {
         xrack_runtime::try_render_rows_from_source(
             || self.row_model(owner, repeat),
             |model| {
+                if repeat.uses_row_identity
+                    && repeat.loader.is_none()
+                    && repeat.scene_cache.is_none()
+                {
+                    return self.rows.try_render_retained_range(
+                        model.as_ref(),
+                        range,
+                        |context| Self::allocate_row(owner, template, repeat, context),
+                        |instance, _, _, _, _| {
+                            instance.render_template(template, &TableColumnWindow::default())
+                        },
+                    );
+                }
                 self.render_indices(
                     owner,
                     template,

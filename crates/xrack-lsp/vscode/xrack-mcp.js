@@ -173,7 +173,13 @@ async function call(project, name, args) {
             if (!snapshot.updatePlan) throw new Error('Launch the live app with XRACK_PROFILE_UI=1');
             const plan = snapshot.updatePlan;
             const entries = args.element ? plan.entries.filter(entry => entry.element === args.element) : plan.entries;
-            return { ...result, plan: { ...plan, entries }, updates: snapshot.updates ?? [] };
+            return {
+                ...result,
+                plan: { ...plan, entries },
+                updates: snapshot.updates ?? [],
+                renderSamples: snapshot.renderSamples ?? [],
+                presentedFrames: snapshot.presentedFrames ?? [],
+            };
         }
         case 'get_ui_tree':
             return { ...result, truncated: snapshot.tree?.truncated ?? false,

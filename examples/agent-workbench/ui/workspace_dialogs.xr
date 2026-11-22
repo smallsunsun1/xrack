@@ -1,0 +1,45 @@
+import { Palette } from "theme.xr";
+
+export component WorkspaceCloseDialog inherits Dialog {
+    in property <bool> workspace-edits-dirty;
+    in property <bool> workspace-edits-saving;
+    in-out property <bool> workspace-window-close-approved;
+    in-out property <bool> workspace-window-confirm-open;
+    callback finish-close();
+
+    title: @tr("close-workbench");
+    open <=> root.workspace-window-confirm-open;
+    width: 420px;
+    height: 160px;
+    close-on-outside: false;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 9px;
+        Label {
+            text: root.workspace-edits-saving ? @tr("files-are-saving-wait-for-them-to-finish") :
+                root.workspace-edits-dirty ? @tr("you-have-unsaved-file-changes") : @tr("files-are-saved");
+            color: Palette.text;
+        }
+        HorizontalLayout {
+            alignment: end;
+            height: 33px;
+            spacing: 8px;
+            cancel-workspace-window-close := Button {
+                text: @tr("back-to-workbench");
+                padding: 6px;
+                primary: true;
+                clicked => { root.workspace-window-confirm-open = false; }
+            }
+            discard-and-close-workbench := Button {
+                text: root.workspace-edits-dirty ? @tr("discard-and-quit") : @tr("close");
+                padding: 6px;
+                flat: true;
+                enabled: !root.workspace-edits-saving;
+                clicked => {
+                    root.workspace-window-close-approved = true;
+                    root.finish-close();
+                }
+            }
+        }
+    }
+}

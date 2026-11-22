@@ -68,6 +68,41 @@ pub fn load_mlir_file(path: impl AsRef<Path>) -> Result<Program> {
         .map(|(program, _)| program)
 }
 
+/// Load the interpreter artifact and the resources of a packaged XRack module.
+pub fn load_module_package(root: impl AsRef<Path>) -> Result<Program> {
+    use xrack_syntax::module_manifest::{MANIFEST_FILE, ModuleManifest};
+
+    let root = root.as_ref();
+    let path = ModuleManifest::resolve(root, Path::new(MANIFEST_FILE)).map_err(Error::Invalid)?;
+    let manifest = xrack_ir::modules::read_package_manifest(&path).map_err(Error::Invalid)?;
+    let mlir = ModuleManifest::resolve(root, &manifest.mlir).map_err(Error::Invalid)?;
+    let inputs = manifest
+        .inputs
+        .iter()
+        .map(|path| ModuleManifest::resolve(root, path))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Error::Invalid)?;
+    let text = std::fs::read_to_string(&mlir)
+        .map_err(|error| Error::Invalid(format!("{}: {error}", mlir.display())))?;
+    let module = xrack_mlir::Module::parse(&text).map_err(Error::Invalid)?;
+    let (module, translations) =
+        xrack_resources::prepare_module(module, &mlir, Some(&inputs), &BTreeMap::new())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let (program, _) = Program::from_module_with_declared_resources(
+        &module,
+        &mlir,
+        translations.catalog,
+        Some(&inputs),
+    )?;
+    let declared: BTreeSet<_> = manifest.components.iter().map(String::as_str).collect();
+    if program.exported_components().collect::<BTreeSet<_>>() != declared {
+        return Err(Error::Invalid(
+            "module manifest exports do not match the IR".into(),
+        ));
+    }
+    Ok(program)
+}
+
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum Error {
     #[error("{0}")]
@@ -146,8 +181,17 @@ impl Program {
         filename: impl AsRef<Path>,
         translations: Option<EmbeddedTranslations>,
     ) -> Result<(Self, BTreeSet<PathBuf>)> {
+        Self::from_module_with_declared_resources(module, filename, translations, None)
+    }
+
+    fn from_module_with_declared_resources(
+        module: &xrack_mlir::Module,
+        filename: impl AsRef<Path>,
+        translations: Option<EmbeddedTranslations>,
+        assets: Option<&[PathBuf]>,
+    ) -> Result<(Self, BTreeSet<PathBuf>)> {
         module.verify().map_err(Error::Invalid)?;
-        let assets = xrack_resources::resolve_assets(module, filename.as_ref(), None)
+        let assets = xrack_resources::resolve_assets(module, filename.as_ref(), assets)
             .map_err(Error::Invalid)?;
         xrack_resources::validate_module_resources(
             module,
@@ -233,6 +277,9 @@ pub enum ValueType {
     Int,
     Float,
     Length,
+    Point2D,
+    Vector2D,
+    Transform2D,
     Percent,
     Color,
     Brush,
@@ -312,6 +359,12 @@ impl Member {
 }
 
 type Expr = Rc<Expression>;
+
+#[derive(Clone)]
+enum TextPart {
+    Static(Rc<str>),
+    Dynamic(Expr),
+}
 type VisualSlot = VisualCacheKey<usize>;
 
 #[derive(Clone)]
@@ -327,11 +380,26 @@ enum Expression {
     CalendarCellParam(calendar::Parameter),
     Unary(UnaryOperator, Expr),
     Binary(BinaryOperator, Expr, Expr),
+    Concat(Vec<TextPart>),
     Select(Expr, Expr, Expr),
+    MatchEnum(Expr, Vec<Expr>),
+    EnumMatch {
+        name: Rc<str>,
+        subject: Expr,
+        cases: Vec<EnumCase>,
+    },
     Cast(Expr),
     Round(Expr),
     MathFunction(xrack_syntax::builtins::MathFunction, Vec<Expr>),
+    GeometryFunction(xrack_syntax::builtins::GeometryFunction, Vec<Expr>),
     StringFunction(xrack_syntax::builtins::StringFunction, Vec<Expr>),
+    ModelProjection {
+        model: Expr,
+        field: Vec<String>,
+        option: Expr,
+        filter: bool,
+        exact: bool,
+    },
     ModelCount(Expr),
     ModelIsEmpty(Expr),
     ModelAt(Expr, Expr, Expr),
@@ -436,6 +504,7 @@ enum Expression {
 
 #[derive(Clone)]
 enum Statement {
+    Local(Expr),
     If {
         condition: Expr,
         yes: Vec<Statement>,
@@ -512,6 +581,8 @@ struct Function {
     result: Option<ValueType>,
     body: Vec<Statement>,
     pure: bool,
+    cache_default: bool,
+    inline_default: bool,
     alias: Option<Member>,
 }
 
@@ -536,7 +607,18 @@ struct RecordField {
     ty: ValueType,
 }
 
-type RecordSchemas = BTreeMap<String, Vec<RecordField>>;
+#[derive(Clone)]
+struct EnumCase {
+    fields: Vec<String>,
+    result: Expr,
+}
+
+struct RecordSchema {
+    fields: Vec<RecordField>,
+    variants: Vec<Vec<RecordField>>,
+}
+
+type RecordSchemas = BTreeMap<String, RecordSchema>;
 
 struct Definition {
     #[cfg(all(feature = "live-reload", unix))]

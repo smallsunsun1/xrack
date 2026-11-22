@@ -10,6 +10,7 @@ bazel_dep(name = "rules_go", version = "0.59.0")
 bazel_dep(name = "rules_rust", version = "0.75.0")
 bazel_dep(name = "rules_rust_bindgen", version = "0.75.0")
 bazel_dep(name = "rules_rust_pyo3", version = "0.75.0")
+bazel_dep(name = "rules_shell", version = "0.8.0")
 bazel_dep(name = "rules_python", version = "1.8.0")
 bazel_dep(name = "aspect_rules_lint", version = "2.9.1")
 bazel_dep(name = "rules_multitool", version = "0.11.0")
@@ -39,6 +40,13 @@ single_version_override(
         "//bazel:openssl_windows_ssize_max.patch",
         "//bazel:openssl_windows_winstore.patch",
     ],
+    patch_strip = 1,
+)
+
+# Allow the Workbench app's LLVM toolchain to use C++ link variables with Bazel 9.
+single_version_override(
+    module_name = "rules_apple",
+    patches = ["//bazel:rules_apple_macos_linking.patch"],
     patch_strip = 1,
 )
 
@@ -124,6 +132,7 @@ osx.frameworks(names = [
     "SystemConfiguration",
     "UIFoundation",
     "UniformTypeIdentifiers",
+    "UserNotifications",
     "VideoToolbox",
 ])
 
@@ -176,6 +185,7 @@ inject_repo(crate, rules_rust_pyo3 = "rules_rust_pyo3")
 python_abi_toolchain = "@rules_rust_pyo3//:current_pyo3_toolchain"
 [
     crate.annotation(
+        repositories = ["crates"],
         crate = name,
         version = "0.29.0",
         build_script_data = [python_abi_toolchain],
@@ -194,6 +204,7 @@ python_abi_toolchain = "@rules_rust_pyo3//:current_pyo3_toolchain"
 
 # Preserve the native AppKit mixed value for tri-state check boxes.
 crate.annotation(
+    repositories = ["crates"],
     crate = "accesskit_macos",
     version = "0.27.2",
     patch_args = ["-p1"],
@@ -220,6 +231,25 @@ crate.from_cargo(
     ],
 )
 use_repo(crate, "crates")
+
+# The workbench's example terminal has its own desktop-only dependencies.
+crate.spec(package = "portable-pty", version = "=0.9.0", repositories = ["terminal_crates"])
+crate.spec(package = "vt100", version = "=0.18.1", repositories = ["terminal_crates"])
+crate.from_specs(
+    name = "terminal_crates",
+    host_tools = "@xrack_rust_host_tools",
+    cargo_lockfile = "//examples/agent-workbench:TerminalCargo.lock",
+    lockfile = "//examples/agent-workbench:TerminalCrates.lock",
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "aarch64-pc-windows-msvc",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+use_repo(crate, "terminal_crates")
 
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")

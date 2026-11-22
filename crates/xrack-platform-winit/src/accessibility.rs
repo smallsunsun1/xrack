@@ -5032,6 +5032,63 @@ mod tests {
     }
 
     #[test]
+    fn rotated_viewport_projects_and_focuses_the_visible_text_link() {
+        let mut label = Node::new("StyledText", Some("links"));
+        length(&mut label, "width", 180.0);
+        label.properties.insert(
+            "text",
+            xrack_runtime::StyledText::from_markdown("[first](#a)\n\n[last](#b)")
+                .unwrap()
+                .into(),
+        );
+        let mut viewport = Node::new("ScrollView", Some("viewport"));
+        length(&mut viewport, "width", 200.0);
+        length(&mut viewport, "height", 32.0);
+        length(&mut viewport, "x", 12.0);
+        length(&mut viewport, "y", 16.0);
+        viewport
+            .properties
+            .insert("transform-rotation", 7.0_f64.into());
+        viewport.children.push(label);
+        let mut window = Node::new("Window", None);
+        window.children.push(viewport);
+        let scene = Rc::new(window);
+        let size = Size::new(240.0, 120.0);
+        let initial = layout(&scene, size, &mut Text);
+
+        for (at_end, index, url) in [(false, 0, "#a"), (true, 1, "#b")] {
+            let mut input = Interaction::default();
+            if at_end {
+                let end = initial.children[0]
+                    .scroll_on(Orientation::Vertical)
+                    .unwrap()
+                    .max_offset;
+                assert!(input.accessibility_scroll_to(&initial, &[0], Orientation::Vertical, end));
+            }
+            let frame = Rc::new(xrack_layout::layout_with_input(
+                &scene, size, &mut Text, &input,
+            ));
+            input.focus_next(&scene, &frame, false);
+            assert_eq!(
+                input.focused.as_ref().and_then(Target::text_link_index),
+                Some(index)
+            );
+            let mut projection = Projection::default();
+            let update = projection
+                .update(&scene, &frame, &input, 1.0, None)
+                .unwrap();
+            let links: Vec<_> = update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == Role::Link)
+                .collect();
+            assert_eq!(links.len(), 1);
+            assert_eq!(links[0].1.url(), Some(url));
+            assert_eq!(update.focus, links[0].0);
+        }
+    }
+
+    #[test]
     fn swipe_delegate_projects_only_revealed_actions() {
         let mut row = Node::new("SwipeDelegate", Some("row"));
         row.properties

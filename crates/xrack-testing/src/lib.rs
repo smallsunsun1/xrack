@@ -8,7 +8,7 @@ use std::{
 };
 pub use xrack_layout::{ActivationKey, EditAction, Point, Size, TableEditCommit, TextMeasurer};
 use xrack_layout::{
-    ChoiceKey, EditSource, Interaction, LayoutNode, MenuKey, MenuPanel, MenuShortcut,
+    ChoiceKey, EditSource, FrameCache, Interaction, LayoutNode, MenuKey, MenuPanel, MenuShortcut,
     NavigationKey, ScrollBarUpdate, ViewportObservers, WindowEffects, prepare_scene_with_input,
 };
 pub use xrack_runtime::RowKey;
@@ -41,7 +41,8 @@ pub struct UiDriver<C, T = FixedText> {
     text: T,
     input: Interaction,
     scene: Rc<Node>,
-    layout: LayoutNode,
+    layout: Rc<LayoutNode>,
+    frame_cache: FrameCache,
     viewport: Size,
     scroll_requests: ScrollRequests,
     viewport_observers: ViewportObservers,
@@ -60,13 +61,11 @@ impl<C: Component> UiDriver<C> {
 impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     pub fn new(component: C, mut text: T, viewport: Size) -> Self {
         let mut input = Interaction::default();
-        let (scene, layout) = prepare_scene_with_input(
-            &component,
-            component.render_shared(),
-            viewport,
-            &mut text,
-            &input,
-        );
+        let mut frame_cache = FrameCache::default();
+        let (scene, layout) =
+            frame_cache.prepare(component.render_shared(), viewport, &input, |scene| {
+                prepare_scene_with_input(&component, scene, viewport, &mut text, &input)
+            });
         input.reconcile(&scene, &layout);
         let mut viewport_observers = ViewportObservers::default();
         viewport_observers.sync(&scene, &layout);
@@ -78,6 +77,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             input,
             scene,
             layout,
+            frame_cache,
             viewport,
             scroll_requests: ScrollRequests::default(),
             viewport_observers,
@@ -101,13 +101,21 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     fn prepare(&mut self) {
-        xrack_runtime::update_profile::layout(false);
-        (self.scene, self.layout) = prepare_scene_with_input(
-            &self.component,
+        self.frame_cache
+            .update_typography(self.text.typography_revision());
+        (self.scene, self.layout) = self.frame_cache.prepare(
             self.component.render_shared(),
             self.viewport,
-            &mut self.text,
             &self.input,
+            |scene| {
+                prepare_scene_with_input(
+                    &self.component,
+                    scene,
+                    self.viewport,
+                    &mut self.text,
+                    &self.input,
+                )
+            },
         );
         self.input.reconcile(&self.scene, &self.layout);
         self.sync_timers();
@@ -180,6 +188,12 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
         update(&mut self.component);
+        self.refresh();
+    }
+
+    /// Re-layout the existing component in a new logical viewport.
+    pub fn resize(&mut self, viewport: Size) {
+        self.viewport = viewport;
         self.refresh();
     }
 

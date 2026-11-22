@@ -19,6 +19,11 @@ pub fn reload_committed(generation: u64) {
     tracing::debug!(target: TARGET, event = "reload_committed", generation);
 }
 
+#[doc(hidden)]
+pub fn frame_presented(host_micros: u64, input_to_present_micros: Option<u64>) {
+    tracing::debug!(target: TARGET, event = "frame_presented", host_micros, input_to_present_micros);
+}
+
 #[derive(Clone, Default)]
 pub struct Buffer(Arc<Mutex<VecDeque<Fields>>>);
 

@@ -39,6 +39,12 @@ pub struct VisualTextLine {
 }
 
 impl VisualTextLine {
+    pub(super) fn allocated_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.cells.capacity() * std::mem::size_of::<VisualGrapheme>()
+            + self.visual.capacity() * std::mem::size_of::<usize>()
+    }
+
     /// Each glyph supplies its source byte index and horizontal advance in drawing order.
     pub fn new(text: &str, glyphs: impl IntoIterator<Item = (usize, f32)>) -> Self {
         let bidi = BidiInfo::new(text, None);

@@ -25,6 +25,8 @@ bool isExpression(::mlir::Operation &op);
 
 /// Decode a finite XR float, length or percentage literal.
 std::optional<double> parseFloatLiteral(llvm::StringRef spelling);
+std::optional<llvm::SmallVector<double, 6>>
+parseGeometryLiteral(mlir::Type type, llvm::StringRef spelling);
 
 /// Check the XR compiler's top-level contract, beyond the per-operation ODS
 /// checks.

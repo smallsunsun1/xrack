@@ -379,7 +379,10 @@ fn collect_dependencies<'m>(
             collect_dependencies(definition, qualify, seen, dependencies)?;
         }
     }
-    if matches!(op.name(), "xr.if" | "xr.for") {
+    if matches!(
+        op.name(),
+        "xr.if" | "xr.for" | "xr.enum_match" | "xr.enum_case"
+    ) {
         for statement in op.children().filter(|child| child.result_count() == 0) {
             collect_dependencies(statement, qualify, seen, dependencies)?;
         }
@@ -855,6 +858,13 @@ pub fn has_button_check_state(element: OperationRef<'_>) -> bool {
             }))
 }
 
+pub fn has_text_link_handler(element: OperationRef<'_>) -> bool {
+    element.attribute("kind") == Some("StyledText")
+        && element.children().any(|child| {
+            child.name() == "xr.handler" && child.attribute("name") == Some("link-activated")
+        })
+}
+
 /// Determine whether a repeated scene needs state that follows model row keys.
 pub fn repeat_uses_row_identity(template: OperationRef<'_>, use_visual_plan: bool) -> bool {
     if matches!(template.attribute("kind"), Some("SwipePage" | "Tab")) {
@@ -871,6 +881,7 @@ pub fn repeat_uses_row_identity(template: OperationRef<'_>, use_visual_plan: boo
     template.name() == "xr.instance"
         || template.attribute("kind") == Some("GroupBox")
         || has_button_check_state(template)
+        || has_text_link_handler(template)
         || scene_children(template).any(|child| repeat_uses_row_identity(child, use_visual_plan))
 }
 

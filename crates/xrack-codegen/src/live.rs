@@ -56,9 +56,12 @@ pub fn generate_live(module: &Module, filename: &str, cargo: bool) -> Result<Tok
 
             #[allow(dead_code, clippy::clone_on_copy)]
             impl #rust_name {
+                pub fn try_new() -> ::core::result::Result<Self, ::std::string::String> {
+                    (#open).map(Self)
+                }
+
                 pub fn new() -> Self {
-                    Self((#open)
-                        .unwrap_or_else(|error| ::core::panic!("XRack live reload: {}", error)))
+                    Self::try_new().unwrap_or_else(|error| ::core::panic!("XRack live reload: {}", error))
                 }
 
                 pub fn as_weak(&self) -> ::xrack_runtime::WeakComponent<Self> {
@@ -121,6 +124,9 @@ fn value_variant(ty: &Type) -> Result<Ident, String> {
         Type::DateList => "DateList",
         Type::Date => "Date",
         Type::Length => "Length",
+        Type::Point2D => "Point2D",
+        Type::Vector2D => "Vector2D",
+        Type::Transform2D => "Transform2D",
         Type::Color => "Color",
         _ => {
             return Err(format!(
@@ -139,12 +145,19 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
     let rust_type = host_ty(&ty);
     let variant = value_variant(&ty)?;
     let get = format_ident!("get_{name_rust}");
+    let try_get = format_ident!("try_get_{name_rust}");
     let mut methods = quote! {
-        pub fn #get(&self) -> #rust_type {
-            match self.__xr_component().current().get_snapshot(#name) {
-                ::core::result::Result::Ok(::xrack_runtime::Value::#variant(value)) => value,
-                value => ::core::panic!("XRack live property {}: {:?}", #name, value),
+        pub fn #try_get(&self) -> ::core::result::Result<#rust_type, ::std::string::String> {
+            let value = self.__xr_component().current().get_snapshot(#name)
+                .map_err(|error| error.to_string())?;
+            match value {
+                ::xrack_runtime::Value::#variant(value) => ::core::result::Result::Ok(value),
+                _ => ::core::result::Result::Err(::std::format!("XRack live property {} has an incompatible value", #name)),
             }
+        }
+
+        pub fn #get(&self) -> #rust_type {
+            self.#try_get().unwrap_or_else(|error| ::core::panic!("XRack live property {}: {}", #name, error))
         }
     };
     if writable {
@@ -203,6 +216,7 @@ fn callback_methods(callback: OperationRef<'_>) -> Result<TokenStream, String> {
     let name_rust = rust_name(name);
     let on = format_ident!("on_{name_rust}");
     let invoke = format_ident!("invoke_{name_rust}");
+    let try_invoke = format_ident!("try_invoke_{name_rust}");
     let parameters = callback.parameters()?;
     let types: Vec<_> = parameters
         .iter()
@@ -228,15 +242,15 @@ fn callback_methods(callback: OperationRef<'_>) -> Result<TokenStream, String> {
             ))),
             quote! {
                 match result {
-                    ::core::option::Option::Some(::xrack_runtime::Value::#variant(value)) => value,
-                    value => ::core::panic!("XRack live callback {}: {:?}", #name, value),
+                    ::core::option::Option::Some(::xrack_runtime::Value::#variant(value)) => ::core::result::Result::Ok(value),
+                    _ => ::core::result::Result::Err(::std::format!("XRack live callback {} returned an incompatible value", #name)),
                 }
             },
         )
     } else {
         (
             quote!(::core::result::Result::Ok(::core::option::Option::None)),
-            quote! { let _ = result; },
+            quote! { let _ = result; ::core::result::Result::Ok(()) },
         )
     };
     let args_value = quote!(#(#args.clone()),*);
@@ -269,10 +283,18 @@ fn callback_methods(callback: OperationRef<'_>) -> Result<TokenStream, String> {
             })).unwrap();
         }
 
-        pub fn #invoke(&mut self #(, #args: #types)*) -> #returns {
+        pub fn #try_invoke(&mut self #(, #args: #types)*)
+            -> ::core::result::Result<#returns, ::std::string::String>
+        {
             let result = self.__xr_component().current()
-                .invoke(#name, &[#(::xrack_runtime::Value::#variants(#args)),*]).unwrap();
+                .invoke(#name, &[#(::xrack_runtime::Value::#variants(#args)),*])
+                .map_err(|error| error.to_string())?;
             #unpack
+        }
+
+        pub fn #invoke(&mut self #(, #args: #types)*) -> #returns {
+            self.#try_invoke(#(#args),*)
+                .unwrap_or_else(|error| ::core::panic!("XRack live callback {}: {}", #name, error))
         }
     })
 }

@@ -55,6 +55,8 @@ Rust 宿主可用 `xrack_interpreter::load_mlir_file` 加载文本 MLIR。图片
 XRACK_LIVE_PROJECT="$PWD" XRACK_DEBUG_VALUES=1 bazel run //examples/async_demo:async_demo_live
 ```
 
+Live Reload 生成的 Rust 组件提供 `try_new()`、`try_get_*` 和 `try_invoke_*`，分别返回启动、属性求值和回调调用的错误。异步搜索示例用 `try_new()` 报告首次加载失败。已有便利方法保留原来的 panic 行为。可变宿主回调重入会触发 AOT panic，解释器的动态调用接口返回重入错误。
+
 用 `XRACK_DEBUG_VALUES=1` 启动应用可额外捕获回调实参、返回值和已有缓存的私有属性值。未求值或已失效的私有绑定显示为无缓存。调用历史有容量上限。热重载前的帧仍可查看，源码跳转仅开放给当前版本。这个面板展示解释器里的 XR 调用帧。Rust 和 Python 宿主内部的堆栈及断点由各自的调试器提供。
 
 在 macOS 或 Linux 上，可以把同一个开发会话接到 MCP 客户端。配置 `stdio` 启动命令及参数，例如：
@@ -71,6 +73,8 @@ XRACK_LIVE_PROJECT="$PWD" XRACK_DEBUG_VALUES=1 bazel run //examples/async_demo:a
 ```
 
 先用 `list_sessions` 选择应用，再用 `get_ui_tree` 或 `get_node` 查值。用 `read_model` 分页读取公开的字符串或记录模型，继续翻页时核对 `modelRevision` 是否一致。用 `get_calls` 和 `get_call_stack` 查最近的调用，用 `get_diagnostics` 核对热重载错误和应用中的源码版本。这些查询工具只读取工作区里正在运行的开发会话。开启值捕获时，请使用适合共享给调试客户端的数据。
+
+`get_update_profile` 的 `renderSamples` 包含布局准备代次 `preparedRevision` 和当前帧的 `sceneChanges`。例如，`pooledRows` 和 `reusedRows` 可用于观察虚拟行离开与再次进入视口时的身份变化。`measure` 统计测量输入变化的节点，实际布局次数仍看 `layoutRuns`。
 
 ### 录制交互和分析更新
 

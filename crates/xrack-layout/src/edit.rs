@@ -1,6 +1,6 @@
 use crate::{Interaction, Target};
 use std::{ops::Range, time::Duration};
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 use xrack_runtime::{KeyModifiers, Node, TextCommand, spin_editable};
 
 #[derive(Clone, Debug, Default)]
@@ -208,10 +208,33 @@ fn boundary(text: &str, position: usize) -> usize {
     if position >= text.len() {
         return text.len();
     }
+    // Start after the requested byte's scalar. The previous grapheme starts
+    // at or before that byte, including when the byte is inside UTF-8.
+    let next = text.ceil_char_boundary(position + 1);
+    let mut cursor = GraphemeCursor::new(next, text.len(), true);
+    if let Ok(Some(index)) = cursor.prev_boundary(text, 0) {
+        return index;
+    }
     text.grapheme_indices(true)
         .take_while(|(index, _)| *index <= position)
         .last()
         .map_or(0, |(index, _)| index)
+}
+
+fn boundary_after(text: &str, position: usize) -> usize {
+    if position == 0 || position >= text.len() {
+        return position.min(text.len());
+    }
+    // Starting at the preceding scalar includes a boundary exactly at position.
+    let previous = text.floor_char_boundary(position - 1);
+    let mut cursor = GraphemeCursor::new(previous, text.len(), true);
+    if let Ok(Some(index)) = cursor.next_boundary(text, 0) {
+        return index;
+    }
+    text.grapheme_indices(true)
+        .map(|(index, _)| index)
+        .find(|&index| index >= position)
+        .unwrap_or(text.len())
 }
 
 impl TextEdit {
@@ -450,11 +473,7 @@ impl TextEdit {
         let next_word = || {
             word_ranges(text)
                 .find(|word| word.end > caret)
-                .map_or(text.len(), |word| {
-                    text.grapheme_indices(true)
-                        .find(|(index, _)| *index >= word.end)
-                        .map_or(text.len(), |(index, _)| index)
-                })
+                .map_or(text.len(), |word| boundary_after(text, word.end))
         };
         let mut move_caret = |next: usize, selecting: bool| {
             self.caret = next;
@@ -556,15 +575,7 @@ impl TextEdit {
         let next = range.start + replacement.len();
         let mut result = text.to_owned();
         result.replace_range(range.clone(), &replacement);
-        self.caret = if next == result.len() {
-            next
-        } else {
-            result
-                .grapheme_indices(true)
-                .map(|(index, _)| index)
-                .find(|&index| index >= next)
-                .unwrap_or(result.len())
-        };
+        self.caret = boundary_after(&result, next);
         self.anchor = self.caret;
         self.trailing = !replacement.is_empty();
         Some(AppliedEdit {
@@ -784,6 +795,38 @@ fn current<'a>(
 #[cfg(test)]
 mod word_tests {
     use super::*;
+
+    #[test]
+    fn caret_boundary_matches_full_segmentation_inside_utf8_and_clusters() {
+        for text in [
+            "",
+            "ASCII\r\nline",
+            "Préfixe a\u{301} 🧑‍💻 👋🏽",
+            "🇩🇪🇨🇦🇺🇸🇫\r\nक्\u{200d}ष, \u{0600}x",
+        ] {
+            for position in 0..=text.len() + 1 {
+                let expected = if position >= text.len() {
+                    text.len()
+                } else {
+                    text.grapheme_indices(true)
+                        .take_while(|(index, _)| *index <= position)
+                        .last()
+                        .map_or(0, |(index, _)| index)
+                };
+                assert_eq!(boundary(text, position), expected, "{text:?} at {position}");
+                let after = text
+                    .grapheme_indices(true)
+                    .map(|(index, _)| index)
+                    .find(|&index| index >= position)
+                    .unwrap_or(text.len());
+                assert_eq!(
+                    boundary_after(text, position),
+                    after,
+                    "{text:?} at {position}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn word_boundaries_keep_combining_sequences_and_joined_emoji_intact() {

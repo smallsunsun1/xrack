@@ -1,6 +1,85 @@
 load("@rules_rust//rust:defs.bzl", "rust_test")
 load("//bazel:xrack.bzl", "xr_ui_library")
 
+xr_ui_library(
+    name = "transform2d_ui",
+    src = "transform2d.xr",
+)
+
+rust_test(
+    name = "transform2d_test",
+    srcs = ["transform2d_test.rs"],
+    compile_data = ["transform2d.xr"],
+    edition = "2024",
+    tags = ["local", "manual", "no-sandbox", "requires-gpu"],
+    deps = [
+        ":transform2d_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:pollster",
+        "@crates//:wgpu",
+    ],
+)
+
+xr_ui_library(
+    name = "rectangle_animation_ui",
+    src = "rectangle_animation.xr",
+)
+
+xr_ui_library(
+    name = "custom_render_ui",
+    src = "custom_render.xr",
+)
+
+rust_test(
+    name = "custom_render_test",
+    srcs = ["custom_render_test.rs"],
+    compile_data = [
+        "custom_render.xr",
+        "//examples/layout:bundled_sources",
+        "//examples/media:assets/sprite-atlas.png",
+    ],
+    edition = "2024",
+    tags = ["local", "manual", "no-sandbox", "requires-gpu"],
+    deps = [
+        ":custom_render_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:pollster",
+        "@crates//:wgpu",
+    ],
+)
+
+xr_ui_library(
+    name = "window_damage_ui",
+    src = "window_damage.xr",
+)
+
+rust_test(
+    name = "window_damage_test",
+    size = "small",
+    srcs = ["window_damage_test.rs"],
+    compile_data = ["window_damage.xr"],
+    edition = "2024",
+    tags = ["local", "manual", "no-sandbox", "requires-gpu"],
+    deps = [
+        ":window_damage_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:pollster",
+        "@crates//:wgpu",
+    ],
+)
+
 # Explicit opt-in: this executes real native GPU commands and needs installed fonts.
 rust_test(
     name = "gpu_test",
@@ -14,6 +93,7 @@ rust_test(
         "//conditions:default": [],
     }),
     data = [
+        "rectangle_animation.xr",
         "//examples/controls:controls.xr",
         "//examples/form:form.xr",
         "//examples/form:widgets.xr",
@@ -44,6 +124,7 @@ rust_test(
         "requires-gpu",
     ],
     deps = [
+        ":rectangle_animation_ui",
         "//crates/xrack-compiler:xrack_compiler",
         "//crates/xrack-interpreter:xrack_interpreter",
         "//crates/xrack-layout:xrack_layout",
@@ -83,6 +164,7 @@ rust_test(
     name = "compiler_test",
     srcs = ["compiler_test.rs"],
     compile_data = [
+        "expressions.xr",
         "//examples/layout:fonts/demo.ttc",
         "//examples/media:assets/nine-slice.svg",
         "//examples/media:assets/pulse.gif",
@@ -543,5 +625,24 @@ rust_test(
         "@crates//:pollster",
         "@crates//:serde_json",
         "@crates//:wgpu",
+    ],
+)
+
+xr_ui_library(
+    name = "enum_payload_ui",
+    src = "enum_payload.xr",
+)
+
+rust_test(
+    name = "enum_payload_test",
+    size = "small",
+    srcs = ["enum_payload_test.rs"],
+    compile_data = ["enum_payload.xr"],
+    edition = "2024",
+    deps = [
+        ":enum_payload_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-runtime:xrack_runtime",
     ],
 )

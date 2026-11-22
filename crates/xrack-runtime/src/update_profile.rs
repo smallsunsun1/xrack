@@ -11,6 +11,18 @@ pub struct UpdateSample {
     pub layout_runs: usize,
     pub layout_reuses: usize,
     pub materialized_rows: usize,
+    pub model_rows_scanned: usize,
+    pub model_rows_cloned: usize,
+    pub draw_primitives: usize,
+    pub quad_batches: usize,
+    pub glyph_batches: usize,
+    pub vertex_bytes: usize,
+    pub gpu_submissions: usize,
+    pub window_image_transfers: usize,
+    pub window_geometry_builds: usize,
+    pub texture_upload_bytes: usize,
+    pub geometry_upload_bytes: usize,
+    pub geometry_reuses: usize,
     pub cpu_micros: u64,
     pub view_rows: Vec<(String, usize)>,
     pub visual_binding_reads: Vec<(String, &'static str, usize)>,
@@ -112,4 +124,61 @@ pub fn visual_binding(element: &str, property: &'static str) {
             sample.visual_binding_reads_truncated = true;
         }
     });
+}
+
+#[doc(hidden)]
+pub fn model_work(scanned: usize, cloned: usize) {
+    count(|sample| {
+        sample.model_rows_scanned += scanned;
+        sample.model_rows_cloned += cloned;
+    });
+}
+
+#[doc(hidden)]
+pub fn draw_primitive() {
+    count(|sample| sample.draw_primitives += 1);
+}
+
+#[doc(hidden)]
+pub fn submit_gpu() {
+    count(|sample| sample.gpu_submissions += 1);
+}
+
+#[doc(hidden)]
+pub fn build_window_geometry() {
+    count(|sample| sample.window_geometry_builds += 1);
+}
+
+#[doc(hidden)]
+pub fn transfer_window_image() {
+    count(|sample| sample.window_image_transfers += 1);
+}
+
+#[doc(hidden)]
+pub fn texture_upload(bytes: usize) {
+    count(|sample| sample.texture_upload_bytes += bytes);
+}
+
+#[doc(hidden)]
+pub fn quad_batch(quads: usize) {
+    count(|sample| {
+        sample.quad_batches += 1;
+        // Six XYUV vertices per quad in FemtoVG's triangle command.
+        sample.vertex_bytes += quads * 6 * 4 * std::mem::size_of::<f32>();
+    });
+}
+
+#[doc(hidden)]
+pub fn glyph_batch() {
+    count(|sample| sample.glyph_batches += 1);
+}
+
+#[doc(hidden)]
+pub fn geometry_upload(bytes: usize) {
+    count(|sample| sample.geometry_upload_bytes += bytes);
+}
+
+#[doc(hidden)]
+pub fn reused_geometry() {
+    count(|sample| sample.geometry_reuses += 1);
 }

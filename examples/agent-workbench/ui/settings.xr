@@ -1,0 +1,196 @@
+import { Palette } from "theme.xr";
+
+export component AppearanceSettings inherits VerticalLayout {
+    in-out property <bool> appearance-open;
+    in property <string> appearance-status;
+    in property <string> language-status;
+    callback select-appearance(mode: ColorScheme);
+    callback select-language(locale: string);
+
+    padding: 14px;
+    spacing: 10px;
+    Label { text: @tr("workbench-color-scheme"); color: Palette.text; font-weight: 650; }
+    appearance-choices := RadioGroup {
+        height: 37px;
+        orientation: Orientation.horizontal;
+        accessible-name: @tr("workbench-color-scheme");
+        current-value: Palette.mode == ColorScheme.dark ? "dark" : Palette.mode == ColorScheme.light ? "light" : "system";
+        selected(value) => {
+            root.select-appearance(value == "dark" ? ColorScheme.dark : value == "light" ? ColorScheme.light : ColorScheme.system);
+        }
+        appearance-system := RadioButton { text: @tr("system"); value: "system"; }
+        appearance-light := RadioButton { text: @tr("light"); value: "light"; }
+        appearance-dark := RadioButton { text: @tr("dark"); value: "dark"; }
+    }
+    Label {
+        text: root.appearance-status;
+        visible: root.appearance-status != "";
+        color: Palette.error;
+        font-size: 12px;
+        height: 22px;
+        overflow: elide;
+    }
+    Label { text: @tr("interface-language"); color: Palette.text; font-weight: 650; }
+    language-choices := RadioGroup {
+        height: 37px;
+        orientation: Orientation.horizontal;
+        accessible-name: @tr("interface-language");
+        current-value: I18n.locale();
+        selected(value) => { root.select-language(value); }
+        language-chinese := RadioButton { text: @tr("language-chinese"); value: "zh-CN"; }
+        language-english := RadioButton { text: @tr("language-english"); value: "en-US"; }
+    }
+    Label {
+        text: @tr("language-settings-error", detail: root.language-status);
+        visible: root.language-status != "";
+        color: Palette.error;
+        font-size: 12px;
+        height: 22px;
+        overflow: elide;
+    }
+    HorizontalLayout {
+        height: 33px;
+        alignment: end;
+        close-appearance := Button {
+            text: @tr("done");
+            primary: true;
+            border-radius: 7px;
+            width: 70px;
+            clicked => { root.appearance-open = false; }
+        }
+    }
+}
+
+export component ComposerSettings inherits VerticalLayout {
+    callback restore-focus();
+    in-out property <string> composer-enter-mode;
+    in-out property <bool> composer-settings-open;
+    in property <string> composer-settings-status;
+    in-out property <bool> composer-steers;
+    callback save-composer-settings();
+
+    padding: 14px;
+    spacing: 9px;
+    alignment: start;
+    Label { text: @tr("enter-key"); color: Palette.text; font-weight: 650; }
+    composer-enter-options := RadioGroup {
+        height: 95px;
+        orientation: Orientation.vertical;
+        accessible-name: @tr("send-shortcut");
+        current-value: root.composer-enter-mode;
+        selected(value) => {
+            root.composer-enter-mode = value;
+            root.save-composer-settings();
+        }
+        enter-modified := RadioButton { text: @tr("send-with-ctrl-enter"); value: "modified"; }
+        enter-single-line := RadioButton { text: @tr("enter-sends-a-single-line"); value: "single-line"; }
+        enter-always := RadioButton { text: @tr("enter-to-send-shift-enter-for-a-new-line"); value: "enter"; }
+    }
+    Label { text: @tr("sending-during-a-turn"); color: Palette.text; font-weight: 650; }
+    composer-followup-options := RadioGroup {
+        height: 32px;
+        orientation: Orientation.horizontal;
+        accessible-name: @tr("default-action-during-a-turn");
+        current-value: root.composer-steers ? "steer" : "queue";
+        selected(value) => {
+            root.composer-steers = value == "steer";
+            root.save-composer-settings();
+        }
+        followup-queue := RadioButton { text: @tr("queue-for-next-turn"); value: "queue"; }
+        followup-steer := RadioButton { text: @tr("steer-current-turn"); value: "steer"; }
+    }
+    Label {
+        text: root.composer-settings-status;
+        visible: root.composer-settings-status != "";
+        color: Palette.error;
+        font-size: 12px;
+        height: 22px;
+        overflow: elide;
+    }
+    HorizontalLayout {
+        height: 33px;
+        alignment: end;
+        close-composer-settings := Button {
+            text: @tr("done");
+            primary: true;
+            width: 70px;
+            border-radius: 7px;
+            clicked => { root.composer-settings-open = false; root.restore-focus(); }
+        }
+    }
+}
+
+export component NotificationSettings inherits VerticalLayout {
+    in-out property <string> completion-notice-mode;
+    in property <bool> notification-access-pending;
+    in property <int> notification-access-status;
+    in property <string> notification-settings-error;
+    in-out property <bool> notification-settings-open;
+    in property <bool> notifications-authorized;
+    in property <bool> notifications-supported;
+    in-out property <bool> question-notices;
+    callback request-notification-access();
+    callback save-notification-settings();
+
+    padding: 14px;
+    spacing: 9px;
+    alignment: start;
+    Label { text: @tr("turn-completion"); color: Palette.text; font-weight: 650; }
+    notification-completion-options := RadioGroup {
+        height: 94px;
+        orientation: Orientation.vertical;
+        current-value: root.completion-notice-mode;
+        accessible-name: @tr("turn-completion-notifications");
+        enabled: root.notifications-supported;
+        selected(value) => {
+            root.completion-notice-mode = value;
+            root.save-notification-settings();
+        }
+        notice-off := RadioButton { text: @tr("off"); value: "off"; }
+        notice-background := RadioButton { text: @tr("only-in-the-background"); value: "background"; }
+        notice-always := RadioButton { text: @tr("always"); value: "always"; }
+    }
+    question-notice-option := CheckBox {
+        height: 31px;
+        text: @tr("notify-when-a-conversation-needs-input");
+        enabled: root.notifications-supported;
+        checked <=> root.question-notices;
+        toggled => { root.save-notification-settings(); }
+    }
+    Label {
+        height: 25px;
+        text: !root.notifications-supported ? @tr("open-the-macos-app-bundle-to-enable-system-notifications") :
+            root.notifications-authorized ? @tr("system-notifications-are-enabled") :
+            root.notification-access-status == 2 ? @tr("allow-notifications-for-this-app-in-macos-system-settings") : @tr("system-notifications-are-disabled");
+        color: Palette.muted;
+        font-size: 12px;
+        overflow: elide;
+    }
+    Label {
+        text: root.notification-settings-error;
+        visible: root.notification-settings-error != "";
+        height: 24px;
+        color: Palette.error;
+        font-size: 12px;
+        overflow: elide;
+    }
+    HorizontalLayout {
+        height: 33px;
+        spacing: 8px;
+        alignment: end;
+        request-notification-permission := Button {
+            text: root.notification-access-pending ? @tr("waiting-for-permission") : @tr("allow-notifications");
+            padding: 5px;
+            visible: root.notifications-supported && root.notification-access-status == 0;
+            enabled: !root.notification-access-pending;
+            clicked => { root.request-notification-access(); }
+        }
+        close-notification-settings := Button {
+            text: @tr("done");
+            primary: true;
+            width: 70px;
+            border-radius: 7px;
+            clicked => { root.notification-settings-open = false; }
+        }
+    }
+}

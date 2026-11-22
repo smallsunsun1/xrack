@@ -35,7 +35,9 @@ pub use xrack_resources::{EmbeddedImage, EmbeddedPath, EmbeddedTranslations, che
 use xrack_runtime::{is_multiline_text_input, is_toggle};
 use xrack_syntax::{
     ast::{Parameter, Type},
-    builtins::{ColorFunction, MathFunction, StringFunction, text_submission_rule},
+    builtins::{
+        ColorFunction, GeometryFunction, MathFunction, StringFunction, text_submission_rule,
+    },
 };
 
 fn ident(s: &str) -> Ident {
@@ -79,6 +81,9 @@ fn ty(t: &Type) -> TokenStream {
             quote!(::xrack_runtime::VecModel<#name>)
         }
         Type::Length => quote!(::xrack_runtime::Length),
+        Type::Point2D => quote!(::xrack_runtime::Point2D),
+        Type::Vector2D => quote!(::xrack_runtime::Vector2D),
+        Type::Transform2D => quote!(::xrack_runtime::Transform2D),
         Type::Percent => quote!(::xrack_runtime::Percent),
         Type::Color => quote!(::xrack_runtime::Color),
         Type::Brush => quote!(::xrack_runtime::Brush),
@@ -155,6 +160,47 @@ fn host_ty(t: &Type) -> TokenStream {
     }
 }
 
+fn table_history_payload_size(value: TokenStream, ty: &Type) -> Option<TokenStream> {
+    match ty {
+        Type::String
+        | Type::Font
+        | Type::KeyEvent
+        | Type::StyledText
+        | Type::Brush
+        | Type::Record(_) => {
+            Some(quote!(::xrack_runtime::TableHistoryPayload::history_payload_bytes(#value)))
+        }
+        _ => None,
+    }
+}
+
+fn enum_binding_ident(name: &str) -> Ident {
+    format_ident!("__xr_variant_{}", name)
+}
+
+fn enum_variant_tokens(
+    ty: &Ident,
+    schema: &xrack_syntax::ast::EnumVariantSchema,
+    fields: &[(Ident, TokenStream)],
+) -> Result<TokenStream, String> {
+    use xrack_syntax::ast::EnumShape;
+    if fields.len() != schema.fields.len() {
+        return Err(format!("wrong payload field count for {}", schema.name));
+    }
+    let variant = ident(&schema.name);
+    Ok(match schema.shape {
+        EnumShape::Unit => quote!(#ty::#variant),
+        EnumShape::Tuple => {
+            let values = fields.iter().map(|(_, value)| value);
+            quote!(#ty::#variant(#(#values),*))
+        }
+        EnumShape::Named => {
+            let fields = fields.iter().map(|(name, value)| quote!(#name: #value));
+            quote!(#ty::#variant { #(#fields),* })
+        }
+    })
+}
+
 fn to_host(value: TokenStream, t: &Type) -> TokenStream {
     if t.list_item().is_some() {
         quote!((#value).into_snapshot())
@@ -216,6 +262,18 @@ fn literal(spelling: &str, ty: Type) -> Result<TokenStream, String> {
         XrLiteral::Length(value) => {
             let number = Literal::f64_suffixed(value.0);
             quote!(::xrack_runtime::Length(#number))
+        }
+        XrLiteral::Point2D(value) => {
+            let [x, y] = [value.x.0, value.y.0].map(Literal::f64_suffixed);
+            quote!(::xrack_runtime::Point2D::new(::xrack_runtime::Length(#x), ::xrack_runtime::Length(#y)))
+        }
+        XrLiteral::Vector2D(value) => {
+            let [x, y] = [value.x.0, value.y.0].map(Literal::f64_suffixed);
+            quote!(::xrack_runtime::Vector2D::new(::xrack_runtime::Length(#x), ::xrack_runtime::Length(#y)))
+        }
+        XrLiteral::Transform2D(value) => {
+            let coeffs = value.coefficients().map(Literal::f64_suffixed);
+            quote!(::xrack_runtime::Transform2D::from_coefficients([#(#coeffs),*]))
         }
         XrLiteral::Percent(value) => {
             let number = Literal::f64_suffixed(value.0);
@@ -1135,7 +1193,7 @@ impl<'a> VisualScope<'a> {
             }
         }
         declarations.extend(quote! {
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, non_snake_case)]
             #[derive(::core::default::Default)]
             struct #name { #fields }
         });
@@ -1152,6 +1210,7 @@ struct Generator<'a> {
     callback_graph: &'a AliasGraph<'a>,
     instance_handlers: Vec<(OperationRef<'a>, Option<OperationRef<'a>>)>,
     records: &'a BTreeMap<&'a str, Vec<Parameter>>,
+    enums: &'a BTreeMap<&'a str, Vec<xrack_syntax::ast::EnumVariantSchema>>,
     instances: BTreeMap<&'a str, OperationRef<'a>>,
     analysis: ComponentAnalysis<'a>,
     element_properties: Vec<(&'a str, OperationRef<'a>)>,
@@ -1495,7 +1554,9 @@ impl<'a> Generator<'a> {
                     self.geometry_targets.insert(child.attr("owner")?);
                 }
                 "xr.callback" | "xr.handler" | "xr.clipboard_paste" => {
-                    for effect in child.children() {
+                    let mut effects: Vec<_> = child.children().collect();
+                    while let Some(effect) = effects.pop() {
+                        effects.extend(effect.children());
                         match effect.name() {
                             "xr.focus_command" => {
                                 self.focus_targets.insert(effect.attr("target")?);
@@ -1913,6 +1974,28 @@ impl<'a> Generator<'a> {
         })
     }
 
+    fn text_fragment(
+        &self,
+        value: OperationRef<'a>,
+        context: ExpressionContext<'_>,
+    ) -> Result<TokenStream, String> {
+        if value.name() == "xr.literal" {
+            let text = serde_json::from_str::<String>(value.attr("value")?)
+                .map_err(|error| error.to_string())?;
+            Ok(quote!(::xrack_runtime::TextFragment::Static(#text)))
+        } else if value.name() == "xr.read"
+            && owner(value) == "root"
+            && VisualCacheGroup::for_subexpression(value).is_none()
+        {
+            let read = property_method("get_shared", "root", value.attr("value")?);
+            let receiver = context.receiver;
+            Ok(quote!(::xrack_runtime::TextFragment::Shared(#receiver.#read())))
+        } else {
+            let part = self.expr_in(value, context)?;
+            Ok(quote!(::xrack_runtime::TextFragment::Owned(#part)))
+        }
+    }
+
     fn expr_in(
         &self,
         op: OperationRef<'a>,
@@ -1942,6 +2025,10 @@ impl<'a> Generator<'a> {
                 return Ok(quote!(#receiver.#selector()));
             }
             return self.state_choice(op, |condition| self.expr_in(condition, context));
+        }
+        if op.name() == "xr.local" {
+            let name = parameter_ident(op.attr("name")?);
+            return Ok(quote!(#name.clone()));
         }
         let value = op.attr("value")?;
         let arg = |i| self.expr_in(self.operand(op, i)?, context);
@@ -2020,6 +2107,21 @@ impl<'a> Generator<'a> {
                     .records
                     .get(name.as_ref())
                     .ok_or_else(|| format!("unknown record `{name}`"))?;
+                if let Some(variants) = self.enums.get(name.as_ref()) {
+                    let tag = self.operand(op, 0)?;
+                    let variant = tag
+                        .attribute("value")
+                        .filter(|_| tag.name() == "xr.literal")
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .and_then(|index| variants.get(index))
+                        .ok_or("enum constructor requires a valid constant discriminant")?;
+                    let name = ident(&name);
+                    if !variant.fields.is_empty() {
+                        return Err("legacy enum construction requires a unit variant".into());
+                    }
+                    let variant = ident(&variant.name);
+                    return Ok(quote!(#name::#variant));
+                }
                 let name = ident(&name);
                 let values = (0..op.operand_count())
                     .map(arg)
@@ -2124,12 +2226,19 @@ impl<'a> Generator<'a> {
             }
             "xr.get_field" => {
                 let record = arg(0)?;
+                if value == xrack_syntax::ast::ENUM_TAG_FIELD
+                    && matches!(value_type(self.operand(op, 0)?)?, Type::Record(name) if self.enums.contains_key(name.as_ref()))
+                {
+                    return Ok(quote!((#record).__xr_discriminant()));
+                }
                 let field = ident(value);
                 quote!((#record).#field)
             }
             "xr.date_field"
             | "xr.time_field"
             | "xr.font_field"
+            | "xr.point2d_field"
+            | "xr.vector2d_field"
             | "xr.key_field"
             | "xr.wheel_field"
             | "xr.pointer_field"
@@ -2599,6 +2708,30 @@ impl<'a> Generator<'a> {
                 let arg = arg(0)?;
                 quote!((#arg as ::core::primitive::f64))
             }
+            "xr.geometry_function" => {
+                let kind = GeometryFunction::parse(value).ok_or("unknown geometry function")?;
+                let args = (0..op.operand_count())
+                    .map(arg)
+                    .collect::<Result<Vec<_>, _>>()?;
+                use GeometryFunction::*;
+                match (kind, args.as_slice()) {
+                    (Point, [x, y]) => quote!(::xrack_runtime::Point2D::new(#x, #y)),
+                    (Vector, [x, y]) => quote!(::xrack_runtime::Vector2D::new(#x, #y)),
+                    (Identity, []) => quote!(::xrack_runtime::Transform2D::IDENTITY),
+                    (Translation, [x, y]) => {
+                        quote!(::xrack_runtime::Transform2D::translation(#x, #y))
+                    }
+                    (Rotation, [degrees]) => {
+                        quote!(::xrack_runtime::Transform2D::rotation(#degrees))
+                    }
+                    (Scale, [x, y]) => quote!(::xrack_runtime::Transform2D::scale(#x, #y)),
+                    (Compose, [a, b]) => quote!((#a).then(#b)),
+                    (Around, [transform, point]) => quote!((#transform).around(#point)),
+                    (MapPoint, [transform, point]) => quote!((#transform).map_point(#point)),
+                    (MapVector, [transform, vector]) => quote!((#transform).map_vector(#vector)),
+                    _ => return Err("invalid geometry operands".into()),
+                }
+            }
             "xr.math_function" => {
                 let kind = MathFunction::parse(value).ok_or("unknown math function")?;
                 let input_type = value_type(self.operand(op, 0)?)?;
@@ -2687,31 +2820,34 @@ impl<'a> Generator<'a> {
                 }
             }
             "xr.string_function" => {
-                let a = arg(0)?;
+                let text = |index| self.text_fragment(self.operand(op, index)?, context);
+                let a = text(0)?;
                 match StringFunction::parse(value).ok_or("unknown string function")? {
-                    StringFunction::Trim => quote!((#a).trim().to_owned()),
-                    StringFunction::IsEmpty => quote!((#a).is_empty()),
+                    StringFunction::Trim => quote!((#a).as_ref().trim().to_owned()),
+                    StringFunction::IsEmpty => quote!((#a).as_ref().is_empty()),
                     StringFunction::Contains => {
-                        let b = arg(1)?;
-                        quote!((#a).contains((#b).as_str()))
+                        let b = text(1)?;
+                        quote!((#a).as_ref().contains((#b).as_ref()))
                     }
                     StringFunction::StartsWith => {
-                        let b = arg(1)?;
-                        quote!((#a).starts_with((#b).as_str()))
+                        let b = text(1)?;
+                        quote!((#a).as_ref().starts_with((#b).as_ref()))
                     }
                     StringFunction::EndsWith => {
-                        let b = arg(1)?;
-                        quote!((#a).ends_with((#b).as_str()))
+                        let b = text(1)?;
+                        quote!((#a).as_ref().ends_with((#b).as_ref()))
                     }
                     StringFunction::ReplaceAll => {
-                        let (from, to) = (arg(1)?, arg(2)?);
-                        quote!((#a).replace((#from).as_str(), &(#to)))
+                        let (from, to) = (text(1)?, text(2)?);
+                        quote!((#a).as_ref().replace((#from).as_ref(), (#to).as_ref()))
                     }
-                    StringFunction::Lowercase => quote!((#a).to_lowercase()),
-                    StringFunction::Uppercase => quote!((#a).to_uppercase()),
-                    StringFunction::IsInt => quote!(::xrack_runtime::parse_int(&(#a)).is_some()),
+                    StringFunction::Lowercase => quote!((#a).as_ref().to_lowercase()),
+                    StringFunction::Uppercase => quote!((#a).as_ref().to_uppercase()),
+                    StringFunction::IsInt => {
+                        quote!(::xrack_runtime::parse_int((#a).as_ref()).is_some())
+                    }
                     StringFunction::IsFloat => {
-                        quote!(::xrack_runtime::parse_float(&(#a)).is_some())
+                        quote!(::xrack_runtime::parse_float((#a).as_ref()).is_some())
                     }
                     StringFunction::ToInt | StringFunction::ToFloat => {
                         let fallback = arg(1)?;
@@ -2720,10 +2856,10 @@ impl<'a> Generator<'a> {
                         } else {
                             quote!(::xrack_runtime::parse_float)
                         };
-                        quote!(#parse(&(#a)).unwrap_or(#fallback))
+                        quote!(#parse((#a).as_ref()).unwrap_or(#fallback))
                     }
                     StringFunction::CharacterCount => {
-                        quote!(::xrack_runtime::character_count(&(#a)))
+                        quote!(::xrack_runtime::character_count((#a).as_ref()))
                     }
                 }
             }
@@ -2831,9 +2967,15 @@ impl<'a> Generator<'a> {
                     UnaryOperator::Not => quote!((!#arg)),
                 }
             }
+            "xr.concat" => {
+                let parts = (0..op.operand_count())
+                    .map(|index| self.text_fragment(self.operand(op, index)?, context))
+                    .collect::<Result<Vec<_>, String>>()?;
+                quote!(::xrack_runtime::concat_text::<::xrack_runtime::TextFragment<'_>>([#(#parts),*]))
+            }
             "xr.binary" if value_type(op)? == Type::String => {
                 let (left, right) = (arg(0)?, arg(1)?);
-                quote!(::std::format!("{}{}", #left, #right))
+                quote!(::xrack_runtime::concat_text::<::std::string::String>([#left, #right]))
             }
             "xr.binary" if value_type(self.operand(op, 0)?)?.list_item().is_some() => {
                 let (left, right) = (arg(0)?, arg(1)?);
@@ -2883,6 +3025,106 @@ impl<'a> Generator<'a> {
                 } else {
                     expression
                 }
+            }
+            "xr.model_filter" | "xr.model_lookup" | "xr.model_sort_by" => {
+                let Type::RecordList(record) = value_type(op)? else {
+                    return Err("model projection requires a record model".into());
+                };
+                let field_ty = self.record_field_type(record.clone(), value)?;
+                let row_ty = ty(&Type::Record(record));
+                let path: Vec<_> = value.split('.').map(ident).collect();
+                let model = arg(0)?;
+                let option = arg(1)?;
+                if op.name() != "xr.model_sort_by" {
+                    if field_ty != Type::String {
+                        return Err("model filter requires a string field".into());
+                    }
+                    if op.name() == "xr.model_lookup" {
+                        quote!((#model).lookup_text(#value, &(#option), |row: &#row_ty| Some(row.#(#path).*.as_str())))
+                    } else {
+                        quote!((#model).filter_text_indexed(#value, &(#option), |row: &#row_ty| Some(row.#(#path).*.as_str())))
+                    }
+                } else {
+                    if !matches!(field_ty, Type::Int | Type::String) {
+                        return Err("model sort requires an int or string field".into());
+                    }
+                    if field_ty == Type::String {
+                        quote!((#model).sorted_text_indexed(#value, #option, |row: &#row_ty| Some(row.#(#path).*.as_str())))
+                    } else {
+                        quote!((#model).sorted(#option, |a: &#row_ty, b: &#row_ty| a.#(#path).*.cmp(&b.#(#path).*)))
+                    }
+                }
+            }
+            "xr.enum_construct" => {
+                let Type::Record(name) = value_type(op)? else {
+                    return Err("expected an enum type".into());
+                };
+                let variant = op
+                    .integer_attribute("tag")
+                    .and_then(|tag| usize::try_from(tag).ok())
+                    .and_then(|tag| self.enums.get(name.as_ref())?.get(tag))
+                    .ok_or("unknown enum variant")?;
+                let fields = op
+                    .string_array_attribute("fields")
+                    .ok_or("missing enum payload fields")?;
+                let values = fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, field)| Ok((ident(field), arg(index)?)))
+                    .collect::<Result<Vec<_>, String>>()?;
+                enum_variant_tokens(&ident(&name), variant, &values)?
+            }
+            "xr.enum_parameter" => {
+                let member = enum_binding_ident(value);
+                quote!(#member.clone())
+            }
+            "xr.enum_match" => {
+                let operand = self.operand(op, 0)?;
+                let Type::Record(name) = value_type(operand)? else {
+                    return Err("expected an enum scrutinee".into());
+                };
+                let variants = self.enums.get(name.as_ref()).ok_or("unknown enum schema")?;
+                let subject = arg(0)?;
+                let name = ident(&name);
+                let arms = children(op, "xr.enum_case")
+                    .map(|case| {
+                        let ordinal = case
+                            .integer_attribute("ordinal")
+                            .and_then(|index| usize::try_from(index).ok())
+                            .ok_or("invalid enum case ordinal")?;
+                        let variant = variants.get(ordinal).ok_or("unknown enum case variant")?;
+                        let scope = case.attr("name")?;
+                        let fields = variant
+                            .fields
+                            .iter()
+                            .enumerate()
+                            .map(|(index, field)| {
+                                let binding = enum_binding_ident(&format!("{scope}_{index}"));
+                                (ident(&field.name), quote!(#binding))
+                            })
+                            .collect::<Vec<_>>();
+                        let pattern = enum_variant_tokens(&name, variant, &fields)?;
+                        let result = children(case, "xr.enum_result")
+                            .next()
+                            .ok_or("missing enum case result")?;
+                        let body = self.expr_in(self.operand(result, 0)?, context)?;
+                        Ok(quote!(#pattern => #body,))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                quote!(match #subject { #(#arms)* })
+            }
+            "xr.match_enum" => {
+                let discriminant = arg(0)?;
+                let branches = (1..op.operand_count())
+                    .map(arg)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut cases = branches.iter().enumerate();
+                let (_, fallback) = cases.next().ok_or("enum match has no arms")?;
+                let cases = cases.map(|(index, code)| {
+                    let index = Literal::i64_unsuffixed(index as i64);
+                    quote!(#index => #code,)
+                });
+                quote!(match #discriminant { #(#cases)* _ => #fallback })
             }
             "xr.select" => {
                 let (condition, yes, no) = (arg(0)?, arg(1)?, arg(2)?);
@@ -3006,6 +3248,12 @@ impl<'a> Generator<'a> {
         let mut statements = TokenStream::new();
         for statement in operations {
             match statement.name() {
+                "xr.local" => {
+                    let name = parameter_ident(statement.attr("name")?);
+                    let value = expression(self.operand(statement, 0)?)?;
+                    let ty = ty(&value_type(statement)?);
+                    statements.extend(quote!(let #name: #ty = #value;));
+                }
                 "xr.if" => {
                     let condition = expression(self.operand(statement, 0)?)?;
                     let mut branches = statement.regions().map(|region| {
@@ -3589,7 +3837,16 @@ impl<'a> Generator<'a> {
                         }
                     })
                 } else {
-                    let rows = quote!(#receiver.#field.render_range(|| #expression, 0..4096, #factory, #row));
+                    let cache = self
+                        .use_visual_plan
+                        .then(|| xrack_mlir::RowSceneCache::from_operation(element))
+                        .flatten();
+                    let rows = if let Some(cache) = cache {
+                        let reads_index = cache == xrack_mlir::RowSceneCache::Indexed;
+                        quote!(#receiver.#field.render_cached_range(|| #expression, 0..4096, #reads_index, #factory, #row))
+                    } else {
+                        quote!(#receiver.#field.render_range(|| #expression, 0..4096, #factory, #row))
+                    };
                     quote!(::xrack_runtime::repeat_scene(#rows, #positioned))
                 };
                 out.extend(quote!(let #name = #scene;));
@@ -4148,11 +4405,11 @@ impl<'a> Generator<'a> {
                 });
             }
             let mut groups = TokenStream::new();
-            self.repeated_check_targets(row, &repeat.row, &mut Vec::new(), &mut groups)?;
-            let group_route = if groups.is_empty() {
+            self.repeated_event_targets(row, &repeat.row, &mut Vec::new(), &mut groups)?;
+            let row_route = if groups.is_empty() {
                 TokenStream::new()
             } else {
-                let route = self.with_check_event_row(
+                let route = self.with_repeat_event_row(
                     row,
                     &self.visuals,
                     repeat,
@@ -4160,7 +4417,9 @@ impl<'a> Generator<'a> {
                     &groups,
                 )?;
                 quote! {
-                    if matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked")) {
+                    if matches!(action,
+                        ::xrack_runtime::RoutedEvent::Dispatch("clicked")
+                        | ::xrack_runtime::RoutedEvent::Control(::xrack_runtime::ControlAction::ActivateTextLink(_))) {
                         let __xr_rest = rest;
                         let __xr_row_node = row;
                         let handled = (|| {
@@ -4461,13 +4720,13 @@ impl<'a> Generator<'a> {
             } else {
                 None
             };
-            if edits.is_some() || !group_route.is_empty() {
+            if edits.is_some() || !row_route.is_empty() {
                 let edit = edits.unwrap_or_else(|| quote!(Some(false)));
                 out.extend(quote! {
                     [#(#path,)* slot, 0, rest @ ..] => Some((|| {
                         let view = scene.at_path(&[#(#path),*])?;
                         let (index, key, row) = view.list_event_row(*slot)?;
-                        #group_route
+                        #row_route
                         #edit
                     })().unwrap_or(false)),
                 });
@@ -4498,7 +4757,7 @@ impl<'a> Generator<'a> {
                     } else {
                         let slot = format_ident!("__xr_slot_{}", path.len());
                         let prefix = path.iter().map(|index| quote!(#index)).collect::<Vec<_>>();
-                        self.repeated_check_events(child, &self.visuals, &slot, &prefix, out)?;
+                        self.repeated_events(child, &self.visuals, &slot, &prefix, out)?;
                     }
                 } else {
                     self.delegate_event_arms(child, path, out, delegates)?;
@@ -4659,7 +4918,7 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
-    fn repeated_check_events(
+    fn repeated_events(
         &self,
         row: OperationRef<'a>,
         scope: &VisualScope<'_>,
@@ -4674,14 +4933,16 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         let mut body = TokenStream::new();
-        self.repeated_check_targets(row, &repeat.row, &mut Vec::new(), &mut body)?;
+        self.repeated_event_targets(row, &repeat.row, &mut Vec::new(), &mut body)?;
         if body.is_empty() {
             return Ok(());
         }
-        let route = self.with_check_event_row(row, scope, repeat, None, &body)?;
+        let route = self.with_repeat_event_row(row, scope, repeat, None, &body)?;
         out.extend(quote! {
             [#(#prefix,)* #slot, __xr_rest @ ..] => Some((|| {
-                if !matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked")) {
+                if !matches!(action,
+                    ::xrack_runtime::RoutedEvent::Dispatch("clicked")
+                    | ::xrack_runtime::RoutedEvent::Control(::xrack_runtime::ControlAction::ActivateTextLink(_))) {
                     return None;
                 }
                 let __xr_container = scene.at_path(&[#(#prefix),*])?;
@@ -4694,7 +4955,7 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
-    fn with_check_event_row(
+    fn with_repeat_event_row(
         &self,
         row: OperationRef<'a>,
         scope: &VisualScope<'_>,
@@ -4741,7 +5002,7 @@ impl<'a> Generator<'a> {
         }
     }
 
-    fn repeated_check_targets(
+    fn repeated_event_targets(
         &self,
         row: OperationRef<'a>,
         scope: &VisualScope<'_>,
@@ -4759,13 +5020,35 @@ impl<'a> Generator<'a> {
             } else {
                 self.group_box_toggle(node, scope, &input)?
             };
-            out.extend(quote!([#(#path),*] => Some((#available) && #click),));
+            out.extend(quote!([#(#path),*] => Some(
+                matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked"))
+                    && (#available) && #click
+            ),));
+        }
+        if xrack_mlir::has_text_link_handler(node) {
+            let available = self.row_target_available(row, path, scope, &quote!(true), None)?;
+            let receiver = quote!(self);
+            let context = ExpressionContext {
+                repeat_parameters: true,
+                ..ExpressionContext::new(&receiver)
+            };
+            let activate = self.text_link_activation(node, context)?;
+            out.extend(quote! {
+                [#(#path),*] => {
+                    let ::xrack_runtime::RoutedEvent::Control(
+                        ::xrack_runtime::ControlAction::ActivateTextLink(index)
+                    ) = action else { return Some(false); };
+                    let index = *index;
+                    let node = __xr_row_node.at_path(&[#(#path),*])?;
+                    Some((#available) && #activate)
+                },
+            });
         }
         for (index, child) in child_slots(node) {
             if let Some(repeat) = scope.repeats.get(element_key(child)?) {
                 if repeat.uses_row_identity() {
                     let mut body = TokenStream::new();
-                    self.repeated_check_targets(child, &repeat.row, &mut Vec::new(), &mut body)?;
+                    self.repeated_event_targets(child, &repeat.row, &mut Vec::new(), &mut body)?;
                     if !body.is_empty() {
                         let available = self.row_target_available(
                             row,
@@ -4774,7 +5057,8 @@ impl<'a> Generator<'a> {
                             &quote!(false),
                             Some(index),
                         )?;
-                        let route = self.with_check_event_row(child, scope, repeat, None, &body)?;
+                        let route =
+                            self.with_repeat_event_row(child, scope, repeat, None, &body)?;
                         out.extend(quote! {
                             [#(#path,)* #index, __xr_slot, __xr_rest @ ..] => Some((#available) && (|| {
                                 let __xr_container = __xr_row_node.at_path(&[#(#path,)* #index])?;
@@ -4788,7 +5072,7 @@ impl<'a> Generator<'a> {
                 }
             } else if children(child, "xr.repeat").next().is_none() {
                 path.push(index);
-                self.repeated_check_targets(row, scope, path, out)?;
+                self.repeated_event_targets(row, scope, path, out)?;
                 path.pop();
             }
         }
@@ -6005,7 +6289,12 @@ impl<'a> Generator<'a> {
                 _ => quote!(|a, b| a == b),
             };
             let bytes = match value_type {
-                Type::String | Type::Font | Type::KeyEvent | Type::StyledText | Type::Brush => {
+                Type::String
+                | Type::Font
+                | Type::KeyEvent
+                | Type::StyledText
+                | Type::Brush
+                | Type::Record(_) => {
                     quote!(::xrack_runtime::TableHistoryPayload::history_payload_bytes)
                 }
                 _ => quote!(|_| 0),
@@ -6037,7 +6326,9 @@ impl<'a> Generator<'a> {
         ty: &Type,
         edited: &mut BTreeMap<Vec<&'a str>, Type>,
     ) {
-        if let Type::Record(name) = ty {
+        if let Type::Record(name) = ty
+            && !self.enums.contains_key(name.as_ref())
+        {
             for field in &self.records[name.as_ref()] {
                 path.push(&field.name);
                 self.record_paste_leaves(path, &field.ty, edited);
@@ -6284,7 +6575,7 @@ impl<'a> Generator<'a> {
             };
         out.extend(quote! {
             #name.table_header = Some(::std::boxed::Box::new(::xrack_runtime::TableHeader {
-                columns: ::std::vec![#(#columns),*],
+                columns: ::std::vec![#(#columns.into_shared()),*],
                 sort: self.__state.#sort.get(|| None),
                 column_widths: self.__state.#widths.get(::std::vec::Vec::new),
             }));
@@ -7970,7 +8261,12 @@ impl<'a> Generator<'a> {
                     quote!(#name.properties.insert(#key, ::xrack_runtime::Value::from(#value));),
                 );
             }
-            if self.use_visual_plan && binding.attribute("xr.update_effect") == Some("paint") {
+            if self.use_visual_plan
+                && matches!(
+                    binding.attribute("xr.update_effect"),
+                    Some("paint" | "accessibility")
+                )
+            {
                 out.extend(quote!(#name.mark_paint_only(#key);));
             }
             if self.use_visual_plan && binding.attribute("xr.precompiled_path") == Some("true") {
@@ -9558,6 +9854,36 @@ impl<'a> Generator<'a> {
         Ok(quote!(let (#(#names,)*) = (#(#values,)*); #body))
     }
 
+    fn text_link_activation(
+        &self,
+        element: OperationRef<'a>,
+        context: ExpressionContext<'_>,
+    ) -> Result<TokenStream, String> {
+        let projection = TableProjection {
+            routed_input: true,
+            ..TableProjection::new(context)
+        };
+        let text = self.row_binding_or(
+            element,
+            "text",
+            quote!(::xrack_runtime::StyledText::default()),
+            &projection,
+        )?;
+        let href = if context.repeat_parameters {
+            quote!(|| __xr_href.to_owned())
+        } else {
+            quote!(__xr_href.to_owned())
+        };
+        let activated = self.typed_event_values_in(element, "link-activated", &[href], context)?;
+        Ok(quote!((|| {
+            let Some(__xr_href) = node.prepare_text_link(index, input, || #text) else {
+                return false;
+            };
+            #activated
+            true
+        })()))
+    }
+
     fn focus_arms(
         &self,
         element: OperationRef<'a>,
@@ -10463,31 +10789,14 @@ impl<'a> Generator<'a> {
                 [#(#path),*] => matches!(action, ::xrack_runtime::ControlAction::SetSwitch(_))
                     && self.__dispatch_path(path, "clicked", input),
             }),
-            "StyledText"
-                if children(element, "xr.handler")
-                    .any(|handler| handler.attr("name") == Ok("link-activated")) =>
-            {
+            "StyledText" if xrack_mlir::has_text_link_handler(element) => {
                 let receiver = quote!(self);
-                let projection = TableProjection::for_input(&receiver);
-                let text = self.row_binding_or(
-                    element,
-                    "text",
-                    quote!(::xrack_runtime::StyledText::default()),
-                    &projection,
-                )?;
-                let activated = self.typed_event_values(
-                    element,
-                    "link-activated",
-                    &[quote!(__xr_href.to_owned())],
-                )?;
+                let activate =
+                    self.text_link_activation(element, ExpressionContext::new(&receiver))?;
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::ActivateTextLink(index) = action else { return false; };
-                        let Some(__xr_href) = node.prepare_text_link(index, input, || #text) else {
-                            return false;
-                        };
-                        #activated
-                        true
+                        #activate
                     }
                 });
             }
@@ -12104,6 +12413,7 @@ impl<'a> Generator<'a> {
             let writable = owner == "root" && matches!(visibility, "in" | "in-out");
             let write_method = property_method("write", owner, property_name);
             let reset_method = property_method("reset", owner, property_name);
+            let mut shared_read = quote!(::std::rc::Rc::new(self.#getter()));
             let (read, write, clear) = if property.attribute("alias") == Some("true") {
                 let (target, name) = self
                     .alias_graph
@@ -12146,12 +12456,19 @@ impl<'a> Generator<'a> {
                     fields.extend(quote!(#field: ::xrack_runtime::Property<#rust_type>,));
                     defaults.extend(quote!(#field: ::core::default::Default::default(),));
                 }
+                shared_read = quote!(self.__state.#field.get_shared(|| #expression));
                 (
                     quote!(self.__state.#field.get(|| #expression)),
                     write_cached_property(&field, &quote!(value), Some(&value_type)),
                     quote!(self.__state.#field.reset();),
                 )
             };
+            if owner == "root" && value_type == Type::String {
+                let read = property_method("get_shared", owner, property_name);
+                methods.extend(quote! {
+                    fn #read(&self) -> ::std::rc::Rc<::std::string::String> { #shared_read }
+                });
+            }
             methods.extend(quote! {
                 #getter_visibility fn #getter(&self) -> #rust_type { #read }
                 fn #write_method(&self, value: #rust_type) { #write }
@@ -13280,7 +13597,18 @@ impl<'a> Generator<'a> {
                 defaults.extend(quote!(#field: ::xrack_runtime::CallbackSlot::new(#incoming),));
                 let track = pure.then(|| quote!(self.__state.#field.track();));
                 let statements = self.statements(callback)?;
-                let fallback = self.callback_fallback(callback)?;
+                let mut fallback = self.callback_fallback(callback)?;
+                if pure
+                    && params.is_empty()
+                    && callback.attribute("xr.cache_callback_default") == Some("true")
+                    && let Some(result) = children(callback, "xr.return").next()
+                {
+                    let cache = callback_method("default_cache", owner, name);
+                    let ty = host_ty(&value_type(self.operand(result, 0)?)?);
+                    fields.extend(quote!(#cache: ::xrack_runtime::Property<#ty>,));
+                    defaults.extend(quote!(#cache: ::core::default::Default::default(),));
+                    fallback = quote!(self.__state.#cache.get(|| { #fallback }));
+                }
                 (
                     quote! {
                         #track
@@ -13292,8 +13620,11 @@ impl<'a> Generator<'a> {
                     quote!(self.__state.#field.set(callback);),
                 )
             };
+            let inline = (callback.attribute("xr.inline_callback_default") == Some("true"))
+                .then(|| quote!(#[inline(always)]));
             methods.extend(quote! {
                 fn #setter(&self, callback: #handle) { #install }
+                #inline
                 fn #invoke_internal(&self #(, #args: #types)*) #returns { #invoke_body }
             });
         }
@@ -14403,7 +14734,7 @@ fn generate_with_resources(
     let with_locale = translations.is_some() || module.operations().any(uses_locale);
     let mut out = quote! {
         const _: () = assert!(
-            ::xrack_runtime::CODEGEN_ABI_VERSION == 16,
+            ::xrack_runtime::CODEGEN_ABI_VERSION == 17,
             "xrackc and xrack-runtime have incompatible code generation interfaces"
         );
     };
@@ -14486,19 +14817,115 @@ fn generate_with_resources(
         path_names.insert(commands.as_str(), name);
     }
     let mut records = BTreeMap::new();
+    let mut enum_types = BTreeMap::new();
     for op in module
         .operations()
         .filter(|op| op.name() == "xr.record_decl")
     {
-        let RecordDeclRef { name, fields } = RecordDeclRef::from_operation(op)?;
+        let RecordDeclRef {
+            name,
+            fields,
+            variants,
+        } = RecordDeclRef::from_operation(op)?;
         let rust_name = ident(name);
-        let names = fields.iter().map(|field| ident(&field.name));
-        let types = fields.iter().map(|field| ty(&field.ty));
-        out.extend(quote! {
-            #[allow(non_camel_case_types)]
-            #[derive(Clone, Debug, Default, PartialEq)]
-            pub struct #rust_name { #(pub #names: #types),* }
-        });
+        if let Some(first) = variants.first() {
+            use xrack_syntax::ast::EnumShape;
+            let declarations = variants.iter().map(|variant| {
+                let name = ident(&variant.name);
+                let types = variant.fields.iter().map(|field| ty(&field.ty));
+                match variant.shape {
+                    EnumShape::Unit => quote!(#name),
+                    EnumShape::Tuple => quote!(#name(#(#types),*)),
+                    EnumShape::Named => {
+                        let names = variant.fields.iter().map(|field| ident(&field.name));
+                        quote!(#name { #(#names: #types),* })
+                    }
+                }
+            });
+            let tags = variants.iter().enumerate().map(|(index, variant)| {
+                let name = ident(&variant.name);
+                let index = Literal::i64_unsuffixed(index as i64);
+                let pattern = match variant.shape {
+                    EnumShape::Unit => quote!(Self::#name),
+                    EnumShape::Tuple => quote!(Self::#name(..)),
+                    EnumShape::Named => quote!(Self::#name { .. }),
+                };
+                quote!(#pattern => #index)
+            });
+            let values = first
+                .fields
+                .iter()
+                .map(|field| {
+                    (
+                        ident(&field.name),
+                        quote!(::core::default::Default::default()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let default = enum_variant_tokens(&format_ident!("Self"), first, &values)?;
+            let sizes =
+                variants
+                    .iter()
+                    .map(|variant| {
+                        let bindings: Vec<_> = variant
+                            .fields
+                            .iter()
+                            .enumerate()
+                            .map(|(index, field)| {
+                                let binding = format_ident!("__xr_field_{index}");
+                                (ident(&field.name), quote!(#binding))
+                            })
+                            .collect();
+                        let pattern =
+                            enum_variant_tokens(&format_ident!("Self"), variant, &bindings)?;
+                        let sizes = variant.fields.iter().zip(bindings).filter_map(
+                            |(field, (_, binding))| table_history_payload_size(binding, &field.ty),
+                        );
+                        Ok(quote!(#pattern => 0usize #(.saturating_add(#sizes))*))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+            out.extend(quote! {
+                #[allow(non_camel_case_types, non_snake_case)]
+                #[derive(Clone, Debug, PartialEq)]
+                pub enum #rust_name { #(#declarations),* }
+
+                impl ::core::default::Default for #rust_name {
+                    fn default() -> Self { #default }
+                }
+
+                impl ::xrack_runtime::TableHistoryPayload for #rust_name {
+                    fn history_payload_bytes(&self) -> ::core::primitive::usize {
+                        match self { #(#sizes),* }
+                    }
+                }
+
+                impl #rust_name {
+                    #[allow(dead_code)]
+                    fn __xr_discriminant(&self) -> ::core::primitive::i64 {
+                        match self { #(#tags),* }
+                    }
+                }
+            });
+            enum_types.insert(name, variants);
+        } else {
+            let names = fields.iter().map(|field| ident(&field.name));
+            let types = fields.iter().map(|field| ty(&field.ty));
+            let sizes = fields.iter().filter_map(|field| {
+                let name = ident(&field.name);
+                table_history_payload_size(quote!(&self.#name), &field.ty)
+            });
+            out.extend(quote! {
+                #[allow(non_camel_case_types)]
+                #[derive(Clone, Debug, Default, PartialEq)]
+                pub struct #rust_name { #(pub #names: #types),* }
+
+                impl ::xrack_runtime::TableHistoryPayload for #rust_name {
+                    fn history_payload_bytes(&self) -> ::core::primitive::usize {
+                        0usize #(.saturating_add(#sizes))*
+                    }
+                }
+            });
+        }
         records.insert(name, fields);
     }
     let AliasGraphs {
@@ -14530,6 +14957,7 @@ fn generate_with_resources(
             callback_graph,
             instance_handlers: Vec::new(),
             records: &records,
+            enums: &enum_types,
             instances: BTreeMap::new(),
             analysis: ComponentAnalysis::from_component(
                 op,

@@ -1,9 +1,12 @@
-use crate::{color, paint_brush};
+use crate::{
+    color, paint_brush,
+    transform::{TargetPixels, to_femtovg},
+};
 use femtovg::{
-    Canvas, Color, CompositeOperation, ImageFlags, ImageId, Paint, Path, PixelFormat, Transform2D,
+    Canvas, Color, CompositeOperation, ImageFlags, ImageId, Paint, Path, PixelFormat,
     renderer::{RenderTarget, WGPURenderer},
 };
-use xrack_layout::Rect;
+use xrack_layout::{Rect, Transform2D};
 use xrack_runtime::{Brush, Value};
 
 #[derive(Clone, Copy)]
@@ -52,10 +55,13 @@ impl<'a> Colorize<'a> {
 /// Map the full intrinsic source to one raster region without moving its
 /// coverage path. The same paint therefore spans the cuts of a nine-slice.
 #[derive(Clone, Copy, PartialEq)]
-pub(crate) struct ColorizeGeometry {
-    pub(crate) source: [u32; 2],
-    pub(crate) transform: Transform2D,
+pub(super) struct ColorizeGeometry {
+    pub(super) source: [u32; 2],
+    pub(super) transform: Transform2D<ImagePixels, TargetPixels>,
 }
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct ImagePixels;
 
 pub(crate) struct GradientTexture {
     pub(crate) id: ImageId,
@@ -105,7 +111,7 @@ impl GradientTexture {
             Rect::new(0.0, 0.0, source_w as f32, source_h as f32),
             0.0,
         )
-        .with_gradient_transform(geometry.transform);
+        .with_gradient_transform(to_femtovg(geometry.transform));
         gradient.set_anti_alias(false);
         let mut coverage = Paint::image(mask, 0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
         coverage.set_anti_alias(false);

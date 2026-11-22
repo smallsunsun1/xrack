@@ -42,10 +42,11 @@ void XrackDialect::initialize() {
 
 bool isExpression(Operation &op) {
   return isa<LiteralOp, ReadOp, DynamicActionOp, DynamicReadOp, LoaderMountedOp, LoaderExternalStatusOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, TreeSelectionKeysOp, ListSelectionKeysOp, ViewIndexOp, ViewCountOp, ListSelectionReadOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, TextAcceptsOp, TextValidityOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, TextSelectionReadOp, TextCommandAvailableOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ButtonPressedOp, ButtonCheckedOp, RadioCheckedOp, NavigationActiveOp, NavigationIndexOp, NavigationCountOp, ToggleStateReadOp, NumericValueReadOp, ComboStateReadOp, ComboPopupReadOp, RangePositionReadOp, ParamOp, UnaryOp, CastOp,
-             ListRowSelectedOp, StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
+             ListRowSelectedOp, StringifyOp, BinaryOp, ConcatOp, SelectOp, SolidBrushOp, GradientStopOp,
              LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, PointerButtonsOp, CallOp,
-             RoundOp, MathFunctionOp, StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, UpdateRecordOp, DefaultRecordOp, RecordArrayOp,
-             GetFieldOp, LoopParamOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp,
+             RoundOp, MathFunctionOp, GeometryFunctionOp, Point2DFieldOp, Vector2DFieldOp,
+             StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, UpdateRecordOp, DefaultRecordOp, RecordArrayOp,
+             GetFieldOp, LoopParamOp, MatchEnumOp, EnumConstructOp, EnumMatchOp, EnumParameterOp, ModelFilterOp, ModelLookupOp, ModelSortByOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp,
              DateIsValidOp, DateAddDaysOp, DateAddMonthsOp, DateWeekdayOp, DateMonthsOp, DateMonthIndexOp, DateParseIsoOp, DateIsSelectableOp,
              MakeTimeOp, TimeFieldOp, TimeParseIsoOp, TimeIsValidIsoOp, TimeFormatIsoOp, TimeInRangeOp, MakeFontOp, FontFieldOp>(op);
 }
@@ -617,11 +618,13 @@ static bool focusTargetKind(llvm::StringRef kind);
 
 static bool validCompositionBinding(llvm::StringRef kind, llvm::StringRef name,
                                     Type type) {
-  if (name != "z" && name != "opacity")
+  if (name != "z" && name != "opacity" && name != "cache-rendering-hint")
     return true;
-  return isa<FloatType>(type) &&
+  return (name == "cache-rendering-hint" ? isa<BoolType>(type)
+                                         : isa<FloatType>(type)) &&
       !llvm::StringSwitch<bool>(kind)
-          .Cases({"Action", "Timer", "FileDialog", "MessageDialog",
+          .Cases({"Action", "ActionGroup", "ButtonGroup", "Timer", "SoundEffect",
+                  "FileDialog", "MessageDialog",
                   "SecondaryWindow", "SystemTrayIcon", "Shortcut", "MenuItem",
                   "MenuSeparator", "TableColumn"}, true)
           .Default(false);
@@ -629,7 +632,7 @@ static bool validCompositionBinding(llvm::StringRef kind, llvm::StringRef name,
 
 static bool validTransformBinding(llvm::StringRef kind, llvm::StringRef name,
                                   Type type) {
-  if (!name.starts_with("transform-"))
+  if (name != "transform" && !name.starts_with("transform-"))
     return true;
   if (llvm::StringSwitch<bool>(kind)
           .Cases({"Action", "Timer", "FileDialog", "MessageDialog", "Shortcut",
@@ -639,6 +642,8 @@ static bool validTransformBinding(llvm::StringRef kind, llvm::StringRef name,
                   "TableColumn"}, true)
           .Default(false))
     return false;
+  if (name == "transform")
+    return isa<Transform2DType>(type);
   if (name == "transform-origin-x" || name == "transform-origin-y")
     return isa<LengthType, PercentType>(type);
   return (name == "transform-rotation" || name == "transform-scale" ||
@@ -1436,6 +1441,10 @@ LogicalResult ElementOp::verify() {
     if (auto bind = dyn_cast<BindOp>(child)) {
       auto name = bind.getName();
       auto type = bind.getInput().getType();
+      if (kind == "CustomRender" &&
+          (((name == "renderer" || name == "data") && !isa<StringType>(type)) ||
+           (name == "revision" && !isa<IntType>(type))))
+        return child.emitOpError("CustomRender requires string renderer and data and integer revision");
       if (name == "highlighted" && (!getDelegate() || !isa<BoolType>(type)))
         return child.emitOpError("highlighted requires a boolean on an item delegate");
       if (virtualDelegate && kind == "RadioButton" && name == "checked")
@@ -1652,7 +1661,9 @@ LogicalResult ElementOp::verify() {
       if (name == "layout-direction" && !isa<LayoutDirectionType>(bind.getInput().getType()))
         return child.emitOpError("layout-direction requires a LayoutDirection value");
       if (!validCompositionBinding(kind, name, bind.getInput().getType()))
-        return child.emitOpError("z and opacity require a visual item and a float");
+        return child.emitOpError(name == "cache-rendering-hint"
+                                     ? "cache-rendering-hint requires a boolean on a visual item"
+                                     : "z and opacity require a visual item and a float");
       if (!validImageBinding(kind, name, bind.getInput().getType()))
         return child.emitOpError("incorrect Image property type");
       if (kind == "MediaPlayer") {
@@ -2705,7 +2716,9 @@ LogicalResult StateSetOp::verify() {
   if (getName() == "layout-direction" && !isa<LayoutDirectionType>(getInput().getType()))
     return emitOpError("layout-direction requires a LayoutDirection value");
   if (!validCompositionBinding(element.getKind(), getName(), getInput().getType()))
-    return emitOpError("z and opacity require a visual item and a float");
+    return emitOpError(getName() == "cache-rendering-hint"
+                           ? "cache-rendering-hint requires a boolean on a visual item"
+                           : "z and opacity require a visual item and a float");
   if (!validImageBinding(element.getKind(), getName(), getInput().getType()))
     return emitOpError("incorrect Image property type");
   auto &body = element.getBody().front();
@@ -3358,7 +3371,8 @@ static LogicalResult verifyInstanceLayout(Operation *op, llvm::StringRef name, T
           .Cases({"horizontal-stretch", "vertical-stretch", "z", "opacity",
                   "transform-rotation", "transform-scale", "transform-scale-x", "transform-scale-y"},
                  FloatType::get(context))
-          .Case("visible", BoolType::get(context))
+          .Case("transform", Transform2DType::get(context))
+          .Cases({"visible", "cache-rendering-hint"}, BoolType::get(context))
           .Case("layout-direction", LayoutDirectionType::get(context))
           .Cases({"layout-order", "row", "col", "rowspan", "colspan"},
                  IntType::get(context))
@@ -3384,7 +3398,7 @@ static LogicalResult verifyStatementBlock(Region &body, bool allowReturn) {
     if (isa<ReturnOp>(child) &&
         (!allowReturn || !isa_and_nonnull<EndOp>(child.getNextNode())))
       return child.emitOpError("must be immediately before xr.end in a callback");
-    if (!isa<IfOp, ForOp, AssignOp, InvokeOp, EvaluateOp, LogOp, NavigateOp, TimerCommandOp, MediaCommandOp, PopupCommandOp,
+    if (!isa<IfOp, ForOp, LocalOp, AssignOp, InvokeOp, EvaluateOp, LogOp, NavigateOp, TimerCommandOp, MediaCommandOp, PopupCommandOp,
              FileDialogOpenOp, NativeDialogOpenOp, WindowCloseOp, WindowCommandOp, CheckGroupCommandOp,
              SecondaryWindowCommandOp, FocusCommandOp, ButtonClickOp, ButtonToggleOp, SwipeCancelOp, TextCommandOp, ScrollCommandOp, PositionChildOp, SourceSelectionOp, TreeCommandOp, TableSortCommandOp, TableSelectionCommandOp, TableHistoryCommandOp, SplitRestoreOp, CancelFlickOp, ReturnToBoundsOp, MoveColumnOp, MoveRowOp, MoveNavigationItemOp, ModelEditOp,
              SetRowHeightOp, ReturnOp, EndOp>(child) &&
@@ -3749,7 +3763,55 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
   return verifyStatementBlock(body, true);
 }
 
+static bool canPlanCallbackDefault(CallbackOp callback, bool withParameters) {
+  auto component = dyn_cast_or_null<ComponentOp>(callback->getParentOp());
+  if (!component || callback.getPure().value_or("") != "true" ||
+      (callback.getParameters() != "[]") != withParameters || callback.getAliasOwner())
+    return false;
+  bool hasReturn = false;
+  for (auto &op : callback.getBody().front()) {
+    if (auto result = dyn_cast<ReturnOp>(op)) {
+      hasReturn = isa<IntType, FloatType, BoolType, StringType, LengthType>(
+          result.getInput().getType());
+      if (!hasReturn)
+        return false;
+    } else if (auto read = dyn_cast<ReadOp>(op)) {
+      if (read.getOwner().value_or("root") != "root")
+        return false;
+      bool privateLiteral = llvm::any_of(component.getBody().front().getOps<PropertyOp>(),
+          [&](PropertyOp property) {
+            return property.getName() == read.getValue() &&
+                   property.getVisibility() == "private" &&
+                   property.getInitial().getDefiningOp<LiteralOp>();
+          });
+      if (!privateLiteral)
+        return false;
+    } else if (!isa<LiteralOp, ParamOp, UnaryOp, BinaryOp, ConcatOp, SelectOp, CastOp, EndOp>(op)) {
+      return false;
+    }
+  }
+  return hasReturn;
+}
+
+bool isCacheableCallbackDefault(CallbackOp callback) {
+  return canPlanCallbackDefault(callback, false);
+}
+
+bool isInlineableCallbackDefault(CallbackOp callback) {
+  return canPlanCallbackDefault(callback, true);
+}
+
 LogicalResult CallbackOp::verify() {
+  if ((*this)->hasAttr("xr.inline_callback_default")) {
+    auto plan = (*this)->getAttrOfType<StringAttr>("xr.inline_callback_default");
+    if (!plan || plan.getValue() != "true" || !isInlineableCallbackDefault(*this))
+      return emitOpError("invalid inline default callback plan");
+  }
+  if ((*this)->hasAttr("xr.cache_callback_default")) {
+    auto cache = (*this)->getAttrOfType<StringAttr>("xr.cache_callback_default");
+    if (!cache || cache.getValue() != "true" || !isCacheableCallbackDefault(*this))
+      return emitOpError("invalid cached default callback plan");
+  }
   if (getPure() && *getPure() != "true")
     return emitOpError("pure marker must be true");
   if (getAliasOwner().has_value() != getAliasName().has_value() ||
@@ -3794,6 +3856,54 @@ LogicalResult MathFunctionOp::verify() {
   } else if (input != result) {
     return emitOpError("expected matching argument and result types");
   }
+  return success();
+}
+
+LogicalResult GeometryFunctionOp::verify() {
+  Type point = Point2DType::get(getContext());
+  Type vector = Vector2DType::get(getContext());
+  Type transform = Transform2DType::get(getContext());
+  Type length = LengthType::get(getContext());
+  Type number = FloatType::get(getContext());
+  llvm::SmallVector<Type, 2> inputs;
+  Type output = transform;
+  auto operation = getValue();
+  if (operation == "point" || operation == "vector") {
+    inputs = {length, length};
+    output = operation == "point" ? point : vector;
+  } else if (operation == "translation")
+    inputs = {length, length};
+  else if (operation == "rotation")
+    inputs = {number};
+  else if (operation == "scale")
+    inputs = {number, number};
+  else if (operation == "compose")
+    inputs = {transform, transform};
+  else if (operation == "around")
+    inputs = {transform, point};
+  else if (operation == "map-point") {
+    inputs = {transform, point};
+    output = point;
+  } else if (operation == "map-vector") {
+    inputs = {transform, vector};
+    output = vector;
+  } else if (operation != "identity") {
+    return emitOpError("unknown geometry function");
+  }
+  if (!llvm::equal(getInputs().getTypes(), inputs) || getResult().getType() != output)
+    return emitOpError("invalid geometry function signature");
+  return success();
+}
+
+LogicalResult Point2DFieldOp::verify() {
+  if (getValue() != "x" && getValue() != "y")
+    return emitOpError("expected a point coordinate x or y");
+  return success();
+}
+
+LogicalResult Vector2DFieldOp::verify() {
+  if (getValue() != "x" && getValue() != "y")
+    return emitOpError("expected a vector coordinate x or y");
   return success();
 }
 
@@ -3869,6 +3979,27 @@ std::optional<double> parseFloatLiteral(llvm::StringRef spelling) {
   return value;
 }
 
+std::optional<llvm::SmallVector<double, 6>>
+parseGeometryLiteral(Type type, llvm::StringRef spelling) {
+  unsigned size = isa<Transform2DType>(type) ? 6
+                  : isa<Point2DType, Vector2DType>(type) ? 2
+                                                       : 0;
+  if (size == 0)
+    return std::nullopt;
+  llvm::SmallVector<llvm::StringRef, 6> parts;
+  spelling.split(parts, ' ', -1, false);
+  if (parts.size() != size)
+    return std::nullopt;
+  llvm::SmallVector<double, 6> values;
+  for (auto part : parts) {
+    auto value = parseFloatLiteral(part);
+    if (!value)
+      return std::nullopt;
+    values.push_back(*value);
+  }
+  return values;
+}
+
 LogicalResult LiteralOp::verify() {
   auto type = getResult().getType();
   auto spelling = getValue();
@@ -3878,6 +4009,8 @@ LogicalResult LiteralOp::verify() {
     valid = !spelling.getAsInteger(10, value);
   } else if (isa<FloatType, LengthType, PercentType>(type)) {
     valid = parseFloatLiteral(spelling).has_value();
+  } else if (isa<Point2DType, Vector2DType, Transform2DType>(type)) {
+    valid = parseGeometryLiteral(type, spelling).has_value();
   } else if (isa<BoolType>(type)) {
     valid = spelling == "true" || spelling == "false";
   } else if (isa<LogLevelType>(type)) {
@@ -4395,6 +4528,49 @@ LogicalResult ModelAtOp::verify() {
 }
 
 
+LogicalResult EnumMatchOp::verify() {
+  if (getBody().empty())
+    return emitOpError("requires an enum match body");
+  uint64_t ordinal = 0;
+  llvm::StringSet<> names;
+  for (Operation &child : getBody().front()) {
+    if (isa<EndOp>(child))
+      continue;
+    auto arm = dyn_cast<EnumCaseOp>(child);
+    if (!arm || arm.getOrdinal() != ordinal++ || arm.getName().empty() ||
+        !llvm::all_of(arm.getName(), [](char c) { return llvm::isAlnum(c) || c == '_'; }) ||
+        !names.insert(arm.getName()).second)
+      return child.emitOpError("expected a unique enum match case in declaration order");
+  }
+  if (ordinal == 0)
+    return emitOpError("requires at least one enum case");
+  return success();
+}
+
+LogicalResult EnumCaseOp::verify() {
+  auto parent = (*this)->getParentOfType<EnumMatchOp>();
+  if (!parent || getBody().empty() || getBody().front().empty())
+    return emitOpError("requires a body in an enum match");
+  auto yield = dyn_cast_or_null<EnumResultOp>(getBody().front().back().getPrevNode());
+  if (!yield || yield.getInput().getType() != parent.getResult().getType())
+    return emitOpError("requires a final xr.enum_result of the match result type");
+  for (Operation &child : getBody().front()) {
+    if (&child != yield.getOperation() && !isa<EndOp>(child) && !isExpression(child))
+      return child.emitOpError("expected an enum arm expression");
+  }
+  return success();
+}
+
+LogicalResult MatchEnumOp::verify() {
+  if (getArms().empty())
+    return emitOpError("requires at least one arm");
+  for (Value arm : getArms()) {
+    if (arm.getType() != getResult().getType())
+      return emitOpError("each arm must match the result type");
+  }
+  return success();
+}
+
 LogicalResult LoopParamOp::verify() {
   auto name = getValue();
   for (auto *scope = (*this)->getParentOp(); scope; scope = scope->getParentOp()) {
@@ -4423,7 +4599,7 @@ static LogicalResult verifyParameter(ParamOp param) {
     return success();
   };
   auto *scope = param->getParentOp();
-  while (isa<IfOp, ForOp>(scope))
+  while (isa<IfOp, ForOp, EnumMatchOp, EnumCaseOp>(scope))
     scope = scope->getParentOp();
   bool allowsRow = true;
   if (isa<CallbackOp, HandlerOp>(scope)) {
@@ -4451,6 +4627,8 @@ static LogicalResult verifyParameter(ParamOp param) {
       auto handler = dyn_cast<HandlerOp>(scope);
       allowsRow = handler &&
           (isVirtualItemDelegate(element) ||
+           (element.getKind() == "StyledText" &&
+            handler.getName() == "link-activated") ||
            (isPushButton(element.getKind()) &&
             (handler.getName() == "clicked" || handler.getName() == "toggled")));
     }
@@ -5490,6 +5668,12 @@ static LogicalResult verifyInstanceTree(ComponentOp component,
 using Fields = llvm::SmallVector<std::pair<std::string, std::string>>;
 using Records = llvm::StringMap<Fields>;
 
+struct EnumVariantLayout {
+  bool tuple = false;
+  Fields fields;
+};
+using EnumLayouts = llvm::StringMap<llvm::SmallVector<EnumVariantLayout>>;
+
 static bool recordIdentifier(llvm::StringRef name) {
   if (name.empty() || name.starts_with("__") ||
       llvm::StringSwitch<bool>(name)
@@ -5505,6 +5689,7 @@ static bool recordIdentifier(llvm::StringRef name) {
 static bool recordScalarType(llvm::StringRef type) {
   return llvm::StringSwitch<bool>(type)
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
+              "point2d", "vector2d", "transform2d", "Point2D", "Vector2D", "Transform2D",
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
               "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "LayoutDirection", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap", "MouseSelectionMode", "InputValidity",
@@ -5514,7 +5699,7 @@ static bool recordScalarType(llvm::StringRef type) {
       .Default(false);
 }
 
-static LogicalResult indexRecord(RecordDeclOp record, Records &records) {
+static LogicalResult indexRecord(RecordDeclOp record, Records &records, EnumLayouts &enums) {
   if (!recordIdentifier(record.getSymName()) ||
       recordScalarType(record.getSymName()))
     return record.emitOpError("invalid record name");
@@ -5540,12 +5725,73 @@ static LogicalResult indexRecord(RecordDeclOp record, Records &records) {
           "record fields require unique names and scalar, enum or named record types");
     fields.emplace_back(name->str(), type->str());
   }
+  if (auto variants = record->getAttrOfType<ArrayAttr>("variants")) {
+    if (variants.empty() || fields.size() != 1 ||
+        fields.front().first != "discriminant" || fields.front().second != "int")
+      return record.emitOpError("an enum requires variants and an integer discriminant");
+    llvm::StringSet<> variantNames;
+    for (Attribute variant : variants) {
+      auto name = dyn_cast<StringAttr>(variant);
+      if (!name || !recordIdentifier(name.getValue()))
+        return record.emitOpError("invalid enum variant name");
+      auto normalized = name.getValue().str();
+      std::replace(normalized.begin(), normalized.end(), '-', '_');
+      if (!variantNames.insert(normalized).second)
+        return record.emitOpError("duplicate enum variant ") << name.getValue();
+    }
+    llvm::SmallVector<EnumVariantLayout> layouts;
+    if (auto payloads = record->getAttrOfType<StringAttr>("variant_payloads")) {
+      auto parsed = llvm::json::parse(payloads.getValue());
+      if (!parsed) {
+        llvm::consumeError(parsed.takeError());
+        return record.emitOpError("invalid enum payload schema");
+      }
+      auto *array = parsed->getAsArray();
+      if (!array || array->size() != variants.size())
+        return record.emitOpError("enum payloads must match the declared variants");
+      for (auto [index, value] : llvm::enumerate(*array)) {
+        const auto *variant = value.getAsObject();
+        auto name = variant ? variant->getString("name") : std::nullopt;
+        auto shape = variant ? variant->getString("shape") : std::nullopt;
+        const auto *payload = variant ? variant->getArray("fields") : nullptr;
+        if (!name || *name != cast<StringAttr>(variants[index]).getValue() ||
+            !shape || !payload ||
+            (*shape != "unit" && *shape != "tuple" && *shape != "named") ||
+            ((*shape == "unit") != payload->empty()))
+          return record.emitOpError("invalid variant payload declaration");
+        EnumVariantLayout layout;
+        layout.tuple = *shape == "tuple";
+        llvm::StringSet<> fieldNames;
+        for (auto [fieldIndex, value] : llvm::enumerate(*payload)) {
+          const auto *field = value.getAsObject();
+          auto fieldName = field ? field->getString("name") : std::nullopt;
+          auto type = field ? field->getString("ty") : std::nullopt;
+          auto normalized = fieldName.value_or("").str();
+          std::replace(normalized.begin(), normalized.end(), '-', '_');
+          auto positional = ("_" + llvm::Twine(fieldIndex)).str();
+          if (!fieldName || !recordIdentifier(*fieldName) ||
+              *fieldName == "discriminant" || !fieldNames.insert(normalized).second ||
+              (layout.tuple && *fieldName != positional) ||
+              !type || (!recordScalarType(*type) && !recordIdentifier(*type)))
+            return record.emitOpError("invalid enum payload field");
+          layout.fields.emplace_back(fieldName->str(), type->str());
+        }
+        layouts.push_back(std::move(layout));
+      }
+    } else {
+      layouts.resize(variants.size());
+    }
+    enums.try_emplace(record.getSymName(), std::move(layouts));
+  } else if (record->hasAttr("variant_payloads")) {
+    return record.emitOpError("payloads require an enum declaration");
+  }
   if (!records.try_emplace(record.getSymName(), std::move(fields)).second)
     return record.emitOpError("duplicate record ") << record.getSymName();
   return success();
 }
 
-static LogicalResult verifyRecordLayouts(ModuleOp module, const Records &records) {
+static LogicalResult verifyRecordLayouts(ModuleOp module, const Records &records,
+                                         const EnumLayouts &enums) {
   llvm::StringMap<RecordDeclOp> declarations;
   for (auto record : module.getBody()->getOps<RecordDeclOp>())
     declarations.try_emplace(record.getSymName(), record);
@@ -5556,15 +5802,24 @@ static LogicalResult verifyRecordLayouts(ModuleOp module, const Records &records
       return success();
     if (!active.insert(name).second)
       return record.emitOpError("cyclic record layout involving ") << name;
-    for (const auto &field : records.find(name)->second) {
-      if (recordScalarType(field.second))
-        continue;
-      auto target = declarations.find(field.second);
-      if (target == declarations.end())
-        return record.emitOpError("unknown record type ") << field.second;
-      if (failed(visit(visit, target->second)))
-        return failure();
-    }
+    auto visitFields = [&](const Fields &fields) -> LogicalResult {
+      for (const auto &field : fields) {
+        if (recordScalarType(field.second))
+          continue;
+        auto target = declarations.find(field.second);
+        if (target == declarations.end())
+          return record.emitOpError("unknown record type ") << field.second;
+        if (failed(visit(visit, target->second)))
+          return failure();
+      }
+      return success();
+    };
+    if (failed(visitFields(records.find(name)->second)))
+      return failure();
+    if (auto found = enums.find(name); found != enums.end())
+      for (auto &variant : found->second)
+        if (failed(visitFields(variant.fields)))
+          return failure();
     active.erase(name);
     done.insert(name);
     return success();
@@ -5576,8 +5831,10 @@ static LogicalResult verifyRecordLayouts(ModuleOp module, const Records &records
 }
 
 static std::optional<llvm::StringRef> recordFieldType(
-    const Records &records, llvm::StringRef record, llvm::StringRef path) {
+    const Records &records, const EnumLayouts &enums, llvm::StringRef record, llvm::StringRef path) {
   while (!path.empty()) {
+    if (enums.contains(record))
+      return std::nullopt;
     auto schema = records.find(record);
     if (schema == records.end())
       return std::nullopt;
@@ -5595,7 +5852,7 @@ static std::optional<llvm::StringRef> recordFieldType(
   return std::nullopt;
 }
 
-static LogicalResult verifyStandardTable(ElementOp table, const Records &records) {
+static LogicalResult verifyStandardTable(ElementOp table, const Records &records, const EnumLayouts &enums) {
   auto &body = table.getBody().front();
   auto bindings = body.getOps<BindOp>();
   auto model = llvm::find_if(bindings, [](BindOp bind) {
@@ -5620,7 +5877,7 @@ static LogicalResult verifyStandardTable(ElementOp table, const Records &records
     auto name = parsed->getAsString();
     if (!name)
       return field.emitOpError("field requires a constant string");
-    auto type = recordFieldType(records, record.getName(), *name);
+    auto type = recordFieldType(records, enums, record.getName(), *name);
     if (!type)
       return field.emitOpError("record has no field ") << *name;
     if (!llvm::StringSwitch<bool>(*type)
@@ -5663,7 +5920,7 @@ static FailureOr<std::string> comboRole(BindOp binding, llvm::StringRef fallback
   return failure();
 }
 
-static LogicalResult verifyComboModel(ElementOp combo, const Records &records,
+static LogicalResult verifyComboModel(ElementOp combo, const Records &records, const EnumLayouts &enums,
                                       ComboValueTypes &comboValues) {
   auto &body = combo.getBody().front();
   auto kind = combo.getKind();
@@ -5686,15 +5943,15 @@ static LogicalResult verifyComboModel(ElementOp combo, const Records &records,
     if (failed(value)) return failure();
     if (!records.contains(record.getName()))
       return model.emitOpError("unknown record type ") << record.getName();
-    if (recordFieldType(records, record.getName(), *text) != "string")
+    if (recordFieldType(records, enums, record.getName(), *text) != "string")
       return model.emitOpError() << kind << " text-role requires a string field named " << *text;
     if (enabledRole) {
       auto enabled = comboRole(enabledRole, "");
       if (failed(enabled)) return failure();
-      if (recordFieldType(records, record.getName(), *enabled) != "bool")
+      if (recordFieldType(records, enums, record.getName(), *enabled) != "bool")
         return enabledRole.emitOpError("ComboBox enabled-role requires a bool field named ") << *enabled;
     }
-    auto type = recordFieldType(records, record.getName(), *value);
+    auto type = recordFieldType(records, enums, record.getName(), *value);
     if (!type ||
         !llvm::StringSwitch<bool>(*type).Cases({"string", "int", "float", "bool", "Date", "Time"}, true).Default(false))
       return model.emitOpError() << kind << " value-role requires a scalar field named " << *value;
@@ -5736,7 +5993,7 @@ static LogicalResult verifyComboModel(ElementOp combo, const Records &records,
   return success();
 }
 
-static LogicalResult verifyViewRecordField(ElementOp element, const Records &records,
+static LogicalResult verifyViewRecordField(ElementOp element, const Records &records, const EnumLayouts &enums,
                                            llvm::StringRef property, llvm::StringRef expected) {
   auto &body = element.getBody().front();
   BindOp role;
@@ -5777,14 +6034,101 @@ static LogicalResult verifyViewRecordField(ElementOp element, const Records &rec
   auto name = parsed->getAsString();
   if (!name)
     return role.emitOpError() << property << " requires a constant string";
-  if (recordFieldType(records, record.getName(), *name) != expected)
+  if (recordFieldType(records, enums, record.getName(), *name) != expected)
     return role.emitOpError() << property << " requires a " << expected << " field named " << *name;
   return success();
 }
 
+static LogicalResult verifyEnumOperations(Operation *op,
+                                         const EnumLayouts &enums) {
+  if (auto make = dyn_cast<EnumConstructOp>(op)) {
+    auto type = cast<RecordType>(make.getResult().getType());
+    auto layout = enums.find(type.getName());
+    if (layout == enums.end() || make.getTag() >= layout->second.size())
+      return op->emitOpError("unknown enum variant");
+    const auto &variant = layout->second[make.getTag()];
+    if (make.getFields().size() != variant.fields.size() ||
+        make.getPayload().size() != variant.fields.size())
+      return op->emitOpError("wrong enum payload field count");
+    llvm::StringSet<> seen;
+    for (auto [index, entry] : llvm::enumerate(llvm::zip(make.getFields(), make.getPayload()))) {
+      auto name = dyn_cast<StringAttr>(std::get<0>(entry));
+      auto field = llvm::find_if(variant.fields, [&](const auto &field) {
+        return name && field.first == name.getValue();
+      });
+      if (field == variant.fields.end() || !seen.insert(name.getValue()).second ||
+          (variant.tuple && field->first != variant.fields[index].first) ||
+          !matchesDeclaredType(std::get<1>(entry).getType(), field->second))
+        return op->emitOpError("invalid enum payload field or type");
+    }
+  } else if (auto match = dyn_cast<EnumMatchOp>(op)) {
+    auto type = cast<RecordType>(match.getSubject().getType());
+    auto layout = enums.find(type.getName());
+    if (layout == enums.end() ||
+        static_cast<size_t>(std::distance(match.getBody().front().getOps<EnumCaseOp>().begin(),
+                                         match.getBody().front().getOps<EnumCaseOp>().end())) !=
+            layout->second.size())
+      return op->emitOpError("match must cover all variants of its enum type");
+  } else if (auto legacy = dyn_cast<MatchEnumOp>(op)) {
+    Value tag = legacy.getTag();
+    if (auto literal = tag.getDefiningOp<LiteralOp>()) {
+      unsigned index;
+      if (!literal.getValue().getAsInteger(10, index) &&
+          index < legacy.getArms().size())
+        return success();
+    } else if (auto field = tag.getDefiningOp<GetFieldOp>()) {
+      auto type = cast<RecordType>(field.getInput().getType());
+      auto layout = enums.find(type.getName());
+      if (field.getValue() == "discriminant" && layout != enums.end() &&
+          layout->second.size() == legacy.getArms().size())
+        return success();
+    }
+    return op->emitOpError("legacy match requires a valid enum discriminant");
+  } else if (auto parameter = dyn_cast<EnumParameterOp>(op)) {
+    auto [scope, field] = parameter.getValue().rsplit('_');
+    unsigned index;
+    if (scope.empty() || field.getAsInteger(10, index))
+      return op->emitOpError("invalid enum binding identifier");
+    for (auto *parent = op->getParentOp(); parent; parent = parent->getParentOp()) {
+      auto arm = dyn_cast<EnumCaseOp>(parent);
+      if (!arm || arm.getName() != scope)
+        continue;
+      auto match = arm->getParentOfType<EnumMatchOp>();
+      auto type = cast<RecordType>(match.getSubject().getType());
+      auto layout = enums.find(type.getName());
+      if (layout == enums.end() || arm.getOrdinal() >= layout->second.size())
+        break;
+      const auto &fields = layout->second[arm.getOrdinal()].fields;
+      if (index >= fields.size() ||
+          !matchesDeclaredType(parameter.getResult().getType(), fields[index].second))
+        return op->emitOpError("invalid enum binding type or field index");
+      return success();
+    }
+    return op->emitOpError("enum binding has no enclosing matching case");
+  } else if (auto make = dyn_cast<MakeRecordOp>(op)) {
+    auto type = cast<RecordType>(make.getResult().getType());
+    if (auto layout = enums.find(type.getName()); layout != enums.end()) {
+      auto literal = make.getFields().size() == 1
+                         ? make.getFields().front().getDefiningOp<LiteralOp>()
+                         : LiteralOp();
+      unsigned index;
+      if (!literal || literal.getValue().getAsInteger(10, index) ||
+          index >= layout->second.size() || !layout->second[index].fields.empty())
+        return op->emitOpError("legacy enum constructor requires a valid constant unit tag");
+    }
+  } else if (auto update = dyn_cast<UpdateRecordOp>(op)) {
+    if (enums.contains(cast<RecordType>(update.getResult().getType()).getName()))
+      return op->emitOpError("record updates cannot set an enum discriminant");
+  }
+  return success();
+}
+
 static LogicalResult verifyRecords(ModuleOp module, const Records &records,
+                                   const EnumLayouts &enums,
                                    ComboValueTypes &comboValues) {
   auto verified = module.walk([&](Operation *op) -> WalkResult {
+    if (failed(verifyEnumOperations(op, enums)))
+      return WalkResult::interrupt();
     for (auto type : op->getResultTypes()) {
       llvm::StringRef name;
       if (auto record = dyn_cast<RecordType>(type))
@@ -5799,24 +6143,24 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
       }
     }
     if (auto element = dyn_cast<ElementOp>(op);
-        element && (failed(verifyViewRecordField(element, records, "row-height-field", "length")) ||
-                    failed(verifyViewRecordField(element, records, "section-field", "string")) ||
+        element && (failed(verifyViewRecordField(element, records, enums, "row-height-field", "length")) ||
+                    failed(verifyViewRecordField(element, records, enums, "section-field", "string")) ||
                     (isVirtualView(element.getKind()) &&
-                     failed(verifyViewRecordField(element, records, "row-visible-field", "bool"))) ||
+                     failed(verifyViewRecordField(element, records, enums, "row-visible-field", "bool"))) ||
                     (isRowKeyView(element.getKind()) &&
-                     failed(verifyViewRecordField(element, records, "row-key-field", "int"))) ||
+                     failed(verifyViewRecordField(element, records, enums, "row-key-field", "int"))) ||
                     (isSelectionList(element.getKind()) &&
-                     failed(verifyViewRecordField(element, records, "typeahead-field", "string"))) ||
+                     failed(verifyViewRecordField(element, records, enums, "typeahead-field", "string"))) ||
                     ((element.getKind() == "TreeView" || element.getKind() == "StandardTableView") &&
-                     failed(verifyViewRecordField(element, records, "filter-field", "string")))))
+                     failed(verifyViewRecordField(element, records, enums, "filter-field", "string")))))
       return WalkResult::interrupt();
     if (auto element = dyn_cast<ElementOp>(op);
         element && element.getKind() == "StandardTableView" &&
-        failed(verifyStandardTable(element, records)))
+        failed(verifyStandardTable(element, records, enums)))
       return WalkResult::interrupt();
     if (auto element = dyn_cast<ElementOp>(op);
         element && (element.getKind() == "ComboBox" || element.getKind() == "Tumbler" || element.getKind() == "PathView") &&
-        failed(verifyComboModel(element, records, comboValues)))
+        failed(verifyComboModel(element, records, enums, comboValues)))
       return WalkResult::interrupt();
     if (auto element = dyn_cast<ElementOp>(op);
         element && element.getKind() == "StandardListView") {
@@ -5851,7 +6195,7 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
             return WalkResult::interrupt();
           field = label->str();
         }
-        if (recordFieldType(records, record.getName(), field) != "string") {
+        if (recordFieldType(records, enums, record.getName(), field) != "string") {
           model.emitOpError("StandardListView model requires a string field named ") << field;
           return WalkResult::interrupt();
         }
@@ -5930,6 +6274,14 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
           return WalkResult::interrupt();
         }
       }
+    } else if (isa<ModelFilterOp, ModelLookupOp, ModelSortByOp>(op)) {
+      auto name = cast<RecordListType>(op->getResult(0).getType()).getName();
+      auto path = op->getAttrOfType<StringAttr>("value").getValue();
+      auto type = recordFieldType(records, enums, name, path);
+      if (type != "string" && !(isa<ModelSortByOp>(op) && type == "int")) {
+        op->emitOpError("invalid record field for model projection: ") << path;
+        return WalkResult::interrupt();
+      }
     } else if (auto field = dyn_cast<GetFieldOp>(op)) {
       const auto name = cast<RecordType>(field.getInput().getType()).getName();
       auto schema = records.find(name);
@@ -5960,6 +6312,7 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
 LogicalResult verifyModule(ModuleOp module) {
   Components components;
   Records records;
+  EnumLayouts enums;
   bool hasTranslationCatalog = false;
   for (Operation &op : module.getBody()->getOperations()) {
     if (isa<FontOp>(op))
@@ -5971,7 +6324,7 @@ LogicalResult verifyModule(ModuleOp module) {
       continue;
     }
     if (auto record = dyn_cast<RecordDeclOp>(op)) {
-      if (failed(indexRecord(record, records)))
+      if (failed(indexRecord(record, records, enums)))
         return failure();
       continue;
     }
@@ -5983,8 +6336,8 @@ LogicalResult verifyModule(ModuleOp module) {
       return op.emitOpError("duplicate component ") << component.getSymName();
   }
   ComboValueTypes comboValues;
-  if (failed(verifyRecordLayouts(module, records)) ||
-      failed(verifyRecords(module, records, comboValues)))
+  if (failed(verifyRecordLayouts(module, records, enums)) ||
+      failed(verifyRecords(module, records, enums, comboValues)))
     return failure();
   for (auto &entry : components)
     if (failed(verifyReferences(entry.getValue(), components, comboValues)))

@@ -11,6 +11,12 @@ pub(super) fn record_validator(records: Rc<RecordSchemas>) -> Rc<RecordRowValida
 }
 
 impl Program {
+    pub(super) fn is_enum_record(&self, name: &str) -> bool {
+        self.records
+            .get(name)
+            .is_some_and(|schema| !schema.variants.is_empty())
+    }
+
     /// Observe the validity of a model returned to a reactive host reader.
     pub(super) fn observe_host_value(
         &self,
@@ -111,6 +117,13 @@ impl Program {
     }
 }
 
+pub(super) fn enum_index(record: &RecordValue) -> Option<usize> {
+    match record.field(xrack_syntax::ast::ENUM_TAG_FIELD)? {
+        Value::Int(index) => usize::try_from(*index).ok(),
+        _ => None,
+    }
+}
+
 fn validate_record(
     records: &RecordSchemas,
     name: &str,
@@ -123,10 +136,21 @@ fn validate_record(
             record.name()
         )));
     }
-    let fields = records
+    let schema = records
         .get(name)
         .ok_or_else(|| Error::Evaluation(format!("{path}: unknown record {name}")))?;
-    for field in fields {
+    let payload = if schema.variants.is_empty() {
+        &[][..]
+    } else {
+        let index = enum_index(record)
+            .and_then(|index| schema.variants.get(index))
+            .ok_or_else(|| {
+                Error::Evaluation(format!("{path}: invalid {name} variant discriminant"))
+            })?;
+        index.as_slice()
+    };
+    let fields = schema.fields.iter().chain(payload);
+    for field in fields.clone() {
         let length = path.len();
         path.push('.');
         path.push_str(&field.name);
@@ -147,10 +171,10 @@ fn validate_record(
         }
         path.truncate(length);
     }
-    if record.fields().len() != fields.len()
+    if record.fields().len() != schema.fields.len() + payload.len()
         && let Some((extra, _)) = record
             .fields()
-            .find(|(name, _)| fields.iter().all(|field| field.name != *name))
+            .find(|(name, _)| fields.clone().all(|field| field.name != *name))
     {
         return Err(Error::Evaluation(format!("{path}.{extra}: unknown field")));
     }

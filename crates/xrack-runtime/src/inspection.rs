@@ -1,5 +1,5 @@
 use crate::{
-    Node, ui_trace,
+    Node, SceneChanges, ui_trace,
     update_profile::{self, UpdateSample},
 };
 
@@ -17,7 +17,7 @@ use std::{
     cell::RefCell,
     collections::VecDeque,
     rc::{Rc, Weak},
-    sync::mpsc::Sender,
+    sync::{Arc, Mutex, mpsc::Sender},
     time::Instant,
 };
 
@@ -27,6 +27,41 @@ pub struct InspectionInput {
     pub generation: u64,
     pub deadline: Instant,
     pub reply: Sender<Result<(), String>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PresentedFrame {
+    pub frame: u64,
+    pub generation: u64,
+    pub host_micros: u64,
+    pub input_to_present_micros: Option<u64>,
+}
+
+/// Thread-safe sink for the platform's asynchronous drawable callback.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct PresentationFeedback {
+    frames: Arc<Mutex<VecDeque<PresentedFrame>>>,
+    frame: u64,
+    generation: u64,
+}
+
+impl PresentationFeedback {
+    pub fn record(&self, host_micros: u64, input_to_present_micros: Option<u64>) {
+        let mut frames = self
+            .frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if frames.len() == MAX_SAMPLES {
+            frames.pop_front();
+        }
+        frames.push_back(PresentedFrame {
+            frame: self.frame,
+            generation: self.generation,
+            host_micros,
+            input_to_present_micros,
+        });
+    }
 }
 
 /// UI-thread state shared by a live-reload component and its native host.
@@ -51,6 +86,9 @@ struct State {
     control: bool,
     input: Option<InspectionInput>,
     samples: VecDeque<(u64, u64, UpdateSample)>,
+    render_samples: VecDeque<RenderSample>,
+    presented_frames: Arc<Mutex<VecDeque<PresentedFrame>>>,
+    next_frame: u64,
     diagnostics: Option<ui_trace::Buffer>,
     updated_requests: Vec<u64>,
     generation: u64,
@@ -146,6 +184,53 @@ impl WindowInspector {
         let id = state.next_sample;
         let generation = state.generation;
         state.samples.push_back((id, generation, sample));
+    }
+
+    pub fn presentation_feedback(&self) -> PresentationFeedback {
+        let mut state = self.0.borrow_mut();
+        state.next_frame += 1;
+        PresentationFeedback {
+            frames: state.presented_frames.clone(),
+            frame: state.next_frame,
+            generation: state.generation,
+        }
+    }
+
+    pub fn presentations(&self) -> Vec<PresentedFrame> {
+        let frames = self.0.borrow().presented_frames.clone();
+        frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    pub fn push_render_sample(
+        &self,
+        update: UpdateSample,
+        input_to_submit_micros: Option<u64>,
+        prepared_revision: u64,
+        scene: SceneChanges,
+    ) {
+        let mut state = self.0.borrow_mut();
+        if state.render_samples.len() == MAX_SAMPLES {
+            state.render_samples.pop_front();
+        }
+        let generation = state.generation;
+        let frame = state.next_frame;
+        state.render_samples.push_back(RenderSample {
+            frame,
+            generation,
+            update,
+            input_to_submit_micros,
+            prepared_revision,
+            scene,
+        });
+    }
+
+    pub fn render_samples(&self) -> Vec<RenderSample> {
+        self.0.borrow().render_samples.iter().cloned().collect()
     }
 
     pub fn set_trace_buffer(&self, buffer: ui_trace::Buffer) {
@@ -315,6 +400,17 @@ impl WindowInspector {
         }
         state.revision += 1;
     }
+}
+
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct RenderSample {
+    pub frame: u64,
+    pub generation: u64,
+    pub update: UpdateSample,
+    pub input_to_submit_micros: Option<u64>,
+    pub prepared_revision: u64,
+    pub scene: SceneChanges,
 }
 
 fn stable_id(scene: &Node, path: &[usize], kinds: &[&str]) -> Option<String> {

@@ -66,6 +66,7 @@ xr_ui_library(
 rust_binary(
     name = "async_demo_live",
     srcs = ["main.rs"],
+    crate_features = ["live-ui"],
     aliases = {":async_ui_live": "async_ui"},
     edition = "2024",
     deps = [

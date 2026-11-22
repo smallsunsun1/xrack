@@ -286,7 +286,7 @@ impl<'a> Index<'a> {
                         });
                     }
                 }
-                "callback"
+                "callback" | "function"
                     if matches!(
                         scopes[current].role,
                         Role::Component { .. } | Role::Element { .. }
@@ -664,7 +664,7 @@ fn role<'a>(head: &[&Token<'a>], top_level: bool) -> Role<'a> {
     if top_level {
         return match first {
             "import" => Role::Import,
-            "struct" => Role::Record {
+            "struct" | "enum" => Role::Record {
                 name: head.get(1).map_or("", |t| t.text),
                 exported,
             },
@@ -676,7 +676,9 @@ fn role<'a>(head: &[&Token<'a>], top_level: bool) -> Role<'a> {
             _ => Role::Block,
         };
     }
-    if last == "=>" {
+    if last == "=>"
+        || matches!(head, [pure, function, ..] if pure.text == "pure" && function.text == "function")
+    {
         return Role::Handler;
     }
     if first == "animate" {
@@ -732,14 +734,38 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
         && head
             .first()
             .is_some_and(|token| token.text == "pointer-event");
-    names
-        .iter()
-        .filter(|t| name(t.text))
+    let signature =
+        matches!(head, [pure, function, ..] if pure.text == "pure" && function.text == "function");
+    let declarations: Vec<_> = if signature {
+        let end = names
+            .iter()
+            .position(|token| token.text == ")")
+            .unwrap_or(names.len());
+        names[..end]
+            .split(|token| token.text == ",")
+            .filter_map(|parameter| {
+                let [name, colon, ty @ ..] = parameter else {
+                    return None;
+                };
+                (colon.text == ":").then(|| (*name, read_type(ty)))
+            })
+            .collect()
+    } else {
+        names
+            .iter()
+            .filter(|token| name(token.text))
+            .map(|token| (*token, None))
+            .collect()
+    };
+    declarations
+        .into_iter()
         .enumerate()
-        .map(|(i, t)| Member {
+        .map(|(i, (t, parameter_ty))| Member {
             name: t.text.into(),
             ty: if repeat && i == 1 {
                 Some(Type::Int)
+            } else if parameter_ty.is_some() {
+                parameter_ty
             } else {
                 wheel_handler
                     .then_some(Type::WheelEvent)
@@ -1080,6 +1106,85 @@ fn suggest_position_child_argument<'a>(
     true
 }
 
+fn shortcut_values(
+    text: &str,
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    code: &[&Token<'_>],
+    cursor: usize,
+) -> Option<Vec<Value>> {
+    let literal = tokens.iter().find(|token| token.blocks_completion(cursor));
+    if literal.is_some_and(|token| !token.text.starts_with('"')) {
+        return None;
+    }
+    let start = literal.map_or(cursor, |token| token.range.start);
+    let before = &code[..code.partition_point(|token| token.range.end <= start)];
+    let statement = before
+        .iter()
+        .rposition(|token| matches!(token.text, "{" | "}" | ";"))
+        .map_or(before, |position| &before[position + 1..]);
+    let name = match statement {
+        [binding, separator]
+            if separator.text == ":" && matches!(binding.text, "shortcut" | "sequence") =>
+        {
+            binding.text
+        }
+        [binding, separator, list, rest @ ..]
+            if binding.text == "sequences"
+                && separator.text == ":"
+                && list.text == "["
+                && rest.iter().all(|token| token.text == ",") =>
+        {
+            binding.text
+        }
+        _ => return None,
+    };
+    let index = Index::new(code, text.len());
+    let owner = match index.scopes[index.scope_at(start)].role {
+        Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+        _ => return None,
+    };
+    if !matches!(
+        (owner, name),
+        ("Shortcut", "sequence" | "sequences") | ("MenuItem" | "Action", "shortcut")
+    ) {
+        return None;
+    }
+    let (edit_start, edit_end) = literal.map_or((cursor, cursor), |token| {
+        (
+            token.range.start + 1,
+            token.range.end - usize::from(token.quoted()),
+        )
+    });
+    let prefix = &text[edit_start..cursor];
+    let range = source.range(edit_start, edit_end);
+    Some(
+        [
+            ("Primary+[", "Modified left bracket"),
+            ("Primary+]", "Modified right bracket"),
+            ("Ctrl+Tab", "Switch tab with a modified Tab key"),
+            (
+                "Ctrl+Shift+Tab",
+                "Switch tab backward with a modified Tab key",
+            ),
+            ("MouseBack", "Mouse back button"),
+            ("MouseForward", "Mouse forward button"),
+        ]
+        .into_iter()
+        .filter(|(value, _)| value.starts_with(prefix))
+        .map(|(value, detail)| {
+            let new_text = if literal.is_some() {
+                value.to_owned()
+            } else {
+                format!("\"{value}\"")
+            };
+            json!({"label": value, "kind": ENUM_MEMBER, "detail": detail,
+            "textEdit": {"range": range, "newText": new_text}})
+        })
+        .collect(),
+    )
+}
+
 pub(crate) fn complete_with_imports(
     text: &str,
     line: usize,
@@ -1092,10 +1197,13 @@ pub(crate) fn complete_with_imports(
         return vec![];
     };
     let tokens = editor_tokens::scan(text);
+    let code: Vec<_> = tokens.iter().filter(|t| t.code()).collect();
+    if let Some(values) = shortcut_values(text, &source, &tokens, &code, cursor) {
+        return values;
+    }
     if tokens.iter().any(|t| t.blocks_completion(cursor)) {
         return vec![];
     }
-    let code: Vec<_> = tokens.iter().filter(|t| t.code()).collect();
     let prefix = code.iter().find(|t| {
         (name(t.text) || t.text.starts_with('@')) && t.range.start < cursor && cursor <= t.range.end
     });
@@ -1125,6 +1233,50 @@ pub(crate) fn complete_with_imports(
         return items.values;
     }
     let prior = &code[..code.partition_point(|t| t.range.end <= start)];
+    if let [.., type_name, separator] = prior
+        && separator.text == "::"
+        && let Some(declaration) = code.windows(3).position(|tokens| {
+            tokens[0].text == "enum" && tokens[1].text == type_name.text && tokens[2].text == "{"
+        })
+    {
+        let mut depth = 0_usize;
+        let mut next_variant = true;
+        for token in &code[declaration + 3..] {
+            if token.text == "}" && depth == 0 {
+                break;
+            }
+            match token.text {
+                "(" | "{" => depth += 1,
+                ")" | "}" => depth = depth.saturating_sub(1),
+                "," if depth == 0 => next_variant = true,
+                variant if depth == 0 && next_variant && name(variant) => {
+                    items.add(variant, ENUM_MEMBER, type_name.text);
+                    next_variant = false;
+                }
+                _ => {}
+            }
+        }
+        return items.values;
+    }
+    if matches!(
+        index.scopes[scope].role,
+        Role::Handler | Role::StatementBlock
+    ) {
+        let end = prior
+            .iter()
+            .rposition(|token| token.text == ";")
+            .unwrap_or(0);
+        for declaration in prior[..end].windows(3) {
+            if declaration[0].text == "let"
+                && declaration[2].text == "="
+                && index
+                    .ancestors(scope)
+                    .any(|ancestor| ancestor == index.scope_at(declaration[0].range.start))
+            {
+                items.add(declaration[1].text, VARIABLE, "immutable local binding");
+            }
+        }
+    }
     if scope != 0 {
         if let Some(workspace) = workspace
             && !index.imports.is_empty()
@@ -1142,6 +1294,21 @@ pub(crate) fn complete_with_imports(
         .map_or(0, |i| i + 1)..];
     let role = index.scopes[scope].role;
     let head = member_head(text, &tokens, head, start, role);
+    if matches!(head, [keyword] if keyword.text == "slot")
+        && let Role::Element { kind, .. } = role
+        && let Some(declaration) = index.declared_component(kind)
+    {
+        let declaration = &index.scopes[declaration];
+        for marker in code.windows(3).filter(|tokens| {
+            tokens[0].text == "@slot"
+                && tokens[1].text == "("
+                && tokens[0].range.start >= declaration.body
+                && tokens[2].range.end <= declaration.close
+        }) {
+            items.add(marker[2].text, PROPERTY, "named component slot");
+        }
+        return items.values;
+    }
     if let Some(close) = prior.last().filter(|token| token.text == "}")
         && index.scopes.iter().any(|branch| {
             matches!(branch.role, Role::StatementBlock)
@@ -1407,6 +1574,9 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         } else {
             items.special_forms();
         }
+        if head.is_empty() && matches!(role, Role::Component { .. } | Role::Element { .. }) {
+            items.add("@slot", KEYWORD, "named component slot");
+        }
         return;
     }
     let head = if matches!(role, Role::Record { .. } | Role::RecordValue(_)) {
@@ -1437,9 +1607,9 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             }
             [] => items.words(
                 if first == "export" {
-                    "component global struct"
+                    "component global struct enum"
                 } else {
-                    "import translations export component global struct"
+                    "import translations export component global struct enum"
                 },
                 KEYWORD,
                 "XRack declaration",
@@ -1489,7 +1659,10 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     if last == "->"
         || matches!(role, Role::Record { .. }) && last == ":"
         || head.iter().any(|t| t.text == "property") && matches!(last, "<" | "[")
-        || head.iter().any(|t| t.text == "callback") && last == ":"
+        || head
+            .iter()
+            .any(|t| matches!(t.text, "callback" | "function"))
+            && last == ":"
     {
         items.types(index);
         return;
@@ -1589,8 +1762,9 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             .any(|t| matches!(t.text, ":" | "<=>" | "=" | "+=" | "-="));
     if expression {
         if in_handler && head.is_empty() {
-            items.words("if for", KEYWORD, "XRack statement");
+            items.words("if for let", KEYWORD, "XRack statement");
         }
+        items.add("match", KEYWORD, "exhaustive enum expression");
         if let Some((ty, _)) = index.combo_option_data(scope) {
             let detail =
                 ty.map_or_else(|| "ComboBox model item".into(), |ty| ty.name().into_owned());
@@ -1847,6 +2021,14 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                 }
             }
             items.add("@children", KEYWORD, catalog::CHILDREN_DOC);
+            items.add("@slot", KEYWORD, "named component slot");
+            items.add("slot", KEYWORD, "supply content to a named slot");
+            items.add("match", KEYWORD, "enum-based component branches");
+            items.add(
+                "pure function",
+                KEYWORD,
+                "component function with no side effects",
+            );
             for event in catalog::EVENTS
                 .split_ascii_whitespace()
                 .filter(|event| builtin_event(kind, event))
@@ -1859,7 +2041,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                     items.add(event, FUNCTION, &detail);
                 } else if event == "editing-finished" {
                     items.add(event, FUNCTION, "event handler (string, bool)");
-                } else if event == "files-failed" {
+                } else if matches!(event, "files-failed" | "link-activated") {
                     items.add(event, FUNCTION, "event handler (string)");
                 } else {
                     items.add(event, FUNCTION, "event handler");
@@ -1997,6 +2179,8 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         | Type::KeyModifiers
         | Type::WheelEvent
         | Type::PointerEvent
+        | Type::Point2D
+        | Type::Vector2D
         | Type::TouchPoint),
     ) = index.ancestors(scope).find_map(|scope| {
         index
@@ -2597,6 +2781,10 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.words("width height", FIELD, "read-only int");
                 return;
             }
+            Some(Type::Point2D | Type::Vector2D) if fields.peek().is_none() => {
+                items.words("x y", FIELD, "length");
+                return;
+            }
             _ => return,
         }
     }
@@ -3042,6 +3230,40 @@ mod tests {
         for name in ["auto", "crosshair", "zoom-in"] {
             assert!(entries.iter().any(|item| item["label"] == name), "{name}");
         }
+    }
+
+    #[test]
+    fn navigation_shortcuts_complete_inside_their_string_bindings() {
+        let source =
+            "component App inherits Window { Shortcut { sequences: [\"Primary+[\", \"MouseB";
+        let entries = complete(source, 0, source.len(), None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["label"], "MouseBack");
+        assert_eq!(entries[0]["textEdit"]["newText"], "MouseBack");
+
+        let source = "component App inherits Window { Shortcut { sequence: \"Primary+\"; } }";
+        let offset = source.find("Primary+").unwrap() + "Primary+".len();
+        let labels: Vec<_> = complete(source, 0, offset, None)
+            .into_iter()
+            .map(|item| item["label"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(labels, ["Primary+[", "Primary+]"]);
+        let source = "component App inherits Window { Label { text: \"MouseB";
+        assert!(complete(source, 0, source.len(), None).is_empty());
+    }
+
+    #[test]
+    fn modified_tab_shortcuts_complete_within_the_binding() {
+        let source = "component App inherits Window { Shortcut { sequence: \"Ctrl+T";
+        let entries = complete(source, 0, source.len(), None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["textEdit"]["newText"], "Ctrl+Tab");
+
+        let source = "component App inherits Window { Shortcut { sequence: \"Ctrl+Shift+T\"; } }";
+        let cursor = source.find("Ctrl+Shift+T").unwrap() + "Ctrl+Shift+T".len();
+        let entries = complete(source, 0, cursor, None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["textEdit"]["newText"], "Ctrl+Shift+Tab");
     }
 
     #[test]

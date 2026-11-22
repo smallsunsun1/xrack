@@ -5,6 +5,26 @@ use std::{
     path::{Path, PathBuf},
 };
 use xrack_parser::{ast, parse};
+use xrack_syntax::module_manifest::{MANIFEST_FILE, ModuleManifest};
+
+pub fn read_package_manifest(path: &Path) -> Result<ModuleManifest, String> {
+    let contents =
+        fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let manifest: ModuleManifest =
+        serde_json::from_str(&contents).map_err(|error| format!("{}: {error}", path.display()))?;
+    manifest.validate()?;
+    Ok(manifest)
+}
+
+/// The source file that provides the exported declarations for an import.
+pub fn package_entry(path: &Path) -> Result<Option<PathBuf>, String> {
+    if path.file_name().and_then(|name| name.to_str()) != Some(MANIFEST_FILE) {
+        return Ok(None);
+    }
+    let parent = path.parent().ok_or("module manifest has no directory")?;
+    let manifest = read_package_manifest(path)?;
+    ModuleManifest::resolve(parent, &manifest.entry).map(Some)
+}
 
 #[derive(Debug)]
 pub enum ModuleError {
@@ -258,14 +278,38 @@ impl Loader<'_> {
             let path: String = serde_json::from_str(&import.path)
                 .map_err(|error| diagnostic(format!("invalid import path: {error}")))?;
             let relative = Path::new(&path);
+            let packaged =
+                relative.file_name().and_then(|name| name.to_str()) == Some(MANIFEST_FILE);
             if relative.is_absolute()
-                || relative.extension().and_then(|ext| ext.to_str()) != Some("xr")
+                || (!packaged && relative.extension().and_then(|ext| ext.to_str()) != Some("xr"))
             {
-                return Err(diagnostic("imports require a relative .xr path".into()));
+                return Err(diagnostic(
+                    "imports require a relative .xr path or xrack-module.json".into(),
+                ));
             }
-            let input = file.parent().unwrap_or(Path::new(".")).join(relative);
-            let canonical = normalize_source_path(&input);
+            let requested = file.parent().unwrap_or(Path::new(".")).join(relative);
             let entry_import = entry_import.unwrap_or(import.span);
+            let input = if packaged {
+                let manifest_path = normalize_source_path(&requested);
+                self.inputs
+                    .entry(manifest_path.clone())
+                    .or_insert(entry_import);
+                if self
+                    .declared
+                    .as_ref()
+                    .is_some_and(|declared| !declared.contains(&manifest_path))
+                {
+                    return Err(diagnostic(format!(
+                        "{path:?} is not declared in xr_ui_library(sources = [...])"
+                    )));
+                }
+                package_entry(&requested)
+                    .map_err(diagnostic)?
+                    .ok_or_else(|| diagnostic(format!("{path:?} has no module entry")))?
+            } else {
+                requested
+            };
+            let canonical = normalize_source_path(&input);
             self.inputs.entry(canonical.clone()).or_insert(entry_import);
             if self.parsed.is_none() && !self.buffers.contains_key(&canonical) {
                 input
@@ -346,7 +390,15 @@ impl Loader<'_> {
         for mut record in doc.records {
             record.span.source = source;
             record.name = names[&record.name].clone();
-            for field in &mut record.fields {
+            for variant in &mut record.variants {
+                variant.span.source = source;
+            }
+            for field in record.fields.iter_mut().chain(
+                record
+                    .variants
+                    .iter_mut()
+                    .flat_map(|variant| &mut variant.fields),
+            ) {
                 field.span.source = source;
                 field.type_span.source = source;
                 if let ast::Type::Record(name) = &field.ty
@@ -464,6 +516,13 @@ fn rewrite_members(
                 if let Some(condition) = &mut element.condition {
                     rewrite_expr(condition, asset_prefix, names, source);
                 }
+                if let Some(arm) = &mut element.view_match {
+                    rewrite_pattern_spans(&mut arm.pattern, source);
+                    rewrite_expr(&mut arm.selector, asset_prefix, names, source);
+                    if let Some(guard) = &mut arm.guard {
+                        rewrite_expr(guard, asset_prefix, names, source);
+                    }
+                }
                 if let Some(repeat) = &mut element.repeat {
                     repeat.item_span.source = source;
                     repeat.index_span.source = source;
@@ -489,7 +548,21 @@ fn rewrite_members(
                     rewrite_record_type(result, names);
                 }
             }
-            ast::Member::Children(span) => span.source = source,
+            ast::Member::Children(span) | ast::Member::SlotMarker { span, .. } => {
+                span.source = source
+            }
+            ast::Member::SlotFill {
+                members,
+                parameters,
+                span,
+                ..
+            } => {
+                span.source = source;
+                for (_, name_span) in parameters {
+                    name_span.source = source;
+                }
+                rewrite_members(members, names, asset_prefix, file, source)?;
+            }
             ast::Member::Animation(animation) => {
                 rewrite_animation(animation, asset_prefix, names, source);
             }
@@ -555,6 +628,16 @@ fn rewrite_statements(
 ) {
     for statement in statements {
         match statement {
+            ast::Statement::Let {
+                value,
+                span,
+                name_span,
+                ..
+            } => {
+                span.source = source;
+                name_span.source = source;
+                rewrite_expr(value, prefix, names, source);
+            }
             ast::Statement::Assignment(assignment) => {
                 assignment.span.source = source;
                 rewrite_expr(&mut assignment.value, prefix, names, source);
@@ -647,7 +730,37 @@ fn rewrite_expr(
                 rewrite_expr(&mut stop.color, prefix, names, source);
             }
         }
+        EnumValue {
+            name,
+            variant,
+            fields,
+            ..
+        } => {
+            if let Some(symbol) = names.get(name) {
+                *name = symbol.clone();
+            }
+            variant.span.source = source;
+            for field in fields {
+                field.span.source = source;
+                rewrite_expr(&mut field.value, prefix, names, source);
+            }
+        }
+        Match { selector, arms } => {
+            rewrite_expr(selector, prefix, names, source);
+            for arm in arms {
+                rewrite_pattern_spans(&mut arm.pattern, source);
+                rewrite_expr(&mut arm.result, prefix, names, source);
+            }
+        }
         Literal { .. } | Reference(_) | Markdown(_) => {}
+    }
+}
+
+fn rewrite_pattern_spans(pattern: &mut ast::EnumPattern, source: usize) {
+    pattern.variant.span.source = source;
+    for field in &mut pattern.fields {
+        field.span.source = source;
+        field.binding_span.source = source;
     }
 }
 
@@ -680,9 +793,24 @@ fn rewrite_global_expr(expr: &mut ast::Expr, globals: &BTreeMap<String, String>)
                 rewrite_global_expr(value, globals);
             }
         }
+        Match { selector, arms } => {
+            rewrite_global_expr(selector, globals);
+            for arm in arms {
+                let locals = globals_without_pattern(globals, &arm.pattern);
+                rewrite_global_expr(&mut arm.result, &locals);
+            }
+        }
         Array(values) => {
             for value in values {
                 rewrite_global_expr(value, globals);
+            }
+        }
+        EnumValue { fields, .. }
+        | Record {
+            fields, base: None, ..
+        } => {
+            for field in fields {
+                rewrite_global_expr(&mut field.value, globals);
             }
         }
         Record { fields, base, .. } => {
@@ -707,6 +835,17 @@ fn rewrite_global_expr(expr: &mut ast::Expr, globals: &BTreeMap<String, String>)
     }
 }
 
+fn globals_without_pattern(
+    globals: &BTreeMap<String, String>,
+    pattern: &ast::EnumPattern,
+) -> BTreeMap<String, String> {
+    let mut locals = globals.clone();
+    for field in &pattern.fields {
+        locals.remove(&field.binding);
+    }
+    locals
+}
+
 fn rewrite_global_members(members: &mut [ast::Member], globals: &BTreeMap<String, String>) {
     for member in members {
         match member {
@@ -722,15 +861,26 @@ fn rewrite_global_members(members: &mut [ast::Member], globals: &BTreeMap<String
                 }
             }
             ast::Member::Handler(handler) => {
-                rewrite_global_statements(&mut handler.statements, globals);
+                let locals = rewrite_global_statements(&mut handler.statements, globals);
                 if let Some(value) = &mut handler.result {
-                    rewrite_global_expr(value, globals);
+                    rewrite_global_expr(value, &locals);
                 }
             }
             ast::Member::Element(element) => {
                 if let Some(value) = &mut element.condition {
                     rewrite_global_expr(value, globals);
                 }
+                let local_globals;
+                let globals = if let Some(arm) = &mut element.view_match {
+                    rewrite_global_expr(&mut arm.selector, globals);
+                    local_globals = globals_without_pattern(globals, &arm.pattern);
+                    if let Some(guard) = &mut arm.guard {
+                        rewrite_global_expr(guard, &local_globals);
+                    }
+                    &local_globals
+                } else {
+                    globals
+                };
                 if let Some(repeat) = &mut element.repeat {
                     rewrite_global_expr(&mut repeat.model, globals);
                 }
@@ -764,7 +914,8 @@ fn rewrite_global_members(members: &mut [ast::Member], globals: &BTreeMap<String
                     }
                 }
             }
-            ast::Member::Children(_) => {}
+            ast::Member::Children(_) | ast::Member::SlotMarker { .. } => {}
+            ast::Member::SlotFill { members, .. } => rewrite_global_members(members, globals),
         }
     }
 }
@@ -772,17 +923,23 @@ fn rewrite_global_members(members: &mut [ast::Member], globals: &BTreeMap<String
 fn rewrite_global_statements(
     statements: &mut [ast::Statement],
     globals: &BTreeMap<String, String>,
-) {
+) -> BTreeMap<String, String> {
+    let mut globals = globals.clone();
     for statement in statements {
+        let names = &globals;
         match statement {
+            ast::Statement::Let { local, value, .. } => {
+                rewrite_global_expr(value, names);
+                globals.remove(local);
+            }
             ast::Statement::Assignment(assignment) => {
-                rewrite_global_reference(&mut assignment.target, globals);
-                rewrite_global_expr(&mut assignment.value, globals);
+                rewrite_global_reference(&mut assignment.target, names);
+                rewrite_global_expr(&mut assignment.value, names);
             }
             ast::Statement::Call(call) => {
-                rewrite_global_reference(&mut call.callee, globals);
+                rewrite_global_reference(&mut call.callee, names);
                 for value in &mut call.arguments {
-                    rewrite_global_expr(value, globals);
+                    rewrite_global_expr(value, names);
                 }
             }
             ast::Statement::If {
@@ -791,15 +948,15 @@ fn rewrite_global_statements(
                 else_body,
                 ..
             } => {
-                rewrite_global_expr(condition, globals);
-                rewrite_global_statements(then_body, globals);
-                rewrite_global_statements(else_body, globals);
+                rewrite_global_expr(condition, names);
+                rewrite_global_statements(then_body, names);
+                rewrite_global_statements(else_body, names);
             }
             ast::Statement::For {
                 iteration, body, ..
             } => {
-                rewrite_global_expr(&mut iteration.model, globals);
-                let mut local_globals = globals.clone();
+                rewrite_global_expr(&mut iteration.model, names);
+                let mut local_globals = names.clone();
                 local_globals.remove(&iteration.item);
                 if let Some(index) = &iteration.index {
                     local_globals.remove(index);
@@ -808,4 +965,5 @@ fn rewrite_global_statements(
             }
         }
     }
+    globals
 }

@@ -106,6 +106,11 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                     parent,
                     RULE_component
                         | RULE_recordDecl
+                        | RULE_slotFill
+                        | RULE_enumDecl
+                        | RULE_matchExpression
+                        | RULE_viewMatch
+                        | RULE_functionDecl
                         | RULE_element
                         | RULE_handler
                         | RULE_statementBlock
@@ -117,11 +122,16 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                 _ => false,
             };
             let angle = parent == RULE_property && matches!(spelling, "<" | ">");
-            let attach_before = (angle && spelling == ">")
+            let attach_before = spelling == "::"
+                || (angle && spelling == ">")
                 || (spelling == "("
                     && matches!(
                         parent,
                         RULE_callback
+                            | RULE_functionDecl
+                            | RULE_enumFieldTypes
+                            | RULE_enumArguments
+                            | RULE_enumPatternFields
                             | RULE_handler
                             | RULE_call
                             | RULE_imageUrl
@@ -134,7 +144,8 @@ pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> 
                     && matches!(parent, RULE_primary | RULE_gradientStop))
                 || (spelling == "deg" && parent == RULE_gradientAngle)
                 || (spelling == "[" && parent == RULE_iteration);
-            let attach_after = (angle && spelling == "<")
+            let attach_after = spelling == "::"
+                || (angle && spelling == "<")
                 || (parent == RULE_recordBase && spelling == "..")
                 || (matches!(spelling, "-" | "+" | "!")
                     && matches!(parent, RULE_unary | RULE_gradientAngle));
@@ -252,6 +263,7 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
             .map(|record| RecordDef {
                 name: record.identifier().required("record name").get_text(),
                 exported: starts_with(&**record, "export"),
+                variants: Vec::new(),
                 fields: record
                     .recordField_all()
                     .iter()
@@ -264,6 +276,26 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
                     .collect(),
                 span: span(&**record),
             })
+            .chain(ctx.enumDecl_all().iter().map(|declaration| {
+                let position = span(&**declaration);
+                let name = declaration.identifier().required("enum name").get_text();
+                RecordDef {
+                    name,
+                    exported: starts_with(&**declaration, "export"),
+                    fields: vec![RecordField {
+                        name: ENUM_TAG_FIELD.into(),
+                        ty: Type::Int,
+                        type_span: position,
+                        span: position,
+                    }],
+                    variants: declaration
+                        .enumVariant_all()
+                        .iter()
+                        .map(|variant| enum_variant(variant))
+                        .collect(),
+                    span: position,
+                }
+            }))
             .collect(),
         components: ctx
             .component_all()
@@ -289,6 +321,104 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
     }
 }
 
+fn enum_variant(ctx: &EnumVariantContextAll<'_>) -> EnumVariantDef {
+    let name = ctx.identifier().required("variant name");
+    let (shape, fields) = if let Some(payload) = ctx.enumFieldTypes() {
+        if starts_with(&*payload, "(") {
+            (
+                EnumShape::Tuple,
+                payload
+                    .typeName_all()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, ty)| RecordField {
+                        name: tuple_field(index),
+                        ty: Type::from_source(&ty.get_text()),
+                        type_span: type_span(ty),
+                        span: span(&**ty),
+                    })
+                    .collect(),
+            )
+        } else {
+            (
+                EnumShape::Named,
+                payload
+                    .recordField_all()
+                    .iter()
+                    .map(|field| {
+                        let ty = field.typeName().required("payload field type");
+                        RecordField {
+                            name: field.identifier().required("payload field").get_text(),
+                            ty: Type::from_source(&ty.get_text()),
+                            type_span: type_span(&ty),
+                            span: span(&**field),
+                        }
+                    })
+                    .collect(),
+            )
+        }
+    } else {
+        (EnumShape::Unit, Vec::new())
+    };
+    EnumVariantDef {
+        name: name.get_text(),
+        span: span(&*name),
+        shape,
+        fields,
+    }
+}
+
+fn enum_pattern(ctx: &EnumPatternContextAll<'_>) -> EnumPattern {
+    let name = ctx.identifier().required("pattern variant");
+    let variant = EnumVariant {
+        name: name.get_text(),
+        span: span(&*name),
+    };
+    let (shape, fields) = if let Some(pattern) = ctx.enumPatternFields() {
+        if starts_with(&*pattern, "(") {
+            (
+                EnumShape::Tuple,
+                pattern
+                    .identifier_all()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, binding)| EnumPatternField {
+                        name: tuple_field(index),
+                        span: span(&**binding),
+                        binding: binding.get_text(),
+                        binding_span: span(&**binding),
+                    })
+                    .collect(),
+            )
+        } else {
+            (
+                EnumShape::Named,
+                pattern
+                    .namedPatternField_all()
+                    .iter()
+                    .map(|field| {
+                        let name = field.identifier(0).required("pattern field");
+                        let binding = field.identifier(1).unwrap_or_else(|| name.clone());
+                        EnumPatternField {
+                            name: name.get_text(),
+                            span: span(&*name),
+                            binding: binding.get_text(),
+                            binding_span: span(&*binding),
+                        }
+                    })
+                    .collect(),
+            )
+        }
+    } else {
+        (EnumShape::Unit, Vec::new())
+    };
+    EnumPattern {
+        variant,
+        shape,
+        fields,
+    }
+}
+
 fn members(contexts: Vec<Rc<MemberContextAll<'_>>>) -> Vec<Member> {
     let mut result = Vec::new();
     for ctx in contexts {
@@ -300,6 +430,106 @@ fn members(contexts: Vec<Rc<MemberContextAll<'_>>>) -> Vec<Member> {
                     options: options.clone(),
                     span: span(&*animation),
                 })
+            }));
+        } else if let Some(branch) = ctx.viewMatch() {
+            let position = span(&*branch);
+            let selector = expression(&branch.expression().required("view match scrutinee"));
+            let arms = branch.viewArm_all();
+            let patterns: Vec<_> = arms
+                .iter()
+                .map(|arm| enum_pattern(&arm.enumPattern().required("view match pattern")))
+                .collect();
+            for (selected, arm) in arms.into_iter().enumerate() {
+                let mut child = element(&arm.element().required("view match element"));
+                child.view_match = Some(ViewMatch {
+                    selector: Box::new(selector.clone()),
+                    pattern: patterns[selected].clone(),
+                    guard: child.condition.take(),
+                });
+                let condition = Expr {
+                    kind: ExprKind::Match {
+                        selector: Box::new(selector.clone()),
+                        arms: patterns
+                            .iter()
+                            .cloned()
+                            .enumerate()
+                            .map(|(index, mut pattern)| {
+                                for field in &mut pattern.fields {
+                                    field.binding = "_".into();
+                                }
+                                MatchArm {
+                                    result: Expr {
+                                        kind: ExprKind::Literal {
+                                            value: (index == selected).to_string(),
+                                            ty: Type::Bool,
+                                        },
+                                        span: pattern.variant.span,
+                                    },
+                                    pattern,
+                                }
+                            })
+                            .collect(),
+                    },
+                    span: position,
+                };
+                child.condition = Some(condition);
+                result.push(Member::Element(child));
+            }
+        } else if let Some(function) = ctx.functionDecl() {
+            let name = function.identifier().required("function name").get_text();
+            let result_ty = function.typeName().required("function result type");
+            let parameter_names = function.namedParameter_all();
+            let parameters: Vec<_> = parameter_names
+                .iter()
+                .map(|parameter| Parameter {
+                    name: parameter
+                        .identifier()
+                        .required("function parameter")
+                        .get_text(),
+                    ty: Type::from_source(
+                        &parameter
+                            .typeName()
+                            .required("function parameter type")
+                            .get_text(),
+                    ),
+                })
+                .collect();
+            let position = span(&*function);
+            result.push(Member::Callback(Callback {
+                name: name.clone(),
+                parameter_type_spans: parameter_names
+                    .iter()
+                    .map(|parameter| {
+                        type_span(&parameter.typeName().required("function parameter type"))
+                    })
+                    .collect(),
+                parameters: parameters.clone(),
+                result_type_span: Some(type_span(&result_ty)),
+                span: position,
+                return_type: Some(Type::from_source(&result_ty.get_text())),
+                pure: true,
+                alias: None,
+                alias_span: None,
+            }));
+            result.push(Member::Handler(Handler {
+                name,
+                parameters: parameters
+                    .into_iter()
+                    .map(|parameter| parameter.name)
+                    .collect(),
+                parameter_spans: parameter_names
+                    .iter()
+                    .map(|parameter| span(&*parameter.identifier().required("function parameter")))
+                    .collect(),
+                statements: function
+                    .statement_all()
+                    .iter()
+                    .map(|item| statement(item))
+                    .collect(),
+                span: position,
+                result: Some(expression(
+                    &function.expression().required("function result"),
+                )),
             }));
         } else {
             result.push(member(&ctx));
@@ -476,39 +706,61 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
             span: span(&*handler),
             result: handler.expression().as_deref().map(expression),
         })
-    } else if let Some(element) = ctx.element() {
-        let first = element
-            .identifier(0)
-            .required("element kind or id")
-            .get_text();
-        let (id, ty) = match element.identifier(1) {
-            Some(kind) => (Some(first), kind.get_text()),
-            None => (None, first),
-        };
-        Member::Element(Element {
-            placement_scope: None,
-            type_span: span(
-                &*element
-                    .identifier(usize::from(id.is_some()))
-                    .required("element type"),
-            ),
-            id,
-            ty,
-            members: members(element.member_all()),
-            span: span(&*element),
-            condition: element.conditionClause().map(|condition| {
-                expression(&condition.expression().required("condition expression"))
-            }),
-            repeat: element
-                .repeatClause()
-                .map(|repeat| iteration(&repeat.iteration().required("repeat iteration"))),
-        })
+    } else if let Some(child) = ctx.element() {
+        Member::Element(element(&child))
     } else if let Some(block) = ctx.stateBlock() {
         Member::States(state_block(&block))
+    } else if let Some(marker) = ctx.slotMarker() {
+        let mut names = marker.identifier_all().into_iter();
+        let name = names.next().required("slot name").get_text();
+        Member::SlotMarker {
+            name,
+            arguments: names.map(|name| name.get_text()).collect(),
+            span: span(&*marker),
+        }
+    } else if let Some(fill) = ctx.slotFill() {
+        let mut names = fill.identifier_all().into_iter();
+        let name = names.next().required("slot name").get_text();
+        Member::SlotFill {
+            name,
+            parameters: names.map(|name| (name.get_text(), span(&*name))).collect(),
+            members: members(fill.member_all()),
+            span: span(&*fill),
+        }
     } else if starts_with(ctx, "@children") {
         Member::Children(span(ctx))
     } else {
         unreachable!("non-animation member alternative")
+    }
+}
+
+fn element(element: &ElementContextAll<'_>) -> Element {
+    let first = element
+        .identifier(0)
+        .required("element kind or id")
+        .get_text();
+    let (id, ty) = match element.identifier(1) {
+        Some(kind) => (Some(first), kind.get_text()),
+        None => (None, first),
+    };
+    Element {
+        placement_scope: None,
+        view_match: None,
+        type_span: span(
+            &*element
+                .identifier(usize::from(id.is_some()))
+                .required("element type"),
+        ),
+        id,
+        ty,
+        members: members(element.member_all()),
+        span: span(element),
+        condition: element
+            .conditionClause()
+            .map(|condition| expression(&condition.expression().required("condition expression"))),
+        repeat: element
+            .repeatClause()
+            .map(|repeat| iteration(&repeat.iteration().required("repeat iteration"))),
     }
 }
 
@@ -520,6 +772,14 @@ fn statement(ctx: &StatementContextAll<'_>) -> Statement {
             iteration: iteration(&loop_stmt.iteration().required("loop iteration")),
             body: statement_block(&loop_stmt.statementBlock().required("loop body")),
             span: span(&*loop_stmt),
+        }
+    } else if let Some(local) = ctx.letStatement() {
+        let name = local.identifier().required("local binding name");
+        Statement::Let {
+            local: name.get_text(),
+            value: expression(&local.expression().required("local initializer")),
+            span: span(&*local),
+            name_span: span(&*name),
         }
     } else if let Some(invocation) = ctx.call() {
         Statement::Call(call(&invocation))
@@ -674,7 +934,62 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
     if let Some(gradient) = ctx.gradient() {
         return gradient_expr(&gradient);
     }
-    let kind = if let Some(invocation) = ctx.call() {
+    let kind = if let Some(value) = ctx.enumValue() {
+        let variant = value.identifier(1).required("enum variant");
+        let (shape, fields) = if let Some(arguments) = value.enumArguments() {
+            if starts_with(&*arguments, "(") {
+                (
+                    EnumShape::Tuple,
+                    arguments
+                        .expression_all()
+                        .iter()
+                        .enumerate()
+                        .map(|(index, value)| RecordValue {
+                            name: tuple_field(index),
+                            span: span(&**value),
+                            value: expression(value),
+                        })
+                        .collect(),
+                )
+            } else {
+                (
+                    EnumShape::Named,
+                    arguments
+                        .recordValue_all()
+                        .iter()
+                        .map(|field| RecordValue {
+                            name: field.identifier().required("payload field").get_text(),
+                            span: span(&**field),
+                            value: expression(&field.expression().required("payload value")),
+                        })
+                        .collect(),
+                )
+            }
+        } else {
+            (EnumShape::Unit, Vec::new())
+        };
+        ExprKind::EnumValue {
+            name: value.identifier(0).required("enum type").get_text(),
+            variant: EnumVariant {
+                name: variant.get_text(),
+                span: span(&*variant),
+            },
+            shape,
+            fields,
+        }
+    } else if let Some(branch) = ctx.matchExpression() {
+        ExprKind::Match {
+            selector: Box::new(expression(&branch.expression().required("match scrutinee"))),
+            arms: branch
+                .matchArm_all()
+                .iter()
+                .map(|arm| MatchArm {
+                    pattern: enum_pattern(&arm.enumPattern().required("match pattern")),
+                    result: expression(&arm.expression().required("match result")),
+                })
+                .collect(),
+        }
+    } else if let Some(invocation) = ctx.call() {
         ExprKind::Call(call(&invocation))
     } else if let Some(url) = ctx.imageUrl() {
         let path = url.STRING().required("image URL").get_text();

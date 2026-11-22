@@ -1,0 +1,92 @@
+export global Palette {
+    in-out property <ColorScheme> mode: ColorScheme.system;
+    in-out property <ColorScheme> system-scheme: ColorScheme.light;
+    out property <bool> dark: root.mode == ColorScheme.dark
+        || (root.mode == ColorScheme.system && root.system-scheme == ColorScheme.dark);
+
+    callback choose(scheme: ColorScheme);
+    callback update-system(scheme: ColorScheme);
+    choose(scheme) => { root.mode = scheme; }
+    update-system(scheme) => { root.system-scheme = scheme; }
+
+    out property <color> canvas: root.dark ? #171a21 : #fbfbfe;
+    out property <color> rail: root.dark ? #20252f : #ecf0f8;
+    out property <color> surface: root.dark ? #232934 : #ffffff;
+    out property <color> border: root.dark ? #384356 : #dce2ee;
+    out property <color> text: root.dark ? #e8eefc : #202944;
+    out property <color> muted: root.dark ? #a6b2c9 : #59647d;
+    out property <color> accent: root.dark ? #a9bcff : #445bc5;
+    out property <color> selection: root.dark ? #344565 : #dde6ff;
+    out property <color> user-message: root.dark ? #2b3853 : #edf1ff;
+    out property <color> hover: root.dark ? #2d394f : #f3f6ff;
+    out property <color> pressed-selection: root.dark ? #41577f : #cbd9ff;
+    out property <color> split-focus: root.dark ? #8196d0 : #9faee1;
+    out property <color> warning: root.dark ? #efbf85 : #985500;
+    out property <color> success: root.dark ? #7ed9ac : #1b6b47;
+    out property <color> error: root.dark ? #ffa8b6 : #a23b4d;
+    out property <color> online: root.dark ? #69d0a4 : #238267;
+    out property <color> offline: root.dark ? #8894ab : #8c96ad;
+    out property <color> diff-added: root.dark ? #203b35 : #edf8f1;
+    out property <color> diff-removed: root.dark ? #402e38 : #fbeef0;
+    out property <color> diff-section: root.dark ? #303951 : #edf0fa;
+}
+
+export component WorkbenchIcon inherits Rectangle {
+    in property <string> shape;
+    in property <color> tint: Palette.muted;
+    width: 17px;
+    height: 17px;
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        fill: #00000000;
+        stroke: root.tint;
+        stroke-width: 1.7px;
+        commands: root.shape;
+    }
+}
+
+export component CenteredWorkbenchIcon inherits HorizontalLayout {
+    in property <string> shape;
+    in property <color> tint: Palette.muted;
+    width: 100%;
+    height: 100%;
+    alignment: center;
+    cross-axis-alignment: center;
+    WorkbenchIcon { shape: root.shape; tint: root.tint; }
+}
+
+export component ConversationMenuAction inherits Button {
+    in property <string> label;
+    in property <string> glyph;
+    in property <bool> available: true;
+    in property <bool> destructive: false;
+    callback action();
+    text: root.label;
+    enabled: root.available;
+    height: 32px;
+    flat: true;
+    padding: 3px;
+    border-radius: 5px;
+    clicked => { root.action(); }
+    ButtonContent {
+        HorizontalLayout {
+            padding-left: 6px;
+            padding-right: 6px;
+            spacing: 9px;
+            cross-axis-alignment: center;
+            WorkbenchIcon {
+                shape: root.glyph;
+                tint: !root.available ? Palette.offline : root.destructive ? Palette.error : Palette.muted;
+            }
+            Label {
+                horizontal-stretch: 1;
+                text: root.label;
+                font-size: 13px;
+                color: !root.available ? Palette.offline : root.destructive ? Palette.error : Palette.text;
+            }
+        }
+    }
+}

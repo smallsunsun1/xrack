@@ -3,10 +3,18 @@ use femtovg::{
     TextDecoration, TextMetrics, renderer::WGPURenderer,
 };
 use fontdb::{Database, Family, Query, Style, Weight};
-use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
+use std::{
+    borrow::Cow,
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    hash::BuildHasher,
+    ops::Range,
+    rc::Rc,
+    sync::Arc,
+};
 use xrack_layout::{
-    LabelLayout, Point, Rect, Size, StyledTextLayout, TextAlignment, TextAreaLayout, TextMeasurer,
-    VisualTextLine, text_editor_viewport,
+    LabelLayout, LabelLine, LabelStyle, Point, Rect, Size, StyledTextLayout, TextAlignment,
+    TextAreaLayout, TextMeasurer, VisualTextLine, text_editor_viewport,
 };
 use xrack_runtime::{EmbeddedFonts, LayoutDirection, Node, TextStyle, TextWrap};
 
@@ -80,11 +88,128 @@ struct FontRequest {
     italic: bool,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct StyledFace {
     id: Option<FontId>,
     weight: u16,
     italic: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct LabelSettings {
+    available: [u32; 2],
+    style: LabelStyle,
+    font_size: u32,
+    face: Option<StyledFace>,
+    registered_fonts: [usize; 2],
+}
+
+struct CachedLabel {
+    text: String,
+    settings: LabelSettings,
+    label: Rc<PreparedLabel>,
+    bytes: usize,
+}
+
+pub(crate) struct PreparedLabel {
+    pub(crate) layout: LabelLayout<'static>,
+    paint: Paint,
+}
+
+impl PreparedLabel {
+    pub(crate) fn paint(&self, tint: Color) -> Paint {
+        self.paint.clone().with_color(tint)
+    }
+}
+
+#[derive(Default)]
+struct LabelCache {
+    entries: HashMap<u64, CachedLabel>,
+    order: VecDeque<u64>,
+    bytes: usize,
+}
+
+impl LabelCache {
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+        self.bytes = 0;
+    }
+
+    fn get<'a>(
+        &mut self,
+        text: &'a str,
+        settings: LabelSettings,
+        build: impl FnOnce() -> (LabelLayout<'a>, Paint),
+    ) -> Rc<PreparedLabel> {
+        const MAX_ENTRIES: usize = 2048;
+        const MAX_BYTES: usize = 2 * 1024 * 1024;
+
+        let key = self.entries.hasher().hash_one((text, settings));
+        // Compare the full inputs on lookup, including collisions of the hash.
+        if let Some(entry) = self.entries.get(&key)
+            && entry.text == text
+            && entry.settings == settings
+        {
+            return entry.label.clone();
+        }
+        let (plan, paint) = build();
+        let layout = LabelLayout {
+            size: plan.size,
+            lines: plan
+                .lines
+                .into_iter()
+                .map(|line| LabelLine {
+                    text: Cow::Owned(line.text.into_owned()),
+                    origin: line.origin,
+                })
+                .collect(),
+        };
+        let bytes = size_of::<CachedLabel>()
+            .saturating_add(size_of::<PreparedLabel>())
+            .saturating_add(text.len())
+            .saturating_add(layout.lines.capacity() * size_of::<LabelLine<'static>>())
+            .saturating_add(
+                layout
+                    .lines
+                    .iter()
+                    .map(|line| match &line.text {
+                        Cow::Owned(text) => text.capacity(),
+                        Cow::Borrowed(_) => 0,
+                    })
+                    .sum::<usize>(),
+            );
+        let label = Rc::new(PreparedLabel { layout, paint });
+        if bytes > MAX_BYTES {
+            return label;
+        }
+        if let Some(entry) = self.entries.remove(&key) {
+            self.bytes -= entry.bytes;
+            self.order.retain(|old| *old != key);
+        }
+        while self.entries.len() >= MAX_ENTRIES || self.bytes + bytes > MAX_BYTES {
+            let Some(old) = self
+                .order
+                .pop_front()
+                .and_then(|key| self.entries.remove(&key))
+            else {
+                return label;
+            };
+            self.bytes -= old.bytes;
+        }
+        self.entries.insert(
+            key,
+            CachedLabel {
+                text: text.to_owned(),
+                settings,
+                label: label.clone(),
+                bytes,
+            },
+        );
+        self.order.push_back(key);
+        self.bytes += bytes;
+        label
+    }
 }
 
 struct FontCatalog {
@@ -94,7 +219,35 @@ struct FontCatalog {
     matches: HashMap<FontRequest, Option<FontId>>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct OutlineGlyph {
+    pub(crate) bounds: Option<ttf_parser::Rect>,
+    pub(crate) units_per_em: u16,
+}
+
 impl FontCatalog {
+    fn outline_glyph(&self, font: FontId, glyph: u16) -> Option<OutlineGlyph> {
+        let id = self
+            .loaded
+            .iter()
+            .find_map(|(&id, &loaded)| (loaded == Some(font)).then_some(id))?;
+        self.db.with_face_data(id, |data, index| {
+            let face = ttf_parser::Face::parse(data, index).ok()?;
+            let glyph = ttf_parser::GlyphId(glyph);
+            if face.is_variable()
+                || face.is_color_glyph(glyph)
+                || face.glyph_svg_image(glyph).is_some()
+                || face.glyph_raster_image(glyph, u16::MAX).is_some()
+            {
+                return None;
+            }
+            Some(OutlineGlyph {
+                bounds: face.glyph_bounding_box(glyph),
+                units_per_em: face.units_per_em(),
+            })
+        })?
+    }
+
     fn new(
         db: Database,
         loaded: HashMap<fontdb::ID, Option<FontId>>,
@@ -432,8 +585,14 @@ pub struct TextSystem {
     default_size: Option<f32>,
     text_scale: f32,
     system_bold_text: bool,
+    typography: Rc<()>,
+    intrinsic_measurements: xrack_layout::IntrinsicMeasurements,
     edit_layout: RefCell<Option<EditLayout>>,
     edit_line: RefCell<Option<EditLine>>,
+    label_layouts: RefCell<LabelCache>,
+    outline_glyphs: RefCell<HashMap<(FontId, u16), Option<OutlineGlyph>>>,
+    styled_layouts: RefCell<crate::styled_text::LayoutCache>,
+    pub(crate) styled_ink: RefCell<crate::styled_ink::InkCache>,
     #[cfg(target_os = "android")]
     android_emoji: Option<RefCell<Emoji>>,
     #[cfg(target_os = "ios")]
@@ -616,8 +775,14 @@ impl TextSystem {
             default_size: None,
             text_scale: 1.0,
             system_bold_text: false,
+            typography: Rc::new(()),
+            intrinsic_measurements: Default::default(),
             edit_layout: RefCell::default(),
             edit_line: RefCell::default(),
+            label_layouts: RefCell::default(),
+            outline_glyphs: RefCell::default(),
+            styled_layouts: RefCell::default(),
+            styled_ink: RefCell::default(),
             #[cfg(target_os = "android")]
             android_emoji: None,
             #[cfg(target_os = "ios")]
@@ -630,8 +795,10 @@ impl TextSystem {
             return false;
         }
         self.text_scale = scale;
+        self.invalidate_intrinsic_measurements();
         self.edit_layout.get_mut().take();
         self.edit_line.get_mut().take();
+        self.styled_layouts.get_mut().clear();
         true
     }
 
@@ -640,8 +807,10 @@ impl TextSystem {
             return false;
         }
         self.system_bold_text = enabled;
+        self.invalidate_intrinsic_measurements();
         self.edit_layout.get_mut().take();
         self.edit_line.get_mut().take();
+        self.styled_layouts.get_mut().clear();
         true
     }
 
@@ -655,7 +824,8 @@ impl TextSystem {
 
     pub fn set_window(&mut self, scene: &Node) {
         let fonts = SceneFonts::from_scene(scene);
-        if fonts != self.active_fonts {
+        let fonts_changed = fonts != self.active_fonts;
+        if fonts_changed {
             if let Some(fonts) = &fonts
                 && self.bundled.as_ref().is_none_or(|(last, _)| last != fonts)
             {
@@ -667,24 +837,66 @@ impl TextSystem {
             self.active_fonts = fonts;
             self.edit_layout.get_mut().take();
             self.edit_line.get_mut().take();
+            self.styled_layouts.get_mut().clear();
         }
         let font = scene.font("default-font");
-        self.default_family.clear();
         let family = scene
             .text("default-font-family")
             .or_else(|| font.map(|font| font.family.as_str()))
-            .unwrap_or("");
-        self.default_family.push_str(family.trim());
-        let default_weight = scene
-            .int("default-font-weight")
-            .or_else(|| font.map(|font| font.weight));
-        self.default_weight = weight(default_weight, 400);
-        self.default_italic =
-            scene.boolean("default-font-italic", font.is_some_and(|font| font.italic));
-        self.default_size = scene
+            .unwrap_or("")
+            .trim();
+        let weight = weight(
+            scene
+                .int("default-font-weight")
+                .or_else(|| font.map(|font| font.weight)),
+            400,
+        );
+        let italic = scene.boolean("default-font-italic", font.is_some_and(|font| font.italic));
+        let size = scene
             .length("default-font-size")
             .or_else(|| font.and_then(xrack_runtime::Font::finite_size))
             .filter(|size| *size > 0.0);
+        if fonts_changed
+            || self.default_family != family
+            || self.default_weight != weight
+            || self.default_italic != italic
+            || self.default_size != size
+        {
+            self.invalidate_intrinsic_measurements();
+        }
+        if self.default_family != family {
+            self.default_family = family.to_owned();
+        }
+        self.default_weight = weight;
+        self.default_italic = italic;
+        self.default_size = size;
+    }
+
+    fn invalidate_intrinsic_measurements(&mut self) {
+        self.typography = Rc::new(());
+        self.intrinsic_measurements = Default::default();
+        self.label_layouts.get_mut().clear();
+        self.outline_glyphs.get_mut().clear();
+    }
+
+    pub(crate) fn outline_glyph(&self, font: FontId, glyph: u16) -> Option<OutlineGlyph> {
+        const MAX_OUTLINES: usize = 4096;
+        let mut outlines = self.outline_glyphs.borrow_mut();
+        let key = (font, glyph);
+        if let Some(outline) = outlines.get(&key) {
+            return *outline;
+        }
+        let context = self.font_context();
+        let outline = context
+            .bundled
+            .as_ref()
+            .and_then(|catalog| catalog.borrow().outline_glyph(font, glyph))
+            .or_else(|| context.catalog.borrow().outline_glyph(font, glyph));
+        if outlines.len() >= MAX_OUTLINES {
+            outlines.clear();
+        }
+        outlines.insert(key, outline);
+        outline
     }
 
     fn font_context(&self) -> &FontContext {
@@ -696,6 +908,28 @@ impl TextSystem {
 
     pub(crate) fn context(&self) -> &TextContext {
         &self.font_context().context
+    }
+
+    pub(crate) fn set_styled_text_incremental_enabled(&mut self, enabled: bool) {
+        self.styled_layouts
+            .get_mut()
+            .set_incremental_enabled(enabled);
+        self.styled_ink.get_mut().set_incremental_enabled(enabled);
+    }
+
+    pub(crate) fn styled_text_reused_fragments(&self) -> u64 {
+        self.styled_layouts.borrow().reused_fragments
+    }
+
+    pub(crate) fn registered_font_counts(&self) -> [usize; 2] {
+        let fonts = self.font_context();
+        [
+            fonts.catalog.borrow().loaded.len(),
+            fonts
+                .bundled
+                .as_ref()
+                .map_or(0, |catalog| catalog.borrow().loaded.len()),
+        ]
     }
 
     #[cfg(target_os = "android")]
@@ -788,7 +1022,7 @@ impl TextSystem {
         )
     }
 
-    fn face(&self, node: Option<&Node>, style: TextStyle) -> Option<StyledFace> {
+    pub(crate) fn font_attributes<'a>(&'a self, node: Option<&'a Node>) -> (&'a str, u16, bool) {
         let font = node.and_then(|node| node.font("font"));
         let family = node
             .and_then(|node| node.text("font-family"))
@@ -807,6 +1041,11 @@ impl TextSystem {
                 font.map_or(self.default_italic, |font| font.italic),
             )
         });
+        (family, weight, italic)
+    }
+
+    fn face(&self, node: Option<&Node>, style: TextStyle) -> Option<StyledFace> {
+        let (family, weight, italic) = self.font_attributes(node);
         let family = if style.monospace { "monospace" } else { family };
         let weight = if style.bold { weight.max(700) } else { weight };
         let weight = self.effective_weight(weight);
@@ -1055,16 +1294,29 @@ impl TextSystem {
             .unwrap_or_else(|_| std::iter::once(0..text.len()).collect())
     }
 
-    pub(crate) fn label_layout<'a>(
+    pub(crate) fn prepared_label(
         &self,
-        node: &'a Node,
+        node: &Node,
         available: Size,
         direction: Option<LayoutDirection>,
-    ) -> LabelLayout<'a> {
+    ) -> Rc<PreparedLabel> {
         let size = self.font_size(node);
-        let paint = self.paint_node_at_size(node, size, Color::white(), false);
-        LabelLayout::in_direction(node, available, size, direction, |value| {
-            self.advance_painted(value, &paint)
+        let face = self.face(Some(node), TextStyle::default());
+        let text = node.text("text").unwrap_or("");
+        let style = LabelStyle::for_node(node, direction);
+        let settings = LabelSettings {
+            available: [available.width.to_bits(), available.height.to_bits()],
+            style,
+            font_size: size.to_bits(),
+            face,
+            registered_fonts: self.registered_font_counts(),
+        };
+        self.label_layouts.borrow_mut().get(text, settings, || {
+            let paint = self.paint_face(face, size, Color::white(), false);
+            let layout = LabelLayout::with_style(text, available, size, style, |value| {
+                self.advance_painted(value, &paint)
+            });
+            (layout, paint)
         })
     }
 
@@ -1094,6 +1346,14 @@ impl TextMeasurer for TextSystem {
         self.set_window(scene);
     }
 
+    fn typography_revision(&self) -> Option<Rc<()>> {
+        Some(self.typography.clone())
+    }
+
+    fn intrinsic_measurements(&mut self) -> Option<&mut xrack_layout::IntrinsicMeasurements> {
+        Some(&mut self.intrinsic_measurements)
+    }
+
     fn font_families(&self) -> &[String] {
         &self.font_context().families
     }
@@ -1107,18 +1367,25 @@ impl TextMeasurer for TextSystem {
     }
 
     fn layout_styled_text(&mut self, node: &Node, available: Size) -> Option<StyledTextLayout> {
-        crate::styled_text::layout(self, node, available, true)
+        self.styled_layouts
+            .borrow_mut()
+            .get(self, node, available, true)
+            .map(|plan| (*plan).clone())
     }
 
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
         let available = Size::new(max_width, f32::INFINITY);
-        crate::styled_text::layout(self, node, available, false).map_or_else(
-            || {
-                self.label_layout(node, available, node.layout_direction())
-                    .size
-            },
-            |plan| plan.size,
-        )
+        self.styled_layouts
+            .borrow_mut()
+            .get(self, node, available, false)
+            .map_or_else(
+                || {
+                    self.prepared_label(node, available, node.layout_direction())
+                        .layout
+                        .size
+                },
+                |plan| plan.size,
+            )
     }
 
     fn font_size(&self, node: &Node) -> f32 {

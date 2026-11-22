@@ -302,6 +302,18 @@ impl TableColumnWindow {
             }
             count = index + 1;
         }
+        Self::from_sorted_indices(count, indices)
+    }
+
+    #[doc(hidden)]
+    pub fn from_indices(count: usize, mut indices: Vec<usize>) -> Self {
+        indices.retain(|&index| index < count);
+        indices.sort_unstable();
+        indices.dedup();
+        Self::from_sorted_indices(count, indices)
+    }
+
+    fn from_sorted_indices(count: usize, indices: Vec<usize>) -> Self {
         Self((indices.len() != count).then(|| {
             Rc::new(VisibleColumns {
                 indices: indices.into_boxed_slice(),

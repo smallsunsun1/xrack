@@ -466,7 +466,9 @@ pub(crate) fn index_overlays(
         path: &mut Vec<usize>,
         overlays: &mut OverlayIndex,
     ) {
-        if Node::SCROLL_PARTS.contains(&scene.kind) {
+        if Node::SCROLL_PARTS.contains(&scene.kind)
+            || scene.shared_subtree_excludes(xrack_runtime::SceneFeature::WindowOverlay)
+        {
             return;
         }
         if scene.kind == "Drawer"

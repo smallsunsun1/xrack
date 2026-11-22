@@ -7,8 +7,10 @@ use std::{
 
 mod error;
 mod modules;
+mod package;
 pub use error::CompilerError;
 pub use modules::parse_document;
+pub use package::pack_module;
 
 pub use xrack_codegen as codegen;
 pub use xrack_ir as ir;

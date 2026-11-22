@@ -468,6 +468,48 @@ fn named_import_completion_offers_unused_exports_from_the_open_module() {
 }
 
 #[test]
+fn packaged_imports_complete_symbols_and_open_the_packaged_source() {
+    let root = workspace_fixture("module-package");
+    let folder = root.join("package");
+    std::fs::create_dir(&folder).unwrap();
+    let entry = folder.join("library.xr");
+    std::fs::write(&entry, "export component Panel inherits Rectangle {}").unwrap();
+    std::fs::write(
+        folder.join("xrack-module.json"),
+        json!({
+            "version": 1, "entry": "library.xr", "mlir": "library.xr.mlir",
+            "rust": "module.rs", "components": ["Panel"], "inputs": ["library.xr"],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let target = workspace.uri(&entry).unwrap();
+    let workspace = completion::Workspace::new(
+        &uri,
+        [(
+            target.as_str(),
+            "export component PendingPanel inherits Rectangle {}",
+        )]
+        .into_iter(),
+    )
+    .unwrap();
+    let text = r#"import { PendingPanel } from "package/xrack-module.json";"#;
+    let items = complete_in(
+        r#"import { Pend| } from "package/xrack-module.json";"#,
+        Some(&workspace),
+    );
+    assert!(items.iter().any(|item| item["label"] == "PendingPanel"));
+    let position = text.find("xrack-module.json").unwrap() + 1;
+    assert_eq!(
+        completion::import_definition(text, (0, position), &workspace).unwrap()["uri"],
+        target
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn repeat_record_fields_and_indices_use_the_declared_model_types() {
     let source = concat!(
         "struct Address { city: string }\n",
@@ -1980,6 +2022,45 @@ fn content_slot_and_control_parts_offer_contextual_completion() {
             .as_str()
             .unwrap()
             .contains("only once")
+    );
+}
+
+#[test]
+fn geometry_values_complete_types_namespaces_and_typed_fields() {
+    for (source, expected) in [
+        (
+            "component Demo inherits Window { property <tra|",
+            "transform2d",
+        ),
+        (
+            "component Demo inherits Window { Rectangle { transf|",
+            "transform",
+        ),
+        (
+            "component Demo inherits Window { property <transform2d> t: Transform2D.co|",
+            "compose",
+        ),
+        (
+            "component Demo inherits Window { property <point2d> p; out property <length> x: root.p.|",
+            "x",
+        ),
+        (
+            "component Demo inherits Window { property <vector2d> v; out property <length> y: v.|",
+            "y",
+        ),
+    ] {
+        assert!(
+            complete_at(source)
+                .iter()
+                .any(|item| item["label"] == expected),
+            "{source}"
+        );
+    }
+    let source = "component Demo inherits Window { property <point2d> p: Point2D.new(0px, ";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "Point2D.new(x: length, y: length) -> point2d"
     );
 }
 
@@ -4170,6 +4251,56 @@ fn pull_to_refresh_completion_and_diagnostics_follow_scrollable_elements() {
 }
 
 #[test]
+fn cache_rendering_hint_completes_and_checks_visual_properties() {
+    let props = complete_at("component App inherits Window { Rectangle { cache-r|");
+    assert!(
+        props
+            .iter()
+            .any(|item| item["label"] == "cache-rendering-hint" && item["detail"] == "bool")
+    );
+    let valid = r#"
+        component Panel inherits Rectangle {}
+        component App inherits Window {
+            Panel { cache-rendering-hint: true; }
+        }
+    "#;
+    let report = analysis::analyze(URI, valid, None).diagnostics;
+    assert!(report.get(URI).is_none_or(Vec::is_empty), "{report:?}");
+    for invalid in [
+        "component App inherits Window { Rectangle { cache-rendering-hint: 5; } }",
+        "component App inherits Window { Timer { cache-rendering-hint: true; } }",
+    ] {
+        let report = analysis::analyze(URI, invalid, None).diagnostics;
+        assert!(report.get(URI).is_some_and(|items| !items.is_empty()));
+    }
+}
+
+#[test]
+fn repeated_styled_text_links_complete_and_validate_as_strings() {
+    let completions = complete_at(
+        "component App inherits Window { for title in [\"path\"] : StyledText { link-act|",
+    );
+    assert!(completions.iter().any(|item| {
+        item["label"] == "link-activated" && item["detail"] == "event handler (string)"
+    }));
+    let valid = r#"component App inherits Window {
+        out property <string> target;
+        for title in ["file"] : StyledText {
+            text: @markdown("[file](src/main.rs)");
+            link-activated(path) => { root.target = title + path; }
+        }
+    }"#;
+    let diagnostics = analysis::analyze(URI, valid, None).diagnostics;
+    assert!(
+        diagnostics.get(URI).is_none_or(Vec::is_empty),
+        "{diagnostics:?}"
+    );
+    let invalid = valid.replace("<string>", "<int>");
+    let diagnostics = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(!diagnostics[URI].is_empty());
+}
+
+#[test]
 fn file_drop_failure_handler_completes_with_a_string_argument() {
     let items = complete_at("component App inherits Window { DropArea { files-f|");
     assert!(items.iter().any(|item| {
@@ -4782,4 +4913,136 @@ fn position_child_completes_and_resolves_only_viewport_descendants() {
         help["signatures"][0]["label"],
         "position-view-at-child(child: element, horizontal: ScrollAlignment, vertical: ScrollAlignment)"
     );
+}
+
+#[test]
+fn completes_enum_variants_and_callback_local_bindings() {
+    let source = r#"enum Phase { Idle, Running }
+component Demo inherits Window {
+    property <Phase> phase: Phase::Idle;
+    callback start();
+    start => {
+        let next-phase = Phase::Running;
+        root.phase = next-phase;
+    }
+}"#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let variants = complete_at(&source.replace("Phase::Idle", "Phase::Ru|"));
+    assert!(
+        variants.iter().any(|item| item["label"] == "Running"),
+        "{variants:?}"
+    );
+    let locals = complete_at(&source.replace("= next-phase;", "= next-|"));
+    assert!(
+        locals.iter().any(|item| item["label"] == "next-phase"),
+        "{locals:?}"
+    );
+    let edits = formatting::edits(&source.replace("Phase::Idle", "Phase :: Idle"), &json!({}));
+    assert!(
+        edits[0]["newText"]
+            .as_str()
+            .unwrap()
+            .contains("Phase::Idle")
+    );
+}
+
+#[test]
+fn completes_named_slots_and_typed_function_parameters() {
+    let source = r#"struct Item { title: string }
+component Card inherits VerticalLayout {
+    @slot(toolbar);
+    pure function caption(item: Item) -> string { item.title }
+}
+component Demo inherits Window { Card { slot toolbar {} } }"#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let slots = complete_at(&source.replace("slot toolbar {}", "slot to|"));
+    assert!(
+        slots.iter().any(|item| item["label"] == "toolbar"),
+        "{slots:?}"
+    );
+    let fields = complete_at(&source.replace("item.title", "item.ti|"));
+    assert!(
+        fields.iter().any(|item| item["label"] == "title"),
+        "{fields:?}"
+    );
+}
+
+#[test]
+fn payload_enum_completion_and_match_binding_definition() {
+    let source = r#"enum Job {
+    Pending,
+    Failed { reason: string, retryable: bool },
+    Ready(string),
+}
+component Demo inherits Window {
+    in property <Job> work: Job::Ready("ok");
+    out property <string> status: match root.work {
+        Pending => "pending",
+        Failed { reason: message, retryable: _ } => message,
+        Ready(text) => text,
+    };
+}"#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let items = complete_at(&source.replace("Job::Ready", "Job::|"));
+    for name in ["Pending", "Failed", "Ready"] {
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    for field in ["reason", "retryable", "string", "bool"] {
+        assert!(
+            !items.iter().any(|item| item["label"] == field),
+            "{items:?}"
+        );
+    }
+    let uri = "untitled:enum-payload.xr";
+    let offset = source.find("=> message").unwrap() + 4;
+    let (line, character) = analysis::Source::new(source).coordinates(offset);
+    let replies = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":uri,"version":1,"text":source}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{
+            "textDocument":{"uri":uri},"position":{"line":line,"character":character}}}),
+    ]);
+    let reply = replies.iter().find(|reply| reply["id"] == 2).unwrap();
+    assert_eq!(
+        reply["result"],
+        location_at(
+            uri,
+            &source.replace("reason: message", "reason: |message"),
+            "message"
+        ),
+    );
+}
+
+#[test]
+fn custom_render_completes_renderer_inputs() {
+    let items = complete_at("component App inherits Window { CustomRender { | } }");
+    for name in ["renderer", "data", "revision"] {
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    let source = r#"component App inherits Window {
+        CustomRender { renderer: "waveform"; data: "samples"; revision: 1; }
+    }"#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn model_lookup_completes_with_a_literal_field_path() {
+    let source = r#"struct Entry { owner: string, label: string }
+        export component Demo inherits Window {
+            in property <[Entry]> rows: [];
+            out property <[Entry]> selected: Model.lookup(root.rows, "owner", "group");
+        }"#;
+    let items = complete_at(&source.replace("Model.lookup", "Model.loo|"));
+    assert!(
+        items.iter().any(|item| item["label"] == "lookup"),
+        "{items:?}"
+    );
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }

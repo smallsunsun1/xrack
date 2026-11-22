@@ -30,6 +30,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "Calendar",
         "CheckBox",
         "ColorPickerPopup",
+        "CustomRender",
         "ComboBox",
         "ComboContent",
         "ComboIndicator",
@@ -541,7 +542,17 @@ pub fn text_submission_rule(kind: &str, name: &str) -> bool {
 }
 
 pub const NAMESPACES: &[&str] = &[
-    "Math", "Strings", "Model", "Colors", "Dates", "Times", "I18n", "Log",
+    "Math",
+    "Strings",
+    "Model",
+    "Colors",
+    "Dates",
+    "Times",
+    "I18n",
+    "Log",
+    "Point2D",
+    "Vector2D",
+    "Transform2D",
 ];
 pub const LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 
@@ -549,10 +560,14 @@ pub const LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 pub enum FunctionKind {
     Round,
     Math(MathFunction),
+    Geometry(GeometryFunction),
     String(StringFunction),
     ModelCount,
     ModelIsEmpty,
     ModelAt,
+    ModelFilter,
+    ModelLookup,
+    ModelSortBy,
     ModelEdit(ModelEditKind),
     Color(ColorFunction),
     DateIsValid,
@@ -600,6 +615,29 @@ operations!(ModelEditKind {
     Move => "move",
     Clear => "clear",
 });
+
+operations!(GeometryFunction {
+    Point => "point",
+    Vector => "vector",
+    Identity => "identity",
+    Translation => "translation",
+    Rotation => "rotation",
+    Scale => "scale",
+    Compose => "compose",
+    Around => "around",
+    MapPoint => "map-point",
+    MapVector => "map-vector",
+});
+
+impl GeometryFunction {
+    pub const fn result(self) -> Type {
+        match self {
+            Self::Point | Self::MapPoint => Type::Point2D,
+            Self::Vector | Self::MapVector => Type::Vector2D,
+            _ => Type::Transform2D,
+        }
+    }
+}
 
 operations!(MathFunction {
     Min => "min", Max => "max", Clamp => "clamp", Abs => "abs",
@@ -782,7 +820,93 @@ const fn string(
     }
 }
 
+const XY: &[Parameter] = &[
+    Parameter::with_type("x: length", &Type::Length),
+    Parameter::with_type("y: length", &Type::Length),
+];
+const TRANSFORM: Parameter = Parameter::with_type("transform: transform2d", &Type::Transform2D);
+const POINT: Parameter = Parameter::with_type("point: point2d", &Type::Point2D);
+const VECTOR: Parameter = Parameter::with_type("vector: vector2d", &Type::Vector2D);
+
+const fn geometry(
+    kind: GeometryFunction,
+    parameters: &'static [Parameter],
+    documentation: &'static str,
+) -> Function {
+    let (namespace, member, result) = match kind {
+        GeometryFunction::Point => ("Point2D", "new", "point2d"),
+        GeometryFunction::Vector => ("Vector2D", "new", "vector2d"),
+        GeometryFunction::MapPoint => ("Transform2D", kind.name(), "point2d"),
+        GeometryFunction::MapVector => ("Transform2D", kind.name(), "vector2d"),
+        _ => ("Transform2D", kind.name(), "transform2d"),
+    };
+    Function {
+        namespace,
+        member,
+        kind: FunctionKind::Geometry(kind),
+        parameters,
+        result: Some(result),
+        documentation,
+    }
+}
+
 pub const FUNCTIONS: &[Function] = &[
+    geometry(
+        GeometryFunction::Point,
+        XY,
+        "Creates a point in logical pixels.",
+    ),
+    geometry(
+        GeometryFunction::Vector,
+        XY,
+        "Creates a displacement in logical pixels.",
+    ),
+    geometry(
+        GeometryFunction::Identity,
+        &[],
+        "Returns the identity transform.",
+    ),
+    geometry(
+        GeometryFunction::Translation,
+        XY,
+        "Moves points by a logical-pixel offset.",
+    ),
+    geometry(
+        GeometryFunction::Rotation,
+        &[Parameter::with_type("degrees: float", &Type::Float)],
+        "Rotates clockwise by the given angle in degrees.",
+    ),
+    geometry(
+        GeometryFunction::Scale,
+        &[
+            Parameter::with_type("x: float", &Type::Float),
+            Parameter::with_type("y: float", &Type::Float),
+        ],
+        "Scales the two axes independently.",
+    ),
+    geometry(
+        GeometryFunction::Compose,
+        &[
+            Parameter::with_type("first: transform2d", &Type::Transform2D),
+            Parameter::with_type("second: transform2d", &Type::Transform2D),
+        ],
+        "Applies the first transform and then the second.",
+    ),
+    geometry(
+        GeometryFunction::Around,
+        &[TRANSFORM, POINT],
+        "Applies a transform around a point in local coordinates.",
+    ),
+    geometry(
+        GeometryFunction::MapPoint,
+        &[TRANSFORM, POINT],
+        "Maps a point including translation.",
+    ),
+    geometry(
+        GeometryFunction::MapVector,
+        &[TRANSFORM, VECTOR],
+        "Maps a displacement by the linear part.",
+    ),
     math(
         MathFunction::Min,
         &[Parameter::new("left: T"), Parameter::new("right: T")],
@@ -1055,6 +1179,42 @@ pub const FUNCTIONS: &[Function] = &[
         ],
         result: Some("Row"),
         documentation: "Reads a zero-based row. Evaluates the fallback only if the row does not exist.",
+    },
+    Function {
+        namespace: "Model",
+        member: "filter",
+        kind: FunctionKind::ModelFilter,
+        parameters: &[
+            MODEL,
+            Parameter::with_type("field: string", &Type::String),
+            TEXT,
+        ],
+        result: Some("[Row]"),
+        documentation: "Projects a record model using a case-insensitive text search on a constant string field path. Preserves row keys.",
+    },
+    Function {
+        namespace: "Model",
+        member: "lookup",
+        kind: FunctionKind::ModelLookup,
+        parameters: &[
+            MODEL,
+            Parameter::with_type("field: string", &Type::String),
+            Parameter::with_type("key: string", &Type::String),
+        ],
+        result: Some("[Row]"),
+        documentation: "Looks up an exact string key on a constant field path. Preserves source order and row keys.",
+    },
+    Function {
+        namespace: "Model",
+        member: "sort-by",
+        kind: FunctionKind::ModelSortBy,
+        parameters: &[
+            MODEL,
+            Parameter::with_type("field: string", &Type::String),
+            Parameter::with_type("descending: bool", &Type::Bool),
+        ],
+        result: Some("[Row]"),
+        documentation: "Returns a read-only sorted projection of a record model by a constant int or string field path. Preserves row keys.",
     },
     model_edit(
         ModelEditKind::Append,

@@ -11750,3 +11750,35 @@ fn child_positioning_checks_the_target_and_both_alignment_types() {
     let error = xrack_compiler::mlir::process(&invalid).unwrap_err();
     assert!(error.contains("descendant in the viewport"), "{error}");
 }
+
+#[test]
+fn rejects_exhaustiveness_scope_and_invalid_projections() {
+    let source = include_str!("expressions.xr");
+    for (from, to, expected) in [
+        (
+            r#"Failed => "failed", Idle => "idle", Active => "active""#,
+            r#"Idle => "idle", Active => "active""#,
+            "non-exhaustive match",
+        ),
+        (
+            "let sample = root.next();",
+            "let sample = root.next(); sample = 0;",
+            "local bindings cannot be assigned",
+        ),
+        (
+            "slot row(item, position)",
+            "slot row(item)",
+            "expects 2 parameters",
+        ),
+        (
+            r#"Model.filter(root.rows, "title", root.query)"#,
+            r#"Model.filter(root.rows, "id", root.query)"#,
+            "Model.filter requires a string field",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "expressions.xr")
+            .err()
+            .expect("invalid declaration should fail");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}

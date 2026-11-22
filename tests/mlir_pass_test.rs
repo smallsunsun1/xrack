@@ -35,6 +35,35 @@ fn visual_slots(module: &Module) -> usize {
 }
 
 #[test]
+fn fused_string_concatenation_is_valid_in_visual_bindings() {
+    let module = raw(
+        r#"
+        export component Demo inherits Window {
+            in property <string> first: "one";
+            in property <string> second: "two";
+            Text { text: root.first + " / " + root.second; }
+        }
+        "#,
+        "concat-element-binding.xr",
+    )
+    .optimize()
+    .unwrap();
+    module.verify().unwrap();
+    let component = module.operations().next().unwrap();
+    let window = component
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let text = window
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let concat = definition(member(text, "xr.bind", "text"), 0);
+    assert_eq!(concat.name(), "xr.concat");
+    assert!(concat.operand(2).is_some());
+}
+
+#[test]
 fn static_integer_repeats_share_only_equal_passive_scenes() {
     let module = raw(
         r#"
@@ -1322,6 +1351,50 @@ fn row_invariant_bindings_share_a_component_cache_across_repeats() {
         rust.matches("self . __state . __visuals . __visual_0 . get")
             .count(),
         2
+    );
+}
+
+#[test]
+fn scene_plans_share_constant_table_columns_without_freezing_live_bindings() {
+    let module = raw(
+        r#"export component Demo inherits Window {
+            in property <length> current-width: 60px;
+            TableView {
+                TableColumn { title: "Fixed"; width: 80px; }
+                TableColumn { title: "Live"; width: root.current-width; }
+                TableColumn { title: "Fixed"; width: 80px; }
+                for label in ["sample"] : TableRow {
+                    TableCell { text: label; }
+                    TableCell { text: label; }
+                    TableCell { text: label; }
+                }
+            }
+        }"#,
+        "table-column-scene-plan.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = module.operations().next().unwrap();
+    let window = component
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let table = window
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let columns: Vec<_> = table
+        .children()
+        .filter(|op| op.attribute("kind") == Some("TableColumn"))
+        .collect();
+    assert_eq!(columns.len(), 3);
+    assert_eq!(columns[0].attribute("xr.static_subtree"), Some("true"));
+    assert_eq!(columns[1].attribute("xr.static_subtree"), None);
+    let group = columns[0].integer_attribute("xr.static_subtree_group");
+    assert!(group.is_some());
+    assert_eq!(
+        columns[2].integer_attribute("xr.static_subtree_group"),
+        group
     );
 }
 

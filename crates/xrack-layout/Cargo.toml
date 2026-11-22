@@ -10,5 +10,6 @@ description = "Layout, hit testing, and input routing for XRack UI"
 [dependencies]
 xrack-assets.workspace = true
 xrack-runtime.workspace = true
+nalgebra.workspace = true
 unicode-segmentation.workspace = true
 unicode-bidi.workspace = true

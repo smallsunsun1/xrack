@@ -3334,3 +3334,109 @@ export component HandlerControlFlowParity inherits Window {
         root.trace
     }
 }
+
+export enum CompositionMode { Idle, Active, Failed }
+
+struct CompositionRow { id: int, title: string }
+
+component ComposedList inherits VerticalLayout {
+    in property <[CompositionRow]> rows;
+    @slot(toolbar);
+    for row[index] in root.rows : VerticalLayout {
+        @slot(row, row, index);
+    }
+    @children
+}
+
+export component LanguageCompositionParity inherits Window {
+    in-out property <CompositionMode> mode: CompositionMode::Idle;
+    out property <string> summary: root.describe(root.mode);
+    in-out property <string> query: "";
+    in-out property <[CompositionRow]> rows: [
+        CompositionRow { id: 3, title: "Beta" },
+        CompositionRow { id: 1, title: "Alpha" },
+        CompositionRow { id: 2, title: "Alpine" },
+    ];
+    out property <[CompositionRow]> shown: Model.sort-by(Model.filter(root.rows, "title", root.query), "id", true);
+    out property <int> calls: 0;
+    callback next() -> int;
+    next => { root.calls += 1; root.calls }
+    callback calculate() -> int;
+    calculate => {
+        let sample = root.next();
+        if true {
+            let sample = sample + 3;
+            root.calls += sample;
+        }
+        sample + sample
+    }
+    pure function describe(value: CompositionMode) -> string {
+        let label = match value { Failed => "failed", Idle => "idle", Active => "active" };
+        "[" + label + "]"
+    }
+
+    entries := ComposedList {
+        rows: root.shown;
+        slot toolbar {
+            title := Text { text: root.summary; }
+            match root.mode: {
+                Idle => idle-action := Text { text: "Waiting"; },
+                Active => active-action := Text { text: "Working"; },
+                Failed => failed-action := Text { text: "Retry"; },
+            }
+        }
+        slot row(item, position) {
+            Text { text: position + ":" + item.title; }
+        }
+        footer := Text { text: "Results " + Model.count(root.shown); }
+    }
+}
+
+export component CallbackIterationParity inherits Window {
+    in-out property <[int]> items;
+    out property <int> outer: 0;
+    out property <int> inner: 0;
+    out property <int> visited: 0;
+    out property <int> completed: 0;
+
+    callback consume();
+    consume => {
+        for i in 3 {
+            root.inner += 1;
+        }
+    }
+
+    callback run();
+    run => {
+        for i in 5003 {
+            root.outer += 1;
+            root.consume();
+        }
+        root.completed += 1;
+    }
+
+    callback traverse();
+    traverse => {
+        for value in root.items {
+            root.visited += value;
+        }
+    }
+}
+
+export component OrdinaryRowSceneCache inherits Window {
+    in-out property <[string]> rows: ["first", "latest"];
+    in-out property <string> suffix: "!";
+    in-out property <int> clicked-index: -1;
+
+    pure function caption(value: string) -> string {
+        value + root.suffix
+    }
+
+    for value[index] in root.rows : VerticalLayout {
+        if value != "" : Button {
+            text: index + ":" + root.caption(value);
+            checkable: true;
+            clicked => { root.clicked-index = index; }
+        }
+    }
+}

@@ -37,6 +37,11 @@ pub enum ScrollAction {
         horizontal: ScrollAlignment,
         vertical: ScrollAlignment,
     },
+    /// Reveal the shaped line containing a byte offset without changing focus.
+    ToStyledText {
+        paragraph: usize,
+        offset: usize,
+    },
     ToIndex {
         index: i64,
         alignment: ScrollAlignment,

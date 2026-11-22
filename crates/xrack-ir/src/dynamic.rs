@@ -31,6 +31,7 @@ pub fn declare_handles(document: &Document) -> Cow<'_, Document> {
             .map(|component| RecordDef {
                 name: handle_type(&component.name),
                 exported: component.exported,
+                variants: Vec::new(),
                 fields: vec![RecordField {
                     name: "id".into(),
                     ty: Type::Int,
@@ -43,6 +44,7 @@ pub fn declare_handles(document: &Document) -> Cow<'_, Document> {
     document.records.push(RecordDef {
         name: "ExternalComponentHandle".into(),
         exported: true,
+        variants: Vec::new(),
         fields: vec![RecordField {
             name: "id".into(),
             ty: Type::Int,

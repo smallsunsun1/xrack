@@ -27,6 +27,9 @@ class XR_NamedType<string name, string spelling> : XR_Type<name, spelling> {
 def XR_Record : XR_NamedType<"Record", "record">;
 def XR_RecordList : XR_NamedType<"RecordList", "recordlist">;
 def XR_Length : XR_Type<"Length", "length">;
+def XR_Point2D : XR_Type<"Point2D", "point2d">;
+def XR_Vector2D : XR_Type<"Vector2D", "vector2d">;
+def XR_Transform2D : XR_Type<"Transform2D", "transform2d">;
 def XR_Percent : XR_Type<"Percent", "percent">;
 def XR_Color : XR_Type<"Color", "color">;
 def XR_Brush : XR_Type<"Brush", "brush">;
@@ -92,7 +95,7 @@ def XR_DateList : XR_Type<"DateList", "datelist">;
 def XR_Time : XR_Type<"Time", "time">;
 def XR_Font : XR_Type<"Font", "font">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
-def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
+def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers, XR_WheelEvent,
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
@@ -114,7 +117,7 @@ def XR_ComponentOp : XR_ScopeOp<"component", [HasParent<"::mlir::ModuleOp">, Sym
   let hasVerifier = 1;
 }
 def XR_RecordDeclOp : XR_Op<"record_decl", [HasParent<"::mlir::ModuleOp">, Symbol]> {
-  let arguments = (ins StrAttr:$sym_name, StrAttr:$fields);
+  let arguments = (ins StrAttr:$sym_name, StrAttr:$fields, OptionalAttr<ArrayAttr>:$variants, OptionalAttr<StrAttr>:$variant_payloads);
 }
 def XR_FontOp : XR_Op<"font", [HasParent<"::mlir::ModuleOp">]> {
   let arguments = (ins StrAttr:$path);
@@ -153,6 +156,12 @@ def XR_ForOp : XR_ScopeOp<"for", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp"
                                  XR_RecordList, XR_TouchPoints]>:$model,
                        StrAttr:$item, StrAttr:$index);
   let hasVerifier = 1;
+}
+
+def XR_LocalOp : XR_Op<"local", [AllTypesMatch<["input", "result"]>,
+    ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
+  let arguments = (ins XR_Value:$input, StrAttr:$name);
+  let results = (outs XR_Value:$result);
 }
 
 def XR_PropertyOp : XR_Op<"property"> {
@@ -401,6 +410,7 @@ def XR_FormatNumberOp : XR_ExpressionOp<"format_number",
     (ins AnyTypeOf<[XR_Int, XR_Float]>:$input, XR_Int:$decimals), XR_String, [MemoryEffects<[MemRead]>]>;
 def XR_ParseNumberOp : XR_ExpressionOp<"parse_number",
     (ins XR_String:$input, XR_Float:$fallback), XR_Float, [MemoryEffects<[MemRead]>]>;
+def XR_ConcatOp : XR_ExpressionOp<"concat", (ins Variadic<XR_String>:$parts), XR_String, [Pure]>;
 def XR_ArrayOp : XR_ExpressionOp<"array", (ins Variadic<XR_String>:$items), XR_StringList, [Pure]>;
 def XR_IntArrayOp : XR_ExpressionOp<"int_array", (ins Variadic<XR_Int>:$items), XR_IntList, [Pure]>;
 def XR_DateArrayOp : XR_ExpressionOp<"date_array", (ins Variadic<XR_Date>:$items), XR_DateList, [Pure]>;
@@ -550,12 +560,28 @@ def XR_CastOp : XR_ExpressionOp<"cast", (ins XR_Int:$input), XR_Float>;
 def XR_MathOperand : AnyTypeOf<[XR_Int, XR_Float, XR_Length, XR_Percent]>;
 def XR_MathFunctionOp : XR_ExpressionOp<"math_function", (ins Variadic<XR_MathOperand>:$inputs),
     AnyTypeOf<[XR_MathOperand, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
+def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D]>;
+def XR_GeometryFunctionOp : XR_ExpressionOp<"geometry_function",
+    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length]>>:$inputs),
+    XR_GeometryValue, [Pure]> { let hasVerifier = 1; }
+def XR_Point2DFieldOp : XR_ExpressionOp<"point2d_field", (ins XR_Point2D:$input), XR_Length, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_Vector2DFieldOp : XR_ExpressionOp<"vector2d_field", (ins XR_Vector2D:$input), XR_Length, [Pure]> {
+  let hasVerifier = 1;
+}
 def XR_StringFunctionOp : XR_ExpressionOp<"string_function", (ins Variadic<AnyTypeOf<[XR_String, XR_Int, XR_Float]>>:$inputs),
     AnyTypeOf<[XR_String, XR_Bool, XR_Int, XR_Float]>, [Pure]> { let hasVerifier = 1; }
 def XR_ColorFunctionOp : XR_ExpressionOp<"color_function",
     (ins Variadic<AnyTypeOf<[XR_Int, XR_Float, XR_Color]>>:$inputs), XR_Color, [Pure]> {
   let hasVerifier = 1;
 }
+def XR_ModelFilterOp : XR_ExpressionOp<"model_filter", (ins XR_RecordList:$model, XR_String:$query),
+    XR_RecordList, [Pure, AllTypesMatch<["model", "result"]>]>;
+def XR_ModelLookupOp : XR_ExpressionOp<"model_lookup", (ins XR_RecordList:$model, XR_String:$key),
+    XR_RecordList, [Pure, AllTypesMatch<["model", "result"]>]>;
+def XR_ModelSortByOp : XR_ExpressionOp<"model_sort_by", (ins XR_RecordList:$model, XR_Bool:$descending),
+    XR_RecordList, [Pure, AllTypesMatch<["model", "result"]>]>;
 def XR_Model : AnyTypeOf<[XR_IntList, XR_DateList, XR_StringList, XR_RecordList]>;
 def XR_ModelEditOp : XR_Op<"model_edit", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_Model:$model, Variadic<XR_Value>:$args, StrAttr:$method);
@@ -587,6 +613,25 @@ def XR_RadialGradientOp : XR_ExpressionOp<"radial_gradient",
   let hasVerifier = 1;
 }
 def XR_BinaryOp : XR_ExpressionOp<"binary", (ins XR_Value:$lhs, XR_Value:$rhs)> {
+  let hasVerifier = 1;
+}
+def XR_EnumConstructOp : XR_ExpressionOp<"enum_construct",
+    (ins Variadic<XR_Value>:$payload, I64Attr:$tag, ArrayAttr:$fields), XR_Record, [Pure]>;
+def XR_EnumMatchOp : XR_ExpressionOp<"enum_match", (ins XR_Record:$subject), XR_Value,
+    [SingleBlockImplicitTerminator<"EndOp">, NoRegionArguments]> {
+  let regions = (region SizedRegion<1>:$body);
+  let hasVerifier = 1;
+}
+def XR_EnumCaseOp : XR_ScopeOp<"enum_case", [HasParent<"EnumMatchOp">]> {
+  let arguments = (ins StrAttr:$name, I64Attr:$ordinal);
+  let hasVerifier = 1;
+}
+def XR_EnumResultOp : XR_Op<"enum_result", [HasParent<"EnumCaseOp">]> {
+  let arguments = (ins XR_Value:$input);
+}
+def XR_EnumParameterOp : XR_ExpressionOp<"enum_parameter", (ins)>;
+
+def XR_MatchEnumOp : XR_ExpressionOp<"match_enum", (ins XR_Int:$tag, Variadic<XR_Value>:$arms), XR_Value, [Pure]> {
   let hasVerifier = 1;
 }
 def XR_SelectOp : XR_ExpressionOp<"select", (ins XR_Bool:$condition, XR_Value:$on_true, XR_Value:$on_false),

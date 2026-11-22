@@ -1,0 +1,263 @@
+import { Palette, WorkbenchIcon } from "theme.xr";
+
+export component SessionRowMenu inherits ContextMenuArea {
+    in property <bool> menu-rename;
+    in property <bool> menu-pin;
+    in property <bool> menu-archive;
+    in property <bool> menu-pinned;
+    in property <bool> menu-archived;
+    callback manage(action: string);
+
+    @children
+    Menu {
+        enabled: root.menu-rename || root.menu-pin || root.menu-archive;
+        MenuItem {
+            text: @tr("rename");
+            enabled: root.menu-rename;
+            activated => { root.manage("rename"); }
+        }
+        MenuItem {
+            text: root.menu-pinned ? @tr("unpin") : @tr("pin");
+            enabled: root.menu-pin;
+            activated => { root.manage("pin"); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            text: root.menu-archived ? @tr("restore-conversation") : @tr("archive-conversation");
+            enabled: root.menu-archive;
+            activated => { root.manage("archive"); }
+        }
+    }
+}
+
+export component ConversationTile inherits Rectangle {
+    in property <bool> menu-rename;
+    in property <bool> menu-pin;
+    in property <bool> menu-archive;
+    in property <bool> menu-pinned;
+    in property <bool> menu-archived;
+    callback manage(action: string);
+    in property <bool> stacked-detail: false;
+    in property <string> heading;
+    in property <string> folder;
+    in property <string> activity;
+    in property <bool> pinned;
+    private property <string> activity-label: root.activity == "running" ? @tr("running") :
+        root.activity == "needs-input" ? @tr("needs-input") : root.activity == "updated" ? @tr("updated") : "";
+    in property <bool> selected;
+    callback choose();
+
+    conversation-menu-area := SessionRowMenu {
+        width: 100%;
+        height: 100%;
+        menu-rename: root.menu-rename;
+        menu-pin: root.menu-pin;
+        menu-archive: root.menu-archive;
+        menu-pinned: root.menu-pinned;
+        menu-archived: root.menu-archived;
+        manage(action) => { root.manage(action); }
+        conversation-action := Button {
+            width: 100%;
+            height: 100%;
+            border-radius: 8px;
+            flat: true;
+            padding: root.stacked-detail ? 4px : 10px;
+            text: root.heading;
+            accessible-name: root.heading + (root.folder == "" ? "" : " · " + root.folder)
+                + (root.pinned ? (" " + @tr("pinned-suffix")) : "")
+                + (root.activity-label == "" ? "" : " · " + root.activity-label);
+            background: root.selected ? Palette.selection : self.pressed ? Palette.hover : #00000000;
+            ButtonContent {
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 7px;
+                    cross-axis-alignment: center;
+                    WorkbenchIcon {
+                        width: 16px;
+                        height: 16px;
+                        tint: root.selected || root.pinned ? Palette.accent : Palette.muted;
+                        shape: root.pinned ? "M8 5 H16 M9 5 V10 L6 14 H18 L15 10 V5 M12 14 V21" : "M4 5 H20 V16 H10 L4 20 Z";
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        alignment: center;
+                        spacing: 2px;
+                        Label {
+                            text: root.heading;
+                            color: Palette.text;
+                            font-weight: root.selected ? 650 : 500;
+                            overflow: elide;
+                        }
+                        Label {
+                            text: root.folder + (root.activity-label == "" ? "" : " · " + root.activity-label);
+                            color: Palette.muted;
+                            font-size: 10px;
+                            overflow: elide;
+                            visible: root.stacked-detail && (root.folder != "" || root.activity-label != "");
+                        }
+                    }
+                    Label {
+                        text: root.activity-label == "" ? root.folder : root.activity-label;
+                        color: root.activity == "needs-input" ? Palette.warning :
+                            root.activity-label != "" ? Palette.accent : Palette.muted;
+                        font-size: 10px;
+                        visible: !root.stacked-detail && (root.activity-label != "" || root.folder != "");
+                    }
+                }
+            }
+            clicked => { root.choose(); }
+        }
+    }
+}
+
+export component ActivityTile inherits Rectangle {
+    in property <string> heading;
+    in property <string> project;
+    in property <string> activity;
+    in property <bool> selected;
+    private property <string> status: root.activity == "needs-input" ? @tr("needs-input") :
+        root.activity == "updated" ? @tr("updated") : @tr("running");
+    callback choose();
+
+    activity-row-action := Button {
+        width: 100%;
+        height: 100%;
+        text: root.heading;
+        accessible-name: root.heading + " · " + root.status + " · " + root.project;
+        border-radius: 8px;
+        flat: true;
+        padding: 0px;
+        background: root.selected ? Palette.selection : self.pressed ? Palette.hover : #00000000;
+        ButtonContent {
+            VerticalLayout {
+                alignment: center;
+                padding-left: 8px;
+                padding-right: 12px;
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    cross-axis-alignment: center;
+                    Label {
+                        text: root.heading;
+                        color: Palette.text;
+                        font-size: 13px;
+                        font-weight: 650;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Label {
+                        text: root.status;
+                        color: root.activity == "needs-input" ? Palette.warning : Palette.accent;
+                        font-size: 10px;
+                    }
+                }
+                Label { text: root.project; color: Palette.muted; font-size: 11px; overflow: elide; }
+            }
+        }
+        clicked => { root.choose(); }
+    }
+}
+
+export component RenameConversationContent inherits VerticalLayout {
+    callback focus-input();
+    focus-input => { rename-field.focus(); }
+    callback rename-conversation(name: string);
+    in-out property <string> rename-draft;
+    in property <string> rename-error;
+    in-out property <bool> rename-open;
+    in property <bool> rename-pending;
+
+    padding: 13px;
+    spacing: 9px;
+    rename-field := LineEdit {
+        height: 36px;
+        accessible-name: @tr("new-conversation-name");
+        placeholder-text: @tr("enter-a-conversation-name");
+        text <=> root.rename-draft;
+        maximum-length: 72;
+        enabled: !root.rename-pending;
+        accepted => { root.rename-conversation(root.rename-draft); }
+    }
+    Label {
+        text: root.rename-error;
+        color: Palette.error;
+        font-size: 12px;
+        overflow: elide;
+        visible: root.rename-error != "";
+    }
+    HorizontalLayout {
+        height: 33px;
+        alignment: end;
+        spacing: 8px;
+        cancel-rename := Button {
+            text: @tr("cancel");
+            height: 33px;
+            flat: true;
+            padding: 6px;
+            enabled: !root.rename-pending;
+            clicked => { root.rename-open = false; }
+        }
+        save-rename := Button {
+            text: root.rename-pending ? @tr("saving-state") : @tr("save");
+            height: 33px;
+            border-radius: 7px;
+            primary: true;
+            padding: 6px;
+            enabled: !root.rename-pending && root.rename-draft != "";
+            clicked => { root.rename-conversation(root.rename-draft); }
+        }
+    }
+}
+
+export component RenameSidebarConversationContent inherits VerticalLayout {
+    callback focus-input();
+    focus-input => { sidebar-rename-field.focus(); }
+    callback rename-sidebar-session(name: string);
+    in-out property <string> sidebar-rename-draft;
+    in property <string> sidebar-rename-error;
+    in-out property <bool> sidebar-rename-open;
+    in property <bool> sidebar-rename-pending;
+
+    padding: 13px;
+    spacing: 9px;
+    sidebar-rename-field := LineEdit {
+        height: 36px;
+        accessible-name: @tr("new-conversation-name");
+        placeholder-text: @tr("enter-a-conversation-name");
+        text <=> root.sidebar-rename-draft;
+        maximum-length: 72;
+        enabled: !root.sidebar-rename-pending;
+        accepted => { root.rename-sidebar-session(root.sidebar-rename-draft); }
+    }
+    Label {
+        text: root.sidebar-rename-error;
+        color: Palette.error;
+        font-size: 12px;
+        overflow: elide;
+        visible: root.sidebar-rename-error != "";
+    }
+    HorizontalLayout {
+        height: 33px;
+        alignment: end;
+        spacing: 8px;
+        cancel-sidebar-rename := Button {
+            text: @tr("cancel");
+            height: 33px;
+            flat: true;
+            padding: 6px;
+            enabled: !root.sidebar-rename-pending;
+            clicked => { root.sidebar-rename-open = false; }
+        }
+        save-sidebar-rename := Button {
+            text: root.sidebar-rename-pending ? @tr("saving-state") : @tr("save");
+            height: 33px;
+            border-radius: 7px;
+            primary: true;
+            padding: 6px;
+            enabled: !root.sidebar-rename-pending && root.sidebar-rename-draft != "";
+            clicked => { root.rename-sidebar-session(root.sidebar-rename-draft); }
+        }
+    }
+}

@@ -459,7 +459,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     if name == "preserve-scroll-anchor" && viewport_kind(kind) && !content_viewport(kind) {
         return Some(Type::Bool);
     }
-    if name.starts_with("transform-")
+    if (name == "transform" || name.starts_with("transform-"))
         && matches!(
             kind,
             "Window"
@@ -588,7 +588,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => None,
         };
     }
-    if matches!(name, "z" | "opacity")
+    if matches!(name, "z" | "opacity" | "cache-rendering-hint")
         && matches!(kind, "MenuItem" | "MenuSeparator" | "TableColumn")
     {
         return None;
@@ -1403,6 +1403,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Brush
         }
+        "renderer" | "data" if kind == "CustomRender" => Type::String,
+        "revision" if kind == "CustomRender" => Type::Int,
         "commands" if kind == "Path" => Type::String,
         "path" if kind == "PathView" => Type::String,
         "item-width" | "item-height" if kind == "PathView" => Type::Length,
@@ -1465,7 +1467,8 @@ pub fn layout_item_property(name: &str) -> Option<Type> {
         | "transform-origin-y" => Type::Length,
         "horizontal-stretch" | "vertical-stretch" | "z" | "opacity" | "transform-rotation"
         | "transform-scale" | "transform-scale-x" | "transform-scale-y" => Type::Float,
-        "visible" => Type::Bool,
+        "transform" => Type::Transform2D,
+        "visible" | "cache-rendering-hint" => Type::Bool,
         "layout-direction" => Type::LayoutDirection,
         "layout-order" | "row" | "col" | "rowspan" | "colspan" => Type::Int,
         "cross-axis-self-alignment" => Type::CrossAxisAlignment,
@@ -2260,32 +2263,29 @@ fn validate_records(doc: &ast::Document) -> Result<BTreeMap<&str, &ast::RecordDe
                 format!("duplicate or reserved record `{}`", record.name),
             );
         }
-        let mut fields = BTreeSet::new();
-        for field in &record.fields {
-            check_name(&field.name, field.span)?;
-            if !fields.insert(rust_name(&field.name)) {
+        let mut variants = BTreeSet::new();
+        for variant in &record.variants {
+            check_name(&variant.name, variant.span)?;
+            validate_record_fields(&variant.fields)?;
+            if let Some(field) = variant
+                .fields
+                .iter()
+                .find(|field| field.name == ast::ENUM_TAG_FIELD)
+            {
                 return fail(
                     field.span,
-                    format!("duplicate record field `{}`", field.name),
+                    "enum payload field name discriminant is reserved",
                 );
             }
-            if matches!(
-                field.ty,
-                Type::RecordList(_)
-                    | Type::StringList
-                    | Type::IntList
-                    | Type::DateList
-                    | Type::TouchPoints
-                    | Type::GradientStop
-                    | Type::Percent
-            ) {
+            if !variants.insert(rust_name(&variant.name)) {
                 return fail(
-                    field.span,
-                    "record fields require scalar, enum or named record types",
+                    variant.span,
+                    format!("duplicate enum variant {}", variant.name),
                 );
             }
         }
-        if fields.is_empty() {
+        validate_record_fields(&record.fields)?;
+        if record.fields.is_empty() {
             return fail(record.span, "record must declare at least one field");
         }
         records.insert(record.name.as_str(), record);
@@ -2293,7 +2293,11 @@ fn validate_records(doc: &ast::Document) -> Result<BTreeMap<&str, &ast::RecordDe
     let mut layouts = Dependencies::new();
     for record in &doc.records {
         let mut fields = Vec::new();
-        for field in &record.fields {
+        for field in record
+            .fields
+            .iter()
+            .chain(record.variants.iter().flat_map(|variant| &variant.fields))
+        {
             if let Type::Record(name) = &field.ty {
                 if !records.contains_key(name.as_ref()) {
                     return fail(field.span, format!("unknown record type `{name}`"));
@@ -2307,6 +2311,35 @@ fn validate_records(doc: &ast::Document) -> Result<BTreeMap<&str, &ast::RecordDe
     Ok(records)
 }
 
+fn validate_record_fields(record_fields: &[ast::RecordField]) -> Result<()> {
+    let mut fields = BTreeSet::new();
+    for field in record_fields {
+        check_name(&field.name, field.span)?;
+        if !fields.insert(rust_name(&field.name)) {
+            return fail(
+                field.span,
+                format!("duplicate record field `{}`", field.name),
+            );
+        }
+        if matches!(
+            field.ty,
+            Type::RecordList(_)
+                | Type::StringList
+                | Type::IntList
+                | Type::DateList
+                | Type::TouchPoints
+                | Type::GradientStop
+                | Type::Percent
+        ) {
+            return fail(
+                field.span,
+                "record fields require scalar, enum or named record types",
+            );
+        }
+    }
+    Ok(())
+}
+
 fn record_field_type(
     records: &BTreeMap<&str, &ast::RecordDef>,
     record: &str,
@@ -2315,6 +2348,9 @@ fn record_field_type(
     let mut fields = path.split('.').peekable();
     let mut schema = *records.get(record)?;
     while let Some(name) = fields.next() {
+        if !schema.variants.is_empty() {
+            return None;
+        }
         let field = schema.fields.iter().find(|field| field.name == name)?;
         if fields.peek().is_none() {
             return Some(field.ty.clone());
@@ -2448,6 +2484,9 @@ struct Scope<'a> {
     parameters: BTreeMap<String, Type>,
     parameter_sites: BTreeMap<String, Span>,
     loop_locals: BTreeSet<String>,
+    let_locals: BTreeMap<String, String>,
+    enum_locals: BTreeMap<String, ir::Expr>,
+    slot_aliases: BTreeMap<String, String>,
     effects_allowed: bool,
     writable_row: Option<String>,
     row_template: Option<RowTemplate>,
@@ -3035,6 +3074,10 @@ impl<'a> Scope<'a> {
     }
 
     fn record_handler_parameters(&mut self, handler: &ast::Handler) {
+        for name in &handler.parameters {
+            self.slot_aliases.remove(name);
+            self.enum_locals.remove(name);
+        }
         if self.references.is_some() {
             self.parameter_sites.extend(
                 handler
@@ -6272,7 +6315,7 @@ fn lower_callable(
                 .iter()
                 .map(|parameter| (parameter.name.clone(), parameter.ty.clone())),
         );
-        callback.body = statements(handler, &handler_scope, owner)?;
+        callback.body = statement_block(&handler.statements, &mut handler_scope, owner)?;
         callback.result = match (definition.return_type.clone(), &handler.result) {
             (Some(ty), Some(value)) => Some(expression_as(value, &handler_scope, owner, ty)?),
             (Some(ty), None) => return fail(span, format!("callback must return {}", ty.name())),
@@ -6604,7 +6647,7 @@ fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredM
         c.span
     };
     element(
-        (&c.base, Some("root"), root_span),
+        (&c.base, Some("root"), root_span, None),
         &c.members,
         &scope,
         "root",
@@ -6616,7 +6659,7 @@ fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredM
 }
 
 fn element<'a>(
-    (kind, id, span): (&'a str, Option<&'a str>, Span),
+    (kind, id, span, view_match): (&'a str, Option<&'a str>, Span, Option<&ast::ViewMatch>),
     members: &'a [Member],
     scope: &Scope<'_>,
     owner: &str,
@@ -6624,6 +6667,26 @@ fn element<'a>(
     repeat: Option<&ast::Repeat>,
     lowered: &mut Vec<LoweredMember<'a>>,
 ) -> Result<()> {
+    let slot_scope;
+    let scope = if let Some(placement) = scope.owners[owner].placement
+        && !placement.slot_parameters.is_empty()
+    {
+        let mut nested = scope.clone();
+        for (name, (argument, declaration)) in &placement.slot_parameters {
+            let ty = scope.parameters.get(argument).ok_or_else(|| Diagnostic {
+                span: *declaration,
+                message: format!("slot argument {argument} is out of scope"),
+            })?;
+            nested.parameters.insert(name.clone(), ty.clone());
+            nested.parameter_sites.insert(name.clone(), *declaration);
+            nested.slot_aliases.insert(name.clone(), argument.clone());
+            nested.enum_locals.remove(name);
+        }
+        slot_scope = nested;
+        &slot_scope
+    } else {
+        scope
+    };
     let source_kind = kind;
     let delegate = delegate_base(kind).map(|_| kind);
     let kind = delegate_base(kind).unwrap_or(kind);
@@ -6737,6 +6800,54 @@ fn element<'a>(
             Type::Bool,
         )?));
     }
+    let match_scope;
+    let scope = if let Some(arm) = view_match {
+        let parent = scope.owners[owner]
+            .placement
+            .and_then(|placement| placement.caller.as_ref().map(|caller| caller.1.as_str()))
+            .or_else(|| scope.lexical_parent(owner))
+            .unwrap_or("root");
+        let selector = expression(&arm.selector, scope, parent)?;
+        let definition = enum_definition(scope, &selector)?;
+        let (selected, declaration) = enum_variant(scope, definition, &arm.pattern.variant)?;
+        let mut local = scope.clone();
+        for (field_index, field_type, field) in
+            enum_pattern_fields(scope, declaration, &arm.pattern)?
+        {
+            if field.binding == "_" {
+                continue;
+            }
+            let span = field.binding_span;
+            let ty = field_type.ty.clone();
+            let mut operands = vec![selector.clone()];
+            for index in 0..definition.variants.len() {
+                let name = enum_case_name(span, index);
+                let value = if index == selected {
+                    enum_parameter(&name, field_index, ty.clone(), span)
+                } else {
+                    default(ty.clone(), span)
+                };
+                operands.push(enum_case(name, value));
+            }
+            bind_enum_local(
+                &mut local,
+                field,
+                ir::Expr::operation("enum_match", ty, operands, span),
+            );
+        }
+        if let Some(guard) = &arm.guard {
+            lowered.push(LoweredMember::Condition(expression_as(
+                guard,
+                &local,
+                parent,
+                Type::Bool,
+            )?));
+        }
+        match_scope = local;
+        &match_scope
+    } else {
+        scope
+    };
     let repeated_scope;
     let scope = if let Some(repeat) = repeat {
         if virtual_delegate {
@@ -6867,6 +6978,8 @@ fn element<'a>(
         };
         if !loader_candidate {
             template.parameters.insert(repeat.item.clone(), item_type);
+            template.slot_aliases.remove(&repeat.item);
+            template.enum_locals.remove(&repeat.item);
         }
         if template.references.is_some() {
             if !loader_candidate {
@@ -6882,6 +6995,8 @@ fn element<'a>(
         }
         if let Some(index) = &repeat.index {
             template.parameters.insert(index.clone(), Type::Int);
+            template.slot_aliases.remove(index);
+            template.enum_locals.remove(index);
         }
         lowered.push(LoweredMember::Repeat {
             model,
@@ -7917,7 +8032,7 @@ fn element<'a>(
                 });
             }
             Member::Element(e) => element(
-                (&e.ty, e.id.as_deref(), e.span),
+                (&e.ty, e.id.as_deref(), e.span, e.view_match.as_ref()),
                 &e.members,
                 scope,
                 &key(e, owner, index),
@@ -7957,6 +8072,9 @@ fn element<'a>(
                 let close_requested = is_window(kind) && h.name == "close-requested";
                 let leave_requested = kind == "StackPage" && h.name == "leave-requested";
                 let scrolled = matches!(h.name.as_str(), "scrolled" | "flicked");
+                let row_link_event = kind == "StyledText"
+                    && h.name == "link-activated"
+                    && scope.repeat_source.is_some();
                 if close_requested && !root {
                     return fail(
                         h.span,
@@ -7970,6 +8088,7 @@ fn element<'a>(
                     && !(builtins::push_button(kind)
                         && named_binding(members, "checkable").is_some()
                         && matches!(h.name.as_str(), "clicked" | "toggled"))
+                    && !row_link_event
                     && !(root && scrolled)
                     && !(root
                         && matches!(
@@ -8070,9 +8189,10 @@ fn element<'a>(
                 handler_scope.effects_allowed = true;
                 let row_button_event =
                     builtins::push_button(kind) && matches!(h.name.as_str(), "clicked" | "toggled");
-                if !virtual_delegate && !row_button_event {
+                if !virtual_delegate && !row_button_event && !row_link_event {
                     handler_scope.parameters.clear();
                     handler_scope.parameter_sites.clear();
+                    handler_scope.slot_aliases.clear();
                 }
                 handler_scope.record_handler_parameters(h);
                 handler_scope.parameters.extend(
@@ -8080,7 +8200,7 @@ fn element<'a>(
                         .iter()
                         .map(|parameter| (parameter.name.clone(), parameter.ty.clone())),
                 );
-                let mut body = statements(h, &handler_scope, owner)?;
+                let mut body = statement_block(&h.statements, &mut handler_scope, owner)?;
                 let result = if let Some(ty) = event_return_type(kind, &h.name) {
                     let Some(expr) = &h.result else {
                         let message = if ty == Type::Bool {
@@ -9128,7 +9248,8 @@ fn validate_template(
         match member {
             Member::Binding(_) | Member::Animation(_) | Member::States(_) => {}
             Member::Handler(handler)
-                if checkable_button && matches!(handler.name.as_str(), "clicked" | "toggled") => {}
+                if checkable_button && matches!(handler.name.as_str(), "clicked" | "toggled")
+                    || kind == "StyledText" && handler.name == "link-activated" => {}
             Member::Element(child) => {
                 if (kind == "TableRow" || tree)
                     && let Some((property, _)) = row_editor_binding(&child.ty)
@@ -9169,19 +9290,41 @@ fn discarded_call(expr: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir
     }
 }
 
-fn statements(h: &ast::Handler, scope: &Scope<'_>, owner: &str) -> Result<Vec<ir::Statement>> {
-    statement_block(&h.statements, scope, owner)
-}
-
 fn statement_block(
     statements: &[ast::Statement],
-    scope: &Scope<'_>,
+    scope: &mut Scope<'_>,
     owner: &str,
 ) -> Result<Vec<ir::Statement>> {
+    let mut declared = BTreeSet::new();
     statements
         .iter()
         .map(|statement| {
             let s = match statement {
+                ast::Statement::Let {
+                    local,
+                    value,
+                    span,
+                    name_span,
+                } => {
+                    if !declared.insert(local) {
+                        return fail(*name_span, format!("duplicate local binding {local}"));
+                    }
+                    let value = expression(value, scope, owner)?;
+                    let name = format!(
+                        "local_{}_{}_{}_{local}",
+                        span.source, span.line, span.column
+                    );
+                    scope.parameters.insert(local.clone(), value.ty.clone());
+                    scope.parameter_sites.insert(local.clone(), *name_span);
+                    scope.let_locals.insert(local.clone(), name.clone());
+                    scope.loop_locals.remove(local);
+                    scope.enum_locals.remove(local);
+                    return Ok(ir::Statement::Let {
+                        local: name,
+                        value,
+                        span: *span,
+                    });
+                }
                 ast::Statement::If {
                     condition,
                     then_body,
@@ -9190,8 +9333,8 @@ fn statement_block(
                 } => {
                     return Ok(ir::Statement::If {
                         condition: expression_as(condition, scope, owner, Type::Bool)?,
-                        then_body: statement_block(then_body, scope, owner)?,
-                        else_body: statement_block(else_body, scope, owner)?,
+                        then_body: statement_block(then_body, &mut scope.clone(), owner)?,
+                        else_body: statement_block(else_body, &mut scope.clone(), owner)?,
                         span: *span,
                     });
                 }
@@ -9220,6 +9363,9 @@ fn statement_block(
                         body_scope.parameters.insert(name.into(), ty);
                         body_scope.parameter_sites.insert(name.into(), span);
                         body_scope.loop_locals.insert(name.into());
+                        body_scope.let_locals.remove(name);
+                        body_scope.slot_aliases.remove(name);
+                        body_scope.enum_locals.remove(name);
                     };
                     declare(&iteration.item, item_type, iteration.item_span);
                     if let Some(index) = &iteration.index {
@@ -9229,7 +9375,7 @@ fn statement_block(
                         model,
                         item: iteration.item.clone(),
                         index: iteration.index.clone(),
-                        body: statement_block(body, &body_scope, owner)?,
+                        body: statement_block(body, &mut body_scope, owner)?,
                         span: *span,
                     });
                 }
@@ -9241,7 +9387,17 @@ fn statement_block(
             if !scope.effects_allowed {
                 return fail(s.span, "assignment is not allowed in a pure callback");
             }
+            let receiver = s
+                .target
+                .split_once('.')
+                .map_or(s.target.as_str(), |(name, _)| name);
+            if scope.enum_locals.contains_key(receiver) {
+                return fail(s.span, "match bindings cannot be assigned");
+            }
             if !s.target.contains('.') && scope.parameters.contains_key(&s.target) {
+                if scope.let_locals.contains_key(&s.target) {
+                    return fail(s.span, "local bindings cannot be assigned");
+                }
                 if scope.loop_locals.contains(&s.target) {
                     return fail(s.span, "loop bindings cannot be assigned");
                 }
@@ -9328,6 +9484,8 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         );
     }
     let value = match &ty {
+        Type::Point2D | Type::Vector2D => "0 0",
+        Type::Transform2D => "1 0 0 1 0 0",
         Type::String => "\"\"",
         Type::Bool => "false",
         Type::Color => "#00000000",
@@ -9411,6 +9569,9 @@ fn expression_as(
             vec![condition, yes, no],
             e.span,
         ));
+    }
+    if let ExprKind::Match { selector, arms } = &e.kind {
+        return match_enum(selector, arms, e.span, scope, owner, Some(expected));
     }
     if let ExprKind::Array(items) = &e.kind
         && let Type::RecordList(name) = &expected
@@ -9573,6 +9734,183 @@ fn dynamic_member_name(expr: &ast::Expr) -> Result<String> {
     fail(expr.span, "expected a literal component member name")
 }
 
+fn enum_definition<'a>(scope: &Scope<'a>, selector: &ir::Expr) -> Result<&'a ast::RecordDef> {
+    let definition = match &selector.ty {
+        Type::Record(name) => scope.records.get(name.as_ref()).copied(),
+        _ => None,
+    };
+    definition
+        .filter(|record| !record.variants.is_empty())
+        .ok_or_else(|| Diagnostic {
+            span: selector.span,
+            message: "match requires a user-defined enum".into(),
+        })
+}
+
+fn enum_variant<'a>(
+    scope: &Scope<'_>,
+    definition: &'a ast::RecordDef,
+    name: &ast::EnumVariant,
+) -> Result<(usize, &'a ast::EnumVariantDef)> {
+    let result = definition
+        .variants
+        .iter()
+        .enumerate()
+        .find(|(_, decl)| decl.name == name.name)
+        .ok_or_else(|| Diagnostic {
+            span: name.span,
+            message: format!("unknown {} variant {}", definition.name, name.name),
+        })?;
+    scope.reference(name.span, &name.name, 0, result.1.span, &name.name);
+    Ok(result)
+}
+
+fn enum_pattern_fields<'a>(
+    scope: &Scope<'_>,
+    variant: &'a ast::EnumVariantDef,
+    pattern: &'a ast::EnumPattern,
+) -> Result<Vec<(usize, &'a ast::RecordField, &'a ast::EnumPatternField)>> {
+    if pattern.shape != variant.shape || pattern.fields.len() != variant.fields.len() {
+        return fail(
+            pattern.variant.span,
+            format!(
+                "pattern for {} must destructure {} payload field(s) in the declared form",
+                variant.name,
+                variant.fields.len()
+            ),
+        );
+    }
+    let mut field_names = BTreeSet::new();
+    let mut bindings = BTreeSet::new();
+    pattern
+        .fields
+        .iter()
+        .map(|field| {
+            if !field_names.insert(field.name.as_str()) {
+                return fail(
+                    field.span,
+                    format!("duplicate enum pattern field {}", field.name),
+                );
+            }
+            if field.binding != "_" {
+                check_name(&field.binding, field.binding_span)?;
+                if !bindings.insert(field.binding.as_str()) {
+                    return fail(
+                        field.binding_span,
+                        format!("duplicate match binding {}", field.binding),
+                    );
+                }
+            }
+            let (index, declaration) = variant
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, item)| item.name == field.name)
+                .ok_or_else(|| Diagnostic {
+                    span: field.span,
+                    message: format!("unknown payload field {}", field.name),
+                })?;
+            if pattern.shape == ast::EnumShape::Named {
+                scope.reference(field.span, &field.name, 0, declaration.span, &field.name);
+            }
+            Ok((index, declaration, field))
+        })
+        .collect()
+}
+
+fn enum_case_name(span: Span, ordinal: usize) -> String {
+    format!(
+        "enum_{}_{}_{}_{ordinal}",
+        span.source, span.line, span.column
+    )
+}
+
+fn enum_parameter(case: &str, index: usize, ty: Type, span: Span) -> ir::Expr {
+    ir::Expr {
+        value: format!("{case}_{index}"),
+        ..ir::Expr::operation("enum_parameter", ty, Vec::new(), span)
+    }
+}
+
+fn enum_case(name: String, value: ir::Expr) -> ir::Expr {
+    ir::Expr {
+        op: "enum_case".into(),
+        value: name,
+        ty: value.ty.clone(),
+        span: value.span,
+        args: vec![value],
+        owner: None,
+    }
+}
+
+fn bind_enum_local(scope: &mut Scope<'_>, field: &ast::EnumPatternField, value: ir::Expr) {
+    scope
+        .parameters
+        .insert(field.binding.clone(), value.ty.clone());
+    scope
+        .parameter_sites
+        .insert(field.binding.clone(), field.binding_span);
+    scope.enum_locals.insert(field.binding.clone(), value);
+}
+
+fn match_enum(
+    selector: &ast::Expr,
+    arms: &[ast::MatchArm],
+    span: Span,
+    scope: &Scope<'_>,
+    owner: &str,
+    expected: Option<Type>,
+) -> Result<ir::Expr> {
+    let selector = expression(selector, scope, owner)?;
+    let definition = enum_definition(scope, &selector)?;
+    let mut branches = BTreeMap::new();
+    for arm in arms {
+        let (ordinal, variant) = enum_variant(scope, definition, &arm.pattern.variant)?;
+        if branches.contains_key(&ordinal) {
+            return fail(
+                arm.pattern.variant.span,
+                format!("duplicate match arm {}", variant.name),
+            );
+        }
+        let name = enum_case_name(span, ordinal);
+        let mut local = scope.clone();
+        for (index, declaration, field) in enum_pattern_fields(scope, variant, &arm.pattern)? {
+            if field.binding != "_" {
+                let value =
+                    enum_parameter(&name, index, declaration.ty.clone(), field.binding_span);
+                bind_enum_local(&mut local, field, value);
+            }
+        }
+        let value = match &expected {
+            Some(ty) => expression_as(&arm.result, &local, owner, ty.clone())?,
+            None => expression(&arm.result, &local, owner)?,
+        };
+        branches.insert(ordinal, (name, value));
+    }
+    for (ordinal, variant) in definition.variants.iter().enumerate() {
+        if !branches.contains_key(&ordinal) {
+            return fail(
+                span,
+                format!("non-exhaustive match, missing {}", variant.name),
+            );
+        }
+    }
+    let Some((_, first)) = branches.values().next() else {
+        return fail(span, "match requires at least one arm");
+    };
+    let ty = if first.ty == Type::Int && branches.values().any(|(_, value)| value.ty == Type::Float)
+    {
+        Type::Float
+    } else {
+        first.ty.clone()
+    };
+    let mut arguments = vec![selector];
+    for (_, (name, value)) in branches {
+        arguments.push(enum_case(name, coerce(value, ty.clone())?));
+    }
+    Ok(ir::Expr::operation("enum_match", ty, arguments, span))
+}
+
 fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr> {
     let span = e.span;
     Ok(match &e.kind {
@@ -9718,6 +10056,13 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             ir::Expr::operation(op, ty, items, span)
         }
         ExprKind::Record { name, fields, base } => {
+            if scope
+                .records
+                .get(name.as_str())
+                .is_some_and(|record| !record.variants.is_empty())
+            {
+                return fail(span, "construct enum values with EnumName::Variant");
+            }
             if scope.records.contains_key("ExternalComponentHandle")
                 && (name == "ExternalComponentHandle"
                     || name.strip_suffix("Handle").is_some_and(|base| {
@@ -9871,6 +10216,13 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 return match function.kind {
                     FunctionKind::Format => format_call(call, scope, owner),
                     FunctionKind::Math(kind) => math_call(call, scope, owner, function, kind),
+                    FunctionKind::Geometry(kind) => {
+                        let args = builtin_arguments(call, scope, owner, function)?;
+                        Ok(ir::Expr {
+                            value: kind.name().into(),
+                            ..ir::Expr::operation("geometry_function", kind.result(), args, span)
+                        })
+                    }
                     FunctionKind::String(kind) => {
                         let args = builtin_arguments(call, scope, owner, function)?;
                         Ok(ir::Expr {
@@ -9880,7 +10232,10 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     }
                     FunctionKind::ModelCount
                     | FunctionKind::ModelIsEmpty
-                    | FunctionKind::ModelAt => model_call(call, scope, owner, function),
+                    | FunctionKind::ModelAt
+                    | FunctionKind::ModelFilter
+                    | FunctionKind::ModelLookup
+                    | FunctionKind::ModelSortBy => model_call(call, scope, owner, function),
                     FunctionKind::ModelEdit(_) => fail(
                         span,
                         format!("{} requires a statement in an impure callback", call.callee),
@@ -10113,6 +10468,8 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                                 | Type::WheelEvent
                                 | Type::PointerEvent
                                 | Type::TouchPoint
+                                | Type::Point2D
+                                | Type::Vector2D
                         ) =>
                     {
                         Some(value)
@@ -10154,7 +10511,11 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     let Type::Record(name) = &record.ty else {
                         unreachable!()
                     };
-                    let definition = scope.records[name.as_ref()]
+                    let schema = scope.records[name.as_ref()];
+                    if !schema.variants.is_empty() {
+                        return fail(span, format!("enum {name} does not expose record fields"));
+                    }
+                    let definition = schema
                         .fields
                         .iter()
                         .find(|definition| definition.name == field)
@@ -10171,19 +10532,34 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 }
             }
             if !s.contains('.')
+                && let Some(value) = scope.enum_locals.get(s)
+            {
+                if let Some(declaration) = scope.parameter_sites.get(s) {
+                    scope.reference(span, s, 0, *declaration, s);
+                }
+                return Ok(value.clone());
+            }
+            if !s.contains('.')
                 && let Some(ty) = scope.parameters.get(s)
             {
                 if let Some(declaration) = scope.parameter_sites.get(s) {
                     scope.reference(span, s, 0, *declaration, s);
                 }
                 return Ok(ir::Expr {
-                    op: if scope.loop_locals.contains(s) {
+                    op: if scope.let_locals.contains_key(s) {
+                        "local_read"
+                    } else if scope.loop_locals.contains(s) {
                         "loop_param"
                     } else {
                         "param"
                     }
                     .into(),
-                    value: s.clone(),
+                    value: scope
+                        .let_locals
+                        .get(s)
+                        .or_else(|| scope.slot_aliases.get(s))
+                        .unwrap_or(s)
+                        .clone(),
                     owner: None,
                     ty: ty.clone(),
                     args: vec![],
@@ -10253,6 +10629,79 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             expression(right, scope, owner)?,
             span,
         )?,
+        ExprKind::EnumValue {
+            name,
+            variant,
+            shape,
+            fields,
+        } => {
+            let definition = scope
+                .records
+                .get(name.as_str())
+                .filter(|record| !record.variants.is_empty())
+                .ok_or_else(|| Diagnostic {
+                    span,
+                    message: format!("unknown enum {name}"),
+                })?;
+            let (index, declaration) = enum_variant(scope, definition, variant)?;
+            scope.reference(span, "", 0, definition.span, &definition.name);
+            if *shape != declaration.shape || fields.len() != declaration.fields.len() {
+                return fail(
+                    variant.span,
+                    format!(
+                        "{} requires {} payload field(s) in the declared form",
+                        declaration.name,
+                        declaration.fields.len()
+                    ),
+                );
+            }
+            let mut values = Vec::new();
+            let mut used = BTreeSet::new();
+            for field in fields {
+                if !used.insert(field.name.as_str()) {
+                    return fail(
+                        field.span,
+                        format!("duplicate payload field {}", field.name),
+                    );
+                }
+                let target = declaration
+                    .fields
+                    .iter()
+                    .find(|target| target.name == field.name)
+                    .ok_or_else(|| Diagnostic {
+                        span: field.span,
+                        message: format!("unknown payload field {}", field.name),
+                    })?;
+                if *shape == ast::EnumShape::Named {
+                    scope.reference(field.span, &field.name, 0, target.span, &field.name);
+                }
+                values.push(expression_as(
+                    &field.value,
+                    scope,
+                    owner,
+                    target.ty.clone(),
+                )?);
+            }
+            let field_order = fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>();
+            ir::Expr {
+                value: serde_json::to_string(&(index, field_order)).map_err(|error| {
+                    Diagnostic {
+                        span,
+                        message: error.to_string(),
+                    }
+                })?,
+                ..ir::Expr::operation(
+                    "enum_construct",
+                    Type::Record(name.as_str().into()),
+                    values,
+                    span,
+                )
+            }
+        }
+        ExprKind::Match { selector, arms } => match_enum(selector, arms, span, scope, owner, None)?,
         ExprKind::Conditional { condition, yes, no } => {
             let condition = coerce(expression(condition, scope, owner)?, Type::Bool)?;
             let yes = expression(yes, scope, owner)?;
@@ -10318,6 +10767,53 @@ fn model_call(
         );
     };
     let (op, result) = match function.kind {
+        FunctionKind::ModelFilter | FunctionKind::ModelLookup | FunctionKind::ModelSortBy => {
+            let Type::Record(record) = row else {
+                return fail(
+                    call.span,
+                    format!("{} requires a record model", call.callee),
+                );
+            };
+            let field = (args[1].op == "literal")
+                .then(|| serde_json::from_str::<String>(&args[1].value).ok())
+                .flatten()
+                .ok_or_else(|| Diagnostic {
+                    span: call.arguments[1].span,
+                    message: "model projection field must be a constant string path".into(),
+                })?;
+            let field_ty = record_field_type(&scope.records, &record, &field);
+            let text_key = !matches!(function.kind, FunctionKind::ModelSortBy);
+            if !matches!(field_ty, Some(Type::String))
+                && (text_key || !matches!(field_ty, Some(Type::Int)))
+            {
+                return fail(
+                    call.arguments[1].span,
+                    format!(
+                        "{} requires {}",
+                        call.callee,
+                        if text_key {
+                            "a string field"
+                        } else {
+                            "an int or string field"
+                        }
+                    ),
+                );
+            }
+            args.remove(1);
+            return Ok(ir::Expr {
+                value: field,
+                ..ir::Expr::operation(
+                    match function.kind {
+                        FunctionKind::ModelFilter => "model_filter",
+                        FunctionKind::ModelLookup => "model_lookup",
+                        _ => "model_sort_by",
+                    },
+                    Type::RecordList(record),
+                    args,
+                    call.span,
+                )
+            });
+        }
         FunctionKind::ModelCount => ("model_count", Type::Int),
         FunctionKind::ModelIsEmpty => ("model_is_empty", Type::Bool),
         FunctionKind::ModelAt => {
@@ -10852,6 +11348,7 @@ fn geometry_safe_binding(kind: &str, property: &str, fixed_label: bool) -> bool 
             | "accessible-name"
             | "accessible-description"
             | "opacity"
+            | "cache-rendering-hint"
             | "z"
     ) || scroll_control(kind) && matches!(property, "position" | "size" | "minimum-size" | "policy")
         || matches!(kind, "ProgressIndicator" | "Spinner") && property == "progress"
@@ -11391,7 +11888,10 @@ fn collect_bindings(
                         ir::Statement::If { condition, .. } => {
                             dependencies(condition, &path, &mut deps)
                         }
-                        ir::Statement::For { model, .. } => dependencies(model, &path, &mut deps),
+                        ir::Statement::For { model, .. }
+                        | ir::Statement::Let { value: model, .. } => {
+                            dependencies(model, &path, &mut deps);
+                        }
                         ir::Statement::Assignment(assignment) => {
                             dependencies(&assignment.value, &path, &mut deps)
                         }

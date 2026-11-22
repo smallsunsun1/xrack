@@ -3,7 +3,7 @@ use crate::{
     text_area::{fitting_prefix, grapheme_boundaries, paragraphs},
 };
 use std::{borrow::Cow, ops::Range};
-use unicode_bidi::{Direction, get_base_direction};
+use unicode_bidi::{Direction, InitialInfo, get_base_direction};
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_runtime::{
     LayoutDirection, Node, TextHorizontalAlignment, TextOverflow, TextVerticalAlignment, TextWrap,
@@ -44,17 +44,41 @@ impl TextAlignment {
         self.mode != TextHorizontalAlignment::Left
     }
 
-    pub fn offset(self, space: f32, natural_rtl: bool) -> f32 {
+    fn factor(self, natural_rtl: bool) -> f32 {
         use TextHorizontalAlignment as Horizontal;
         let rtl = self.direction.map_or(natural_rtl, |direction| {
             direction == LayoutDirection::RightToLeft
         });
         match self.mode {
-            Horizontal::Center => space * 0.5,
-            Horizontal::Right => space,
-            Horizontal::Start if rtl => space,
-            Horizontal::End if !rtl => space,
+            Horizontal::Center => 0.5,
+            Horizontal::Right => 1.0,
+            Horizontal::Start if rtl => 1.0,
+            Horizontal::End if !rtl => 1.0,
             _ => 0.0,
+        }
+    }
+
+    pub fn offset(self, space: f32, natural_rtl: bool) -> f32 {
+        let factor = self.factor(natural_rtl);
+        if factor == 0.0 { 0.0 } else { space * factor }
+    }
+
+    #[doc(hidden)]
+    pub fn passive_line_offset(self, width: f32, text: &str, advance: impl FnOnce() -> f32) -> f32 {
+        let natural_rtl = self.direction.is_none()
+            && matches!(
+                self.mode,
+                TextHorizontalAlignment::Start | TextHorizontalAlignment::End
+            )
+            && InitialInfo::new(text, None)
+                .paragraphs
+                .first()
+                .is_some_and(|p| p.level.is_rtl());
+        let factor = self.factor(natural_rtl);
+        if factor == 0.0 {
+            0.0
+        } else {
+            (width - advance() - 1.0) * factor
         }
     }
 
@@ -158,12 +182,33 @@ impl<'a> LabelLayout<'a> {
         available: Size,
         size: f32,
         direction: Option<LayoutDirection>,
+        advance: impl FnMut(&str) -> f32,
+    ) -> Self {
+        Self::with_style(
+            node.text("text").unwrap_or(""),
+            available,
+            size,
+            LabelStyle::for_node(node, direction),
+            advance,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn with_style(
+        text: &'a str,
+        available: Size,
+        size: f32,
+        style: LabelStyle,
         mut advance: impl FnMut(&str) -> f32,
     ) -> Self {
-        let text = node.text("text").unwrap_or("");
-        let plan = LabelPlan::in_direction(node, available, size, direction, |range, ellipsis| {
-            advance(&line_text(text, range, ellipsis))
-        });
+        let plan = LabelPlan::plan(
+            text,
+            available,
+            size,
+            style,
+            |range, ellipsis| advance(&line_text(text, range, ellipsis)),
+            None,
+        );
         Self {
             size: plan.size,
             lines: plan
@@ -208,12 +253,54 @@ impl PlannedLabelLine {
     }
 }
 
-struct LabelStyle {
+#[doc(hidden)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct LabelStyle {
     horizontal: TextAlignment,
     vertical: TextVerticalAlignment,
     wrap: TextWrap,
     elide: bool,
     max_lines: usize,
+}
+
+impl LabelStyle {
+    pub fn for_node(node: &Node, direction: Option<LayoutDirection>) -> Self {
+        let default = if matches!(node.kind, "Label" | "StyledText") {
+            TextHorizontalAlignment::Start
+        } else {
+            TextHorizontalAlignment::Left
+        };
+        let vertical = match node.properties.get("vertical-alignment") {
+            Some(Value::TextVerticalAlignment(alignment)) => *alignment,
+            _ => TextVerticalAlignment::Top,
+        };
+        Self {
+            horizontal: TextAlignment::from_node(node, direction, default),
+            vertical,
+            wrap: wrap(node),
+            elide: node.properties.get("overflow")
+                == Some(&Value::TextOverflow(TextOverflow::Elide)),
+            max_lines: node
+                .int("max-lines")
+                .and_then(|count| usize::try_from(count).ok())
+                .filter(|&count| count > 0)
+                .unwrap_or(usize::MAX),
+        }
+    }
+}
+
+impl std::hash::Hash for LabelStyle {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (
+            self.horizontal.mode as u8,
+            self.horizontal.direction.map(|direction| direction as u8),
+            self.vertical as u8,
+            self.wrap as u8,
+            self.elide,
+            self.max_lines,
+        )
+            .hash(state);
+    }
 }
 
 /// Text ranges shared by plain and styled labels, independent of the shaping backend.
@@ -239,39 +326,24 @@ impl LabelPlan {
         direction: Option<LayoutDirection>,
         advance: impl FnMut(Range<usize>, bool) -> f32,
     ) -> Self {
-        use TextHorizontalAlignment as Horizontal;
-        use TextVerticalAlignment as Vertical;
+        Self::with_widths(node, available, size, direction, advance, None)
+    }
 
-        let text = node.text("text").unwrap_or("");
-        let elide =
-            node.properties.get("overflow") == Some(&Value::TextOverflow(TextOverflow::Elide));
-        let default = if matches!(node.kind, "Label" | "StyledText") {
-            Horizontal::Start
-        } else {
-            Horizontal::Left
-        };
-        let horizontal = TextAlignment::from_node(node, direction, default);
-        let vertical = match node.properties.get("vertical-alignment") {
-            Some(Value::TextVerticalAlignment(alignment)) => *alignment,
-            _ => Vertical::Top,
-        };
-        let max_lines = node
-            .int("max-lines")
-            .and_then(|count| usize::try_from(count).ok())
-            .filter(|&count| count > 0)
-            .unwrap_or(usize::MAX);
+    pub(crate) fn with_widths(
+        node: &Node,
+        available: Size,
+        size: f32,
+        direction: Option<LayoutDirection>,
+        advance: impl FnMut(Range<usize>, bool) -> f32,
+        widths: Option<&mut Vec<f32>>,
+    ) -> Self {
         Self::plan(
-            text,
+            node.text("text").unwrap_or(""),
             available,
             size,
-            LabelStyle {
-                horizontal,
-                vertical,
-                wrap: wrap(node),
-                elide,
-                max_lines,
-            },
+            LabelStyle::for_node(node, direction),
             advance,
+            widths,
         )
     }
 
@@ -308,6 +380,7 @@ impl LabelPlan {
                         .width
                 }
             },
+            None,
         )
     }
 
@@ -317,6 +390,7 @@ impl LabelPlan {
         size: f32,
         style: LabelStyle,
         mut advance: impl FnMut(Range<usize>, bool) -> f32,
+        mut widths: Option<&mut Vec<f32>>,
     ) -> Self {
         use TextHorizontalAlignment as Horizontal;
         use TextVerticalAlignment as Vertical;
@@ -424,6 +498,9 @@ impl LabelPlan {
                     span = advance(range.clone(), ellipsis);
                 }
                 width = width.max(span);
+                if let Some(widths) = widths.as_deref_mut() {
+                    widths.push(width.min(available.width));
+                }
                 let free = available.width - span;
                 let x = horizontal.offset(free, rtl);
                 PlannedLabelLine {

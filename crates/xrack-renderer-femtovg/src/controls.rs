@@ -1,6 +1,8 @@
 use crate::{
-    TextSystem, brush_paint, color,
+    DisplayList, PaintFrame, Primitive, Renderer, TextSystem, brush_paint, canvas_transform, color,
+    has_device_scale,
     image::Images,
+    rectangle,
     theme::{Palette, PaletteRole as Role},
 };
 use femtovg::{Align, Canvas, Paint, Path, renderer::WGPURenderer};
@@ -629,110 +631,139 @@ pub(crate) fn tree_indicator(
     canvas.fill_path(&arrow, &Paint::color(color(tint)));
 }
 
-pub(crate) fn table_header(
-    canvas: &mut Canvas<WGPURenderer>,
-    text: &TextSystem,
-    theme: Palette,
-    header: &TableHeader,
-    geometry: &TableGeometry,
-    clip: Rect,
-    highlights: impl Fn(usize) -> (bool, bool, bool),
-) -> Result<(), String> {
-    fill(
-        canvas,
-        geometry.header.intersect(clip),
-        0.0,
-        theme.role(Role::TableHeader),
-    );
-    for (index, (column, bounds)) in header.columns.iter().zip(&geometry.columns).enumerate() {
-        let visible = bounds.intersect(geometry.column_clip(index, clip));
-        if visible.width <= 0.0 || visible.height <= 0.0 {
-            continue;
+impl Renderer {
+    pub(super) fn draw_table_header(
+        &mut self,
+        frame: PaintFrame<'_>,
+        header: &TableHeader,
+        geometry: &TableGeometry,
+        layout: &LayoutNode,
+        highlights: impl Fn(usize) -> (bool, bool, bool),
+    ) -> Result<(), String> {
+        let PaintFrame { theme, scale, .. } = frame;
+        let clip = layout.clip.intersect(layout.bounds);
+        let mut dividers = DisplayList::new(self, clip, scale);
+        let batch_dividers = self.display_batching
+            && !self.rectangle_batches.disabled
+            && self.can_cache_on_main_canvas()
+            && !self.retained_layers.vectors.opacity_passthrough
+            && !layout.has_ancestor_clip_chain()
+            && has_device_scale(canvas_transform(&self.canvas), scale)
+            && scale >= 1.0;
+        let canvas = &mut self.canvas;
+        let text = &self.text;
+        fill(
+            canvas,
+            geometry.header.intersect(clip),
+            0.0,
+            theme.role(Role::TableHeader),
+        );
+        let mirrored = geometry.mirrored();
+        let size = xrack_layout::table_heading_font_size(text)
+            .clamp(1.0, (geometry.header.height / 1.4).max(1.0));
+        let mut paint = text.paint(size, color(theme.text), false);
+        if mirrored {
+            paint.set_text_align(Align::Right);
         }
-        let (highlighted, resizing, selected) = highlights(index);
-        if selected {
-            fill(canvas, visible, 0.0, theme.role(Role::SelectedColumn));
-        }
-        if highlighted {
-            fill(
-                canvas,
-                visible,
-                0.0,
-                if selected {
-                    theme.role(Role::ActiveColumn)
-                } else {
-                    theme.role(Role::HoverSurface)
-                },
-            );
-        }
-        let sort = header.sort.filter(|sort| sort.column == index);
-        let title_width = (bounds.width - if sort.is_some() { 32.0 } else { 16.0 }).max(0.0);
-        let title = geometry.content_bounds(*bounds, 8.0, title_width);
-        let origin = if geometry.mirrored() {
-            title.x + title.width
-        } else {
-            title.x
-        };
-        let title = title.intersect(visible);
-        if title.width > 0.0 && title.height > 0.0 {
-            canvas.save();
-            canvas.intersect_scissor(title.x, title.y, title.width, title.height);
-            let size = xrack_layout::table_heading_font_size(text)
-                .clamp(1.0, (bounds.height / 1.4).max(1.0));
-            let mut paint = text.paint(size, color(theme.text), false);
-            if geometry.mirrored() {
-                paint.set_text_align(Align::Right);
-            }
-            let caption = column.text("title").unwrap_or("");
-            let caption = if text.text_scale() > 1.0 {
-                xrack_layout::elide_to_width(caption, title_width, |value| {
-                    text.advance_painted(value, &paint)
-                })
-            } else {
-                std::borrow::Cow::Borrowed(caption)
+        for index in geometry.columns_in_viewport() {
+            let Some(column) = header.columns.get(index) else {
+                continue;
             };
-            let result = text.fill_text(
-                canvas,
-                origin,
-                bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
-                &caption,
-                &paint,
-            );
-            canvas.restore();
-            result.map_err(|error| format!("table header drawing failed: {error}"))?;
-        }
-        if let Some(sort) = sort
-            && bounds.width >= 24.0
-        {
-            canvas.save();
-            canvas.intersect_scissor(visible.x, visible.y, visible.width, visible.height);
-            chevron(
-                canvas,
-                geometry.content_bounds(*bounds, bounds.width - 12.0, 0.0).x,
-                bounds.y + bounds.height * 0.5,
-                4.0,
-                !sort.descending,
-                theme.text,
-            );
-            canvas.restore();
-        }
-        let thickness = if resizing { 2.0 } else { 1.0 };
-        let separator = geometry.content_bounds(*bounds, bounds.width - thickness, thickness);
-        let separator = separator.intersect(visible);
-        if separator.width > 0.0 {
-            fill(
-                canvas,
-                separator,
-                0.0,
-                if resizing {
+            let bounds = &geometry.columns[index];
+            if bounds.width <= 0.0
+                || bounds.x + bounds.width <= clip.x
+                || bounds.x >= clip.x + clip.width
+            {
+                continue;
+            }
+            let visible = bounds.intersect(geometry.column_clip(index, clip));
+            if visible.width <= 0.0 || visible.height <= 0.0 {
+                continue;
+            }
+            let (highlighted, resizing, selected) = highlights(index);
+            if selected {
+                fill(canvas, visible, 0.0, theme.role(Role::SelectedColumn));
+            }
+            if highlighted {
+                fill(
+                    canvas,
+                    visible,
+                    0.0,
+                    if selected {
+                        theme.role(Role::ActiveColumn)
+                    } else {
+                        theme.role(Role::HoverSurface)
+                    },
+                );
+            }
+            let sort = header.sort.filter(|sort| sort.column == index);
+            let title_width = (bounds.width - if sort.is_some() { 32.0 } else { 16.0 }).max(0.0);
+            let title = geometry.content_bounds(*bounds, 8.0, title_width);
+            let origin = if mirrored {
+                title.x + title.width
+            } else {
+                title.x
+            };
+            let title = title.intersect(visible);
+            if title.width > 0.0 && title.height > 0.0 {
+                canvas.save();
+                canvas.intersect_scissor(title.x, title.y, title.width, title.height);
+                let caption = column.text("title").unwrap_or("");
+                let caption = if text.text_scale() > 1.0 {
+                    xrack_layout::elide_to_width(caption, title_width, |value| {
+                        text.advance_painted(value, &paint)
+                    })
+                } else {
+                    std::borrow::Cow::Borrowed(caption)
+                };
+                let result = text.fill_text(
+                    canvas,
+                    origin,
+                    bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
+                    &caption,
+                    &paint,
+                );
+                canvas.restore();
+                result.map_err(|error| format!("table header drawing failed: {error}"))?;
+            }
+            if let Some(sort) = sort
+                && bounds.width >= 24.0
+            {
+                canvas.save();
+                canvas.intersect_scissor(visible.x, visible.y, visible.width, visible.height);
+                chevron(
+                    canvas,
+                    geometry.content_bounds(*bounds, bounds.width - 12.0, 0.0).x,
+                    bounds.y + bounds.height * 0.5,
+                    4.0,
+                    !sort.descending,
+                    theme.text,
+                );
+                canvas.restore();
+            }
+            let thickness = if resizing { 2.0 } else { 1.0 };
+            let separator = geometry.content_bounds(*bounds, bounds.width - thickness, thickness);
+            let separator = separator.intersect(visible);
+            if separator.width > 0.0 {
+                let tint = if resizing {
                     theme.focus
                 } else {
                     theme.role(Role::Divider)
-                },
-            );
+                };
+                // The title and sort indicator are inset from the separator.
+                // Neighboring headers are confined to their own pane and column.
+                if batch_dividers
+                    && let Some(rectangle) =
+                        rectangle::Solid::from_rect(separator, visible, tint, scale)
+                {
+                    dividers.push(Primitive::Rectangle(rectangle));
+                } else {
+                    fill(canvas, separator, 0.0, tint);
+                }
+            }
         }
+        dividers.submit(self)
     }
-    Ok(())
 }
 
 pub(crate) fn table_row_headers(

@@ -1,18 +1,99 @@
 pub(crate) use crate::image_colorize::Colorize;
 use crate::{
+    CanvasTransform, canvas_transform,
     image_colorize::{ColorizeGeometry, GradientTexture},
+    image_coverage::{Coverage, CoverageAtlas},
     nine_slice,
 };
 use femtovg::{
-    Canvas, ImageFlags, ImageId, ImageSource, Paint, Path, Transform2D, renderer::WGPURenderer,
+    Atlas as PackingAtlas, Canvas, ImageFlags, ImageId, ImageInfo, ImageSource, Paint, Path,
+    PixelFormat, Quad, renderer::WGPURenderer,
 };
-use rgb::{FromSlice, Gray};
+use rgb::{FromSlice, Gray, RGBA8};
 use std::collections::{HashMap, hash_map::Entry};
 use xrack_assets::{MAX_IMAGE_DIMENSION, Raster, decode_png, rasterize_svg_region};
-use xrack_layout::{ImagePresentation, ImageRegion, Rect, Size};
+use xrack_layout::{ImagePresentation, ImageRegion, Point, Rect, Size, Transform2D};
 use xrack_runtime::{
     ImageAsset, ImageFit, ImageFormat, ImageIdentity, ImagePixels, ImageRendering, MediaFrame,
 };
+
+pub(super) fn supports_quad_transform(transform: CanvasTransform) -> bool {
+    let Some([sx, sy]) = transform.axis_scales() else {
+        return false;
+    };
+    let [x, y] = transform.translation();
+    sx > 0.0 && sy > 0.0 && [sx, sy, x, y].into_iter().all(f32::is_finite)
+}
+
+pub(super) fn quad_edges_are_pixel_aligned(bounds: Rect, transform: CanvasTransform) -> bool {
+    let start = transform.map_point(Point {
+        x: bounds.x,
+        y: bounds.y,
+    });
+    let end = transform.map_point(Point {
+        x: bounds.x + bounds.width,
+        y: bounds.y + bounds.height,
+    });
+    [start.x, start.y, end.x, end.y]
+        .into_iter()
+        .all(|pixel| pixel.is_finite() && pixel.fract() == 0.0)
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum QuadBounds {
+    Aligned(Option<Rect>),
+    Snapped(Rect),
+    Antialiased(Rect, f32),
+}
+
+pub(super) struct ImageQuad<'a> {
+    pub(super) asset: &'a ImageAsset,
+    pub(super) bounds: Rect,
+    pub(super) clip: Rect,
+    pub(super) coverage: QuadBounds,
+    pub(super) presentation: ImagePresentation,
+}
+
+pub(super) fn quad_pixel_coverage(
+    bounds: Rect,
+    transform: CanvasTransform,
+    dpi: f32,
+) -> Option<Rect> {
+    if quad_edges_are_pixel_aligned(bounds, transform) {
+        return Some(bounds);
+    }
+    let [sx, sy] = transform.axis_scales()?;
+    if dpi <= 1.0 || bounds.width * sx <= 1.0 || bounds.height * sy <= 1.0 {
+        return None;
+    }
+    let [tx, ty] = transform.translation();
+    let device = transform.map_rect(bounds);
+    let edges = [
+        device.x,
+        device.y,
+        device.x + device.width,
+        device.y + device.height,
+    ];
+    let snapped = edges.map(f32::round);
+    // A rectangular fill and its scissor both reach full coverage half a
+    // fringe inside the edge. If no pixel center intersects the fringe, a
+    // snapped quad covers exactly the same samples. Keep the original UVs.
+    let slack = 0.5 - 0.5 / dpi;
+    if !edges
+        .iter()
+        .zip(snapped)
+        .all(|(edge, pixel)| (*edge - pixel).abs() <= slack)
+    {
+        return None;
+    }
+    let [left, top, right, bottom] = snapped;
+    Some(Rect::new(
+        (left - tx) / sx,
+        (top - ty) / sy,
+        (right - left) / sx,
+        (bottom - top) / sy,
+    ))
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct RasterKey {
@@ -52,14 +133,14 @@ impl Key {
         let sy = raster_h as f32 / source_h as f32;
         ColorizeGeometry {
             source,
-            transform: Transform2D::new(
+            transform: Transform2D::from_coefficients([
                 sx,
                 0.0,
                 0.0,
                 sy,
                 -(source_x as f32 * sx + region_x as f32),
                 -(source_y as f32 * sy + region_y as f32),
-            ),
+            ]),
         }
     }
 }
@@ -139,11 +220,88 @@ struct VideoTexture {
     used: bool,
 }
 
+const BATCH_ATLAS_SIZE: usize = 1024;
+const BATCH_TILE_LIMIT: u32 = 64;
+
+/// A bounded, straight-RGBA atlas for the display list's linear-sampled PNGs.
+struct BatchAtlas {
+    image: ImageId,
+    texture: wgpu::Texture,
+    packing: PackingAtlas,
+    tiles: HashMap<RasterKey, usize>,
+    slots: Vec<BatchSlot>,
+    retired: Option<HashMap<[u32; 2], RetiredSlots>>,
+    uploads: Vec<BatchUpload>,
+    frame: u64,
+    used: bool,
+}
+
+struct BatchSlot {
+    key: RasterKey,
+    position: [usize; 2],
+    last_frame: u64,
+}
+
+#[derive(Default)]
+struct RetiredSlots {
+    stale: Vec<usize>,
+    previous_frame: Vec<usize>,
+}
+
+struct BatchUpload {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    pixels: Vec<RGBA8>,
+}
+
+impl BatchAtlas {
+    fn reserve(&mut self, size: [u32; 2]) -> Option<([usize; 2], Option<usize>)> {
+        let [width, height] = size.map(|n| n as usize);
+        if let Some((x, y)) = self.packing.add_rect(width + 2, height + 2) {
+            return Some(([x + 1, y + 1], None));
+        }
+
+        // Build the list only when fresh space runs out. Prefer slots that
+        // were already absent last frame over slots that could still be visible.
+        // Within each age group, the original packing order keeps neighbors
+        // together for uploads when the tile sizes are uniform.
+        let retired = self.retired.get_or_insert_with(|| {
+            let mut by_size = HashMap::<_, RetiredSlots>::new();
+            for (index, tile) in self.slots.iter().enumerate().rev() {
+                if tile.last_frame == self.frame {
+                    continue;
+                }
+                let slots = by_size.entry(tile.key.size).or_default();
+                if tile.last_frame == self.frame.wrapping_sub(1) {
+                    slots.previous_frame.push(index);
+                } else {
+                    slots.stale.push(index);
+                }
+            }
+            by_size
+        });
+        let slots = retired.get_mut(&size)?;
+        while let Some(index) = slots.stale.pop().or_else(|| slots.previous_frame.pop()) {
+            // A quad can claim a tile after the list was built. Keep it intact
+            // until the canvas has submitted all draws for this frame.
+            let tile = &self.slots[index];
+            if tile.last_frame != self.frame {
+                return Some((tile.position, Some(index)));
+            }
+        }
+        None
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Images {
     textures: HashMap<Key, Texture>,
     atlases: AtlasCache,
     video: HashMap<usize, VideoTexture>,
+    batch_atlas: Option<BatchAtlas>,
+    coverage_atlas: Option<CoverageAtlas>,
 }
 
 impl Images {
@@ -173,6 +331,14 @@ impl Images {
     }
 
     pub(crate) fn begin_frame(&mut self) {
+        if let Some(atlas) = &mut self.coverage_atlas {
+            atlas.begin_frame();
+        }
+        if let Some(atlas) = &mut self.batch_atlas {
+            atlas.frame = atlas.frame.wrapping_add(1);
+            atlas.retired = None;
+            atlas.used = false;
+        }
         for texture in self.video.values_mut() {
             texture.used = false;
         }
@@ -185,6 +351,16 @@ impl Images {
     }
 
     pub(crate) fn end_frame(&mut self, canvas: &mut Canvas<WGPURenderer>) {
+        if let Some(atlas) = self.coverage_atlas.take_if(CoverageAtlas::idle) {
+            canvas.delete_image(atlas.image);
+        }
+        // A failed display-list recording can leave pending writes in the page.
+        if let Some(atlas) = self
+            .batch_atlas
+            .take_if(|atlas| !atlas.used || !atlas.uploads.is_empty())
+        {
+            canvas.delete_image(atlas.image);
+        }
         self.video.retain(|_, texture| {
             if !texture.used {
                 canvas.delete_image(texture.id);
@@ -369,6 +545,291 @@ impl Images {
         Ok(())
     }
 
+    /// Prepare a straight-RGBA image for a quad batch. Small linear-sampled
+    /// PNGs can share a texture even when they come from different sources.
+    pub(super) fn batch_quad(
+        &mut self,
+        device: &wgpu::Device,
+        canvas: &mut Canvas<WGPURenderer>,
+        image: ImageQuad<'_>,
+    ) -> Result<Option<(ImageId, Quad)>, String> {
+        let ImageQuad {
+            asset,
+            bounds,
+            clip,
+            coverage,
+            presentation,
+        } = image;
+        let image = asset.frame(0);
+        let Some(ImagePixels {
+            identity,
+            format: ImageFormat::Png,
+            bytes,
+            size,
+            edges: None,
+        }) = image.pixels()
+        else {
+            return Ok(None);
+        };
+        let placement = presentation.placement(bounds);
+        let pattern = placement.pattern;
+        if presentation.region != ImageRegion::full(size)
+            || placement.repeat != [false; 2]
+            || pattern.width <= 0.0
+            || pattern.height <= 0.0
+        {
+            return Ok(None);
+        }
+        let key = Key {
+            raster: RasterKey {
+                identity,
+                len: bytes.len(),
+                format: ImageFormat::Png,
+                size,
+                svg_region: None,
+            },
+            region: None,
+            repeat: [false; 2],
+            nearest: presentation.rendering == ImageRendering::Pixelated,
+            alpha_mask: false,
+        };
+        let mut decoded = None;
+        let rect = match coverage {
+            QuadBounds::Aligned(clip) => {
+                let visible = placement.visible;
+                let rect = clip.map_or(visible, |clip| visible.intersect(clip));
+                if !quad_edges_are_pixel_aligned(rect, canvas_transform(canvas)) {
+                    return Ok(None);
+                }
+                rect
+            }
+            QuadBounds::Snapped(rect) => rect,
+            QuadBounds::Antialiased(leaf_clip, dpi) => {
+                let Some(coverage) = Coverage::new(
+                    canvas_transform(canvas),
+                    placement.visible,
+                    leaf_clip,
+                    pattern,
+                    clip,
+                    dpi,
+                ) else {
+                    return Ok(None);
+                };
+                let Some((_, source)) =
+                    self.batch_atlas_tile(device, canvas, key, bytes, &mut decoded)?
+                else {
+                    return Ok(None);
+                };
+                if self.coverage_atlas.is_none() {
+                    self.coverage_atlas = CoverageAtlas::new(device, canvas);
+                }
+                return Ok(self.coverage_atlas.as_mut().and_then(|atlas| {
+                    atlas
+                        .push(canvas, coverage, source, size, BATCH_ATLAS_SIZE)
+                        .map(|quad| (atlas.image, quad))
+                }));
+            }
+        };
+        // Keep sampling in the uncut pattern after adjusting the quad's
+        // coverage for clipping and antialiasing.
+        if rect != rect.intersect(clip) || rect.width <= 0.0 || rect.height <= 0.0 {
+            return Ok(None);
+        }
+
+        let mut quad = Quad {
+            x0: rect.x,
+            y0: rect.y,
+            x1: rect.x + rect.width,
+            y1: rect.y + rect.height,
+            s0: (rect.x - pattern.x) / pattern.width,
+            t0: (rect.y - pattern.y) / pattern.height,
+            s1: (rect.x + rect.width - pattern.x) / pattern.width,
+            t1: (rect.y + rect.height - pattern.y) / pattern.height,
+        };
+        if let Some((image, [x, y])) =
+            self.batch_atlas_tile(device, canvas, key, bytes, &mut decoded)?
+        {
+            let horizontal = |u: f32| (x as f32 + u * size[0] as f32) / BATCH_ATLAS_SIZE as f32;
+            let vertical = |v: f32| (y as f32 + v * size[1] as f32) / BATCH_ATLAS_SIZE as f32;
+            quad.s0 = horizontal(quad.s0);
+            quad.s1 = horizontal(quad.s1);
+            quad.t0 = vertical(quad.t0);
+            quad.t1 = vertical(quad.t1);
+            return Ok(Some((image, quad)));
+        }
+        let texture = self.texture(canvas, key, bytes, &mut decoded, size, Colorize::Original)?;
+        Ok(Some((texture, quad)))
+    }
+
+    fn batch_atlas_tile(
+        &mut self,
+        device: &wgpu::Device,
+        canvas: &mut Canvas<WGPURenderer>,
+        key: Key,
+        bytes: &[u8],
+        decoded: &mut Option<Raster>,
+    ) -> Result<Option<(ImageId, [usize; 2])>, String> {
+        let size = key.raster.size;
+        if key.nearest
+            || !size
+                .into_iter()
+                .all(|n| (1..=BATCH_TILE_LIMIT).contains(&n))
+        {
+            return Ok(None);
+        }
+        if let Some(atlas) = &mut self.batch_atlas
+            && let Some(&index) = atlas.tiles.get(&key.raster)
+        {
+            let tile = &mut atlas.slots[index];
+            tile.last_frame = atlas.frame;
+            atlas.used = true;
+            return Ok(Some((atlas.image, tile.position)));
+        }
+        let atlas = match &mut self.batch_atlas {
+            Some(atlas) => atlas,
+            slot => {
+                // The coverage pass runs before the canvas command buffer.
+                // A native texture's updates are queued before both passes.
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("XRack source image atlas"),
+                    size: wgpu::Extent3d {
+                        width: BATCH_ATLAS_SIZE as u32,
+                        height: BATCH_ATLAS_SIZE as u32,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                let image = canvas
+                    .create_image_from_native_texture(
+                        texture.clone(),
+                        ImageInfo::new(
+                            ImageFlags::empty(),
+                            BATCH_ATLAS_SIZE,
+                            BATCH_ATLAS_SIZE,
+                            PixelFormat::Rgba8,
+                        ),
+                    )
+                    .map_err(|error| format!("image atlas allocation failed: {error}"))?;
+                slot.insert(BatchAtlas {
+                    image,
+                    texture,
+                    packing: PackingAtlas::new(BATCH_ATLAS_SIZE, BATCH_ATLAS_SIZE),
+                    tiles: HashMap::new(),
+                    slots: Vec::new(),
+                    retired: None,
+                    uploads: Vec::new(),
+                    frame: 0,
+                    used: false,
+                })
+            }
+        };
+        let [width, height] = size.map(|n| n as usize);
+        let Some(([x, y], replaced)) = atlas.reserve(size) else {
+            return Ok(None);
+        };
+        let raster = decoded.insert(decode_png(bytes)?);
+        if raster.size != size {
+            return Ok(None);
+        }
+        // A one-texel gutter reproduces the edge clamp of the original texture.
+        let pixels = raster.rgba.as_rgba();
+        let mut padded = Vec::with_capacity((width + 2) * (height + 2));
+        for row in 0..height + 2 {
+            let from = row.saturating_sub(1).min(height - 1) * width;
+            padded.push(pixels[from]);
+            padded.extend_from_slice(&pixels[from..from + width]);
+            padded.push(pixels[from + width - 1]);
+        }
+        atlas.uploads.push(BatchUpload {
+            x: x - 1,
+            y: y - 1,
+            width: width + 2,
+            height: height + 2,
+            pixels: padded,
+        });
+        let tile = [x, y];
+        let slot = BatchSlot {
+            key: key.raster,
+            position: tile,
+            last_frame: atlas.frame,
+        };
+        let index = if let Some(index) = replaced {
+            let old = std::mem::replace(&mut atlas.slots[index], slot);
+            atlas.tiles.remove(&old.key);
+            index
+        } else {
+            let index = atlas.slots.len();
+            atlas.slots.push(slot);
+            index
+        };
+        atlas.tiles.insert(key.raster, index);
+        atlas.used = true;
+        Ok(Some((atlas.image, tile)))
+    }
+
+    /// Upload adjacent tiles as one strip before submitting their first draw.
+    pub(super) fn flush_batch_uploads(
+        &mut self,
+        canvas: &mut Canvas<WGPURenderer>,
+    ) -> Result<(), String> {
+        let Some(atlas) = &mut self.batch_atlas else {
+            return Ok(());
+        };
+        let mut remaining = atlas.uploads.as_slice();
+        let mut packed = Vec::new();
+        while let Some((first, tail)) = remaining.split_first() {
+            let mut count = 1;
+            let mut width = first.width;
+            for next in tail {
+                if next.y != first.y || next.height != first.height || next.x != first.x + width {
+                    break;
+                }
+                width += next.width;
+                count += 1;
+            }
+            let (run, rest) = remaining.split_at(count);
+            let pixels = if count == 1 {
+                first.pixels.as_slice()
+            } else {
+                packed.clear();
+                packed.reserve(width * first.height);
+                for row in 0..first.height {
+                    for tile in run {
+                        let start = row * tile.width;
+                        packed.extend_from_slice(&tile.pixels[start..start + tile.width]);
+                    }
+                }
+                packed.as_slice()
+            };
+            canvas
+                .update_image(
+                    atlas.image,
+                    ImageSource::Rgba(imgref::Img::new(pixels, width, first.height)),
+                    first.x,
+                    first.y,
+                )
+                .map_err(|error| format!("image atlas upload failed: {error}"))?;
+            xrack_runtime::update_profile::texture_upload(pixels.len() * 4);
+            remaining = rest;
+        }
+        atlas.uploads.clear();
+        Ok(())
+    }
+
+    pub(super) fn encode_coverage(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<wgpu::CommandBuffer> {
+        let source = &self.batch_atlas.as_ref()?.texture;
+        self.coverage_atlas.as_mut()?.encode(device, queue, source)
+    }
+
     fn texture(
         &mut self,
         canvas: &mut Canvas<WGPURenderer>,
@@ -432,6 +893,10 @@ impl Images {
                     }
                     ImageSource::Rgba(pixels)
                 };
+                let channels = if key.alpha_mask { 1 } else { 4 };
+                xrack_runtime::update_profile::texture_upload(
+                    size[0] as usize * size[1] as usize * channels,
+                );
                 let id = canvas
                     .create_image(image, flags)
                     .map_err(|error| format!("image texture upload failed: {error}"))?;

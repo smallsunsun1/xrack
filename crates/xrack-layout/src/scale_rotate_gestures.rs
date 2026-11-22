@@ -89,6 +89,22 @@ pub enum TrackpadDelta {
     Rotation(f64),
 }
 
+/// Contacts that a newly exclusive transform gesture takes over.
+#[derive(Clone, Copy)]
+pub enum GrabHandoff<Device> {
+    Contacts([ContactId<Device>; 2]),
+    All,
+}
+
+impl<Device: Eq> GrabHandoff<Device> {
+    pub fn includes(&self, contact: ContactId<Device>) -> bool {
+        match self {
+            Self::Contacts(contacts) => contacts.contains(&contact),
+            Self::All => true,
+        }
+    }
+}
+
 pub struct Gestures<Device> {
     pending: Option<(Contact<Device>, ScaleRotateTarget)>,
     capture: Option<Capture<Device>>,
@@ -116,6 +132,11 @@ impl<Device: Copy + Eq> Gestures<Device> {
             Source::Touch { pair, .. } => Some(pair.map(|contact| contact.id)),
             Source::Trackpad { .. } => None,
         }
+    }
+
+    pub fn exclusive_handoff(&self) -> GrabHandoff<Device> {
+        self.captured_touch_pair()
+            .map_or(GrabHandoff::All, GrabHandoff::Contacts)
     }
 
     pub fn cancel(&mut self) -> Option<Delivery> {

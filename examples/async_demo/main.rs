@@ -189,6 +189,15 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    #[cfg(feature = "live-ui")]
+    let mut ui = match AsyncDemo::try_new() {
+        Ok(ui) => ui,
+        Err(error) => {
+            eprintln!("could not start XRack live UI: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    #[cfg(not(feature = "live-ui"))]
     let mut ui = AsyncDemo::new();
     let inspector = trace.and_then(|buffer| {
         let inspector = ui.window_inspector(&ui.render_shared())?;

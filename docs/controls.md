@@ -92,6 +92,8 @@ iOS 增大系统字号时，按钮会按文字测量所需空间。显式限制�
 `StyledText` 接收 `styled-text` 值并复用标签的布局属性。``@markdown("**粗体**、*斜体*和 `xrackc`")`` 在编译时生成文字和字素对齐的样式区间。支持段落、标题、粗体、斜体、删除线、代码和链接。图片和 HTML 会产生诊断。Rust 可用 `StyledText::from_markdown` 解析动态内容，也可用 `StyledText::from_parts` 提供有样式区间和链接的文本。
 Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置 `link-color`。鼠标和 Tab / Enter 均可触发 `link-activated(target)`，应用收到字符串后决定如何处理。布局截断和祖先裁剪会同步限制链接的命中范围和焦点。运行 `bazel run //examples/layout:layout -- --styled-text` 体验换行和截断。
 
+普通 `for` 模板中的匿名 `StyledText` 也支持 `link-activated(target)`。回调可以读取触发链接的记录。记录已移走或链接内容已更新时，旧场景中的链接不会触发回调。
+
 设置 `selectable: true;` 后，`StyledText` 可以拖选、双击选词、全选和复制纯文本。选区按已排版的字形定位，样式和链接保持有效。短按链接触发 `link-activated`，从链接上开始拖动则选择文字。可通过 `selected-text` 读取选中内容，通过 `select-all()`、`select-word()`、`set-selection-offsets(anchor, focus)`、`clear-selection()` 和 `copy()` 操作已聚焦的选区。全选包含原文中被截断的部分。运行 `bazel run //examples/layout:layout -- --selectable-styled-text` 体验。
 
 Android 库存示例的 **Open bulletin** 演示轻触链接、长按选词、从编辑菜单复制纯文本，以及截断后的链接命中。设备回归目标为 `//examples/android:bulletin_ui_test`。[Android 示例](../examples/android/README.md#富文本触摸回归)
@@ -680,7 +682,7 @@ iOS 和 iPadOS 的菜单项会随系统文本大小调整字号及点击区域�
 
 单行、多行、搜索框、可编辑下拉框、数字输入框和正在编辑的表格或树单元格提供默认编辑菜单。右键、Shift+F10 或辅助技术均可打开。菜单与键盘共用选区、剪贴板和撤销记录。只读框可复制，密码框禁用复制和剪切。数字框的撤销和重做作用于草稿，提交时再更新绑定的数值。`ContextMenuArea` 优先，`context-menu-enabled: false` 可关闭默认菜单。菜单打开后，外部修改当前文本或选区会使旧操作失效。运行 `bazel run //examples/form:form -- --editor-menus` 体验。
 
-`MenuItem` 的 `shortcut: "Primary+Shift+E";` 与点击共用 `activated()`。菜单在正文和快捷键都能完整放下时显示组合键。`Primary` 在 macOS 上表示 Command，在其他平台表示 Ctrl。也可以组合 `Ctrl`、`Alt`、`Shift` 和 `Super`，主键支持英文字母、数字和 F1 到 F12。字母和数字需要 Ctrl、Alt、Super 或 Primary 中的一个修饰键。无效字符串不会注册快捷键，可将绑定设为空字符串清除快捷键。
+`MenuItem` 的 `shortcut: "Primary+Shift+E";` 与点击共用 `activated()`。菜单在正文和快捷键都能完整放下时显示组合键。`Primary` 在 macOS 上表示 Command，在其他平台表示 Ctrl。也可以组合 `Ctrl`、`Alt`、`Shift` 和 `Super`，主键支持英文字母、数字、方括号、Tab 和 F1 到 F12。字母、数字、方括号和 Tab 需要 Ctrl、Alt、Super 或 Primary 中的一个修饰键。普通 Tab 和 Shift+Tab 用于焦点遍历。`MouseBack` 和 `MouseForward` 对应鼠标侧键，可独立绑定。无效字符串不会注册快捷键，可将绑定设为空字符串清除快捷键。
 
 菜单栏快捷键在当前窗口或最上层模态区域内生效。打开右键菜单时，只处理该菜单内的快捷键。隐藏和禁用项不参与匹配，同一作用域内的重复组合键不会触发命令。文本编辑保留选择、剪贴板和撤销重做快捷键。运行 `bazel run //examples/menu:menu` 可体验。
 
@@ -734,6 +736,39 @@ ui.invoke_increment(2);
 ui.dispatch("add", "clicked");
 let scene = ui.render();
 ```
+
+### CustomRender
+
+`CustomRender` 将 Rust 应用的绘制放在普通布局节点中。设置尺寸和 `renderer: "注册名"`，用 `data: string` 和 `revision: int` 向 painter 传参数。它遵循布局、祖先裁剪、变换、透明度和 `z` 顺序。应用需要触发更新时，可以修改绑定到 `data` 或 `revision` 的属性。
+
+`register_gpu_pass` 把同一个 painter 接入视图的绘制顺序。整像素对齐且符合裁剪条件的顶层控件可在主目标上录制一个 GPU pass。需要组透明度、旋转或复杂裁剪时，运行时用离屏目标承接同一个 painter。管线按传入的目标格式创建，混合使用预乘 alpha，视口和 scissor 由运行时设置。
+
+`register_shader_effect` 接受 WGSL 函数 `shade(uv: vec2<f32>, frame: vec4<f32>) -> vec4<f32>`。UV 是控件内归一化坐标，`frame` 依次包含目标像素宽高、缩放和控件修订号。函数返回直通 alpha 的颜色，渲染器在写入透明纹理时乘入 alpha。
+
+```xr
+CustomRender {
+    width: 240px;
+    height: 96px;
+    renderer: "level-meter";
+    data: "green";
+}
+```
+
+在运行窗口的 UI 线程注册并持有返回的句柄。AOT 和解释器使用同一组注册函数。没有注册 painter 时，节点仍参与布局，其普通背景与子节点可作为占位。在独立 VS Code 预览进程中会显示这个占位，运行应用内的热重载可以使用应用已注册的 painter。
+
+```rust
+use xrack::{Color, layout::Rect, renderer::{Geometry, register_geometry}};
+
+let _painter = register_geometry("level-meter", |context| {
+    vec![Geometry::Rectangle {
+        bounds: Rect::new(0.0, 0.0, context.bounds.width * 0.75, context.bounds.height),
+        color: Color(0x39a76aff),
+    }]
+})?;
+// 用 xrack::run(ui) 启动应用，句柄在窗口运行期间保持有效。
+```
+
+`register_geometry` 接受本地逻辑像素坐标的矩形、折线、多边形、图像和文本。`register_gpu` 提供当前设备、命令编码器和节点纹理视图，应用可创建自己的 pipeline 或深度纹理并录制 render pass。颜色目标为 `Rgba8Unorm`，输出采用预乘 alpha。XRack 按布局计算纹理像素尺寸，先执行这些命令，再把纹理合成到场景。应用可通过回调捕获自己的资源缓存，按设备和尺寸复用资源。[GPU 注册与绘制用例](../tests/custom_render_test.rs)
 
 ### SoundEffect
 

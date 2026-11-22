@@ -1,5 +1,5 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 
 rust_library(
     name = "xrack_renderer_femtovg",
@@ -15,4 +15,15 @@ rust_library(
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-assets:xrack_assets",
     ] + all_crate_deps(normal = True),
+)
+
+
+rust_binary(
+    name = "xrack-gpu-trace",
+    crate_name = "xrack_gpu_trace",
+    srcs = ["src/bin/gpu_trace.rs"],
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True),
+    visibility = ["//visibility:public"],
 )

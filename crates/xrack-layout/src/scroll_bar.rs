@@ -22,6 +22,9 @@ pub(crate) struct AttachedScrollBar {
 
 /// Resolve handles after laying out both the control and its viewport.
 pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode, text: &mut impl TextMeasurer) {
+    if !scene.contains_scene_feature(xrack_runtime::SceneFeature::AttachedScrollBar) {
+        return;
+    }
     fn index<'a>(
         node: &'a Node,
         item: &LayoutNode,
@@ -29,7 +32,10 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode, text: &mut impl Text
         viewports: &mut BTreeMap<usize, Vec<usize>>,
         controls: &mut Vec<(&'a Node, Vec<usize>)>,
     ) {
-        if !item.visible || !node.group_content_enabled() {
+        if !item.visible
+            || !node.group_content_enabled()
+            || node.shared_subtree_excludes(xrack_runtime::SceneFeature::ScrollEndpoint)
+        {
             return;
         }
         if let Some(handle) = &node.viewport_handle {
@@ -81,6 +87,8 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode, text: &mut impl Text
             row_key: node.routing_row_key(),
             anchor: None,
             resolved_list_scroll: None,
+            resolved_table: None,
+            cache_table_sizes: false,
             row_layouts: None,
             ancestor_shapes: item.ancestor_shapes.clone(),
             space: item.space.clone(),

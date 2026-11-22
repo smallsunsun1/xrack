@@ -1,7 +1,10 @@
-use crate::{append_rect, border_path, brush_paint_with, color};
+use crate::{
+    append_rect, border_path, brush_paint_with, color, pixel_phase,
+    retained_layers::{device_bounds, logical_bounds},
+};
 use femtovg::{
-    Canvas, Color, FillRule, ImageFilter, LayerEffects, MorphologyOperator, Paint, Path,
-    renderer::WGPURenderer,
+    Canvas, Color, FillRule, ImageFilter, ImageFlags, ImageId, LayerEffects, MorphologyOperator,
+    Paint, Path, renderer::WGPURenderer,
 };
 use xrack_layout::{Rect, corner_radii, normalize_radii};
 use xrack_runtime::{Brush, Color as UiColor, Node, Value};
@@ -10,6 +13,7 @@ use xrack_runtime::{Brush, Color as UiColor, Node, Value};
 // eight 24-pixel steps per axis.
 const MAX_SIGMA_PX: f32 = 512.0;
 const MAX_SPREAD_PX: f32 = 192.0;
+const MIN_INTERPOLATED_SIGMA_PX: f32 = 10.0;
 
 struct Shadow {
     tint: UiColor,
@@ -102,8 +106,88 @@ pub(crate) struct OuterShadow {
     radii: [f32; 4],
     fill: Option<Paint>,
     border: Option<(f32, Paint)>,
+    source_alphas: Option<(u8, u8)>,
     spread_px: f32,
     reach: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct ShadowMaskKey {
+    size: [u32; 2],
+    pixels: [u32; 2],
+    phase: [u8; 2],
+    interpolated: bool,
+    radii: [u32; 4],
+    stroke: u32,
+    filter: [u32; 3],
+    source_alphas: (u8, u8),
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ShadowTile {
+    pub(super) key: ShadowMaskKey,
+    pub(super) source_pixels: Rect,
+    destination: Rect,
+    sample: Rect,
+}
+
+impl ShadowTile {
+    pub(super) fn sampling(self) -> ImageFlags {
+        if self.key.interpolated {
+            ImageFlags::empty()
+        } else {
+            ImageFlags::NEAREST
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ShadowDraw {
+    image: ImageId,
+    bounds: Rect,
+    sample: Rect,
+    tint: Color,
+}
+
+impl ShadowDraw {
+    pub(super) fn draw(self, canvas: &mut Canvas<WGPURenderer>) {
+        let Rect {
+            x,
+            y,
+            width,
+            height,
+        } = self.bounds;
+        let mut path = Path::new();
+        path.rect(x, y, width, height);
+        let sample = self.sample;
+        let mut paint = Paint::image_tint(
+            self.image,
+            sample.x,
+            sample.y,
+            sample.width,
+            sample.height,
+            0.0,
+            self.tint,
+        );
+        paint.set_anti_alias(false);
+        canvas.fill_path(&path, &paint);
+    }
+}
+
+pub(super) struct ShadowPaint<'a> {
+    pub(super) source: &'a OuterShadow,
+    pub(super) clip: Rect,
+    pub(super) mask: Option<ShadowDraw>,
+}
+
+impl ShadowPaint<'_> {
+    pub(super) fn draw(&self, canvas: &mut Canvas<WGPURenderer>) {
+        if let Some(mask) = self.mask {
+            mask.draw(canvas);
+        } else {
+            self.source.draw(canvas, self.clip);
+        }
+    }
 }
 
 impl OuterShadow {
@@ -145,12 +229,26 @@ impl OuterShadow {
             .clamp(-MAX_SPREAD_PX, MAX_SPREAD_PX)
             .round();
         let reach = ((3.0 * shadow.sigma + spread_px.max(0.0)).ceil() + 2.0) / scale;
+        let fill_alpha = if fill.is_some() {
+            uniform_alpha(node.properties.get("background"))
+        } else {
+            Some(0)
+        };
+        let border_alpha = if border.is_some() {
+            node.properties.get("border-color").map_or_else(
+                || Some(fallback_border.0 as u8),
+                |value| uniform_alpha(Some(value)),
+            )
+        } else {
+            Some(0)
+        };
         Some(Self {
             shadow,
             shape: bounds,
             radii: corner_radii(node, bounds),
             fill,
             border,
+            source_alphas: fill_alpha.zip(border_alpha),
             spread_px,
             reach,
         })
@@ -158,6 +256,131 @@ impl OuterShadow {
 
     pub(crate) fn paint_bounds(&self) -> Rect {
         shifted(self.shape.inset(-self.reach), self.shadow.offset)
+    }
+
+    pub(crate) fn is_filtered(&self) -> bool {
+        self.spread_px != 0.0 || self.shadow.sigma > 0.0
+    }
+
+    pub(super) fn mask_tile(&self, scale: f32, clip: Rect) -> Option<ShadowTile> {
+        let source_alphas = self.source_alphas?;
+        let bounds = self.paint_bounds();
+        // A cropped filter may use a different clipped input or blur pyramid.
+        if !self.is_filtered()
+            || clip.x > bounds.x
+            || clip.y > bounds.y
+            || clip.x + clip.width < bounds.x + bounds.width
+            || clip.y + clip.height < bounds.y + bounds.height
+        {
+            return None;
+        }
+        let device = device_bounds(bounds, scale);
+        // Interpolating a wide Gaussian avoids rerunning the filter on every
+        // fractional translation. Keep phase-dependent sampling where sharper
+        // or higher-contrast edges reveal interpolation of the 8-bit mask.
+        let interpolated = self.spread_px == 0.0
+            && self.shadow.sigma >= MIN_INTERPOLATED_SIGMA_PX
+            && self.shadow.alpha() <= 0.5;
+        let [width, height] = if interpolated {
+            [self.shape.width, self.shape.height]
+                .map(|size| ((size + 2.0 * self.reach) * scale).ceil() + 2.0)
+        } else {
+            [device.width, device.height]
+        };
+        if !(width > 0.0 && width <= 1024.0 && height > 0.0 && height <= 1024.0) {
+            return None;
+        }
+        let destination = logical_bounds(device, scale);
+        let source_pixels = Rect::new(0.0, 0.0, width, height);
+        let source = logical_bounds(source_pixels, scale);
+        let (phase, sample) = if interpolated {
+            let guard = 1.0 / scale;
+            (
+                [0; 2],
+                Rect::new(
+                    bounds.x - guard,
+                    bounds.y - guard,
+                    source.width,
+                    source.height,
+                ),
+            )
+        } else {
+            (
+                [pixel_phase(bounds.x * scale), pixel_phase(bounds.y * scale)],
+                destination,
+            )
+        };
+        Some(ShadowTile {
+            key: ShadowMaskKey {
+                size: [self.shape.width, self.shape.height].map(f32::to_bits),
+                pixels: [width as u32, height as u32],
+                phase,
+                interpolated,
+                radii: self.radii.map(f32::to_bits),
+                stroke: self
+                    .border
+                    .as_ref()
+                    .map_or(0.0, |(width, _)| *width)
+                    .to_bits(),
+                filter: [self.spread_px, self.shadow.sigma, scale].map(f32::to_bits),
+                source_alphas,
+            },
+            source_pixels,
+            destination,
+            sample,
+        })
+    }
+
+    pub(super) fn draw_mask(
+        &self,
+        canvas: &mut Canvas<WGPURenderer>,
+        tile: ShadowTile,
+        scale: f32,
+    ) {
+        let Some((fill, border)) = self.source_alphas else {
+            return;
+        };
+        let [x, y] = if tile.key.interpolated {
+            [1.0 / scale; 2]
+        } else {
+            tile.key
+                .phase
+                .map(|phase| f32::from(phase) / (256.0 * scale))
+        };
+        let white = |alpha| Paint::color(Color::rgba(255, 255, 255, alpha));
+        let mask = Self {
+            shadow: Shadow {
+                tint: UiColor(0xffff_ffff),
+                offset: [0.0; 2],
+                spread: self.shadow.spread,
+                sigma: self.shadow.sigma,
+            },
+            shape: Rect::new(
+                self.reach + x,
+                self.reach + y,
+                self.shape.width,
+                self.shape.height,
+            ),
+            radii: self.radii,
+            fill: (fill != 0).then(|| white(fill)),
+            border: self
+                .border
+                .as_ref()
+                .map(|(width, _)| (*width, white(border))),
+            source_alphas: self.source_alphas,
+            spread_px: self.spread_px,
+            reach: self.reach,
+        };
+        mask.draw(canvas, mask.paint_bounds());
+    }
+
+    pub(super) fn masked_draw(&self, image: ImageId, tile: ShadowTile) -> ShadowDraw {
+        ShadowDraw {
+            image,
+            bounds: tile.destination,
+            sample: tile.sample,
+            tint: color(self.shadow.tint),
+        }
     }
 
     pub(crate) fn draw(&self, canvas: &mut Canvas<WGPURenderer>, clip: Rect) {
@@ -236,6 +459,20 @@ fn has_coverage(value: Option<&Value>) -> bool {
             stops.iter().any(|stop| stop.color.0 & 0xff != 0)
         }
         _ => false,
+    }
+}
+
+fn uniform_alpha(value: Option<&Value>) -> Option<u8> {
+    match value {
+        Some(Value::Color(color) | Value::Brush(Brush::Solid(color))) => Some(color.0 as u8),
+        Some(Value::Brush(Brush::Linear { stops, .. } | Brush::Radial { stops })) => {
+            let alpha = stops.first()?.color.0 as u8;
+            stops
+                .iter()
+                .all(|stop| stop.color.0 as u8 == alpha)
+                .then_some(alpha)
+        }
+        _ => Some(0),
     }
 }
 

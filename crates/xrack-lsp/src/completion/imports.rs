@@ -432,10 +432,15 @@ pub(super) fn module_path(path: &Path, source: &str) -> Option<PathBuf> {
 
 fn import_input(path: &Path, source: &str) -> Option<PathBuf> {
     let relative: PathBuf = serde_json::from_str(source).ok()?;
-    if relative.is_absolute() || relative.extension().is_none_or(|ext| ext != "xr") {
+    if relative.is_absolute() {
         return None;
     }
-    Some(path.parent()?.join(relative))
+    let requested = path.parent()?.join(relative);
+    match xrack_ir::modules::package_entry(&requested).ok()? {
+        Some(entry) => Some(entry),
+        None if requested.extension().is_some_and(|ext| ext == "xr") => Some(requested),
+        None => None,
+    }
 }
 
 fn source_links(text: &str, workspace: &Workspace<'_>) -> Vec<(Range<usize>, String)> {

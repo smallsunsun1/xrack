@@ -12,8 +12,12 @@ xrack-runtime.workspace = true
 xrack-layout.workspace = true
 xrack-assets.workspace = true
 femtovg.workspace = true
-wgpu.workspace = true
+wgpu = { workspace = true, features = ["trace"] }
+wgpu-core = { version = "=30.0.1", features = ["trace"] }
+ron = "0.12"
+serde_json.workspace = true
 fontdb.workspace = true
+ttf-parser.workspace = true
 pollster.workspace = true
 png.workspace = true
 imgref.workspace = true
@@ -23,3 +27,8 @@ rgb.workspace = true
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["CFString", "std"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGPath", "std"] }
 objc2-core-text = { version = "=0.3.2", default-features = false, features = ["CTFont", "CTFontDescriptor", "CTFontTraits", "objc2-core-graphics", "std"] }
+
+
+[[bin]]
+name = "xrack-gpu-trace"
+path = "src/bin/gpu_trace.rs"

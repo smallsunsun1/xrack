@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 16;
+pub const CODEGEN_ABI_VERSION: u32 = 17;
 
 mod animation;
 mod arithmetic;
@@ -26,6 +26,7 @@ mod focus;
 mod font_picker;
 mod geometry;
 mod ui_log;
+mod visual_transform;
 pub use ui_log::LogLevel;
 #[doc(hidden)]
 pub use ui_log::log_ui;
@@ -34,7 +35,9 @@ mod image_animation;
 mod image_asset;
 mod inspection;
 #[doc(hidden)]
-pub use inspection::{InspectionInput, RecordedAction, WindowInspector};
+pub use inspection::{
+    InspectionInput, PresentationFeedback, PresentedFrame, RecordedAction, WindowInspector,
+};
 mod media;
 #[doc(hidden)]
 pub mod ui_trace;
@@ -65,6 +68,8 @@ mod repeat;
 mod row_heights;
 mod scale_rotate;
 mod scene_plan;
+mod scene_tracking;
+pub use scene_tracking::{SceneChanges, SceneIndex, SceneNodeId};
 mod split;
 mod stack;
 mod styled_text;
@@ -270,8 +275,10 @@ pub use split::{
 #[doc(hidden)]
 pub use stack::{StackChange, StackEvent, StackNavigationArgument, StackNavigationMethod};
 pub use stack::{StackNavigation, StackSnapshot, StackState};
-use std::{collections::BTreeMap, rc::Rc, sync::Arc};
-pub use styled_text::{StyledLink, StyledRun, StyledText, StyledTextError, TextStyle};
+use std::{cell::OnceCell, collections::BTreeMap, rc::Rc, sync::Arc};
+pub use styled_text::{
+    MarkdownStream, StyledLink, StyledRun, StyledText, StyledTextError, TextStyle,
+};
 pub use swipe_gesture::{SwipeHandle, SwipeSample};
 #[doc(hidden)]
 pub use table_clipboard::{
@@ -330,6 +337,7 @@ pub use viewport::{
 };
 #[doc(hidden)]
 pub use viewport::{ScrollBarStep, ScrollCommand, ScrollCommandMethod, SourceScroll};
+pub use visual_transform::{Point2D, Transform2D, Vector2D};
 pub use window_status::{WindowCommand, WindowStatus};
 #[doc(hidden)]
 pub use window_status::{WindowCommandMethod, WindowLifecycle, WindowMetric, WindowStatusBinding};
@@ -1576,6 +1584,35 @@ pub enum AccessibleLive {
     Assertive,
 }
 
+/// A string fragment consumed by generated concatenation code.
+#[doc(hidden)]
+pub enum TextFragment<'a> {
+    Static(&'a str),
+    Owned(String),
+    Shared(Rc<String>),
+}
+
+impl AsRef<str> for TextFragment<'_> {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Static(value) => value,
+            Self::Owned(value) => value,
+            Self::Shared(value) => value.as_str(),
+        }
+    }
+}
+
+/// Join already evaluated fragments using a single allocation for the result.
+#[doc(hidden)]
+pub fn concat_text<T: AsRef<str>>(parts: impl AsRef<[T]>) -> String {
+    let parts = parts.as_ref();
+    let mut result = String::with_capacity(parts.iter().map(|part| part.as_ref().len()).sum());
+    for part in parts {
+        result.push_str(part.as_ref());
+    }
+    result
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     EventResult(EventResult),
@@ -1603,6 +1640,9 @@ pub enum Value {
     RecordList(RecordList),
     ComboModel(ComboModel),
     Length(Length),
+    Point2D(Point2D),
+    Vector2D(Vector2D),
+    Transform2D(Transform2D),
     Percent(Percent),
     Color(Color),
     Brush(Brush),
@@ -1720,6 +1760,9 @@ impl From<VecModel<Date>> for Value {
 }
 
 value_from!(Length, Length);
+value_from!(Point2D, Point2D);
+value_from!(Vector2D, Vector2D);
+value_from!(Transform2D, Transform2D);
 value_from!(Percent, Percent);
 value_from!(Color, Color);
 value_from!(Image, Image);
@@ -1784,14 +1827,38 @@ impl From<Brush> for Value {
     }
 }
 
+/// A UI scene node with copy-on-write snapshot storage.
 #[derive(Clone, Debug)]
-pub struct Node(NodeStorage);
+pub struct Node(Rc<NodeStorage>);
 
 #[derive(Clone, Debug)]
-#[allow(clippy::large_enum_variant)] // Keep ordinary dynamic nodes inline.
-enum NodeStorage {
-    Inline(NodeData),
-    Shared(Arc<NodeData>),
+struct NodeStorage {
+    data: NodeData,
+    frozen: bool,
+    scene_features: OnceCell<u8>,
+}
+
+/// A storage identity for caches that should not keep a scene node alive.
+#[doc(hidden)]
+pub struct SharedNodeIdentity(std::rc::Weak<NodeStorage>);
+
+impl SharedNodeIdentity {
+    pub fn matches(&self, node: &Node) -> bool {
+        std::ptr::eq(self.0.as_ptr(), Rc::as_ptr(&node.0))
+    }
+}
+
+/// Structural features used by layout's scene-wide passes. Visibility and
+/// interaction state are resolved by the pass itself.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub enum SceneFeature {
+    VirtualList = 1,
+    ListPreparation = 2,
+    FontFamilyChoice = 4,
+    WindowOverlay = 8,
+    AttachedScrollBar = 16,
+    ScrollEndpoint = 32,
 }
 
 /// Scene data shared by clones of a node. Mutating a node detaches its data.
@@ -1925,10 +1992,7 @@ impl std::ops::Deref for Node {
     type Target = NodeData;
 
     fn deref(&self) -> &Self::Target {
-        match &self.0 {
-            NodeStorage::Inline(data) => data,
-            NodeStorage::Shared(data) => data,
-        }
+        &self.0.data
     }
 }
 
@@ -2181,7 +2245,7 @@ impl Node {
     }
 
     pub fn new(kind: &'static str, id: Option<&'static str>) -> Self {
-        Self(NodeStorage::Inline(NodeData {
+        let data = NodeData {
             kind,
             application_window: false,
             id,
@@ -2253,24 +2317,101 @@ impl Node {
             precompiled_path: None,
             loaded_path: None,
             static_grid: None,
+        };
+        Self(Rc::new(NodeStorage {
+            data,
+            frozen: false,
+            scene_features: OnceCell::new(),
         }))
     }
 
-    /// Freeze a static subtree so subsequent snapshot clones share its storage.
+    /// Mark a subtree for scene caches that retain explicitly frozen nodes.
     #[doc(hidden)]
-    pub fn into_shared(self) -> Self {
-        match self.0 {
-            NodeStorage::Inline(mut data) => {
-                data.children = data.children.into_iter().map(Self::into_shared).collect();
-                Self(NodeStorage::Shared(Arc::new(data)))
+    pub fn into_shared(mut self) -> Self {
+        self.freeze();
+        self
+    }
+
+    fn freeze(&mut self) {
+        if !self.0.frozen {
+            let storage = Rc::make_mut(&mut self.0);
+            for child in &mut storage.data.children {
+                child.freeze();
             }
-            NodeStorage::Shared(data) => Self(NodeStorage::Shared(data)),
+            storage.frozen = true;
         }
     }
 
     pub fn shares_storage_with(&self, other: &Self) -> bool {
-        std::ptr::eq(self, other)
-            || matches!((&self.0, &other.0), (NodeStorage::Shared(a), NodeStorage::Shared(b)) if Arc::ptr_eq(a, b))
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// Whether the subtree was explicitly frozen for scene caches.
+    #[doc(hidden)]
+    pub fn has_shared_storage(&self) -> bool {
+        self.0.frozen
+    }
+
+    #[doc(hidden)]
+    pub fn shared_identity(&self) -> Option<SharedNodeIdentity> {
+        self.0
+            .frozen
+            .then(|| SharedNodeIdentity(Rc::downgrade(&self.0)))
+    }
+
+    #[doc(hidden)]
+    pub fn contains_scene_feature(&self, feature: SceneFeature) -> bool {
+        self.scene_features() & feature as u8 != 0
+    }
+
+    /// Dynamic branches can be cheap to visit directly. Avoid
+    /// scanning them twice when an existing traversal is already descending.
+    #[doc(hidden)]
+    pub fn shared_subtree_excludes(&self, feature: SceneFeature) -> bool {
+        self.has_shared_storage() && !self.contains_scene_feature(feature)
+    }
+
+    fn scene_features(&self) -> u8 {
+        if self.0.frozen {
+            *self
+                .0
+                .scene_features
+                .get_or_init(|| self.collect_scene_features())
+        } else {
+            self.collect_scene_features()
+        }
+    }
+
+    fn collect_scene_features(&self) -> u8 {
+        use SceneFeature::*;
+
+        let mut features = 0;
+        if self.list.is_some() {
+            features |= VirtualList as u8 | ListPreparation as u8;
+        }
+        if let Some((_, page)) = self
+            .swipe_preview
+            .as_ref()
+            .and_then(|preview| preview.page.as_ref())
+        {
+            // Only virtual-list preparation visits the separate swipe scene.
+            features |= ListPreparation as u8 | (page.scene_features() & VirtualList as u8);
+        }
+        if is_font_family_choice(self) {
+            features |= FontFamilyChoice as u8;
+        }
+        if is_window_overlay(self.kind) {
+            features |= WindowOverlay as u8;
+        }
+        if self.scroll_target.is_some() {
+            features |= AttachedScrollBar as u8 | ScrollEndpoint as u8;
+        }
+        if self.viewport_handle.is_some() {
+            features |= ScrollEndpoint as u8;
+        }
+        self.children.iter().fold(features, |features, child| {
+            features | child.scene_features()
+        })
     }
 
     #[doc(hidden)]
@@ -2298,10 +2439,9 @@ impl Node {
     /// Mark a generated Rectangle's background as independent of layout and input.
 
     fn data_mut(&mut self) -> &mut NodeData {
-        match &mut self.0 {
-            NodeStorage::Inline(data) => data,
-            NodeStorage::Shared(data) => Arc::make_mut(data),
-        }
+        let node = Rc::make_mut(&mut self.0);
+        node.scene_features.take();
+        &mut node.data
     }
 
     #[doc(hidden)]
@@ -2374,9 +2514,17 @@ impl Node {
     fn paint_only_bit(&self, property: &str) -> u8 {
         match (self.kind, property) {
             ("Rectangle", "background") => 1,
-            ("Text", "color") => 2,
+            ("Text" | "Label" | "StyledText", "color") => 2,
             ("Text" | "Label", "text") => 4,
             ("Image", "source") => 8,
+            ("StyledText", "link-color") => 64,
+            (
+                _,
+                "accessible-name"
+                | "accessible-description"
+                | "accessible-heading-level"
+                | "accessible-live",
+            ) => 128,
             (kind, "flat") if is_button(kind) || kind == "StandardButton" => 16,
             ("Button" | "ToolButton" | "RoundButton" | "DelayButton", "primary") => 32,
             _ => 0,
@@ -2397,9 +2545,35 @@ impl Node {
     /// Compare frame inputs, allowing paint-only values to differ.
     #[doc(hidden)]
     pub fn same_frame_inputs(&self, other: &Self) -> bool {
+        self.same_layout_inputs(other, false)
+    }
+
+    /// Compare a subtree after its parent has resolved the root's position.
+    /// Child positions and all layout-affecting inputs remain significant.
+    #[doc(hidden)]
+    pub fn same_local_layout_inputs(&self, other: &Self) -> bool {
+        self.same_layout_inputs(other, true)
+    }
+
+    #[doc(hidden)]
+    pub fn same_measurement_inputs_at_node(&self, other: &Self) -> bool {
+        self.shares_storage_with(other) || self.same_own_layout_inputs(other, false, true)
+    }
+
+    fn same_layout_inputs(&self, other: &Self, local: bool) -> bool {
         if self.shares_storage_with(other) {
             return true;
         }
+        self.same_own_layout_inputs(other, local, false)
+            && self.children.len() == other.children.len()
+            && self
+                .children
+                .iter()
+                .zip(&other.children)
+                .all(|(child, other)| child.same_frame_inputs(other))
+    }
+
+    fn same_own_layout_inputs(&self, other: &Self, local: bool, ignore_transform: bool) -> bool {
         let paint_only = self.paint_only & other.paint_only;
         let ignore_frame = self.kind == "AnimatedImage" && other.kind == "AnimatedImage";
         let ignore_colorize =
@@ -2407,6 +2581,10 @@ impl Node {
         let fixed_visual_box =
             |node: &Self| node.length("width").is_some() && node.length("height").is_some();
         let relevant = |(name, _): &(&&str, &Value)| match **name {
+            "x" | "y" if local => false,
+            name if ignore_transform && (name == "transform" || name.starts_with("transform-")) => {
+                false
+            }
             "text" | "source" if paint_only & self.paint_only_bit(name) != 0 => {
                 !fixed_visual_box(self) || !fixed_visual_box(other)
             }
@@ -2433,27 +2611,48 @@ impl Node {
                 .iter()
                 .filter(relevant)
                 .eq(other.properties.iter().filter(relevant))
-            && self.children.len() == other.children.len()
-            && self
-                .children
-                .iter()
-                .zip(&other.children)
-                .all(|(child, other)| child.same_frame_inputs(other))
+    }
+
+    /// Compare this node's paint inputs. Descendants are tracked separately.
+    #[doc(hidden)]
+    pub fn same_own_paint_inputs(&self, other: &Self) -> bool {
+        self.shares_storage_with(other)
+            || self.same_structure_and_state(other)
+                && self.media_frame == other.media_frame
+                && self.properties == other.properties
     }
 
     /// Compare a paint layer's content independently of its composited opacity.
     #[doc(hidden)]
     pub fn same_paint_except_opacity(&self, other: &Self) -> bool {
-        let without_opacity = |(name, _): &(&&str, &Value)| **name != "opacity";
+        self.same_layer_content(other, false)
+    }
+
+    /// The painter must separately verify that changes to the root position
+    /// preserve the layout relative to the cached texture.
+    #[doc(hidden)]
+    pub fn same_paint_except_layer_composition(&self, other: &Self) -> bool {
+        self.same_layer_content(other, true)
+    }
+
+    fn same_layer_content(&self, other: &Self, moving: bool) -> bool {
+        let content_property = |(name, _): &(&&str, &Value)| {
+            **name != "opacity" && !(moving && matches!(**name, "x" | "y"))
+        };
         self.shares_storage_with(other)
             || self.same_structure_and_state(other)
                 && self.media_frame == other.media_frame
                 && self
                     .properties
                     .iter()
-                    .filter(without_opacity)
-                    .eq(other.properties.iter().filter(without_opacity))
-                && self.children == other.children
+                    .filter(content_property)
+                    .eq(other.properties.iter().filter(content_property))
+                && self.children.len() == other.children.len()
+                && self
+                    .children
+                    .iter()
+                    .zip(&other.children)
+                    .all(|(child, other)| child.shares_storage_with(other) || child == other)
     }
     /// An empty slot keeps the generated event paths stable across conditional renders.
     pub fn hidden() -> Self {
@@ -2542,7 +2741,10 @@ impl Node {
             Some(Value::Percent(Percent(factor))) if factor.is_finite() => {
                 Some((factor * f64::from(reference)).clamp(-1_000_000.0, 1_000_000.0) as f32)
             }
-            _ => self.length(name),
+            Some(Value::Length(Length(value))) if value.is_finite() => {
+                Some(value.clamp(-1_000_000.0, 1_000_000.0) as f32)
+            }
+            _ => None,
         }
     }
 
@@ -3189,5 +3391,46 @@ impl Node {
                 .as_ref()?
                 .position_of_source_key(key, source_index)
         }
+    }
+}
+
+#[cfg(test)]
+mod node_storage_tests {
+    use super::*;
+
+    #[test]
+    fn scene_snapshot_clones_detach_only_the_edited_path() {
+        assert_eq!(std::mem::size_of::<Node>(), std::mem::size_of::<Rc<()>>());
+
+        let mut root = Node::new("Window", None);
+        let mut label = Node::new("Text", None);
+        label
+            .properties
+            .insert("text", Value::String("original".into()));
+        root.children.extend([label, Node::new("Rectangle", None)]);
+        let mut snapshot = root.clone();
+        assert!(root.shares_storage_with(&snapshot));
+        assert!(!snapshot.has_shared_storage());
+
+        snapshot.children[0]
+            .properties
+            .insert("text", Value::String("edited".into()));
+        assert!(!root.shares_storage_with(&snapshot));
+        assert_eq!(root.children[0].text("text"), Some("original"));
+        assert_eq!(snapshot.children[0].text("text"), Some("edited"));
+        assert!(root.children[1].shares_storage_with(&snapshot.children[1]));
+
+        let mut frozen = root.clone().into_shared();
+        assert!(!root.children[0].has_shared_storage());
+        assert!(frozen.children[0].has_shared_storage());
+        assert!(!frozen.contains_scene_feature(SceneFeature::VirtualList));
+        let identity = frozen.shared_identity().unwrap();
+        frozen.children[0].list = Some(ListMetrics {
+            row_count: 1,
+            first_row: 0,
+        });
+        assert!(!identity.matches(&frozen));
+        assert!(frozen.contains_scene_feature(SceneFeature::VirtualList));
+        assert!(!root.contains_scene_feature(SceneFeature::VirtualList));
     }
 }

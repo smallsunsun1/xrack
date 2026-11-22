@@ -256,11 +256,42 @@ impl<Item: Clone + PartialEq, State, Ui> Delegate<Item, State, Ui> {
 
 type DelegateRows<Item, State, Ui> = BTreeMap<RowKey, Rc<Delegate<Item, State, Ui>>>;
 
+#[derive(Clone, Copy)]
+enum SceneRetention {
+    None,
+    Equal,
+    Reactive { reads_index: bool },
+}
+
+#[derive(Default)]
+struct RetainedScene {
+    node: Property<Node>,
+    invokes_callback: Cell<bool>,
+}
+
+impl RetainedScene {
+    fn render<E>(&self, draw: impl FnOnce() -> Result<Node, E>) -> Result<Node, E> {
+        if self.invokes_callback.get() {
+            return draw().map(Node::into_shared);
+        }
+        self.node.try_get(|| {
+            let reads = crate::callback::callback_reads();
+            let result = draw();
+            // An installed callback can observe or modify state outside the
+            // property graph. Keep rendering this row when its parent updates.
+            self.invokes_callback
+                .set(crate::callback::callback_reads() != reads);
+            result.map(Node::into_shared)
+        })
+    }
+}
+
 pub struct ComponentRepeater<Model: ListModel, State, Ui> {
     model: Property<Rc<Model>>,
     stamp: Cell<Option<(u64, u64)>>,
     rows: RefCell<DelegateRows<Model::Item, State, Ui>>,
-    scenes: RefCell<BTreeMap<RowKey, Rc<Property<Node>>>>,
+    scenes: RefCell<BTreeMap<RowKey, Rc<RetainedScene>>>,
+    previous: RefCell<BTreeMap<RowKey, Node>>,
 }
 
 impl<Model: ListModel, State, Ui> Default for ComponentRepeater<Model, State, Ui> {
@@ -270,6 +301,7 @@ impl<Model: ListModel, State, Ui> Default for ComponentRepeater<Model, State, Ui
             stamp: Cell::default(),
             rows: RefCell::default(),
             scenes: RefCell::default(),
+            previous: RefCell::default(),
         }
     }
 }
@@ -309,7 +341,25 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         self.render_rows(
             model,
             |count| range.start..range.end.min(count),
-            None,
+            SceneRetention::Equal,
+            create,
+            render,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn render_cached_range(
+        &self,
+        model: impl FnOnce() -> Model,
+        range: Range<usize>,
+        reads_index: bool,
+        create: impl Fn(RowContext<Model::Item>) -> Ui,
+        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> Node,
+    ) -> Vec<Node> {
+        self.render_rows(
+            model,
+            |count| range.start..range.end.min(count),
+            SceneRetention::Reactive { reads_index },
             create,
             render,
         )
@@ -325,7 +375,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         self.render_rows(
             model,
             |count| indices.into_iter().filter(move |&index| index < count),
-            None,
+            SceneRetention::None,
             create,
             render,
         )
@@ -345,7 +395,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         self.render_rows(
             model,
             |count| indices.into_iter().filter(move |&index| index < count),
-            Some(reads_index),
+            SceneRetention::Reactive { reads_index },
             create,
             render,
         )
@@ -355,7 +405,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         &self,
         model: impl FnOnce() -> Model,
         indices: impl FnOnce(usize) -> I,
-        cache_reads_index: Option<bool>,
+        retention: SceneRetention,
         create: impl Fn(RowContext<Model::Item>) -> Ui,
         render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> Node,
     ) -> Vec<Node> {
@@ -365,7 +415,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
                 self.try_render_rows(
                     &resolved,
                     indices,
-                    cache_reads_index,
+                    retention,
                     |input| Ok(create(input)),
                     |ui, index, item, row_index, state| {
                         Ok::<_, std::convert::Infallible>(render(ui, index, item, row_index, state))
@@ -446,7 +496,33 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         self.try_render_rows(
             model,
             |count| indices.into_iter().filter(move |&index| index < count),
-            cache_reads_index,
+            cache_reads_index.map_or(SceneRetention::None, |reads_index| {
+                SceneRetention::Reactive { reads_index }
+            }),
+            create,
+            render,
+        )
+    }
+
+    /// Preserve identical scenes for ordinary repeats after evaluating the row.
+    #[doc(hidden)]
+    pub fn try_render_retained_range<E>(
+        &self,
+        model: &Model,
+        range: Range<usize>,
+        create: impl Fn(RowContext<Model::Item>) -> Result<Ui, E>,
+        render: impl Fn(
+            &Ui,
+            usize,
+            &dyn Fn() -> Model::Item,
+            &dyn Fn() -> i64,
+            &State,
+        ) -> Result<Node, E>,
+    ) -> Result<Vec<Node>, E> {
+        self.try_render_rows(
+            model,
+            |count| range.start..range.end.min(count),
+            SceneRetention::Equal,
             create,
             render,
         )
@@ -456,7 +532,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         &self,
         model: &Model,
         indices: impl FnOnce(usize) -> I,
-        cache_reads_index: Option<bool>,
+        retention: SceneRetention,
         create: impl Fn(RowContext<Model::Item>) -> Result<Ui, E>,
         render: impl Fn(
             &Ui,
@@ -504,20 +580,37 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
                 node.set_row_key(Some(key));
                 Ok(node)
             };
-            if let Some(reads_index) = cache_reads_index {
-                visible.insert(key);
-                let scene = self.scenes.borrow_mut().entry(key).or_default().clone();
-                scene.try_get(|| {
-                    if reads_index {
-                        row.input.index();
+            match retention {
+                SceneRetention::Reactive { reads_index } => {
+                    visible.insert(key);
+                    let scene = self.scenes.borrow_mut().entry(key).or_default().clone();
+                    scene.render(|| {
+                        if reads_index {
+                            row.input.index();
+                        }
+                        draw()
+                    })
+                }
+                SceneRetention::Equal => {
+                    let scene = draw()?;
+                    visible.insert(key);
+                    let mut previous = self.previous.borrow_mut();
+                    if let Some(old) = previous.get(&key)
+                        && *old == scene
+                    {
+                        return Ok(old.clone());
                     }
-                    draw().map(Node::into_shared)
-                })
-            } else {
-                draw()
+                    let scene = scene.into_shared();
+                    previous.insert(key, scene.clone());
+                    Ok(scene)
+                }
+                SceneRetention::None => draw(),
             }
         });
         self.scenes
+            .borrow_mut()
+            .retain(|key, _| visible.contains(key));
+        self.previous
             .borrow_mut()
             .retain(|key, _| visible.contains(key));
         nodes
@@ -751,6 +844,57 @@ mod tests {
         assert_ne!(replaced[0].row_key, reordered[0].row_key);
         assert_eq!(replaced[0].text("text"), Some("0:replacement"));
         assert_eq!(draws.get(), 7);
+    }
+
+    #[test]
+    fn cached_range_updates_only_changed_rows_and_keeps_host_calls_live() {
+        let model = VecModel::from(vec!["history".to_owned(), "stream".to_owned()]);
+        let repeater = ComponentRepeater::<VecModel<String>, (), ()>::default();
+        let root = Property::default();
+        let revision = Property::default();
+        let suffix = Property::default();
+        let callback = crate::CallbackSlot::default();
+        let draws = RefCell::new(Vec::new());
+        let render = || {
+            root.get(|| {
+                revision.get(|| 0);
+                repeater.render_cached_range(
+                    || model.clone(),
+                    0..2,
+                    true,
+                    |_| (),
+                    |_, index, item, _, _| {
+                        draws.borrow_mut().push(index);
+                        let mut text = item();
+                        if index == 1 {
+                            callback.track();
+                            if callback.get().is_some() {
+                                text.push_str(&suffix.get(String::new));
+                            }
+                        }
+                        let mut node = Node::new("Label", None);
+                        node.properties.insert("text", text.into());
+                        node
+                    },
+                )
+            })
+        };
+
+        let initial = render();
+        assert!(model.set_row(1, "updated".into()));
+        let updated = render();
+        assert_eq!(*draws.borrow(), [0, 1, 1]);
+        assert!(initial[0].shares_storage_with(&updated[0]));
+        assert_eq!(updated[1].text("text"), Some("updated"));
+
+        callback.set(());
+        render();
+        suffix.set("!".into());
+        assert_eq!(render()[1].text("text"), Some("updated!"));
+        revision.set(1);
+        let again = render();
+        assert_eq!(*draws.borrow(), [0, 1, 1, 1, 1, 1]);
+        assert!(again[0].shares_storage_with(&initial[0]));
     }
 
     #[test]

@@ -67,6 +67,11 @@ pub enum Statement {
         body: Vec<Statement>,
         span: Span,
     },
+    Let {
+        local: String,
+        value: Expr,
+        span: Span,
+    },
     Assignment(Assignment),
     Invoke(CallbackCall),
     Evaluate {

@@ -344,6 +344,8 @@ Android 软键盘的提交操作沿用表格的类型校验。有效值写回后
 
 普通视觉节点支持 `transform-rotation`、`transform-scale`、`transform-scale-x` 和 `transform-scale-y`。旋转值用顺时针角度，逐轴值可覆盖统一缩放，负值可镜像。`transform-origin-x` 和 `transform-origin-y` 接受长度或百分比，省略时以节点中心为原点。变换作用于已完成布局的子树，绘制、指针定位和裁剪共用变换矩阵。窗口级弹出层继续以窗口坐标定位。运行 `bazel run //examples/layout:layout -- --transforms`。
 
+`transform` 接受可绑定的 `transform2d` 值。它以节点左上角为局部原点，在上述属性确定的变换之后应用。绕其他点变换可用 `Transform2D.around`。[二维点、向量和变换](language.md#二维点向量和变换)
+
 `ScaleRotateGestureHandler` 把触屏双指手势、macOS 和 iPadOS 触控板手势统一成 `started()`、`updated()`、`ended()` 和 `cancelled()`。在 `started()` 保存初始状态，在 `updated()` 读取累计 `scale`、顺时针角度 `rotation` 和局部逻辑像素中心 `center-x/y`，再更新内容变换。手势结束或取消时，`active` 变回 `false`，读数回到默认值。两指须从同一个可用区域开始。第二指接管待提交的单指输入时，会取消原来的点击候选。关闭 `enabled` 会取消该区域的手势，子控件仍可接收单指操作。运行 `bazel run //examples/layout:layout -- --scale-rotate`。
 
 [Android 控件示例](../examples/android/README.md#独立控件回归) 的 **Open gestures** 面板可验证双指接管、松手保留变换、后台取消和恢复后重新点击。应用在 `cancelled()` 中将图形恢复到本次手势开始前的状态。

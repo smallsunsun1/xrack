@@ -4,32 +4,51 @@ mod android_emoji;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod color_glyphs;
 mod controls;
+mod display_list;
 mod entry;
 mod image;
 mod image_colorize;
+mod image_coverage;
 #[cfg(target_os = "ios")]
 mod ios_font;
+mod layer_compositor;
 mod nine_slice;
 pub mod preview;
 mod preview_pointer;
+mod primitive;
 mod range;
+mod rectangle;
+mod retained_geometry;
 mod retained_layers;
+mod shader_effect;
 mod shadow;
+mod styled_ink;
 mod styled_text;
 mod text;
 mod theme;
+mod transform;
+mod transient_textures;
 mod vector;
+mod vector_masks;
+mod window_damage;
 #[cfg(target_os = "android")]
 #[doc(hidden)]
 pub use color_glyphs::GlyphBitmap as AndroidGlyphBitmap;
+pub use display_list::DisplayBatchStats;
+use display_list::DisplayList;
 #[doc(hidden)]
 pub use entry::{PointerCaret, TouchSelectionHandle};
 use femtovg::{
-    Canvas, Color, FillRule, LayerEffects, Paint, Path, Solidity, Transform2D,
-    renderer::WGPURenderer,
+    Canvas, Color, FillRule, LayerEffects, Paint, Path, Solidity, renderer::WGPURenderer,
+};
+use primitive::Primitive;
+pub use primitive::{
+    Geometry, GpuPaintContext, GpuPassContext, PaintContext, PaintRegistration, register_geometry,
+    register_gpu, register_gpu_pass,
 };
 #[doc(hidden)]
-pub use retained_layers::LayerStats;
+pub use retained_layers::{LayerStats, OpacityAtlasStats};
+pub use shader_effect::register_shader_effect;
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -40,9 +59,11 @@ use std::{
 pub use text::TextSystem;
 pub use theme::Theme;
 use theme::{Palette, PaletteRole as Role};
+use transform::{CanvasTransform, canvas_transform, has_device_scale, has_pixel_aligned_scale};
+pub use window_damage::{DamageRect, DamageRegions, WindowDamage};
 use xrack_layout::{
-    Affine, ButtonContent, ComboCompletion, ImagePresentation, Interaction, LayoutNode, Point,
-    Rect, Size, SpinGeometry, StackTransitions, TextMeasurer, TreeRowGeometry, corner_radii,
+    ButtonContent, ComboCompletion, ImagePresentation, Interaction, LayoutNode, Point, Rect, Size,
+    SpinGeometry, StackTransitions, TextMeasurer, TreeRowGeometry, corner_radii,
 };
 use xrack_runtime::{
     Brush, Color as UiColor, ColorScheme, Component, GradientStop, Node, Orientation,
@@ -58,6 +79,10 @@ struct PaintFrame<'a> {
     transitions: Option<&'a StackTransitions>,
     indicator_phase: Option<f32>,
     theme: Palette,
+    cleared_window: Option<&'a Node>,
+    /// Complete paint groups to replay, bounded in physical pixels.
+    damage: Option<DamageRegions>,
+    prepared_layout: Option<&'a Rc<LayoutNode>>,
 }
 
 fn color(color: UiColor) -> Color {
@@ -68,6 +93,22 @@ fn color(color: UiColor) -> Color {
         color.0 as u8,
     )
 }
+
+fn pixel_aligned(bounds: Rect, scale: f32) -> bool {
+    [bounds.x, bounds.y, bounds.width, bounds.height]
+        .into_iter()
+        .all(|value| {
+            let pixels = value * scale;
+            pixels.is_finite() && pixels == pixels.round()
+        })
+}
+
+/// The fractional sampling position in a device pixel. Integer translations
+/// share it, and the quantization error is less than 1/256 of a pixel.
+fn pixel_phase(value: f32) -> u8 {
+    ((value - value.floor()) * 256.0).round() as u8
+}
+
 fn tint(value: UiColor, factor: f32) -> UiColor {
     let channel = |shift: u32| {
         let c = ((value.0 >> shift) & 255_u32) as f32;
@@ -135,6 +176,27 @@ fn paint_brush_with(brush: &Brush, bounds: Rect, tinted: impl Fn(UiColor) -> Col
     }
 }
 
+// A full opaque Window fill can be the render pass clear.
+fn window_clear_background(
+    scene: &Node,
+    layout: &LayoutNode,
+    viewport: Rect,
+    scale: f32,
+) -> Option<UiColor> {
+    scene.color("background").filter(|background| {
+        background.0 & 0xff == 0xff
+            && scene.kind == "Window"
+            && scene.opacity() == 1.0
+            && layout.visible
+            && layout.bounds == viewport
+            && layout.clip.intersect(layout.bounds) == viewport
+            && pixel_aligned(viewport, scale)
+            && layout.local_transform().is_identity()
+            && layout.table_pane_clip().is_none()
+            && corner_radii(scene, layout.bounds) == [0.0; 4]
+    })
+}
+
 fn indicator_phase(elapsed: Duration) -> f32 {
     const PERIOD_NS: u128 = 1_400_000_000;
     (elapsed.as_nanos() % PERIOD_NS) as f32 / PERIOD_NS as f32
@@ -149,6 +211,22 @@ pub struct Renderer {
     canvas_font_context: Rc<()>,
     images: image::Images,
     retained_layers: retained_layers::RetainedLayers,
+    layer_compositor: Option<layer_compositor::LayerCompositor>,
+    cached_layer_compositing: bool,
+    rectangle_batches: rectangle::RectangleBatches,
+    geometry_cache: retained_geometry::GeometryCache,
+    render_scene: xrack_runtime::SceneIndex,
+    scene_generation: u64,
+    inspect_scene: bool,
+    scene_changes: xrack_runtime::SceneChanges,
+    transient_textures: transient_textures::TransientTextures,
+    inline_target: Option<wgpu::Texture>,
+    window_damage: window_damage::WindowDamageState,
+    geometry_row: Option<xrack_runtime::RowKey>,
+    display_batching: bool,
+    display_batch_stats: DisplayBatchStats,
+    custom_encoder: Option<wgpu::CommandEncoder>,
+    vector_paths: vector::Paths,
     row_layouts: xrack_layout::RowLayoutCache,
     clock: Instant,
     needs_redraw: bool,
@@ -196,8 +274,26 @@ impl RenderDevice {
                 .min(supported_limits.max_inter_stage_shader_variables),
             ..required_limits
         };
+        let trace = match std::env::var_os("XRACK_GPU_TRACE_DIR") {
+            Some(root) => {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static NEXT_CAPTURE: AtomicU64 = AtomicU64::new(0);
+                let index = NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed);
+                let folder = std::path::PathBuf::from(root)
+                    .join(format!("xrack-{}-{index}", std::process::id()));
+                std::fs::create_dir_all(&folder).map_err(|error| {
+                    format!(
+                        "cannot create GPU trace directory {}: {error}",
+                        folder.display()
+                    )
+                })?;
+                wgpu::Trace::Directory(folder)
+            }
+            None => wgpu::Trace::Off,
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
+                trace,
                 label: Some("XRack"),
                 required_features: wgpu::Features::empty(),
                 required_limits,
@@ -259,6 +355,24 @@ impl Renderer {
             canvas_font_context: text.context_key().clone(),
             images: image::Images::default(),
             retained_layers: Default::default(),
+            layer_compositor: None,
+            cached_layer_compositing: true,
+            rectangle_batches: Default::default(),
+            geometry_cache: retained_geometry::GeometryCache::new(
+                std::env::var_os("XRACK_RETAINED_GEOMETRY").is_some_and(|value| value == "1"),
+            ),
+            transient_textures: Default::default(),
+            render_scene: Default::default(),
+            scene_generation: 0,
+            inspect_scene: false,
+            scene_changes: Default::default(),
+            inline_target: None,
+            window_damage: Default::default(),
+            geometry_row: None,
+            display_batching: true,
+            display_batch_stats: DisplayBatchStats::default(),
+            custom_encoder: None,
+            vector_paths: Default::default(),
             row_layouts: Default::default(),
             clock: Instant::now(),
             needs_redraw: false,
@@ -295,6 +409,7 @@ impl Renderer {
     }
 
     fn invalidate_text_layout(&mut self) {
+        self.submit_opacity_atlas();
         self.row_layouts = Default::default();
         self.retained_layers.clear_images(&mut self.canvas);
     }
@@ -332,6 +447,116 @@ impl Renderer {
     /// An animated element was visible in the last frame.
     pub fn needs_redraw(&self) -> bool {
         self.needs_redraw
+    }
+
+    /// Select the direct vector path for benchmarks and pixel comparisons.
+    #[doc(hidden)]
+    pub fn set_vector_path_cache_enabled(&mut self, enabled: bool) {
+        self.vector_paths.set_enabled(enabled);
+    }
+
+    /// Select full rich-text painting for pixel comparisons and benchmarks.
+    #[doc(hidden)]
+    pub fn set_styled_text_culling_enabled(&mut self, enabled: bool) {
+        self.text.styled_ink.get_mut().set_enabled(enabled);
+    }
+
+    #[doc(hidden)]
+    pub fn styled_text_culled_fragments(&self) -> u64 {
+        self.text.styled_ink.borrow().culled
+    }
+
+    /// Select a fresh rich-text layout for each revision in tests and benchmarks.
+    #[doc(hidden)]
+    pub fn set_styled_text_incremental_enabled(&mut self, enabled: bool) {
+        self.text.set_styled_text_incremental_enabled(enabled);
+    }
+
+    #[doc(hidden)]
+    pub fn styled_text_reused_fragments(&self) -> u64 {
+        self.text.styled_text_reused_fragments()
+    }
+
+    /// Reuse device vertex buffers for compatible opaque rectangle batches.
+    pub fn set_retained_geometry_enabled(&mut self, enabled: bool) {
+        self.geometry_cache.enabled = enabled;
+    }
+
+    /// Return reused batches and uploaded vertex bytes.
+    pub fn retained_geometry_stats(&self) -> (u64, u64) {
+        (self.geometry_cache.reused, self.geometry_cache.uploaded)
+    }
+
+    /// Count geometry cache hits in scopes with a stable model row identity.
+    pub fn retained_row_geometry_reuses(&self) -> u64 {
+        self.geometry_cache.row_reuses
+    }
+
+    #[doc(hidden)]
+    pub fn transient_target_reuses(&self) -> u64 {
+        self.transient_textures.reuses
+    }
+
+    #[doc(hidden)]
+    pub fn set_scene_observation(&mut self, generation: u64, enabled: bool) {
+        self.scene_generation = generation;
+        self.inspect_scene = enabled;
+    }
+
+    #[doc(hidden)]
+    pub fn scene_changes(&self) -> xrack_runtime::SceneChanges {
+        self.scene_changes
+    }
+
+    /// Enable or disable merging compatible display list entries.
+    pub fn set_display_batching_enabled(&mut self, enabled: bool) {
+        self.display_batching = enabled;
+    }
+
+    #[doc(hidden)]
+    pub fn set_cached_layer_compositing_enabled(&mut self, enabled: bool) {
+        self.cached_layer_compositing = enabled;
+    }
+
+    pub fn display_batch_stats(&self) -> DisplayBatchStats {
+        self.display_batch_stats
+    }
+
+    /// Compare rectangle fills and batches with the general painter in tests.
+    #[doc(hidden)]
+    pub fn set_rectangle_optimization_enabled(&mut self, enabled: bool) {
+        self.rectangle_batches.disabled = !enabled;
+    }
+
+    /// Compare atlas submission strategies in GPU tests.
+    #[doc(hidden)]
+    pub fn set_atlas_batching_enabled(&mut self, enabled: bool) {
+        self.rectangle_batches.eager_atlas_submission = !enabled;
+    }
+
+    #[doc(hidden)]
+    pub fn set_fractional_rounded_tile_retention_enabled(&mut self, enabled: bool) {
+        self.rectangle_batches.reset_fractional_tiles_each_frame = !enabled;
+    }
+
+    #[doc(hidden)]
+    pub fn rounded_tile_rasterizations(&self) -> usize {
+        self.rectangle_batches.rounded_tile_rasterizations()
+    }
+
+    #[doc(hidden)]
+    pub fn rectangle_batch_draws(&self) -> u64 {
+        self.rectangle_batches.draws
+    }
+
+    #[doc(hidden)]
+    pub fn rectangle_palette_uploads(&self) -> u64 {
+        self.rectangle_batches.palette_uploads
+    }
+
+    #[doc(hidden)]
+    pub fn rounded_rectangle_batch_draws(&self) -> u64 {
+        self.rectangle_batches.rounded_draws
     }
 
     pub fn take_painted_combo_completion(&mut self) -> Option<ComboCompletion> {
@@ -405,6 +630,9 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions: None,
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
+                cleared_window: None,
+                damage: None,
+                prepared_layout: None,
             },
         )?;
         Ok(layout)
@@ -455,6 +683,75 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions: Some(transitions),
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
+                cleared_window: None,
+                damage: None,
+                prepared_layout: None,
+            },
+        )
+    }
+
+    /// Draw a window frame, reusing the previous image for bounded repaint work.
+    /// The supplied texture may be a different swapchain image on every call.
+    pub fn draw_window(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &wgpu::Texture,
+        scale: f32,
+        input: &Interaction,
+        transitions: &StackTransitions,
+    ) -> Result<WindowDamage, String> {
+        self.draw_window_with_layout(scene, (layout, None), target, scale, input, transitions)
+    }
+
+    /// Reuse the geometry of a prepared layout while the window keeps it alive.
+    pub fn draw_window_prepared(
+        &mut self,
+        scene: &Node,
+        layout: &Rc<LayoutNode>,
+        target: &wgpu::Texture,
+        scale: f32,
+        input: &Interaction,
+        transitions: &StackTransitions,
+    ) -> Result<WindowDamage, String> {
+        self.draw_window_with_layout(
+            scene,
+            (layout, Some(layout)),
+            target,
+            scale,
+            input,
+            transitions,
+        )
+    }
+
+    fn draw_window_with_layout(
+        &mut self,
+        scene: &Node,
+        (layout, prepared_layout): (&LayoutNode, Option<&Rc<LayoutNode>>),
+        target: &wgpu::Texture,
+        scale: f32,
+        input: &Interaction,
+        transitions: &StackTransitions,
+    ) -> Result<WindowDamage, String> {
+        validate_extent(
+            target.width(),
+            target.height(),
+            scale,
+            self.device.limits().max_texture_dimension_2d,
+        )?;
+        self.paint_window(
+            scene,
+            layout,
+            target,
+            PaintFrame {
+                input,
+                scale,
+                theme: self.palette(scene),
+                transitions: Some(transitions),
+                indicator_phase: Some(indicator_phase(self.clock.elapsed())),
+                cleared_window: None,
+                damage: None,
+                prepared_layout,
             },
         )
     }
@@ -472,6 +769,44 @@ impl Renderer {
         target: &wgpu::Texture,
         frame: PaintFrame<'_>,
     ) -> Result<(), String> {
+        self.paint_frame_with_transfer(scene, layout, target, frame, None)
+    }
+
+    fn paint_frame_with_transfer(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &wgpu::Texture,
+        frame: PaintFrame<'_>,
+        transfer: Option<wgpu::CommandBuffer>,
+    ) -> Result<(), String> {
+        self.inline_target = (frame.damage.is_none()
+            && scene.kind == "Window"
+            && scene.opacity() == 1.0
+            && !layout.has_ancestor_clip_chain()
+            && layout.child_clip_shape().is_none()
+            && !frame.transitions.is_some_and(StackTransitions::is_active))
+        .then(|| target.clone());
+        let result = self.record_frame(scene, layout, target, frame, transfer);
+        self.inline_target = None;
+        if result.is_err() {
+            self.custom_encoder = None;
+            self.retained_layers.reset_canvas();
+            self.canvas_font_context = Rc::new(());
+        }
+        self.transient_textures.finish_frame(&self.queue);
+        result
+    }
+
+    fn record_frame(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &wgpu::Texture,
+        frame: PaintFrame<'_>,
+        transfer: Option<wgpu::CommandBuffer>,
+    ) -> Result<(), String> {
+        self.submit_opacity_atlas();
         let inspection_outline = self.inspection_outline.take();
         let PaintFrame {
             input,
@@ -491,6 +826,13 @@ impl Renderer {
             self.images = image::Images::default();
             self.retained_layers.reset_canvas();
         }
+        self.rectangle_batches.begin_frame(canvas_changed);
+        self.geometry_cache.begin_frame();
+        if self.geometry_cache.enabled || self.inspect_scene {
+            self.scene_changes = self.render_scene.synchronize(scene, self.scene_generation);
+        }
+        self.transient_textures.begin_frame();
+        self.custom_encoder = None;
         #[cfg(any(target_os = "android", target_os = "ios"))]
         self.text.begin_color_glyph_frame(canvas_changed);
         self.retained_layers.begin_frame(&mut self.canvas);
@@ -499,21 +841,52 @@ impl Renderer {
         self.needs_redraw = false;
         self.painted_combo_completion = None;
         let size = target.size();
-        self.canvas.set_size(size.width, size.height, scale);
-        self.canvas.reset();
-        self.canvas
-            .clear_rect(0, 0, size.width, size.height, color(theme.window));
-        self.canvas.scale(scale, scale);
-        self.images.begin_frame();
-        if !is_window_overlay(scene.kind) {
-            self.paint(scene, layout, &mut Vec::new(), frame, false)?;
-        }
         let scrim_bounds = Rect::new(
             0.0,
             0.0,
             size.width as f32 / scale,
             size.height as f32 / scale,
         );
+        let clear_background = window_clear_background(scene, layout, scrim_bounds, scale);
+        let cached_layers = if self.cached_layer_compositing
+            && self.display_batching
+            && self.inline_target.is_some()
+            && layer_compositor::supports_target(target)
+            && let Some(background) = clear_background
+            && let Some(layers) = DisplayList::cached_layers(self, scene, layout, frame)
+        {
+            self.retain_composited_layers(&layers);
+            self.encode_cached_layers(target, background, scale, layers);
+            true
+        } else {
+            false
+        };
+        let mut canvas_started = false;
+        if !cached_layers {
+            self.start_frame_canvas(size, scale, &mut canvas_started);
+            let clear = color(clear_background.unwrap_or(theme.window));
+            if let Some(regions) = frame.damage {
+                for &DamageRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                } in regions.rectangles()
+                {
+                    self.canvas.clear_rect(x, y, width, height, clear);
+                }
+            } else {
+                self.canvas.clear_rect(0, 0, size.width, size.height, clear);
+            }
+        }
+        self.images.begin_frame();
+        if !cached_layers && !is_window_overlay(scene.kind) {
+            let root_frame = PaintFrame {
+                cleared_window: clear_background.map(|_| scene),
+                ..frame
+            };
+            self.paint(scene, layout, &mut Vec::new(), root_frame, false)?;
+        }
         for path in input.overlay_layers(layout) {
             let (Some(node), Some(item)) = (scene.at_path(path), layout.at_path(path)) else {
                 continue;
@@ -521,6 +894,7 @@ impl Renderer {
             if !node.is_modal() && !input.allows_popup(layout, path) {
                 continue;
             }
+            self.start_frame_canvas(size, scale, &mut canvas_started);
             if node.boolean("dim", node.is_modal()) {
                 let reveal = input.closing_drawer_scrim(scene, layout, path);
                 self.paint_overlay_scrim(scrim_bounds, theme, reveal);
@@ -528,6 +902,7 @@ impl Renderer {
             self.paint(node, item, &mut path.to_vec(), frame, false)?;
         }
         if let Some((node, viewport, reveal)) = input.opening_drawer_preview(scene, layout) {
+            self.start_frame_canvas(size, scale, &mut canvas_started);
             if node.boolean("dim", node.is_modal()) {
                 self.paint_overlay_scrim(scrim_bounds, theme, reveal);
             }
@@ -552,9 +927,11 @@ impl Renderer {
             result?;
         }
         if let Some(menu) = input.choice_menu(scene, layout) {
+            self.start_frame_canvas(size, scale, &mut canvas_started);
             self.paint_choice_menu(&menu, frame)?;
         }
         for panel in input.menu_panels(scene, layout) {
+            self.start_frame_canvas(size, scale, &mut canvas_started);
             controls::menu_panel(
                 &mut self.canvas,
                 &self.text,
@@ -565,9 +942,11 @@ impl Renderer {
             )?;
         }
         for handle in self.text.touch_selection_handles(scene, layout, input) {
+            self.start_frame_canvas(size, scale, &mut canvas_started);
             handle.paint(&mut self.canvas, color(theme.focus));
         }
         if let Some(popup) = input.tooltip_popup(scene, layout) {
+            self.start_frame_canvas(size, scale, &mut canvas_started);
             let viewport = Rect::new(
                 0.0,
                 0.0,
@@ -585,6 +964,9 @@ impl Renderer {
                     theme,
                     transitions: None,
                     indicator_phase: frame.indicator_phase,
+                    cleared_window: None,
+                    damage: None,
+                    prepared_layout: None,
                 },
                 false,
             )?;
@@ -592,6 +974,7 @@ impl Renderer {
         if let Some(bounds) =
             inspection_outline.filter(|rect| rect.width >= 3.0 && rect.height >= 3.0)
         {
+            self.start_frame_canvas(size, scale, &mut canvas_started);
             let rect = bounds.inset(1.5);
             let mut outline = Path::new();
             outline.rect(rect.x, rect.y, rect.width, rect.height);
@@ -603,12 +986,56 @@ impl Renderer {
             stroke.set_line_width(3.0);
             self.canvas.stroke_path(&outline, &stroke);
         }
-        self.queue.submit(self.canvas.flush_to_output(target));
+        self.rectangle_batches.upload(&mut self.canvas)?;
+        self.submit_canvas_with_transfer(target, transfer);
         #[cfg(any(target_os = "android", target_os = "ios"))]
         self.text.end_color_glyph_frame(&mut self.canvas);
         self.images.end_frame(&mut self.canvas);
-        self.retained_layers.finish_frame(&mut self.canvas);
+        self.retained_layers
+            .finish_frame(&mut self.canvas, &self.render_scene);
         Ok(())
+    }
+
+    fn start_frame_canvas(&mut self, size: wgpu::Extent3d, scale: f32, started: &mut bool) {
+        if !*started {
+            self.canvas.set_size(size.width, size.height, scale);
+            self.canvas.reset();
+            self.canvas.scale(scale, scale);
+            *started = true;
+        }
+    }
+
+    fn submit_canvas(&mut self, target: &wgpu::Texture) {
+        self.submit_canvas_with_transfer(target, None);
+    }
+
+    fn submit_canvas_with_transfer(
+        &mut self,
+        target: &wgpu::Texture,
+        transfer: Option<wgpu::CommandBuffer>,
+    ) {
+        if self.rectangle_batches.eager_atlas_submission {
+            self.submit_opacity_atlas();
+        }
+        xrack_runtime::update_profile::submit_gpu();
+        let rounded = self.rectangle_batches.take_rounded_commands();
+        let opacity = self.take_opacity_atlas_commands();
+        let commands = self.custom_encoder.take().map(wgpu::CommandEncoder::finish);
+        let image_coverage = self.images.encode_coverage(&self.device, &self.queue);
+        // Rounded tiles feed the opacity atlas, and both feed the canvas.
+        // The window can read the backing image only after the canvas writes it.
+        if transfer.is_some() {
+            xrack_runtime::update_profile::transfer_window_image();
+        }
+        self.queue.submit(
+            rounded
+                .into_iter()
+                .chain(opacity)
+                .chain(commands)
+                .chain(image_coverage)
+                .chain(self.canvas.flush_to_output(target))
+                .chain(transfer),
+        );
     }
 
     fn paint(
@@ -619,32 +1046,30 @@ impl Renderer {
         frame: PaintFrame<'_>,
         in_layout: bool,
     ) -> Result<(), String> {
+        let previous = self.geometry_row;
+        let row = node.routing_row_key().or(previous);
+        self.geometry_row = row;
+        let result = self.paint_with_transform(node, layout, path, frame, in_layout);
+        self.geometry_row = previous;
+        result
+    }
+
+    fn paint_with_transform(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+        in_layout: bool,
+    ) -> Result<(), String> {
         let local = layout.local_transform();
         let pane = layout.table_pane_clip();
-        if local == Affine::IDENTITY && pane.is_none() {
+        if local.is_identity() && pane.is_none() {
             return self.paint_in_space(node, layout, path, frame, in_layout);
         }
         self.canvas.save();
         if let Some((bounds, transform)) = pane {
-            let corners = [
-                Point {
-                    x: bounds.x,
-                    y: bounds.y,
-                },
-                Point {
-                    x: bounds.x + bounds.width,
-                    y: bounds.y,
-                },
-                Point {
-                    x: bounds.x + bounds.width,
-                    y: bounds.y + bounds.height,
-                },
-                Point {
-                    x: bounds.x,
-                    y: bounds.y + bounds.height,
-                },
-            ]
-            .map(|point| transform.map_point(point));
+            let corners = transform.map_corners(bounds);
             let mut mask = Path::new();
             mask.move_to(corners[0].x, corners[0].y);
             for point in &corners[1..] {
@@ -653,8 +1078,9 @@ impl Renderer {
             mask.close();
             self.canvas.clip_path(&mask, FillRule::NonZero);
         }
-        if local != Affine::IDENTITY {
-            self.canvas.set_transform(&Transform2D(local.0));
+        if !local.is_identity() {
+            let transform = local.then(canvas_transform(&self.canvas));
+            transform::set_canvas_transform(&mut self.canvas, transform);
         }
         let result = self.paint_in_space(node, layout, path, frame, in_layout);
         self.canvas.restore();
@@ -673,6 +1099,17 @@ impl Renderer {
         if !layout.visible || opacity == 0.0 {
             return Ok(());
         }
+        if !self.rectangle_batches.disabled
+            && node.kind == "Rectangle"
+            && has_device_scale(canvas_transform(&self.canvas), frame.scale)
+            && let Some(rectangle) = rectangle::Solid::from_node(node, layout, frame.scale)
+            && !rectangle.uses_mask()
+        {
+            if rectangle.visible() {
+                self.draw_primitive(Primitive::Rectangle(rectangle))?;
+            }
+            return Ok(());
+        }
         let content = layout.clip.intersect(layout.bounds);
         let shadow = shadow::OuterShadow::for_node(
             node,
@@ -684,30 +1121,81 @@ impl Renderer {
             let effect = layout.clip.intersect(shadow.paint_bounds());
             shadow::nonempty(effect).then_some((shadow, effect))
         });
-        if layout.allows_overflow() {
+        let overflow = layout.allows_overflow();
+        let retain_opaque_group = self.geometry_cache.enabled
+            && node.kind == "Rectangle"
+            && node
+                .color("background")
+                .is_some_and(|color| color.0 & 0xff == 0xff)
+            && !node.children.is_empty()
+            && corner_radii(node, layout.bounds) == [0.0; 4]
+            && content == layout.bounds;
+        if !overflow
+            && opacity.is_finite()
+            && (opacity < 1.0
+                || retain_opaque_group
+                || node.boolean("cache-rendering-hint", false)
+                || shadow
+                    .as_ref()
+                    .is_some_and(|(shadow, _)| shadow.is_filtered()))
+            && self.paint_retained_opacity(node, layout, path, frame, in_layout, shadow.as_ref())?
+        {
+            return Ok(());
+        }
+        if !overflow
+            && opacity < 1.0
+            && self.paint_transient_opacity(
+                node,
+                layout,
+                path,
+                frame,
+                in_layout,
+                retained_layers::OpacitySource::Transient(shadow.as_ref()),
+            )?
+        {
+            return Ok(());
+        }
+        let mask = self.prepare_shadow_mask(shadow.as_ref(), layout, frame.scale, false)?;
+        let shadow = shadow.as_ref().map(|(source, clip)| shadow::ShadowPaint {
+            source,
+            clip: *clip,
+            mask,
+        });
+        if overflow {
             // The group must cover descendants outside the box, including their
             // paint-only effects. The enclosing viewport is its hard bound.
             return self.paint_group(layout.clip, opacity, |renderer| {
-                if let Some((shadow, effect)) = shadow {
-                    shadow.draw(&mut renderer.canvas, effect);
+                if let Some(shadow) = shadow {
+                    shadow.draw(&mut renderer.canvas);
                 }
                 renderer.paint_element(node, layout, path, frame, in_layout)
             });
         }
-        if let Some((shadow, effect)) = shadow {
-            return self.paint_group(shadow::union(content, effect), opacity, |renderer| {
-                shadow.draw(&mut renderer.canvas, effect);
-                renderer.paint_group(content, 1.0, |renderer| {
-                    renderer.paint_element(node, layout, path, frame, in_layout)
-                })
-            });
-        }
-        if opacity < 1.0 && self.paint_retained_opacity(node, layout, path, frame, in_layout)? {
-            return Ok(());
-        }
-        self.paint_group(content, opacity, |renderer| {
-            renderer.paint_element(node, layout, path, frame, in_layout)
+        let clip = shadow
+            .as_ref()
+            .map_or(content, |shadow| shadow::union(content, shadow.clip));
+        self.paint_group(clip, opacity, |renderer| {
+            renderer.paint_element_with_shadow(node, layout, path, frame, in_layout, shadow)
         })
+    }
+
+    fn paint_element_with_shadow(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+        in_layout: bool,
+        shadow: Option<shadow::ShadowPaint<'_>>,
+    ) -> Result<(), String> {
+        if let Some(shadow) = shadow {
+            shadow.draw(&mut self.canvas);
+            self.paint_group(layout.clip.intersect(layout.bounds), 1.0, |renderer| {
+                renderer.paint_element(node, layout, path, frame, in_layout)
+            })
+        } else {
+            self.paint_element(node, layout, path, frame, in_layout)
+        }
     }
 
     fn paint_overlay_scrim(&mut self, bounds: Rect, theme: Palette, reveal: f32) {
@@ -728,33 +1216,37 @@ impl Renderer {
             return Ok(());
         }
         self.canvas.save();
-        let transform = self.canvas.transform();
-        let [_, b, c, _, _, _] = transform.0;
-        if b == 0.0 && c == 0.0 {
+        let transform = canvas_transform(&self.canvas);
+        if transform.axis_scales().is_some() {
             self.canvas
                 .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
         } else {
             if opacity < 1.0 {
                 // Bound the offscreen allocation in device space while keeping
                 // the exact rotated clip for the final composite.
-                let capture = Affine(transform.0).map_rect(clip).inset(-1.0);
+                let capture = transform.map_rect(clip).inset(-1.0);
                 self.canvas.reset_transform();
                 self.canvas
                     .intersect_scissor(capture.x, capture.y, capture.width, capture.height);
-                self.canvas.set_transform(&transform);
+                self.canvas.set_transform(&transform::to_femtovg(transform));
             }
             let mut mask = Path::new();
             mask.rect(clip.x, clip.y, clip.width, clip.height);
             self.canvas.clip_path(&mask, FillRule::NonZero);
         }
         let layer = opacity < 1.0;
-        if layer {
-            // FemtoVG supplies a pass-through fallback when it cannot reserve a layer.
-            let _captured = self
+        let previous_passthrough = self.retained_layers.vectors.opacity_passthrough;
+        if layer
+            && !self
                 .canvas
-                .begin_layer(&LayerEffects::new().with_opacity(opacity));
+                .begin_layer(&LayerEffects::new().with_opacity(opacity))
+        {
+            // In a pass-through layer FemtoVG multiplies alpha into each draw.
+            // A retained mask blends the coverage of several strokes at once.
+            self.retained_layers.vectors.opacity_passthrough = true;
         }
         let result = draw(self);
+        self.retained_layers.vectors.opacity_passthrough = previous_passthrough;
         if layer {
             self.canvas.end_layer();
         }
@@ -1097,7 +1589,12 @@ impl Renderer {
                     .is_some_and(xrack_runtime::ButtonPressHandle::is_synthetic_pressed));
         let field = is_input || is_spin_box(node.kind) || node.kind == "ComboBox";
         let mut button_text_color = theme.text;
-        let background = if use_row_surface {
+        let background = if frame
+            .cleared_window
+            .is_some_and(|window| std::ptr::eq(window, node))
+        {
+            None
+        } else if use_row_surface {
             brush_paint(node, "background", bounds, 0.0).or_else(|| {
                 let role = if node.boolean("highlighted", false) || checked {
                     Some(Role::RowSelection)
@@ -1317,16 +1814,23 @@ impl Renderer {
                 image
             };
             let presentation = ImagePresentation::for_node(node, image.size(), in_layout);
-            self.images.draw(
-                &mut self.canvas,
-                &image,
+            self.draw_primitive(Primitive::Image {
                 bounds,
-                image_scale,
+                clip: None,
+                quad: None,
+                asset: image,
                 presentation,
-                image::Colorize::from_value(node.properties.get("colorize")),
-            )?;
+                colorize: image::Colorize::from_value(node.properties.get("colorize")),
+                scale: image_scale,
+            })?;
         } else if node.kind == "Path" {
-            vector::draw_path(&mut self.canvas, node, bounds)?;
+            self.draw_primitive(Primitive::Vector {
+                node,
+                layout,
+                scale,
+            })?;
+        } else if node.kind == "CustomRender" {
+            self.paint_custom(node, layout, path, scale)?;
         } else if node.kind == "ColorPlane" {
             controls::color_plane(&mut self.canvas, node, bounds);
         } else if node.kind == "ColorPreview" {
@@ -1618,35 +2122,17 @@ impl Renderer {
                 &self.text,
                 node,
                 layout,
-                theme,
+                frame,
                 focused,
                 selection,
             )?;
         } else if xrack_layout::uses_label_layout(node) {
-            let tint = if layout.enabled {
-                node.color("color").unwrap_or(theme.text)
-            } else {
-                theme.disabled_text
-            };
-            let paint = self.text.paint_node(node, color(tint), false);
-            let label = self.text.label_layout(
+            self.paint_label(
                 node,
-                Size::new(bounds.width, bounds.height),
-                layout.layout_direction_override(),
-            );
-            for line in label.lines {
-                if !line.text.is_empty() {
-                    self.text
-                        .fill_text(
-                            &mut self.canvas,
-                            bounds.x + line.origin.x,
-                            bounds.y + line.origin.y,
-                            &*line.text,
-                            &paint,
-                        )
-                        .map_err(|error| format!("text drawing failed: {error}"))?;
-                }
-            }
+                layout,
+                display_list::label_tint(node, layout, theme),
+                scale,
+            )?;
         } else if node.kind == "Text" || is_button && node.control_part("ButtonContent").is_none() {
             let button = is_button.then(|| ButtonContent::new(node));
             let text = button
@@ -1714,15 +2200,17 @@ impl Renderer {
                 let placed =
                     button.place(area, size, line_height, centered, layout.layout_direction);
                 if let (Some((image, _)), Some(bounds)) = (button.icon.as_ref(), placed.icon) {
-                    self.images.draw_icon(
-                        &mut self.canvas,
-                        image,
+                    let mut display = DisplayList::new(self, layout.clip.intersect(bounds), scale);
+                    display.push(Primitive::Icon {
                         bounds,
-                        scale,
-                        layout.enabled,
-                        node.boolean("colorize-icon", false)
+                        asset: image,
+                        enabled: layout.enabled,
+                        tint: node
+                            .boolean("colorize-icon", false)
                             .then(|| color(text_color)),
-                    )?;
+                        scale,
+                    });
+                    display.submit(self)?;
                 }
                 (placed.label, placed.icon.is_some() || clip)
             } else {
@@ -1740,18 +2228,22 @@ impl Renderer {
             } else {
                 label.x
             };
-            let result = (|| {
+            let result = {
+                let mut display = DisplayList::new(self, layout.clip.intersect(label), scale);
                 for i in 0..visible_lines {
                     let y = label.y + i as f32 * line_height;
                     if y >= label.y + label.height {
                         break;
                     }
-                    self.text
-                        .fill_text(&mut self.canvas, x, y, shown_line(i), &paint)
-                        .map_err(|e| format!("text drawing failed: {e}"))?;
+                    display.push(Primitive::Text {
+                        origin: Point { x, y },
+                        text: shown_line(i),
+                        paint: &paint,
+                        clip: None,
+                    });
                 }
-                Ok::<(), String>(())
-            })();
+                display.submit(self)
+            };
             if clip {
                 self.canvas.restore();
             }
@@ -1760,23 +2252,15 @@ impl Renderer {
         let table = layout.table.as_deref();
         if let (Some(header), Some(table)) = (&node.table_header, table) {
             let grip = input.table_resize_column(path);
-            controls::table_header(
-                &mut self.canvas,
-                &self.text,
-                theme,
-                header,
-                table,
-                layout.clip.intersect(bounds),
-                |column| {
-                    (
-                        input.table_column_hovered(path, column),
-                        grip == Some(column),
-                        node.table_selection
-                            .as_ref()
-                            .is_some_and(|view| view.columns().contains(&column)),
-                    )
-                },
-            )?;
+            self.draw_table_header(frame, header, table, layout, |column| {
+                (
+                    input.table_column_hovered(path, column),
+                    grip == Some(column),
+                    node.table_selection
+                        .as_ref()
+                        .is_some_and(|view| view.columns().contains(&column)),
+                )
+            })?;
             if let Some(x) = input.table_column_move_marker(path, node, layout) {
                 let marker = Rect::new(x - 1.0, table.header.y, 2.0, table.header.height)
                     .intersect(table.header)
@@ -1873,6 +2357,9 @@ impl Renderer {
                 theme,
                 transitions: None,
                 indicator_phase: None,
+                cleared_window: None,
+                damage: None,
+                prepared_layout: None,
             };
             for (page, offset, visible, cacheable) in slide.outgoing_layers() {
                 let clip = slide.slice(bounds, visible).intersect(slide_viewport);
@@ -1952,17 +2439,109 @@ impl Renderer {
             .children_in_paint_order(node)
             .filter(|(index, _, _)| Some(*index) != thumb_index)
             .chain(thumb);
+        let offset = slide
+            .map(|slide| slide.displacement(bounds, slide.incoming_offset()))
+            .or(swipe_offset);
+        // The color-atlas shader does not inherit the canvas's global alpha.
+        let transform = canvas_transform(&self.canvas);
+        let axis_aligned = offset.is_none()
+            && (self.can_cache_on_main_canvas() || self.using_capture_canvas())
+            && !self.retained_layers.vectors.opacity_passthrough
+            && has_pixel_aligned_scale(transform, scale);
+        let plain_canvas =
+            axis_aligned && transform.translation() == [0.0, 0.0] && !self.using_capture_canvas();
+        let rounded_batch = axis_aligned && !self.rectangle_batches.disabled;
+        let square_batch = plain_canvas && rounded_batch;
+        let mut prepare_opacity_for = plain_canvas.then_some((node, layout));
+        let batch_images = self.display_batching
+            && offset.is_none()
+            && self.can_cache_on_main_canvas()
+            && !self.retained_layers.vectors.opacity_passthrough
+            && image::supports_quad_transform(transform);
+        let batch_groups = batch_images && !transitions.is_some_and(StackTransitions::is_active);
+        let plain_table_row = self.display_batching
+            && plain_canvas
+            && node.kind == "TableRow"
+            && self.text.text_scale() <= 1.0;
+        let row_enabled = layout.enabled;
+        let cell_paint = std::cell::OnceCell::new();
+        let batch_clip = if layout.allows_overflow() {
+            layout.clip
+        } else {
+            layout.clip.intersect(bounds)
+        };
+        // Keep offscreen cache captures complete during a window repaint.
+        let damage = frame.damage.filter(|_| !self.using_capture_canvas());
+        let mut display = DisplayList::new(self, batch_clip, scale);
         for (i, node, layout) in children {
-            if is_window_overlay(node.kind)
+            // Hidden branches emit no commands and cannot break a batch.
+            if !layout.visible
+                || is_window_overlay(node.kind)
                 || Node::PROGRESS_PARTS.contains(&node.kind)
                 || Node::SCROLL_PARTS.contains(&node.kind)
             {
                 continue;
             }
+            if node.opacity() != 0.0
+                && damage.is_some_and(|rect| {
+                    !window_damage::intersects_damage(node, layout, frame, rect)
+                })
+            {
+                // Keep disjoint runs separate when the skipped node was a
+                // paint barrier in the full frame.
+                display.submit(self)?;
+                continue;
+            }
+            if rounded_batch
+                && let Some(rectangle) = rectangle::Solid::from_node(node, layout, scale)
+                && (rectangle.rounded()
+                    || square_batch && rectangle.collect_square(batch_clip, scale))
+            {
+                if rectangle.visible() {
+                    display.push(Primitive::Rectangle(rectangle));
+                }
+                continue;
+            }
+            if let Some((parent, parent_layout)) = prepare_opacity_for
+                && layout.visible
+                && rectangle::single_fill(node, layout)
+            {
+                let opacity = node.opacity();
+                if 0.0 < opacity && opacity < 1.0 {
+                    self.prepare_rectangle_opacity_atlas(parent, parent_layout, scale);
+                    prepare_opacity_for = None;
+                }
+            }
+            if batch_images
+                && let Some(image) = self.display_image(node, layout, is_layout, scale, transform)
+            {
+                display.push(image);
+                continue;
+            }
+            if batch_images && let Some(label) = self.display_label(node, layout, theme, scale) {
+                display.push(label);
+                continue;
+            }
+            if batch_groups
+                && display.try_append(|display| {
+                    // Bound the repeated work when a deep group eventually
+                    // contains an element that needs the general painter.
+                    self.collect_group_primitives(node, layout, display, square_batch, theme, 6)
+                })
+            {
+                continue;
+            }
+            if plain_table_row && layout.enabled == row_enabled {
+                path.push(i);
+                let cell = self.display_table_cell(node, layout, path, frame, &cell_paint);
+                path.pop();
+                if let Some(cell) = cell {
+                    display.push(cell);
+                    continue;
+                }
+            }
+            display.submit(self)?;
             path.push(i);
-            let offset = slide
-                .map(|slide| slide.displacement(bounds, slide.incoming_offset()))
-                .or(swipe_offset);
             let result = if let Some(offset) = offset {
                 self.canvas.save();
                 self.canvas.intersect_scissor(
@@ -1981,7 +2560,170 @@ impl Renderer {
             path.pop();
             result?;
         }
-        Ok(())
+        display.submit(self)
+    }
+
+    fn display_table_cell<'a>(
+        &self,
+        node: &'a Node,
+        layout: &LayoutNode,
+        path: &[usize],
+        frame: PaintFrame<'_>,
+        row_paint: &'a std::cell::OnceCell<Paint>,
+    ) -> Option<Primitive<'a>> {
+        if node.kind != "TableCell"
+            || !node.children.is_empty()
+            || !layout.local_transform().is_identity()
+            || layout.table_pane_clip().is_some()
+            || layout.has_ancestor_clip_chain()
+            || layout.allows_overflow()
+            || !node.properties.keys().all(|name| {
+                matches!(
+                    *name,
+                    "text" | "horizontal-alignment" | "enabled" | "editable"
+                )
+            })
+            || frame.input.is_focused(path)
+            || frame.input.editor_active(path)
+            || frame.input.table_cell_editing(path)
+        {
+            return None;
+        }
+        let text = node.text("text").filter(|text| !text.is_empty())?;
+        let area = xrack_layout::text_editor_viewport(node, layout.bounds);
+        if area.width <= 0.0
+            || area.height <= 0.0
+            || area.intersect(layout.clip) != area
+            || !pixel_aligned(area, frame.scale)
+        {
+            return None;
+        }
+        let paint = row_paint.get_or_init(|| {
+            let size = self.text.entry_font_size(node, layout.bounds);
+            let tint = color(frame.theme.editor_foreground(node, false, layout.enabled));
+            self.text.paint_node_at_size(node, size, tint, false)
+        });
+        Some(Primitive::Text {
+            origin: entry::passive_origin(
+                &self.text,
+                node,
+                area,
+                text,
+                paint,
+                layout.layout_direction_override(),
+            ),
+            text,
+            paint,
+            clip: Some(area),
+        })
+    }
+
+    fn display_image<'a>(
+        &self,
+        node: &'a Node,
+        layout: &LayoutNode,
+        in_layout: bool,
+        scale: f32,
+        transform: CanvasTransform,
+    ) -> Option<Primitive<'a>> {
+        if !Self::is_plain_image(node, layout) {
+            return None;
+        }
+        let bounds = layout.bounds;
+        let visible = bounds.intersect(layout.clip);
+        if visible.width <= 0.0 || visible.height <= 0.0 {
+            return None;
+        }
+        let asset = node.image_asset("source")?;
+        let aligned = image::quad_edges_are_pixel_aligned(bounds, transform);
+        let presentation = ImagePresentation::for_node(node, asset.size(), in_layout);
+        let clip = (!aligned || visible != bounds).then_some(visible);
+        let quad = if aligned
+            && (visible == bounds || image::quad_edges_are_pixel_aligned(visible, transform))
+        {
+            Some(image::QuadBounds::Aligned(clip))
+        } else {
+            let visible = presentation.placement(bounds).visible.intersect(visible);
+            image::quad_pixel_coverage(visible, transform, scale).map(image::QuadBounds::Snapped)
+        };
+        let quad = quad.or_else(|| {
+            (scale >= 1.0 && !layout.has_ancestor_clip_chain())
+                .then_some(image::QuadBounds::Antialiased(visible, scale))
+        });
+        if quad.is_none() && scale < 1.0 {
+            return None;
+        }
+        Some(Primitive::Image {
+            presentation,
+            bounds,
+            // An unaligned image stays on the original path painter with
+            // its element scissor, even when collected alongside other draws.
+            clip,
+            quad,
+            asset,
+            colorize: image::Colorize::Original,
+            scale: scale * layout.world_transform().max_scale(),
+        })
+    }
+
+    fn is_plain_image(node: &Node, layout: &LayoutNode) -> bool {
+        node.kind == "Image"
+            && node.opacity() == 1.0
+            && node.children.is_empty()
+            && layout.local_transform().is_identity()
+            && layout.table_pane_clip().is_none()
+            && !layout.allows_overflow()
+            && node.properties.keys().all(|name| {
+                matches!(
+                    *name,
+                    "x" | "y"
+                        | "width"
+                        | "height"
+                        | "source"
+                        | "image-fit"
+                        | "image-rendering"
+                        | "visible"
+                        | "enabled"
+                        | "z"
+                        | "opacity"
+                        | "horizontal-alignment"
+                        | "vertical-alignment"
+                        | "preferred-width"
+                        | "preferred-height"
+                        | "min-width"
+                        | "min-height"
+                        | "max-width"
+                        | "max-height"
+                        | "horizontal-stretch"
+                        | "vertical-stretch"
+                )
+            })
+    }
+
+    fn draw_rectangle_batch(
+        &mut self,
+        rectangles: &mut Vec<rectangle::Solid>,
+        scale: f32,
+        clip: Rect,
+    ) {
+        if self.draw_retained_geometry(rectangles, scale) {
+            rectangles.clear();
+            return;
+        }
+        if rectangles.first().is_some_and(rectangle::Solid::rounded) {
+            let capturing = self.using_capture_canvas();
+            self.rectangle_batches.draw_rounded(
+                &mut self.canvas,
+                &self.device,
+                &self.queue,
+                scale,
+                rectangles,
+                capturing,
+            );
+        } else {
+            self.rectangle_batches
+                .draw_squares(&mut self.canvas, scale, clip, rectangles);
+        }
     }
 
     fn paint_progress_parts(
@@ -2338,6 +3080,9 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions: Some(transitions),
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
+                cleared_window: None,
+                damage: None,
+                prepared_layout: None,
             },
         )
     }
@@ -2363,6 +3108,9 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions: None,
                 indicator_phase: Some(indicator_phase(elapsed)),
+                cleared_window: None,
+                damage: None,
+                prepared_layout: None,
             },
         )
     }
@@ -2413,6 +3161,9 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions,
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
+                cleared_window: None,
+                damage: None,
+                prepared_layout: None,
             },
         )
     }

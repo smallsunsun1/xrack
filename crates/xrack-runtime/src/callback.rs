@@ -1,5 +1,13 @@
 use crate::ChangeSignal;
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
+
+thread_local! {
+    static CALLBACK_READS: Cell<u64> = const { Cell::new(0) };
+}
+
+pub(crate) fn callback_reads() -> u64 {
+    CALLBACK_READS.get()
+}
 
 /// Stores a replaceable callback handle and tracks reactive readers of pure callbacks.
 pub struct CallbackSlot<T> {
@@ -34,10 +42,21 @@ impl<T> CallbackSlot<T> {
     }
 }
 
+impl<T> CallbackSlot<T> {
+    #[doc(hidden)]
+    pub fn has_handler(&self) -> bool {
+        self.callback.borrow().is_some()
+    }
+}
+
 impl<T: Clone> CallbackSlot<T> {
     /// Take a handle without borrowing the slot while user code runs.
     pub fn get(&self) -> Option<T> {
-        self.callback.borrow().clone()
+        let callback = self.callback.borrow().clone();
+        if callback.is_some() {
+            CALLBACK_READS.set(CALLBACK_READS.get().wrapping_add(1));
+        }
+        callback
     }
 }
 

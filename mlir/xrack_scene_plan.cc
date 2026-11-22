@@ -1,5 +1,6 @@
 #include "mlir/xrack_passes.h"
 
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/xrack_dialect.h"
@@ -29,6 +30,9 @@ namespace xrack::dialect {
 
 using namespace ::mlir;
 
+bool isCacheableCallbackDefault(CallbackOp callback);
+bool isInlineableCallbackDefault(CallbackOp callback);
+
 namespace {
 void clearMarker(Operation *op, StringAttr name) {
   if (op->getDiscardableAttr(name))
@@ -44,10 +48,22 @@ bool passiveElement(llvm::StringRef kind) {
       .Default(false);
 }
 
+bool ordinaryRepeatContainer(llvm::StringRef kind) {
+  return llvm::StringSwitch<bool>(kind)
+      .Cases({"Window", "ApplicationWindow", "Rectangle", "Pane", "ControlFrame",
+              "HorizontalLayout", "VerticalLayout", "HorizontalBox", "VerticalBox",
+              "GridLayout", "FlowLayout", "FlexboxLayout", "ScrollView", "Flickable"},
+             true)
+      .Default(false);
+}
+
 /// Shared analysis of scene properties and row structure. The planning passes
 /// only attach discardable hints, so each can preserve these facts.
 struct SceneAnalysis {
   llvm::DenseSet<Operation *> paintOnly;
+  llvm::DenseSet<Operation *> accessibilityOnly;
+  llvm::DenseSet<Operation *> cachedDefaults;
+  llvm::DenseSet<Operation *> inlineDefaults;
   llvm::DenseMap<Operation *, llvm::SmallVector<int64_t>> zOrders;
   llvm::DenseMap<Operation *, bool> repeatRows;
 
@@ -61,10 +77,20 @@ struct SceneAnalysis {
       bool ordinaryButton = kind == "Button" || kind == "ToolButton" ||
                             kind == "RoundButton" || kind == "DelayButton";
       if ((kind == "Rectangle" && name == "background") ||
-          (kind == "Text" && name == "color") ||
+          ((kind == "Text" || kind == "Label" || kind == "StyledText") && name == "color") ||
+          (kind == "StyledText" && name == "link-color") ||
           (ordinaryButton && (name == "primary" || name == "flat")) ||
           ((kind == "DialogButton" || kind == "StandardButton") && name == "flat"))
         paintOnly.insert(binding);
+      if (name == "accessible-name" || name == "accessible-description" ||
+          name == "accessible-heading-level" || name == "accessible-live")
+        accessibilityOnly.insert(binding);
+    });
+    module->walk([&](CallbackOp callback) {
+      if (isCacheableCallbackDefault(callback))
+        cachedDefaults.insert(callback);
+      if (isInlineableCallbackDefault(callback))
+        inlineDefaults.insert(callback);
     });
     module->walk([&](ElementOp element) {
       if (auto order = staticZOrder(element))
@@ -78,9 +104,18 @@ struct SceneAnalysis {
           if (auto index = cacheableRow(&child))
             repeatRows.try_emplace(&child, *index);
     });
+    module->walk([&](Operation *row) {
+      if (!isa<ElementOp, InstanceOp>(row))
+        return;
+      auto parent = dyn_cast_or_null<ElementOp>(row->getParentOp());
+      if (parent && ordinaryRepeatContainer(parent.getKind()))
+        if (auto index = cacheableOrdinaryRow(row))
+          repeatRows.try_emplace(row, *index);
+    });
   }
 
 private:
+
   static std::optional<llvm::SmallVector<int64_t>> staticZOrder(ElementOp parent) {
     if (!passiveElement(parent.getKind()) && parent.getKind() != "Window")
       return {};
@@ -150,6 +185,38 @@ private:
       return std::nullopt;
     return usesIndex;
   }
+
+  static std::optional<bool> cacheableOrdinaryRow(Operation *row) {
+    auto repeats = row->getRegion(0).front().getOps<RepeatOp>();
+    if (repeats.empty())
+      return std::nullopt;
+
+    auto result = row->walk<WalkOrder::PreOrder>([](Operation *op) -> WalkResult {
+      // Event bodies are dispatched separately and can still read the model
+      // and run side effects against the live row.
+      if (isa<HandlerOp, CallbackOp>(op))
+        return WalkResult::skip();
+      if (auto element = dyn_cast<ElementOp>(op)) {
+        if (passiveElement(element.getKind()) ||
+            llvm::StringSwitch<bool>(element.getKind())
+                .Cases({"Button", "ButtonContent", "Pane"}, true)
+                .Default(false))
+          return WalkResult::advance();
+        return WalkResult::interrupt();
+      }
+      // Bindings and guards track their reads in the row's Property. A pure
+      // call reaching an installed host handler opts out at runtime.
+      if (isa<InstanceOp, BindOp, LayoutBindOp, ShowIfOp, RepeatOp, EndOp,
+              ReadOp, ParamOp, CallOp, UnaryOp, BinaryOp, SelectOp, TranslateOp,
+              StringifyOp, ModelAtOp, ModelCountOp, ModelIsEmptyOp>(op) ||
+          isMemoryEffectFree(op))
+        return WalkResult::advance();
+      return WalkResult::interrupt();
+    });
+    if (result.wasInterrupted())
+      return std::nullopt;
+    return !(*repeats.begin()).getIndex().empty();
+  }
 };
 
 bool emptyModel(Value model) {
@@ -214,6 +281,18 @@ struct PlanUpdateEffects : impl::XrPlanUpdateEffectsBase<PlanUpdateEffects> {
       clearMarker(binding, name);
       if (analysis.paintOnly.contains(binding))
         binding->setDiscardableAttr(name, paint);
+      else if (analysis.accessibilityOnly.contains(binding))
+        binding->setDiscardableAttr(name, StringAttr::get(&getContext(), "accessibility"));
+    });
+    auto cache = StringAttr::get(&getContext(), "xr.cache_callback_default");
+    auto inlineDefault = StringAttr::get(&getContext(), "xr.inline_callback_default");
+    getOperation()->walk([&](CallbackOp callback) {
+      clearMarker(callback, cache);
+      clearMarker(callback, inlineDefault);
+      if (analysis.cachedDefaults.contains(callback))
+        callback->setDiscardableAttr(cache, StringAttr::get(&getContext(), "true"));
+      if (analysis.inlineDefaults.contains(callback))
+        callback->setDiscardableAttr(inlineDefault, StringAttr::get(&getContext(), "true"));
     });
     markAnalysesPreserved<SceneAnalysis>();
   }
@@ -536,7 +615,9 @@ struct StaticSceneAnalysis {
         observe(op, target.getTarget());
     });
     module->walk<WalkOrder::PostOrder>([&](ElementOp element) {
-      if (!passiveElement(element.getKind()))
+      // TableColumn is immutable header metadata when all bindings are
+      // constant. Both backends can then share it across table snapshots.
+      if (!passiveElement(element.getKind()) && element.getKind() != "TableColumn")
         return;
       auto component = observed.find(element->getParentOfType<ComponentOp>());
       auto key = element.getKey().value_or(element.getId());

@@ -1,0 +1,227 @@
+import { Palette, CenteredWorkbenchIcon } from "theme.xr";
+
+export component ExternalOpenButton inherits Button {
+    in property <bool> available: true;
+    in property <string> label;
+    callback activate();
+    text: @tr("open-with");
+    accessible-name: root.label;
+    enabled: root.available;
+    width: 34px;
+    height: 28px;
+    padding: 3px;
+    flat: true;
+    border-radius: 6px;
+    ButtonContent {
+        CenteredWorkbenchIcon {
+            shape: "M13 4 H20 V11 M20 4 L10 14 M10 5 H4 V20 H19 V14";
+        }
+    }
+    Tooltip { text: @tr("open-with"); }
+    clicked => { root.activate(); }
+}
+
+export component ExternalOpenContent inherits VerticalLayout {
+    in property <string> path;
+    in-out property <string> destination;
+    in-out property <bool> remember;
+    in property <bool> can-remember;
+    in property <bool> pending;
+    in property <string> error;
+    callback confirm();
+    callback cancel();
+
+    padding: 13px;
+    spacing: 8px;
+    alignment: start;
+    external-open-location := Label {
+        text: root.path;
+        color: Palette.text;
+        font-size: 12px;
+        font-family: "monospace";
+        height: 23px;
+        overflow: elide;
+    }
+    external-destination-options := RadioGroup {
+        height: 99px;
+        orientation: Orientation.vertical;
+        accessible-name: @tr("editor-or-file-manager");
+        current-value: root.destination;
+        enabled: !root.pending;
+        selected(value) => { root.destination = value; }
+        external-vscode := RadioButton { text: "Visual Studio Code"; value: "vscode"; }
+        external-cursor := RadioButton { text: "Cursor"; value: "cursor"; }
+        external-files := RadioButton { text: @tr("file-manager"); value: "files"; }
+    }
+    external-remember-project := CheckBox {
+        text: @tr("remember-this-project");
+        checked <=> root.remember;
+        visible: root.can-remember;
+        enabled: !root.pending;
+        height: 29px;
+    }
+    Label {
+        text: @tr("external-open-failed", detail: root.error);
+        visible: root.error != "";
+        color: Palette.error;
+        font-size: 12px;
+        height: 36px;
+        wrap: word-wrap;
+        max-lines: 2;
+        overflow: elide;
+    }
+    HorizontalLayout {
+        height: 33px;
+        alignment: end;
+        spacing: 6px;
+        cancel-external-open := Button {
+            text: @tr("cancel");
+            flat: true;
+            padding: 6px;
+            enabled: !root.pending;
+            clicked => { root.cancel(); }
+        }
+        confirm-external-open-button := Button {
+            text: root.pending ? @tr("opening-external") : @tr("open-external");
+            primary: true;
+            border-radius: 6px;
+            padding: 6px;
+            width: 78px;
+            enabled: !root.pending && root.destination != "";
+            clicked => { root.confirm(); }
+        }
+    }
+}
+
+export component WorkspaceFileEditor inherits Rectangle {
+    in-out property <string> draft: "";
+    in property <bool> saving: false;
+    in property <bool> grab-focus: false;
+    in property <bool> can-attach: false;
+    callback edited(text: string);
+    callback focus-complete();
+    callback attach-selection(start: int, end: int, text: string);
+    callback attach-disk-file();
+
+    VerticalLayout {
+        spacing: 0px;
+        workspace-file-editor := TextArea {
+            vertical-stretch: 1;
+            accessible-name: @tr("workspace-file-editor");
+            text <=> root.draft;
+            read-only: root.saving;
+            persistent-selection: true;
+            font-family: "monospace";
+            font-size: 12px;
+            padding: 10px;
+            wrap: char-wrap;
+            edited(text) => { root.edited(text); }
+        }
+        HorizontalLayout {
+            height: 34px;
+            alignment: end;
+            padding-right: 8px;
+            spacing: 6px;
+            cross-axis-alignment: center;
+            attach-editor-disk-file := Button {
+                text: @tr("attach-file-from-disk");
+                height: 27px;
+                flat: true;
+                padding: 5px;
+                enabled: root.can-attach;
+                focus-on-click: false;
+                clicked => { root.attach-disk-file(); }
+            }
+            attach-editor-excerpt := Button {
+                text: @tr("attach-selection");
+                accessible-name: @tr("add-the-editor-selection-to-the-conversation");
+                height: 27px;
+                flat: true;
+                padding: 5px;
+                focus-on-click: false;
+                enabled: root.can-attach && workspace-file-editor.selected-text != "";
+                clicked => {
+                    root.attach-selection(workspace-file-editor.selection-start-offset,
+                        workspace-file-editor.selection-end-offset, workspace-file-editor.selected-text);
+                }
+            }
+        }
+    }
+    file-edit-focus-timer := Timer {
+        interval: 1;
+        running: root.grab-focus;
+        repeat: false;
+        triggered => {
+            workspace-file-editor.focus();
+            root.focus-complete();
+        }
+    }
+}
+
+export component PaletteResult inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> current;
+    in property <bool> ready;
+    in property <bool> keep-focus;
+    callback choose();
+
+    palette-result-action := Button {
+        width: 100%;
+        height: 100%;
+        text: root.title;
+        accessible-name: root.detail == "" ? root.title : root.title + " · " + root.detail;
+        enabled: root.ready;
+        focus-on-click: !root.keep-focus;
+        flat: true;
+        border-radius: 6px;
+        padding: 0px;
+        background: root.current ? Palette.selection : self.pressed ? Palette.rail : #00000000;
+        ButtonContent {
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 12px;
+                cross-axis-alignment: center;
+                Label { text: root.title; color: Palette.text; overflow: elide; horizontal-stretch: 1; }
+                Label {
+                    text: root.detail;
+                    color: Palette.muted;
+                    font-size: 11px;
+                    preferred-width: 188px;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                    visible: root.detail != "";
+                }
+            }
+        }
+        clicked => { root.choose(); }
+    }
+}
+
+export component FileEditConfirmation inherits VerticalLayout {
+    callback resolve-workspace-edit-close(discard: bool);
+    in property <bool> workspace-edit-confirm-closing;
+    in property <string> workspace-edit-confirm-file;
+
+    padding: 14px;
+    spacing: 9px;
+    Label { text: root.workspace-edit-confirm-file; overflow: elide; color: Palette.text; }
+    HorizontalLayout {
+        alignment: end;
+        height: 33px;
+        spacing: 8px;
+        keep-file-edits := Button {
+            text: @tr("keep-editing");
+            padding: 6px;
+            primary: true;
+            clicked => { root.resolve-workspace-edit-close(false); }
+        }
+        discard-file-edits := Button {
+            text: root.workspace-edit-confirm-closing ? @tr("discard-and-close") : @tr("discard-changes");
+            padding: 6px;
+            flat: true;
+            clicked => { root.resolve-workspace-edit-close(true); }
+        }
+    }
+}

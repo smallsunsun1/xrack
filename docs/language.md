@@ -80,13 +80,50 @@ refresh => {
 }
 ```
 
-`for entry in model { ... }` 遍历进入循环时取得的模型快照。循环体内的模型增删会立即更新模型，当前循环会遍历原来取得的条目。`[index]` 可省略，索引从零开始。循环源也可以是整数计数，例如 `for step in 3 { ... }` 依次绑定 `0`、`1`、`2`，非正数执行零次。循环变量在循环体内可读，语句可嵌套，`pure` 回调的限制适用于每个分支和循环体。
+`for entry in model { ... }` 遍历进入循环时取得的模型快照。循环体内的模型增删会立即更新模型，当前循环会遍历原来取得的条目。`[index]` 可省略，索引从零开始。循环源也可以是整数计数，例如 `for step in 3 { ... }` 依次绑定 `0`、`1`、`2`，非正数执行零次。同步循环会遍历完整的计数区间或模型快照。循环变量在循环体内可读，语句可嵌套，`pure` 回调的限制适用于每个分支和循环体。
 
 DSL 调用与 Rust 的 `invoke_*()` 共用同一处理逻辑。注册了 Rust `on_*()` 闭包时，有返回类型的调用返回闭包的结果。纯回调接收 `Fn` 闭包，调用方需保证闭包没有副作用。元素事件通过 `dispatch(id, event)` 分发。
 
 `callback submitted <=> editor.accepted;` 可以把内部控件事件或子组件的回调作为组件 API 公开。别名沿用目标的参数、返回类型和纯度，调用别名与调用目标进入同一个回调。也可以在命名元素上声明自定义回调。组件实例可写 `entry := Editor { submitted => { root.save(); } }`，类型化的处理器可以返回结果。列表和网格的实例处理器可读取当前模型项和索引。
 
 实例处理器和 Rust `on_*()` 设置目标回调的实现。声明上已有的普通 DSL 回调语句仍先执行，返回值以当前注册实现为准。别名上声明的处理器可作为默认实现。纯回调的注册变化会让依赖该回调的绑定失效。运行 `bazel run //examples/stepper:stepper -- --linked`，在共享编辑器或任务行按 Enter 体验转发。
+
+## 局部变量、纯函数和枚举
+
+回调和纯函数中可用 `let name = expression;` 声明不可写的局部变量。初始化表达式执行一次，后续语句和末尾表达式均可读取它。内层块可以声明同名变量，离开该块后外层变量恢复可见。`pure function` 在同一处声明返回类型和实现，调用方式与纯度检查沿用 `pure callback`。
+
+```xr
+export enum RequestState {
+    Idle,
+    Ready(string),
+    Failed { message: string, retryable: bool },
+}
+
+component StatusLine inherits VerticalLayout {
+    in property <RequestState> state: RequestState::Idle;
+    pure function status-text(value: RequestState) -> string {
+        let caption = match value {
+            Idle => "等待",
+            Ready(document) => document,
+            Failed { message: reason, retryable: _ } => reason,
+        };
+        "状态 " + caption
+    }
+
+    Label { text: root.status-text(root.state); }
+    match root.state: {
+        Idle => Label { text: "可以启动"; },
+        Ready(document) => Label { text: document; },
+        Failed { message, retryable: _ } => Label { text: message; },
+    }
+}
+```
+
+有名枚举可导入，可作为属性、回调参数或记录字段。默认值是第一项，载荷字段使用各自的默认值。用 `RequestState::Idle`、`RequestState::Ready("结果")` 或 `RequestState::Failed { message: "失败", retryable: true }` 构造值。AOT 为宿主生成原生 Rust `enum`，属性和回调直接使用生成的类型。
+
+两种 `match` 都要求列出全部变体且每项只出现一次。按声明的形状解构每个载荷字段，可用 `_` 忽略字段，也可给命名字段起局部别名。绑定仅在该分支中可见，且为只读。表达式形式只求值选中的结果，树内形式显示选中分支的元素。
+
+动态宿主通过同名 record 传递枚举，`discriminant` 是从零开始的变体序号。只传入所选变体的载荷字段，位置字段使用 `_0`、`_1` 等键。解释器会拒绝无效序号、缺失或多余字段以及类型错误的值。
 
 ## 容器组件与共享状态
 
@@ -112,6 +149,30 @@ export component App inherits Window {
 
 `global` 可声明属性、回调及其处理器。一个顶层组件实例及其子组件共享一份全局状态，每次独立创建顶层组件都会获得新状态。跨文件用普通 `import` 导入已导出的全局。Rust AOT 可用 `ui.global_Session()` 取得导出对象。解释器可用 `instance.global("Session")`，再调用属性和回调 API。全局不出现在窗口或预览组件列表中。
 
+用 `@slot(toolbar)` 声明命名插槽，在组件实例中用 `slot toolbar { ... }` 提供内容。命名插槽可与 `@children` 同时使用。每个命名插槽可填充一次，省略时它为空。重复模板可以将周围的行和索引作为参数传给插槽。
+
+```xr
+component Results inherits VerticalLayout {
+    in property <[string]> rows;
+    @slot(toolbar);
+    for row[index] in root.rows : VerticalLayout {
+        @slot(row, row, index);
+    }
+}
+
+export component ResultsDemo inherits Window {
+    Results {
+        rows: ["Alpha", "Beta"];
+        slot toolbar { Text { text: "结果"; } }
+        slot row(item, position) {
+            Text { text: position + " " + item; }
+        }
+    }
+}
+```
+
+填充内容沿用调用方的 `root`、元素 ID 和回调作用域。插槽参数根据声明处的重复模型推断类型，参数个数须与标记匹配。
+
 ## 内建函数与值
 
 普通内建函数通过 `Math`、`Strings`、`Model`、`Colors`、`Dates`、`Times`、`I18n` 和 `Log` 命名空间调用。`@` 用于 `@tr`、`@image-url` 等专用语法。作用域中若已有同名控件 ID，限定调用会解析为该控件的成员。
@@ -121,9 +182,61 @@ export component App inherits Window {
 - **Strings** 提供 `trim`、`is-empty`、`contains`、`starts-with`、`ends-with`、`replace-all`、`lowercase`、`uppercase` 和 `character-count`。字符计数按 Unicode 字素簇计算，例如 `"👩‍💻"` 算一个字符。`is-int`、`is-float` 检查修剪过的数字字符串。`Strings.to-float(input, 0.0)` 和 `Strings.to-int(input, 0)` 在解析失败时返回默认值。小数分隔符使用 `.`。
 - **Strings.format** 的模板是字符串字面量。`{}` 按顺序消费字符串、整数、浮点数、布尔值、日期或时间参数。`{{` 和 `}}` 表示字面量大括号。`Strings.format("{:.2}", value)` 输出两位小数，精度可设为 0 到 20。
 - **Model** 的 `count` 和 `is-empty` 跟踪模型的行数。修改已有行的内容会保留行数绑定的缓存。`Model.at(root.rows, index, fallback)` 按从零开始的索引取行，只有索引越界时才求值默认表达式。默认值类型必须和模型行一致。
+- **Model.filter(model, "field", query)** 按常量字符串字段路径筛选记录，忽略大小写，去除查询两端空白。**Model.sort-by(model, "field", descending)** 按常量整数或字符串字段稳定排序。两者返回可绑定、可组合的只读模型，保留源行的键。源数据或查询变化时重新计算投影，编辑应用于源模型。**Model.lookup(model, "field", key)** 按常量字符串字段路径精确匹配键，区分大小写并保持源行顺序。按键索引在同一模型上共享。只修改其他键组时，当前查找的绑定可继续复用已有投影。
 - **Model** 的 `append(model, value)`、`insert(model, index, value)`、`set(model, index, value)`、`remove(model, index)`、`move(model, from, to)` 和 `clear(model)` 可在有副作用的回调中编辑模型。第一个参数必须是可写的列表属性，行值必须匹配列表的元素类型。索引从零开始，`insert` 接受当前行数作为追加位置，`move` 的目标是行移动后的索引。无效索引会忽略。
 - **Colors** 提供 `rgb`、`rgba`、`with-alpha` 和 `mix`，例如 `Colors.rgba(30, 120, 200, 75%)`。RGB 通道限制在 0 到 255，透明度与混合系数限制在 0 到 1。`mix` 对 RGBA 四个通道做线性插值。
 - **I18n.locale()** 返回协商后的语言标识，例如 `"fr"`。调用会跟踪 UI 语言变化。有 Fluent 语言包时使用匹配语言或语言包的默认语言。没有语言包时返回应用设置的语言，尚未设置时返回 `"und"`。词条翻译使用 `@tr`。
+
+### 二维点、向量和变换
+
+`point2d` 表示位置，`vector2d` 表示位移。用 `Point2D.new(x, y)` 和 `Vector2D.new(x, y)` 构造，坐标是逻辑像素长度，读取用 `.x` 和 `.y`。两种类型的默认值都是零。整数缩放因子和角度可按现有数值规则提升为 `float`。
+
+| 方法 | 行为 |
+|---|---|
+| `Transform2D.identity()` | 单位变换，也是 `transform2d` 的默认值 |
+| `Transform2D.translation(x, y)` | 按两个长度平移 |
+| `Transform2D.rotation(degrees)` | 按顺时针角度旋转 |
+| `Transform2D.scale(x, y)` | 分别缩放两轴，负值可以镜像 |
+| `Transform2D.compose(first, second)` | 先应用第一个变换，再应用第二个 |
+| `Transform2D.around(transform, point)` | 绕给定点应用变换 |
+| `Transform2D.map-point(transform, point)` | 映射位置，包含平移 |
+| `Transform2D.map-vector(transform, vector)` | 映射位移，使用线性部分 |
+
+```xr
+export component TransformExample inherits Window {
+    in-out property <float> angle: 30;
+    property <transform2d> tilt: Transform2D.around(
+        Transform2D.rotation(root.angle),
+        Point2D.new(40px, 20px),
+    );
+
+    Rectangle {
+        x: 12px; y: 12px;
+        width: 80px; height: 40px;
+        background: #378ac8;
+        transform: root.tilt;
+    }
+}
+```
+
+`transform` 使用节点左上角为原点的局部坐标，并在现有 `transform-rotation`、`transform-scale`、逐轴缩放与原点属性确定的变换之后应用。变换发生在布局完成后，绘制、裁剪和命中测试使用同一结果。MLIR 会折叠有限的常量几何运算和显式组合在一起的常量变换，并消去组合中的单位变换。动态组合保持源码的运算顺序。
+
+### 图层缓存
+
+`cache-rendering-hint` 是视觉元素的布尔属性，默认关闭。启用后，渲染器可将内容稳定的子树绘制到纹理中。元素的 `x`、`y` 和 `opacity` 变化时可以直接合成这张纹理。
+
+```xr
+Rectangle {
+    x: root.card-x;
+    width: 160px;
+    height: 80px;
+    background: #263854;
+    cache-rendering-hint: true;
+    Text { text: "状态概览"; color: #ffffff; }
+}
+```
+
+缓存使用窗口的图层预算。内容或尺寸改变后，渲染器会更新图层或直接绘制。完整缓存的图层经过设备像素对齐的矩形视口边界时，可以复用纹理并合成可见部分。轴对齐的圆角视口可缓存自身的裁剪覆盖率，在合成时应用到可见图层。亚像素平移使用双线性采样，文字和边缘的像素覆盖可能与重新栅格化不同。布局、命中测试和无障碍继续使用原来的元素树。
 
 ### 公历日期运算
 

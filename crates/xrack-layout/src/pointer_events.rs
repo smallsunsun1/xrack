@@ -206,8 +206,19 @@ impl PointerSequence {
     }
 
     pub fn is_live(&self, input: &Interaction, scene: &Node, layout: &LayoutNode) -> bool {
-        let path = &self.target.path;
-        live_handler(scene, &self.target, &self.handle)
+        self.target_is_live(&self.target, input, scene, layout)
+            || self.moved_target(input, scene, layout).is_some()
+    }
+
+    fn target_is_live(
+        &self,
+        target: &Target,
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> bool {
+        let path = &target.path;
+        live_handler(scene, target, &self.handle)
             && scene
                 .interactive_at_path(path)
                 .is_some_and(|node| node.accepts_pointer_button(self.last.button))
@@ -217,6 +228,28 @@ impl PointerSequence {
             && input.allows_popup(layout, path)
             && !input.menu_open()
             && !input.choice_open()
+    }
+
+    fn moved_target(
+        &self,
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<Target> {
+        crate::input::moved_row_target(&self.target, scene, layout)
+            .filter(|target| self.target_is_live(target, input, scene, layout))
+    }
+
+    fn refresh_target(
+        &mut self,
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<()> {
+        if !self.target_is_live(&self.target, input, scene, layout) {
+            self.target = self.moved_target(input, scene, layout)?;
+        }
+        Some(())
     }
 
     pub fn press_and_hold_deadline(&self) -> Option<Instant> {
@@ -278,12 +311,15 @@ impl PointerSequence {
         {
             return false;
         }
+        if self.refresh_target(input, scene, layout).is_none() {
+            self.press_and_hold = None;
+            return false;
+        }
         self.constrain_press_and_hold(layout, None);
         let pending = self.press_and_hold.take().is_some();
         if pending
             && !input.direct_pointer_claimed()
             && input.drag_position().is_none()
-            && self.is_live(input, scene, layout)
             && component.dispatch_at(scene, &self.target.path, "press-and-hold")
         {
             self.press_and_hold = Some(PressAndHold::Triggered);
@@ -302,9 +338,7 @@ impl PointerSequence {
         kind: PointerEventKind,
         modifiers: KeyModifiers,
     ) -> Option<PointerDelivery> {
-        if !self.is_live(input, scene, layout) {
-            return None;
-        }
+        self.refresh_target(input, scene, layout)?;
         let item = layout.at_path(&self.target.path)?;
         let (local, x, y) = local_position(item, point)?;
         self.last = PointerEvent {

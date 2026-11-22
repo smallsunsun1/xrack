@@ -1,6 +1,6 @@
 use crate::{
-    Affine, ControlInput, LayoutNode, Point, Rect, Size, Target, TextMeasurer, input::valid,
-    path_view::MeasuredPath, scroll_gesture::SCROLL_FRAME_INTERVAL,
+    ControlInput, LayoutNode, LayoutSpace, Point, Rect, Size, Target, TextMeasurer, Transform2D,
+    WindowSpace, input::valid, path_view::MeasuredPath, scroll_gesture::SCROLL_FRAME_INTERVAL,
 };
 use std::time::{Duration, Instant};
 use xrack_runtime::{
@@ -278,7 +278,7 @@ pub(crate) struct TumblerDrag {
     pub start: Point,
     step: f32,
     path: Option<PathLayout>,
-    transform: Affine,
+    transform: Transform2D<LayoutSpace, WindowSpace>,
     motion: Option<ViewportHandle>,
     dragging: bool,
     pub offset: f32,

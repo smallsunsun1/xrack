@@ -1276,6 +1276,38 @@ fn entry_origin(
     (x, caret_x)
 }
 
+pub(super) fn passive_origin(
+    text_system: &TextSystem,
+    node: &Node,
+    area: Rect,
+    content: &str,
+    paint: &Paint,
+    direction: Option<LayoutDirection>,
+) -> Point {
+    let x = area.x
+        + TextAlignment::editor(node, direction).passive_line_offset(area.width, content, || {
+            text_system
+                .context()
+                .measure_text(0.0, 0.0, content, paint)
+                .map_or(0.0, |metrics| {
+                    // Match VisualTextLine's advance without building editing slots.
+                    metrics
+                        .glyphs
+                        .iter()
+                        .filter(|glyph| {
+                            glyph.byte_index < content.len() && glyph.advance_x.is_finite()
+                        })
+                        .map(|glyph| glyph.advance_x)
+                        .sum::<f32>()
+                        .max(0.0)
+                })
+        });
+    Point {
+        x,
+        y: text_editor_line_bounds(area, paint.font_size() * 1.4).y,
+    }
+}
+
 pub(crate) fn draw(
     canvas: &mut Canvas<WGPURenderer>,
     text_system: &TextSystem,
@@ -1310,6 +1342,14 @@ pub(crate) fn draw(
         })
     {
         content = Cow::Owned(shortened);
+    }
+    if text.editor.is_none() && !text.active && text.completion.is_none() {
+        let origin = passive_origin(text_system, node, area, &content, &paint, text.direction);
+        canvas.intersect_scissor(area.x, area.y, area.width, area.height);
+        text_system
+            .fill_text(canvas, origin.x, origin.y, &content, &paint)
+            .map_err(|error| format!("text input drawing failed: {error}"))?;
+        return Ok(false);
     }
     let layout = text_system.single_line_layout_at_size(node, &content, size);
     let (aligned_x, caret_x) = entry_origin(
