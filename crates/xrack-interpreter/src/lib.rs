@@ -127,9 +127,24 @@ pub struct Program {
     record_validator: Rc<RecordRowValidator>,
     translations: Option<Rc<TranslationCatalog>>,
     fonts: Option<LoadedFonts>,
+    scene_assets: Rc<xrack_resources::SceneAssets>,
+    scene_projections: Rc<xrack_runtime::scene3d::SceneProjectionCache>,
 }
 
 impl Program {
+    fn prepare_scene(
+        &self,
+        model: &xrack_runtime::RecordList,
+        renderables: bool,
+    ) -> std::sync::Arc<xrack_runtime::scene3d::SceneModel> {
+        let imported = |key: &str| self.scene_assets.meshes.get(key).cloned();
+        if renderables {
+            self.scene_projections.record_objects(model, imported)
+        } else {
+            self.scene_projections.record_cameras(model, imported)
+        }
+    }
+
     /// Copy the verified operation graph into definitions that own their data.
     pub fn from_module(module: &xrack_mlir::Module) -> Result<Self> {
         Self::from_module_with_translations(module, None)
@@ -170,7 +185,15 @@ impl Program {
         )
         .map_err(Error::Invalid)?;
         let paths = xrack_resources::collect_vector_paths(module).map_err(Error::Invalid)?;
-        load::program(module, translations, fonts, images, paths, "")
+        load::program(
+            module,
+            translations,
+            fonts,
+            images,
+            paths,
+            xrack_resources::SceneAssets::default(),
+            "",
+        )
     }
 
     /// Load file-backed images and fonts for a prepared module, using the
@@ -184,7 +207,8 @@ impl Program {
         Self::from_module_with_declared_resources(module, filename, translations, None)
     }
 
-    fn from_module_with_declared_resources(
+    #[doc(hidden)]
+    pub fn from_module_with_declared_resources(
         module: &xrack_mlir::Module,
         filename: impl AsRef<Path>,
         translations: Option<EmbeddedTranslations>,
@@ -217,6 +241,7 @@ impl Program {
             fonts,
             images,
             assets.paths,
+            assets.scene,
             &filename.as_ref().to_string_lossy(),
         )?;
         Ok((program, assets.inputs))
@@ -278,6 +303,11 @@ pub enum ValueType {
     Float,
     Length,
     Point2D,
+    Point3D,
+    Vector3D,
+    Hit3D,
+    Hit3DList,
+    ProjectedPoint3D,
     Vector2D,
     Transform2D,
     Percent,
@@ -316,6 +346,7 @@ pub enum ValueType {
     TextVerticalAlignment,
     TextOverflow,
     ColorScheme,
+    SceneToneMap,
     InputType,
     InputPurpose,
     KeyboardCapitalization,
@@ -476,6 +507,7 @@ enum Expression {
     Array(Vec<Expr>),
     IntArray(Vec<Expr>),
     DateArray(Vec<Expr>),
+    Hit3DArray(Vec<Expr>),
     Record {
         name: Rc<str>,
         fields: Vec<(String, Expr)>,
@@ -882,6 +914,18 @@ impl Instance {
             }
             value => evaluate::callback_value(value),
         })
+    }
+
+    /// Get the shared hit-list model without replacing its row identities.
+    pub fn hit3d_model(&self, name: &str) -> Result<xrack_runtime::VecModel<xrack_runtime::Hit3D>> {
+        let member = Member::root(name);
+        self.require_public(&member, false)?;
+        match self.read(&member)? {
+            Value::Hit3DList(model) => Ok(model),
+            _ => Err(Error::Evaluation(format!(
+                "property {name} is not a hit list"
+            ))),
+        }
     }
 
     /// Get the shared string model without taking a snapshot or replacing row identities.

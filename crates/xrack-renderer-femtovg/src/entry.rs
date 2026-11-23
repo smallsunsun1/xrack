@@ -1283,10 +1283,20 @@ pub(super) fn passive_origin(
     content: &str,
     paint: &Paint,
     direction: Option<LayoutDirection>,
+    measurement_scale: f32,
 ) -> Point {
     let x = area.x
         + TextAlignment::editor(node, direction).passive_line_offset(area.width, content, || {
-            text_system
+            let scaled = (measurement_scale != 1.0).then(|| {
+                paint
+                    .clone()
+                    .with_font_size(paint.font_size() * measurement_scale)
+            });
+            let paint = scaled.as_ref().unwrap_or(paint);
+            #[cfg(xrack_femtovg_glyph_samples)]
+            let advance = text_system.context().unwrapped_advance(content, paint);
+            #[cfg(not(xrack_femtovg_glyph_samples))]
+            let advance = text_system
                 .context()
                 .measure_text(0.0, 0.0, content, paint)
                 .map_or(0.0, |metrics| {
@@ -1300,7 +1310,8 @@ pub(super) fn passive_origin(
                         .map(|glyph| glyph.advance_x)
                         .sum::<f32>()
                         .max(0.0)
-                })
+                });
+            advance / measurement_scale
         });
     Point {
         x,
@@ -1344,7 +1355,15 @@ pub(crate) fn draw(
         content = Cow::Owned(shortened);
     }
     if text.editor.is_none() && !text.active && text.completion.is_none() {
-        let origin = passive_origin(text_system, node, area, &content, &paint, text.direction);
+        let origin = passive_origin(
+            text_system,
+            node,
+            area,
+            &content,
+            &paint,
+            text.direction,
+            1.0,
+        );
         canvas.intersect_scissor(area.x, area.y, area.width, area.height);
         text_system
             .fill_text(canvas, origin.x, origin.y, &content, &paint)

@@ -1,20 +1,36 @@
 //! Resolve assets and localization catalogs referenced by XR dialect modules.
 mod animated_image;
 mod assets;
+mod environment;
 pub mod field;
+mod heightfield;
+pub mod lightmap_bake;
+mod lightmap_unwrap;
 pub mod literal;
 mod localization;
+mod mesh;
+mod mesh_animation;
+mod mesh_lights;
+mod mesh_lod;
+mod mesh_lod_motion;
+mod mesh_materials;
+mod mesh_morph;
+mod mesh_skin;
+mod mesh_tangents;
 mod scene_plan;
 pub mod visual;
 
 pub use assets::{
-    ResolvedAssets, check_font_sources, check_image_sources, check_loaded_image_sources,
-    collect_missing_vector_paths, collect_vector_paths, resolve_assets,
+    ResolvedAssets, SceneAssets, check_font_sources, check_image_sources,
+    check_loaded_image_sources, collect_missing_vector_paths, collect_vector_paths,
+    require_scene_assets, resolve_assets,
 };
+pub use environment::pack_environment;
 pub use localization::{
     ResolvedTranslations, check_missing_translation_catalog, check_translation_sources,
     resolve_translations,
 };
+pub use mesh_materials::pack_mesh_image;
 pub use scene_plan::ScenePlan;
 use std::{
     collections::BTreeMap,

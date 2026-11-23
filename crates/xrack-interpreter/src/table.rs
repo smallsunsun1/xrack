@@ -6,10 +6,10 @@ use std::{cmp::Ordering, ops::Range};
 use xrack_mlir::TableRead;
 use xrack_runtime::{
     ControlAction, ListMetrics, Property, RecordValue, RowHeightOverrides, SelectionTarget,
-    TableCellEditor, TableColumnOrder, TableColumnWindow, TableField, TableHeader,
-    TableHeaderAction, TableRows, TableSelection, TableSelectionAction, TableSelectionChange,
-    TableSelectionCommand, TableSelectionMethod, TableSelectionOptions, TableSelectionSnapshot,
-    TableSort, VecModel,
+    StandardTableRowCache, TableCellEditor, TableColumnOrder, TableColumnWindow, TableField,
+    TableHeader, TableHeaderAction, TableRows, TableSelection, TableSelectionAction,
+    TableSelectionChange, TableSelectionCommand, TableSelectionMethod, TableSelectionOptions,
+    TableSelectionSnapshot, TableSort, VecModel,
 };
 
 pub(crate) struct Definition {
@@ -37,6 +37,7 @@ pub(crate) struct State {
     widths: Property<Vec<Option<u32>>>,
     columns: Property<TableColumnOrder>,
     heights: RowHeightOverrides,
+    row_cache: StandardTableRowCache,
     pub(crate) selection: TableSelection,
     pub(crate) history: xrack_runtime::TableEditHistory<RecordValue>,
     pub(crate) string_history: xrack_runtime::TableEditHistory<String>,
@@ -258,7 +259,8 @@ impl Instance {
         let definition = view.table_definition();
         let columns = &definition.columns;
         let header = definition.row_header.as_deref();
-        xrack_runtime::try_render_standard_table_rows(
+        let state = self.repeat_state(view);
+        state.table_state().row_cache.try_render(
             || {
                 self.view_model(view)?
                     .projected

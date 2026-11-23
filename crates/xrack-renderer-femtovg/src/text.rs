@@ -216,6 +216,8 @@ struct FontCatalog {
     db: Database,
     primary: String,
     loaded: HashMap<fontdb::ID, Option<FontId>>,
+    // Glyph bounds use the same bytes as the registered font.
+    outline_faces: HashMap<FontId, FontSource>,
     matches: HashMap<FontRequest, Option<FontId>>,
 }
 
@@ -225,33 +227,70 @@ pub(crate) struct OutlineGlyph {
     pub(crate) units_per_em: u16,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct GlyphExtents {
+    pub(super) min_bearing: [f32; 2],
+    pub(super) max_bearing: [f32; 2],
+    pub(super) size: [f32; 2],
+}
+
+pub(super) fn atlas_size_range(size: f32, scale: f32) -> [f32; 2] {
+    // A previous paint in the same FemtoVG size bin may have produced
+    // slightly different rounded bearings and texel extents.
+    let size_bin = (size * scale * 10.0).trunc();
+    [
+        (size_bin / 10.0 - 0.0001).max(0.0),
+        (size_bin + 1.0) / 10.0 + 0.0001,
+    ]
+}
+
+impl OutlineGlyph {
+    pub(super) fn atlas_extents(self, size_range: [f32; 2]) -> Option<GlyphExtents> {
+        let ink = self.bounds?;
+        let [small, large] = size_range.map(|size| size / f32::from(self.units_per_em));
+        let bearing = [f32::from(ink.x_min), -f32::from(ink.y_max)];
+        Some(GlyphExtents {
+            min_bearing: bearing.map(|value| (value * small).min(value * large).round()),
+            max_bearing: bearing.map(|value| (value * small).max(value * large).round()),
+            size: [ink.width(), ink.height()].map(|extent| (f32::from(extent) * large).ceil()),
+        })
+    }
+}
+
+impl GlyphExtents {
+    pub(super) fn padded_edges(self) -> [f32; 4] {
+        [
+            self.min_bearing[0] - 1.0,
+            self.min_bearing[1] - 1.0,
+            self.max_bearing[0] + self.size[0] + 1.0,
+            self.max_bearing[1] + self.size[1] + 1.0,
+        ]
+    }
+}
+
 impl FontCatalog {
     fn outline_glyph(&self, font: FontId, glyph: u16) -> Option<OutlineGlyph> {
-        let id = self
-            .loaded
-            .iter()
-            .find_map(|(&id, &loaded)| (loaded == Some(font)).then_some(id))?;
-        self.db.with_face_data(id, |data, index| {
-            let face = ttf_parser::Face::parse(data, index).ok()?;
-            let glyph = ttf_parser::GlyphId(glyph);
-            if face.is_variable()
-                || face.is_color_glyph(glyph)
-                || face.glyph_svg_image(glyph).is_some()
-                || face.glyph_raster_image(glyph, u16::MAX).is_some()
-            {
-                return None;
-            }
-            Some(OutlineGlyph {
-                bounds: face.glyph_bounding_box(glyph),
-                units_per_em: face.units_per_em(),
-            })
-        })?
+        let source = self.outline_faces.get(&font)?;
+        let face = ttf_parser::Face::parse(source.bytes.as_ref(), source.index).ok()?;
+        let glyph = ttf_parser::GlyphId(glyph);
+        if face.is_variable()
+            || face.is_color_glyph(glyph)
+            || face.glyph_svg_image(glyph).is_some()
+            || face.glyph_raster_image(glyph, u16::MAX).is_some()
+        {
+            return None;
+        }
+        Some(OutlineGlyph {
+            bounds: face.glyph_bounding_box(glyph),
+            units_per_em: face.units_per_em(),
+        })
     }
 
     fn new(
         db: Database,
         loaded: HashMap<fontdb::ID, Option<FontId>>,
         first: Option<FontId>,
+        fallback: &[FallbackFace],
     ) -> Self {
         let primary = db
             .faces()
@@ -260,10 +299,18 @@ impl FontCatalog {
             .and_then(|face| face.families.first())
             .map(|(family, _)| family.clone())
             .unwrap_or_default();
+        let outline_faces = fallback
+            .iter()
+            .filter_map(|fallback| {
+                let font = loaded.get(&fallback.id?).copied().flatten()?;
+                Some((font, fallback.source.clone()))
+            })
+            .collect();
         Self {
             db,
             primary,
             loaded,
+            outline_faces,
             matches: HashMap::new(),
         }
     }
@@ -306,10 +353,12 @@ impl FontCatalog {
             ..Default::default()
         });
         let font = id.and_then(|id| {
-            *self
-                .loaded
-                .entry(id)
-                .or_insert_with(|| load_face(&self.db, context, id))
+            *self.loaded.entry(id).or_insert_with(|| {
+                let source = FontSource::from_database(&self.db, id)?;
+                let font = source.load(context).ok()?;
+                self.outline_faces.insert(font, source);
+                Some(font)
+            })
         });
         // Bound memoization of requests supplied by dynamic application bindings.
         if self.matches.len() >= 128 {
@@ -320,40 +369,45 @@ impl FontCatalog {
     }
 }
 
-fn load_face(db: &Database, context: &TextContext, id: fontdb::ID) -> Option<FontId> {
-    struct Binary(Arc<dyn AsRef<[u8]> + Send + Sync>);
+#[derive(Clone)]
+struct FontBytes(Arc<dyn AsRef<[u8]> + Send + Sync>);
 
-    impl AsRef<[u8]> for Binary {
-        fn as_ref(&self) -> &[u8] {
-            self.0.as_ref().as_ref()
-        }
+impl AsRef<[u8]> for FontBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref().as_ref()
+    }
+}
+
+#[derive(Clone)]
+struct FontSource {
+    bytes: FontBytes,
+    index: u32,
+}
+
+impl FontSource {
+    fn from_database(db: &Database, id: fontdb::ID) -> Option<Self> {
+        let face = db.face(id)?;
+        let bytes = if let fontdb::Source::Binary(data) = &face.source {
+            FontBytes(data.clone())
+        } else {
+            db.with_face_data(id, |data, _| FontBytes(Arc::new(Arc::<[u8]>::from(data))))?
+        };
+        Some(Self {
+            bytes,
+            index: face.index,
+        })
     }
 
-    let face = db.face(id)?;
-    if let fontdb::Source::Binary(data) = &face.source {
-        return context
-            .add_shared_font_with_index(Binary(data.clone()), face.index)
-            .ok();
-    }
-    db.with_face_data(id, |data, index| {
+    fn load(&self, context: &TextContext) -> Result<FontId, String> {
         context
-            .add_shared_font_with_index(Arc::<[u8]>::from(data), index)
-            .ok()
-    })?
+            .add_shared_font_with_index(self.bytes.clone(), self.index)
+            .map_err(|error| error.to_string())
+    }
 }
 
 struct FallbackFace {
     id: Option<fontdb::ID>,
-    data: Arc<[u8]>,
-    index: u32,
-}
-
-impl FallbackFace {
-    fn load(&self, context: &TextContext) -> Result<FontId, String> {
-        context
-            .add_shared_font_with_index(self.data.clone(), self.index)
-            .map_err(|error| error.to_string())
-    }
+    source: FontSource,
 }
 
 #[derive(Clone, PartialEq)]
@@ -434,7 +488,7 @@ impl FontContext {
         let fallback: Vec<_> = sources
             .iter()
             .filter_map(|source| {
-                let font = source.load(&context).ok();
+                let font = source.source.load(&context).ok();
                 if let Some(id) = source.id {
                     loaded.insert(id, font);
                 }
@@ -447,8 +501,18 @@ impl FontContext {
         let families = font_family_names(&system, Some(&db));
         #[cfg(target_os = "android")]
         let emoji_font = android_emoji_font(&system, &loaded);
-        let catalog = RefCell::new(FontCatalog::new(system, loaded, fallback.first().copied()));
-        let bundled = Some(RefCell::new(FontCatalog::new(db, HashMap::new(), None)));
+        let catalog = RefCell::new(FontCatalog::new(
+            system,
+            loaded,
+            fallback.first().copied(),
+            sources,
+        ));
+        let bundled = Some(RefCell::new(FontCatalog::new(
+            db,
+            HashMap::new(),
+            None,
+            &[],
+        )));
         let result = Self {
             identity: Rc::new(()),
             families,
@@ -591,6 +655,7 @@ pub struct TextSystem {
     edit_line: RefCell<Option<EditLine>>,
     label_layouts: RefCell<LabelCache>,
     outline_glyphs: RefCell<HashMap<(FontId, u16), Option<OutlineGlyph>>>,
+    pub(super) cell_glyphs: RefCell<crate::cell_glyphs::Cache>,
     styled_layouts: RefCell<crate::styled_text::LayoutCache>,
     pub(crate) styled_ink: RefCell<crate::styled_ink::InkCache>,
     #[cfg(target_os = "android")]
@@ -673,15 +738,14 @@ impl TextSystem {
             {
                 continue;
             }
-            if let Some(source) = db.with_face_data(id, |data, index| FallbackFace {
-                id: Some(id),
-                data: Arc::<[u8]>::from(data),
-                index,
-            }) {
+            if let Some(source) = FontSource::from_database(&db, id) {
                 let font = source.load(&context).ok();
                 loaded.insert(id, font);
                 if let Some(font) = font {
-                    sources.push(source);
+                    sources.push(FallbackFace {
+                        id: Some(id),
+                        source,
+                    });
                     fonts.push(font);
                 }
             }
@@ -718,21 +782,20 @@ impl TextSystem {
         let mut fallback = Vec::new();
         let mut sources = Vec::new();
         for (data, index) in fonts.into_iter().take(8) {
-            let mut source = FallbackFace {
-                id: None,
-                data: data.into(),
+            let source = FontSource {
+                bytes: FontBytes(Arc::new(data)),
                 index,
             };
             let font = source.load(&context)?;
-            let ids = db.load_font_source(fontdb::Source::Binary(Arc::new(source.data.clone())));
-            source.id = ids
+            let ids = db.load_font_source(fontdb::Source::Binary(source.bytes.0.clone()));
+            let id = ids
                 .into_iter()
                 .find(|&id| db.face(id).is_some_and(|face| face.index == index));
-            if let Some(id) = source.id {
+            if let Some(id) = id {
                 loaded.insert(id, Some(font));
             }
             fallback.push(font);
-            sources.push(source);
+            sources.push(FallbackFace { id, source });
         }
         if fallback.is_empty() {
             return Err("at least one font is required".into());
@@ -750,7 +813,12 @@ impl TextSystem {
         let families = font_family_names(&db, None);
         #[cfg(target_os = "android")]
         let emoji_font = android_emoji_font(&db, &loaded);
-        let catalog = RefCell::new(FontCatalog::new(db, loaded, fallback.first().copied()));
+        let catalog = RefCell::new(FontCatalog::new(
+            db,
+            loaded,
+            fallback.first().copied(),
+            &fallback_sources,
+        ));
         Self {
             base: FontContext {
                 identity: Rc::new(()),
@@ -781,6 +849,7 @@ impl TextSystem {
             edit_line: RefCell::default(),
             label_layouts: RefCell::default(),
             outline_glyphs: RefCell::default(),
+            cell_glyphs: RefCell::default(),
             styled_layouts: RefCell::default(),
             styled_ink: RefCell::default(),
             #[cfg(target_os = "android")]
@@ -877,6 +946,7 @@ impl TextSystem {
         self.intrinsic_measurements = Default::default();
         self.label_layouts.get_mut().clear();
         self.outline_glyphs.get_mut().clear();
+        self.cell_glyphs.get_mut().clear();
     }
 
     pub(crate) fn outline_glyph(&self, font: FontId, glyph: u16) -> Option<OutlineGlyph> {
@@ -919,6 +989,14 @@ impl TextSystem {
 
     pub(crate) fn styled_text_reused_fragments(&self) -> u64 {
         self.styled_layouts.borrow().reused_fragments
+    }
+
+    pub(crate) fn reused_styled_prefix(
+        &self,
+        plan: &Rc<StyledTextLayout>,
+        document: [(usize, usize); 3],
+    ) -> Option<crate::styled_text::ReusedPrefix> {
+        self.styled_layouts.borrow().reused_prefix(plan, document)
     }
 
     pub(crate) fn registered_font_counts(&self) -> [usize; 2] {
@@ -1179,8 +1257,16 @@ impl TextSystem {
 
     pub(crate) fn advance_painted(&self, text: &str, paint: &Paint) -> f32 {
         if text.is_empty() {
-            0.0
-        } else {
+            return 0.0;
+        }
+        #[cfg(xrack_femtovg_glyph_samples)]
+        {
+            self.context()
+                .measure_text_width(text, paint)
+                .unwrap_or(0.0)
+        }
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        {
             self.context()
                 .measure_text(0.0, 0.0, text, paint)
                 .map_or(0.0, |metrics| metrics.width())
@@ -1367,10 +1453,18 @@ impl TextMeasurer for TextSystem {
     }
 
     fn layout_styled_text(&mut self, node: &Node, available: Size) -> Option<StyledTextLayout> {
+        self.shared_styled_text_layout(node, available)
+            .map(|plan| (*plan).clone())
+    }
+
+    fn shared_styled_text_layout(
+        &mut self,
+        node: &Node,
+        available: Size,
+    ) -> Option<Rc<StyledTextLayout>> {
         self.styled_layouts
             .borrow_mut()
             .get(self, node, available, true)
-            .map(|plan| (*plan).clone())
     }
 
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {

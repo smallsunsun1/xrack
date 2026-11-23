@@ -2,7 +2,7 @@ use crate::{
     Point, Size, TextMeasurer, font_size,
     text_area::{fitting_prefix, grapheme_boundaries, paragraphs},
 };
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, cell::Cell, ops::Range};
 use unicode_bidi::{Direction, InitialInfo, get_base_direction};
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_runtime::{
@@ -208,6 +208,7 @@ impl<'a> LabelLayout<'a> {
             style,
             |range, ellipsis| advance(&line_text(text, range, ellipsis)),
             None,
+            None,
         );
         Self {
             size: plan.size,
@@ -309,6 +310,136 @@ pub struct LabelPlan {
     pub lines: Vec<PlannedLabelLine>,
 }
 
+pub(crate) struct PreparedLabel {
+    paragraphs: Vec<PreparedParagraph>,
+    graphemes: Vec<usize>,
+    words: Vec<usize>,
+    first_line_probes: Vec<Cell<FirstLineProbes>>,
+    font_generation: Cell<u32>,
+}
+
+struct PreparedParagraph {
+    source: Range<usize>,
+    trimmed_end: usize,
+    rtl: bool,
+    graphemes: Range<usize>,
+    words: Range<usize>,
+    one_line: Cell<Option<OneLineFit>>,
+}
+
+#[derive(Clone, Copy)]
+struct OneLineFit {
+    font_generation: u32,
+    wrap: TextWrap,
+    minimum_width: f32,
+}
+
+const FIRST_LINE_PROBE_COUNT: usize = 8;
+
+#[derive(Clone, Copy)]
+struct FirstLineProbes {
+    font_generation: u32,
+    widths: [f32; FIRST_LINE_PROBE_COUNT],
+}
+
+impl FirstLineProbes {
+    fn new(font_generation: u32) -> Self {
+        Self {
+            font_generation,
+            widths: [f32::NAN; FIRST_LINE_PROBE_COUNT],
+        }
+    }
+
+    fn measure(
+        &mut self,
+        index: usize,
+        last: usize,
+        font_generation: u32,
+        advance: impl FnOnce() -> f32,
+    ) -> f32 {
+        if self.font_generation != font_generation {
+            *self = Self::new(font_generation);
+        }
+        // The first line always probes the same powers of two, capped at
+        // the last grapheme. Binary search can then explore other boundaries.
+        if (index.is_power_of_two() || index == last)
+            && let Some(width) = self
+                .widths
+                .get_mut(index.next_power_of_two().trailing_zeros() as usize)
+        {
+            if width.is_nan() {
+                *width = advance();
+            }
+            *width
+        } else {
+            advance()
+        }
+    }
+}
+
+impl PreparedLabel {
+    pub(crate) fn new(text: &str) -> Option<Self> {
+        const MAX_PARAGRAPHS: usize = 65_536;
+        const MAX_BOUNDARIES: usize = 512 * 1024;
+        let mut result = Self {
+            paragraphs: Vec::new(),
+            graphemes: Vec::new(),
+            words: Vec::new(),
+            first_line_probes: Vec::new(),
+            font_generation: Cell::new(0),
+        };
+        for source in paragraphs(text) {
+            let content = &text[source.clone()];
+            if result.paragraphs.len() == MAX_PARAGRAPHS || content.len() > MAX_BOUNDARIES {
+                return None;
+            }
+            let grapheme_start = result.graphemes.len();
+            result
+                .graphemes
+                .extend(content.grapheme_indices(true).map(|(byte, _)| byte));
+            result.graphemes.push(content.len());
+            let word_start = result.words.len();
+            result.words.extend(
+                content
+                    .split_word_bound_indices()
+                    .map(|(byte, word)| byte + word.len()),
+            );
+            if result.graphemes.len() + result.words.len() > MAX_BOUNDARIES {
+                return None;
+            }
+            result.paragraphs.push(PreparedParagraph {
+                trimmed_end: source.start + content.trim_end().len(),
+                source,
+                rtl: get_base_direction(content) == Direction::Rtl,
+                graphemes: grapheme_start..result.graphemes.len(),
+                words: word_start..result.words.len(),
+                one_line: Cell::new(None),
+            });
+        }
+        // Width changes that keep a paragraph on one line only read the
+        // paragraph metadata. Keep the search probes out of that traversal.
+        result
+            .first_line_probes
+            .resize_with(result.paragraphs.len(), || {
+                Cell::new(FirstLineProbes::new(0))
+            });
+        Some(result)
+    }
+
+    pub(crate) fn invalidate_widths(&self) {
+        let next = self.font_generation.get().wrapping_add(1);
+        if next == 0 {
+            for paragraph in &self.paragraphs {
+                paragraph.one_line.set(None);
+            }
+            for probes in &self.first_line_probes {
+                probes.set(FirstLineProbes::new(0));
+            }
+        }
+        self.font_generation.set(next);
+    }
+}
+
 impl LabelPlan {
     pub fn with_font_size(
         node: &Node,
@@ -326,7 +457,7 @@ impl LabelPlan {
         direction: Option<LayoutDirection>,
         advance: impl FnMut(Range<usize>, bool) -> f32,
     ) -> Self {
-        Self::with_widths(node, available, size, direction, advance, None)
+        Self::with_widths(node, available, size, direction, advance, None, None)
     }
 
     pub(crate) fn with_widths(
@@ -336,6 +467,7 @@ impl LabelPlan {
         direction: Option<LayoutDirection>,
         advance: impl FnMut(Range<usize>, bool) -> f32,
         widths: Option<&mut Vec<f32>>,
+        prepared: Option<&PreparedLabel>,
     ) -> Self {
         Self::plan(
             node.text("text").unwrap_or(""),
@@ -344,6 +476,7 @@ impl LabelPlan {
             LabelStyle::for_node(node, direction),
             advance,
             widths,
+            prepared,
         )
     }
 
@@ -381,6 +514,7 @@ impl LabelPlan {
                 }
             },
             None,
+            None,
         )
     }
 
@@ -391,6 +525,7 @@ impl LabelPlan {
         style: LabelStyle,
         mut advance: impl FnMut(Range<usize>, bool) -> f32,
         mut widths: Option<&mut Vec<f32>>,
+        prepared: Option<&PreparedLabel>,
     ) -> Self {
         use TextHorizontalAlignment as Horizontal;
         use TextVerticalAlignment as Vertical;
@@ -419,11 +554,22 @@ impl LabelPlan {
         }
 
         let mut raw = Vec::new();
-        'paragraphs: for range in paragraphs(text) {
+        let mut generated = paragraphs(text);
+        let mut retained = prepared.map(|prepared| prepared.paragraphs.iter());
+        let sources = std::iter::from_fn(|| match &mut retained {
+            Some(retained) => retained
+                .next()
+                .map(|paragraph| (paragraph.source.clone(), Some(paragraph))),
+            None => generated.next().map(|range| (range, None)),
+        });
+        'paragraphs: for (paragraph_index, (range, paragraph)) in sources.enumerate() {
             let content = &text[range.clone()];
             let rtl = horizontal.direction.is_none()
                 && matches!(horizontal.mode, Horizontal::Start | Horizontal::End)
-                && get_base_direction(content) == Direction::Rtl;
+                && paragraph.map_or_else(
+                    || get_base_direction(content) == Direction::Rtl,
+                    |paragraph| paragraph.rtl,
+                );
             if wrap == TextWrap::NoWrap || content.is_empty() {
                 raw.push((range, rtl));
                 if raw.len() > limit {
@@ -431,30 +577,89 @@ impl LabelPlan {
                 }
                 continue;
             }
-            let graphemes = grapheme_boundaries(content);
-            let words = if wrap == TextWrap::WordWrap {
-                content
+            let retained = prepared.zip(paragraph);
+            let font_generation = prepared.map_or(0, |prepared| prepared.font_generation.get());
+            if let Some(paragraph) = paragraph
+                && paragraph.one_line.get().is_some_and(|fit| {
+                    fit.font_generation == font_generation
+                        && fit.wrap == wrap
+                        && available.width >= fit.minimum_width
+                })
+            {
+                raw.push((range.start..paragraph.trimmed_end, rtl));
+                if raw.len() > limit {
+                    break;
+                }
+                continue;
+            }
+            let generated_graphemes;
+            let graphemes = if let Some((prepared, paragraph)) = retained {
+                &prepared.graphemes[paragraph.graphemes.clone()]
+            } else {
+                generated_graphemes = grapheme_boundaries(content);
+                &generated_graphemes
+            };
+            let generated_words;
+            let words: &[usize] = if wrap != TextWrap::WordWrap {
+                &[]
+            } else if let Some((prepared, paragraph)) = retained {
+                &prepared.words[paragraph.words.clone()]
+            } else {
+                generated_words = content
                     .split_word_bound_indices()
                     .map(|(start, word)| start + word.len())
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
+                    .collect::<Vec<_>>();
+                &generated_words
             };
             let last = graphemes.len() - 1;
             let mut start = 0;
             while start < last {
-                let fit = fitting_prefix(start, last, |index| {
-                    let from = range.start + graphemes[start];
-                    let to = range.start + graphemes[index];
-                    advance(from..to, false) <= available.width
-                })
-                .max(start + 1);
+                let mut minimum_width = f32::NEG_INFINITY;
+                let (fit, whole_paragraph_fits) = if let Some((prepared, _)) = retained
+                    && start == 0
+                {
+                    let cache = &prepared.first_line_probes[paragraph_index];
+                    let mut probes = cache.get();
+                    let fit = fitting_prefix(0, last, |index| {
+                        let width =
+                            probes.measure(index, last, prepared.font_generation.get(), || {
+                                advance(range.start..range.start + graphemes[index], false)
+                            });
+                        minimum_width = minimum_width.max(width);
+                        width <= available.width
+                    });
+                    if probes.font_generation == prepared.font_generation.get() {
+                        cache.set(probes);
+                    }
+                    (fit, fit == last)
+                } else {
+                    let fit = fitting_prefix(start, last, |index| {
+                        let from = range.start + graphemes[start];
+                        let to = range.start + graphemes[index];
+                        advance(from..to, false) <= available.width
+                    });
+                    (fit, false)
+                };
+                let fit = fit.max(start + 1);
                 let word_end = words.partition_point(|&byte| byte <= graphemes[fit]);
                 let next = word_end
                     .checked_sub(1)
                     .and_then(|index| graphemes.binary_search(&words[index]).ok())
                     .filter(|&index| index > start)
                     .unwrap_or(fit);
+                if whole_paragraph_fits
+                    && next == last
+                    && let Some((prepared, paragraph)) = retained
+                    && font_generation == prepared.font_generation.get()
+                {
+                    // Reaching the last grapheme required every exponential
+                    // probe to fit. A wider line repeats those same decisions.
+                    paragraph.one_line.set(Some(OneLineFit {
+                        font_generation,
+                        wrap,
+                        minimum_width,
+                    }));
+                }
                 let from = range.start + graphemes[start];
                 let to = range.start + graphemes[next];
                 raw.push((trim_trailing_space(text, from..to), rtl));
@@ -561,4 +766,55 @@ fn elided(
         trim_trailing_space(text, start..start + boundaries[end]),
         true,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_line_probes_are_reused_at_new_widths_and_reset_for_new_fonts() {
+        let text = "abcdefghi";
+        let prepared = PreparedLabel::new(text).unwrap();
+        let mut node = Node::new("StyledText", None);
+        node.properties.insert(
+            "text",
+            xrack_runtime::StyledText::from_plain_text(text).into(),
+        );
+        node.properties.insert("wrap", TextWrap::CharWrap.into());
+        let layout = |width, scale, probes: &mut Vec<Range<usize>>| {
+            LabelPlan::with_widths(
+                &node,
+                Size::new(width, f32::INFINITY),
+                12.0,
+                None,
+                |range, _| {
+                    let width = range.len() as f32 * scale;
+                    probes.push(range);
+                    width
+                },
+                None,
+                Some(&prepared),
+            )
+        };
+
+        let mut probes = Vec::new();
+        let initial = layout(16.0, 1.0, &mut probes);
+        assert_eq!(initial.lines[0].range, 0..9);
+        assert!(probes.contains(&(0..1)));
+
+        probes.clear();
+        let narrower = layout(5.5, 1.0, &mut probes);
+        assert_eq!(narrower.lines[0].range, 0..5);
+        assert!(!probes.contains(&(0..1)));
+        assert!(!probes.contains(&(0..4)));
+        assert!(probes.contains(&(0..6)));
+
+        prepared.invalidate_widths();
+        probes.clear();
+        let new_font = layout(5.5, 2.0, &mut probes);
+        assert_eq!(new_font.lines[0].range, 0..2);
+        assert!(probes.contains(&(0..1)));
+        assert!(probes.contains(&(0..4)));
+    }
 }

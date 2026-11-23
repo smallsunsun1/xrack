@@ -8,6 +8,8 @@ pub enum Literal {
     Float(f64),
     Length(Length),
     Point2D(runtime::Point2D),
+    Point3D(runtime::Point3D),
+    Vector3D(runtime::Vector3D),
     Vector2D(runtime::Vector2D),
     Transform2D(runtime::Transform2D),
     Percent(Percent),
@@ -28,6 +30,8 @@ impl Literal {
             Self::Float(value) => Value::Float(value),
             Self::Length(value) => Value::Length(value),
             Self::Point2D(value) => Value::Point2D(value),
+            Self::Point3D(value) => Value::Point3D(value),
+            Self::Vector3D(value) => Value::Vector3D(value),
             Self::Vector2D(value) => Value::Vector2D(value),
             Self::Transform2D(value) => Value::Transform2D(value),
             Self::Percent(value) => Value::Percent(value),
@@ -78,6 +82,26 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
         Type::Point2D => {
             let [x, y] = coordinates(spelling)?;
             Literal::Point2D(runtime::Point2D::new(Length(x), Length(y)))
+        }
+        Type::Point3D => {
+            let [x, y, z] = coordinates(spelling)?;
+            Literal::Point3D(runtime::Point3D::new(x, y, z))
+        }
+        Type::Vector3D => {
+            let [x, y, z] = coordinates(spelling)?;
+            Literal::Vector3D(runtime::Vector3D::new(x, y, z))
+        }
+        Type::Hit3D => {
+            if !spelling.is_empty() {
+                return Err("invalid scene hit literal".into());
+            }
+            Default(Value::Hit3D(runtime::Hit3D::default()))
+        }
+        Type::ProjectedPoint3D => {
+            if !spelling.is_empty() {
+                return Err("invalid projected point literal".into());
+            }
+            Default(Value::ProjectedPoint3D(runtime::ProjectedPoint3D::default()))
         }
         Type::Vector2D => {
             let [x, y] = coordinates(spelling)?;
@@ -219,6 +243,9 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
         Type::ColorScheme => {
             enumeration!(ColorScheme, "system" => System, "light" => Light, "dark" => Dark)
         }
+        Type::SceneToneMap => enumeration!(SceneToneMap,
+            "none" => None, "linear" => Linear, "reinhard" => Reinhard,
+            "aces" => Aces, "hejl-dawson" => HejlDawson, "filmic" => Filmic),
         Type::SwipeSide => {
             enumeration!(SwipeSide, "closed" => Closed, "left" => Left, "right" => Right)
         }
@@ -270,6 +297,7 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
         | Type::StringList
         | Type::IntList
         | Type::DateList
+        | Type::Hit3DList
         | Type::PointerButtons
         | Type::StyledText
         | Type::Record(_)

@@ -1,0 +1,81 @@
+struct LightmappedActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    lightmap: image, lightmap-mode: string, lightmap-intensity: float,
+    lightmap-u: float, lightmap-v: float, lightmap-width: float, lightmap-height: float,
+}
+
+struct LightmapLamp {
+    kind: string, x: float, y: float, z: float,
+    yaw: float, elevation: float, intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float,
+}
+
+export component LightmapsDemo inherits Window {
+    title: "XRack · 烘焙光照";
+    width: 600px; height: 394px;
+    resizable: false;
+    background: #141d29;
+
+    in-out property <bool> baked: true;
+    in-out property <bool> full-diffuse: true;
+    in-out property <float> live-light: 0;
+    in-out property <float> gain: 2.6;
+    in-out property <bool> chart: true;
+    in-out property <bool> swap-tiles: false;
+    in-out property <bool> msaa: false;
+    in-out property <bool> ssgi: false;
+    property <image> atlas: @image-url("models/lightmap-atlas.png");
+    property <image> empty;
+    property <LightmappedActor> receiver: LightmappedActor {
+        id: "", mesh: root.chart ? @mesh-url("models/lightmap-receiver.gltf")
+            : @mesh-url("models/ssr-mirror.gltf"),
+        x: 0, y: 0, z: 0, scale-x: 2.35, scale-y: 2.8, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff,
+        lightmap: root.baked ? root.atlas : root.empty,
+        lightmap-mode: root.full-diffuse ? "diffuse" : "indirect",
+        lightmap-intensity: root.gain,
+        lightmap-u: 0, lightmap-v: 0, lightmap-width: 0.5, lightmap-height: 1,
+    };
+    property <[LightmappedActor]> panels: [
+        LightmappedActor { id: "left", x: -1.38, lightmap-u: root.swap-tiles ? 0.5 : 0.0, ..root.receiver },
+        LightmappedActor { id: "offscreen", x: 80, ..root.receiver },
+        LightmappedActor { id: "right", x: 1.38, lightmap-u: root.swap-tiles ? 0.0 : 0.5, ..root.receiver },
+    ];
+    property <[LightmapLamp]> lights: [
+        LightmapLamp {
+            kind: "directional", x: 0, y: 0, z: 0, yaw: 18, elevation: 20,
+            intensity: root.live-light, color: #f3dcba, range: 0, inner-angle: 0, outer-angle: 45,
+        }
+    ];
+
+    lighting := SceneView3D {
+        width: 600px; height: 340px;
+        model: root.panels;
+        lights: root.lights;
+        ambient-intensity: 0.28;
+        camera-yaw: 0; camera-pitch: 0; camera-distance: 8.4;
+        scene-background: #172638;
+        multisampling: root.msaa;
+        screen-space-global-illumination: root.ssgi;
+        cache-rendering: true;
+    }
+
+    HorizontalLayout {
+        x: 12px; y: 347px; width: 576px; height: 36px; spacing: 10px;
+        bake-switch := CheckBox { width: 100px; text: "烘焙"; checked <=> root.baked; }
+        mode-switch := Button {
+            width: 133px;
+            text: root.full-diffuse ? "完整漫反射" : "仅间接光";
+            clicked => { root.full-diffuse = !root.full-diffuse; }
+        }
+        tile-switch := Button {
+            width: 104px; text: "交换图块";
+            clicked => { root.swap-tiles = !root.swap-tiles; }
+        }
+        Text { text: "实时灯"; color: #edf4ff; }
+        live-slider := Slider { minimum: 0; maximum: 4; value <=> root.live-light; }
+    }
+}

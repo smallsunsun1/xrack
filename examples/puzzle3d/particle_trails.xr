@@ -1,0 +1,81 @@
+struct TrailEmitter {
+    position: point3d, color: color, size: float, lifetime: float,
+    burst-count: int, fade-out: float, seed: int, layers: int,
+    velocity: vector3d, velocity-spread: vector3d, gravity: vector3d,
+    trail-segments: int, trail-duration: float, trail-end-scale: float,
+    trail-fade: float, trail-eol-fade: float,
+}
+
+struct TrailRotator {
+    affector-kind: string, position: point3d, direction: vector3d,
+    angular-speed: float, enabled: bool, layers: int,
+}
+
+struct TrailCamera {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float,
+}
+
+export component ParticleTrailsDemo inherits Window {
+    title: "XRack · 粒子拖尾";
+    width: 670px; height: 457px;
+    background: #182333;
+
+    in-out property <float> time: 0.9;
+    in-out property <int> segments: 12;
+    in-out property <float> history: 0.8;
+    in-out property <bool> rotate-trails: false;
+    in-out property <bool> retain-trails: true;
+    in-out property <int> population: 1;
+
+    property <TrailEmitter> comet: TrailEmitter {
+        position: Point3D.new(-2.2, -0.4, 0), color: #48d9ffff, size: 0.22, lifetime: 1.25,
+        burst-count: root.population, fade-out: 0, seed: 41, layers: 1,
+        velocity: Vector3D.new(3.8, 3.8, 0), velocity-spread: Vector3D.new(0, 0, 0),
+        gravity: Vector3D.new(0, -5.4, 0),
+        trail-segments: root.segments, trail-duration: root.history,
+        trail-end-scale: 0.16, trail-fade: 0.78, trail-eol-fade: root.retain-trails ? 0.62 : 0,
+    };
+    property <[TrailEmitter]> emitters: [
+        TrailEmitter { ..root.comet },
+        TrailEmitter {
+            position: Point3D.new(-2.2, -1.84, 0), color: #ff9e46ff, size: 0.19, lifetime: 2.2, layers: 2,
+            trail-segments: 0, ..root.comet
+        },
+    ];
+    property <[TrailRotator]> fields: [
+        TrailRotator {
+            affector-kind: "point-rotator", position: Point3D.new(0.5, 0.72, 0),
+            direction: Vector3D.new(0,0,1), angular-speed: 85,
+            enabled: root.rotate-trails, layers: 1,
+        },
+    ];
+    property <[TrailCamera]> model: [
+        TrailCamera {
+            id: "eye", mesh: "", x: 0, y: 0, z: 10,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+            color: #ffffff, camera-kind: "orthographic", camera-height: 6,
+        },
+    ];
+    SceneView3D {
+        width: 670px; height: 352px;
+        camera: "eye"; model: root.model; layer-mask: 3;
+        particle-emitters: root.emitters; particle-time: root.time; particle-affectors: root.fields;
+        scene-background: #101925; cache-rendering: true; order-independent-transparency: true;
+    }
+    Text { x: 20px; y: 34px; text: "拖尾轨迹"; color: #9eb7c9; }
+    Text { x: 20px; y: 203px; text: "点粒子"; color: #d0b291; }
+
+    segments-toggle := Button {
+        x: 18px; y: 365px; width: 107px; height: 36px;
+        text: root.segments == 12 ? "12 段" : root.segments == 1 ? "1 段" : "无拖尾";
+        clicked => { root.segments = root.segments == 12 ? 1 : root.segments == 1 ? 0 : 12; }
+    }
+    rotate-toggle := CheckBox { x: 141px; y: 365px; width: 116px; height: 36px; text: "旋转影响器"; checked <=> root.rotate-trails; }
+    retain-toggle := CheckBox { x: 270px; y: 365px; width: 110px; height: 36px; text: "保留残影"; checked <=> root.retain-trails; }
+    Label { x: 400px; y: 365px; width: 76px; height: 36px; text: "拖尾时长"; }
+    span-slider := Slider { x: 479px; y: 365px; width: 169px; height: 36px; minimum: 0.12; maximum: 1.3; value <=> root.history; }
+    Label { x: 18px; y: 412px; width: 50px; height: 35px; text: "时间"; }
+    time-slider := Slider { x: 72px; y: 412px; width: 578px; height: 35px; minimum: 0; maximum: 2.1; value <=> root.time; }
+}

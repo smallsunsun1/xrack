@@ -1,0 +1,166 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "XRack animated camera rig"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Camera rig",
+      "scale": [
+        2,
+        1,
+        0.75
+      ],
+      "children": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "name": "Hero",
+      "camera": 0,
+      "translation": [
+        0,
+        0,
+        4
+      ],
+      "scale": [
+        0.25,
+        2,
+        1.5
+      ]
+    },
+    {
+      "name": "Map",
+      "camera": 1,
+      "translation": [
+        0,
+        0,
+        4
+      ]
+    },
+    {
+      "name": "Far",
+      "camera": 2,
+      "translation": [
+        0,
+        0,
+        4
+      ]
+    },
+    {
+      "name": "Duplicate",
+      "camera": 1,
+      "translation": [
+        0,
+        0,
+        5
+      ]
+    },
+    {
+      "name": "Duplicate",
+      "camera": 1,
+      "translation": [
+        0,
+        0,
+        6
+      ]
+    }
+  ],
+  "cameras": [
+    {
+      "type": "perspective",
+      "perspective": {
+        "yfov": 1.0471975511965976,
+        "aspectRatio": 1,
+        "znear": 0.2,
+        "zfar": 20
+      }
+    },
+    {
+      "type": "orthographic",
+      "orthographic": {
+        "xmag": 2,
+        "ymag": 1,
+        "znear": 0,
+        "zfar": 34
+      }
+    },
+    {
+      "type": "perspective",
+      "perspective": {
+        "yfov": 0.75,
+        "znear": 0.2
+      }
+    }
+  ],
+  "animations": [
+    {
+      "name": "Dolly",
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 1,
+            "path": "translation"
+          }
+        }
+      ],
+      "samplers": [
+        {
+          "input": 0,
+          "output": 1
+        }
+      ]
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 32,
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAEAAAAAAAAAAAAAAgEDNzEw/AAAAAAAAgEA="
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 8,
+      "byteLength": 24
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 2,
+      "type": "SCALAR",
+      "min": [
+        0
+      ],
+      "max": [
+        2
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 2,
+      "type": "VEC3"
+    }
+  ]
+}

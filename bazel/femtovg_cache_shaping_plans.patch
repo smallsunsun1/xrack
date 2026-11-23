@@ -1,0 +1,88 @@
+diff --git a/src/text/font.rs b/src/text/font.rs
+--- a/src/text/font.rs
++++ b/src/text/font.rs
+@@ -362,7 +362,22 @@
+ #[cfg(feature = "textlayout")]
+ struct ParsedFace<'a> {
+     default: TtfFont<'a>,
+-    shaping: std::cell::OnceCell<RefCell<rustybuzz::Face<'a>>>,
++    shaping: std::cell::OnceCell<RefCell<ShapingFace<'a>>>,
++}
++
++#[cfg(feature = "textlayout")]
++struct ShapingFace<'a> {
++    face: rustybuzz::Face<'a>,
++    plans: std::collections::VecDeque<ShapingPlan>,
++}
++
++#[cfg(feature = "textlayout")]
++struct ShapingPlan {
++    direction: rustybuzz::Direction,
++    script: Option<rustybuzz::Script>,
++    language: Option<rustybuzz::Language>,
++    coordinates: Vec<ttf_parser::NormalizedCoordinate>,
++    plan: rustybuzz::ShapePlan,
+ }
+ 
+ #[cfg(feature = "textlayout")]
+@@ -641,13 +656,19 @@
+     pub(crate) fn shape(
+         &self,
+         variations: &FontVariations,
+-        buffer: rustybuzz::UnicodeBuffer,
++        mut buffer: rustybuzz::UnicodeBuffer,
+     ) -> rustybuzz::GlyphBuffer {
+         self.data.with_dependent(|_, parsed| {
+-            let mut face = parsed
++            let mut shaping = parsed
+                 .shaping
+-                .get_or_init(|| RefCell::new(rustybuzz::Face::from_face(parsed.default.clone())))
++                .get_or_init(|| {
++                    RefCell::new(ShapingFace {
++                        face: rustybuzz::Face::from_face(parsed.default.clone()),
++                        plans: Default::default(),
++                    })
++                })
+                 .borrow_mut();
++            let ShapingFace { face, plans } = &mut *shaping;
+             if self.metrics.flags.variable() {
+                 // The lookup tables are shared across the coordinates of a variable font.
+                 // Reset the ttf-parser view before applying the run's coordinates.
+@@ -656,7 +677,36 @@
+                     face.set_variation(ttf_parser::Tag(tag), value);
+                 }
+             }
+-            rustybuzz::shape(&face, &[], buffer)
++            buffer.guess_segment_properties();
++            let direction = buffer.direction();
++            let script = buffer.script();
++            // Rustybuzz exposes an unresolved script as UNKNOWN. The buffer
++            // starts with no explicit script and guesses only strong scripts.
++            let script = (script != rustybuzz::script::UNKNOWN).then_some(script);
++            let language = buffer.language();
++            let coordinates = face.variation_coordinates();
++            if let Some(entry) = plans.iter().find(|entry| {
++                entry.direction == direction
++                    && entry.script == script
++                    && entry.language == language
++                    && entry.coordinates == coordinates
++            }) {
++                return rustybuzz::shape_with_plan(face, &entry.plan, buffer);
++            }
++            let plan = rustybuzz::ShapePlan::new(face, direction, script, language.as_ref(), &[]);
++            let output = rustybuzz::shape_with_plan(face, &plan, buffer);
++            const MAX_PLANS: usize = 8;
++            if plans.len() == MAX_PLANS {
++                plans.pop_front();
++            }
++            plans.push_back(ShapingPlan {
++                direction,
++                script,
++                language,
++                coordinates: coordinates.to_vec(),
++                plan,
++            });
++            output
+         })
+     }
+ 

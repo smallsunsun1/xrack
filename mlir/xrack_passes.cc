@@ -433,6 +433,8 @@ using GeometryNumbers = llvm::SmallVector<double, 6>;
 constexpr double identity2D[] = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
 
 std::optional<GeometryNumbers> geometryNumbers(Value value) {
+  while (auto local = value.getDefiningOp<LocalOp>())
+    value = local.getInput();
   auto literal = value.getDefiningOp<LiteralOp>();
   if (!literal)
     return std::nullopt;
@@ -500,6 +502,43 @@ struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
       return replaceGeometryLiteral(rewriter, op, identity2D);
     if (inputs.empty())
       return failure();
+    if (operation == "hit-all-3d" || operation == "hit-all-camera-3d" ||
+        operation == "ray-hit-all-3d" || operation == "sphere-overlap-3d") {
+      auto model = inputs.front().getDefiningOp<RecordArrayOp>();
+      bool emptyModel = model && model.getItems().empty() && inputs.front().hasOneUse();
+      bool emptyLayers = false;
+      const unsigned withMask = operation == "hit-all-3d" ? 7u
+                                : operation == "sphere-overlap-3d" ? 4u : 5u;
+      if (inputs.size() == withMask)
+        if (auto mask = inputs.back().getDefiningOp<LiteralOp>()) {
+          int64_t bits;
+          emptyLayers = !mask.getValue().getAsInteger(10, bits) && bits == 0;
+        }
+      if (!emptyModel && !emptyLayers)
+        return failure();
+      rewriter.replaceOpWithNewOp<Hit3DArrayOp>(
+          op, op.getResult().getType(), ValueRange{}, "");
+      return success();
+    }
+    if ((operation == "sphere-slide-3d" || operation == "sphere-walk-3d") && inputs.size() >= 4) {
+      auto displacement = geometryNumbers(inputs[2]);
+      if (displacement && displacement->size() == 3 &&
+          llvm::all_of(*displacement, [](double value) { return value == 0.0; })) {
+        rewriter.replaceOp(op, inputs[1]);
+        return success();
+      }
+      return failure();
+    }
+    if (operation == "point-3d" || operation == "vector-3d") {
+      GeometryNumbers values;
+      for (auto input : inputs) {
+        auto number = geometryNumbers(input);
+        if (!number)
+          return failure();
+        values.push_back(number->front());
+      }
+      return replaceGeometryLiteral(rewriter, op, values);
+    }
     auto a = geometryNumbers(inputs[0]);
     auto b = inputs.size() == 2 ? geometryNumbers(inputs[1]) : std::nullopt;
     if (operation == "compose") {
@@ -569,7 +608,7 @@ struct FoldGeometryField : OpRewritePattern<Field> {
 
   LogicalResult matchAndRewrite(Field op, PatternRewriter &rewriter) const override {
     if (auto coordinates = geometryNumbers(op.getInput()))
-      return replaceFloatLiteral(rewriter, op, llvm::APFloat((*coordinates)[op.getValue() == "y"]));
+      return replaceFloatLiteral(rewriter, op, llvm::APFloat((*coordinates)[op.getValue() == "z" ? 2 : op.getValue() == "y" ? 1 : 0]));
     return failure();
   }
 };
@@ -699,6 +738,7 @@ LogicalResult foldConstants(ModuleOp module, const PropertyAnalysis &properties)
     RewritePatternSet patterns(context);
     patterns.add<FoldUnary, FoldBinary, FoldCast, FoldMathFunction, FoldGeometryFunction,
                  FoldGeometryField<Point2DFieldOp>, FoldGeometryField<Vector2DFieldOp>,
+                 FoldGeometryField<Point3DFieldOp>, FoldGeometryField<Vector3DFieldOp>,
                  FoldRound, FoldToRatio, FoldStringify>(context);
     patterns.add<FoldBuiltinField<DateFieldOp, MakeDateOp>,
                  FoldBuiltinField<TimeFieldOp, MakeTimeOp>,

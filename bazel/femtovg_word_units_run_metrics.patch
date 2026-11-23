@@ -1,0 +1,175 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -113,7 +113,14 @@
+ }
+ 
+ pub(super) type ShapedWordsCache<H> = LruCache<WordId, Result<ShapedWord, ErrorKind>, H>;
+-pub(super) type ShapingRunCache<H> = LruCache<ShapingId, TextMetrics, H>;
++pub(super) type ShapingRunCache<H> = LruCache<ShapingId, ShapingRun, H>;
++
++pub(super) struct ShapingRun {
++    metrics: TextMetrics,
++    ascender: f32,
++    descender: f32,
++    unwrapped_advance: f32,
++}
+ 
+ impl super::TextContext {
+     /// Returns information on how the provided text will be drawn with the specified paint.
+@@ -125,6 +132,18 @@
+         paint: &Paint,
+     ) -> Result<TextMetrics, ErrorKind> {
+         self.0.borrow_mut().measure_text(x, y, text, &paint.text)
++    }
++
++    /// Measures the line width without copying or placing the cached glyphs.
++    pub fn measure_text_width(&self, text: &str, paint: &Paint) -> Result<f32, ErrorKind> {
++        let mut context = self.0.borrow_mut();
++        cached_run(&mut context, &paint.text, text, None).map(|run| run.metrics.width())
++    }
++
++    /// Returns the sum of finite glyph advances on the first line.
++    pub fn unwrapped_advance(&self, text: &str, paint: &Paint) -> f32 {
++        let mut context = self.0.borrow_mut();
++        cached_run(&mut context, &paint.text, text, None).map_or(0.0, |run| run.unwrapped_advance)
+     }
+ 
+     /// Returns the maximum index-th byte of text that will fit inside `max_width`.
+@@ -278,6 +297,18 @@
+     text: &str,
+     max_width: Option<f32>,
+ ) -> Result<TextMetrics, ErrorKind> {
++    let run = cached_run(context, text_settings, text, max_width)?;
++    let mut metrics = run.metrics.clone();
++    layout(x, y, &mut metrics, text_settings, [run.ascender, run.descender]);
++    Ok(metrics)
++}
++
++fn cached_run<'a>(
++    context: &'a mut super::TextContextImpl,
++    text_settings: &TextSettings,
++    text: &str,
++    max_width: Option<f32>,
++) -> Result<&'a ShapingRun, ErrorKind> {
+     let variations = &text_settings.font_variations;
+     let id = ShapingId::new(
+         text_settings.font_size,
+@@ -298,16 +329,26 @@
+             max_width,
+             variations,
+         );
+-        context.shaping_run_cache.put(id, metrics);
+-    }
+-
+-    if let Some(mut metrics) = context.shaping_run_cache.get(&id).cloned() {
+-        layout(x, y, context, &mut metrics, text_settings)?;
+-
+-        return Ok(metrics);
+-    }
+-
+-    Err(ErrorKind::UnknownError)
++        let [ascender, descender] = run_extents(context, &metrics, text_settings)?;
++        let unwrapped_advance = metrics
++            .glyphs
++            .iter()
++            .filter(|glyph| glyph.byte_index < text.len() && glyph.advance_x.is_finite())
++            .map(|glyph| glyph.advance_x)
++            .sum::<f32>()
++            .max(0.0);
++        context.shaping_run_cache.put(
++            id,
++            ShapingRun {
++                metrics,
++                ascender,
++                descender,
++                unwrapped_advance,
++            },
++        );
++    }
++
++    context.shaping_run_cache.get(&id).ok_or(ErrorKind::UnknownError)
+ }
+ 
+ fn shape_run(
+@@ -520,14 +561,38 @@
+     })
+ }
+ 
++// Resolve the font metrics once per shaped run. The caller's origin and
++// alignment only affect placement, so this can live in the shaping cache.
++fn run_extents(
++    context: &mut super::TextContextImpl,
++    res: &TextMetrics,
++    text_settings: &TextSettings,
++) -> Result<[f32; 2], ErrorKind> {
++    let mut ascender: f32 = 0.;
++    let mut descender: f32 = 0.;
++
++    for glyph in &res.glyphs {
++        let font = context.font(glyph.font_id).ok_or(ErrorKind::NoFontFound)?;
++        let metrics = font.metrics(text_settings.font_size);
++        ascender = ascender.max(metrics.ascender());
++        descender = descender.min(metrics.descender());
++    }
++
++    let primary_metrics = context.find_font(&text_settings.font_ids, |(_, font)| {
++        (false, font.metrics(text_settings.font_size))
++    })?;
++    if ascender.abs() < f32::EPSILON {
++        ascender = primary_metrics.ascender();
++    }
++    if descender.abs() < f32::EPSILON {
++        descender = primary_metrics.descender();
++    }
++
++    Ok([ascender, descender])
++}
++
+ // Calculates the x,y coordinates for each glyph based on their advances. Calculates total width and height of the shaped text run
+-fn layout(
+-    x: f32,
+-    y: f32,
+-    context: &mut super::TextContextImpl,
+-    res: &mut TextMetrics,
+-    text_settings: &TextSettings,
+-) -> Result<(), ErrorKind> {
++fn layout(x: f32, y: f32, res: &mut TextMetrics, text_settings: &TextSettings, [ascender, descender]: [f32; 2]) {
+     let mut cursor_x = x;
+     let mut cursor_y = y;
+ 
+@@ -542,26 +607,6 @@
+ 
+     let mut min_y = cursor_y;
+     let mut max_y = cursor_y;
+-
+-    let mut ascender: f32 = 0.;
+-    let mut descender: f32 = 0.;
+-
+-    for glyph in &mut res.glyphs {
+-        let font = context.font(glyph.font_id).ok_or(ErrorKind::NoFontFound)?;
+-        let metrics = font.metrics(text_settings.font_size);
+-        ascender = ascender.max(metrics.ascender());
+-        descender = descender.min(metrics.descender());
+-    }
+-
+-    let primary_metrics = context.find_font(&text_settings.font_ids, |(_, font)| {
+-        (false, font.metrics(text_settings.font_size))
+-    })?;
+-    if ascender.abs() < f32::EPSILON {
+-        ascender = primary_metrics.ascender();
+-    }
+-    if descender.abs() < f32::EPSILON {
+-        descender = primary_metrics.descender();
+-    }
+ 
+     // Baseline alignment
+     let alignment_offset_y = match text_settings.text_baseline {
+@@ -591,6 +636,4 @@
+ 
+     res.y = min_y;
+     res.height = max_y - min_y;
+-
+-    Ok(())
+-}
++}

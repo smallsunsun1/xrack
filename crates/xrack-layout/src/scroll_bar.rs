@@ -34,7 +34,7 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode, text: &mut impl Text
     ) {
         if !item.visible
             || !node.group_content_enabled()
-            || node.shared_subtree_excludes(xrack_runtime::SceneFeature::ScrollEndpoint)
+            || !node.contains_scene_feature(xrack_runtime::SceneFeature::ScrollEndpoint)
         {
             return;
         }
@@ -74,7 +74,7 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode, text: &mut impl Text
             continue;
         };
         item.enabled &= enabled;
-        item.attached_scroll_bar = Some(Box::new(attached));
+        item.details_mut().attached_scroll_bar = Some(Box::new(attached));
         if !node.has_scroll_parts() {
             continue;
         }
@@ -123,7 +123,7 @@ fn resolve_attachment(
     viewports: &BTreeMap<usize, Vec<usize>>,
 ) -> Option<(AttachedScrollBar, bool)> {
     let target = viewports.get(&node.scroll_target.as_ref()?.identity())?;
-    if layout.overlays.as_ref().is_some_and(|overlays| {
+    if layout.overlay_index().is_some_and(|overlays| {
         overlays
             .modal
             .iter()
@@ -207,7 +207,7 @@ pub(crate) fn scroll_bar_thickness(bounds: Rect) -> f32 {
 
 impl LayoutNode {
     pub fn attached_scroll_geometry(&self) -> Option<ScrollBarGeometry> {
-        self.attached_scroll_bar.as_ref().map(|bar| bar.geometry)
+        self.attached_scroll_bar().map(|bar| bar.geometry)
     }
 
     pub fn scroll_control_geometry(&self, node: &Node) -> Option<ScrollBarGeometry> {

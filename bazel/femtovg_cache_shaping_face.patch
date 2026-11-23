@@ -1,0 +1,119 @@
+diff --git a/src/text/font.rs b/src/text/font.rs
+--- a/src/text/font.rs
++++ b/src/text/font.rs
+@@ -359,7 +359,26 @@
+ /// The hash covers all normalized variation coordinates, or 0 for defaults.
+ type GlyphCacheKey = (u16, u64);
+ 
++#[cfg(feature = "textlayout")]
++struct ParsedFace<'a> {
++    default: TtfFont<'a>,
++    shaping: std::cell::OnceCell<RefCell<rustybuzz::Face<'a>>>,
++}
++
++#[cfg(feature = "textlayout")]
++self_cell::self_cell!(
++    struct FontData {
++        owner: Box<dyn AsRef<[u8]>>,
++
++        #[not_covariant]
++        dependent: ParsedFace,
++    }
++);
++
+ pub struct Font {
++    #[cfg(feature = "textlayout")]
++    data: FontData,
++    #[cfg(not(feature = "textlayout"))]
+     data: Box<dyn AsRef<[u8]>>,
+     face_index: u32,
+     // swash's table-directory offset and cache key; `None` if swash can't parse the face.
+@@ -464,7 +483,14 @@
+             #[cfg(feature = "swash")]
+             swash_identity: swash::FontRef::from_index(data.as_ref(), face_index as usize)
+                 .map(|font_ref| (font_ref.offset, font_ref.key)),
+-            data: Box::new(data),
++            data: FontData::try_new(Box::new(data), |owner| {
++                let default =
++                    TtfFont::parse(owner.as_ref().as_ref(), face_index).map_err(|_| ErrorKind::FontParseError)?;
++                Ok::<_, ErrorKind>(ParsedFace {
++                    default,
++                    shaping: Default::default(),
++                })
++            })?,
+             face_index,
+             units_per_em,
+             metrics,
+@@ -594,7 +620,11 @@
+ 
+     #[allow(dead_code)]
+     pub fn data(&self) -> &[u8] {
+-        (*self.data).as_ref()
++        #[cfg(feature = "textlayout")]
++        let data = self.data.borrow_owner();
++        #[cfg(not(feature = "textlayout"))]
++        let data = &self.data;
++        data.as_ref().as_ref()
+     }
+ 
+     #[allow(dead_code)]
+@@ -604,7 +634,30 @@
+ 
+     #[cfg(feature = "textlayout")]
+     pub(crate) fn face_ref(&self) -> FontFaceRef<'_> {
+-        FontFaceRef(ttf_parser::Face::parse(self.data.as_ref().as_ref(), self.face_index).unwrap())
++        FontFaceRef(ttf_parser::Face::parse(self.data(), self.face_index).unwrap())
++    }
++
++    #[cfg(feature = "textlayout")]
++    pub(crate) fn shape(
++        &self,
++        variations: &FontVariations,
++        buffer: rustybuzz::UnicodeBuffer,
++    ) -> rustybuzz::GlyphBuffer {
++        self.data.with_dependent(|_, parsed| {
++            let mut face = parsed
++                .shaping
++                .get_or_init(|| RefCell::new(rustybuzz::Face::from_face(parsed.default.clone())))
++                .borrow_mut();
++            if self.metrics.flags.variable() {
++                // The lookup tables are shared across the coordinates of a variable font.
++                // Reset the ttf-parser view before applying the run's coordinates.
++                *face.as_mut() = parsed.default.clone();
++                for (tag, value) in variations.iter() {
++                    face.set_variation(ttf_parser::Tag(tag), value);
++                }
++            }
++            rustybuzz::shape(&face, &[], buffer)
++        })
+     }
+ 
+     #[cfg(not(feature = "textlayout"))]
+@@ -618,7 +671,7 @@
+         // `FontRef` constructor mints a new key, so reuse the one minted at load.
+         let (offset, key) = self.swash_identity?;
+         Some(swash::FontRef {
+-            data: self.data.as_ref().as_ref(),
++            data: self.data(),
+             offset,
+             key,
+         })
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -483,14 +483,13 @@
+     context.find_font(font_ids, |(font_id, font)| {
+         let font_face = font.face_ref_with_variations(variations);
+         let normalized_coords = font.normalize_variations(variations);
+-        let face = rustybuzz::Face::from_face(font_face.0.clone());
+         // Call harfbuzz
+         let output = {
+             let mut buffer = rustybuzz::UnicodeBuffer::new();
+             buffer.push_str(word);
+             buffer.set_direction(hb_direction);
+ 
+-            rustybuzz::shape(&face, &[], buffer)
++            font.shape(variations, buffer)
+         };
+ 
+         let positions = output.glyph_positions();

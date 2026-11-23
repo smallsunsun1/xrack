@@ -5,6 +5,45 @@ mod stack_back;
 mod touch_spin;
 
 #[test]
+fn continued_styled_layout_accounts_for_shared_and_replaced_shapes() {
+    use xrack_runtime::StyledText;
+
+    let node = node("StyledText", "document");
+    let available = Size::new(320.0, f32::INFINITY);
+    let font_size = 16.0;
+    let advance = |text: &str, _| text.chars().count() as f32 * 7.0;
+    let shape =
+        |text: &str, _| VisualTextLine::new(text, text.char_indices().map(|(i, _)| (i, 7.0)));
+    let indexed = |document: &StyledText| {
+        let mut node = node.clone();
+        node.properties.insert("text", document.clone().into());
+        StyledTextLayout::indexed(&node, document, available, font_size, advance)
+    };
+    let prefix = "same\nsame\n";
+    let previous = StyledText::from_plain_text(format!("{prefix}discarded"));
+    let (mut layout, lines) = indexed(&previous);
+    let mut allocations = Vec::new();
+    layout.shape_selection_recording(&previous, 0, shape, |index, bytes| {
+        allocations.push((index, bytes));
+    });
+    assert_eq!(allocations.len(), 2);
+    let tail = StyledText::from_plain_text("新段落");
+    let next = StyledText::from_plain_text(format!("{prefix}{}", tail.text()));
+    let (mut layout, _, kept) =
+        layout.replace_tail(&lines, prefix.len(), indexed(&tail), 0, font_size);
+    let retained = allocations.partition_point(|(index, _)| *index < kept);
+    assert_eq!(retained, 1);
+    let retained_bytes: usize = allocations[..retained].iter().map(|(_, size)| size).sum();
+    let new_bytes = layout.shape_selection_recording(&next, kept, shape, |index, _| {
+        assert!(index >= kept);
+    });
+    assert_eq!(
+        layout.allocated_bytes(),
+        layout.fragments.capacity() * size_of::<StyledFragment>() + retained_bytes + new_bytes
+    );
+}
+
+#[test]
 fn calendar_arrows_start_at_the_disabled_selection_and_skip_excluded_days() {
     use xrack_runtime::{CalendarAction, ControlAction, Date};
 
@@ -84,6 +123,262 @@ fn adjacent_text_fields_skip_unavailable_controls_and_stop_in_the_dialog() {
         Some(false)
     );
     assert!(input.is_focused(&[0, 0, 0]));
+}
+
+#[test]
+fn leaf_placement_matches_general_placement() {
+    let bounds = Rect::new(16.0, 14.0, 38.0, 27.0);
+    let viewport = Rect::new(0.0, 0.0, 80.0, 64.0);
+    for kind in ["Rectangle", "TableCell", "TreeCell"] {
+        for (scale, clipping, visible, enabled) in [
+            (1.0, None, true, true),
+            (1.25, Some(true), true, false),
+            (0.0, Some(false), true, true),
+            (1.0, Some(false), false, true),
+        ] {
+            let mut parent = node("Rectangle", "panel");
+            parent.properties.insert("transform-scale-x", scale.into());
+            let mut space = None;
+            let mut ancestor_shapes = Some(Rc::new(ClipChain {
+                shape: RoundedClip {
+                    bounds: viewport,
+                    radii: [9.0; 4],
+                },
+                parent: None,
+                space: None,
+            }));
+            let (clip, _) = frame_projection::apply(
+                &parent,
+                viewport,
+                viewport,
+                &mut space,
+                &mut ancestor_shapes,
+            );
+            let mut leaf = node(kind, "leaf");
+            length(&mut leaf, "border-radius", 6.0);
+            length(&mut leaf, "font-size", 18.0);
+            boolean(&mut leaf, "mouse-drag-pan-enabled", true);
+            boolean(&mut leaf, "pull-to-refresh", true);
+            if let Some(clipping) = clipping {
+                boolean(&mut leaf, "clip", clipping);
+                leaf.properties
+                    .insert("transform-rotation", 11.0_f64.into());
+                leaf.properties
+                    .insert("layout-direction", LayoutDirection::LeftToRight.into());
+            }
+            let mut context = LayoutContext {
+                text: &mut Text,
+                layout_direction: Some(LayoutDirection::RightToLeft),
+                offsets: &BTreeMap::new(),
+                input: None,
+                path: vec![0, 0],
+                row_key: None,
+                anchor: None,
+                resolved_list_scroll: None,
+                resolved_table: None,
+                cache_table_sizes: false,
+                row_layouts: None,
+                ancestor_shapes,
+                space,
+                viewport,
+            };
+            let specialized = context.place(&leaf, bounds, clip, visible, enabled, None);
+            context.layout_direction = leaf.layout_direction().or(context.layout_direction);
+            let general = context.place_node(&leaf, bounds, clip, visible, enabled, None);
+            assert_eq!(
+                specialized, general,
+                "{kind}, parent scale={scale}, clip={clipping:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cloning_a_cached_layout_projects_each_nested_clip_once() {
+    let mut window = node("Window", "root");
+    let mut panel = node("Rectangle", "panel");
+    length(&mut panel, "x", 12.0);
+    length(&mut panel, "width", 80.0);
+    length(&mut panel, "height", 60.0);
+    length(&mut panel, "border-radius", 9.0);
+    boolean(&mut panel, "clip", true);
+    let mut label = node("Label", "label");
+    label
+        .properties
+        .insert("text", "cached label".to_owned().into());
+    length(&mut label, "y", 16.0);
+    panel.children.extend([label.clone(), label.clone(), label]);
+    window.children.push(panel);
+    let mut local = layout(&window, Size::new(100.0, 80.0), &mut Text);
+    let siblings = &mut local.children[0].children;
+    assert_eq!(siblings[0].clip, siblings[1].clip);
+    siblings[2].clip = siblings[2]
+        .clip
+        .intersect(Rect::new(28.0, 19.0, 18.0, 27.0));
+    assert_ne!(siblings[1].clip, siblings[2].clip);
+    let outer_clip = Rc::new(ClipChain {
+        shape: RoundedClip {
+            bounds: Rect::new(10.0, 7.0, 80.0, 60.0),
+            radii: [16.0; 4],
+        },
+        parent: None,
+        space: None,
+    });
+
+    for (bounds, clip, ancestors) in [
+        (
+            Rect::new(4.125, 7.0, 100.0, 80.0),
+            Rect::new(0.0, 0.0, 150.0, 130.0),
+            None,
+        ),
+        (
+            Rect::new(-12.75, 9.5, 100.0, 80.0),
+            Rect::new(0.0, 15.0, 70.0, 55.0),
+            Some(&outer_clip),
+        ),
+    ] {
+        let mut expected = local.clone();
+        row_layout::place_in_view(&mut expected, bounds, clip, ancestors);
+        let projected = row_layout::clone_in_view(&local, bounds, clip, ancestors);
+        assert_eq!(projected, expected);
+    }
+}
+
+#[test]
+fn static_absolute_rectangles_reuse_layout_until_their_inputs_change() {
+    struct View;
+
+    impl Component for View {
+        fn render(&self) -> Node {
+            Node::hidden()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    struct Metrics {
+        revision: Rc<()>,
+        scale: f32,
+    }
+
+    impl TextMeasurer for Metrics {
+        fn measure(&mut self, text: &str, size: f32, width: f32) -> Size {
+            Text.measure(text, size, width)
+        }
+
+        fn font_size(&self, node: &Node) -> f32 {
+            font_size(node) * self.scale
+        }
+
+        fn typography_revision(&self) -> Option<Rc<()>> {
+            Some(self.revision.clone())
+        }
+    }
+
+    let mut window = node("Window", "root");
+    let mut flickable = node("Flickable", "view");
+    for (name, value) in [
+        ("width", 120.0),
+        ("height", 90.0),
+        ("content-height", 240.0),
+    ] {
+        length(&mut flickable, name, value);
+    }
+    window.children.push(flickable);
+    for (id, x) in [("left", 20.0), ("right", 90.0)] {
+        let mut rectangle = node("Rectangle", id);
+        length(&mut rectangle, "x", x);
+        length(&mut rectangle, "height", 16.0);
+        rectangle
+            .properties
+            .insert("width", Value::Percent(xrack_runtime::Percent(0.25)));
+        window.children.push(rectangle);
+    }
+
+    let mut root = Rc::new(window);
+    let mut viewport = Size::new(180.0, 110.0);
+    let mut input = Interaction::default();
+    let mut cache = RowLayoutCache::default();
+    let mut text = Metrics {
+        revision: Rc::new(()),
+        scale: 1.0,
+    };
+    let mut previous = None;
+    for (frame, expected_reuses) in [0, 2, 2, 1, 0, 0, 0].into_iter().enumerate() {
+        match frame {
+            1 => assert!(input.accessibility_scroll_to(
+                previous.as_ref().unwrap(),
+                &[0],
+                Orientation::Vertical,
+                34.0
+            )),
+            2 => length(&mut Rc::make_mut(&mut root).children[0], "y", 7.0),
+            3 => length(&mut Rc::make_mut(&mut root).children[2], "x", 81.0),
+            4 => viewport.width = 208.0,
+            5 => {
+                text = Metrics {
+                    revision: Rc::new(()),
+                    scale: 1.5,
+                }
+            }
+            6 => Rc::make_mut(&mut root).children.swap(1, 2),
+            _ => (),
+        }
+        let before = cache.stats().subtree_reuses;
+        let (_, cached) = prepare_scene_with_row_cache(
+            &View,
+            root.clone(),
+            viewport,
+            &mut text,
+            &input,
+            &mut cache,
+        );
+        let (_, fresh) = prepare_scene_with_input(&View, root.clone(), viewport, &mut text, &input);
+        assert_eq!(cached, fresh, "frame={frame}");
+        assert_eq!(
+            cache.stats().subtree_reuses - before,
+            expected_reuses,
+            "frame={frame}"
+        );
+        previous = Some(cached);
+    }
+}
+
+#[test]
+fn layout_indexes_drawers_added_to_a_prepared_scene() {
+    let mut root = node("Window", "root");
+    root.children.push(node("Rectangle", "panel"));
+    let viewport = Size::new(320.0, 240.0);
+    let initial = layout(&root, viewport, &mut Text);
+    assert!(initial.drawer_paths().is_empty());
+    assert!(initial.overlay_paths().is_empty());
+
+    let mut updated = root.clone();
+    let mut drawer = node("Drawer", "tools");
+    length(&mut drawer, "drag-margin", 16.0);
+    length(&mut drawer, "width", 120.0);
+    updated.children[0].children.push(drawer);
+    let closed = layout(&updated, viewport, &mut Text);
+    assert_eq!(closed.drawer_paths(), &[vec![0, 0]]);
+    assert!(closed.overlay_paths().is_empty());
+
+    boolean(&mut updated.children[0].children[0], "open", true);
+    let open = layout(&updated, viewport, &mut Text);
+    assert_eq!(open.overlay_paths(), &[vec![0, 0]]);
+    let mut cleared = open.clone();
+    assert!(Rc::ptr_eq(
+        open.details.as_ref().unwrap(),
+        cleared.details.as_ref().unwrap()
+    ));
+    cleared.set_overlay_index(None);
+    assert!(cleared.overlay_paths().is_empty());
+    assert!(cleared.details.is_none());
+    assert_eq!(open.overlay_paths(), &[vec![0, 0]]);
+    updated.children[0].children.clear();
+    assert_eq!(layout(&updated, viewport, &mut Text), initial);
+    assert_eq!(layout(&root, viewport, &mut Text), initial);
 }
 
 #[test]
@@ -841,6 +1136,106 @@ fn animated_groups_reuse_local_layout_and_follow_current_clipping() {
 }
 
 #[test]
+fn cached_local_and_row_layouts_attach_the_current_rounded_ancestors() {
+    use xrack_runtime::ListModel;
+
+    #[derive(Default)]
+    struct Metrics(Rc<()>);
+    impl TextMeasurer for Metrics {
+        fn measure(&mut self, text: &str, size: f32, width: f32) -> Size {
+            Text.measure(text, size, width)
+        }
+        fn typography_revision(&self) -> Option<Rc<()>> {
+            Some(self.0.clone())
+        }
+    }
+    struct View;
+    impl Component for View {
+        fn render(&self) -> Node {
+            Node::hidden()
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let mut outer = node("Rectangle", "outer");
+    let mut inner = node("Rectangle", "inner");
+    for (panel, width, radius) in [(&mut outer, 160.0, 12.0), (&mut inner, 148.0, 5.0)] {
+        boolean(panel, "clip", true);
+        length(panel, "width", width);
+        length(panel, "height", 92.0);
+        length(panel, "border-radius", radius);
+    }
+    let mut group = node("Rectangle", "group");
+    length(&mut group, "width", 80.0);
+    length(&mut group, "height", 60.0);
+    group.properties.insert("opacity", 0.7_f64.into());
+    let mut row = node("ListRow", "row");
+    row.set_row_key(Some(3_i64.row_key(0)));
+    length(&mut row, "x", 40.0);
+    length(&mut row, "y", 62.0);
+    length(&mut row, "width", 90.0);
+    length(&mut row, "height", 24.0);
+    for y in [8.0, 24.0, 40.0] {
+        let mut label = Node::new("Label", None);
+        length(&mut label, "y", y);
+        length(&mut label, "width", 52.0);
+        length(&mut label, "height", 18.0);
+        label.properties.insert("text", "Status".to_owned().into());
+        group.children.push(label.clone());
+        row.children.push(label);
+    }
+    inner.children.extend([group, row]);
+    outer.children.push(inner);
+    let mut window = node("Window", "root");
+    window.children.push(outer);
+    let mut scene = Rc::new(window);
+    let viewport = Size::new(180.0, 104.0);
+    let input = Interaction::default();
+    let mut cache = RowLayoutCache::default();
+    let mut metrics = Metrics::default();
+
+    for (frame, (x, radius)) in [
+        (8.125, 12.0),
+        (27.625, 12.0),
+        (-14.375, 32.0),
+        (12.875, 12.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let outer = &mut Rc::make_mut(&mut scene).children[0];
+        length(outer, "border-radius", radius);
+        length(&mut outer.children[0].children[0], "x", x);
+        let before = cache.stats();
+        let (_, retained) = prepare_scene_with_row_cache(
+            &View,
+            scene.clone(),
+            viewport,
+            &mut metrics,
+            &input,
+            &mut cache,
+        );
+        let (_, fresh) =
+            prepare_scene_with_input(&View, scene.clone(), viewport, &mut Text, &input);
+        assert_eq!(retained, fresh, "moving group at x={x}");
+        let group = retained.at_path(&[0, 0, 0]).unwrap();
+        assert!(group.children[0].has_ancestor_clip_chain());
+        assert_eq!(
+            group.contains_clip_point(Point { x: 6.0, y: 6.0 }),
+            radius == 12.0
+        );
+        let after = cache.stats();
+        if frame != 0 {
+            assert!(after.subtree_reuses > before.subtree_reuses);
+            assert_eq!(after.reused - before.reused, 1);
+            assert_eq!(after.calculated, before.calculated);
+        }
+    }
+}
+
+#[test]
 fn preparing_virtual_rows_keeps_unrelated_shared_branches_intact() {
     use xrack_runtime::{ListRowRenderer, SceneFeature};
 
@@ -910,11 +1305,15 @@ fn passive_scroll_content_repositions_without_measuring_and_updates_after_resize
     }
 
     #[derive(Default)]
-    struct Measured(usize);
+    struct Measured(usize, Rc<()>);
     impl TextMeasurer for Measured {
         fn measure(&mut self, text: &str, size: f32, width: f32) -> Size {
             self.0 += 1;
             Text.measure(text, size, width)
+        }
+
+        fn typography_revision(&self) -> Option<Rc<()>> {
+            Some(self.1.clone())
         }
     }
 
@@ -970,6 +1369,48 @@ fn passive_scroll_content_repositions_without_measuring_and_updates_after_resize
         prepare_scene_with_input(&component, base.clone(), viewport, &mut Text, &input);
     assert_eq!(after_scroll, expected);
     assert_eq!(text.0, 0);
+
+    let replacement = Image::Embedded {
+        format: ImageFormat::Png,
+        bytes: b"new pixels with the same dimensions",
+        size: [24, 16],
+    };
+    let mut updated = base.clone();
+    Rc::make_mut(&mut updated).children[0].children[0]
+        .properties
+        .insert("source", replacement.clone().into());
+    let (prepared, reused) = prepare_scene_with_row_cache(
+        &component,
+        updated.clone(),
+        viewport,
+        &mut text,
+        &input,
+        &mut cache,
+    );
+    assert_eq!(reused, after_scroll);
+    assert_eq!(text.0, 0);
+    assert_eq!(
+        prepared.children[0].children[0].image("source"),
+        Some(replacement)
+    );
+
+    Rc::make_mut(&mut updated).children[0].children[0]
+        .properties
+        .insert("source", source([24, 28]).into());
+    let (_, remeasured) = prepare_scene_with_row_cache(
+        &component,
+        updated.clone(),
+        viewport,
+        &mut text,
+        &input,
+        &mut cache,
+    );
+    let (_, expected) = prepare_scene_with_input(&component, updated, viewport, &mut Text, &input);
+    assert_eq!(remeasured, expected);
+    assert_ne!(
+        remeasured.children[0].children[0].bounds.height,
+        reused.children[0].children[0].bounds.height,
+    );
 
     let narrow = Size::new(112.0, 86.0);
     let (_, resized) = prepare_scene_with_row_cache(
@@ -1028,9 +1469,162 @@ fn passive_scroll_content_repositions_without_measuring_and_updates_after_resize
         &input,
         &mut cache,
     );
-    let (_, direct) = prepare_scene_with_input(&component, current, narrow, &mut Text, &input);
+    let (_, direct) =
+        prepare_scene_with_input(&component, current.clone(), narrow, &mut Text, &input);
     assert_eq!(scrolled, direct);
     assert_eq!(text.0, 0);
+
+    let viewport = Rc::make_mut(&mut current);
+    viewport.properties.insert(
+        "layout-direction",
+        xrack_runtime::LayoutDirection::RightToLeft.into(),
+    );
+    length(viewport, "content-width", 250.0);
+    let mut sibling = node("Rectangle", "tail");
+    length(&mut sibling, "x", 104.0);
+    length(&mut sibling, "y", 78.0);
+    length(&mut sibling, "width", 28.0);
+    length(&mut sibling, "height", 32.0);
+    viewport.children.extend([Node::hidden(), sibling]);
+    let mut last = scrolled;
+    for offset in [0.0, 32.25, 58.0] {
+        if offset > 0.0 {
+            assert!(input.accessibility_scroll_to(&last, &[], Orientation::Horizontal, offset));
+        }
+        let (_, cached) = prepare_scene_with_row_cache(
+            &component,
+            current.clone(),
+            narrow,
+            &mut text,
+            &input,
+            &mut cache,
+        );
+        let (_, fresh) =
+            prepare_scene_with_input(&component, current.clone(), narrow, &mut Text, &input);
+        assert_eq!(cached, fresh);
+        assert!(!cached.children[1].visible);
+        last = cached;
+    }
+}
+
+#[test]
+fn clipped_scroll_measurements_survive_unrelated_edits_and_viewport_motion() {
+    struct View;
+    impl Component for View {
+        fn render(&self) -> Node {
+            Node::hidden()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    struct Measured {
+        calls: usize,
+        revision: Rc<()>,
+    }
+    impl TextMeasurer for Measured {
+        fn measure(&mut self, text: &str, size: f32, width: f32) -> Size {
+            self.calls += 1;
+            Text.measure(text, size, width)
+        }
+
+        fn typography_revision(&self) -> Option<Rc<()>> {
+            Some(self.revision.clone())
+        }
+    }
+
+    let mut window = node("Window", "root");
+    let mut panel = node("Rectangle", "panel");
+    length(&mut panel, "width", 132.0);
+    length(&mut panel, "height", 116.0);
+    length(&mut panel, "border-radius", 24.0);
+    boolean(&mut panel, "clip", true);
+    let mut view = node("Flickable", "view");
+    view.properties
+        .insert("width", Value::Percent(xrack_runtime::Percent(1.0)));
+    length(&mut view, "height", 80.0);
+    length(&mut view, "content-height", 180.0);
+    let mut label = node("Label", "label");
+    length(&mut label, "width", 86.0);
+    length(&mut label, "y", 45.0);
+    label
+        .properties
+        .insert("text", "A measured label".to_owned().into());
+    let mut progress = node("ProgressIndicator", "progress");
+    length(&mut progress, "width", 60.0);
+    length(&mut progress, "height", 8.0);
+    let mut nested = node("Flickable", "nested");
+    for (name, value) in [
+        ("x", 12.0),
+        ("y", 24.0),
+        ("width", 68.0),
+        ("height", 26.0),
+        ("content-height", 60.0),
+    ] {
+        length(&mut nested, name, value);
+    }
+    nested.children.push(label.clone());
+    let mut trailing = label.clone();
+    length(&mut trailing, "y", 85.0);
+    view.children.extend([label, nested, progress, trailing]);
+    panel.children.push(view);
+    window
+        .children
+        .extend([panel, node("Rectangle", "outside")]);
+
+    let mut scene = Rc::new(window);
+    let viewport = Size::new(220.0, 150.0);
+    let mut cache = RowLayoutCache::default();
+    let mut text = Measured {
+        calls: 0,
+        revision: Rc::new(()),
+    };
+    let mut input = Interaction::default();
+    let mut previous = None;
+    for (frame, measures) in [true, false, false, false, true, true, true]
+        .into_iter()
+        .enumerate()
+    {
+        match frame {
+            1 => assert!(input.accessibility_scroll_to(
+                previous.as_ref().unwrap(),
+                &[0, 0],
+                Orientation::Vertical,
+                30.0,
+            )),
+            2 => length(&mut Rc::make_mut(&mut scene).children[1], "x", 39.0),
+            3 => length(&mut Rc::make_mut(&mut scene).children[0], "y", 11.0),
+            4 => length(&mut Rc::make_mut(&mut scene).children[0], "width", 142.0),
+            5 => text.revision = Rc::new(()),
+            6 => {
+                Rc::make_mut(&mut scene).children[0].children[0].children[0]
+                    .properties
+                    .insert("text", "A different label".to_owned().into());
+            }
+            _ => (),
+        }
+        text.calls = 0;
+        let (_, retained) = prepare_scene_with_row_cache(
+            &View,
+            scene.clone(),
+            viewport,
+            &mut text,
+            &input,
+            &mut cache,
+        );
+        let (_, expected) =
+            prepare_scene_with_input(&View, scene.clone(), viewport, &mut Text, &input);
+        assert_eq!(retained, expected, "frame={frame}");
+        assert_eq!(
+            text.calls > 0,
+            measures,
+            "frame={frame}, measured {}",
+            text.calls
+        );
+        previous = Some(retained);
+    }
 }
 
 #[test]
@@ -1260,6 +1854,39 @@ fn wide_table_stores_only_the_materialized_scene_and_layout_cells() {
     assert_eq!(same_columns.reused, rows * 5);
     assert_eq!(next_column.calculated - same_columns.calculated, rows);
     assert_eq!(next_column.reused - same_columns.reused, rows * 4);
+
+    let columns_before = layout.table.clone();
+    let mut retained: Option<Rc<Node>> = None;
+    let mut released_header = None;
+    for (first_row, offset) in [24.0, 48.0, 72.0].into_iter().enumerate() {
+        assert!(input.accessibility_scroll_to(&layout, &[], Orientation::Vertical, offset));
+        let (scene, next) = prepare_scene_with_row_cache(
+            &view,
+            base.clone(),
+            viewport,
+            &mut Text,
+            &input,
+            &mut cache,
+        );
+        let (expected, expected_layout) =
+            prepare_scene_with_input(&view, base.clone(), viewport, &mut Text, &input);
+        assert_eq!(scene.list.unwrap().first_row, first_row + 1);
+        assert_eq!(*scene, *expected);
+        assert_eq!(next, expected_layout);
+        assert_eq!(next.table, columns_before);
+        let header = scene.table_header.as_ref().unwrap().columns.as_ptr();
+        if first_row == 1 {
+            let held = retained.take().unwrap();
+            assert_eq!(held.list.unwrap().first_row, 1);
+            let held_header = held.table_header.as_ref().unwrap().columns.as_ptr();
+            assert_ne!(held_header, header);
+            released_header = Some(held_header);
+        } else if first_row == 2 {
+            assert_eq!(Some(header), released_header);
+        }
+        retained = Some(scene);
+        layout = next;
+    }
 
     let mut base = base;
     Rc::make_mut(&mut base)
@@ -1574,6 +2201,65 @@ fn flick_only_overshoot_starts_at_the_inertial_boundary() {
 }
 
 #[test]
+fn scroll_content_measures_only_axes_without_explicit_sizes() {
+    #[derive(Default)]
+    struct Measured(Vec<(String, f32)>);
+
+    impl TextMeasurer for Measured {
+        fn measure(&mut self, text: &str, _: f32, max_width: f32) -> Size {
+            self.0.push((text.to_owned(), max_width));
+            Size::new(max_width.min(60.0), 24.0)
+        }
+    }
+
+    for (kind, max_offset) in [("Flickable", 70.0), ("ScrollView", 98.0)] {
+        let mut view = node(kind, "view");
+        length(&mut view, "content-width", 200.0);
+        length(&mut view, "content-height", 160.0);
+        let mut fixed = node("Label", "fixed");
+        fixed.properties.insert("text", "fixed".to_owned().into());
+        for (name, factor) in [("width", 0.5), ("height", 0.25)] {
+            fixed
+                .properties
+                .insert(name, Value::Percent(xrack_runtime::Percent(factor)));
+        }
+        length(&mut fixed, "x", 124.0);
+        length(&mut fixed, "y", 148.0);
+        let mut intrinsic = node("Text", "intrinsic");
+        intrinsic
+            .properties
+            .insert("text", "intrinsic".to_owned().into());
+        length(&mut intrinsic, "width", 40.0);
+        let mut text = Measured::default();
+        let size = linear::measure(&fixed, Size::new(200.0, 160.0), &mut text);
+        assert_eq!((size.x.preferred, size.y.preferred), (100.0, 40.0));
+        assert!(text.0.is_empty());
+        view.children = vec![fixed, intrinsic];
+
+        let viewport = Size::new(120.0, 90.0);
+        let frame = layout(&view, viewport, &mut text);
+        assert_eq!(
+            frame.children[0].bounds,
+            Rect::new(124.0, 148.0, 100.0, 40.0)
+        );
+        assert_eq!(frame.children[1].bounds, Rect::new(0.0, 0.0, 40.0, 24.0));
+        assert_eq!(frame.scroll.unwrap().max_offset, max_offset);
+        assert_eq!(text.0, [("intrinsic".to_owned(), 40.0)]);
+
+        let mut input = Interaction::default();
+        assert!(input.accessibility_scroll_to(&frame, &[], Orientation::Vertical, 30.0));
+        text.0.clear();
+        let shifted = layout_with_input(&view, viewport, &mut text, &input);
+        assert_eq!(
+            shifted.children[0].bounds,
+            Rect::new(124.0, 118.0, 100.0, 40.0)
+        );
+        assert_eq!(shifted.scroll.unwrap().max_offset, max_offset);
+        assert_eq!(text.0, [("intrinsic".to_owned(), 40.0)]);
+    }
+}
+
+#[test]
 fn flickable_clip_and_mouse_pan_are_independent_of_touch() {
     use std::time::{Duration, Instant};
 
@@ -1788,6 +2474,74 @@ fn frozen_columns_follow_visual_order_and_leave_room_for_the_scrollable_pane() {
 }
 
 #[test]
+fn table_header_hit_testing_reaches_visible_columns_after_a_far_scroll() {
+    use xrack_runtime::{LayoutDirection, Orientation, TableHeader};
+
+    let mut table = node("TableView", "table");
+    table.properties.insert("frozen-columns", 2_i64.into());
+    boolean(&mut table, "resizable-columns", true);
+    let count = 8192;
+    let last = count - 2;
+    let columns = (0..count)
+        .map(|index| {
+            let mut column = Node::new("TableColumn", None);
+            length(&mut column, "width", 80.0);
+            boolean(&mut column, "visible", index % 19 != 7);
+            column
+        })
+        .collect();
+    table.table_header = Some(Box::new(TableHeader {
+        columns,
+        sort: None,
+        column_widths: Vec::new(),
+    }));
+    // Move the last declaration to the frozen pane. The final scrolling
+    // column is now the second-to-last declaration.
+    table.table_column_order = table
+        .table_column_order
+        .moved(count, count - 1, 1)
+        .unwrap()
+        .1;
+    let viewport = Size::new(343.0, 180.0);
+    for direction in [LayoutDirection::LeftToRight, LayoutDirection::RightToLeft] {
+        table
+            .properties
+            .insert("layout-direction", direction.into());
+        let before = layout(&table, viewport, &mut Text);
+        let end = before.table.as_ref().unwrap().horizontal.max_offset;
+        let mut input = Interaction::default();
+        assert!(input.accessibility_scroll_to(&before, &[], Orientation::Horizontal, end));
+        let scrolled = layout_with_input(&table, viewport, &mut Text, &input);
+        let geometry = scrolled.table.as_ref().unwrap();
+        assert!(geometry.columns_in_viewport().count() < 10);
+        assert!(!geometry.is_frozen(last));
+        assert!(geometry.is_frozen(count - 1));
+        for column in [0, count - 1, last] {
+            let bounds = geometry.header_cell_bounds(column, scrolled.clip).unwrap();
+            let center = Point {
+                x: bounds.x + bounds.width * 0.5,
+                y: bounds.y + bounds.height * 0.5,
+            };
+            assert_eq!(geometry.column_at(center), Some(column));
+            let grip = Point {
+                x: if geometry.mirrored() {
+                    bounds.x + 1.0
+                } else {
+                    bounds.x + bounds.width - 1.0
+                },
+                y: center.y,
+            };
+            assert_eq!(
+                geometry.resize_at(&table, scrolled.clip, grip),
+                Some(column)
+            );
+            input.pointer_move(&table, &scrolled, grip);
+            assert_eq!(input.table_resize_column(&[]), Some(column));
+        }
+    }
+}
+
+#[test]
 fn table_positioning_uses_the_scrollable_pane_and_latest_queued_offset() {
     use xrack_runtime::{
         ListMetrics, Orientation, ScrollAction, ScrollAlignment, ScrollRequest, TableHeader,
@@ -1959,6 +2713,104 @@ fn table_header_drop_targets_only_shown_columns_in_full_permutation_order() {
 }
 
 #[test]
+fn prepared_table_rows_survive_scroll_and_refresh_when_their_inputs_change() {
+    use xrack_runtime::{
+        ListRowRenderer, StandardTableRowCache, TableHeader, TableRowOrder, VecModel,
+    };
+
+    struct View;
+    impl Component for View {
+        fn render(&self) -> Node {
+            Node::hidden()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let model = Rc::new(VecModel::from((0..20).collect::<Vec<i64>>()));
+    let rows = TableRowOrder::default().rows(model.clone());
+    let projection = StandardTableRowCache::default();
+    let mut table = node("TableView", "table");
+    length(&mut table, "row-height", 24.0);
+    length(&mut table, "row-header-width", 40.0);
+    table.list = Some(ListMetrics {
+        row_count: 20,
+        first_row: 0,
+    });
+    table.table_header = Some(Box::new(TableHeader {
+        columns: vec![node("TableColumn", "value"), node("TableColumn", "other")],
+        column_widths: Vec::new(),
+        sort: None,
+    }));
+    table.list_row_renderer = Some(ListRowRenderer::with_columns(move |range, columns| {
+        projection.render(
+            || rows.clone(),
+            range,
+            columns,
+            None,
+            2,
+            |_| None,
+            |value, _| value.to_string(),
+            |_| None,
+        )
+    }));
+    let mut scene = Rc::new(table);
+    let viewport = Size::new(200.0, 130.0);
+    let mut input = Interaction::default();
+    let mut cache = RowLayoutCache::default();
+    let prepare = |scene: &Rc<Node>, input: &Interaction, cache: &mut RowLayoutCache| {
+        prepare_scene_with_row_cache(&View, scene.clone(), viewport, &mut Text, input, cache)
+    };
+    prepare(&scene, &input, &mut cache);
+    let (initial, layout) = prepare(&scene, &input, &mut cache);
+    assert!(input.accessibility_scroll_to(&layout, &[], Orientation::Vertical, 24.0));
+    let (scrolled, _) = prepare(&scene, &input, &mut cache);
+    assert_eq!(scrolled.list.unwrap().first_row, 1);
+    assert!(scrolled.children[0].shares_storage_with(&initial.children[1]));
+    assert_eq!(scrolled.children[0].text("row-header-text"), Some("2"));
+
+    assert!(model.set_row(1, 91));
+    let (edited, _) = prepare(&scene, &input, &mut cache);
+    assert!(!edited.children[0].shares_storage_with(&scrolled.children[0]));
+    assert_eq!(
+        edited.children[0].children[0].children[0].text("text"),
+        Some("91")
+    );
+    assert_eq!(
+        scrolled.children[0].children[0].children[0].text("text"),
+        Some("1")
+    );
+    assert!(edited.children[1].shares_storage_with(&scrolled.children[1]));
+
+    Rc::make_mut(&mut scene)
+        .properties
+        .insert("current-row", 1_i64.into());
+    let (selected, cached) = prepare(&scene, &input, &mut cache);
+    assert!(selected.children[0].boolean("selected", false));
+    assert!(!edited.children[0].boolean("selected", false));
+    assert!(selected.children[1].shares_storage_with(&edited.children[1]));
+    let (fresh, direct) =
+        prepare_scene_with_input(&View, scene.clone(), viewport, &mut Text, &input);
+    assert_eq!(*selected, *fresh);
+    assert_eq!(cached, direct);
+
+    let (_, order) = scene.table_column_order.moved(2, 0, 1).unwrap();
+    Rc::make_mut(&mut scene).table_column_order = order;
+    let (reordered, cached) = prepare(&scene, &input, &mut cache);
+    let (fresh, direct) = prepare_scene_with_input(&View, scene, viewport, &mut Text, &input);
+    assert_eq!(*reordered, *fresh);
+    assert_eq!(cached, direct);
+    assert_eq!(
+        reordered.children[0].children[0]
+            .table_column_order
+            .as_slice(2),
+        Some(&[1, 0][..]),
+    );
+}
+
+#[test]
 fn table_cell_positioning_updates_bound_offsets_and_ignores_hidden_targets() {
     use std::{cell::Cell, rc::Rc};
     use xrack_runtime::{
@@ -2126,7 +2978,7 @@ fn vertical_tab_bar_reveals_the_selected_tab_and_scrolls_on_its_axis() {
     let size = Size::new(100.0, 80.0);
     let frame = layout(&bar, size, &mut Text);
     assert_eq!(frame.scroll.unwrap().offset, 40.0);
-    assert!(frame.horizontal_scroll.is_none());
+    assert!(frame.scroll_on(Orientation::Horizontal).is_none());
     assert_eq!(frame.children[2].bounds, Rect::new(0.0, 40.0, 100.0, 40.0));
     let mut input = Interaction::default();
     assert!(!input.focus_next(&bar, &frame, false));
@@ -4695,8 +5547,8 @@ fn overlapping_scroll_views_route_wheel_input_in_paint_order() {
     let viewport = Size::new(160.0, 120.0);
     let frame = layout(&window, viewport, &mut Text);
     assert!(matches!(
-        frame.paint_order,
-        Some(xrack_runtime::ScenePlanSlice::Static(&[1, 0]))
+        frame.paint_order(),
+        Some(&xrack_runtime::ScenePlanSlice::Static(&[1, 0]))
     ));
     let mut input = Interaction::default();
     input.pointer_move(&window, &frame, point);
@@ -4709,7 +5561,7 @@ fn overlapping_scroll_views_route_wheel_input_in_paint_order() {
     assert_eq!(frame.child_paint_order().collect::<Vec<_>>(), [0, 1]);
     window.set_natural_paint_order();
     assert!(window.has_natural_paint_order());
-    assert!(layout(&window, viewport, &mut Text).paint_order.is_none());
+    assert!(layout(&window, viewport, &mut Text).paint_order().is_none());
     window.children[0].properties.insert("z", 2.0_f64.into());
     assert!(!window.has_natural_paint_order());
     let changed = layout(&window, viewport, &mut Text);

@@ -59,6 +59,13 @@
       "problemMatcher": "$rustc"
     },
     {
+      "label": "XRack: Play 3D Puzzle",
+      "type": "process",
+      "command": "bazel",
+      "args": ["run", "--repo_env=CARGO_BAZEL_ISOLATED=false", "--run_env=XRACK_LIVE_PROJECT=${workspaceFolder}", "//examples/puzzle3d:play_live"],
+      "problemMatcher": "$rustc"
+    },
+    {
       "label": "Bazel: Test workspace",
       "type": "process",
       "command": "bazel",

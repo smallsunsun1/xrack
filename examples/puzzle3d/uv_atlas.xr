@@ -1,0 +1,73 @@
+struct AtlasObject {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    color: color, visible: bool,
+    camera-kind: string, camera-height: float, casts-shadow: bool,
+}
+
+struct AtlasLight {
+    kind: string, x: float, y: float, z: float,
+    yaw: float, elevation: float,
+    intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float,
+}
+
+export component UvAtlasDemo inherits Window {
+    title: "XRack · glTF 纹理坐标";
+    width: 400px;
+    height: 288px;
+    background: #141d29;
+
+    in-out property <float> light-yaw: -40;
+    in-out property <bool> shadows: false;
+    in-out property <bool> shadow-screen: false;
+    in-out property <point2d> pointer;
+    property <[AtlasObject]> scene: [
+        AtlasObject {
+            id: "atlas", mesh: @mesh-url("models/uv-atlas.gltf"),
+            x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+            yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
+            camera-kind: "", camera-height: 6.4, casts-shadow: true,
+        },
+        AtlasObject {
+            id: "eye", mesh: "", x: 0, y: 0, z: 9,
+            scale-x: 1, scale-y: 1, scale-z: 1,
+            yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
+            camera-kind: "orthographic", camera-height: 6.4, casts-shadow: false,
+        },
+        AtlasObject {
+            id: "screen", mesh: "primitive:box", x: 0, y: 0, z: -2.05,
+            scale-x: 7.5, scale-y: 5.2, scale-z: 0.1,
+            yaw: 0, pitch: 0, roll: 0, color: #c9d0da, visible: root.shadow-screen,
+            camera-kind: "", camera-height: 6.4, casts-shadow: false,
+        },
+    ];
+    property <[AtlasLight]> lamps: [
+        AtlasLight {
+            kind: "directional", x: 0, y: 0, z: 0,
+            yaw: root.light-yaw, elevation: 0, intensity: 4, color: #ffffff,
+            range: 0, inner-angle: 0, outer-angle: 45,
+        },
+    ];
+    out property <string> picked: Scene3D.pick-camera(root.scene, "eye",
+        Point2D.new(400px, 230px), root.pointer);
+
+    view := SceneView3D {
+        width: 400px;
+        height: 230px;
+        model: root.scene;
+        camera: "eye";
+        lights: root.lamps;
+        shadows: root.shadows;
+        shadow-map-size: 128;
+        ambient-intensity: 0.3;
+        scene-background: #172333;
+    }
+
+    Label { x: 94px; y: 229px; width: 86px; height: 22px; text: "原始 UV"; }
+    Label { x: 219px; y: 229px; width: 100px; height: 22px; text: "UV 变换"; }
+    Label { x: 18px; y: 251px; width: 90px; height: 31px; text: "光照方向"; }
+    light := Slider { x: 118px; y: 250px; width: 260px; height: 32px; minimum: -50; maximum: 50; value <=> root.light-yaw; }
+}

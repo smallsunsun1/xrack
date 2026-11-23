@@ -95,7 +95,7 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
   --test_arg=--ignored --test_arg=--nocapture --test_arg=benchmark_long_styled_text_paint
 ```
 
-富文本追加基准使用同一文档和视口。每帧追加一段并滚动，完整解析 Markdown，再分别测量全量排版和增量排版的耗时，统计范围包含 GPU 完成等待。
+富文本追加基准使用同一文档和视口。每帧追加一段并滚动，分别测量全量排版和增量排版。报告独立统计 Markdown 解析、布局、绘制提交、GPU 完成等待和整帧耗时。
 
 ```sh
 bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
@@ -103,6 +103,8 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
 ```
 
 加上 `--test_env=XRACK_STYLED_TEXT_PARAGRAPHS=6000` 可测更长文档。`--test_env=XRACK_STYLED_TEXT_LATEST=1` 使滚动位置跟随末尾，`--test_env=XRACK_STYLED_TEXT_TRANSFORM=rotate` 或 `zoom` 让视口在追加时旋转或缩放。`--test_env=XRACK_STYLED_TEXT_OPTIMIZED_ONLY=1` 只测默认的增量路径。输出包含复用和裁掉的片段数。
+
+加 `--test_env=XRACK_STYLED_TEXT_STREAM=1` 使用 `MarkdownStream` 增量解析，测量流式更新下的同一组阶段耗时。
 
 富文本交互基准预先布局 10,000 段文档并滚到末尾，分别测链接矩形枚举、鼠标命中、Tab 导航、选区命中和水平光标移动。输出包含普通和旋转视口的 CPU 耗时。
 
@@ -118,7 +120,13 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
   --test_arg=--ignored --test_arg=--nocapture --test_arg=benchmark_wide_table_scroll
 ```
 
-设 `XRACK_TABLE_BENCH_PIXELS` 为已有的输出目录，可以在计时结束后保存包含混合文字和居中单元格的 RGBA 帧。加 `XRACK_TABLE_BENCH_RTL=1` 可保存右向左布局的对照帧。
+加 `--test_env=XRACK_TABLE_BENCH_VERTICAL=1` 可用同一份数据测量每帧滚动 17 个逻辑像素的纵向路径。加 `--test_env=XRACK_TABLE_BENCH_TEXT=mixed` 测试混合中文和希伯来文及部分居中单元格。`--test_env=XRACK_TABLE_BENCH_TEXT=cjk` 会随行变化使用不同的汉字，配合纵向滚动会绘制 1,080 帧，用来观察持续引入新字形时的帧耗时。
+
+设 `--test_env=XRACK_TABLE_BENCH_TARGET=bgra` 或 `bgra-srgb` 可使用窗口常见的目标格式，也可用 `rgba` 或 `rgba-srgb`。读回文件统一存为 RGBA 通道顺序。运行同一测试目标并将过滤名改为 `benchmark_wide_table_resize` 可量测拖动冻结列宽的开销。
+
+加 `--test_env=XRACK_TABLE_BENCH_WINDOW_ENTRY=1` 会交替使用两个离屏目标调用窗口渲染入口，并报告全量、局部和未变化的帧数。计时截至 GPU 完成。基准报告稳定阶段的整帧 P99，以及前 20 帧的整帧 P95 和最大值，便于分别观察持续滚动的长尾和预热开销。
+
+设 `XRACK_TABLE_BENCH_PIXELS` 为已有的输出目录，可以在计时结束后从最后绘制的目标读回包含混合文字和居中单元格的 RGBA 帧。加 `XRACK_TABLE_BENCH_RTL=1` 可保存右向左布局的对照帧。
 
 
 帧报告的渲染计数包含图元分发、四边形和字形批次、渲染器队列提交、已观测的图像上传字节与保留几何的上传和命中。四边形顶点字节按实际提交的 XYUV 顶点计算。FemtoVG 内部展开的全部 GPU draw call 和上传需要使用后端追踪。CPU 准备计数另含模型扫描行和投影创建时的行克隆。实时附加快照的 `renderSamples` 还报告输入批次到调用 `present` 的耗时。真正显示到屏幕的时间需要平台呈现时间戳。离屏基准报告准备、提交和等待完成的耗时。

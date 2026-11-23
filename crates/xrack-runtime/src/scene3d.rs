@@ -1,0 +1,1832 @@
+//! Scene geometry, camera projection, and ray queries shared by 3D hosts.
+pub use crate::scene_animation::{
+    AnimatedMesh, MAX_ANIMATION_KEYS, MAX_ANIMATION_NODES, MeshAnimationBlend, MeshAnimationClip,
+    MeshAnimationNode, MeshAnimationProperty, MeshAnimationTrack, MeshAsset, MeshCamera,
+    MeshCameraProjection, MeshInterpolation, MeshLight, MeshLods, MeshNodeTransform, MeshPlayback,
+    MorphAnimationTrack,
+};
+pub use crate::scene_camera::{
+    Point3D, ProjectedPoint3D, SceneCamera, SceneCameraSettings, hit_all_camera, hit_all_objects,
+    hit_camera, hit_model, hit_objects, pick_camera, pick_model, pick_objects, project,
+    project_camera, unproject, unproject_camera,
+};
+use crate::scene_cast::{MeshContact, SphereSweep, TriangleContact, cast_triangle};
+pub use crate::scene_cast::{WalkOptions, sphere_cast, sphere_overlap, sphere_slide, sphere_walk};
+pub use crate::scene_environment::{
+    EnvironmentProbe, ReflectionCapture, ReflectionProbe, ReflectionRefresh, ReflectionSlicing,
+    ReflectionSource, environment_resource_key, model_reflections, record_reflections,
+};
+pub use crate::scene_fog::{
+    FogNoise, FogVolume3D, FogVolumeDefinition, MAX_FOG_VOLUMES, model_fog_volumes,
+    record_fog_volumes, visible_fog_volumes,
+};
+use crate::scene_hierarchy::SceneTransform;
+pub use crate::scene_hierarchy::{
+    SceneGeometry, SceneModel, SceneNodeDefinition, model_cameras, model_nodes, record_cameras,
+    record_objects,
+};
+pub use crate::scene_lighting::{
+    DirectionalShadowSpace, MAX_SCENE_LIGHTS, PointShadowProjection, SceneLight,
+    SceneLightDefinition, SceneLightModel, SceneLightSource, ShadowLight, linear_color,
+    model_lights, record_lights,
+};
+pub use crate::scene_material::{
+    MAX_MESH_TEXTURE_DIMENSION, MeshAlphaMode, MeshClearcoat, MeshDielectric, MeshImage,
+    MeshMaterial, MeshNormalMap, MeshPart, MeshPbr, MeshTexture, MeshTransmission, MeshVolume,
+    RefractionChannels, TextureColorSpace, TextureFilter, TextureTransform, TextureWrap,
+};
+use crate::scene_morph::MorphPose;
+pub use crate::scene_morph::{
+    MAX_MORPH_DELTAS, MAX_MORPH_TARGETS, MorphDelta, MorphGeometry, MorphWeights,
+};
+pub use crate::scene_particle_affectors::{
+    MAX_PARTICLE_AFFECTORS, ParticleAffector, ParticleAffectorDefinition, model_particle_affectors,
+    record_particle_affectors,
+};
+pub use crate::scene_particle_mesh::ParticleMeshSurface;
+pub use crate::scene_particle_motion::ParticleMotion;
+pub use crate::scene_particles::{
+    MAX_PARTICLE_EMITTERS, MAX_PARTICLE_TEXTURE_BYTES, MAX_PARTICLES, ParticleBlend,
+    ParticleEmitter, ParticleEmitterDefinition, ParticleSample, ParticleSprite, model_particles,
+    record_particles,
+};
+use crate::scene_pick::{BoundsSegment, MIN_BVH_TRIANGLES, PickTree};
+pub use crate::scene_projection::SceneProjectionCache;
+pub use crate::scene_skin::{
+    JointPalette, JointRows, MAX_SKIN_JOINTS, MeshInfluence, MeshSkin, MeshSkinJoint,
+    SKIN_INFLUENCES,
+};
+use crate::scene_skin::{SkinGeometry, SkinPose};
+pub use crate::scene_surface::{SurfaceSample, corresponding_vertices};
+pub use crate::scene_visibility::{SceneVisibility, VisibilityIndex};
+
+/// The default content layer for an authored model, light or camera.
+pub use crate::scene_lighting::viewport_lighting;
+pub use crate::scene_lightmap::{BakedLightmap, LightmapMode, LightmapTrace};
+
+pub const MAIN_LAYER: u64 = 1;
+use crate::{Color, VecModel, scene_bounds::Bounds3D};
+use nalgebra::Vector3;
+use std::{
+    f32::consts::{PI, TAU},
+    num::NonZeroU32,
+    ops::Range,
+    sync::{Arc, OnceLock},
+};
+
+pub const MAX_IMPORTED_VERTICES: usize = 900_000;
+/// Signed normalized tangent XYZ and orientation W. Zero W disables normal mapping.
+pub type MeshTangent = [i16; 4];
+
+#[derive(Clone, Debug)]
+pub enum Mesh3D {
+    Box,
+    Sphere,
+    Imported(Arc<MeshData>),
+}
+
+impl PartialEq for Mesh3D {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Box, Self::Box) | (Self::Sphere, Self::Sphere) => true,
+            (Self::Imported(left), Self::Imported(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MeshVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
+    pub uv1: [f32; 2],
+    pub color: [f32; 4],
+}
+
+impl MeshVertex {
+    pub const STRIDE: usize = 56;
+
+    fn solid(position: [f32; 3], normal: [f32; 3]) -> Self {
+        Self {
+            position,
+            normal,
+            uv: [0.0; 2],
+            uv1: [0.0; 2],
+            color: [1.0; 4],
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MeshData {
+    vertices: Vec<MeshVertex>,
+    parts: Vec<MeshPart>,
+    materials: Arc<[MeshMaterial]>,
+    tangents: Vec<MeshTangent>,
+    lightmap_uv: Vec<[f32; 2]>,
+    lightmap_min_size: u32,
+    blended_parts: Vec<(usize, [f32; 3])>,
+    transmission_blur: Option<f32>,
+    has_opaque_parts: bool,
+    has_depth_writing_transmission: bool,
+    has_volume: bool,
+    min: [f32; 3],
+    max: [f32; 3],
+    skin: Option<SkinGeometry>,
+    morph: Option<MorphGeometry>,
+    pick_tree: OnceLock<PickTree>,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct MeshImportOptions {
+    pub automatic_lod: bool,
+    pub lightmap_uv: bool,
+}
+
+impl MeshImportOptions {
+    pub fn from_operation(name: &str) -> Option<Self> {
+        let [automatic_lod, lightmap_uv] = match name {
+            "xr.mesh_url" => [false, false],
+            "xr.mesh_lod_url" => [true, false],
+            "xr.mesh_lightmap_url" => [false, true],
+            "xr.mesh_lod_lightmap_url" => [true, true],
+            _ => return None,
+        };
+        Some(Self {
+            automatic_lod,
+            lightmap_uv,
+        })
+    }
+}
+
+pub fn mesh_resource_key(path: &str, options: MeshImportOptions) -> String {
+    let prefix = match (options.automatic_lod, options.lightmap_uv) {
+        (false, false) => "asset",
+        (true, false) => "asset-lod",
+        (false, true) => "asset-lightmap",
+        (true, true) => "asset-lod-lightmap",
+    };
+    format!("{prefix}:{path}")
+}
+
+impl Mesh3D {
+    pub fn resolve(key: &str, imported: impl FnOnce(&str) -> Option<Self>) -> Option<Self> {
+        match key {
+            "primitive:box" => Some(Self::Box),
+            "primitive:sphere" => Some(Self::Sphere),
+            _ => imported(key),
+        }
+    }
+
+    pub fn imported(
+        vertices: Vec<MeshVertex>,
+        tangents: Vec<MeshTangent>,
+        parts: Vec<MeshPart>,
+        materials: Vec<MeshMaterial>,
+    ) -> Result<Self, &'static str> {
+        Self::imported_shared(vertices, tangents, parts, materials.into())
+    }
+
+    #[doc(hidden)]
+    pub fn imported_shared(
+        vertices: Vec<MeshVertex>,
+        tangents: Vec<MeshTangent>,
+        parts: Vec<MeshPart>,
+        materials: Arc<[MeshMaterial]>,
+    ) -> Result<Self, &'static str> {
+        if vertices.is_empty()
+            || !vertices.len().is_multiple_of(3)
+            || vertices.len() > MAX_IMPORTED_VERTICES
+        {
+            return Err("mesh must contain complete triangles within the vertex limit");
+        }
+        let mut end = 0;
+        for part in &parts {
+            if part.vertices.start != end
+                || part.vertices.is_empty()
+                || !part.vertices.len().is_multiple_of(3)
+                || part.material >= materials.len()
+            {
+                return Err("mesh parts must cover contiguous triangles with valid materials");
+            }
+            end = part.vertices.end;
+        }
+        if end != vertices.len() {
+            return Err("mesh parts do not cover the vertex buffer");
+        }
+        let needs_tangents = parts.iter().any(|part| {
+            materials[part.material]
+                .pbr
+                .as_ref()
+                .and_then(MeshPbr::tangent_normal_map)
+                .is_some()
+        });
+        if needs_tangents && tangents.len() != vertices.len()
+            || !needs_tangents && !tangents.is_empty()
+        {
+            return Err("mesh tangent data does not match the normal-mapped vertex buffer");
+        }
+        if materials.iter().any(|material| {
+            !material
+                .base_color
+                .iter()
+                .all(|channel| (0.0..=1.0).contains(channel))
+                || matches!(material.alpha_mode, MeshAlphaMode::Mask(alpha) if !alpha.is_finite() || alpha < 0.0)
+                || material.base_texture.as_ref().is_some_and(|texture| texture.uv_slot != 0 || !texture.transform.is_valid())
+                || material.pbr.as_ref().is_some_and(|pbr| !pbr.is_valid())
+        }) {
+            return Err("mesh contains an invalid material factor");
+        }
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for vertex in &vertices {
+            if !vertex
+                .position
+                .into_iter()
+                .chain(vertex.normal)
+                .chain(vertex.uv)
+                .chain(vertex.uv1)
+                .all(f32::is_finite)
+                || !vertex
+                    .color
+                    .iter()
+                    .all(|channel| (0.0..=1.0).contains(channel))
+                || Vector3::from(vertex.normal).norm_squared() < 1e-8
+            {
+                return Err("mesh contains an invalid position or normal");
+            }
+            for axis in 0..3 {
+                min[axis] = min[axis].min(vertex.position[axis]);
+                max[axis] = max[axis].max(vertex.position[axis]);
+            }
+        }
+        let blended_parts = parts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, part)| {
+                if materials[part.material].alpha_mode != MeshAlphaMode::Blend {
+                    return None;
+                }
+                let mut low = [f32::INFINITY; 3];
+                let mut high = [f32::NEG_INFINITY; 3];
+                for vertex in &vertices[part.vertices.clone()] {
+                    for axis in 0..3 {
+                        low[axis] = low[axis].min(vertex.position[axis]);
+                        high[axis] = high[axis].max(vertex.position[axis]);
+                    }
+                }
+                Some((
+                    index,
+                    std::array::from_fn(|axis| f32::midpoint(low[axis], high[axis])),
+                ))
+            })
+            .collect();
+        if parts
+            .iter()
+            .filter_map(|part| part.volume_inverse)
+            .flat_map(|inverse| inverse.into_iter().flatten())
+            .any(|value| !value.is_finite())
+        {
+            return Err("invalid mesh volume transform");
+        }
+        let mut transmission_blur = None::<f32>;
+        let mut has_opaque_parts = parts.is_empty();
+        let mut has_depth_writing_transmission = false;
+        let mut has_volume = false;
+        for part in &parts {
+            let material = &materials[part.material];
+            if let Some(blur) = material.pbr.as_ref().and_then(MeshPbr::transmission_blur) {
+                transmission_blur = Some(transmission_blur.map_or(blur, |before| before.max(blur)));
+                has_depth_writing_transmission |= material.alpha_mode != MeshAlphaMode::Blend;
+                has_volume |= material.pbr.as_ref().and_then(MeshPbr::volume).is_some();
+            } else if material.alpha_mode != MeshAlphaMode::Blend {
+                has_opaque_parts = true;
+            }
+        }
+        Ok(Self::Imported(Arc::new(MeshData {
+            vertices,
+            parts,
+            materials,
+            tangents,
+            lightmap_uv: Vec::new(),
+            lightmap_min_size: 0,
+            blended_parts,
+            transmission_blur,
+            has_opaque_parts,
+            has_depth_writing_transmission,
+            has_volume,
+            min,
+            max,
+            skin: None,
+            morph: None,
+            pick_tree: OnceLock::new(),
+        })))
+    }
+
+    /// Rebuild surviving triangles with the original materials and vertex deformation data.
+    #[doc(hidden)]
+    pub fn triangle_subset(&self, vertices: &[usize], parts: Vec<MeshPart>) -> Option<Self> {
+        let Self::Imported(source) = self else {
+            return None;
+        };
+        let geometry = vertices
+            .iter()
+            .map(|&index| source.vertices.get(index).copied())
+            .collect::<Option<_>>()?;
+        let tangents = if source.tangents.is_empty() {
+            Vec::new()
+        } else {
+            vertices
+                .iter()
+                .map(|&index| source.tangents.get(index).copied())
+                .collect::<Option<_>>()?
+        };
+        let mut mesh =
+            Self::imported_shared(geometry, tangents, parts, source.materials.clone()).ok()?;
+        if !source.lightmap_uv.is_empty() {
+            let uv = vertices
+                .iter()
+                .map(|&index| source.lightmap_uv[index])
+                .collect();
+            mesh = mesh.attach_lightmap_uv(uv, source.lightmap_min_size)?;
+        }
+        if let Some(skin) = &source.skin {
+            let weights = vertices
+                .iter()
+                .map(|&index| skin.weights.get(index).copied())
+                .collect::<Option<_>>()?;
+            mesh = mesh.with_skin_weights(weights)?;
+        }
+        if let Some(morph) = &source.morph {
+            let (offsets, deltas) = morph.subset(vertices)?;
+            mesh = mesh.with_morph(
+                morph.target_count(),
+                morph.target_names().clone(),
+                offsets,
+                deltas,
+            )?;
+        }
+        Some(mesh)
+    }
+
+    pub(crate) fn compatible_lod(&self, level: &Self) -> bool {
+        let same_skin = match (self.skin_geometry(), level.skin_geometry()) {
+            (None, None) => true,
+            (Some(a), Some(b)) => b.joint_count <= a.joint_count,
+            _ => false,
+        };
+        let same_morph = match (self.morph_geometry(), level.morph_geometry()) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                a.target_count() == b.target_count() && a.target_names() == b.target_names()
+            }
+            _ => false,
+        };
+        same_skin && same_morph
+    }
+
+    /// Authored or generated lightmap coordinates, independent of material UV slots.
+    pub fn lightmap_uvs(&self) -> &[[f32; 2]] {
+        match self {
+            Self::Imported(mesh) => &mesh.lightmap_uv,
+            _ => &[],
+        }
+    }
+
+    pub fn lightmap_min_size(&self) -> u32 {
+        match self {
+            Self::Imported(mesh) => mesh.lightmap_min_size,
+            _ => 0,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_lightmap_uv(self, uv: Vec<[f32; 2]>) -> Option<Self> {
+        self.attach_lightmap_uv(uv, 0)
+    }
+
+    #[doc(hidden)]
+    pub fn with_generated_lightmap_uv(mut self, uv: Vec<[f32; 2]>, min_size: u32) -> Option<Self> {
+        let Self::Imported(source) = &mut self else {
+            return None;
+        };
+        if source.skin.is_some() || source.morph.is_some() {
+            return None;
+        }
+        if Arc::get_mut(source).is_some() {
+            return self.attach_lightmap_uv(uv, min_size);
+        }
+        let mesh = Self::imported_shared(
+            source.vertices.clone(),
+            source.tangents.clone(),
+            source.parts.clone(),
+            source.materials.clone(),
+        )
+        .ok()?;
+        mesh.attach_lightmap_uv(uv, min_size)
+    }
+
+    fn attach_lightmap_uv(mut self, uv: Vec<[f32; 2]>, min_size: u32) -> Option<Self> {
+        if uv.is_empty() {
+            return Some(self);
+        }
+        let Self::Imported(mesh) = &mut self else {
+            return None;
+        };
+        let data = Arc::get_mut(mesh)?;
+        if uv.len() != data.vertices.len() || !uv.iter().flatten().all(|value| value.is_finite()) {
+            return None;
+        }
+        data.lightmap_uv = uv;
+        data.lightmap_min_size = min_size;
+        Some(self)
+    }
+
+    #[doc(hidden)]
+    pub fn with_packed_lightmap_uv(self, bytes: &[u8], min_size: u32) -> Option<Self> {
+        let (coordinates, rest) = bytes.as_chunks::<8>();
+        if !rest.is_empty() || coordinates.len() > MAX_IMPORTED_VERTICES {
+            return None;
+        }
+        self.attach_lightmap_uv(
+            coordinates
+                .iter()
+                .map(|uv| {
+                    let [x, y] = uv.as_chunks::<4>().0 else {
+                        unreachable!()
+                    };
+                    [*x, *y].map(f32::from_le_bytes)
+                })
+                .collect(),
+            min_size,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn with_skin_weights(mut self, weights: Vec<MeshInfluence>) -> Option<Self> {
+        let Self::Imported(mesh) = &mut self else {
+            return None;
+        };
+        let mesh = Arc::get_mut(mesh)?;
+        mesh.skin = Some(SkinGeometry::new(
+            weights,
+            &mesh.vertices,
+            mesh.blended_parts
+                .iter()
+                .map(|(part, _)| (*part, mesh.parts[*part].vertices.clone())),
+        )?);
+        Some(self)
+    }
+
+    #[doc(hidden)]
+    pub fn with_packed_skin(self, bytes: &[u8]) -> Option<Self> {
+        if !bytes.len().is_multiple_of(MeshInfluence::STRIDE) {
+            return None;
+        }
+        let weights = bytes
+            .as_chunks::<{ MeshInfluence::STRIDE }>()
+            .0
+            .iter()
+            .copied()
+            .map(MeshInfluence::from_packed)
+            .collect();
+        self.with_skin_weights(weights)
+    }
+
+    pub fn influences(&self) -> Option<&[MeshInfluence]> {
+        self.skin_geometry()
+            .map(|geometry| geometry.weights.as_slice())
+    }
+
+    pub(crate) fn skin_geometry(&self) -> Option<&SkinGeometry> {
+        match self {
+            Self::Imported(mesh) => mesh.skin.as_ref(),
+            _ => None,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_morph(
+        mut self,
+        target_count: usize,
+        names: Arc<[String]>,
+        offsets: Vec<u32>,
+        deltas: Vec<MorphDelta>,
+    ) -> Option<Self> {
+        let Self::Imported(mesh) = &mut self else {
+            return None;
+        };
+        let mesh = Arc::get_mut(mesh)?;
+        mesh.morph = Some(MorphGeometry::new(
+            target_count,
+            names,
+            offsets,
+            deltas,
+            &mesh.vertices,
+            mesh.blended_parts
+                .iter()
+                .map(|(part, _)| (*part, mesh.parts[*part].vertices.clone())),
+        )?);
+        Some(self)
+    }
+
+    #[doc(hidden)]
+    pub fn with_packed_morph(
+        self,
+        target_count: usize,
+        names: &[&str],
+        bytes: &[u8],
+    ) -> Option<Self> {
+        let count = self.vertices().len() + 1;
+        let (words, remainder) = bytes.as_chunks::<4>();
+        if !remainder.is_empty() {
+            return None;
+        }
+        let offsets = words
+            .get(..count)?
+            .iter()
+            .copied()
+            .map(u32::from_le_bytes)
+            .collect();
+        let (records, remainder) = words[count..].as_chunks::<10>();
+        if !remainder.is_empty() || records.len() > MAX_MORPH_DELTAS {
+            return None;
+        }
+        let deltas = records
+            .iter()
+            .map(|record| {
+                let vector =
+                    |offset| std::array::from_fn(|axis| f32::from_le_bytes(record[offset + axis]));
+                MorphDelta {
+                    target: u32::from_le_bytes(record[0]),
+                    position: vector(1),
+                    normal: vector(4),
+                    tangent: vector(7),
+                }
+            })
+            .collect();
+        self.with_morph(
+            target_count,
+            names.iter().map(|name| (*name).to_owned()).collect(),
+            offsets,
+            deltas,
+        )
+    }
+
+    pub fn morph_geometry(&self) -> Option<&MorphGeometry> {
+        match self {
+            Self::Imported(mesh) => mesh.morph.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn mirrored_x(&self) -> Option<Self> {
+        let Self::Imported(mesh) = self else {
+            return None;
+        };
+        let mut vertices = mesh.vertices.clone();
+        for triangle in vertices.chunks_exact_mut(3) {
+            for vertex in &mut *triangle {
+                vertex.position[0] = -vertex.position[0];
+                vertex.normal[0] = -vertex.normal[0];
+            }
+            triangle.swap(1, 2);
+        }
+        let mut tangents = mesh.tangents.clone();
+        for triangle in tangents.chunks_exact_mut(3) {
+            for tangent in &mut *triangle {
+                tangent[0] = tangent[0].saturating_neg();
+                tangent[3] = tangent[3].saturating_neg();
+            }
+            triangle.swap(1, 2);
+        }
+        let mut mirrored = Self::imported_shared(
+            vertices,
+            tangents,
+            mesh.parts.clone(),
+            mesh.materials.clone(),
+        )
+        .ok()?;
+        if !mesh.lightmap_uv.is_empty() {
+            let mut uv = mesh.lightmap_uv.clone();
+            for triangle in uv.chunks_exact_mut(3) {
+                triangle.swap(1, 2);
+            }
+            mirrored = mirrored.attach_lightmap_uv(uv, mesh.lightmap_min_size)?;
+        }
+        if let Some(morph) = &mesh.morph {
+            let (offsets, deltas) = morph.mirrored_x();
+            mirrored.with_morph(
+                morph.target_count(),
+                morph.target_names().clone(),
+                offsets,
+                deltas,
+            )
+        } else {
+            Some(mirrored)
+        }
+    }
+
+    /// Read the compact triangle data emitted by the AOT resource compiler.
+    #[doc(hidden)]
+    pub fn from_packed(
+        bytes: &[u8],
+        tangent_bytes: &[u8],
+        parts: Vec<MeshPart>,
+        materials: Vec<MeshMaterial>,
+    ) -> Option<Self> {
+        if !bytes.len().is_multiple_of(MeshVertex::STRIDE)
+            || bytes.len() / MeshVertex::STRIDE > MAX_IMPORTED_VERTICES
+            || !tangent_bytes.len().is_multiple_of(8)
+            || tangent_bytes.len() / 8 > MAX_IMPORTED_VERTICES
+        {
+            return None;
+        }
+        let vertices = bytes
+            .as_chunks::<{ MeshVertex::STRIDE }>()
+            .0
+            .iter()
+            .map(|row| {
+                let [x, y, z, nx, ny, nz, u, v, r, g, b, a, u1, v1] = row.as_chunks::<4>().0 else {
+                    unreachable!()
+                };
+                MeshVertex {
+                    position: [*x, *y, *z].map(f32::from_le_bytes),
+                    normal: [*nx, *ny, *nz].map(f32::from_le_bytes),
+                    uv: [*u, *v].map(f32::from_le_bytes),
+                    uv1: [*u1, *v1].map(f32::from_le_bytes),
+                    color: [*r, *g, *b, *a].map(f32::from_le_bytes),
+                }
+            })
+            .collect();
+        let tangents = tangent_bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|bytes| {
+                let [x, y, z, w] = bytes.as_chunks::<2>().0 else {
+                    unreachable!()
+                };
+                [*x, *y, *z, *w].map(i16::from_le_bytes)
+            })
+            .collect();
+        Self::imported(vertices, tangents, parts, materials).ok()
+    }
+
+    pub fn parts(&self) -> &[MeshPart] {
+        match self {
+            Self::Imported(mesh) => &mesh.parts,
+            _ => &[],
+        }
+    }
+
+    pub fn materials(&self) -> &[MeshMaterial] {
+        match self {
+            Self::Imported(mesh) => &mesh.materials,
+            _ => &[],
+        }
+    }
+
+    pub fn tangents(&self) -> &[[i16; 4]] {
+        match self {
+            Self::Imported(mesh) => &mesh.tangents,
+            _ => &[],
+        }
+    }
+
+    pub fn transmission_blur(&self) -> Option<f32> {
+        match self {
+            Self::Imported(mesh) => mesh.transmission_blur,
+            _ => None,
+        }
+    }
+
+    pub fn has_volume(&self) -> bool {
+        matches!(self, Self::Imported(mesh) if mesh.has_volume)
+    }
+
+    pub fn has_depth_writing_transmission(&self) -> bool {
+        matches!(self, Self::Imported(mesh) if mesh.has_depth_writing_transmission)
+    }
+
+    pub fn has_opaque_parts(&self) -> bool {
+        match self {
+            Self::Imported(mesh) => mesh.has_opaque_parts,
+            _ => true,
+        }
+    }
+
+    /// Model-space bounds centers of the blend parts, in source order.
+    pub fn blended_parts(&self) -> &[(usize, [f32; 3])] {
+        match self {
+            Self::Imported(mesh) => &mesh.blended_parts,
+            _ => &[],
+        }
+    }
+
+    pub fn sections(&self) -> impl Iterator<Item = (Range<usize>, Option<&MeshMaterial>)> {
+        let builtin = self
+            .parts()
+            .is_empty()
+            .then(|| (0..self.vertices().len(), None));
+        builtin.into_iter().chain(self.parts().iter().map(|part| {
+            (
+                part.vertices.clone(),
+                Some(&self.materials()[part.material]),
+            )
+        }))
+    }
+
+    /// Triangles in model space, shared by rasterization and ray queries.
+    pub fn vertices(&self) -> &[MeshVertex] {
+        static BOX: OnceLock<Vec<MeshVertex>> = OnceLock::new();
+        static SPHERE: OnceLock<Vec<MeshVertex>> = OnceLock::new();
+        match self {
+            Self::Box => BOX.get_or_init(box_vertices),
+            Self::Sphere => SPHERE.get_or_init(sphere_vertices),
+            Self::Imported(mesh) => &mesh.vertices,
+        }
+    }
+
+    fn bounds(&self) -> ([f32; 3], [f32; 3]) {
+        match self {
+            Self::Box => ([-0.5; 3], [0.5; 3]),
+            Self::Sphere => ([-1.0; 3], [1.0; 3]),
+            Self::Imported(mesh) => (mesh.min, mesh.max),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneObject {
+    pub id: String,
+    pub mesh: Mesh3D,
+    pub color: Color,
+    pub casts_shadow: bool,
+    pub receives_shadow: bool,
+    pub receives_reflections: bool,
+    pub casts_reflections: bool,
+    pub layers: u64,
+    pub lightmap: Option<BakedLightmap>,
+    source_row: Option<NonZeroU32>,
+    pickable: bool,
+    collidable: bool,
+    transform: SceneTransform,
+    skin: Option<Arc<SkinPose>>,
+    morph: Option<Arc<MorphPose>>,
+}
+
+impl SceneObject {
+    /// Resolve a mesh key separately from the object's stable identity.
+    /// The standard unit meshes are `primitive:box` and `primitive:sphere`.
+    pub fn from_mesh(
+        id: String,
+        mesh: Mesh3D,
+        center: [f64; 3],
+        scale: [f64; 3],
+        angles: [f64; 3],
+        color: Color,
+    ) -> Option<Self> {
+        Self::new(
+            id,
+            mesh,
+            center.map(|v| v as f32),
+            scale.map(|v| v as f32),
+            angles.map(|v| v as f32),
+            color,
+        )
+    }
+
+    /// Construct a box at its center using world dimensions and yaw, pitch,
+    /// and roll in degrees (applied in pitch, yaw, roll order).
+    pub fn cuboid(
+        id: impl Into<String>,
+        center: [f32; 3],
+        dimensions: [f32; 3],
+        angles: [f32; 3],
+        color: Color,
+    ) -> Option<Self> {
+        Self::new(id.into(), Mesh3D::Box, center, dimensions, angles, color)
+    }
+
+    /// Construct a sphere from its center and world-space radius.
+    pub fn sphere(
+        id: impl Into<String>,
+        center: [f32; 3],
+        radius: f32,
+        color: Color,
+    ) -> Option<Self> {
+        Self::new(
+            id.into(),
+            Mesh3D::Sphere,
+            center,
+            [radius; 3],
+            [0.0; 3],
+            color,
+        )
+    }
+
+    fn new(
+        id: String,
+        mesh: Mesh3D,
+        center: [f32; 3],
+        scale: [f32; 3],
+        angles: [f32; 3],
+        color: Color,
+    ) -> Option<Self> {
+        let (transform, _) = SceneTransform::local(center, scale, angles, [0.0; 3])?;
+        Some(Self::from_transform(id, mesh, transform, color))
+    }
+
+    pub(crate) fn from_transform(
+        id: String,
+        mesh: Mesh3D,
+        transform: SceneTransform,
+        color: Color,
+    ) -> Self {
+        Self {
+            id,
+            mesh,
+            color,
+            casts_shadow: true,
+            receives_shadow: true,
+            receives_reflections: true,
+            casts_reflections: true,
+            layers: MAIN_LAYER,
+            lightmap: None,
+            source_row: None,
+            pickable: true,
+            collidable: true,
+            transform,
+            skin: None,
+            morph: None,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_shadows(mut self, casts: bool, receives: bool) -> Self {
+        self.casts_shadow = casts;
+        self.receives_shadow = receives;
+        self
+    }
+
+    pub fn with_pickable(mut self, enabled: bool) -> Self {
+        self.pickable = enabled;
+        self
+    }
+
+    pub fn with_collidable(mut self, enabled: bool) -> Self {
+        self.collidable = enabled;
+        self
+    }
+
+    pub(crate) fn scene_row(&self) -> Option<u32> {
+        self.source_row.map(|row| row.get() - 1)
+    }
+
+    pub(crate) fn sphere_contact(&self, sweep: SphereSweep, max: f64) -> Option<MeshContact> {
+        if !self.collidable || sweep.span(max).entry(self.world_bounds()).is_none() {
+            return None;
+        }
+        let linear = self.transform.linear.cast::<f64>();
+        let origin = self.transform.origin.cast::<f64>();
+        let inverse = linear.try_inverse();
+        let local_center = inverse.map(|inverse| inverse * (sweep.origin - origin));
+        let triangles = self.mesh.vertices().as_chunks::<3>().0;
+        // Generated primitives are convex solids. Imported geometry contributes
+        // its posed surfaces, which may describe open or disconnected meshes.
+        let inside = local_center.is_some_and(|point| match &self.mesh {
+            Mesh3D::Box => point.abs().max() < 0.5,
+            Mesh3D::Sphere if point.norm_squared() < 1.0 => triangles.iter().all(|triangle| {
+                let [a, b, c] =
+                    triangle.map(|vertex| Vector3::from(vertex.position.map(f64::from)));
+                let normal = (b - a).cross(&(c - a));
+                let plane = normal.dot(&a);
+                plane == 0.0 || normal.dot(&(point - a)) * plane.signum() < 0.0
+            }),
+            _ => false,
+        });
+        let pose = self.pick_pose();
+        let mut best: Option<(usize, TriangleContact, [MeshVertex; 3])> = None;
+        let mut inspect = |vertex: usize, closest: f64| {
+            let triangle = pose.deform::<false>(vertex, triangles[vertex / 3]);
+            let world =
+                triangle.map(|p| linear * Vector3::from(p.position.map(f64::from)) + origin);
+            if let Some(contact) = cast_triangle(sweep, world, inside, closest)
+                && best.as_ref().is_none_or(|(previous_vertex, previous, _)| {
+                    contact
+                        .distance
+                        .total_cmp(&previous.distance)
+                        .then(contact.initial_gap.total_cmp(&previous.initial_gap))
+                        .then(vertex.cmp(previous_vertex))
+                        .is_lt()
+                })
+            {
+                let distance = contact.distance;
+                best = Some((vertex, contact, triangle));
+                distance
+            } else {
+                closest
+            }
+        };
+        let tree = if !inside && !pose.is_deformed() && triangles.len() >= MIN_BVH_TRIANGLES {
+            match &self.mesh {
+                Mesh3D::Imported(mesh) => Some(
+                    mesh.pick_tree
+                        .get_or_init(|| PickTree::new(&mesh.vertices, &mesh.parts)),
+                ),
+                Mesh3D::Sphere => {
+                    static TREE: OnceLock<PickTree> = OnceLock::new();
+                    Some(TREE.get_or_init(|| {
+                        PickTree::new(
+                            self.mesh.vertices(),
+                            &[MeshPart {
+                                vertices: 0..triangles.len() * 3,
+                                material: 0,
+                                volume_inverse: None,
+                            }],
+                        )
+                    }))
+                }
+                Mesh3D::Box => None,
+            }
+        } else {
+            None
+        };
+        if let (Some(tree), Some(inverse), Some(local_center)) = (tree, inverse, local_center) {
+            // Inverse-transforming a world sphere gives an ellipsoid. Its
+            // coordinate radii conservatively expand every mesh-space BVH node.
+            let span = BoundsSegment {
+                origin: local_center,
+                direction: inverse * sweep.direction,
+                min: 0.0,
+                max,
+                expansion: Vector3::from_fn(|axis, _| inverse.row(axis).norm() * sweep.radius),
+            };
+            tree.visit_expanded(span, |triangle, closest| {
+                inspect(triangle.vertex as usize, closest)
+            });
+        } else {
+            let mut closest = max;
+            for vertex in (0..triangles.len() * 3).step_by(3) {
+                closest = inspect(vertex, closest);
+            }
+        }
+        let (_, contact, triangle) = best?;
+        let local_position = triangle
+            .iter()
+            .zip(contact.weights)
+            .fold(Vector3::zeros(), |sum, (point, weight)| {
+                sum + Vector3::from(point.position.map(f64::from)) * weight
+            });
+        let uv = std::array::from_fn(|axis| {
+            triangle
+                .iter()
+                .zip(contact.weights)
+                .map(|(point, weight)| f64::from(point.uv[axis]) * weight)
+                .sum()
+        });
+        let local_normal = (linear.transpose() * contact.normal)
+            .try_normalize(0.0)
+            .unwrap_or(contact.normal);
+        Some(MeshContact {
+            contact,
+            local_position,
+            local_normal,
+            uv,
+            inside,
+        })
+    }
+
+    pub(crate) fn with_source_row(mut self, row: u32) -> Self {
+        self.source_row = NonZeroU32::new(row + 1);
+        self
+    }
+
+    pub(crate) fn with_morph(mut self, weights: MorphWeights) -> Option<Self> {
+        if weights.iter().any(|weight| *weight != 0.0) {
+            self.morph = Some(Arc::new(MorphPose::new(
+                self.mesh.morph_geometry()?,
+                weights,
+                self.mesh.bounds(),
+            )?));
+        }
+        Some(self)
+    }
+
+    pub fn morph_weights(&self) -> Option<&MorphWeights> {
+        self.morph.as_ref().map(|pose| &pose.weights)
+    }
+
+    pub(crate) fn with_skin(mut self, palette: JointPalette) -> Option<Self> {
+        self.skin = Some(Arc::new(SkinPose::new(
+            self.mesh.skin_geometry()?,
+            palette,
+            self.morph.as_deref(),
+        )?));
+        Some(self)
+    }
+
+    pub fn skin_palette(&self) -> Option<&JointPalette> {
+        self.skin.as_ref().map(|skin| &skin.palette)
+    }
+
+    pub fn blended_parts(&self) -> &[(usize, [f32; 3])] {
+        if let Some(skin) = &self.skin {
+            &skin.blended_parts
+        } else if let Some(morph) = &self.morph {
+            &morph.blended_parts
+        } else {
+            self.mesh.blended_parts()
+        }
+    }
+
+    fn bounds(&self) -> ([f32; 3], [f32; 3]) {
+        if let Some(skin) = &self.skin {
+            skin.bounds
+        } else if let Some(morph) = &self.morph {
+            morph.bounds
+        } else {
+            self.mesh.bounds()
+        }
+    }
+
+    pub(crate) fn world_bounds(&self) -> Bounds3D {
+        let (min, max) = self.bounds();
+        Bounds3D { min, max }.transform(self.transform_rows())
+    }
+
+    /// Corners of the transformed mesh bounds.
+    pub fn bounds_corners(&self) -> [[f32; 3]; 8] {
+        let (min, max) = self.bounds();
+        let transform = self.transform_rows();
+        std::array::from_fn(|corner| {
+            let [x, y, z] = std::array::from_fn(|axis| {
+                if corner & (1 << axis) == 0 {
+                    min[axis]
+                } else {
+                    max[axis]
+                }
+            });
+            transform.map(|[a, b, c, d]| a * x + b * y + c * z + d)
+        })
+    }
+
+    /// Rows of the model-to-world affine transform, including translation.
+    pub fn transform_rows(&self) -> [[f32; 4]; 3] {
+        self.transform.rows()
+    }
+
+    pub(crate) fn posed_triangles(&self) -> impl Iterator<Item = [[f32; 3]; 3]> + '_ {
+        let deformation = self.pick_pose();
+        self.mesh
+            .vertices()
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .enumerate()
+            .map(move |(index, triangle)| {
+                deformation
+                    .deform::<false>(index * 3, *triangle)
+                    .map(|vertex| {
+                        (self.transform.origin
+                            + self.transform.linear * Vector3::from(vertex.position))
+                        .into()
+                    })
+            })
+    }
+
+    fn hit(&self, ray: Ray3D, min: f32, max: f32) -> Option<SurfaceHit> {
+        self.pickable
+            .then(|| self.surface_hit(ray, min, max, false))
+            .flatten()
+    }
+
+    fn surface_hit(&self, ray: Ray3D, min: f32, max: f32, bake: bool) -> Option<SurfaceHit> {
+        // Keep the ray parameter in world units under non-uniform scaling.
+        let local_origin = self.transform.inverse * (ray.origin - self.transform.origin);
+        let world_step = self.transform.inverse * ray.direction;
+        if !overlaps_bounds(local_origin, world_step, self.bounds(), min, max) {
+            return None;
+        }
+        let ray_scale = world_step.norm();
+        let local_direction = world_step / ray_scale;
+        let triangles = self.mesh.vertices().as_chunks::<3>().0;
+        let pose = self.pick_pose();
+        let tint_alpha = f32::from(self.color.0 as u8) / 255.0;
+        let mut best = None;
+        let mut test = |vertex: usize, material: Option<&MeshMaterial>, closest| {
+            if bake && material.is_some_and(|material| !bake_opaque(material)) {
+                return closest;
+            }
+            let base = &triangles[vertex / 3];
+            let posed;
+            let [a, b, c] = if pose.is_deformed() {
+                posed = pose.deform::<false>(vertex, *base);
+                posed.each_ref()
+            } else {
+                base.each_ref()
+            };
+            let Some((distance, u, v, front)) =
+                intersect_triangle(local_origin, local_direction, [a, b, c])
+            else {
+                return closest;
+            };
+            let distance = distance / ray_scale;
+            if !(min..=closest).contains(&distance) {
+                return closest;
+            }
+            let w = 1.0 - u - v;
+            if let Some(material) = material {
+                if !front && !material.is_double_sided() {
+                    return closest;
+                }
+                if material.alpha_mode != MeshAlphaMode::Opaque
+                    && !material.covers(
+                        std::array::from_fn(|axis| {
+                            a.uv[axis] * w + b.uv[axis] * u + c.uv[axis] * v
+                        }),
+                        a.color[3] * w + b.color[3] * u + c.color[3] * v,
+                        tint_alpha,
+                    )
+                {
+                    return closest;
+                }
+            }
+            let hit = SurfaceHit {
+                distance,
+                vertex,
+                weights: [w, u, v],
+                back_face: material.is_some() && !front,
+                blended: material
+                    .is_some_and(|material| material.alpha_mode == MeshAlphaMode::Blend),
+            };
+            if hit.precedes_triangle(best) {
+                best = Some(hit);
+                distance
+            } else {
+                closest
+            }
+        };
+        if !pose.is_deformed()
+            && let Mesh3D::Imported(mesh) = &self.mesh
+            && triangles.len() >= MIN_BVH_TRIANGLES
+        {
+            let tree = mesh
+                .pick_tree
+                .get_or_init(|| PickTree::new(&mesh.vertices, &mesh.parts));
+            tree.visit(local_origin, world_step, min, max, |triangle, closest| {
+                let part = &mesh.parts[triangle.part as usize];
+                test(
+                    triangle.vertex as usize,
+                    Some(&mesh.materials[part.material]),
+                    closest,
+                )
+            });
+        } else {
+            let mut closest = max;
+            for (range, material) in self.mesh.sections() {
+                for vertex in range.step_by(3) {
+                    closest = test(vertex, material, closest);
+                }
+            }
+        }
+        best
+    }
+
+    pub(super) fn bake_occludes(&self, ray: Ray3D, max: f32) -> bool {
+        self.surface_hit(ray, 0.0, max, true).is_some()
+    }
+
+    pub(super) fn bake_hit(&self, ray: Ray3D, min: f32, max: f32) -> Option<(f32, BakedSurface)> {
+        let hit = self.surface_hit(ray, min, max, true)?;
+        let parts = self.mesh.parts();
+        let part = parts.partition_point(|part| part.vertices.end <= hit.vertex);
+        let material = parts
+            .get(part)
+            .and_then(|part| self.mesh.materials().get(part.material));
+        self.bake_sample(hit.vertex, hit.weights, material, hit.back_face)
+            .map(|sample| (hit.distance, sample))
+    }
+
+    /// Evaluate the same material UVs and world pose used by the opaque draw.
+    #[doc(hidden)]
+    pub fn bake_sample(
+        &self,
+        vertex: usize,
+        weights: [f32; 3],
+        material: Option<&MeshMaterial>,
+        back_face: bool,
+    ) -> Option<BakedSurface> {
+        let triangle = *self.mesh.vertices().as_chunks::<3>().0.get(vertex / 3)?;
+        let vertices = self.pick_pose().deform::<true>(vertex, triangle);
+        let interpolate = |value: fn(&MeshVertex) -> [f32; 3]| {
+            vertices
+                .iter()
+                .zip(weights)
+                .fold(Vector3::zeros(), |sum, (vertex, weight)| {
+                    sum + Vector3::from(value(vertex)) * weight
+                })
+        };
+        let local = interpolate(|vertex| vertex.position);
+        let position = self.transform.linear * local + self.transform.origin;
+        let normal = (self.transform.inverse.transpose() * interpolate(|vertex| vertex.normal))
+            .try_normalize(1e-12)?
+            * if back_face { -1.0 } else { 1.0 };
+        let interpolate_uv = |slot| {
+            std::array::from_fn(|axis| {
+                vertices
+                    .iter()
+                    .zip(weights)
+                    .map(|(vertex, weight)| {
+                        let uv = if slot == 0 { vertex.uv } else { vertex.uv1 };
+                        uv[axis] * weight
+                    })
+                    .sum()
+            })
+        };
+        let uv = interpolate_uv(0);
+        let color = interpolate(|vertex| [vertex.color[0], vertex.color[1], vertex.color[2]]);
+        let tint = Vector3::from(crate::scene_lighting::linear_color(self.color));
+        let mut diffuse = color.component_mul(&tint);
+        let mut emission = Vector3::zeros();
+        if let Some(material) = material {
+            let alpha = vertices
+                .iter()
+                .zip(weights)
+                .map(|(vertex, weight)| vertex.color[3] * weight)
+                .sum();
+            if !material.covers(uv, alpha, f32::from(self.color.0 as u8) / 255.0) {
+                return None;
+            }
+            let [r, g, b, _] = material.base_color;
+            diffuse.component_mul_assign(&Vector3::new(r, g, b));
+            if let Some(texture) = &material.base_texture {
+                diffuse.component_mul_assign(&Vector3::from(texture.rgb_at(uv, true)));
+            }
+            if let Some(pbr) = &material.pbr {
+                let metallic = pbr.metallic
+                    * pbr
+                        .metallic_roughness_texture
+                        .as_ref()
+                        .map_or(1.0, |map| map.rgb_at(interpolate_uv(map.uv_slot), false)[2]);
+                diffuse *= 1.0 - metallic.clamp(0.0, 1.0);
+                emission = Vector3::from(pbr.emissive);
+                if let Some(map) = &pbr.emissive_texture {
+                    emission.component_mul_assign(&Vector3::from(
+                        map.rgb_at(interpolate_uv(map.uv_slot), true),
+                    ));
+                }
+            } else {
+                emission = diffuse;
+                diffuse = Vector3::zeros();
+            }
+        }
+        Some(BakedSurface {
+            position: position.into(),
+            normal: normal.into(),
+            diffuse: diffuse.map(|channel| channel.clamp(0.0, 1.0)).into(),
+            emission: emission.into(),
+            layers: self.layers,
+            receives_shadow: self.receives_shadow,
+        })
+    }
+
+    fn pick_pose(&self) -> PickPose<'_> {
+        PickPose {
+            skin: self.skin.as_deref().zip(self.mesh.influences()),
+            morph: self.morph.as_deref().zip(self.mesh.morph_geometry()),
+        }
+    }
+
+    fn describe_hit(&self, ray: Ray3D, surface: SurfaceHit) -> RayHit<'_> {
+        let base = self.mesh.vertices().as_chunks::<3>().0[surface.vertex / 3];
+        let [a, b, c] = self.pick_pose().deform::<true>(surface.vertex, base);
+        let [w, u, v] = surface.weights;
+        let local_position = Vector3::from(a.position) * w
+            + Vector3::from(b.position) * u
+            + Vector3::from(c.position) * v;
+        let interpolated =
+            Vector3::from(a.normal) * w + Vector3::from(b.normal) * u + Vector3::from(c.normal) * v;
+        // Mesh normals can cancel at a seam. Use the face's oriented normal in
+        // that case so a surface hit always has a usable unit direction.
+        let local_normal = interpolated.try_normalize(1e-12).unwrap_or_else(|| {
+            let a = Vector3::from(a.position);
+            (Vector3::from(b.position) - a)
+                .cross(&(Vector3::from(c.position) - a))
+                .normalize()
+        });
+        let sign = if surface.back_face { -1.0 } else { 1.0 };
+        let world_normal = (self.transform.inverse.transpose() * local_normal).normalize();
+        RayHit {
+            object_id: &self.id,
+            row_index: self.source_row.map(|row| row.get() - 1),
+            distance: surface.distance,
+            position: (ray.origin + surface.distance * ray.direction).into(),
+            normal: (sign * world_normal).into(),
+            local_position: local_position.into(),
+            local_normal: (sign * local_normal).into(),
+            uv: std::array::from_fn(|axis| a.uv[axis] * w + b.uv[axis] * u + c.uv[axis] * v),
+        }
+    }
+}
+
+struct PickPose<'a> {
+    skin: Option<(&'a SkinPose, &'a [MeshInfluence])>,
+    morph: Option<(&'a MorphPose, &'a MorphGeometry)>,
+}
+
+impl PickPose<'_> {
+    fn is_deformed(&self) -> bool {
+        self.skin.is_some() || self.morph.is_some()
+    }
+
+    fn deform<const NORMALS: bool>(
+        &self,
+        vertex: usize,
+        mut triangle: [MeshVertex; 3],
+    ) -> [MeshVertex; 3] {
+        if let Some((pose, geometry)) = self.morph {
+            for (i, point) in triangle.iter_mut().enumerate() {
+                *point = geometry.deform::<NORMALS>(vertex + i, &pose.weights, *point);
+            }
+        }
+        if let Some((pose, weights)) = self.skin {
+            for (i, point) in triangle.iter_mut().enumerate() {
+                *point = pose.deform::<NORMALS>(weights[vertex + i], *point);
+            }
+        }
+        triangle
+    }
+}
+
+fn box_vertices() -> Vec<MeshVertex> {
+    let corners = [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5],
+    ];
+    let faces = [
+        ([3, 2, 1, 0], [0.0, 0.0, -1.0]),
+        ([4, 5, 6, 7], [0.0, 0.0, 1.0]),
+        ([4, 7, 3, 0], [-1.0, 0.0, 0.0]),
+        ([1, 2, 6, 5], [1.0, 0.0, 0.0]),
+        ([0, 1, 5, 4], [0.0, -1.0, 0.0]),
+        ([3, 7, 6, 2], [0.0, 1.0, 0.0]),
+    ];
+    faces
+        .into_iter()
+        .flat_map(|(indices, normal)| {
+            [0, 1, 2, 0, 2, 3].map(|index| MeshVertex::solid(corners[indices[index]], normal))
+        })
+        .collect()
+}
+
+fn sphere_vertices() -> Vec<MeshVertex> {
+    const SLICES: usize = 24;
+    const STACKS: usize = 12;
+    let point = |row: usize, column: usize| {
+        let polar = PI * row as f32 / STACKS as f32;
+        let azimuth = TAU * (column % SLICES) as f32 / SLICES as f32;
+        let (radius, y) = polar.sin_cos();
+        let position = match row {
+            0 => [0.0, 1.0, 0.0],
+            STACKS => [0.0, -1.0, 0.0],
+            _ => [radius * azimuth.cos(), y, radius * azimuth.sin()],
+        };
+        MeshVertex::solid(position, position)
+    };
+    let mut vertices = Vec::with_capacity(SLICES * (STACKS - 1) * 6);
+    for row in 0..STACKS {
+        for column in 0..SLICES {
+            let a = point(row, column);
+            let b = point(row, column + 1);
+            let c = point(row + 1, column);
+            let d = point(row + 1, column + 1);
+            if row > 0 {
+                vertices.extend([a, b, c]);
+            }
+            if row + 1 < STACKS {
+                vertices.extend([b, d, c]);
+            }
+        }
+    }
+    vertices
+}
+
+/// A displacement or direction in 3D scene coordinates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Vector3D {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl Vector3D {
+    pub const fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+
+    fn ray_direction(self) -> Option<[f32; 3]> {
+        let direction = [self.x, self.y, self.z];
+        if !direction.into_iter().all(f64::is_finite) {
+            return None;
+        }
+        let scale = direction.into_iter().map(f64::abs).fold(0.0, f64::max);
+        (scale > 0.0).then(|| direction.map(|value| (value / scale) as f32))
+    }
+}
+
+/// The result of a scene surface query. A miss has zero coordinates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Hit3D(Option<Arc<Hit3DData>>);
+
+impl Hit3D {
+    #[doc(hidden)]
+    pub fn from_data(data: Hit3DData) -> Self {
+        Self(data.valid.then(|| Arc::new(data)))
+    }
+}
+
+impl std::ops::Deref for Hit3D {
+    type Target = Hit3DData;
+
+    fn deref(&self) -> &Self::Target {
+        static MISS: Hit3DData = Hit3DData {
+            valid: false,
+            object_id: String::new(),
+            row_index: -1,
+            distance: 0.0,
+            position: Point3D::new(0.0, 0.0, 0.0),
+            normal: Vector3D::new(0.0, 0.0, 0.0),
+            local_position: Point3D::new(0.0, 0.0, 0.0),
+            local_normal: Vector3D::new(0.0, 0.0, 0.0),
+            u: 0.0,
+            v: 0.0,
+        };
+        self.0.as_deref().unwrap_or(&MISS)
+    }
+}
+
+#[doc(hidden)]
+#[derive(Debug, PartialEq)]
+pub struct Hit3DData {
+    pub valid: bool,
+    pub object_id: String,
+    pub row_index: i64,
+    pub distance: f64,
+    pub position: Point3D,
+    pub normal: Vector3D,
+    pub local_position: Point3D,
+    pub local_normal: Vector3D,
+    pub u: f64,
+    pub v: f64,
+}
+
+impl From<RayHit<'_>> for Hit3D {
+    fn from(hit: RayHit<'_>) -> Self {
+        let [x, y, z] = hit.position.map(f64::from);
+        let [nx, ny, nz] = hit.normal.map(f64::from);
+        let [lx, ly, lz] = hit.local_position.map(f64::from);
+        let [lnx, lny, lnz] = hit.local_normal.map(f64::from);
+        Self::from_data(Hit3DData {
+            valid: true,
+            object_id: hit.object_id.to_owned(),
+            row_index: hit.row_index.map_or(-1, i64::from),
+            distance: f64::from(hit.distance),
+            position: Point3D::new(x, y, z),
+            normal: Vector3D::new(nx, ny, nz),
+            local_position: Point3D::new(lx, ly, lz),
+            local_normal: Vector3D::new(lnx, lny, lnz),
+            u: f64::from(hit.uv[0]),
+            v: f64::from(hit.uv[1]),
+        })
+    }
+}
+
+#[doc(hidden)]
+pub fn ray_hit(
+    objects: &[SceneObject],
+    origin: Point3D,
+    direction: Vector3D,
+    max_distance: f64,
+    layers: Option<i64>,
+) -> Hit3D {
+    world_ray(origin, direction, max_distance)
+        .and_then(|(ray, max)| {
+            trace_surfaces(
+                objects,
+                ray,
+                0.0,
+                max,
+                layers.map_or(MAIN_LAYER, |mask| mask as u64),
+            )
+        })
+        .map_or_else(Hit3D::default, Hit3D::from)
+}
+
+#[doc(hidden)]
+pub fn ray_hit_all(
+    model: &SceneModel,
+    origin: Point3D,
+    direction: Vector3D,
+    max_distance: f64,
+    layers: Option<i64>,
+) -> VecModel<Hit3D> {
+    world_ray(origin, direction, max_distance).map_or_else(VecModel::default, |(ray, max)| {
+        trace_model_hits(
+            model,
+            ray,
+            0.0,
+            max,
+            layers.map_or(MAIN_LAYER, |mask| mask as u64),
+        )
+    })
+}
+
+fn world_ray(origin: Point3D, direction: Vector3D, max_distance: f64) -> Option<(Ray3D, f32)> {
+    let max = max_distance as f32;
+    if !max.is_finite() || max_distance < 0.0 {
+        return None;
+    }
+    let ray = Ray3D::new(origin.narrow()?, direction.ray_direction()?)?;
+    Some((ray, max))
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct BakedSurface {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub diffuse: [f32; 3],
+    pub emission: [f32; 3],
+    pub layers: u64,
+    pub receives_shadow: bool,
+}
+
+pub(crate) fn bake_opaque(material: &MeshMaterial) -> bool {
+    material.alpha_mode != MeshAlphaMode::Blend
+        && material
+            .pbr
+            .as_ref()
+            .is_none_or(|pbr| pbr.transmission_blur().is_none())
+}
+
+/// A world-space ray with a unit-length direction.
+#[derive(Clone, Copy, Debug)]
+pub struct Ray3D {
+    origin: Vector3<f32>,
+    pub(crate) direction: Vector3<f32>,
+}
+
+impl Ray3D {
+    pub(crate) fn origin(self) -> Vector3<f32> {
+        self.origin
+    }
+
+    pub fn new(origin: [f32; 3], direction: [f32; 3]) -> Option<Self> {
+        let length = Vector3::from(direction).norm();
+        if !origin.iter().all(|value| value.is_finite()) || !length.is_finite() || length == 0.0 {
+            return None;
+        }
+        Some(Self {
+            origin: origin.into(),
+            direction: Vector3::from(direction) / length,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct RayHit<'a> {
+    pub object_id: &'a str,
+    pub row_index: Option<u32>,
+    pub distance: f32,
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub local_position: [f32; 3],
+    pub local_normal: [f32; 3],
+    pub uv: [f32; 2],
+}
+
+#[derive(Clone, Copy)]
+struct SurfaceHit {
+    distance: f32,
+    vertex: usize,
+    weights: [f32; 3],
+    back_face: bool,
+    blended: bool,
+}
+
+impl SurfaceHit {
+    fn precedes(self, previous: Option<Self>) -> bool {
+        // Opaque depth wins a tie. Coplanar blend parts compose in source order.
+        previous.is_none_or(|previous| {
+            self.distance < previous.distance
+                || (self.distance == previous.distance && previous.blended)
+        })
+    }
+
+    fn precedes_triangle(self, previous: Option<Self>) -> bool {
+        previous.is_none_or(|previous| {
+            if self.distance != previous.distance {
+                self.distance < previous.distance
+            } else if self.blended != previous.blended {
+                !self.blended
+            } else if self.blended {
+                self.vertex > previous.vertex
+            } else {
+                self.vertex < previous.vertex
+            }
+        })
+    }
+}
+
+/// Find the nearest visible surface along a world-space ray.
+/// Empty IDs can still occlude other surfaces.
+pub fn raycast(objects: &[SceneObject], ray: Ray3D, max_distance: f32) -> Option<RayHit<'_>> {
+    if !max_distance.is_finite() || max_distance < 0.0 {
+        return None;
+    }
+    trace_surfaces(objects, ray, 0.0, max_distance, u64::MAX)
+}
+
+/// Return the nearest surface of each intersected object, sorted from the ray origin.
+pub fn raycast_all(objects: &[SceneObject], ray: Ray3D, max_distance: f32) -> Vec<RayHit<'_>> {
+    if !max_distance.is_finite() || max_distance < 0.0 {
+        return Vec::new();
+    }
+    sorted_surfaces(objects, ray, 0.0, max_distance, false, u64::MAX)
+        .into_iter()
+        .map(|(index, surface)| objects[index].describe_hit(ray, surface))
+        .collect()
+}
+
+pub(crate) fn trace_model_hits(
+    model: &[SceneObject],
+    ray: Ray3D,
+    min: f32,
+    max: f32,
+    layers: u64,
+) -> VecModel<Hit3D> {
+    let hits: Vec<_> = sorted_surfaces(model, ray, min, max, true, layers)
+        .into_iter()
+        .map(|(index, surface)| Hit3D::from(model[index].describe_hit(ray, surface)))
+        .collect();
+    hits.into()
+}
+
+fn sorted_surfaces(
+    objects: &[SceneObject],
+    ray: Ray3D,
+    min: f32,
+    max: f32,
+    group_rows: bool,
+    layers: u64,
+) -> Vec<(usize, SurfaceHit)> {
+    let mut hits: Vec<(usize, SurfaceHit)> = Vec::new();
+    for (index, object) in objects.iter().enumerate() {
+        if object.layers & layers == 0 {
+            continue;
+        }
+        // The model emits each authored row's mesh placements contiguously.
+        // Query only its nearest accepted surface, including rows without IDs.
+        if group_rows
+            && let Some(row) = object.source_row
+            && let Some((previous_index, previous)) = hits.last_mut()
+            && objects[*previous_index].source_row == Some(row)
+        {
+            if let Some(hit) = object.hit(ray, min, previous.distance)
+                && hit.precedes(Some(*previous))
+            {
+                *previous_index = index;
+                *previous = hit;
+            }
+        } else if let Some(hit) = object.hit(ray, min, max) {
+            hits.push((index, hit));
+        }
+    }
+    hits.sort_unstable_by(|(a_index, a), (b_index, b)| {
+        if a.distance != b.distance {
+            a.distance.total_cmp(&b.distance)
+        } else {
+            a.blended.cmp(&b.blended).then_with(|| {
+                if a.blended {
+                    b_index.cmp(a_index)
+                } else {
+                    a_index.cmp(b_index)
+                }
+            })
+        }
+    });
+    hits
+}
+
+pub(crate) fn trace_surfaces(
+    objects: &[SceneObject],
+    ray: Ray3D,
+    min: f32,
+    max: f32,
+    layers: u64,
+) -> Option<RayHit<'_>> {
+    let (object, surface) = nearest_surface(objects, ray, min, max, layers)?;
+    Some(object.describe_hit(ray, surface))
+}
+
+pub(crate) fn trace_id(
+    objects: &[SceneObject],
+    ray: Ray3D,
+    min: f32,
+    max: f32,
+    layers: u64,
+) -> Option<&str> {
+    nearest_surface(objects, ray, min, max, layers).map(|(object, _)| object.id.as_str())
+}
+
+fn nearest_surface(
+    objects: &[SceneObject],
+    ray: Ray3D,
+    min: f32,
+    max: f32,
+    layers: u64,
+) -> Option<(&SceneObject, SurfaceHit)> {
+    let mut best: Option<(&SceneObject, SurfaceHit)> = None;
+    let mut closest = max;
+    for item in objects {
+        if item.layers & layers != 0
+            && let Some(hit) = item.hit(ray, min, closest)
+            && hit.precedes(best.map(|(_, surface)| surface))
+        {
+            closest = hit.distance;
+            best = Some((item, hit));
+        }
+    }
+    best
+}
+
+fn overlaps_bounds(
+    origin: Vector3<f32>,
+    direction: Vector3<f32>,
+    (min, max): ([f32; 3], [f32; 3]),
+    mut near: f32,
+    mut far: f32,
+) -> bool {
+    for axis in 0..3 {
+        if direction[axis].abs() < 1e-10 {
+            if origin[axis] < min[axis] || origin[axis] > max[axis] {
+                return false;
+            }
+            continue;
+        }
+        let a = (min[axis] - origin[axis]) / direction[axis];
+        let b = (max[axis] - origin[axis]) / direction[axis];
+        near = near.max(a.min(b));
+        far = far.min(a.max(b));
+        if near > far {
+            return false;
+        }
+    }
+    true
+}
+
+fn intersect_triangle(
+    origin: Vector3<f32>,
+    direction: Vector3<f32>,
+    [a, b, c]: [&MeshVertex; 3],
+) -> Option<(f32, f32, f32, bool)> {
+    let a = Vector3::from(a.position);
+    let ab = Vector3::from(b.position) - a;
+    let ac = Vector3::from(c.position) - a;
+    let p = direction.cross(&ac);
+    let det = ab.dot(&p);
+    if det.abs() < 1e-8 {
+        return None;
+    }
+    let delta = origin - a;
+    let u = delta.dot(&p) / det;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = delta.cross(&ab);
+    let v = direction.dot(&q) / det;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    Some((ac.dot(&q) / det, u, v, det > 0.0))
+}
+
+pub fn direction(yaw: f64, elevation: f64) -> [f32; 3] {
+    let yaw = yaw.rem_euclid(360.0).to_radians() as f32;
+    let elevation = elevation.clamp(-90.0, 90.0).to_radians() as f32;
+    [
+        yaw.sin() * elevation.cos(),
+        elevation.sin(),
+        yaw.cos() * elevation.cos(),
+    ]
+}

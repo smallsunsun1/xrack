@@ -1,0 +1,456 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "XRack dielectric reflection demo"
+  },
+  "extensionsUsed": [
+    "KHR_materials_ior",
+    "KHR_materials_specular",
+    "KHR_texture_transform"
+  ],
+  "extensionsRequired": [
+    "KHR_materials_ior",
+    "KHR_materials_specular",
+    "KHR_texture_transform"
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0,
+      "translation": [
+        -4.2,
+        1.45,
+        0
+      ]
+    },
+    {
+      "mesh": 1,
+      "translation": [
+        -1.4,
+        1.45,
+        0
+      ]
+    },
+    {
+      "mesh": 2,
+      "translation": [
+        1.4,
+        1.45,
+        0
+      ]
+    },
+    {
+      "mesh": 3,
+      "translation": [
+        4.2,
+        1.45,
+        0
+      ]
+    },
+    {
+      "mesh": 4,
+      "translation": [
+        -4.2,
+        -1.45,
+        0
+      ]
+    },
+    {
+      "mesh": 5,
+      "translation": [
+        -1.4,
+        -1.45,
+        0
+      ]
+    },
+    {
+      "mesh": 6,
+      "translation": [
+        1.4,
+        -1.45,
+        0
+      ]
+    },
+    {
+      "mesh": 7,
+      "translation": [
+        4.2,
+        -1.45,
+        0
+      ]
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 2,
+            "TEXCOORD_0": 1
+          },
+          "indices": 3,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 2,
+            "TEXCOORD_0": 1
+          },
+          "indices": 3,
+          "material": 1
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 2,
+            "TEXCOORD_0": 1
+          },
+          "indices": 3,
+          "material": 2
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 2,
+            "TEXCOORD_0": 1
+          },
+          "indices": 3,
+          "material": 3
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 2,
+            "TEXCOORD_0": 1
+          },
+          "indices": 3,
+          "material": 4
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 2,
+            "TEXCOORD_0": 1
+          },
+          "indices": 3,
+          "material": 5
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 2,
+            "TEXCOORD_0": 1
+          },
+          "indices": 3,
+          "material": 6
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 2,
+            "TEXCOORD_0": 1
+          },
+          "indices": 3,
+          "material": 7
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "Default IOR",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.018,
+          0.018,
+          0.018,
+          1
+        ],
+        "roughnessFactor": 0.4,
+        "metallicFactor": 0
+      },
+      "extensions": {}
+    },
+    {
+      "name": "IOR 1",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.018,
+          0.018,
+          0.018,
+          1
+        ],
+        "roughnessFactor": 0.4,
+        "metallicFactor": 0
+      },
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1
+        }
+      }
+    },
+    {
+      "name": "IOR 2.42",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.018,
+          0.018,
+          0.018,
+          1
+        ],
+        "roughnessFactor": 0.4,
+        "metallicFactor": 0
+      },
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 2.42
+        }
+      }
+    },
+    {
+      "name": "Infinite IOR",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.018,
+          0.018,
+          0.018,
+          1
+        ],
+        "roughnessFactor": 0.4,
+        "metallicFactor": 0
+      },
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 0
+        }
+      }
+    },
+    {
+      "name": "Specular strength and color maps",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.018,
+          0.018,
+          0.018,
+          1
+        ],
+        "roughnessFactor": 0.4,
+        "metallicFactor": 0
+      },
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularTexture": {
+            "index": 0,
+            "extensions": {
+              "KHR_texture_transform": {
+                "scale": [
+                  0.5,
+                  1.0
+                ]
+              }
+            }
+          },
+          "specularColorTexture": {
+            "index": 0,
+            "extensions": {
+              "KHR_texture_transform": {
+                "scale": [
+                  0.5,
+                  1.0
+                ],
+                "offset": [
+                  0.5,
+                  0.0
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Tinted reflection",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.018,
+          0.018,
+          0.018,
+          1
+        ],
+        "roughnessFactor": 0.4,
+        "metallicFactor": 0
+      },
+      "extensions": {
+        "KHR_materials_specular": {
+          "specularColorFactor": [
+            3.0,
+            0.25,
+            0.1
+          ]
+        }
+      }
+    },
+    {
+      "name": "Metal with specular zero",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.018,
+          0.018,
+          0.018,
+          1
+        ],
+        "roughnessFactor": 0.4,
+        "metallicFactor": 1
+      },
+      "extensions": {
+        "KHR_materials_ior": {
+          "ior": 1
+        },
+        "KHR_materials_specular": {
+          "specularFactor": 0
+        }
+      }
+    },
+    {
+      "name": "Reference metal",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.018,
+          0.018,
+          0.018,
+          1
+        ],
+        "roughnessFactor": 0.4,
+        "metallicFactor": 1
+      },
+      "extensions": {}
+    }
+  ],
+  "samplers": [
+    {
+      "minFilter": 9728,
+      "magFilter": 9728,
+      "wrapS": 33071,
+      "wrapT": 33071
+    }
+  ],
+  "textures": [
+    {
+      "source": 0,
+      "sampler": 0
+    }
+  ],
+  "images": [
+    {
+      "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAABCAYAAAD5PA/NAAAAF0lEQVR4nGP4//8/w38QYGD436Dx4T8AaQQLj7Pdih0AAAAASUVORK5CYII="
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 140,
+      "uri": "data:application/octet-stream;base64,AACAvwAAgL8AAAAAAACAPwAAgL8AAAAAAACAPwAAgD8AAAAAAACAvwAAgD8AAAAAAAAAAAAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAEAAgAAAAIAAwA="
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 48,
+      "byteLength": 32
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 80,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 128,
+      "byteLength": 12
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3",
+      "min": [
+        -1,
+        -1,
+        0
+      ],
+      "max": [
+        1,
+        1,
+        0
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5123,
+      "count": 6,
+      "type": "SCALAR"
+    }
+  ]
+}

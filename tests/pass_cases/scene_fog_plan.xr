@@ -1,0 +1,24 @@
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-depth-enabled"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-height-enabled"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-transmit-enabled"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-depth-curve"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-height-start"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-height-end"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-height-curve"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-transmit-curve"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+
+export component FogPlan inherits Window {
+    in property <bool> enabled;
+    in property <float> amount;
+    SceneView3D {
+        width: 100px; height: 100px;
+        fog-depth-enabled: root.enabled;
+        fog-height-enabled: root.enabled;
+        fog-transmit-enabled: root.enabled;
+        fog-depth-curve: root.amount;
+        fog-height-start: 1 + root.amount;
+        fog-height-end: root.amount;
+        fog-height-curve: root.amount;
+        fog-transmit-curve: root.amount;
+    }
+}

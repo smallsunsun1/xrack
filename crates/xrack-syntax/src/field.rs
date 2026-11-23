@@ -51,6 +51,34 @@ macro_rules! builtin_value_fields {
                 "x" => x: Length,
                 "y" => y: Length,
             }
+            Point3D, "point3d_field" {
+                "x" => x: Float,
+                "y" => y: Float,
+                "z" => z: Float,
+            }
+            Vector3D, "vector3d_field" {
+                "x" => x: Float,
+                "y" => y: Float,
+                "z" => z: Float,
+            }
+            Hit3D, "hit3d_field" {
+                "valid" => valid: Bool,
+                "object-id" => object_id: String,
+                "row-index" => row_index: Int,
+                "distance" => distance: Float,
+                "position" => position: Point3D,
+                "normal" => normal: Vector3D,
+                "local-position" => local_position: Point3D,
+                "local-normal" => local_normal: Vector3D,
+                "u" => u: Float,
+                "v" => v: Float,
+            }
+            ProjectedPoint3D, "projected_point3d_field" {
+                "point" => point: Point2D,
+                "depth" => depth: Float,
+                "valid" => valid: Bool,
+                "inside" => inside: Bool,
+            }
             Vector2D, "vector2d_field" {
                 "x" => x: Length,
                 "y" => y: Length,
@@ -78,6 +106,13 @@ macro_rules! builtin_value_fields {
 macro_rules! field_type {
     ($($owner:ident, $op:literal { $($name:literal => $member:ident: $result:ident,)* })*) => {
         impl Type {
+            pub fn builtin_fields(&self) -> &'static [&'static str] {
+                match self {
+                    $(Self::$owner => &[$($name),*],)*
+                    _ => &[],
+                }
+            }
+
             pub fn builtin_field(&self, name: &str) -> Option<(&'static str, Self)> {
                 match (self, name) {
                     $($((Self::$owner, $name) => Some(($op, Self::$result)),)*)*

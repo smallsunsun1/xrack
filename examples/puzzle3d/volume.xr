@@ -1,0 +1,75 @@
+struct VolumeObject {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    color: color, visible: bool,
+    camera-kind: string, camera-height: float,
+}
+
+struct VolumeLamp {
+    kind: string, x: float, y: float, z: float,
+    yaw: float, elevation: float,
+    intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float,
+}
+
+export component VolumeDemo inherits Window {
+    title: "XRack · 体积折射与吸收";
+    width: 460px;
+    height: 282px;
+    background: #141d29;
+
+    in-out property <float> depth-scale: 1;
+    in-out property <float> yaw: 22;
+    in-out property <bool> patterned: true;
+    in-out property <bool> volume: true;
+    in-out property <bool> occlude: false;
+    in-out property <bool> refraction-blocker: false;
+    in-out property <bool> msaa: false;
+    property <VolumeObject> defaults: VolumeObject {
+        id: "", mesh: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
+        camera-kind: "", camera-height: 5.6,
+    };
+    property <[VolumeObject]> scene: [
+        VolumeObject {
+            id: "wall", mesh: @mesh-url("models/transmission-wall.gltf"),
+            z: -4, scale-x: 5.55, scale-y: 2.8, visible: root.patterned, ..root.defaults
+        },
+        VolumeObject {
+            id: "blocks",
+            mesh: root.volume ? @mesh-url("models/volume-blocks.gltf") : @mesh-url("models/volume-thin-reference.gltf"),
+            yaw: root.yaw, scale-z: root.depth-scale, ..root.defaults
+        },
+        VolumeObject {
+            id: "cover", mesh: "primitive:box", x: -1.4, z: 2.5,
+            scale-x: 0.64, scale-y: 1.2, scale-z: 0.3, color: #c94360, visible: root.occlude, ..root.defaults
+        },
+        VolumeObject {
+            id: "sliver", mesh: "primitive:box", x: -1.045, z: 2.4,
+            scale-x: 0.096, scale-y: 2, scale-z: 0.3, color: #ff4530,
+            visible: root.refraction-blocker, ..root.defaults
+        },
+        VolumeObject {
+            id: "eye", z: 9, camera-kind: "orthographic", ..root.defaults
+        },
+    ];
+    property <[VolumeLamp]> lights;
+
+    SceneView3D {
+        width: 460px;
+        height: 224px;
+        model: root.scene;
+        camera: "eye";
+        lights: root.lights;
+        ambient-intensity: 0.4;
+        multisampling: root.msaa;
+        scene-background: #ffffff;
+    }
+    volume-toggle := CheckBox { x: 16px; y: 230px; width: 112px; height: 40px; text: "体积折射"; checked <=> root.volume; }
+    pattern-toggle := CheckBox { x: 139px; y: 230px; width: 102px; height: 40px; text: "棋盘格"; checked <=> root.patterned; }
+    Label { x: 246px; y: 230px; width: 54px; height: 40px; text: "厚度"; }
+    thickness := Slider { x: 299px; y: 232px; width: 139px; height: 35px; minimum: 0.5; maximum: 2; value <=> root.depth-scale; }
+}

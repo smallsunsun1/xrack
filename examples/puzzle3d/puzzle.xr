@@ -1,0 +1,301 @@
+export struct SceneObject3D {
+    id: string,
+    mesh: string,
+    parent: string,
+    camera-kind: string,
+    camera-look-at: string,
+    camera-height: float,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    color: color,
+}
+
+export struct SceneLight3D {
+    kind: string,
+    parent: string,
+    x: float, y: float, z: float,
+    yaw: float, elevation: float,
+    intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float,
+}
+
+export component Puzzle3D inherits Window {
+    title: "XRack · 3D 解谜";
+    width: root.window-width; height: root.window-height;
+    resizable: false;
+    background: #141d29;
+
+    in-out property <float> yaw: 24;
+    in-out property <float> pitch: 24;
+    in-out property <float> distance: 11;
+    in-out property <bool> map-view: false;
+    property <string> active-camera: root.map-view ? "overview" : "";
+    in-out property <float> player-x: 0;
+    in-out property <float> player-z: 1;
+    in-out property <bool> amber-on: false;
+    in-out property <bool> blue-on: false;
+    in-out property <bool> finished: false;
+    in-out property <bool> playing: false;
+    in-out property <string> selected: "";
+    out property <hit3d> last-hit;
+    property <bool> through-selection: false;
+    out property <[hit3d]> hit-list: [];
+    property <int> hit-index: 0;
+    property <hit3d> no-hit;
+    in-out property <string> status: "拖动绕视，点击物体以选中";
+    out property <bool> gate-open: root.amber-on && root.blue-on;
+    out property <float> gate-angle: root.gate-open ? -90 : 0;
+
+    out property <float> light-yaw: 42;
+    property <float> light-elevation: 55;
+    property <[SceneLight3D]> room-lights: [
+        SceneLight3D {
+            kind: "directional", parent: "", x: 0, y: 0, z: 0,
+            yaw: root.light-yaw, elevation: root.light-elevation,
+            intensity: 2.4, color: #ffffff, range: 0, inner-angle: 0, outer-angle: 45,
+        },
+        SceneLight3D {
+            kind: "point", parent: "player-rig", x: -1, y: 0.65, z: -0.65,
+            yaw: 0, elevation: 0, intensity: root.amber-on ? 0.8 : 0.18,
+            color: #ffc044, range: 2, inner-angle: 0, outer-angle: 45,
+        },
+    ];
+    out property <length> panel-width: 204px;
+    out property <length> viewport-width: scene.layout-width;
+    property <length> window-width: 830px;
+    property <length> window-height: 560px;
+    property <length> view-width: root.window-width - root.panel-width - 36px;
+    property <length> view-height: root.window-height - 24px;
+    property <length> last-x: 0px;
+    property <length> last-y: 0px;
+    property <length> start-x: 0px;
+    property <length> start-y: 0px;
+    property <bool> orbiting: false;
+    property <SceneObject3D> box-defaults: SceneObject3D {
+        id: "", mesh: "primitive:box", parent: "", camera-kind: "", camera-look-at: "", camera-height: 8,
+        x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #3d4f65,
+    };
+    property <SceneObject3D> orb-defaults: SceneObject3D {
+        mesh: "primitive:sphere", y: 0.14,
+        scale-x: 0.30, scale-y: 0.30, scale-z: 0.30,
+        ..root.box-defaults
+    };
+
+    property <[SceneObject3D]> room: [
+        SceneObject3D {
+            id: "overview", mesh: "", y: 16, pitch: -90, camera-kind: "orthographic", camera-look-at: "room-focus",
+            ..root.box-defaults
+        },
+        SceneObject3D { id: "room-focus", mesh: "", ..root.box-defaults },
+        SceneObject3D { y: -0.30, scale-x: 6.4, scale-y: 0.25, scale-z: 6, color: #65717f, ..root.box-defaults },
+        SceneObject3D { x: -3.1, y: 0.45, scale-x: 0.24, scale-y: 1.5, scale-z: 6, ..root.box-defaults },
+        SceneObject3D { x: 3.1, y: 0.45, scale-x: 0.24, scale-y: 1.5, scale-z: 6, ..root.box-defaults },
+        SceneObject3D { x: -1.92, y: 0.44, z: -1.45, scale-x: 2.4, scale-y: 1.5, scale-z: 0.24, ..root.box-defaults },
+        SceneObject3D { x: 1.92, y: 0.44, z: -1.45, scale-x: 2.4, scale-y: 1.5, scale-z: 0.24, ..root.box-defaults },
+        SceneObject3D {
+            id: "gate-hinge", mesh: "", x: -0.70, y: 0.50, z: -1.45,
+            yaw: root.gate-angle, ..root.box-defaults
+        },
+        SceneObject3D {
+            id: "gate", parent: "gate-hinge", x: 0.70,
+            scale-x: 1.4, scale-y: 1.6, scale-z: 0.22,
+            color: #b47057, ..root.box-defaults
+        },
+        SceneObject3D {
+            id: "exit", mesh: @mesh-url("models/exit.gltf"),
+            y: -0.13, z: -2, scale-x: 0.78, scale-y: 0.09, scale-z: 0.67,
+            color: #ffffff, ..root.box-defaults
+        },
+        SceneObject3D {
+            id: "glass", mesh: @mesh-url("models/glass.gltf"),
+            x: 1.95, y: 0.70, z: -2.6, scale-x: 0.52, scale-y: 0.56, scale-z: 0.12,
+            color: #ffffff, ..root.box-defaults
+        },
+        SceneObject3D {
+            id: "player-rig", mesh: "", x: root.player-x, z: root.player-z,
+            ..root.box-defaults
+        },
+        SceneObject3D {
+            id: "player", parent: "player-rig", y: 0.13,
+            scale-x: 0.41, scale-y: 0.63, scale-z: 0.41, color: #eaf4ff, ..root.box-defaults
+        },
+        SceneObject3D {
+            id: "amber", mesh: @mesh-url("models/amber.glb"),
+            x: -1, color: root.amber-on ? #fff392 : #c17a26, ..root.orb-defaults
+        },
+        SceneObject3D { id: "blue", x: 1, color: root.blue-on ? #a9f6ff : #267cc1, ..root.orb-defaults },
+    ];
+
+    property <point2d> viewport: Point2D.new(root.view-width, root.view-height);
+    property <point3d> exit-anchor: Point3D.new(0, 0.18, -2);
+    pure function project-world(world: point3d) -> projectedpoint3d {
+        root.map-view
+            ? Scene3D.project-camera(root.room, root.active-camera, root.viewport, world)
+            : Scene3D.project(root.yaw, root.pitch, root.distance, root.viewport, world)
+    }
+    out property <projectedpoint3d> exit-marker: root.project-world(root.exit-anchor);
+    property <projectedpoint3d> surface-marker: root.project-world(root.last-hit.position);
+
+    callback move-player(string);
+    callback activate-object(string);
+
+    keys := FocusScope {
+        width: root.window-width;
+        height: root.window-height;
+        initial-focus: north;
+        key-pressed(event) => {
+            if root.playing {
+                if event.key == "ArrowUp" || event.key == "w" { root.move-player("north"); }
+                if event.key == "ArrowDown" || event.key == "s" { root.move-player("south"); }
+                if event.key == "ArrowLeft" || event.key == "a" { root.move-player("west"); }
+                if event.key == "ArrowRight" || event.key == "d" { root.move-player("east"); }
+                if event.key == "e" { root.activate-object(root.selected); }
+            }
+            root.playing && (event.key == "ArrowUp" || event.key == "ArrowDown" ||
+                event.key == "ArrowLeft" || event.key == "ArrowRight" ||
+                event.key == "w" || event.key == "a" || event.key == "s" || event.key == "d" ||
+                event.key == "e") ? accept : reject
+        }
+        HorizontalLayout {
+            width: root.window-width;
+            height: root.window-height;
+            padding: 12px;
+            spacing: 12px;
+            room-input := TouchArea {
+                width: root.view-width;
+                height: root.view-height;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        root.start-x = event.x;
+                        root.start-y = event.y;
+                        root.last-x = event.x;
+                        root.last-y = event.y;
+                        root.orbiting = false;
+                    }
+                    if event.kind == PointerEventKind.move {
+                        if Math.abs(event.x - root.start-x) > 4px || Math.abs(event.y - root.start-y) > 4px {
+                            root.orbiting = true;
+                        }
+                        if root.orbiting && !root.map-view {
+                            root.yaw -= (event.x - root.last-x) / 1px * 0.38;
+                            root.pitch = Math.clamp(root.pitch + (event.y - root.last-y) / 1px * 0.32, -65, 80);
+                        }
+                        root.last-x = event.x;
+                        root.last-y = event.y;
+                    }
+                    if event.kind == PointerEventKind.up && event.inside && !root.orbiting {
+                        let viewport = Point2D.new(self.layout-width, self.layout-height);
+                        let pointer = Point2D.new(event.x, event.y);
+                        if root.through-selection {
+                            root.hit-index = 0;
+                            root.hit-list = root.map-view
+                                ? Scene3D.hit-all-camera(root.room, root.active-camera, viewport, pointer)
+                                : Scene3D.hit-all(root.room, root.yaw, root.pitch, root.distance, viewport, pointer);
+                            root.last-hit = Model.at(root.hit-list, 0, root.no-hit);
+                        } else {
+                            root.hit-list = [];
+                            root.last-hit = root.map-view
+                                ? Scene3D.hit-camera(root.room, root.active-camera, viewport, pointer)
+                                : Scene3D.hit(root.room, root.yaw, root.pitch, root.distance, viewport, pointer);
+                        }
+                        root.selected = root.last-hit.object-id;
+                        if root.playing { root.activate-object(root.selected); }
+                    }
+                }
+                scroll-event(event) => {
+                    if !root.map-view { root.distance = Math.clamp(root.distance + event.y / 120px, 6, 20); }
+                    accept
+                }
+                scene := SceneView3D {
+                    width: root.view-width;
+                    height: root.view-height;
+                    model: root.room;
+                    camera: root.active-camera;
+                    camera-yaw: root.yaw;
+                    camera-pitch: root.pitch;
+                    camera-distance: root.distance;
+                    lights: root.room-lights;
+                    shadows: true;
+                    shadow-cascades: 3;
+                    shadow-distance: 24;
+                    selected-object: root.selected;
+                    environment: @environment-url("models/studio.hdr");
+                    environment-intensity: 0.25;
+                    environment-yaw: 28;
+                    scene-background: #26364a;
+                }
+                if root.last-hit.valid && root.surface-marker.inside: hit-marker := Rectangle {
+                    x: root.surface-marker.point.x - 4px;
+                    y: root.surface-marker.point.y - 4px;
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: #ffd565;
+                    border-width: 1px;
+                    border-color: #251902;
+                }
+                exit-label := Rectangle {
+                    opacity: root.exit-marker.inside ? 1 : 0;
+                    x: root.exit-marker.point.x - 24px;
+                    y: root.exit-marker.point.y - 26px;
+                    width: 48px;
+                    height: 19px;
+                    background: #19283de8;
+                    border-radius: 5px;
+                    Text { x: 10px; y: 1px; text: "出口"; color: #eef5ff; font-size: 13px; }
+                }
+            }
+            VerticalLayout {
+                width: root.panel-width;
+                spacing: 8px;
+                alignment: start;
+                Text { text: root.playing ? "机关房间" : "机关房间 · 场景预览"; color: #f2f5fb; font-size: 18px; }
+                Text {
+                    text: root.selected != "" ? "选中 · " + root.selected
+                        : root.last-hit.valid ? "选中 · 场景行 " + root.last-hit.row-index : "未选中物体";
+                    color: #acc8ed;
+                }
+                if root.last-hit.valid: Text {
+                    color: #acc8ed;
+                    text: "命中距离 · " + (Math.round(root.last-hit.distance * 10) / 10.0);
+                }
+                Text { text: root.gate-open ? "门已开启" : "门尚未开启"; }
+                Text { text: root.status; wrap: word-wrap; }
+                toggle-view := Button {
+                    text: root.map-view ? "返回透视视角" : "俯视地图";
+                    clicked => { root.map-view = !root.map-view; }
+                }
+                through-toggle := CheckBox {
+                    text: "穿透选择";
+                    checked <=> root.through-selection;
+                }
+                if root.through-selection: next-hit := Button {
+                    text: "下一个命中 (" + Model.count(root.hit-list) + ")";
+                    enabled: Model.count(root.hit-list) > 1;
+                    clicked => {
+                        root.hit-index = (root.hit-index + 1) % Model.count(root.hit-list);
+                        root.last-hit = Model.at(root.hit-list, root.hit-index, root.no-hit);
+                        root.selected = root.last-hit.object-id;
+                    }
+                }
+                reset-view := Button {
+                    text: "重置视角";
+                    clicked => { root.map-view = false; root.yaw = 24; root.pitch = 24; root.distance = 11; }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    north := Button { text: "↑"; enabled: root.playing; clicked => { root.move-player("north"); } }
+                    south := Button { text: "↓"; enabled: root.playing; clicked => { root.move-player("south"); } }
+                    west := Button { text: "←"; enabled: root.playing; clicked => { root.move-player("west"); } }
+                    east := Button { text: "→"; enabled: root.playing; clicked => { root.move-player("east"); } }
+                }
+                amber-action := Button { text: "激活琥珀机关"; enabled: root.playing; clicked => { root.activate-object("amber"); } }
+                blue-action := Button { text: "激活蓝色机关"; enabled: root.playing; clicked => { root.activate-object("blue"); } }
+                Text { text: "依次靠近并点亮琥珀、蓝色机关，再穿过门走到出口。"; wrap: word-wrap; }
+            }
+        }
+    }
+}

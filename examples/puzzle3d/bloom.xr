@@ -1,0 +1,79 @@
+struct BloomActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, visible: bool,
+    camera-kind: string, camera-height: float,
+}
+
+export component BloomDemo inherits Window {
+    title: "XRack · HDR 泛光";
+    width: 480px;
+    height: 300px;
+    background: #141d29;
+
+    in-out property <bool> glow: true;
+    in-out property <bool> hdr: true;
+    in-out property <bool> covered: false;
+    in-out property <bool> glass: false;
+    in-out property <bool> probe: false;
+    in-out property <float> strength: 0.75;
+    in-out property <float> threshold: 1;
+    in-out property <int> levels: 5;
+    in-out property <float> exposure: 1;
+    in-out property <length> view-width: 480px;
+
+    property <BloomActor> defaults: BloomActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true, camera-kind: "", camera-height: 6,
+    };
+    property <[BloomActor]> models: [
+        BloomActor { id: "holder", y: -0.83, z: -0.12, scale-x: 2.7, scale-y: 0.74, scale-z: 0.18, color: #394660, ..root.defaults },
+        BloomActor { id: "left", x: -1.15, y: 0.2, z: -0.2, scale-x: 0.36, scale-y: 1.65, scale-z: 0.2, color: #243347, ..root.defaults },
+        BloomActor { id: "right", x: 1.15, y: 0.2, z: -0.2, scale-x: 0.36, scale-y: 1.65, scale-z: 0.2, color: #243347, ..root.defaults },
+        BloomActor {
+            id: "emitter", mesh: @mesh-url("models/bloom-emitter.gltf"),
+            y: 0.35, scale-x: 0.11, scale-y: 0.24, ..root.defaults
+        },
+        BloomActor {
+            id: "cover", visible: root.covered, y: 0.35, z: 2,
+            scale-x: 0.85, scale-y: 1.18, scale-z: 0.24, color: #364758, ..root.defaults
+        },
+        BloomActor {
+            id: "glass", mesh: @mesh-url("models/oit-sheet.gltf"), visible: root.glass,
+            y: 0.32, z: 3, scale-x: 0.18, scale-y: 0.34, color: #73b2ec, ..root.defaults
+        },
+        BloomActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.defaults },
+    ];
+    out property <string> picked: Scene3D.pick-camera(root.models, "eye",
+        Point2D.new(root.view-width, 248px), Point2D.new(root.view-width / 2, 110px));
+
+    view := SceneView3D {
+        width: root.view-width;
+        height: 248px;
+        camera: "eye";
+        model: root.models;
+        scene-background: #111b2b;
+        scene-hdr: root.hdr;
+        scene-exposure: root.exposure;
+        bloom: root.glow;
+        bloom-strength: root.strength;
+        bloom-threshold: root.threshold;
+        bloom-levels: root.levels;
+        environment: root.probe ? @environment-url("models/studio.hdr") : "";
+        multisampling: root.glass;
+        order-independent-transparency: root.glass;
+    }
+
+    HorizontalLayout {
+        y: 248px;
+        width: 480px;
+        height: 52px;
+        padding: 12px;
+        spacing: 12px;
+        glow-toggle := CheckBox { width: 76px; text: "泛光"; checked <=> root.glow; }
+        cover-toggle := CheckBox { width: 126px; text: "遮挡发光体"; checked <=> root.covered; }
+        glass-toggle := CheckBox { width: 76px; text: "玻璃"; checked <=> root.glass; }
+        Label { width: 36px; text: "强度"; }
+        strength-slider := Slider { width: 86px; minimum: 0; maximum: 1.5; value <=> root.strength; }
+    }
+}

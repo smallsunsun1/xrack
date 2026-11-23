@@ -1,0 +1,27 @@
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-volumes"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-volume-scattering"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-volume-anisotropy"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-volume-samples"{{.*}}xr.update_effect = "paint"{{.*}}!xr.int
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-volume-density-samples"{{.*}}xr.update_effect = "paint"{{.*}}!xr.int
+
+struct MistRecord {
+    position: point3d, size: vector3d, density: float, color: color, fog-shape: string,
+    yaw: float, pitch: float, roll: float,
+    fog-height-enabled: bool, fog-height-start: float, fog-height-end: float,
+    fog-noise-amount: float, fog-noise-scale: float, fog-noise-offset: vector3d,
+}
+
+export component VolumetricFogPlan inherits Window {
+    in property <[MistRecord]> regions;
+    in property <float> scattering: 1;
+    in property <float> asymmetry: 0.2;
+    in property <int> samples: 8;
+    SceneView3D {
+        width: 100px; height: 100px;
+        fog-volumes: root.regions;
+        fog-volume-scattering: root.scattering;
+        fog-volume-anisotropy: root.asymmetry;
+        fog-volume-samples: root.samples;
+        fog-volume-density-samples: root.samples;
+    }
+}

@@ -250,6 +250,11 @@ pub enum Type {
     RecordList(Box<str>),
     Length,
     Point2D,
+    Point3D,
+    Vector3D,
+    Hit3D,
+    Hit3DList,
+    ProjectedPoint3D,
     Vector2D,
     Transform2D,
     Percent,
@@ -289,6 +294,7 @@ pub enum Type {
     AccessibleLive,
     CursorShape,
     ColorScheme,
+    SceneToneMap,
     FileDialogMode,
     MessageLevel,
     MessageButtons,
@@ -328,6 +334,10 @@ impl Type {
             | Self::WheelEvent
             | Self::PointerEvent
             | Self::Point2D
+            | Self::Point3D
+            | Self::Vector3D
+            | Self::Hit3D
+            | Self::ProjectedPoint3D
             | Self::Vector2D
             | Self::TouchPoint => self.builtin_field(field).map(|(_, ty)| ty),
             _ => None,
@@ -358,6 +368,11 @@ impl Type {
             Self::RecordList(name) => return Cow::Owned(format!("recordlist<\"{name}\">")),
             Self::Length => "length",
             Self::Point2D => "point2d",
+            Self::Point3D => "point3d",
+            Self::Vector3D => "vector3d",
+            Self::Hit3D => "hit3d",
+            Self::Hit3DList => "hit3dlist",
+            Self::ProjectedPoint3D => "projectedpoint3d",
             Self::Vector2D => "vector2d",
             Self::Transform2D => "transform2d",
             Self::Percent => "percent",
@@ -397,6 +412,7 @@ impl Type {
             Self::AccessibleLive => "accessiblelive",
             Self::CursorShape => "cursorshape",
             Self::ColorScheme => "colorscheme",
+            Self::SceneToneMap => "scenetonemap",
             Self::FileDialogMode => "filedialogmode",
             Self::MessageLevel => "messagelevel",
             Self::MessageButtons => "messagebuttons",
@@ -438,6 +454,11 @@ impl Type {
             "datelist" | "[Date]" => Self::DateList,
             "length" => Self::Length,
             "point2d" | "Point2D" => Self::Point2D,
+            "point3d" | "Point3D" => Self::Point3D,
+            "vector3d" | "Vector3D" => Self::Vector3D,
+            "hit3d" | "Hit3D" => Self::Hit3D,
+            "hit3dlist" | "[hit3d]" | "[Hit3D]" => Self::Hit3DList,
+            "projectedpoint3d" | "ProjectedPoint3D" => Self::ProjectedPoint3D,
             "vector2d" | "Vector2D" => Self::Vector2D,
             "transform2d" | "Transform2D" => Self::Transform2D,
             "percent" => Self::Percent,
@@ -479,6 +500,7 @@ impl Type {
             "accessiblelive" | "AccessibleLive" => Self::AccessibleLive,
             "cursorshape" | "CursorShape" => Self::CursorShape,
             "colorscheme" | "ColorScheme" => Self::ColorScheme,
+            "scenetonemap" | "SceneToneMap" => Self::SceneToneMap,
             "filedialogmode" | "FileDialogMode" => Self::FileDialogMode,
             "messagelevel" | "MessageLevel" => Self::MessageLevel,
             "messagebuttons" | "MessageButtons" => Self::MessageButtons,
@@ -525,6 +547,7 @@ impl Type {
             Self::StringList => Some(Self::String),
             Self::IntList => Some(Self::Int),
             Self::DateList => Some(Self::Date),
+            Self::Hit3DList => Some(Self::Hit3D),
             Self::RecordList(name) => Some(Self::Record(name.clone())),
             Self::TouchPoints => Some(Self::TouchPoint),
             _ => None,
@@ -610,6 +633,14 @@ impl Type {
                 "zoom-out",
             ],
             Self::ColorScheme => &["system", "light", "dark"],
+            Self::SceneToneMap => &[
+                "none",
+                "linear",
+                "reinhard",
+                "aces",
+                "hejl-dawson",
+                "filmic",
+            ],
             Self::FileDialogMode => &[
                 "open-file",
                 "open-files",
@@ -672,6 +703,7 @@ impl Serialize for Type {
             Self::StringList => serializer.serialize_str("[string]"),
             Self::IntList => serializer.serialize_str("[int]"),
             Self::DateList => serializer.serialize_str("[Date]"),
+            Self::Hit3DList => serializer.serialize_str("[hit3d]"),
             Self::LogLevel => serializer.serialize_str("LogLevel"),
             Self::ImageFit => serializer.serialize_str("ImageFit"),
             Self::ImageTileMode => serializer.serialize_str("ImageTileMode"),
@@ -705,6 +737,7 @@ impl Serialize for Type {
             Self::AccessibleLive => serializer.serialize_str("AccessibleLive"),
             Self::CursorShape => serializer.serialize_str("CursorShape"),
             Self::ColorScheme => serializer.serialize_str("ColorScheme"),
+            Self::SceneToneMap => serializer.serialize_str("SceneToneMap"),
             Self::FileDialogMode => serializer.serialize_str("FileDialogMode"),
             Self::MessageLevel => serializer.serialize_str("MessageLevel"),
             Self::MessageButtons => serializer.serialize_str("MessageButtons"),
@@ -905,6 +938,12 @@ pub enum ExprKind {
         ty: Type,
     },
     ImageUrl(String),
+    MeshUrl(String),
+    MeshUrlWithOptions {
+        path: String,
+        options: Vec<String>,
+    },
+    EnvironmentUrl(String),
     SlicedImageUrl {
         path: String,
         slice: String,

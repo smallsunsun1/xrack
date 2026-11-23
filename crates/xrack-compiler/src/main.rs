@@ -1,3 +1,5 @@
+mod bake_cli;
+
 use clap::{Parser, ValueEnum};
 use proc_macro2::{Group, Ident, Spacing, TokenStream, TokenTree};
 use std::{fs, io, path::PathBuf, process::ExitCode};
@@ -17,6 +19,8 @@ enum Emit {
     Mlir,
     /// Package the UI library, source inputs and runtime artifacts into a new directory.
     Package,
+    /// Bake a SceneView3D lightmap atlas and an importable XRack module.
+    Lightmaps,
     /// Print the lowered MLIR before native verification and optimization.
     MlirRaw,
     /// Report source-linked paint, binding and row cache decisions as JSON.
@@ -45,6 +49,9 @@ struct Args {
     /// Output format.
     #[arg(long, value_enum, default_value_t)]
     emit: Emit,
+
+    #[command(flatten)]
+    bake: bake_cli::Arguments,
 
     /// Verify the input and its resources.
     #[arg(long)]
@@ -137,6 +144,22 @@ fn run(args: Args) -> Result<(), CompilerError> {
         xrack_compiler::pack_module(std::path::Path::new(&args.input), output, sources, assets)?;
         return Ok(());
     }
+    if matches!(args.emit, Emit::Lightmaps) && !args.check {
+        let output = args.output.as_deref().ok_or_else(|| {
+            CompilerError::Resources("--emit lightmaps requires --output DIRECTORY".into())
+        })?;
+        let document = parse_document(&source, &args.input, sources)?;
+        let (module, translations) =
+            xrack_compiler::prepare_runtime_module(&document, &args.input, assets)?;
+        let (program, _) = xrack_interpreter::Program::from_module_with_declared_resources(
+            &module,
+            &args.input,
+            translations,
+            assets,
+        )
+        .map_err(|error| CompilerError::Resources(error.to_string()))?;
+        return bake_cli::run(&program, &args.bake, output);
+    }
     if args.cargo {
         let compile = if args.live_reload {
             compile_live_with_inputs
@@ -183,7 +206,7 @@ fn run(args: Args) -> Result<(), CompilerError> {
             Some(output) => export_mlir_to(&doc, &args.input, assets, output)?,
             None => export_mlir(&doc, &args.input, assets)?,
         },
-        Emit::Preview | Emit::LiveModule | Emit::Package => {
+        Emit::Preview | Emit::LiveModule | Emit::Package | Emit::Lightmaps => {
             unreachable!("handled before emitting text")
         }
         Emit::Rust => {

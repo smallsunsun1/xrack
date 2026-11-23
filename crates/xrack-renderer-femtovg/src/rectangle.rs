@@ -1,7 +1,7 @@
 use crate::{
     Canvas, Color, LayoutNode, Node, Paint, Path, Rect, WGPURenderer, append_rect,
     canvas_transform, color, pixel_phase,
-    retained_layers::{device_bounds, logical_bounds},
+    retained_layers::{CachedLayerImage, WindowLayer, device_bounds, logical_bounds},
     transform::has_pixel_aligned_scale,
 };
 use femtovg::rgb::RGBA8;
@@ -9,7 +9,7 @@ use femtovg::{
     Atlas, BlendFactor, DrawCommand, GlyphDrawCommands, ImageFlags, ImageId, ImageInfo,
     LayerEffects, PixelFormat, Quad, imgref::Img,
 };
-use std::collections::HashMap;
+use std::{cell::OnceCell, collections::HashMap, rc::Rc};
 use xrack_runtime::{Brush, Value};
 
 const ATLAS_WIDTH: usize = 128;
@@ -19,44 +19,100 @@ const ROUND_ATLAS_SIZE: usize = 512;
 const MAX_ROUND_TILE: f32 = 128.0;
 const MAX_NEW_ROUND_TILES: usize = 16;
 
+pub(super) struct RoundedPanel {
+    bounds: Rect,
+    template: Rect,
+    margins: [f32; 4],
+    radii: [f32; 4],
+    tint: Color,
+}
+
+impl RoundedPanel {
+    pub(super) fn from_node(node: &Node, layout: &LayoutNode, scale: f32) -> Option<Self> {
+        let bounds = layout.bounds;
+        if node.children.is_empty()
+            || !plain_surface(node, layout)
+            || node.opacity() != 1.0
+            || !layout.local_transform().is_identity()
+            || layout.table_pane_clip().is_some()
+            || scale < 1.0
+            || !crate::pixel_aligned(bounds, scale)
+        {
+            return None;
+        }
+        let tint = color(node.color("background")?);
+        let radii = xrack_layout::corner_radii(node, bounds);
+        if tint.a != 1.0 || radii == [0.0; 4] {
+            return None;
+        }
+        let [tl, tr, br, bl] = radii;
+        // Leave a device pixel beyond each arc. The straight middle spans
+        // can then hold one texel each without sampling a curved edge.
+        let margins = [tl.max(bl), tl.max(tr), tr.max(br), bl.max(br)]
+            .map(|radius| (radius * scale).ceil() + 1.0);
+        let [left, top, right, bottom] = margins;
+        let width = left + right + 1.0;
+        let height = top + bottom + 1.0;
+        let template = Rect::new(0.0, 0.0, width / scale, height / scale);
+        let limit = MAX_ROUND_TILE + 3.0;
+        (width <= limit
+            && height <= limit
+            && template.width < bounds.width
+            && template.height < bounds.height
+            && crate::pixel_aligned(template, scale))
+        .then_some(Self {
+            bounds,
+            template,
+            margins,
+            radii,
+            tint,
+        })
+    }
+}
+
 /// A leaf whose only paint operation can be its background fill.
 pub(super) fn single_fill(node: &Node, layout: &LayoutNode) -> bool {
     node.children.is_empty() && plain_surface(node, layout)
 }
 
 pub(super) fn plain_surface(node: &Node, layout: &LayoutNode) -> bool {
+    surface_node(node, layout) && node.properties.keys().all(|name| surface_property(name))
+}
+
+fn surface_node(node: &Node, layout: &LayoutNode) -> bool {
     node.kind == "Rectangle"
         && node.list.is_none()
         && node.scroll_target.is_none()
         && layout.table.is_none()
         && !layout.allows_overflow()
-        && node.properties.keys().all(|&name| {
-            matches!(
-                name,
-                "x" | "y"
-                    | "width"
-                    | "height"
-                    | "z"
-                    | "opacity"
-                    | "visible"
-                    | "enabled"
-                    | "background"
-                    | "clip"
-                    | "border-radius"
-                    | "border-top-left-radius"
-                    | "border-top-right-radius"
-                    | "border-bottom-left-radius"
-                    | "border-bottom-right-radius"
-                    | "min-width"
-                    | "max-width"
-                    | "min-height"
-                    | "max-height"
-                    | "preferred-width"
-                    | "preferred-height"
-                    | "horizontal-stretch"
-                    | "vertical-stretch"
-            )
-        })
+}
+
+fn surface_property(name: &str) -> bool {
+    matches!(
+        name,
+        "x" | "y"
+            | "width"
+            | "height"
+            | "z"
+            | "opacity"
+            | "visible"
+            | "enabled"
+            | "background"
+            | "clip"
+            | "border-radius"
+            | "border-top-left-radius"
+            | "border-top-right-radius"
+            | "border-bottom-left-radius"
+            | "border-bottom-right-radius"
+            | "min-width"
+            | "max-width"
+            | "min-height"
+            | "max-height"
+            | "preferred-width"
+            | "preferred-height"
+            | "horizontal-stretch"
+            | "vertical-stretch"
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -71,25 +127,47 @@ pub(super) struct Solid {
 
 impl Solid {
     pub(super) fn from_node(node: &Node, layout: &LayoutNode, scale: f32) -> Option<Self> {
-        if !single_fill(node, layout)
+        if !node.children.is_empty()
+            || !surface_node(node, layout)
             || !layout.local_transform().is_identity()
             || layout.has_ancestor_clip_chain()
             || layout.table_pane_clip().is_some()
         {
             return None;
         }
-        let value = match node.properties.get("background")? {
-            Value::Color(value) | Value::Brush(Brush::Solid(value)) => *value,
-            _ => return None,
-        };
-        let opacity = node.opacity();
-        if !opacity.is_finite() {
-            return None;
+        let mut background = None;
+        let mut opacity = 1.0;
+        let mut has_radius = false;
+        // Validate and read the paint properties in one walk. Flat fills need
+        // neither the corner lookups nor the size-dependent radius calculation.
+        for (&name, value) in &node.properties {
+            match name {
+                "background" => match value {
+                    Value::Color(value) | Value::Brush(Brush::Solid(value)) => {
+                        background = Some(*value);
+                    }
+                    _ => return None,
+                },
+                "opacity" => opacity = node.opacity(),
+                "border-radius"
+                | "border-top-left-radius"
+                | "border-top-right-radius"
+                | "border-bottom-left-radius"
+                | "border-bottom-right-radius" => {
+                    has_radius |= matches!(value, Value::Length(radius) if radius.0.is_finite() && radius.0 > 0.0);
+                }
+                name if surface_property(name) => (),
+                _ => return None,
+            }
         }
+        let tint = color(background?);
         let bounds = layout.bounds.intersect(layout.clip);
         let shape = layout.bounds;
-        let radii = xrack_layout::corner_radii(node, shape);
-        let tint = color(value);
+        let radii = if has_radius {
+            xrack_layout::corner_radii(node, shape)
+        } else {
+            [0.0; 4]
+        };
         if !layout.visible || tint.a * opacity == 0.0 || bounds.width <= 0.0 || bounds.height <= 0.0
         {
             return Some(Self {
@@ -173,6 +251,10 @@ impl Solid {
 
     pub(super) fn square_bounds(&self) -> Option<Rect> {
         (!self.rounded()).then_some(self.bounds)
+    }
+
+    pub(super) fn plain_layer(self) -> Option<(Rect, Color)> {
+        (!self.uses_mask()).then_some((self.bounds, self.tint()))
     }
 
     pub(super) fn collect_square(&self, clip: Rect, scale: f32) -> bool {
@@ -306,6 +388,13 @@ fn fill_rounded(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum RoundedTileClip {
+    Shape,
+    Coverage,
+    Vertical { y: u32, height: u32 },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct RoundedKey {
     size: [u32; 2],
     pixels: [u32; 2],
@@ -314,6 +403,19 @@ struct RoundedKey {
     color: [u32; 4],
     opacity: u32,
     scale: u32,
+    clip: RoundedTileClip,
+}
+
+impl RoundedKey {
+    fn same_capsule(self, other: Self) -> bool {
+        matches!(self.clip, RoundedTileClip::Vertical { .. })
+            && matches!(other.clip, RoundedTileClip::Vertical { .. })
+            && self.size == other.size
+            && self.radii == other.radii
+            && self.color == other.color
+            && self.opacity == other.opacity
+            && self.scale == other.scale
+    }
 }
 
 struct FractionalSlot {
@@ -326,14 +428,18 @@ struct RoundedAtlas {
     main_image: Option<ImageId>,
     capture_image: Option<ImageId>,
     texture: wgpu::Texture,
+    window_texture: Option<Rc<CachedLayerImage>>,
     producer: Canvas<WGPURenderer>,
     packing: Atlas,
+    reused_aligned_area: bool,
     slots: HashMap<RoundedKey, [u32; 2]>,
     fractional_packing: Atlas,
+    reused_fractional_area: bool,
     fractional_slots: HashMap<RoundedKey, FractionalSlot>,
     frame: u64,
     reset_fractional: bool,
     new_tiles: usize,
+    warm_requests: Vec<(RoundedKey, Solid)>,
     pending_scale: Option<f32>,
     full: bool,
     used: bool,
@@ -362,14 +468,18 @@ impl RoundedAtlas {
             main_image: None,
             capture_image: None,
             texture,
+            window_texture: None,
             producer,
             packing: Atlas::new(ROUND_ATLAS_SIZE, ROUND_ATLAS_SIZE / 2),
+            reused_aligned_area: false,
             slots: HashMap::new(),
             fractional_packing: Atlas::new(ROUND_ATLAS_SIZE, ROUND_ATLAS_SIZE / 2),
+            reused_fractional_area: false,
             fractional_slots: HashMap::new(),
             frame: 0,
             reset_fractional: false,
             new_tiles: 0,
+            warm_requests: Vec::new(),
             pending_scale: None,
             full: false,
             used: false,
@@ -398,10 +508,23 @@ impl RoundedAtlas {
         Some(image)
     }
 
+    fn window_source(&mut self) -> Rc<CachedLayerImage> {
+        self.window_texture
+            .get_or_insert_with(|| {
+                Rc::new(CachedLayerImage {
+                    texture: self.texture.clone(),
+                    binding: OnceCell::new(),
+                })
+            })
+            .clone()
+    }
+
     fn begin_frame(&mut self, retain_fractional: bool) {
         self.frame = self.frame.wrapping_add(1);
         self.new_tiles = 0;
+        self.warm_requests.clear();
         if !retain_fractional || std::mem::take(&mut self.reset_fractional) {
+            self.reused_fractional_area |= !self.fractional_slots.is_empty();
             self.fractional_packing
                 .reset(ROUND_ATLAS_SIZE, ROUND_ATLAS_SIZE / 2);
             self.fractional_slots.clear();
@@ -410,14 +533,26 @@ impl RoundedAtlas {
             // Keep hot tiles in a full atlas. Reclaim slots between frames once
             // the current scene no longer uses any of them.
             self.packing.reset(ROUND_ATLAS_SIZE, ROUND_ATLAS_SIZE / 2);
+            self.reused_aligned_area = true;
             self.slots.clear();
             self.full = false;
         }
         self.used = false;
     }
 
-    fn quad(&mut self, queue: &wgpu::Queue, rectangle: Solid, scale: f32) -> Option<Quad> {
+    fn quad(
+        &mut self,
+        queue: &wgpu::Queue,
+        rectangle: Solid,
+        scale: f32,
+        clip: RoundedTileClip,
+    ) -> Option<Quad> {
         let device = device_bounds(rectangle.shape, scale);
+        let color = if clip == RoundedTileClip::Shape {
+            rectangle.color
+        } else {
+            Color::rgbaf(1.0, 1.0, 1.0, rectangle.color.a)
+        };
         let key = RoundedKey {
             size: [rectangle.shape.width, rectangle.shape.height].map(f32::to_bits),
             pixels: [device.width as u32, device.height as u32],
@@ -426,15 +561,10 @@ impl RoundedAtlas {
                 pixel_phase(rectangle.shape.y * scale),
             ],
             radii: rectangle.radii.map(f32::to_bits),
-            color: [
-                rectangle.color.r,
-                rectangle.color.g,
-                rectangle.color.b,
-                rectangle.color.a,
-            ]
-            .map(f32::to_bits),
+            color: [color.r, color.g, color.b, color.a].map(f32::to_bits),
             opacity: rectangle.opacity.to_bits(),
             scale: scale.to_bits(),
+            clip,
         };
         let cached = if rectangle.fractional {
             self.fractional_slots.get_mut(&key).map(|slot| {
@@ -446,7 +576,14 @@ impl RoundedAtlas {
         };
         let [left, top] = match cached {
             Some(origin) => origin,
-            None => self.rasterize(queue, rectangle, scale, key)?,
+            None => {
+                let warm = self.should_warm_capsule(key);
+                let origin = self.rasterize(queue, rectangle, scale, key, true)?;
+                if warm {
+                    self.warm_requests.push((key, rectangle));
+                }
+                origin
+            }
         };
         self.used |= !rectangle.fractional;
         let raster = logical_bounds(device, scale);
@@ -475,18 +612,82 @@ impl RoundedAtlas {
         })
     }
 
-    fn allocate_fractional(&mut self, key: RoundedKey) -> Option<[u32; 2]> {
+    fn should_warm_capsule(&self, key: RoundedKey) -> bool {
+        if key.phase[1] == 0
+            || !matches!(key.clip, RoundedTileClip::Vertical { .. })
+            || self.warm_requests.iter().any(|&(pending, _)| {
+                pending.phase[1] == key.phase[1]
+                    && pending.clip == key.clip
+                    && key.same_capsule(pending)
+            })
+        {
+            return false;
+        }
+        let mut seen_fractional_pose = false;
+        for &old in self.fractional_slots.keys() {
+            if old.phase[1] != 0 && key.same_capsule(old) {
+                if old.phase[1] == key.phase[1] {
+                    return true;
+                }
+                seen_fractional_pose = true;
+            }
+        }
+        // Seed the first fractional scroll pose. Later distinct poses must
+        // recur before borrowing horizontal phases from the cache.
+        !seen_fractional_pose
+    }
+
+    fn warm_capsule_phases(
+        &mut self,
+        queue: &wgpu::Queue,
+        rectangle: Solid,
+        scale: f32,
+        key: RoundedKey,
+    ) {
+        // Rasterize previously seen horizontal cap phases together with the
+        // required tiles in the same pending atlas pass.
+        let remaining = MAX_NEW_ROUND_TILES.saturating_sub(self.new_tiles);
+        let mut hints = Vec::new();
+        for &old in self.slots.keys().chain(self.fractional_slots.keys()) {
+            if hints.len() == remaining {
+                break;
+            }
+            if key.same_capsule(old) {
+                let hint = RoundedKey {
+                    phase: [old.phase[0], key.phase[1]],
+                    pixels: [old.pixels[0], key.pixels[1]],
+                    ..key
+                };
+                if !self.fractional_slots.contains_key(&hint) && !hints.contains(&hint) {
+                    hints.push(hint);
+                }
+            }
+        }
+        for hint in hints {
+            if self
+                .rasterize(queue, rectangle, scale, hint, false)
+                .is_none()
+            {
+                break;
+            }
+        }
+    }
+
+    fn allocate_fractional(&mut self, key: RoundedKey, recycle: bool) -> Option<([u32; 2], bool)> {
         let [width, height] = key.pixels;
-        let slot = if let Some((x, y)) = self
+        let (slot, needs_clear) = if let Some((x, y)) = self
             .fractional_packing
             .add_rect(width as usize, height as usize)
         {
-            FractionalSlot {
-                origin: [x as u32, (y + ROUND_ATLAS_SIZE / 2) as u32],
-                capacity: key.pixels,
-                last_frame: self.frame,
-            }
-        } else {
+            (
+                FractionalSlot {
+                    origin: [x as u32, (y + ROUND_ATLAS_SIZE / 2) as u32],
+                    capacity: key.pixels,
+                    last_frame: self.frame,
+                },
+                self.reused_fractional_area,
+            )
+        } else if recycle {
             // A slot referenced by this frame may still be sampled by an
             // unsubmitted canvas. Only overwrite slots from earlier frames.
             let oldest = self
@@ -505,11 +706,13 @@ impl RoundedAtlas {
                 return None;
             };
             slot.last_frame = self.frame;
-            slot
+            (slot, true)
+        } else {
+            return None;
         };
         let origin = slot.origin;
         self.fractional_slots.insert(key, slot);
-        Some(origin)
+        Some((origin, needs_clear))
     }
 
     fn rasterize(
@@ -518,51 +721,62 @@ impl RoundedAtlas {
         rectangle: Solid,
         scale: f32,
         key: RoundedKey,
+        recycle: bool,
     ) -> Option<[u32; 2]> {
         if self.full && !rectangle.fractional || self.new_tiles >= MAX_NEW_ROUND_TILES {
             return None;
         }
         let [width, height] = key.pixels;
-        let [x, y] = if rectangle.fractional {
-            self.allocate_fractional(key)?
+        let ([x, y], needs_clear) = if rectangle.fractional {
+            self.allocate_fractional(key, recycle)?
         } else {
             let Some((x, y)) = self.packing.add_rect(width as usize, height as usize) else {
                 self.full = true;
                 return None;
             };
             self.slots.insert(key, [x as u32, y as u32]);
-            [x as u32, y as u32]
+            ([x as u32, y as u32], self.reused_aligned_area)
         };
 
-        // The color-quad shader expects straight RGBA. Initialize RGB with the
-        // unassociated tint, then let FemtoVG's regular path fill update alpha.
-        let [r, g, b] = [rectangle.color.r, rectangle.color.g, rectangle.color.b]
-            .map(|channel| (channel * 255.0).round() as u8);
-        let pixels = [r, g, b, 0].repeat(width as usize * height as usize);
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x, y, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            &pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
+        let coverage_only = key.clip != RoundedTileClip::Shape;
+        if !coverage_only {
+            // The color-quad shader expects straight RGBA. Initialize RGB with the
+            // unassociated tint, then let FemtoVG's regular path fill update alpha.
+            let [r, g, b] = [rectangle.color.r, rectangle.color.g, rectangle.color.b]
+                .map(|channel| (channel * 255.0).round() as u8);
+            let pixels = [r, g, b, 0].repeat(width as usize * height as usize);
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x, y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         if self.pending_scale.is_none() {
             self.producer
                 .set_size(ROUND_ATLAS_SIZE as u32, ROUND_ATLAS_SIZE as u32, scale);
         }
         self.producer.reset();
+        if coverage_only && needs_clear {
+            // Initialize in the raster pass. The window compositor samples
+            // alpha and applies its tint independently of the mask. Unused
+            // regions of the original allocation are already zero in wgpu.
+            self.producer
+                .clear_rect(x, y, width, height, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+        }
         self.producer.scale(scale, scale);
         self.producer.translate(x as f32 / scale, y as f32 / scale);
         let bounds = Rect::new(
@@ -571,14 +785,28 @@ impl RoundedAtlas {
             rectangle.shape.width,
             rectangle.shape.height,
         );
-        self.producer
-            .scissor(bounds.x, bounds.y, bounds.width, bounds.height);
-        self.producer.global_composite_blend_func_separate(
-            BlendFactor::Zero,
-            BlendFactor::One,
-            BlendFactor::One,
-            BlendFactor::OneMinusSrcAlpha,
-        );
+        match key.clip {
+            RoundedTileClip::Shape | RoundedTileClip::Coverage => {
+                self.producer
+                    .scissor(bounds.x, bounds.y, bounds.width, bounds.height);
+            }
+            RoundedTileClip::Vertical { y, height } => {
+                self.producer.scissor(
+                    0.0,
+                    f32::from_bits(y),
+                    width as f32 / scale,
+                    f32::from_bits(height),
+                );
+            }
+        }
+        if !coverage_only {
+            self.producer.global_composite_blend_func_separate(
+                BlendFactor::Zero,
+                BlendFactor::One,
+                BlendFactor::One,
+                BlendFactor::OneMinusSrcAlpha,
+            );
+        }
         let mut path = Path::new();
         append_rect(&mut path, bounds, rectangle.radii);
         fill_rounded(
@@ -594,6 +822,7 @@ impl RoundedAtlas {
     }
 
     fn take_commands(&mut self) -> Option<wgpu::CommandBuffer> {
+        self.warm_requests.clear();
         self.pending_scale.take()?;
         self.producer.flush_to_output(&self.texture)
     }
@@ -615,12 +844,169 @@ pub(super) struct RectangleBatches {
     pub(super) disabled: bool,
     pub(super) eager_atlas_submission: bool,
     pub(super) reset_fractional_tiles_each_frame: bool,
+    pub(super) capsule_warmup_disabled: bool,
     pub(super) draws: u64,
     pub(super) palette_uploads: u64,
     pub(super) rounded_draws: u64,
 }
 
 impl RectangleBatches {
+    fn window_atlas(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scale: f32,
+    ) -> Option<&mut RoundedAtlas> {
+        if self.rounded.is_none() {
+            self.rounded = RoundedAtlas::new(device, queue);
+        }
+        let atlas = self.rounded.as_mut()?;
+        if atlas.pending_scale.is_some_and(|pending| pending != scale) {
+            atlas.submit(queue);
+        }
+        Some(atlas)
+    }
+
+    pub(super) fn window_panel(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        panel: RoundedPanel,
+        scale: f32,
+    ) -> Option<[WindowLayer; 9]> {
+        let atlas = self.window_atlas(device, queue, scale)?;
+        let shape = panel.template;
+        let rectangle = Solid {
+            bounds: shape,
+            shape,
+            radii: panel.radii,
+            color: Color::white(),
+            opacity: 1.0,
+            fractional: false,
+        };
+        let tile = atlas.quad(queue, rectangle, scale, RoundedTileClip::Coverage)?;
+        let image = atlas.window_source();
+        let spans = |start, extent, [near, far]: [f32; 2], [uv_start, uv_end]: [f32; 2]| {
+            let end = start + extent;
+            let near_edge = uv_start + near / ROUND_ATLAS_SIZE as f32;
+            let far_edge = uv_end - far / ROUND_ATLAS_SIZE as f32;
+            let middle = (near_edge + far_edge) * 0.5;
+            [
+                (start, start + near / scale, uv_start, near_edge),
+                (start + near / scale, end - far / scale, middle, middle),
+                (end - far / scale, end, far_edge, uv_end),
+            ]
+        };
+        let [left, top, right, bottom] = panel.margins;
+        let bounds = panel.bounds;
+        let columns = spans(bounds.x, bounds.width, [left, right], [tile.s0, tile.s1]);
+        let rows = spans(bounds.y, bounds.height, [top, bottom], [tile.t0, tile.t1]);
+        Some(std::array::from_fn(|index| {
+            let (x0, x1, s0, s1) = columns[index % 3];
+            let (y0, y1, t0, t1) = rows[index / 3];
+            WindowLayer::tinted_alpha(
+                Quad {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    s0,
+                    t0,
+                    s1,
+                    t1,
+                },
+                image.clone(),
+                panel.tint,
+            )
+        }))
+    }
+
+    pub(super) fn warm_capsules(&mut self, queue: &wgpu::Queue) {
+        if self.capsule_warmup_disabled {
+            return;
+        }
+        let Some(atlas) = &mut self.rounded else {
+            return;
+        };
+        let Some(scale) = atlas.pending_scale else {
+            return;
+        };
+        // Use only the budget left after all visible draws acquired tiles.
+        // Warming joins the pending pass, with no eviction or separate submit.
+        let mut requests = std::mem::take(&mut atlas.warm_requests);
+        for (key, rectangle) in requests.drain(..) {
+            atlas.warm_capsule_phases(queue, rectangle, scale, key);
+        }
+        atlas.warm_requests = requests;
+    }
+
+    pub(super) fn capsule_template_width(bounds: Rect, scale: f32) -> Option<f32> {
+        let width = bounds.height + 2.0 / scale;
+        (bounds.width >= width && width * scale <= MAX_ROUND_TILE && bounds.height * scale >= 2.0)
+            .then_some(width)
+    }
+
+    pub(super) fn window_capsule(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bounds: Rect,
+        tint: Color,
+        scale: f32,
+        clip_y: [f32; 2],
+    ) -> Option<[WindowLayer; 3]> {
+        let radius = bounds.height * 0.5;
+        let template_width = Self::capsule_template_width(bounds, scale)?;
+        let left = ((bounds.x + radius) * scale).ceil() / scale;
+        let right = ((bounds.x + bounds.width - radius) * scale).floor() / scale;
+        let raster = logical_bounds(device_bounds(bounds, scale), scale);
+        let [clip_top, clip_height] = clip_y;
+        // Bake the actual intersection. A clipped capsule may need the
+        // scissor on an edge that the full path could render on its own.
+        let clip = RoundedTileClip::Vertical {
+            y: (clip_top - raster.y).to_bits(),
+            height: clip_height.to_bits(),
+        };
+        let middle = Rect::new(left, raster.y, right - left, raster.height);
+        // Expanding or contracting a capsule only moves the caps. Keep the
+        // cap's device-pixel phase and join each one inside the straight body.
+        let atlas = self.window_atlas(device, queue, scale)?;
+        let texture = atlas.window_source();
+        let mut cap = |x| {
+            let shape = Rect::new(x, bounds.y, template_width, bounds.height);
+            let rectangle = Solid {
+                bounds: shape,
+                shape,
+                radii: [radius; 4],
+                color: tint,
+                opacity: 1.0,
+                fractional: !crate::pixel_aligned(shape, scale),
+            };
+            atlas.quad(queue, rectangle, scale, clip)
+        };
+        let left_clip = Rect::new(raster.x, raster.y, left - raster.x, raster.height);
+        let right_clip = Rect::new(
+            right,
+            raster.y,
+            raster.x + raster.width - right,
+            raster.height,
+        );
+        let left_quad = cap(bounds.x)?;
+        let right_quad = cap(bounds.x + bounds.width - template_width)?;
+        let mut left_cap = WindowLayer::tinted_alpha(left_quad, texture.clone(), tint);
+        left_cap.crop(left_clip);
+        let mut right_cap = WindowLayer::tinted_alpha(right_quad, texture.clone(), tint);
+        right_cap.crop(right_clip);
+
+        // Sample the first complete column of the template's straight body.
+        // All three parts can then share the same draw and sampling state.
+        let column = left_quad.s0 + ((left - left_quad.x0) * scale + 0.5) / ROUND_ATLAS_SIZE as f32;
+        let mut body = WindowLayer::tinted_alpha(left_quad, texture, tint);
+        body.bounds = middle;
+        body.uv = [column, left_quad.t0, column, left_quad.t1];
+        Some([left_cap, body, right_cap])
+    }
+
     pub(super) fn rounded_tile_rasterizations(&self) -> usize {
         self.rounded.as_ref().map_or(0, |atlas| atlas.new_tiles)
     }
@@ -793,7 +1179,7 @@ impl RectangleBatches {
         }
         let mut quads = Vec::with_capacity(rectangles.len());
         for rectangle in rectangles.drain(..) {
-            if let Some(quad) = atlas.quad(queue, rectangle, scale) {
+            if let Some(quad) = atlas.quad(queue, rectangle, scale, RoundedTileClip::Shape) {
                 quads.push(quad);
             } else {
                 self.rounded_draws += draw_quads(canvas, image, std::mem::take(&mut quads));

@@ -1,15 +1,15 @@
 use crate::{
     ClipChain, LayoutNode, Rect, RoundedClip, Transform2D, TransformPlacement, TransformSpace,
 };
-use std::sync::Arc;
+use std::rc::Rc;
 use xrack_runtime::Node;
 
 pub(super) fn apply(
     node: &Node,
     bounds: Rect,
     clip: Rect,
-    space: &mut Option<Arc<TransformSpace>>,
-    shapes: &mut Option<Arc<ClipChain>>,
+    space: &mut Option<Rc<TransformSpace>>,
+    shapes: &mut Option<Rc<ClipChain>>,
 ) -> (Rect, Option<Box<TransformPlacement>>) {
     let local = Transform2D::for_node(node, bounds);
     if local.is_identity() {
@@ -21,7 +21,7 @@ pub(super) fn apply(
             .as_deref()
             .map_or(Transform2D::IDENTITY, |space| space.world),
     );
-    *shapes = Some(Arc::new(ClipChain {
+    *shapes = Some(Rc::new(ClipChain {
         shape: RoundedClip {
             bounds: clip,
             radii: [0.0; 4],
@@ -29,7 +29,7 @@ pub(super) fn apply(
         parent: shapes.clone(),
         space: parent_space.clone(),
     }));
-    *space = Some(Arc::new(TransformSpace {
+    *space = Some(Rc::new(TransformSpace {
         world,
         inverse: world.inverse(),
     }));
@@ -69,7 +69,7 @@ fn can_reproject(old: &Node, node: &Node, layout: &LayoutNode) -> bool {
             | "GridLayout"
     ) && !node.application_window
         && layout.visible
-        && layout.overlays.is_none()
+        && layout.overlay_index().is_none()
         && layout.children.len() == node.children.len()
         && old.children.len() == node.children.len()
         && old.same_measurement_inputs_at_node(node)
@@ -85,8 +85,8 @@ fn project(
     node: &Node,
     layout: &mut LayoutNode,
     parent_clip: Rect,
-    mut space: Option<Arc<TransformSpace>>,
-    mut shapes: Option<Arc<ClipChain>>,
+    mut space: Option<Rc<TransformSpace>>,
+    mut shapes: Option<Rc<ClipChain>>,
 ) -> Option<()> {
     let (clip, transform) = apply(node, layout.bounds, parent_clip, &mut space, &mut shapes);
     // A singular ancestor can collapse the bounds of its children during
@@ -101,8 +101,8 @@ fn project(
     layout.transform = transform;
     layout.space = space.clone();
     layout.ancestor_shapes = shapes.clone();
-    if let Some(shape) = layout.child_shape {
-        shapes = Some(Arc::new(ClipChain {
+    if let Some(shape) = layout.child_clip_shape() {
+        shapes = Some(Rc::new(ClipChain {
             shape,
             parent: shapes,
             space: space.clone(),

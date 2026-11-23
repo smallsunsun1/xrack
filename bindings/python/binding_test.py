@@ -10,11 +10,29 @@ from xrack.stubgen import generate
 
 HOST_VALUES_UI = """
 export struct SearchRow { label: string, color: color, direction: LayoutDirection }
+struct BoxActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color,
+}
 
 export component HostValues inherits Window {
     in-out property <color> ink: #123456;
     in-out property <brush> fill: #234567;
     in-out property <length> offset: 12px;
+    in-out property <point3d> world: Point3D.new(1, 2, 0);
+    out property <projectedpoint3d> projection: Scene3D.project(
+        0, 0, 8, Point2D.new(200px, 200px), root.world);
+    property <[BoxActor]> scene: [BoxActor {
+        id: "cube", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff,
+    }];
+    out property <hit3d> hit: Scene3D.ray-hit(
+        root.scene, Point3D.new(0, 0, 3), Vector3D.new(0, 0, -2), 5);
+    out property <[hit3d]> hits: Scene3D.ray-hit-all(
+        root.scene, Point3D.new(0, 0, 3), Vector3D.new(0, 0, -2), 5);
+    in-out property <[hit3d]> saved-hits: [];
     in-out property <LayoutDirection> direction: LayoutDirection.left-to-right;
     in-out property <ButtonDisplay> presentation;
     in-out property <InputType> input-mode: InputType.email;
@@ -22,6 +40,7 @@ export component HostValues inherits Window {
     in-out property <KeyboardCapitalization> keyboard-case: KeyboardCapitalization.words;
     in-out property <ReturnKey> enter-action: ReturnKey.next;
     in-out property <AccessibleLive> status-priority: AccessibleLive.polite;
+    in-out property <SceneToneMap> tone;
     in-out property <Date> date;
     in-out property <Time> time;
     in-out property <Font> font;
@@ -33,6 +52,7 @@ export component HostValues inherits Window {
     out property <int> count: Model.count(root.names);
     callback inspect-key(KeyEvent) -> EventResult;
     callback recolor(color) -> color;
+    callback reflect-hits([hit3d]) -> [hit3d];
 }
 """
 
@@ -116,6 +136,9 @@ class BindingTest(unittest.TestCase):
             self.assertEqual(ui.get("keyboard-case"), xrack.KeyboardCapitalization.Words)
             self.assertEqual(ui.get("enter-action"), xrack.ReturnKey.Next)
             self.assertEqual(ui.get("status-priority"), xrack.AccessibleLive.Polite)
+            self.assertEqual(ui.get("tone"), xrack.SceneToneMap.Reinhard)
+            ui.set("tone", xrack.SceneToneMap.None_)
+            self.assertEqual(ui.get("tone"), xrack.SceneToneMap.None_)
             self.assertEqual(ink.rgba, (0x12, 0x34, 0x56, 255))
             accent = xrack.Color(200, 100, 25)
             brush = xrack.Brush.linear(
@@ -140,6 +163,33 @@ class BindingTest(unittest.TestCase):
             for name, value in properties:
                 ui.set(name, value)
                 self.assertEqual(ui.get(name), value)
+            world = xrack.Point3D(0.0, 0.0, 0.0)
+            ui.set("world", world)
+            self.assertEqual(ui.get("world"), world)
+            projected = ui.get("projection")
+            self.assertEqual(
+                projected,
+                xrack.ProjectedPoint3D(
+                    xrack.Point2D(xrack.Length(100), xrack.Length(100)), 8.0, True, True
+                ),
+            )
+            hit = ui.get("hit")
+            assert isinstance(hit, xrack.Hit3D)
+            self.assertTrue(hit.valid)
+            self.assertEqual(hit.object_id, "cube")
+            self.assertEqual(hit.distance, 2.5)
+            self.assertEqual(hit.position, xrack.Point3D(0.0, 0.0, 0.5))
+            self.assertEqual(hit.normal, xrack.Vector3D(0.0, 0.0, 1.0))
+            self.assertEqual(hit.row_index, 0)
+            self.assertEqual(ui.get("hits"), [hit])
+            ui.on("reflect-hits", lambda hits: hits)
+            self.assertEqual(ui.invoke("reflect-hits", [hit]), [hit])
+            self.assertEqual(ui.invoke("reflect-hits", []), [])
+            ui.set("saved-hits", [hit])
+            self.assertEqual(ui.get("saved-hits"), [hit])
+            ui.set("saved-hits", [])
+            self.assertEqual(ui.get("saved-hits"), [])
+            self.assertFalse(xrack.Hit3D.miss().valid)
             with self.assertRaises(TypeError):
                 ui.set("offset", 4.0)
             ui.reset("offset")

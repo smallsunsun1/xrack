@@ -1,0 +1,100 @@
+struct Emitter {
+    position: point3d, color: color, lifetime: float, size: float, end-size: float,
+    rate: float, burst-count: int, start-time: float, seed: int,
+    velocity: vector3d, velocity-spread: vector3d, gravity: vector3d,
+    intensity: float, layers: int, enabled: bool,
+}
+
+struct ParticleSceneObject {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color, visible: bool,
+    yaw: float, pitch: float, roll: float,
+}
+
+export component ParticleDemo inherits Window {
+    title: "XRack · 3D 粒子";
+    width: 620px;
+    height: 410px;
+    background: #182333;
+
+    in-out property <float> time: 0.65;
+    in-out property <float> emission: 100;
+    in-out property <float> burst-start: 0.2;
+    in-out property <int> burst-size: 60;
+    in-out property <int> layers: 3;
+    in-out property <bool> emitting: true;
+    in-out property <bool> cover: true;
+    in-out property <bool> weighted: true;
+    in-out property <bool> msaa: false;
+    in-out property <bool> hdr: false;
+    in-out property <bool> running: false;
+
+    clock := Timer {
+        interval: 16;
+        running: root.running;
+        triggered => { root.time += 0.016; }
+    }
+
+    property <[Emitter]> emitters: [
+        Emitter {
+            position: Point3D.new(-1.25, -1.2, -0.2), color: #ff952dc0,
+            lifetime: 1.6, size: 0.25, end-size: 0.04,
+            rate: root.emission, burst-count: 0, start-time: 0, seed: 47,
+            velocity: Vector3D.new(0.5, 4.8, 0), velocity-spread: Vector3D.new(1.3, 1.6, 0.8),
+            gravity: Vector3D.new(0, -6.5, 0),
+            intensity: 1.8, layers: 1, enabled: root.emitting,
+        },
+        Emitter {
+            position: Point3D.new(1.15, -0.03, 0.4), color: #31dfffc0,
+            lifetime: 1.4, size: 0.32, end-size: 0.08,
+            rate: 0, burst-count: root.burst-size, start-time: root.burst-start, seed: 99,
+            velocity: Vector3D.new(0, 0.9, 0), velocity-spread: Vector3D.new(3, 2.4, 1),
+            gravity: Vector3D.new(0, -2.1, 0),
+            intensity: 1.25, layers: 2, enabled: root.emitting,
+        },
+    ];
+
+    property <[ParticleSceneObject]> room: [
+        ParticleSceneObject {
+            id: "cover", mesh: "primitive:box", x: -1.4, y: -0.14, z: 1.25,
+            scale-x: 0.6, scale-y: 1.35, scale-z: 0.2, color: #52779b, visible: root.cover,
+            yaw: 0, pitch: 0, roll: 0,
+        },
+        ParticleSceneObject {
+            id: "floor", mesh: "primitive:box", x: 0, y: -1.35, z: 0,
+            scale-x: 6, scale-y: 0.15, scale-z: 3.25, color: #243b57, visible: root.cover,
+            yaw: 0, pitch: 0, roll: 0,
+        },
+    ];
+
+    SceneView3D {
+        width: 620px; height: 330px;
+        model: root.room;
+        camera-yaw: 8;
+        camera-pitch: 8;
+        camera-distance: 7.9;
+        layer-mask: root.layers;
+        scene-background: #101724;
+        particle-emitters: root.emitters;
+        particle-time: root.time;
+        cache-rendering: true;
+        order-independent-transparency: root.weighted;
+        multisampling: root.msaa;
+        scene-hdr: root.hdr;
+        bloom: root.hdr;
+        bloom-threshold: 0.7;
+    }
+
+    play := CheckBox { x: 14px; y: 367px; width: 82px; height: 36px; text: "播放"; checked <=> root.running; }
+    burst := Button {
+        x: 104px; y: 367px; width: 82px; height: 36px;
+        text: "爆发";
+        clicked => { root.burst-start = root.time - 0.18; }
+    }
+    cover-toggle := CheckBox { x: 197px; y: 367px; width: 86px; height: 36px; text: "遮挡"; checked <=> root.cover; }
+    weighting := CheckBox { x: 285px; y: 367px; width: 108px; height: 36px; text: "加权透明"; checked <=> root.weighted; }
+    hdr-toggle := CheckBox { x: 395px; y: 367px; width: 80px; height: 36px; text: "HDR"; checked <=> root.hdr; }
+    msaa-toggle := CheckBox { x: 478px; y: 367px; width: 128px; height: 36px; text: "4× MSAA"; checked <=> root.msaa; }
+    Label { x: 17px; y: 330px; width: 64px; height: 36px; text: "时间"; }
+    timeline := Slider { x: 78px; y: 330px; width: 528px; height: 36px; minimum: 0; maximum: 4; value <=> root.time; }
+}

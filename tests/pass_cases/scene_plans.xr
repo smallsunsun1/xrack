@@ -5,6 +5,52 @@
 // CHECK-DAG: "xr.state_set"{{.*}}case_index = 1
 // CHECK-DAG: "xr.state_timing"{{.*}}case_index = 1{{.*}}direction = "in"
 // CHECK-DAG: "xr.bind"{{.*}}name = "color"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "imported-lights"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "reflection-probes"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist
+// CHECK-DAG: "xr.bind"{{.*}}name = "multisampling"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "progressive-aa"{{.*}}xr.update_effect = "paint"{{.*}}!xr.int
+// CHECK-DAG: "xr.bind"{{.*}}name = "temporal-aa"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "temporal-aa-mode"{{.*}}xr.update_effect = "paint"{{.*}}!xr.string
+// CHECK-DAG: "xr.bind"{{.*}}name = "temporal-aa-strength"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "screen-space-reflections"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "ssr-steps"{{.*}}xr.update_effect = "paint"{{.*}}!xr.int
+// CHECK-DAG: "xr.bind"{{.*}}name = "ssr-thickness"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "screen-space-global-illumination"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "ssgi-rays"{{.*}}xr.update_effect = "paint"{{.*}}!xr.int
+// CHECK-DAG: "xr.bind"{{.*}}name = "ssgi-radius"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "supersampling"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "texture-width"{{.*}}xr.update_effect = "paint"{{.*}}!xr.int
+// CHECK-DAG: "xr.bind"{{.*}}name = "texture-height"{{.*}}xr.update_effect = "paint"{{.*}}!xr.int
+// CHECK-DAG: "xr.bind"{{.*}}name = "render-scale"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "layer-mask"{{.*}}xr.update_effect = "paint"{{.*}}!xr.int
+// CHECK-DAG: "xr.bind"{{.*}}name = "cache-rendering"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "specular-aa"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "order-independent-transparency"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "ambient-occlusion"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "ao-strength"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "ao-distance"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "ao-bias"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-hdr"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "bloom"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "bloom-strength"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "bloom-threshold"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "bloom-levels"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "depth-of-field"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "dof-blur-radius"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "dof-focus-distance"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "dof-focus-range"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-tone-map"{{.*}}xr.update_effect = "paint"{{.*}}!xr.scenetonemap
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-white-point"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-brightness"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-contrast"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-saturation"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-lut"{{.*}}xr.update_effect = "paint"{{.*}}!xr.image
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-lut-size"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-lut-strength"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-color"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-near"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-far"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "fog-density"{{.*}}xr.update_effect = "paint"
 // CHECK-DAG: xr.static_z_order = array<i64: 1, 0>
 // CHECK-DAG: xr.row_scene_cache = "indexed"
 
@@ -13,10 +59,13 @@ component Cell inherits Rectangle {
     Text { text: root.caption; }
 }
 
+struct Probe3D { source: string, position: point3d, box-size: vector3d }
+
 export component Plans inherits Window {
     in property <bool> compact: false;
     in-out property <color> ink: #ebedf0;
     in property <[string]> items: ["one", "two"];
+    in property <[Probe3D]> probes: [];
 
     states [
         dead when false: { panel.width: 25px; }
@@ -35,5 +84,53 @@ export component Plans inherits Window {
     }
     ListView {
         for item[index] in root.items : Cell { caption: item + index; }
+    }
+    SceneView3D {
+        reflection-probes: root.probes;
+        imported-lights: root.compact;
+        multisampling: root.compact;
+        progressive-aa: root.compact ? 4 : 0;
+        temporal-aa: root.compact;
+        temporal-aa-mode: root.compact ? "motion-vectors" : "blend";
+        temporal-aa-strength: root.compact ? 0.3 : 0.2;
+        screen-space-reflections: root.compact;
+        ssr-steps: root.compact ? 96 : 64;
+        ssr-thickness: root.compact ? 0.2 : 0.1;
+        screen-space-global-illumination: root.compact;
+        ssgi-rays: root.compact ? 12 : 8;
+        ssgi-radius: root.compact ? 3.0 : 2.0;
+        supersampling: root.compact ? 1.5 : 1;
+        texture-width: root.compact ? 256 : 0;
+        texture-height: root.compact ? 192 : 0;
+        render-scale: root.compact ? 0.5 : 1.0;
+        layer-mask: root.compact ? 2 : 1;
+        cache-rendering: root.compact;
+        specular-aa: root.compact;
+        order-independent-transparency: root.compact;
+        ambient-occlusion: root.compact;
+        ao-strength: 0.8;
+        ao-distance: 1.35;
+        ao-bias: 0.025;
+        scene-hdr: true;
+        bloom: root.compact;
+        bloom-strength: 0.75;
+        bloom-threshold: 1;
+        bloom-levels: 5;
+        depth-of-field: root.compact;
+        dof-blur-radius: 24px;
+        dof-focus-distance: 12;
+        dof-focus-range: 0.8;
+        scene-tone-map: SceneToneMap.hejl-dawson;
+        scene-white-point: 11.2;
+        scene-brightness: 1;
+        scene-contrast: 1;
+        scene-saturation: 1;
+        scene-lut: @image-url("");
+        scene-lut-size: 16;
+        scene-lut-strength: 0.75;
+        fog-color: root.ink;
+        fog-near: 8;
+        fog-far: 28;
+        fog-density: 0.65;
     }
 }

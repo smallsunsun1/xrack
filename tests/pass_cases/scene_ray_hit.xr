@@ -1,0 +1,21 @@
+// RAW: "xr.geometry_function"{{.*}}value = "vector-3d"
+// RAW: "xr.geometry_function"{{.*}}value = "ray-hit-3d"
+// RAW: "xr.hit3d_field"{{.*}}value = "normal"
+
+// CHECK: "xr.literal"() <{value = "0 0 -2"}> : () -> !xr.vector3d
+// CHECK: "xr.geometry_function"{{.*}}value = "ray-hit-3d"{{.*}} -> !xr.hit3d
+// CHECK: "xr.hit3d_field"{{.*}}value = "normal"{{.*}} -> !xr.vector3d
+// CHECK-NOT: value = "vector-3d"
+
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color,
+}
+
+export component SurfaceQuery inherits Window {
+    in-out property <[Actor]> scene: [];
+    out property <hit3d> hit: Scene3D.ray-hit(
+        root.scene, Point3D.new(0, 0, 8), Vector3D.new(0, 0, -2), 40);
+    out property <vector3d> normal: root.hit.normal;
+}

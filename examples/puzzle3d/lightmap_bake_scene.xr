@@ -1,0 +1,66 @@
+export struct BakeActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    casts-shadow: bool,
+    lightmap: image, lightmap-mode: string, lightmap-intensity: float,
+    lightmap-u: float, lightmap-v: float, lightmap-width: float, lightmap-height: float,
+}
+
+export struct BakeLamp {
+    kind: string, x: float, y: float, z: float,
+    yaw: float, elevation: float, intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float,
+}
+
+export global BakeRoom {
+    property <image> empty;
+    property <BakeActor> defaults: BakeActor {
+        id: "", mesh: "primitive:box",
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff, casts-shadow: true,
+        lightmap: root.empty, lightmap-mode: "diffuse", lightmap-intensity: 1,
+        lightmap-u: 0, lightmap-v: 0, lightmap-width: 1, lightmap-height: 1,
+    };
+    out property <BakeActor> plate: BakeActor {
+        id: "plate", mesh: @mesh-url("models/lightmap-receiver.gltf"),
+        scale-x: 3.4, scale-y: 2.7,
+        ..root.defaults
+    };
+    out property <BakeActor> figure: BakeActor {
+        id: "figure", mesh: @mesh-url("models/lod-surface.gltf", lightmap-uv, auto-lod),
+        x: 2.24, y: -0.1, z: -0.08, scale-x: 0.57, scale-y: 0.77, scale-z: 0.57,
+        yaw: 30, color: #dde8fb,
+        ..root.defaults
+    };
+    out property <BakeActor> sphere: BakeActor {
+        id: "sphere", mesh: "primitive:sphere", x: -0.28, y: 0.19, z: 0.76,
+        scale-x: 0.76, scale-y: 0.76, scale-z: 0.76, color: #f5d0a8,
+        ..root.defaults
+    };
+    out property <BakeActor> luminous: BakeActor {
+        id: "red", mesh: @mesh-url("models/ssgi-emitter.gltf"),
+        x: -1.7, y: 0.02, z: 0.5, yaw: 90,
+        scale-x: 1.0, scale-y: 2.2, color: #ff4c28, casts-shadow: false,
+        ..root.defaults
+    };
+    out property <[BakeLamp]> lights: [
+        BakeLamp { kind: "point", x: -0.62, y: 0.92, z: 1.6,
+            yaw: 0, elevation: 0, intensity: 9.4, color: #ffe2bd,
+            range: 9, inner-angle: 0, outer-angle: 45 },
+    ];
+}
+
+export component LightmapBakeSource inherits Window {
+    title: "XRack · 光照烘焙源场景";
+    width: 600px; height: 394px;
+    source := SceneView3D {
+        width: 600px; height: 340px;
+        camera-yaw: 20; camera-pitch: 12; camera-distance: 8.4;
+        scene-background: #172638;
+        ambient-intensity: 0.17; shadows: true;
+        model: [BakeRoom.plate, BakeRoom.sphere, BakeRoom.luminous, BakeRoom.figure];
+        lights: BakeRoom.lights;
+    }
+}

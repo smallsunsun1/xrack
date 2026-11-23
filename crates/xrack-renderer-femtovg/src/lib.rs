@@ -1,11 +1,13 @@
 //! wgpu-backed 2D renderer. No windowing dependency and no compiler/MLIR dependency.
 #[cfg(target_os = "android")]
 mod android_emoji;
+mod cell_glyphs;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod color_glyphs;
 mod controls;
 mod display_list;
 mod entry;
+mod glyph_masks;
 mod image;
 mod image_colorize;
 mod image_coverage;
@@ -20,6 +22,9 @@ mod range;
 mod rectangle;
 mod retained_geometry;
 mod retained_layers;
+mod scene3d;
+pub use scene3d::SceneDrawStats;
+mod scroll_images;
 mod shader_effect;
 mod shadow;
 mod styled_ink;
@@ -79,10 +84,26 @@ struct PaintFrame<'a> {
     transitions: Option<&'a StackTransitions>,
     indicator_phase: Option<f32>,
     theme: Palette,
-    cleared_window: Option<&'a Node>,
+    cleared_background: Option<&'a ClearBackground<'a>>,
     /// Complete paint groups to replay, bounded in physical pixels.
     damage: Option<DamageRegions>,
     prepared_layout: Option<&'a Rc<LayoutNode>>,
+}
+
+#[derive(Clone, Copy)]
+struct ClearBackground<'a> {
+    color: UiColor,
+    root: &'a Node,
+    surface: Option<&'a Node>,
+}
+
+impl ClearBackground<'_> {
+    fn covers(&self, node: &Node) -> bool {
+        std::ptr::eq(self.root, node)
+            || self
+                .surface
+                .is_some_and(|surface| std::ptr::eq(surface, node))
+    }
 }
 
 fn color(color: UiColor) -> Color {
@@ -186,14 +207,70 @@ fn window_clear_background(
     scene.color("background").filter(|background| {
         background.0 & 0xff == 0xff
             && scene.kind == "Window"
-            && scene.opacity() == 1.0
-            && layout.visible
-            && layout.bounds == viewport
-            && layout.clip.intersect(layout.bounds) == viewport
-            && pixel_aligned(viewport, scale)
-            && layout.local_transform().is_identity()
-            && layout.table_pane_clip().is_none()
-            && corner_radii(scene, layout.bounds) == [0.0; 4]
+            && covers_frame(scene, layout, viewport, scale)
+    })
+}
+
+fn covers_frame(node: &Node, layout: &LayoutNode, viewport: Rect, scale: f32) -> bool {
+    node.opacity() == 1.0
+        && layout.visible
+        && layout.bounds == viewport
+        && layout.clip.intersect(layout.bounds) == viewport
+        && pixel_aligned(viewport, scale)
+        && layout.local_transform().is_identity()
+        && layout.table_pane_clip().is_none()
+        && corner_radii(node, layout.bounds) == [0.0; 4]
+}
+
+fn table_frame_background<'a>(
+    scene: &'a Node,
+    layout: &'a LayoutNode,
+    viewport: Rect,
+    frame: PaintFrame<'_>,
+) -> Option<ClearBackground<'a>> {
+    // A plain Window contributes only its own background before its first
+    // visible child. A full opaque table can supply both background fills.
+    let (table, item) = if scene.kind == "Window" {
+        let (_, child, item) = layout
+            .children_in_paint_order(scene)
+            .find(|(_, _, item)| item.visible)?;
+        if child.kind != "TableView"
+            || scene.application_window
+            || scene.is_item_delegate()
+            || layout.table.is_some()
+            || !DisplayList::plain_window(scene)
+            || !covers_frame(scene, layout, viewport, frame.scale)
+            || layout.has_ancestor_clip_chain()
+        {
+            return None;
+        }
+        (child, item)
+    } else {
+        (scene, layout)
+    };
+    if table.kind != "TableView"
+        || table.is_item_delegate()
+        || item.has_ancestor_clip_chain()
+        || !covers_frame(table, item, viewport, frame.scale)
+        || shadow::OuterShadow::for_node(
+            table,
+            item.bounds,
+            frame.scale,
+            frame.theme.role(Role::Border),
+        )
+        .is_some()
+    {
+        return None;
+    }
+    let background = match table.properties.get("background") {
+        Some(Value::Color(value) | Value::Brush(Brush::Solid(value))) => *value,
+        None => frame.theme.role(Role::Surface),
+        Some(_) => return None,
+    };
+    (background.0 & 0xff == 0xff).then_some(ClearBackground {
+        color: background,
+        root: scene,
+        surface: (!std::ptr::eq(table, scene)).then_some(table),
     })
 }
 
@@ -210,16 +287,20 @@ pub struct Renderer {
     canvas: Canvas<WGPURenderer>,
     canvas_font_context: Rc<()>,
     images: image::Images,
+    scroll_images: scroll_images::ScrollImages,
     retained_layers: retained_layers::RetainedLayers,
     layer_compositor: Option<layer_compositor::LayerCompositor>,
     cached_layer_compositing: bool,
     rectangle_batches: rectangle::RectangleBatches,
     geometry_cache: retained_geometry::GeometryCache,
+    glyph_masks: glyph_masks::GlyphMasks,
     render_scene: xrack_runtime::SceneIndex,
     scene_generation: u64,
     inspect_scene: bool,
     scene_changes: xrack_runtime::SceneChanges,
     transient_textures: transient_textures::TransientTextures,
+    scene3d: scene3d::SceneRenderer,
+    viewport_textures: scene3d::retained_view::ViewportTextures,
     inline_target: Option<wgpu::Texture>,
     window_damage: window_damage::WindowDamageState,
     geometry_row: Option<xrack_runtime::RowKey>,
@@ -266,6 +347,17 @@ impl RenderDevice {
             .map_err(|e| format!("no compatible GPU adapter: {e}"))?;
         let supported_limits = adapter.limits();
         let required_limits = wgpu::Limits::default().using_resolution(supported_limits.clone());
+        let features = adapter.features();
+        let scroll_immediates = features.contains(wgpu::Features::IMMEDIATES)
+            && supported_limits.max_immediate_size >= layer_compositor::IMAGE_MOTION_BYTES;
+        let required_limits = wgpu::Limits {
+            max_immediate_size: if scroll_immediates {
+                layer_compositor::IMAGE_MOTION_BYTES
+            } else {
+                0
+            },
+            ..required_limits
+        };
         // The iOS Simulator advertises one fewer varyings slot than the WebGPU default.
         #[cfg(target_os = "ios")]
         let required_limits = wgpu::Limits {
@@ -291,11 +383,22 @@ impl RenderDevice {
             }
             None => wgpu::Trace::Off,
         };
+        let info = adapter.get_info();
+        let mut required_features = if info.backend == wgpu::Backend::Metal
+            && info.device_type == wgpu::DeviceType::IntegratedGpu
+        {
+            features & wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+        } else {
+            wgpu::Features::empty()
+        };
+        if scroll_immediates {
+            required_features |= wgpu::Features::IMMEDIATES;
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 trace,
                 label: Some("XRack"),
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits,
                 ..Default::default()
             })
@@ -353,7 +456,9 @@ impl Renderer {
             queue,
             canvas,
             canvas_font_context: text.context_key().clone(),
+            glyph_masks: Default::default(),
             images: image::Images::default(),
+            scroll_images: Default::default(),
             retained_layers: Default::default(),
             layer_compositor: None,
             cached_layer_compositing: true,
@@ -362,6 +467,8 @@ impl Renderer {
                 std::env::var_os("XRACK_RETAINED_GEOMETRY").is_some_and(|value| value == "1"),
             ),
             transient_textures: Default::default(),
+            scene3d: Default::default(),
+            viewport_textures: Default::default(),
             render_scene: Default::default(),
             scene_generation: 0,
             inspect_scene: false,
@@ -497,6 +604,41 @@ impl Renderer {
         self.transient_textures.reuses
     }
 
+    /// Cumulative GPU uploads of resolved glTF joint palettes.
+    pub fn scene_skin_uploads(&self) -> u64 {
+        self.scene3d.skin_uploads()
+    }
+
+    /// Number of distinct glTF morph weight sets uploaded by the 3D renderer.
+    pub fn scene_morph_uploads(&self) -> u64 {
+        self.scene3d.morph_uploads()
+    }
+
+    /// Cumulative uploads of imported 3D mesh vertex buffers.
+    pub fn scene_mesh_uploads(&self) -> u64 {
+        self.scene3d.mesh_uploads()
+    }
+
+    /// Cumulative uploads of transformed mesh instances for SceneView3D.
+    pub fn scene_instance_uploads(&self) -> u64 {
+        self.scene3d.instance_uploads()
+    }
+
+    /// Color submissions and camera-frustum rejections since renderer creation.
+    pub fn scene_draw_stats(&self) -> SceneDrawStats {
+        self.scene3d.stats
+    }
+
+    /// Cumulative cubemap uploads for SceneView3D environment probes.
+    pub fn scene_environment_uploads(&self) -> u64 {
+        self.scene3d.environment_uploads()
+    }
+
+    /// Cumulative depth passes used to update SceneView3D shadow maps.
+    pub fn scene_shadow_passes(&self) -> u64 {
+        self.scene3d.shadow_passes()
+    }
+
     #[doc(hidden)]
     pub fn set_scene_observation(&mut self, generation: u64, enabled: bool) {
         self.scene_generation = generation;
@@ -537,6 +679,12 @@ impl Renderer {
     #[doc(hidden)]
     pub fn set_fractional_rounded_tile_retention_enabled(&mut self, enabled: bool) {
         self.rectangle_batches.reset_fractional_tiles_each_frame = !enabled;
+    }
+
+    /// Compare demand-only and batched capsule atlas updates in benchmarks.
+    #[doc(hidden)]
+    pub fn set_capsule_warmup_enabled(&mut self, enabled: bool) {
+        self.rectangle_batches.capsule_warmup_disabled = !enabled;
     }
 
     #[doc(hidden)]
@@ -630,7 +778,7 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions: None,
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
-                cleared_window: None,
+                cleared_background: None,
                 damage: None,
                 prepared_layout: None,
             },
@@ -683,7 +831,7 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions: Some(transitions),
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
-                cleared_window: None,
+                cleared_background: None,
                 damage: None,
                 prepared_layout: None,
             },
@@ -749,7 +897,7 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions: Some(transitions),
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
-                cleared_window: None,
+                cleared_background: None,
                 damage: None,
                 prepared_layout,
             },
@@ -788,9 +936,15 @@ impl Renderer {
             && !frame.transitions.is_some_and(StackTransitions::is_active))
         .then(|| target.clone());
         let result = self.record_frame(scene, layout, target, frame, transfer);
+        self.viewport_textures.finish_frame(result.is_ok());
+        self.scene3d.finish_frame(result.is_ok());
         self.inline_target = None;
         if result.is_err() {
             self.custom_encoder = None;
+            self.scene3d.discard_recorded_passes();
+            if let Some(compositor) = &mut self.layer_compositor {
+                compositor.discard_pending_instances();
+            }
             self.retained_layers.reset_canvas();
             self.canvas_font_context = Rc::new(());
         }
@@ -823,15 +977,20 @@ impl Renderer {
             )
             .map_err(|error| error.to_string())?;
             self.canvas_font_context = self.text.context_key().clone();
+            self.glyph_masks = Default::default();
             self.images = image::Images::default();
+            self.scroll_images = Default::default();
             self.retained_layers.reset_canvas();
         }
+        self.glyph_masks.begin_frame();
         self.rectangle_batches.begin_frame(canvas_changed);
         self.geometry_cache.begin_frame();
         if self.geometry_cache.enabled || self.inspect_scene {
             self.scene_changes = self.render_scene.synchronize(scene, self.scene_generation);
         }
         self.transient_textures.begin_frame();
+        self.viewport_textures.begin_frame();
+        self.scene3d.begin_frame();
         self.custom_encoder = None;
         #[cfg(any(target_os = "android", target_os = "ios"))]
         self.text.begin_color_glyph_frame(canvas_changed);
@@ -847,24 +1006,66 @@ impl Renderer {
             size.width as f32 / scale,
             size.height as f32 / scale,
         );
-        let clear_background = window_clear_background(scene, layout, scrim_bounds, scale);
-        let cached_layers = if self.cached_layer_compositing
+        let window_background = window_clear_background(scene, layout, scrim_bounds, scale);
+        self.images.begin_frame();
+        self.scroll_images.begin_frame();
+        let mut live_paints = Vec::new();
+        let composed = if self.cached_layer_compositing
             && self.display_batching
             && self.inline_target.is_some()
             && layer_compositor::supports_target(target)
-            && let Some(background) = clear_background
-            && let Some(layers) = DisplayList::cached_layers(self, scene, layout, frame)
+            && let Some(background) = window_background
         {
-            self.retain_composited_layers(&layers);
-            self.encode_cached_layers(target, background, scale, layers);
-            true
+            if let Some(composition) =
+                DisplayList::cached_layers(self, scene, layout, frame, background)
+            {
+                self.retain_composited_layers(&composition.layers);
+                let encoded = self.encode_cached_layers(
+                    target,
+                    background,
+                    scale,
+                    composition.layers,
+                    composition.scrolls,
+                )?;
+                self.needs_redraw |= encoded && composition.animating;
+                if encoded {
+                    live_paints = composition.live_paints;
+                }
+                encoded
+            } else if let Some(images) =
+                DisplayList::window_image_quads(self, scene, layout, scale)?
+            {
+                self.encode_window_image_quads(target, background, &images)?
+            } else {
+                false
+            }
         } else {
             false
         };
         let mut canvas_started = false;
-        if !cached_layers {
+        if self.display_batching && self.glyph_masks.has_pending() {
             self.start_frame_canvas(size, scale, &mut canvas_started);
-            let clear = color(clear_background.unwrap_or(theme.window));
+            // Record the atlas writes before the draws that sample them.
+            self.glyph_masks.prepare(&mut self.canvas);
+        }
+        if !composed {
+            let cleared_background = self
+                .display_batching
+                .then(|| table_frame_background(scene, layout, scrim_bounds, frame))
+                .flatten()
+                .or_else(|| {
+                    window_background.map(|color| ClearBackground {
+                        color,
+                        root: scene,
+                        surface: None,
+                    })
+                });
+            self.start_frame_canvas(size, scale, &mut canvas_started);
+            let clear = color(
+                cleared_background
+                    .as_ref()
+                    .map_or(theme.window, |background| background.color),
+            );
             if let Some(regions) = frame.damage {
                 for &DamageRect {
                     x,
@@ -878,14 +1079,17 @@ impl Renderer {
             } else {
                 self.canvas.clear_rect(0, 0, size.width, size.height, clear);
             }
+            if !is_window_overlay(scene.kind) {
+                let root_frame = PaintFrame {
+                    cleared_background: cleared_background.as_ref(),
+                    ..frame
+                };
+                self.paint(scene, layout, &mut Vec::new(), root_frame, false)?;
+            }
         }
-        self.images.begin_frame();
-        if !cached_layers && !is_window_overlay(scene.kind) {
-            let root_frame = PaintFrame {
-                cleared_window: clear_background.map(|_| scene),
-                ..frame
-            };
-            self.paint(scene, layout, &mut Vec::new(), root_frame, false)?;
+        for paint in live_paints {
+            self.start_frame_canvas(size, scale, &mut canvas_started);
+            paint.paint(self, frame)?;
         }
         for path in input.overlay_layers(layout) {
             let (Some(node), Some(item)) = (scene.at_path(path), layout.at_path(path)) else {
@@ -964,7 +1168,7 @@ impl Renderer {
                     theme,
                     transitions: None,
                     indicator_phase: frame.indicator_phase,
-                    cleared_window: None,
+                    cleared_background: None,
                     damage: None,
                     prepared_layout: None,
                 },
@@ -986,6 +1190,7 @@ impl Renderer {
             stroke.set_line_width(3.0);
             self.canvas.stroke_path(&outline, &stroke);
         }
+        self.rectangle_batches.warm_capsules(&self.queue);
         self.rectangle_batches.upload(&mut self.canvas)?;
         self.submit_canvas_with_transfer(target, transfer);
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -1235,6 +1440,10 @@ impl Renderer {
             self.canvas.clip_path(&mask, FillRule::NonZero);
         }
         let layer = opacity < 1.0;
+        let previous_mask_deferral = self.glyph_masks.defer_preparation;
+        // An isolated layer may suppress its draws. Pending masks should
+        // only become ready after their coverage has actually been recorded.
+        self.glyph_masks.defer_preparation |= layer;
         let previous_passthrough = self.retained_layers.vectors.opacity_passthrough;
         if layer
             && !self
@@ -1246,6 +1455,7 @@ impl Renderer {
             self.retained_layers.vectors.opacity_passthrough = true;
         }
         let result = draw(self);
+        self.glyph_masks.defer_preparation = previous_mask_deferral;
         self.retained_layers.vectors.opacity_passthrough = previous_passthrough;
         if layer {
             self.canvas.end_layer();
@@ -1590,8 +1800,8 @@ impl Renderer {
         let field = is_input || is_spin_box(node.kind) || node.kind == "ComboBox";
         let mut button_text_color = theme.text;
         let background = if frame
-            .cleared_window
-            .is_some_and(|window| std::ptr::eq(window, node))
+            .cleared_background
+            .is_some_and(|background| background.covers(node))
         {
             None
         } else if use_row_surface {
@@ -1829,6 +2039,8 @@ impl Renderer {
                 layout,
                 scale,
             })?;
+        } else if node.kind == "SceneView3D" {
+            self.paint_scene3d(node, bounds, path, scale)?;
         } else if node.kind == "CustomRender" {
             self.paint_custom(node, layout, path, scale)?;
         } else if node.kind == "ColorPlane" {
@@ -2239,7 +2451,7 @@ impl Renderer {
                         origin: Point { x, y },
                         text: shown_line(i),
                         paint: &paint,
-                        clip: None,
+                        cell_clip: None,
                     });
                 }
                 display.submit(self)
@@ -2357,7 +2569,7 @@ impl Renderer {
                 theme,
                 transitions: None,
                 indicator_phase: None,
-                cleared_window: None,
+                cleared_background: None,
                 damage: None,
                 prepared_layout: None,
             };
@@ -2463,6 +2675,17 @@ impl Renderer {
             && plain_canvas
             && node.kind == "TableRow"
             && self.text.text_scale() <= 1.0;
+        let batch_table_rows = batch_groups
+            && plain_canvas
+            && !cfg!(any(target_os = "android", target_os = "ios"))
+            && node.kind == "TableView"
+            && layout.table.is_some()
+            && layout.child_clip_shape().is_none()
+            && self.text.text_scale() <= 1.0
+            && frame.damage.is_none();
+        let resizing_row = batch_table_rows
+            .then(|| frame.input.table_resize_row(path))
+            .flatten();
         let row_enabled = layout.enabled;
         let cell_paint = std::cell::OnceCell::new();
         let batch_clip = if layout.allows_overflow() {
@@ -2491,6 +2714,19 @@ impl Renderer {
                 // paint barrier in the full frame.
                 display.submit(self)?;
                 continue;
+            }
+            if batch_table_rows
+                && layout.enabled == row_enabled
+                && (resizing_row.is_none() || resizing_row != node.row_key)
+            {
+                path.push(i);
+                let collected = display.try_append(|display| {
+                    self.collect_passive_table_row(node, layout, path, frame, &cell_paint, display)
+                });
+                path.pop();
+                if collected {
+                    continue;
+                }
             }
             if rounded_batch
                 && let Some(rectangle) = rectangle::Solid::from_node(node, layout, scale)
@@ -2533,10 +2769,10 @@ impl Renderer {
             }
             if plain_table_row && layout.enabled == row_enabled {
                 path.push(i);
-                let cell = self.display_table_cell(node, layout, path, frame, &cell_paint);
+                let collected =
+                    self.append_table_cell(node, layout, path, frame, &cell_paint, &mut display);
                 path.pop();
-                if let Some(cell) = cell {
-                    display.push(cell);
+                if collected {
                     continue;
                 }
             }
@@ -2563,14 +2799,72 @@ impl Renderer {
         display.submit(self)
     }
 
-    fn display_table_cell<'a>(
+    fn collect_passive_table_row<'a>(
+        &self,
+        item: &'a Node,
+        layout: &'a LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+        cell_paint: &'a std::cell::OnceCell<Paint>,
+        display: &mut DisplayList<'a>,
+    ) -> bool {
+        // Leave row chrome and custom delegates on the ordinary painter.
+        let [row] = item.children.as_slice() else {
+            return false;
+        };
+        let [row_layout] = layout.children.as_slice() else {
+            return false;
+        };
+        if item.kind != "ListRow"
+            || row.kind != "TableRow"
+            || item.boolean("selected", false)
+            || item.boolean("current", false)
+            || frame.input.is_hovered(path)
+            || !item
+                .properties
+                .keys()
+                .all(|key| matches!(*key, "selected" | "current" | "row-header-text"))
+            || !row.properties.keys().all(|key| *key == "row-header-text")
+            || !row_layout.visible
+            || row_layout.enabled != layout.enabled
+            || !layout.local_transform().is_identity()
+            || !row_layout.local_transform().is_identity()
+            || layout.table_pane_clip().is_some()
+            || row_layout.table_pane_clip().is_some()
+            || layout.has_ancestor_clip_chain()
+            || row_layout.has_ancestor_clip_chain()
+        {
+            return false;
+        }
+        path.push(0);
+        let collected = row_layout
+            .children_in_paint_order(row)
+            .all(|(index, cell, item)| {
+                if !item.visible || item.clip.width <= 0.0 || item.clip.height <= 0.0 {
+                    return true;
+                }
+                if item.enabled != layout.enabled {
+                    return false;
+                }
+                path.push(index);
+                let collected =
+                    self.append_table_cell(cell, item, path, frame, cell_paint, display);
+                path.pop();
+                collected
+            });
+        path.pop();
+        collected
+    }
+
+    fn append_table_cell<'a>(
         &self,
         node: &'a Node,
         layout: &LayoutNode,
         path: &[usize],
         frame: PaintFrame<'_>,
         row_paint: &'a std::cell::OnceCell<Paint>,
-    ) -> Option<Primitive<'a>> {
+        display: &mut DisplayList<'a>,
+    ) -> bool {
         if node.kind != "TableCell"
             || !node.children.is_empty()
             || !layout.local_transform().is_identity()
@@ -2587,23 +2881,44 @@ impl Renderer {
             || frame.input.editor_active(path)
             || frame.input.table_cell_editing(path)
         {
-            return None;
+            return false;
         }
-        let text = node.text("text").filter(|text| !text.is_empty())?;
+        let Some(text) = node.text("text").filter(|text| !text.is_empty()) else {
+            return false;
+        };
         let area = xrack_layout::text_editor_viewport(node, layout.bounds);
-        if area.width <= 0.0
-            || area.height <= 0.0
-            || area.intersect(layout.clip) != area
-            || !pixel_aligned(area, frame.scale)
-        {
-            return None;
+        let clip = area.intersect(layout.clip);
+        if !pixel_aligned(area, frame.scale) {
+            return false;
+        }
+        if clip.width <= 0.0 || clip.height <= 0.0 {
+            // A viewport can expose cell padding without exposing any text.
+            // An empty pixel-aligned scissor emits nothing and leaves the
+            // neighboring rows in the same glyph batch.
+            return pixel_aligned(layout.clip, frame.scale);
+        }
+        if !pixel_aligned(clip, frame.scale) {
+            return false;
         }
         let paint = row_paint.get_or_init(|| {
             let size = self.text.entry_font_size(node, layout.bounds);
             let tint = color(frame.theme.editor_foreground(node, false, layout.enabled));
             self.text.paint_node_at_size(node, size, tint, false)
         });
-        Some(Primitive::Text {
+        // Power-of-two scaling preserves the advances and their sum exactly.
+        // Measure at the glyph batch's size so both can use the same run.
+        let measurement_scale = if cfg!(xrack_femtovg_glyph_samples)
+            && !cfg!(any(target_os = "android", target_os = "ios"))
+            && text.len() <= 128
+            && matches!(frame.scale, 2.0 | 4.0)
+            && (1.0..=90.0).contains(&(paint.font_size() * frame.scale))
+            && paint.letter_spacing() == 0.0
+        {
+            cell_glyphs::measurement_scale(frame.scale)
+        } else {
+            1.0
+        };
+        display.push(Primitive::Text {
             origin: entry::passive_origin(
                 &self.text,
                 node,
@@ -2611,11 +2926,13 @@ impl Renderer {
                 text,
                 paint,
                 layout.layout_direction_override(),
+                measurement_scale,
             ),
             text,
             paint,
-            clip: Some(area),
-        })
+            cell_clip: Some(clip),
+        });
+        true
     }
 
     fn display_image<'a>(
@@ -2636,7 +2953,7 @@ impl Renderer {
         }
         let asset = node.image_asset("source")?;
         let aligned = image::quad_edges_are_pixel_aligned(bounds, transform);
-        let presentation = ImagePresentation::for_node(node, asset.size(), in_layout);
+        let presentation = ImagePresentation::for_whole_node(node, asset.size(), in_layout);
         let clip = (!aligned || visible != bounds).then_some(visible);
         let quad = if aligned
             && (visible == bounds || image::quad_edges_are_pixel_aligned(visible, transform))
@@ -3080,7 +3397,7 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions: Some(transitions),
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
-                cleared_window: None,
+                cleared_background: None,
                 damage: None,
                 prepared_layout: None,
             },
@@ -3108,7 +3425,7 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions: None,
                 indicator_phase: Some(indicator_phase(elapsed)),
-                cleared_window: None,
+                cleared_background: None,
                 damage: None,
                 prepared_layout: None,
             },
@@ -3161,7 +3478,7 @@ impl Renderer {
                 theme: self.palette(scene),
                 transitions,
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
-                cleared_window: None,
+                cleared_background: None,
                 damage: None,
                 prepared_layout: None,
             },
@@ -3289,12 +3606,14 @@ fn append_rect(path: &mut Path, bounds: Rect, [tl, tr, br, bl]: [f32; 4]) {
     );
 }
 
+const MAX_RENDER_PIXELS: u64 = 64_000_000;
+
 fn validate_extent(width: u32, height: u32, scale: f32, limit: u32) -> Result<(), String> {
     if width == 0
         || height == 0
         || width > limit
         || height > limit
-        || width as u64 * height as u64 > 64_000_000
+        || u64::from(width) * u64::from(height) > MAX_RENDER_PIXELS
         || !scale.is_finite()
         || scale <= 0.0
     {

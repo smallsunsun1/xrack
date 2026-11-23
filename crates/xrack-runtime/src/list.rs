@@ -1,9 +1,12 @@
-use crate::property::{ReadWatch, with_read_watch};
 use crate::{
     Date, ListSelectionKeys, Node, Orientation, Property, TableRows, Time, Value, VecModel,
 };
+use crate::{
+    model::RowKeyObserver,
+    property::{ReadWatch, with_read_watch},
+};
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell, RefMut},
     cmp::Ordering as Comparison,
     collections::HashMap,
     fmt,
@@ -800,6 +803,147 @@ pub fn try_render_standard_table_rows<T: Clone + PartialEq, E>(
     cell: impl Fn(&T, usize) -> String,
     editor: impl Fn(usize) -> Result<Option<TableCellEditor>, E>,
 ) -> Result<Vec<Node>, E> {
+    try_render_table_rows(
+        None,
+        rows,
+        range,
+        columns,
+        expected_stamp,
+        column_count,
+        header,
+        cell,
+        editor,
+    )
+}
+
+/// Retains the last visible rows of a standard table. Each instance belongs
+/// to one view whose header and cell accessors format only the source record.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct StandardTableRowCache(Rc<StandardTableCache>);
+
+#[derive(Default)]
+struct StandardTableCache {
+    projection: RefCell<StandardTableProjection>,
+    missed_invalidation: Cell<bool>,
+}
+
+#[derive(Default)]
+struct StandardTableProjection {
+    model: Option<(u64, Option<u64>)>,
+    _row_observer: Option<Rc<RowKeyObserver>>,
+    columns: TableColumnWindow,
+    visible: Vec<(usize, Option<TableCellEditor>)>,
+    rows: HashMap<RowKey, (Node, bool)>,
+}
+
+impl StandardTableRowCache {
+    fn prepare<T>(
+        &self,
+        model: &VecModel<T>,
+        columns: &TableColumnWindow,
+        visible: &[(usize, Option<TableCellEditor>)],
+    ) -> Option<RefMut<'_, StandardTableProjection>> {
+        let mut projection = self.0.projection.try_borrow_mut().ok()?;
+        let identity = Some(model.row_cache_identity());
+        let model_changed = projection.model != identity;
+        if model_changed {
+            let cache = Rc::downgrade(&self.0);
+            let observer: Rc<RowKeyObserver> = Rc::new(move |key| {
+                if let Some(cache) = cache.upgrade() {
+                    if let Ok(mut projection) = cache.projection.try_borrow_mut() {
+                        projection.rows.remove(&key);
+                    } else {
+                        cache.missed_invalidation.set(true);
+                    }
+                }
+            });
+            model.observe_row_keys(&observer);
+            projection._row_observer = Some(observer);
+            projection.model = identity;
+        }
+        let missed_invalidation = self.0.missed_invalidation.replace(false);
+        if model_changed
+            || missed_invalidation
+            || projection.columns != *columns
+            || projection.visible != visible
+        {
+            projection.columns = columns.clone();
+            projection.visible.clear();
+            projection.visible.extend_from_slice(visible);
+            projection.rows.clear();
+            // A moving column window can invalidate every frame. Admit rows
+            // only after the inputs repeat.
+            return None;
+        }
+        for (_, used) in projection.rows.values_mut() {
+            *used = false;
+        }
+        Some(projection)
+    }
+
+    #[doc(hidden)]
+    pub fn render<T: Clone + PartialEq>(
+        &self,
+        rows: impl FnOnce() -> TableRows<VecModel<T>>,
+        range: Range<usize>,
+        columns: &TableColumnWindow,
+        expected_stamp: Option<(u64, u64)>,
+        column_count: usize,
+        header: impl Fn(&T) -> Option<String>,
+        cell: impl Fn(&T, usize) -> String,
+        editor: impl Fn(usize) -> Option<TableCellEditor>,
+    ) -> Vec<Node> {
+        self.try_render(
+            || Ok::<_, std::convert::Infallible>(rows()),
+            range,
+            columns,
+            expected_stamp,
+            column_count,
+            header,
+            cell,
+            |column| Ok(editor(column)),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn try_render<T: Clone + PartialEq, E>(
+        &self,
+        rows: impl FnOnce() -> Result<TableRows<VecModel<T>>, E>,
+        range: Range<usize>,
+        columns: &TableColumnWindow,
+        expected_stamp: Option<(u64, u64)>,
+        column_count: usize,
+        header: impl Fn(&T) -> Option<String>,
+        cell: impl Fn(&T, usize) -> String,
+        editor: impl Fn(usize) -> Result<Option<TableCellEditor>, E>,
+    ) -> Result<Vec<Node>, E> {
+        try_render_table_rows(
+            Some(self),
+            rows,
+            range,
+            columns,
+            expected_stamp,
+            column_count,
+            header,
+            cell,
+            editor,
+        )
+    }
+}
+
+fn try_render_table_rows<T: Clone + PartialEq, E>(
+    cache: Option<&StandardTableRowCache>,
+    rows: impl FnOnce() -> Result<TableRows<VecModel<T>>, E>,
+    range: Range<usize>,
+    columns: &TableColumnWindow,
+    expected_stamp: Option<(u64, u64)>,
+    column_count: usize,
+    header: impl Fn(&T) -> Option<String>,
+    cell: impl Fn(&T, usize) -> String,
+    editor: impl Fn(usize) -> Result<Option<TableCellEditor>, E>,
+) -> Result<Vec<Node>, E> {
     crate::property::watch_reads(|reads| {
         let rows = rows()?;
         if expected_stamp.is_some_and(|stamp| stamp != rows.positions().stamp()) {
@@ -817,9 +961,21 @@ pub fn try_render_standard_table_rows<T: Clone + PartialEq, E>(
                 return Ok(Vec::new());
             }
         }
-        Ok(materialize_standard_table_rows(
-            &rows, range, columns, &visible, header, cell,
-        ))
+        let mut projection =
+            cache.and_then(|cache| cache.prepare(rows.source(), columns, &visible));
+        let nodes = materialize_standard_table_rows(
+            &rows,
+            range,
+            columns,
+            &visible,
+            header,
+            cell,
+            projection.as_deref_mut(),
+        );
+        if let Some(cache) = &mut projection {
+            cache.rows.retain(|_, (_, used)| *used && !reads.changed());
+        }
+        Ok(nodes)
     })
 }
 
@@ -830,6 +986,7 @@ fn materialize_standard_table_rows<T>(
     visible: &[(usize, Option<TableCellEditor>)],
     header: impl Fn(&T) -> Option<String>,
     cell: impl Fn(&T, usize) -> String,
+    mut cache: Option<&mut StandardTableProjection>,
 ) -> Vec<Node> {
     let model = rows.source();
     range
@@ -837,14 +994,22 @@ fn materialize_standard_table_rows<T>(
             let index = rows.positions().source_index(index)?;
             let key = model.row_key(index)?;
             model.project_row(index, |item| {
-                let mut row = projected_table_row(key, header(item));
-                row.table_column_window = columns.clone();
-                row.children.extend(
-                    visible
-                        .iter()
-                        .map(|&(column, editor)| projected_table_cell(cell(item, column), editor)),
-                );
-                row
+                let project =
+                    || {
+                        let mut row = projected_table_row(key, header(item));
+                        row.table_column_window = columns.clone();
+                        row.children.extend(visible.iter().map(|&(column, editor)| {
+                            projected_table_cell(cell(item, column), editor)
+                        }));
+                        row
+                    };
+                if let Some(cache) = cache.as_deref_mut() {
+                    let (row, used) = cache.rows.entry(key).or_insert_with(|| (project(), true));
+                    *used = true;
+                    row.clone()
+                } else {
+                    project()
+                }
             })
         })
         .collect()
@@ -1222,6 +1387,100 @@ mod tests {
         );
         assert!(view[1].child_at(1).is_none());
         assert_eq!(view[1].children.len(), 2);
+    }
+
+    #[test]
+    fn standard_table_reuses_visible_cells_and_invalidates_changed_inputs() {
+        let model = Rc::new(VecModel::from(["A", "B", "C"].map(str::to_owned).to_vec()));
+        let order = crate::TableRowOrder::default();
+        let cache = StandardTableRowCache::default();
+        let formatted = Cell::new(0);
+        let editable = Cell::new(true);
+        let render = |range, columns: &[usize]| {
+            cache.render(
+                || order.rows(model.clone()),
+                range,
+                &TableColumnWindow::from_indices(3, columns.to_vec()),
+                None,
+                3,
+                |_| None,
+                |item, column| {
+                    formatted.set(formatted.get() + 1);
+                    format!("{item}:{column}")
+                },
+                |_| editable.get().then_some(TableCellEditor::String),
+            )
+        };
+
+        render(0..2, &[0, 2]);
+        let mut first = render(0..2, &[0, 2]);
+        let original = first[1].children[0].clone();
+        first[1].children[0]
+            .properties
+            .insert("text", "display-only edit".to_owned().into());
+        let second = render(1..3, &[0, 2]);
+        assert_eq!(formatted.get(), 10);
+        assert_eq!(second[0].row_key, model.row_key(1));
+        assert!(original.shares_storage_with(&second[0].children[0]));
+        assert_eq!(second[0].children[0].text("text"), Some("B:0"));
+
+        assert!(model.set_row(1, "Updated".into()));
+        let edited = render(1..3, &[0, 2]);
+        assert_eq!(
+            edited[0].child_at(2).unwrap().text("text"),
+            Some("Updated:2")
+        );
+        assert!(edited[1].children[0].shares_storage_with(&second[1].children[0]));
+        assert_eq!(formatted.get(), 12);
+
+        assert!(model.set_row(0, "Offscreen".into()));
+        let unchanged = render(1..3, &[0, 2]);
+        assert!(unchanged[0].shares_storage_with(&edited[0]));
+        model.remove(0).unwrap();
+        let shifted = render(0..2, &[0, 2]);
+        assert!(shifted[0].shares_storage_with(&edited[0]));
+        assert_eq!(formatted.get(), 12);
+
+        editable.set(false);
+        let readonly = render(0..2, &[0, 2]);
+        assert_eq!(readonly[0].children[0].table_cell_editor, None);
+        assert_eq!(formatted.get(), 16);
+
+        let different_column = render(0..2, &[1]);
+        assert_eq!(
+            different_column[0].child_at(1).unwrap().text("text"),
+            Some("Updated:1")
+        );
+        assert!(different_column[0].child_at(0).is_none());
+        assert_eq!(formatted.get(), 18);
+    }
+
+    #[test]
+    fn standard_table_row_cache_distinguishes_snapshots_with_the_same_row_keys() {
+        let model = VecModel::from(vec!["Before".to_owned()]);
+        let before = Rc::new(model.filter_text("", |row| Some(row.as_str())));
+        assert!(model.set_row(0, "After".into()));
+        let after = Rc::new(model.filter_text("", |row| Some(row.as_str())));
+        assert_eq!(before.row_key(0), after.row_key(0));
+
+        let order = crate::TableRowOrder::default();
+        let cache = StandardTableRowCache::default();
+        let render = |snapshot: &Rc<VecModel<String>>| {
+            cache.render(
+                || order.rows(snapshot.clone()),
+                0..1,
+                &TableColumnWindow::default(),
+                None,
+                1,
+                |_| None,
+                |item, _| item.clone(),
+                |_| None,
+            )
+        };
+        render(&before);
+        assert_eq!(render(&before)[0].children[0].text("text"), Some("Before"));
+        assert_eq!(render(&after)[0].children[0].text("text"), Some("After"));
+        assert_eq!(render(&before)[0].children[0].text("text"), Some("Before"));
     }
 
     #[test]

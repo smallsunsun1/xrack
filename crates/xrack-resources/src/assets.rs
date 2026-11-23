@@ -1,27 +1,41 @@
 use crate::{
     EmbeddedImage, EmbeddedPath,
     animated_image::{MAX_DECODED_BYTES, MAX_FRAMES, encode_gif_frames},
+    mesh::MeshSource,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::Read,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use xrack_assets::{
-    ImageFormat, MAX_ASSET_BYTES, image_size, parse_path, validate_image_size, vector_bounds,
-    vector_segments,
+    ImageFormat, MAX_ASSET_BYTES, color_lut_size, image_size, parse_path, validate_image_size,
+    vector_bounds, vector_segments,
 };
 
 use xrack_mlir::{Module, OperationRef};
-use xrack_runtime::{Image, ImageAsset};
+use xrack_runtime::{
+    Image, ImageAsset,
+    scene3d::{
+        EnvironmentProbe, MeshAsset, MeshImportOptions, environment_resource_key, mesh_resource_key,
+    },
+};
 
 #[derive(Default)]
 pub struct ResolvedAssets {
     pub images: BTreeMap<String, EmbeddedImage>,
     pub fonts: Vec<Vec<u8>>,
     pub paths: BTreeMap<String, EmbeddedPath>,
+    pub scene: SceneAssets,
     pub inputs: BTreeSet<PathBuf>,
+}
+
+#[derive(Default)]
+pub struct SceneAssets {
+    pub meshes: BTreeMap<String, MeshAsset>,
+    pub environments: BTreeMap<String, Arc<EnvironmentProbe>>,
 }
 
 pub(super) fn walk<'m>(
@@ -47,6 +61,10 @@ pub fn resolve_assets(
     let (fonts, font_inputs) = resolve_fonts_at(module, &filename, base, declared.as_ref())?;
     assets.fonts = fonts;
     assets.inputs.extend(font_inputs);
+    let mut mesh_sources = BTreeMap::<(PathBuf, MeshSource), MeshAsset>::new();
+    let mut chart_sources = BTreeMap::<(PathBuf, MeshSource), MeshAsset>::new();
+    let mut lod_sources = BTreeMap::<((PathBuf, MeshSource), bool), MeshAsset>::new();
+    let mut lut_images = Vec::new();
     let mut visit = |op: OperationRef<'_>| {
         if op.name() == "xr.image_url" {
             let url = op.attr("value")?;
@@ -63,7 +81,89 @@ pub fn resolve_assets(
             })?;
             assets.inputs.insert(path);
             assets.images.insert(url.to_owned(), image);
+        } else if let Some(options) = MeshImportOptions::from_operation(op.name()) {
+            let url = op.attr("value")?;
+            let key = mesh_resource_key(url, options);
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                assets.scene.meshes.entry(key)
+            {
+                let error_at_mesh = |error: String| {
+                    let span = op.span();
+                    let source = op.source_file().unwrap_or(&filename);
+                    format!(
+                        "{source}:{}:{}: mesh {url:?}: {error}",
+                        span.line, span.column
+                    )
+                };
+                let resolved =
+                    MeshSource::resolve(base, url, declared.as_ref()).map_err(error_at_mesh)?;
+                let kind = resolved.1;
+                let mesh = match mesh_sources.entry(resolved.clone()) {
+                    std::collections::btree_map::Entry::Occupied(mesh) => mesh.get().clone(),
+                    std::collections::btree_map::Entry::Vacant(source) => {
+                        let (mesh, inputs) = kind
+                            .load(&source.key().0, declared.as_ref())
+                            .map_err(error_at_mesh)?;
+                        assets.inputs.extend(inputs);
+                        source.insert(mesh).clone()
+                    }
+                };
+                let mesh = if options.lightmap_uv {
+                    match chart_sources.entry(resolved.clone()) {
+                        std::collections::btree_map::Entry::Occupied(chart) => chart.get().clone(),
+                        std::collections::btree_map::Entry::Vacant(chart) => {
+                            let generated =
+                                kind.generate_lightmap_uv(mesh).map_err(error_at_mesh)?;
+                            chart.insert(generated).clone()
+                        }
+                    }
+                } else {
+                    mesh
+                };
+                let mesh = if options.automatic_lod {
+                    lod_sources
+                        .entry((resolved, options.lightmap_uv))
+                        .or_insert_with(|| crate::mesh_lod::generate(mesh))
+                        .clone()
+                } else {
+                    mesh
+                };
+                entry.insert(mesh);
+            }
+        } else if op.name() == "xr.environment_url" {
+            let url = op.attr("value")?;
+            let key = environment_resource_key(url);
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                assets.scene.environments.entry(key)
+            {
+                let resolve = || {
+                    let path = asset_path(
+                        base,
+                        local_path(url)?,
+                        declared.as_ref(),
+                        "environment probe",
+                    )?;
+                    let probe = crate::environment::load(&path)?;
+                    Ok::<_, String>((path, probe))
+                };
+                let (path, probe) = resolve().map_err(|error| {
+                    let span = op.span();
+                    let source = op.source_file().unwrap_or(&filename);
+                    format!(
+                        "{source}:{}:{}: environment {url:?}: {error}",
+                        span.line, span.column
+                    )
+                })?;
+                assets.inputs.insert(path);
+                entry.insert(probe);
+            }
         } else {
+            if op.name() == "xr.element"
+                && op.attribute("kind") == Some("SceneView3D")
+                && let Some(check) = static_lut_check(op, &filename)?
+            {
+                lut_images.push(check);
+            }
             collect_path(
                 op,
                 &filename,
@@ -77,7 +177,93 @@ pub fn resolve_assets(
     for op in module.operations() {
         walk(op, &mut visit)?;
     }
+    for (url, size, location) in lut_images {
+        match assets.images.get(url.as_str()) {
+            Some(EmbeddedImage::Static {
+                format: ImageFormat::Png,
+                size: dimensions,
+                ..
+            }) if color_lut_size(*dimensions, size).is_some() => {}
+            Some(EmbeddedImage::Static {
+                format: ImageFormat::Png,
+                size: [width, height],
+                ..
+            }) => {
+                return Err(format!(
+                    "{location}: scene-lut {url:?} has dimensions {width}×{height}; expected a horizontal N²×N strip (2–64), matching scene-lut-size {size} (0 infers the size)"
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "{location}: scene-lut {url:?} requires a static PNG"
+                ));
+            }
+        }
+    }
     Ok(assets)
+}
+
+fn static_lut_check<'m>(
+    element: OperationRef<'m>,
+    filename: &str,
+) -> Result<Option<(String, i64, String)>, String> {
+    let binding = |name| {
+        element
+            .children()
+            .find(|op| op.name() == "xr.bind" && op.attribute("name") == Some(name))
+    };
+    let definition =
+        |bind: OperationRef<'m>| bind.operand(0).and_then(|value| value.defining_operation());
+    let Some(image) = binding("scene-lut").and_then(definition) else {
+        return Ok(None);
+    };
+    let span = image.span();
+    let source = image.source_file().unwrap_or(filename);
+    let location = || format!("{source}:{}:{}", span.line, span.column);
+    if image.name() == "xr.nine_slice" {
+        return Err(format!(
+            "{}: scene-lut requires an unsliced PNG",
+            location()
+        ));
+    }
+    if image.name() != "xr.image_url" {
+        return Ok(None);
+    }
+    let url = image.attr("value")?;
+    if url.is_empty() {
+        return Ok(None);
+    }
+    let size = binding("scene-lut-size")
+        .and_then(definition)
+        .filter(|op| op.name() == "xr.literal")
+        .and_then(|op| op.attribute("value"))
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0);
+    Ok(Some((url.into(), size, location())))
+}
+
+/// Check that the caller resolved all 3D assets referenced by the module.
+pub fn require_scene_assets(module: &Module, scene: &SceneAssets) -> Result<(), String> {
+    for op in module.operations() {
+        walk(op, &mut |op| {
+            if let Some(options) = MeshImportOptions::from_operation(op.name()) {
+                let url = op.attr("value")?;
+                if !scene.meshes.contains_key(&mesh_resource_key(url, options)) {
+                    return Err(format!("unresolved mesh {url:?}"));
+                }
+            } else if op.name() == "xr.environment_url" {
+                let url = op.attr("value")?;
+                if !scene
+                    .environments
+                    .contains_key(&environment_resource_key(url))
+                {
+                    return Err(format!("unresolved environment {url:?}"));
+                }
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// Validate literal SVG commands and collect the plans selected by MLIR.

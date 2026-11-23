@@ -1,0 +1,81 @@
+struct SpriteEmitter {
+    position: point3d, color: color, size: float, lifetime: float,
+    burst-count: int, sprite: image, sprite-frames: int,
+    sprite-duration: float, sprite-duration-variation: float,
+    sprite-playback: string, sprite-interpolate: bool, sprite-random-start: bool,
+    velocity: vector3d, velocity-spread: vector3d, gravity: vector3d,
+    start-time: float, seed: int,
+}
+
+export component SpriteParticlesDemo inherits Window {
+    title: "XRack · 粒子序列帧";
+    width: 620px;
+    height: 416px;
+    background: #182333;
+
+    in-out property <float> time: 0.10;
+    in-out property <float> epoch: 0.0;
+    in-out property <string> playback: "loop";
+    in-out property <bool> interpolate-frames: false;
+    in-out property <bool> random-start: true;
+    in-out property <bool> weighted: true;
+    in-out property <bool> animating: false;
+    in-out property <int> cells: 4;
+
+    clock := Timer {
+        interval: 16;
+        running: root.animating;
+        triggered => {
+            root.time += 0.016;
+            if root.time - root.epoch > 4.2 { root.epoch = root.time; }
+        }
+    }
+
+    property <SpriteEmitter> defaults: SpriteEmitter {
+        position: Point3D.new(0, 0, 0), color: #ffffff, size: 1.45, lifetime: 4,
+        burst-count: 1, sprite: @image-url("models/particle-marks.png"), sprite-frames: root.cells,
+        sprite-duration: 1.2, sprite-duration-variation: 0,
+        sprite-playback: root.playback, sprite-interpolate: root.interpolate-frames,
+        sprite-random-start: false, velocity: Vector3D.new(0,0,0), velocity-spread: Vector3D.new(0,0,0),
+        gravity: Vector3D.new(0,0,0), start-time: root.epoch, seed: 57,
+    };
+    property <[SpriteEmitter]> emitters: [
+        SpriteEmitter { position: Point3D.new(-1.9, 0, 0), ..root.defaults },
+        SpriteEmitter {
+            sprite: @image-url("models/particle-ring.png"), sprite-frames: 1,
+            size: 1.55, ..root.defaults
+        },
+        SpriteEmitter {
+            position: Point3D.new(1.9, -0.65, 0.3), size: 0.30, burst-count: 44,
+            sprite-random-start: root.random-start, sprite-duration-variation: 0.20,
+            velocity: Vector3D.new(0, 1.75, 0), velocity-spread: Vector3D.new(1.35, 0.85, 0.6),
+            gravity: Vector3D.new(0, -2.25, 0), ..root.defaults
+        },
+    ];
+
+    SceneView3D {
+        width: 620px; height: 320px;
+        camera-yaw: 0; camera-pitch: 0; camera-distance: 7;
+        scene-background: #111a29;
+        particle-time: root.time; particle-emitters: root.emitters;
+        cache-rendering: true;
+        order-independent-transparency: root.weighted;
+    }
+    Label { x: 18px; y: 327px; width: 60px; height: 34px; text: "时间"; }
+    timeline := Slider { x: 72px; y: 328px; width: 531px; height: 34px; minimum: 0; maximum: 3.6; value <=> root.time; }
+    play := CheckBox { x: 18px; y: 369px; width: 79px; height: 35px; text: "播放"; checked <=> root.animating; }
+    restart := Button {
+        x: 105px; y: 369px; width: 75px; height: 35px; text: "爆发";
+        clicked => { root.epoch = root.time - 0.35; }
+    }
+    playback-mode := Button {
+        x: 189px; y: 369px; width: 98px; height: 35px;
+        text: root.playback == "loop" ? "循环" : root.playback == "reverse" ? "倒放" : "往返";
+        clicked => {
+            root.playback = root.playback == "loop" ? "reverse" : root.playback == "reverse" ? "ping-pong" : "loop";
+        }
+    }
+    interpolation := CheckBox { x: 306px; y: 369px; width: 86px; height: 35px; text: "插值"; checked <=> root.interpolate-frames; }
+    randomness := CheckBox { x: 410px; y: 369px; width: 105px; height: 35px; text: "随机起帧"; checked <=> root.random-start; }
+    transparency := CheckBox { x: 529px; y: 369px; width: 82px; height: 35px; text: "加权"; checked <=> root.weighted; }
+}

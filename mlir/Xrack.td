@@ -28,6 +28,11 @@ def XR_Record : XR_NamedType<"Record", "record">;
 def XR_RecordList : XR_NamedType<"RecordList", "recordlist">;
 def XR_Length : XR_Type<"Length", "length">;
 def XR_Point2D : XR_Type<"Point2D", "point2d">;
+def XR_Point3D : XR_Type<"Point3D", "point3d">;
+def XR_Vector3D : XR_Type<"Vector3D", "vector3d">;
+def XR_Hit3D : XR_Type<"Hit3D", "hit3d">;
+def XR_Hit3DList : XR_Type<"Hit3DList", "hit3dlist">;
+def XR_ProjectedPoint3D : XR_Type<"ProjectedPoint3D", "projectedpoint3d">;
 def XR_Vector2D : XR_Type<"Vector2D", "vector2d">;
 def XR_Transform2D : XR_Type<"Transform2D", "transform2d">;
 def XR_Percent : XR_Type<"Percent", "percent">;
@@ -67,6 +72,7 @@ def XR_ReturnKey : XR_Type<"ReturnKey", "returnkey">;
 def XR_AccessibleLive : XR_Type<"AccessibleLive", "accessiblelive">;
 def XR_CursorShape : XR_Type<"CursorShape", "cursorshape">;
 def XR_ColorScheme : XR_Type<"ColorScheme", "colorscheme">;
+def XR_SceneToneMap : XR_Type<"SceneToneMap", "scenetonemap">;
 def XR_FileDialogMode : XR_Type<"FileDialogMode", "filedialogmode">;
 def XR_MessageLevel : XR_Type<"MessageLevel", "messagelevel">;
 def XR_MessageButtons : XR_Type<"MessageButtons", "messagebuttons">;
@@ -95,12 +101,12 @@ def XR_DateList : XR_Type<"DateList", "datelist">;
 def XR_Time : XR_Type<"Time", "time">;
 def XR_Font : XR_Type<"Font", "font">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
-def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
+def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Point3D, XR_Vector3D, XR_Hit3D, XR_Hit3DList, XR_ProjectedPoint3D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers, XR_WheelEvent,
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
                          XR_ImageHorizontalAlignment, XR_ImageVerticalAlignment, XR_ImageRendering, XR_ButtonDisplay, XR_LayoutAlignment, XR_CrossAxisAlignment,
-                         XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_LayoutDirection, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_MouseSelectionMode, XR_InputValidity, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_InputPurpose, XR_KeyboardCapitalization, XR_ReturnKey, XR_AccessibleLive, XR_CursorShape, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_SelectionGesture, XR_Date, XR_Time, XR_Font]>;
+                         XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_LayoutDirection, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_MouseSelectionMode, XR_InputValidity, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_InputPurpose, XR_KeyboardCapitalization, XR_ReturnKey, XR_AccessibleLive, XR_CursorShape, XR_ColorScheme, XR_SceneToneMap, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_SelectionGesture, XR_Date, XR_Time, XR_Font]>;
 def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
 
 class XR_Op<string mnemonic, list<Trait> traits = []> : Op<Xrack_Dialect, mnemonic, traits>;
@@ -153,7 +159,7 @@ def XR_IfOp : XR_Op<"if", [SingleBlockImplicitTerminator<"EndOp">, NoRegionArgum
 }
 def XR_ForOp : XR_ScopeOp<"for", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_DateList, XR_StringList,
-                                 XR_RecordList, XR_TouchPoints]>:$model,
+                                 XR_RecordList, XR_Hit3DList, XR_TouchPoints]>:$model,
                        StrAttr:$item, StrAttr:$index);
   let hasVerifier = 1;
 }
@@ -222,7 +228,7 @@ def XR_StateTimingOp : XR_Op<"state_timing", [ParentOneOf<["ElementOp", "Instanc
   let hasVerifier = 1;
 }
 def XR_RepeatOp : XR_Op<"repeat", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
-  let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_DateList, XR_StringList, XR_RecordList, XR_TouchPoints]>:$input, StrAttr:$name,
+  let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_DateList, XR_StringList, XR_RecordList, XR_Hit3DList, XR_TouchPoints]>:$input, StrAttr:$name,
                        StrAttr:$item, StrAttr:$index);
 }
 def XR_ControlLinkOp : XR_Op<"control_link", [HasParent<"ElementOp">]> {
@@ -393,6 +399,21 @@ def XR_LiteralOp : XR_ExpressionOp<"literal", (ins), XR_Value, [Pure]> {
   let hasVerifier = 1;
 }
 def XR_ImageUrlOp : XR_ExpressionOp<"image_url", (ins), XR_Image, [Pure]>;
+def XR_MeshUrlOp : XR_ExpressionOp<"mesh_url", (ins), XR_String, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_MeshLodUrlOp : XR_ExpressionOp<"mesh_lod_url", (ins), XR_String, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_MeshLightmapUrlOp : XR_ExpressionOp<"mesh_lightmap_url", (ins), XR_String, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_MeshLodLightmapUrlOp : XR_ExpressionOp<"mesh_lod_lightmap_url", (ins), XR_String, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_EnvironmentUrlOp : XR_ExpressionOp<"environment_url", (ins), XR_String, [Pure]> {
+  let hasVerifier = 1;
+}
 def XR_ImageDimensionOp : XR_ExpressionOp<"image_dimension", (ins XR_Image:$input), XR_Int, [Pure]> {
   let hasVerifier = 1;
 }
@@ -412,6 +433,7 @@ def XR_ParseNumberOp : XR_ExpressionOp<"parse_number",
     (ins XR_String:$input, XR_Float:$fallback), XR_Float, [MemoryEffects<[MemRead]>]>;
 def XR_ConcatOp : XR_ExpressionOp<"concat", (ins Variadic<XR_String>:$parts), XR_String, [Pure]>;
 def XR_ArrayOp : XR_ExpressionOp<"array", (ins Variadic<XR_String>:$items), XR_StringList, [Pure]>;
+def XR_Hit3DArrayOp : XR_ExpressionOp<"hit3d_array", (ins Variadic<XR_Hit3D>:$items), XR_Hit3DList, [Pure]>;
 def XR_IntArrayOp : XR_ExpressionOp<"int_array", (ins Variadic<XR_Int>:$items), XR_IntList, [Pure]>;
 def XR_DateArrayOp : XR_ExpressionOp<"date_array", (ins Variadic<XR_Date>:$items), XR_DateList, [Pure]>;
 def XR_PointerButtonsOp : XR_ExpressionOp<"pointer_buttons", (ins Variadic<XR_PointerButton>:$items), XR_PointerButtons, [Pure]>;
@@ -560,11 +582,25 @@ def XR_CastOp : XR_ExpressionOp<"cast", (ins XR_Int:$input), XR_Float>;
 def XR_MathOperand : AnyTypeOf<[XR_Int, XR_Float, XR_Length, XR_Percent]>;
 def XR_MathFunctionOp : XR_ExpressionOp<"math_function", (ins Variadic<XR_MathOperand>:$inputs),
     AnyTypeOf<[XR_MathOperand, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
-def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D]>;
+def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Point3D, XR_Vector3D, XR_Hit3D, XR_Hit3DList, XR_ProjectedPoint3D]>;
 def XR_GeometryFunctionOp : XR_ExpressionOp<"geometry_function",
-    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length]>>:$inputs),
-    XR_GeometryValue, [Pure]> { let hasVerifier = 1; }
+    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_RecordList, XR_String, XR_Int]>>:$inputs),
+    AnyTypeOf<[XR_GeometryValue, XR_String]>, [Pure]> { let hasVerifier = 1; }
 def XR_Point2DFieldOp : XR_ExpressionOp<"point2d_field", (ins XR_Point2D:$input), XR_Length, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_Point3DFieldOp : XR_ExpressionOp<"point3d_field", (ins XR_Point3D:$input), XR_Float, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_Vector3DFieldOp : XR_ExpressionOp<"vector3d_field", (ins XR_Vector3D:$input), XR_Float, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_Hit3DFieldOp : XR_ExpressionOp<"hit3d_field", (ins XR_Hit3D:$input),
+    AnyTypeOf<[XR_Point3D, XR_Vector3D, XR_Int, XR_Float, XR_Bool, XR_String]>, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_ProjectedPoint3DFieldOp : XR_ExpressionOp<"projected_point3d_field",
+    (ins XR_ProjectedPoint3D:$input), AnyTypeOf<[XR_Point2D, XR_Float, XR_Bool]>, [Pure]> {
   let hasVerifier = 1;
 }
 def XR_Vector2DFieldOp : XR_ExpressionOp<"vector2d_field", (ins XR_Vector2D:$input), XR_Length, [Pure]> {
@@ -582,7 +618,7 @@ def XR_ModelLookupOp : XR_ExpressionOp<"model_lookup", (ins XR_RecordList:$model
     XR_RecordList, [Pure, AllTypesMatch<["model", "result"]>]>;
 def XR_ModelSortByOp : XR_ExpressionOp<"model_sort_by", (ins XR_RecordList:$model, XR_Bool:$descending),
     XR_RecordList, [Pure, AllTypesMatch<["model", "result"]>]>;
-def XR_Model : AnyTypeOf<[XR_IntList, XR_DateList, XR_StringList, XR_RecordList]>;
+def XR_Model : AnyTypeOf<[XR_IntList, XR_DateList, XR_StringList, XR_RecordList, XR_Hit3DList]>;
 def XR_ModelEditOp : XR_Op<"model_edit", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_Model:$model, Variadic<XR_Value>:$args, StrAttr:$method);
   let hasVerifier = 1;
@@ -590,8 +626,8 @@ def XR_ModelEditOp : XR_Op<"model_edit", [ParentOneOf<["CallbackOp", "HandlerOp"
 def XR_ModelCountOp : XR_ExpressionOp<"model_count", (ins XR_Model:$input), XR_Int, [MemoryEffects<[MemRead]>]>;
 def XR_ModelIsEmptyOp : XR_ExpressionOp<"model_is_empty", (ins XR_Model:$input), XR_Bool, [MemoryEffects<[MemRead]>]>;
 def XR_ModelAtOp : XR_ExpressionOp<"model_at",
-    (ins XR_Model:$model, XR_Int:$index, AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record]>:$fallback),
-    AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record]>, [MemoryEffects<[MemRead]>, AllTypesMatch<["fallback", "result"]>]> {
+    (ins XR_Model:$model, XR_Int:$index, AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record, XR_Hit3D]>:$fallback),
+    AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record, XR_Hit3D]>, [MemoryEffects<[MemRead]>, AllTypesMatch<["fallback", "result"]>]> {
   let hasVerifier = 1;
 }
 def XR_FormatFixedOp : XR_ExpressionOp<"format_fixed",

@@ -18,6 +18,8 @@ const SHADOW_MASK_LIFETIME: u64 = 60;
 const MAX_OPACITY_ATLAS_EDGE: u32 = 1536;
 const OPACITY_ATLAS_LIFETIME: u64 = 60;
 const MAX_SHARED_OPACITY_TILES: usize = 32;
+const WINDOW_ATLAS_EDGE: u32 = 512;
+const WINDOW_ATLAS_BYTES: u64 = WINDOW_ATLAS_EDGE as u64 * WINDOW_ATLAS_EDGE as u64 * 4;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LayerStats {
@@ -36,8 +38,8 @@ struct Layer {
 
 struct OpacityLayer {
     node: Box<Node>,
-    layout: Box<LayoutNode>,
-    clip: Rect,
+    captured_layout: Box<LayoutNode>,
+    capture_clip: Rect,
     full_coverage: bool,
     image: Rc<OpacityImage>,
     raster_bounds: Rect,
@@ -63,19 +65,140 @@ pub(super) struct CachedLayerImage {
     pub(super) binding: OnceCell<wgpu::BindGroup>,
 }
 
-pub(super) struct CachedLayer {
-    owner: LayerOwner,
-    pub(super) image: Rc<CachedLayerImage>,
+struct WindowOpacityAtlas {
+    image: Rc<CachedLayerImage>,
+    packing: Atlas,
+    tiles: HashMap<*const CachedLayerImage, WindowAtlasTile>,
+    last_frame: u64,
+}
+
+struct WindowAtlasTile {
+    source: Weak<CachedLayerImage>,
+    origin: [u32; 2],
+}
+
+impl WindowOpacityAtlas {
+    fn new(device: &wgpu::Device, frame: u64) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("XRack compositor opacity atlas"),
+            size: wgpu::Extent3d {
+                width: WINDOW_ATLAS_EDGE,
+                height: WINDOW_ATLAS_EDGE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        Self {
+            image: Rc::new(CachedLayerImage {
+                texture,
+                binding: OnceCell::new(),
+            }),
+            packing: Atlas::new(WINDOW_ATLAS_EDGE as usize, WINDOW_ATLAS_EDGE as usize),
+            tiles: HashMap::new(),
+            last_frame: frame,
+        }
+    }
+
+    fn tile(
+        &mut self,
+        source: &Rc<CachedLayerImage>,
+        device: &wgpu::Device,
+        encoder: &mut Option<wgpu::CommandEncoder>,
+    ) -> Option<[u32; 2]> {
+        let key = Rc::as_ptr(source);
+        if let Some(tile) = self.tiles.get(&key) {
+            return Some(tile.origin);
+        }
+        if self.tiles.len() >= MAX_LAYERS {
+            return None;
+        }
+        let width = source.texture.width();
+        let height = source.texture.height();
+        let (x, y) = self
+            .packing
+            .add_rect((width + 2) as usize, (height + 2) as usize)?;
+        let origin = [x as u32 + 1, y as u32 + 1];
+        let encoder = encoder.get_or_insert_with(|| {
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("XRack compositor atlas copies"),
+            })
+        });
+        // Replicate the edge texels into the gutter so bilinear sampling
+        // matches the source texture's clamp-to-edge sampler.
+        let spans = |start, extent| {
+            [
+                (0, start - 1, 1),
+                (0, start, extent),
+                (extent - 1, start + extent, 1),
+            ]
+        };
+        for (sy, dy, height) in spans(origin[1], height) {
+            for (sx, dx, width) in spans(origin[0], width) {
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &source.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: sx, y: sy, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.image.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: dx, y: dy, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+        self.tiles.insert(
+            key,
+            WindowAtlasTile {
+                source: Rc::downgrade(source),
+                origin,
+            },
+        );
+        Some(origin)
+    }
+}
+
+pub(super) enum WindowLayerSource {
+    Texture(Rc<CachedLayerImage>),
+    TintedAlpha {
+        image: Rc<CachedLayerImage>,
+        tint: u32,
+    },
+    Solid(Color),
+}
+
+pub(super) struct WindowLayer {
+    owner: Option<LayerOwner>,
+    pub(super) source: WindowLayerSource,
     pub(super) bounds: Rect,
     pub(super) uv: [f32; 4],
     pub(super) opacity: f32,
     pub(super) surface_only: bool,
-    pub(super) mask: Option<Rc<WindowClipMask>>,
+    pub(super) mask: Option<LayerClip>,
+    pub(super) sample_mask: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct LayerClip {
+    pub(super) mask: Rc<WindowClipMask>,
+    pub(super) origin: [i32; 2],
 }
 
 pub(super) struct WindowClipMask {
     pub(super) texture: wgpu::Texture,
-    pub(super) origin: [i32; 2],
     pub(super) binding: OnceCell<wgpu::BindGroup>,
     last_frame: Cell<u64>,
 }
@@ -83,21 +206,87 @@ pub(super) struct WindowClipMask {
 struct RetainedClipMask {
     shapes: Rc<[RoundedClip]>,
     scale: f32,
+    physical: Rect,
     mask: Rc<WindowClipMask>,
     bytes: u64,
 }
 
-impl CachedLayer {
+impl RetainedClipMask {
+    fn matches(&self, shapes: &[RoundedClip], physical: Rect, scale: f32) -> bool {
+        if self.scale != scale
+            || self.physical.width != physical.width
+            || self.physical.height != physical.height
+            || self.shapes.len() != shapes.len()
+        {
+            return false;
+        }
+        let dx = physical.x - self.physical.x;
+        let dy = physical.y - self.physical.y;
+        // Device-pixel translations preserve the mask. Allow for rounding
+        // when the layout coordinates were formed in logical pixels.
+        let tolerance = 1.0 / 1024.0;
+        self.shapes.iter().zip(shapes).all(|(before, after)| {
+            before.radii == after.radii
+                && before.bounds.width == after.bounds.width
+                && before.bounds.height == after.bounds.height
+                && ((after.bounds.x - before.bounds.x) * scale - dx).abs() <= tolerance
+                && ((after.bounds.y - before.bounds.y) * scale - dy).abs() <= tolerance
+        })
+    }
+}
+
+impl WindowLayer {
+    pub(super) fn tinted_alpha(
+        quad: femtovg::Quad,
+        image: Rc<CachedLayerImage>,
+        color: Color,
+    ) -> Self {
+        let [r, g, b] = [color.r, color.g, color.b].map(|channel| (channel * 255.0).round() as u32);
+        Self {
+            owner: None,
+            source: WindowLayerSource::TintedAlpha {
+                image,
+                tint: (r << 16) | (g << 8) | b,
+            },
+            bounds: Rect::new(quad.x0, quad.y0, quad.x1 - quad.x0, quad.y1 - quad.y0),
+            uv: [quad.s0, quad.t0, quad.s1, quad.t1],
+            opacity: 1.0,
+            surface_only: true,
+            mask: None,
+            sample_mask: false,
+        }
+    }
+
+    pub(super) fn solid(bounds: Rect, color: Color) -> Self {
+        Self {
+            owner: None,
+            source: WindowLayerSource::Solid(color),
+            bounds,
+            uv: [0.0; 4],
+            opacity: 1.0,
+            surface_only: true,
+            mask: None,
+            sample_mask: false,
+        }
+    }
+
     pub(super) fn crop(&mut self, clip: Rect) {
         let source = self.bounds;
         let visible = source.intersect(clip);
-        self.uv = [
+        let relative = [
             (visible.x - source.x) / source.width,
             (visible.y - source.y) / source.height,
             (visible.x + visible.width - source.x) / source.width,
             (visible.y + visible.height - source.y) / source.height,
         ]
         .map(|value| value.clamp(0.0, 1.0));
+        let [u, v, right, bottom] = self.uv;
+        self.uv = [
+            u + relative[0] * (right - u),
+            v + relative[1] * (bottom - v),
+            u + relative[2] * (right - u),
+            v + relative[3] * (bottom - v),
+        ];
         self.bounds = visible;
     }
 }
@@ -141,23 +330,36 @@ impl OpacityLayer {
             return false;
         }
         let offset = Point {
-            x: layout.bounds.x - self.layout.bounds.x,
-            y: layout.bounds.y - self.layout.bounds.y,
+            x: layout.bounds.x - self.captured_layout.bounds.x,
+            y: layout.bounds.y - self.captured_layout.bounds.y,
         };
-        let mut translated = self.layout.as_ref().clone();
-        let mut motion = LayoutMove::new(self.clip, layout.bounds, offset, 0.0);
-        move_layout(&mut translated, layout, &mut motion) && translated == *layout
+        let mut motion = LayoutMove::new(self.capture_clip, layout.bounds, offset, 0.0);
+        self.captured_layout
+            .matches_translated(layout, true, |before, after| {
+                translated_geometry_matches(before, after, &mut motion)
+            })
     }
 
-    fn move_to(&mut self, layout: &LayoutNode, clip: Rect, full_coverage: bool) -> bool {
-        let previous = self.layout.bounds;
+    fn reuse_at(&mut self, layout: &LayoutNode, clip: Rect, full_coverage: bool) -> bool {
+        let previous = self.captured_layout.bounds;
         let next = layout.bounds;
+        // Exact capture reuse also covers clipped surfaces which cannot move.
+        if previous == next && self.capture_clip == clip && *self.captured_layout == *layout {
+            let bounds = if self.resample_origin.is_some() {
+                clip.inset(-1.0 / self.scale)
+            } else {
+                clip
+            };
+            self.raster_bounds = logical_bounds(device_bounds(bounds, self.scale), self.scale);
+            return true;
+        }
         // A cropped raster cannot reveal content that was outside its old clip.
         if !self.full_coverage
             || !full_coverage
                 && (self.resample_origin.is_none() || !can_crop_sampled_layer(layout, self.scale))
             || self.resample_origin.is_none()
-                && (layout.has_ancestor_clip_chain() || self.layout.has_ancestor_clip_chain())
+                && (layout.has_ancestor_clip_chain()
+                    || self.captured_layout.has_ancestor_clip_chain())
         {
             return false;
         }
@@ -176,7 +378,7 @@ impl OpacityLayer {
             // Whole device pixels keep the capture's text and edge phase.
             let dx = offset.x * self.scale;
             let dy = offset.y * self.scale;
-            let before = device_bounds(self.clip, self.scale);
+            let before = device_bounds(self.capture_clip, self.scale);
             let after = device_bounds(clip, self.scale);
             if dx.fract() != 0.0
                 || dy.fract() != 0.0
@@ -187,16 +389,19 @@ impl OpacityLayer {
             (logical_bounds(after, self.scale), 0.0)
         };
         let mut motion = LayoutMove::new(previous, next, offset, tolerance);
-        if (!full_coverage || self.clip != previous)
+        if (!full_coverage || self.capture_clip != previous)
             && let Some(clips) = &self.sampled_clips
         {
             motion.sampled_clips = Some(clips.iter());
             motion.viewport = layout.clip;
         }
-        if !move_layout(&mut self.layout, layout, &mut motion) || *self.layout != *layout {
+        if !self.captured_layout.matches_translated(
+            layout,
+            self.resample_origin.is_some(),
+            |before, after| translated_geometry_matches(before, after, &mut motion),
+        ) {
             return false;
         }
-        self.clip = clip;
         self.raster_bounds = raster_bounds;
         true
     }
@@ -241,8 +446,6 @@ pub(super) fn logical_bounds(bounds: Rect, scale: f32) -> Rect {
     )
 }
 
-// The caller discards the cached layout if any comparison fails. After the
-// positional fields are updated, normal layout equality checks all other state.
 struct LayoutMove<'a> {
     previous: Rect,
     next: Rect,
@@ -265,7 +468,11 @@ impl LayoutMove<'_> {
     }
 }
 
-fn move_layout(previous: &mut LayoutNode, next: &LayoutNode, motion: &mut LayoutMove<'_>) -> bool {
+fn translated_geometry_matches(
+    previous: &LayoutNode,
+    next: &LayoutNode,
+    motion: &mut LayoutMove<'_>,
+) -> bool {
     let translated = |rect: Rect, offset: Point| {
         Rect::new(
             rect.x + offset.x,
@@ -298,22 +505,11 @@ fn move_layout(previous: &mut LayoutNode, next: &LayoutNode, motion: &mut Layout
         translated(previous.clip.intersect(motion.previous), motion.offset)
     };
     let next_clip = next.clip.intersect(motion.next);
-    if !equal(translated(previous.bounds, motion.offset), next.bounds)
-        || previous.children.len() != next.children.len()
-        || !(equal(clip, next_clip)
+    equal(translated(previous.bounds, motion.offset), next.bounds)
+        && (equal(clip, next_clip)
             || motion.sampled_clips.is_some()
                 && !shadow::nonempty(clip)
                 && !shadow::nonempty(next_clip))
-    {
-        return false;
-    }
-    previous.bounds = next.bounds;
-    previous.clip = next.clip;
-    previous
-        .children
-        .iter_mut()
-        .zip(&next.children)
-        .all(|(previous, next)| move_layout(previous, next, motion))
 }
 
 #[derive(Clone, Copy)]
@@ -424,9 +620,11 @@ impl OpacityTile {
         {
             return false;
         }
-        let mut translated = self.layout.as_ref().clone();
         let mut motion = LayoutMove::new(self.clip, clip, offset, 0.0);
-        move_layout(&mut translated, layout, &mut motion) && translated == *layout
+        self.layout
+            .matches_translated(layout, false, |before, after| {
+                translated_geometry_matches(before, after, &mut motion)
+            })
     }
 }
 
@@ -485,6 +683,19 @@ impl LayerPlacement {
             && ((self.bounds.x - other.bounds.x) * self.scale).fract() == 0.0
             && ((self.bounds.y - other.bounds.y) * self.scale).fract() == 0.0
     }
+
+    fn preserves_surface_raster(self, other: Self) -> bool {
+        // Both placements must be eligible for capture, with device-aligned bounds.
+        if self.scale != other.scale {
+            return false;
+        }
+        let before = device_bounds(self.bounds, self.scale);
+        let after = device_bounds(other.bounds, other.scale);
+        self.bounds.width == other.bounds.width
+            && self.bounds.height == other.bounds.height
+            && before.width == after.width
+            && before.height == after.height
+    }
 }
 
 pub(super) enum OpacitySource<'a> {
@@ -518,6 +729,7 @@ pub(super) struct RetainedLayers {
     frame_number: u64,
     new_shadow_masks: usize,
     opacity_atlas: Option<OpacityAtlas>,
+    window_opacity_atlas: Option<WindowOpacityAtlas>,
     opacity_atlas_stats: OpacityAtlasStats,
     opacity_atlas_disabled: bool,
     opacity_tile_sharing: bool,
@@ -545,6 +757,7 @@ impl Default for RetainedLayers {
             frame_number: 0,
             new_shadow_masks: 0,
             opacity_atlas: None,
+            window_opacity_atlas: None,
             opacity_atlas_stats: OpacityAtlasStats::default(),
             opacity_atlas_disabled: false,
             opacity_tile_sharing: true,
@@ -569,6 +782,7 @@ impl RetainedLayers {
         self.window_clip_masks.clear();
         self.changing_groups.clear();
         self.opacity_atlas = None;
+        self.window_opacity_atlas = None;
         self.opacity_demand = Default::default();
         self.previous_opacity_demand = Default::default();
         self.capture = None;
@@ -576,6 +790,11 @@ impl RetainedLayers {
 
     pub(super) fn begin_frame(&mut self, canvas: &mut Canvas<WGPURenderer>) {
         self.frame_number = self.frame_number.wrapping_add(1);
+        if self.window_opacity_atlas.as_ref().is_some_and(|atlas| {
+            self.frame_number.wrapping_sub(atlas.last_frame) > OPACITY_ATLAS_LIFETIME
+        }) {
+            self.window_opacity_atlas = None;
+        }
         self.window_clip_masks
             .retain(|entry| self.frame_number.wrapping_sub(entry.mask.last_frame.get()) <= 2);
         self.new_shadow_masks = 0;
@@ -631,6 +850,7 @@ impl RetainedLayers {
     pub(super) fn clear_images(&mut self, canvas: &mut Canvas<WGPURenderer>) {
         self.window_clip_masks.clear();
         self.clear_opacity_atlas(canvas);
+        self.window_opacity_atlas = None;
         self.opacity_demand = Default::default();
         self.previous_opacity_demand = Default::default();
         self.vectors.clear(canvas);
@@ -657,7 +877,12 @@ impl RetainedLayers {
             u64::from(atlas.texture.width()) * u64::from(atlas.texture.height()) * 4
         });
         let mut charged = HashSet::new();
+        let window = self
+            .window_opacity_atlas
+            .as_ref()
+            .map_or(0, |_| WINDOW_ATLAS_BYTES);
         atlas
+            + window
             + self
                 .layers
                 .iter()
@@ -749,6 +974,73 @@ impl RetainedLayers {
 }
 
 impl Renderer {
+    pub(super) fn pack_composited_opacity_layers(&mut self, layers: &mut [WindowLayer]) {
+        fn source(layer: &WindowLayer) -> Option<&Rc<CachedLayerImage>> {
+            let WindowLayerSource::Texture(image) = &layer.source else {
+                return None;
+            };
+            let texture = &image.texture;
+            (!layer.surface_only
+                && texture.format() == wgpu::TextureFormat::Rgba8Unorm
+                && texture.usage().contains(wgpu::TextureUsages::COPY_SRC)
+                && texture.width() + 2 <= WINDOW_ATLAS_EDGE
+                && texture.height() + 2 <= WINDOW_ATLAS_EDGE)
+                .then_some(image)
+        }
+
+        let cache = &mut self.retained_layers;
+        if cache.opacity_atlas_disabled {
+            return;
+        }
+        if let Some(atlas) = &mut cache.window_opacity_atlas
+            && !atlas.tiles.is_empty()
+            && atlas
+                .tiles
+                .values()
+                .all(|tile| tile.source.strong_count() == 0)
+        {
+            atlas.tiles.clear();
+            atlas
+                .packing
+                .reset(WINDOW_ATLAS_EDGE as usize, WINDOW_ATLAS_EDGE as usize);
+        }
+        if cache.window_opacity_atlas.is_none() {
+            let mut candidates = layers.iter().filter_map(source);
+            let Some(first) = candidates.next() else {
+                return;
+            };
+            if !candidates.any(|image| !Rc::ptr_eq(first, image))
+                || WINDOW_ATLAS_EDGE > self.device.limits().max_texture_dimension_2d
+                || WINDOW_ATLAS_BYTES > cache.budget.saturating_sub(cache.resident_bytes())
+            {
+                return;
+            }
+            cache.window_opacity_atlas =
+                Some(WindowOpacityAtlas::new(&self.device, cache.frame_number));
+        }
+        let Some(atlas) = &mut cache.window_opacity_atlas else {
+            return;
+        };
+        let edge = WINDOW_ATLAS_EDGE as f32;
+        for layer in layers {
+            let Some(image) = source(layer) else { continue };
+            let Some([x, y]) = atlas.tile(image, &self.device, &mut self.custom_encoder) else {
+                continue;
+            };
+            let [u, v, right, bottom] = layer.uv;
+            let width = image.texture.width() as f32;
+            let height = image.texture.height() as f32;
+            layer.uv = [
+                (x as f32 + u * width) / edge,
+                (y as f32 + v * height) / edge,
+                (x as f32 + right * width) / edge,
+                (y as f32 + bottom * height) / edge,
+            ];
+            layer.source = WindowLayerSource::Texture(atlas.image.clone());
+            atlas.last_frame = cache.frame_number;
+        }
+    }
+
     #[doc(hidden)]
     pub fn stack_layer_stats(&self) -> LayerStats {
         self.retained_layers.stats
@@ -911,15 +1203,15 @@ impl Renderer {
         path: &[usize],
         in_layout: bool,
         frame: PaintFrame<'_>,
-    ) -> Option<CachedLayer> {
+    ) -> Option<WindowLayer> {
         let bounds = layout.bounds;
         let opacity = node.opacity();
         let full_coverage = layout.clip.x <= bounds.x
             && layout.clip.y <= bounds.y
             && layout.clip.x + layout.clip.width >= bounds.x + bounds.width
             && layout.clip.y + layout.clip.height >= bounds.y + bounds.height;
-        if !(node.boolean("cache-rendering-hint", false)
-            || Self::can_cache_window_surface(node, layout, frame.scale))
+        let hinted = node.boolean("cache-rendering-hint", false);
+        if !(hinted || Self::can_cache_window_surface(node, layout, frame.scale))
             || !opacity.is_finite()
             || layout.allows_overflow()
             || !layout.local_transform().is_identity()
@@ -938,11 +1230,24 @@ impl Renderer {
             return None;
         }
         let image = layer.image.cached.as_ref()?.clone();
-        if layer.surface_only && !node.children.is_empty() {
-            // A panel background is independent of its children's positions.
-            if layout.bounds != layer.layout.bounds || !layer.node.same_own_paint_inputs(node) {
+        let raster_bounds = if layer.surface_only && node.kind == "Rectangle" {
+            let captured = LayerPlacement {
+                bounds: layer.captured_layout.bounds,
+                scale: layer.scale,
+            };
+            let current = LayerPlacement {
+                bounds,
+                scale: frame.scale,
+            };
+            // The background raster covers only the panel surface. Descendant
+            // layout and the current ancestor clip are handled by the compositor.
+            if hinted
+                || !captured.preserves_surface_raster(current)
+                || !layer.node.same_own_paint_except_position(node)
+            {
                 return None;
             }
+            logical_bounds(device_bounds(bounds, frame.scale), frame.scale)
         } else {
             if !layer.node.same_paint_except_layer_composition(node) {
                 return None;
@@ -952,23 +1257,23 @@ impl Renderer {
             } else {
                 bounds.intersect(layout.clip)
             };
-            if (*layer.layout != *layout || layer.clip != clip)
-                && !layer.move_to(layout, clip, full_coverage)
-            {
+            if !layer.reuse_at(layout, clip, full_coverage) {
                 if let Some(layer) = self.retained_layers.opacity.remove(&owner) {
                     layer.release_image(&mut self.canvas);
                 }
                 return None;
             }
-        }
-        Some(CachedLayer {
-            owner,
-            image,
-            bounds: layer.raster_bounds,
+            layer.raster_bounds
+        };
+        Some(WindowLayer {
+            owner: Some(owner),
+            source: WindowLayerSource::Texture(image),
+            bounds: raster_bounds,
             uv: [0.0, 0.0, 1.0, 1.0],
             opacity,
             surface_only: layer.surface_only,
             mask: None,
+            sample_mask: false,
         })
     }
 
@@ -1018,8 +1323,15 @@ impl Renderer {
         let candidates = &mut self.retained_layers.changing_groups;
         if let Some(previous) = candidates.get_mut(&owner) {
             let stable = previous.last_frame == previous_frame
-                && previous.moving_phase == Some(placement)
-                && previous.node.same_own_paint_inputs(node);
+                && if node.kind == "Rectangle" {
+                    previous
+                        .moving_phase
+                        .is_some_and(|old| old.preserves_surface_raster(placement))
+                        && previous.node.same_own_paint_except_position(node)
+                } else {
+                    previous.moving_phase == Some(placement)
+                        && previous.node.same_own_paint_inputs(node)
+                };
             if !stable {
                 previous.node.as_mut().clone_from(node);
             }
@@ -1047,7 +1359,7 @@ impl Renderer {
         path: &[usize],
         in_layout: bool,
         frame: PaintFrame<'_>,
-    ) -> Option<CachedLayer> {
+    ) -> Option<WindowLayer> {
         let bounds = layout.bounds;
         let owner = self.opacity_owner(path);
         if let Some(layer) = self.retained_layers.opacity.remove(&owner) {
@@ -1076,8 +1388,8 @@ impl Renderer {
             owner.clone(),
             OpacityLayer {
                 node: Box::new(node.clone()),
-                layout: Box::new(layout.clone()),
-                clip: bounds,
+                captured_layout: Box::new(layout.clone()),
+                capture_clip: bounds,
                 full_coverage: true,
                 image: Rc::new(OpacityImage {
                     image: raster.image,
@@ -1097,14 +1409,60 @@ impl Renderer {
             },
         );
         self.retained_layers.opacity_stats.rasterized += 1;
-        Some(CachedLayer {
-            owner,
-            image,
+        Some(WindowLayer {
+            owner: Some(owner),
+            source: WindowLayerSource::Texture(image),
             bounds: raster.bounds,
             uv: [0.0, 0.0, 1.0, 1.0],
             opacity: 1.0,
             surface_only: true,
             mask: None,
+            sample_mask: false,
+        })
+    }
+
+    pub(super) fn capture_window_viewport(
+        &mut self,
+        clip: Rect,
+        scale: f32,
+        reserved: &mut u64,
+        paint: impl FnOnce(&mut Self) -> Result<(), String>,
+    ) -> Option<WindowLayer> {
+        let physical = device_bounds(clip, scale);
+        let bytes = (physical.width as u64)
+            .saturating_mul(physical.height as u64)
+            .saturating_mul(8);
+        let available = self
+            .retained_layers
+            .budget
+            .saturating_sub(self.retained_layers.resident_bytes())
+            .saturating_sub(*reserved);
+        if bytes > available {
+            return None;
+        }
+        // Clip-aligned RGBA16Float preserves the pane's blended coverage.
+        // These surfaces are owned by the current composition only.
+        let captured = self
+            .capture_device_texture_with_format(
+                physical,
+                scale,
+                wgpu::TextureFormat::Rgba16Float,
+                paint,
+            )
+            .ok()??;
+        *reserved += captured.bytes;
+        Some(WindowLayer {
+            owner: None,
+            source: WindowLayerSource::Texture(Rc::new(CachedLayerImage {
+                texture: captured.texture,
+                binding: OnceCell::new(),
+            })),
+            bounds: captured.bounds,
+            uv: [0.0, 0.0, 1.0, 1.0],
+            opacity: 1.0,
+            surface_only: false,
+            mask: None,
+            sample_mask: false,
         })
     }
 
@@ -1112,21 +1470,24 @@ impl Renderer {
         &mut self,
         shapes: &Rc<[RoundedClip]>,
         scale: f32,
-    ) -> Option<Rc<WindowClipMask>> {
-        let frame = self.retained_layers.frame_number;
-        if let Some(entry) = self
-            .retained_layers
-            .window_clip_masks
-            .iter()
-            .find(|entry| entry.scale == scale && entry.shapes.as_ref() == shapes.as_ref())
-        {
-            return Some(entry.mask.clone());
-        }
+    ) -> Option<LayerClip> {
         let bounds = shapes
             .iter()
             .map(|shape| shape.bounds)
             .reduce(Rect::intersect)?;
         let physical = device_bounds(bounds, scale);
+        let origin = [physical.x as i32, physical.y as i32];
+        if let Some(entry) = self
+            .retained_layers
+            .window_clip_masks
+            .iter()
+            .find(|entry| entry.matches(shapes, physical, scale))
+        {
+            return Some(LayerClip {
+                mask: entry.mask.clone(),
+                origin,
+            });
+        }
         let captured = self
             .capture_device_texture_with_format(
                 physical,
@@ -1150,31 +1511,34 @@ impl Renderer {
             .ok()??;
         let mask = Rc::new(WindowClipMask {
             texture: captured.texture,
-            origin: [physical.x as i32, physical.y as i32],
             binding: OnceCell::new(),
-            last_frame: Cell::new(frame),
+            last_frame: Cell::new(self.retained_layers.frame_number),
         });
         self.retained_layers
             .window_clip_masks
             .push(RetainedClipMask {
                 shapes: shapes.clone(),
                 scale,
+                physical,
                 mask: mask.clone(),
                 bytes: captured.bytes,
             });
-        Some(mask)
+        Some(LayerClip { mask, origin })
     }
 
-    pub(super) fn retain_composited_layers(&mut self, layers: &[CachedLayer]) {
+    pub(super) fn retain_composited_layers(&mut self, layers: &[WindowLayer]) {
         for item in layers {
-            if let Some(mask) = &item.mask {
-                mask.last_frame.set(self.retained_layers.frame_number);
+            if let Some(clip) = &item.mask {
+                clip.mask.last_frame.set(self.retained_layers.frame_number);
             }
-            if let Some(layer) = self.retained_layers.opacity.get_mut(&item.owner) {
+            let Some(owner) = &item.owner else {
+                continue;
+            };
+            if let Some(layer) = self.retained_layers.opacity.get_mut(owner) {
                 layer.used = true;
                 layer.last_frame = self.retained_layers.frame_number;
             }
-            self.retained_layers.changing_groups.remove(&item.owner);
+            self.retained_layers.changing_groups.remove(owner);
             self.retained_layers.opacity_stats.reused += 1;
         }
     }
@@ -1277,10 +1641,8 @@ impl Renderer {
                 if sampled != resample && !crop {
                     return None;
                 }
-                let previous = layer.layout.bounds;
-                if (*layer.layout == *layout && layer.clip == clip)
-                    || layer.move_to(layout, clip, full_coverage)
-                {
+                let previous = layer.captured_layout.bounds;
+                if layer.reuse_at(layout, clip, full_coverage) {
                     layer.used = true;
                     layer.last_frame = self.retained_layers.frame_number;
                     layer.recaptured_at_new_phase = false;
@@ -1433,8 +1795,8 @@ impl Renderer {
                 owner,
                 OpacityLayer {
                     node: Box::new(node.clone()),
-                    layout: Box::new(layout.clone()),
-                    clip,
+                    captured_layout: Box::new(layout.clone()),
+                    capture_clip: clip,
                     full_coverage,
                     image,
                     raster_bounds,
@@ -1912,7 +2274,9 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let rendered = self.with_capture_canvas(|renderer| {
@@ -1973,7 +2337,7 @@ fn opacity_tile_fits(width: u32, height: u32, limit: u32) -> bool {
         && u64::from(width) * u64::from(height) <= u64::from(limit) * u64::from(limit) / 4
 }
 
-fn passive_content(node: &Node) -> bool {
+pub(super) fn passive_content(node: &Node) -> bool {
     matches!(
         node.kind,
         "Rectangle"

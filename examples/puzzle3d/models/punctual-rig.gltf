@@ -1,0 +1,215 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "XRack glTF punctual light rig"
+  },
+  "extensionsUsed": [
+    "KHR_lights_punctual"
+  ],
+  "extensionsRequired": [
+    "KHR_lights_punctual"
+  ],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [
+        {
+          "name": "Red point",
+          "type": "point",
+          "color": [
+            0.9,
+            0.05,
+            0.02
+          ],
+          "intensity": 24,
+          "range": 5
+        },
+        {
+          "name": "Green spot",
+          "type": "spot",
+          "color": [
+            0.03,
+            1,
+            0.08
+          ],
+          "intensity": 16,
+          "range": 4,
+          "spot": {
+            "innerConeAngle": 0.2617993877991494,
+            "outerConeAngle": 0.5235987755982988
+          }
+        },
+        {
+          "name": "Blue fill",
+          "type": "directional",
+          "color": [
+            0.04,
+            0.08,
+            1
+          ],
+          "intensity": 0.45
+        }
+      ]
+    }
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Nonuniform parent",
+      "scale": [
+        2,
+        1,
+        1.5
+      ],
+      "children": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "name": "Moving light",
+      "translation": [
+        -1.1,
+        0.3,
+        1.75
+      ],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 0
+        }
+      }
+    },
+    {
+      "name": "Sweeping cone",
+      "translation": [
+        0.95,
+        0.4,
+        1.8
+      ],
+      "rotation": [
+        0,
+        0.17364817766693033,
+        0,
+        0.984807753012208
+      ],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 1
+        }
+      }
+    },
+    {
+      "name": "Fill matrix",
+      "matrix": [
+        0.9781476007338057,
+        0,
+        0.20791169081775934,
+        0,
+        0,
+        1.4,
+        0,
+        0,
+        -0.1247470144906556,
+        0,
+        0.5868885604402834,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 2
+        }
+      }
+    }
+  ],
+  "animations": [
+    {
+      "name": "Sweep",
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 1,
+            "path": "translation"
+          }
+        },
+        {
+          "sampler": 1,
+          "target": {
+            "node": 2,
+            "path": "rotation"
+          }
+        }
+      ],
+      "samplers": [
+        {
+          "input": 0,
+          "output": 1
+        },
+        {
+          "input": 0,
+          "output": 2
+        }
+      ]
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 64,
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAEDNzIy/mpmZPgAA4D8zM5M/mpmZPgAA4D8AAAAA1NAxPgAAAABcHHw/AAAAANTQMb4AAAAAXBx8Pw=="
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 8,
+      "byteLength": 24
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 32,
+      "byteLength": 32
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 2,
+      "type": "SCALAR",
+      "min": [
+        0
+      ],
+      "max": [
+        2
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 2,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 2,
+      "type": "VEC4"
+    }
+  ]
+}

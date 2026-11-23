@@ -272,6 +272,17 @@ pub fn check_document(
     checked_module(document, filename, declared_assets).map(|_| ())
 }
 
+/// Prepare a declared input set for offline interpreter-based tooling.
+#[doc(hidden)]
+pub fn prepare_runtime_module(
+    document: &ast::Document,
+    filename: &str,
+    declared_assets: Option<&[PathBuf]>,
+) -> Result<(mlir::Module, Option<xrack_resources::EmbeddedTranslations>), CompilerError> {
+    let (module, translations) = prepare(document, filename, declared_assets, &BTreeMap::new())?;
+    Ok((module, translations.catalog))
+}
+
 /// Export optimized XR dialect text after checking the resources used at runtime.
 pub fn export_mlir(
     document: &ast::Document,

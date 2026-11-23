@@ -5,7 +5,7 @@ rust_library(
     name = "xrack_compiler",
     srcs = glob(
         ["src/*.rs"],
-        exclude = ["src/main.rs"],
+        exclude = ["src/main.rs", "src/bake_cli.rs"],
     ),
     aliases = aliases(),
     crate_name = "xrack_compiler",
@@ -25,9 +25,15 @@ rust_library(
 
 rust_binary(
     name = "xrackc",
-    srcs = ["src/main.rs"],
+    srcs = ["src/main.rs", "src/bake_cli.rs"],
+    crate_root = "src/main.rs",
     edition = "2024",
     version = "0.8.0",
     visibility = ["//visibility:public"],
-    deps = [":xrack_compiler"] + all_crate_deps(normal = True),
+    deps = [
+        ":xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-resources:xrack_resources",
+        "//crates/xrack-runtime:xrack_runtime",
+    ] + all_crate_deps(normal = True),
 )

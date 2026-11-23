@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Runtime types, properties, models, and controls for generated XRack UI"
 
 [dependencies]
+flate2.workspace = true
 fluent-bundle.workspace = true
 fluent-langneg.workspace = true
 icu_decimal.workspace = true

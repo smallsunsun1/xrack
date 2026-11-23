@@ -1006,6 +1006,20 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
         } else {
             ExprKind::ImageUrl(path)
         }
+    } else if let Some(url) = ctx.meshUrl() {
+        let path = url.STRING().required("mesh URL").get_text();
+        let options: Vec<_> = url
+            .identifier_all()
+            .iter()
+            .map(|mode| mode.get_text())
+            .collect();
+        if options.is_empty() {
+            ExprKind::MeshUrl(path)
+        } else {
+            ExprKind::MeshUrlWithOptions { path, options }
+        }
+    } else if let Some(url) = ctx.environmentUrl() {
+        ExprKind::EnvironmentUrl(url.STRING().required("environment URL").get_text())
     } else if let Some(markdown) = ctx.markdown() {
         ExprKind::Markdown(markdown.STRING().required("Markdown string").get_text())
     } else if let Some(translation) = ctx.translation() {

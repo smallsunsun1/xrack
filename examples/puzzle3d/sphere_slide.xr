@@ -1,0 +1,101 @@
+struct SlideActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, collidable: bool, visible: bool,
+}
+
+export component SphereSlideDemo inherits Window {
+    title: "XRack · 沿墙滑移";
+    width: 610px; height: 426px;
+    resizable: false;
+    background: #172638;
+    property <point3d> spawn: Point3D.new(-2, 0.55, -1.4);
+    in-out property <point3d> center: Point3D.new(-2, 0.55, -1.4);
+    in-out property <float> drive-x: 4.4;
+    in-out property <float> drive-z: 3.1;
+    in-out property <bool> corner: true;
+    in-out property <int> mask: 1;
+    property <float> radius: 0.38;
+    property <vector3d> displacement: Vector3D.new(root.drive-x, 0, root.drive-z);
+    out property <point3d> endpoint: Scene3D.sphere-slide(
+        root.obstacles, root.center, root.displacement, root.radius, root.mask);
+    out property <hit3d> first-contact: Scene3D.sphere-cast(
+        root.obstacles, root.center, root.displacement,
+        Math.hypot(root.drive-x, root.drive-z), root.radius, root.mask);
+    callback walk(float, float);
+    walk(dx, dz) => {
+        root.center = Scene3D.sphere-slide(
+            root.obstacles, root.center, Vector3D.new(dx, 0, dz), root.radius, root.mask);
+    }
+
+    property <SlideActor> base: SlideActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #7189a3, collidable: true, visible: true,
+    };
+    property <SlideActor> along: SlideActor {
+        id: "long-wall", x: 0, y: 0.6, z: 0, scale-x: 0.4, scale-y: 1.5, scale-z: 5.4,
+        color: #789ebd, ..root.base
+    };
+    property <SlideActor> across: SlideActor {
+        id: "corner-wall", x: -1.35, y: 0.6, z: 1.36,
+        scale-x: 2.8, scale-y: 1.36, scale-z: 0.4,
+        color: #8a7fa4, collidable: root.corner, visible: root.corner, ..root.base
+    };
+    property <[SlideActor]> obstacles: [root.along, root.across];
+    property <SlideActor> sphere: SlideActor {
+        mesh: "primitive:sphere", scale-x: root.radius, scale-y: root.radius, scale-z: root.radius,
+        collidable: false, ..root.base
+    };
+    property <[SlideActor]> display: [
+        root.along, root.across,
+        SlideActor {
+            y: -0.16, scale-x: 8.4, scale-y: 0.2, scale-z: 6.0,
+            color: #39534f, collidable: false, ..root.base
+        },
+        SlideActor {
+            x: root.center.x, y: root.center.y, z: root.center.z,
+            color: #77d9cb, ..root.sphere
+        },
+        SlideActor {
+            x: root.endpoint.x, y: root.endpoint.y, z: root.endpoint.z,
+            color: #ffc56b, ..root.sphere
+        },
+        SlideActor {
+            mesh: "primitive:sphere", x: root.first-contact.position.x, y: root.first-contact.position.y,
+            z: root.first-contact.position.z, scale-x: 0.08, scale-y: 0.08, scale-z: 0.08,
+            color: #ff8965, collidable: false, visible: root.first-contact.valid, ..root.base
+        },
+    ];
+
+    keys := FocusScope {
+        width: 610px; height: 426px;
+        initial-focus: advance;
+        key-pressed(event) => {
+            if event.key == "ArrowUp" || event.key == "w" { root.walk(0, -0.35); }
+            if event.key == "ArrowDown" || event.key == "s" { root.walk(0, 0.35); }
+            if event.key == "ArrowLeft" || event.key == "a" { root.walk(-0.35, 0); }
+            if event.key == "ArrowRight" || event.key == "d" { root.walk(0.35, 0); }
+            event.key == "ArrowUp" || event.key == "ArrowDown" ||
+            event.key == "ArrowLeft" || event.key == "ArrowRight" ||
+            event.key == "w" || event.key == "a" || event.key == "s" || event.key == "d" ? accept : reject
+        }
+        SceneView3D {
+            width: 610px; height: 350px;
+            model: root.display;
+            camera-yaw: -18; camera-pitch: 64; camera-distance: 9.1;
+            scene-background: #263d54; ambient-intensity: 0.38;
+            multisampling: true;
+        }
+        HorizontalLayout {
+            x: 15px; y: 366px; width: 582px; height: 43px; spacing: 9px;
+            advance := Button { width: 96px; text: "走一步"; clicked => { root.center = root.endpoint; } }
+            reset := Button { width: 67px; text: "复位"; clicked => { root.center = root.spawn; } }
+            corner-toggle := CheckBox { width: 91px; text: "拐角墙"; checked <=> root.corner; }
+            Text { width: 20px; height: 43px; vertical-alignment: TextVerticalAlignment.center; text: "X"; color: #dbe6ef; }
+            x-travel := Slider { width: 117px; minimum: -4.4; maximum: 5; value <=> root.drive-x; }
+            Text { width: 20px; height: 43px; vertical-alignment: TextVerticalAlignment.center; text: "Z"; color: #dbe6ef; }
+            z-travel := Slider { width: 117px; minimum: -3.5; maximum: 4; value <=> root.drive-z; }
+        }
+    }
+}

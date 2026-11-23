@@ -1,0 +1,86 @@
+struct MistCloud {
+    position: point3d, size: vector3d, density: float, color: color, fog-shape: string,
+    fog-height-enabled: bool, fog-height-start: float, fog-height-end: float,
+    fog-noise-amount: float, fog-noise-scale: float, fog-noise-offset: vector3d,
+}
+struct MistRidge {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component FogNoiseDemo inherits Window {
+    title: "XRack · 流动体积雾";
+    width: 600px; height: 422px;
+    resizable: false;
+    background: #152437;
+    in-out property <bool> noise: true;
+    in-out property <bool> wind: false;
+    in-out property <bool> lit: true;
+    in-out property <bool> graded: true;
+    in-out property <bool> overlap: false;
+    in-out property <bool> reversed: false;
+    in-out property <float> drift: 0;
+    in-out property <int> density-samples: 36;
+
+    wind-clock := Timer {
+        interval: 34;
+        repeat: true;
+        running: root.wind;
+        triggered => { root.drift += 0.045; }
+    }
+
+    property <MistCloud> low: MistCloud {
+        position: Point3D.new(0, -0.12, 0), size: Vector3D.new(7.9, 3.4, 3.3),
+        density: 0.82, color: #99cde1, fog-shape: "box",
+        fog-height-enabled: root.graded, fog-height-start: 1.05, fog-height-end: -1.05,
+        fog-noise-amount: root.noise ? 1.0 : 0.0, fog-noise-scale: 0.7,
+        fog-noise-offset: Vector3D.new(root.drift, 0.15, -0.42),
+    };
+    property <MistCloud> high: MistCloud {
+        position: Point3D.new(0.9, 0.26, -0.45), size: Vector3D.new(5.4, 2.3, 2.2),
+        density: 0.38, color: #f2ac6c, fog-shape: "sphere",
+        fog-height-enabled: false, fog-height-start: 0, fog-height-end: 0,
+        fog-noise-amount: root.noise ? 0.72 : 0.0, fog-noise-scale: 0.9,
+        fog-noise-offset: Vector3D.new(root.drift * 0.55, -0.3, 0.55),
+    };
+    property <[MistCloud]> air: !root.overlap ? [root.low]
+        : root.reversed ? [root.high, root.low] : [root.low, root.high];
+
+    property <MistRidge> block: MistRidge {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 0.55, scale-y: 0.72, scale-z: 0.58,
+        yaw: 18, pitch: 0, roll: 0, color: #c59460,
+    };
+    property <[MistRidge]> markers: [
+        MistRidge { id: "front", x: -1.95, y: -0.43, z: 3.0, ..root.block },
+        MistRidge { id: "inside", x: 0.2, y: -0.75, z: 0.27,
+            color: #607991, ..root.block },
+        MistRidge { id: "behind", x: 2.15, y: -0.42, z: -2.9,
+            scale-y: 1.2, color: #a44f3b, ..root.block },
+    ];
+
+    view := SceneView3D {
+        width: 600px; height: 356px;
+        model: root.markers; camera-yaw: 0; camera-pitch: 0; camera-distance: 10;
+        scene-background: #203346;
+        light-yaw: -39; light-elevation: 44; ambient-intensity: 0.25;
+        shadows: root.lit; shadow-map-size: 256;
+        fog-volumes: root.air;
+        fog-volume-density-samples: root.density-samples;
+        fog-volume-scattering: root.lit ? 3.8 : 0.0;
+        fog-volume-anisotropy: 0.3;
+        cache-rendering: true;
+    }
+    HorizontalLayout {
+        x: 14px; y: 367px; width: 572px; height: 44px; spacing: 9px;
+        noise-toggle := CheckBox { width: 100px; text: "雾团"; checked <=> root.noise; }
+        wind-toggle := CheckBox { width: 90px; text: "随风"; checked <=> root.wind; enabled: root.noise; }
+        light-toggle := CheckBox { width: 90px; text: "受光"; checked <=> root.lit; }
+        wind-slider := Slider {
+            width: 230px; minimum: -3; maximum: 3; value <=> root.drift;
+            enabled: root.noise && !root.wind;
+        }
+    }
+}

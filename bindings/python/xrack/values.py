@@ -9,6 +9,7 @@ from ._native import (
     CheckState,
     Color,
     ColorScheme,
+    SceneToneMap,
     CrossAxisAlignment,
     CursorShape,
     Date,
@@ -25,6 +26,7 @@ from ._native import (
     FlickDirection,
     FocusReason,
     Font,
+    Hit3D,
     GradientStop,
     Image,
     ImageFit,
@@ -48,6 +50,8 @@ from ._native import (
     Orientation,
     Percent,
     Point2D,
+    Point3D,
+    ProjectedPoint3D,
     PointerButton,
     PointerButtons,
     PointerEvent,
@@ -75,6 +79,7 @@ from ._native import (
     TouchPoints,
     Transform2D,
     Vector2D,
+    Vector3D,
     WheelEvent,
 )
 
@@ -85,6 +90,7 @@ __all__ = [
     "CheckState",
     "Color",
     "ColorScheme",
+    "SceneToneMap",
     "CrossAxisAlignment",
     "CursorShape",
     "Date",
@@ -101,6 +107,7 @@ __all__ = [
     "FlickDirection",
     "FocusReason",
     "Font",
+    "Hit3D",
     "GradientStop",
     "Image",
     "ImageFit",
@@ -124,6 +131,8 @@ __all__ = [
     "Orientation",
     "Percent",
     "Point2D",
+    "Point3D",
+    "ProjectedPoint3D",
     "PointerButton",
     "PointerButtons",
     "PointerEvent",
@@ -151,6 +160,7 @@ __all__ = [
     "TouchPoints",
     "Transform2D",
     "Vector2D",
+    "Vector3D",
     "WheelEvent",
     "Value",
 ]
@@ -166,6 +176,7 @@ Value: TypeAlias = (
     | CheckState
     | Color
     | ColorScheme
+    | SceneToneMap
     | CrossAxisAlignment
     | CursorShape
     | Date
@@ -182,6 +193,7 @@ Value: TypeAlias = (
     | FlickDirection
     | FocusReason
     | Font
+    | Hit3D
     | Image
     | ImageFit
     | ImageHorizontalAlignment
@@ -205,6 +217,8 @@ Value: TypeAlias = (
     | Orientation
     | Percent
     | Point2D
+    | Point3D
+    | ProjectedPoint3D
     | PointerButton
     | PointerButtons
     | PointerEvent
@@ -232,5 +246,6 @@ Value: TypeAlias = (
     | TouchPoints
     | Transform2D
     | Vector2D
+    | Vector3D
     | WheelEvent
 )

@@ -1,6 +1,9 @@
 use crate::Color;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::Cow,
+    sync::{Arc, Weak},
+};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
@@ -32,7 +35,23 @@ pub struct StyledLink {
 #[derive(Clone, Debug)]
 enum Storage {
     Compiled(&'static str, &'static [StyledRun], &'static [StyledLink]),
-    Owned(Arc<str>, Arc<[StyledRun]>, Arc<[StyledLink]>),
+    Owned(Arc<OwnedText>),
+}
+
+#[derive(Debug)]
+struct OwnedText {
+    text: Arc<str>,
+    runs: Arc<[StyledRun]>,
+    links: Arc<[StyledLink]>,
+    prefix: Option<VerifiedPrefix>,
+}
+
+#[derive(Debug)]
+struct VerifiedPrefix {
+    previous: Weak<OwnedText>,
+    bytes: usize,
+    runs: usize,
+    links: usize,
 }
 
 /// Immutable text with inline styles. Cloning shares the underlying data.
@@ -64,12 +83,17 @@ impl StyledText {
         Self(Storage::Compiled(text, runs, links))
     }
 
+    fn from_owned(text: Arc<str>, runs: Arc<[StyledRun]>, links: Arc<[StyledLink]>) -> Self {
+        Self(Storage::Owned(Arc::new(OwnedText {
+            text,
+            runs,
+            links,
+            prefix: None,
+        })))
+    }
+
     pub fn from_plain_text(text: impl Into<String>) -> Self {
-        Self(Storage::Owned(
-            text.into().into(),
-            Arc::default(),
-            Arc::default(),
-        ))
+        Self::from_owned(text.into().into(), Arc::default(), Arc::default())
     }
 
     pub fn from_runs(
@@ -91,27 +115,27 @@ impl StyledText {
         if !valid_ranges(&text, links.iter().map(|link| (link.start, link.end))) {
             return Err(StyledTextError::InvalidLinkRange);
         }
-        Ok(Self(Storage::Owned(text.into(), runs.into(), links.into())))
+        Ok(Self::from_owned(text.into(), runs.into(), links.into()))
     }
 
     pub fn text(&self) -> &str {
         match &self.0 {
             Storage::Compiled(text, ..) => text,
-            Storage::Owned(text, ..) => text,
+            Storage::Owned(document) => &document.text,
         }
     }
 
     pub fn runs(&self) -> &[StyledRun] {
         match &self.0 {
             Storage::Compiled(_, runs, _) => runs,
-            Storage::Owned(_, runs, _) => runs,
+            Storage::Owned(document) => &document.runs,
         }
     }
 
     pub fn links(&self) -> &[StyledLink] {
         match &self.0 {
             Storage::Compiled(_, _, links) => links,
-            Storage::Owned(_, _, links) => links,
+            Storage::Owned(document) => &document.links,
         }
     }
 
@@ -151,9 +175,26 @@ impl StyledText {
         }
         let (text, runs) = match &self.0 {
             Storage::Compiled(text, runs, _) => (Arc::from(*text), Arc::from(*runs)),
-            Storage::Owned(text, runs, _) => (text.clone(), runs.clone()),
+            Storage::Owned(document) => (document.text.clone(), document.runs.clone()),
         };
-        Self(Storage::Owned(text, runs, links.into()))
+        Self::from_owned(text, runs, links.into())
+    }
+
+    /// The unchanged text bytes, complete style runs, and complete links
+    /// copied from the previous document by a Markdown stream update.
+    #[doc(hidden)]
+    pub fn verified_prefix_from(&self, previous: &Self) -> Option<(usize, usize, usize)> {
+        let (Storage::Owned(current), Storage::Owned(previous)) = (&self.0, &previous.0) else {
+            return None;
+        };
+        let prefix = current.prefix.as_ref()?;
+        // The weak reference keeps the identity live without keeping the old
+        // document data or a chain of older revisions alive.
+        (prefix.previous.as_ptr() == Arc::as_ptr(previous)).then_some((
+            prefix.bytes,
+            prefix.runs,
+            prefix.links,
+        ))
     }
 
     pub fn from_markdown(source: &str) -> Result<Self, StyledTextError> {
@@ -198,6 +239,12 @@ impl MarkdownStream {
         let mut builder = checkpoint.map_or_else(Markdown::default, |prefix| {
             Markdown::from_prefix(&self.document, prefix.text_end)
         });
+        let previous = checkpoint.and_then(|prefix| {
+            let Storage::Owned(document) = &self.document.0 else {
+                return None;
+            };
+            Some((Arc::downgrade(document), prefix.text_end))
+        });
         for (event, range) in parser.into_offset_iter() {
             let paragraph = matches!(event, Event::End(TagEnd::Paragraph));
             builder.push_event(event)?;
@@ -214,7 +261,7 @@ impl MarkdownStream {
                 });
             }
         }
-        let document = builder.finish();
+        let document = builder.finish_with_prefix(previous);
         self.sealed_source.truncate(offset);
         if let Some(checkpoint) = checkpoint {
             self.sealed_source
@@ -437,6 +484,10 @@ impl Markdown {
     }
 
     fn finish(self) -> StyledText {
+        self.finish_with_prefix(None)
+    }
+
+    fn finish_with_prefix(self, previous: Option<(Weak<OwnedText>, usize)>) -> StyledText {
         // The builder emits ordered, nonoverlapping ranges. Keep those ranges
         // if every endpoint is already a grapheme boundary. A single UTF-8
         // scalar on each side is sufficient for common boundaries. If the
@@ -462,18 +513,31 @@ impl Markdown {
                 .is_boundary(&self.text[start..end], start)
                 == Ok(true)
         };
-        let (runs, links) = if self.runs[self.trusted_runs..]
+        let preserve_ranges = self.runs[self.trusted_runs..]
             .iter()
             .all(|run| boundary(run.start) && boundary(run.end))
             && self.links[self.trusted_links..]
                 .iter()
-                .all(|link| boundary(link.start) && boundary(link.end))
-        {
+                .all(|link| boundary(link.start) && boundary(link.end));
+        let prefix = previous
+            .filter(|_| preserve_ranges)
+            .map(|(previous, bytes)| VerifiedPrefix {
+                previous,
+                bytes,
+                runs: self.trusted_runs,
+                links: self.trusted_links,
+            });
+        let (runs, links) = if preserve_ranges {
             (self.runs, self.links)
         } else {
             self.normalize_ranges()
         };
-        StyledText(Storage::Owned(self.text.into(), runs.into(), links.into()))
+        StyledText(Storage::Owned(Arc::new(OwnedText {
+            text: self.text.into(),
+            runs: runs.into(),
+            links: links.into(),
+            prefix,
+        })))
     }
 
     fn normalize_ranges(&self) -> (Vec<StyledRun>, Vec<StyledLink>) {
@@ -532,17 +596,47 @@ fn push_run(runs: &mut Vec<StyledRun>, start: usize, end: usize, style: TextStyl
 mod tests {
     use super::*;
 
+    fn check_verified_prefix(previous: &StyledText, next: &StyledText) {
+        if let Some((bytes, runs, links)) = next.verified_prefix_from(previous) {
+            assert_eq!(next.text()[..bytes], previous.text()[..bytes]);
+            assert_eq!(next.runs()[..runs], previous.runs()[..runs]);
+            assert_eq!(next.links()[..links], previous.links()[..links]);
+        }
+    }
+
     #[test]
     fn streaming_markdown_keeps_a_verified_prefix() {
         let mut stream = MarkdownStream::default();
         let first = "**a**&#769; [link](#ref)\n\n";
-        assert_eq!(stream.update(first), StyledText::from_markdown(first));
+        let previous = stream.update(first).unwrap();
+        let independent = StyledText::from_markdown(first).unwrap();
+        assert_eq!(previous, independent);
         assert_eq!(stream.sealed_source, first);
         let source = format!("{first}**تحديث** [خيار](#next)\n\nnew tail");
-        assert_eq!(stream.update(&source), StyledText::from_markdown(&source));
+        let next = stream.update(&source).unwrap();
+        assert_eq!(next, StyledText::from_markdown(&source).unwrap());
+        assert_eq!(
+            next.verified_prefix_from(&previous),
+            Some((
+                previous.text().len(),
+                previous.runs().len(),
+                previous.links().len()
+            ))
+        );
+        check_verified_prefix(&previous, &next);
+        assert!(next.verified_prefix_from(&independent).is_none());
         assert!(stream.sealed_source.ends_with("](#next)\n\n"));
         let edited = source.replace("link", "updated link");
-        assert_eq!(stream.update(&edited), StyledText::from_markdown(&edited));
+        let reparsed = stream.update(&edited).unwrap();
+        assert_eq!(reparsed, StyledText::from_markdown(&edited).unwrap());
+        assert!(reparsed.verified_prefix_from(&next).is_none());
+
+        let mut stream = MarkdownStream::default();
+        let previous = stream.update(first).unwrap();
+        let source = format!("{first}**b**&#769;");
+        let normalized = stream.update(&source).unwrap();
+        assert_eq!(normalized, StyledText::from_markdown(&source).unwrap());
+        assert!(normalized.verified_prefix_from(&previous).is_none());
     }
 
     #[test]
@@ -558,25 +652,16 @@ mod tests {
             "- list item\n\n- more\n\nparagraph\n\n    indented code",
         ] {
             let mut stream = MarkdownStream::default();
-            for end in source
-                .char_indices()
-                .map(|(offset, _)| offset)
-                .chain([source.len()])
-            {
+            let ends = || source.char_indices().map(|(offset, _)| offset);
+            let mut previous = StyledText::default();
+            for end in ends().chain([source.len()]).chain(ends().rev()) {
                 let prefix = &source[..end];
-                assert_eq!(
-                    stream.update(prefix),
-                    StyledText::from_markdown(prefix),
-                    "{prefix:?}"
-                );
-            }
-            for end in source.char_indices().map(|(offset, _)| offset).rev() {
-                let prefix = &source[..end];
-                assert_eq!(
-                    stream.update(prefix),
-                    StyledText::from_markdown(prefix),
-                    "{prefix:?}"
-                );
+                let next = stream.update(prefix);
+                assert_eq!(next, StyledText::from_markdown(prefix), "{prefix:?}");
+                if let Ok(next) = next {
+                    check_verified_prefix(&previous, &next);
+                    previous = next;
+                }
             }
         }
     }

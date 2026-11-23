@@ -36,6 +36,15 @@ impl BuiltinField {
     }
 }
 
+macro_rules! read_member {
+    (Hit3D, $input:ident, object_id) => {
+        $input.object_id.clone()
+    };
+    ($owner:ident, $input:ident, $member:ident) => {
+        $input.$member
+    };
+}
+
 macro_rules! field_access {
     ($($owner:ident, $op:literal { $($name:literal => $member:ident: $result:ident,)* })*) => {
         fn builtin_field(owner: &Type, name: &str) -> BuiltinField {
@@ -43,7 +52,7 @@ macro_rules! field_access {
                 $($((Type::$owner, $name) => BuiltinField {
                     member: stringify!($member),
                     read: |value| match value {
-                        Value::$owner(input) => Some(Value::$result(input.$member)),
+                        Value::$owner(input) => Some(Value::$result(read_member!($owner, input, $member))),
                         _ => None,
                     },
                 },)*)*

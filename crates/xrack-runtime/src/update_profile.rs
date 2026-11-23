@@ -13,6 +13,8 @@ pub struct UpdateSample {
     pub materialized_rows: usize,
     pub model_rows_scanned: usize,
     pub model_rows_cloned: usize,
+    pub scene_projections_built: usize,
+    pub scene_projection_cache_hits: usize,
     pub draw_primitives: usize,
     pub quad_batches: usize,
     pub glyph_batches: usize,
@@ -59,6 +61,8 @@ pub fn measure(update: impl FnOnce()) -> Option<UpdateSample> {
             layout_runs = sample.layout_runs as u64,
             layout_reuses = sample.layout_reuses as u64,
             materialized_rows = sample.materialized_rows as u64,
+            scene_projections_built = sample.scene_projections_built as u64,
+            scene_projection_cache_hits = sample.scene_projection_cache_hits as u64,
             cpu_micros = sample.cpu_micros,
         );
         Some(sample)
@@ -134,6 +138,16 @@ pub fn model_work(scanned: usize, cloned: usize) {
     });
 }
 
+pub(crate) fn scene_projection(reused: bool) {
+    count(|sample| {
+        if reused {
+            sample.scene_projection_cache_hits += 1;
+        } else {
+            sample.scene_projections_built += 1;
+        }
+    });
+}
+
 #[doc(hidden)]
 pub fn draw_primitive() {
     count(|sample| sample.draw_primitives += 1);
@@ -161,10 +175,15 @@ pub fn texture_upload(bytes: usize) {
 
 #[doc(hidden)]
 pub fn quad_batch(quads: usize) {
+    // Six XYUV vertices per quad in FemtoVG's triangle command.
+    quad_batch_upload(quads * 6 * 4 * std::mem::size_of::<f32>());
+}
+
+#[doc(hidden)]
+pub fn quad_batch_upload(bytes: usize) {
     count(|sample| {
         sample.quad_batches += 1;
-        // Six XYUV vertices per quad in FemtoVG's triangle command.
-        sample.vertex_bytes += quads * 6 * 4 * std::mem::size_of::<f32>();
+        sample.vertex_bytes += bytes;
     });
 }
 

@@ -1,0 +1,16 @@
+// RAW: "xr.geometry_function"{{.*}}value = "hit-all-3d"{{.*}}!xr.int) -> !xr.hit3dlist
+// CHECK-NOT: value = "hit-all-3d"
+// CHECK: %[[EMPTY:[0-9]+]] = "xr.hit3d_array"() <{value = ""}> : () -> !xr.hit3dlist
+// CHECK: "xr.property"(%[[EMPTY]]) <{name = "hits", visibility = "out"}>
+
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, layers: int,
+}
+
+export component EmptyLayers inherits Window {
+    in property <[Actor]> actors: [];
+    out property <[hit3d]> hits: Scene3D.hit-all(root.actors, 0, 0, 8,
+        Point2D.new(200px, 200px), Point2D.new(100px, 100px), 0);
+}

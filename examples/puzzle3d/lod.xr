@@ -1,0 +1,126 @@
+struct LodActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    visible: bool, pickable: bool,
+    casts-shadow: bool, receives-shadow: bool,
+    camera-kind: string, camera-height: float, camera-lod-bias: float,
+    lod-of: string, lod-max-size: length, lod-bias: float,
+    animation: string, animation-time: float,
+}
+
+export component LodDemo inherits Window {
+    title: "XRack · 网格细节";
+    width: 480px;
+    height: 280px;
+    resizable: false;
+    background: #141d29;
+
+    in-out property <float> distance: 6;
+    in-out property <bool> orthographic: false;
+    in-out property <bool> full-detail: false;
+    in-out property <float> object-bias: 1;
+    in-out property <bool> animated: false;
+    in-out property <bool> automatic: false;
+    in-out property <bool> deformation: false;
+    in-out property <bool> morph-only: false;
+    in-out property <float> time: 0;
+    in-out property <bool> shadows: false;
+    property <point2d> viewport: Point2D.new(280px, 252px);
+    property <point2d> center: Point2D.new(140px, 126px);
+
+    property <LodActor> defaults: LodActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff,
+        visible: true, pickable: true, casts-shadow: true, receives-shadow: true,
+        camera-kind: "", camera-height: 8, camera-lod-bias: 1,
+        lod-of: "", lod-max-size: 0px, lod-bias: 1,
+        animation: "", animation-time: 0,
+    };
+    property <[LodActor]> scene: [
+        LodActor { mesh: "primitive:box", lod-of: "target", lod-max-size: 60px, visible: !root.automatic, ..root.defaults },
+        LodActor {
+            id: "target", color: #52b7fa,
+            mesh: root.automatic
+                ? (root.deformation
+                    ? (root.morph-only ? @mesh-url("models/lod-morph.gltf", auto-lod)
+                        : @mesh-url("models/lod-deform.gltf", auto-lod))
+                    : (root.animated ? @mesh-url("models/lod-surface-animated.gltf", auto-lod)
+                        : @mesh-url("models/lod-surface.gltf", auto-lod)))
+                : "primitive:sphere",
+            lod-bias: root.object-bias,
+            animation: root.deformation ? "Deform" : "Slide", animation-time: root.time,
+            ..root.defaults
+        },
+        LodActor {
+            mesh: root.animated ? @mesh-url("models/animated-panel.glb") : @mesh-url("models/octa-lod.gltf"),
+            lod-of: "target", lod-max-size: 140px, visible: !root.automatic,
+            x: 25, pickable: false, color: #ff4030,
+            ..root.defaults
+        },
+        LodActor {
+            id: "view", z: root.distance,
+            camera-kind: root.orthographic ? "orthographic" : "perspective",
+            camera-lod-bias: root.full-detail ? 0 : 1,
+            ..root.defaults
+        },
+        LodActor {
+            id: "floor", mesh: "primitive:box", y: -1.3,
+            scale-x: 9, scale-y: 0.18, scale-z: 9,
+            color: #3a4962, visible: root.shadows, pickable: false, casts-shadow: false,
+            ..root.defaults
+        },
+    ];
+
+    out property <hit3d> camera-hit: Scene3D.hit-camera(root.scene, "view", root.viewport, root.center);
+    out property <hit3d> orbit-hit: Scene3D.hit(root.scene, 0, 0, root.distance, root.viewport, root.center);
+    out property <[hit3d]> camera-hits: Scene3D.hit-all-camera(root.scene, "view", root.viewport, root.center);
+    out property <hit3d> world-hit: Scene3D.ray-hit(
+        root.scene, Point3D.new(0, 0, 10), Vector3D.new(0, 0, -1), 20);
+
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 14px;
+        SceneView3D {
+            width: root.viewport.x;
+            height: root.viewport.y;
+            model: root.scene;
+            camera: "view";
+            shadows: root.shadows;
+            shadow-map-size: 256;
+            light-yaw: 26;
+            light-elevation: 42;
+            scene-background: #22314a;
+        }
+        VerticalLayout {
+            width: 150px;
+            spacing: 10px;
+            Text { text: "相机距离"; color: #edf4ff; }
+            distance-slider := Slider {
+                width: 142px;
+                height: 30px;
+                minimum: 3;
+                maximum: 60;
+                step: 1;
+                value <=> root.distance;
+            }
+            ortho-toggle := CheckBox { text: "正交相机"; checked <=> root.orthographic; }
+            detail-toggle := CheckBox { text: "始终用主网格"; checked <=> root.full-detail; }
+            auto-toggle := CheckBox { text: "自动减面"; checked <=> root.automatic; }
+            if root.automatic: deform-toggle := CheckBox {
+                text: "蒙皮与形变";
+                checked <=> root.deformation;
+            }
+            if root.automatic && root.deformation: pose-slider := Slider {
+                width: 142px;
+                height: 30px;
+                minimum: 0;
+                maximum: 1;
+                step: 0.01;
+                value <=> root.time;
+            }
+        }
+    }
+}

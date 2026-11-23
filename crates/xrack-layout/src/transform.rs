@@ -145,6 +145,32 @@ impl<From, To> Transform2D<From, To> {
             });
             return Rect::new(origin.x, origin.y, 0.0, 0.0);
         }
+        if self.axis_scales().is_some() {
+            let start = Point {
+                x: rect.x,
+                y: rect.y,
+            };
+            let end = Point {
+                x: rect.x + rect.width,
+                y: rect.y + rect.height,
+            };
+            if [start.x, start.y, end.x, end.y]
+                .into_iter()
+                .all(f32::is_finite)
+            {
+                // Each axis is independent, including with a negative scale.
+                let start = self.map_point(start);
+                let end = self.map_point(end);
+                let left = start.x.min(end.x);
+                let top = start.y.min(end.y);
+                return Rect::new(
+                    left,
+                    top,
+                    start.x.max(end.x) - left,
+                    start.y.max(end.y) - top,
+                );
+            }
+        }
         let [first, rest @ ..] = self.map_corners(rect);
         let (mut left, mut top, mut right, mut bottom) = (first.x, first.y, first.x, first.y);
         for point in rest {
@@ -171,6 +197,15 @@ impl Transform2D<LayoutSpace, LayoutSpace> {
                     | "TabButton"
                     | "TableColumn"
             )
+        {
+            return Self::IDENTITY;
+        }
+        // One ordered lookup handles the common case without any transforms.
+        if node
+            .properties
+            .range("transform"..)
+            .next()
+            .is_none_or(|(name, _)| !name.starts_with("transform"))
         {
             return Self::IDENTITY;
         }

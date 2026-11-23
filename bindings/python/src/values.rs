@@ -18,6 +18,9 @@ impl PythonValue {
     pub(super) fn into_for(self, ty: &ValueType) -> PyResult<HostValue> {
         let value = match (ty, self.0) {
             (ValueType::Float, HostValue::Int(value)) => HostValue::Float(value as f64),
+            (ValueType::Hit3DList, HostValue::StringList(value)) if value.is_empty() => {
+                HostValue::Hit3DList(rt::VecModel::default())
+            }
             (ValueType::IntList, HostValue::StringList(value)) if value.is_empty() => {
                 HostValue::IntList(Vec::new())
             }
@@ -104,6 +107,98 @@ struct_value!(Font {
 struct_value!(Point2D {
     x: Length,
     y: Length
+});
+struct_value!(Point3D {
+    x: f64,
+    y: f64,
+    z: f64
+});
+struct_value!(Vector3D {
+    x: f64,
+    y: f64,
+    z: f64
+});
+owned_value!(Hit3D, rt::Hit3D);
+
+#[pymethods]
+impl Hit3D {
+    #[new]
+    #[pyo3(signature = (object_id, distance, position, normal, local_position, local_normal, uv, *, row_index = -1))]
+    fn new(
+        object_id: String,
+        distance: f64,
+        position: Point3D,
+        normal: Vector3D,
+        local_position: Point3D,
+        local_normal: Vector3D,
+        uv: (f64, f64),
+        row_index: i64,
+    ) -> Self {
+        Self(rt::Hit3D::from_data(rt::scene3d::Hit3DData {
+            valid: true,
+            object_id,
+            row_index,
+            distance,
+            position: position.0,
+            normal: normal.0,
+            local_position: local_position.0,
+            local_normal: local_normal.0,
+            u: uv.0,
+            v: uv.1,
+        }))
+    }
+
+    #[staticmethod]
+    fn miss() -> Self {
+        Self(rt::Hit3D::default())
+    }
+
+    #[getter]
+    fn valid(&self) -> bool {
+        self.0.valid
+    }
+    #[getter]
+    fn object_id(&self) -> String {
+        self.0.object_id.clone()
+    }
+    #[getter]
+    fn row_index(&self) -> i64 {
+        self.0.row_index
+    }
+    #[getter]
+    fn distance(&self) -> f64 {
+        self.0.distance
+    }
+    #[getter]
+    fn position(&self) -> Point3D {
+        self.0.position.into()
+    }
+    #[getter]
+    fn normal(&self) -> Vector3D {
+        self.0.normal.into()
+    }
+    #[getter]
+    fn local_position(&self) -> Point3D {
+        self.0.local_position.into()
+    }
+    #[getter]
+    fn local_normal(&self) -> Vector3D {
+        self.0.local_normal.into()
+    }
+    #[getter]
+    fn u(&self) -> f64 {
+        self.0.u
+    }
+    #[getter]
+    fn v(&self) -> f64 {
+        self.0.v
+    }
+}
+struct_value!(ProjectedPoint3D {
+    point: Point2D,
+    depth: f64,
+    valid: bool,
+    inside: bool
 });
 struct_value!(Vector2D {
     x: Length,
@@ -717,6 +812,7 @@ macro_rules! bridge_values {
             type_hint_subscript!(PyList::TYPE_HINT, PyString::TYPE_HINT),
             type_hint_subscript!(PyList::TYPE_HINT, PyInt::TYPE_HINT),
             type_hint_subscript!(PyList::TYPE_HINT, Date::TYPE_HINT),
+            type_hint_subscript!(PyList::TYPE_HINT, Hit3D::TYPE_HINT),
             $($wrapper::TYPE_HINT,)+
             $($name::TYPE_HINT),+
         );
@@ -745,6 +841,11 @@ macro_rules! bridge_values {
                     let dates = list.iter().map(|item| Ok(item.extract::<PyRef<'_, Date>>()?.0))
                         .collect::<PyResult<Vec<_>>>()?;
                     return Ok(HostValue::DateList(dates));
+                }
+                if !list.is_empty() && list.iter().all(|item| item.is_instance_of::<Hit3D>()) {
+                    let hits = list.iter().map(|item| Ok(item.extract::<PyRef<'_, Hit3D>>()?.0.clone()))
+                        .collect::<PyResult<Vec<_>>>()?;
+                    return Ok(HostValue::Hit3DList(hits.into()));
                 }
                 return Ok(HostValue::StringList(value.extract()?));
             }
@@ -777,9 +878,11 @@ macro_rules! bridge_values {
                 HostValue::IntModel(model) => convert!(model.into_snapshot()),
                 HostValue::DateList(dates) => convert!(dates.into_iter().map(Date).collect::<Vec<_>>()),
                 HostValue::DateModel(model) => convert!(model.into_snapshot().into_iter().map(Date).collect::<Vec<_>>()),
+                HostValue::Hit3DList(model) => convert!(model.into_snapshot().into_iter().map(Hit3D).collect::<Vec<_>>()),
                 HostValue::Image(value) => convert!(Image(value.into())),
                 // The combo projection is renderer data and has no public ValueType.
                 HostValue::ComboModel(_) => Err(PyTypeError::new_err("invalid public XRack combo projection")),
+                HostValue::SceneObjects(_) | HostValue::SceneLights(_) | HostValue::SceneEnvironment(_) | HostValue::SceneReflections(_) | HostValue::SceneFogVolumes(_) | HostValue::SceneParticleEmitters(_) | HostValue::SceneParticleAffectors(_) => Err(PyTypeError::new_err("invalid public XRack scene projection")),
                 $(HostValue::$tag(value) => convert!($wrapper(value)),)+
                 $(HostValue::$name(value) => convert!($name::from(value)),)+
             }
@@ -807,6 +910,10 @@ bridge_values! {
         Length => Length,
         Percent => Percent,
         Point2D => Point2D,
+        Point3D => Point3D,
+        Vector3D => Vector3D,
+        Hit3D => Hit3D,
+        ProjectedPoint3D => ProjectedPoint3D,
         PointerButtons => PointerButtons,
         PointerEvent => PointerEvent,
         Record => Record,
@@ -825,6 +932,7 @@ bridge_values! {
         ButtonDisplay { IconOnly, TextOnly, TextBesideIcon, TextUnderIcon },
         CheckState { Unchecked, PartiallyChecked, Checked },
         ColorScheme { System, Light, Dark },
+        SceneToneMap { #[pyo3(name = "None_")] None, Linear, Reinhard, Aces, HejlDawson, Filmic },
         CrossAxisAlignment { Auto, Stretch, Start, End, Center },
         CursorShape { Auto, Default, Pointer, Text, Crosshair, Move, Grab, Grabbing, NotAllowed, Wait, Help, ResizeHorizontal, ResizeVertical, ZoomIn, ZoomOut },
         DialInputMode { Circular, Horizontal, Vertical },

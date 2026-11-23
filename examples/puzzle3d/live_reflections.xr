@@ -1,0 +1,97 @@
+struct CaptureActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    casts-reflections: bool, receives-reflections: bool,
+}
+
+struct CaptureProbe {
+    position: point3d, box-size: vector3d,
+    parallax-correction: bool, capture-size: int, refresh-mode: string,
+    capture-revision: int,
+    time-slicing: string,
+    intensity: float,
+}
+
+export component LiveReflectionsDemo inherits Window {
+    title: "XRack · 实时场景反射";
+    width: 532px;
+    height: 382px;
+    resizable: false;
+    background: #141d29;
+
+    in-out property <bool> warm: true;
+    in-out property <bool> casts: true;
+    in-out property <bool> receives: true;
+    in-out property <float> orbit: 0;
+    in-out property <float> probe-x: 0;
+    in-out property <int> revision: 0;
+    in-out property <string> refresh: "on-change";
+    in-out property <string> slicing: "none";
+    property <CaptureActor> defaults: CaptureActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, casts-reflections: true, receives-reflections: true,
+    };
+    property <[CaptureActor]> scene: [
+        CaptureActor {
+            id: "mirror", mesh: @mesh-url("models/probe-sphere.gltf"),
+            scale-x: 1.55, scale-y: 1.55, scale-z: 1.55, casts-reflections: false,
+            receives-reflections: root.receives, ..root.defaults
+        },
+        CaptureActor {
+            id: "reflection-card", z: 10, scale-x: 11, scale-y: 9, scale-z: 0.3,
+            color: root.warm ? #ef5f38 : #3e9fff, casts-reflections: root.casts, ..root.defaults
+        },
+        CaptureActor {
+            id: "base", y: -1.42, scale-x: 8.4, scale-y: 0.16, scale-z: 7.6,
+            color: #627589, ..root.defaults
+        },
+        CaptureActor {
+            id: "left-column", x: -2.9, y: -0.25, z: -0.64,
+            scale-x: 0.62, scale-y: 2.05, scale-z: 0.7, color: #e7be6f, ..root.defaults
+        },
+        CaptureActor {
+            id: "right-column", x: 2.9, y: -0.35, z: -0.48,
+            scale-x: 0.62, scale-y: 1.8, scale-z: 0.7, color: #75b9aa, ..root.defaults
+        },
+    ];
+    property <[CaptureProbe]> probes: [
+        CaptureProbe {
+            position: Point3D.new(root.probe-x, 0, 0), box-size: Vector3D.new(8, 8, 16),
+            parallax-correction: true, capture-size: 96,
+            refresh-mode: root.refresh, capture-revision: root.revision,
+            time-slicing: root.slicing,
+            intensity: 1.65,
+        },
+    ];
+
+    SceneView3D {
+        width: 532px; height: 270px;
+        model: root.scene; reflection-probes: root.probes;
+        cache-rendering: true;
+        camera-yaw: root.orbit; camera-pitch: 0; camera-distance: 8;
+        scene-background: #24354d; light-yaw: -30; light-elevation: 58;
+        scene-hdr: true;
+    }
+    HorizontalLayout {
+        x: 12px; y: 279px; width: 508px; height: 45px; spacing: 8px;
+        card := Button { width: 116px; text: "切换反射颜色"; clicked => { root.warm = !root.warm; } }
+        mode := Button {
+            width: 99px; text: root.refresh == "on-change" ? "按变化" : root.refresh == "first-frame" ? "固定首帧" : "逐帧";
+            clicked => { root.refresh = root.refresh == "on-change" ? "first-frame" : root.refresh == "first-frame" ? "every-frame" : "on-change"; }
+        }
+        capture := Button { width: 94px; text: "刷新探针"; clicked => { root.revision += 1; } }
+        slicing-mode := Button {
+            width: 129px;
+            text: root.slicing == "none" ? "同帧更新" : root.slicing == "individual-faces" ? "逐面更新" : "分级预滤波";
+            clicked => { root.slicing = root.slicing == "none" ? "individual-faces"
+                : root.slicing == "individual-faces" ? "all-faces-at-once" : "none"; }
+        }
+    }
+    HorizontalLayout {
+        x: 12px; y: 329px; width: 508px; height: 40px; spacing: 10px;
+        Text { text: "观察角度"; color: #e2eaf4; }
+        angle := Slider { minimum: -22; maximum: 22; value <=> root.orbit; }
+    }
+}

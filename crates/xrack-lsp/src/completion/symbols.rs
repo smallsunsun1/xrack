@@ -257,6 +257,13 @@ pub(crate) fn query(
     let Some(cursor) = position.and_then(|(line, column)| source.offset_at(line, column)) else {
         return Value::Null;
     };
+    if method == "textDocument/hover"
+        && let Some(hint) = workspace.and_then(|workspace| {
+            super::imports::mesh_asset_hover(&source, &tokens, cursor, workspace)
+        })
+    {
+        return hint;
+    }
     let Some((token, symbol)) = symbols.hit(cursor) else {
         return Value::Null;
     };
@@ -325,6 +332,7 @@ pub(crate) fn query(
                 Type::RecordList(name) => format!("[{name}]"),
                 Type::StringList => "[string]".into(),
                 Type::IntList => "[int]".into(),
+                Type::Hit3DList => "[hit3d]".into(),
                 Type::DateList => "[Date]".into(),
                 _ => ty.name().into_owned(),
             });
@@ -991,7 +999,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
 
     fn field(&self, parent: &Symbol, name: &str) -> Option<Symbol> {
         let ty = parent.ty.as_ref()?;
-        if let Some(ty) = ty.input_field(name).or_else(|| {
+        if let Some(ty) = ty.builtin_field(name).map(|(_, ty)| ty).or_else(|| {
             (matches!(ty, Type::Image) && matches!(name, "width" | "height")).then_some(Type::Int)
         }) {
             let mut symbol = Symbol::builtin(Kind::Property, Some(ty));

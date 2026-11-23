@@ -100,6 +100,7 @@ struct Index<'a> {
     value_navigation: BTreeSet<usize>,
     choice_roles: BTreeMap<(usize, &'a str), String>,
     imported_members: BTreeMap<String, Vec<Member>>,
+    imported_globals: BTreeSet<String>,
 }
 
 enum ComboModelHint<'a> {
@@ -339,6 +340,7 @@ impl<'a> Index<'a> {
             value_navigation,
             choice_roles: BTreeMap::new(),
             imported_members: BTreeMap::new(),
+            imported_globals: BTreeSet::new(),
         }
     }
 
@@ -1185,6 +1187,67 @@ fn shortcut_values(
     )
 }
 
+fn mesh_options(
+    text: &str,
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+) -> Option<Vec<Value>> {
+    for (index, window) in tokens.windows(4).enumerate().rev() {
+        let [url, open, path, delimiter] = window else {
+            continue;
+        };
+        if url.text != "@mesh-url"
+            || open.text != "("
+            || !path.quoted()
+            || delimiter.text != ","
+            || delimiter.range.end > cursor
+        {
+            continue;
+        }
+        let before = &tokens[index + 4..tokens.partition_point(|token| token.range.start < cursor)];
+        let mut used = BTreeSet::new();
+        let mut start = delimiter.range.end;
+        let mut completed = true;
+        let mut pairs = before.chunks_exact(2);
+        for pair in &mut pairs {
+            if !name(pair[0].text) || pair[1].text != "," {
+                completed = false;
+                break;
+            }
+            used.insert(pair[0].text);
+            start = pair[1].range.end;
+        }
+        if !completed
+            || pairs
+                .remainder()
+                .first()
+                .is_some_and(|token| !name(token.text))
+        {
+            continue;
+        }
+        let prefix = text.get(start..cursor)?.trim_start();
+        let start = cursor - prefix.len();
+        let end = tokens
+            .iter()
+            .find(|token| token.range.start == start && name(token.text))
+            .map_or(cursor, |token| token.range.end);
+        return Some(
+            builtins::MESH_URL_OPTIONS
+                .iter()
+                .filter(|(option, _)| option.starts_with(prefix) && !used.contains(option))
+                .map(|(option, description)| {
+                    json!({
+                        "label": option, "kind": KEYWORD, "detail": description,
+                        "textEdit": { "range": source.range(start, end), "newText": option }
+                    })
+                })
+                .collect(),
+        );
+    }
+    None
+}
+
 pub(crate) fn complete_with_imports(
     text: &str,
     line: usize,
@@ -1197,6 +1260,27 @@ pub(crate) fn complete_with_imports(
         return vec![];
     };
     let tokens = editor_tokens::scan(text);
+    if let Some(items) = mesh_options(text, &source, &tokens, cursor) {
+        return items;
+    }
+    if let Some(kinds) = imports::scene_string_options(&source, &tokens, cursor, text.len()) {
+        return kinds;
+    }
+    if let Some(paths) = workspace
+        .and_then(|workspace| imports::scene_asset_paths(&source, &tokens, cursor, workspace))
+    {
+        return paths;
+    }
+    if let Some(clips) = workspace
+        .and_then(|workspace| imports::scene_animation_values(&source, &tokens, cursor, workspace))
+    {
+        return clips;
+    }
+    if let Some(cameras) = workspace
+        .and_then(|workspace| imports::scene_camera_values(&source, &tokens, cursor, workspace))
+    {
+        return cameras;
+    }
     let code: Vec<_> = tokens.iter().filter(|t| t.code()).collect();
     if let Some(values) = shortcut_values(text, &source, &tokens, &code, cursor) {
         return values;
@@ -1281,7 +1365,7 @@ pub(crate) fn complete_with_imports(
         if let Some(workspace) = workspace
             && !index.imports.is_empty()
         {
-            index.imported_members = workspace.imported_members(&tokens);
+            (index.imported_members, index.imported_globals) = workspace.imported_members(&tokens);
         }
         index.infer_repeat_items(false);
         index.infer_choice_roles(&tokens);
@@ -2136,6 +2220,15 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         return;
     }
     if receiver.is_empty()
+        && index.imported_globals.contains(first)
+        && let Some(members) = index.imported_members.get(first)
+    {
+        for member in members {
+            items.member(member);
+        }
+        return;
+    }
+    if receiver.is_empty()
         && builtins::NAMESPACES.contains(&first)
         && index.builtin_namespace_visible(scope, first)
     {
@@ -2174,58 +2267,23 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         items.words("width height", FIELD, "read-only int");
         return;
     }
-    if let Some(
-        mut ty @ (Type::KeyEvent
-        | Type::KeyModifiers
-        | Type::WheelEvent
-        | Type::PointerEvent
-        | Type::Point2D
-        | Type::Vector2D
-        | Type::TouchPoint),
-    ) = index.ancestors(scope).find_map(|scope| {
-        index
-            .members(scope, false)
-            .into_iter()
-            .find(|member| member.name == first)?
-            .ty
-            .clone()
-    }) {
-        for field in receiver.iter().rev() {
-            let Some(next) = ty.input_field(field) else {
-                return;
-            };
-            ty = next;
-        }
-        for field in [
-            "key",
-            "text",
-            "modifiers",
-            "repeat",
-            "control",
-            "shift",
-            "alt",
-            "meta",
-            "primary",
-            "x",
-            "y",
-            "delta-x",
-            "delta-y",
-            "lines-x",
-            "lines-y",
-            "is-line",
-            "kind",
-            "button",
-            "inside",
-            "is-touch",
-            "touch-finger-id",
-            "id",
-            "start-x",
-            "start-y",
-        ] {
-            if let Some(field_type) = ty.input_field(field) {
-                items.add(field, FIELD, &field_type.name());
-            }
-        }
+    if let Some(ty) = index
+        .ancestors(scope)
+        .find_map(|scope| {
+            index
+                .members(scope, false)
+                .into_iter()
+                .find(|member| member.name == first)?
+                .ty
+                .clone()
+        })
+        .filter(|ty| {
+            ty.builtin_fields()
+                .iter()
+                .any(|field| ty.input_field(field).is_some())
+        })
+    {
+        complete_builtin_fields(ty, receiver.iter().rev().copied(), items);
         return;
     }
     let owner = match first {
@@ -2781,8 +2839,8 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.words("width height", FIELD, "read-only int");
                 return;
             }
-            Some(Type::Point2D | Type::Vector2D) if fields.peek().is_none() => {
-                items.words("x y", FIELD, "length");
+            Some(ty) if !ty.builtin_fields().is_empty() => {
+                complete_builtin_fields(ty.clone(), fields, items);
                 return;
             }
             _ => return,
@@ -2790,6 +2848,24 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
     }
     for member in members {
         items.member(member);
+    }
+}
+
+fn complete_builtin_fields<'a>(
+    mut ty: Type,
+    fields: impl Iterator<Item = &'a str>,
+    items: &mut Items,
+) {
+    for field in fields {
+        let Some(next) = ty.builtin_field(field).map(|(_, ty)| ty) else {
+            return;
+        };
+        ty = next;
+    }
+    for &field in ty.builtin_fields() {
+        if let Some((_, result)) = ty.builtin_field(field) {
+            items.add(field, FIELD, &result.name());
+        }
     }
 }
 

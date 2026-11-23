@@ -8,11 +8,18 @@ repository.workspace = true
 description = "XRack resources support"
 
 [dependencies]
+base64 = "0.22"
+bevy_mikktspace = "=1.0.0"
+flate2.workspace = true
 fluent-syntax.workspace = true
 gif.workspace = true
 gif-dispose.workspace = true
+gltf = { version = "=1.4.1", default-features = false, features = ["utils", "extensions", "KHR_materials_unlit"] }
+jpeg-decoder = { version = "=0.3.2", default-features = false }
+nalgebra.workspace = true
 png.workspace = true
 rgb.workspace = true
+rmeshopt = "=0.1.3"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

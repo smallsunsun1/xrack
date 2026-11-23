@@ -1,0 +1,86 @@
+struct BlendActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    color: color,
+    animation: string, animation-time: float, animation-loop: bool,
+    animation-to: string, animation-to-time: float, animation-to-loop: bool,
+    animation-blend: float,
+}
+
+export component AnimationBlendDemo inherits Window {
+    title: "XRack · 动画过渡";
+    width: 580px;
+    height: 348px;
+    resizable: false;
+    background: #141d29;
+
+    in-out property <float> blend: 0.5;
+    in-out property <float> from-time: 1;
+    in-out property <float> to-time: 1;
+    in-out property <bool> from-loop: false;
+    in-out property <bool> to-loop: false;
+    in-out property <string> motion-to: "Turn";
+    property <point2d> viewport-size: Point2D.new(580px, 244px);
+    property <BlendActor> defaults: BlendActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff,
+        animation: "", animation-time: root.from-time, animation-loop: root.from-loop,
+        animation-to: "", animation-to-time: root.to-time, animation-to-loop: root.to-loop,
+        animation-blend: root.blend,
+    };
+    property <[BlendActor]> scene: [
+        BlendActor {
+            id: "movement", mesh: @mesh-url("models/animated-panel.glb"), x: -5.5,
+            color: #e2a959, animation: "Slide", animation-to: root.motion-to, ..root.defaults
+        },
+        BlendActor {
+            id: "skin", mesh: @mesh-url("models/skinned-panel.glb"), x: -1.6,
+            color: #69c5a7, animation: "Bend", ..root.defaults
+        },
+        BlendActor {
+            id: "morph", mesh: @mesh-url("models/morph-panel.glb"), x: 3.15,
+            color: #8da8ed, animation: "Morph", animation-to: "StepMorph", ..root.defaults
+        },
+        BlendActor {
+            id: "dolly", mesh: @mesh-url("models/camera-rig.gltf"),
+            animation-to: "Dolly", ..root.defaults
+        },
+        BlendActor {
+            id: "backdrop", x: 0, z: -0.85, scale-x: 15, scale-y: 5.4, scale-z: 0.12,
+            color: #575e70, ..root.defaults
+        },
+    ];
+    out property <projectedpoint3d> dolly: Scene3D.project-camera(root.scene, "dolly/Hero",
+        root.viewport-size, Point3D.new(0, 0, 0));
+    in-out property <point2d> cursor: Point2D.new(180px, 122px);
+    out property <string> picked: Scene3D.pick(root.scene, 0, 0, 9,
+        root.viewport-size, root.cursor);
+
+    SceneView3D {
+        width: 580px; height: 244px;
+        model: root.scene;
+        camera-yaw: 0; camera-pitch: 0; camera-distance: 9;
+        light-yaw: -37; light-elevation: 28;
+        shadows: true; shadow-map-size: 512; shadow-bias: 0.006;
+        scene-background: #26364a;
+    }
+    VerticalLayout {
+        x: 14px; y: 246px; width: 552px; height: 94px; spacing: 6px;
+        HorizontalLayout {
+            height: 42px; spacing: 8px;
+            from := Button { text: "原片段"; width: 80px; clicked => { root.blend = 0; } }
+            to := Button { text: "目标片段"; width: 96px; clicked => { root.blend = 1; } }
+            blend-slider := Slider { minimum: 0; maximum: 1; value <=> root.blend; }
+        }
+        HorizontalLayout {
+            height: 42px; spacing: 10px;
+            Text { text: "原时间"; color: #edf3ff; }
+            from-slider := Slider { minimum: 0; maximum: 1; width: 204px; value <=> root.from-time; }
+            Text { text: "目标时间"; color: #edf3ff; }
+            to-slider := Slider { minimum: 0; maximum: 1; width: 188px; value <=> root.to-time; }
+        }
+    }
+}

@@ -377,13 +377,22 @@ impl From<Error> for PreviewError {
     }
 }
 
+struct Preview {
+    filename: String,
+    component: String,
+    scope: u64,
+    instance: Instance,
+    windows: Windows,
+}
+
 #[derive(Default)]
 struct Host {
-    active: Option<(Instance, Windows)>,
-    pending: Option<(Instance, Windows)>,
+    active: Option<Preview>,
+    pending: Option<Preview>,
     renderer: Option<Renderer>,
     scale: Option<f32>,
     check: bool,
+    scope: u64,
 }
 
 impl Host {
@@ -411,6 +420,7 @@ impl Host {
             Program::from_module_with_file_resources(&preview.module, filename, translations)?;
         preview.inputs.extend(assets);
         self.stage(
+            filename,
             program,
             preview.components,
             preview.inputs.into_iter().collect(),
@@ -420,6 +430,7 @@ impl Host {
 
     fn stage(
         &mut self,
+        filename: &str,
         program: Program,
         components: Vec<String>,
         inputs: Vec<PathBuf>,
@@ -429,7 +440,21 @@ impl Host {
             .filter(|name| components.contains(name))
             .or_else(|| components.first().cloned())
             .ok_or_else(|| failure("this file has no component to preview"))?;
+        let scope = if let Some(active) = &self.active
+            && active.filename == filename
+            && active.component == selected
+        {
+            active.scope
+        } else {
+            self.scope = self.scope.wrapping_add(1);
+            self.scope
+        };
         let instance = program.create(&selected).map_err(PreviewError::from)?;
+        if let Some(active) = &self.active
+            && active.filename == filename
+        {
+            instance.restore_preview_state(&active.instance)?;
+        }
         let mut windows = Windows::new(Box::new(instance.clone()));
         instance.try_render().map_err(PreviewError::from)?;
         let png = if self.check {
@@ -451,7 +476,7 @@ impl Host {
                 .as_mut()
                 .ok_or_else(|| failure("preview renderer was not initialized"))?;
             windows
-                .render(renderer, self.scale.unwrap_or(1.0))
+                .render(renderer, self.scale.unwrap_or(1.0), scope)
                 .map_err(failure)?
         };
         if let Some(error) = instance.take_error() {
@@ -460,7 +485,7 @@ impl Host {
         let reply = Reply {
             components,
             inputs,
-            component: Some(selected),
+            component: Some(selected.clone()),
             next_frame_ms: next_frame_ms(&windows),
             windows: windows.descriptions(),
             window: windows.selection(),
@@ -469,7 +494,13 @@ impl Host {
             ime_area: ime_area(windows.selected()),
             ..Reply::default()
         };
-        self.pending = Some((instance, windows));
+        self.pending = Some(Preview {
+            filename: filename.into(),
+            component: selected,
+            scope,
+            instance,
+            windows,
+        });
         Ok((reply, png))
     }
 
@@ -495,7 +526,7 @@ impl Host {
         action: impl FnOnce(&mut PreviewScene, &mut Renderer) -> bool,
     ) -> Result<(Reply, Vec<u8>), PreviewError> {
         let (windows, renderer) = match (&mut self.active, &mut self.renderer) {
-            (Some((_, windows)), Some(renderer)) => (windows, renderer),
+            (Some(preview), Some(renderer)) => (&mut preview.windows, renderer),
             (None, _) => return Err(failure("no preview component is loaded")),
             _ => return Err(failure("no preview renderer is active")),
         };
@@ -506,12 +537,17 @@ impl Host {
     fn active_windows(&mut self) -> Result<&mut Windows, PreviewError> {
         self.active
             .as_mut()
-            .map(|(_, windows)| windows)
+            .map(|preview| &mut preview.windows)
             .ok_or_else(|| failure("no preview component is loaded"))
     }
 
     fn render_active(&mut self, redraw: bool) -> Result<(Reply, Vec<u8>), PreviewError> {
-        let (instance, windows) = self
+        let Preview {
+            instance,
+            windows,
+            scope,
+            ..
+        } = self
             .active
             .as_mut()
             .ok_or_else(|| failure("no preview component is loaded"))?;
@@ -536,7 +572,7 @@ impl Host {
             .ok_or_else(|| failure("no preview renderer is active"))?;
         instance.try_render().map_err(PreviewError::from)?;
         let png = windows
-            .render(renderer, self.scale.unwrap_or(1.0))
+            .render(renderer, self.scale.unwrap_or(1.0), *scope)
             .map_err(failure)?;
         if let Some(error) = instance.take_error() {
             return Err(error.into());
@@ -598,21 +634,26 @@ impl Host {
                 self.stage_module(preview, &filename, component)
             }
             Request::Activate => {
-                let (instance, mut windows) = self
+                let mut preview = self
                     .pending
                     .take()
                     .ok_or_else(|| failure("no preview to activate"))?;
                 let reply = Reply {
-                    native_dialog: windows.begin_native_dialog().map(dialog::Panel::from),
-                    window_closed: windows.closed(),
+                    native_dialog: preview
+                        .windows
+                        .begin_native_dialog()
+                        .map(dialog::Panel::from),
+                    window_closed: preview.windows.closed(),
                     ..Reply::default()
                 };
-                self.active = Some((instance, windows));
+                self.active = Some(preview);
                 Ok((reply, Vec::new()))
             }
             Request::Frame => self.render_active(true),
             Request::Inspect => {
-                let (instance, windows) = self
+                let Preview {
+                    instance, windows, ..
+                } = self
                     .active
                     .as_ref()
                     .ok_or_else(|| failure("no preview component is loaded"))?;
@@ -1060,7 +1101,7 @@ mod tests {
             .unwrap();
         assert!(reply.inputs.iter().any(|input| input.ends_with("zh.ftl")));
         host.request(Request::Activate).unwrap();
-        let ui = &host.active.as_ref().unwrap().0;
+        let ui = &host.active.as_ref().unwrap().instance;
         let locale = LocaleContext::default();
         ui.set_locale_context(locale.clone());
         let scene = ui.try_render().unwrap();
@@ -1097,7 +1138,7 @@ mod tests {
             .unwrap();
         assert!(host.active.is_none());
         host.request(Request::Activate).unwrap();
-        let value = |host: &Host| host.active.as_ref().unwrap().0.get("count").unwrap();
+        let value = |host: &Host| host.active.as_ref().unwrap().instance.get("count").unwrap();
         assert_eq!(value(&host), xrack_interpreter::HostValue::Int(1));
 
         host.load("preview.xr", &source(2), BTreeMap::new(), None)
@@ -1118,5 +1159,54 @@ mod tests {
             .unwrap();
         host.request(Request::Activate).unwrap();
         assert_eq!(value(&host), xrack_interpreter::HostValue::Int(3));
+    }
+
+    #[test]
+    fn preview_reload_keeps_written_state_for_the_same_file_and_component() {
+        use xrack_runtime::Value;
+
+        let mut host = Host {
+            check: true,
+            ..Host::default()
+        };
+        let before = r#"
+            export component Main inherits Window {
+                in-out property <float> yaw: 24;
+                in-out property <int> marker: 1;
+                out property <color> lamp: #ff0000;
+            }
+        "#;
+        let after = r#"
+            export component Main inherits Window {
+                in-out property <float> yaw: 24;
+                in-out property <string> marker: "new type";
+                out property <color> lamp: #00ff00;
+            }
+        "#;
+        let active = |host: &Host| host.active.as_ref().unwrap().instance.clone();
+        host.load("puzzle.xr", before, BTreeMap::new(), None)
+            .unwrap();
+        host.request(Request::Activate).unwrap();
+        active(&host).set("yaw", Value::Float(65.0)).unwrap();
+        active(&host).set("marker", Value::Int(8)).unwrap();
+
+        host.load("puzzle.xr", after, BTreeMap::new(), None)
+            .unwrap();
+        assert_eq!(active(&host).get("marker").unwrap(), Value::Int(8));
+        host.request(Request::Activate).unwrap();
+        let edited = active(&host);
+        assert_eq!(edited.get("yaw").unwrap(), Value::Float(65.0));
+        assert_eq!(
+            edited.get("marker").unwrap(),
+            Value::String("new type".into())
+        );
+        assert_eq!(
+            edited.get("lamp").unwrap(),
+            Value::Color(xrack_runtime::Color(0x00ff00ff))
+        );
+
+        host.load("other.xr", after, BTreeMap::new(), None).unwrap();
+        host.request(Request::Activate).unwrap();
+        assert_eq!(active(&host).get("yaw").unwrap(), Value::Float(24.0));
     }
 }

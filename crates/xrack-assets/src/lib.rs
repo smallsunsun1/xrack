@@ -9,6 +9,15 @@ use xrack_runtime::{Image, ImageAsset, VectorSegment};
 pub const MAX_IMAGE_DIMENSION: u32 = 4096;
 pub const MAX_ASSET_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Validate a horizontal PNG LUT strip, with red along each tile's width,
+/// green along its height, and blue selecting a tile.
+pub fn color_lut_size([width, height]: [u32; 2], requested: i64) -> Option<u32> {
+    ((2..=64).contains(&height)
+        && width == height * height
+        && (requested == 0 || requested == i64::from(height)))
+    .then_some(height)
+}
+
 pub fn vector_bounds(path: &VectorPath) -> [f32; 4] {
     let bounds = path.compute_tight_bounds().unwrap_or_else(|| path.bounds());
     [bounds.x(), bounds.y(), bounds.width(), bounds.height()]

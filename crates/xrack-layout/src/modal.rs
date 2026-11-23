@@ -467,7 +467,7 @@ pub(crate) fn index_overlays(
         overlays: &mut OverlayIndex,
     ) {
         if Node::SCROLL_PARTS.contains(&scene.kind)
-            || scene.shared_subtree_excludes(xrack_runtime::SceneFeature::WindowOverlay)
+            || !scene.contains_scene_feature(xrack_runtime::SceneFeature::WindowOverlay)
         {
             return;
         }
@@ -501,9 +501,11 @@ pub(crate) fn index_overlays(
         ..OverlayIndex::default()
     };
     visit(scene, layout, &mut Vec::new(), &mut overlays);
-    layout.overlays = (!overlays.open.is_empty()
-        || !overlays.drawers.is_empty()
-        || floating_keyboard.is_some()
-        || popup_typography != crate::popup::PopupTypography::default())
-    .then(|| Box::new(overlays));
+    layout.set_overlay_index(
+        (!overlays.open.is_empty()
+            || !overlays.drawers.is_empty()
+            || floating_keyboard.is_some()
+            || popup_typography != crate::popup::PopupTypography::default())
+        .then(|| Box::new(overlays)),
+    );
 }

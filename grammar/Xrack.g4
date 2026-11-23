@@ -54,7 +54,7 @@ comparison: additive (('<' | '<=' | '>' | '>=') additive)*;
 additive: multiplicative (('+' | '-') multiplicative)*;
 multiplicative: unary (('*' | '/' | '%') unary)*;
 unary: ('!' | '-' | '+') unary | primary;
-primary: NUMBER (UNIT | '%')? | STRING | COLOR | 'true' | 'false' | gradient | imageUrl | markdown | translation | arrayLiteral | recordLiteral | enumValue | matchExpression | call | reference | '(' expression ')';
+primary: NUMBER (UNIT | '%')? | STRING | COLOR | 'true' | 'false' | gradient | imageUrl | meshUrl | environmentUrl | markdown | translation | arrayLiteral | recordLiteral | enumValue | matchExpression | call | reference | '(' expression ')';
 enumValue: identifier '::' identifier enumArguments?;
 enumArguments: '(' expression (',' expression)* ','? ')' | '{' recordValue (',' recordValue)* ','? '}';
 matchExpression: 'match' expression '{' matchArm (',' matchArm)* ','? '}';
@@ -68,6 +68,8 @@ recordLiteral: identifier '{' (recordValue (',' recordValue)* (',' recordBase?)?
 recordBase: '..' expression ','?;
 recordValue: identifier ':' expression;
 imageUrl: '@image-url' '(' STRING (',' imageSlice)? ')';
+meshUrl: '@mesh-url' '(' STRING (',' identifier)* ')';
+environmentUrl: '@environment-url' '(' STRING ')';
 imageSlice: IDENT '(' imageEdge+ ')';
 imageEdge: NUMBER;
 markdown: '@markdown' '(' STRING ')';

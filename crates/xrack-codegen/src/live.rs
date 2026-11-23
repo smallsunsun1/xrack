@@ -125,6 +125,11 @@ fn value_variant(ty: &Type) -> Result<Ident, String> {
         Type::Date => "Date",
         Type::Length => "Length",
         Type::Point2D => "Point2D",
+        Type::Point3D => "Point3D",
+        Type::Vector3D => "Vector3D",
+        Type::Hit3D => "Hit3D",
+        Type::Hit3DList => "Hit3DList",
+        Type::ProjectedPoint3D => "ProjectedPoint3D",
         Type::Vector2D => "Vector2D",
         Type::Transform2D => "Transform2D",
         Type::Color => "Color",
@@ -138,6 +143,23 @@ fn value_variant(ty: &Type) -> Result<Ident, String> {
     Ok(format_ident!("{variant}"))
 }
 
+fn pack_value(ty: &Type, variant: &Ident, source: TokenStream) -> TokenStream {
+    let source = if *ty == Type::Hit3DList {
+        quote!(::xrack_runtime::VecModel::from(#source))
+    } else {
+        source
+    };
+    quote!(::xrack_runtime::Value::#variant(#source))
+}
+
+fn unpack_value(ty: &Type, source: TokenStream) -> TokenStream {
+    if *ty == Type::Hit3DList {
+        quote!((#source).into_snapshot())
+    } else {
+        source
+    }
+}
+
 fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenStream, String> {
     let name = property.attr("name")?;
     let name_rust = rust_name(name);
@@ -146,12 +168,13 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
     let variant = value_variant(&ty)?;
     let get = format_ident!("get_{name_rust}");
     let try_get = format_ident!("try_get_{name_rust}");
+    let snapshot = unpack_value(&ty, quote!(value));
     let mut methods = quote! {
         pub fn #try_get(&self) -> ::core::result::Result<#rust_type, ::std::string::String> {
             let value = self.__xr_component().current().get_snapshot(#name)
                 .map_err(|error| error.to_string())?;
             match value {
-                ::xrack_runtime::Value::#variant(value) => ::core::result::Result::Ok(value),
+                ::xrack_runtime::Value::#variant(value) => ::core::result::Result::Ok(#snapshot),
                 _ => ::core::result::Result::Err(::std::format!("XRack live property {} has an incompatible value", #name)),
             }
         }
@@ -163,9 +186,10 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
     if writable {
         let set = format_ident!("set_{name_rust}");
         let reset = format_ident!("reset_{name_rust}");
+        let packed = pack_value(&ty, &variant, quote!(value));
         methods.extend(quote! {
             pub fn #set(&mut self, value: #rust_type) {
-                self.__xr_component().current().set(#name, ::xrack_runtime::Value::#variant(value)).unwrap();
+                self.__xr_component().current().set(#name, #packed).unwrap();
             }
 
             pub fn #reset(&mut self) {
@@ -173,7 +197,10 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
             }
         });
     }
-    if matches!(ty, Type::StringList | Type::IntList | Type::DateList) {
+    if matches!(
+        ty,
+        Type::StringList | Type::IntList | Type::DateList | Type::Hit3DList
+    ) {
         let model = format_ident!("model_{name_rust}");
         let (item, access, value) = if ty == Type::IntList {
             (
@@ -186,6 +213,12 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
                 quote!(::xrack_runtime::Date),
                 quote!(date_model),
                 quote!(::xrack_runtime::Value::DateModel(model)),
+            )
+        } else if ty == Type::Hit3DList {
+            (
+                quote!(::xrack_runtime::Hit3D),
+                quote!(hit3d_model),
+                quote!(::xrack_runtime::Value::Hit3DList(model)),
             )
         } else {
             (
@@ -236,13 +269,15 @@ fn callback_methods(callback: OperationRef<'_>) -> Result<TokenStream, String> {
     let returns = result.as_ref().map(host_ty).unwrap_or_else(|| quote!(()));
     let (pack, unpack) = if let Some(ty) = &result {
         let variant = value_variant(ty)?;
+        let packed = pack_value(ty, &variant, quote!(value));
+        let snapshot = unpack_value(ty, quote!(value));
         (
             quote!(::core::result::Result::Ok(::core::option::Option::Some(
-                ::xrack_runtime::Value::#variant(value)
+                #packed
             ))),
             quote! {
                 match result {
-                    ::core::option::Option::Some(::xrack_runtime::Value::#variant(value)) => ::core::result::Result::Ok(value),
+                    ::core::option::Option::Some(::xrack_runtime::Value::#variant(value)) => ::core::result::Result::Ok(#snapshot),
                     _ => ::core::result::Result::Err(::std::format!("XRack live callback {} returned an incompatible value", #name)),
                 }
             },
@@ -253,7 +288,16 @@ fn callback_methods(callback: OperationRef<'_>) -> Result<TokenStream, String> {
             quote! { let _ = result; ::core::result::Result::Ok(()) },
         )
     };
-    let args_value = quote!(#(#args.clone()),*);
+    let unpacked_args = parameters
+        .iter()
+        .zip(&args)
+        .map(|(parameter, arg)| unpack_value(&parameter.ty, quote!(#arg.clone())));
+    let args_value = quote!(#(#unpacked_args),*);
+    let packed_args = parameters
+        .iter()
+        .zip(&args)
+        .zip(&variants)
+        .map(|((parameter, arg), variant)| pack_value(&parameter.ty, variant, quote!(#arg)));
     let (call, bind, bound) = if callback.attribute("pure") == Some("true") {
         (
             quote!(callback(#args_value)),
@@ -287,7 +331,7 @@ fn callback_methods(callback: OperationRef<'_>) -> Result<TokenStream, String> {
             -> ::core::result::Result<#returns, ::std::string::String>
         {
             let result = self.__xr_component().current()
-                .invoke(#name, &[#(::xrack_runtime::Value::#variants(#args)),*])
+                .invoke(#name, &[#(#packed_args),*])
                 .map_err(|error| error.to_string())?;
             #unpack
         }

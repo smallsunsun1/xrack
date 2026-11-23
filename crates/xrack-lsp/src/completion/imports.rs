@@ -7,11 +7,13 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::{Read, Seek, SeekFrom},
     ops::Range,
     path::{Path, PathBuf},
 };
 
 pub(super) use xrack_ir::modules::normalize_source_path as normalize;
+use xrack_parser::builtins::{HEIGHTFIELD_EXTENSION, MESH_SOURCE_EXTENSIONS};
 
 pub(crate) struct Workspace<'a> {
     pub(crate) entry: PathBuf,
@@ -62,8 +64,22 @@ impl<'a> Workspace<'a> {
         }
     }
 
-    pub(super) fn imported_members(&self, tokens: &[Token<'_>]) -> BTreeMap<String, Vec<Member>> {
-        self.interfaces(&import_targets(&self.entry, tokens), &mut BTreeMap::new())
+    pub(super) fn imported_members(
+        &self,
+        tokens: &[Token<'_>],
+    ) -> (BTreeMap<String, Vec<Member>>, BTreeSet<String>) {
+        let imports = import_targets(&self.entry, tokens);
+        let mut modules = BTreeMap::new();
+        let members = self.interfaces(&imports, &mut modules);
+        let globals = imports
+            .iter()
+            .filter_map(|(alias, target)| {
+                let module = self.module(&target.file, &mut modules);
+                let component = module.components.get(&target.name)?;
+                (component.exported && component.base == "global").then(|| alias.clone())
+            })
+            .collect();
+        (members, globals)
     }
 
     pub(super) fn interfaces(
@@ -449,30 +465,54 @@ fn source_links(text: &str, workspace: &Workspace<'_>) -> Vec<(Range<usize>, Str
         .iter()
         .filter(|token| token.code() || token.quoted())
         .collect();
-    preamble(&code)
-        .filter_map(|item| {
-            let (token, path) = match item {
-                Preamble::Named(clause) => (
-                    clause.source,
-                    module_path(&workspace.entry, clause.source.text)?,
-                ),
-                Preamble::Font(token) => {
-                    let path: PathBuf = serde_json::from_str(token.text).ok()?;
-                    if path.is_absolute() {
-                        return None;
-                    }
-                    (token, normalize(&workspace.entry.parent()?.join(path)))
+    let imports = preamble(&code).filter_map(|item| {
+        let (token, path) = match item {
+            Preamble::Named(clause) => (
+                clause.source,
+                module_path(&workspace.entry, clause.source.text)?,
+            ),
+            Preamble::Font(token) => {
+                let path: PathBuf = serde_json::from_str(token.text).ok()?;
+                if path.is_absolute() {
+                    return None;
                 }
-                Preamble::Translations => return None,
-            };
-            // An unsaved buffer can be a valid import before the file exists on disk.
-            if !workspace.open.contains_key(&path) && !path.is_file() {
-                return None;
+                (token, normalize(&workspace.entry.parent()?.join(path)))
             }
-            let uri = workspace.uri(&path)?;
-            Some((token.range.start + 1..token.range.end - 1, uri))
-        })
-        .collect()
+            Preamble::Translations => return None,
+        };
+        // An unsaved buffer can be a valid import before the file exists on disk.
+        if !workspace.open.contains_key(&path) && !path.is_file() {
+            return None;
+        }
+        let uri = workspace.uri(&path)?;
+        Some((token.range.start + 1..token.range.end - 1, uri))
+    });
+    let assets = tokens.windows(3).enumerate().filter_map(|(index, window)| {
+        let [_, open, token] = window else {
+            return None;
+        };
+        let extensions = scene_asset_extensions(&tokens, index)?;
+        if open.text != "(" || !token.quoted() {
+            return None;
+        }
+        let spelling: String = serde_json::from_str(token.text).ok()?;
+        let relative = Path::new(&spelling);
+        if relative.is_absolute()
+            || spelling.contains(':')
+            || !matches_asset_extension(relative, extensions)
+        {
+            return None;
+        }
+        let path = normalize(&workspace.entry.parent()?.join(relative));
+        if !path.is_file() {
+            return None;
+        }
+        Some((
+            token.range.start + 1..token.range.end - 1,
+            workspace.uri(&path)?,
+        ))
+    });
+    imports.chain(assets).collect()
 }
 
 pub(crate) fn document_links(text: &str, workspace: &Workspace<'_>) -> Value {
@@ -485,6 +525,522 @@ pub(crate) fn document_links(text: &str, workspace: &Workspace<'_>) -> Value {
             })
             .collect::<Vec<_>>()
     )
+}
+
+fn scene_asset_extensions(tokens: &[Token<'_>], index: usize) -> Option<&'static [&'static str]> {
+    match tokens.get(index)?.text {
+        "@mesh-url" => Some(MESH_SOURCE_EXTENSIONS),
+        "@environment-url" => Some(&["hdr"]),
+        "@image-url"
+            if index >= 2
+                && matches!(
+                    tokens[index - 2].text,
+                    "scene-lut" | "sprite" | "color-table"
+                )
+                && tokens[index - 1].text == ":" =>
+        {
+            Some(&["png"])
+        }
+        _ => None,
+    }
+}
+
+fn matches_asset_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            extensions
+                .iter()
+                .any(|expected| ext.eq_ignore_ascii_case(expected))
+        })
+}
+
+pub(super) fn scene_animation_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    workspace: &Workspace<'_>,
+) -> Option<Vec<Value>> {
+    let (field, literal) = tokens.windows(3).enumerate().find_map(|(index, tokens)| {
+        let [field, colon, string] = tokens else {
+            return None;
+        };
+        (matches!(field.text, "animation" | "animation-to")
+            && colon.text == ":"
+            && string.text.starts_with('"')
+            && string.blocks_completion(cursor))
+        .then_some((index, string))
+    })?;
+    let open = enclosing_block(tokens, field)?;
+    if !name(tokens.get(open.checked_sub(1)?)?.text) {
+        return None;
+    }
+    let metadata = scene_metadata(&scene_row_asset(tokens, open)?, workspace)?;
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    Some(
+        metadata
+            .animation_selectors()
+            .into_iter()
+            .filter(|label| label.starts_with(prefix))
+            .map(|label| {
+                let replacement = json!(label).to_string();
+                json!({
+                    "label": label, "kind": 12, "detail": "glTF animation clip",
+                    "textEdit": {"range": range, "newText": &replacement[1..replacement.len() - 1]},
+                })
+            })
+            .collect(),
+    )
+}
+
+fn enclosing_block(tokens: &[Token<'_>], before: usize) -> Option<usize> {
+    let mut nested = 0usize;
+    (0..before).rev().find(|&index| {
+        let token = &tokens[index];
+        if token.code() {
+            match token.text {
+                "}" => nested += 1,
+                "{" if nested == 0 => return true,
+                "{" => nested -= 1,
+                _ => {}
+            }
+        }
+        false
+    })
+}
+
+fn scene_row_asset(tokens: &[Token<'_>], open: usize) -> Option<String> {
+    let mut depth = 0usize;
+    let mut asset = None;
+    for (offset, token) in tokens[open + 1..].iter().enumerate() {
+        if !token.code() {
+            continue;
+        }
+        match token.text {
+            "{" => depth += 1,
+            "}" if depth == 0 => break,
+            "}" => depth -= 1,
+            "mesh" if depth == 0 => {
+                let start = open + offset + 1;
+                let Some([_, colon, url, paren, path, end]) = tokens.get(start..start + 6) else {
+                    continue;
+                };
+                if colon.text == ":"
+                    && url.text == "@mesh-url"
+                    && paren.text == "("
+                    && matches!(end.text, ")" | ",")
+                    && path.quoted()
+                {
+                    asset = serde_json::from_str::<String>(path.text).ok();
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    asset
+}
+
+pub(super) fn scene_camera_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    workspace: &Workspace<'_>,
+) -> Option<Vec<Value>> {
+    let (field, literal) = tokens.windows(3).enumerate().find_map(|(index, window)| {
+        let [field, colon, literal] = window else {
+            return None;
+        };
+        (field.text == "camera"
+            && colon.text == ":"
+            && literal.text.starts_with('"')
+            && literal.blocks_completion(cursor))
+        .then_some((index, literal))
+    })?;
+    let view = enclosing_block(tokens, field)?;
+    if tokens.get(view.checked_sub(1)?)?.text != "SceneView3D" {
+        return None;
+    }
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let (owner, _) = prefix.rsplit_once('/')?;
+    let mut open = view;
+    let component = loop {
+        open = enclosing_block(tokens, open)?;
+        let mut header = tokens[..open]
+            .iter()
+            .rev()
+            .filter(|token| token.code())
+            .take_while(|token| !matches!(token.text, "{" | "}" | ";"));
+        if header.any(|token| token.text == "component") {
+            break open;
+        }
+    };
+    let mut depth = 1usize;
+    let tail = &tokens[component + 1..];
+    let end = tail
+        .iter()
+        .position(|token| {
+            if token.code() {
+                match token.text {
+                    "{" => depth += 1,
+                    "}" => depth -= 1,
+                    _ => {}
+                }
+            }
+            depth == 0
+        })
+        .unwrap_or(tail.len());
+    let assets: BTreeSet<_> = tail[..end]
+        .windows(3)
+        .enumerate()
+        .filter_map(|(offset, window)| {
+            let [id, colon, name] = window else {
+                return None;
+            };
+            if id.text != "id"
+                || colon.text != ":"
+                || !name.quoted()
+                || serde_json::from_str::<String>(name.text).ok().as_deref() != Some(owner)
+            {
+                return None;
+            }
+            scene_row_asset(tokens, enclosing_block(tokens, component + 1 + offset)?)
+        })
+        .collect();
+    if assets.len() != 1 {
+        return None;
+    }
+    let metadata = scene_metadata(assets.first()?, workspace)?;
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    let range = &range;
+    Some(metadata.camera_nodes().into_iter().flat_map(|(index, kind, alias)| {
+        [Some(format!("{owner}/#{index}")), alias.map(|alias| format!("{owner}/{alias}"))]
+            .into_iter().flatten().filter(|label| label.starts_with(prefix)).map(move |label| {
+                let replacement = json!(label).to_string();
+                json!({"label": label, "kind": 12, "detail": format!("glTF {kind} camera"),
+                    "textEdit": {"range": range, "newText": &replacement[1..replacement.len() - 1]}})
+            })
+    }).collect())
+}
+
+pub(super) fn scene_string_options(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    text_len: usize,
+) -> Option<Vec<Value>> {
+    let end = tokens.partition_point(|token| token.range.start < cursor);
+    let [field, colon, literal] = tokens.get(end.checked_sub(3)?..end)? else {
+        return None;
+    };
+    let options = match field.text {
+        "camera-kind" => xrack_parser::builtins::SCENE_CAMERA_KINDS,
+        "refresh-mode" => xrack_parser::builtins::REFLECTION_REFRESH_MODES,
+        "time-slicing" => xrack_parser::builtins::REFLECTION_TIME_SLICING,
+        "lightmap-mode" => xrack_parser::builtins::LIGHTMAP_MODES,
+        "fog-shape" => xrack_parser::builtins::FOG_VOLUME_SHAPES,
+        "sprite-playback" => xrack_parser::builtins::PARTICLE_SPRITE_PLAYBACK,
+        "particle-blend-mode" => xrack_parser::builtins::PARTICLE_BLEND_MODES,
+        "emitter-shape" => xrack_parser::builtins::PARTICLE_EMITTER_SHAPES,
+        "affector-kind" => xrack_parser::builtins::PARTICLE_AFFECTOR_KINDS,
+        "velocity-mode" => xrack_parser::builtins::PARTICLE_VELOCITY_MODES,
+        "temporal-aa-mode" => xrack_parser::builtins::TEMPORAL_AA_MODES,
+        _ => return None,
+    };
+    if colon.text != ":" || !literal.text.starts_with('"') || !literal.blocks_completion(cursor) {
+        return None;
+    }
+    let code: Vec<_> = tokens.iter().filter(|token| token.code()).collect();
+    let index = Index::new(&code, text_len);
+    let role = index.scopes[index.scope_at(cursor)].role;
+    if !(if field.text == "temporal-aa-mode" {
+        matches!(
+            role,
+            Role::Element {
+                kind: "SceneView3D",
+                ..
+            }
+        )
+    } else {
+        matches!(role, Role::RecordValue(_))
+    }) {
+        return None;
+    }
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    Some(
+        options
+            .iter()
+            .filter(|(kind, _)| kind.starts_with(prefix))
+            .map(|(kind, detail)| {
+                json!({
+                    "label": kind,
+                    "kind": 12,
+                    "detail": detail,
+                    "textEdit": {"range": range, "newText": kind},
+                })
+            })
+            .collect(),
+    )
+}
+
+fn scene_metadata(
+    asset: &str,
+    workspace: &Workspace<'_>,
+) -> Option<xrack_parser::gltf_metadata::GltfMetadata> {
+    let relative = Path::new(asset);
+    if relative.is_absolute()
+        || asset.contains(':')
+        || !matches_asset_extension(relative, &["glb", "gltf"])
+    {
+        return None;
+    }
+    let path = workspace.entry.parent()?.join(relative);
+    let metadata = fs::metadata(&path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let size = usize::try_from(metadata.len()).ok()?;
+    let mut file = fs::File::open(path).ok()?;
+    let mut header = [0; 20];
+    let header = &mut header[..size.min(20)];
+    file.read_exact(header).ok()?;
+    let json = xrack_parser::gltf_metadata::json_range(header, size)?;
+    // Large GLBs can still have a small JSON chunk. The editor only reads that chunk.
+    const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
+    if json.len() > MAX_JSON_BYTES {
+        return None;
+    }
+    file.seek(SeekFrom::Start(json.start as u64)).ok()?;
+    let mut bytes = vec![0; json.len()];
+    file.read_exact(&mut bytes).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn heightfield_description(asset: &str, workspace: &Workspace<'_>) -> Option<String> {
+    let relative = Path::new(asset);
+    if relative.is_absolute() || asset.contains(':') {
+        return None;
+    }
+    let path = workspace.entry.parent()?.join(relative);
+    if !fs::metadata(&path).ok()?.is_file() {
+        return None;
+    }
+    let mut header = [0; 29];
+    fs::File::open(path).ok()?.read_exact(&mut header).ok()?;
+    if header[..16] != *b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR"
+        || header[25] != 0
+        || !matches!(header[24], 8 | 16)
+    {
+        return None;
+    }
+    let width = u32::from_be_bytes(header[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(header[20..24].try_into().ok()?);
+    let depth = header[24];
+    Some(format!(
+        "PNG heightfield · {width} × {height} samples · {depth}-bit grayscale\n\nImage columns map to +X and rows to +Z. Black is Y = 0 and white is Y = 1 before the model transform."
+    ))
+}
+
+pub(super) fn mesh_asset_hover(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    workspace: &Workspace<'_>,
+) -> Option<Value> {
+    use std::fmt::Write;
+
+    let (url, path) = tokens.windows(4).find_map(|tokens| {
+        let [url, open, path, close] = tokens else {
+            return None;
+        };
+        (url.text == "@mesh-url"
+            && open.text == "("
+            && path.quoted()
+            && matches!(close.text, ")" | ",")
+            && (url.range.contains(&cursor) || path.range.contains(&cursor)))
+        .then_some((url, path))
+    })?;
+    let asset: String = serde_json::from_str(path.text).ok()?;
+    if matches_asset_extension(Path::new(&asset), &[HEIGHTFIELD_EXTENSION]) {
+        return Some(json!({
+            "contents": {"kind": "plaintext", "value": heightfield_description(&asset, workspace)?},
+            "range": source.range(url.range.start, path.range.end),
+        }));
+    }
+    let metadata = scene_metadata(&asset, workspace)?;
+    let mut meshes = metadata.mesh_morph_counts().peekable();
+    let mut message = String::new();
+    if meshes.peek().is_some() {
+        message.push_str("glTF morph targets for morph-weights");
+        for (mesh, count) in meshes.by_ref().take(8) {
+            let names = if count <= 32 {
+                metadata.morph_target_names(mesh, count)
+            } else {
+                Vec::new()
+            };
+            let _ = write!(message, "\n\nMesh #{mesh}");
+            for index in 0..count.min(32) {
+                let _ = write!(message, "\ntarget-{index}");
+                if let Some(alias) = names.get(index)
+                    && name(alias)
+                    && alias.len() <= 80
+                    && alias
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                {
+                    let _ = write!(message, "  {alias}");
+                }
+            }
+            if count > 32 {
+                message.push_str("\n…");
+            }
+        }
+        if meshes.peek().is_some() {
+            message.push_str("\n…");
+        }
+    }
+    let mut extensions = metadata.material_extensions().peekable();
+    if extensions.peek().is_some() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF material extensions");
+        for extension in extensions {
+            let _ = write!(message, "\n{extension}");
+        }
+    }
+    if metadata.uses_texture_transform() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str(
+            "glTF texture coordinates\nKHR_texture_transform (offset, rotation, scale, UV set)",
+        );
+    }
+    let cameras = metadata.camera_nodes();
+    if !cameras.is_empty() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF camera nodes (use row-id/selector)");
+        for &(index, kind, alias) in cameras.iter().take(8) {
+            let _ = write!(message, "\n#{index}  {kind}");
+            if let Some(alias) = alias.filter(|alias| alias.len() <= 80) {
+                let _ = write!(message, "  {alias}");
+            }
+        }
+        if cameras.len() > 8 {
+            message.push_str("\n…");
+        }
+    }
+    let mut lights = metadata.punctual_lights().peekable();
+    if lights.peek().is_some() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF punctual lights");
+        for (index, kind, name) in lights.by_ref().take(8) {
+            let _ = write!(message, "\nLight #{index}  {kind}");
+            if let Some(name) = name.filter(|name| {
+                !name.is_empty() && name.len() <= 80 && !name.chars().any(char::is_control)
+            }) {
+                let _ = write!(message, "  {name}");
+            }
+        }
+        if lights.peek().is_some() {
+            message.push_str("\n…");
+        }
+    }
+    let mut filters = metadata.texture_min_filters().peekable();
+    if filters.peek().is_some() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF texture minification");
+        for (index, filter) in filters.by_ref().take(8) {
+            let _ = write!(message, "\nTexture #{index}  {filter}");
+        }
+        if filters.peek().is_some() {
+            message.push_str("\n…");
+        }
+    }
+    if message.is_empty() {
+        return None;
+    }
+    let hovered = if url.range.contains(&cursor) {
+        url
+    } else {
+        path
+    };
+    Some(json!({
+        "contents": { "kind": "plaintext", "value": message },
+        "range": source.range(hovered.range.start, hovered.range.end),
+    }))
+}
+
+pub(super) fn scene_asset_paths(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    workspace: &Workspace<'_>,
+) -> Option<Vec<Value>> {
+    let (extensions, path) = tokens.windows(3).enumerate().find_map(|(index, window)| {
+        let [_, open, path] = window else {
+            return None;
+        };
+        let extensions = scene_asset_extensions(tokens, index)?;
+        (open.text == "(" && path.text.starts_with('"') && path.blocks_completion(cursor))
+            .then_some((extensions, path))
+    })?;
+    let prefix = &path.text[1..cursor - path.range.start];
+    let (directory, name) = prefix.rsplit_once('/').unwrap_or(("", prefix));
+    if prefix.starts_with('/') || prefix.contains([':', '\\']) {
+        return Some(Vec::new());
+    }
+    let base = workspace.entry.parent()?;
+    let paths = fs::read_dir(base.join(directory)).ok()?;
+    let start = cursor - name.len();
+    let end = path.range.end - usize::from(path.quoted());
+    let range = source.range(start, end);
+    let mut candidates = BTreeMap::new();
+    for path in paths.filter_map(Result::ok) {
+        let Ok(mut label) = path.file_name().into_string() else {
+            continue;
+        };
+        if !label.starts_with(name) {
+            continue;
+        }
+        let is_folder = path.path().is_dir();
+        if is_folder {
+            label.push('/');
+        } else if !matches_asset_extension(&path.path(), extensions) {
+            continue;
+        }
+        let replacement = json!(label).to_string();
+        candidates.insert(
+            label.clone(),
+            json!({
+                "label": label,
+                "kind": if is_folder { 19 } else { 17 },
+                "textEdit": {"range": range, "newText": &replacement[1..replacement.len() - 1]},
+            }),
+        );
+        if candidates.len() == 256 {
+            break;
+        }
+    }
+    Some(candidates.into_values().collect())
 }
 
 pub(crate) fn import_definition(

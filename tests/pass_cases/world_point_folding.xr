@@ -1,0 +1,17 @@
+// RAW: "xr.geometry_function"{{.*}}value = "point-3d"
+// RAW: "xr.point3d_field"{{.*}}value = "z"
+
+// CHECK: %[[WORLD:[0-9]+]] = "xr.literal"() <{value = "1.5 -2 7.25"}> : () -> !xr.point3d
+// CHECK: "xr.property"(%[[WORLD]]) <{name = "world", visibility = "out"}>
+// CHECK-NOT: "xr.point3d_field"
+// CHECK: "xr.literal"() <{value = "7.25"}> : () -> !xr.float
+// CHECK-NOT: "xr.point3d_field"
+
+export component WorldPoint inherits Window {
+    out property <point3d> world: Point3D.new(1.5, -2, 7.25);
+    out property <float> depth: root.constant-depth();
+    pure function constant-depth() -> float {
+        let position = Point3D.new(1.5, -2, 7.25);
+        position.z
+    }
+}

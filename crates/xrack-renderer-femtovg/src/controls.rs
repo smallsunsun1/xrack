@@ -8,7 +8,7 @@ use crate::{
 use femtovg::{Align, Canvas, Paint, Path, renderer::WGPURenderer};
 use xrack_layout::{
     CalendarGeometry, ChoiceMenu, ColorPlaneGeometry, ComboGeometry, LayoutNode, MenuPanel,
-    PageIndicatorGeometry, Rect, SpinGeometry, TableGeometry, TextMeasurer,
+    PageIndicatorGeometry, Point, Rect, SpinGeometry, TableGeometry, TextMeasurer,
 };
 use xrack_runtime::{
     Color, LayoutDirection, Node, Orientation, RowKey, TableHeader, combo_editable, combo_text,
@@ -643,6 +643,7 @@ impl Renderer {
         let PaintFrame { theme, scale, .. } = frame;
         let clip = layout.clip.intersect(layout.bounds);
         let mut dividers = DisplayList::new(self, clip, scale);
+        let mut captions = DisplayList::new(self, clip, scale);
         let batch_dividers = self.display_batching
             && !self.rectangle_batches.disabled
             && self.can_cache_on_main_canvas()
@@ -650,18 +651,19 @@ impl Renderer {
             && !layout.has_ancestor_clip_chain()
             && has_device_scale(canvas_transform(&self.canvas), scale)
             && scale >= 1.0;
-        let canvas = &mut self.canvas;
-        let text = &self.text;
+        let batch_captions = batch_dividers
+            && !cfg!(any(target_os = "android", target_os = "ios"))
+            && self.text.text_scale() <= 1.0;
         fill(
-            canvas,
+            &mut self.canvas,
             geometry.header.intersect(clip),
             0.0,
             theme.role(Role::TableHeader),
         );
         let mirrored = geometry.mirrored();
-        let size = xrack_layout::table_heading_font_size(text)
+        let size = xrack_layout::table_heading_font_size(&self.text)
             .clamp(1.0, (geometry.header.height / 1.4).max(1.0));
-        let mut paint = text.paint(size, color(theme.text), false);
+        let mut paint = self.text.paint(size, color(theme.text), false);
         if mirrored {
             paint.set_text_align(Align::Right);
         }
@@ -681,6 +683,15 @@ impl Renderer {
                 continue;
             }
             let (highlighted, resizing, selected) = highlights(index);
+            let sort = header.sort.filter(|sort| sort.column == index);
+            let passive = !highlighted && !resizing && !selected && sort.is_none();
+            if batch_captions && !passive {
+                // Preserve paint order at the active column while keeping the
+                // captions on either side eligible to batch.
+                captions.submit(self)?;
+            }
+            let canvas = &mut self.canvas;
+            let text = &self.text;
             if selected {
                 fill(canvas, visible, 0.0, theme.role(Role::SelectedColumn));
             }
@@ -696,7 +707,6 @@ impl Renderer {
                     },
                 );
             }
-            let sort = header.sort.filter(|sort| sort.column == index);
             let title_width = (bounds.width - if sort.is_some() { 32.0 } else { 16.0 }).max(0.0);
             let title = geometry.content_bounds(*bounds, 8.0, title_width);
             let origin = if mirrored {
@@ -705,26 +715,30 @@ impl Renderer {
                 title.x
             };
             let title = title.intersect(visible);
-            if title.width > 0.0 && title.height > 0.0 {
-                canvas.save();
-                canvas.intersect_scissor(title.x, title.y, title.width, title.height);
-                let caption = column.text("title").unwrap_or("");
-                let caption = if text.text_scale() > 1.0 {
-                    xrack_layout::elide_to_width(caption, title_width, |value| {
-                        text.advance_painted(value, &paint)
-                    })
+            let caption = column.text("title").unwrap_or("");
+            let y = bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5;
+            if title.width > 0.0 && title.height > 0.0 && !caption.is_empty() {
+                if batch_captions && passive {
+                    captions.push(Primitive::Text {
+                        origin: Point { x: origin, y },
+                        text: caption,
+                        paint: &paint,
+                        cell_clip: Some(title),
+                    });
                 } else {
-                    std::borrow::Cow::Borrowed(caption)
-                };
-                let result = text.fill_text(
-                    canvas,
-                    origin,
-                    bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
-                    &caption,
-                    &paint,
-                );
-                canvas.restore();
-                result.map_err(|error| format!("table header drawing failed: {error}"))?;
+                    canvas.save();
+                    canvas.intersect_scissor(title.x, title.y, title.width, title.height);
+                    let caption = if text.text_scale() > 1.0 {
+                        xrack_layout::elide_to_width(caption, title_width, |value| {
+                            text.advance_painted(value, &paint)
+                        })
+                    } else {
+                        std::borrow::Cow::Borrowed(caption)
+                    };
+                    let result = text.fill_text(canvas, origin, y, &caption, &paint);
+                    canvas.restore();
+                    result.map_err(|error| format!("table header drawing failed: {error}"))?;
+                }
             }
             if let Some(sort) = sort
                 && bounds.width >= 24.0
@@ -762,6 +776,7 @@ impl Renderer {
                 }
             }
         }
+        captions.submit(self)?;
         dividers.submit(self)
     }
 }

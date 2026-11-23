@@ -389,6 +389,12 @@ pub(crate) fn measurement_width(node: &Node, reference: Size) -> f32 {
         })
 }
 
+pub(crate) fn fixed_size(node: &Node, reference: Size) -> Option<Size> {
+    let width = node.relative_length("width", reference.width)?.max(0.0);
+    let height = node.relative_length("height", reference.height)?.max(0.0);
+    Some(Size::new(width, height))
+}
+
 pub(crate) fn measure_with_width(
     node: &Node,
     reference: Size,
@@ -423,14 +429,12 @@ fn compute_measurement(
     assigned_width: Option<f32>,
     text: &mut impl TextMeasurer,
 ) -> Metrics {
-    // Explicit sizes replace both intrinsic axes in with_properties. Leave
-    // shaping and image fitting to the painter for fixed-size leaves.
-    if matches!(node.kind, "Text" | "Label" | "Image" | "AnimatedImage")
-        && let (Some(width), Some(height)) = (node.length("width"), node.length("height"))
-    {
+    // Explicit sizes replace both axes in with_properties. Children are
+    // measured later, if their own placement depends on intrinsic sizes.
+    if let Some(size) = fixed_size(node, reference) {
         return Metrics {
-            x: AxisInfo::fixed(width.max(0.0)),
-            y: AxisInfo::fixed(height.max(0.0)),
+            x: AxisInfo::fixed(size.width),
+            y: AxisInfo::fixed(size.height),
         };
     }
     let relative_width = |name| {
@@ -793,7 +797,7 @@ fn compute_measurement(
             }
             "MediaPlayer" => Size::new(320.0, 180.0),
             "Image" | "AnimatedImage" => {
-                let source = node.image_asset("source").unwrap_or_default().size();
+                let source = node.image_size("source");
                 let [width, height] = crate::ImageRegion::for_node(node, source).size();
                 if width == 0 || height == 0 {
                     Size::default()

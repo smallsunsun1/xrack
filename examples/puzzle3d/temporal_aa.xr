@@ -1,0 +1,90 @@
+struct TemporalActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component TemporalAaDemo inherits Window {
+    title: "XRack · 运动抗锯齿";
+    width: 760px;
+    height: 352px;
+    resizable: false;
+    background: #141d29;
+
+    in-out property <bool> playing: false;
+    in-out property <bool> temporal: true;
+    in-out property <bool> motion-vectors: false;
+    in-out property <bool> progressive: true;
+    in-out property <bool> msaa: false;
+    in-out property <float> strength: 0.3;
+    in-out property <float> angle: 0;
+    in-out property <bool> warm: true;
+    in-out property <int> texture-size: 0;
+
+    motion-clock := Timer {
+        interval: 16;
+        running: root.playing;
+        repeat: true;
+        triggered => { root.angle = root.angle >= 359 ? 0 : root.angle + 1; }
+    }
+
+    property <TemporalActor> bar: TemporalActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 3.2, scale-y: 0.16, scale-z: 0.16,
+        yaw: 0, pitch: 0, roll: root.angle + 27, color: #eebb86,
+    };
+    property <[TemporalActor]> actors: [
+        TemporalActor { id: "bar", x: -1, y: 0.45, color: root.warm ? #f9b663 : #55caff, ..root.bar },
+        TemporalActor { id: "cross", x: -1, y: 0.45, roll: root.bar.roll + 90, ..root.bar },
+        TemporalActor {
+            id: "wings", x: 1.4, z: -1.0, roll: 35,
+            yaw: root.angle, scale-x: 1.4, scale-y: 1.4, scale-z: 1.4,
+            color: #85baff, ..root.bar
+        },
+    ];
+
+    Text { x: 12px; y: 8px; text: "单帧"; color: #e2eaf4; }
+    Text {
+        x: 386px; y: 8px;
+        text: root.motion-vectors ? "运动向量重投影" : "时域 AA";
+        color: #e2eaf4;
+    }
+
+    reference := SceneView3D {
+        x: 12px; y: 36px; width: 362px; height: 250px;
+        scene-background: root.warm ? #222d44 : #122534;
+        camera-yaw: root.angle / 6;
+        model: root.actors;
+        cache-rendering: true;
+    }
+    filtered := SceneView3D {
+        x: 386px; y: 36px; width: 362px; height: 250px;
+        scene-background: root.warm ? #222d44 : #122534;
+        camera-yaw: root.angle / 6;
+        model: root.actors;
+        texture-width: root.texture-size;
+        temporal-aa: root.temporal;
+        temporal-aa-mode: root.motion-vectors ? "motion-vectors" : "blend";
+        temporal-aa-strength: root.strength;
+        progressive-aa: root.progressive ? 4 : 0;
+        multisampling: root.msaa;
+    }
+
+    HorizontalLayout {
+        x: 12px; y: 296px; width: 736px; height: 44px; spacing: 12px;
+        run-motion := Button {
+            width: 98px;
+            text: root.playing ? "暂停" : "播放";
+            clicked => { root.playing = !root.playing; }
+        }
+        temporal-switch := CheckBox { width: 108px; text: "时域 AA"; checked <=> root.temporal; }
+        motion-switch := CheckBox { width: 122px; text: "运动向量"; checked <=> root.motion-vectors; }
+        progressive-switch := CheckBox {
+            width: 118px; text: "停稳累积"; checked <=> root.progressive;
+            enabled: !root.temporal || !root.motion-vectors;
+        }
+        msaa-switch := CheckBox { width: 98px; text: "MSAA"; checked <=> root.msaa; }
+        angle-slider := Slider { minimum: 0; maximum: 359; value <=> root.angle; }
+    }
+}

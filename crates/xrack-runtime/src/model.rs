@@ -88,6 +88,12 @@ impl RowSignals {
 
 type ProjectionDiff<T> = dyn Fn(usize, &T, &T) -> bool;
 pub(crate) type RowObserver<T> = dyn Fn(RowKey, Option<&T>);
+pub(crate) type RowKeyObserver = dyn Fn(RowKey);
+
+enum ModelRowObserver<T> {
+    Contents(Weak<RowObserver<T>>),
+    Key(Weak<RowKeyObserver>),
+}
 
 struct RowProjection<T> {
     signal: Weak<ChangeSignal>,
@@ -189,7 +195,7 @@ struct ModelData<T> {
     values: ChangeSignal,
     row_signals: RefCell<RowSignals>,
     projections: RefCell<Vec<RowProjection<T>>>,
-    row_observers: RefCell<Vec<Weak<RowObserver<T>>>>,
+    row_observers: RefCell<Vec<ModelRowObserver<T>>>,
     text_columns: RefCell<BTreeMap<String, TextColumn<T>>>,
 }
 
@@ -408,9 +414,20 @@ impl<T> VecModel<T> {
 
     /// Observe row contents by stable key. Observers run while the model may be borrowed.
     pub(crate) fn observe_rows(&self, observer: &Rc<RowObserver<T>>) {
+        self.register_row_observer(ModelRowObserver::Contents(Rc::downgrade(observer)));
+    }
+
+    pub(crate) fn observe_row_keys(&self, observer: &Rc<RowKeyObserver>) {
+        self.register_row_observer(ModelRowObserver::Key(Rc::downgrade(observer)));
+    }
+
+    fn register_row_observer(&self, observer: ModelRowObserver<T>) {
         let mut observers = self.0.row_observers.borrow_mut();
-        observers.retain(|observer| observer.strong_count() != 0);
-        observers.push(Rc::downgrade(observer));
+        observers.retain(|observer| match observer {
+            ModelRowObserver::Contents(contents) => contents.strong_count() != 0,
+            ModelRowObserver::Key(key) => key.strong_count() != 0,
+        });
+        observers.push(observer);
     }
 
     fn row_changed(&self, id: u64, value: Option<&T>) {
@@ -419,14 +436,19 @@ impl<T> VecModel<T> {
             row: id,
             scope: 0,
         };
-        self.0.row_observers.borrow_mut().retain(|observer| {
-            if let Some(observer) = observer.upgrade() {
-                observer(key, value);
-                true
-            } else {
-                false
-            }
-        });
+        self.0
+            .row_observers
+            .borrow_mut()
+            .retain(|observer| match observer {
+                ModelRowObserver::Contents(contents) => contents.upgrade().is_some_and(|notify| {
+                    notify(key, value);
+                    true
+                }),
+                ModelRowObserver::Key(observer) => observer.upgrade().is_some_and(|notify| {
+                    notify(key);
+                    true
+                }),
+            });
     }
 
     pub(crate) fn row_lifetime(&self, key: RowKey) -> RowLifetime {
@@ -446,6 +468,15 @@ impl<T> VecModel<T> {
     #[doc(hidden)]
     pub fn edit_stamp(&self) -> (u64, u64) {
         (self.0.id, self.0.edit_revision.get())
+    }
+
+    pub(crate) fn row_cache_identity(&self) -> (u64, Option<u64>) {
+        // Read-only projections share the source model's row keys but each
+        // snapshot has its own immutable contents and observer list.
+        (
+            self.0.id,
+            self.0.origin.as_ref().map(|_| self.0.edit_revision.get()),
+        )
     }
 
     pub(crate) fn contents_stamp(&self) -> (u64, u64) {

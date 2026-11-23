@@ -1,0 +1,90 @@
+struct ReflectionActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    color: color, visible: bool,
+}
+
+export component ScreenReflectionsDemo inherits Window {
+    title: "XRack · 屏幕空间反射";
+    width: 600px; height: 394px;
+    resizable: false;
+    background: #141d29;
+
+    in-out property <bool> reflect-screen: true;
+    in-out property <bool> show-source: true;
+    in-out property <bool> studio: false;
+    in-out property <bool> msaa: false;
+    in-out property <int> glass-mode: 0;
+    in-out property <bool> weighted: false;
+    in-out property <float> offset: -1.5;
+    in-out property <float> cutoff: 0.65;
+    in-out property <float> trace-scale: 0.5;
+    in-out property <float> aa-scale: 1.0;
+    in-out property <int> steps: 128;
+
+    property <ReflectionActor> defaults: ReflectionActor {
+        id: "", mesh: "primitive:box",
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
+    };
+    property <[ReflectionActor]> actors: [
+        ReflectionActor {
+            id: "floor", mesh: @mesh-url("models/ssr-mirror.gltf"),
+            y: -0.5, pitch: -90, scale-x: 10, scale-y: 8,
+            ..root.defaults
+        },
+        ReflectionActor {
+            id: "red", x: root.offset, y: 0.45, z: -0.65,
+            scale-x: 1.45, scale-y: 1.42, scale-z: 1.45, yaw: 15, color: #ff6545,
+            visible: root.show-source, ..root.defaults
+        },
+        ReflectionActor {
+            id: "blue", mesh: "primitive:sphere", x: 1.8, y: 0.45, z: -1.4,
+            scale-x: 1.65, scale-y: 1.65, scale-z: 1.65, color: #3ab4ff,
+            visible: root.show-source, ..root.defaults
+        },
+        ReflectionActor {
+            id: "glass", mesh: root.glass-mode == 1 ? @mesh-url("models/glass.gltf")
+                : root.glass-mode == 2 ? @mesh-url("models/transmission-clear.gltf")
+                : @mesh-url("models/volume-blocks.gltf"),
+            x: -1.0, y: 0.25, z: 1.6,
+            scale-x: 2.2, scale-y: 1.2,
+            visible: root.glass-mode != 0, ..root.defaults
+        },
+    ];
+    viewport := SceneView3D {
+        width: 600px; height: 340px;
+        model: root.actors;
+        scene-background: #182538;
+        light-yaw: -28; light-elevation: 55;
+        camera-yaw: 0; camera-pitch: 26; camera-distance: 10;
+        screen-space-reflections: root.reflect-screen;
+        ssr-thickness: 0.26;
+        ssr-steps: root.steps;
+        ssr-roughness-cutoff: root.cutoff;
+        ssr-scale: root.trace-scale;
+        environment: root.studio ? @environment-url("models/studio.hdr") : "";
+        environment-skybox: root.studio;
+        multisampling: root.msaa;
+        order-independent-transparency: root.weighted;
+        supersampling: root.aa-scale;
+        cache-rendering: true;
+    }
+    HorizontalLayout {
+        x: 12px; y: 346px; width: 576px; height: 36px;
+        spacing: 8px;
+        reflection-switch := CheckBox { width: 110px; text: "屏幕反射"; checked <=> root.reflect-screen; }
+        msaa-switch := CheckBox { width: 82px; text: "MSAA"; checked <=> root.msaa; }
+        source-switch := CheckBox { width: 66px; text: "物体"; checked <=> root.show-source; }
+        sky-switch := CheckBox { width: 82px; text: "环境"; checked <=> root.studio; }
+        glass-switch := Button {
+            width: 68px;
+            text: root.glass-mode == 0 ? "玻璃" : root.glass-mode == 1 ? "透明"
+                : root.glass-mode == 2 ? "透射" : "体积";
+            clicked => { root.glass-mode = (root.glass-mode + 1) % 4; }
+        }
+        position-slider := Slider { minimum: -3.4; maximum: 3.4; value <=> root.offset; }
+    }
+}

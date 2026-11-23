@@ -152,6 +152,7 @@ fn host_callback_arguments(args: &[Value]) -> Vec<Value> {
             Value::StringModel(model) => Value::StringList(model.snapshot_untracked()),
             Value::IntModel(model) => Value::IntList(model.snapshot_untracked()),
             Value::DateModel(model) => Value::DateList(model.snapshot_untracked()),
+            Value::Hit3DList(model) => Value::Hit3DList(model.snapshot_untracked().into()),
             value => value.clone(),
         })
         .collect()
@@ -2012,6 +2013,9 @@ impl Instance {
                 Box::new(items.into_snapshot().into_iter().map(Value::String))
             }
             Value::DateModel(items) => Box::new(items.into_snapshot().into_iter().map(Value::Date)),
+            Value::Hit3DList(items) => {
+                Box::new(items.into_snapshot().into_iter().map(Value::Hit3D))
+            }
             Value::RecordList(items) => {
                 Box::new(items.into_snapshot().1.into_iter().map(Value::Record))
             }
@@ -2341,7 +2345,7 @@ impl Instance {
             },
             MathFunction(kind, inputs) => math_function(*kind, &self.arguments(inputs, args)?),
             GeometryFunction(kind, inputs) => {
-                geometry_function(*kind, &self.arguments(inputs, args)?)
+                geometry_function(*kind, &self.arguments(inputs, args)?, self.program())
             }
             StringFunction(kind, inputs) => {
                 let mut owned = [None, None, None];
@@ -2438,6 +2442,7 @@ impl Instance {
                     Value::StringModel(rows) => rows.len(),
                     Value::IntList(rows) => rows.len(),
                     Value::IntModel(rows) => rows.len(),
+                    Value::Hit3DList(rows) => rows.len(),
                     Value::DateList(rows) => rows.len(),
                     Value::DateModel(rows) => rows.len(),
                     Value::RecordList(rows) => rows.model().len(),
@@ -2473,6 +2478,7 @@ impl Instance {
                         .copied()
                         .map(Value::Date),
                     Value::DateModel(rows) => rows.row_at(index).map(Value::Date),
+                    Value::Hit3DList(rows) => rows.row_at(index).map(Value::Hit3D),
                     Value::RecordList(rows) => {
                         self.program().record_at(&rows, index)?.map(Value::Record)
                     }
@@ -2897,6 +2903,16 @@ impl Instance {
                     italic: *italic,
                 }))
             }
+            Hit3DArray(items) => Ok(Value::Hit3DList(
+                items
+                    .iter()
+                    .map(|item| match self.evaluate(item, args)? {
+                        Value::Hit3D(hit) => Ok(hit),
+                        _ => Err(evaluation("hit list item requires hit3d")),
+                    })
+                    .collect::<Result<Vec<_>>>()?
+                    .into(),
+            )),
             DateArray(items) => Ok(Value::DateModel(
                 items
                     .iter()
@@ -3106,6 +3122,47 @@ impl Instance {
             .ok_or_else(|| evaluation(format!("unknown timer {key}")))
     }
 
+    fn explicit_root_values(&self) -> impl Iterator<Item = (&Member, &ValueType, Value)> {
+        self.definition()
+            .properties
+            .iter()
+            .filter(|(member, property)| {
+                member.owner == "root" && property.public && property.writable
+            })
+            .filter_map(|(member, property)| {
+                let value = self.0.values.get(member)?.explicit_value()?;
+                Some((member, &property.ty, value))
+            })
+    }
+
+    /// Restore the interactions of the same component in the editor preview.
+    /// Properties added, removed or retyped in the editor use the new declaration.
+    #[doc(hidden)]
+    pub fn restore_preview_state(&self, previous: &Instance) -> Result<()> {
+        if self.0.name != previous.0.name {
+            return Ok(());
+        }
+        let properties = &self.definition().properties;
+        for (member, previous_type, value) in previous.explicit_root_values() {
+            if let Some(property) = properties.get(member)
+                && property.public
+                && property.writable
+                && &property.ty == previous_type
+                && self
+                    .program()
+                    .validate_host_value(
+                        &property.ty,
+                        &value,
+                        format_args!("property {}", member.name),
+                    )
+                    .is_ok()
+            {
+                self.write(member, value)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn reloaded_instance(&self, program: &Program) -> Result<Instance> {
         let next = program.create(&self.0.name)?;
         let purity = |instance: &Instance| {
@@ -3126,13 +3183,8 @@ impl Instance {
                 self.0.name
             )));
         }
-        for (member, property) in &self.definition().properties {
-            if property.public
-                && property.writable
-                && let Some(value) = self.0.values.get(member).and_then(Property::explicit_value)
-            {
-                next.set(&member.name, value)?;
-            }
+        for (member, _, value) in self.explicit_root_values() {
+            next.set(&member.name, value)?;
         }
         // Remember explicit starts and stops, including completion of a named
         // one-shot timer. Untouched timers use the new declaration's bindings.
@@ -3426,6 +3478,73 @@ impl Instance {
                     return Err(evaluation("expected a string ComboBox model"));
                 };
                 node.set_string_combo_model(model);
+            } else if node.kind == "SceneView3D" && name == "model" {
+                let Value::RecordList(model) = value else {
+                    return Err(evaluation("expected a scene object record list"));
+                };
+                node.properties.insert(
+                    name,
+                    Value::SceneObjects(self.program().prepare_scene(&model, true)),
+                );
+            } else if node.kind == "SceneView3D" && name == "lights" {
+                let Value::RecordList(model) = value else {
+                    return Err(evaluation("expected a scene light record list"));
+                };
+                node.properties.insert(
+                    name,
+                    Value::SceneLights(xrack_runtime::scene3d::record_lights(&model)),
+                );
+            } else if node.kind == "SceneView3D" && name == "particle-emitters" {
+                let Value::RecordList(model) = value else {
+                    return Err(evaluation("expected a particle emitter record list"));
+                };
+                node.properties.insert(
+                    name,
+                    Value::SceneParticleEmitters(xrack_runtime::scene3d::record_particles(
+                        &model,
+                        |key, scale| {
+                            let program = self.program();
+                            program
+                                .scene_projections
+                                .particle_surface(key, scale, |key| {
+                                    program.scene_assets.meshes.get(key).cloned()
+                                })
+                        },
+                    )),
+                );
+            } else if node.kind == "SceneView3D" && name == "particle-affectors" {
+                let Value::RecordList(model) = value else {
+                    return Err(evaluation("expected a particle affector record list"));
+                };
+                node.properties.insert(
+                    name,
+                    Value::SceneParticleAffectors(
+                        xrack_runtime::scene3d::record_particle_affectors(&model),
+                    ),
+                );
+            } else if node.kind == "SceneView3D" && name == "fog-volumes" {
+                let Value::RecordList(model) = value else {
+                    return Err(evaluation("expected a fog volume record list"));
+                };
+                node.properties.insert(
+                    name,
+                    Value::SceneFogVolumes(xrack_runtime::scene3d::record_fog_volumes(&model)),
+                );
+            } else if node.kind == "SceneView3D" && name == "reflection-probes" {
+                let Value::RecordList(model) = value else {
+                    return Err(evaluation("expected a reflection probe record list"));
+                };
+                let probes = xrack_runtime::scene3d::record_reflections(&model, |key| {
+                    self.program().scene_assets.environments.get(key).cloned()
+                });
+                node.properties
+                    .insert(name, Value::SceneReflections(probes));
+            } else if node.kind == "SceneView3D" && name == "environment" {
+                let Value::String(key) = value else {
+                    return Err(evaluation("expected an environment key"));
+                };
+                let probe = self.program().scene_assets.environments.get(&key).cloned();
+                node.properties.insert(name, Value::SceneEnvironment(probe));
             } else {
                 node.properties.insert(name, scene_value(value));
             }
@@ -6347,6 +6466,11 @@ impl ValueType {
                 | (Self::CheckState, Value::CheckState(_))
                 | (Self::StyledText, Value::StyledText(_))
                 | (Self::Point2D, Value::Point2D(_))
+                | (Self::Point3D, Value::Point3D(_))
+                | (Self::Vector3D, Value::Vector3D(_))
+                | (Self::Hit3D, Value::Hit3D(_))
+                | (Self::Hit3DList, Value::Hit3DList(_))
+                | (Self::ProjectedPoint3D, Value::ProjectedPoint3D(_))
                 | (Self::Vector2D, Value::Vector2D(_))
                 | (Self::Transform2D, Value::Transform2D(_))
                 | (Self::LayoutAlignment, Value::LayoutAlignment(_))
@@ -6377,6 +6501,7 @@ impl ValueType {
                 | (Self::TextVerticalAlignment, Value::TextVerticalAlignment(_))
                 | (Self::TextOverflow, Value::TextOverflow(_))
                 | (Self::ColorScheme, Value::ColorScheme(_))
+                | (Self::SceneToneMap, Value::SceneToneMap(_))
                 | (Self::InputType, Value::InputType(_))
                 | (Self::InputPurpose, Value::InputPurpose(_))
                 | (
@@ -6427,6 +6552,7 @@ pub(super) fn callback_value(value: Value) -> Value {
         Value::StringModel(model) => Value::StringModel(model.into_snapshot().into()),
         Value::IntModel(model) => Value::IntModel(model.into_snapshot().into()),
         Value::DateModel(model) => Value::DateModel(model.into_snapshot().into()),
+        Value::Hit3DList(model) => Value::Hit3DList(model.into_snapshot().into()),
         Value::RecordList(list) => {
             let (name, rows) = list.into_snapshot();
             Value::RecordList(RecordList::new(name, rows))
@@ -6443,6 +6569,7 @@ fn callback_parameter(value: &Value) -> Value {
         Value::StringModel(model) => Value::StringModel(model.snapshot_untracked().into()),
         Value::IntModel(model) => Value::IntModel(model.snapshot_untracked().into()),
         Value::DateModel(model) => Value::DateModel(model.snapshot_untracked().into()),
+        Value::Hit3DList(model) => Value::Hit3DList(model.snapshot_untracked().into()),
         Value::RecordList(list) => Value::RecordList(RecordList::new(
             list.name(),
             list.model().snapshot_untracked(),
@@ -6457,6 +6584,7 @@ pub(crate) fn host_value(value: Value) -> Value {
         Value::StringModel(model) => Value::StringList(model.into_snapshot()),
         Value::IntModel(model) => Value::IntList(model.into_snapshot()),
         Value::DateModel(model) => Value::DateList(model.into_snapshot()),
+        Value::Hit3DList(model) => Value::Hit3DList(model.into_snapshot().into()),
         value => value,
     }
 }
@@ -6476,6 +6604,7 @@ fn binary(program: &Program, operator: BinaryOperator, lhs: Value, rhs: Value) -
             (StringModel(a), StringModel(b)) => a.values_eq_owned(b),
             (IntModel(a), IntModel(b)) => a.values_eq_owned(b),
             (DateModel(a), DateModel(b)) => a.values_eq_owned(b),
+            (Hit3DList(a), Hit3DList(b)) => a.values_eq_owned(b),
             (DateModel(model), DateList(items)) | (DateList(items), DateModel(model)) => {
                 model.into_snapshot() == items
             }
@@ -6557,9 +6686,15 @@ fn binary(program: &Program, operator: BinaryOperator, lhs: Value, rhs: Value) -
 fn geometry_function(
     kind: xrack_syntax::builtins::GeometryFunction,
     inputs: &[Value],
+    program: &Program,
 ) -> Result<Value> {
-    use xrack_runtime::{Point2D, Transform2D, Vector2D};
+    use xrack_runtime::{Point2D, Transform2D, Vector2D, scene3d};
     use xrack_syntax::builtins::GeometryFunction::*;
+    let optional_layers = |tail: &[Value]| match tail {
+        [] => Ok(None),
+        [Value::Int(mask)] => Ok(Some(*mask)),
+        _ => Err(evaluation("invalid scene layer mask")),
+    };
     Ok(match (kind, inputs) {
         (Point, [Value::Length(x), Value::Length(y)]) => Point2D::new(*x, *y).into(),
         (Vector, [Value::Length(x), Value::Length(y)]) => Vector2D::new(*x, *y).into(),
@@ -6579,6 +6714,290 @@ fn geometry_function(
         (MapVector, [Value::Transform2D(transform), Value::Vector2D(vector)]) => {
             transform.map_vector(*vector).into()
         }
+        (Point3D, [Value::Float(x), Value::Float(y), Value::Float(z)]) => {
+            xrack_runtime::Point3D::new(*x, *y, *z).into()
+        }
+        (Vector3D, [Value::Float(x), Value::Float(y), Value::Float(z)]) => {
+            xrack_runtime::Vector3D::new(*x, *y, *z).into()
+        }
+        (
+            Hit3D,
+            [
+                Value::RecordList(model),
+                Value::Float(yaw),
+                Value::Float(pitch),
+                Value::Float(distance),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                layers @ ..,
+            ],
+        ) => scene3d::hit_model(
+            &program.prepare_scene(model, true),
+            *yaw,
+            *pitch,
+            *distance,
+            *viewport,
+            *pointer,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            HitCamera3D,
+            [
+                Value::RecordList(model),
+                Value::String(camera),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                layers @ ..,
+            ],
+        ) => scene3d::hit_camera(
+            &program.prepare_scene(model, true),
+            camera,
+            *viewport,
+            *pointer,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            RayHit3D,
+            [
+                Value::RecordList(model),
+                Value::Point3D(origin),
+                Value::Vector3D(direction),
+                Value::Float(distance),
+                layers @ ..,
+            ],
+        ) => scene3d::ray_hit(
+            &program.prepare_scene(model, true),
+            *origin,
+            *direction,
+            *distance,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            HitAll3D,
+            [
+                Value::RecordList(model),
+                Value::Float(yaw),
+                Value::Float(pitch),
+                Value::Float(distance),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                layers @ ..,
+            ],
+        ) => scene3d::hit_all_objects(
+            &program.prepare_scene(model, true),
+            *yaw,
+            *pitch,
+            *distance,
+            *viewport,
+            *pointer,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            HitAllCamera3D,
+            [
+                Value::RecordList(model),
+                Value::String(camera),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                layers @ ..,
+            ],
+        ) => scene3d::hit_all_camera(
+            &program.prepare_scene(model, true),
+            camera,
+            *viewport,
+            *pointer,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            SphereCast3D,
+            [
+                Value::RecordList(model),
+                Value::Point3D(origin),
+                Value::Vector3D(direction),
+                Value::Float(distance),
+                Value::Float(radius),
+                layers @ ..,
+            ],
+        ) => scene3d::sphere_cast(
+            &program.prepare_scene(model, true),
+            *origin,
+            *direction,
+            *distance,
+            *radius,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            SphereOverlap3D,
+            [
+                Value::RecordList(model),
+                Value::Point3D(center),
+                Value::Float(radius),
+                layers @ ..,
+            ],
+        ) => scene3d::sphere_overlap(
+            &program.prepare_scene(model, true),
+            *center,
+            *radius,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            SphereSlide3D,
+            [
+                Value::RecordList(model),
+                Value::Point3D(origin),
+                Value::Vector3D(displacement),
+                Value::Float(radius),
+                layers @ ..,
+            ],
+        ) => scene3d::sphere_slide(
+            &program.prepare_scene(model, true),
+            *origin,
+            *displacement,
+            *radius,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            SphereWalk3D,
+            [
+                Value::RecordList(model),
+                Value::Point3D(origin),
+                Value::Vector3D(displacement),
+                Value::Float(radius),
+                Value::Float(step),
+                Value::Float(snap),
+                Value::Float(slope),
+                layers @ ..,
+            ],
+        ) => scene3d::sphere_walk(
+            &program.prepare_scene(model, true),
+            *origin,
+            *displacement,
+            scene3d::WalkOptions {
+                radius: *radius,
+                step_height: *step,
+                snap_distance: *snap,
+                max_slope: *slope,
+            },
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            RayHitAll3D,
+            [
+                Value::RecordList(model),
+                Value::Point3D(origin),
+                Value::Vector3D(direction),
+                Value::Float(distance),
+                layers @ ..,
+            ],
+        ) => scene3d::ray_hit_all(
+            &program.prepare_scene(model, true),
+            *origin,
+            *direction,
+            *distance,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            Project3D,
+            [
+                Value::Float(yaw),
+                Value::Float(pitch),
+                Value::Float(distance),
+                Value::Point2D(viewport),
+                Value::Point3D(point),
+            ],
+        ) => scene3d::project(*yaw, *pitch, *distance, *viewport, *point).into(),
+        (
+            Unproject3D,
+            [
+                Value::Float(yaw),
+                Value::Float(pitch),
+                Value::Float(distance),
+                Value::Point2D(viewport),
+                Value::Point2D(point),
+                Value::Float(depth),
+                Value::Point3D(fallback),
+            ],
+        ) => scene3d::unproject(
+            *yaw, *pitch, *distance, *viewport, *point, *depth, *fallback,
+        )
+        .into(),
+        (
+            ProjectCamera3D,
+            [
+                Value::RecordList(model),
+                Value::String(id),
+                Value::Point2D(viewport),
+                Value::Point3D(point),
+            ],
+        ) => scene3d::project_camera(&program.prepare_scene(model, false), id, *viewport, *point)
+            .into(),
+        (
+            UnprojectCamera3D,
+            [
+                Value::RecordList(model),
+                Value::String(id),
+                Value::Point2D(viewport),
+                Value::Point2D(point),
+                Value::Float(depth),
+                Value::Point3D(fallback),
+            ],
+        ) => scene3d::unproject_camera(
+            &program.prepare_scene(model, false),
+            id,
+            *viewport,
+            *point,
+            *depth,
+            *fallback,
+        )
+        .into(),
+        (
+            PickCamera3D,
+            [
+                Value::RecordList(model),
+                Value::String(camera),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                layers @ ..,
+            ],
+        ) => scene3d::pick_camera(
+            &program.prepare_scene(model, true),
+            camera,
+            *viewport,
+            *pointer,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            Pick3D,
+            [
+                Value::RecordList(model),
+                Value::Float(yaw),
+                Value::Float(pitch),
+                Value::Float(distance),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                layers @ ..,
+            ],
+        ) => scene3d::pick_model(
+            &program.prepare_scene(model, true),
+            *yaw,
+            *pitch,
+            *distance,
+            *viewport,
+            *pointer,
+            optional_layers(layers)?,
+        )
+        .into(),
         _ => return Err(evaluation("invalid geometry operands")),
     })
 }

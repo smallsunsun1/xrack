@@ -1405,6 +1405,118 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         }
         "renderer" | "data" if kind == "CustomRender" => Type::String,
         "revision" if kind == "CustomRender" => Type::Int,
+        "model" if kind == "SceneView3D" => Type::RecordList("SceneObject3D".into()),
+        "lights" if kind == "SceneView3D" => Type::RecordList("SceneLight3D".into()),
+        "particle-emitters" if kind == "SceneView3D" => {
+            Type::RecordList("ParticleEmitter3D".into())
+        }
+        "particle-affectors" if kind == "SceneView3D" => {
+            Type::RecordList("ParticleAffector3D".into())
+        }
+        "fog-volumes" if kind == "SceneView3D" => Type::RecordList("FogVolume3D".into()),
+        "reflection-probes" if kind == "SceneView3D" => {
+            Type::RecordList("ReflectionProbe3D".into())
+        }
+        "selected-object" | "environment" | "camera" | "temporal-aa-mode"
+            if kind == "SceneView3D" =>
+        {
+            Type::String
+        }
+        "shadows"
+        | "imported-lights"
+        | "environment-skybox"
+        | "frustum-culling"
+        | "cache-rendering"
+        | "multisampling"
+        | "temporal-aa"
+        | "screen-space-reflections"
+        | "screen-space-global-illumination"
+        | "specular-aa"
+        | "order-independent-transparency"
+        | "fog-depth-enabled"
+        | "fog-height-enabled"
+        | "fog-transmit-enabled"
+        | "ambient-occlusion"
+        | "scene-hdr"
+        | "bloom"
+        | "depth-of-field"
+            if kind == "SceneView3D" =>
+        {
+            Type::Bool
+        }
+        "shadow-map-size"
+        | "shadow-cascades"
+        | "bloom-levels"
+        | "texture-width"
+        | "texture-height"
+        | "progressive-aa"
+        | "ssr-steps"
+        | "ssgi-rays"
+        | "ssgi-steps"
+        | "fog-volume-samples"
+        | "fog-volume-density-samples"
+            if kind == "SceneView3D" =>
+        {
+            Type::Int
+        }
+        "scene-background" | "ambient-color" | "fog-color" if kind == "SceneView3D" => Type::Color,
+        "dof-blur-radius" if kind == "SceneView3D" => Type::Length,
+        "scene-tone-map" if kind == "SceneView3D" => Type::SceneToneMap,
+        "scene-lut" if kind == "SceneView3D" => Type::Image,
+        "scene-lut-size" | "layer-mask" if kind == "SceneView3D" => Type::Int,
+        "camera-yaw"
+        | "camera-pitch"
+        | "camera-distance"
+        | "light-yaw"
+        | "light-elevation"
+        | "ambient-intensity"
+        | "shadow-bias"
+        | "shadow-distance"
+        | "shadow-cascade-blend"
+        | "shadow-split-balance"
+        | "environment-intensity"
+        | "environment-yaw"
+        | "scene-exposure"
+        | "scene-white-point"
+        | "scene-brightness"
+        | "scene-contrast"
+        | "scene-saturation"
+        | "scene-lut-strength"
+        | "supersampling"
+        | "temporal-aa-strength"
+        | "ssr-strength"
+        | "ssr-distance"
+        | "ssr-thickness"
+        | "ssr-roughness-cutoff"
+        | "ssr-scale"
+        | "ssgi-strength"
+        | "ssgi-occlusion"
+        | "ssgi-radius"
+        | "ssgi-thickness"
+        | "ssgi-scale"
+        | "render-scale"
+        | "fog-near"
+        | "fog-far"
+        | "fog-density"
+        | "fog-depth-curve"
+        | "fog-height-start"
+        | "fog-height-end"
+        | "fog-height-curve"
+        | "fog-transmit-curve"
+        | "fog-volume-scattering"
+        | "fog-volume-anisotropy"
+        | "particle-time"
+        | "ao-strength"
+        | "ao-distance"
+        | "ao-bias"
+        | "bloom-strength"
+        | "bloom-threshold"
+        | "dof-focus-distance"
+        | "dof-focus-range"
+            if kind == "SceneView3D" =>
+        {
+            Type::Float
+        }
         "commands" if kind == "Path" => Type::String,
         "path" if kind == "PathView" => Type::String,
         "item-width" | "item-height" if kind == "PathView" => Type::Length,
@@ -2327,6 +2439,7 @@ fn validate_record_fields(record_fields: &[ast::RecordField]) -> Result<()> {
                 | Type::StringList
                 | Type::IntList
                 | Type::DateList
+                | Type::Hit3DList
                 | Type::TouchPoints
                 | Type::GradientStop
                 | Type::Percent
@@ -2361,6 +2474,59 @@ fn record_field_type(
         schema = *records.get(next.as_ref())?;
     }
     None
+}
+
+fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
+    validate_scene_records(
+        value,
+        scope,
+        "3D model",
+        builtins::SCENE_OBJECT_FIELDS,
+        builtins::SCENE_OBJECT_OPTIONAL_FIELDS,
+    )?;
+    let Type::RecordList(record) = &value.ty else {
+        return Ok(());
+    };
+    if let Some(ty) = record_field_type(&scope.records, record, "morph-weights")
+        && !matches!(ty, Type::Record(weights) if scope.records.get(weights.as_ref()).is_some_and(|schema| {
+            schema.variants.is_empty() && schema.fields.iter().all(|field| field.ty == Type::Float)
+        }))
+    {
+        return fail(
+            value.span,
+            format!("3D model record `{record}` requires a morph-weights record with float fields"),
+        );
+    }
+    Ok(())
+}
+
+fn validate_scene_records(
+    value: &ir::Expr,
+    scope: &Scope<'_>,
+    subject: &str,
+    fields: &[(&str, Type)],
+    optional_fields: &[(&str, Type)],
+) -> Result<()> {
+    let Type::RecordList(record) = &value.ty else {
+        return fail(value.span, format!("{subject} requires a record list"));
+    };
+    for ((name, ty), required) in fields
+        .iter()
+        .map(|field| (field, true))
+        .chain(optional_fields.iter().map(|field| (field, false)))
+    {
+        let actual = record_field_type(&scope.records, record, name);
+        if (required || actual.is_some()) && actual.as_ref() != Some(ty) {
+            return fail(
+                value.span,
+                format!(
+                    "{subject} record `{record}` requires a {} field named `{name}`",
+                    ty.name()
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn inherit<'a>(
@@ -4269,7 +4435,11 @@ impl<'a> Scope<'a> {
         let (_, ty) = self.property(owner, model, true, *model_span)?;
         if !matches!(
             ty,
-            Type::IntList | Type::DateList | Type::StringList | Type::RecordList(_)
+            Type::IntList
+                | Type::DateList
+                | Type::StringList
+                | Type::Hit3DList
+                | Type::RecordList(_)
         ) {
             return fail(
                 *model_span,
@@ -7883,6 +8053,68 @@ fn element<'a>(
                     }));
                     continue;
                 }
+                if kind == "SceneView3D"
+                    && matches!(
+                        b.name.as_str(),
+                        "model"
+                            | "lights"
+                            | "reflection-probes"
+                            | "fog-volumes"
+                            | "particle-emitters"
+                            | "particle-affectors"
+                    )
+                {
+                    let value = expression(&b.value, scope, owner)?;
+                    if b.name == "lights" {
+                        validate_scene_records(
+                            &value,
+                            scope,
+                            "3D lights",
+                            builtins::SCENE_LIGHT_FIELDS,
+                            builtins::SCENE_LIGHT_OPTIONAL_FIELDS,
+                        )?;
+                    } else if b.name == "particle-emitters" {
+                        validate_scene_records(
+                            &value,
+                            scope,
+                            "3D particle emitters",
+                            builtins::SCENE_PARTICLE_FIELDS,
+                            builtins::SCENE_PARTICLE_OPTIONAL_FIELDS,
+                        )?;
+                    } else if b.name == "particle-affectors" {
+                        validate_scene_records(
+                            &value,
+                            scope,
+                            "3D particle affectors",
+                            builtins::SCENE_PARTICLE_AFFECTOR_FIELDS,
+                            builtins::SCENE_PARTICLE_AFFECTOR_OPTIONAL_FIELDS,
+                        )?;
+                    } else if b.name == "fog-volumes" {
+                        validate_scene_records(
+                            &value,
+                            scope,
+                            "3D fog volumes",
+                            builtins::SCENE_FOG_VOLUME_FIELDS,
+                            builtins::SCENE_FOG_VOLUME_OPTIONAL_FIELDS,
+                        )?;
+                    } else if b.name == "reflection-probes" {
+                        validate_scene_records(
+                            &value,
+                            scope,
+                            "3D reflection probes",
+                            builtins::SCENE_REFLECTION_FIELDS,
+                            builtins::SCENE_REFLECTION_OPTIONAL_FIELDS,
+                        )?;
+                    } else {
+                        validate_scene_model(&value, scope)?;
+                    }
+                    lowered.push(LoweredMember::Binding(ir::Binding {
+                        name: b.name.clone(),
+                        value,
+                        span: b.span,
+                    }));
+                    continue;
+                }
                 if kind == "StandardTableView" && b.name == "model" {
                     let value = expression(&b.value, scope, owner)?;
                     let Type::RecordList(name) = &value.ty else {
@@ -9456,6 +9688,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
     if let Some(op) = match ty {
         Type::IntList => Some("int_array"),
         Type::DateList => Some("date_array"),
+        Type::Hit3DList => Some("hit3d_array"),
         _ => None,
     } {
         return ir::Expr::operation(op, ty, vec![], span);
@@ -9485,6 +9718,8 @@ fn default(ty: Type, span: Span) -> ir::Expr {
     }
     let value = match &ty {
         Type::Point2D | Type::Vector2D => "0 0",
+        Type::Point3D | Type::Vector3D => "0 0 0",
+        Type::ProjectedPoint3D | Type::Hit3D => "",
         Type::Transform2D => "1 0 0 1 0 0",
         Type::String => "\"\"",
         Type::Bool => "false",
@@ -9521,6 +9756,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::AccessibleLive => "off",
         Type::CursorShape => "auto",
         Type::ColorScheme => "system",
+        Type::SceneToneMap => "reinhard",
         Type::FileDialogMode => "open-file",
         Type::MessageLevel => "info",
         Type::MessageButtons => "ok",
@@ -9557,7 +9793,12 @@ fn expression_as(
     if let ExprKind::Conditional { condition, yes, no } = &e.kind
         && (matches!(
             expected,
-            Type::Brush | Type::PointerButtons | Type::TouchPoints | Type::IntList | Type::DateList
+            Type::Brush
+                | Type::PointerButtons
+                | Type::TouchPoints
+                | Type::IntList
+                | Type::DateList
+                | Type::Hit3DList
         ) || !expected.enum_variants().is_empty())
     {
         let condition = expression_as(condition, scope, owner, Type::Bool)?;
@@ -9586,6 +9827,7 @@ fn expression_as(
         && let Some((op, item_type)) = match expected {
             Type::IntList => Some(("int_array", Type::Int)),
             Type::DateList => Some(("date_array", Type::Date)),
+            Type::Hit3DList => Some(("hit3d_array", Type::Hit3D)),
             _ => None,
         }
     {
@@ -9996,6 +10238,57 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 ..ir::Expr::operation("markdown", Type::StyledText, vec![], span)
             }
         }
+        ExprKind::EnvironmentUrl(path) => {
+            let value = serde_json::from_str::<String>(path).map_err(|error| Diagnostic {
+                span,
+                message: format!("invalid environment path: {error}"),
+            })?;
+            if value.is_empty() {
+                return fail(span, "environment URL requires a nonempty path");
+            }
+            ir::Expr {
+                value,
+                ..ir::Expr::operation("environment_url", Type::String, vec![], span)
+            }
+        }
+        ExprKind::MeshUrl(path) | ExprKind::MeshUrlWithOptions { path, .. } => {
+            let mut modes = BTreeSet::new();
+            if let ExprKind::MeshUrlWithOptions { options, .. } = &e.kind {
+                for option in options {
+                    if !builtins::MESH_URL_OPTIONS
+                        .iter()
+                        .any(|(name, _)| *name == option)
+                    {
+                        return fail(
+                            span,
+                            format!(
+                                "unknown mesh URL option `{option}`; expected `auto-lod` or `lightmap-uv`"
+                            ),
+                        );
+                    }
+                    if !modes.insert(option.as_str()) {
+                        return fail(span, format!("duplicate mesh URL option `{option}`"));
+                    }
+                }
+            }
+            let op = match (modes.contains("auto-lod"), modes.contains("lightmap-uv")) {
+                (false, false) => "mesh_url",
+                (true, false) => "mesh_lod_url",
+                (false, true) => "mesh_lightmap_url",
+                (true, true) => "mesh_lod_lightmap_url",
+            };
+            let value = serde_json::from_str::<String>(path).map_err(|error| Diagnostic {
+                span,
+                message: format!("invalid mesh path: {error}"),
+            })?;
+            if value.is_empty() {
+                return fail(span, "mesh URL requires a nonempty path");
+            }
+            ir::Expr {
+                value,
+                ..ir::Expr::operation(op, Type::String, vec![], span)
+            }
+        }
         ExprKind::ImageUrl(path) | ExprKind::SlicedImageUrl { path, .. } => {
             let value = serde_json::from_str::<String>(path).map_err(|e| Diagnostic {
                 span,
@@ -10047,6 +10340,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 ),
                 Some(Type::Int) => ("int_array", Type::IntList, Type::Int),
                 Some(Type::Date) => ("date_array", Type::DateList, Type::Date),
+                Some(Type::Hit3D) => ("hit3d_array", Type::Hit3DList, Type::Hit3D),
                 _ => ("array", Type::StringList, Type::String),
             };
             let items = items
@@ -10218,6 +10512,11 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     FunctionKind::Math(kind) => math_call(call, scope, owner, function, kind),
                     FunctionKind::Geometry(kind) => {
                         let args = builtin_arguments(call, scope, owner, function)?;
+                        if kind.uses_scene_model()
+                            && let Some(model) = args.first()
+                        {
+                            validate_scene_model(model, scope)?;
+                        }
                         Ok(ir::Expr {
                             value: kind.name().into(),
                             ..ir::Expr::operation("geometry_function", kind.result(), args, span)
@@ -10425,6 +10724,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "PointerEventKind"
                         | "PointerButton"
                         | "ColorScheme"
+                        | "SceneToneMap"
                         | "FileDialogMode"
                         | "MessageLevel"
                         | "MessageButtons"
@@ -10469,6 +10769,10 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                                 | Type::PointerEvent
                                 | Type::TouchPoint
                                 | Type::Point2D
+                                | Type::Point3D
+                                | Type::Vector3D
+                                | Type::Hit3D
+                                | Type::ProjectedPoint3D
                                 | Type::Vector2D
                         ) =>
                     {
@@ -10728,13 +11032,20 @@ fn builtin_arguments(
     owner: &str,
     function: &builtins::Function,
 ) -> Result<Vec<ir::Expr>> {
-    if call.arguments.len() != function.parameters.len() {
+    let min = function.minimum_arguments();
+    let max = function.parameters.len();
+    if !(min..=max).contains(&call.arguments.len()) {
+        let count = if min == max {
+            max.to_string()
+        } else {
+            format!("{min} or {max}")
+        };
         return fail(
             call.span,
             format!(
                 "{} expects {} arguments, found {}",
                 call.callee,
-                function.parameters.len(),
+                count,
                 call.arguments.len()
             ),
         );

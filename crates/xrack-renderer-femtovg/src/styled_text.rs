@@ -4,12 +4,16 @@ use crate::{
 };
 use femtovg::{Canvas, Paint, Path, renderer::WGPURenderer};
 use std::{
-    collections::{HashMap, VecDeque},
+    cell::Cell,
+    collections::{HashMap, VecDeque, hash_map::Entry},
+    hash::BuildHasher,
     ops::Range,
-    rc::Rc,
+    rc::{Rc, Weak},
+    sync::Arc,
 };
 use xrack_layout::{
-    LayoutNode, Point, Size, StyledFragment, StyledTextLayout, StyledTextLineIndex, TextMeasurer,
+    LayoutNode, Point, Size, StyledFragment, StyledSelectionSpans, StyledTextLayout,
+    StyledTextLineIndex, StyledTextMeasurements, TextMeasurer, VisualTextLine,
 };
 use xrack_runtime::{
     Node, StyledLink, StyledRun, StyledText, TextHorizontalAlignment, TextOverflow, TextStyle,
@@ -30,10 +34,7 @@ struct LayoutKey {
 struct LayoutSettings {
     kind: &'static str,
     available: [u32; 2],
-    font_size: u32,
-    family: String,
-    weight: u16,
-    italic: bool,
+    font: LayoutFont,
     wrap: u8,
     overflow: u8,
     max_lines: i64,
@@ -43,13 +44,174 @@ struct LayoutSettings {
     selectable: bool,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct LayoutFont {
+    size: u32,
+    family: String,
+    weight: u16,
+    italic: bool,
+}
+
+struct FontScope {
+    font: LayoutFont,
+    context: Rc<()>,
+    typography: Rc<()>,
+}
+
+impl FontScope {
+    fn matches(&self, font: &LayoutFont, context: &Rc<()>, typography: &Rc<()>) -> bool {
+        self.font == *font
+            && Rc::ptr_eq(&self.context, context)
+            && Rc::ptr_eq(&self.typography, typography)
+    }
+}
+
+struct ReflowMeasurements {
+    document: [(usize, usize); 3],
+    scope: FontScope,
+    registered_fonts: [usize; 2],
+    measurements: StyledTextMeasurements,
+}
+
+struct ShapedSpans {
+    scope: FontScope,
+    registered_fonts: [usize; 2],
+    span_widths: SpanWidths,
+    selection: SelectionShapes,
+    selection_document: Option<SelectionDocument>,
+}
+
+struct SelectionDocument {
+    identity: [(usize, usize); 3],
+    spans: StyledSelectionSpans,
+}
+
+type SpanWidths = HashMap<u64, (TextStyle, Box<str>, f32)>;
+type ShapingPaints = [Option<Paint>; 8];
+
+fn shaping_style_index(style: TextStyle) -> usize {
+    usize::from(style.bold) | (usize::from(style.italic) << 1) | (usize::from(style.monospace) << 2)
+}
+
+fn shaping_paint(system: &TextSystem, node: &Node, style: TextStyle) -> Paint {
+    // Shaping uses the font variant. Color and decoration belong to painting.
+    system.paint_styled(
+        node,
+        femtovg::Color::white(),
+        TextStyle {
+            bold: style.bold,
+            italic: style.italic,
+            monospace: style.monospace,
+            ..TextStyle::default()
+        },
+    )
+}
+
+impl ShapedSpans {
+    fn sync_fonts(&mut self, registered_fonts: [usize; 2]) {
+        if self.registered_fonts != registered_fonts {
+            self.span_widths.clear();
+            self.clear_selection();
+            self.registered_fonts = registered_fonts;
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        self.selection = SelectionShapes::default();
+        self.selection_document = None;
+    }
+
+    fn selection_caches(
+        &mut self,
+        document: &StyledText,
+        identity: [(usize, usize); 3],
+    ) -> (&mut SelectionShapes, &mut StyledSelectionSpans) {
+        let make_document = || SelectionDocument {
+            identity,
+            spans: StyledSelectionSpans::new(document.clone()),
+        };
+        let document = self.selection_document.get_or_insert_with(make_document);
+        if document.identity != identity {
+            *document = make_document();
+        }
+        (&mut self.selection, &mut document.spans)
+    }
+}
+
+struct SelectionShape {
+    text: Box<str>,
+    style: TextStyle,
+    geometry: Arc<VisualTextLine>,
+}
+
+#[derive(Default)]
+struct SelectionShapes {
+    entries: HashMap<u64, SelectionShape>,
+    bytes: usize,
+}
+
+impl SelectionShapes {
+    fn get_or_shape(
+        &mut self,
+        text: &str,
+        style: TextStyle,
+        shape: impl FnOnce() -> Arc<VisualTextLine>,
+    ) -> Arc<VisualTextLine> {
+        const MAX_BYTES: usize = 4 * 1024 * 1024;
+        if text.len() > 256 {
+            return shape();
+        }
+        let key = self.entries.hasher().hash_one((text, style));
+        match self.entries.entry(key) {
+            Entry::Occupied(entry) => {
+                let retained = entry.get();
+                if retained.style == style && retained.text.as_ref() == text {
+                    retained.geometry.clone()
+                } else {
+                    shape()
+                }
+            }
+            Entry::Vacant(entry) => {
+                let geometry = shape();
+                let bytes = std::mem::size_of::<(u64, SelectionShape)>()
+                    + text.len()
+                    + geometry.allocated_bytes();
+                if self.bytes + bytes <= MAX_BYTES {
+                    entry.insert(SelectionShape {
+                        text: text.into(),
+                        style,
+                        geometry: geometry.clone(),
+                    });
+                    self.bytes += bytes;
+                }
+                geometry
+            }
+        }
+    }
+}
+
 struct CachedLayout {
     document: StyledText,
     plan: Rc<StyledTextLayout>,
     lines: Option<Rc<StyledTextLineIndex>>,
     shaped_fragments: usize,
+    selection_allocations: Vec<SelectionAllocation>,
     registered_fonts: [usize; 2],
+    prefix: Option<ReusedPrefix>,
     bytes: usize,
+}
+
+#[derive(Clone, Copy)]
+struct SelectionAllocation {
+    first_fragment: usize,
+    total_bytes: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct ReusedPrefix {
+    pub(crate) source: Weak<StyledTextLayout>,
+    pub(crate) source_document: [(usize, usize); 3],
+    pub(crate) fragments: usize,
 }
 
 pub(super) fn document_bytes(document: &StyledText) -> usize {
@@ -72,34 +234,38 @@ pub(super) fn document_identity(document: &StyledText) -> [(usize, usize); 3] {
 /// Complete paragraphs whose bytes, inline styles and link destinations still
 /// match after parsing a later document revision.
 pub(super) fn unchanged_paragraph_prefix(previous: &StyledText, next: &StyledText) -> usize {
+    let (verified_bytes, verified_runs, verified_links) =
+        next.verified_prefix_from(previous).unwrap_or_default();
     let old = previous.text().as_bytes();
-    let new = next.text().as_bytes();
-    let common = if new.starts_with(old) {
+    let old_tail = &old[verified_bytes..];
+    let new_tail = &next.text().as_bytes()[verified_bytes..];
+    let common = if new_tail.starts_with(old_tail) {
         old.len()
     } else {
-        old.iter().zip(new).take_while(|(a, b)| *a == *b).count()
+        verified_bytes
+            + old_tail
+                .iter()
+                .zip(new_tail)
+                .take_while(|(a, b)| *a == *b)
+                .count()
     };
     let Some(newline) = old[..common].iter().rposition(|byte| *byte == b'\n') else {
         return 0;
     };
     let end = newline + 1;
-    let styles_match = previous
-        .runs()
+    let styles_match = previous.runs()[verified_runs..]
         .iter()
         .take_while(|run| run.start < end)
         .map(|run| (run.start, run.end.min(end), run.style))
-        .eq(next
-            .runs()
+        .eq(next.runs()[verified_runs..]
             .iter()
             .take_while(|run| run.start < end)
             .map(|run| (run.start, run.end.min(end), run.style)));
-    let links_match = previous
-        .links()
+    let links_match = previous.links()[verified_links..]
         .iter()
         .take_while(|link| link.start < end)
         .map(|link| (link.start, link.end.min(end), &link.href))
-        .eq(next
-            .links()
+        .eq(next.links()[verified_links..]
             .iter()
             .take_while(|link| link.start < end)
             .map(|link| (link.start, link.end.min(end), &link.href)));
@@ -113,6 +279,8 @@ pub(crate) struct LayoutCache {
     order: VecDeque<LayoutKey>,
     bytes: usize,
     prefix_disabled: bool,
+    reflow: Option<ReflowMeasurements>,
+    shaped_spans: Option<ShapedSpans>,
     pub(crate) reused_fragments: u64,
 }
 
@@ -121,10 +289,30 @@ impl LayoutCache {
         self.entries.clear();
         self.order.clear();
         self.bytes = 0;
+        self.reflow = None;
+        self.shaped_spans = None;
     }
 
     pub(crate) fn set_incremental_enabled(&mut self, enabled: bool) {
         self.prefix_disabled = !enabled;
+    }
+
+    pub(crate) fn reused_prefix(
+        &self,
+        plan: &Rc<StyledTextLayout>,
+        document: [(usize, usize); 3],
+    ) -> Option<ReusedPrefix> {
+        self.order.iter().rev().take(32).find_map(|key| {
+            if key.document != document {
+                return None;
+            }
+            let entry = self.entries.get(key)?;
+            if Rc::ptr_eq(&entry.plan, plan) {
+                entry.prefix.clone()
+            } else {
+                None
+            }
+        })
     }
 
     pub(crate) fn get(
@@ -161,10 +349,12 @@ impl LayoutCache {
             settings: LayoutSettings {
                 kind: node.kind,
                 available: [available.width.to_bits(), available.height.to_bits()],
-                font_size: system.font_size(node).to_bits(),
-                family: family.into(),
-                weight,
-                italic,
+                font: LayoutFont {
+                    size: system.font_size(node).to_bits(),
+                    family: family.into(),
+                    weight,
+                    italic,
+                },
                 wrap: wrap as u8,
                 overflow: overflow as u8,
                 max_lines: node.int("max-lines").unwrap_or_default(),
@@ -195,7 +385,8 @@ impl LayoutCache {
             return Some(cached.plan.clone());
         }
 
-        let mut paints = HashMap::new();
+        let mut paints = ShapingPaints::default();
+        let share_spans = self.prepare_shaped_spans(system, document, &key.settings.font);
         let mut cached = self.take(&key).unwrap_or_else(|| {
             let can_index = !self.prefix_disabled
                 && key.settings.available[1] == f32::INFINITY.to_bits()
@@ -205,24 +396,38 @@ impl LayoutCache {
                 && overflow != TextOverflow::Elide
                 && key.settings.max_lines <= 0
                 && document.text().len() >= 4096;
-            let continued = can_index
-                .then(|| self.continue_layout(system, node, document, &key, &mut paints))
-                .flatten();
-            let (plan, lines, shaped_fragments) =
-                if let Some((plan, lines, reused, shaped)) = continued {
-                    self.reused_fragments = self.reused_fragments.saturating_add(reused as u64);
-                    (plan, Some(lines), shaped)
-                } else {
-                    let (plan, lines) =
-                        layout(system, node, document, available, &mut paints, can_index);
-                    (plan, lines, 0)
-                };
+            if can_index
+                && let Some((cached, reused)) =
+                    self.continue_layout(system, node, document, &key, &mut paints, share_spans)
+            {
+                self.reused_fragments = self.reused_fragments.saturating_add(reused as u64);
+                return cached;
+            }
+            let reflow = can_index && self.prepare_reflow(system, document, &key);
+            let mode = if let Some(reflow) = self.reflow.as_mut().filter(|_| reflow) {
+                LayoutMode::Reflow(reflow)
+            } else if can_index {
+                LayoutMode::Indexed
+            } else {
+                LayoutMode::Regular
+            };
+            let (plan, lines) = layout(
+                system,
+                node,
+                document,
+                available,
+                &mut paints,
+                mode,
+                self.shaped_spans.as_mut().filter(|_| share_spans),
+            );
             CachedLayout {
                 plan: Rc::new(plan),
                 document: document.clone(),
                 lines: lines.map(Rc::new),
-                shaped_fragments,
+                shaped_fragments: 0,
+                selection_allocations: Vec::new(),
                 registered_fonts: system.registered_font_counts(),
+                prefix: None,
                 bytes: 0,
             }
         });
@@ -231,33 +436,155 @@ impl LayoutCache {
             // Resolve all used faces before sharing a shaped span. Shaping
             // the same text with the same style then uses a stable font set.
             for fragment in &plan.fragments[cached.shaped_fragments..] {
-                paints.entry(fragment.style()).or_insert_with(|| {
-                    system.paint_styled(node, femtovg::Color::white(), fragment.style())
-                });
+                let style = fragment.style();
+                paints[shaping_style_index(style)]
+                    .get_or_insert_with(|| shaping_paint(system, node, style));
             }
-            let shaped_bytes =
-                plan.shape_selection_from(document, cached.shaped_fragments, |text, style| {
-                    system.shape_visual_line(text, &paints[&style])
+            let registered_fonts = system.registered_font_counts();
+            let allocations = &mut cached.selection_allocations;
+            let mut bytes = allocations.last().map_or(0, |entry| entry.total_bytes);
+            let allocate = |first_fragment, allocation_bytes| {
+                bytes = bytes.saturating_add(allocation_bytes);
+                allocations.push(SelectionAllocation {
+                    first_fragment,
+                    total_bytes: bytes,
                 });
-            if cached.bytes != 0 {
-                cached.bytes = cached.bytes.saturating_add(shaped_bytes);
+            };
+            let mut shape = |text: &str, style: TextStyle| {
+                let paint = paints[shaping_style_index(style)]
+                    .get_or_insert_with(|| shaping_paint(system, node, style));
+                Arc::new(system.shape_visual_line(text, paint))
+            };
+            if let Some(spans) = self.shaped_spans.as_mut().filter(|_| share_spans) {
+                spans.sync_fonts(registered_fonts);
+                if cached.shaped_fragments == 0
+                    && (spans
+                        .selection_document
+                        .as_ref()
+                        .is_some_and(|entry| entry.identity == key.document)
+                        || (document.text().len() <= 1024 * 1024
+                            && document_bytes(document) <= 8 * 1024 * 1024))
+                {
+                    let (selection, source) = spans.selection_caches(document, key.document);
+                    plan.shape_selection_recording_by_span(
+                        0,
+                        source,
+                        |text, style| selection.get_or_shape(text, style, || shape(text, style)),
+                        allocate,
+                    );
+                } else {
+                    plan.shape_selection_recording_shared(
+                        document,
+                        cached.shaped_fragments,
+                        |text, style| {
+                            spans
+                                .selection
+                                .get_or_shape(text, style, || shape(text, style))
+                        },
+                        allocate,
+                    );
+                }
+            } else {
+                plan.shape_selection_recording_shared(
+                    document,
+                    cached.shaped_fragments,
+                    shape,
+                    allocate,
+                );
             }
             cached.shaped_fragments = plan.fragments.len();
-            cached.registered_fonts = system.registered_font_counts();
+            cached.registered_fonts = registered_fonts;
         }
         let plan = cached.plan.clone();
         self.insert(key, cached);
         Some(plan)
     }
 
+    fn prepare_shaped_spans(
+        &mut self,
+        system: &TextSystem,
+        document: &StyledText,
+        font: &LayoutFont,
+    ) -> bool {
+        if self.prefix_disabled || document.text().len() < 4096 {
+            return false;
+        }
+        let Some(typography) = system.typography_revision() else {
+            return false;
+        };
+        let context = system.context_key();
+        let registered_fonts = system.registered_font_counts();
+        if let Some(spans) = self.shaped_spans.as_mut()
+            && spans.scope.matches(font, context, &typography)
+        {
+            spans.sync_fonts(registered_fonts);
+        } else {
+            self.shaped_spans = Some(ShapedSpans {
+                scope: FontScope {
+                    font: font.clone(),
+                    context: context.clone(),
+                    typography,
+                },
+                registered_fonts,
+                span_widths: SpanWidths::new(),
+                selection: SelectionShapes::default(),
+                selection_document: None,
+            });
+        }
+        true
+    }
+
+    fn prepare_reflow(
+        &mut self,
+        system: &TextSystem,
+        document: &StyledText,
+        key: &LayoutKey,
+    ) -> bool {
+        let context = system.context_key();
+        let Some(typography) = system.typography_revision() else {
+            return false;
+        };
+        let registered_fonts = system.registered_font_counts();
+        if !self.reflow.as_ref().is_some_and(|entry| {
+            entry.document == key.document
+                && entry
+                    .scope
+                    .matches(&key.settings.font, context, &typography)
+        }) {
+            // Capture the first full layout's probe results for a later resize.
+            // Incremental tails bypass this path.
+            if document.text().len() > 1024 * 1024 || document_bytes(document) > 8 * 1024 * 1024 {
+                return false;
+            }
+            self.reflow = Some(ReflowMeasurements {
+                document: key.document,
+                scope: FontScope {
+                    font: key.settings.font.clone(),
+                    context: context.clone(),
+                    typography,
+                },
+                registered_fonts,
+                measurements: StyledTextMeasurements::new(document.clone()),
+            });
+        }
+        if let Some(reflow) = self.reflow.as_mut()
+            && reflow.registered_fonts != registered_fonts
+        {
+            reflow.measurements.clear_widths();
+            reflow.registered_fonts = registered_fonts;
+        }
+        true
+    }
+
     fn continue_layout(
-        &self,
+        &mut self,
         system: &TextSystem,
         node: &Node,
         document: &StyledText,
         key: &LayoutKey,
-        paints: &mut HashMap<TextStyle, Paint>,
-    ) -> Option<(StyledTextLayout, StyledTextLineIndex, usize, usize)> {
+        paints: &mut ShapingPaints,
+        share_spans: bool,
+    ) -> Option<(CachedLayout, usize)> {
         let registered_fonts = system.registered_font_counts();
         let (old, split) = self.order.iter().rev().take(32).find_map(|previous| {
             if previous.settings != key.settings {
@@ -270,13 +597,12 @@ impl LayoutCache {
             let split = unchanged_paragraph_prefix(&old.document, document);
             (split >= 4096).then_some((old, split))
         })?;
+        let first_run = document.runs().partition_point(|run| run.end <= split);
         let first_link = document.links().partition_point(|link| link.end <= split);
         let suffix = StyledText::from_parts(
             document.text().get(split..)?,
-            document
-                .runs()
+            document.runs()[first_run..]
                 .iter()
-                .filter(|run| run.end > split)
                 .map(|run| StyledRun {
                     start: run.start.saturating_sub(split),
                     end: run.end - split,
@@ -301,7 +627,8 @@ impl LayoutCache {
             &suffix,
             Size::new(f32::from_bits(key.settings.available[0]), f32::INFINITY),
             paints,
-            true,
+            LayoutMode::Indexed,
+            self.shaped_spans.as_mut().filter(|_| share_spans),
         );
         if system.registered_font_counts() != registered_fonts {
             return None;
@@ -313,7 +640,26 @@ impl LayoutCache {
             first_link,
             system.font_size(node),
         );
-        Some((plan, lines, reused, old.shaped_fragments.min(reused)))
+        let retained_shapes = old
+            .selection_allocations
+            .partition_point(|entry| entry.first_fragment < reused);
+        Some((
+            CachedLayout {
+                document: document.clone(),
+                plan: Rc::new(plan),
+                lines: Some(Rc::new(lines)),
+                shaped_fragments: old.shaped_fragments.min(reused),
+                selection_allocations: old.selection_allocations[..retained_shapes].to_vec(),
+                registered_fonts,
+                prefix: Some(ReusedPrefix {
+                    source: Rc::downgrade(&old.plan),
+                    source_document: document_identity(&old.document),
+                    fragments: reused,
+                }),
+                bytes: 0,
+            },
+            reused,
+        ))
     }
 
     fn take(&mut self, key: &LayoutKey) -> Option<CachedLayout> {
@@ -324,16 +670,25 @@ impl LayoutCache {
     }
 
     fn insert(&mut self, key: LayoutKey, mut cached: CachedLayout) {
-        if cached.bytes == 0 {
-            cached.bytes = document_bytes(&cached.document)
-                .saturating_add(cached.plan.allocated_bytes())
-                .saturating_add(
-                    cached
-                        .lines
-                        .as_deref()
-                        .map_or(0, StyledTextLineIndex::allocated_bytes),
-                );
-        }
+        let visual_bytes = cached
+            .selection_allocations
+            .last()
+            .map_or(0, |entry| entry.total_bytes);
+        cached.bytes = document_bytes(&cached.document)
+            .saturating_add(
+                cached.plan.fragments.capacity() * std::mem::size_of::<StyledFragment>(),
+            )
+            .saturating_add(
+                cached.selection_allocations.capacity()
+                    * std::mem::size_of::<SelectionAllocation>(),
+            )
+            .saturating_add(visual_bytes)
+            .saturating_add(
+                cached
+                    .lines
+                    .as_deref()
+                    .map_or(0, StyledTextLineIndex::allocated_bytes),
+            );
         let bytes = cached.bytes;
         if bytes > MAX_CACHE_BYTES {
             return;
@@ -352,30 +707,118 @@ impl LayoutCache {
     }
 }
 
+enum LayoutMode<'a> {
+    Regular,
+    Indexed,
+    Reflow(&'a mut ReflowMeasurements),
+}
+
 fn layout(
     system: &TextSystem,
     node: &Node,
     document: &StyledText,
     available: Size,
-    paints: &mut HashMap<TextStyle, Paint>,
-    indexed: bool,
+    paints: &mut ShapingPaints,
+    mode: LayoutMode<'_>,
+    mut spans: Option<&mut ShapedSpans>,
 ) -> (StyledTextLayout, Option<StyledTextLineIndex>) {
+    // Wrap probes and final placement often measure the same short spans.
+    let max_widths = if spans.is_some() { 16_384 } else { 1024 };
+    let invalidated = Cell::new(false);
+    let mut registered_fonts = if let Some(spans) = &spans {
+        Some(spans.registered_fonts)
+    } else if let LayoutMode::Reflow(reflow) = &mode {
+        Some(reflow.registered_fonts)
+    } else {
+        None
+    };
+    let mut local_widths;
+    let mut widths = if let Some(spans) = &mut spans {
+        Some(&mut spans.span_widths)
+    } else {
+        local_widths = (document.text().len() >= 4096).then(SpanWidths::new);
+        local_widths.as_mut()
+    };
+    let mut unretained_widths = 0_usize;
     let advance = |text: &str, style| {
-        let paint = paints
-            .entry(style)
-            .or_insert_with(|| system.paint_styled(node, femtovg::Color::white(), style));
-        system.advance_painted(text, paint)
+        let slot = &mut paints[shaping_style_index(style)];
+        let paint = match slot {
+            Some(paint) => paint,
+            None => {
+                let paint = shaping_paint(system, node, style);
+                // A newly registered face can change fallback for earlier spans.
+                let clear_widths = if let Some(registered_fonts) = &mut registered_fonts {
+                    let fonts = system.registered_font_counts();
+                    let changed = *registered_fonts != fonts;
+                    if changed {
+                        invalidated.set(true);
+                        *registered_fonts = fonts;
+                    }
+                    changed
+                } else {
+                    true
+                };
+                if clear_widths && let Some(widths) = &mut widths {
+                    widths.clear();
+                }
+                slot.insert(paint)
+            }
+        };
+        let Some(widths) = widths.as_mut().filter(|_| text.len() <= 128) else {
+            return system.advance_painted(text, paint);
+        };
+        let key = widths.hasher().hash_one((style, text));
+        if let Some((cached_style, cached_text, width)) = widths.get(&key)
+            && *cached_style == style
+            && cached_text.as_ref() == text
+        {
+            return *width;
+        }
+        let width = system.advance_painted(text, paint);
+        if widths.len() < max_widths {
+            widths.insert(key, (style, text.into(), width));
+        } else {
+            unretained_widths += 1;
+        }
+        width
     };
     let size = system.font_size(node);
-    if indexed {
-        let (plan, lines) = StyledTextLayout::indexed(node, document, available, size, advance);
-        (plan, Some(lines))
-    } else {
-        (
+    let plan = match mode {
+        LayoutMode::Reflow(reflow) => {
+            let (plan, lines) = StyledTextLayout::indexed_with_measurements(
+                node,
+                available,
+                size,
+                &mut reflow.measurements,
+                &invalidated,
+                advance,
+            );
+            reflow.registered_fonts = system.registered_font_counts();
+            // A document with many misses at capacity benefits from retaining
+            // complete spans by their source position on its next reflow.
+            if unretained_widths >= 1024 {
+                reflow.measurements.retain_span_advances();
+            }
+            (plan, Some(lines))
+        }
+        LayoutMode::Indexed => {
+            let (plan, lines) = StyledTextLayout::indexed(node, document, available, size, advance);
+            (plan, Some(lines))
+        }
+        LayoutMode::Regular => (
             StyledTextLayout::new(node, document, available, size, advance),
             None,
-        )
+        ),
+    };
+    if let Some(spans) = spans {
+        let registered_fonts = system.registered_font_counts();
+        if spans.registered_fonts != registered_fonts {
+            // The measuring callback already discarded stale span widths.
+            spans.clear_selection();
+            spans.registered_fonts = registered_fonts;
+        }
     }
+    plan
 }
 
 pub(crate) fn selection_spans(

@@ -411,6 +411,10 @@ pub(crate) fn model_page(
                 model.inspect_rows(query.offset, query.limit, |text| json!(shortened(text)));
             ("StringList", count, items, Some(model.edit_stamp()))
         }
+        Value::Hit3DList(model) => {
+            let (count, items) = model.inspect_rows(query.offset, query.limit, describe_hit);
+            ("Hit3DList", count, items, Some(model.edit_stamp()))
+        }
         Value::RecordList(list) => {
             let model = list.model();
             let (count, items) = model.inspect_rows(query.offset, query.limit, |record| {
@@ -418,7 +422,7 @@ pub(crate) fn model_page(
             });
             ("RecordList", count, items, Some(model.edit_stamp()))
         }
-        _ => return json!({"error": "The property is not an int, string, or record model"}),
+        _ => return json!({"error": "The property is not a pageable model"}),
     };
     let end = query.offset + items.len();
     json!({
@@ -511,6 +515,17 @@ fn public_properties(instance: &Instance, limit: usize) -> Vec<Json> {
         .collect()
 }
 
+fn describe_hit(value: &xrack_runtime::Hit3D) -> Json {
+    json!({
+        "valid": value.valid, "object-id": shortened(&value.object_id), "row-index": value.row_index, "distance": value.distance,
+        "position": {"x": value.position.x, "y": value.position.y, "z": value.position.z},
+        "normal": {"x": value.normal.x, "y": value.normal.y, "z": value.normal.z},
+        "local-position": {"x": value.local_position.x, "y": value.local_position.y, "z": value.local_position.z},
+        "local-normal": {"x": value.local_normal.x, "y": value.local_normal.y, "z": value.local_normal.z},
+        "u": value.u, "v": value.v,
+    })
+}
+
 pub(crate) fn describe_value(property: &mut Json, value: &Value, depth: usize) {
     describe(value, property, depth, &mut 24);
 }
@@ -522,11 +537,29 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
         Value::Float(value) => ("Float", json!(value.to_string())),
         Value::String(value) => ("String", json!(shortened(value))),
         Value::Length(value) => ("Length", json!(format!("{}px", value.0))),
+        Value::Vector3D(value) => (
+            "Vector3D",
+            json!({"x": value.x, "y": value.y, "z": value.z}),
+        ),
+        Value::Hit3D(value) => ("Hit3D", describe_hit(value)),
+        Value::Point3D(value) => ("Point3D", json!({"x": value.x, "y": value.y, "z": value.z})),
+        Value::ProjectedPoint3D(value) => (
+            "ProjectedPoint3D",
+            json!({
+                "point": {"x": value.point.x.0, "y": value.point.y.0},
+                "depth": value.depth, "valid": value.valid, "inside": value.inside,
+            }),
+        ),
         Value::Point2D(value) => ("Point2D", json!({"x": value.x.0, "y": value.y.0})),
         Value::Vector2D(value) => ("Vector2D", json!({"x": value.x.0, "y": value.y.0})),
         Value::Transform2D(value) => ("Transform2D", json!(value.coefficients())),
         Value::Percent(value) => ("Percent", json!(format!("{}%", value.0 * 100.0))),
         Value::Color(value) => ("Color", json!(format!("#{:08x}", value.0))),
+        Value::Hit3DList(model) if depth > 0 => {
+            let (count, items) = model.inspect_rows(0, MAX_ROWS, describe_hit);
+            set_items(property, "Hit3DList", count, items);
+            return;
+        }
         Value::IntList(items) if depth > 0 => {
             let sample: Vec<_> = items.iter().take(MAX_ROWS).map(i64::to_string).collect();
             set_items(property, "IntList", items.len(), sample);
@@ -584,6 +617,7 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
             return;
         }
         Value::StringList(items) => ("StringList", json!(format!("{} rows", items.len()))),
+        Value::Hit3DList(rows) => ("Hit3DList", json!(format!("{} rows", rows.len()))),
         Value::IntList(items) => ("IntList", json!(format!("{} rows", items.len()))),
         Value::DateList(items) => ("DateList", json!(format!("{} rows", items.len()))),
         Value::DateModel(model) => (
@@ -771,6 +805,52 @@ mod tests {
             model_page(&ui, &next, BTreeMap::new())["items"],
             page["items"]
         );
+    }
+
+    #[test]
+    fn hit_lists_can_be_inspected_as_a_pageable_model() {
+        let ui = ReloadableInstance::new(
+            program(
+                r##"
+                struct Actor {
+                    id: string, mesh: string, x: float, y: float, z: float,
+                    scale-x: float, scale-y: float, scale-z: float, yaw: float,
+                    pitch: float, roll: float, color: color,
+                }
+                export component PickPanel inherits Window {
+                    property <Actor> near: Actor {
+                        id: "near", mesh: "primitive:box", x: 0, y: 0, z: 0,
+                        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0,
+                        roll: 0, color: #ffffff,
+                    };
+                    property <[Actor]> actors: [
+                        root.near, Actor { id: "far", z: -2, ..root.near }
+                    ];
+                    out property <[hit3d]> hits: Scene3D.ray-hit-all(
+                        root.actors, Point3D.new(0, 0, 8), Vector3D.new(0, 0, -1), 20);
+                }
+                "##,
+            )
+            .create("PickPanel")
+            .unwrap(),
+        );
+        let page = model_page(
+            &ui,
+            &ModelQuery {
+                node_key: "root".into(),
+                property: "hits".into(),
+                offset: 1,
+                limit: 1,
+                generation: None,
+            },
+            BTreeMap::new(),
+        );
+        assert_eq!(page["kind"], "Hit3DList");
+        assert_eq!(page["count"], 2);
+        assert_eq!(page["items"][0]["object-id"], "far");
+        assert_eq!(page["items"][0]["row-index"], 1);
+        assert_eq!(page["items"][0]["position"]["z"], -1.5);
+        assert!(page["nextOffset"].is_null());
     }
 
     #[test]

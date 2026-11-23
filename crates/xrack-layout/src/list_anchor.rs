@@ -45,8 +45,7 @@ impl ListAnchor {
         }
         let offset = layout.scroll?.offset;
         let scope = layout
-            .nested_list
-            .as_ref()
+            .nested_list_renderer()
             .map(xrack_runtime::ListRowRenderer::scope);
         let tree_root = node.tree.as_ref().map(|tree| tree.root_identity());
         if layout.missing_list_rows {
@@ -136,7 +135,7 @@ pub(crate) fn capture_list_anchors(
         anchors: &mut BTreeMap<Vec<usize>, ListAnchor>,
     ) {
         if scene.list.is_some() {
-            if let Some(renderer) = &layout.nested_list
+            if let Some(renderer) = layout.nested_list_renderer()
                 && layout.visible
             {
                 let width = layout

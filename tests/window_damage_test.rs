@@ -1,3 +1,5 @@
+mod gpu_readback;
+
 use std::rc::Rc;
 use window_damage_ui::{DamageDemo, MixedDamageDemo};
 use xrack_layout::{Interaction, Point, Size, StackTransitions, TextAreaMotion};
@@ -82,7 +84,7 @@ impl Harness {
             self.scale,
             input,
         )?;
-        let mut pixels = read_texture(&self.incremental, &target)?;
+        let mut pixels = gpu_readback::read_texture(&self.incremental, &target)?;
         if self.format == wgpu::TextureFormat::Bgra8Unorm {
             for pixel in pixels.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
@@ -105,47 +107,6 @@ impl Harness {
         }
         Ok((work, pixels))
     }
-}
-
-fn read_texture(renderer: &Renderer, target: &wgpu::Texture) -> TestResult<Vec<u8>> {
-    let (width, height) = (target.width(), target.height());
-    let row_bytes = width * 4;
-    let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let stride = row_bytes.div_ceil(alignment) * alignment;
-    let buffer = renderer.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("window damage test readback"),
-        size: u64::from(stride) * u64::from(height),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = renderer.device.create_command_encoder(&Default::default());
-    encoder.copy_texture_to_buffer(
-        target.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(stride),
-                rows_per_image: Some(height),
-            },
-        },
-        target.size(),
-    );
-    renderer.queue.submit([encoder.finish()]);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-    renderer.device.poll(wgpu::PollType::wait_indefinitely())?;
-    receiver.recv_timeout(std::time::Duration::from_secs(5))??;
-    Ok(buffer
-        .slice(..)
-        .get_mapped_range()?
-        .chunks_exact(stride as usize)
-        .flat_map(|row| row[..row_bytes as usize].iter().copied())
-        .collect())
 }
 
 #[track_caller]

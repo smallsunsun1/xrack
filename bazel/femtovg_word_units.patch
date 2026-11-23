@@ -1,0 +1,342 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -33,8 +33,10 @@
+ 
+ #[derive(Clone, Debug, Default)]
+ pub(super) struct ShapedWord {
++    // Shaping and ink metrics are in font units. The run applies its size
++    // and letter spacing after retrieving each shaped word.
+     glyphs: Vec<ShapedGlyph>,
+-    width: f32,
++    units_per_em: u16,
+ }
+ 
+ #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+@@ -43,14 +45,6 @@
+     word_hash: u64,
+     font_ids: [Option<FontId>; 8],
+     variation_hash: u64,
+-    // The same word shapes differently right-to-left than left-to-right
+-    // (mirrored brackets, reversed cluster order), so the cached shaping is
+-    // only valid for the direction it was produced under. Direction-neutral
+-    // words (digits, punctuation) genuinely occur in both. `None` marks a
+-    // whole-run key, where the direction is derived from the text itself.
+-    rtl: Option<bool>,
+-    // Letter spacing is baked into the cached advances by `shape_word`, so
+-    // shapings at different spacings must not share an entry.
+     letter_spacing_key: u32,
+ }
+ 
+@@ -62,7 +56,6 @@
+         max_width: Option<f32>,
+         variations: &FontVariations,
+         letter_spacing: f32,
+-        rtl: Option<bool>,
+     ) -> Self {
+         let mut hasher = FnvHasher::default();
+         word.hash(&mut hasher);
+@@ -75,13 +68,51 @@
+             word_hash: hasher.finish(),
+             font_ids,
+             variation_hash: variations.hash(),
+-            rtl,
+             letter_spacing_key: letter_spacing.to_bits(),
+         }
+     }
+ }
+ 
+-pub(super) type ShapedWordsCache<H> = LruCache<ShapingId, Result<ShapedWord, ErrorKind>, H>;
++#[derive(Clone, Copy, Hash, Eq, PartialEq)]
++pub(super) struct WordId {
++    word_hash: u64,
++    font_ids: [Option<FontId>; 8],
++    variation_hash: u64,
++    rtl: bool,
++}
++
++impl ShapedWord {
++    fn scale(&self, size: f32) -> f32 {
++        size / f32::from(self.units_per_em)
++    }
++
++    fn width(&self, scale: f32, letter_spacing: f32) -> f32 {
++        self.glyphs
++            .iter()
++            .fold(0.0, |width, glyph| width + (glyph.advance_x * scale + letter_spacing))
++    }
++
++    fn append(&self, glyphs: &mut Vec<ShapedGlyph>, scale: f32, byte_index: usize, rtl: bool) {
++        let start = glyphs.len();
++        glyphs.extend(self.glyphs.iter().map(|glyph| {
++            let mut glyph = *glyph;
++            glyph.byte_index += byte_index;
++            glyph.width *= scale;
++            glyph.height *= scale;
++            glyph.advance_x *= scale;
++            glyph.advance_y *= scale;
++            glyph.offset_x *= scale;
++            glyph.offset_y *= scale;
++            glyph.bearing_y *= scale;
++            glyph
++        }));
++        if rtl {
++            glyphs[start..].reverse();
++        }
++    }
++}
++
++pub(super) type ShapedWordsCache<H> = LruCache<WordId, Result<ShapedWord, ErrorKind>, H>;
+ pub(super) type ShapingRunCache<H> = LruCache<ShapingId, TextMetrics, H>;
+ 
+ impl super::TextContext {
+@@ -255,9 +286,6 @@
+         max_width,
+         variations,
+         text_settings.letter_spacing,
+-        // The run cache keys the whole string; per-run direction is derived
+-        // from the text itself below.
+-        None,
+     );
+ 
+     if !context.shaping_run_cache.contains(&id) {
+@@ -331,132 +359,65 @@
+             rustybuzz::Direction::LeftToRight
+         };
+ 
+-        let mut words = Vec::new();
++        let run_start = result.glyphs.len();
+         let mut word_break_reached = false;
+         let mut byte_index = run.start;
+-
+         let is_rtl_run = hb_direction == rustybuzz::Direction::RightToLeft;
+ 
+         for mut word_txt in sub_text.split_word_bounds() {
+-            let id = ShapingId::new(
+-                font_size,
+-                font_ids,
+-                word_txt,
+-                max_width,
+-                variations,
+-                letter_spacing,
+-                Some(is_rtl_run),
+-            );
+-
+-            if !context.shaped_words_cache.contains(&id) {
+-                let word = shape_word(
+-                    word_txt,
+-                    hb_direction,
+-                    context,
+-                    font_size,
+-                    &font_ids,
+-                    letter_spacing,
+-                    variations,
+-                );
+-                context.shaped_words_cache.put(id, word);
+-            }
+-
+-            if let Some(Ok(word)) = context.shaped_words_cache.get(&id) {
+-                let mut word = word.clone();
+-
++            if let Some(mut word) = cached_word(context, word_txt, hb_direction, font_ids, variations) {
++                let mut scale = word.scale(font_size);
++                let mut width = word.width(scale, letter_spacing);
+                 if let Some(max_width) = max_width {
+-                    if result.width + word.width >= max_width {
++                    if result.width + width >= max_width {
+                         word_break_reached = true;
+                         if first_word_in_paragraph {
+-                            // search for the largest prefix of the word that can fit
+                             let mut bytes_included = 0;
+                             let mut subword_width = 0.0;
+                             let target_width = max_width - result.width;
+-                            for glyph in word.glyphs {
++                            for glyph in &word.glyphs {
+                                 bytes_included = glyph.byte_index;
+-                                let glyph_width = glyph.advance_x + letter_spacing;
+-
+-                                // nuance: we want to include the first glyph even if it breaks
+-                                // the bounds. this is to allow pathologically small bounds to
+-                                // at least complete rendering
++                                let glyph_width = glyph.advance_x * scale + letter_spacing;
++
++                                // Include at least the first glyph for very narrow bounds.
+                                 if subword_width + glyph_width >= target_width && bytes_included != 0 {
+                                     break;
+                                 }
+-
+                                 subword_width += glyph_width;
+                             }
+-
+                             if bytes_included == 0 {
+-                                // just in case - never mind!
+                                 break;
+                             }
+-
+-                            let subword_txt = &word_txt[..bytes_included];
+-                            let id = ShapingId::new(
+-                                font_size,
+-                                font_ids,
+-                                subword_txt,
+-                                Some(max_width),
+-                                variations,
+-                                letter_spacing,
+-                                Some(is_rtl_run),
+-                            );
+-                            if !context.shaped_words_cache.contains(&id) {
+-                                let subword = shape_word(
+-                                    subword_txt,
+-                                    hb_direction,
+-                                    context,
+-                                    font_size,
+-                                    &font_ids,
+-                                    letter_spacing,
+-                                    variations,
+-                                );
+-                                context.shaped_words_cache.put(id, subword);
+-                            }
+-
+-                            if let Some(Ok(subword)) = context.shaped_words_cache.get(&id) {
+-                                // replace the outer variables so we can continue normally
+-                                word = subword.clone();
+-                                word_txt = subword_txt;
+-                            } else {
++                            word_txt = &word_txt[..bytes_included];
++                            let Some(subword) = cached_word(context, word_txt, hb_direction, font_ids, variations)
++                            else {
+                                 break;
+-                            }
+-                        } else if word.glyphs.iter().all(|g| g.c.is_whitespace()) {
+-                            // the last word we've broken in the middle of is whitespace.
+-                            // include this word for now, but we will discard its metrics in a moment.
+-                        } else {
+-                            // we are not breaking up words - discard this word
++                            };
++                            word = subword;
++                            scale = word.scale(font_size);
++                            width = word.width(scale, letter_spacing);
++                        } else if !word.glyphs.iter().all(|g| g.c.is_whitespace()) {
+                             break;
+                         }
+                     }
+                 }
+ 
+-                // if we have broken in the middle of whitespace, do not include this word in metrics
++                // Whitespace at a line break can be drawn without extending the line.
+                 if !word_break_reached || !word.glyphs.iter().all(|g| g.c.is_whitespace()) {
+-                    result.width += word.width;
++                    result.width += width;
+                 }
+-
+-                for glyph in &mut word.glyphs {
+-                    glyph.byte_index += byte_index;
+-                    debug_assert!(text.get(glyph.byte_index..).is_some());
+-                }
+-                words.push(word);
++                word.append(&mut result.glyphs, scale, byte_index, is_rtl_run);
+                 first_word_in_paragraph = false;
+             }
+-
+             byte_index += word_txt.len();
+-
+             if word_break_reached {
+                 break;
+             }
+         }
+ 
+-        if levels[run.start].is_rtl() {
+-            words.reverse();
+-        }
+-
+-        for word in words {
+-            result.glyphs.extend(word.glyphs.clone());
++        // Reverse the sequence of words while preserving each shaped word's glyph order.
++        if is_rtl_run {
++            result.glyphs[run_start..].reverse();
+         }
+ 
+         result.final_byte_index = byte_index;
+@@ -467,15 +428,35 @@
+     }
+ 
+     result
++}
++
++fn cached_word<'a>(
++    context: &'a mut super::TextContextImpl,
++    word: &str,
++    direction: rustybuzz::Direction,
++    font_ids: [Option<FontId>; 8],
++    variations: &FontVariations,
++) -> Option<&'a ShapedWord> {
++    let mut hasher = FnvHasher::default();
++    word.hash(&mut hasher);
++    let id = WordId {
++        word_hash: hasher.finish(),
++        font_ids,
++        variation_hash: variations.hash(),
++        rtl: direction == rustybuzz::Direction::RightToLeft,
++    };
++    if !context.shaped_words_cache.contains(&id) {
++        let shaped = shape_word(word, direction, context, &font_ids, variations);
++        context.shaped_words_cache.put(id, shaped);
++    }
++    context.shaped_words_cache.get(&id)?.as_ref().ok()
+ }
+ 
+ fn shape_word(
+     word: &str,
+     hb_direction: rustybuzz::Direction,
+     context: &mut super::TextContextImpl,
+-    font_size: f32,
+     font_ids: &[Option<FontId>; 8],
+-    letter_spacing: f32,
+     variations: &FontVariations,
+ ) -> Result<ShapedWord, ErrorKind> {
+     // find_font will call the closure with each font matching the provided style
+@@ -497,7 +478,7 @@
+ 
+         let mut shaped_word = ShapedWord {
+             glyphs: Vec::with_capacity(positions.len()),
+-            width: 0.0,
++            units_per_em: font_face.0.units_per_em(),
+         };
+ 
+         let mut has_missing = false;
+@@ -506,8 +487,6 @@
+             if info.glyph_id == 0 {
+                 has_missing = true;
+             }
+-
+-            let scale = font.scale(font_size);
+ 
+             let mut g = ShapedGlyph {
+                 x: 0.0,
+@@ -521,20 +500,19 @@
+                     .expect("rustybuzz guarantees the output glyph id is u16"),
+                 width: 0.0,
+                 height: 0.0,
+-                advance_x: position.x_advance as f32 * scale,
+-                advance_y: position.y_advance as f32 * scale,
+-                offset_x: position.x_offset as f32 * scale,
+-                offset_y: position.y_offset as f32 * scale,
++                advance_x: position.x_advance as f32,
++                advance_y: position.y_advance as f32,
++                offset_x: position.x_offset as f32,
++                offset_y: position.y_offset as f32,
+                 bearing_y: 0.0,
+             };
+ 
+             if let Some(glyph) = font.glyph(&font_face, g.glyph_id, &normalized_coords) {
+-                g.width = glyph.metrics.width * scale;
+-                g.height = glyph.metrics.height * scale;
+-                g.bearing_y = glyph.metrics.bearing_y * scale;
++                g.width = glyph.metrics.width;
++                g.height = glyph.metrics.height;
++                g.bearing_y = glyph.metrics.bearing_y;
+             }
+ 
+-            shaped_word.width += g.advance_x + letter_spacing;
+             shaped_word.glyphs.push(g);
+         }
+ 

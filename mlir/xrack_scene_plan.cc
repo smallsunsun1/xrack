@@ -76,11 +76,36 @@ struct SceneAnalysis {
       auto name = binding.getName();
       bool ordinaryButton = kind == "Button" || kind == "ToolButton" ||
                             kind == "RoundButton" || kind == "DelayButton";
+      bool sceneViewport = kind == "SceneView3D" &&
+          llvm::StringSwitch<bool>(name)
+              .Cases({"model", "lights", "ambient-color", "ambient-intensity", "light-yaw",
+                      "light-elevation", "scene-background", "shadows", "imported-lights", "shadow-map-size",
+                      "shadow-bias", "shadow-cascades", "shadow-distance", "shadow-cascade-blend",
+                      "shadow-split-balance", "camera", "camera-yaw", "camera-pitch", "camera-distance",
+                      "selected-object", "environment", "reflection-probes", "environment-yaw", "environment-intensity",
+                      "environment-skybox", "frustum-culling", "scene-exposure", "multisampling", "supersampling",
+                      "progressive-aa", "temporal-aa", "temporal-aa-mode", "temporal-aa-strength",
+                      "screen-space-reflections", "ssr-strength", "ssr-distance", "ssr-thickness",
+                      "ssr-steps", "ssr-roughness-cutoff", "ssr-scale",
+                      "screen-space-global-illumination", "ssgi-strength", "ssgi-occlusion",
+                      "ssgi-radius", "ssgi-thickness", "ssgi-scale", "ssgi-rays", "ssgi-steps",
+                      "texture-width", "texture-height", "render-scale", "layer-mask", "cache-rendering",
+                      "specular-aa", "order-independent-transparency", "fog-color", "fog-near", "fog-far", "fog-density",
+                      "particle-emitters", "particle-affectors", "particle-time", "fog-volumes", "fog-depth-enabled", "fog-depth-curve", "fog-height-enabled", "fog-height-start",
+                      "fog-height-end", "fog-height-curve", "fog-transmit-enabled", "fog-transmit-curve",
+                      "fog-volume-scattering", "fog-volume-anisotropy", "fog-volume-samples", "fog-volume-density-samples",
+                      "ambient-occlusion", "ao-strength", "ao-distance", "ao-bias",
+                      "scene-hdr", "bloom", "bloom-strength", "bloom-threshold", "bloom-levels",
+                      "depth-of-field", "dof-blur-radius", "dof-focus-distance", "dof-focus-range",
+                      "scene-tone-map", "scene-white-point", "scene-brightness", "scene-contrast",
+                      "scene-saturation", "scene-lut", "scene-lut-size", "scene-lut-strength"}, true)
+              .Default(false);
       if ((kind == "Rectangle" && name == "background") ||
           ((kind == "Text" || kind == "Label" || kind == "StyledText") && name == "color") ||
           (kind == "StyledText" && name == "link-color") ||
           (ordinaryButton && (name == "primary" || name == "flat")) ||
-          ((kind == "DialogButton" || kind == "StandardButton") && name == "flat"))
+          ((kind == "DialogButton" || kind == "StandardButton") && name == "flat") ||
+          sceneViewport)
         paintOnly.insert(binding);
       if (name == "accessible-name" || name == "accessible-description" ||
           name == "accessible-heading-level" || name == "accessible-live")
@@ -223,6 +248,8 @@ bool emptyModel(Value model) {
   if (auto array = model.getDefiningOp<ArrayOp>())
     return array.getItems().empty();
   if (auto array = model.getDefiningOp<DateArrayOp>())
+    return array.getItems().empty();
+  if (auto array = model.getDefiningOp<Hit3DArrayOp>())
     return array.getItems().empty();
   if (auto array = model.getDefiningOp<RecordArrayOp>())
     return array.getItems().empty();
@@ -475,7 +502,7 @@ bool staticValue(Value value, llvm::DenseMap<Value, bool> &known) {
     return found->second;
   auto *definition = value.getDefiningOp();
   bool result =
-      isa_and_nonnull<LiteralOp, ImageUrlOp, ImageDimensionOp, NineSliceOp,
+      isa_and_nonnull<LiteralOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp,
                       MarkdownOp, SolidBrushOp, GradientStopOp, LinearGradientOp,
                       RadialGradientOp, MakeFontOp, MakeDateOp, MakeTimeOp,
                       MakeRecordOp>(definition) &&

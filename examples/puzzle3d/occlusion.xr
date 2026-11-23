@@ -1,0 +1,89 @@
+struct OcclusionActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, visible: bool,
+    camera-kind: string, camera-height: float, camera-look-at: string,
+}
+
+struct OcclusionLamp {
+    kind: string, x: float, y: float, z: float,
+    yaw: float, elevation: float, intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float,
+}
+
+export component OcclusionDemo inherits Window {
+    title: "XRack · 屏幕空间环境遮蔽";
+    width: 480px;
+    height: 300px;
+    background: #141d29;
+
+    in-out property <bool> ao: true;
+    in-out property <bool> orthographic: false;
+    in-out property <bool> hdr: false;
+    in-out property <bool> glass: false;
+    in-out property <float> strength: 0.95;
+    in-out property <float> radius: 1.35;
+    in-out property <float> ambient: 1.2;
+    in-out property <float> direct: 0.2;
+    in-out property <float> angle: 30;
+
+    property <OcclusionActor> defaults: OcclusionActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #e8dbc4, visible: true,
+        camera-kind: "", camera-height: 6.2, camera-look-at: "",
+    };
+    property <[OcclusionActor]> models: [
+        OcclusionActor { id: "floor", y: -0.37, scale-x: 6.4, scale-y: 0.3, scale-z: 5.4, color: #cfbd9b, ..root.defaults },
+        OcclusionActor { id: "plinth", x: -0.45, y: 0.22, z: 0.35, scale-x: 1.7, scale-y: 0.88, scale-z: 1.15, ..root.defaults },
+        OcclusionActor { id: "upper", x: -0.8, y: 0.88, z: 0.35, scale-x: 0.9, scale-y: 0.44, scale-z: 0.82, ..root.defaults },
+        OcclusionActor { id: "pillar", x: 1.15, y: 0.58, z: -0.8, scale-x: 0.8, scale-y: 1.6, scale-z: 0.85, color: #e5ad7f, ..root.defaults },
+        OcclusionActor { id: "wall", x: -1.1, y: 0.34, z: -1.95, scale-x: 3.5, scale-y: 1.12, scale-z: 0.48, color: #d5a580, ..root.defaults },
+        OcclusionActor {
+            id: "glass", mesh: @mesh-url("models/oit-sheet.gltf"), visible: root.glass,
+            x: 2.55, y: 0.65, z: 0.5, scale-x: 0.23, scale-y: 0.4, yaw: 12, color: #81bbef, ..root.defaults
+        },
+        OcclusionActor {
+            id: "ortho", mesh: "", x: 4.4, y: 4.0, z: 7.4,
+            camera-kind: "orthographic", camera-look-at: "floor", ..root.defaults
+        },
+    ];
+    property <[OcclusionLamp]> lights: [
+        OcclusionLamp {
+            kind: "directional", x: 0, y: 0, z: 0, yaw: 36, elevation: 62,
+            intensity: root.direct, color: #fff6e6, range: 0, inner-angle: 0, outer-angle: 45,
+        },
+    ];
+
+    view := SceneView3D {
+        width: 480px;
+        height: 248px;
+        model: root.models;
+        lights: root.lights;
+        camera: root.orthographic ? "ortho" : "";
+        camera-yaw: root.angle;
+        camera-pitch: 27;
+        camera-distance: 9.8;
+        ambient-intensity: root.ambient;
+        ambient-occlusion: root.ao;
+        ao-strength: root.strength;
+        ao-distance: root.radius;
+        ao-bias: 0.025;
+        environment: root.hdr ? @environment-url("models/studio.hdr") : "";
+        order-independent-transparency: root.glass;
+        multisampling: root.glass;
+        scene-background: #182537;
+    }
+
+    HorizontalLayout {
+        y: 248px;
+        width: 480px;
+        height: 52px;
+        padding: 12px;
+        spacing: 12px;
+        ao-toggle := CheckBox { width: 112px; text: "环境遮蔽"; checked <=> root.ao; }
+        ortho-toggle := CheckBox { width: 72px; text: "正交"; checked <=> root.orthographic; }
+        hdr-toggle := CheckBox { width: 68px; text: "HDR"; checked <=> root.hdr; }
+        glass-toggle := CheckBox { width: 72px; text: "透明"; checked <=> root.glass; }
+        radius-slider := Slider { width: 84px; minimum: 0.15; maximum: 2.5; value <=> root.radius; }
+    }
+}

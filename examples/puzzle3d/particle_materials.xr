@@ -1,0 +1,81 @@
+struct MaterialEmitter {
+    position: point3d, color: color, size: float, lifetime: float,
+    burst-count: int, fade-out: float, velocity: vector3d, velocity-spread: vector3d,
+    sprite: image, color-table: image, particle-blend-mode: string, enabled: bool, seed: int,
+}
+
+struct ParticleShield {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, visible: bool,
+}
+
+export component ParticleMaterialsDemo inherits Window {
+    title: "XRack · 粒子混合与颜色表";
+    width: 620px; height: 422px;
+    background: #182333;
+
+    in-out property <float> time: 0.41;
+    in-out property <string> blend-mode: "source-over";
+    in-out property <bool> use-table: true;
+    in-out property <bool> use-sprite: false;
+    in-out property <bool> companion: true;
+    in-out property <bool> cover: false;
+    in-out property <bool> weighted: true;
+    in-out property <bool> msaa: false;
+    in-out property <bool> hdr: false;
+    property <image> empty-image;
+    property <image> color-map: @image-url("models/particle-colors.png");
+    property <image> ring-map: @image-url("models/particle-ring.png");
+
+    property <[MaterialEmitter]> emitters: [
+        MaterialEmitter {
+            position: Point3D.new(-1.8, 0, 0), size: 1.45, lifetime: 4,
+            color: root.use-table ? #ffffffb0 : #c0603080, fade-out: 0,
+            burst-count: 1, velocity: Vector3D.new(0, 0, 0), velocity-spread: Vector3D.new(0, 0, 0),
+            sprite: root.use-sprite ? root.ring-map : root.empty-image,
+            color-table: root.use-table ? root.color-map : root.empty-image,
+            particle-blend-mode: root.blend-mode, enabled: true, seed: 11,
+        },
+        MaterialEmitter {
+            position: Point3D.new(1.0, -0.7, 0.6), size: 0.34, lifetime: 4,
+            color: #ffffff90, fade-out: 0.4,
+            burst-count: 82, velocity: Vector3D.new(0.34, 0.65, 0), velocity-spread: Vector3D.new(1.45, 1.35, 0.7),
+            sprite: root.ring-map, color-table: root.use-table ? root.color-map : root.empty-image,
+            particle-blend-mode: "source-over", enabled: root.companion, seed: 35,
+        },
+    ];
+    property <[ParticleShield]> room: [
+        ParticleShield {
+            id: "shield", mesh: "primitive:box", x: -1.8, y: 0, z: 1.1,
+            scale-x: 2.0, scale-y: 2.0, scale-z: 0.3,
+            yaw: 0, pitch: 0, roll: 0, color: #405b7c, visible: root.cover,
+        },
+    ];
+
+    SceneView3D {
+        width: 620px; height: 320px;
+        model: root.room;
+        camera-yaw: 0; camera-pitch: 0; camera-distance: 7;
+        scene-background: #607080;
+        particle-emitters: root.emitters; particle-time: root.time;
+        order-independent-transparency: root.weighted;
+        multisampling: root.msaa; scene-hdr: root.hdr; cache-rendering: true;
+    }
+    Label { x: 16px; y: 329px; width: 55px; height: 35px; text: "寿命"; }
+    time-slider := Slider { x: 72px; y: 328px; width: 533px; height: 36px; minimum: 0; maximum: 3.9; value <=> root.time; }
+    blend := Button {
+        x: 16px; y: 375px; width: 115px; height: 35px;
+        text: root.blend-mode == "source-over" ? "普通混合" : root.blend-mode == "additive" ? "加色"
+            : root.blend-mode == "screen" ? "滤色" : "正片叠底";
+        clicked => {
+            root.blend-mode = root.blend-mode == "source-over" ? "additive" : root.blend-mode == "additive" ? "screen"
+                : root.blend-mode == "screen" ? "multiply" : "source-over";
+        }
+    }
+    table := CheckBox { x: 147px; y: 375px; width: 94px; height: 35px; text: "颜色表"; checked <=> root.use-table; }
+    texture := CheckBox { x: 247px; y: 375px; width: 88px; height: 35px; text: "贴图"; checked <=> root.use-sprite; }
+    oit := CheckBox { x: 343px; y: 375px; width: 88px; height: 35px; text: "加权"; checked <=> root.weighted; }
+    samples := CheckBox { x: 435px; y: 375px; width: 96px; height: 35px; text: "MSAA"; checked <=> root.msaa; }
+    hdr-toggle := CheckBox { x: 536px; y: 375px; width: 75px; height: 35px; text: "HDR"; checked <=> root.hdr; }
+}

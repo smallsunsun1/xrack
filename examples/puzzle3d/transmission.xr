@@ -1,0 +1,79 @@
+struct TransmissionObject {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    color: color, visible: bool,
+    camera-kind: string, camera-height: float,
+}
+
+struct TransmissionLamp {
+    kind: string, x: float, y: float, z: float,
+    yaw: float, elevation: float,
+    intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float,
+}
+
+export component TransmissionDemo inherits Window {
+    title: "XRack · 薄壁透射";
+    width: 480px;
+    height: 294px;
+    background: #141d29;
+
+    in-out property <bool> clear-glass: true;
+    in-out property <bool> frost: true;
+    in-out property <bool> overlay: false;
+    in-out property <bool> optical-overlay: false;
+    in-out property <bool> weighted: true;
+    in-out property <bool> hdr: false;
+    in-out property <bool> msaa: false;
+    in-out property <float> aa-scale: 1;
+    property <TransmissionObject> defaults: TransmissionObject {
+        id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
+        camera-kind: "", camera-height: 6,
+    };
+    property <[TransmissionObject]> scene: [
+        TransmissionObject {
+            id: "wall", mesh: @mesh-url("models/transmission-wall.gltf"),
+            z: -1, scale-x: 5.6, scale-y: 2.65, ..root.defaults
+        },
+        TransmissionObject {
+            id: "clear", mesh: @mesh-url("models/transmission-clear.gltf"), x: -2.5,
+            scale-x: 1.95, scale-y: 1.9, visible: root.clear-glass, ..root.defaults
+        },
+        TransmissionObject {
+            id: "frost", mesh: @mesh-url("models/transmission-frost.gltf"), x: 2.5,
+            scale-x: 1.95, scale-y: 1.9, visible: root.frost, ..root.defaults
+        },
+        TransmissionObject {
+            id: "wash", mesh: root.optical-overlay ? @mesh-url("models/transmission-blend.gltf") : @mesh-url("models/oit-sheet.gltf"), z: 0.3,
+            scale-x: 0.45, scale-y: 0.9, visible: root.overlay, ..root.defaults
+        },
+        TransmissionObject {
+            id: "eye", z: 9, camera-kind: "orthographic", ..root.defaults
+        },
+    ];
+    property <[TransmissionLamp]> lights;
+
+    SceneView3D {
+        width: 480px;
+        height: 240px;
+        model: root.scene;
+        camera: "eye";
+        lights: root.lights;
+        ambient-intensity: 0.12;
+        scene-background: #172333;
+        scene-hdr: root.hdr;
+        multisampling: root.msaa;
+        supersampling: root.aa-scale;
+        order-independent-transparency: root.weighted;
+    }
+    HorizontalLayout {
+        x: 14px; y: 243px; width: 452px; height: 47px; spacing: 12px;
+        clear-toggle := CheckBox { text: "透射贴图"; width: 106px; checked <=> root.clear-glass; }
+        frost-toggle := CheckBox { text: "磨砂遮罩"; width: 106px; checked <=> root.frost; }
+        overlay-toggle := CheckBox { text: "透明层"; width: 95px; checked <=> root.overlay; }
+        hdr-toggle := CheckBox { text: "HDR"; width: 70px; checked <=> root.hdr; }
+    }
+}

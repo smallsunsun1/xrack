@@ -242,12 +242,16 @@ pub(crate) fn dial(
     );
 }
 
-fn indicator_foreground(theme: Palette, node: &Node, enabled: bool) -> Color {
+pub(super) fn indicator_foreground(theme: Palette, node: &Node, enabled: bool) -> Color {
     if enabled {
         node.color("color").unwrap_or(theme.button)
     } else {
         theme.disabled
     }
+}
+
+pub(super) fn progress_track_color(theme: Palette, node: &Node) -> Color {
+    node.color("track-color").unwrap_or(theme.role(Role::Track))
 }
 
 pub(crate) fn progress_track(
@@ -256,11 +260,7 @@ pub(crate) fn progress_track(
     node: &Node,
     bounds: Rect,
 ) {
-    capsule(
-        canvas,
-        bounds,
-        node.color("track-color").unwrap_or(theme.role(Role::Track)),
-    );
+    capsule(canvas, bounds, progress_track_color(theme, node));
 }
 
 pub(crate) fn progress_fill(

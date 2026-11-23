@@ -39,7 +39,8 @@ pub struct VisualTextLine {
 }
 
 impl VisualTextLine {
-    pub(super) fn allocated_bytes(&self) -> usize {
+    #[doc(hidden)]
+    pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.cells.capacity() * std::mem::size_of::<VisualGrapheme>()
             + self.visual.capacity() * std::mem::size_of::<usize>()

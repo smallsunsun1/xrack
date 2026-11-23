@@ -1,5 +1,5 @@
 //! XRack syntax frontend.
-pub use xrack_syntax::{ast, builtins};
+pub use xrack_syntax::{ast, builtins, gltf_metadata};
 
 mod antlr;
 pub use antlr::{FormatToken, format_tokens, parse, same_tokens};

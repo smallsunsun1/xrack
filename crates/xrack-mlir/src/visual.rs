@@ -163,6 +163,17 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
                             | "PathView"
                             | "StandardListView"
                             | "StandardTableView"
+                            | "SceneView3D"
+                    )
+                    && matches!(actual, Type::RecordList(_))
+                || kind == "SceneView3D"
+                    && matches!(
+                        name,
+                        "lights"
+                            | "reflection-probes"
+                            | "fog-volumes"
+                            | "particle-emitters"
+                            | "particle-affectors"
                     )
                     && matches!(actual, Type::RecordList(_)));
         if actual == expected
@@ -1101,7 +1112,15 @@ pub fn visual_cache_operand(
     (!static_gradient
         && !matches!(
             definition.name(),
-            "xr.literal" | "xr.read" | "xr.image_url" | "xr.param"
+            "xr.literal"
+                | "xr.read"
+                | "xr.image_url"
+                | "xr.mesh_url"
+                | "xr.mesh_lod_url"
+                | "xr.mesh_lightmap_url"
+                | "xr.mesh_lod_lightmap_url"
+                | "xr.environment_url"
+                | "xr.param"
         ))
     .then_some(definition)
 }

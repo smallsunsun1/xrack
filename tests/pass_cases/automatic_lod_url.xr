@@ -1,0 +1,7 @@
+// RAW: "xr.mesh_lod_url"() <{value = "models/surface.glb"}> : () -> !xr.string
+// CHECK: %[[MESH:[0-9]+]] = "xr.mesh_lod_url"() <{value = "models/surface.glb"}> : () -> !xr.string
+// CHECK: "xr.property"(%[[MESH]]) <{name = "surface", visibility = "out"}>
+
+export component AutoLodAssets inherits Window {
+    out property <string> surface: @mesh-url("models/surface.glb", auto-lod);
+}

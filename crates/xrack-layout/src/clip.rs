@@ -1,5 +1,5 @@
 use crate::{Point, Rect, Transform2D, WindowSpace, transform::TransformSpace};
-use std::sync::Arc;
+use std::rc::Rc;
 use xrack_runtime::{Node, is_button, is_pane, is_text_input};
 
 /// A child clip in its owner's layout coordinates, with radii from the top left.
@@ -74,8 +74,8 @@ fn inset_over(start: f32, end: f32, extent: f32, before: f32, after: f32) -> f32
 #[derive(Debug, PartialEq)]
 pub(crate) struct ClipChain {
     pub(crate) shape: RoundedClip,
-    pub(crate) parent: Option<Arc<Self>>,
-    pub(crate) space: Option<Arc<TransformSpace>>,
+    pub(crate) parent: Option<Rc<Self>>,
+    pub(crate) space: Option<Rc<TransformSpace>>,
 }
 
 impl ClipChain {

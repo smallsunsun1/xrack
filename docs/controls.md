@@ -770,6 +770,387 @@ let _painter = register_geometry("level-meter", |context| {
 
 `register_geometry` 接受本地逻辑像素坐标的矩形、折线、多边形、图像和文本。`register_gpu` 提供当前设备、命令编码器和节点纹理视图，应用可创建自己的 pipeline 或深度纹理并录制 render pass。颜色目标为 `Rgba8Unorm`，输出采用预乘 alpha。XRack 按布局计算纹理像素尺寸，先执行这些命令，再把纹理合成到场景。应用可通过回调捕获自己的资源缓存，按设备和尺寸复用资源。[GPU 注册与绘制用例](../tests/custom_render_test.rs)
 
+### SceneView3D
+
+`SceneView3D` 是一个参与普通 2D 布局的 3D 视口。`model` 接收记录列表。可以给记录起任意名称并添加应用字段，编译器会检查绘制和拾取共用的字段。
+
+```xr
+struct SceneObject3D {
+    id: string,
+    mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    color: color,
+}
+```
+
+`id` 是物体的标识，给可交互物体使用唯一的 ID。`mesh` 是资源键，可以用 `primitive:box`、`primitive:sphere` 或 `@mesh-url("models/marker.glb")`。盒体基础网格的边长为 1，球体基础网格的半径为 1。`scale-x`、`scale-y` 和 `scale-z` 独立缩放网格，再依次应用 X 轴 pitch、Y 轴 yaw、Z 轴 roll 以及平移。未知网格键或无效变换会跳过该行。
+
+记录可以添加 `parent: string`、`visible: bool` 和 `pivot-x`、`pivot-y`、`pivot-z` 三个 `float` 字段。父节点用同一列表里的唯一 `id` 引用，空父引用表示根节点。写 `mesh: ""` 可以创建只提供变换的节点，例如先定义 `id: "hinge"` 的门轴，再在门的记录里设置 `parent: "hinge"`。父节点可以在子节点之后声明。子节点的位置、旋转和缩放都相对父节点，局部枢轴会映射到该行的 `x`、`y`、`z`。省略这些可选字段时，父引用为空、可见、枢轴为原点。
+
+父节点隐藏、父引用缺失或有歧义、或者链路形成循环时，对应子树会从绘制、投影和拾取中跳过。多级旋转和非均匀缩放按仿射变换合成，拾取与光照使用同一世界坐标。相机绕视和灯光更新会复用场景几何未变的实例缓冲区。
+
+`@mesh-url` 以声明所在的 `.xr` 文件为基准，接收 glTF 2.0 的 `.glb` 或 `.gltf`。导入器读取默认场景的节点变换、三角网格和每个图元的底色材质。底色由 glTF 的 `baseColorFactor`、顶点色、PNG/JPEG 底色纹理和记录的 `color` 相乘。保留模型原底色时可将 `color` 设为白色。纹理支持内嵌数据和相对文件、重复与镜像寻址，以及最邻近和线性采样。当前使用纹理的基础层。
+
+用 `@mesh-url("models/ridge.png")` 可以从 8 位或 16 位灰度 PNG 生成高度图地形。每个像素提供一个线性高度样本，黑色对应局部 Y = 0，白色对应 Y = 1。图片从左到右映射到局部 X，从上到下映射到局部 Z。地形在 XZ 平面内居中，基础宽深各为 1，用模型的 `scale-x`、`scale-y`、`scale-z` 设置实际范围。
+
+每个网格单元生成两个三角形，网格边缘和内部使用邻近高度计算平滑法线。物体使用默认的粗糙漫反射材质，可用记录的 `color` 上色。绘制、阴影、视口点选和世界射线查询都使用该网格。PNG 每边至少需要两个样本，单个地形最多 150,000 个网格单元。
+
+可用 `@mesh-url("models/ridge.png", lightmap-uv, auto-lod)` 生成烘焙 UV 和远景简化网格。光照 UV 用单张 XZ 投影图表覆盖地形。AOT 构建时准备顶点，解释器在加载时准备，在帧间复用 GPU 网格。VS Code 可补全 PNG 路径、打开源文件，并在悬停时查看尺寸和位深。 [地形点选与放置示例](../examples/puzzle3d/heightfield.xr)
+
+glTF 材质使用金属度与粗糙度模型。导入器读取 `metallicFactor`、`roughnessFactor`、`metallicRoughnessTexture`、自发光和遮蔽参数。金属度和粗糙度分别来自组合贴图的 B、G 线性通道。遮蔽使用 R 通道调节环境光，自发光贴图按 sRGB 采样。每个材质可以使用两组纹理坐标。声明 `KHR_materials_unlit` 的材质只使用底色和透明度。
+
+`KHR_materials_clearcoat` 支持独立的清漆强度、粗糙度和法线。强度和粗糙度因子分别乘以线性贴图的 R、G 通道。清漆根据自身的法线和菲涅耳反射影响直射光及环境反射，基础材质的透明度和拾取规则仍由底色决定。强度为 0 时跳过清漆贴图与着色。清漆法线可以使用第二组 UV，此时使用对应的切线空间。
+
+`KHR_materials_emissive_strength` 在材质准备时把发光倍数乘进线性发光因子。HDR 视口会保留高于 1 的发光值供色调映射使用。可在 VS Code 悬停 `@mesh-url` 查看资源声明的这两项材质扩展。 [材质对照示例](../examples/puzzle3d/materials.xr)
+
+`normalTexture` 使用线性 RGB 表示切线空间法线。`scale` 控制贴图在切线和副切线方向上的扰动强度。导入器使用模型提供的切线，缺少切线时在原始几何上用 MikkTSpace 生成，再应用节点的镜像和缩放变换。法线贴图影响光照。拾取继续使用模型的三角面。
+
+`OPAQUE` 以不透明表面绘制。对 `MASK`，绘制和拾取都应用 alpha 阈值，射线可以穿过被裁剪的区域。`BLEND` 在不透明和裁剪子网格之后绘制。透明子网格按包围盒中心的相机深度从远到近排序，测试已有深度，在同一个视口附件中以线性颜色混合。相交的透明面采用子网格排序。拾取选择最近的可见表面，跳过零 alpha 的混合表面，纹理 alpha 以基础层的放大滤波方式采样。
+
+设置 `order-independent-transparency: true;` 可以让视口使用加权顺序无关透明。它按每个片元的相机深度和不透明度加权，在相交处也能反映两边不同的前后关系。加权结果是透明叠色的近似，适合重叠的半透明模型。默认仍使用子网格排序。
+
+加权透明复用不透明几何的深度，允许同网格的透明实例合批。开启 MSAA 时按样本合成，HDR 视口在合成后做色调映射。视锥裁剪后没有可见透明实例时，视口沿用普通颜色通道。`Renderer::scene_draw_stats()` 的 `transparency_composites` 记录累计合成次数。拾取仍返回实际最近的可见表面。 [相交透明面示例](../examples/puzzle3d/transparency.xr)
+
+含动画的 glTF 可以用记录字段 `animation: string` 选择片段，`animation-time: float` 以秒采样，`animation-loop: bool` 控制循环。编辑器会为直接绑定到同一记录的 `@mesh-url` 补全片段名。片段可按名字选择，也可以用 `"#0"` 等原文件索引选择。空值或找不到片段时显示初始姿态。时间默认 0，循环默认关闭，超过片段末尾时停在末帧。可以把时间绑定到 `Timer` 驱动的属性，或在编辑器里直接定位播放位置。
+
+同一资产的两个片段可以交叉过渡。用 `animation-to: string` 选择目标，`animation-to-time: float` 和 `animation-to-loop: bool` 控制它自己的时间和循环。`animation-blend: float` 默认为 0，限制在 0 到 1，0、1 分别取原片段和目标片段。把权重从 0 动画到 1 即可切换动作。缺少的轨道使用该节点的初始值，因此空选择器也可用于过渡到初始姿态。两个时间都先按各自轨道的插值规则采样，再混合节点的局部姿态。旋转沿四元数最短路径插值，手动 `morph-weights` 在混合后应用。
+
+蒙皮、拾取、阴影和 glTF 内置相机与灯光共用混合姿态。权重在端点时只采样对应片段。过渡时 GPU 复用顶点数据。VS Code 在 `animation` 和 `animation-to` 字符串里提供片段名和原文件索引补全。 [动画过渡示例](../examples/puzzle3d/animation_blend.xr)
+
+节点的平移、旋转和缩放支持 glTF 的 `STEP`、`LINEAR` 和 `CUBICSPLINE` 插值。不同帧复用同一份网格和材质，绘制、投影及拾取使用当帧的节点变换，拾取返回外层记录的 ID。 [glTF 动画示例](../examples/puzzle3d/README.md#gltf-节点动画) 可以暂停并切换片段。使用 Bazel 时，含动画的 `.glb` 或 `.gltf` 及外置资源与静态模型一样加入 `assets`。
+
+同一套动画字段也适用于 glTF 骨骼蒙皮。每个蒙皮可用最多 128 个关节，每个顶点可通过 `JOINTS_0/WEIGHTS_0` 和 `JOINTS_1/WEIGHTS_1` 使用最多 8 个权重。关节层级和逆绑定矩阵在导入时检查，AOT 嵌入预处理后的数据。GPU 复用顶点、权重和关节缓冲，颜色通道和阴影通道共享蒙皮函数。CPU 根据关节变换更新包围盒，并在射线穿过包围盒时采样三角面做拾取。
+
+glTF 的形变目标（morph targets）通过权重改变网格，适合表情、机关变形和网格之间的过渡。每个网格可用最多 32 个目标，支持位置、法线和切线的稀疏及密集增量。初始权重优先取节点的 `weights`，再取网格的 `weights`，都省略时使用零。动画用同一套 `animation`、`animation-time` 和 `animation-loop` 播放权重轨道，支持三种插值。形变在骨骼蒙皮前应用，颜色、阴影和拾取使用同一顺序。模型形变数据留在 GPU 上，播放时只更新变化的权重或关节矩阵。
+
+要直接用界面或业务状态控制形变，在场景对象记录里添加 `morph-weights`，它的类型是只包含 `float` 字段的自定义记录。例如，让 `Actor` 声明 `morph-weights: PanelWeights`，再把形变绑定到组件属性。
+
+```xr
+struct PanelWeights {
+    extend: float,
+    target-0: float,
+}
+```
+
+在使用 `Actor` 的记录字面量中写 `morph-weights: PanelWeights { extend: root.extension, target-0: 0.125 }`。字段 `extend` 对应导出器在 `mesh.extras.targetNames` 里写入的同名目标，`target-0` 对应第一个目标。每个网格按自己的目标顺序解析字段。`target-N` 保留作索引，每个场景对象实例都有自己的权重。同一个目标同时匹配名称和索引时，名称优先。未匹配的字段、超出范围的索引和非有限权重会跳过。模型没有足够明确的目标名时，可用从零开始的 `target-N`。在 VS Code 里悬停 `@mesh-url` 可以查看资源里各网格的索引和导出名称。
+
+手动绑定的目标覆盖动画和初始权重。未绑定的目标继续由片段或初始权重决定，节点动画与蒙皮也可以同时播放。权重 0 表示该目标不参与，1 表示应用该目标的完整增量，也可以用负数或大于 1 的值来外推。 [形变滑块示例](../examples/puzzle3d/animation.xr) 可以暂停后交互调整 `extend`。
+
+glTF 材质默认剔除背面。`doubleSided` 使背面参与绘制和拾取，背面光照和命中法线使用反向法线。导入时保留镜像节点的正面朝向。
+
+使用 Bazel 时，把模型文件、外置二进制缓冲区和纹理都加入 `xr_ui_library(assets = [...])`。AOT 在构建时解析模型并嵌入三角数据和压缩像素，解释器在加载资源时解析。GPU 网格和纹理由引用同一资源的物体共享。
+
+视口可以用 `camera: "overview"` 选择模型中的具名相机。相机行设置 `camera-kind: "perspective"` 或 `camera-kind: "orthographic"`，通常用 `mesh: ""` 声明为只提供变换的节点。相机沿局部 −Z 观察，可以随父节点移动、旋转和显隐。父节点的缩放会影响相机位置，镜头方向由局部和父节点的旋转决定。
+
+透视相机使用 `camera-fov` 设定垂直视角，默认 45°。正交相机通过 `camera-height` 设定垂直覆盖的世界单位，默认 10。两个投影都用当前视口宽高比确定横向范围。可选的 `camera-look-at` 接收同一模型里的节点 ID，目标或相机移动时会重新朝向目标的世界原点。目标缺失、隐藏或与相机重合时沿用声明的旋转。可选的 `camera-near` 和 `camera-far` 裁剪距离默认分别为 0.1 和 100。空相机名使用 `camera-yaw`、`camera-pitch` 和 `camera-distance` 控制的绕视镜头。显式相机找不到、被隐藏或投影参数无效时，视口显示背景且拾取返回空字符串。
+
+使用 `camera-kind: "frustum"` 可声明偏轴透视镜头。在相机记录中添加 `camera-left`、`camera-right`、`camera-bottom` 和 `camera-top` 四个 `float` 字段。它们是 `camera-near` 平面上相对相机光轴的局部坐标，单位与场景一致。每个轴的下界必须小于上界。省略某条边时使用 `±camera-near × tan(22.5°)`，正负号取决于边所在的一侧。四条边会映射到整个视口，独立决定横向和纵向的覆盖范围。一起平移同一轴的两条边可以移动构图，保留相机的位置和朝向。
+
+投影、反投影、拾取、视锥裁剪、级联阴影、天空和屏幕空间环境遮蔽使用同一视锥。更改边界会更新受影响的视口，不会重新上传未变化的场景网格和实例缓冲。VS Code 在记录字面量的 `camera-kind` 字符串中补全 `frustum`。 [非对称视锥示例](../examples/puzzle3d/off_axis_camera.xr)
+
+`frustum-culling` 默认开启。视口会根据当前相机、父子变换、蒙皮和形变后的包围盒，跳过完全在视锥外的颜色绘制。横跨裁剪面的实例会保留，阴影继续使用灯光自己的投影范围。刚性场景移动相机时会复用已有的空间索引和实例缓冲；如果一个批次的可见行之间有间隔，渲染器会把这些可见行集中提交，保留原有的绘制顺序和批次数。可设为 `false` 对照画面和提交开销。Rust 端的 `Renderer::scene_draw_stats()` 提供累计的颜色绘制调用、实例提交、裁剪和颜色专用实例缓冲上传次数。
+
+同一程序内，共享同一个模型的视口、拾取和射线查询会复用准备好的 3D 场景。具名相机的投影查询也可以复用完整场景。单独改变视口镜头时，可见性和 LOD 按新镜头计算，已准备的层级和网格姿态继续使用。编辑、插入、删除和重排行会更新模型版本，后续查询使用新的行顺序。可通过 Rust 的 `update_profile::measure` 查看 `scene_projections_built` 和 `scene_projection_cache_hits`。
+
+模型、灯光和探针记录可声明 `layers: int`，默认 `1`。这是一个 64 位掩码，`1` 和 `2` 代表前两层，`3` 同时包含它们，`-1` 表示全部位。对象各自设置层，父子关系仍负责变换和整体显隐。具名相机使用所在记录的 `layers`，绕视相机默认用第一层。`SceneView3D.layer-mask: int` 可为当前视口覆盖相机掩码。
+
+视口会绘制与掩码有交集的对象，并从同一集合取阴影投射体及接收体。显式和导入的灯光也按视口掩码筛选。反射探针从模型和视口的共同层中匹配。拾取函数 `pick`、`hit`、`hit-all` 和具名相机版本都接受可选的尾部 `layer-mask` 参数。需要与视口覆盖值一致时传入同一绑定。`ray-hit` 和 `ray-hit-all` 也接受该参数，省略时使用第一层。
+
+两个视口可以对同一模型使用不同掩码。掩码筛选保留原有模型行和 GPU 实例索引，与视锥裁剪共同缩小绘制集合。变化量可通过 `Renderer::scene_draw_stats().layer_filtered_instances` 查看。 [多视口内容层示例](../examples/puzzle3d/content_layers.xr)
+
+`multisampling: true;` 为当前视口启用 4× MSAA，默认关闭。它平滑三角形轮廓，场景仍用同一组绘制调用。普通视口解析到 2D 合成用的纹理，HDR 视口先解析再做色调映射。阴影图和视口外的 2D 控件沿用各自的采样方式。重复渲染会复用同尺寸的采样附件，`Renderer::scene_draw_stats()` 的 `multisample_resolves` 记录累计解析次数。
+
+`texture-width` 和 `texture-height` 可分别指定 3D 画幅离屏纹理的物理像素数，类型为 `int`。默认 0，非正值都按自动处理。自动轴跟随画幅的逻辑尺寸、DPI 和画布缩放。`render-scale` 只作用于自动轴，默认 1，范围为 0.125 到 1。例如两轴都自动时设为 `0.5`，光栅面积约为原先的四分之一。设定的纹理尺寸会受设备最大纹理尺寸和额外像素预算限制。
+
+2D 合成直接将这张纹理映射到相机的逻辑画幅。布局、投影、拾取和 LOD 使用逻辑像素。景深会分别按两个轴的像素比例计算采样半径。开启 `supersampling` 时，会在选定的纹理尺寸上超采样，再解析回该尺寸。Rust 可通过 `Renderer::scene_draw_stats()` 读取最后一个视口的 `last_texture_size`、`last_raster_size` 和累计 `raster_pixels`。 [视口纹理示例](../examples/puzzle3d/texture_size.xr)
+
+设置 `cache-rendering: true` 可以跨帧复用 `SceneView3D` 已完成的颜色纹理。刷新旁边的 2D 控件、平移视口或改变合成透明度时，视口可以直接用该纹理。相机、模型、灯光、效果或画幅发生变化时会重新渲染。尺寸和渲染输入相同的视口可以共用已完成的纹理。
+
+该属性默认关闭。每个渲染器最多保留八张视口纹理，合计至多 32 MiB。可以通过 `Renderer::scene_draw_stats()` 的 `viewport_renders`、`viewport_cache_hits` 和 `viewport_cache_allocations` 分别查看渲染次数、缓存命中次数和缓存纹理分配次数。 [视口缓存示例](../examples/puzzle3d/viewport_cache.xr)
+
+`supersampling: 1.5;` 将视口的内部渲染长宽放大 1.5 倍，再按像素覆盖面积在线性颜色空间缩回窗口尺寸。范围为 1 到 2，默认 1。放大生效时使用单样本的高分辨率附件。设备纹理尺寸限制和额外约 420 万光栅像素的预算会降低实际倍率。如果尺寸无法放大，`multisampling` 仍可按设置启用。
+
+超采样会过滤几何边缘、纹理和着色细节，代价是更多的像素着色和附件显存。加权透明和景深在放大后的画面合成，泛光和色调映射使用缩回后的画面。布局、拾取和 LOD 继续用逻辑视口尺寸。未启用超采样时无需额外解析通道。`Renderer::scene_draw_stats()` 的 `supersample_resolves` 和 `supersample_pixels` 分别记录解析次数与处理的输入像素数。 [画质示例](../examples/puzzle3d/quality.xr)
+
+设置 `progressive-aa: 8;` 后，每次画面变化先显示当前画面。视口稳定时，接下来的帧使用不同的亚像素偏移，并在线性颜色空间累积。可选值为 2、4、8，默认 0，其他值按关闭处理。相机、模型、灯光、反射探针或渲染尺寸变化会重新开始，拾取仍以原相机为准。可与 MSAA、SSAA 一起使用，累积在景深和超采样解析之后、泛光和色调映射之前进行。
+
+原生窗口和 VS Code 预览会自动绘制所需帧。累积完成后释放历史纹理，在视口缓存预算内复用最终结果。`Renderer::scene_draw_stats().progressive_aa_samples` 记录实际累积的样本数。显存预算不足时沿用当前帧的渲染设置。 [画质示例](../examples/puzzle3d/quality.xr)
+
+开启 `temporal-aa: true;` 后，视口在运动时交替偏移亚像素采样位置，并把当前帧与上一帧的原始场景颜色在线性空间等权混合。用 `temporal-aa-strength` 控制每轴偏移的像素量，默认 0.3，最大 1，非正值关闭时域滤波。画幅尺寸、具名相机、内容层、背景或环境切换会清掉历史。快速移动的物体可能残留一帧影像。
+
+视口停稳后补一帧消掉运动历史，随后复用结果。若同时设置 `progressive-aa`，停稳后直接开始渐进累积。开启 `multisampling` 时暂停时域滤波。时域采样发生在景深和超采样解析之后、色调映射之前。AOT 和解释器共享调度，保留的两个原始颜色纹理受视口缓存预算约束。 [运动对照示例](../examples/puzzle3d/temporal_aa.xr)
+
+使用 `temporal-aa-mode: "motion-vectors";` 可启用运动向量重投影，默认模式为 `"blend"`。运动通道用相机、实例的世界变换以及骨骼和 morph 的前后两帧姿态求出历史坐标。重投影检查物体身份和深度，并用当前邻域限制历史颜色，减少遮挡变化和快速运动时的拖影。天空、透明和透射覆盖区域使用当前帧颜色。
+
+运动向量模式在静止时独立收敛八个亚像素样本，不进入渐进 AA 序列。运动通道仅在该模式启用且视口需要更新时执行，使用视口输出纹理尺寸，并保留两张身份贴图。可通过 `Renderer::scene_draw_stats()` 的 `motion_vector_draws` 和 `temporal_reprojections` 查看绘制及历史重投影次数。 [运动对照示例](../examples/puzzle3d/temporal_aa.xr)
+
+开启 `screen-space-reflections: true;` 后，视口用不透明场景的颜色、深度和材质法线追踪反射。反射落在可见表面时按材质 BRDF 混合屏幕上的颜色，离屏、被挡住或缺少可信交点时保留天空或局部反射探针。反射接收器使用带 PBR 材质的不透明 glTF 网格，基础层和清漆层中选出较明显的一层做屏幕追踪。混合透明绘制在之后，透射材质可以折射已经合成的屏幕反射。
+
+`ssr-strength` 控制屏幕结果的权重，默认 1。 `ssr-distance` 和 `ssr-thickness` 使用场景世界单位，默认分别为 24 和 0.2。 `ssr-steps` 是单条射线的采样上限，默认 64，可设 8 到 256。 `ssr-roughness-cutoff` 默认 0.65，更粗糙的表面沿用探针。 `ssr-scale` 控制追踪长宽相对于场景光栅的比例，默认 0.5，可设 0.25 到 1。低分辨率结果按深度和法线合成，避免跨越材质边缘。可与 4× MSAA、超采样和时域抗锯齿配合。与 MSAA 配合时，反射追踪读取最近深度，合成会按每个颜色样本的表面信息修正反射，因此几何边缘和后续透明混合仍使用各自的样本覆盖率。
+
+HDR、景深及色调映射继续在反射和透明合成之后处理。可以通过 `Renderer::scene_draw_stats()` 的 `screen_reflection_resolves` 和 `screen_reflection_pixels` 检查实际工作量。 `opaque_depth_captures` 记录最近深度解析次数，屏幕反射和体积透射可以共用一次解析。 `cache-rendering` 可复用已经完成的静态视口。 [屏幕空间反射示例](../examples/puzzle3d/screen_reflections.xr)
+
+开启 `screen-space-global-illumination: true;` 后，视口从可见不透明表面向半球追踪，估算一次漫反射反弹及环境遮蔽。着色器按接收材质的漫反射分量增加间接光，遮蔽仅扣减原有环境漫反射。镜面反射和直接照明分开合成。离屏和被遮挡的几何继续依靠场景原有的环境光。
+
+`ssgi-strength` 默认 1，范围 0 到 8。设为 0 时只计算环境遮蔽。 `ssgi-occlusion` 默认 0.5，范围 0 到 1，大于 0 时接管环境遮蔽。设为 0 时可继续使用原有 `ambient-occlusion`。两者都为 0 时跳过全局光照。 `ssgi-radius` 和 `ssgi-thickness` 的默认值分别为 3 和 0.22，单位为场景世界单位。
+
+`ssgi-rays` 默认 8，可设 2 到 32。 `ssgi-steps` 默认 24，可设 4 到 64。 `ssgi-scale` 默认为 0.5，可设 0.25 到 1，控制追踪和降噪纹理的长宽。合成按深度和法线保护材质边缘。屏幕反射和全局光照共用一次不透明材质绘制，4× MSAA 时逐样本合成。静态缓存继续适用，`Renderer::scene_draw_stats()` 可查询 `screen_indirect_resolves` 和 `screen_indirect_pixels`。 [间接光示例](../examples/puzzle3d/screen_indirect.xr)
+
+静态模型记录可以用 `lightmap: image` 绑定预烘焙光照贴图，例如 `lightmap: @image-url("room-bake.png");`。贴图使用 sRGB PNG，RGB 表示经归一化的漫反射光照乘数，`lightmap-intensity: float` 在线性空间缩放，默认 1。网格用 glTF 的 `TEXCOORD_1` 做光照 UV，材质贴图继续使用它们各自的 UV 集。
+
+`lightmap-mode: "indirect"` 用贴图替换运行时环境漫反射，仍计算实时灯的漫反射、阴影和镜面高光。`"diffuse"` 用贴图提供完整漫反射，实时灯仍提供视角相关的镜面高光。适用于不透明或带遮罩的静态 PBR 表面。缺少光照 UV 的三角形继续使用动态光照。启用 SSGI 时，烘焙表面可作为其他表面的光源，其自身继续使用已烘焙的漫反射。
+
+同一张图集可供多个实例共享。`lightmap-u`、`lightmap-v`、`lightmap-width`、`lightmap-height` 是归一化的左上角坐标和长宽，默认 `0, 0, 1, 1`。采样限制在对应区域内，使用同一图集的相邻实例仍能合批。AOT 嵌入贴图和光照 UV，解释器从相同资源加载。示例展示手工绑定已有图集。 [光照图集示例](../examples/puzzle3d/lightmaps.xr)
+
+缺少专用光照 UV 时，可以用 `@mesh-url("models/room.gltf", lightmap-uv)` 在静态 glTF 资源准备阶段展开光照图表。生成结果使用独立 UV 通道，原有材质 UV 和顶点顺序保留。图表沿可投影的相邻面展开，遇到重叠会拆分，并在最小烘焙分辨率上保留采样间距。与 `auto-lod` 一起使用时先生成光照 UV，再简化网格。AOT 嵌入生成结果，解释器在加载资源时生成一次。
+
+准备好作者提供的 `TEXCOORD_1` 或生成的光照图表后，可用 `xrackc --emit lightmaps` 重新生成图集。工具从组件的初始状态读取 `SceneView3D`，与实时渲染共用节点变换、灯光层、遮罩和几何射线查询。它追踪点光、聚光和方向光的遮挡，并用确定性的半球路径估算环境遮蔽和漫反射反弹。间接光沿表面降噪，直接光的阴影边界保留。贴图中只存光照，运行时再乘材质漫反射颜色。
+
+```sh
+bazel run //crates/xrack-compiler:xrackc -- \
+  "$PWD/examples/puzzle3d/lightmap_bake_scene.xr" --emit lightmaps \
+  --bake-receiver plate --bake-receiver figure --bake-size 64 --bake-samples 48 --bake-bounces 1 \
+  -o "$PWD/baked-room"
+```
+
+输出为 `atlas.png`、`lighting.xr` 和 `lightmaps.json`。从 `lighting.xr` 导入 `BakedLightmaps`，将 atlas、mode、intensity 和对象的 region 绑定到已有光照贴图字段。输出目录遵循包生成命令的约定，使用新路径。文件有多个可选组件或视口时，用 `--bake-component` 和 `--bake-viewport` 指定。设为 `--bake-mode indirect` 时保留实时直接漫反射。
+
+目前 CPU 烘焙使用解析灯光和环境常量，支持不透明及遮罩网格。启用自动展开的网格会记录图表所需的最小烘焙分辨率。图集生成、AOT 和加载同一图集的解释器路径可在烘焙房间示例中比较。 [源场景](../examples/puzzle3d/lightmap_bake_scene.xr) · [生成图集的使用方式](../examples/puzzle3d/lightmap_baked_view.xr)
+
+`specular-aa: true;` 缓和镜头移动时镜面高光的闪烁，默认关闭。着色器根据相邻片元的法线变化调宽 GGX 高光，在 PBR 基材和清漆层分别计算，方向光、点光、聚光灯的高光以及环境探针反射共用过滤后的粗糙度。法线贴图也参与计算。它只使用当前帧，和 MSAA、超采样及透明合成可以一起使用。高光可能会变宽，视口分辨率和绘制通道与开关关闭时相同。 [镜面高光示例](../examples/puzzle3d/specular_aa.xr)
+
+glTF 材质从采样器读取消除缩小锯齿的过滤方式。显式 `NEAREST` 和 `LINEAR` 只使用原图。四个 `*_MIPMAP_*` 模式分别控制每级的采样，以及级与级之间用最近点还是线性混合。省略 `minFilter` 时用三线性过滤。颜色和发光贴图在线性光空间缩小，法线和材质通道按线性数据缩小，并包含奇数尺寸的边缘像素。
+
+AOT 在构建期生成并嵌入需要的 mip 链，解释器在准备资源时使用同一套算法。一个纹理用于多处时复用同类 mip 链和 GPU 纹理。镜头移动时选择已有的级别，`Renderer::scene_draw_stats().material_mip_levels_uploaded` 可检查上传次数。VS Code 悬停 `@mesh-url` 可查看资源的采样器设定。GPU 以各通道的屏幕覆盖范围采样，几何射线以原图 alpha 测试命中，因此小于一个屏幕像素的透明细节可能出现差别。 [纹理缩小示例](../examples/puzzle3d/texture_mips.xr)
+
+glTF 的 `KHR_texture_transform` 可对同一材质的每张贴图单独设置偏移、旋转、缩放和输入 UV 通道。每个材质最多使用两组源 UV。变换按缩放、旋转、平移的顺序应用，之后才做重复、镜像或夹取。AOT 和解释器在准备资源时计算变换矩阵，渲染、遮罩深度和几何拾取用同一套 UV 映射。法线贴图也沿变换后的坐标建立切线方向。镜头移动时 mip 级别按变换后的纹理覆盖范围选择。在 VS Code 中悬停 `@mesh-url` 可看到模型声明的扩展。 [UV 图集示例](../examples/puzzle3d/uv_atlas.xr)
+
+glTF 的 `KHR_materials_ior` 和 `KHR_materials_specular` 控制介电基材的镜面反射。折射率默认 1.5，正视反射率为 4%。合法值从 1 起，0 表示 glTF 的无限折射率模式。`specularFactor` 和强度贴图的 alpha 通道相乘，`specularColorFactor` 与 sRGB 颜色贴图相乘。两张贴图可以设置独立的 UV 变换。
+
+直接光和 HDR 环境探针共用镜面反射参数。色彩变化也会改变留给漫反射的能量。纯金属使用自身颜色确定反射，清漆层独立计算。AOT 和解释器共用材质数据，VS Code 悬停 `@mesh-url` 会列出这两个扩展。 [镜面反射示例](../examples/puzzle3d/dielectric.xr)
+
+glTF 的 `KHR_materials_transmission` 支持薄壁玻璃。透射强度乘以贴图的线性 R 通道，基材颜色给透出的画面着色，粗糙度控制模糊程度。`alphaMode` 独立控制表面覆盖，透明裁剪孔仍显示原背景。默认的 `OPAQUE` 也可透射。
+
+视口从不透明画面读取背景，玻璃按屏幕位置采样。多层玻璃共用该背景，阴影通道跳过透射面，体积折射和有色透射阴影属于独立能力。有可见玻璃时才保存背景，纯光滑玻璃直接采样原分辨率，需要模糊时才生成低分辨率层。支持 HDR、MSAA、超采样和加权透明合成。开发者可用 `transmission_captures` 和 `transmission_mip_passes` 查看这部分工作量。VS Code 悬停 `@mesh-url` 可查看扩展。 [薄壁透射示例](../examples/puzzle3d/transmission.xr)
+
+带厚度的玻璃可以叠加 glTF 的 `KHR_materials_volume`。`thicknessFactor` 以网格坐标为单位，并乘以厚度贴图的线性 G 通道。`attenuationDistance` 以世界坐标为单位，省略时表示无限距离。`attenuationColor` 是光走过该距离后留下的线性颜色。渲染器在入射面折射，使用模型缩放计算光路长度，再按 Beer–Lambert 定律逐通道吸收。`thicknessFactor: 0` 回到薄壁模型。
+
+CPU 在资源编译时保留已烘焙 glTF 节点的逆变换，GPU 与实例变换组合。标准材质仍走不含体积计算的管线。体积从正面入射，并用估算的出射点采样视口的不透明背景。出射点落到视口外、位于不透明前景之后或缺少可用深度时，回退到入射点采样。只有可见体积材质需要额外保存不透明深度，可通过 `volume_depth_captures` 查看次数。VS Code 悬停 `@mesh-url` 可查看扩展。 [体积吸收示例](../examples/puzzle3d/volume.xr)
+
+glTF 的 `KHR_materials_dispersion` 可在体积折射上增加色散。系统从基础折射率和 `dispersion` 值计算 RGB 三条光路，按各自的出射位置采样背景并计算吸收。深度遮挡和离屏回退对每条光路分别判断。三个通道共用同一份背景、深度和模糊层。零厚度、零色散和 glTF 的无限折射率模式会用单条光路。示例采用夸大的色散值，便于在黑白条纹上看清颜色分离。 [色散示例](../examples/puzzle3d/dispersion.xr)
+
+`SceneView3D` 在材质着色阶段计算距离雾和高度雾。`fog-density` 控制整体浓度，范围 0 到 1，默认 0。`fog-color` 默认取 `scene-background`。雾色按线性颜色混合，物体的透明度、天空和拾取沿用各自的规则。
+
+- `fog-depth-enabled` 默认开启。`fog-near` 和 `fog-far` 按相机前向深度定义雾由浅到浓的范围，默认 0 和 100。`fog-depth-curve` 默认 1，越大则雾越集中到远端。远端小于或等于近端时关闭距离雾。
+- `fog-height-enabled` 默认关闭。`fog-height-start` 和 `fog-height-end` 分别设世界 Y 轴上由清晰到最浓的高度，默认 10 和 0。互换高度即可反转方向，相同高度时关闭该层。`fog-height-curve` 默认 1，调节两端之间的平滑过渡。
+- `fog-transmit-enabled` 默认关闭。距离雾生效时，打开它会让亮于雾色的分量从近处保留到雾区中，远端仍接近雾色。`fog-transmit-curve` 越大，亮部保留得越远，默认 1。三个曲线的有效范围为 0.01 到 16，非正值按默认值处理。
+
+距离雾和高度雾同时打开时，取较强的一层再乘以密度。运行时更新雾参数只使视口颜色失效，网格和实例缓冲继续复用。雾计算在原有颜色通道中完成。 [山谷晨雾示例](../examples/puzzle3d/fog.xr)
+
+`fog-volumes` 接收局部体积雾的记录列表。每条记录需要 `position: point3d`、`size: vector3d`、`density: float` 和 `color: color`。位置是世界坐标中的中心。尺寸是三个轴的完整宽度。可选的 `fog-shape: string` 默认为 `"box"`，`"sphere"` 随三轴尺寸可形成椭球。可用 `visible: bool` 控制显隐，`layers: int` 默认 1，沿用视口的内容掩码。
+
+雾体记录可用 `yaw`、`pitch` 和 `roll` 旋转盒形或椭球边界。旋转顺序与场景物体一致，三个值默认 0，单位为度。遮挡积分在旋转后的区域内进行，视锥筛选和阴影按旋转后的世界范围计算。
+
+记录内的 `fog-height-enabled: true` 启用局部密度过渡。`fog-height-start` 是密度为零的世界 Y，`fog-height-end` 是达到记录密度的世界 Y，默认分别为 10 和 0。两点之间线性过渡，互换高度可倒置雾层。两点相同会采用均匀密度。高度沿世界 Y 计算，可以独立旋转雾体边界。 [旋转与高度衰减示例](../examples/puzzle3d/fog_profiles.xr)
+
+浓度对应每世界单位的消光系数，大于 64 时按 64 处理。透过的背景比例为 `exp(-浓度 × 穿过的距离)`。颜色按线性空间解释为雾体散射的颜色。视口会筛掉掩码和视锥外的记录，最多处理前八个有效雾体。零浓度、无效尺寸和未知形状会跳过。
+
+每条视线按从近到远混合遇到的雾体。重叠处相加消光并按浓度混合颜色。相机裁剪面和模型表面截断积分，因此空背景也能显示雾体，雾体前方的物体保持清晰。普通透明继续做覆盖率混合，屏幕空间折射复用已有背景采样。与材质雾并用时，先对表面着色，再算相机与表面之间的体积雾。
+
+雾体消光按均匀或线性变化的密度解析积分。不同颜色的高度层重叠时，每段以双点积分近似颜色。开启局部雾时复用已有颜色通道，并绘制支持雾效的天空或背景。没有可见雾体时使用普通着色管线。雾记录按绘制属性编译，调整位置或密度可复用网格和实例缓冲。 [局部体积雾示例](../examples/puzzle3d/volumetric_fog.xr)
+
+用 `fog-volume-scattering` 开启场景灯光的单次散射，默认 0，范围 0 到 16。雾色同时给散射光着色。方向光、点光源和聚光灯使用视口当前灯光列表，沿用灯光强度、距离衰减、聚光锥和内容层。开启 `shadows` 时，雾中的采样点查询同一份场景阴影图。移动光源或遮挡物会改变雾里的光斑和阴影。
+
+`fog-volume-anisotropy` 默认为 0，范围 −0.85 到 0.85。正值增强沿入射光方向的散射，负值增强反向散射。`fog-volume-samples` 为每条视线的采样数，默认 8，有效值 1 到 16。采样按整条视线上被雾衰减的光量分配，随雾体重叠仍共用同一预算。消光和恒定雾色仍用解析积分，采样只估算随空间变化的直接散射光。调节浓度、散射强度和采样数时可复用既有阴影图。 [体积光与雾影示例](../examples/puzzle3d/fog_lighting.xr)
+
+在雾体记录中设置 `fog-noise-amount`（0 到 1，默认 0）可调节三维密度变化的强度。`fog-noise-scale` 是噪声格子的世界单位长度，默认 0.8，有效范围 0.05 到 1000。`fog-noise-offset: vector3d` 默认是零向量，沿世界坐标移动噪声。绑定到计时器即可让雾团随风移动。噪声会和高度衰减相乘，在旋转后的雾体内部采样，周期为格子长度的 256 倍。
+
+`SceneView3D.fog-volume-density-samples` 控制噪声密度积分，默认 32，有效值 8 到 64。采样只分配给视线穿过的雾段，每段至少一次，重叠雾共用预算。步长较大时会减弱高频细节。开启受光时，光照继续使用独立的 `fog-volume-samples` 预算。关闭噪声时，消光沿用均匀密度或高度线性过渡的解析积分；调整偏移可复用网格、实例数据和同一份阴影图。 [流动体积雾示例](../examples/puzzle3d/fog_noise.xr)
+
+`ambient-occlusion: true;` 启用屏幕空间环境遮蔽，默认关闭。`ao-strength` 控制强度，范围 0 到 1，默认 0.8。`ao-distance` 是采样半径，默认 1 个世界单位。`ao-bias` 以世界单位抑制小尺度的自遮蔽，默认 0.025。遮蔽调暗接触区域的环境光和环境反射，直射光、自发光、天空和拾取保持原有规则。普通实体和 Alpha Mask 参与深度计算，`BLEND` 继续按自己的透明规则合成。屏幕空间估算使用可见深度，画面外和被遮住的几何只能通过场景原有的灯光与阴影体现。
+
+开启时，视口使用长宽减半的深度和遮蔽纹理，并按深度差插值，减少轮廓处的串色。灯光和强度变化复用遮蔽结果，半径或偏移变化复用相机深度。强度为 0、半径不大于偏移、没有环境光或没有可见接收面时跳过两个通道。支持透视、正交、HDR、MSAA 与加权透明。 [环境遮蔽示例](../examples/puzzle3d/occlusion.xr)
+
+`scene-hdr: true;` 可以在没有环境探针时使用线性 HDR 渲染和色调映射。`scene-exposure` 默认 1，调节色调映射前的曝光。使用环境探针或开启有效的泛光时也会自动通过 HDR 通道。
+
+`scene-tone-map` 接受 `SceneToneMap` 枚举，显式绑定会开启 HDR。默认 HDR 曲线是 `reinhard`，按最大通道压缩亮部以保留颜色比例。`linear` 应用曝光并裁到显示范围。`none` 直接输出场景颜色，跳过曝光和曲线。`aces` 使用 ACES 风格的拟合曲线，`hejl-dawson` 和 `filmic` 使用各自的电影曲线。`scene-white-point` 默认 11.2，只用于归一化 `filmic` 的白点。
+
+`scene-brightness`、`scene-contrast` 和 `scene-saturation` 的范围都是 0 到 4，默认 1。它们依次调整最终显示颜色的亮度、以 18% 线性灰为中心的对比度，以及按 Rec. 709 亮度计算的饱和度。饱和度为 0 时输出灰度。HDR 视口在色调映射通道内完成调整，LDR 视口保持原有色彩空间。 [色调与颜色调整示例](../examples/puzzle3d/tone.xr)
+
+`scene-lut: @image-url("models/grade.png");` 可为 HDR 或 LDR 视口添加调色表。使用宽 `N²`、高 `N` 的静态 PNG 横条，`N` 可取 2 到 64。每块内红色由左到右增加，绿色由上到下增加，蓝色从第一块到最后一块增加。`scene-lut-size` 默认为 0，从高度推导；显式值必须匹配 PNG。直接绑定的文件在处理资源时检查格式和尺寸，运行时动态提供的无效图片会沿用原画面。
+
+`scene-lut-strength` 默认 1，范围 0 到 1，用于在原色与查表后的 sRGB 显示颜色间混合。查表在泛光、色调映射和颜色调整之后进行，用三线性插值平滑过渡。重复切换已缓存的图片或调整混合强度会复用 GPU 纹理，强度为 0 时跳过查表。 [LUT 调色示例](../examples/puzzle3d/lut.xr)
+
+`bloom: true;` 为可见高亮启用泛光，默认关闭。`bloom-threshold` 是曝光前的线性亮度阈值，默认 1，阈值附近使用平滑过渡。`bloom-strength` 默认 0.45，设为 0 可跳过泛光计算。`bloom-levels` 可取 1 到 6，默认 5，更多级别会扩散到更远处。渲染器从合成后的 HDR 画面提取高亮，用长宽逐级减半的纹理过滤，并在色调映射时合入泛光。遮挡、透明和 MSAA 会先结算，泛光留在当前视口内。 [HDR 泛光示例](../examples/puzzle3d/bloom.xr)
+
+`depth-of-field: true;` 启用景深，默认关闭。`dof-focus-distance` 按相机前向轴测量对焦距离，默认 10 个世界单位。`dof-focus-range` 是焦平面两侧清晰区的总宽度，默认 2。`dof-blur-radius` 设置最大模糊半径，接受逻辑像素长度，默认 `12px`，范围 `0px` 到 `32px`。`0px` 跳过景深通道。
+
+景深读取当前视口的不透明和 Alpha Mask 深度，按半分辨率过滤前后景，再用全分辨率深度合成。透明颜色参与后处理，其对焦距离沿用该像素的不透明深度。MSAA 深度采用最近样本，支持透视和正交相机。LDR 视口保留原色彩空间，HDR 则在泛光和色调映射之前完成景深。拾取仍使用原三角面。 [景深示例](../examples/puzzle3d/focus.xr)
+
+要为物体配置 LOD，先用带唯一 `id` 的场景行声明主网格，再为每个替代网格添加一行。替代行用 `lod-of` 指向主行，用正的 `lod-max-size` 长度设定启用该级别的最大投影尺寸。例如在同一个场景列表里写 `Actor { mesh: @mesh-url("models/rock-medium.glb"), lod-of: "rock", lod-max-size: 140px, ..root.defaults }`，再为远景网格写一个更小的阈值。渲染器选用仍能覆盖投影尺寸的最小阈值。超过所有阈值时使用主网格。阈值采用逻辑像素，正交相机下移动相机的距离不会改变屏幕尺寸。
+
+替代行提供 `mesh`、`lod-of`、`lod-max-size` 和可选的 `visible`。选中后沿用主行的变换、颜色、拾取设置、动画时间、形变权重和场景行索引。替代 mesh 可以是内建形状或 glTF，AOT 会随主网格一起嵌入资源。`lod-bias: float` 可以调节单个物体，`camera-lod-bias: float` 可以调节具名相机。默认乘数为 1，设为 0 使用主网格。LOD 使用主网格的姿态包围盒来估算屏幕大小。
+
+每个视口独立选择 LOD。同一相机的颜色、阴影和视口拾取共用选中的网格，显式世界射线使用主网格。已计算过的网格姿态和相同级别组合可复用。`Renderer::scene_draw_stats()` 还提供替代网格的选择次数和颜色通道提交的顶点数。 [LOD 示例](../examples/puzzle3d/lod.xr)
+
+glTF 资源也可以用 `@mesh-url("models/rock.glb", auto-lod)` 自动生成 LOD。资源加载会在材质分区内减面，把法线、纹理坐标、顶点色和切线纳入误差估算，保留边界与顶点属性断开处。生成的级别根据实测误差设置屏幕阈值。手写替代行优先于自动级别，仍可用 `lod-bias` 和 `camera-lod-bias` 调整。
+
+自动减面适用于静态、节点动画、蒙皮和形变网格。幸存顶点保留原关节权重、形变增量和目标名。蒙皮级别会抽样检查 glTF 动画姿态，形变级别会检查每个目标的位置偏差。形变权重绝对值超过 1 时，自动级别会按当前最大权重缩小启用范围。AOT 把生成结果和阈值嵌入产物，解释器在准备资源时用同一算法生成。无可用蒙皮姿态样本、未能通过误差预算或减面收益不足的网格会沿用主网格。
+
+glTF 相机可通过场景行 ID 加选择器引用，例如 `camera: "rig/Hero";` 或 `camera: "rig/#1";`。井号后的数字是原文件的节点索引。名称优先取节点名，其次取相机名，重复名称用节点索引区分。只有相机和动画的 glTF 也可以直接引用。摄像机位置跟随节点和动画，视图方向忽略节点缩放。
+
+透视镜头可省略远裁剪面。固定宽高比的透视和正交镜头会在控件内居中适配，留边使用 `scene-background`。绘制和拾取使用同一画幅，留边不会命中 3D 物体。投影、反投影、景深和阴影使用同一镜头。VS Code 悬停 `@mesh-url` 可查看可用的相机节点选择器。在同一组件中用字面量声明相机行时，输入 `camera: "rig/` 可补全该行的相机。 [导入镜头示例](../examples/puzzle3d/imported_cameras.xr)
+
+结合 `Scene3D.pick-camera(model, camera, viewport, pointer)` 使用相同的记录模型、相机 ID 和视口尺寸即可拾取，匹配渲染的投影和裁剪面。解谜示例的「俯视地图」可以在正交和绕视镜头之间切换。`selected-object` 高亮给定 ID，`scene-background` 设置视口背景。
+
+如果还需要命中点的信息，使用 `Scene3D.hit(objects, yaw, pitch, distance, viewport, pointer)` 或 `Scene3D.hit-camera(objects, camera, viewport, pointer)`。两个函数按视口当前裁剪面返回最近的可见表面。`Scene3D.ray-hit(objects, origin, direction, max-distance)` 可从任意世界位置发射射线，其中 `origin` 用 `Point3D.new` 构造，`direction` 用 `Vector3D.new` 构造。方向会归一化，最大距离和结果距离均用世界单位。
+
+`hit3d` 的 `valid` 表示是否命中。命中匿名网格时 `valid` 仍为真，`object-id` 为空。`position` 和 `normal` 使用世界坐标，`local-position` 和 `local-normal` 使用网格坐标，形变和蒙皮会参与计算。法线按命中三角形的顶点法线插值，双面材质从背面命中时反转。`u` 和 `v` 是插值后的第一组纹理坐标，未提供 UV 时默认为零。`distance` 是从射线起点到命中点的距离。透视拾取从相机位置出发，正交拾取从相机平面上对应指针的位置出发。
+
+无效射线、无效相机或未命中会返回 `valid: false` 的结果。遮挡、透明裁剪和背面判定与 ID 拾取共用同一套逻辑。多个实例共享刚性导入网格时，可复用网格的三角形包围盒树；正在变形的网格使用当前姿态的三角面。
+
+穿透选择可用 `Scene3D.hit-all`、`Scene3D.hit-all-camera` 或 `Scene3D.ray-hit-all`。它们和对应的单命中查询接受相同参数，返回按距离从近到远排列的 `[hit3d]`，包括前方表面后面的物体。一个模型行有多个 glTF 网格时，只保留该行最近的一处命中。距离相同时沿用单次拾取的绘制顺序规则，因此取列表第一项可得到同一命中。
+
+`row-index` 是在查询发生时命中物体在原场景记录列表中的从零开始的索引。它可以区分匿名行和重名行。未命中或 Rust 直接构造的场景物体使用 `-1`。每个模型行可声明可选的 `pickable: bool`，默认开启。关闭后，该行仍参与绘制和阴影，射线会继续查找它后面的物体。
+
+可用 `Model.count(hits)`、`Model.at(hits, index, miss)` 和 `for hit in hits` 消费结果。这里的 `miss` 可以用没有初值的 `hit3d` 属性提供。解谜示例开启「穿透选择」后，点击场景，再按「下一个命中」就能沿射线切换选择。 [解谜示例](../examples/puzzle3d/puzzle.xr)
+
+要把 2D 标签放在世界中的一个点上，可以用 `Point3D.new(x, y, z)` 创建世界坐标，再调用 `Scene3D.project(yaw, pitch, distance, viewport, world)` 或 `Scene3D.project-camera(model, camera, viewport, world)`。将用于绘制和投影的视口宽高绑定到同一组属性，再用 `Point2D.new(root.view-width, root.view-height)` 得到尺寸。相机参数也使用画面绑定的同一组值。标签的 `x`、`y` 可直接绑定到投影坐标。 [解谜示例](../examples/puzzle3d/puzzle.xr) 用这套接口定位「出口」标签。
+
+投影结果的类型是 `projectedpoint3d`。其中 `point.x`、`point.y` 是相对视口左上角的逻辑像素，`depth` 是从相机沿前向轴测量的世界单位。相机可用且世界点在相机前方时，`valid` 为真。点还要位于视口矩形内、通过近远裁剪，`inside` 才为真。画面外的有效点也有位置，可以据此放置指示箭头。`inside` 表示通过视锥检查，物体遮挡仍由拾取处理。
+
+`Scene3D.unproject(yaw, pitch, distance, viewport, pointer, depth, fallback)` 和 `Scene3D.unproject-camera(model, camera, viewport, pointer, depth, fallback)` 将逻辑像素坐标与正的前向深度还原为 `point3d`。将一次投影的 `point` 和 `depth` 传回同一个相机即可还原世界点。无效相机、坐标或深度返回指定的 `fallback`。两种映射共享渲染与拾取使用的透视或正交镜头。
+
+`Scene3D.sphere-cast(objects, origin, direction, max-distance, radius, layer-mask?)` 沿归一化方向连续移动球体，返回第一个 `hit3d` 接触。距离是球心移动量，`position` 是碰撞面上的接触点，`normal` 是用于分离的几何法线。球体可以接触物体的面、棱或顶点。起始位置已经穿入时返回距离 0。起点刚好相切时，沿表面或远离表面的运动可以继续。扫掠途中相切的接触仍会报告，可通过法线判断运动方向。
+
+`Scene3D.sphere-overlap(objects, center, radius, layer-mask?)` 返回 `[hit3d]`，每条源模型行最多返回一个接触，按模型顺序排列。基础盒体和球体按封闭体检查内部，导入模型和高度图按变换后的三角面检查。可用记录字段 `collidable: bool` 独立控制这两种查询，默认开启。它们使用可见行和指定层掩码，默认第一层。三角面参与双面碰撞，材质透明度继续服务于绘制和射线拾取。
+
+静态查询复用场景和网格的 BVH。蒙皮及形变网格使用当前姿态，碰撞查询始终使用主网格。半径必须为正，距离为非负世界单位。位置、方向或范围无效时返回未命中。想约束移动时，可以用返回距离限制球心的目标位置。 [扫掠与高度图碰撞示例](../examples/puzzle3d/sphere_cast.xr)
+
+`Scene3D.sphere-slide(objects, origin, displacement, radius, layer-mask?)` 返回球体移动后的中心 `point3d`。传入本次请求的世界坐标位移。遇到墙时，先推进到接触前，再将剩余位移投影到可移动的方向。多个接触面会一起限制剩余位移，例如进到两面墙的拐角后，仍可沿两面墙的交线移动。
+
+滑移只处理阻挡运动的接触，纯相切和分离方向可以继续移动。球心起始于封闭图元内部时停在原处。每次调用处理最多八次阻挡接触，并在接近表面时沿进入方向留出半径万分之一的间隙。这个函数使用同一场景 BVH、网格 BVH 和 `collidable` 字段。 [沿墙滑移示例](../examples/puzzle3d/sphere_slide.xr)
+
+`Scene3D.sphere-walk(objects, origin, displacement, radius, step-height, snap-distance, max-slope, layer-mask?)` 为空间移动加入贴地规则，返回移动后的球心 `point3d`。Y 轴向上，`max-slope` 是允许向上走的坡度角，范围为 0 到 90 度。过陡的上坡接触会同时限制朝坡内的水平运动，仍可沿坡横向移动。
+
+起点有地面支撑且位移朝水平或向下时，`step-height` 启用上台阶。系统检查头顶空间、抬高后的水平路线及可行走的落脚点，且台阶路线须比普通滑移推进更远。`snap-distance` 控制下坡或下台阶后的最大贴地距离。两个值均为非负世界单位，设为 0 可分别关闭。向上移动和从空中开始的移动继续使用本次传入的位移，跳过踏步与吸附。恒定零位移在编译时折叠为原位置。 [地面行走示例](../examples/puzzle3d/sphere_walk.xr)
+
+`lights` 接受灯光记录列表，记录名可以自定。以下字段参与类型检查。
+
+```xr
+struct SceneLight3D {
+    kind: string,
+    x: float, y: float, z: float,
+    yaw: float, elevation: float,
+    intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float,
+}
+```
+
+- `"directional"` 提供方向光。偏航和仰角都为 0 时，光沿世界的 −Z 方向传播。
+- `"point"` 从 `x`、`y`、`z` 向各方向发光，亮度按距离平方衰减。
+- `"spot"` 在点光基础上沿一个锥形区域发光，`inner-angle` 和 `outer-angle` 是以度为单位的半角。内锥保持最大亮度，外锥边缘平滑衰减到零。
+
+`intensity` 是线性强度，`color` 是 sRGB 颜色。点光和聚光灯的 `range: 0` 表示无限范围，正值表示衰减到零的位置。每个视口读取前 16 条记录，零强度和无效记录会跳过。`ambient-color` 与 `ambient-intensity` 控制常量环境光，默认分别为白色和 1。
+
+灯光记录的可选 `parent: string` 将方向光、点光或聚光灯挂到模型里的节点。点光和聚光灯的局部位置继承父变换。方向光和聚光灯的照射方向继承旋转，光照范围仍以世界单位计。隐藏父节点、无效父引用或灯光行上的 `visible: false` 会停用该光源。移动灯光时，在同一视口的阴影图布局和投影物体保持一致的情况下，可以保留未变化的深度层。
+
+导入 glTF 的 `KHR_lights_punctual` 时，方向光、点光和聚光灯保留线性 RGB、强度、范围和聚光锥。灯光位置跟随节点和动画，方向取旋转，节点缩放只作用于灯光的位置。只包含灯光和动画的 glTF 也可以作为场景行引用。隐藏源行或父节点会隐藏它的灯光。 [导入布光示例](../examples/puzzle3d/punctual_lights.xr)
+
+`imported-lights` 默认为 `true`。同时有手写灯光和导入灯光时，视口先使用 `lights` 中的灯，再使用 glTF 的灯，总数最多 16。启用 `shadows` 时导入灯光也可投影。切换镜头或几何 LOD 时沿用主场景灯光，`light_buffer_uploads` 可查看 GPU 灯光缓冲区上传次数。悬停 `@mesh-url` 可查看 glTF 灯名和类型。
+
+省略 `lights` 且没有启用的导入灯组时，`light-yaw` 和 `light-elevation` 控制默认方向光。可绑定空灯光列表并关闭 `imported-lights`，只保留环境光。
+
+在视口上设置 `shadows: true` 启用实时阴影，默认关闭。每个视口按灯光列表顺序为前四盏开启投影的灯光生成深度图。方向光默认使用一个深度图，聚光灯使用一个深度图。点光沿六个立方体朝向投影，只渲染与投影物体相交的面。`shadow-map-size` 指定深度图的边长，默认 1024 像素，可设为 128 到 2048。当多个灯和面超过单组 64 MiB 的显存预算时，渲染器会降低深度图分辨率。`shadow-bias` 控制深度比较的偏移，默认 0.001。出现自阴影时可以稍微提高偏移。
+
+灯光记录可以声明 `casts-shadow: bool`，物体记录可以声明 `casts-shadow: bool` 和 `receives-shadow: bool`。字段省略时按 `true` 处理。阴影只减弱相应灯光的直接光照。环境光、自发光和 unlit 材质按原有规则显示。`MASK` 按材质的 alpha 阈值投影，`BLEND` 的半透明图元可以接收阴影。绕视和改变光强时复用深度图，移动投影物体、移动点光源或调整光照方向时更新。对于点光源，偏移量按阴影视锥的最远距离缩放，以保留远处遮挡的精度。
+
+方向光可以用 `shadow-cascades` 将相机深度范围分成 1 到 4 级，默认 1。近处切片覆盖更小的世界范围，能用相同分辨率分辨更细的阴影。级联数量大于 1 时，`shadow-distance` 设置从相机开始的最远投影距离，0 表示按场景范围计算。`shadow-split-balance` 在均匀分割（0）和对数分割（1）之间插值，默认 0.5。`shadow-cascade-blend` 控制相邻切片的过渡比例，范围 0 到 1，默认 0.1。
+
+级联使用与深度图像素网格对齐的投影。给定固定的距离和视口比例时，小于一个深度图像素的相机变化可复用已有深度图。相机移动后，点光、聚光灯和投影仍相同的级联层可以继续复用。相机画面外的物体也可以给画面内的表面投影。
+
+使用 `environment: @environment-url("models/studio.hdr")` 加载 Radiance HDR 环境探针。资源路径相对声明所在的 `.xr`，Bazel 应用要把文件加入 `xr_ui_library(assets = [...])`。探针接收 2:1 的 RGBE 全景图，最多 8 Mi 像素，文件最多 16 MiB。编译器预计算漫反射和按粗糙度分层的立方体反射，AOT 嵌入结果，解释器按资源内容缓存。环境光与已有的方向光、聚光灯和点光叠加。
+
+`environment-yaw` 以度旋转环境，`environment-intensity` 调整环境光与天空盒的强度，默认 1。`environment-skybox` 默认关闭，开启后用同一张探针绘制背景。加载探针时，视口在线性 HDR 颜色空间完成透明混合，再通过色调映射输出。`scene-exposure` 调整整个 3D 视口的曝光，默认 1。旋转环境、移动相机或调整曝光会复用 GPU 上已上传的环境纹理。
+
+`reflection-probes` 为同一视口中的模型提供局部 HDR 镜面反射。探针记录需要 `position: point3d` 和 `box-size: vector3d`。使用 `source: @environment-url("models/room.hdr")` 加载 HDR 全景。省略 `source` 或将其设为空字符串会从场景捕获。`position` 是世界空间采样中心。把 `box-size` 设为世界轴对齐盒体的三条边长，三个分量均须大于零。可用 `box-offset: vector3d` 将影响盒相对采样中心平移，默认零。
+
+视口读取前八个探针记录，从包含模型原点的盒中选采样中心最近的探针。距离相同时按记录顺序选取。模型行可用 `receives-reflections: false` 关闭局部反射，或通过移动模型进入另一个盒。盒外模型使用全局环境的镜面反射。全局环境还提供天空和漫反射。`parallax-correction: true` 根据反射射线在盒体上的出口方向查找局部纹理，默认关闭。探针的 `yaw` 以度旋转纹理，`intensity` 控制强度，`visible` 控制是否参与。默认值依次为 0、1 和 `true`。
+
+局部探针沿用 HDR 预滤波和 GPU 纹理缓存。移动镜头时可以复用网格与实例缓冲。同一批次内相邻且使用同一探针的模型仍可合批。探针绑定属于绘制更新。 [局部反射示例](../examples/puzzle3d/reflection_probes.xr)
+
+场景捕获为匹配接收模型的探针渲染六个 HDR 面，并在 GPU 上为不同粗糙度生成 mip。`capture-size: int` 指定每面像素尺寸，默认 128，范围为 32 到 256。模型记录可用 `casts-reflections: false` 退出捕获。捕获使用当前视口的场景灯光、全局环境和匹配的层。本地探针从全局环境获取反射输入，避免构成立方体捕获的递归依赖。
+
+`refresh-mode: "on-change"` 在捕获输入变化时刷新，且为默认模式。`"first-frame"` 保留初次捕获的内容，适合静态布景。`"every-frame"` 在视口绘制时更新。`capture-revision: int` 可显式请求刷新。改变探针位置或面尺寸也会更新捕获。仅移动观察相机时，按变化刷新的探针可以复用现有立方体贴图。`cache-rendering` 也会跟踪立方体贴图版本。Rust 可查询 `reflection_cubemap_updates`、`reflection_capture_faces` 和 `reflection_prefilter_passes`。 [实时场景反射示例](../examples/puzzle3d/live_reflections.xr)
+
+`time-slicing: "none"` 默认在同一帧完成捕获和预滤波。`"individual-faces"` 分六帧捕获六面，再分六帧逐面生成 mip。`"all-faces-at-once"` 在第一帧捕获六面，之后每帧为六面生成一级粗糙度 mip。两种分帧模式都按每个探针调度。
+
+分帧捕获使用开始时的场景和探针位置。更新完成后才发布整张立方体贴图，并切换视口缓存使用的版本。期间继续合成上一张已完成的贴图。初次捕获期间使用全局环境。按变化刷新时，捕获期间的新输入会安排到下一轮。原生窗口和 VS Code 预览会按需请求帧，直到当前任务收尾。
+
+结合 `TouchArea` 的本地指针坐标，可以调用 `Scene3D.pick` 取得最近可见物体的 ID。传入和视口一致的记录模型、相机属性和布局尺寸。空 ID 的物体仍会遮挡后方物体。Rust 宿主可以通过 `xrack_runtime::scene3d::raycast` 发出世界空间射线，获取命中的 ID、距离、位置和法线。查看 [3D 解谜示例](../examples/puzzle3d/README.md) 中的绕视、拾取和原生 Play。
+
+#### 3D 粒子
+
+`particle-emitters` 接受使用自定义记录名的发射器列表。`particle-time` 是秒为单位的播放位置，默认 0，可以绑定 `Timer`、滑块或业务状态。发射器参数、种子和时间一致时会得到同一帧粒子，可以暂停、倒回和直接跳到目标时间。重设某个发射器的 `start-time` 会重启它的时间线。需要重叠的爆发时，为每次爆发保留一条独立记录。
+
+| 记录字段 | 类型和含义 |
+| --- | --- |
+| `position`, `color`, `size`, `lifetime` | 必填。世界坐标 `point3d`、含透明度的 `color`、世界单位直径和秒为单位的寿命。后两项为 `float`。 |
+| `rate`, `burst-count`, `start-time` | 连续发射的每秒速率 `float`、起始时一次发射的数量 `int`、起始秒数 `float`，默认都是 0。连续发射的首个粒子在起始后一个发射间隔出现。 |
+| `velocity`, `velocity-spread`, `gravity` | 三个 `vector3d`，默认为零向量。分量为世界坐标方向的初速度、随机速度幅度和加速度。 |
+| `end-size`, `fade-in`, `fade-out` | 三个 `float`，分别为末尾直径、淡入秒数、淡出秒数，默认是初始直径、0 和 0.25。 |
+| `intensity`, `seed`, `layers`, `enabled` | 发光倍数 `float` 默认 1，限制在 0 到 64。随机种子和层掩码为 `int`，默认 0 和 1。启用状态为 `bool`，默认启用。 |
+
+粒子使用面向相机的精灵，在 GPU 上按时间和种子算出位置、大小和淡出。CPU 每帧提交发射器参数。每个视口最多处理 16 个发射器、8192 个存活粒子，单个发射器最多 4096 个并优先保留较新的粒子。
+
+精灵接受不透明几何的深度遮挡，并参与 HDR、泛光和 MSAA。开启 `order-independent-transparency` 时，精灵与半透明网格一起参与加权合成。普通模式下先绘制透明网格，再按发射器顺序混合精灵。粒子属于视口效果，拾取、碰撞、阴影和反射探针继续使用场景模型。 [粒子示例](../examples/puzzle3d/particles.xr)
+
+发射器可以用 `sprite: image` 绑定 `@image-url("sprites.png")`。PNG 从左到右排列等宽的帧，单帧图片也可以直接用。精灵的高度由 `size` 控制，宽度按单帧比例计算，`color` 和 `intensity` 再乘上贴图颜色。无可用贴图时使用软圆精灵。
+
+| 序列字段 | 类型和含义 |
+| --- | --- |
+| `sprite-frames` | `int`，默认 1，范围 1–256，应整除图片宽度。 |
+| `sprite-frame` | `int`，起始帧从 0 编号。未声明时正放从首帧开始，倒放从末帧开始。 |
+| `sprite-duration`, `sprite-duration-variation` | `float`，单位为秒，控制完整播放周期及每颗粒子的随机时长偏移。周期默认等于寿命，一个往返计作一周期。 |
+| `sprite-playback` | `string`，可选 `"loop"`、`"reverse"`、`"ping-pong"`、`"ping-pong-reverse"`、`"once"`、`"single-frame"`，默认循环。 |
+| `sprite-interpolate`, `sprite-random-start` | `bool`，默认开启相邻帧插值，默认关闭按粒子种子随机起帧。 |
+
+上传时把贴图转换为线性预乘颜色，帧采样限制在单元格内。时间推进和换帧复用 GPU 上的贴图。加权透明下，同一贴图的发射器可以跨行合为一次实例化 draw。普通混合只合并相邻且共用贴图的发射器。Bazel 应用将 PNG 加入 `xr_ui_library(assets = [...])`。 [序列帧示例](../examples/puzzle3d/sprite_particles.xr)
+
+`color-table: image` 接收静态 PNG。横轴从出生映射到寿命结束，RGBA 与发射器颜色和贴图相乘。多行颜色表会按种子为每颗粒子固定选一行，水平插值让颜色和透明度随年龄连续变化。改时间、速度或混合模式时复用驻留在 GPU 上的颜色表。
+
+`particle-blend-mode: string` 默认是 `"source-over"`，使用常规透明合成。可选 `"additive"` 累加发光、`"screen"` 滤色提亮和 `"multiply"` 正片叠底。混合在线性颜色空间执行。HDR 保留加色后的高亮，滤色和正片叠底把粒子自身的直通 RGB 限制在 0–1。
+
+所有模式都测试场景深度。打开加权透明时，加色、滤色和正片叠底按发射器顺序写入场景底色，常规透明粒子与透明网格随后参与加权合成。关闭加权时，四种模式都按发射器顺序绘制。共享混合模式、精灵贴图和颜色表的发射器可以合批。 [混合与颜色表示例](../examples/puzzle3d/particle_materials.xr)
+
+`emitter-shape: string` 支持 `"point"`、`"box"`、`"sphere"` 和 `"cylinder"`，默认从 `position` 发射。`emitter-extents: vector3d` 是各轴的半尺寸，球体支持椭球，圆柱沿局部 Y 轴，X 和 Z 是截面半径。三个分量默认为 0。`emitter-fill: bool` 默认为 `true`，设为 `false` 可从面、外壳或端盖发射。表面采样考虑缩放后的面积。`emitter-yaw`、`emitter-pitch`、`emitter-roll` 以度旋转发射范围，顺序与场景物体一致。
+
+| `velocity-mode` | 出生时的速度 |
+| --- | --- |
+| `"vector"` | 默认。以 `velocity` 为中心，按 `velocity-spread` 扰动各个分量。 |
+| `"normalized-vector"` | 使用扰动后的方向，速度大小取 `velocity` 的长度。 |
+| `"cone"` | 在以 `velocity` 为轴的锥内按立体角采样。`velocity-cone-angle: float` 是半角，范围 0–180 度。 |
+| `"target"` | 从每颗粒子的出生点朝 `velocity-target: point3d` 发射。`velocity-target-spread: vector3d` 可以扰动目标的世界坐标。 |
+
+后三种模式使用 `velocity` 的长度作为标称速度，可用 `velocity-speed-variation: float` 设置速度变化范围。目标用于计算出生时的速度方向，运动按初速度和 `gravity` 推进。发射范围和速度都按粒子身份与种子采样，参数固定时，向前或回拨时间得到相同轨迹。修改发射参数会按当前时间重算存活粒子。普通点发射的批次继续使用原来的顶点路径。 [空间发射示例](../examples/puzzle3d/particle_emitters.xr)
+
+网格发射使用 `emitter-shape: "mesh"` 和 `emitter-mesh: @mesh-url("models/shape.gltf")`。也可以使用 `"primitive:box"` 和 `"primitive:sphere"`。发射范围取 glTF 初始姿态下的主网格表面，计入节点层级和初始变形。`emitter-mesh-scale: vector3d` 是三个轴各自的缩放，默认 `Vector3D.new(1, 1, 1)`。`position` 和发射器角度会把该范围摆放到场景中。资源键无法解析或缩放后没有有效三角形时，该发射器跳过。
+
+网格模式始终从表面发射。GPU 先按缩放后的三角面面积选面，再在面内取均匀的点。设置 `velocity-mode: "surface-normal"` 可沿所选三角面的几何法线喷射，速度取 `velocity` 的长度，也可以叠加速度变化。移动、旋转和拖时间轴会复用采样表。共享网格、缩放与材质的发射器可以合批。单张采样表最多包含 300,000 个有效三角面。 [网格发射示例](../examples/puzzle3d/particle_mesh_emitters.xr)
+
+`SceneView3D.particle-affectors` 接收自定义记录列表，必填字段为 `affector-kind: string`。GPU 先计算发射器的轨迹，再按列表顺序应用匹配的影响器。每个视口最多应用 16 个影响器。
+
+| `affector-kind` | 作用 |
+| --- | --- |
+| `"attractor"` | 在 `duration: float` 秒内线性拉向 `position: point3d`。默认时长 −1 表示余下寿命。可用 `position-variation: vector3d` 和 `duration-variation: float` 随机扰动终点和时长，默认 0。`hide-at-end: bool` 默认关闭，开启后到达时隐藏。 |
+| `"repeller"` | 以 `position` 为中心径向推开粒子。`radius: float` 内施加全量位移 `strength: float`，到 `outer-radius: float` 平滑衰减至零。默认内半径为 0，外半径和位移强度为 1，单位为世界单位。 |
+| `"gravity"` | 沿单位 `direction: vector3d` 添加匀加速位移。`strength` 默认 1，单位为世界单位每秒平方，可为负数。默认方向为 −Y。 |
+| `"point-rotator"` | 围绕经过 `position`、指向 `direction` 的轴旋转。`angular-speed: float` 默认 10 度每秒，可为负数。默认轴为 +Y。 |
+
+`position` 默认在世界原点。`start-age: float` 是从粒子出生算起的启用秒数，默认 0。`layers: int` 默认为 −1，会与发射器和视口的图层取交集。`enabled: bool` 默认开启。`seed: int` 默认 0，用于固定吸引扰动，回拨时间可以得到同样的粒子位置。编辑影响器会用新参数重算存活粒子在当前时间的位置。只改变时间时复用影响器参数的 GPU 缓冲。 [粒子影响器示例](../examples/puzzle3d/particle_affectors.xr)
+
 ### SoundEffect
 
 `SoundEffect` 在组件根部以具名的非视觉对象声明。启用 Cargo 的 `media`

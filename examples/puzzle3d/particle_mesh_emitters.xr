@@ -1,0 +1,73 @@
+struct MeshEmitter {
+    position: point3d, color: color, size: float, lifetime: float,
+    burst-count: int, fade-out: float, seed: int,
+    emitter-shape: string, emitter-mesh: string, emitter-mesh-scale: vector3d, emitter-roll: float,
+    velocity-mode: string, velocity: vector3d, velocity-target: point3d,
+}
+struct SurfaceCamera {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float,
+}
+export component ParticleMeshEmittersDemo inherits Window {
+    title: "XRack · 网格表面发射";
+    width: 670px; height: 462px;
+    background: #182333;
+
+    in-out property <string> mesh-key: @mesh-url("models/particle-surface.gltf");
+    in-out property <string> direction: "surface-normal";
+    in-out property <float> stretch: 1.0;
+    in-out property <float> turn: 0;
+    in-out property <float> time: 0.55;
+    in-out property <int> population: 800;
+
+    property <MeshEmitter> defaults: MeshEmitter {
+        position: Point3D.new(0, 1.38, 0), color: #50dbffff, size: 0.055, lifetime: 4,
+        burst-count: root.population, fade-out: 0, seed: 37,
+        emitter-shape: "mesh", emitter-mesh: root.mesh-key,
+        emitter-mesh-scale: Vector3D.new(root.stretch, 1, 1), emitter-roll: root.turn,
+        velocity-mode: "vector", velocity: Vector3D.new(0,0,0),
+        velocity-target: Point3D.new(0, -0.8, 0),
+    };
+    property <[MeshEmitter]> emitters: [
+        MeshEmitter { ..root.defaults },
+        MeshEmitter {
+            position: Point3D.new(0, -1.22, 0), color: #ff9e4fff,
+            velocity: Vector3D.new(0, 0, 2.1), velocity-mode: root.direction, ..root.defaults
+        },
+    ];
+    property <[SurfaceCamera]> model: [
+        SurfaceCamera {
+            id: "eye", mesh: "", x: 0, y: 0, z: 10,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+            color: #ffffff, camera-kind: "orthographic", camera-height: 6,
+        },
+    ];
+    SceneView3D {
+        width: 670px; height: 352px;
+        camera: "eye"; model: root.model;
+        scene-background: #101925;
+        particle-emitters: root.emitters; particle-time: root.time;
+        order-independent-transparency: true; cache-rendering: true;
+    }
+    Text { x: 21px; y: 32px; text: "出生位置"; color: #9eb7c9; }
+    Text { x: 21px; y: 186px; text: "运行轨迹"; color: #d0b291; }
+    mesh-toggle := Button {
+        x: 16px; y: 367px; width: 105px; height: 35px;
+        text: root.mesh-key == "primitive:box" ? "盒体" : "glTF 模型";
+        clicked => {
+            root.mesh-key = root.mesh-key == "primitive:box" ? @mesh-url("models/particle-surface.gltf") : "primitive:box";
+        }
+    }
+    mode-toggle := Button {
+        x: 130px; y: 367px; width: 105px; height: 35px;
+        text: root.direction == "surface-normal" ? "沿面法线" : "聚向目标";
+        clicked => { root.direction = root.direction == "surface-normal" ? "target" : "surface-normal"; }
+    }
+    Label { x: 249px; y: 367px; width: 52px; height: 35px; text: "旋转"; }
+    turn-slider := Slider { x: 302px; y: 367px; width: 130px; height: 35px; minimum: 0; maximum: 90; value <=> root.turn; }
+    Label { x: 444px; y: 367px; width: 57px; height: 35px; text: "横向缩放"; }
+    stretch-slider := Slider { x: 508px; y: 367px; width: 143px; height: 35px; minimum: 0.25; maximum: 2; value <=> root.stretch; }
+    Label { x: 16px; y: 418px; width: 54px; height: 33px; text: "时间"; }
+    time-slider := Slider { x: 72px; y: 418px; width: 579px; height: 33px; minimum: 0; maximum: 1.25; value <=> root.time; }
+}

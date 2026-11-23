@@ -172,22 +172,20 @@ impl LayoutNode {
     #[doc(hidden)]
     pub fn scroll_axis_reversed(&self, axis: Orientation) -> bool {
         axis == Orientation::Horizontal
-            && (self.horizontal_scroll_reversed
+            && (self
+                .details
+                .as_deref()
+                .is_some_and(|details| details.horizontal_scroll_reversed)
                 || self.table.as_ref().is_some_and(|table| table.mirrored()))
     }
 
     #[doc(hidden)]
     pub fn scroll_viewport(&self, axis: Orientation) -> Rect {
-        if let Some(strip) = self.tab_strip {
+        if let Some(strip) = self.tab_strip() {
             return strip;
         }
         self.table.as_deref().map_or_else(
-            || {
-                self.content_bounds
-                    .as_deref()
-                    .copied()
-                    .unwrap_or(self.bounds)
-            },
+            || self.content_bounds().unwrap_or(self.bounds),
             |table| match axis {
                 Orientation::Horizontal => table.scrollable_body(),
                 Orientation::Vertical => table.rows_area(),
@@ -299,8 +297,7 @@ impl LayoutObservers {
                     let inner = crate::linear::Padding::read(node).inner_rect(rect);
                     [inner.width, inner.height]
                 } else if node.application_window {
-                    item.content_bounds
-                        .as_deref()
+                    item.content_bounds()
                         .map_or([0.0; 2], |rect| [rect.width, rect.height])
                 } else {
                     [0.0; 2]

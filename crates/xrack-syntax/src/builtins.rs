@@ -31,6 +31,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "CheckBox",
         "ColorPickerPopup",
         "CustomRender",
+        "SceneView3D",
         "ComboBox",
         "ComboContent",
         "ComboIndicator",
@@ -551,8 +552,11 @@ pub const NAMESPACES: &[&str] = &[
     "I18n",
     "Log",
     "Point2D",
+    "Point3D",
+    "Vector3D",
     "Vector2D",
     "Transform2D",
+    "Scene3D",
 ];
 pub const LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 
@@ -627,15 +631,82 @@ operations!(GeometryFunction {
     Around => "around",
     MapPoint => "map-point",
     MapVector => "map-vector",
+    Pick3D => "pick-3d",
+    PickCamera3D => "pick-camera-3d",
+    Point3D => "point-3d",
+    Vector3D => "vector-3d",
+    Hit3D => "hit-3d",
+    HitCamera3D => "hit-camera-3d",
+    RayHit3D => "ray-hit-3d",
+    HitAll3D => "hit-all-3d",
+    HitAllCamera3D => "hit-all-camera-3d",
+    RayHitAll3D => "ray-hit-all-3d",
+    SphereCast3D => "sphere-cast-3d",
+    SphereOverlap3D => "sphere-overlap-3d",
+    SphereSlide3D => "sphere-slide-3d",
+    SphereWalk3D => "sphere-walk-3d",
+    Project3D => "project-3d",
+    ProjectCamera3D => "project-camera-3d",
+    Unproject3D => "unproject-3d",
+    UnprojectCamera3D => "unproject-camera-3d",
 });
 
 impl GeometryFunction {
+    pub const fn supports_layer_mask(self) -> bool {
+        matches!(
+            self,
+            Self::Pick3D
+                | Self::PickCamera3D
+                | Self::Hit3D
+                | Self::HitCamera3D
+                | Self::HitAll3D
+                | Self::HitAllCamera3D
+                | Self::RayHit3D
+                | Self::RayHitAll3D
+                | Self::SphereCast3D
+                | Self::SphereOverlap3D
+                | Self::SphereSlide3D
+                | Self::SphereWalk3D
+        )
+    }
+
     pub const fn result(self) -> Type {
         match self {
             Self::Point | Self::MapPoint => Type::Point2D,
             Self::Vector | Self::MapVector => Type::Vector2D,
+            Self::Pick3D | Self::PickCamera3D => Type::String,
+            Self::Point3D
+            | Self::Unproject3D
+            | Self::UnprojectCamera3D
+            | Self::SphereSlide3D
+            | Self::SphereWalk3D => Type::Point3D,
+            Self::Project3D | Self::ProjectCamera3D => Type::ProjectedPoint3D,
+            Self::Vector3D => Type::Vector3D,
+            Self::Hit3D | Self::HitCamera3D | Self::RayHit3D | Self::SphereCast3D => Type::Hit3D,
+            Self::HitAll3D | Self::HitAllCamera3D | Self::RayHitAll3D | Self::SphereOverlap3D => {
+                Type::Hit3DList
+            }
             _ => Type::Transform2D,
         }
+    }
+    pub const fn uses_scene_model(self) -> bool {
+        matches!(
+            self,
+            Self::Pick3D
+                | Self::PickCamera3D
+                | Self::ProjectCamera3D
+                | Self::UnprojectCamera3D
+                | Self::Hit3D
+                | Self::HitCamera3D
+                | Self::RayHit3D
+                | Self::HitAll3D
+                | Self::HitAllCamera3D
+                | Self::RayHitAll3D
+                | Self::SphereCast3D
+                | Self::SphereOverlap3D
+                | Self::SphereSlide3D
+                | Self::SphereWalk3D
+        )
     }
 }
 
@@ -704,6 +775,13 @@ pub struct Function {
 }
 
 impl Function {
+    pub fn minimum_arguments(&self) -> usize {
+        self.parameters.len()
+            - usize::from(
+                matches!(self.kind, FunctionKind::Geometry(kind) if kind.supports_layer_mask()),
+            )
+    }
+
     pub fn signature(&self) -> String {
         let mut signature = format!(
             "{}.{}({})",
@@ -761,7 +839,7 @@ const DATE: Parameter = Parameter::with_type("date: Date", &Type::Date);
 const DATE_FALLBACK: Parameter = Parameter::with_type("fallback: Date", &Type::Date);
 const TEXT: Parameter = Parameter::with_type("text: string", &Type::String);
 const NUMBER: Parameter = Parameter::with_type("value: float", &Type::Float);
-const MODEL: Parameter = Parameter::new("model: [int] | [string] | [Record]");
+const MODEL: Parameter = Parameter::new("model: [int] | [string] | [Date] | [Record] | [hit3d]");
 const WRITABLE_MODEL: Parameter = Parameter::new("model: writable [Row]");
 const MODEL_ROW: Parameter = Parameter::new("value: Row");
 const MODEL_INDEX: Parameter = Parameter::with_type("index: int", &Type::Int);
@@ -828,6 +906,340 @@ const TRANSFORM: Parameter = Parameter::with_type("transform: transform2d", &Typ
 const POINT: Parameter = Parameter::with_type("point: point2d", &Type::Point2D);
 const VECTOR: Parameter = Parameter::with_type("vector: vector2d", &Type::Vector2D);
 
+pub const SCENE_OBJECT_FIELDS: &[(&str, Type)] = &[
+    ("id", Type::String),
+    ("mesh", Type::String),
+    ("x", Type::Float),
+    ("y", Type::Float),
+    ("z", Type::Float),
+    ("scale-x", Type::Float),
+    ("scale-y", Type::Float),
+    ("scale-z", Type::Float),
+    ("yaw", Type::Float),
+    ("pitch", Type::Float),
+    ("roll", Type::Float),
+    ("color", Type::Color),
+];
+
+pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("animation", Type::String),
+    ("animation-time", Type::Float),
+    ("animation-loop", Type::Bool),
+    ("animation-to", Type::String),
+    ("animation-to-time", Type::Float),
+    ("animation-to-loop", Type::Bool),
+    ("animation-blend", Type::Float),
+    ("parent", Type::String),
+    ("visible", Type::Bool),
+    ("lod-of", Type::String),
+    ("lod-max-size", Type::Length),
+    ("lod-bias", Type::Float),
+    ("camera-lod-bias", Type::Float),
+    ("pickable", Type::Bool),
+    ("collidable", Type::Bool),
+    ("pivot-x", Type::Float),
+    ("pivot-y", Type::Float),
+    ("pivot-z", Type::Float),
+    ("camera-kind", Type::String),
+    ("camera-fov", Type::Float),
+    ("camera-height", Type::Float),
+    ("camera-look-at", Type::String),
+    ("camera-near", Type::Float),
+    ("camera-far", Type::Float),
+    ("camera-left", Type::Float),
+    ("camera-right", Type::Float),
+    ("camera-bottom", Type::Float),
+    ("camera-top", Type::Float),
+    ("casts-shadow", Type::Bool),
+    ("receives-shadow", Type::Bool),
+    ("receives-reflections", Type::Bool),
+    ("casts-reflections", Type::Bool),
+    ("layers", Type::Int),
+    ("lightmap", Type::Image),
+    ("lightmap-mode", Type::String),
+    ("lightmap-intensity", Type::Float),
+    ("lightmap-u", Type::Float),
+    ("lightmap-v", Type::Float),
+    ("lightmap-width", Type::Float),
+    ("lightmap-height", Type::Float),
+];
+
+pub const SCENE_PARTICLE_FIELDS: &[(&str, Type)] = &[
+    ("position", Type::Point3D),
+    ("color", Type::Color),
+    ("size", Type::Float),
+    ("lifetime", Type::Float),
+];
+
+pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("end-size", Type::Float),
+    ("start-time", Type::Float),
+    ("rate", Type::Float),
+    ("burst-count", Type::Int),
+    ("velocity", Type::Vector3D),
+    ("velocity-spread", Type::Vector3D),
+    ("gravity", Type::Vector3D),
+    ("fade-in", Type::Float),
+    ("fade-out", Type::Float),
+    ("intensity", Type::Float),
+    ("seed", Type::Int),
+    ("layers", Type::Int),
+    ("enabled", Type::Bool),
+    ("sprite", Type::Image),
+    ("sprite-frames", Type::Int),
+    ("sprite-frame", Type::Int),
+    ("sprite-duration", Type::Float),
+    ("sprite-duration-variation", Type::Float),
+    ("sprite-playback", Type::String),
+    ("sprite-interpolate", Type::Bool),
+    ("sprite-random-start", Type::Bool),
+    ("color-table", Type::Image),
+    ("particle-blend-mode", Type::String),
+    ("emitter-shape", Type::String),
+    ("emitter-mesh", Type::String),
+    ("emitter-mesh-scale", Type::Vector3D),
+    ("emitter-extents", Type::Vector3D),
+    ("emitter-fill", Type::Bool),
+    ("emitter-yaw", Type::Float),
+    ("emitter-pitch", Type::Float),
+    ("emitter-roll", Type::Float),
+    ("velocity-mode", Type::String),
+    ("velocity-cone-angle", Type::Float),
+    ("velocity-target", Type::Point3D),
+    ("velocity-target-spread", Type::Vector3D),
+    ("velocity-speed-variation", Type::Float),
+    ("trail-segments", Type::Int),
+    ("trail-duration", Type::Float),
+    ("trail-end-scale", Type::Float),
+    ("trail-fade", Type::Float),
+    ("trail-eol-fade", Type::Float),
+];
+
+pub const SCENE_PARTICLE_AFFECTOR_FIELDS: &[(&str, Type)] = &[("affector-kind", Type::String)];
+pub const SCENE_PARTICLE_AFFECTOR_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("position", Type::Point3D),
+    ("position-variation", Type::Vector3D),
+    ("direction", Type::Vector3D),
+    ("duration", Type::Float),
+    ("duration-variation", Type::Float),
+    ("start-age", Type::Float),
+    ("hide-at-end", Type::Bool),
+    ("radius", Type::Float),
+    ("outer-radius", Type::Float),
+    ("strength", Type::Float),
+    ("angular-speed", Type::Float),
+    ("seed", Type::Int),
+    ("layers", Type::Int),
+    ("enabled", Type::Bool),
+];
+pub const PARTICLE_AFFECTOR_KINDS: &[(&str, &str)] = &[
+    (
+        "attractor",
+        "Pull particles toward a destination over a fixed duration",
+    ),
+    (
+        "repeller",
+        "Displace particles outward within a falloff region",
+    ),
+    ("gravity", "Add constant world-space acceleration"),
+    (
+        "point-rotator",
+        "Rotate particles around a shared world-space pivot",
+    ),
+];
+
+pub const PARTICLE_EMITTER_SHAPES: &[(&str, &str)] = &[
+    ("point", "Emit from the origin"),
+    ("mesh", "Emit from the surface of a glTF mesh"),
+    ("box", "Emit from a box volume or its faces"),
+    ("sphere", "Emit from an ellipsoid volume or its surface"),
+    (
+        "cylinder",
+        "Emit from a Y-axis cylinder with an elliptical cross section",
+    ),
+];
+
+pub const PARTICLE_VELOCITY_MODES: &[(&str, &str)] = &[
+    (
+        "surface-normal",
+        "Emit along the sampled mesh triangle normal",
+    ),
+    (
+        "vector",
+        "Apply component-wise variation to the velocity vector",
+    ),
+    (
+        "normalized-vector",
+        "Apply direction variation while preserving the nominal speed",
+    ),
+    (
+        "cone",
+        "Sample directions within a solid angle around the velocity",
+    ),
+    (
+        "target",
+        "Aim from each birth position toward a world-space target",
+    ),
+];
+
+pub const PARTICLE_BLEND_MODES: &[(&str, &str)] = &[
+    (
+        "source-over",
+        "Composite premultiplied color over the destination",
+    ),
+    ("additive", "Add emitted light to the destination"),
+    ("screen", "Lighten the destination using screen blending"),
+    ("multiply", "Darken the destination with a color filter"),
+];
+
+pub const PARTICLE_SPRITE_PLAYBACK: &[(&str, &str)] = &[
+    ("loop", "Play frames from left to right and loop"),
+    ("reverse", "Play frames from right to left and loop"),
+    ("ping-pong", "Reverse each time the sequence reaches an end"),
+    (
+        "ping-pong-reverse",
+        "Play a ping-pong sequence starting from the last frame",
+    ),
+    ("once", "Play once and hold the last frame"),
+    (
+        "single-frame",
+        "Hold the initial frame for the particle lifetime",
+    ),
+];
+
+pub const SCENE_FOG_VOLUME_FIELDS: &[(&str, Type)] = &[
+    ("position", Type::Point3D),
+    ("size", Type::Vector3D),
+    ("density", Type::Float),
+    ("color", Type::Color),
+];
+
+pub const SCENE_FOG_VOLUME_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("fog-shape", Type::String),
+    ("visible", Type::Bool),
+    ("layers", Type::Int),
+    ("yaw", Type::Float),
+    ("pitch", Type::Float),
+    ("roll", Type::Float),
+    ("fog-height-enabled", Type::Bool),
+    ("fog-height-start", Type::Float),
+    ("fog-height-end", Type::Float),
+    ("fog-noise-amount", Type::Float),
+    ("fog-noise-scale", Type::Float),
+    ("fog-noise-offset", Type::Vector3D),
+];
+
+pub const FOG_VOLUME_SHAPES: &[(&str, &str)] = &[
+    ("box", "Box, optionally rotated by yaw, pitch and roll"),
+    ("sphere", "Sphere or ellipsoid with the specified size"),
+];
+
+pub const SCENE_REFLECTION_FIELDS: &[(&str, Type)] =
+    &[("position", Type::Point3D), ("box-size", Type::Vector3D)];
+
+pub const SCENE_REFLECTION_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("source", Type::String),
+    ("capture-size", Type::Int),
+    ("capture-revision", Type::Int),
+    ("refresh-mode", Type::String),
+    ("time-slicing", Type::String),
+    ("layers", Type::Int),
+    ("box-offset", Type::Vector3D),
+    ("visible", Type::Bool),
+    ("yaw", Type::Float),
+    ("intensity", Type::Float),
+    ("parallax-correction", Type::Bool),
+];
+
+pub const REFLECTION_REFRESH_MODES: &[(&str, &str)] = &[
+    (
+        "first-frame",
+        "Capture once, then refresh when capture-revision changes",
+    ),
+    ("on-change", "Refresh after a change to the captured scene"),
+    ("every-frame", "Capture each time the viewport renders"),
+];
+
+pub const HEIGHTFIELD_EXTENSION: &str = "png";
+pub const MESH_SOURCE_EXTENSIONS: &[&str] = &["glb", "gltf", HEIGHTFIELD_EXTENSION];
+
+pub const MESH_URL_OPTIONS: &[(&str, &str)] = &[
+    ("auto-lod", "Generate mesh levels of detail"),
+    (
+        "lightmap-uv",
+        "Generate independent nonoverlapping UV charts for lightmap baking",
+    ),
+];
+
+pub const LIGHTMAP_MODES: &[(&str, &str)] = &[
+    (
+        "indirect",
+        "Replace ambient diffuse lighting and keep real-time direct lighting",
+    ),
+    (
+        "diffuse",
+        "Replace all diffuse lighting and keep view-dependent specular",
+    ),
+];
+
+pub const TEMPORAL_AA_MODES: &[(&str, &str)] = &[
+    ("blend", "Blend the current and previous raw frames"),
+    (
+        "motion-vectors",
+        "Reproject visible surfaces with motion and depth",
+    ),
+];
+
+pub const REFLECTION_TIME_SLICING: &[(&str, &str)] = &[
+    (
+        "none",
+        "Capture and prefilter the whole cubemap in one frame",
+    ),
+    (
+        "individual-faces",
+        "Capture one face per frame, then prefilter one face per frame",
+    ),
+    (
+        "all-faces-at-once",
+        "Capture all faces, then prefilter one roughness mip per frame",
+    ),
+];
+
+pub const SCENE_CAMERA_KINDS: &[(&str, &str)] = &[
+    (
+        "perspective",
+        "Perspective camera with a vertical field of view",
+    ),
+    (
+        "orthographic",
+        "Orthographic camera with a fixed world-space height",
+    ),
+    (
+        "frustum",
+        "Perspective camera with explicit near-plane bounds",
+    ),
+];
+pub const SCENE_LIGHT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("layers", Type::Int),
+    ("casts-shadow", Type::Bool),
+    ("parent", Type::String),
+    ("visible", Type::Bool),
+];
+
+pub const SCENE_LIGHT_FIELDS: &[(&str, Type)] = &[
+    ("kind", Type::String),
+    ("x", Type::Float),
+    ("y", Type::Float),
+    ("z", Type::Float),
+    ("yaw", Type::Float),
+    ("elevation", Type::Float),
+    ("intensity", Type::Float),
+    ("color", Type::Color),
+    ("range", Type::Float),
+    ("inner-angle", Type::Float),
+    ("outer-angle", Type::Float),
+];
+
 const fn geometry(
     kind: GeometryFunction,
     parameters: &'static [Parameter],
@@ -835,9 +1247,27 @@ const fn geometry(
 ) -> Function {
     let (namespace, member, result) = match kind {
         GeometryFunction::Point => ("Point2D", "new", "point2d"),
+        GeometryFunction::Point3D => ("Point3D", "new", "point3d"),
+        GeometryFunction::Vector3D => ("Vector3D", "new", "vector3d"),
+        GeometryFunction::Hit3D => ("Scene3D", "hit", "hit3d"),
+        GeometryFunction::HitCamera3D => ("Scene3D", "hit-camera", "hit3d"),
+        GeometryFunction::RayHit3D => ("Scene3D", "ray-hit", "hit3d"),
+        GeometryFunction::HitAll3D => ("Scene3D", "hit-all", "[hit3d]"),
+        GeometryFunction::HitAllCamera3D => ("Scene3D", "hit-all-camera", "[hit3d]"),
+        GeometryFunction::RayHitAll3D => ("Scene3D", "ray-hit-all", "[hit3d]"),
+        GeometryFunction::SphereCast3D => ("Scene3D", "sphere-cast", "hit3d"),
+        GeometryFunction::SphereOverlap3D => ("Scene3D", "sphere-overlap", "[hit3d]"),
+        GeometryFunction::SphereSlide3D => ("Scene3D", "sphere-slide", "point3d"),
+        GeometryFunction::SphereWalk3D => ("Scene3D", "sphere-walk", "point3d"),
         GeometryFunction::Vector => ("Vector2D", "new", "vector2d"),
         GeometryFunction::MapPoint => ("Transform2D", kind.name(), "point2d"),
         GeometryFunction::MapVector => ("Transform2D", kind.name(), "vector2d"),
+        GeometryFunction::Pick3D => ("Scene3D", "pick", "string"),
+        GeometryFunction::PickCamera3D => ("Scene3D", "pick-camera", "string"),
+        GeometryFunction::Project3D => ("Scene3D", "project", "projectedpoint3d"),
+        GeometryFunction::ProjectCamera3D => ("Scene3D", "project-camera", "projectedpoint3d"),
+        GeometryFunction::Unproject3D => ("Scene3D", "unproject", "point3d"),
+        GeometryFunction::UnprojectCamera3D => ("Scene3D", "unproject-camera", "point3d"),
         _ => ("Transform2D", kind.name(), "transform2d"),
     };
     Function {
@@ -850,7 +1280,192 @@ const fn geometry(
     }
 }
 
+const WORLD_POINT: Parameter = Parameter::with_type("world: point3d", &Type::Point3D);
+const POINTER: Parameter = Parameter::with_type("pointer: point2d", &Type::Point2D);
+const VIEWPORT: Parameter = Parameter::with_type("viewport: point2d", &Type::Point2D);
+const VIEW_DEPTH: Parameter = Parameter::with_type("depth: float", &Type::Float);
+const WORLD_FALLBACK: Parameter = Parameter::with_type("fallback: point3d", &Type::Point3D);
+const LAYER_MASK: Parameter = Parameter::with_type("layer-mask?: int", &Type::Int);
+const ORBIT_VIEW: [Parameter; 4] = [
+    Parameter::with_type("yaw: float", &Type::Float),
+    Parameter::with_type("pitch: float", &Type::Float),
+    Parameter::with_type("distance: float", &Type::Float),
+    VIEWPORT,
+];
+const NAMED_VIEW: [Parameter; 3] = [
+    Parameter::new("objects: [record]"),
+    Parameter::with_type("camera: string", &Type::String),
+    VIEWPORT,
+];
+
+const XYZ: &[Parameter] = &[
+    Parameter::with_type("x: float", &Type::Float),
+    Parameter::with_type("y: float", &Type::Float),
+    Parameter::with_type("z: float", &Type::Float),
+];
+
+const WORLD_RAY: &[Parameter] = &[
+    NAMED_VIEW[0],
+    Parameter::with_type("origin: point3d", &Type::Point3D),
+    Parameter::with_type("direction: vector3d", &Type::Vector3D),
+    Parameter::with_type("max-distance: float", &Type::Float),
+    LAYER_MASK,
+];
+const SPHERE_RADIUS: Parameter = Parameter::with_type("radius: float", &Type::Float);
+const WORLD_SPHERE_CAST: &[Parameter] = &[
+    WORLD_RAY[0],
+    WORLD_RAY[1],
+    WORLD_RAY[2],
+    WORLD_RAY[3],
+    SPHERE_RADIUS,
+    LAYER_MASK,
+];
+const WORLD_SPHERE_OVERLAP: &[Parameter] = &[
+    WORLD_RAY[0],
+    Parameter::with_type("center: point3d", &Type::Point3D),
+    SPHERE_RADIUS,
+    LAYER_MASK,
+];
+const WORLD_SPHERE_SLIDE: &[Parameter] = &[
+    WORLD_RAY[0],
+    WORLD_RAY[1],
+    Parameter::with_type("displacement: vector3d", &Type::Vector3D),
+    SPHERE_RADIUS,
+    LAYER_MASK,
+];
+const WORLD_SPHERE_WALK: &[Parameter] = &[
+    WORLD_SPHERE_SLIDE[0],
+    WORLD_SPHERE_SLIDE[1],
+    WORLD_SPHERE_SLIDE[2],
+    SPHERE_RADIUS,
+    Parameter::with_type("step-height: float", &Type::Float),
+    Parameter::with_type("snap-distance: float", &Type::Float),
+    Parameter::with_type("max-slope: float", &Type::Float),
+    LAYER_MASK,
+];
+const ORBIT_HIT: &[Parameter] = &[
+    NAMED_VIEW[0],
+    ORBIT_VIEW[0],
+    ORBIT_VIEW[1],
+    ORBIT_VIEW[2],
+    VIEWPORT,
+    POINTER,
+    LAYER_MASK,
+];
+const CAMERA_HIT: &[Parameter] = &[NAMED_VIEW[0], NAMED_VIEW[1], VIEWPORT, POINTER, LAYER_MASK];
+
 pub const FUNCTIONS: &[Function] = &[
+    geometry(
+        GeometryFunction::Point3D,
+        XYZ,
+        "Creates a point in 3D scene coordinates.",
+    ),
+    geometry(
+        GeometryFunction::Vector3D,
+        XYZ,
+        "Creates a displacement or direction in 3D scene coordinates.",
+    ),
+    geometry(
+        GeometryFunction::Hit3D,
+        ORBIT_HIT,
+        "Returns the nearest visible surface along the pointer ray from the orbit camera. Read valid before using object-id, world and local position, normals, distance, or UV.",
+    ),
+    geometry(
+        GeometryFunction::HitCamera3D,
+        CAMERA_HIT,
+        "Returns the nearest visible surface under a local logical-pixel point using the named camera and its clip planes.",
+    ),
+    geometry(
+        GeometryFunction::RayHit3D,
+        WORLD_RAY,
+        "Traces a world-space ray with a nonzero direction up to max-distance world units. Returns a hit3d value with valid false when the ray misses.",
+    ),
+    geometry(
+        GeometryFunction::HitAll3D,
+        ORBIT_HIT,
+        "Returns the nearest accepted surface of each pickable scene row along the pointer ray, ordered nearest first.",
+    ),
+    geometry(
+        GeometryFunction::HitAllCamera3D,
+        CAMERA_HIT,
+        "Returns front-to-back hits under a pointer using a named camera. Geometry remains subject to the camera clip planes.",
+    ),
+    geometry(
+        GeometryFunction::RayHitAll3D,
+        WORLD_RAY,
+        "Returns front-to-back hits along a world-space ray, including objects behind other surfaces. Use Model.at or iterate the result as [hit3d].",
+    ),
+    geometry(
+        GeometryFunction::SphereCast3D,
+        WORLD_SPHERE_CAST,
+        "Sweeps a world-space sphere along a nonzero direction and returns the first contact. Distance is center travel; position is the contact on the collider.",
+    ),
+    geometry(
+        GeometryFunction::SphereOverlap3D,
+        WORLD_SPHERE_OVERLAP,
+        "Returns one contact for each authored collider overlapping a world-space sphere, in model row order.",
+    ),
+    geometry(
+        GeometryFunction::SphereSlide3D,
+        WORLD_SPHERE_SLIDE,
+        "Moves a world-space sphere, clips remaining displacement against blocking contacts, and returns its new center.",
+    ),
+    geometry(
+        GeometryFunction::SphereWalk3D,
+        WORLD_SPHERE_WALK,
+        "Resolves a world-space sphere while walking. Limits uphill slopes in degrees, steps when grounded, and follows nearby walkable ground.",
+    ),
+    geometry(
+        GeometryFunction::Project3D,
+        &[
+            ORBIT_VIEW[0],
+            ORBIT_VIEW[1],
+            ORBIT_VIEW[2],
+            ORBIT_VIEW[3],
+            WORLD_POINT,
+        ],
+        "Maps a world point into logical pixels using the orbit camera. The result has point, depth, valid, and inside fields.",
+    ),
+    geometry(
+        GeometryFunction::ProjectCamera3D,
+        &[NAMED_VIEW[0], NAMED_VIEW[1], NAMED_VIEW[2], WORLD_POINT],
+        "Maps a world point into logical pixels using a named scene camera. The result has point, depth, valid, and inside fields.",
+    ),
+    geometry(
+        GeometryFunction::Unproject3D,
+        &[
+            ORBIT_VIEW[0],
+            ORBIT_VIEW[1],
+            ORBIT_VIEW[2],
+            ORBIT_VIEW[3],
+            POINTER,
+            VIEW_DEPTH,
+            WORLD_FALLBACK,
+        ],
+        "Maps a logical-pixel point at a positive forward-axis depth into world space. Returns fallback for an invalid viewport, point, or depth.",
+    ),
+    geometry(
+        GeometryFunction::UnprojectCamera3D,
+        &[
+            NAMED_VIEW[0],
+            NAMED_VIEW[1],
+            NAMED_VIEW[2],
+            POINTER,
+            VIEW_DEPTH,
+            WORLD_FALLBACK,
+        ],
+        "Maps a logical-pixel point at a positive forward-axis depth into world space using a named camera. Returns fallback if the camera or input is invalid.",
+    ),
+    geometry(
+        GeometryFunction::Pick3D,
+        ORBIT_HIT,
+        "Uses the SceneView3D camera and local logical coordinates to return the nearest visible object ID, or an empty string. Parent transforms, pivots, and inherited visibility are shared with drawing.",
+    ),
+    geometry(
+        GeometryFunction::PickCamera3D,
+        CAMERA_HIT,
+        "Picks the nearest visible object inside the named camera's clip planes. The camera ID, hierarchy and projection are the same as SceneView3D.camera.",
+    ),
     geometry(
         GeometryFunction::Point,
         XY,

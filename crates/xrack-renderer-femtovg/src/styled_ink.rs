@@ -6,11 +6,12 @@ use crate::{
 };
 use femtovg::{Canvas, Color, Paint, renderer::WGPURenderer};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque, hash_map::Entry},
+    hash::BuildHasher,
     ops::Range,
-    rc::Rc,
+    rc::{Rc, Weak},
 };
-use xrack_layout::{LayoutNode, StyledFragment, TextMeasurer};
+use xrack_layout::{LayoutNode, StyledFragment, StyledTextLayout, TextMeasurer};
 use xrack_runtime::{Node, StyledText, TextStyle};
 
 const MAX_DOCUMENTS: usize = 8;
@@ -52,19 +53,82 @@ impl Ink {
     }
 }
 
+struct InkSpans {
+    entries: HashMap<u64, (TextStyle, Box<str>, Ink)>,
+    bytes: usize,
+    max_bytes: usize,
+}
+
+impl InkSpans {
+    fn new(document_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            bytes: 0,
+            max_bytes: CACHE_BYTES
+                .saturating_sub(document_bytes)
+                .min(2 * 1024 * 1024),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries = HashMap::new();
+        self.bytes = 0;
+    }
+
+    fn measure(
+        &mut self,
+        text: &str,
+        style: TextStyle,
+        measure: impl FnOnce() -> Option<Ink>,
+    ) -> Option<Ink> {
+        if text.len() > 128 {
+            return measure();
+        }
+        let key = self.entries.hasher().hash_one((text, style));
+        match self.entries.entry(key) {
+            Entry::Occupied(entry) => {
+                let (cached_style, cached_text, ink) = entry.get();
+                if *cached_style == style && cached_text.as_ref() == text {
+                    Some(*ink)
+                } else {
+                    measure()
+                }
+            }
+            Entry::Vacant(entry) => {
+                let ink = measure()?;
+                let bytes = std::mem::size_of::<(u64, (TextStyle, Box<str>, Ink))>() + text.len();
+                if self.bytes + bytes <= self.max_bytes {
+                    entry.insert((style, text.into(), ink));
+                    self.bytes += bytes;
+                }
+                Some(ink)
+            }
+        }
+    }
+}
+
 struct CachedInk {
     // Keep the storage addresses in the key alive.
     source: StyledText,
     document: [(usize, usize); 3],
+    context: Rc<()>,
     typography: Rc<()>,
     registered_fonts: [usize; 2],
     family: String,
     weight: u16,
     italic: bool,
     size_baseline: [u32; 2],
-    runs: Vec<Run>,
+    plan: Weak<StyledTextLayout>,
+    max_fragment_height: f32,
     ink: Option<Ink>,
     bytes: usize,
+    spans: Option<InkSpans>,
+}
+
+impl CachedInk {
+    fn resident_bytes(&self) -> usize {
+        self.bytes + self.spans.as_ref().map_or(0, |spans| spans.bytes)
+    }
 }
 
 #[derive(Default)]
@@ -98,6 +162,12 @@ impl InkCache {
         if cfg!(any(target_os = "ios", target_os = "android")) || self.disabled {
             return None;
         }
+        let clip = layout.clip.intersect(layout.bounds);
+        let plan = layout.styled_text.as_ref()?;
+        let fragments = &plan.fragments;
+        if clip.height >= layout.bounds.height || fragments.len() < MIN_FRAGMENTS {
+            return None;
+        }
         let inverse = canvas_transform(canvas).inverse()?;
         let [_, y_from_x, _, y_from_y, _, _] = inverse.coefficients();
         // Glyph metrics are in text space. Keep slack for atlas padding there
@@ -106,111 +176,179 @@ impl InkCache {
         if !fringe.is_finite() {
             return None;
         }
-        let clip = layout.clip.intersect(layout.bounds);
-        let fragments = &layout.styled_text.as_ref()?.fragments;
         let document = node.styled_text("text")?;
-        if clip.height >= layout.bounds.height
-            || fragments.len() < MIN_FRAGMENTS
-            || !fragments
-                .windows(2)
-                .all(|pair| pair[0].bounds.y <= pair[1].bounds.y)
-        {
-            return None;
-        }
-
+        let plan_key = Rc::downgrade(plan);
         let identity = document_identity(document);
+        let context = system.context_key();
         let typography = system.typography_revision()?;
         let registered_fonts = system.registered_font_counts();
         let (family, weight, italic) = system.font_attributes(Some(node));
         let size_baseline = [system.font_size(node), baseline].map(f32::to_bits);
         let same_font = |entry: &CachedInk| {
-            Rc::ptr_eq(&entry.typography, &typography)
+            Rc::ptr_eq(&entry.context, context)
+                && Rc::ptr_eq(&entry.typography, &typography)
                 && entry.registered_fonts == registered_fonts
                 && entry.family == family
                 && entry.weight == weight
                 && entry.italic == italic
                 && entry.size_baseline == size_baseline
         };
-        let known = self.entries.iter().rposition(|entry| {
-            entry.document == identity
-                && same_font(entry)
-                && entry.runs.len() == fragments.len()
-                && entry
-                    .runs
-                    .iter()
-                    .zip(fragments)
-                    .all(|(run, frag)| *run == Run::for_fragment(frag))
-        });
+        let known =
+            self.entries.iter().rposition(|entry| {
+                entry.document == identity
+                    && same_font(entry)
+                    && (entry.plan.ptr_eq(&plan_key)
+                        || entry.plan.upgrade().is_some_and(|previous| {
+                            previous.fragments.len() == fragments.len()
+                                && previous.fragments.iter().zip(fragments).all(|(old, new)| {
+                                    Run::for_fragment(old) == Run::for_fragment(new)
+                                })
+                        }))
+            });
+        // Layout has already checked the source, typography and geometry of
+        // this prefix. The previous ink and height are conservative bounds
+        // even when part of the previous tail was replaced.
+        let continued = if !self.prefix_disabled && known.is_none() {
+            system
+                .reused_styled_prefix(plan, identity)
+                .and_then(|prefix| {
+                    let entry = self.entries.iter().rev().find(|entry| {
+                        entry.plan.ptr_eq(&prefix.source)
+                            && entry.document == prefix.source_document
+                            && same_font(entry)
+                    })?;
+                    Some((entry.ink?, prefix.fragments, entry.max_fragment_height))
+                })
+        } else {
+            None
+        };
+        // The plan owns local geometry. An unchanged plan keeps the same ink
+        // across scroll offsets, including the full height of selection spans.
+        let max_fragment_height = if let Some(entry) = known
+            .and_then(|index| self.entries.get(index))
+            .filter(|entry| entry.plan.ptr_eq(&plan_key))
+        {
+            entry.max_fragment_height
+        } else {
+            let (prefix, mut max_height) =
+                continued.map_or((0, 0.0), |(_, count, height)| (count, height));
+            let mut last_y = fragments[..prefix]
+                .last()
+                .map_or(f32::NEG_INFINITY, |fragment| fragment.bounds.y);
+            for fragment in &fragments[prefix..] {
+                let bounds = fragment.bounds;
+                if bounds.y < last_y || !bounds.y.is_finite() {
+                    return None;
+                }
+                last_y = bounds.y;
+                max_height = max_height.max(bounds.height);
+            }
+            max_height
+        };
         let entry = match known.and_then(|index| self.entries.remove(index)) {
-            Some(entry) => entry,
+            Some(mut entry) => {
+                entry.plan = plan_key;
+                entry.max_fragment_height = max_fragment_height;
+                entry
+            }
             None => {
-                let bytes = document_bytes(document)
-                    .saturating_add(fragments.len().saturating_mul(std::mem::size_of::<Run>()));
+                let bytes = document_bytes(document);
                 if bytes > CACHE_BYTES {
                     return None;
                 }
-                let prefix = if self.prefix_disabled {
+                // A new width can change the fragment boundaries. Reuse the ink
+                // of spans already seen in this document at the same typography.
+                let same_document =
+                    |entry: &CachedInk| entry.document == identity && same_font(entry);
+                let mut spans = if self.prefix_disabled {
                     None
                 } else {
+                    self.entries
+                        .iter_mut()
+                        .rev()
+                        .filter(|entry| same_document(entry))
+                        .find_map(|entry| entry.spans.take())
+                };
+                let prefix = continued.map(|(ink, count, _)| (ink, count)).or_else(|| {
+                    if self.prefix_disabled {
+                        return None;
+                    }
                     self.entries
                         .iter()
                         .rev()
                         .filter(|entry| same_font(entry))
                         .find_map(|entry| {
                             let ink = entry.ink?;
+                            let previous = entry.plan.upgrade()?;
                             let end = unchanged_paragraph_prefix(&entry.source, document);
                             if end < 4096 {
                                 return None;
                             }
-                            let shared = entry
-                                .runs
+                            let shared = previous
+                                .fragments
                                 .iter()
                                 .zip(fragments)
-                                .take_while(|(run, fragment)| {
+                                .take_while(|(old, new)| {
+                                    let run = Run::for_fragment(old);
                                     run.source.0.as_ref().is_some_and(|range| range.end <= end)
-                                        && *run == &Run::for_fragment(fragment)
+                                        && run == Run::for_fragment(new)
                                 })
                                 .count();
                             (shared > 0).then_some((ink, shared))
                         })
-                };
+                });
                 let reused = prefix.and_then(|(mut ink, shared)| {
-                    let tail = measure_ink(system, node, document, &fragments[shared..], baseline)?;
+                    let tail = measure_ink(
+                        system,
+                        node,
+                        document,
+                        &fragments[shared..],
+                        baseline,
+                        spans.as_mut(),
+                    )?;
                     if system.registered_font_counts() != registered_fonts {
                         return None;
                     }
                     ink.add(tail.top, tail.bottom)?;
                     Some(ink)
                 });
-                let ink =
-                    reused.or_else(|| measure_ink(system, node, document, fragments, baseline));
+                let ink = reused.or_else(|| {
+                    // Keep the first full scan's measurements for reflow as well.
+                    if !self.prefix_disabled && spans.is_none() {
+                        spans = Some(InkSpans::new(bytes));
+                    }
+                    measure_ink(system, node, document, fragments, baseline, spans.as_mut())
+                });
                 CachedInk {
                     source: document.clone(),
                     document: identity,
+                    context: context.clone(),
                     typography,
                     registered_fonts: system.registered_font_counts(),
                     family: family.into(),
                     weight,
                     italic,
                     size_baseline,
-                    runs: fragments.iter().map(Run::for_fragment).collect(),
+                    plan: plan_key,
+                    max_fragment_height,
                     ink,
                     bytes,
+                    spans,
                 }
             }
         };
         let ink = entry.ink;
-        let mut resident = entry.bytes
+        let mut resident = entry.resident_bytes()
             + self
                 .entries
                 .iter()
-                .map(|cached| cached.bytes)
+                .map(CachedInk::resident_bytes)
                 .sum::<usize>();
         while self.entries.len() >= MAX_DOCUMENTS || resident > CACHE_BYTES {
             let Some(oldest) = self.entries.pop_front() else {
                 break;
             };
-            resident -= oldest.bytes;
+            resident -= oldest.resident_bytes();
         }
         self.entries.push_back(entry);
         let ink = ink?;
@@ -218,10 +356,7 @@ impl InkCache {
         let top = ink.top - fringe;
         // Selection backgrounds can extend below the glyph ink.
         let bottom = if has_selection {
-            fragments
-                .iter()
-                .map(|fragment| fragment.bounds.height)
-                .fold(ink.bottom, f32::max)
+            ink.bottom.max(max_fragment_height)
         } else {
             ink.bottom
         } + fringe;
@@ -243,9 +378,11 @@ fn measure_ink(
     document: &StyledText,
     fragments: &[StyledFragment],
     baseline: f32,
+    mut spans: Option<&mut InkSpans>,
 ) -> Option<Ink> {
     let mut ink = Ink::default();
     let mut paints: HashMap<TextStyle, Paint> = HashMap::new();
+    let registered_fonts = spans.as_ref().map(|_| system.registered_font_counts());
     // Register the document's faces before measuring any fallback runs.
     for fragment in fragments {
         let style = Run::for_fragment(fragment).style;
@@ -253,21 +390,38 @@ fn measure_ink(
             .entry(style)
             .or_insert_with(|| system.paint_styled(node, Color::white(), style));
     }
-    let mut seen = HashSet::new();
+    if let Some(registered_fonts) = registered_fonts
+        && system.registered_font_counts() != registered_fonts
+        && let Some(spans) = &mut spans
+    {
+        spans.clear();
+    }
+    let mut seen = HashMap::new();
     for fragment in fragments {
         let style = Run::for_fragment(fragment).style;
-        let text = fragment.text(document);
-        if !seen.insert((text, style)) {
+        let Entry::Vacant(entry) = seen.entry((fragment.text(document), style)) else {
             continue;
-        }
+        };
+        let text = entry.key().0.as_ref();
         let paint = paints.get(&style)?;
         // Layout and shaping use font-unit metrics. Measure in user space so
         // zoom and rotation can reuse extents without reshaping the document.
-        let metrics = system
-            .context()
-            .measure_text(0.0, baseline, fragment.text(document), paint)
-            .ok()?;
-        ink.add(metrics.y, metrics.y + metrics.height())?;
+        let measure = || {
+            let metrics = system
+                .context()
+                .measure_text(0.0, baseline, text, paint)
+                .ok()?;
+            let mut span = Ink::default();
+            span.add(metrics.y, metrics.y + metrics.height())?;
+            Some(span)
+        };
+        let span = if let Some(spans) = &mut spans {
+            spans.measure(text, style, measure)
+        } else {
+            measure()
+        }?;
+        ink.add(span.top, span.bottom)?;
+        entry.insert(());
     }
     // Link underlines and strikeout rules are separate from the glyph ink.
     for (style, paint) in &paints {

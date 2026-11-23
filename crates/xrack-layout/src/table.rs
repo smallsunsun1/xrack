@@ -3,7 +3,7 @@ use crate::{
     linear::{AxisInfo, fit_axis},
     place_in_direction,
 };
-use std::sync::Arc;
+use std::rc::Rc;
 use xrack_runtime::{
     LayoutDirection, ListMetrics, Node, SharedNodeIdentity, TableColumnOrder, TableColumnWindow,
     TableHeader, resizable_table_column,
@@ -33,7 +33,7 @@ const MIN_SCROLLABLE_WIDTH: f32 = 32.0;
 
 pub(crate) struct PaneClip {
     pub bounds: Rect,
-    pub space: Option<Arc<TransformSpace>>,
+    pub space: Option<Rc<TransformSpace>>,
 }
 
 #[derive(Default)]
@@ -44,7 +44,70 @@ pub(super) struct ColumnSizing {
     fitted: Vec<f32>,
     widths: Vec<f32>,
     total: f32,
+    geometry: ColumnGeometryCache,
+    prepared_nodes: Option<PreparedTableNodes>,
+    prepared_rows: Option<PreparedTableRows>,
     pub(super) used: bool,
+}
+
+struct PreparedTableNodes {
+    source: SharedNodeIdentity,
+    frames: [Option<Node>; 2],
+    next: usize,
+    used: bool,
+}
+
+pub(super) struct PreparedTableRows {
+    order: TableColumnOrder,
+    scope: u64,
+    headers: bool,
+    first: usize,
+    previous_first: usize,
+    current: Vec<Option<PreparedRow>>,
+    previous: Vec<Option<PreparedRow>>,
+    used: bool,
+}
+
+struct PreparedRow {
+    source: SharedNodeIdentity,
+    selection: [bool; 2],
+    node: Node,
+}
+
+impl PreparedTableRows {
+    pub(super) fn take(
+        &mut self,
+        position: usize,
+        source: &Node,
+        selection: [bool; 2],
+    ) -> Option<Node> {
+        let slot = self
+            .previous
+            .get_mut(position.checked_sub(self.previous_first)?)?;
+        if !slot
+            .as_ref()
+            .is_some_and(|row| row.selection == selection && row.source.matches(source))
+        {
+            return None;
+        }
+        let row = slot.take()?;
+        let node = row.node.clone();
+        self.current.push(Some(row));
+        Some(node)
+    }
+
+    pub(super) fn push(
+        &mut self,
+        source: Option<SharedNodeIdentity>,
+        selection: [bool; 2],
+        node: &Node,
+    ) {
+        self.current.push(source.map(|source| PreparedRow {
+            source,
+            selection,
+            node: node.clone(),
+        }));
+    }
 }
 
 struct ColumnTrack {
@@ -53,12 +116,100 @@ struct ColumnTrack {
 }
 
 impl ColumnSizing {
+    pub(super) fn begin_frame(&mut self) {
+        if let Some(pool) = &mut self.prepared_nodes {
+            pool.used = false;
+        }
+        if let Some(rows) = &mut self.prepared_rows {
+            rows.used = false;
+        }
+    }
+
+    pub(super) fn finish_frame(&mut self) {
+        if self.prepared_nodes.as_ref().is_some_and(|pool| !pool.used) {
+            self.prepared_nodes = None;
+        }
+        if let Some(rows) = &mut self.prepared_rows {
+            if rows.used {
+                std::mem::swap(&mut rows.previous, &mut rows.current);
+                rows.previous_first = rows.first;
+                rows.current.clear();
+            } else {
+                self.prepared_rows = None;
+            }
+        }
+    }
+
     pub(super) fn invalidate_scene(&mut self) {
         self.used = false;
         self.input = None;
     }
 
-    fn resolve(&mut self, header: &TableHeader, width: f32) -> (&[f32], f32) {
+    pub(super) fn reuse_prepared_node(&mut self, node: &mut Node) -> usize {
+        let pool = self
+            .prepared_nodes
+            .get_or_insert_with(|| PreparedTableNodes {
+                source: node.snapshot_identity(),
+                frames: [None, None],
+                next: 0,
+                used: true,
+            });
+        if !pool.source.matches(node) {
+            pool.source = node.snapshot_identity();
+            pool.frames = [None, None];
+            pool.next = 0;
+        }
+        let slot = pool
+            .frames
+            .iter()
+            .position(|frame| frame.as_ref().is_none_or(Node::owns_storage))
+            .unwrap_or(pool.next);
+        if let Some(recycled) = pool.frames[slot].take().filter(Node::owns_storage) {
+            // The caller replaces the prepared rows and list metrics. All
+            // other fields still belong to the same immutable base node.
+            *node = recycled;
+        }
+        pool.next = (slot + 1) % pool.frames.len();
+        pool.used = true;
+        slot
+    }
+
+    pub(super) fn remember_prepared_node(&mut self, slot: usize, node: &Node) {
+        if let Some(pool) = &mut self.prepared_nodes {
+            pool.frames[slot] = Some(node.clone());
+        }
+    }
+
+    pub(super) fn prepare_rows(
+        &mut self,
+        order: &TableColumnOrder,
+        scope: u64,
+        headers: bool,
+        first: usize,
+    ) -> &mut PreparedTableRows {
+        let rows = self.prepared_rows.get_or_insert_with(|| PreparedTableRows {
+            order: order.clone(),
+            scope,
+            headers,
+            first,
+            previous_first: first,
+            current: Vec::new(),
+            previous: Vec::new(),
+            used: false,
+        });
+        if &rows.order != order || rows.scope != scope || rows.headers != headers {
+            rows.previous.clear();
+            rows.order = order.clone();
+            rows.scope = scope;
+            rows.headers = headers;
+        }
+        rows.first = first;
+        rows.current.clear();
+        rows.used = true;
+        rows
+    }
+
+    fn resolve(&mut self, header: &TableHeader, width: f32) {
         self.used = true;
         let input = (std::ptr::from_ref(header).addr(), width);
         if self.input != Some(input) {
@@ -69,8 +220,8 @@ impl ColumnSizing {
             apply_width_overrides(&mut self.widths, header, width);
             self.total = self.widths.iter().sum();
             self.input = Some(input);
+            self.geometry = ColumnGeometryCache::default();
         }
-        (&self.widths, self.total)
     }
 
     fn fit(&mut self, columns: &[Node], viewport: f32) {
@@ -187,6 +338,25 @@ pub(crate) fn header_height(node: &Node, height: f32, preferred: f32) -> f32 {
     preferred.clamp(16.0, 128.0).min(available)
 }
 
+#[derive(Default)]
+struct ColumnGeometryCache {
+    horizontal_offset: Option<f32>,
+    placement: Option<TablePlacement>,
+    layout: Option<TableGeometry>,
+}
+
+#[derive(PartialEq)]
+struct TablePlacement {
+    header: Rect,
+    body: Rect,
+    row_header: Rect,
+    horizontal: ScrollLayout,
+    direction: LayoutDirection,
+    frozen_columns: usize,
+    frozen_limit: f32,
+    order: TableColumnOrder,
+}
+
 impl TableGeometry {
     pub fn new(node: &Node, bounds: Rect) -> Option<Self> {
         Self::with_offset(
@@ -233,8 +403,13 @@ impl TableGeometry {
         );
         let header_bounds = Rect::new(body.x, bounds.y, body.width, body.y - bounds.y);
         let mut widths;
-        let (widths, total_width) = if let Some(sizing) = sizing {
-            sizing.resolve(header, body.width)
+        let (widths, total_width, cache) = if let Some(sizing) = sizing {
+            sizing.resolve(header, body.width);
+            (
+                sizing.widths.as_slice(),
+                sizing.total,
+                Some(&mut sizing.geometry),
+            )
         } else {
             let tracks = header
                 .columns
@@ -242,7 +417,7 @@ impl TableGeometry {
                 .map(|column| column_track(column, body.width));
             widths = fit_axis(tracks, body.width);
             apply_width_overrides(&mut widths, header, body.width);
-            (widths.as_slice(), widths.iter().sum())
+            (widths.as_slice(), widths.iter().sum(), None)
         };
         let horizontal = ScrollLayout::new(requested, total_width - body.width);
         let order = node.table_column_order.clone();
@@ -255,6 +430,35 @@ impl TableGeometry {
         } else {
             visible_right
         };
+        // Keep a snapshot once the placement repeats. During continuous
+        // horizontal motion, check the offset before constructing a key.
+        let cache = cache.and_then(|cache| {
+            if cache.horizontal_offset.replace(horizontal.offset) != Some(horizontal.offset) {
+                cache.placement = None;
+                cache.layout = None;
+                return None;
+            }
+            let placement = TablePlacement {
+                header: header_bounds,
+                body,
+                row_header,
+                horizontal,
+                direction,
+                frozen_columns: requested_frozen,
+                frozen_limit: limit,
+                order: order.clone(),
+            };
+            if cache.placement.as_ref() == Some(&placement) {
+                Some(cache)
+            } else {
+                cache.placement = Some(placement);
+                cache.layout = None;
+                None
+            }
+        });
+        if let Some(layout) = cache.as_ref().and_then(|cache| cache.layout.as_ref()) {
+            return Some(layout.clone());
+        }
         let mut frozen_width = 0.0;
         let mut frozen_count = 0;
         let mut frozen_end = 0;
@@ -301,7 +505,7 @@ impl TableGeometry {
             x += width;
         }
         viewport_columns.sort_unstable();
-        Some(Self {
+        let layout = Self {
             header: header_bounds,
             body,
             row_header,
@@ -315,7 +519,11 @@ impl TableGeometry {
             frozen_count,
             frozen_end,
             frozen_width,
-        })
+        };
+        if let Some(cache) = cache {
+            cache.layout = Some(layout.clone());
+        }
+        Some(layout)
     }
 
     pub(crate) fn rows_area(&self) -> Rect {
@@ -553,11 +761,16 @@ impl TableGeometry {
     }
 
     pub(crate) fn column_at(&self, point: Point) -> Option<usize> {
-        self.visible_columns().find(|&column| {
-            self.columns[column]
-                .intersect(self.column_clip(column, self.header))
-                .contains(point)
-        })
+        if !self.header.contains(point) {
+            return None;
+        }
+        self.columns_in_viewport()
+            .filter(|&column| {
+                self.columns[column]
+                    .intersect(self.column_clip(column, self.header))
+                    .contains(point)
+            })
+            .min_by_key(|&column| self.visual_index(column))
     }
 
     pub(crate) fn body_column_at(&self, point: Point) -> Option<usize> {
@@ -576,11 +789,12 @@ impl TableGeometry {
             return None;
         }
         let pointer_x = self.mirror_x(point.x);
-        self.columns
-            .iter()
-            .enumerate()
-            .filter_map(|(index, bounds)| {
-                let bounds = self.mirror_rect(*bounds);
+        // The grip must be inside its pane. The viewport index includes
+        // columns touching either viewport edge, even if their handles are
+        // the only part reachable from inside the header.
+        self.columns_in_viewport()
+            .filter_map(|index| {
+                let bounds = self.mirror_rect(self.columns[index]);
                 let edge = bounds.x + bounds.width;
                 let distance = (pointer_x - edge).abs();
                 if !(bounds.width > 0.0 && distance <= GRIP_RADIUS) {

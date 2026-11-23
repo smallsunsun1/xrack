@@ -105,6 +105,18 @@ impl ImagePresentation {
     }
 
     pub fn for_node(node: &Node, size: [u32; 2], in_layout: bool) -> Self {
+        let mut presentation = Self::for_whole_node(node, size, in_layout);
+        presentation.region = ImageRegion::for_node(node, size);
+        presentation.modes = [
+            node.image_tile_mode("horizontal-tile-mode"),
+            node.image_tile_mode("vertical-tile-mode"),
+        ];
+        presentation
+    }
+
+    /// Prepare an image whose caller has established that it has no source crop or tiling.
+    #[doc(hidden)]
+    pub fn for_whole_node(node: &Node, size: [u32; 2], in_layout: bool) -> Self {
         let x = match node.properties.get("horizontal-alignment") {
             Some(Value::ImageHorizontalAlignment(Horizontal::Left)) => 0.0,
             Some(Value::ImageHorizontalAlignment(Horizontal::Right)) => 1.0,
@@ -120,11 +132,8 @@ impl ImagePresentation {
             _ => ImageRendering::Smooth,
         };
         Self {
-            region: ImageRegion::for_node(node, size),
-            modes: [
-                node.image_tile_mode("horizontal-tile-mode"),
-                node.image_tile_mode("vertical-tile-mode"),
-            ],
+            region: ImageRegion::full(size),
+            modes: [ImageTileMode::Stretch; 2],
             rendering,
             fit: node.image_fit("image-fit").unwrap_or(
                 if in_layout || node.kind == "MediaPlayer" {

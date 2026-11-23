@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    hash::{DefaultHasher, Hash, Hasher},
     time::Duration,
 };
 use xrack_renderer_femtovg::{
@@ -85,6 +86,7 @@ impl Windows {
         &mut self,
         renderer: &mut Renderer,
         scale: f32,
+        scope: u64,
     ) -> Result<Vec<u8>, String> {
         // Closing a child can invalidate its parent's scene and registration list.
         for _ in 0..8 {
@@ -105,6 +107,9 @@ impl Windows {
         if self.closed() {
             return Ok(Vec::new());
         }
+        let mut generation = DefaultHasher::new();
+        (scope, self.selected).hash(&mut generation);
+        renderer.set_scene_observation(generation.finish(), false);
         Ok(self
             .selected_mut()
             .draw_prepared_scaled(renderer, scale)?

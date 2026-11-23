@@ -165,7 +165,7 @@ impl Overscroll {
     }
 
     pub fn pull(&mut self, item: &LayoutNode, axis: Orientation, delta: f64) -> bool {
-        item.elastic
+        item.elastic_options()
             .is_some_and(|options| self.pull_with(item, axis, delta, options, false))
     }
 
@@ -326,7 +326,7 @@ impl Overscroll {
                             .is_some_and(|scroll| scroll.offset == 0.0))
                     .then_some(lane.options);
                 }
-                return item.elastic.filter(|options| {
+                return item.elastic_options().filter(|options| {
                     item.scroll_axis_reversed(axis) == lane.reversed
                         && (lane.rebound.is_some() || options.behavior.allows_overshoot(false))
                         && item.pan_axes[index(axis)]

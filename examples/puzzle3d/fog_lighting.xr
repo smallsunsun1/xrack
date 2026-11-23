@@ -1,0 +1,87 @@
+struct LitMist {
+    position: point3d, size: vector3d, density: float, color: color,
+    fog-shape: string,
+}
+struct MistOccluder {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    casts-shadow: bool, receives-shadow: bool,
+}
+struct MistLight {
+    kind: string, x: float, y: float, z: float,
+    yaw: float, elevation: float, intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float, casts-shadow: bool,
+}
+
+export component FogLightingDemo inherits Window {
+    title: "XRack · 体积光与雾影";
+    width: 600px; height: 422px;
+    resizable: false;
+    background: #121d2f;
+    in-out property <bool> scattering: true;
+    in-out property <bool> shadow: true;
+    in-out property <bool> barrier: true;
+    in-out property <float> density: 0.4;
+    in-out property <float> lamp-y: 0;
+    in-out property <float> lamp-yaw: -90;
+    in-out property <string> light-kind: "spot";
+    in-out property <float> asymmetry: 0;
+    in-out property <int> samples: 12;
+
+    property <[LitMist]> air: [
+        LitMist {
+            position: Point3D.new(0, 0, 0), size: Vector3D.new(8.4, 4.4, 2.6),
+            density: root.density, color: #526e8c, fog-shape: "box",
+        },
+    ];
+    property <[MistOccluder]> wall: [
+        MistOccluder {
+            id: "wall", mesh: "primitive:box", x: -1.15, y: 0, z: 0,
+            scale-x: 0.34, scale-y: 1.37, scale-z: 2.85,
+            yaw: 0, pitch: 0, roll: 0, color: #5f6f86,
+            casts-shadow: root.barrier, receives-shadow: false,
+        },
+    ];
+    property <[MistLight]> lamps: [
+        MistLight {
+            kind: root.light-kind, x: -3.75, y: root.lamp-y, z: 0,
+            yaw: root.lamp-yaw, elevation: 0,
+            intensity: root.light-kind == "directional" ? 2.4 : 64,
+            color: #ffe4a0, range: 10.0, inner-angle: 12, outer-angle: 27,
+            casts-shadow: true,
+        },
+    ];
+    view := SceneView3D {
+        width: 600px; height: 356px;
+        model: root.wall; lights: root.lamps;
+        camera-yaw: 0; camera-pitch: 0; camera-distance: 10;
+        scene-background: #162438;
+        ambient-intensity: 0.15;
+        scene-hdr: true;
+        shadows: root.shadow; shadow-map-size: 512;
+        fog-volumes: root.air;
+        fog-volume-scattering: root.scattering ? 10.0 : 0.0;
+        fog-volume-anisotropy: root.asymmetry;
+        fog-volume-samples: root.samples;
+        cache-rendering: true;
+    }
+    HorizontalLayout {
+        x: 15px; y: 363px; width: 574px; height: 48px; spacing: 8px;
+        scatter-toggle := CheckBox { width: 98px; text: "体积光"; checked <=> root.scattering; }
+        shadow-toggle := CheckBox { width: 95px; text: "雾影"; checked <=> root.shadow; }
+        light-toggle := Button {
+            width: 83px;
+            text: root.light-kind == "spot" ? "聚光灯" : root.light-kind == "point" ? "点光源" : "方向光";
+            clicked => {
+                root.light-kind = root.light-kind == "spot" ? "point"
+                    : root.light-kind == "point" ? "directional" : "spot";
+            }
+        }
+        lamp-height := Slider {
+            width: 223px;
+            minimum: -1.3; maximum: 1.3; value <=> root.lamp-y;
+        }
+    }
+}

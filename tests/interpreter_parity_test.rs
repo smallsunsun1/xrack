@@ -30271,17 +30271,74 @@ fn standard_table_samples_editors_only_for_materialized_columns() {
     let renderer = |scene: &Node| scene.children[0].list_row_renderer.clone().unwrap();
     for (window, expected) in [([false, true], 1), ([true, false], 0)] {
         let columns = TableColumnWindow::new(window);
-        let left = renderer(&interpreted_scene).render_in_columns(0..2, &columns);
-        let right = renderer(&generated_scene).render_in_columns(0..2, &columns);
-        assert_eq!(left.len(), 2);
-        assert_eq!(right.len(), 2);
-        for (left, right) in left.iter().zip(&right) {
-            assert_same_scene(left, right);
-            assert_eq!(left.children.len(), 1);
-            assert!(left.children[0].boolean("editable", false));
+        let mut previous: Option<[Node; 2]> = None;
+        for frame in 0..3 {
+            let left = renderer(&interpreted_scene).render_in_columns(0..2, &columns);
+            let right = renderer(&generated_scene).render_in_columns(0..2, &columns);
+            assert_eq!(left.len(), 2);
+            assert_eq!(right.len(), 2);
+            for (left, right) in left.iter().zip(&right) {
+                assert_same_scene(left, right);
+                assert_eq!(left.children.len(), 1);
+                assert!(left.children[0].boolean("editable", false));
+            }
+            let cells = [left[0].children[0].clone(), right[0].children[0].clone()];
+            if frame == 2 {
+                for (current, previous) in cells.iter().zip(previous.as_ref().unwrap()) {
+                    assert!(current.shares_storage_with(previous));
+                }
+            }
+            previous = Some(cells);
+            for calls in [generated_calls.take(), interpreted_calls.take()] {
+                if frame == 0 {
+                    assert_eq!(calls, [expected]);
+                } else {
+                    // A clean editor binding can return its value without
+                    // invoking the callback again on a repeated projection.
+                    assert!(calls.iter().all(|&column| column == expected));
+                }
+            }
         }
-        assert_eq!(generated_calls.take(), [expected]);
-        assert_eq!(interpreted_calls.take(), [expected]);
+    }
+    let columns = TableColumnWindow::new([true, false]);
+    let interpreted_renderer = renderer(&interpreted_scene);
+    let generated_renderer = renderer(&generated_scene);
+    let before = [
+        interpreted_renderer.render_in_columns(0..2, &columns),
+        generated_renderer.render_in_columns(0..2, &columns),
+    ];
+    let interpreted_model = interpreted.record_model("rows").unwrap();
+    let row = interpreted_model
+        .model()
+        .row(0)
+        .unwrap()
+        .with_field(&["name".into()], "Updated".to_owned().into())
+        .unwrap();
+    assert!(interpreted_model.model().set_row(0, row));
+    let generated_model = generated.model_rows();
+    let mut row = generated_model.row(0).unwrap();
+    row.name = "Updated".into();
+    assert!(generated_model.set_row(0, row));
+    for (previous, renderer) in before
+        .iter()
+        .zip([&interpreted_renderer, &generated_renderer])
+    {
+        let after = renderer.render_in_columns(0..2, &columns);
+        assert_eq!(after[0].children[0].text("text"), Some("Updated"));
+        assert!(after[1].children[0].shares_storage_with(&previous[1].children[0]));
+    }
+
+    interpreted
+        .on("editable-column", Rc::new(|_| Ok(Some(false.into()))))
+        .unwrap();
+    generated.on_editable_column(|_| false);
+    let left = renderer(&interpreted_scene).render_in_columns(0..2, &columns);
+    let right = renderer(&generated_scene).render_in_columns(0..2, &columns);
+    assert_eq!(left.len(), 2);
+    assert_eq!(right.len(), 2);
+    for (left, right) in left.iter().zip(&right) {
+        assert_same_scene(left, right);
+        assert_eq!(left.children[0].table_cell_editor, None);
     }
     assert_eq!(interpreted.take_error(), None);
 }

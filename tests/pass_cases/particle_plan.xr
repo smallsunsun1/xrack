@@ -1,0 +1,34 @@
+// CHECK-DAG: "xr.bind"{{.*}}name = "particle-emitters"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist
+// CHECK-DAG: "xr.bind"{{.*}}name = "particle-time"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
+// CHECK-DAG: "xr.bind"{{.*}}name = "particle-affectors"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist
+
+struct Sparks {
+    position: point3d, color: color, size: float, lifetime: float,
+    rate: float, burst-count: int, gravity: vector3d,
+    sprite: image, sprite-frames: int, sprite-playback: string,
+    sprite-duration: float, sprite-duration-variation: float,
+    sprite-interpolate: bool, sprite-random-start: bool, sprite-frame: int,
+    color-table: image, particle-blend-mode: string,
+    emitter-shape: string, emitter-extents: vector3d, emitter-fill: bool,
+    emitter-mesh: string, emitter-mesh-scale: vector3d,
+    emitter-yaw: float, emitter-pitch: float, emitter-roll: float,
+    velocity-mode: string, velocity-cone-angle: float, velocity-target: point3d,
+    velocity-target-spread: vector3d, velocity-speed-variation: float,
+}
+
+struct Field {
+    affector-kind: string, position: point3d, direction: vector3d,
+    start-age: float, duration: float, hide-at-end: bool, layers: int,
+}
+
+export component ParticlePlan inherits Window {
+    in property <[Sparks]> emitters;
+    in property <[Field]> fields;
+    in property <float> time: 0;
+    SceneView3D {
+        width: 100px; height: 100px;
+        particle-emitters: root.emitters;
+        particle-affectors: root.fields;
+        particle-time: root.time;
+    }
+}

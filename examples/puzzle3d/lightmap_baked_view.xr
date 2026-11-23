@@ -1,0 +1,49 @@
+import { BakeActor, BakeRoom } from "lightmap_bake_scene.xr";
+import { BakedLightmaps } from "baked/lighting.xr";
+
+export component BakedRoomDemo inherits Window {
+    title: "XRack · 离线烘焙图集";
+    width: 600px; height: 394px;
+    resizable: false;
+    background: #141d29;
+
+    in-out property <bool> baked: true;
+    property <BakeActor> plate: BakeActor {
+        lightmap: BakedLightmaps.atlas,
+        lightmap-mode: BakedLightmaps.mode,
+        lightmap-intensity: BakedLightmaps.intensity,
+        lightmap-u: BakedLightmaps.region-plate.u,
+        lightmap-v: BakedLightmaps.region-plate.v,
+        lightmap-width: BakedLightmaps.region-plate.width,
+        lightmap-height: BakedLightmaps.region-plate.height,
+        ..BakeRoom.plate
+    };
+
+    property <BakeActor> figure: BakeActor {
+        lightmap: BakedLightmaps.atlas,
+        lightmap-mode: BakedLightmaps.mode,
+        lightmap-intensity: BakedLightmaps.intensity,
+        lightmap-u: BakedLightmaps.region-figure.u,
+        lightmap-v: BakedLightmaps.region-figure.v,
+        lightmap-width: BakedLightmaps.region-figure.width,
+        lightmap-height: BakedLightmaps.region-figure.height,
+        ..BakeRoom.figure
+    };
+
+    room := SceneView3D {
+        width: 600px; height: 340px;
+        camera-yaw: 20; camera-pitch: 12; camera-distance: 8.4;
+        scene-background: #172638;
+        ambient-intensity: 0.17; shadows: !root.baked;
+        model: [root.baked ? root.plate : BakeRoom.plate, BakeRoom.sphere, BakeRoom.luminous,
+            root.baked ? root.figure : BakeRoom.figure];
+        lights: BakeRoom.lights;
+        cache-rendering: true;
+    }
+
+    bake-switch := CheckBox {
+        x: 20px; y: 352px; width: 220px; height: 31px;
+        text: "使用离线烘焙光照";
+        checked <=> root.baked;
+    }
+}

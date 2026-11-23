@@ -1,0 +1,106 @@
+struct Field3D {
+    affector-kind: string, position: point3d, direction: vector3d,
+    position-variation: vector3d, duration: float, duration-variation: float,
+    start-age: float, hide-at-end: bool, radius: float, outer-radius: float,
+    strength: float, angular-speed: float, seed: int, layers: int, enabled: bool,
+}
+
+struct FieldEmitter {
+    position: point3d, color: color, size: float, lifetime: float,
+    burst-count: int, fade-out: float, seed: int, layers: int,
+    emitter-shape: string, emitter-extents: vector3d, velocity: vector3d,
+}
+
+struct FieldCamera {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float,
+}
+
+export component ParticleAffectorsDemo inherits Window {
+    title: "XRack · 粒子影响器";
+    width: 670px; height: 462px;
+    background: #182333;
+
+    in-out property <string> field-kind: "attractor";
+    in-out property <bool> enabled-fields: true;
+    in-out property <bool> hide: false;
+    in-out property <bool> secondary: false;
+    in-out property <bool> reverse-order: false;
+    in-out property <float> time: 0.58;
+    in-out property <float> begin: 0.2;
+    in-out property <float> travel: 0.77;
+    in-out property <float> variation: 0;
+    in-out property <float> radius: 0.4;
+    in-out property <float> outer-radius: 2.2;
+    in-out property <float> strength: 2;
+    in-out property <int> layers: 1;
+    in-out property <int> visible-layers: 3;
+    in-out property <int> population: 480;
+
+    property <Field3D> main-field: Field3D {
+        affector-kind: root.field-kind, position: Point3D.new(0.65, 0.70, 0),
+        direction: root.field-kind == "point-rotator" ? Vector3D.new(0,0,1) : Vector3D.new(0,-1,0),
+        position-variation: Vector3D.new(root.variation, root.variation, 0),
+        duration: root.travel, duration-variation: 0,
+        start-age: root.begin, hide-at-end: root.hide,
+        radius: root.radius, outer-radius: root.outer-radius,
+        strength: root.strength, angular-speed: 75,
+        seed: 17, layers: root.layers, enabled: root.enabled-fields,
+    };
+    property <Field3D> extra-field: Field3D {
+        affector-kind: "gravity", direction: Vector3D.new(0,-1,0),
+        strength: 3.0, enabled: root.enabled-fields && root.secondary,
+        start-age: 0, ..root.main-field
+    };
+    property <[Field3D]> fields: root.reverse-order
+        ? [root.extra-field, root.main-field]
+        : [root.main-field, root.extra-field];
+
+    property <FieldEmitter> emitter: FieldEmitter {
+        position: Point3D.new(-2.2, 0.7, 0), color: #53dfffff, size: 0.06, lifetime: 4,
+        burst-count: root.population, fade-out: 0, seed: 36, layers: 1,
+        emitter-shape: "box", emitter-extents: Vector3D.new(0.5, 0.34, 0.03),
+        velocity: Vector3D.new(1.4, 0, 0),
+    };
+    property <[FieldEmitter]> emitters: [
+        FieldEmitter { ..root.emitter },
+        FieldEmitter {
+            position: Point3D.new(-2.2, -1.3, 0), color: #ff9c45ff, layers: 2, ..root.emitter
+        },
+    ];
+    property <[FieldCamera]> model: [
+        FieldCamera {
+            id: "eye", mesh: "", x: 0, y: 0, z: 10,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+            color: #ffffff, camera-kind: "orthographic", camera-height: 6,
+        },
+    ];
+    SceneView3D {
+        width: 670px; height: 352px;
+        camera: "eye"; model: root.model;
+        layer-mask: root.visible-layers;
+        particle-emitters: root.emitters; particle-affectors: root.fields; particle-time: root.time;
+        scene-background: #101925; cache-rendering: true; order-independent-transparency: true;
+    }
+    Rectangle {
+        x: 366px; y: 128px; width: 14px; height: 14px; border-radius: 7px;
+        border-width: 1px; border-color: #7f96ac; background: #00000000;
+    }
+    Label { x: 385px; y: 118px; width: 110px; height: 30px; text: "影响器位置"; color: #9eb7c9; }
+    mode-toggle := Button {
+        x: 15px; y: 367px; width: 104px; height: 36px;
+        text: root.field-kind == "attractor" ? "吸引" : root.field-kind == "repeller" ? "排斥" :
+            root.field-kind == "gravity" ? "重力" : "绕点旋转";
+        clicked => {
+            root.field-kind = root.field-kind == "attractor" ? "repeller" : root.field-kind == "repeller" ? "gravity" :
+                root.field-kind == "gravity" ? "point-rotator" : "attractor";
+        }
+    }
+    enable-toggle := CheckBox { x: 132px; y: 367px; width: 91px; height: 36px; text: "启用"; checked <=> root.enabled-fields; }
+    hide-toggle := CheckBox { x: 227px; y: 367px; width: 103px; height: 36px; text: "到达隐藏"; checked <=> root.hide; }
+    gravity-toggle := CheckBox { x: 341px; y: 367px; width: 126px; height: 36px; text: "叠加重力"; checked <=> root.secondary; }
+    order-toggle := CheckBox { x: 483px; y: 367px; width: 111px; height: 36px; text: "交换顺序"; checked <=> root.reverse-order; }
+    Label { x: 15px; y: 415px; width: 55px; height: 36px; text: "时间"; }
+    time-slider := Slider { x: 72px; y: 417px; width: 580px; height: 34px; minimum: 0; maximum: 2; value <=> root.time; }
+}

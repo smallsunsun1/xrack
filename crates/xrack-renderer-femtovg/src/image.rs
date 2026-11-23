@@ -1,6 +1,6 @@
 pub(crate) use crate::image_colorize::Colorize;
 use crate::{
-    CanvasTransform, canvas_transform,
+    CanvasTransform,
     image_colorize::{ColorizeGeometry, GradientTexture},
     image_coverage::{Coverage, CoverageAtlas},
     nine_slice,
@@ -10,11 +10,16 @@ use femtovg::{
     PixelFormat, Quad, renderer::WGPURenderer,
 };
 use rgb::{FromSlice, Gray, RGBA8};
-use std::collections::{HashMap, hash_map::Entry};
+use std::{
+    cell::OnceCell,
+    collections::{HashMap, hash_map::Entry},
+    rc::Rc,
+};
 use xrack_assets::{MAX_IMAGE_DIMENSION, Raster, decode_png, rasterize_svg_region};
 use xrack_layout::{ImagePresentation, ImageRegion, Point, Rect, Size, Transform2D};
 use xrack_runtime::{
-    ImageAsset, ImageFit, ImageFormat, ImageIdentity, ImagePixels, ImageRendering, MediaFrame,
+    Color as UiColor, ImageAsset, ImageFit, ImageFormat, ImageIdentity, ImagePixels,
+    ImageRendering, MediaFrame,
 };
 
 pub(super) fn supports_quad_transform(transform: CanvasTransform) -> bool {
@@ -52,6 +57,7 @@ pub(super) struct ImageQuad<'a> {
     pub(super) clip: Rect,
     pub(super) coverage: QuadBounds,
     pub(super) presentation: ImagePresentation,
+    pub(super) transform: CanvasTransform,
 }
 
 pub(super) fn quad_pixel_coverage(
@@ -223,21 +229,39 @@ struct VideoTexture {
 const BATCH_ATLAS_SIZE: usize = 1024;
 const BATCH_TILE_LIMIT: u32 = 64;
 
-/// A bounded, straight-RGBA atlas for the display list's linear-sampled PNGs.
+/// A bounded, straight-RGBA atlas for linear-sampled PNGs and solid fills.
 struct BatchAtlas {
     image: ImageId,
     texture: wgpu::Texture,
+    compositor_binding: OnceCell<wgpu::BindGroup>,
     packing: PackingAtlas,
-    tiles: HashMap<RasterKey, usize>,
+    tiles: HashMap<BatchTile, usize>,
     slots: Vec<BatchSlot>,
     retired: Option<HashMap<[u32; 2], RetiredSlots>>,
     uploads: Vec<BatchUpload>,
     frame: u64,
     used: bool,
+    key: Rc<()>,
+    pinned: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum BatchTile {
+    Raster(RasterKey),
+    Solid(UiColor),
+}
+
+impl BatchTile {
+    fn size(self) -> [u32; 2] {
+        match self {
+            Self::Raster(key) => key.size,
+            Self::Solid(_) => [1, 1],
+        }
+    }
 }
 
 struct BatchSlot {
-    key: RasterKey,
+    key: BatchTile,
     position: [usize; 2],
     last_frame: u64,
 }
@@ -257,10 +281,55 @@ struct BatchUpload {
 }
 
 impl BatchAtlas {
+    fn lookup(&mut self, key: BatchTile) -> Option<[usize; 2]> {
+        let tile = &mut self.slots[*self.tiles.get(&key)?];
+        tile.last_frame = self.frame;
+        self.used = true;
+        Some(tile.position)
+    }
+
+    fn store(
+        &mut self,
+        key: BatchTile,
+        position: [usize; 2],
+        replaced: Option<usize>,
+        pixels: Vec<RGBA8>,
+    ) {
+        let [x, y] = position;
+        let [width, height] = key.size().map(|n| n as usize);
+        self.uploads.push(BatchUpload {
+            x: x - 1,
+            y: y - 1,
+            width: width + 2,
+            height: height + 2,
+            pixels,
+        });
+        let slot = BatchSlot {
+            key,
+            position,
+            last_frame: self.frame,
+        };
+        let index = if let Some(index) = replaced {
+            self.key = Rc::new(());
+            let old = std::mem::replace(&mut self.slots[index], slot);
+            self.tiles.remove(&old.key);
+            index
+        } else {
+            let index = self.slots.len();
+            self.slots.push(slot);
+            index
+        };
+        self.tiles.insert(key, index);
+        self.used = true;
+    }
+
     fn reserve(&mut self, size: [u32; 2]) -> Option<([usize; 2], Option<usize>)> {
         let [width, height] = size.map(|n| n as usize);
         if let Some((x, y)) = self.packing.add_rect(width + 2, height + 2) {
             return Some(([x + 1, y + 1], None));
+        }
+        if self.pinned {
+            return None;
         }
 
         // Build the list only when fresh space runs out. Prefer slots that
@@ -273,7 +342,7 @@ impl BatchAtlas {
                 if tile.last_frame == self.frame {
                     continue;
                 }
-                let slots = by_size.entry(tile.key.size).or_default();
+                let slots = by_size.entry(tile.key.size()).or_default();
                 if tile.last_frame == self.frame.wrapping_sub(1) {
                     slots.previous_frame.push(index);
                 } else {
@@ -305,6 +374,37 @@ pub(crate) struct Images {
 }
 
 impl Images {
+    pub(super) fn source_atlas_key(&self, image: ImageId) -> Option<Rc<()>> {
+        let atlas = self
+            .batch_atlas
+            .as_ref()
+            .filter(|atlas| atlas.image == image)?;
+        Some(atlas.key.clone())
+    }
+
+    pub(super) fn retain_source_atlas(&mut self, key: &Rc<()>) -> Option<ImageId> {
+        let atlas = self
+            .batch_atlas
+            .as_mut()
+            .filter(|atlas| Rc::ptr_eq(&atlas.key, key))?;
+        atlas.used = true;
+        // The cached instance buffer refers to tiles the collector did not
+        // look up on this frame. Keep them intact through overlay painting.
+        atlas.pinned = true;
+        Some(atlas.image)
+    }
+
+    pub(super) fn source_atlas(
+        &self,
+        image: ImageId,
+    ) -> Option<(&wgpu::Texture, &OnceCell<wgpu::BindGroup>)> {
+        let atlas = self
+            .batch_atlas
+            .as_ref()
+            .filter(|atlas| atlas.image == image)?;
+        Some((&atlas.texture, &atlas.compositor_binding))
+    }
+
     pub(crate) fn draw_icon(
         &mut self,
         canvas: &mut Canvas<WGPURenderer>,
@@ -338,6 +438,7 @@ impl Images {
             atlas.frame = atlas.frame.wrapping_add(1);
             atlas.retired = None;
             atlas.used = false;
+            atlas.pinned = false;
         }
         for texture in self.video.values_mut() {
             texture.used = false;
@@ -559,6 +660,7 @@ impl Images {
             clip,
             coverage,
             presentation,
+            transform,
         } = image;
         let image = asset.frame(0);
         let Some(ImagePixels {
@@ -598,21 +700,16 @@ impl Images {
             QuadBounds::Aligned(clip) => {
                 let visible = placement.visible;
                 let rect = clip.map_or(visible, |clip| visible.intersect(clip));
-                if !quad_edges_are_pixel_aligned(rect, canvas_transform(canvas)) {
+                if !quad_edges_are_pixel_aligned(rect, transform) {
                     return Ok(None);
                 }
                 rect
             }
             QuadBounds::Snapped(rect) => rect,
             QuadBounds::Antialiased(leaf_clip, dpi) => {
-                let Some(coverage) = Coverage::new(
-                    canvas_transform(canvas),
-                    placement.visible,
-                    leaf_clip,
-                    pattern,
-                    clip,
-                    dpi,
-                ) else {
+                let Some(coverage) =
+                    Coverage::new(transform, placement.visible, leaf_clip, pattern, clip, dpi)
+                else {
                     return Ok(None);
                 };
                 let Some((_, source)) =
@@ -677,15 +774,76 @@ impl Images {
         {
             return Ok(None);
         }
-        if let Some(atlas) = &mut self.batch_atlas
-            && let Some(&index) = atlas.tiles.get(&key.raster)
-        {
-            let tile = &mut atlas.slots[index];
-            tile.last_frame = atlas.frame;
-            atlas.used = true;
-            return Ok(Some((atlas.image, tile.position)));
+        let key = BatchTile::Raster(key.raster);
+        let atlas = self.batch_atlas(device, canvas)?;
+        if let Some(tile) = atlas.lookup(key) {
+            return Ok(Some((atlas.image, tile)));
         }
-        let atlas = match &mut self.batch_atlas {
+        let Some((tile, replaced)) = atlas.reserve(size) else {
+            return Ok(None);
+        };
+        let raster = decoded.insert(decode_png(bytes)?);
+        if raster.size != size {
+            return Ok(None);
+        }
+        let [width, height] = size.map(|n| n as usize);
+        // A one-texel gutter reproduces the edge clamp of the original texture.
+        let pixels = raster.rgba.as_rgba();
+        let mut padded = Vec::with_capacity((width + 2) * (height + 2));
+        for row in 0..height + 2 {
+            let from = row.saturating_sub(1).min(height - 1) * width;
+            padded.push(pixels[from]);
+            padded.extend_from_slice(&pixels[from..from + width]);
+            padded.push(pixels[from + width - 1]);
+        }
+        atlas.store(key, tile, replaced, padded);
+        Ok(Some((atlas.image, tile)))
+    }
+
+    pub(super) fn batch_solid_quad(
+        &mut self,
+        device: &wgpu::Device,
+        canvas: &mut Canvas<WGPURenderer>,
+        bounds: Rect,
+        tint: UiColor,
+    ) -> Result<Option<(ImageId, Quad)>, String> {
+        let atlas = self.batch_atlas(device, canvas)?;
+        let key = BatchTile::Solid(tint);
+        let [x, y] = if let Some(tile) = atlas.lookup(key) {
+            tile
+        } else {
+            let Some((tile, replaced)) = atlas.reserve(key.size()) else {
+                return Ok(None);
+            };
+            let [r, g, b, a] = tint.0.to_be_bytes();
+            atlas.store(key, tile, replaced, vec![RGBA8::new(r, g, b, a); 9]);
+            tile
+        };
+        // Sample the same texel at all four corners, with the usual atlas
+        // gutters isolating its color from the neighbouring PNGs.
+        let s = (x as f32 + 0.5) / BATCH_ATLAS_SIZE as f32;
+        let t = (y as f32 + 0.5) / BATCH_ATLAS_SIZE as f32;
+        Ok(Some((
+            atlas.image,
+            Quad {
+                x0: bounds.x,
+                y0: bounds.y,
+                x1: bounds.x + bounds.width,
+                y1: bounds.y + bounds.height,
+                s0: s,
+                t0: t,
+                s1: s,
+                t1: t,
+            },
+        )))
+    }
+
+    fn batch_atlas(
+        &mut self,
+        device: &wgpu::Device,
+        canvas: &mut Canvas<WGPURenderer>,
+    ) -> Result<&mut BatchAtlas, String> {
+        Ok(match &mut self.batch_atlas {
             Some(atlas) => atlas,
             slot => {
                 // The coverage pass runs before the canvas command buffer.
@@ -718,6 +876,7 @@ impl Images {
                 slot.insert(BatchAtlas {
                     image,
                     texture,
+                    compositor_binding: OnceCell::new(),
                     packing: PackingAtlas::new(BATCH_ATLAS_SIZE, BATCH_ATLAS_SIZE),
                     tiles: HashMap::new(),
                     slots: Vec::new(),
@@ -725,51 +884,11 @@ impl Images {
                     uploads: Vec::new(),
                     frame: 0,
                     used: false,
+                    key: Rc::new(()),
+                    pinned: false,
                 })
             }
-        };
-        let [width, height] = size.map(|n| n as usize);
-        let Some(([x, y], replaced)) = atlas.reserve(size) else {
-            return Ok(None);
-        };
-        let raster = decoded.insert(decode_png(bytes)?);
-        if raster.size != size {
-            return Ok(None);
-        }
-        // A one-texel gutter reproduces the edge clamp of the original texture.
-        let pixels = raster.rgba.as_rgba();
-        let mut padded = Vec::with_capacity((width + 2) * (height + 2));
-        for row in 0..height + 2 {
-            let from = row.saturating_sub(1).min(height - 1) * width;
-            padded.push(pixels[from]);
-            padded.extend_from_slice(&pixels[from..from + width]);
-            padded.push(pixels[from + width - 1]);
-        }
-        atlas.uploads.push(BatchUpload {
-            x: x - 1,
-            y: y - 1,
-            width: width + 2,
-            height: height + 2,
-            pixels: padded,
-        });
-        let tile = [x, y];
-        let slot = BatchSlot {
-            key: key.raster,
-            position: tile,
-            last_frame: atlas.frame,
-        };
-        let index = if let Some(index) = replaced {
-            let old = std::mem::replace(&mut atlas.slots[index], slot);
-            atlas.tiles.remove(&old.key);
-            index
-        } else {
-            let index = atlas.slots.len();
-            atlas.slots.push(slot);
-            index
-        };
-        atlas.tiles.insert(key.raster, index);
-        atlas.used = true;
-        Ok(Some((atlas.image, tile)))
+        })
     }
 
     /// Upload adjacent tiles as one strip before submitting their first draw.

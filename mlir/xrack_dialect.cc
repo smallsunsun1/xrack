@@ -43,12 +43,43 @@ void XrackDialect::initialize() {
 bool isExpression(Operation &op) {
   return isa<LiteralOp, ReadOp, DynamicActionOp, DynamicReadOp, LoaderMountedOp, LoaderExternalStatusOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, TreeSelectionKeysOp, ListSelectionKeysOp, ViewIndexOp, ViewCountOp, ListSelectionReadOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, TextAcceptsOp, TextValidityOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, TextSelectionReadOp, TextCommandAvailableOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ButtonPressedOp, ButtonCheckedOp, RadioCheckedOp, NavigationActiveOp, NavigationIndexOp, NavigationCountOp, ToggleStateReadOp, NumericValueReadOp, ComboStateReadOp, ComboPopupReadOp, RangePositionReadOp, ParamOp, UnaryOp, CastOp,
              ListRowSelectedOp, StringifyOp, BinaryOp, ConcatOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, PointerButtonsOp, CallOp,
-             RoundOp, MathFunctionOp, GeometryFunctionOp, Point2DFieldOp, Vector2DFieldOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
+             RoundOp, MathFunctionOp, GeometryFunctionOp, Point2DFieldOp, Point3DFieldOp,
+             ProjectedPoint3DFieldOp, Hit3DFieldOp, Vector3DFieldOp, Vector2DFieldOp,
              StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, UpdateRecordOp, DefaultRecordOp, RecordArrayOp,
              GetFieldOp, LoopParamOp, MatchEnumOp, EnumConstructOp, EnumMatchOp, EnumParameterOp, ModelFilterOp, ModelLookupOp, ModelSortByOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp,
              DateIsValidOp, DateAddDaysOp, DateAddMonthsOp, DateWeekdayOp, DateMonthsOp, DateMonthIndexOp, DateParseIsoOp, DateIsSelectableOp,
              MakeTimeOp, TimeFieldOp, TimeParseIsoOp, TimeIsValidIsoOp, TimeFormatIsoOp, TimeInRangeOp, MakeFontOp, FontFieldOp>(op);
+}
+
+LogicalResult MeshUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty mesh path");
+  return success();
+}
+
+LogicalResult MeshLodUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty mesh path");
+  return success();
+}
+
+LogicalResult MeshLightmapUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty mesh path");
+  return success();
+}
+
+LogicalResult MeshLodLightmapUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty mesh path");
+  return success();
+}
+
+LogicalResult EnvironmentUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty environment path");
+  return success();
 }
 
 LogicalResult TranslateOp::verify() {
@@ -429,7 +460,7 @@ static ReadOp writableNavigationModelRead(ElementOp target) {
     if (!llvm::hasSingleElement(repeats))
       continue;
     auto source = (*repeats.begin()).getInput();
-    if (isa<IntListType, DateListType, StringListType, RecordListType>(source.getType()))
+    if (isa<IntListType, DateListType, StringListType, RecordListType, Hit3DListType>(source.getType()))
       return source.getDefiningOp<ReadOp>();
   }
   return {};
@@ -1445,6 +1476,41 @@ LogicalResult ElementOp::verify() {
           (((name == "renderer" || name == "data") && !isa<StringType>(type)) ||
            (name == "revision" && !isa<IntType>(type))))
         return child.emitOpError("CustomRender requires string renderer and data and integer revision");
+      if (kind == "SceneView3D" &&
+          (((name == "model" || name == "lights" || name == "reflection-probes" || name == "fog-volumes" || name == "particle-emitters" || name == "particle-affectors") && !isa<RecordListType>(type)) ||
+           ((name == "selected-object" || name == "environment" || name == "camera" || name == "temporal-aa-mode") && !isa<StringType>(type)) ||
+           ((name == "shadows" || name == "imported-lights" || name == "environment-skybox" || name == "frustum-culling" ||
+             name == "cache-rendering" || name == "multisampling" || name == "specular-aa" || name == "temporal-aa" || name == "order-independent-transparency" ||
+             name == "ambient-occlusion" || name == "scene-hdr" || name == "bloom" || name == "screen-space-reflections" || name == "screen-space-global-illumination" ||
+             name == "fog-depth-enabled" || name == "fog-height-enabled" ||
+             name == "fog-transmit-enabled" || name == "depth-of-field") && !isa<BoolType>(type)) ||
+           ((name == "shadow-map-size" || name == "shadow-cascades" || name == "bloom-levels" ||
+             name == "scene-lut-size" || name == "texture-width" || name == "texture-height" || name == "progressive-aa" || name == "ssr-steps" || name == "ssgi-rays" || name == "ssgi-steps" ||
+             name == "fog-volume-samples" || name == "fog-volume-density-samples" || name == "layer-mask") && !isa<IntType>(type)) ||
+           (name == "scene-lut" && !isa<ImageType>(type)) ||
+           (name == "dof-blur-radius" && !isa<LengthType>(type)) ||
+           (name == "scene-tone-map" && !isa<SceneToneMapType>(type)) ||
+           ((name == "scene-background" || name == "ambient-color" || name == "fog-color") && !isa<ColorType>(type)) ||
+           ((name.starts_with("camera-") || name.starts_with("light-") ||
+             name == "ambient-intensity" || name == "shadow-bias" || name == "shadow-distance" ||
+             name == "shadow-cascade-blend" || name == "shadow-split-balance" ||
+             name == "environment-yaw" || name == "environment-intensity" || name == "scene-exposure" ||
+             name == "supersampling" || name == "temporal-aa-strength" || name == "render-scale" ||
+             name == "ssr-strength" || name == "ssr-distance" || name == "ssr-thickness" ||
+             name == "ssr-roughness-cutoff" || name == "ssr-scale" ||
+             name == "ssgi-strength" || name == "ssgi-occlusion" || name == "ssgi-radius" ||
+             name == "ssgi-thickness" || name == "ssgi-scale" ||
+             name == "scene-white-point" || name == "scene-brightness" ||
+             name == "scene-contrast" || name == "scene-saturation" || name == "scene-lut-strength" ||
+             name == "fog-near" || name == "fog-far" || name == "fog-density" ||
+             name == "fog-depth-curve" || name == "fog-height-start" || name == "fog-height-end" ||
+             name == "fog-height-curve" || name == "fog-transmit-curve" ||
+             name == "fog-volume-scattering" || name == "fog-volume-anisotropy" || name == "particle-time" ||
+             name == "ao-strength" || name == "ao-distance" || name == "ao-bias" ||
+             name == "bloom-strength" || name == "bloom-threshold" ||
+             name == "dof-focus-distance" || name == "dof-focus-range") &&
+            !isa<FloatType>(type))))
+        return child.emitOpError("invalid SceneView3D property type");
       if (name == "highlighted" && (!getDelegate() || !isa<BoolType>(type)))
         return child.emitOpError("highlighted requires a boolean on an item delegate");
       if (virtualDelegate && kind == "RadioButton" && name == "checked")
@@ -2562,6 +2628,7 @@ LogicalResult ClipboardPasteOp::verify() {
       auto list = dyn_cast<RecordListType>(model);
       const bool itemType = (isa<StringListType>(model) && isa<StringType>(type)) ||
                             (isa<IntListType>(model) && isa<IntType>(type)) ||
+                            (isa<Hit3DListType>(model) && isa<Hit3DType>(type)) ||
                             (isa<DateListType>(model) && isa<DateType>(type)) ||
           (list && record && list.getName() == record.getName());
       if (name.empty() || (name == text && !isa<StringType>(type)) ||
@@ -3861,6 +3928,11 @@ LogicalResult MathFunctionOp::verify() {
 
 LogicalResult GeometryFunctionOp::verify() {
   Type point = Point2DType::get(getContext());
+  Type worldPoint = Point3DType::get(getContext());
+  Type worldVector = Vector3DType::get(getContext());
+  Type hit = Hit3DType::get(getContext());
+  Type hitList = Hit3DListType::get(getContext());
+  Type projection = ProjectedPoint3DType::get(getContext());
   Type vector = Vector2DType::get(getContext());
   Type transform = Transform2DType::get(getContext());
   Type length = LengthType::get(getContext());
@@ -3887,9 +3959,67 @@ LogicalResult GeometryFunctionOp::verify() {
   } else if (operation == "map-vector") {
     inputs = {transform, vector};
     output = vector;
+  } else if (operation == "point-3d" || operation == "vector-3d") {
+    inputs = {number, number, number};
+    output = operation == "point-3d" ? worldPoint : worldVector;
+  } else if (operation == "project-3d") {
+    inputs = {number, number, number, point, worldPoint};
+    output = projection;
+  } else if (operation == "unproject-3d") {
+    inputs = {number, number, number, point, point, number, worldPoint};
+    output = worldPoint;
+  } else if (operation == "pick-3d" || operation == "pick-camera-3d" ||
+             operation == "project-camera-3d" || operation == "unproject-camera-3d" ||
+             operation == "hit-3d" || operation == "hit-camera-3d" || operation == "ray-hit-3d" ||
+             operation == "hit-all-3d" || operation == "hit-all-camera-3d" || operation == "ray-hit-all-3d" ||
+             operation == "sphere-cast-3d" || operation == "sphere-overlap-3d" || operation == "sphere-slide-3d" || operation == "sphere-walk-3d") {
+    if (getInputs().empty() || !isa<RecordListType>(getInputs().front().getType()))
+      return emitOpError("3D query requires a scene object record model");
+    auto model = getInputs().front().getType();
+    auto string = StringType::get(getContext());
+    if (operation == "hit-3d" || operation == "hit-all-3d") {
+      inputs = {model, number, number, number, point, point};
+      output = operation == "hit-3d" ? hit : hitList;
+    } else if (operation == "hit-camera-3d" || operation == "hit-all-camera-3d") {
+      inputs = {model, string, point, point};
+      output = operation == "hit-camera-3d" ? hit : hitList;
+    } else if (operation == "ray-hit-3d" || operation == "ray-hit-all-3d") {
+      inputs = {model, worldPoint, worldVector, number};
+      output = operation == "ray-hit-3d" ? hit : hitList;
+    } else if (operation == "sphere-cast-3d") {
+      inputs = {model, worldPoint, worldVector, number, number};
+      output = hit;
+    } else if (operation == "sphere-overlap-3d") {
+      inputs = {model, worldPoint, number};
+      output = hitList;
+    } else if (operation == "sphere-slide-3d") {
+      inputs = {model, worldPoint, worldVector, number};
+      output = worldPoint;
+    } else if (operation == "sphere-walk-3d") {
+      inputs = {model, worldPoint, worldVector, number, number, number, number};
+      output = worldPoint;
+    } else if (operation == "project-camera-3d") {
+      inputs = {model, string, point, worldPoint};
+      output = projection;
+    } else if (operation == "unproject-camera-3d") {
+      inputs = {model, string, point, point, number, worldPoint};
+      output = worldPoint;
+    } else {
+      output = string;
+      if (operation == "pick-camera-3d")
+        inputs = {model, string, point, point};
+      else
+        inputs = {model, number, number, number, point, point};
+    }
   } else if (operation != "identity") {
     return emitOpError("unknown geometry function");
   }
+  if (getInputs().size() == inputs.size() + 1 &&
+      llvm::StringSwitch<bool>(operation)
+          .Cases({"pick-3d", "pick-camera-3d", "hit-3d", "hit-camera-3d", "hit-all-3d",
+                  "hit-all-camera-3d", "ray-hit-3d", "ray-hit-all-3d", "sphere-cast-3d", "sphere-overlap-3d", "sphere-slide-3d", "sphere-walk-3d"}, true)
+          .Default(false))
+    inputs.push_back(IntType::get(getContext()));
   if (!llvm::equal(getInputs().getTypes(), inputs) || getResult().getType() != output)
     return emitOpError("invalid geometry function signature");
   return success();
@@ -3899,6 +4029,41 @@ LogicalResult Point2DFieldOp::verify() {
   if (getValue() != "x" && getValue() != "y")
     return emitOpError("expected a point coordinate x or y");
   return success();
+}
+
+LogicalResult Point3DFieldOp::verify() {
+  if (getValue() != "x" && getValue() != "y" && getValue() != "z")
+    return emitOpError("expected a world coordinate x, y or z");
+  return success();
+}
+
+LogicalResult Vector3DFieldOp::verify() {
+  if (getValue() != "x" && getValue() != "y" && getValue() != "z")
+    return emitOpError("expected a vector coordinate x, y or z");
+  return success();
+}
+
+LogicalResult Hit3DFieldOp::verify() {
+  auto type = getResult().getType();
+  auto field = getValue();
+  if ((field == "valid" && isa<BoolType>(type)) ||
+      (field == "object-id" && isa<StringType>(type)) ||
+      (field == "row-index" && isa<IntType>(type)) ||
+      ((field == "distance" || field == "u" || field == "v") && isa<FloatType>(type)) ||
+      ((field == "position" || field == "local-position") && isa<Point3DType>(type)) ||
+      ((field == "normal" || field == "local-normal") && isa<Vector3DType>(type)))
+    return success();
+  return emitOpError("invalid hit field or result type");
+}
+
+LogicalResult ProjectedPoint3DFieldOp::verify() {
+  auto type = getResult().getType();
+  auto field = getValue();
+  if ((field == "point" && isa<Point2DType>(type)) ||
+      (field == "depth" && isa<FloatType>(type)) ||
+      ((field == "valid" || field == "inside") && isa<BoolType>(type)))
+    return success();
+  return emitOpError("invalid projected point field or result type");
 }
 
 LogicalResult Vector2DFieldOp::verify() {
@@ -3982,6 +4147,7 @@ std::optional<double> parseFloatLiteral(llvm::StringRef spelling) {
 std::optional<llvm::SmallVector<double, 6>>
 parseGeometryLiteral(Type type, llvm::StringRef spelling) {
   unsigned size = isa<Transform2DType>(type) ? 6
+                  : isa<Point3DType, Vector3DType>(type) ? 3
                   : isa<Point2DType, Vector2DType>(type) ? 2
                                                        : 0;
   if (size == 0)
@@ -4009,8 +4175,10 @@ LogicalResult LiteralOp::verify() {
     valid = !spelling.getAsInteger(10, value);
   } else if (isa<FloatType, LengthType, PercentType>(type)) {
     valid = parseFloatLiteral(spelling).has_value();
-  } else if (isa<Point2DType, Vector2DType, Transform2DType>(type)) {
+  } else if (isa<Point2DType, Vector2DType, Transform2DType, Point3DType, Vector3DType>(type)) {
     valid = parseGeometryLiteral(type, spelling).has_value();
+  } else if (isa<ProjectedPoint3DType, Hit3DType>(type)) {
+    valid = spelling.empty();
   } else if (isa<BoolType>(type)) {
     valid = spelling == "true" || spelling == "false";
   } else if (isa<LogLevelType>(type)) {
@@ -4102,6 +4270,9 @@ LogicalResult LiteralOp::verify() {
     valid = spelling == "off" || spelling == "polite" || spelling == "assertive";
   } else if (isa<ColorSchemeType>(type)) {
     valid = spelling == "system" || spelling == "light" || spelling == "dark";
+  } else if (isa<SceneToneMapType>(type)) {
+    valid = spelling == "none" || spelling == "linear" || spelling == "reinhard" ||
+            spelling == "aces" || spelling == "hejl-dawson" || spelling == "filmic";
   } else if (isa<FileDialogModeType>(type)) {
     valid = spelling == "open-file" || spelling == "open-files" ||
             spelling == "save-file" || spelling == "select-folder" || spelling == "select-folders";
@@ -4481,6 +4652,8 @@ static bool matchesDeclaredType(Type type, llvm::StringRef declared) {
     declared = "intlist";
   else if (declared == "[Date]")
     declared = "datelist";
+  else if (declared == "[hit3d]" || declared == "[Hit3D]")
+    declared = "hit3dlist";
   else if (declared == "styled-text")
     declared = "styledtext";
   return spelling.consume_front("!xr.") && spelling == declared.lower();
@@ -4496,6 +4669,8 @@ static Type repeatedItemType(Type model) {
     return IntType::get(context);
   if (isa<DateListType>(model))
     return DateType::get(context);
+  if (isa<Hit3DListType>(model))
+    return Hit3DType::get(context);
   if (isa<TouchPointsType>(model))
     return TouchPointType::get(context);
   return model;
@@ -5690,10 +5865,12 @@ static bool recordScalarType(llvm::StringRef type) {
   return llvm::StringSwitch<bool>(type)
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
               "point2d", "vector2d", "transform2d", "Point2D", "Vector2D", "Transform2D",
+              "point3d", "Point3D", "vector3d", "Vector3D", "hit3d", "Hit3D",
+              "projectedpoint3d", "ProjectedPoint3D",
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
               "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "LayoutDirection", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap", "MouseSelectionMode", "InputValidity",
-              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "InputPurpose", "KeyboardCapitalization", "ReturnKey", "AccessibleLive", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
+              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "InputPurpose", "KeyboardCapitalization", "ReturnKey", "AccessibleLive", "CursorShape", "ColorScheme", "SceneToneMap", "FileDialogMode", "MessageLevel", "MessageButtons",
               "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "WheelEvent", "PointerEvent", "PointerEventKind", "PointerButton", "PointerButtons", "TouchPoint", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "SelectionGesture", "Date", "Time", "Font", "CheckState"},
              true)
       .Default(false);
@@ -6123,12 +6300,153 @@ static LogicalResult verifyEnumOperations(Operation *op,
   return success();
 }
 
+static LogicalResult verifySceneRecords(
+    Operation *op, Type type, const Records &records, const EnumLayouts &enums,
+    llvm::StringRef subject,
+    std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> fields,
+    std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> optionalFields) {
+  auto model = dyn_cast<RecordListType>(type);
+  if (!model)
+    return success();
+  for (const auto &[field, expected] : fields) {
+    if (recordFieldType(records, enums, model.getName(), field) != expected)
+      return op->emitOpError() << subject << " requires a " << expected << " field named " << field;
+  }
+  for (const auto &[field, expected] : optionalFields)
+    if (auto actual = recordFieldType(records, enums, model.getName(), field);
+        actual && *actual != expected)
+      return op->emitOpError() << subject << " requires a " << expected << " field named " << field;
+  return success();
+}
+
+static LogicalResult verifySceneModel(Operation *op, Type type, const Records &records,
+                                      const EnumLayouts &enums) {
+  if (failed(verifySceneRecords(
+      op, type, records, enums, "3D model",
+      {{"id", "string"}, {"mesh", "string"}, {"x", "float"}, {"y", "float"}, {"z", "float"},
+       {"scale-x", "float"}, {"scale-y", "float"}, {"scale-z", "float"}, {"yaw", "float"},
+       {"pitch", "float"}, {"roll", "float"}, {"color", "color"}},
+      {{"casts-shadow", "bool"}, {"receives-shadow", "bool"}, {"receives-reflections", "bool"},
+       {"casts-reflections", "bool"}, {"parent", "string"}, {"layers", "int"},
+       {"visible", "bool"}, {"lod-of", "string"}, {"lod-max-size", "length"}, {"lod-bias", "float"},
+       {"camera-lod-bias", "float"}, {"pickable", "bool"}, {"collidable", "bool"}, {"pivot-x", "float"}, {"pivot-y", "float"}, {"pivot-z", "float"},
+       {"camera-kind", "string"}, {"camera-fov", "float"}, {"camera-height", "float"},
+       {"camera-near", "float"}, {"camera-far", "float"}, {"camera-look-at", "string"},
+       {"camera-left", "float"}, {"camera-right", "float"},
+       {"camera-bottom", "float"}, {"camera-top", "float"},
+       {"animation", "string"}, {"animation-time", "float"}, {"animation-loop", "bool"},
+       {"animation-to", "string"}, {"animation-to-time", "float"},
+       {"animation-to-loop", "bool"}, {"animation-blend", "float"},
+       {"lightmap", "image"}, {"lightmap-mode", "string"}, {"lightmap-intensity", "float"},
+       {"lightmap-u", "float"}, {"lightmap-v", "float"}, {"lightmap-width", "float"},
+       {"lightmap-height", "float"}})))
+    return failure();
+  if (auto model = dyn_cast<RecordListType>(type))
+    if (auto weights = recordFieldType(records, enums, model.getName(), "morph-weights")) {
+      auto schema = records.find(*weights);
+      if (schema == records.end() || enums.contains(*weights) ||
+          !llvm::all_of(schema->second, [](const auto &field) { return field.second == "float"; }))
+        return op->emitOpError("3D model requires a morph-weights record with float fields");
+    }
+  return success();
+}
+
+static LogicalResult verifySceneLights(BindOp lights, const Records &records,
+                                       const EnumLayouts &enums) {
+  return verifySceneRecords(
+      lights, lights.getInput().getType(), records, enums, "3D lights",
+      {{"kind", "string"}, {"x", "float"}, {"y", "float"}, {"z", "float"}, {"yaw", "float"},
+       {"elevation", "float"}, {"intensity", "float"}, {"color", "color"}, {"range", "float"},
+       {"inner-angle", "float"}, {"outer-angle", "float"}},
+      {{"casts-shadow", "bool"}, {"parent", "string"}, {"visible", "bool"}, {"layers", "int"}});
+}
+
+static LogicalResult verifyParticleEmitters(BindOp emitters, const Records &records,
+                                            const EnumLayouts &enums) {
+  return verifySceneRecords(
+      emitters, emitters.getInput().getType(), records, enums, "3D particle emitters",
+      {{"position", "point3d"}, {"color", "color"}, {"size", "float"}, {"lifetime", "float"}},
+      {{"end-size", "float"}, {"start-time", "float"}, {"rate", "float"},
+       {"burst-count", "int"}, {"velocity", "vector3d"}, {"velocity-spread", "vector3d"},
+       {"gravity", "vector3d"}, {"fade-in", "float"}, {"fade-out", "float"},
+       {"intensity", "float"}, {"seed", "int"}, {"layers", "int"}, {"enabled", "bool"},
+       {"sprite", "image"}, {"sprite-frames", "int"}, {"sprite-frame", "int"},
+       {"sprite-duration", "float"}, {"sprite-duration-variation", "float"},
+       {"sprite-playback", "string"}, {"sprite-interpolate", "bool"},
+       {"sprite-random-start", "bool"}, {"color-table", "image"},
+       {"particle-blend-mode", "string"}, {"emitter-shape", "string"},
+       {"emitter-mesh", "string"}, {"emitter-mesh-scale", "vector3d"},
+       {"emitter-extents", "vector3d"}, {"emitter-fill", "bool"}, {"emitter-yaw", "float"},
+       {"emitter-pitch", "float"}, {"emitter-roll", "float"}, {"velocity-mode", "string"},
+       {"velocity-cone-angle", "float"}, {"velocity-target", "point3d"},
+       {"velocity-target-spread", "vector3d"}, {"velocity-speed-variation", "float"},
+       {"trail-segments", "int"}, {"trail-duration", "float"}, {"trail-end-scale", "float"},
+       {"trail-fade", "float"}, {"trail-eol-fade", "float"}});
+}
+
+static LogicalResult verifyParticleAffectors(BindOp affectors, const Records &records,
+                                             const EnumLayouts &enums) {
+  return verifySceneRecords(
+      affectors, affectors.getInput().getType(), records, enums, "3D particle affectors",
+      {{"affector-kind", "string"}},
+      {{"position", "point3d"}, {"position-variation", "vector3d"}, {"direction", "vector3d"},
+       {"duration", "float"}, {"duration-variation", "float"}, {"start-age", "float"},
+       {"hide-at-end", "bool"}, {"radius", "float"}, {"outer-radius", "float"}, {"strength", "float"},
+       {"angular-speed", "float"}, {"seed", "int"}, {"layers", "int"}, {"enabled", "bool"}});
+}
+
+static LogicalResult verifyFogVolumes(BindOp volumes, const Records &records,
+                                      const EnumLayouts &enums) {
+  return verifySceneRecords(
+      volumes, volumes.getInput().getType(), records, enums, "3D fog volumes",
+      {{"position", "point3d"}, {"size", "vector3d"}, {"density", "float"}, {"color", "color"}},
+      {{"fog-shape", "string"}, {"visible", "bool"}, {"layers", "int"},
+       {"yaw", "float"}, {"pitch", "float"}, {"roll", "float"},
+       {"fog-height-enabled", "bool"}, {"fog-height-start", "float"}, {"fog-height-end", "float"},
+       {"fog-noise-amount", "float"}, {"fog-noise-scale", "float"}, {"fog-noise-offset", "vector3d"}});
+}
+
+static LogicalResult verifySceneReflections(BindOp probes, const Records &records,
+                                            const EnumLayouts &enums) {
+  return verifySceneRecords(
+      probes, probes.getInput().getType(), records, enums, "3D reflection probes",
+      {{"position", "point3d"}, {"box-size", "vector3d"}},
+      {{"source", "string"}, {"capture-size", "int"}, {"capture-revision", "int"}, {"refresh-mode", "string"},
+       {"time-slicing", "string"},
+       {"box-offset", "vector3d"}, {"visible", "bool"}, {"yaw", "float"},
+       {"intensity", "float"}, {"parallax-correction", "bool"}, {"layers", "int"}});
+}
+
 static LogicalResult verifyRecords(ModuleOp module, const Records &records,
                                    const EnumLayouts &enums,
                                    ComboValueTypes &comboValues) {
   auto verified = module.walk([&](Operation *op) -> WalkResult {
     if (failed(verifyEnumOperations(op, enums)))
       return WalkResult::interrupt();
+    if (auto picking = dyn_cast<GeometryFunctionOp>(op);
+        picking && (picking.getValue() == "pick-3d" || picking.getValue() == "pick-camera-3d" ||
+                    picking.getValue() == "project-camera-3d" ||
+                    picking.getValue() == "unproject-camera-3d" ||
+                    picking.getValue() == "hit-3d" || picking.getValue() == "hit-camera-3d" ||
+                    picking.getValue() == "ray-hit-3d" ||
+                    picking.getValue() == "sphere-cast-3d" || picking.getValue() == "sphere-overlap-3d" ||
+                    picking.getValue() == "sphere-slide-3d" || picking.getValue() == "sphere-walk-3d" ||
+                    picking.getValue() == "hit-all-3d" ||
+                    picking.getValue() == "hit-all-camera-3d" ||
+                    picking.getValue() == "ray-hit-all-3d") &&
+        !picking.getInputs().empty() &&
+        failed(verifySceneModel(op, picking.getInputs().front().getType(), records, enums)))
+      return WalkResult::interrupt();
+    if (auto scene = dyn_cast<ElementOp>(op); scene && scene.getKind() == "SceneView3D")
+      for (auto binding : scene.getBody().front().getOps<BindOp>())
+        if ((binding.getName() == "model" &&
+             failed(verifySceneModel(binding, binding.getInput().getType(), records, enums))) ||
+            (binding.getName() == "lights" && failed(verifySceneLights(binding, records, enums))) ||
+            (binding.getName() == "particle-emitters" && failed(verifyParticleEmitters(binding, records, enums))) ||
+            (binding.getName() == "particle-affectors" && failed(verifyParticleAffectors(binding, records, enums))) ||
+            (binding.getName() == "fog-volumes" && failed(verifyFogVolumes(binding, records, enums))) ||
+            (binding.getName() == "reflection-probes" && failed(verifySceneReflections(binding, records, enums))))
+          return WalkResult::interrupt();
     for (auto type : op->getResultTypes()) {
       llvm::StringRef name;
       if (auto record = dyn_cast<RecordType>(type))
@@ -6232,7 +6550,8 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
             continue;
           auto name = *type;
           if (recordScalarType(name) || name == "[int]" || name == "[string]" ||
-              name == "[Date]" || name == "TouchPoints" || name == "percent")
+              name == "[Date]" || name == "[hit3d]" || name == "[Hit3D]" ||
+              name == "TouchPoints" || name == "percent")
             continue;
           const bool wellFormed =
               !name.consume_front("[") || name.consume_back("]");

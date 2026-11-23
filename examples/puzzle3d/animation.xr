@@ -1,0 +1,97 @@
+struct PanelWeights { extend: float }
+
+struct AnimatedPart {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    animation: string, animation-time: float, animation-loop: bool,
+    casts-shadow: bool, morph-weights: PanelWeights,
+}
+
+export component GlTfAnimationDemo inherits Window {
+    title: "XRack · glTF 形变与骨骼动画";
+    width: 520px;
+    height: 390px;
+    resizable: false;
+    background: #141d29;
+    in-out property <bool> playing: true;
+    in-out property <float> time: 0;
+    in-out property <float> extension: 0.35;
+    property <string> clip: "Morph";
+    playback := Timer {
+        interval: 16;
+        repeat: true;
+        running: root.playing;
+        triggered => { root.time += 0.016; }
+    }
+
+    property <AnimatedPart> plain: AnimatedPart {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff,
+        animation: "", animation-time: 0, animation-loop: false, casts-shadow: false,
+        morph-weights: PanelWeights { extend: 0 },
+    };
+    property <[AnimatedPart]> scene: [
+        AnimatedPart {
+            id: "panels", mesh: root.clip == "Morph" ? @mesh-url("models/morph-panel.glb")
+                : root.clip == "Bend" ? @mesh-url("models/skinned-panel.glb")
+                : @mesh-url("models/animated-panel.glb"),
+            x: -1,
+            color: #ff7858, animation: root.clip,
+            animation-time: root.time, animation-loop: true, casts-shadow: true,
+            morph-weights: PanelWeights { extend: root.extension },
+            ..root.plain
+        },
+        AnimatedPart {
+            id: "backdrop", z: -1, scale-x: 6, scale-y: 5, scale-z: 0.15,
+            color: #627eaa, ..root.plain
+        },
+    ];
+    VerticalLayout {
+        width: 520px;
+        height: 390px;
+        padding: 12px;
+        spacing: 8px;
+        SceneView3D {
+            width: 496px;
+            height: 324px;
+            model: root.scene;
+            camera-yaw: 0;
+            camera-pitch: 0;
+            camera-distance: 8;
+            light-yaw: -45;
+            light-elevation: 28;
+            shadows: true;
+            scene-background: #26364a;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            play-toggle := Button {
+                text: root.playing ? "暂停" : "继续";
+                clicked => { root.playing = !root.playing; }
+            }
+            clip-toggle := Button {
+                text: root.clip == "Morph" ? "切换骨骼片段"
+                    : root.clip == "Bend" ? "切换平移片段"
+                    : root.clip == "Slide" ? "切换旋转片段" : "切换形变片段";
+                clicked => {
+                    root.clip = root.clip == "Morph" ? "Bend"
+                        : root.clip == "Bend" ? "Slide" : root.clip == "Slide" ? "Turn" : "Morph";
+                    root.time = 0;
+                }
+            }
+            Text { text: "形变"; color: #edf3ff; }
+            extend-slider := Slider {
+                width: 145px;
+                height: 29px;
+                minimum: 0;
+                maximum: 1;
+                step: 0.01;
+                enabled: root.clip == "Morph";
+                value <=> root.extension;
+            }
+        }
+    }
+}

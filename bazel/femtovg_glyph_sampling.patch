@@ -1,0 +1,135 @@
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1569,6 +1569,59 @@
+             ));
+ 
+             cmd.triangles_verts = Some((offset, 4));
++        }
++    }
++
++    /// The eight samples of an outline share the flattened and expanded
++    /// contours. Rasterize each with its device-space offset in the atlas.
++    fn fill_glyph_samples(
++        &mut self,
++        path: &Path,
++        origin: Transform2D,
++        scale: f32,
++        samples: &[(f32, f32)],
++        paint: &PaintFlavor,
++    ) {
++        const SUBPIXELS: f32 = 4096.0;
++        let transform = Transform2D::new(scale, 0.0, 0.0, scale, 0.0, 0.0);
++        let mut cache = path.cache(&transform, self.tess_tol, self.dist_tol);
++        cache.expand_fill(0.0, LineJoin::Miter, 2.4, FillRule::NonZero);
++
++        let params = Params::new(
++            &self.images,
++            &origin,
++            paint,
++            &GlyphTexture::default(),
++            &Scissor::default(),
++            self.fringe_width,
++            self.fringe_width,
++            -1.0,
++        );
++        let composite = self.state().composite_operation;
++        for &(dx, dy) in samples {
++            let kind = if cache.is_convex() {
++                CommandType::ConvexFill { params: params.clone() }
++            } else {
++                CommandType::ConcaveFill {
++                    stencil_params: Params::stencil(),
++                    fill_params: params.clone(),
++                }
++            };
++            let mut cmd = Command::new(kind);
++            cmd.fill_rule = FillRule::NonZero;
++            cmd.composite_operation = composite;
++
++            let start = self.verts.len();
++            self.push_fill(&mut cmd, &cache, 0.0);
++            let tx = origin[4] + dx;
++            let ty = origin[5] + dy;
++            for vertex in &mut self.verts[start..] {
++                // Use a shared subpixel grid so translating to another atlas
++                // cell can't round the coordinates to different samples.
++                vertex.x = (vertex.x * SUBPIXELS).round() / SUBPIXELS + tx;
++                vertex.y = (vertex.y * SUBPIXELS).round() / SUBPIXELS + ty;
++            }
++            self.append_cmd(cmd);
+         }
+     }
+ 
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -494,31 +494,30 @@
+             (-5.0 / 16.0, 3.0 / 16.0),
+         ];
+ 
++        if mode == RenderMode::Fill {
++            canvas.fill_glyph_samples(
++                &self.path,
++                self.origin,
++                self.scale,
++                &points,
++                &PaintFlavor::Color(mask_color),
++            );
++            return;
++        }
+         for point in &points {
+             canvas.state_mut().transform = self.origin;
+             canvas.translate(point.0, point.1);
+             canvas.scale(self.scale, self.scale);
+-
+-            if mode == RenderMode::Stroke {
+-                canvas.stroke_path_internal(
+-                    &self.path,
+-                    None,
+-                    &PaintFlavor::Color(mask_color),
+-                    false,
+-                    &StrokeSettings {
+-                        line_width: self.line_width,
+-                        ..Default::default()
+-                    },
+-                );
+-            } else {
+-                canvas.fill_path_internal(
+-                    &self.path,
+-                    None,
+-                    &PaintFlavor::Color(mask_color),
+-                    false,
+-                    FillRule::NonZero,
+-                );
+-            }
++            canvas.stroke_path_internal(
++                &self.path,
++                None,
++                &PaintFlavor::Color(mask_color),
++                false,
++                &StrokeSettings {
++                    line_width: self.line_width,
++                    ..Default::default()
++                },
++            );
+         }
+     }
+ }
+@@ -578,8 +577,14 @@
+             // offset of the glyph from `glyph.x.trunc()`, where the quad is placed below.
+             // `quantize` rounds to the nearest step only for a non-negative value, so it is given
+             // the absolute value.
+-            let fract = glyph.x.fract();
+-            let subpixel_location = (crate::geometry::quantize(fract.abs(), 0.1) * 10.0).copysign(fract) as i8;
++            // Only the swash rasterizer shifts the glyph's coverage with
++            // the pen fraction. Vector outlines can share the same mask.
++            let subpixel_location = if cfg!(feature = "swash") {
++                let fract = glyph.x.fract();
++                (crate::geometry::quantize(fract.abs(), 0.1) * 10.0).copysign(fract) as i8
++            } else {
++                0
++            };
+ 
+             let id = RenderedGlyphId::new(
+                 glyph.glyph_id,

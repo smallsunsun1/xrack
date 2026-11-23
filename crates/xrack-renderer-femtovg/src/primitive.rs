@@ -177,7 +177,8 @@ pub(super) enum Primitive<'a> {
         origin: Point,
         text: &'a str,
         paint: &'a Paint,
-        clip: Option<Rect>,
+        /// Passive table cells use the window's default entry text style.
+        cell_clip: Option<Rect>,
     },
     Label {
         node: &'a Node,
@@ -274,9 +275,9 @@ impl Renderer {
                 origin,
                 text,
                 paint,
-                clip,
+                cell_clip,
             } => {
-                if let Some(clip) = clip {
+                if let Some(clip) = cell_clip {
                     self.canvas.save();
                     self.canvas
                         .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
@@ -284,10 +285,37 @@ impl Renderer {
                 let result = self
                     .text
                     .fill_text(&mut self.canvas, origin.x, origin.y, text, paint);
-                if clip.is_some() {
+                if cell_clip.is_some() {
                     self.canvas.restore();
                 }
-                result.map_err(|error| format!("text drawing failed: {error}"))?;
+                let metrics = result.map_err(|error| format!("text drawing failed: {error}"))?;
+                if !cfg!(any(target_os = "android", target_os = "ios"))
+                    && let Some(clip) = cell_clip
+                    && text.len() <= 128
+                    && paint.text_align() == femtovg::Align::Left
+                    && paint.text_baseline() == femtovg::Baseline::Top
+                    && paint.letter_spacing() == 0.0
+                    && self.display_batching
+                    && self.can_cache_on_main_canvas()
+                    && !self.retained_layers.vectors.opacity_passthrough
+                    && paint.text_decoration().is_none()
+                {
+                    let transform = canvas_transform(&self.canvas);
+                    if let Some([scale, sy]) = transform.axis_scales()
+                        && scale == sy
+                        && matches!(scale, 1.0 | 2.0 | 4.0)
+                        && transform.translation() == [0.0, 0.0]
+                        && crate::pixel_aligned(clip, scale)
+                    {
+                        self.glyph_masks.prime_fallback(
+                            &mut self.canvas,
+                            &self.text,
+                            &metrics,
+                            paint,
+                            scale,
+                        );
+                    }
+                }
             }
             Primitive::Label {
                 node,
@@ -304,7 +332,7 @@ impl Renderer {
                 bounds,
                 context,
                 source,
-            } => self.draw_native(bounds, context, source)?,
+            } => self.draw_native(bounds, context, wgpu::TextureFormat::Rgba8Unorm, source)?,
         }
         Ok(())
     }
@@ -426,7 +454,7 @@ impl Renderer {
                             origin: *origin,
                             text,
                             paint: &paint,
-                            clip: None,
+                            cell_clip: None,
                         })?;
                     }
                     continue;
@@ -437,31 +465,219 @@ impl Renderer {
         display.submit(self)
     }
 
+    pub(super) fn paint_scene3d(
+        &mut self,
+        node: &Node,
+        bounds: Rect,
+        path: &[usize],
+        scale: f32,
+    ) -> Result<(), String> {
+        use crate::scene3d::retained_view::{Sampling, ViewSize, ViewTexture};
+
+        if !usable_rect(bounds) {
+            return Ok(());
+        }
+        let camera = crate::scene3d::SceneRenderer::camera_for_view(
+            node,
+            [f64::from(bounds.width), f64::from(bounds.height)],
+        );
+        let content = camera.map_or(bounds, |camera| {
+            let [x, y, width, height] = camera.content_rect();
+            Rect {
+                x: bounds.x + x as f32,
+                y: bounds.y + y as f32,
+                width: width as f32,
+                height: height as f32,
+            }
+        });
+        if content != bounds {
+            fill_rect(
+                &mut self.canvas,
+                bounds,
+                &Paint::color(color(crate::scene3d::background(node))),
+            );
+        }
+        if !usable_rect(content) {
+            return Ok(());
+        }
+        let (nominal, pixel_scale) = self.native_texture_extent(content);
+        let texture_size = crate::scene3d::texture_extent(
+            node,
+            nominal,
+            self.device.limits().max_texture_dimension_2d,
+        );
+        let context = PaintContext {
+            bounds: content,
+            scale,
+            data: "",
+            revision: 0,
+        };
+        let (cubes, reflection_redraw) = if crate::scene3d::has_scene_reflections(node)
+            && let Some(camera) = camera
+        {
+            let encoder = native_encoder(&mut self.custom_encoder, &self.device);
+            self.scene3d.capture_reflections(
+                node,
+                (&self.device, &self.queue, encoder),
+                path,
+                camera,
+                self.scene_generation,
+                context,
+            )
+        } else {
+            (Vec::new(), false)
+        };
+        self.needs_redraw |= reflection_redraw;
+        let sampling = camera.map_or_else(Sampling::default, |_| Sampling::from_node(node));
+        let owner = (path, self.scene_generation);
+        self.viewport_textures
+            .clear_disabled_temporal(owner, sampling);
+        let (cached_target, sample) =
+            if sampling.is_active() || node.boolean("cache-rendering", false) {
+                let [width, height] = texture_size;
+                crate::validate_extent(
+                    width,
+                    height,
+                    pixel_scale,
+                    self.device.limits().max_texture_dimension_2d,
+                )?;
+                let target = self.viewport_textures.get(
+                    &self.device,
+                    node,
+                    (path, self.scene_generation),
+                    ViewSize {
+                        pixels: texture_size,
+                        logical: [content.width, content.height],
+                    },
+                    std::array::from_fn(|index| {
+                        cubes
+                            .get(index)
+                            .and_then(Option::as_ref)
+                            .map_or(0, |cube| cube.revision)
+                    }),
+                    sampling,
+                );
+                self.scene3d.stats.viewport_cache_allocations = self.viewport_textures.allocations;
+                match target {
+                    Some(ViewTexture::Ready(texture)) => {
+                        self.scene3d.stats.viewport_cache_hits =
+                            self.scene3d.stats.viewport_cache_hits.saturating_add(1);
+                        return self.composite_native_texture(content, texture);
+                    }
+                    Some(ViewTexture::Render {
+                        texture,
+                        sample,
+                        needs_redraw,
+                    }) => {
+                        self.needs_redraw |= needs_redraw;
+                        (Some(texture), sample)
+                    }
+                    None => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+        let renderer = RefCell::new(std::mem::take(&mut self.scene3d));
+        let queue = self.queue.clone();
+        let render = |context: GpuPaintContext<'_>| {
+            renderer.borrow_mut().draw(
+                node,
+                context,
+                &queue,
+                path,
+                camera,
+                (&cubes, sample.as_ref()),
+            );
+            Ok(())
+        };
+        // The scene render or resolve pass initializes the entire texture.
+        let result = if let Some(texture) = cached_target {
+            self.draw_native_texture(
+                content,
+                context,
+                crate::scene3d::COLOR_FORMAT,
+                texture,
+                false,
+                &render,
+            )
+        } else {
+            self.draw_native_at_size(
+                content,
+                context,
+                crate::scene3d::COLOR_FORMAT,
+                (texture_size, pixel_scale),
+                false,
+                &render,
+            )
+        };
+        self.scene3d = renderer.into_inner();
+        result
+    }
+
     fn draw_native(
         &mut self,
         bounds: Rect,
         context: PaintContext<'_>,
+        format: wgpu::TextureFormat,
         source: &(impl Fn(GpuPaintContext<'_>) -> Result<(), String> + ?Sized),
     ) -> Result<(), String> {
+        let extent = self.native_texture_extent(bounds);
+        self.draw_native_at_size(bounds, context, format, extent, true, source)
+    }
+
+    fn native_texture_extent(&self, bounds: Rect) -> ([u32; 2], f32) {
         // Follow the effective canvas scale for nested transforms as well as HiDPI.
         let scale = canvas_transform(&self.canvas).max_scale();
-        let size = [
-            (bounds.width * scale).ceil() as u32,
-            (bounds.height * scale).ceil() as u32,
-        ];
+        (
+            [
+                (bounds.width * scale).ceil() as u32,
+                (bounds.height * scale).ceil() as u32,
+            ],
+            scale,
+        )
+    }
+
+    fn draw_native_at_size(
+        &mut self,
+        bounds: Rect,
+        context: PaintContext<'_>,
+        format: wgpu::TextureFormat,
+        (size, scale): ([u32; 2], f32),
+        clear_reused: bool,
+        source: &(impl Fn(GpuPaintContext<'_>) -> Result<(), String> + ?Sized),
+    ) -> Result<(), String> {
         let limit = self.device.limits().max_texture_dimension_2d;
         crate::validate_extent(size[0], size[1], scale, limit)?;
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let (texture, reused) = self.transient_textures.acquire(&self.device, size);
-        let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let encoder = self.custom_encoder.get_or_insert_with(|| {
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("XRack custom draw commands"),
-                })
+        let (texture, reused) =
+            self.transient_textures
+                .acquire_render_view(&self.device, size, format);
+        self.draw_native_texture(
+            bounds,
+            context,
+            format,
+            texture,
+            clear_reused && reused,
+            source,
+        )
+    }
+
+    fn draw_native_texture(
+        &mut self,
+        bounds: Rect,
+        context: PaintContext<'_>,
+        format: wgpu::TextureFormat,
+        texture: wgpu::Texture,
+        clear: bool,
+        source: &(impl Fn(GpuPaintContext<'_>) -> Result<(), String> + ?Sized),
+    ) -> Result<(), String> {
+        let size = [texture.width(), texture.height()];
+        let target = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(format),
+            ..Default::default()
         });
+        let encoder = native_encoder(&mut self.custom_encoder, &self.device);
         // Preserve the same transparent starting surface as a fresh texture.
-        if reused {
+        if clear {
             let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("XRack clear recycled custom target"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -484,10 +700,18 @@ impl Renderer {
             size,
             format,
         })?;
+        self.composite_native_texture(bounds, texture)
+    }
+
+    fn composite_native_texture(
+        &mut self,
+        bounds: Rect,
+        texture: wgpu::Texture,
+    ) -> Result<(), String> {
         let info = ImageInfo::new(
             ImageFlags::PREMULTIPLIED,
-            size[0] as usize,
-            size[1] as usize,
+            texture.width() as usize,
+            texture.height() as usize,
             PixelFormat::Rgba8,
         );
         let image = self
@@ -555,8 +779,21 @@ impl Renderer {
             self.queue.submit([encoder.finish()]);
             return Ok(());
         }
-        self.draw_native(bounds, context, &|ctx| record_gpu_pass(ctx, None, source))
+        self.draw_native(bounds, context, wgpu::TextureFormat::Rgba8Unorm, &|ctx| {
+            record_gpu_pass(ctx, None, source)
+        })
     }
+}
+
+fn native_encoder<'a>(
+    encoder: &'a mut Option<wgpu::CommandEncoder>,
+    device: &wgpu::Device,
+) -> &'a mut wgpu::CommandEncoder {
+    encoder.get_or_insert_with(|| {
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("XRack custom draw commands"),
+        })
+    })
 }
 
 fn record_gpu_pass(

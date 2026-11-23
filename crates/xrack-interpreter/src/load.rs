@@ -34,8 +34,10 @@ pub(crate) fn program(
     fonts: Option<LoadedFonts>,
     images: BTreeMap<String, ImageAsset>,
     paths: BTreeMap<String, xrack_resources::EmbeddedPath>,
+    scene_assets: xrack_resources::SceneAssets,
     entry_file: &str,
 ) -> Result<Program> {
+    xrack_resources::require_scene_assets(module, &scene_assets).map_err(Error::Invalid)?;
     let records = Rc::new(
         module
             .operations()
@@ -125,6 +127,8 @@ pub(crate) fn program(
         records,
         translations: translations.map(Rc::new),
         fonts,
+        scene_assets: Rc::new(scene_assets),
+        scene_projections: Rc::default(),
     })
 }
 
@@ -185,6 +189,11 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::Float => ValueType::Float,
         Type::Length => ValueType::Length,
         Type::Point2D => ValueType::Point2D,
+        Type::Point3D => ValueType::Point3D,
+        Type::Vector3D => ValueType::Vector3D,
+        Type::Hit3D => ValueType::Hit3D,
+        Type::Hit3DList => ValueType::Hit3DList,
+        Type::ProjectedPoint3D => ValueType::ProjectedPoint3D,
         Type::Vector2D => ValueType::Vector2D,
         Type::Transform2D => ValueType::Transform2D,
         Type::Percent => ValueType::Percent,
@@ -223,6 +232,7 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::TextVerticalAlignment => ValueType::TextVerticalAlignment,
         Type::TextOverflow => ValueType::TextOverflow,
         Type::ColorScheme => ValueType::ColorScheme,
+        Type::SceneToneMap => ValueType::SceneToneMap,
         Type::InputType => ValueType::InputType,
         Type::InputPurpose => ValueType::InputPurpose,
         Type::KeyboardCapitalization => ValueType::KeyboardCapitalization,
@@ -801,6 +811,7 @@ impl<'m> Loader<'m> {
                         | ValueType::StringList
                         | ValueType::IntList
                         | ValueType::DateList
+                        | ValueType::Hit3DList
                         | ValueType::RecordList(_)
                         | ValueType::TouchPoints
                 ) {
@@ -1808,6 +1819,20 @@ impl<'m> Loader<'m> {
                 }
                 Expression::ScrollControlRead(member)
             }
+            "xr.environment_url" => Expression::Literal(Value::String(
+                runtime::scene3d::environment_resource_key(spelling()?),
+            )),
+            "xr.mesh_url"
+            | "xr.mesh_lod_url"
+            | "xr.mesh_lightmap_url"
+            | "xr.mesh_lod_lightmap_url" => {
+                let options = runtime::scene3d::MeshImportOptions::from_operation(op.name())
+                    .ok_or_else(|| invalid(op, format_args!("invalid mesh import operation")))?;
+                Expression::Literal(Value::String(runtime::scene3d::mesh_resource_key(
+                    spelling()?,
+                    options,
+                )))
+            }
             "xr.image_url" => {
                 let url = spelling()?;
                 let image = if url.is_empty() {
@@ -2164,6 +2189,10 @@ impl<'m> Loader<'m> {
             | "xr.time_field"
             | "xr.font_field"
             | "xr.point2d_field"
+            | "xr.point3d_field"
+            | "xr.vector3d_field"
+            | "xr.hit3d_field"
+            | "xr.projected_point3d_field"
             | "xr.vector2d_field"
             | "xr.key_field"
             | "xr.wheel_field"
@@ -2214,6 +2243,7 @@ impl<'m> Loader<'m> {
             "xr.array" => Expression::Array(arguments(self)?),
             "xr.int_array" => Expression::IntArray(arguments(self)?),
             "xr.date_array" => Expression::DateArray(arguments(self)?),
+            "xr.hit3d_array" => Expression::Hit3DArray(arguments(self)?),
             "xr.call" => Expression::Call(
                 member(op, "value")?,
                 arguments(self)?,
@@ -2294,6 +2324,11 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
     }
     Some(defaults!(
         Point2D,
+        Point3D,
+        Vector3D,
+        Hit3D,
+        Hit3DList,
+        ProjectedPoint3D,
         Vector2D,
         Transform2D,
         EventResult,
@@ -2350,6 +2385,7 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         TextVerticalAlignment,
         TextOverflow,
         ColorScheme,
+        SceneToneMap,
         InputType,
         InputPurpose,
         KeyboardCapitalization,
@@ -2662,6 +2698,101 @@ const PROPERTIES: &[&str] = &[
     "data",
     "renderer",
     "revision",
+    "camera",
+    "camera-yaw",
+    "camera-pitch",
+    "camera-distance",
+    "light-yaw",
+    "light-elevation",
+    "lights",
+    "reflection-probes",
+    "particle-emitters",
+    "particle-affectors",
+    "particle-time",
+    "fog-volumes",
+    "fog-volume-scattering",
+    "fog-volume-anisotropy",
+    "fog-volume-samples",
+    "fog-volume-density-samples",
+    "ambient-color",
+    "ambient-intensity",
+    "shadows",
+    "imported-lights",
+    "shadow-map-size",
+    "shadow-bias",
+    "shadow-cascades",
+    "shadow-distance",
+    "shadow-cascade-blend",
+    "shadow-split-balance",
+    "environment",
+    "environment-intensity",
+    "environment-yaw",
+    "environment-skybox",
+    "frustum-culling",
+    "multisampling",
+    "supersampling",
+    "progressive-aa",
+    "temporal-aa",
+    "temporal-aa-mode",
+    "temporal-aa-strength",
+    "screen-space-reflections",
+    "ssr-strength",
+    "ssr-distance",
+    "ssr-thickness",
+    "ssr-steps",
+    "ssr-roughness-cutoff",
+    "ssr-scale",
+    "screen-space-global-illumination",
+    "ssgi-strength",
+    "ssgi-occlusion",
+    "ssgi-radius",
+    "ssgi-thickness",
+    "ssgi-scale",
+    "ssgi-rays",
+    "ssgi-steps",
+    "render-scale",
+    "texture-width",
+    "texture-height",
+    "layer-mask",
+    "cache-rendering",
+    "specular-aa",
+    "order-independent-transparency",
+    "ambient-occlusion",
+    "scene-hdr",
+    "bloom",
+    "bloom-strength",
+    "bloom-threshold",
+    "bloom-levels",
+    "depth-of-field",
+    "dof-blur-radius",
+    "dof-focus-distance",
+    "dof-focus-range",
+    "ao-strength",
+    "ao-distance",
+    "ao-bias",
+    "fog-color",
+    "fog-near",
+    "fog-far",
+    "fog-density",
+    "fog-depth-enabled",
+    "fog-height-enabled",
+    "fog-transmit-enabled",
+    "fog-depth-curve",
+    "fog-height-start",
+    "fog-height-end",
+    "fog-height-curve",
+    "fog-transmit-curve",
+    "scene-exposure",
+    "scene-tone-map",
+    "scene-white-point",
+    "scene-brightness",
+    "scene-contrast",
+    "scene-saturation",
+    "scene-lut",
+    "scene-lut-size",
+    "scene-lut-strength",
+    "scene-background",
+    "selected-object",
     "drag-key",
     "touch-drag-delay",
     "drag-auto-scroll",

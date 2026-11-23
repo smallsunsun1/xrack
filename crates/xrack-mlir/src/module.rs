@@ -257,7 +257,12 @@ impl Module {
         self.visit_operations(|op| {
             let attribute = match op.name() {
                 "xr.font" | "xr.translation_catalog" => Some("path"),
-                "xr.image_url" => Some("value"),
+                "xr.image_url"
+                | "xr.mesh_url"
+                | "xr.mesh_lod_url"
+                | "xr.mesh_lightmap_url"
+                | "xr.mesh_lod_lightmap_url"
+                | "xr.environment_url" => Some("value"),
                 _ => None,
             };
             if let Some(attribute) = attribute {

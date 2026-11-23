@@ -62,6 +62,286 @@ fn field_access<'a>(path: impl IntoIterator<Item = &'a str>) -> TokenStream {
     quote!(#(.#fields)*)
 }
 
+fn project_scene_objects(
+    model: &TokenStream,
+    ty: &Type,
+    fields: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+    cameras_only: bool,
+) -> TokenStream {
+    let field = |name, default| scene_field(fields, name, "object", default);
+    let parent = field("parent", quote!(::std::string::String::new()));
+    let look_at = field("camera-look-at", quote!(::std::string::String::new()));
+    let playback = |clip, time, looping| {
+        let clip = field(clip, quote!(::std::string::String::new()));
+        let time = field(time, quote!(0.0));
+        let looping = field(looping, quote!(false));
+        quote!(::xrack_runtime::scene3d::MeshPlayback { clip: #clip, time: #time, looping: #looping })
+    };
+    let from = playback("animation", "animation-time", "animation-loop");
+    let to = playback("animation-to", "animation-to-time", "animation-to-loop");
+    let weight = field("animation-blend", quote!(0.0));
+    let weight_fields = fields
+        .iter()
+        .find(|field| !cameras_only && field.name == "morph-weights")
+        .and_then(|field| match &field.ty {
+            Type::Record(name) => records.get(name.as_ref()),
+            _ => None,
+        })
+        .into_iter()
+        .flatten()
+        .map(|field| {
+            let name = &field.name;
+            let member = ident(name);
+            quote!((#name, object.morph_weights.#member))
+        });
+    let [pivot_x, pivot_y, pivot_z] =
+        ["pivot-x", "pivot-y", "pivot-z"].map(|name| field(name, quote!(0.0)));
+    let visible = field("visible", quote!(true));
+    let camera = if fields.iter().any(|param| param.name == "camera-kind") {
+        let fov = field("camera-fov", quote!(45.0));
+        let height = field("camera-height", quote!(10.0));
+        let near = field("camera-near", quote!(0.1));
+        let far = field("camera-far", quote!(100.0));
+        let bounds = ["camera-left", "camera-right", "camera-bottom", "camera-top"].map(|name| {
+            if fields.iter().any(|param| param.name == name) {
+                let member = ident(name);
+                quote!(::core::option::Option::Some(object.#member))
+            } else {
+                quote!(::core::option::Option::None)
+            }
+        });
+        quote!(::xrack_runtime::scene3d::SceneCameraSettings::from_record(
+            &object.camera_kind, #fov, #height, #near, #far, [#(#bounds),*]
+        ))
+    } else {
+        quote!(::core::option::Option::None)
+    };
+    let casts = field("casts-shadow", quote!(true));
+    let receives = field("receives-shadow", quote!(true));
+    let reflects = field("receives-reflections", quote!(true));
+    let capture = field("casts-reflections", quote!(true));
+    let layers = field(
+        "layers",
+        quote!(::xrack_runtime::scene3d::MAIN_LAYER as i64),
+    );
+    let pickable = field("pickable", quote!(true));
+    let collidable = field("collidable", quote!(true));
+    let lod_of = field("lod-of", quote!(::std::string::String::new()));
+    let lod_size = field("lod-max-size", quote!(::xrack_runtime::Length(0.0)));
+    let lod_bias = field("lod-bias", quote!(1.0));
+    let camera_lod_bias = field("camera-lod-bias", quote!(1.0));
+    let lightmap = if !cameras_only && fields.iter().any(|field| field.name == "lightmap") {
+        let mode = field("lightmap-mode", quote!(::std::string::String::new()));
+        let strength = field("lightmap-intensity", quote!(1.0));
+        let u = field("lightmap-u", quote!(0.0));
+        let v = field("lightmap-v", quote!(0.0));
+        let width = field("lightmap-width", quote!(1.0));
+        let height = field("lightmap-height", quote!(1.0));
+        quote!(::xrack_runtime::scene3d::BakedLightmap::new(
+            object.lightmap, &#mode, #strength, [#u, #v, #width, #height]
+        ))
+    } else {
+        quote!(::core::option::Option::None)
+    };
+    let prepare = if cameras_only {
+        quote!(model_cameras)
+    } else {
+        quote!(model_nodes)
+    };
+    let schema = match ty {
+        Type::RecordList(name) => name.as_ref(),
+        _ => "",
+    };
+    quote! {
+        __XR_SCENE_PROJECTIONS.with(|cache| cache.#prepare(&(#model), #schema, |object| {
+            ::xrack_runtime::scene3d::SceneNodeDefinition {
+                id: object.id,
+                mesh: &object.mesh,
+                animation: ::xrack_runtime::scene3d::MeshAnimationBlend { from: #from, to: #to, weight: #weight },
+                morph_weights: &[#(#weight_fields),*],
+                parent: #parent,
+                visible: #visible,
+                camera: #camera,
+                look_at: #look_at,
+                position: [object.x, object.y, object.z],
+                scale: [object.scale_x, object.scale_y, object.scale_z],
+                angles: [object.yaw, object.pitch, object.roll],
+                pivot: [#pivot_x, #pivot_y, #pivot_z],
+                color: object.color,
+                lightmap: #lightmap,
+                casts_shadow: #casts,
+                receives_shadow: #receives,
+                receives_reflections: #reflects,
+                casts_reflections: #capture,
+                layers: (#layers) as u64,
+                pickable: #pickable,
+                collidable: #collidable,
+                lod_of: #lod_of,
+                lod_max_size: (#lod_size).0,
+                lod_bias: #lod_bias,
+                camera_lod_bias: #camera_lod_bias,
+            }.prepare(__xr_scene_mesh)
+        }))
+    }
+}
+
+fn scene_field(fields: &[Parameter], field: &str, row: &str, default: TokenStream) -> TokenStream {
+    if !fields.iter().any(|param| param.name == field) {
+        return default;
+    }
+    let row = ident(row);
+    let field = ident(field);
+    quote!(#row.#field)
+}
+
+fn project_particles(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
+    let options = xrack_syntax::builtins::SCENE_PARTICLE_OPTIONAL_FIELDS
+        .iter()
+        .filter(|(name, _)| fields.iter().any(|field| field.name == *name))
+        .map(|(name, _)| {
+            let field = ident(name);
+            if matches!(*name, "end-size" | "sprite-frame") {
+                quote!(#field: ::core::option::Option::Some(emitter.#field))
+            } else {
+                quote!(#field: emitter.#field)
+            }
+        });
+    quote! {
+        ::xrack_runtime::scene3d::model_particles(&(#model), |emitter| {
+            ::xrack_runtime::scene3d::ParticleEmitterDefinition {
+                position: emitter.position, color: emitter.color, size: emitter.size,
+                lifetime: emitter.lifetime,
+                #(#options,)*
+                ..::core::default::Default::default()
+            }.prepare(|key, scale| {
+                __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_surface(key, scale, __xr_scene_mesh))
+            })
+        })
+    }
+}
+
+fn project_particle_affectors(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
+    let options = xrack_syntax::builtins::SCENE_PARTICLE_AFFECTOR_OPTIONAL_FIELDS
+        .iter()
+        .filter(|(name, _)| fields.iter().any(|field| field.name == *name))
+        .map(|(name, _)| {
+            let field = ident(name);
+            if *name == "direction" {
+                quote!(#field: ::core::option::Option::Some(affector.#field))
+            } else {
+                quote!(#field: affector.#field)
+            }
+        });
+    quote! {
+        ::xrack_runtime::scene3d::model_particle_affectors(&(#model), |affector| {
+            ::xrack_runtime::scene3d::ParticleAffectorDefinition {
+                affector_kind: affector.affector_kind,
+                #(#options,)*
+                ..::core::default::Default::default()
+            }.prepare()
+        })
+    }
+}
+
+fn project_fog_volumes(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
+    let field = |name, default| scene_field(fields, name, "volume", default);
+    let visible = field("visible", quote!(true));
+    let shape = field("fog-shape", quote!("box"));
+    let layers = field(
+        "layers",
+        quote!(::xrack_runtime::scene3d::MAIN_LAYER as i64),
+    );
+    let yaw = field("yaw", quote!(0.0));
+    let pitch = field("pitch", quote!(0.0));
+    let roll = field("roll", quote!(0.0));
+    let height_enabled = field("fog-height-enabled", quote!(false));
+    let height_start = field("fog-height-start", quote!(10.0));
+    let height_end = field("fog-height-end", quote!(0.0));
+    let noise_amount = field("fog-noise-amount", quote!(0.0));
+    let noise_scale = field("fog-noise-scale", quote!(0.8));
+    let noise_offset = field(
+        "fog-noise-offset",
+        quote!(::xrack_runtime::Vector3D::default()),
+    );
+    quote! {
+        ::xrack_runtime::scene3d::model_fog_volumes(&(#model), |volume| {
+            if !(#visible) { return ::core::option::Option::None; }
+            ::xrack_runtime::scene3d::FogVolumeDefinition {
+                position: volume.position, size: volume.size,
+                density: volume.density, color: volume.color, shape: &(#shape), layers: (#layers) as u64,
+                angles: [#yaw, #pitch, #roll],
+                height: (#height_enabled).then(|| [#height_start, #height_end]),
+                noise: ::xrack_runtime::scene3d::FogNoise::prepare(#noise_amount, #noise_scale, #noise_offset),
+            }.prepare()
+        })
+    }
+}
+
+fn project_reflections(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
+    let field = |name, default| scene_field(fields, name, "probe", default);
+    let visible = field("visible", quote!(true));
+    let offset = field("box-offset", quote!(::xrack_runtime::Vector3D::default()));
+    let yaw = field("yaw", quote!(0.0));
+    let intensity = field("intensity", quote!(1.0));
+    let parallax = field("parallax-correction", quote!(false));
+    let layers = field(
+        "layers",
+        quote!(::xrack_runtime::scene3d::MAIN_LAYER as i64),
+    );
+    let source = field("source", quote!(::std::string::String::new()));
+    let size = field("capture-size", quote!(128));
+    let refresh = field("refresh-mode", quote!(::std::string::String::new()));
+    let revision = field("capture-revision", quote!(0));
+    let slicing = field("time-slicing", quote!(::std::string::String::new()));
+    quote! {
+        ::xrack_runtime::scene3d::model_reflections(&(#model), |probe| {
+            if !#visible { return ::core::option::Option::None; }
+            let source = ::xrack_runtime::scene3d::ReflectionSource::resolve(&(#source), #size, &(#refresh), #revision, &(#slicing), __xr_environment)?;
+            ::xrack_runtime::scene3d::ReflectionProbe::prepare(source,
+                probe.position, probe.box_size, #offset, #yaw, #intensity, #parallax)
+                .map(|reflection| reflection.with_layers((#layers) as u64))
+        })
+    }
+}
+
+fn project_scene_lights(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
+    let casts = scene_field(fields, "casts-shadow", "light", quote!(true));
+    let parent = scene_field(
+        fields,
+        "parent",
+        "light",
+        quote!(::std::string::String::new()),
+    );
+    let visible = scene_field(fields, "visible", "light", quote!(true));
+    let layers = scene_field(
+        fields,
+        "layers",
+        "light",
+        quote!(::xrack_runtime::scene3d::MAIN_LAYER as i64),
+    );
+    quote! {
+        ::xrack_runtime::scene3d::model_lights(&(#model), |light| {
+            if !(#visible) {
+                return ::core::option::Option::None;
+            }
+            ::xrack_runtime::scene3d::SceneLightDefinition {
+                kind: &light.kind,
+                position: [light.x, light.y, light.z],
+                yaw: light.yaw,
+                elevation: light.elevation,
+                intensity: light.intensity,
+                color: light.color,
+                range: light.range,
+                inner_angle: light.inner_angle,
+                outer_angle: light.outer_angle,
+                casts_shadow: #casts,
+                layers: (#layers) as u64,
+            }.prepare().map(|source| (source, #parent))
+        })
+    }
+}
+
 fn ty(t: &Type) -> TokenStream {
     match t {
         Type::Int => quote!(::core::primitive::i64),
@@ -82,6 +362,11 @@ fn ty(t: &Type) -> TokenStream {
         }
         Type::Length => quote!(::xrack_runtime::Length),
         Type::Point2D => quote!(::xrack_runtime::Point2D),
+        Type::Point3D => quote!(::xrack_runtime::Point3D),
+        Type::Vector3D => quote!(::xrack_runtime::Vector3D),
+        Type::Hit3D => quote!(::xrack_runtime::Hit3D),
+        Type::Hit3DList => quote!(::xrack_runtime::VecModel<::xrack_runtime::Hit3D>),
+        Type::ProjectedPoint3D => quote!(::xrack_runtime::ProjectedPoint3D),
         Type::Vector2D => quote!(::xrack_runtime::Vector2D),
         Type::Transform2D => quote!(::xrack_runtime::Transform2D),
         Type::Percent => quote!(::xrack_runtime::Percent),
@@ -119,6 +404,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::AccessibleLive => quote!(::xrack_runtime::AccessibleLive),
         Type::CursorShape => quote!(::xrack_runtime::CursorShape),
         Type::ColorScheme => quote!(::xrack_runtime::ColorScheme),
+        Type::SceneToneMap => quote!(::xrack_runtime::SceneToneMap),
         Type::FileDialogMode => quote!(::xrack_runtime::FileDialogMode),
         Type::MessageLevel => quote!(::xrack_runtime::MessageLevel),
         Type::MessageButtons => quote!(::xrack_runtime::MessageButtons),
@@ -266,6 +552,14 @@ fn literal(spelling: &str, ty: Type) -> Result<TokenStream, String> {
         XrLiteral::Point2D(value) => {
             let [x, y] = [value.x.0, value.y.0].map(Literal::f64_suffixed);
             quote!(::xrack_runtime::Point2D::new(::xrack_runtime::Length(#x), ::xrack_runtime::Length(#y)))
+        }
+        XrLiteral::Point3D(value) => {
+            let [x, y, z] = [value.x, value.y, value.z].map(Literal::f64_suffixed);
+            quote!(::xrack_runtime::Point3D::new(#x, #y, #z))
+        }
+        XrLiteral::Vector3D(value) => {
+            let [x, y, z] = [value.x, value.y, value.z].map(Literal::f64_suffixed);
+            quote!(::xrack_runtime::Vector3D::new(#x, #y, #z))
         }
         XrLiteral::Vector2D(value) => {
             let [x, y] = [value.x.0, value.y.0].map(Literal::f64_suffixed);
@@ -418,6 +712,10 @@ fn table_rows_model_method(key: &str) -> Ident {
 
 fn table_row_order_field(key: &str) -> Ident {
     format_ident!("__table_row_order_{}", rust_key(key))
+}
+
+fn table_row_cache_field(key: &str) -> Ident {
+    format_ident!("__table_row_cache_{}", rust_key(key))
 }
 
 fn table_move_row_method(key: &str) -> Ident {
@@ -1801,6 +2099,13 @@ impl<'a> Generator<'a> {
             .expect("verified binding operand")
     }
 
+    fn scene_record_fields(&self, ty: &Type) -> &[Parameter] {
+        let Type::RecordList(record) = ty else {
+            return &[];
+        };
+        self.records.get(record.as_ref()).map_or(&[], Vec::as_slice)
+    }
+
     fn visual_value(
         &self,
         binding: OperationRef<'a>,
@@ -2083,7 +2388,8 @@ impl<'a> Generator<'a> {
                     &[#((#names, ::xrack_runtime::TranslationValue::from(#values))),*],
                 )))
             }
-            "xr.array" | "xr.int_array" | "xr.date_array" | "xr.record_array" => {
+            "xr.array" | "xr.int_array" | "xr.date_array" | "xr.record_array"
+            | "xr.hit3d_array" => {
                 let items = (0..op.operand_count())
                     .map(arg)
                     .collect::<Result<Vec<_>, _>>()?;
@@ -2238,6 +2544,10 @@ impl<'a> Generator<'a> {
             | "xr.time_field"
             | "xr.font_field"
             | "xr.point2d_field"
+            | "xr.point3d_field"
+            | "xr.vector3d_field"
+            | "xr.hit3d_field"
+            | "xr.projected_point3d_field"
             | "xr.vector2d_field"
             | "xr.key_field"
             | "xr.wheel_field"
@@ -2246,7 +2556,11 @@ impl<'a> Generator<'a> {
                 let record = arg(0)?;
                 let field =
                     ident(xrack_resources::field::BuiltinField::from_operation(op)?.member());
-                quote!((#record).#field)
+                if op.name() == "xr.hit3d_field" && value == "object-id" {
+                    quote!((#record).#field.clone())
+                } else {
+                    quote!((#record).#field)
+                }
             }
             "xr.markdown" => {
                 let name = self
@@ -2254,6 +2568,19 @@ impl<'a> Generator<'a> {
                     .get(value)
                     .ok_or_else(|| "missing compiled Markdown literal".to_string())?;
                 quote!(#name.clone())
+            }
+            "xr.environment_url" => {
+                let key = xrack_runtime::scene3d::environment_resource_key(value);
+                quote!(#key.to_owned())
+            }
+            "xr.mesh_url"
+            | "xr.mesh_lod_url"
+            | "xr.mesh_lightmap_url"
+            | "xr.mesh_lod_lightmap_url" => {
+                let options = xrack_runtime::scene3d::MeshImportOptions::from_operation(op.name())
+                    .ok_or_else(|| format!("invalid mesh import operation {}", op.name()))?;
+                let key = xrack_runtime::scene3d::mesh_resource_key(value, options);
+                quote!(#key.to_owned())
             }
             "xr.image_url" if value.is_empty() => quote!(::xrack_runtime::Image::Empty),
             "xr.image_url" => {
@@ -2714,8 +3041,126 @@ impl<'a> Generator<'a> {
                     .map(arg)
                     .collect::<Result<Vec<_>, _>>()?;
                 use GeometryFunction::*;
+                let optional_layers = |tail: &[TokenStream]| {
+                    tail.first().map_or_else(
+                        || quote!(::core::option::Option::None),
+                        |mask| quote!(::core::option::Option::Some(#mask)),
+                    )
+                };
                 match (kind, args.as_slice()) {
                     (Point, [x, y]) => quote!(::xrack_runtime::Point2D::new(#x, #y)),
+                    (Point3D, [x, y, z]) => quote!(::xrack_runtime::Point3D::new(#x, #y, #z)),
+                    (Vector3D, [x, y, z]) => quote!(::xrack_runtime::Vector3D::new(#x, #y, #z)),
+                    (RayHit3D | RayHitAll3D, [model, origin, direction, distance, layers @ ..]) => {
+                        let query = if kind == RayHitAll3D {
+                            quote!(ray_hit_all)
+                        } else {
+                            quote!(ray_hit)
+                        };
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::#query(&#objects, #origin, #direction, #distance, #layers))
+                    }
+                    (SphereCast3D, [model, origin, direction, distance, radius, layers @ ..]) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::sphere_cast(&#objects, #origin, #direction, #distance, #radius, #layers))
+                    }
+                    (SphereOverlap3D, [model, center, radius, layers @ ..]) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::sphere_overlap(&#objects, #center, #radius, #layers))
+                    }
+                    (SphereSlide3D, [model, origin, displacement, radius, layers @ ..]) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::sphere_slide(&#objects, #origin, #displacement, #radius, #layers))
+                    }
+                    (
+                        SphereWalk3D,
+                        [
+                            model,
+                            origin,
+                            displacement,
+                            radius,
+                            step,
+                            snap,
+                            slope,
+                            layers @ ..,
+                        ],
+                    ) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::sphere_walk(
+                            &#objects, #origin, #displacement,
+                            ::xrack_runtime::scene3d::WalkOptions {
+                                radius: #radius, step_height: #step, snap_distance: #snap, max_slope: #slope,
+                            }, #layers,
+                        ))
+                    }
+                    (Project3D, [yaw, pitch, distance, viewport, point]) => {
+                        quote!(::xrack_runtime::scene3d::project(#yaw, #pitch, #distance, #viewport, #point))
+                    }
+                    (Unproject3D, [yaw, pitch, distance, viewport, point, depth, fallback]) => {
+                        quote!(::xrack_runtime::scene3d::unproject(#yaw, #pitch, #distance, #viewport, #point, #depth, #fallback))
+                    }
+                    (ProjectCamera3D, [model, camera, viewport, point]) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            true,
+                        );
+                        quote!(::xrack_runtime::scene3d::project_camera(&#objects, &(#camera), #viewport, #point))
+                    }
+                    (UnprojectCamera3D, [model, camera, viewport, point, depth, fallback]) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            true,
+                        );
+                        quote!(::xrack_runtime::scene3d::unproject_camera(&#objects, &(#camera), #viewport, #point, #depth, #fallback))
+                    }
                     (Vector, [x, y]) => quote!(::xrack_runtime::Vector2D::new(#x, #y)),
                     (Identity, []) => quote!(::xrack_runtime::Transform2D::IDENTITY),
                     (Translation, [x, y]) => {
@@ -2729,6 +3174,46 @@ impl<'a> Generator<'a> {
                     (Around, [transform, point]) => quote!((#transform).around(#point)),
                     (MapPoint, [transform, point]) => quote!((#transform).map_point(#point)),
                     (MapVector, [transform, vector]) => quote!((#transform).map_vector(#vector)),
+                    (
+                        PickCamera3D | HitCamera3D | HitAllCamera3D,
+                        [model, camera, viewport, pointer, layers @ ..],
+                    ) => {
+                        let query = match kind {
+                            HitAllCamera3D => quote!(hit_all_camera),
+                            HitCamera3D => quote!(hit_camera),
+                            _ => quote!(pick_camera),
+                        };
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::#query(&#objects, &(#camera), #viewport, #pointer, #layers))
+                    }
+                    (
+                        Pick3D | Hit3D | HitAll3D,
+                        [model, yaw, pitch, distance, viewport, pointer, layers @ ..],
+                    ) => {
+                        let query = match kind {
+                            HitAll3D => quote!(hit_all_objects),
+                            Hit3D => quote!(hit_model),
+                            _ => quote!(pick_model),
+                        };
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::#query(&#objects, #yaw, #pitch, #distance, #viewport, #pointer, #layers))
+                    }
                     _ => return Err("invalid geometry operands".into()),
                 }
             }
@@ -4066,6 +4551,7 @@ impl<'a> Generator<'a> {
     fn list_row_body(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
         if element.attr("kind") == Ok("StandardTableView") {
             let model = self.table_rows_model(element)?;
+            let cache = table_row_cache_field(element_key(element)?);
             let table = self.standard_table(element)?;
             let count = table.columns.len();
             let header = if let Some(name) = &table.row_header {
@@ -4099,7 +4585,7 @@ impl<'a> Generator<'a> {
                 .enumerate()
                 .map(|(column, editor)| quote!(#column => #editor,));
             return Ok(quote! {
-                ::xrack_runtime::render_standard_table_rows(
+                self.__state.#cache.render(
                     || #model, __range, __xr_columns, __xr_scene.and_then(|node| node.standard_list_stamp), #count, |item| #header,
                     |item, column| match column { #(#cells)* _ => ::core::unreachable!() },
                     |column| match column { #(#editors)* _ => ::core::option::Option::None },
@@ -8254,12 +8740,53 @@ impl<'a> Generator<'a> {
                 out.extend(quote!(#name.set_string_combo_model(#value);));
                 continue;
             }
+            let value = match (element.attr("kind"), key) {
+                (Ok("SceneView3D"), "model") => {
+                    let ty = operand_type(binding).ok_or("missing 3D model type")?;
+                    let objects = project_scene_objects(
+                        &value,
+                        &ty,
+                        self.scene_record_fields(&ty),
+                        self.records,
+                        false,
+                    );
+                    quote!(::xrack_runtime::Value::SceneObjects(#objects))
+                }
+                (Ok("SceneView3D"), "environment") => {
+                    quote!(::xrack_runtime::Value::SceneEnvironment(__xr_environment(&(#value))))
+                }
+                (Ok("SceneView3D"), "lights") => {
+                    let ty = operand_type(binding).ok_or("missing 3D light type")?;
+                    let lights = project_scene_lights(&value, self.scene_record_fields(&ty));
+                    quote!(::xrack_runtime::Value::SceneLights(#lights))
+                }
+                (Ok("SceneView3D"), "particle-emitters") => {
+                    let ty = operand_type(binding).ok_or("missing particle emitter model type")?;
+                    let emitters = project_particles(&value, self.scene_record_fields(&ty));
+                    quote!(::xrack_runtime::Value::SceneParticleEmitters(#emitters))
+                }
+                (Ok("SceneView3D"), "particle-affectors") => {
+                    let ty = operand_type(binding).ok_or("missing particle affector model type")?;
+                    let affectors =
+                        project_particle_affectors(&value, self.scene_record_fields(&ty));
+                    quote!(::xrack_runtime::Value::SceneParticleAffectors(#affectors))
+                }
+                (Ok("SceneView3D"), "fog-volumes") => {
+                    let ty = operand_type(binding).ok_or("missing fog volume model type")?;
+                    let volumes = project_fog_volumes(&value, self.scene_record_fields(&ty));
+                    quote!(::xrack_runtime::Value::SceneFogVolumes(#volumes))
+                }
+                (Ok("SceneView3D"), "reflection-probes") => {
+                    let ty = operand_type(binding).ok_or("missing reflection probe model type")?;
+                    let probes = project_reflections(&value, self.scene_record_fields(&ty));
+                    quote!(::xrack_runtime::Value::SceneReflections(#probes))
+                }
+                _ => quote!(::xrack_runtime::Value::from(#value)),
+            };
             if binding_op == "xr.layout_bind" {
-                out.extend(quote!(#name.set_instance_layout_property(#key, ::xrack_runtime::Value::from(#value));));
+                out.extend(quote!(#name.set_instance_layout_property(#key, #value);));
             } else {
-                out.extend(
-                    quote!(#name.properties.insert(#key, ::xrack_runtime::Value::from(#value));),
-                );
+                out.extend(quote!(#name.properties.insert(#key, #value);));
             }
             if self.use_visual_plan
                 && matches!(
@@ -13067,6 +13594,11 @@ impl<'a> Generator<'a> {
             let visible_field = self.record_field_binding(table, "row-visible-field")?;
             let projected = auto_sort || filter_field.is_some() || visible_field.is_some();
             let standard = table.attr("kind") == Ok("StandardTableView");
+            if standard {
+                let cache = table_row_cache_field(key);
+                fields.extend(quote!(#cache: ::xrack_runtime::StandardTableRowCache,));
+                defaults.extend(quote!(#cache: ::core::default::Default::default(),));
+            }
             if standard || visible_field.is_some() {
                 let binding = if standard {
                     self.standard_table(table)?.model
@@ -14665,7 +15197,16 @@ pub fn generate_with_locale(
     paths: &BTreeMap<String, EmbeddedPath>,
     translations: Option<&EmbeddedTranslations>,
 ) -> Result<TokenStream, String> {
-    generate_with_resources(module, images, fonts, paths, translations, true, "")
+    generate_with_resources(
+        module,
+        images,
+        fonts,
+        paths,
+        &xrack_resources::SceneAssets::default(),
+        translations,
+        true,
+        "",
+    )
 }
 
 pub use generate_with_locale as generate_with_translations;
@@ -14694,6 +15235,7 @@ pub fn generate_with_resolved_assets_at(
         &assets.images,
         &assets.fonts,
         &assets.paths,
+        &assets.scene,
         translations,
         false,
         entry_file,
@@ -14707,16 +15249,700 @@ fn uses_locale(op: OperationRef<'_>) -> bool {
     ) || op.children().any(uses_locale)
 }
 
+fn uses_scene_meshes(op: OperationRef<'_>) -> bool {
+    op.name() == "xr.element" && op.attribute("kind") == Some("SceneView3D")
+        || op.name() == "xr.geometry_function"
+            && op
+                .attribute("value")
+                .and_then(xrack_syntax::builtins::GeometryFunction::parse)
+                .is_some_and(xrack_syntax::builtins::GeometryFunction::uses_scene_model)
+        || op.children().any(uses_scene_meshes)
+}
+
+fn binds_scene_environment(op: OperationRef<'_>) -> bool {
+    op.name() == "xr.element"
+        && op.attribute("kind") == Some("SceneView3D")
+        && op.children().any(|child| {
+            child.name() == "xr.bind"
+                && matches!(
+                    child.attribute("name"),
+                    Some("environment" | "reflection-probes")
+                )
+        })
+        || op.children().any(binds_scene_environment)
+}
+
+fn embed_environments(assets: &xrack_resources::SceneAssets) -> Result<TokenStream, String> {
+    let mut declarations = TokenStream::new();
+    let mut entries = TokenStream::new();
+    let mut known = BTreeMap::<usize, Ident>::new();
+    for (key, probe) in &assets.environments {
+        let identity = ::std::sync::Arc::as_ptr(probe) as usize;
+        let next = known.len();
+        let name = match known.entry(identity) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.get().clone(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let name = format_ident!("__XR_ENVIRONMENT_{next}");
+                let packed =
+                    proc_macro2::Literal::byte_string(&xrack_resources::pack_environment(probe)?);
+                let diffuse = probe.diffuse().iter().map(|[r, g, b]| quote!([#r, #g, #b]));
+                declarations.extend(quote! {
+                    static #name: ::std::sync::LazyLock<::core::option::Option<::std::sync::Arc<::xrack_runtime::scene3d::EnvironmentProbe>>> =
+                        ::std::sync::LazyLock::new(|| ::xrack_runtime::scene3d::EnvironmentProbe::from_packed(
+                            [#(#diffuse),*], #packed
+                        ).map(::std::sync::Arc::new));
+                });
+                entry.insert(name).clone()
+            }
+        };
+        entries.extend(quote!(#key => (*#name).clone(),));
+    }
+    Ok(quote! {
+        #declarations
+        fn __xr_environment(key: &::core::primitive::str) -> ::core::option::Option<::std::sync::Arc<::xrack_runtime::scene3d::EnvironmentProbe>> {
+            match key {
+                #entries
+                _ => ::core::option::Option::None,
+            }
+        }
+    })
+}
+
+fn embed_scene_meshes(
+    assets: &BTreeMap<String, xrack_runtime::scene3d::MeshAsset>,
+) -> Result<TokenStream, String> {
+    let mut meshes = MeshEmitter::default();
+    let mut entries = TokenStream::new();
+    for (key, asset) in assets {
+        let value = meshes.asset(asset)?;
+        entries.extend(quote!(#key => #value,));
+    }
+    let declarations = meshes.declarations;
+    Ok(quote! {
+        ::std::thread_local! {
+            #[allow(dead_code)]
+            static __XR_SCENE_PROJECTIONS: ::xrack_runtime::scene3d::SceneProjectionCache =
+                const { ::xrack_runtime::scene3d::SceneProjectionCache::new() };
+        }
+        #[allow(dead_code)]
+        fn __xr_scene_mesh(key: &::core::primitive::str) -> ::core::option::Option<::xrack_runtime::scene3d::MeshAsset> {
+            #declarations
+            match key {
+                #entries
+                _ => ::core::option::Option::None,
+            }
+        }
+    })
+}
+
+#[derive(Default)]
+struct MeshEmitter {
+    geometry: BTreeMap<usize, Ident>,
+    rigs: BTreeMap<usize, Ident>,
+    lods: BTreeMap<usize, Ident>,
+    images: BTreeMap<usize, Ident>,
+    declarations: TokenStream,
+}
+
+impl MeshEmitter {
+    fn mesh(&mut self, mesh: &xrack_runtime::scene3d::Mesh3D) -> Result<Ident, String> {
+        embed_mesh_geometry(
+            mesh,
+            &mut self.geometry,
+            &mut self.images,
+            &mut self.declarations,
+        )
+    }
+
+    fn asset(&mut self, asset: &xrack_runtime::scene3d::MeshAsset) -> Result<TokenStream, String> {
+        use xrack_runtime::scene3d::MeshAsset;
+        Ok(match asset {
+            MeshAsset::Static(mesh) => {
+                let name = self.mesh(mesh)?;
+                quote!((#name).as_ref().cloned().map(::xrack_runtime::scene3d::MeshAsset::Static))
+            }
+            MeshAsset::Animated(rig) => {
+                let identity = ::std::sync::Arc::as_ptr(rig) as usize;
+                let name = if let Some(name) = self.rigs.get(&identity) {
+                    name.clone()
+                } else {
+                    let name = format_ident!("PACKED_RIG_{}", self.rigs.len());
+                    let meshes = rig
+                        .meshes()
+                        .iter()
+                        .map(|mesh| self.mesh(mesh))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let nodes = rig.nodes().iter().map(embed_animation_node);
+                    let clips = rig.clips().iter().map(embed_animation_clip);
+                    let skins = rig.skins().iter().map(embed_mesh_skin);
+                    let lights = rig.lights().iter().map(embed_mesh_light);
+                    let cameras = rig.cameras().iter().map(embed_mesh_camera);
+                    self.declarations.extend(quote! {
+                        static #name: ::std::sync::LazyLock<::core::option::Option<::xrack_runtime::scene3d::MeshAsset>> =
+                            ::std::sync::LazyLock::new(|| {
+                                ::xrack_runtime::scene3d::AnimatedMesh::new(
+                                    ::std::vec![#((#meshes).as_ref()?.clone()),*],
+                                    ::std::vec![#(#nodes),*],
+                                    ::std::vec![#(#clips),*],
+                                    ::std::vec![#(#skins),*],
+                                    ::std::vec![#(#lights),*],
+                                    ::std::vec![#(#cameras),*],
+                                ).ok().map(|rig| ::xrack_runtime::scene3d::MeshAsset::Animated(::std::sync::Arc::new(rig)))
+                            });
+                    });
+                    self.rigs.insert(identity, name.clone());
+                    name
+                };
+                quote!((*#name).clone())
+            }
+            MeshAsset::Lods(lods) => {
+                let identity = ::std::sync::Arc::as_ptr(lods) as usize;
+                let name = if let Some(name) = self.lods.get(&identity) {
+                    name.clone()
+                } else {
+                    let name = format_ident!("PACKED_LODS_{}", self.lods.len());
+                    let primary = self.asset(lods.primary())?;
+                    let levels = lods
+                        .levels()
+                        .iter()
+                        .map(|level| {
+                            let size = level.max_size;
+                            let meshes = level
+                                .meshes
+                                .iter()
+                                .map(|mesh| self.mesh(mesh))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            Ok::<_, String>(
+                                quote!((#size, ::std::vec![#((#meshes).as_ref()?.clone()),*])),
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.declarations.extend(quote! {
+                        static #name: ::std::sync::LazyLock<::core::option::Option<::xrack_runtime::scene3d::MeshAsset>> =
+                            ::std::sync::LazyLock::new(|| {
+                                Some((#primary)?.with_lods(::std::vec![#(#levels),*]))
+                            });
+                    });
+                    self.lods.insert(identity, name.clone());
+                    name
+                };
+                quote!((*#name).clone())
+            }
+        })
+    }
+}
+
+fn embed_mesh_geometry(
+    mesh: &xrack_runtime::scene3d::Mesh3D,
+    known: &mut BTreeMap<usize, Ident>,
+    images: &mut BTreeMap<usize, Ident>,
+    declarations: &mut TokenStream,
+) -> Result<Ident, String> {
+    use xrack_runtime::scene3d::MeshAlphaMode;
+    let identity = mesh.vertices().as_ptr() as usize;
+    let next = known.len();
+    let entry = match known.entry(identity) {
+        std::collections::btree_map::Entry::Occupied(entry) => return Ok(entry.get().clone()),
+        std::collections::btree_map::Entry::Vacant(entry) => entry,
+    };
+    let name = format_ident!("PACKED_MESH_{next}");
+    let bytes: Vec<u8> = mesh
+        .vertices()
+        .iter()
+        .flat_map(|vertex| {
+            vertex
+                .position
+                .into_iter()
+                .chain(vertex.normal)
+                .chain(vertex.uv)
+                .chain(vertex.color)
+                .chain(vertex.uv1)
+        })
+        .flat_map(f32::to_le_bytes)
+        .collect();
+    let bytes = Literal::byte_string(&bytes);
+    let tangents: Vec<_> = mesh
+        .tangents()
+        .iter()
+        .flatten()
+        .copied()
+        .flat_map(i16::to_le_bytes)
+        .collect();
+    let tangents = Literal::byte_string(&tangents);
+    let parts = mesh.parts().iter().map(|part| {
+        let start = part.vertices.start;
+        let end = part.vertices.end;
+        let material = part.material;
+        let volume_inverse = if let Some(matrix) = part.volume_inverse {
+            let rows = matrix.map(|[a, b, c]| quote!([#a, #b, #c]));
+            quote!(::core::option::Option::Some([#(#rows),*]))
+        } else {
+            quote!(::core::option::Option::None)
+        };
+        quote!(::xrack_runtime::scene3d::MeshPart {
+            vertices: #start..#end,
+            material: #material,
+            volume_inverse: #volume_inverse,
+        })
+    });
+    let materials = mesh
+        .materials()
+        .iter()
+        .map(|material| {
+            let [r, g, b, a] = material.base_color;
+            let alpha_mode = match material.alpha_mode {
+                MeshAlphaMode::Opaque => {
+                    quote!(::xrack_runtime::scene3d::MeshAlphaMode::Opaque)
+                }
+                MeshAlphaMode::Mask(cutoff) => {
+                    quote!(::xrack_runtime::scene3d::MeshAlphaMode::Mask(#cutoff))
+                }
+                MeshAlphaMode::Blend => {
+                    quote!(::xrack_runtime::scene3d::MeshAlphaMode::Blend)
+                }
+            };
+            let double_sided = material.double_sided;
+            let base_texture =
+                embed_optional_mesh_texture(&material.base_texture, images, declarations)?;
+            let pbr = if let Some(pbr) = &material.pbr {
+                let [mr, emissive_texture, occlusion] = [
+                    &pbr.metallic_roughness_texture,
+                    &pbr.emissive_texture,
+                    &pbr.occlusion_texture,
+                ]
+                .map(|texture| embed_optional_mesh_texture(texture, images, declarations));
+                let (mr, emissive_texture, occlusion) = (mr?, emissive_texture?, occlusion?);
+                let metallic = pbr.metallic;
+                let roughness = pbr.roughness;
+                let [r, g, b] = pbr.emissive;
+                let occlusion_strength = pbr.occlusion_strength;
+                let normal_map = embed_mesh_normal(pbr.normal_map.as_ref(), images, declarations)?;
+                let clearcoat = if let Some(coat) = &pbr.clearcoat {
+                    let amount = coat.amount;
+                    let roughness = coat.roughness;
+                    let amount_texture =
+                        embed_optional_mesh_texture(&coat.amount_texture, images, declarations)?;
+                    let roughness_texture =
+                        embed_optional_mesh_texture(&coat.roughness_texture, images, declarations)?;
+                    let normal_map =
+                        embed_mesh_normal(coat.normal_map.as_ref(), images, declarations)?;
+                    quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshClearcoat {
+                        amount: #amount,
+                        roughness: #roughness,
+                        amount_texture: #amount_texture,
+                        roughness_texture: #roughness_texture,
+                        normal_map: #normal_map,
+                    }))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
+                let dielectric = if let Some(material) = pbr.dielectric.as_deref() {
+                    let ior = material.ior;
+                    let specular = material.specular;
+                    let [sr, sg, sb] = material.color;
+                    let specular_texture = embed_optional_mesh_texture(
+                        &material.specular_texture,
+                        images,
+                        declarations,
+                    )?;
+                    let color_texture =
+                        embed_optional_mesh_texture(&material.color_texture, images, declarations)?;
+                    quote!(::core::option::Option::Some(::std::boxed::Box::new(
+                        ::xrack_runtime::scene3d::MeshDielectric {
+                            ior: #ior, specular: #specular, color: [#sr, #sg, #sb],
+                            specular_texture: #specular_texture,
+                            color_texture: #color_texture,
+                        }
+                    )))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
+                let transmission = if let Some(material) = pbr.transmission.as_deref() {
+                    let factor = material.factor;
+                    let texture = embed_optional_mesh_texture(&material.texture, images, declarations)?;
+                    let volume = if let Some(volume) = material.volume.as_deref() {
+                        let thickness = volume.thickness;
+                        let dispersion = volume.dispersion;
+                        let thickness_texture = embed_optional_mesh_texture(&volume.texture, images, declarations)?;
+                        let [r,g,b] = volume.attenuation_color;
+                        let distance = match volume.attenuation_distance {
+                            Some(distance) => quote!(::core::option::Option::Some(#distance)),
+                            None => quote!(::core::option::Option::None),
+                        };
+                        quote!(::core::option::Option::Some(::std::boxed::Box::new(
+                            ::xrack_runtime::scene3d::MeshVolume {
+                                thickness: #thickness, dispersion: #dispersion, texture: #thickness_texture,
+                                attenuation_distance: #distance, attenuation_color: [#r,#g,#b],
+                            }
+                        )))
+                    } else {
+                        quote!(::core::option::Option::None)
+                    };
+                    quote!(::core::option::Option::Some(::std::boxed::Box::new(
+                        ::xrack_runtime::scene3d::MeshTransmission { factor: #factor, texture: #texture, volume: #volume }
+                    )))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
+                quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshPbr {
+                    metallic: #metallic, roughness: #roughness, emissive: [#r, #g, #b],
+                    occlusion_strength: #occlusion_strength,
+                    metallic_roughness_texture: #mr,
+                    emissive_texture: #emissive_texture,
+                    occlusion_texture: #occlusion,
+                    normal_map: #normal_map,
+                    clearcoat: #clearcoat,
+                    dielectric: #dielectric,
+                    transmission: #transmission,
+                }))
+            } else {
+                quote!(::core::option::Option::None)
+            };
+            Ok(quote!(::xrack_runtime::scene3d::MeshMaterial {
+                base_color: [#r, #g, #b, #a],
+                base_texture: #base_texture,
+                alpha_mode: #alpha_mode,
+                double_sided: #double_sided,
+                pbr: #pbr,
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let prepared = quote!(::xrack_runtime::scene3d::Mesh3D::from_packed(
+        #bytes, #tangents, ::std::vec![#(#parts),*], ::std::vec![#(#materials),*],
+    ));
+    let prepared = if mesh.lightmap_uvs().is_empty() {
+        prepared
+    } else {
+        let bytes = mesh
+            .lightmap_uvs()
+            .iter()
+            .flatten()
+            .copied()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let bytes = Literal::byte_string(&bytes);
+        let min_size = mesh.lightmap_min_size();
+        quote!((#prepared).and_then(|mesh| mesh.with_packed_lightmap_uv(#bytes, #min_size)))
+    };
+    let prepared = if let Some(weights) = mesh.influences() {
+        let packed: Vec<u8> = weights
+            .iter()
+            .copied()
+            .flat_map(|weight| weight.packed())
+            .collect();
+        let packed = Literal::byte_string(&packed);
+        quote!((#prepared).and_then(|mesh| mesh.with_packed_skin(#packed)))
+    } else {
+        prepared
+    };
+    let prepared = if let Some(morph) = mesh.morph_geometry() {
+        let count = morph.target_count();
+        let names = morph.target_names().iter();
+        let packed: Vec<u8> = morph.packed_words().flat_map(u32::to_le_bytes).collect();
+        let packed = Literal::byte_string(&packed);
+        quote!((#prepared).and_then(|mesh| mesh.with_packed_morph(#count, &[#(#names),*], #packed)))
+    } else {
+        prepared
+    };
+    declarations.extend(quote! {
+        static #name: ::std::sync::LazyLock<::core::option::Option<::xrack_runtime::scene3d::Mesh3D>> =
+            ::std::sync::LazyLock::new(|| #prepared);
+    });
+    Ok(entry.insert(name).clone())
+}
+
+fn embed_mesh_camera(camera: &xrack_runtime::scene3d::MeshCamera) -> TokenStream {
+    use xrack_runtime::scene3d::MeshCameraProjection;
+    let node = camera.node;
+    let source_node = camera.source_node;
+    let name = match &camera.name {
+        Some(name) => quote!(::core::option::Option::Some(::std::string::String::from(#name))),
+        None => quote!(::core::option::Option::None),
+    };
+    let optional_float = |value: Option<f32>| match value {
+        Some(value) => quote!(::core::option::Option::Some(#value)),
+        None => quote!(::core::option::Option::None),
+    };
+    let lens = match camera.lens {
+        MeshCameraProjection::Perspective {
+            yfov,
+            aspect,
+            near,
+            far,
+        } => {
+            let aspect = optional_float(aspect);
+            let far = optional_float(far);
+            quote!(::xrack_runtime::scene3d::MeshCameraProjection::Perspective {
+                yfov: #yfov, aspect: #aspect, near: #near, far: #far,
+            })
+        }
+        MeshCameraProjection::Orthographic {
+            xmag,
+            ymag,
+            near,
+            far,
+        } => quote!(::xrack_runtime::scene3d::MeshCameraProjection::Orthographic {
+            xmag: #xmag, ymag: #ymag, near: #near, far: #far,
+        }),
+    };
+    quote!(::xrack_runtime::scene3d::MeshCamera { node: #node, source_node: #source_node, name: #name, lens: #lens })
+}
+
+fn embed_mesh_light(mount: &xrack_runtime::scene3d::MeshLight) -> TokenStream {
+    use xrack_runtime::scene3d::SceneLightSource;
+    let node = mount.node;
+    let [r, g, b] = mount.light.radiance;
+    let casts_shadow = mount.light.casts_shadow;
+    let layers = mount.light.layers;
+    let source = match mount.light.source {
+        SceneLightSource::Directional {
+            toward_light: [x, y, z],
+        } => {
+            quote!(::xrack_runtime::scene3d::SceneLightSource::Directional { toward_light: [#x,#y,#z] })
+        }
+        SceneLightSource::Point {
+            position: [x, y, z],
+            inverse_range_squared,
+        } => quote!(::xrack_runtime::scene3d::SceneLightSource::Point {
+            position: [#x,#y,#z], inverse_range_squared: #inverse_range_squared,
+        }),
+        SceneLightSource::Spot {
+            position: [x, y, z],
+            inverse_range_squared,
+            toward_light: [dx, dy, dz],
+            cone_scale,
+            cone_offset,
+            outer_cos,
+        } => quote!(::xrack_runtime::scene3d::SceneLightSource::Spot {
+            position: [#x,#y,#z], inverse_range_squared: #inverse_range_squared,
+            toward_light: [#dx,#dy,#dz], cone_scale: #cone_scale,
+            cone_offset: #cone_offset, outer_cos: #outer_cos,
+        }),
+    };
+    quote!(::xrack_runtime::scene3d::MeshLight {
+        node: #node,
+        light: ::xrack_runtime::scene3d::SceneLight {
+            source: #source, radiance: [#r, #g, #b], casts_shadow: #casts_shadow, layers: #layers,
+        },
+    })
+}
+
+fn embed_animation_node(node: &xrack_runtime::scene3d::MeshAnimationNode) -> TokenStream {
+    use xrack_runtime::scene3d::MeshNodeTransform;
+    let optional = |index: Option<usize>| {
+        index.map_or_else(
+            || quote!(::core::option::Option::None),
+            |index| quote!(::core::option::Option::Some(#index)),
+        )
+    };
+    let parent = optional(node.parent);
+    let mesh = optional(node.mesh);
+    let skin = optional(node.skin);
+    let weights = node.morph_weights.iter();
+    let transform = match &node.transform {
+        MeshNodeTransform::Matrix(columns) => {
+            let columns = columns.iter().map(|column| quote!([#(#column),*]));
+            quote!(::xrack_runtime::scene3d::MeshNodeTransform::Matrix([#(#columns),*]))
+        }
+        MeshNodeTransform::Trs {
+            translation,
+            rotation,
+            scale,
+        } => {
+            quote!(::xrack_runtime::scene3d::MeshNodeTransform::Trs {
+                translation: [#(#translation),*], rotation: [#(#rotation),*], scale: [#(#scale),*]
+            })
+        }
+    };
+    quote!(::xrack_runtime::scene3d::MeshAnimationNode {
+        parent: #parent, mesh: #mesh, skin: #skin, transform: #transform, morph_weights: ::std::sync::Arc::from([#(#weights),*])
+    })
+}
+
+fn embed_mesh_skin(skin: &xrack_runtime::scene3d::MeshSkin) -> TokenStream {
+    let joints = skin.joints.iter().map(|joint| {
+        let node = joint.node;
+        let bind = joint
+            .inverse_bind
+            .iter()
+            .map(|column| quote!([#(#column),*]));
+        quote!(::xrack_runtime::scene3d::MeshSkinJoint { node: #node, inverse_bind: [#(#bind),*] })
+    });
+    quote!(::xrack_runtime::scene3d::MeshSkin {
+        joints: ::std::vec![#(#joints),*]
+    })
+}
+
+fn embed_animation_clip(clip: &xrack_runtime::scene3d::MeshAnimationClip) -> TokenStream {
+    use xrack_runtime::scene3d::{MeshAnimationProperty, MeshInterpolation};
+    let index = clip.index;
+    let name = clip.name.as_deref().map_or_else(
+        || quote!(::core::option::Option::None),
+        |name| quote!(::core::option::Option::Some(#name.to_owned())),
+    );
+    let interpolation = |interpolation| match interpolation {
+        MeshInterpolation::Step => quote!(::xrack_runtime::scene3d::MeshInterpolation::Step),
+        MeshInterpolation::Linear => {
+            quote!(::xrack_runtime::scene3d::MeshInterpolation::Linear)
+        }
+        MeshInterpolation::CubicSpline => {
+            quote!(::xrack_runtime::scene3d::MeshInterpolation::CubicSpline)
+        }
+    };
+    let tracks = clip.tracks.iter().map(|track| {
+        let node = track.node;
+        let property = match track.property {
+            MeshAnimationProperty::Translation => {
+                quote!(::xrack_runtime::scene3d::MeshAnimationProperty::Translation)
+            }
+            MeshAnimationProperty::Rotation => {
+                quote!(::xrack_runtime::scene3d::MeshAnimationProperty::Rotation)
+            }
+            MeshAnimationProperty::Scale => {
+                quote!(::xrack_runtime::scene3d::MeshAnimationProperty::Scale)
+            }
+        };
+        let interpolation = interpolation(track.interpolation);
+        let times: Vec<_> = track
+            .times
+            .iter()
+            .copied()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let values: Vec<_> = track
+            .values
+            .iter()
+            .flatten()
+            .copied()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let times = Literal::byte_string(&times);
+        let values = Literal::byte_string(&values);
+        quote!((::xrack_runtime::scene3d::MeshAnimationTrack::from_packed(
+            #node, #property, #interpolation, #times, #values
+        ))?)
+    });
+    let morph_tracks = clip.morph_tracks.iter().map(|track| {
+        let node = track.node;
+        let width = track.width;
+        let interpolation = interpolation(track.interpolation);
+        let times: Vec<_> = track
+            .times
+            .iter()
+            .copied()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let values: Vec<_> = track
+            .values
+            .iter()
+            .copied()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let times = Literal::byte_string(&times);
+        let values = Literal::byte_string(&values);
+        quote!((::xrack_runtime::scene3d::MorphAnimationTrack::from_packed(
+            #node, #width, #interpolation, #times, #values
+        ))?)
+    });
+    quote!(::xrack_runtime::scene3d::MeshAnimationClip {
+        index: #index, name: #name, tracks: ::std::vec![#(#tracks),*], morph_tracks: ::std::vec![#(#morph_tracks),*]
+    })
+}
+
+fn embed_mesh_normal(
+    normal: Option<&xrack_runtime::scene3d::MeshNormalMap>,
+    images: &mut BTreeMap<usize, Ident>,
+    declarations: &mut TokenStream,
+) -> Result<TokenStream, String> {
+    let Some(normal) = normal else {
+        return Ok(quote!(::core::option::Option::None));
+    };
+    let texture = embed_mesh_texture(&normal.texture, images, declarations)?;
+    let scale = normal.scale;
+    Ok(
+        quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshNormalMap {
+            texture: (#texture)?,
+            scale: #scale,
+        })),
+    )
+}
+
+fn embed_optional_mesh_texture(
+    texture: &Option<xrack_runtime::scene3d::MeshTexture>,
+    images: &mut BTreeMap<usize, Ident>,
+    declarations: &mut TokenStream,
+) -> Result<TokenStream, String> {
+    match texture {
+        Some(texture) => embed_mesh_texture(texture, images, declarations),
+        None => Ok(quote!(::core::option::Option::None)),
+    }
+}
+
+fn embed_mesh_texture(
+    texture: &xrack_runtime::scene3d::MeshTexture,
+    images: &mut BTreeMap<usize, Ident>,
+    declarations: &mut TokenStream,
+) -> Result<TokenStream, String> {
+    use xrack_runtime::scene3d::{TextureFilter, TextureWrap};
+    let identity = ::std::sync::Arc::as_ptr(&texture.image) as usize;
+    let next = images.len();
+    let name = match images.entry(identity) {
+        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            let name = format_ident!("PACKED_MESH_IMAGE_{next}");
+            let [width, height] = texture.image.size();
+            let compressed = xrack_resources::pack_mesh_image(&texture.image)?;
+            let bytes = Literal::byte_string(&compressed);
+            declarations.extend(quote! {
+                static #name: ::std::sync::LazyLock<::core::option::Option<::std::sync::Arc<::xrack_runtime::scene3d::MeshImage>>> =
+                    ::std::sync::LazyLock::new(|| ::xrack_runtime::scene3d::MeshImage::from_packed([#width, #height], #bytes).map(::std::sync::Arc::new));
+            });
+            entry.insert(name)
+        }
+    };
+    let name = &*name;
+    let [u, v] = texture.wrap.map(|wrap| match wrap {
+        TextureWrap::Clamp => quote!(::xrack_runtime::scene3d::TextureWrap::Clamp),
+        TextureWrap::Repeat => quote!(::xrack_runtime::scene3d::TextureWrap::Repeat),
+        TextureWrap::Mirror => quote!(::xrack_runtime::scene3d::TextureWrap::Mirror),
+    });
+    let filter = |filter| match filter {
+        TextureFilter::Linear => quote!(::xrack_runtime::scene3d::TextureFilter::Linear),
+        TextureFilter::Nearest => quote!(::xrack_runtime::scene3d::TextureFilter::Nearest),
+    };
+    let min = filter(texture.min_filter);
+    let mag = filter(texture.mag_filter);
+    let mip = match texture.mip_filter.map(filter) {
+        Some(filter) => quote!(::core::option::Option::Some(#filter)),
+        None => quote!(::core::option::Option::None),
+    };
+    let uv_slot = texture.uv_slot;
+    let [[ux, uy, offset_u], [vx, vy, offset_v]] = texture.transform.rows;
+    Ok(
+        quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshTexture {
+            image: (*#name).clone()?,
+            wrap: [#u, #v],
+            min_filter: #min,
+            mag_filter: #mag,
+            mip_filter: #mip,
+            uv_slot: #uv_slot,
+            transform: ::xrack_runtime::scene3d::TextureTransform { rows: [[#ux, #uy, #offset_u], [#vx, #vy, #offset_v]] },
+        })),
+    )
+}
+
 fn generate_with_resources(
     module: &Module,
     images: &BTreeMap<String, EmbeddedImage>,
     fonts: &[Vec<u8>],
     paths: &BTreeMap<String, EmbeddedPath>,
+    scene_assets: &xrack_resources::SceneAssets,
     translations: Option<&EmbeddedTranslations>,
     validate_asset_data: bool,
     entry_file: &str,
 ) -> Result<TokenStream, String> {
     module.verify()?;
+    xrack_resources::require_scene_assets(module, scene_assets)?;
     xrack_resources::validate_module_resources(
         module,
         xrack_resources::ResourceImages::Embedded(images),
@@ -14734,10 +15960,17 @@ fn generate_with_resources(
     let with_locale = translations.is_some() || module.operations().any(uses_locale);
     let mut out = quote! {
         const _: () = assert!(
-            ::xrack_runtime::CODEGEN_ABI_VERSION == 17,
+            ::xrack_runtime::CODEGEN_ABI_VERSION == 18,
             "xrackc and xrack-runtime have incompatible code generation interfaces"
         );
     };
+    let uses_scene = module.operations().any(uses_scene_meshes);
+    if !scene_assets.meshes.is_empty() || uses_scene {
+        out.extend(embed_scene_meshes(&scene_assets.meshes)?);
+    }
+    if !scene_assets.environments.is_empty() || module.operations().any(binds_scene_environment) {
+        out.extend(embed_environments(scene_assets)?);
+    }
     if !globals.is_empty() {
         let mut fields = TokenStream::new();
         for &global in &globals {

@@ -1,0 +1,28 @@
+// CHECK: "xr.geometry_function"{{.*}}value = "sphere-cast-3d"{{.*}}!xr.hit3d
+// CHECK: "xr.geometry_function"{{.*}}value = "sphere-overlap-3d"{{.*}}!xr.hit3dlist
+// CHECK: "xr.hit3d_array"()
+// CHECK: "xr.geometry_function"{{.*}}value = "sphere-slide-3d"{{.*}}!xr.point3d
+// CHECK-NOT: "sphere-slide-3d"
+// CHECK: "xr.geometry_function"{{.*}}value = "sphere-walk-3d"{{.*}}!xr.point3d
+// CHECK-NOT: "sphere-walk-3d"
+
+struct Wall {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, collidable: bool,
+}
+
+export component SweepPlan inherits Window {
+    in property <[Wall]> walls;
+    in property <point3d> start;
+    in property <float> radius: 0.5;
+    in property <vector3d> displacement;
+    out property <hit3d> cast: Scene3D.sphere-cast(root.walls,
+        root.start, Vector3D.new(1, 0, 0), 8.0, root.radius);
+    out property <[hit3d]> overlaps: Scene3D.sphere-overlap(root.walls, root.start, root.radius);
+    out property <[hit3d]> none: Scene3D.sphere-overlap(root.walls, root.start, root.radius, 0);
+    out property <point3d> slide: Scene3D.sphere-slide(root.walls, root.start, root.displacement, root.radius);
+    out property <point3d> still: Scene3D.sphere-slide(root.walls, root.start, Vector3D.new(0, 0, 0), root.radius);
+    out property <point3d> walk: Scene3D.sphere-walk(root.walls, root.start, root.displacement, root.radius, 0.3, 0.25, 45);
+    out property <point3d> idle: Scene3D.sphere-walk(root.walls, root.start, Vector3D.new(0, 0, 0), root.radius, 0.3, 0.25, 45);
+}

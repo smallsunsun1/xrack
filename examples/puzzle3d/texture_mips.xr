@@ -1,0 +1,45 @@
+struct MipmapActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    color: color, visible: bool,
+}
+
+export component TextureMipmapDemo inherits Window {
+    title: "XRack · 材质纹理缩小";
+    width: 400px;
+    height: 258px;
+    background: #141d29;
+
+    in-out property <float> distance: 20;
+    in-out property <float> yaw: 14;
+    property <[MipmapActor]> scene: [
+        MipmapActor {
+            id: "cards", mesh: @mesh-url("models/minification-cards.gltf"),
+            x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+            yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,
+        },
+    ];
+    view := SceneView3D {
+        width: 400px;
+        height: 200px;
+        model: root.scene;
+        camera-yaw: root.yaw;
+        camera-pitch: 0;
+        camera-distance: root.distance;
+        scene-background: #172333;
+    }
+
+    Label { x: 26px; y: 200px; width: 166px; height: 24px; text: "最近点"; }
+    Label { x: 222px; y: 200px; width: 150px; height: 24px; text: "三线性 mipmap"; }
+    Label { x: 14px; y: 224px; width: 44px; height: 34px; text: "距离"; }
+    zoom := Slider {
+        x: 62px; y: 225px; width: 170px; height: 32px;
+        minimum: 11; maximum: 35; value <=> root.distance;
+    }
+    orbit := Slider {
+        x: 246px; y: 225px; width: 138px; height: 32px;
+        minimum: -65; maximum: 65; value <=> root.yaw;
+    }
+}

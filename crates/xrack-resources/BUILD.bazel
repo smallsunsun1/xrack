@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
 
 rust_library(
@@ -16,4 +16,9 @@ rust_library(
         "//crates/xrack-runtime:xrack_runtime",
         "//crates/xrack-syntax:xrack_syntax",
     ] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "mesh_lod_test",
+    crate = ":xrack_resources",
 )

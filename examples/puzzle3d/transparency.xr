@@ -1,0 +1,81 @@
+struct TransparentActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, visible: bool,
+    camera-kind: string, camera-height: float,
+}
+
+export component TransparencyDemo inherits Window {
+    title: "XRack · 相交透明面";
+    width: 480px;
+    height: 300px;
+    background: #141d29;
+
+    in-out property <bool> weighted: false;
+    in-out property <bool> reversed: false;
+    in-out property <bool> smooth: false;
+    in-out property <bool> hdr: false;
+    in-out property <bool> single: false;
+    in-out property <bool> offscreen: false;
+    property <float> shift: root.offscreen ? 100 : 0;
+
+    property <TransparentActor> defaults: TransparentActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true, camera-kind: "", camera-height: 6,
+    };
+    property <string> sheet: @mesh-url("models/oit-sheet.gltf");
+    property <TransparentActor> red: TransparentActor {
+        id: "red", mesh: root.sheet, x: root.shift, yaw: 40, color: #ff3838, ..root.defaults
+    };
+    property <TransparentActor> blue: TransparentActor {
+        id: "blue", mesh: root.sheet, x: root.shift, yaw: -40, color: #3864ff,
+        visible: !root.single, ..root.defaults
+    };
+    property <TransparentActor> culled: TransparentActor {
+        id: "outside", mesh: root.sheet, x: 100, ..root.defaults
+    };
+    property <TransparentActor> front: TransparentActor {
+        id: "block", mesh: "primitive:box", y: -0.63, z: 3.25,
+        scale-x: 0.85, scale-y: 1.35, scale-z: 0.55, roll: 17,
+        color: #46936f, ..root.defaults
+    };
+    property <TransparentActor> camera: TransparentActor {
+        id: "eye", z: 8, camera-kind: "orthographic", ..root.defaults
+    };
+    property <TransparentActor> coated: TransparentActor {
+        id: "coated", mesh: @mesh-url("models/oit-coated.gltf"), x: root.shift,
+        y: -2.18, scale-x: 0.48, scale-y: 0.28, scale-z: 1,
+        color: #e9bb6e, visible: !root.single, ..root.defaults
+    };
+    property <[TransparentActor]> models: root.reversed
+        ? [root.blue, root.culled, root.red, root.front, root.coated, root.camera]
+        : [root.red, root.culled, root.blue, root.front, root.coated, root.camera];
+    property <point2d> viewport: Point2D.new(480px, 248px);
+    out property <string> left-pick: Scene3D.pick-camera(root.models, "eye",
+        root.viewport, Point2D.new(185px, 98px));
+    out property <string> right-pick: Scene3D.pick-camera(root.models, "eye",
+        root.viewport, Point2D.new(295px, 98px));
+
+    view := SceneView3D {
+        width: 480px;
+        height: 248px;
+        camera: "eye";
+        model: root.models;
+        order-independent-transparency: root.weighted;
+        multisampling: root.smooth;
+        environment: root.hdr ? @environment-url("models/studio.hdr") : "";
+        scene-background: #172333;
+    }
+
+    HorizontalLayout {
+        y: 248px;
+        height: 52px;
+        width: 480px;
+        padding: 12px;
+        spacing: 14px;
+        weighted-toggle := CheckBox { text: "加权透明"; checked <=> root.weighted; }
+        reversed-toggle := CheckBox { text: "反转行序"; checked <=> root.reversed; }
+        smooth-toggle := CheckBox { text: "4× MSAA"; checked <=> root.smooth; }
+        hdr-toggle := CheckBox { text: "HDR"; checked <=> root.hdr; }
+    }
+}

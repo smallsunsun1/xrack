@@ -181,11 +181,11 @@ pub(crate) fn measure(node: &Node, available: Size, text: &mut impl TextMeasurer
 pub(crate) struct Placement {
     pub(crate) bounds: Rect,
     pub(crate) row_children: Option<RowPlacements>,
-    pub(crate) clip: Option<std::sync::Arc<crate::table::PaneClip>>,
+    pub(crate) clip: Option<std::rc::Rc<crate::table::PaneClip>>,
 }
 
 pub(crate) enum RowPlacements {
-    Cells(Vec<CellPlacement>),
+    Cells(Vec<Placement>),
     Tree {
         geometry: TreeRowGeometry,
         has_children: bool,
@@ -200,12 +200,6 @@ impl Placement {
             clip: None,
         }
     }
-}
-
-#[derive(Clone)]
-pub(crate) struct CellPlacement {
-    pub(crate) bounds: Rect,
-    pub(crate) clip: Option<std::sync::Arc<crate::table::PaneClip>>,
 }
 
 pub(crate) fn children(
@@ -238,13 +232,11 @@ pub(crate) fn children(
             if child.kind == "Row" && child.boolean("visible", true) {
                 Placement {
                     bounds: inner,
-                    row_children: Some(RowPlacements::Cells(vec![
-                        CellPlacement {
-                            bounds: hidden,
-                            clip: None
-                        };
-                        child.children.len()
-                    ])),
+                    row_children: Some(RowPlacements::Cells(
+                        (0..child.children.len())
+                            .map(|_| Placement::plain(hidden))
+                            .collect(),
+                    )),
                     clip: None,
                 }
             } else {

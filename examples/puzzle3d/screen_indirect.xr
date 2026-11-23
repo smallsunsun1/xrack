@@ -1,0 +1,94 @@
+struct IndirectActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, visible: bool,
+}
+
+export component ScreenIndirectDemo inherits Window {
+    title: "XRack · 屏幕空间全局光照";
+    width: 600px; height: 394px;
+    resizable: false;
+    background: #141d29;
+
+    in-out property <bool> global-light: true;
+    in-out property <bool> warm-panel: true;
+    in-out property <bool> show-panel: true;
+    in-out property <bool> msaa: false;
+    in-out property <bool> reflect-screen: false;
+    in-out property <bool> ambient-occlusion: false;
+    in-out property <float> strength: 3.0;
+    in-out property <float> occlusion: 0.6;
+    in-out property <float> ambient-level: 0.32;
+    in-out property <float> buffer-scale: 0.5;
+
+    property <IndirectActor> base: IndirectActor {
+        id: "", mesh: "primitive:box",
+        x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0,
+        color: #c5c9d1, visible: true,
+    };
+    property <[IndirectActor]> room: [
+        IndirectActor {
+            id: "floor", y: -0.56, scale-x: 6.8, scale-y: 0.12, scale-z: 6.6,
+            ..root.base
+        },
+        IndirectActor {
+            id: "wall", y: 0.42, z: -2.0, scale-x: 6.8, scale-y: 2.0, scale-z: 0.12,
+            ..root.base
+        },
+        IndirectActor {
+            id: "source", mesh: @mesh-url("models/ssgi-emitter.gltf"),
+            x: -1.8, y: 0.48, z: -0.6, yaw: 90, scale-x: 2.7, scale-y: 1.96,
+            color: root.warm-panel ? #ff241b : #197bff, visible: root.show-panel,
+            ..root.base
+        },
+        IndirectActor {
+            id: "column", x: -0.35, y: 0.0, z: -0.6,
+            scale-x: 0.85, scale-y: 1.0, scale-z: 1.0, yaw: -10,
+            color: #e0dfd5, ..root.base
+        },
+        IndirectActor {
+            id: "mirror", mesh: @mesh-url("models/ssr-mirror.gltf"),
+            x: 1.63, y: -0.491, z: 0.25, pitch: -90, scale-x: 2.3, scale-y: 3.55,
+            ..root.base
+        },
+        IndirectActor {
+            id: "globe", mesh: "primitive:sphere",
+            x: 1.18, y: 0.05, z: -0.7,
+            scale-x: 1.16, scale-y: 1.16, scale-z: 1.16, color: #a9c6e6,
+            ..root.base
+        },
+    ];
+
+    view := SceneView3D {
+        width: 600px; height: 340px;
+        model: root.room;
+        camera-yaw: 25; camera-pitch: 32; camera-distance: 9.8;
+        light-yaw: 27; light-elevation: 65;
+        ambient-intensity: root.ambient-level;
+        scene-background: #172538;
+        cache-rendering: true;
+        multisampling: root.msaa;
+        ambient-occlusion: root.ambient-occlusion;
+        screen-space-reflections: root.reflect-screen;
+        ssr-steps: 96;
+        screen-space-global-illumination: root.global-light;
+        ssgi-radius: 3.3; ssgi-thickness: 0.31;
+        ssgi-strength: root.strength; ssgi-occlusion: root.occlusion;
+        ssgi-scale: root.buffer-scale; ssgi-rays: 16; ssgi-steps: 30;
+    }
+
+    HorizontalLayout {
+        x: 12px; y: 346px; width: 576px; height: 36px; spacing: 12px;
+        gi-switch := CheckBox { width: 112px; text: "间接光"; checked <=> root.global-light; }
+        color-switch := Button {
+            width: 92px; text: root.warm-panel ? "红色" : "蓝色";
+            clicked => { root.warm-panel = !root.warm-panel; }
+        }
+        msaa-switch := CheckBox { width: 82px; text: "MSAA"; checked <=> root.msaa; }
+        reflection-switch := CheckBox { width: 110px; text: "屏幕反射"; checked <=> root.reflect-screen; }
+        strength-slider := Slider { minimum: 0; maximum: 8; value <=> root.strength; }
+    }
+}

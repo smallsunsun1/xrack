@@ -786,6 +786,38 @@ fn global_properties_are_completed_and_resolve_to_their_declarations() {
 }
 
 #[test]
+fn imported_global_properties_complete_through_an_alias() {
+    let root = workspace_fixture("imported-global-completion");
+    std::fs::write(root.join("lighting.xr"),
+        "export global BakedLightmaps { out property <float> intensity: 1; private property <float> hidden: 0; }"
+    ).unwrap();
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let text = r#"import { BakedLightmaps as Atlas } from "lighting.xr";
+        struct Material { intensity: float }
+        component App inherits Window {
+            property <Material> material: Material { intensity: Atlas.| };
+        }"#;
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let (before, after) = text.split_once('|').unwrap();
+    let line = before.bytes().filter(|&byte| byte == b'\n').count();
+    let character = before.rsplit('\n').next().unwrap().encode_utf16().count();
+    let items = completion::complete(
+        &format!("{before}{after}"),
+        line,
+        character,
+        Some(&workspace),
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "intensity" && item["detail"] == "float")
+    );
+    assert!(!items.iter().any(|item| item["label"] == "hidden"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn list_selection_api_completes_and_has_typed_signatures() {
     let items = complete_at(
         "component App inherits Window { list := GridView {} out property <int> count: list.selection-|",
@@ -1007,6 +1039,240 @@ fn button_display_completes_members_and_enum_values() {
                 "{kind}.{value}"
             );
         }
+    }
+}
+
+#[test]
+fn scene_viewport_options_have_viewport_specific_types() {
+    for (prefix, name, ty) in [
+        ("supersam", "supersampling", "float"),
+        ("progressive-a", "progressive-aa", "int"),
+        ("temporal-a", "temporal-aa", "bool"),
+        ("temporal-aa-m", "temporal-aa-mode", "string"),
+        ("screen-space-refl", "screen-space-reflections", "bool"),
+        ("ssr-st", "ssr-steps", "int"),
+        ("ssr-th", "ssr-thickness", "float"),
+        (
+            "screen-space-global",
+            "screen-space-global-illumination",
+            "bool",
+        ),
+        ("ssgi-ra", "ssgi-radius", "float"),
+        ("ssgi-ra", "ssgi-rays", "int"),
+        ("temporal-aa-s", "temporal-aa-strength", "float"),
+        ("texture-w", "texture-width", "int"),
+        ("texture-h", "texture-height", "int"),
+        ("render-sc", "render-scale", "float"),
+        ("layer-ma", "layer-mask", "int"),
+        ("cache-rend", "cache-rendering", "bool"),
+        ("imported-li", "imported-lights", "bool"),
+        ("specular-", "specular-aa", "bool"),
+        ("particle-t", "particle-time", "float"),
+    ] {
+        let members = complete_at(&format!(
+            "component App inherits Window {{ SceneView3D {{ {prefix}| }} }}"
+        ));
+        let member = members
+            .iter()
+            .find(|item| item["label"] == name)
+            .expect("typed SceneView3D property");
+        assert_eq!(member["detail"], ty);
+        let outside = complete_at(&format!(
+            "component App inherits Window {{ Rectangle {{ {prefix}| }} }}"
+        ));
+        assert!(!outside.iter().any(|item| item["label"] == name));
+    }
+}
+
+#[test]
+fn scene_particle_binding_completes_a_user_defined_record_list() {
+    let source = "struct Sparks { position: point3d, size: float, lifetime: float, color: color }
+        component App inherits Window {
+            property <[Sparks]> emitters;
+            SceneView3D { particle-em| }
+        }";
+    let items = complete_at(source);
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "particle-emitters")
+    );
+    let outside = complete_at("component App inherits Window { Rectangle { particle-em| } }");
+    assert!(
+        !outside
+            .iter()
+            .any(|item| item["label"] == "particle-emitters")
+    );
+}
+
+#[test]
+fn sprite_playback_values_complete_in_emitter_records() {
+    let source = r#"struct Emitter {
+            position: point3d, size: float, lifetime: float, color: color, sprite-playback: string,
+        }
+        component App inherits Window {
+            property <[Emitter]> emitters: [
+                Emitter {
+                    position: Point3D.new(0, 0, 0), size: 1, color: #fff, lifetime: 2,
+                    sprite-playback: "ping-|",
+                },
+            ];
+            SceneView3D { particle-emitters: root.emitters; }
+        }"#;
+    let items = complete_at(source);
+    assert!(items.iter().any(|item| item["label"] == "ping-pong"));
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "ping-pong-reverse")
+    );
+}
+
+#[test]
+fn particle_affectors_complete_list_and_typed_record_kinds() {
+    let members = complete_at("component App inherits Window { SceneView3D { particle-af| } }");
+    assert!(
+        members
+            .iter()
+            .any(|item| item["label"] == "particle-affectors")
+    );
+    let outside = complete_at("component App inherits Window { Rectangle { particle-af| } }");
+    assert!(
+        !outside
+            .iter()
+            .any(|item| item["label"] == "particle-affectors")
+    );
+    let kinds = complete_at(
+        r#"struct Field { affector-kind: string }
+           component App inherits Window {
+               property <Field> effect: Field { affector-kind: "point-|"; };
+           }"#,
+    );
+    assert!(kinds.iter().any(|item| item["label"] == "point-rotator"));
+}
+
+#[test]
+fn particle_blend_values_complete_in_emitter_records() {
+    let items = complete_at(
+        r#"struct Emitter { particle-blend-mode: string }
+           component App inherits Window {
+               property <Emitter> effect: Emitter { particle-blend-mode: "mu|"; };
+           }"#,
+    );
+    assert!(items.iter().any(|item| item["label"] == "multiply"));
+}
+
+#[test]
+fn particle_shape_and_direction_complete_in_emitter_records() {
+    for (field, prefix, expected) in [
+        ("emitter-shape", "cy", "cylinder"),
+        ("emitter-shape", "me", "mesh"),
+        ("velocity-mode", "ta", "target"),
+        ("velocity-mode", "norm", "normalized-vector"),
+        ("velocity-mode", "sur", "surface-normal"),
+    ] {
+        let source = format!(
+            "struct Emitter {{ {field}: string }} component App inherits Window {{
+                property <Emitter> effect: Emitter {{ {field}: \"{prefix}|\"; }};
+            }}"
+        );
+        assert!(
+            complete_at(&source)
+                .iter()
+                .any(|item| item["label"] == expected)
+        );
+    }
+}
+
+#[test]
+fn lightmap_modes_complete_in_model_records() {
+    let source = r#"struct Object { lightmap: image, lightmap-mode: string }
+        component App inherits Window {
+            property <Object> item: Object { lightmap-mode: "ind|"; };
+        }"#;
+    let items = complete_at(source);
+    assert!(items.iter().any(|item| item["label"] == "indirect"));
+}
+
+#[test]
+fn temporal_modes_complete_in_scene_viewport_string_values() {
+    let items = complete_at(
+        "component App inherits Window { SceneView3D { temporal-aa-mode: \"motion-|\"; } }",
+    );
+    assert!(items.iter().any(|item| item["label"] == "motion-vectors"));
+    let outside = complete_at(
+        "component App inherits Window { Rectangle { temporal-aa-mode: \"motion-|\"; } }",
+    );
+    assert!(!outside.iter().any(|item| item["label"] == "motion-vectors"));
+}
+
+#[test]
+fn reflection_probe_refresh_modes_complete_inside_record_values() {
+    let source = "struct Probe { refresh-mode: string } component App inherits Window {
+        property <Probe> probe: Probe { refresh-mode: \"first-f|\" };
+    }";
+    let items = complete_at(source);
+    assert!(items.iter().any(|item| {
+        item["label"] == "first-frame"
+            && item["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("capture-revision"))
+    }));
+    let prefix = source.replace("first-f|", "on-ch|");
+    assert!(
+        complete_at(&prefix)
+            .iter()
+            .any(|item| item["label"] == "on-change")
+    );
+}
+
+#[test]
+fn reflection_probe_time_slicing_completes_inside_probe_records() {
+    let source = "struct Probe { time-slicing: string } component App inherits Window {
+        property <Probe> probe: Probe { time-slicing: \"indiv|\" };
+    }";
+    assert!(
+        complete_at(source)
+            .iter()
+            .any(|item| item["label"] == "individual-faces")
+    );
+    assert!(
+        complete_at(&source.replace("indiv|", "all-f|"))
+            .iter()
+            .any(|item| item["label"] == "all-faces-at-once")
+    );
+}
+
+#[test]
+fn scene_tone_map_completes_typed_curves_and_color_adjustments() {
+    let members = complete_at("component App inherits Window { SceneView3D { scene-| } }");
+    for expected in [
+        "scene-tone-map",
+        "scene-white-point",
+        "scene-brightness",
+        "scene-contrast",
+        "scene-saturation",
+    ] {
+        assert!(
+            members.iter().any(|item| item["label"] == expected),
+            "{expected}"
+        );
+    }
+    let values = complete_at(
+        "component App inherits Window { SceneView3D { scene-tone-map: SceneToneMap.| } }",
+    );
+    for expected in [
+        "none",
+        "linear",
+        "reinhard",
+        "aces",
+        "hejl-dawson",
+        "filmic",
+    ] {
+        assert!(
+            values.iter().any(|item| item["label"] == expected),
+            "{expected}"
+        );
     }
 }
 
@@ -2065,6 +2331,811 @@ fn geometry_values_complete_types_namespaces_and_typed_fields() {
 }
 
 #[test]
+fn scene3d_completes_viewport_properties_and_geometry() {
+    for (source, expected) in [
+        (
+            "component App inherits Window { SceneView3D { camer| } }",
+            "camera",
+        ),
+        (
+            "component App inherits Window { property <string> id: Scene3D.pick-ca|; }",
+            "pick-camera",
+        ),
+        (
+            "component App inherits Window { SceneView3D { camera-| } }",
+            "camera-yaw",
+        ),
+        (
+            "component App inherits Window { SceneView3D { mo| } }",
+            "model",
+        ),
+        (
+            "component App inherits Window { SceneView3D { lig| } }",
+            "lights",
+        ),
+        (
+            "component App inherits Window { SceneView3D { ambient-| } }",
+            "ambient-intensity",
+        ),
+        (
+            "component App inherits Window { SceneView3D { ambient-oc| } }",
+            "ambient-occlusion",
+        ),
+        (
+            "component App inherits Window { SceneView3D { ao-s| } }",
+            "ao-strength",
+        ),
+        (
+            "component App inherits Window { SceneView3D { ao-d| } }",
+            "ao-distance",
+        ),
+        (
+            "component App inherits Window { SceneView3D { ao-b| } }",
+            "ao-bias",
+        ),
+        (
+            "component App inherits Window { SceneView3D { scene-h| } }",
+            "scene-hdr",
+        ),
+        (
+            "component App inherits Window { SceneView3D { blo| } }",
+            "bloom",
+        ),
+        (
+            "component App inherits Window { SceneView3D { bloom-str| } }",
+            "bloom-strength",
+        ),
+        (
+            "component App inherits Window { SceneView3D { bloom-thr| } }",
+            "bloom-threshold",
+        ),
+        (
+            "component App inherits Window { SceneView3D { bloom-le| } }",
+            "bloom-levels",
+        ),
+        (
+            "component App inherits Window { SceneView3D { depth-of-f| } }",
+            "depth-of-field",
+        ),
+        (
+            "component App inherits Window { SceneView3D { dof-blur-| } }",
+            "dof-blur-radius",
+        ),
+        (
+            "component App inherits Window { SceneView3D { dof-focus-d| } }",
+            "dof-focus-distance",
+        ),
+        (
+            "component App inherits Window { SceneView3D { dof-focus-r| } }",
+            "dof-focus-range",
+        ),
+        (
+            "component App inherits Window { SceneView3D { shad| } }",
+            "shadows",
+        ),
+        (
+            "component App inherits Window { SceneView3D { shadow-| } }",
+            "shadow-map-size",
+        ),
+        (
+            "component App inherits Window { SceneView3D { shadow-cas| } }",
+            "shadow-cascades",
+        ),
+        (
+            "component App inherits Window { SceneView3D { shadow-cascade-| } }",
+            "shadow-cascade-blend",
+        ),
+        (
+            "component App inherits Window { SceneView3D { shadow-dis| } }",
+            "shadow-distance",
+        ),
+        (
+            "component App inherits Window { SceneView3D { shadow-spl| } }",
+            "shadow-split-balance",
+        ),
+        (
+            "component App inherits Window { SceneView3D { environment-s| } }",
+            "environment-skybox",
+        ),
+        (
+            "component App inherits Window { SceneView3D { reflection-pr| } }",
+            "reflection-probes",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fru| } }",
+            "frustum-culling",
+        ),
+        (
+            "component App inherits Window { SceneView3D { multi| } }",
+            "multisampling",
+        ),
+        (
+            "component App inherits Window { SceneView3D { order-independent-tr| } }",
+            "order-independent-transparency",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-c| } }",
+            "fog-color",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-d| } }",
+            "fog-density",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-f| } }",
+            "fog-far",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-vol| } }",
+            "fog-volumes",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-volume-sc| } }",
+            "fog-volume-scattering",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-volume-sa| } }",
+            "fog-volume-samples",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-volume-de| } }",
+            "fog-volume-density-samples",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-volume-an| } }",
+            "fog-volume-anisotropy",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-n| } }",
+            "fog-near",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-depth-c| } }",
+            "fog-depth-curve",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-depth-e| } }",
+            "fog-depth-enabled",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-height-e| } }",
+            "fog-height-enabled",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-height-en| } }",
+            "fog-height-end",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-height-st| } }",
+            "fog-height-start",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-height-c| } }",
+            "fog-height-curve",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-transmit-e| } }",
+            "fog-transmit-enabled",
+        ),
+        (
+            "component App inherits Window { SceneView3D { fog-transmit-cu| } }",
+            "fog-transmit-curve",
+        ),
+        (
+            "component App inherits Window { property <string> id: Scene3D.pi|; }",
+            "pick",
+        ),
+    ] {
+        assert!(
+            complete_at(source)
+                .iter()
+                .any(|item| item["label"] == expected),
+            "{source}",
+        );
+    }
+    let source = "component App inherits Window { property <string> item: Scene3D.pick(";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "Scene3D.pick(objects: [record], yaw: float, pitch: float, distance: float, viewport: point2d, pointer: point2d, layer-mask?: int) -> string"
+    );
+    let source = "component App inherits Window { property <string> item: Scene3D.pick-camera(";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "Scene3D.pick-camera(objects: [record], camera: string, viewport: point2d, pointer: point2d, layer-mask?: int) -> string"
+    );
+}
+
+#[test]
+fn scene_projection_types_fields_and_functions_complete_in_incomplete_source() {
+    for (source, expected, detail) in [
+        (
+            "component App inherits Window { property <point3d> aim: Point3D.ne|",
+            "new",
+            "point3d",
+        ),
+        (
+            "component App inherits Window { property <point3d> aim; property <float> z: root.aim.|",
+            "z",
+            "float",
+        ),
+        (
+            "component App inherits Window { property <projectedpoint3d> aim; property <length> x: root.aim.point.|",
+            "x",
+            "length",
+        ),
+        (
+            "component App inherits Window { property <projectedpoint3d> aim; property <bool> visible: root.aim.in|",
+            "inside",
+            "bool",
+        ),
+        (
+            "component App inherits Window { property <projectedpoint3d> aim: Scene3D.project-c|",
+            "project-camera",
+            "projectedpoint3d",
+        ),
+        (
+            "component App inherits Window { property <point3d> aim: Scene3D.unpr|",
+            "unproject",
+            "point3d",
+        ),
+    ] {
+        assert!(
+            complete_at(source)
+                .iter()
+                .any(|item| item["label"] == expected
+                    && item["detail"]
+                        .as_str()
+                        .is_some_and(|value| value.contains(detail))),
+            "{source}"
+        );
+    }
+
+    let source = "component App inherits Window { property <point3d> p: Scene3D.unproject-camera(";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "Scene3D.unproject-camera(objects: [record], camera: string, viewport: point2d, pointer: point2d, depth: float, fallback: point3d) -> point3d"
+    );
+}
+
+#[test]
+fn hit3d_completion_exposes_world_local_and_nested_fields() {
+    for (source, expected, detail) in [
+        (
+            "component App inherits Window { property <hit3d> hit: Scene3D.hit-c|",
+            "hit-camera",
+            "hit3d",
+        ),
+        (
+            "component App inherits Window { property <hit3d> hit; property <string> id: root.hit.obj|",
+            "object-id",
+            "string",
+        ),
+        (
+            "component App inherits Window { property <hit3d> hit; property <float> z: root.hit.normal.|",
+            "z",
+            "float",
+        ),
+        (
+            "component App inherits Window { property <hit3d> hit; property <point3d> position: root.hit.loc|",
+            "local-position",
+            "point3d",
+        ),
+        (
+            "component App inherits Window { property <vector3d> direction: Vector3D.ne|",
+            "new",
+            "vector3d",
+        ),
+    ] {
+        assert!(
+            complete_at(source)
+                .iter()
+                .any(|item| item["label"] == expected
+                    && item["detail"]
+                        .as_str()
+                        .is_some_and(|value| value.contains(detail))),
+            "{source}"
+        );
+    }
+    let source = "component App inherits Window { property <hit3d> p: Scene3D.ray-hit(";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "Scene3D.ray-hit(objects: [record], origin: point3d, direction: vector3d, max-distance: float, layer-mask?: int) -> hit3d"
+    );
+}
+
+#[test]
+fn hit_list_completion_and_signature_help_are_typed() {
+    let type_template = "component App inherits Window { property <[hit3d]> hits: []; BODY";
+    for (use_site, label, detail) in [
+        (
+            "out property <[hit3d]> picked: Scene3D.hit-all-c|",
+            "hit-all-camera",
+            "[hit3d]",
+        ),
+        (
+            "VerticalLayout { for contact in root.hits: Text { text: contact.row-|",
+            "row-index",
+            "int",
+        ),
+        (
+            "VerticalLayout { for contact in root.hits: Text { text: contact.normal.|",
+            "z",
+            "float",
+        ),
+    ] {
+        let items = complete_at(&type_template.replace("BODY", use_site));
+        assert!(
+            items.iter().any(|item| item["label"] == label
+                && item["detail"]
+                    .as_str()
+                    .is_some_and(|ty| ty.contains(detail))),
+            "{items:?}"
+        );
+    }
+    let source = "component App inherits Window { property <[hit3d]> hits: Scene3D.ray-hit-all(";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "Scene3D.ray-hit-all(objects: [record], origin: point3d, direction: vector3d, max-distance: float, layer-mask?: int) -> [hit3d]"
+    );
+}
+
+#[test]
+fn scene_hierarchy_record_fields_complete_with_their_types() {
+    for (prefix, field, ty) in [
+        ("par", "parent", "string"),
+        ("vis", "visible", "bool"),
+        ("pivot-", "pivot-x", "float"),
+        ("camera-look-", "camera-look-at", "string"),
+        ("camera-le", "camera-left", "float"),
+        ("camera-ri", "camera-right", "float"),
+        ("camera-bo", "camera-bottom", "float"),
+        ("camera-to", "camera-top", "float"),
+        ("ani", "animation", "string"),
+        ("animation-t", "animation-time", "float"),
+        ("animation-l", "animation-loop", "bool"),
+        ("animation-t", "animation-to", "string"),
+        ("animation-to-t", "animation-to-time", "float"),
+        ("animation-to-l", "animation-to-loop", "bool"),
+        ("animation-b", "animation-blend", "float"),
+        ("lod-o", "lod-of", "string"),
+        ("lod-max", "lod-max-size", "length"),
+        ("camera-lod-", "camera-lod-bias", "float"),
+        ("morph-w", "morph-weights", "PanelWeights"),
+    ] {
+        let source = format!("struct PanelWeights {{ extend: float }} struct Actor {{ parent: string, visible: bool, pivot-x: float, camera-look-at: string, camera-left: float, camera-right: float, camera-bottom: float, camera-top: float, animation: string, animation-time: float, animation-loop: bool, animation-to: string, animation-to-time: float, animation-to-loop: bool, animation-blend: float, lod-of: string, lod-max-size: length, camera-lod-bias: float, morph-weights: PanelWeights }} component App inherits Window {{
+            property <Actor> node: Actor {{ {prefix}| }}
+        }}");
+        let items = complete_at(&source);
+        let item = items
+            .iter()
+            .find(|item| item["label"] == field)
+            .unwrap_or_else(|| panic!("missing {field}: {items:?}"));
+        assert!(
+            item["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains(ty)),
+            "{item}"
+        );
+    }
+}
+
+#[test]
+fn completes_authored_camera_kinds_in_partial_string_literals() {
+    for source in [
+        "struct Actor { camera-kind: string } component App { property <Actor> eye: Actor { camera-kind: \"fr|",
+        "struct Actor { camera-kind: string } component App { property <Actor> eye: Actor { camera-kind: \"fr|ustum\" }; }",
+    ] {
+        let items = complete_at(source);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["label"], "frustum");
+        assert_eq!(items[0]["textEdit"]["newText"], "frustum");
+    }
+    assert!(complete_at("component App { property <string> camera-kind: \"fr|\"; }").is_empty());
+}
+
+#[test]
+fn completes_a_partially_typed_named_morph_target() {
+    let items = complete_at(
+        "struct Weights { extend: float, target-0: float }
+         struct Actor { morph-weights: Weights }
+         component App inherits Window {
+             property <Actor> model: Actor { morph-weights: Weights { ext| } };
+         }",
+    );
+    assert!(items.iter().any(|item| {
+        item["label"] == "extend"
+            && item["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("float"))
+    }));
+}
+
+#[test]
+fn fog_volume_shapes_complete_in_record_literals() {
+    let items = complete_at(
+        r#"struct Mist { fog-shape: string }
+        component App inherits Window {
+            property <Mist> mist: Mist { fog-shape: "sp|" };
+        }"#,
+    );
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["label"], "sphere");
+    assert_eq!(items[0]["textEdit"]["newText"], "sphere");
+}
+
+#[test]
+fn fog_volume_records_complete_height_and_orientation_fields() {
+    let source = r#"struct Mist {
+            position: point3d, size: vector3d, density: float, color: color,
+            yaw: float, pitch: float, roll: float,
+            fog-height-enabled: bool, fog-height-start: float, fog-height-end: float,
+        }
+        component App inherits Window {
+            property <Mist> mist: Mist { PREFIX };
+        }"#;
+    for (prefix, field, ty) in [
+        ("fog-height-st|", "fog-height-start", "float"),
+        ("fog-height-e|", "fog-height-enabled", "bool"),
+        ("rol|", "roll", "float"),
+    ] {
+        let items = complete_at(&source.replace("PREFIX", prefix));
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == field && item["detail"] == ty),
+            "{field}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn fog_volume_records_complete_spatial_noise_with_types() {
+    let source = r#"struct Mist {
+            position: point3d, size: vector3d, density: float, color: color,
+            fog-noise-amount: float, fog-noise-scale: float, fog-noise-offset: vector3d,
+        }
+        component App inherits Window {
+            property <Mist> mist: Mist { PREFIX };
+        }"#;
+    for (prefix, field, ty) in [
+        ("fog-noise-a|", "fog-noise-amount", "float"),
+        ("fog-noise-s|", "fog-noise-scale", "float"),
+        ("fog-noise-o|", "fog-noise-offset", "vector3d"),
+    ] {
+        let items = complete_at(&source.replace("PREFIX", prefix));
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == field && item["detail"] == ty),
+            "{field}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn sphere_queries_complete_and_show_radius_and_layer_signatures() {
+    let items =
+        complete_at("component App inherits Window { property <hit3d> hit: Scene3D.sphere-|; }");
+    for expected in ["sphere-cast", "sphere-overlap"] {
+        assert!(items.iter().any(|item| item["label"] == expected));
+    }
+    let source = "component App inherits Window { property <hit3d> hit: Scene3D.sphere-cast(";
+    let signature = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "Scene3D.sphere-cast(objects: [record], origin: point3d, direction: vector3d, max-distance: float, radius: float, layer-mask?: int) -> hit3d"
+    );
+}
+
+#[test]
+fn sphere_slide_completion_describes_displacement_and_returned_center() {
+    let items = complete_at(
+        "component App inherits Window { property <point3d> moved: Scene3D.sphere-s|; }",
+    );
+    assert!(items.iter().any(|item| item["label"] == "sphere-slide"));
+    let source = "component App inherits Window { property <point3d> moved: Scene3D.sphere-slide(";
+    let signature = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "Scene3D.sphere-slide(objects: [record], origin: point3d, displacement: vector3d, radius: float, layer-mask?: int) -> point3d"
+    );
+}
+
+#[test]
+fn sphere_walk_completion_describes_step_snap_and_slope() {
+    let items = complete_at(
+        "component App inherits Window { property <point3d> moved: Scene3D.sphere-w|; }",
+    );
+    assert!(items.iter().any(|item| item["label"] == "sphere-walk"));
+    let source = "component App inherits Window { property <point3d> moved: Scene3D.sphere-walk(";
+    let signature = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "Scene3D.sphere-walk(objects: [record], origin: point3d, displacement: vector3d, radius: float, step-height: float, snap-distance: float, max-slope: float, layer-mask?: int) -> point3d"
+    );
+}
+
+#[test]
+fn mesh_url_completes_automatic_lod_option() {
+    let items = complete_at(
+        r#"component App inherits Window { property <string> key: @mesh-url("model.glb", au|); }"#,
+    );
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["textEdit"]["newText"], "auto-lod");
+}
+
+#[test]
+fn mesh_url_completes_the_chart_option_after_lod() {
+    let complete = |tail: &str| {
+        complete_at(&format!(
+            r#"component App inherits Window {{ property <string> key: @mesh-url("model.glb", {tail}); }}"#
+        ))
+    };
+    let options = complete("|");
+    assert!(options.iter().any(|item| item["label"] == "lightmap-uv"));
+    let after_lod = complete("auto-lod, lig|");
+    assert_eq!(after_lod.len(), 1);
+    assert_eq!(after_lod[0]["textEdit"]["newText"], "lightmap-uv");
+    let after_chart = complete("lightmap-uv, |");
+    assert_eq!(after_chart.len(), 1);
+    assert_eq!(after_chart[0]["textEdit"]["newText"], "auto-lod");
+}
+
+#[test]
+fn scene_asset_urls_complete_and_link_local_resources() {
+    let root = workspace_fixture("mesh-paths");
+    let models = root.join("models");
+    std::fs::create_dir_all(&models).unwrap();
+    for file in [
+        "room.glb",
+        "roof.gltf",
+        "room.bin",
+        "room.hdr",
+        "room.png",
+        "room.svg",
+    ] {
+        std::fs::write(models.join(file), []).unwrap();
+    }
+    let uris = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let uri = uris.uri(&root.join("app.xr")).unwrap();
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let source = r#"component App inherits Window { property <string> mesh: @mesh-url("models/ro"#;
+    let items = completion::complete(source, 0, source.len(), Some(&workspace));
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item["label"].as_str())
+            .collect::<Vec<_>>(),
+        [Some("roof.gltf"), Some("room.glb"), Some("room.png")]
+    );
+    assert_eq!(items[1]["textEdit"]["newText"], "room.glb");
+    let emitter = r#"struct Emitter { emitter-mesh: string } component App inherits Window { property <Emitter> emitter: Emitter { emitter-mesh: @mesh-url("models/ro"#;
+    let items = completion::complete(emitter, 0, emitter.len(), Some(&workspace));
+    assert!(items.iter().any(|item| item["label"] == "room.glb"));
+    let source =
+        r#"component App inherits Window { SceneView3D { environment: @environment-url("models/ro"#;
+    let items = completion::complete(source, 0, source.len(), Some(&workspace));
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["textEdit"]["newText"], "room.hdr");
+    let complete = source.to_owned() + r#"om.hdr"); } }"#;
+    let links = completion::document_links(&complete, &workspace);
+    assert_eq!(
+        links[0]["target"],
+        workspace.uri(&models.join("room.hdr")).unwrap()
+    );
+    let source =
+        r#"component App inherits Window { SceneView3D { scene-lut: @image-url("models/ro"#;
+    let items = completion::complete(source, 0, source.len(), Some(&workspace));
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["textEdit"]["newText"], "room.png");
+    let complete = source.to_owned() + r#"om.png"); } }"#;
+    let links = completion::document_links(&complete, &workspace);
+    assert_eq!(
+        links[0]["target"],
+        workspace.uri(&models.join("room.png")).unwrap()
+    );
+    let members = complete_at("component App inherits Window { SceneView3D { scene-lut| } }");
+    for expected in ["scene-lut", "scene-lut-size", "scene-lut-strength"] {
+        assert!(
+            members.iter().any(|item| item["label"] == expected),
+            "{expected}"
+        );
+    }
+
+    let source = r#"struct Emitter { sprite: image } component App inherits Window { property <Emitter> effect: Emitter { sprite: @image-url("models/ro"#;
+    let items = completion::complete(source, 0, source.len(), Some(&workspace));
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["textEdit"]["newText"], "room.png");
+    let complete = source.to_owned() + r#"om.png") }; }"#;
+    let links = completion::document_links(&complete, &workspace);
+    assert_eq!(
+        links[0]["target"],
+        workspace.uri(&models.join("room.png")).unwrap()
+    );
+    let source = source.replace("sprite", "color-table");
+    let items = completion::complete(&source, 0, source.len(), Some(&workspace));
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["textEdit"]["newText"], "room.png");
+}
+
+#[test]
+fn png_mesh_resource_links_and_displays_heightfield_dimensions() {
+    let root = workspace_fixture("heightfield-hover");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    header.extend(64u32.to_be_bytes());
+    header.extend(32u32.to_be_bytes());
+    header.extend([16, 0, 0, 0, 0]);
+    let png = root.join("ridge.png");
+    std::fs::write(&png, header).unwrap();
+    let source = r#"component App inherits Window { title: @mesh-url("ridge.png"); }"#;
+    let offset = source.find("ridge").unwrap();
+    let hover = completion::query(
+        "textDocument/hover",
+        &uri,
+        source,
+        Some(analysis::Source::new(source).coordinates(offset)),
+        Some(&workspace),
+    );
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("64 × 32 samples · 16-bit grayscale")
+    );
+    let links = completion::document_links(source, &workspace);
+    assert_eq!(links[0]["target"], workspace.uri(&png).unwrap());
+}
+
+#[test]
+fn names_glb_animation_clips_in_record_bindings() {
+    let root = workspace_fixture("mesh-clip-values");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let mut json =
+        br#"{"animations":[{"name":"Slide"},{"name":"Step"},{},{"name":"Step"},{"name":"Morph","channels":[{"target":{"path":"weights"}}]}]}"#.to_vec();
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let mut bytes = b"glTF".to_vec();
+    bytes.extend(2u32.to_le_bytes());
+    bytes.extend((20u32 + json.len() as u32).to_le_bytes());
+    bytes.extend((json.len() as u32).to_le_bytes());
+    bytes.extend(b"JSON");
+    bytes.extend(json);
+    std::fs::write(root.join("rig.glb"), bytes).unwrap();
+    let source = r#"component App inherits Window { property <Actor> mesh: Actor {
+        animation: "S|", mesh: @mesh-url("rig.glb")
+    }; }"#;
+    let marker = source.find('|').unwrap();
+    let source = source.replace('|', "");
+    let (line, column) = analysis::Source::new(&source).coordinates(marker);
+    let items = completion::complete(&source, line, column, Some(&workspace));
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["textEdit"]["newText"], "Slide");
+    let mut source = source;
+    source.replace_range(marker - 1..marker, "M");
+    let items = completion::complete(&source, line, column, Some(&workspace));
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["textEdit"]["newText"], "Morph");
+    source.replace_range(marker - 1..marker, "#");
+    let (line, column) = analysis::Source::new(&source).coordinates(marker);
+    let items = completion::complete(&source, line, column, Some(&workspace));
+    assert_eq!(
+        items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<Vec<_>>(),
+        ["#1", "#2", "#3"]
+    );
+    let incomplete = r#"component App inherits Window { property <Actor> mesh: Actor {
+        mesh: @mesh-url("rig.glb"), animation-to: "Sl"#;
+    let (line, column) = analysis::Source::new(incomplete).coordinates(incomplete.len());
+    let items = completion::complete(incomplete, line, column, Some(&workspace));
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["textEdit"]["newText"], "Slide");
+}
+
+#[test]
+fn camera_selector_completion_uses_the_rig_in_the_current_component() {
+    let root = workspace_fixture("mesh-camera-values");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    for (file, name) in [("first.gltf", "Hero"), ("second.gltf", "Other")] {
+        std::fs::write(
+            root.join(file),
+            serde_json::json!({
+                "nodes": [{"camera":0, "name":name}], "cameras": [{"type":"perspective"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    let marked = r#"
+        component Other inherits Window {
+            property <[Actor]> scene: [Actor { id: "rig", mesh: @mesh-url("second.gltf") }];
+        }
+        component App inherits Window {
+            property <[Actor]> scene: [Actor { id: "rig", mesh: @mesh-url("first.gltf") }];
+            SceneView3D { model: root.scene; camera: "rig/|"; }
+        }
+    "#;
+    let text = marked.replace('|', "");
+    let (line, column) = analysis::Source::new(&text).coordinates(marked.find('|').unwrap());
+    let items = completion::complete(&text, line, column, Some(&workspace));
+    assert_eq!(
+        items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<Vec<_>>(),
+        ["rig/#0", "rig/Hero"]
+    );
+    assert_eq!(items[1]["textEdit"]["newText"], "rig/Hero");
+}
+
+#[test]
+fn glb_hover_lists_texture_samplers_and_material_metadata_without_binary_data() {
+    let root = workspace_fixture("mesh-morph-hover");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+
+    let mut json = br#"{"extensionsUsed":["KHR_texture_transform"],"nodes":[{"camera":0,"name":"Hero"},{"camera":1},{"camera":1}],"cameras":[{"type":"perspective"},{"type":"orthographic","name":"Duplicate"}],"extensions":{"KHR_lights_punctual":{"lights":[{"type":"point","name":"Fill"},{"type":"spot"}]}},"materials":[
+        {"extensions":{"KHR_materials_clearcoat":{},"KHR_materials_unknown":{}}},
+        {"extensions":{"KHR_materials_clearcoat":{},"KHR_materials_emissive_strength":{},"KHR_materials_ior":{},"KHR_materials_specular":{},"KHR_materials_transmission":{},"KHR_materials_volume":{},"KHR_materials_dispersion":{}}}
+    ],"meshes":[
+        {"primitives":[{"targets":[{},{}]}],"extras":{"targetNames":["extend","retract"]}},
+        {"primitives":[{"targets":[{},{}]}],"extras":{"targetNames":["blink","blink"]}},
+        {"primitives":[{"targets":[{}]}],"extras":[123]}
+    ],"textures":[{"sampler":0},{"sampler":1},{}],
+    "samplers":[{"minFilter":9985},{"minFilter":9728}]}"#
+        .to_vec();
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let size: u32 = 24 * 1024 * 1024;
+    let mesh = root.join("face.glb");
+    let mut bytes = b"glTF".to_vec();
+    bytes.extend(2u32.to_le_bytes());
+    bytes.extend(size.to_le_bytes());
+    bytes.extend((json.len() as u32).to_le_bytes());
+    bytes.extend(b"JSON");
+    bytes.extend(json);
+    std::fs::write(&mesh, bytes).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(mesh)
+        .unwrap()
+        .set_len(size.into())
+        .unwrap();
+
+    let marked = r#"component App inherits Window { title: @mesh-url("fac|e.glb"); }"#;
+    let text = marked.replace('|', "");
+    let cursor = analysis::Source::new(&text).coordinates(marked.find('|').unwrap());
+    let hover = completion::query(
+        "textDocument/hover",
+        &uri,
+        &text,
+        Some(cursor),
+        Some(&workspace),
+    );
+    assert_eq!(hover["contents"]["kind"], "plaintext");
+    assert_eq!(
+        hover["contents"]["value"],
+        "glTF morph targets for morph-weights\n\nMesh #0\ntarget-0  extend\ntarget-1  retract\n\nMesh #1\ntarget-0\ntarget-1\n\nMesh #2\ntarget-0\n\nglTF material extensions\nKHR_materials_clearcoat\nKHR_materials_emissive_strength\nKHR_materials_ior\nKHR_materials_specular\nKHR_materials_transmission\nKHR_materials_volume\nKHR_materials_dispersion\n\nglTF texture coordinates\nKHR_texture_transform (offset, rotation, scale, UV set)\n\nglTF camera nodes (use row-id/selector)\n#0  perspective  Hero\n#1  orthographic\n#2  orthographic\n\nglTF punctual lights\nLight #0  point  Fill\nLight #1  spot\n\nglTF texture minification\nTexture #0  LINEAR_MIPMAP_NEAREST\nTexture #1  NEAREST\nTexture #2  LINEAR_MIPMAP_LINEAR (XRack default)"
+    );
+}
+
+#[test]
 fn standard_library_completion_and_signature_help_use_the_shared_catalog() {
     for &namespace in xrack_parser::builtins::NAMESPACES {
         let items = complete_at(&format!(
@@ -2259,6 +3330,16 @@ fn builtin_signatures_work_in_incomplete_buffers_and_diagnostics_cover_function_
             "@image-url(",
             0,
             "@image-url(path: string literal, nine-slice(...) (optional)) -> image",
+        ),
+        (
+            "@mesh-url(",
+            0,
+            "@mesh-url(path: string literal, auto-lod (optional), lightmap-uv (optional)) -> string",
+        ),
+        (
+            "@environment-url(",
+            0,
+            "@environment-url(path: string literal) -> string",
         ),
     ] {
         let text =

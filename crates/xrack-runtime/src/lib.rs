@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 17;
+pub const CODEGEN_ABI_VERSION: u32 = 18;
 
 mod animation;
 mod arithmetic;
@@ -25,6 +25,28 @@ pub use event_loop::{EventLoopError, WeakComponent, invoke_from_event_loop};
 mod focus;
 mod font_picker;
 mod geometry;
+#[doc(hidden)]
+pub mod scene3d;
+mod scene_animation;
+mod scene_bounds;
+mod scene_camera;
+mod scene_cast;
+mod scene_environment;
+mod scene_fog;
+mod scene_hierarchy;
+mod scene_lighting;
+mod scene_lightmap;
+mod scene_material;
+mod scene_morph;
+mod scene_particle_affectors;
+mod scene_particle_mesh;
+mod scene_particle_motion;
+mod scene_particles;
+mod scene_pick;
+mod scene_projection;
+mod scene_skin;
+mod scene_surface;
+mod scene_visibility;
 mod ui_log;
 mod visual_transform;
 pub use ui_log::LogLevel;
@@ -209,10 +231,10 @@ pub use list::ViewIndex;
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
 pub use list::{
-    ListModel, ListRowLocator, ListRowRenderer, ListTextSearch, RowLifetime, TableCellEditor,
-    TableColumnWindow, TableField, project_standard_table_rows, render_standard_table_rows,
-    standard_list_rows, standard_list_rows_in_view, standard_table_rows,
-    standard_table_rows_in_order, standard_table_rows_with_editors_in_order,
+    ListModel, ListRowLocator, ListRowRenderer, ListTextSearch, RowLifetime, StandardTableRowCache,
+    TableCellEditor, TableColumnWindow, TableField, project_standard_table_rows,
+    render_standard_table_rows, standard_list_rows, standard_list_rows_in_view,
+    standard_table_rows, standard_table_rows_in_order, standard_table_rows_with_editors_in_order,
     standard_table_rows_with_header, try_project_standard_table_rows, try_render_rows_from_source,
     try_render_standard_table_rows,
 };
@@ -267,6 +289,7 @@ pub use scene_plan::{
     GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, LoadedVectorPath, ScenePlanSlice,
     StaticVectorPath, VectorSegment,
 };
+pub use scene3d::{Hit3D, Point3D, ProjectedPoint3D, Vector3D};
 #[doc(hidden)]
 pub use split::{
     SplitHandleInput, SplitResizeHandle, SplitState, decode_split_sizes, decode_split_state,
@@ -1124,6 +1147,19 @@ pub enum ColorScheme {
     Dark,
 }
 
+/// Display transform for scene-linear HDR radiance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SceneToneMap {
+    None = 0,
+    Linear = 1,
+    #[default]
+    Reinhard = 2,
+    Aces = 3,
+    HejlDawson = 4,
+    Filmic = 5,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImageFormat {
     Png,
@@ -1639,8 +1675,25 @@ pub enum Value {
     Record(RecordValue),
     RecordList(RecordList),
     ComboModel(ComboModel),
+    /// Prepared object data for a SceneView3D node.
+    #[doc(hidden)]
+    SceneObjects(Arc<scene3d::SceneModel>),
+    #[doc(hidden)]
+    SceneLights(Arc<scene3d::SceneLightModel>),
+    SceneEnvironment(Option<Arc<scene3d::EnvironmentProbe>>),
+    SceneReflections(Arc<[scene3d::ReflectionProbe]>),
+    SceneFogVolumes(Arc<[scene3d::FogVolume3D]>),
+    #[doc(hidden)]
+    SceneParticleEmitters(Arc<[scene3d::ParticleEmitter]>),
+    #[doc(hidden)]
+    SceneParticleAffectors(Arc<[scene3d::ParticleAffector]>),
     Length(Length),
     Point2D(Point2D),
+    Point3D(Point3D),
+    Vector3D(Vector3D),
+    Hit3D(Hit3D),
+    Hit3DList(VecModel<Hit3D>),
+    ProjectedPoint3D(ProjectedPoint3D),
     Vector2D(Vector2D),
     Transform2D(Transform2D),
     Percent(Percent),
@@ -1684,6 +1737,7 @@ pub enum Value {
     PointerButton(PointerButton),
     PointerButtons(PointerButtons),
     ColorScheme(ColorScheme),
+    SceneToneMap(SceneToneMap),
     FileDialogMode(FileDialogMode),
     MessageLevel(MessageLevel),
     MessageButtons(MessageButtons),
@@ -1761,6 +1815,11 @@ impl From<VecModel<Date>> for Value {
 
 value_from!(Length, Length);
 value_from!(Point2D, Point2D);
+value_from!(Point3D, Point3D);
+value_from!(Vector3D, Vector3D);
+value_from!(Hit3D, Hit3D);
+value_from!(VecModel<Hit3D>, Hit3DList);
+value_from!(ProjectedPoint3D, ProjectedPoint3D);
 value_from!(Vector2D, Vector2D);
 value_from!(Transform2D, Transform2D);
 value_from!(Percent, Percent);
@@ -1802,6 +1861,7 @@ value_from!(PointerEventKind, PointerEventKind);
 value_from!(PointerButton, PointerButton);
 value_from!(PointerButtons, PointerButtons);
 value_from!(ColorScheme, ColorScheme);
+value_from!(SceneToneMap, SceneToneMap);
 value_from!(FileDialogMode, FileDialogMode);
 value_from!(MessageLevel, MessageLevel);
 value_from!(MessageButtons, MessageButtons);
@@ -1836,6 +1896,7 @@ struct NodeStorage {
     data: NodeData,
     frozen: bool,
     scene_features: OnceCell<u8>,
+    stacking_order: OnceCell<f64>,
 }
 
 /// A storage identity for caches that should not keep a scene node alive.
@@ -2322,6 +2383,7 @@ impl Node {
             data,
             frozen: false,
             scene_features: OnceCell::new(),
+            stacking_order: OnceCell::new(),
         }))
     }
 
@@ -2346,6 +2408,12 @@ impl Node {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
+    /// Whether this node is the sole owner of its copy-on-write storage.
+    #[doc(hidden)]
+    pub fn owns_storage(&self) -> bool {
+        Rc::strong_count(&self.0) == 1
+    }
+
     /// Whether the subtree was explicitly frozen for scene caches.
     #[doc(hidden)]
     pub fn has_shared_storage(&self) -> bool {
@@ -2354,9 +2422,13 @@ impl Node {
 
     #[doc(hidden)]
     pub fn shared_identity(&self) -> Option<SharedNodeIdentity> {
-        self.0
-            .frozen
-            .then(|| SharedNodeIdentity(Rc::downgrade(&self.0)))
+        self.0.frozen.then(|| self.snapshot_identity())
+    }
+
+    /// Track this copy-on-write snapshot without keeping its data alive.
+    #[doc(hidden)]
+    pub fn snapshot_identity(&self) -> SharedNodeIdentity {
+        SharedNodeIdentity(Rc::downgrade(&self.0))
     }
 
     #[doc(hidden)]
@@ -2372,14 +2444,12 @@ impl Node {
     }
 
     fn scene_features(&self) -> u8 {
-        if self.0.frozen {
-            *self
-                .0
-                .scene_features
-                .get_or_init(|| self.collect_scene_features())
-        } else {
-            self.collect_scene_features()
-        }
+        // A clone retains the same snapshot even for non-frozen nodes.
+        // data_mut clears these bits on each edited path.
+        *self
+            .0
+            .scene_features
+            .get_or_init(|| self.collect_scene_features())
     }
 
     fn collect_scene_features(&self) -> u8 {
@@ -2441,6 +2511,7 @@ impl Node {
     fn data_mut(&mut self) -> &mut NodeData {
         let node = Rc::make_mut(&mut self.0);
         node.scene_features.take();
+        node.stacking_order.take();
         &mut node.data
     }
 
@@ -2519,6 +2590,99 @@ impl Node {
             ("Image", "source") => 8,
             ("StyledText", "link-color") => 64,
             (
+                "SceneView3D",
+                "model"
+                | "lights"
+                | "ambient-color"
+                | "ambient-intensity"
+                | "light-yaw"
+                | "light-elevation"
+                | "scene-background"
+                | "shadows"
+                | "imported-lights"
+                | "shadow-map-size"
+                | "shadow-bias"
+                | "shadow-cascades"
+                | "shadow-distance"
+                | "shadow-cascade-blend"
+                | "shadow-split-balance"
+                | "camera"
+                | "camera-yaw"
+                | "camera-pitch"
+                | "camera-distance"
+                | "selected-object"
+                | "environment"
+                | "environment-intensity"
+                | "environment-yaw"
+                | "environment-skybox"
+                | "frustum-culling"
+                | "multisampling"
+                | "supersampling"
+                | "progressive-aa"
+                | "temporal-aa"
+                | "temporal-aa-mode"
+                | "temporal-aa-strength"
+                | "screen-space-reflections"
+                | "ssr-strength"
+                | "ssr-distance"
+                | "ssr-thickness"
+                | "ssr-steps"
+                | "ssr-roughness-cutoff"
+                | "ssr-scale"
+                | "screen-space-global-illumination"
+                | "ssgi-strength"
+                | "ssgi-occlusion"
+                | "ssgi-radius"
+                | "ssgi-thickness"
+                | "ssgi-scale"
+                | "ssgi-rays"
+                | "ssgi-steps"
+                | "specular-aa"
+                | "order-independent-transparency"
+                | "ambient-occlusion"
+                | "scene-hdr"
+                | "bloom"
+                | "bloom-strength"
+                | "bloom-threshold"
+                | "bloom-levels"
+                | "depth-of-field"
+                | "dof-blur-radius"
+                | "dof-focus-distance"
+                | "dof-focus-range"
+                | "ao-strength"
+                | "ao-distance"
+                | "ao-bias"
+                | "particle-emitters"
+                | "particle-affectors"
+                | "particle-time"
+                | "fog-volumes"
+                | "fog-volume-scattering"
+                | "fog-volume-anisotropy"
+                | "fog-volume-samples"
+                | "fog-volume-density-samples"
+                | "fog-color"
+                | "fog-near"
+                | "fog-far"
+                | "fog-density"
+                | "fog-depth-enabled"
+                | "fog-height-enabled"
+                | "fog-transmit-enabled"
+                | "fog-depth-curve"
+                | "fog-height-start"
+                | "fog-height-end"
+                | "fog-height-curve"
+                | "fog-transmit-curve"
+                | "scene-exposure"
+                | "scene-tone-map"
+                | "scene-white-point"
+                | "scene-brightness"
+                | "scene-contrast"
+                | "scene-saturation"
+                | "scene-lut"
+                | "scene-lut-size"
+                | "scene-lut-strength",
+            ) => 64,
+            (
                 _,
                 "accessible-name"
                 | "accessible-description"
@@ -2576,8 +2740,17 @@ impl Node {
     fn same_own_layout_inputs(&self, other: &Self, local: bool, ignore_transform: bool) -> bool {
         let paint_only = self.paint_only & other.paint_only;
         let ignore_frame = self.kind == "AnimatedImage" && other.kind == "AnimatedImage";
-        let ignore_colorize =
-            matches!(self.kind, "Image" | "AnimatedImage") && self.kind == other.kind;
+        let is_image = matches!(self.kind, "Image" | "AnimatedImage") && self.kind == other.kind;
+        // The source contributes intrinsic dimensions. Explicit sizes
+        // override both axes, and the remaining layout properties are still
+        // compared below, including any source clip.
+        let fixed_image_box = |node: &Self| {
+            node.relative_length("width", 0.0).is_some()
+                && node.relative_length("height", 0.0).is_some()
+        };
+        let ignore_image_source = is_image
+            && (fixed_image_box(self) && fixed_image_box(other)
+                || self.image_size("source") == other.image_size("source"));
         let fixed_visual_box =
             |node: &Self| node.length("width").is_some() && node.length("height").is_some();
         let relevant = |(name, _): &(&&str, &Value)| match **name {
@@ -2585,7 +2758,8 @@ impl Node {
             name if ignore_transform && (name == "transform" || name.starts_with("transform-")) => {
                 false
             }
-            "text" | "source" if paint_only & self.paint_only_bit(name) != 0 => {
+            "source" if is_image => !ignore_image_source,
+            "text" if paint_only & self.paint_only_bit(name) != 0 => {
                 !fixed_visual_box(self) || !fixed_visual_box(other)
             }
             name if paint_only & self.paint_only_bit(name) != 0 => false,
@@ -2602,7 +2776,7 @@ impl Node {
             | "inner-shadow-offset-y"
             | "inner-shadow-spread" => self.kind != "Rectangle",
             "current-frame" => !ignore_frame,
-            "colorize" => !ignore_colorize,
+            "colorize" => !is_image,
             _ => true,
         };
         self.same_structure_and_state(other)
@@ -2620,6 +2794,20 @@ impl Node {
             || self.same_structure_and_state(other)
                 && self.media_frame == other.media_frame
                 && self.properties == other.properties
+    }
+
+    /// Compare this node's paint inputs after the renderer has resolved its position.
+    #[doc(hidden)]
+    pub fn same_own_paint_except_position(&self, other: &Self) -> bool {
+        let paint_property = |(name, _): &(&&str, &Value)| !matches!(**name, "x" | "y");
+        self.shares_storage_with(other)
+            || self.same_structure_and_state(other)
+                && self.media_frame == other.media_frame
+                && self
+                    .properties
+                    .iter()
+                    .filter(paint_property)
+                    .eq(other.properties.iter().filter(paint_property))
     }
 
     /// Compare a paint layer's content independently of its composited opacity.
@@ -2854,7 +3042,10 @@ impl Node {
 
     /// Finite stacking order within an ordinary sibling list.
     pub fn z(&self) -> f64 {
-        self.number("z").filter(|&z| z != 0.0).unwrap_or_default()
+        *self
+            .0
+            .stacking_order
+            .get_or_init(|| self.number("z").filter(|&z| z != 0.0).unwrap_or_default())
     }
 
     pub fn layout_direction(&self) -> Option<LayoutDirection> {
@@ -3036,6 +3227,15 @@ impl Node {
             Some(Value::Image(value)) => Some(value.clone().into()),
             Some(Value::ImageAsset(value)) => Some(value.clone()),
             _ => None,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn image_size(&self, name: &str) -> [u32; 2] {
+        match self.properties.get(name) {
+            Some(Value::Image(image)) => image.size(),
+            Some(Value::ImageAsset(asset)) => asset.size(),
+            _ => [0, 0],
         }
     }
 
@@ -3397,6 +3597,124 @@ impl Node {
 #[cfg(test)]
 mod node_storage_tests {
     use super::*;
+
+    #[test]
+    fn image_source_updates_use_sizes_for_layout_and_pixels_for_paint() {
+        let image = |bytes: &'static [u8], size| Image::Embedded {
+            format: ImageFormat::Png,
+            bytes,
+            size,
+        };
+        for kind in ["Image", "AnimatedImage"] {
+            let mut previous = Node::new(kind, None);
+            previous
+                .properties
+                .insert("source", image(b"first", [16, 24]).into());
+            let mut current = previous.clone();
+            current.properties.insert(
+                "source",
+                Value::ImageAsset(ImageAsset::from(image(b"second", [16, 24]))),
+            );
+            assert!(previous.same_frame_inputs(&current));
+            assert!(!previous.same_own_paint_inputs(&current));
+
+            let mut cropped = current.clone();
+            cropped.properties.insert("source-clip-width", 8_i64.into());
+            assert!(!previous.same_frame_inputs(&cropped));
+
+            current
+                .properties
+                .insert("source", image(b"larger", [32, 24]).into());
+            assert!(!previous.same_frame_inputs(&current));
+            for node in [&mut previous, &mut current] {
+                node.properties.insert("width", Length(48.0).into());
+            }
+            assert!(!previous.same_frame_inputs(&current));
+            for node in [&mut previous, &mut current] {
+                node.properties
+                    .insert("height", Value::Percent(Percent(0.5)));
+            }
+            assert!(previous.same_frame_inputs(&current));
+            assert!(!previous.same_own_paint_inputs(&current));
+        }
+    }
+
+    #[test]
+    fn stacking_order_follows_edits_to_a_shared_snapshot() {
+        let mut node = Node::new("Rectangle", None);
+        assert_eq!(node.z(), 0.0);
+        node.properties.insert("z", 2.0.into());
+        assert_eq!(node.z(), 2.0);
+
+        let original = node.clone();
+        node.properties.insert("z", (-1.0).into());
+        assert_eq!(node.z(), -1.0);
+        assert_eq!(original.z(), 2.0);
+
+        for value in [-0.0, f64::NAN, f64::INFINITY] {
+            node.properties.insert("z", value.into());
+            assert_eq!(node.z().to_bits(), 0.0_f64.to_bits());
+        }
+        node.properties.remove("z");
+        assert_eq!(node.z(), 0.0);
+    }
+
+    #[test]
+    fn snapshot_identity_tracks_unfrozen_nodes_without_retaining_them() {
+        let mut node = Node::new("Flickable", None);
+        let identity = node.snapshot_identity();
+        assert!(identity.matches(&node));
+        assert_eq!(Rc::strong_count(&node.0), 1);
+        node.properties.insert("x", Length(16.0).into());
+        assert!(!identity.matches(&node));
+        assert_eq!(node.length("x"), Some(16.0));
+    }
+
+    #[test]
+    fn scene_features_follow_edits_to_unfrozen_snapshots() {
+        let mut window = Node::new("Window", None);
+        let mut panel = Node::new("Rectangle", None);
+        panel.children.extend([
+            Node::new("ListView", None),
+            Node::new("ComboBox", None),
+            Node::new("Rectangle", None),
+            Node::new("ScrollBar", None),
+        ]);
+        window.children.extend([panel, Node::new("Text", None)]);
+        let features = [
+            SceneFeature::VirtualList,
+            SceneFeature::FontFamilyChoice,
+            SceneFeature::WindowOverlay,
+            SceneFeature::AttachedScrollBar,
+        ];
+        for feature in features {
+            assert!(!window.contains_scene_feature(feature));
+        }
+        assert!(!window.has_shared_storage());
+        assert_eq!(window.children[1].0.scene_features.get(), Some(&0));
+
+        let mut edited = window.clone();
+        let panel = &mut edited.children[0];
+        panel.children[0].list = Some(ListMetrics {
+            row_count: 1,
+            first_row: 0,
+        });
+        panel.children[1]
+            .properties
+            .insert("__font-picker-field", Value::String("family".into()));
+        panel.children[2].kind = "Drawer";
+        panel.children[3].scroll_target = Some(ViewportHandle::for_flickable(false));
+        for feature in features {
+            assert!(edited.contains_scene_feature(feature));
+            assert!(!window.contains_scene_feature(feature));
+        }
+        assert!(edited.children[1].shares_storage_with(&window.children[1]));
+
+        edited.children.remove(0);
+        for feature in features {
+            assert!(!edited.contains_scene_feature(feature));
+        }
+    }
 
     #[test]
     fn scene_snapshot_clones_detach_only_the_edited_path() {

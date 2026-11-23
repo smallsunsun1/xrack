@@ -1849,7 +1849,7 @@ fn pending_scroll_offset(
     path: &[usize],
     axis: Orientation,
 ) -> Option<f32> {
-    if let Some(renderer) = &item.nested_list {
+    if let Some(renderer) = item.nested_list_renderer() {
         item.bound_offset(axis).or_else(|| renderer.offset(axis))
     } else {
         offsets.get(path).copied()
@@ -1863,7 +1863,7 @@ fn store_scroll_offset(
     axis: Orientation,
     offset: f32,
 ) {
-    if let Some(renderer) = &item.nested_list {
+    if let Some(renderer) = item.nested_list_renderer() {
         renderer.set_offset(axis, offset);
     } else {
         offsets.insert(path.to_vec(), offset);
@@ -4245,7 +4245,7 @@ impl Interaction {
             return false;
         };
         let mut path = path;
-        if let Some(bar) = &item.attached_scroll_bar {
+        if let Some(bar) = item.attached_scroll_bar() {
             if bar.geometry.orientation != orientation || !self.allows_popup(layout, &bar.target) {
                 return false;
             }
@@ -4364,7 +4364,7 @@ impl Interaction {
         if node.kind == "ScrollBar" && !node.boolean("interactive", true) {
             return None;
         }
-        if let Some(bar) = &item.attached_scroll_bar
+        if let Some(bar) = item.attached_scroll_bar()
             && !self.allows_popup(layout, &bar.target)
         {
             return None;
@@ -4801,7 +4801,7 @@ impl Interaction {
             let Some(item) = layout.at_path(path) else {
                 continue;
             };
-            if item.tab_strip.is_some() && depth != last_depth {
+            if item.tab_strip().is_some() && depth != last_depth {
                 continue;
             }
             if let ScrollInput::Pan { device, .. } = &input
@@ -4850,7 +4850,7 @@ impl Interaction {
                 && scroll.max_offset > 0.0
                 && item.viewport_handle.is_some()
                 && item
-                    .elastic
+                    .elastic_options()
                     .is_some_and(|options| options.behavior.allows_overshoot(*flicking))
             {
                 elastic_owner = Some(item);
@@ -5593,7 +5593,7 @@ impl Interaction {
                         && item.accepts_pan(axis, device)
                         && item.viewport_handle.as_ref() == Some(handle)
                         && item
-                            .elastic
+                            .elastic_options()
                             .is_some_and(|options| options.behavior.allows_overshoot(false))
                 })
             })

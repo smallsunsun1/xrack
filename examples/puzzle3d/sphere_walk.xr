@@ -1,0 +1,91 @@
+struct WalkActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, collidable: bool, visible: bool,
+}
+
+export component SphereWalkDemo inherits Window {
+    title: "XRack · 地面行走";
+    width: 620px; height: 438px;
+    resizable: false;
+    background: #172638;
+    property <point3d> spawn: Point3D.new(-2.4, 0.4, 0);
+    in-out property <point3d> center: Point3D.new(-2.4, 0.4, 0);
+    in-out property <float> drive: 1.8;
+    in-out property <float> vertical: 0;
+    in-out property <bool> steps: true;
+    in-out property <bool> snapping: true;
+    in-out property <bool> ceiling: false;
+    in-out property <float> ramp-angle: 30;
+    property <float> radius: 0.4;
+
+    out property <point3d> endpoint: Scene3D.sphere-walk(
+        root.terrain, root.center, Vector3D.new(root.drive, root.vertical, 0), root.radius,
+        root.steps ? 0.3 : 0, root.snapping ? 0.36 : 0, 45);
+    callback walk-command(float, float);
+    walk-command(dx, dz) => {
+        root.center = Scene3D.sphere-walk(
+            root.terrain, root.center, Vector3D.new(dx, 0, dz), root.radius,
+            root.steps ? 0.3 : 0, root.snapping ? 0.36 : 0, 45);
+    }
+
+    property <WalkActor> base: WalkActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #7189a3, collidable: true, visible: true,
+    };
+    property <WalkActor> floor: WalkActor {
+        id: "floor", y: -0.13, scale-x: 9, scale-y: 0.26, scale-z: 7.4,
+        color: #395850, ..root.base
+    };
+    property <WalkActor> platform: WalkActor {
+        id: "step", x: -0.55, y: 0.12, scale-x: 0.8, scale-y: 0.24, scale-z: 1.85,
+        color: #6391ab, ..root.base
+    };
+    property <float> ramp-radians: root.ramp-angle * 0.0174532925199433;
+    property <WalkActor> ramp: WalkActor {
+        id: "ramp", x: 1.55, y: 1.3 * Math.sin(root.ramp-radians) - 0.11 * Math.cos(root.ramp-radians), z: -2.2,
+        scale-x: 2.6, scale-y: 0.22, scale-z: 1.75, roll: root.ramp-angle,
+        color: #b98a6c, ..root.base
+    };
+    property <WalkActor> low-ceiling: WalkActor {
+        id: "ceiling", x: -1.3, y: 0.98, scale-x: 4.0, scale-y: 0.22, scale-z: 1.8,
+        color: #795d83, collidable: root.ceiling, visible: root.ceiling, ..root.base
+    };
+    property <[WalkActor]> terrain: [root.floor, root.platform, root.ramp, root.low-ceiling];
+    property <WalkActor> marker: WalkActor {
+        mesh: "primitive:sphere", scale-x: root.radius, scale-y: root.radius, scale-z: root.radius,
+        collidable: false, ..root.base
+    };
+    property <[WalkActor]> display: [
+        root.floor, root.platform, root.ramp, root.low-ceiling,
+        WalkActor { x: root.center.x, y: root.center.y, z: root.center.z, color: #76d6ca, ..root.marker },
+        WalkActor { x: root.endpoint.x, y: root.endpoint.y, z: root.endpoint.z, color: #ffbb68, ..root.marker },
+    ];
+    keys := FocusScope {
+        width: 620px; height: 438px;
+        initial-focus: advance;
+        key-pressed(event) => {
+            if event.key == "ArrowUp" || event.key == "w" { root.walk-command(0, -0.35); }
+            if event.key == "ArrowDown" || event.key == "s" { root.walk-command(0, 0.35); }
+            if event.key == "ArrowLeft" || event.key == "a" { root.walk-command(-0.35, 0); }
+            if event.key == "ArrowRight" || event.key == "d" { root.walk-command(0.35, 0); }
+            event.key == "ArrowUp" || event.key == "ArrowDown" ||
+            event.key == "ArrowLeft" || event.key == "ArrowRight" ||
+            event.key == "w" || event.key == "a" || event.key == "s" || event.key == "d" ? accept : reject
+        }
+        SceneView3D {
+            width: 620px; height: 360px; model: root.display;
+            camera-yaw: -17; camera-pitch: 52; camera-distance: 10.5;
+            scene-background: #263d54; ambient-intensity: 0.4; multisampling: true;
+        }
+        HorizontalLayout {
+            x: 15px; y: 377px; width: 590px; height: 44px; spacing: 10px;
+            advance := Button { width: 89px; text: "走一步"; clicked => { root.center = root.endpoint; } }
+            reset := Button { width: 67px; text: "复位"; clicked => { root.center = root.spawn; } }
+            step-toggle := CheckBox { width: 100px; text: "上台阶"; checked <=> root.steps; }
+            snap-toggle := CheckBox { width: 96px; text: "贴地"; checked <=> root.snapping; }
+            travel := Slider { width: 170px; minimum: -3; maximum: 3; value <=> root.drive; }
+        }
+    }
+}

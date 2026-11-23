@@ -683,9 +683,11 @@ fn rewrite_expr(
     expr.span.source = source;
     use ast::ExprKind::*;
     match &mut expr.kind {
-        ImageUrl(spelling) | SlicedImageUrl { path: spelling, .. } => {
-            rebase_asset(spelling, prefix)
-        }
+        ImageUrl(spelling)
+        | MeshUrl(spelling)
+        | MeshUrlWithOptions { path: spelling, .. }
+        | EnvironmentUrl(spelling)
+        | SlicedImageUrl { path: spelling, .. } => rebase_asset(spelling, prefix),
         Unary { value, .. } => rewrite_expr(value, prefix, names, source),
         Binary { left, right, .. } => {
             rewrite_expr(left, prefix, names, source);
