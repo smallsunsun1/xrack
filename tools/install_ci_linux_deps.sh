@@ -33,7 +33,7 @@ Components: main
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 EOF
     if "${apt[@]}" -o APT::Update::Error-Mode=any update &&
-        "${apt[@]}" install -y --no-install-recommends pkg-config libdbus-1-dev libwayland-dev libxkbcommon-dev; then
+        "${apt[@]}" install -y --no-install-recommends pkg-config libdbus-1-dev libfontconfig-dev libwayland-dev libxkbcommon-dev; then
         exit 0
     fi
 done

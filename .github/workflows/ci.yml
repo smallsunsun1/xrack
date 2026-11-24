@@ -172,6 +172,9 @@ jobs:
         run: git diff --exit-code -- Cargo.lock
       - name: Package xrackc
         run: python tools/package_xrackc.py
+      - name: Install Linux dependencies for the standalone Cargo consumers
+        if: runner.os == 'Linux'
+        run: bash tools/install_ci_linux_deps.sh
       - name: Run the standalone Cargo consumer with the bundled compiler
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer

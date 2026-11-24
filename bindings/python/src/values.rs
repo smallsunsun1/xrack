@@ -894,7 +894,7 @@ macro_rules! bridge_values {
                 HostValue::Image(value) => convert!(Image(value.into())),
                 // The combo projection is renderer data and has no public ValueType.
                 HostValue::ComboModel(_) => Err(PyTypeError::new_err("invalid public XRack combo projection")),
-                HostValue::SceneObjects(_) | HostValue::SceneLights(_) | HostValue::SceneEnvironment(_) | HostValue::SceneReflections(_) | HostValue::SceneFogVolumes(_) | HostValue::SceneEffects(_) | HostValue::SceneParticleEmitters(_) | HostValue::SceneParticleAffectors(_) => Err(PyTypeError::new_err("invalid public XRack scene projection")),
+                HostValue::SceneObjects(_) | HostValue::SceneLights(_) | HostValue::SceneEnvironment(_) | HostValue::SceneReflections(_) | HostValue::SceneFogVolumes(_) | HostValue::SceneEffects(_) | HostValue::SceneCaptures(_) | HostValue::SceneParticleEmitters(_) | HostValue::SceneParticleAffectors(_) => Err(PyTypeError::new_err("invalid public XRack scene projection")),
                 $(HostValue::$tag(value) => convert!($wrapper(value)),)+
                 $(HostValue::$name(value) => convert!($name::from(value)),)+
             }

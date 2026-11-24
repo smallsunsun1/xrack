@@ -320,6 +320,13 @@ fn fixture_uri(name: &str) -> String {
     format!("file:///{drive}xrack-completion-fixture/{name}")
 }
 
+fn workspace_file_uri(path: &std::path::Path) -> String {
+    completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty())
+        .unwrap()
+        .uri(path)
+        .unwrap()
+}
+
 #[test]
 fn imported_aliases_resolve_exported_members_and_bases_from_open_buffers() {
     let entry = fixture_uri("Main%20View.xr");
@@ -2930,7 +2937,7 @@ fn built_in_primitive_keys_and_material_slots_complete() {
     }
     let directory = workspace_fixture("primitive-slots");
     let file = directory.join("main.xr");
-    let uri = format!("file://{}", file.display());
+    let uri = workspace_file_uri(&file);
     let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
     let marked = r#"component App inherits Window { property <Actor> object: Actor {
         mesh: "primitive:cylinder",
@@ -2957,7 +2964,7 @@ fn material_slot_selector_completion_uses_the_enclosing_mesh() {
     )
     .unwrap();
     let file = directory.join("app.xr");
-    let uri = format!("file://{}", file.display());
+    let uri = workspace_file_uri(&file);
     let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
     let prefix = r#"component App inherits Window { property <Actor> model: Actor {
         mesh: @mesh-url("sample.gltf"),
@@ -6460,7 +6467,7 @@ fn gltf_material_variant_selectors_complete_and_hover_inside_scene_rows() {
     )
     .unwrap();
     let file = directory.join("app.xr");
-    let uri = format!("file://{}", file.display());
+    let uri = workspace_file_uri(&file);
     let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
     let prefix = r#"component App inherits Window { property <Actor> model: Actor {
         mesh: @mesh-url("sample.gltf", auto-lod),
@@ -6510,7 +6517,7 @@ fn mesh_asset_hover_reports_gpu_instance_groups_and_accessors() {
         }],"accessors":[{"count":128},{"count":128}]}"#,
     )
     .unwrap();
-    let uri = format!("file://{}", directory.join("main.xr").display());
+    let uri = workspace_file_uri(&directory.join("main.xr"));
     let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
     let source =
         r#"component App inherits Window { property <string> forest: @mesh-url("forest.gltf"); }"#;
