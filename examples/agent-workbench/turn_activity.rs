@@ -92,16 +92,17 @@ pub(super) fn restore(ui: &AgentWorkbench, open: &HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::file_references::TranscriptStream;
     use session::{CommandActivity, ForkPoint};
     use std::sync::Arc;
     use std::time::Duration;
-    use xrack_runtime::{MarkdownStream, Orientation};
+    use xrack_runtime::Orientation;
     use xrack_testing::{Size, UiDriver};
 
     #[test]
     fn completed_turns_fold_independently_and_search_opens_the_matched_group() {
         let mut ui = AgentWorkbench::new();
-        let mut markdown = MarkdownStream::default();
+        let mut markdown = TranscriptStream::default();
         crate::chat_find::attach(&mut ui);
         attach(&mut ui);
         let command = |name: &str, output: &str, state| {
@@ -190,7 +191,7 @@ mod tests {
     #[test]
     fn search_scrolls_to_a_line_in_previously_folded_output() {
         let mut ui = AgentWorkbench::new();
-        let mut markdown = MarkdownStream::default();
+        let mut markdown = TranscriptStream::default();
         crate::chat_find::attach(&mut ui);
         let mut snapshot = Snapshot::connecting("/workspace".into());
         snapshot.connected = true;
