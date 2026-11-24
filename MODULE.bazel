@@ -233,9 +233,9 @@ crate.annotation(
     repositories = ["crates"],
     crate = "yeslogic-fontconfig-sys",
     version = "6.0.1",
-    deps = ["@fontconfig//:fontconfig"],
     gen_build_script = "off",
     label_injections = {"@fontconfig//:fontconfig": "@fontconfig"},
+    link_deps = ["@fontconfig//:fontconfig"],
 )
 crate.from_cargo(
     name = "crates",
