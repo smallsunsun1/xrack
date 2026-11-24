@@ -1,0 +1,97 @@
+struct SurfaceActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, pickable: bool, visible: bool, collidable: bool, layers: int,
+    animation: string, animation-time: float, animation-loop: bool,
+}
+export component ClosestSurfaceDemo inherits Window {
+    title: "XRack · 最近表面点";
+    width: 622px; height: 450px;
+    resizable: false;
+    background: #182535;
+
+    in-out property <float> probe-x: 0.25;
+    in-out property <float> reach: 2.2;
+    in-out property <float> time: 0.5;
+    in-out property <float> wall-yaw: 23;
+    in-out property <int> layers: 1;
+    in-out property <string> target: "";
+    in-out property <bool> skin: false;
+    in-out property <bool> visible-wall: true;
+    in-out property <bool> pickable-wall: true;
+
+    property <SurfaceActor> base: SurfaceActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #f5f7fa, pickable: true, visible: true, collidable: true, layers: 1,
+        animation: "", animation-time: 0, animation-loop: false,
+    };
+    property <SurfaceActor> panel: SurfaceActor {
+        id: "panel", x: -2.8, y: -0.32,
+        mesh: root.skin ? @mesh-url("models/skinned-panel.glb") : @mesh-url("models/morph-panel.glb"),
+        animation: root.skin ? "Bend" : "Morph", animation-time: root.time,
+        scale-x: 1.45, scale-y: 1.45, scale-z: 1.25,
+        color: #5ac4b6, ..root.base
+    };
+    property <SurfaceActor> wall: SurfaceActor {
+        id: "wall", x: 0.25, scale-x: 1.9, scale-y: 2.25, scale-z: 0.9,
+        yaw: root.wall-yaw, color: #789bc6, visible: root.visible-wall,
+        pickable: root.pickable-wall, collidable: false, ..root.base
+    };
+    property <SurfaceActor> beacon: SurfaceActor {
+        id: "beacon", mesh: "primitive:sphere", x: 2.7, y: 0.3,
+        scale-x: 0.69, scale-y: 1.0, scale-z: 0.72,
+        color: #c68d68, layers: 2, ..root.base
+    };
+    property <[SurfaceActor]> objects: [root.panel, root.wall, root.beacon];
+    property <point3d> query: Point3D.new(root.probe-x, 0.3, 1.85);
+    out property <hit3d> result: root.target == ""
+        ? Scene3D.closest-point(root.objects, root.query, root.reach, root.layers)
+        : Scene3D.closest-point-on(root.objects, root.target, root.query, root.reach, root.layers);
+    property <float> hit-x: root.result.position.x;
+    property <[SurfaceActor]> world: [
+        root.panel, root.wall, root.beacon,
+        SurfaceActor {
+            y: -1.38, scale-x: 13, scale-y: 0.1, scale-z: 6.8,
+            color: #374f65, pickable: false, ..root.base
+        },
+        SurfaceActor {
+            mesh: "primitive:sphere", x: root.query.x, y: root.query.y, z: root.query.z,
+            scale-x: 0.11, scale-y: 0.11, scale-z: 0.11,
+            color: #f2d6ff, pickable: false, ..root.base
+        },
+        SurfaceActor {
+            mesh: "primitive:sphere", x: root.hit-x, y: root.result.position.y, z: root.result.position.z,
+            scale-x: 0.115, scale-y: 0.115, scale-z: 0.115,
+            color: #ffd76b, visible: root.result.valid, pickable: false, ..root.base
+        },
+    ];
+    SceneView3D {
+        width: 622px; height: 307px; model: root.world;
+        layer-mask: 3; camera-yaw: -17; camera-pitch: 13; camera-distance: 8.9;
+        light-yaw: 27; light-elevation: 55; ambient-intensity: 0.58;
+        scene-background: #253b50; multisampling: true;
+        cache-rendering: true;
+    }
+    Label {
+        x: 15px; y: 310px; width: 450px; height: 35px;
+        text: root.result.valid ? "最近表面  " + root.result.object-id + "   距离 " + (Math.round(root.result.distance * 100) / 100.0) : "半径范围内无表面";
+    }
+    target-toggle := Button {
+        x: 462px; y: 310px; width: 146px; height: 35px;
+        text: root.target == "" ? "查询所有对象" : "仅查询面板";
+        clicked => { root.target = root.target == "" ? "panel" : ""; }
+    }
+    Label { x: 15px; y: 351px; width: 54px; height: 34px; text: "探针"; }
+    probe-slider := Slider { x: 60px; y: 351px; width: 232px; height: 34px; minimum: -3.45; maximum: 3.45; value <=> root.probe-x; }
+    Label { x: 311px; y: 351px; width: 50px; height: 34px; text: "半径"; }
+    radius-slider := Slider { x: 358px; y: 351px; width: 249px; height: 34px; minimum: 0; maximum: 4.5; value <=> root.reach; }
+    include-layer := CheckBox {
+        x: 15px; y: 398px; width: 157px; height: 34px; text: "包含右侧模型";
+        checked: root.layers == 3;
+        toggled => { root.layers = root.layers == 3 ? 1 : 3; }
+    }
+    mesh-toggle := CheckBox { x: 181px; y: 398px; width: 135px; height: 34px; text: "骨骼动画"; checked <=> root.skin; }
+    Label { x: 321px; y: 398px; width: 70px; height: 34px; text: "动画时间"; }
+    time-slider := Slider { x: 401px; y: 398px; width: 206px; height: 34px; minimum: 0; maximum: 1; value <=> root.time; }
+}

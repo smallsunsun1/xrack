@@ -98,9 +98,13 @@ struct SceneAnalysis {
                       "scene-hdr", "bloom", "bloom-strength", "bloom-threshold", "bloom-levels",
                       "depth-of-field", "dof-blur-radius", "dof-focus-distance", "dof-focus-range",
                       "scene-tone-map", "scene-white-point", "scene-brightness", "scene-contrast",
-                      "scene-saturation", "scene-lut", "scene-lut-size", "scene-lut-strength"}, true)
+                      "scene-saturation", "scene-lut", "scene-lut-size", "scene-lut-strength",
+                      "scene-effect", "scene-effect-strength", "scene-effect-depth", "scene-effects", "scene-captures",
+                      "scene-color-capture", "scene-depth-capture",
+                      "scene-effect-history-revision", "scene-effect-animate"}, true)
               .Default(false);
-      if ((kind == "Rectangle" && name == "background") ||
+      if ((kind == "Rectangle" && (name == "background" || name == "texture-source" ||
+                                    name == "texture-mipmaps")) ||
           ((kind == "Text" || kind == "Label" || kind == "StyledText") && name == "color") ||
           (kind == "StyledText" && name == "link-color") ||
           (ordinaryButton && (name == "primary" || name == "flat")) ||
@@ -502,7 +506,7 @@ bool staticValue(Value value, llvm::DenseMap<Value, bool> &known) {
     return found->second;
   auto *definition = value.getDefiningOp();
   bool result =
-      isa_and_nonnull<LiteralOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp,
+      isa_and_nonnull<LiteralOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp,
                       MarkdownOp, SolidBrushOp, GradientStopOp, LinearGradientOp,
                       RadialGradientOp, MakeFontOp, MakeDateOp, MakeTimeOp,
                       MakeRecordOp>(definition) &&

@@ -78,7 +78,7 @@ pub(crate) fn hovered(
     source: Source,
 ) -> Option<TooltipKey> {
     fn path_at(node: &Node, item: &LayoutNode, point: Point, path: &mut Vec<usize>) -> bool {
-        if !item.contains_subtree_point(point) {
+        if node.scene_texture_only() || !item.contains_subtree_point(point) {
             return false;
         }
         for (index, child, layout) in item.children_in_paint_order(node).rev() {

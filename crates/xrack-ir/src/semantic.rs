@@ -1405,8 +1405,12 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         }
         "renderer" | "data" if kind == "CustomRender" => Type::String,
         "revision" if kind == "CustomRender" => Type::Int,
+        "texture-source" if kind == "Rectangle" => Type::String,
+        "texture-only" | "texture-mipmaps" if kind == "Rectangle" => Type::Bool,
         "model" if kind == "SceneView3D" => Type::RecordList("SceneObject3D".into()),
         "lights" if kind == "SceneView3D" => Type::RecordList("SceneLight3D".into()),
+        "scene-effects" if kind == "SceneView3D" => Type::RecordList("SceneEffect3D".into()),
+        "scene-captures" if kind == "SceneView3D" => Type::RecordList("SceneCapture3D".into()),
         "particle-emitters" if kind == "SceneView3D" => {
             Type::RecordList("ParticleEmitter3D".into())
         }
@@ -1417,7 +1421,13 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "reflection-probes" if kind == "SceneView3D" => {
             Type::RecordList("ReflectionProbe3D".into())
         }
-        "selected-object" | "environment" | "camera" | "temporal-aa-mode"
+        "selected-object"
+        | "environment"
+        | "camera"
+        | "temporal-aa-mode"
+        | "scene-effect"
+        | "scene-color-capture"
+        | "scene-depth-capture"
             if kind == "SceneView3D" =>
         {
             Type::String
@@ -1427,6 +1437,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "environment-skybox"
         | "frustum-culling"
         | "cache-rendering"
+        | "texture-input"
         | "multisampling"
         | "temporal-aa"
         | "screen-space-reflections"
@@ -1440,6 +1451,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "scene-hdr"
         | "bloom"
         | "depth-of-field"
+        | "scene-effect-depth"
+        | "scene-effect-animate"
             if kind == "SceneView3D" =>
         {
             Type::Bool
@@ -1455,6 +1468,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "ssgi-steps"
         | "fog-volume-samples"
         | "fog-volume-density-samples"
+        | "scene-effect-history-revision"
             if kind == "SceneView3D" =>
         {
             Type::Int
@@ -1477,6 +1491,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "environment-intensity"
         | "environment-yaw"
         | "scene-exposure"
+        | "scene-effect-strength"
         | "scene-white-point"
         | "scene-brightness"
         | "scene-contrast"
@@ -2410,7 +2425,7 @@ fn validate_records(doc: &ast::Document) -> Result<BTreeMap<&str, &ast::RecordDe
             .iter()
             .chain(record.variants.iter().flat_map(|variant| &variant.fields))
         {
-            if let Type::Record(name) = &field.ty {
+            if let Type::Record(name) | Type::RecordList(name) = &field.ty {
                 if !records.contains_key(name.as_ref()) {
                     return fail(field.span, format!("unknown record type `{name}`"));
                 }
@@ -2435,19 +2450,14 @@ fn validate_record_fields(record_fields: &[ast::RecordField]) -> Result<()> {
         }
         if matches!(
             field.ty,
-            Type::RecordList(_)
-                | Type::StringList
-                | Type::IntList
+            Type::StringList
                 | Type::DateList
                 | Type::Hit3DList
                 | Type::TouchPoints
                 | Type::GradientStop
                 | Type::Percent
         ) {
-            return fail(
-                field.span,
-                "record fields require scalar, enum or named record types",
-            );
+            return fail(field.span, "unsupported record field type");
         }
     }
     Ok(())
@@ -2487,6 +2497,120 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
     let Type::RecordList(record) = &value.ty else {
         return Ok(());
     };
+    if let Some(ty) = record_field_type(&scope.records, record, "geometry") {
+        let schema = match ty {
+            Type::Record(ref geometry) => scope
+                .records
+                .get(geometry.as_ref())
+                .filter(|schema| schema.variants.is_empty()),
+            _ => None,
+        };
+        let Some(schema) = schema else {
+            return fail(value.span, "3D model requires geometry to be a record");
+        };
+        if let Some(vertices) = schema.fields.iter().find(|field| field.name == "vertices") {
+            if schema.fields.iter().any(|field| field.name == "shape") {
+                return fail(
+                    value.span,
+                    "3D geometry cannot declare both shape and vertices",
+                );
+            }
+            let Type::RecordList(vertices) = &vertices.ty else {
+                return fail(
+                    value.span,
+                    "3D geometry requires vertices to be a list of vertex records",
+                );
+            };
+            let Some(vertex_schema) = scope
+                .records
+                .get(vertices.as_ref())
+                .filter(|schema| schema.variants.is_empty())
+            else {
+                return fail(
+                    value.span,
+                    "3D geometry requires vertices to be a list of vertex records",
+                );
+            };
+            for (name, expected) in builtins::SCENE_MESH_VERTEX_FIELDS {
+                let field = vertex_schema
+                    .fields
+                    .iter()
+                    .find(|field| field.name == *name);
+                if field.map_or(*name == "position", |field| field.ty != *expected) {
+                    return fail(
+                        value.span,
+                        format!("3D vertex field `{name}` requires type {}", expected.name(),),
+                    );
+                }
+            }
+            if schema
+                .fields
+                .iter()
+                .any(|field| field.name == "indices" && field.ty != Type::IntList)
+            {
+                return fail(
+                    value.span,
+                    "3D geometry field `indices` requires type [int]",
+                );
+            }
+            if let Some(subsets) = schema.fields.iter().find(|field| field.name == "subsets") {
+                let Type::RecordList(subsets) = &subsets.ty else {
+                    return fail(
+                        value.span,
+                        "3D geometry requires subsets to be a list of subset records",
+                    );
+                };
+                let Some(subset_schema) = scope
+                    .records
+                    .get(subsets.as_ref())
+                    .filter(|schema| schema.variants.is_empty())
+                else {
+                    return fail(
+                        value.span,
+                        "3D geometry requires subsets to be a list of subset records",
+                    );
+                };
+                for (name, expected) in builtins::SCENE_MESH_SUBSET_FIELDS {
+                    let field = subset_schema
+                        .fields
+                        .iter()
+                        .find(|field| field.name == *name);
+                    if field.is_none_or(|field| field.ty != *expected) {
+                        return fail(
+                            value.span,
+                            format!("3D subset field `{name}` requires type {}", expected.name()),
+                        );
+                    }
+                }
+            }
+        } else {
+            if schema.fields.iter().any(|field| field.name == "subsets") {
+                return fail(
+                    value.span,
+                    "3D geometry requires vertices when declaring subsets",
+                );
+            }
+            for (name, expected) in builtins::SCENE_PARAMETRIC_FIELDS {
+                let field = schema.fields.iter().find(|field| field.name == *name);
+                if field.map_or(*name == "shape", |field| field.ty != *expected) {
+                    return fail(
+                        value.span,
+                        format!(
+                            "3D geometry field `{name}` requires type {}",
+                            expected.name(),
+                        ),
+                    );
+                }
+            }
+        }
+    } else if record_field_type(&scope.records, record, "mesh").is_none() {
+        return fail(
+            value.span,
+            format!(
+                "3D model record `{record}` requires a string field named `mesh` or a geometry record",
+            ),
+        );
+    }
     if let Some(ty) = record_field_type(&scope.records, record, "morph-weights")
         && !matches!(ty, Type::Record(weights) if scope.records.get(weights.as_ref()).is_some_and(|schema| {
             schema.variants.is_empty() && schema.fields.iter().all(|field| field.ty == Type::Float)
@@ -2496,6 +2620,182 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
             value.span,
             format!("3D model record `{record}` requires a morph-weights record with float fields"),
         );
+    }
+    if let Some(ty) = record_field_type(&scope.records, record, "material") {
+        let Type::Record(material) = ty else {
+            return fail(
+                value.span,
+                format!("3D model record `{record}` requires material to be a record"),
+            );
+        };
+        validate_scene_material(value, scope, &material)?;
+    }
+    if let Some(ty) = record_field_type(&scope.records, record, "material-slots") {
+        let Type::Record(palette) = ty else {
+            return fail(
+                value.span,
+                "3D model requires material-slots to be a record",
+            );
+        };
+        let Some(schema) = scope
+            .records
+            .get(palette.as_ref())
+            .filter(|schema| schema.variants.is_empty())
+        else {
+            return fail(
+                value.span,
+                "3D material-slots requires a record of material bindings",
+            );
+        };
+        for field in &schema.fields {
+            let Type::Record(style) = &field.ty else {
+                return fail(
+                    value.span,
+                    format!(
+                        "3D material slot `{}` requires a material record",
+                        field.name
+                    ),
+                );
+            };
+            validate_scene_material(value, scope, style)?;
+            if let Some(ty) = record_field_type(&scope.records, style, "slot")
+                && ty != Type::String
+            {
+                return fail(
+                    value.span,
+                    format!(
+                        "3D material slot `{}` requires a string field named `slot`",
+                        field.name
+                    ),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_scene_material(value: &ir::Expr, scope: &Scope<'_>, material: &str) -> Result<()> {
+    let Some(schema) = scope
+        .records
+        .get(material)
+        .filter(|schema| schema.variants.is_empty())
+    else {
+        return fail(
+            value.span,
+            "3D material requires a record of material factors",
+        );
+    };
+    let texture_channels = builtins::SCENE_MATERIAL_CHANNEL_FIELDS
+        .iter()
+        .map(|(name, _)| (*name, Type::String));
+    for (name, expected) in builtins::SCENE_MATERIAL_FIELDS
+        .iter()
+        .cloned()
+        .chain(texture_channels)
+        .chain(
+            builtins::SCENE_VERTEX_MASK_FIELDS
+                .iter()
+                .map(|name| (*name, Type::String)),
+        )
+    {
+        if let Some(field) = schema.fields.iter().find(|field| field.name == name)
+            && field.ty != expected
+        {
+            return fail(
+                value.span,
+                format!(
+                    "3D material record `{material}` requires a {} field named `{name}`",
+                    expected.name()
+                ),
+            );
+        }
+    }
+    if let Some(field) = schema
+        .fields
+        .iter()
+        .find(|field| field.name == "shader-textures")
+    {
+        let Type::RecordList(inputs) = &field.ty else {
+            return fail(
+                value.span,
+                "3D material shader-textures requires a record list",
+            );
+        };
+        let ty = |name| record_field_type(&scope.records, inputs, name);
+        if ["texture", "item", "capture"]
+            .into_iter()
+            .all(|name| ty(name) != Some(Type::String))
+        {
+            return fail(
+                value.span,
+                "3D material shader texture requires a string field named texture, item or capture",
+            );
+        }
+        for (name, expected) in [
+            "texture",
+            "item",
+            "capture",
+            "attachment",
+            "filter",
+            "wrap-u",
+            "wrap-v",
+            "color-space",
+        ]
+        .map(|name| (name, Type::String))
+        .into_iter()
+        .chain([("enabled", Type::Bool)])
+        {
+            if ty(name).is_some_and(|actual| actual != expected) {
+                return fail(
+                    value.span,
+                    format!(
+                        "3D material shader texture field `{name}` requires {}",
+                        expected.name()
+                    ),
+                );
+            }
+        }
+    }
+    for name in builtins::SCENE_MATERIAL_MAP_FIELDS {
+        let Some(field) = schema.fields.iter().find(|field| field.name == *name) else {
+            continue;
+        };
+        if field.ty == Type::String {
+            continue;
+        }
+        let Type::Record(texture) = &field.ty else {
+            return fail(
+                value.span,
+                format!("3D material field `{name}` requires a texture key or record"),
+            );
+        };
+        let Some(texture_fields) = scope
+            .records
+            .get(texture.as_ref())
+            .filter(|schema| schema.variants.is_empty())
+        else {
+            return fail(
+                value.span,
+                format!("3D texture `{texture}` requires a record"),
+            );
+        };
+        for (setting, expected) in builtins::SCENE_TEXTURE_FIELDS {
+            let field = texture_fields
+                .fields
+                .iter()
+                .find(|field| field.name == *setting);
+            if (*setting == "source" || field.is_some())
+                && !field.is_some_and(|field| field.ty == *expected)
+            {
+                return fail(
+                    value.span,
+                    format!(
+                        "3D texture record `{texture}` requires a {} field named `{setting}`",
+                        expected.name()
+                    ),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -8060,6 +8360,8 @@ fn element<'a>(
                             | "lights"
                             | "reflection-probes"
                             | "fog-volumes"
+                            | "scene-effects"
+                            | "scene-captures"
                             | "particle-emitters"
                             | "particle-affectors"
                     )
@@ -8097,6 +8399,142 @@ fn element<'a>(
                             builtins::SCENE_FOG_VOLUME_FIELDS,
                             builtins::SCENE_FOG_VOLUME_OPTIONAL_FIELDS,
                         )?;
+                    } else if b.name == "scene-captures" {
+                        validate_scene_records(
+                            &value,
+                            scope,
+                            "3D scene captures",
+                            builtins::SCENE_CAPTURE_FIELDS,
+                            builtins::SCENE_CAPTURE_OPTIONAL_FIELDS,
+                        )?;
+                        if let Type::RecordList(capture) = &value.ty
+                            && let Some(material) =
+                                record_field_type(&scope.records, capture, "override-material")
+                        {
+                            let Type::Record(material) = material else {
+                                return fail(
+                                    value.span,
+                                    "3D scene captures requires a record field named `override-material`",
+                                );
+                            };
+                            validate_scene_material(&value, scope, &material)?;
+                        }
+                        if let Type::RecordList(capture) = &value.ty
+                            && let Some(state) =
+                                record_field_type(&scope.records, capture, "pipeline-state")
+                        {
+                            let Type::Record(state) = state else {
+                                return fail(
+                                    value.span,
+                                    "3D scene captures requires a record field named `pipeline-state`",
+                                );
+                            };
+                            for (field, expected) in builtins::SCENE_CAPTURE_PIPELINE_FIELDS {
+                                if let Some(actual) =
+                                    record_field_type(&scope.records, &state, field)
+                                    && actual != *expected
+                                {
+                                    return fail(
+                                        value.span,
+                                        format!(
+                                            "3D capture pipeline state requires a {} field named `{field}`",
+                                            expected.name()
+                                        ),
+                                    );
+                                }
+                            }
+                            for (name, state_fields) in [
+                                ("stencil", builtins::SCENE_CAPTURE_STENCIL_FIELDS),
+                                ("target-blend", builtins::SCENE_CAPTURE_TARGET_BLEND_FIELDS),
+                            ] {
+                                let Some(nested) = record_field_type(&scope.records, &state, name)
+                                else {
+                                    continue;
+                                };
+                                let Type::Record(nested) = nested else {
+                                    return fail(
+                                        value.span,
+                                        format!(
+                                            "3D capture pipeline state requires a record field named `{name}`"
+                                        ),
+                                    );
+                                };
+                                for (field, expected) in state_fields {
+                                    if record_field_type(&scope.records, &nested, field)
+                                        .is_some_and(|ty| ty != *expected)
+                                    {
+                                        return fail(
+                                            value.span,
+                                            format!(
+                                                "3D capture {name} state requires a {} field named `{field}`",
+                                                expected.name()
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                            for region in ["viewport", "scissor"] {
+                                let Some(rect) = record_field_type(&scope.records, &state, region)
+                                else {
+                                    continue;
+                                };
+                                let Type::Record(rect) = rect else {
+                                    return fail(
+                                        value.span,
+                                        format!(
+                                            "3D capture pipeline state requires a record field named `{region}`"
+                                        ),
+                                    );
+                                };
+                                for field in builtins::SCENE_CAPTURE_RECT_FIELDS {
+                                    if record_field_type(&scope.records, &rect, field)
+                                        != Some(Type::Float)
+                                    {
+                                        return fail(
+                                            value.span,
+                                            format!(
+                                                "3D capture {region} requires a float field named `{field}`"
+                                            ),
+                                        );
+                                    }
+                                }
+                                if record_field_type(&scope.records, &rect, "enabled")
+                                    .is_some_and(|ty| ty != Type::Bool)
+                                {
+                                    return fail(
+                                        value.span,
+                                        format!(
+                                            "3D capture {region} requires a bool field named `enabled`"
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    } else if b.name == "scene-effects" {
+                        validate_scene_records(
+                            &value,
+                            scope,
+                            "3D effect passes",
+                            builtins::SCENE_EFFECT_FIELDS,
+                            builtins::SCENE_EFFECT_OPTIONAL_FIELDS,
+                        )?;
+                        if let Type::RecordList(pass) = &value.ty
+                            && let Some(buffers) =
+                                record_field_type(&scope.records, pass, "buffers")
+                            && !matches!(buffers, Type::RecordList(buffer)
+                                if ["name", "texture", "item", "capture"].iter().any(|field|
+                                        record_field_type(&scope.records, &buffer, field) == Some(Type::String))
+                                    && ["previous-frame", "enabled"].iter().all(|field|
+                                        record_field_type(&scope.records, &buffer, field).is_none_or(|ty| ty == Type::Bool))
+                                    && ["name", "texture", "item", "capture", "attachment", "filter", "wrap-u", "wrap-v", "color-space"].into_iter().all(|field|
+                                        record_field_type(&scope.records, &buffer, field)
+                                            .is_none_or(|ty| ty == Type::String)))
+                        {
+                            return fail(
+                                value.span,
+                                "3D effect pass buffers requires a record list with a string field named `name`, `texture`, `item` or `capture`, optional bool fields `previous-frame` and `enabled`, and optional string fields `filter`, `wrap-u` and `wrap-v` and `color-space`",
+                            );
+                        }
                     } else if b.name == "reflection-probes" {
                         validate_scene_records(
                             &value,
@@ -10236,6 +10674,41 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             ir::Expr {
                 value,
                 ..ir::Expr::operation("markdown", Type::StyledText, vec![], span)
+            }
+        }
+        ExprKind::ShaderUrl(path) | ExprKind::MaterialShaderUrl(path) => {
+            let value = serde_json::from_str::<String>(path).map_err(|error| Diagnostic {
+                span,
+                message: format!("invalid shader path: {error}"),
+            })?;
+            if value.is_empty() {
+                return fail(span, "shader URL requires a nonempty path");
+            }
+            ir::Expr {
+                value,
+                ..ir::Expr::operation(
+                    if matches!(e.kind, ExprKind::MaterialShaderUrl(_)) {
+                        "material_shader_url"
+                    } else {
+                        "shader_url"
+                    },
+                    Type::String,
+                    vec![],
+                    span,
+                )
+            }
+        }
+        ExprKind::TextureUrl(path) => {
+            let value = serde_json::from_str::<String>(path).map_err(|error| Diagnostic {
+                span,
+                message: format!("invalid texture path: {error}"),
+            })?;
+            if value.is_empty() {
+                return fail(span, "texture URL requires a nonempty path");
+            }
+            ir::Expr {
+                value,
+                ..ir::Expr::operation("texture_url", Type::String, vec![], span)
             }
         }
         ExprKind::EnvironmentUrl(path) => {

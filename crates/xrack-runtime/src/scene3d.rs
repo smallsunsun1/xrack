@@ -1,14 +1,15 @@
 //! Scene geometry, camera projection, and ray queries shared by 3D hosts.
 pub use crate::scene_animation::{
-    AnimatedMesh, MAX_ANIMATION_KEYS, MAX_ANIMATION_NODES, MeshAnimationBlend, MeshAnimationClip,
-    MeshAnimationNode, MeshAnimationProperty, MeshAnimationTrack, MeshAsset, MeshCamera,
-    MeshCameraProjection, MeshInterpolation, MeshLight, MeshLods, MeshNodeTransform, MeshPlayback,
-    MorphAnimationTrack,
+    AnimatedMesh, MAX_ANIMATION_KEYS, MAX_ANIMATION_NODES, MAX_MESH_INSTANCES, MeshAnimationBlend,
+    MeshAnimationClip, MeshAnimationNode, MeshAnimationProperty, MeshAnimationTrack, MeshAsset,
+    MeshCamera, MeshCameraProjection, MeshInstances, MeshInterpolation, MeshLight, MeshLods,
+    MeshNodeTransform, MeshPlayback, MorphAnimationTrack,
 };
 pub use crate::scene_camera::{
     Point3D, ProjectedPoint3D, SceneCamera, SceneCameraSettings, hit_all_camera, hit_all_objects,
-    hit_camera, hit_model, hit_objects, pick_camera, pick_model, pick_objects, project,
-    project_camera, unproject, unproject_camera,
+    hit_camera, hit_instance, hit_instance_camera, hit_model, hit_objects, hit_row, hit_row_camera,
+    hit_subset, hit_subset_camera, pick_camera, pick_in_rect, pick_in_rect_camera, pick_model,
+    pick_objects, project, project_camera, unproject, unproject_camera,
 };
 use crate::scene_cast::{MeshContact, SphereSweep, TriangleContact, cast_triangle};
 pub use crate::scene_cast::{WalkOptions, sphere_cast, sphere_overlap, sphere_slide, sphere_walk};
@@ -22,18 +23,23 @@ pub use crate::scene_fog::{
 };
 use crate::scene_hierarchy::SceneTransform;
 pub use crate::scene_hierarchy::{
-    SceneGeometry, SceneModel, SceneNodeDefinition, model_cameras, model_nodes, record_cameras,
-    record_objects,
+    SceneGeometry, SceneGeometryInput, SceneModel, SceneNodeDefinition, model_cameras, model_nodes,
+    record_cameras, record_objects,
 };
+use crate::scene_indices::MIN_INDEXED_VERTICES;
+pub use crate::scene_indices::{MeshDrawIndices, MeshIndexElements};
 pub use crate::scene_lighting::{
     DirectionalShadowSpace, MAX_SCENE_LIGHTS, PointShadowProjection, SceneLight,
     SceneLightDefinition, SceneLightModel, SceneLightSource, ShadowLight, linear_color,
     model_lights, record_lights,
 };
 pub use crate::scene_material::{
-    MAX_MESH_TEXTURE_DIMENSION, MeshAlphaMode, MeshClearcoat, MeshDielectric, MeshImage,
-    MeshMaterial, MeshNormalMap, MeshPart, MeshPbr, MeshTexture, MeshTransmission, MeshVolume,
-    RefractionChannels, TextureColorSpace, TextureFilter, TextureTransform, TextureWrap,
+    MAX_MESH_TEXTURE_DIMENSION, MaterialChannel, MaterialChannels, MeshAlphaMode, MeshAnisotropy,
+    MeshBlendMode, MeshClearcoat, MeshCullMode, MeshDepthCoverage, MeshDepthDraw, MeshDielectric,
+    MeshFresnel, MeshImage, MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPart, MeshPbr,
+    MeshShader, MeshTexture, MeshTransmission, MeshVolume, RefractionChannels, SceneMaterial,
+    SceneMaterialBinding, SceneMaterialMaps, SceneTexture, TextureChannel, TextureColorSpace,
+    TextureFilter, TextureTransform, TextureWrap, VertexColorMasks, texture_resource_key,
 };
 use crate::scene_morph::MorphPose;
 pub use crate::scene_morph::{
@@ -57,8 +63,11 @@ pub use crate::scene_skin::{
     SKIN_INFLUENCES,
 };
 use crate::scene_skin::{SkinGeometry, SkinPose};
+use crate::scene_surface::closest_triangle_point;
 pub use crate::scene_surface::{SurfaceSample, corresponding_vertices};
+use crate::scene_visibility::Frustum;
 pub use crate::scene_visibility::{SceneVisibility, VisibilityIndex};
+use crate::{scene_effect::CaptureRenderables, scene_material::SceneAppearance};
 
 /// The default content layer for an authored model, light or camera.
 pub use crate::scene_lighting::viewport_lighting;
@@ -66,12 +75,13 @@ pub use crate::scene_lightmap::{BakedLightmap, LightmapMode, LightmapTrace};
 
 pub const MAIN_LAYER: u64 = 1;
 use crate::{Color, VecModel, scene_bounds::Bounds3D};
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 use std::{
+    collections::VecDeque,
     f32::consts::{PI, TAU},
     num::NonZeroU32,
     ops::Range,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 
 pub const MAX_IMPORTED_VERTICES: usize = 900_000;
@@ -89,13 +99,18 @@ impl PartialEq for Mesh3D {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Box, Self::Box) | (Self::Sphere, Self::Sphere) => true,
-            (Self::Imported(left), Self::Imported(right)) => Arc::ptr_eq(left, right),
+            (Self::Imported(left), Self::Imported(right)) => {
+                Arc::ptr_eq(left, right)
+                    || left.authored.is_some()
+                        && left.authored == right.authored
+                        && Arc::ptr_eq(&left.geometry, &right.geometry)
+            }
             _ => false,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeshVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
@@ -118,24 +133,308 @@ impl MeshVertex {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Primitive {
+    Box,
+    Sphere,
+    Rectangle,
+    Cylinder,
+    Cone,
+}
+
+#[doc(hidden)]
 #[derive(Debug)]
-pub struct MeshData {
+pub struct MeshVertexStreams {
     vertices: Vec<MeshVertex>,
-    parts: Vec<MeshPart>,
-    materials: Arc<[MeshMaterial]>,
     tangents: Vec<MeshTangent>,
     lightmap_uv: Vec<[f32; 2]>,
+    draw_indices: Option<Box<OnceLock<Option<MeshDrawIndices>>>>,
+}
+
+impl MeshVertexStreams {
+    fn invalidate_indices(&mut self) {
+        if let Some(indices) = &mut self.draw_indices {
+            indices.take();
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+#[doc(hidden)]
+pub struct MeshGeometry {
+    streams: Arc<MeshVertexStreams>,
+    parts: Vec<MeshPart>,
+    part_centers: Vec<[f32; 3]>,
     lightmap_min_size: u32,
+    min: [f32; 3],
+    max: [f32; 3],
+    skin: Option<Arc<SkinGeometry>>,
+    morph: Option<Arc<MorphGeometry>>,
+    pick_tree: OnceLock<Arc<PickTree>>,
+    primitive: Option<Primitive>,
+}
+
+impl MeshGeometry {
+    fn pick_tree(&self) -> &PickTree {
+        self.pick_tree
+            .get_or_init(|| Arc::new(PickTree::new(&self.vertices, &self.parts)))
+    }
+}
+
+impl std::ops::Deref for MeshGeometry {
+    type Target = MeshVertexStreams;
+
+    fn deref(&self) -> &Self::Target {
+        &self.streams
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MeshData {
+    geometry: Arc<MeshGeometry>,
+    material_slots: Arc<[MeshMaterialSlot]>,
+    materials: Arc<[MeshMaterial]>,
+    uses_base_items: bool,
+    uses_shader_items: bool,
+    capture_sources: Box<[crate::scene_effect::CaptureRead]>,
+    capture_positions: bool,
+    shader_displacement: f32,
     blended_parts: Vec<(usize, [f32; 3])>,
     transmission_blur: Option<f32>,
     has_opaque_parts: bool,
+    has_auxiliary_depth: bool,
+    has_face_culling: bool,
+    depth_prepasses: [bool; 2],
+    blended_depth: bool,
     has_depth_writing_transmission: bool,
     has_volume: bool,
-    min: [f32; 3],
-    max: [f32; 3],
-    skin: Option<SkinGeometry>,
-    morph: Option<MorphGeometry>,
-    pick_tree: OnceLock<PickTree>,
+    authored: Option<Arc<SceneAppearance>>,
+    derivative_normals: Vec<bool>,
+}
+
+impl std::ops::Deref for MeshData {
+    type Target = MeshGeometry;
+
+    fn deref(&self) -> &Self::Target {
+        &self.geometry
+    }
+}
+
+impl MeshData {
+    #[doc(hidden)]
+    pub fn geometry(&self) -> &Arc<MeshGeometry> {
+        &self.geometry
+    }
+
+    /// Identity for GPU vertex attributes. Draw ranges and materials are cached separately.
+    #[doc(hidden)]
+    pub fn vertex_streams(&self) -> &Arc<MeshVertexStreams> {
+        &self.geometry.streams
+    }
+
+    #[doc(hidden)]
+    pub fn uses_base_items(&self) -> bool {
+        self.uses_base_items
+    }
+
+    #[doc(hidden)]
+    pub fn uses_item_textures(&self) -> bool {
+        self.uses_base_items || self.uses_shader_items
+    }
+
+    #[doc(hidden)]
+    pub fn capture_sources(&self) -> &[crate::scene_effect::CaptureRead] {
+        &self.capture_sources
+    }
+
+    #[doc(hidden)]
+    pub fn uses_capture_positions(&self) -> bool {
+        self.capture_positions
+    }
+
+    fn with_materials(
+        geometry: Arc<MeshGeometry>,
+        materials: Arc<[MeshMaterial]>,
+        authored: Option<Arc<SceneAppearance>>,
+    ) -> Self {
+        let mut blended_parts = Vec::new();
+        let mut transmission_blur = None::<f32>;
+        let mut has_opaque_parts = geometry.parts.is_empty();
+        let mut has_auxiliary_depth = geometry.parts.is_empty();
+        let mut has_face_culling = false;
+        let mut depth_prepasses = [false; 2];
+        let mut blended_depth = false;
+        let mut has_depth_writing_transmission = false;
+        let mut has_volume = false;
+        for (index, part) in geometry.parts.iter().enumerate() {
+            let material = &materials[part.material];
+            let blended = material.is_blended();
+            let writes_depth = material.depth_coverage().is_some();
+            has_face_culling |= material.cull_mode != MeshCullMode::None;
+            has_auxiliary_depth |= writes_depth;
+            blended_depth |= writes_depth && blended;
+            let transmission = material.transmission_blur();
+            if material.depth_draw_mode == MeshDepthDraw::OpaquePrepass {
+                depth_prepasses[usize::from(transmission.is_some())] = true;
+            }
+            if blended {
+                blended_parts.push((index, geometry.part_centers[index]));
+            }
+            if let Some(blur) = transmission {
+                transmission_blur = Some(transmission_blur.map_or(blur, |before| before.max(blur)));
+                has_depth_writing_transmission |= !blended;
+                has_volume |= material.pbr.as_ref().and_then(MeshPbr::volume).is_some();
+            } else if !blended {
+                has_opaque_parts = true;
+            }
+        }
+        Self {
+            geometry,
+            material_slots: Arc::from([]),
+            uses_base_items: materials
+                .iter()
+                .any(|material| material.base_item.is_some()),
+            uses_shader_items: materials.iter().any(|material| {
+                material
+                    .shader
+                    .as_ref()
+                    .is_some_and(|shader| shader.item_sources().next().is_some())
+            }),
+            capture_positions: materials
+                .iter()
+                .filter_map(|material| material.shader.as_ref())
+                .any(|shader| {
+                    crate::material_shader::MaterialHooks::from_source(&shader.source)
+                        .capture_position
+                        && shader
+                            .capture_sources(crate::material_shader::MAX_TEXTURES)
+                            .any(|read| {
+                                read.attachment == crate::scene_effect::CaptureAttachment::Depth
+                            })
+                }),
+            capture_sources: materials
+                .iter()
+                .filter_map(|material| material.shader.as_ref())
+                .flat_map(|shader| shader.capture_sources(crate::material_shader::MAX_TEXTURES))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .cloned()
+                .collect(),
+            shader_displacement: materials
+                .iter()
+                .map(|material| material.vertex_parameters()[3])
+                .fold(0.0, f32::max),
+            materials,
+            blended_parts,
+            transmission_blur,
+            has_opaque_parts,
+            has_auxiliary_depth,
+            has_face_culling,
+            depth_prepasses,
+            blended_depth,
+            has_depth_writing_transmission,
+            has_volume,
+            authored,
+            derivative_normals: Vec::new(),
+        }
+    }
+}
+
+fn default_mesh_material() -> MeshMaterial {
+    MeshMaterial {
+        shader: None,
+        channels: Default::default(),
+        vertex_colors: true,
+        vertex_masks: Default::default(),
+        cull_mode: MeshCullMode::Back,
+        depth_draw_mode: Default::default(),
+        blend_mode: Default::default(),
+        base_color: [1.0; 4],
+        base_texture: None,
+        base_item: None,
+        alpha_mode: MeshAlphaMode::Opaque,
+        pbr: Some(MeshPbr::principled()),
+    }
+}
+
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct CaptureMaterial {
+    style: SceneMaterial,
+    replacement: Arc<[MeshMaterial]>,
+    meshes: Mutex<VecDeque<CaptureMesh>>,
+}
+
+#[derive(Debug)]
+struct CaptureMesh {
+    source: Weak<MeshData>,
+    filter: CaptureRenderables,
+    mesh: Option<Mesh3D>,
+}
+
+impl PartialEq for CaptureMaterial {
+    fn eq(&self, other: &Self) -> bool {
+        self.style == other.style
+    }
+}
+
+impl CaptureMaterial {
+    pub(crate) fn new(style: SceneMaterial) -> Arc<Self> {
+        let replacement = Arc::from([style.prepare(&default_mesh_material())]);
+        Arc::new(Self {
+            style,
+            replacement,
+            meshes: Mutex::default(),
+        })
+    }
+
+    pub fn material(&self) -> &MeshMaterial {
+        &self.replacement[0]
+    }
+
+    pub fn project(&self, mesh: &Mesh3D, filter: CaptureRenderables) -> Option<Mesh3D> {
+        let source = mesh.material_source()?;
+        let mut meshes = self
+            .meshes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(index) = meshes.iter().position(|entry| {
+            entry.source.as_ptr() == Arc::as_ptr(source) && entry.filter == filter
+        }) && let Some(entry) = meshes.remove(index)
+        {
+            let mesh = entry.mesh.clone();
+            meshes.push_front(entry);
+            return mesh;
+        }
+        let mut geometry = source.geometry.as_ref().clone();
+        let sections = geometry
+            .parts
+            .drain(..)
+            .zip(geometry.part_centers.drain(..))
+            .filter(|(part, _)| filter.includes(source.materials[part.material].is_blended()))
+            .map(|(mut part, center)| {
+                part.material = 0;
+                (part, center)
+            });
+        let (parts, centers): (Vec<_>, Vec<_>) = sections.unzip();
+        let mesh = (!parts.is_empty()).then(|| {
+            geometry.parts = parts;
+            geometry.part_centers = centers;
+            geometry.pick_tree = OnceLock::new();
+            let mut data =
+                MeshData::with_materials(Arc::new(geometry), self.replacement.clone(), None);
+            data.derivative_normals = vec![self.style.overrides_normal_texture()];
+            Mesh3D::Imported(Arc::new(data))
+        });
+        meshes.retain(|entry| entry.source.strong_count() > 0);
+        meshes.truncate(63);
+        meshes.push_front(CaptureMesh {
+            source: Arc::downgrade(source),
+            filter,
+            mesh: mesh.clone(),
+        });
+        mesh
+    }
 }
 
 #[doc(hidden)]
@@ -171,13 +470,149 @@ pub fn mesh_resource_key(path: &str, options: MeshImportOptions) -> String {
     format!("{prefix}:{path}")
 }
 
+pub use crate::scene_authored_mesh::{
+    SceneMeshIndices, SceneMeshInputs, SceneMeshSubset, SceneMeshVertex,
+};
+pub use crate::scene_parametric::SceneParametricGeometry;
+
 impl Mesh3D {
     pub fn resolve(key: &str, imported: impl FnOnce(&str) -> Option<Self>) -> Option<Self> {
+        Self::builtin(key).or_else(|| imported(key))
+    }
+
+    pub(crate) fn builtin(key: &str) -> Option<Self> {
+        use crate::scene_primitives;
+        static RECTANGLE: OnceLock<Option<Mesh3D>> = OnceLock::new();
+        static CYLINDER: OnceLock<Option<Mesh3D>> = OnceLock::new();
+        static CONE: OnceLock<Option<Mesh3D>> = OnceLock::new();
+
         match key {
             "primitive:box" => Some(Self::Box),
             "primitive:sphere" => Some(Self::Sphere),
-            _ => imported(key),
+            "primitive:rectangle" => RECTANGLE
+                .get_or_init(|| {
+                    Self::prepare_primitive(Primitive::Rectangle, scene_primitives::rectangle())
+                })
+                .clone(),
+            "primitive:cylinder" => CYLINDER
+                .get_or_init(|| {
+                    Self::prepare_primitive(Primitive::Cylinder, scene_primitives::cylinder())
+                })
+                .clone(),
+            "primitive:cone" => CONE
+                .get_or_init(|| Self::prepare_primitive(Primitive::Cone, scene_primitives::cone()))
+                .clone(),
+            _ => None,
         }
+    }
+
+    fn prepare_primitive(
+        kind: Primitive,
+        parts: crate::scene_primitives::PrimitiveParts,
+    ) -> Option<Self> {
+        Self::prepare_parts(Some(kind), parts)
+    }
+
+    pub(crate) fn prepare_procedural(
+        parts: crate::scene_primitives::PrimitiveParts,
+    ) -> Option<Self> {
+        Self::prepare_parts(None, parts)
+    }
+
+    fn prepare_parts(
+        kind: Option<Primitive>,
+        parts: crate::scene_primitives::PrimitiveParts,
+    ) -> Option<Self> {
+        let mut vertices = Vec::new();
+        let mut ranges = Vec::new();
+        let mut slots = Vec::new();
+        let mut materials = Vec::new();
+        for (index, (name, part)) in parts.into_iter().enumerate() {
+            let start = vertices.len();
+            vertices.extend(part);
+            ranges.push(MeshPart {
+                vertices: start..vertices.len(),
+                material: index,
+                volume_inverse: None,
+            });
+            slots.push(MeshMaterialSlot {
+                source_index: Some(index as u32),
+                name: Some(name.into()),
+            });
+            materials.push(MeshMaterial {
+                shader: None,
+                channels: Default::default(),
+                vertex_colors: true,
+                vertex_masks: Default::default(),
+                cull_mode: MeshCullMode::None,
+                depth_draw_mode: Default::default(),
+                blend_mode: Default::default(),
+                base_color: [1.0; 4],
+                base_texture: None,
+                base_item: None,
+                alpha_mode: MeshAlphaMode::Opaque,
+                pbr: Some(MeshPbr::principled()),
+            });
+        }
+        let Self::Imported(mut mesh) = Self::imported(vertices, Vec::new(), ranges, materials)
+            .ok()?
+            .with_material_slots(slots.into())?
+        else {
+            return None;
+        };
+        let geometry = Arc::get_mut(&mut Arc::get_mut(&mut mesh)?.geometry)?;
+        geometry.primitive = kind;
+        Some(Self::Imported(mesh))
+    }
+
+    pub(crate) fn with_procedural_layout(
+        &self,
+        layout: &[crate::scene_authored_mesh::SceneMeshPart],
+    ) -> Option<Self> {
+        let Self::Imported(base) = self else {
+            return None;
+        };
+        let material = base.materials.first()?;
+        let mut part_centers = Vec::with_capacity(layout.len());
+        let mut parts = Vec::with_capacity(layout.len());
+        let mut slots = Vec::new();
+        let mut indices = std::collections::BTreeMap::<&str, usize>::new();
+        for part in layout {
+            let slot = *indices.entry(&part.name).or_insert_with(|| {
+                let index = slots.len();
+                slots.push(MeshMaterialSlot {
+                    source_index: Some(index as u32),
+                    name: Some(part.name.clone()),
+                });
+                index
+            });
+            let mut low = [f32::INFINITY; 3];
+            let mut high = [f32::NEG_INFINITY; 3];
+            for vertex in base.vertices.get(part.range.clone())? {
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(vertex.position[axis]);
+                    high[axis] = high[axis].max(vertex.position[axis]);
+                }
+            }
+            part_centers.push(std::array::from_fn(|axis| {
+                f32::midpoint(low[axis], high[axis])
+            }));
+            parts.push(MeshPart {
+                vertices: part.range.clone(),
+                material: slot,
+                volume_inverse: None,
+            });
+        }
+        let geometry = Arc::new(MeshGeometry {
+            parts,
+            part_centers,
+            pick_tree: OnceLock::new(),
+            ..(*base.geometry).clone()
+        });
+        let materials = vec![material.clone(); slots.len()].into();
+        let mut mesh = MeshData::with_materials(geometry, materials, None);
+        mesh.material_slots = slots.into();
+        Some(Self::Imported(Arc::new(mesh)))
     }
 
     pub fn imported(
@@ -223,10 +658,8 @@ impl Mesh3D {
                 .and_then(MeshPbr::tangent_normal_map)
                 .is_some()
         });
-        if needs_tangents && tangents.len() != vertices.len()
-            || !needs_tangents && !tangents.is_empty()
-        {
-            return Err("mesh tangent data does not match the normal-mapped vertex buffer");
+        if (needs_tangents || !tangents.is_empty()) && tangents.len() != vertices.len() {
+            return Err("mesh tangent data does not match the vertex buffer");
         }
         if materials.iter().any(|material| {
             !material
@@ -239,50 +672,6 @@ impl Mesh3D {
         }) {
             return Err("mesh contains an invalid material factor");
         }
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        for vertex in &vertices {
-            if !vertex
-                .position
-                .into_iter()
-                .chain(vertex.normal)
-                .chain(vertex.uv)
-                .chain(vertex.uv1)
-                .all(f32::is_finite)
-                || !vertex
-                    .color
-                    .iter()
-                    .all(|channel| (0.0..=1.0).contains(channel))
-                || Vector3::from(vertex.normal).norm_squared() < 1e-8
-            {
-                return Err("mesh contains an invalid position or normal");
-            }
-            for axis in 0..3 {
-                min[axis] = min[axis].min(vertex.position[axis]);
-                max[axis] = max[axis].max(vertex.position[axis]);
-            }
-        }
-        let blended_parts = parts
-            .iter()
-            .enumerate()
-            .filter_map(|(index, part)| {
-                if materials[part.material].alpha_mode != MeshAlphaMode::Blend {
-                    return None;
-                }
-                let mut low = [f32::INFINITY; 3];
-                let mut high = [f32::NEG_INFINITY; 3];
-                for vertex in &vertices[part.vertices.clone()] {
-                    for axis in 0..3 {
-                        low[axis] = low[axis].min(vertex.position[axis]);
-                        high[axis] = high[axis].max(vertex.position[axis]);
-                    }
-                }
-                Some((
-                    index,
-                    std::array::from_fn(|axis| f32::midpoint(low[axis], high[axis])),
-                ))
-            })
-            .collect();
         if parts
             .iter()
             .filter_map(|part| part.volume_inverse)
@@ -291,38 +680,183 @@ impl Mesh3D {
         {
             return Err("invalid mesh volume transform");
         }
-        let mut transmission_blur = None::<f32>;
-        let mut has_opaque_parts = parts.is_empty();
-        let mut has_depth_writing_transmission = false;
-        let mut has_volume = false;
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        let mut part_centers = Vec::with_capacity(parts.len());
         for part in &parts {
-            let material = &materials[part.material];
-            if let Some(blur) = material.pbr.as_ref().and_then(MeshPbr::transmission_blur) {
-                transmission_blur = Some(transmission_blur.map_or(blur, |before| before.max(blur)));
-                has_depth_writing_transmission |= material.alpha_mode != MeshAlphaMode::Blend;
-                has_volume |= material.pbr.as_ref().and_then(MeshPbr::volume).is_some();
-            } else if material.alpha_mode != MeshAlphaMode::Blend {
-                has_opaque_parts = true;
+            let mut low = [f32::INFINITY; 3];
+            let mut high = [f32::NEG_INFINITY; 3];
+            for vertex in &vertices[part.vertices.clone()] {
+                if !vertex
+                    .position
+                    .into_iter()
+                    .chain(vertex.normal)
+                    .chain(vertex.uv)
+                    .chain(vertex.uv1)
+                    .all(f32::is_finite)
+                    || !vertex
+                        .color
+                        .iter()
+                        .all(|channel| (0.0..=1.0).contains(channel))
+                    || Vector3::from(vertex.normal).norm_squared() < 1e-8
+                {
+                    return Err("mesh contains an invalid position or normal");
+                }
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(vertex.position[axis]);
+                    high[axis] = high[axis].max(vertex.position[axis]);
+                }
             }
+            for axis in 0..3 {
+                min[axis] = min[axis].min(low[axis]);
+                max[axis] = max[axis].max(high[axis]);
+            }
+            part_centers.push(std::array::from_fn(|axis| {
+                f32::midpoint(low[axis], high[axis])
+            }));
         }
-        Ok(Self::Imported(Arc::new(MeshData {
-            vertices,
+        let geometry = Arc::new(MeshGeometry {
+            streams: Arc::new(MeshVertexStreams {
+                draw_indices: (vertices.len() >= MIN_INDEXED_VERTICES).then(Box::default),
+                vertices,
+                tangents,
+                lightmap_uv: Vec::new(),
+            }),
             parts,
-            materials,
-            tangents,
-            lightmap_uv: Vec::new(),
+            part_centers,
             lightmap_min_size: 0,
-            blended_parts,
-            transmission_blur,
-            has_opaque_parts,
-            has_depth_writing_transmission,
-            has_volume,
             min,
             max,
             skin: None,
             morph: None,
             pick_tree: OnceLock::new(),
-        })))
+            primitive: None,
+        });
+        Ok(Self::Imported(Arc::new(MeshData::with_materials(
+            geometry, materials, None,
+        ))))
+    }
+
+    fn primitive(&self) -> Option<Primitive> {
+        match self {
+            Self::Box => Some(Primitive::Box),
+            Self::Sphere => Some(Primitive::Sphere),
+            Self::Imported(mesh) => mesh.primitive,
+        }
+    }
+
+    fn material_source(&self) -> Option<&Arc<MeshData>> {
+        let builtin = |mesh: &Mesh3D| {
+            let vertices = mesh.vertices().to_vec();
+            let parts = vec![MeshPart {
+                vertices: 0..vertices.len(),
+                material: 0,
+                volume_inverse: None,
+            }];
+            let materials = vec![default_mesh_material()];
+            let Self::Imported(mut source) =
+                Self::imported(vertices, Vec::new(), parts, materials).ok()?
+            else {
+                return None;
+            };
+            Arc::get_mut(&mut Arc::get_mut(&mut source)?.geometry)?.primitive = mesh.primitive();
+            Some(source)
+        };
+        static BOX: OnceLock<Option<Arc<MeshData>>> = OnceLock::new();
+        static SPHERE: OnceLock<Option<Arc<MeshData>>> = OnceLock::new();
+        match self {
+            Self::Box => BOX.get_or_init(|| builtin(self)).as_ref(),
+            Self::Sphere => SPHERE.get_or_init(|| builtin(self)).as_ref(),
+            Self::Imported(data) => Some(data),
+        }
+    }
+
+    pub(crate) fn styled(self, style: Option<&Arc<SceneAppearance>>) -> Self {
+        let Some(style) = style else {
+            return self;
+        };
+        let Some(source) = self.material_source() else {
+            return self;
+        };
+        let mut changed = false;
+        let mut derivative_normals = Vec::with_capacity(source.materials.len());
+        let materials = source
+            .materials
+            .iter()
+            .enumerate()
+            .map(|(index, material)| {
+                let style = style
+                    .styles(source.material_slots.get(index), index)
+                    .cloned()
+                    .reduce(|mut before, later| {
+                        before.overlay(&later);
+                        before
+                    });
+                let Some(resolved) = style else {
+                    derivative_normals.push(false);
+                    return material.clone();
+                };
+                changed = true;
+                derivative_normals.push(resolved.overrides_normal_texture());
+                resolved.prepare(material)
+            })
+            .collect();
+        if !changed {
+            return self;
+        }
+        let mut result =
+            MeshData::with_materials(source.geometry.clone(), materials, Some(style.clone()));
+        result.derivative_normals = derivative_normals;
+        result.material_slots = source.material_slots.clone();
+        Self::Imported(Arc::new(result))
+    }
+
+    #[doc(hidden)]
+    pub fn material_slots(&self) -> &[MeshMaterialSlot] {
+        match self {
+            Self::Imported(data) => &data.material_slots,
+            _ => &[],
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_material_slots(mut self, slots: Arc<[MeshMaterialSlot]>) -> Option<Self> {
+        if slots.is_empty() {
+            return Some(self);
+        }
+        let Self::Imported(mesh) = &mut self else {
+            return None;
+        };
+        let data = Arc::get_mut(mesh)?;
+        if slots.len() != data.materials.len() {
+            return None;
+        }
+        data.material_slots = slots;
+        Some(self)
+    }
+
+    /// Share immutable buffers between preparations of the same imported mesh.
+    #[doc(hidden)]
+    pub fn share_variant_streams(&mut self, reference: &Self) {
+        let (Self::Imported(mesh), Self::Imported(reference)) = (&mut *self, reference) else {
+            return;
+        };
+        if Arc::ptr_eq(mesh.vertex_streams(), reference.vertex_streams())
+            || mesh.vertices != reference.vertices
+            || mesh.tangents != reference.tangents
+            || mesh.lightmap_uv != reference.lightmap_uv
+            || mesh.skin.as_ref().map(|skin| &skin.weights)
+                != reference.skin.as_ref().map(|skin| &skin.weights)
+            || match (&mesh.morph, &reference.morph) {
+                (None, None) => false,
+                (Some(a), Some(b)) => !a.packed_words().eq(b.packed_words()),
+                _ => true,
+            }
+        {
+            return;
+        }
+        Arc::make_mut(&mut Arc::make_mut(mesh).geometry).streams =
+            reference.vertex_streams().clone();
     }
 
     /// Rebuild surviving triangles with the original materials and vertex deformation data.
@@ -343,8 +877,9 @@ impl Mesh3D {
                 .map(|&index| source.tangents.get(index).copied())
                 .collect::<Option<_>>()?
         };
-        let mut mesh =
-            Self::imported_shared(geometry, tangents, parts, source.materials.clone()).ok()?;
+        let mut mesh = Self::imported_shared(geometry, tangents, parts, source.materials.clone())
+            .ok()?
+            .with_material_slots(source.material_slots.clone())?;
         if !source.lightmap_uv.is_empty() {
             let uv = vertices
                 .iter()
@@ -424,7 +959,8 @@ impl Mesh3D {
             source.parts.clone(),
             source.materials.clone(),
         )
-        .ok()?;
+        .ok()?
+        .with_material_slots(source.material_slots.clone())?;
         mesh.attach_lightmap_uv(uv, min_size)
     }
 
@@ -435,11 +971,13 @@ impl Mesh3D {
         let Self::Imported(mesh) = &mut self else {
             return None;
         };
-        let data = Arc::get_mut(mesh)?;
+        let data = Arc::get_mut(&mut Arc::get_mut(mesh)?.geometry)?;
         if uv.len() != data.vertices.len() || !uv.iter().flatten().all(|value| value.is_finite()) {
             return None;
         }
-        data.lightmap_uv = uv;
+        let streams = Arc::get_mut(&mut data.streams)?;
+        streams.lightmap_uv = uv;
+        streams.invalidate_indices();
         data.lightmap_min_size = min_size;
         Some(self)
     }
@@ -470,13 +1008,16 @@ impl Mesh3D {
             return None;
         };
         let mesh = Arc::get_mut(mesh)?;
-        mesh.skin = Some(SkinGeometry::new(
+        let skin = SkinGeometry::new(
             weights,
             &mesh.vertices,
             mesh.blended_parts
                 .iter()
                 .map(|(part, _)| (*part, mesh.parts[*part].vertices.clone())),
-        )?);
+        )?;
+        let geometry = Arc::get_mut(&mut mesh.geometry)?;
+        Arc::get_mut(&mut geometry.streams)?.invalidate_indices();
+        geometry.skin = Some(Arc::new(skin));
         Some(self)
     }
 
@@ -502,7 +1043,7 @@ impl Mesh3D {
 
     pub(crate) fn skin_geometry(&self) -> Option<&SkinGeometry> {
         match self {
-            Self::Imported(mesh) => mesh.skin.as_ref(),
+            Self::Imported(mesh) => mesh.skin.as_deref(),
             _ => None,
         }
     }
@@ -519,7 +1060,7 @@ impl Mesh3D {
             return None;
         };
         let mesh = Arc::get_mut(mesh)?;
-        mesh.morph = Some(MorphGeometry::new(
+        let morph = MorphGeometry::new(
             target_count,
             names,
             offsets,
@@ -528,7 +1069,10 @@ impl Mesh3D {
             mesh.blended_parts
                 .iter()
                 .map(|(part, _)| (*part, mesh.parts[*part].vertices.clone())),
-        )?);
+        )?;
+        let geometry = Arc::get_mut(&mut mesh.geometry)?;
+        Arc::get_mut(&mut geometry.streams)?.invalidate_indices();
+        geometry.morph = Some(Arc::new(morph));
         Some(self)
     }
 
@@ -577,7 +1121,7 @@ impl Mesh3D {
 
     pub fn morph_geometry(&self) -> Option<&MorphGeometry> {
         match self {
-            Self::Imported(mesh) => mesh.morph.as_ref(),
+            Self::Imported(mesh) => mesh.morph.as_deref(),
             _ => None,
         }
     }
@@ -608,7 +1152,8 @@ impl Mesh3D {
             mesh.parts.clone(),
             mesh.materials.clone(),
         )
-        .ok()?;
+        .ok()?
+        .with_material_slots(mesh.material_slots.clone())?;
         if !mesh.lightmap_uv.is_empty() {
             let mut uv = mesh.lightmap_uv.clone();
             for triangle in uv.chunks_exact_mut(3) {
@@ -682,11 +1227,44 @@ impl Mesh3D {
         }
     }
 
+    #[doc(hidden)]
+    pub fn uses_base_items(&self) -> bool {
+        matches!(self, Self::Imported(mesh) if mesh.uses_base_items())
+    }
+
     pub fn materials(&self) -> &[MeshMaterial] {
         match self {
             Self::Imported(mesh) => &mesh.materials,
             _ => &[],
         }
+    }
+
+    /// Authored normal maps use the exact transformed UV derivatives.
+    #[doc(hidden)]
+    pub fn uses_vertex_tangents(&self, material: usize) -> bool {
+        matches!(self, Self::Imported(mesh) if !mesh.tangents.is_empty()
+            && !mesh.derivative_normals.get(material).copied().unwrap_or(false))
+    }
+
+    /// Prepare reusable draw indices without changing the triangle data used for picking.
+    #[doc(hidden)]
+    pub fn draw_indices(&self) -> Option<&MeshDrawIndices> {
+        static SPHERE: OnceLock<Option<MeshDrawIndices>> = OnceLock::new();
+        let slot = match self {
+            Self::Sphere => &SPHERE,
+            Self::Imported(mesh) => mesh.streams.draw_indices.as_deref()?,
+            Self::Box => return None,
+        };
+        slot.get_or_init(|| {
+            MeshDrawIndices::prepare(
+                self.vertices(),
+                self.tangents(),
+                self.lightmap_uvs(),
+                self.influences(),
+                self.morph_geometry(),
+            )
+        })
+        .as_ref()
     }
 
     pub fn tangents(&self) -> &[[i16; 4]] {
@@ -709,6 +1287,48 @@ impl Mesh3D {
 
     pub fn has_depth_writing_transmission(&self) -> bool {
         matches!(self, Self::Imported(mesh) if mesh.has_depth_writing_transmission)
+    }
+
+    #[doc(hidden)]
+    pub fn shader_displacement(&self) -> f32 {
+        match self {
+            Self::Imported(mesh) => mesh.shader_displacement,
+            _ => 0.0,
+        }
+    }
+
+    /// Geometry and material state used by the scene's depth-only passes.
+    #[doc(hidden)]
+    pub fn same_shadow_mesh(&self, other: &Self) -> bool {
+        self == other
+            || match (self, other) {
+                (Self::Imported(a), Self::Imported(b)) => {
+                    Arc::ptr_eq(a.vertex_streams(), b.vertex_streams())
+                        && a.parts.len() == b.parts.len()
+                        && a.parts.iter().zip(&b.parts).all(|(left, right)| {
+                            left.vertices == right.vertices
+                                && a.materials[left.material]
+                                    .same_shadow_surface(&b.materials[right.material])
+                        })
+                }
+                _ => false,
+            }
+    }
+
+    #[doc(hidden)]
+    pub fn has_auxiliary_depth(&self) -> bool {
+        match self {
+            Self::Imported(mesh) => mesh.has_auxiliary_depth,
+            _ => true,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn depth_participation(&self) -> ([bool; 2], bool) {
+        match self {
+            Self::Imported(mesh) => (mesh.depth_prepasses, mesh.blended_depth),
+            _ => ([false; 2], false),
+        }
     }
 
     pub fn has_opaque_parts(&self) -> bool {
@@ -750,7 +1370,30 @@ impl Mesh3D {
         }
     }
 
-    fn bounds(&self) -> ([f32; 3], [f32; 3]) {
+    fn pick_tree(&self) -> Option<&PickTree> {
+        match self {
+            Self::Imported(mesh) if mesh.vertices.len() / 3 >= MIN_BVH_TRIANGLES => {
+                Some(mesh.pick_tree())
+            }
+            Self::Sphere => {
+                static TREE: OnceLock<PickTree> = OnceLock::new();
+                Some(TREE.get_or_init(|| {
+                    let vertices = self.vertices();
+                    PickTree::new(
+                        vertices,
+                        &[MeshPart {
+                            vertices: 0..vertices.len(),
+                            material: 0,
+                            volume_inverse: None,
+                        }],
+                    )
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn bounds(&self) -> ([f32; 3], [f32; 3]) {
         match self {
             Self::Box => ([-0.5; 3], [0.5; 3]),
             Self::Sphere => ([-1.0; 3], [1.0; 3]),
@@ -771,16 +1414,28 @@ pub struct SceneObject {
     pub layers: u64,
     pub lightmap: Option<BakedLightmap>,
     source_row: Option<NonZeroU32>,
+    pub(crate) imported_placement: Option<(u32, Option<u32>)>,
     pickable: bool,
     collidable: bool,
     transform: SceneTransform,
     skin: Option<Arc<SkinPose>>,
     morph: Option<Arc<MorphPose>>,
+    styled_blend_centers: Option<Arc<[(usize, [f32; 3])]>>,
 }
 
 impl SceneObject {
+    pub(crate) fn instance_address(&self) -> Option<[u32; 3]> {
+        let (node, instance) = self.imported_placement()?;
+        Some([self.scene_row()?, node, instance?])
+    }
+
+    #[doc(hidden)]
+    pub fn imported_placement(&self) -> Option<(u32, Option<u32>)> {
+        self.imported_placement
+    }
+
     /// Resolve a mesh key separately from the object's stable identity.
-    /// The standard unit meshes are `primitive:box` and `primitive:sphere`.
+    /// Built-in scene keys and imported mesh keys share this entry point.
     pub fn from_mesh(
         id: String,
         mesh: Mesh3D,
@@ -857,11 +1512,13 @@ impl SceneObject {
             layers: MAIN_LAYER,
             lightmap: None,
             source_row: None,
+            imported_placement: None,
             pickable: true,
             collidable: true,
             transform,
             skin: None,
             morph: None,
+            styled_blend_centers: None,
         }
     }
 
@@ -870,6 +1527,11 @@ impl SceneObject {
         self.casts_shadow = casts;
         self.receives_shadow = receives;
         self
+    }
+
+    #[doc(hidden)]
+    pub fn is_pickable(&self) -> bool {
+        self.pickable
     }
 
     pub fn with_pickable(mut self, enabled: bool) -> Self {
@@ -895,17 +1557,38 @@ impl SceneObject {
         let inverse = linear.try_inverse();
         let local_center = inverse.map(|inverse| inverse * (sweep.origin - origin));
         let triangles = self.mesh.vertices().as_chunks::<3>().0;
-        // Generated primitives are convex solids. Imported geometry contributes
-        // its posed surfaces, which may describe open or disconnected meshes.
-        let inside = local_center.is_some_and(|point| match &self.mesh {
-            Mesh3D::Box => point.abs().max() < 0.5,
-            Mesh3D::Sphere if point.norm_squared() < 1.0 => triangles.iter().all(|triangle| {
+        let inside_faces = |point: Vector3<f64>| {
+            triangles.iter().all(|triangle| {
                 let [a, b, c] =
                     triangle.map(|vertex| Vector3::from(vertex.position.map(f64::from)));
-                let normal = (b - a).cross(&(c - a));
-                let plane = normal.dot(&a);
-                plane == 0.0 || normal.dot(&(point - a)) * plane.signum() < 0.0
-            }),
+                (b - a).cross(&(c - a)).dot(&(point - a)) < 0.0
+            })
+        };
+        // Generated primitives are convex solids. Imported geometry contributes
+        // its posed surfaces, which may describe open or disconnected meshes.
+        let inside = local_center.is_some_and(|point| match self.mesh.primitive() {
+            Some(Primitive::Box) => point.abs().max() < 0.5,
+            Some(Primitive::Sphere) if point.norm_squared() < 1.0 => {
+                triangles.iter().all(|triangle| {
+                    let [a, b, c] =
+                        triangle.map(|vertex| Vector3::from(vertex.position.map(f64::from)));
+                    let normal = (b - a).cross(&(c - a));
+                    let plane = normal.dot(&a);
+                    plane == 0.0 || normal.dot(&(point - a)) * plane.signum() < 0.0
+                })
+            }
+            Some(Primitive::Cylinder)
+                if point.y.abs() < 0.5 && point.x * point.x + point.z * point.z < 0.25 =>
+            {
+                inside_faces(point)
+            }
+            Some(Primitive::Cone)
+                if point.y > 0.0
+                    && point.y < 1.0
+                    && point.x * point.x + point.z * point.z < 0.25 * (1.0 - point.y).powi(2) =>
+            {
+                inside_faces(point)
+            }
             _ => false,
         });
         let pose = self.pick_pose();
@@ -931,30 +1614,9 @@ impl SceneObject {
                 closest
             }
         };
-        let tree = if !inside && !pose.is_deformed() && triangles.len() >= MIN_BVH_TRIANGLES {
-            match &self.mesh {
-                Mesh3D::Imported(mesh) => Some(
-                    mesh.pick_tree
-                        .get_or_init(|| PickTree::new(&mesh.vertices, &mesh.parts)),
-                ),
-                Mesh3D::Sphere => {
-                    static TREE: OnceLock<PickTree> = OnceLock::new();
-                    Some(TREE.get_or_init(|| {
-                        PickTree::new(
-                            self.mesh.vertices(),
-                            &[MeshPart {
-                                vertices: 0..triangles.len() * 3,
-                                material: 0,
-                                volume_inverse: None,
-                            }],
-                        )
-                    }))
-                }
-                Mesh3D::Box => None,
-            }
-        } else {
-            None
-        };
+        let tree = (!inside && !pose.is_deformed())
+            .then(|| self.mesh.pick_tree())
+            .flatten();
         if let (Some(tree), Some(inverse), Some(local_center)) = (tree, inverse, local_center) {
             // Inverse-transforming a world sphere gives an ellipsoid. Its
             // coordinate radii conservatively expand every mesh-space BVH node.
@@ -1012,6 +1674,7 @@ impl SceneObject {
                 weights,
                 self.mesh.bounds(),
             )?));
+            self.update_styled_blend_centers(true);
         }
         Some(self)
     }
@@ -1026,6 +1689,7 @@ impl SceneObject {
             palette,
             self.morph.as_deref(),
         )?));
+        self.update_styled_blend_centers(true);
         Some(self)
     }
 
@@ -1033,8 +1697,79 @@ impl SceneObject {
         self.skin.as_ref().map(|skin| &skin.palette)
     }
 
+    pub(crate) fn with_capture_mesh(mut self, mesh: Mesh3D) -> Self {
+        self.mesh = mesh;
+        self.color = Color(0xffffffff);
+        self.styled_blend_centers = None;
+        self.update_styled_blend_centers(false);
+        self
+    }
+
+    fn update_styled_blend_centers(&mut self, inherit: bool) {
+        let Mesh3D::Imported(mesh) = &self.mesh else {
+            return;
+        };
+        if (inherit && mesh.authored.is_none())
+            || mesh.blended_parts.is_empty()
+            || self.skin.is_none() && self.morph.is_none()
+        {
+            return;
+        }
+        let inherited = self
+            .skin
+            .as_ref()
+            .map(|skin| skin.blended_parts.as_slice())
+            .or_else(|| {
+                self.morph
+                    .as_ref()
+                    .map(|morph| morph.blended_parts.as_slice())
+            })
+            .unwrap_or_default();
+        if inherit
+            && inherited
+                .iter()
+                .map(|(index, _)| index)
+                .eq(mesh.blended_parts.iter().map(|(index, _)| index))
+        {
+            self.styled_blend_centers = None;
+            return;
+        }
+        let pose = self.pick_pose();
+        let triangles = mesh.vertices.as_chunks::<3>().0;
+        self.styled_blend_centers = Some(
+            mesh.blended_parts
+                .iter()
+                .map(|&(index, _)| {
+                    if inherit
+                        && let Ok(old) = inherited.binary_search_by_key(&index, |(part, _)| *part)
+                    {
+                        return inherited[old];
+                    }
+                    let mut min = [f32::INFINITY; 3];
+                    let mut max = [f32::NEG_INFINITY; 3];
+                    for vertex in mesh.parts[index].vertices.clone().step_by(3) {
+                        for vertex in pose.deform::<false>(vertex, triangles[vertex / 3]) {
+                            for axis in 0..3 {
+                                min[axis] = min[axis].min(vertex.position[axis]);
+                                max[axis] = max[axis].max(vertex.position[axis]);
+                            }
+                        }
+                    }
+                    (
+                        index,
+                        std::array::from_fn(|axis| f32::midpoint(min[axis], max[axis])),
+                    )
+                })
+                .collect(),
+        );
+    }
+
     pub fn blended_parts(&self) -> &[(usize, [f32; 3])] {
-        if let Some(skin) = &self.skin {
+        if let Some(centers) = &self.styled_blend_centers {
+            centers
+        } else if self.mesh.blended_parts().is_empty() {
+            &[]
+        } else if let Some(skin) = &self.skin {
             &skin.blended_parts
         } else if let Some(morph) = &self.morph {
             &morph.blended_parts
@@ -1053,14 +1788,23 @@ impl SceneObject {
         }
     }
 
-    pub(crate) fn world_bounds(&self) -> Bounds3D {
+    fn render_bounds(&self) -> ([f32; 3], [f32; 3]) {
         let (min, max) = self.bounds();
+        let expansion = self.mesh.shader_displacement();
+        (
+            min.map(|point| point - expansion),
+            max.map(|point| point + expansion),
+        )
+    }
+
+    pub(crate) fn world_bounds(&self) -> Bounds3D {
+        let (min, max) = self.render_bounds();
         Bounds3D { min, max }.transform(self.transform_rows())
     }
 
     /// Corners of the transformed mesh bounds.
     pub fn bounds_corners(&self) -> [[f32; 3]; 8] {
-        let (min, max) = self.bounds();
+        let (min, max) = self.render_bounds();
         let transform = self.transform_rows();
         std::array::from_fn(|corner| {
             let [x, y, z] = std::array::from_fn(|axis| {
@@ -1096,6 +1840,195 @@ impl SceneObject {
                         .into()
                     })
             })
+    }
+
+    pub(crate) fn particle_prototype(&self) -> Option<Mesh3D> {
+        let pose = self.pick_pose();
+        if self.transform.linear == Matrix3::identity()
+            && self.transform.origin == Vector3::zeros()
+            && !pose.is_deformed()
+        {
+            return Some(self.mesh.clone());
+        }
+        let Mesh3D::Imported(mesh) = &self.mesh else {
+            return None;
+        };
+        let mut vertices = Vec::with_capacity(mesh.vertices.len());
+        let normal_transform = self.transform.inverse.transpose();
+        for (index, triangle) in mesh.vertices.as_chunks::<3>().0.iter().enumerate() {
+            vertices.extend(pose.deform::<true>(index * 3, *triangle).map(|mut vertex| {
+                vertex.position = (self.transform.origin
+                    + self.transform.linear * Vector3::from(vertex.position))
+                .into();
+                let normal = normal_transform * Vector3::from(vertex.normal);
+                vertex.normal = normal.try_normalize(1e-12).unwrap_or(Vector3::y()).into();
+                vertex
+            }));
+        }
+        let tangents = mesh
+            .tangents
+            .iter()
+            .enumerate()
+            .map(|(index, &[x, y, z, sign])| {
+                let mut tangent = Vector3::new(f32::from(x), f32::from(y), f32::from(z));
+                if let Some((skin, influences)) = pose.skin
+                    && let Some(rows) = influences[index].deformation_rows(&skin.palette)
+                {
+                    tangent = Vector3::from(
+                        rows.map(|[a, b, c, _]| a * tangent.x + b * tangent.y + c * tangent.z),
+                    );
+                }
+                let Some(tangent) = (self.transform.linear * tangent).try_normalize(1e-12) else {
+                    return [0; 4];
+                };
+                std::array::from_fn(|axis| {
+                    if axis == 3 {
+                        sign
+                    } else {
+                        (tangent[axis] * 32767.0).round() as i16
+                    }
+                })
+            })
+            .collect();
+        let mut parts = mesh.parts.clone();
+        for part in &mut parts {
+            let material = &mesh.materials[part.material];
+            if material.pbr.as_ref().and_then(MeshPbr::volume).is_some() {
+                let previous = material
+                    .volume_inverse(part.volume_inverse)
+                    .map_or_else(Matrix3::identity, |rows| {
+                        Matrix3::from_fn(|r, c| rows[r][c])
+                    });
+                let inverse = previous * self.transform.inverse;
+                part.volume_inverse = Some(std::array::from_fn(|r| {
+                    std::array::from_fn(|c| inverse[(r, c)])
+                }));
+            }
+        }
+        let mut materials = mesh.materials.clone();
+        if materials.iter().any(|material| {
+            material
+                .pbr
+                .as_ref()
+                .and_then(MeshPbr::volume)
+                .is_some_and(|volume| volume.thickness_in_prepared_space)
+        }) {
+            // The prepared model was baked again as a particle prototype.
+            // Its parts now carry the resolved optical basis.
+            for material in Arc::make_mut(&mut materials) {
+                if let Some(volume) = material
+                    .pbr
+                    .as_mut()
+                    .and_then(|pbr| pbr.transmission.as_deref_mut())
+                    .and_then(|term| term.volume.as_deref_mut())
+                {
+                    volume.thickness_in_prepared_space = false;
+                }
+            }
+        }
+        Mesh3D::imported_shared(vertices, tangents, parts, materials)
+            .ok()?
+            .with_material_slots(mesh.material_slots.clone())
+    }
+
+    pub(crate) fn intersects_selection(
+        &self,
+        camera: &SceneCamera,
+        region: &Frustum,
+        planes: u8,
+    ) -> bool {
+        if !self.pickable {
+            return false;
+        }
+        let test_faces = matches!(&self.mesh, Mesh3D::Imported(mesh) if mesh.has_face_culling);
+        if planes == 0 && !test_faces {
+            return true;
+        }
+        let pose = self.pick_pose();
+        let triangles = self.mesh.vertices().as_chunks::<3>().0;
+        let intersects = |vertex, material: Option<&MeshMaterial>, planes| {
+            let vertices = pose.deform::<false>(vertex, triangles[vertex / 3]);
+            let points = vertices.map(|vertex| {
+                self.transform.linear * Vector3::from(vertex.position) + self.transform.origin
+            });
+            let cull = material.map_or(MeshCullMode::None, |material| material.cull_mode);
+            if cull != MeshCullMode::None {
+                let [a, b, c] = points;
+                let facing = (b - a).cross(&(c - a)).dot(&camera.toward_viewer(a));
+                if facing == 0.0 || !cull.accepts(facing > 0.0) {
+                    return false;
+                }
+            }
+            region.triangle_intersects(points.map(Into::into), planes)
+        };
+        if !pose.is_deformed()
+            && let Some(tree) = self.mesh.pick_tree()
+        {
+            tree.intersects_selection(
+                region,
+                self.transform_rows(),
+                planes,
+                test_faces,
+                |triangle, planes| {
+                    let material = self
+                        .mesh
+                        .parts()
+                        .get(triangle.part as usize)
+                        .map(|part| &self.mesh.materials()[part.material]);
+                    intersects(triangle.vertex as usize, material, planes)
+                },
+            )
+        } else {
+            self.mesh.sections().any(|(range, material)| {
+                range
+                    .step_by(3)
+                    .any(|vertex| intersects(vertex, material, planes))
+            })
+        }
+    }
+
+    fn closest_surface(&self, point: Vector3<f64>, limit: f64) -> Option<ClosestSurface> {
+        let pose = self.pick_pose();
+        let origin = self.transform.origin.cast::<f64>();
+        let linear = self.transform.linear.cast::<f64>();
+        let triangles = self.mesh.vertices().as_chunks::<3>().0;
+        let mut best: Option<ClosestSurface> = None;
+        let mut inspect = |vertex: usize, limit: f64| {
+            let triangle = pose.deform::<false>(vertex, triangles[vertex / 3]);
+            let [a, b, c] =
+                triangle.map(|v| linear * Vector3::from(v.position).cast::<f64>() + origin);
+            if (b - a).cross(&(c - a)).norm_squared() == 0.0 {
+                return limit;
+            }
+            let (weights, distance_squared) = closest_triangle_point(point, [a, b, c]);
+            if distance_squared <= limit
+                && (distance_squared < limit || best.is_none_or(|old| vertex < old.vertex))
+            {
+                let [u, v, w] = weights;
+                let position = (a * u + b * v + c * w).cast::<f32>();
+                if position.iter().copied().all(f32::is_finite) {
+                    best = Some(ClosestSurface {
+                        vertex,
+                        weights,
+                        distance_squared,
+                        position,
+                    });
+                    return distance_squared;
+                }
+            }
+            limit
+        };
+        if !pose.is_deformed()
+            && let Some(tree) = self.mesh.pick_tree()
+        {
+            tree.visit_nearest(point, self.transform_rows(), limit, inspect);
+        } else {
+            let mut limit = limit;
+            for vertex in (0..triangles.len() * 3).step_by(3) {
+                limit = inspect(vertex, limit);
+            }
+        }
+        best
     }
 
     fn hit(&self, ray: Ray3D, min: f32, max: f32) -> Option<SurfaceHit> {
@@ -1140,19 +2073,22 @@ impl SceneObject {
             }
             let w = 1.0 - u - v;
             if let Some(material) = material {
-                if !front && !material.is_double_sided() {
+                if !material.cull_mode.accepts(front) {
                     return closest;
                 }
-                if material.alpha_mode != MeshAlphaMode::Opaque
-                    && !material.covers(
-                        std::array::from_fn(|axis| {
-                            a.uv[axis] * w + b.uv[axis] * u + c.uv[axis] * v
-                        }),
-                        a.color[3] * w + b.color[3] * u + c.color[3] * v,
-                        tint_alpha,
-                    )
-                {
-                    return closest;
+                if material.alpha_mode != MeshAlphaMode::Opaque {
+                    let uv = std::array::from_fn(|axis| {
+                        a.uv[axis] * w + b.uv[axis] * u + c.uv[axis] * v
+                    });
+                    let vertex_alpha = a.color[3] * w + b.color[3] * u + c.color[3] * v;
+                    let covered = if bake {
+                        material.depth_covers(uv, vertex_alpha, tint_alpha)
+                    } else {
+                        material.covers(uv, vertex_alpha, tint_alpha)
+                    };
+                    if !covered {
+                        return closest;
+                    }
                 }
             }
             let hit = SurfaceHit {
@@ -1160,8 +2096,7 @@ impl SceneObject {
                 vertex,
                 weights: [w, u, v],
                 back_face: material.is_some() && !front,
-                blended: material
-                    .is_some_and(|material| material.alpha_mode == MeshAlphaMode::Blend),
+                blended: material.is_some_and(|material| material.is_blended()),
             };
             if hit.precedes_triangle(best) {
                 best = Some(hit);
@@ -1174,9 +2109,7 @@ impl SceneObject {
             && let Mesh3D::Imported(mesh) = &self.mesh
             && triangles.len() >= MIN_BVH_TRIANGLES
         {
-            let tree = mesh
-                .pick_tree
-                .get_or_init(|| PickTree::new(&mesh.vertices, &mesh.parts));
+            let tree = mesh.pick_tree();
             tree.visit(local_origin, world_step, min, max, |triangle, closest| {
                 let part = &mesh.parts[triangle.part as usize];
                 test(
@@ -1248,36 +2181,49 @@ impl SceneObject {
             })
         };
         let uv = interpolate_uv(0);
-        let color = interpolate(|vertex| [vertex.color[0], vertex.color[1], vertex.color[2]]);
+        let rgba = std::array::from_fn::<_, 4, _>(|channel| {
+            vertices
+                .iter()
+                .zip(weights)
+                .map(|(vertex, weight)| vertex.color[channel] * weight)
+                .sum()
+        });
+        let [r, g, b, alpha] = rgba;
+        let color = Vector3::new(r, g, b);
         let tint = Vector3::from(crate::scene_lighting::linear_color(self.color));
         let mut diffuse = color.component_mul(&tint);
         let mut emission = Vector3::zeros();
         if let Some(material) = material {
-            let alpha = vertices
-                .iter()
-                .zip(weights)
-                .map(|(vertex, weight)| vertex.color[3] * weight)
-                .sum();
-            if !material.covers(uv, alpha, f32::from(self.color.0 as u8) / 255.0) {
+            if !material.depth_covers(uv, alpha, f32::from(self.color.0 as u8) / 255.0) {
                 return None;
+            }
+            if !material.vertex_colors {
+                diffuse = tint;
             }
             let [r, g, b, _] = material.base_color;
             diffuse.component_mul_assign(&Vector3::new(r, g, b));
             if let Some(texture) = &material.base_texture {
-                diffuse.component_mul_assign(&Vector3::from(texture.rgb_at(uv, true)));
+                diffuse.component_mul_assign(&Vector3::from(
+                    texture
+                        .channel_color(uv, material.channels.channel(MaterialChannel::BaseColor)),
+                ));
             }
             if let Some(pbr) = &material.pbr {
                 let metallic = pbr.metallic
-                    * pbr
-                        .metallic_roughness_texture
-                        .as_ref()
-                        .map_or(1.0, |map| map.rgb_at(interpolate_uv(map.uv_slot), false)[2]);
+                    * material.vertex_masks.metalness(rgba)
+                    * pbr.metallic_roughness_texture.as_ref().map_or(1.0, |map| {
+                        map.scalar_at(
+                            interpolate_uv(map.uv_slot),
+                            material.channels.channel(MaterialChannel::Metalness),
+                        )
+                    });
                 diffuse *= 1.0 - metallic.clamp(0.0, 1.0);
                 emission = Vector3::from(pbr.emissive);
                 if let Some(map) = &pbr.emissive_texture {
-                    emission.component_mul_assign(&Vector3::from(
-                        map.rgb_at(interpolate_uv(map.uv_slot), true),
-                    ));
+                    emission.component_mul_assign(&Vector3::from(map.channel_color(
+                        interpolate_uv(map.uv_slot),
+                        material.channels.channel(MaterialChannel::Emissive),
+                    )));
                 }
             } else {
                 emission = diffuse;
@@ -1302,6 +2248,11 @@ impl SceneObject {
     }
 
     fn describe_hit(&self, ray: Ray3D, surface: SurfaceHit) -> RayHit<'_> {
+        let position = ray.origin + surface.distance * ray.direction;
+        self.describe_surface(position, surface)
+    }
+
+    fn describe_surface(&self, position: Vector3<f32>, surface: SurfaceHit) -> RayHit<'_> {
         let base = self.mesh.vertices().as_chunks::<3>().0[surface.vertex / 3];
         let [a, b, c] = self.pick_pose().deform::<true>(surface.vertex, base);
         let [w, u, v] = surface.weights;
@@ -1323,8 +2274,9 @@ impl SceneObject {
         RayHit {
             object_id: &self.id,
             row_index: self.source_row.map(|row| row.get() - 1),
+            imported_placement: self.imported_placement,
             distance: surface.distance,
-            position: (ray.origin + surface.distance * ray.direction).into(),
+            position: position.into(),
             normal: (sign * world_normal).into(),
             local_position: local_position.into(),
             local_normal: (sign * local_normal).into(),
@@ -1384,7 +2336,20 @@ fn box_vertices() -> Vec<MeshVertex> {
     faces
         .into_iter()
         .flat_map(|(indices, normal)| {
-            [0, 1, 2, 0, 2, 3].map(|index| MeshVertex::solid(corners[indices[index]], normal))
+            let up = match normal[1] {
+                1.0 => -Vector3::z(),
+                -1.0 => Vector3::z(),
+                _ => Vector3::y(),
+            };
+            let right = up.cross(&Vector3::from(normal));
+            [0, 1, 2, 0, 2, 3].map(|index| {
+                let position = corners[indices[index]];
+                let p = Vector3::from(position);
+                MeshVertex {
+                    uv: [0.5 + p.dot(&right), 0.5 - p.dot(&up)],
+                    ..MeshVertex::solid(position, normal)
+                }
+            })
         })
         .collect()
 }
@@ -1401,7 +2366,10 @@ fn sphere_vertices() -> Vec<MeshVertex> {
             STACKS => [0.0, -1.0, 0.0],
             _ => [radius * azimuth.cos(), y, radius * azimuth.sin()],
         };
-        MeshVertex::solid(position, position)
+        MeshVertex {
+            uv: [column as f32 / SLICES as f32, row as f32 / STACKS as f32],
+            ..MeshVertex::solid(position, position)
+        }
     };
     let mut vertices = Vec::with_capacity(SLICES * (STACKS - 1) * 6);
     for row in 0..STACKS {
@@ -1463,6 +2431,8 @@ impl std::ops::Deref for Hit3D {
             valid: false,
             object_id: String::new(),
             row_index: -1,
+            mesh_node_index: -1,
+            instance_index: -1,
             distance: 0.0,
             position: Point3D::new(0.0, 0.0, 0.0),
             normal: Vector3D::new(0.0, 0.0, 0.0),
@@ -1481,6 +2451,8 @@ pub struct Hit3DData {
     pub valid: bool,
     pub object_id: String,
     pub row_index: i64,
+    pub mesh_node_index: i64,
+    pub instance_index: i64,
     pub distance: f64,
     pub position: Point3D,
     pub normal: Vector3D,
@@ -1500,6 +2472,13 @@ impl From<RayHit<'_>> for Hit3D {
             valid: true,
             object_id: hit.object_id.to_owned(),
             row_index: hit.row_index.map_or(-1, i64::from),
+            mesh_node_index: hit
+                .imported_placement
+                .map_or(-1, |(node, _)| i64::from(node)),
+            instance_index: hit
+                .imported_placement
+                .and_then(|(_, instance)| instance)
+                .map_or(-1, i64::from),
             distance: f64::from(hit.distance),
             position: Point3D::new(x, y, z),
             normal: Vector3D::new(nx, ny, nz),
@@ -1533,6 +2512,19 @@ pub fn ray_hit(
 }
 
 #[doc(hidden)]
+pub fn ray_hit_model(
+    model: &SceneModel,
+    origin: Point3D,
+    direction: Vector3D,
+    max_distance: f64,
+    layers: Option<i64>,
+) -> Hit3D {
+    world_query(origin, direction, max_distance, layers).map_or_else(Hit3D::default, |query| {
+        query.first(model.query_geometry(), &RayRows::All)
+    })
+}
+
+#[doc(hidden)]
 pub fn ray_hit_all(
     model: &SceneModel,
     origin: Point3D,
@@ -1540,15 +2532,144 @@ pub fn ray_hit_all(
     max_distance: f64,
     layers: Option<i64>,
 ) -> VecModel<Hit3D> {
-    world_ray(origin, direction, max_distance).map_or_else(VecModel::default, |(ray, max)| {
-        trace_model_hits(
-            model,
-            ray,
-            0.0,
-            max,
-            layers.map_or(MAIN_LAYER, |mask| mask as u64),
-        )
+    world_query(origin, direction, max_distance, layers).map_or_else(VecModel::default, |query| {
+        query.all(model.query_geometry(), &RayRows::All)
     })
+}
+
+#[doc(hidden)]
+pub fn ray_hit_row(
+    model: &SceneModel,
+    origin: Point3D,
+    direction: Vector3D,
+    max_distance: f64,
+    row: i64,
+    layers: Option<i64>,
+) -> Hit3D {
+    world_query(origin, direction, max_distance, layers).map_or_else(Hit3D::default, |query| {
+        query.first(model.query_geometry(), &RayRows::Row(row))
+    })
+}
+
+/// Trace a ray against one placement in an imported glTF instance table.
+#[doc(hidden)]
+pub fn ray_hit_instance(
+    model: &SceneModel,
+    origin: Point3D,
+    direction: Vector3D,
+    max_distance: f64,
+    address: [i64; 3],
+    layers: Option<i64>,
+) -> Hit3D {
+    let Some(rows) = RayRows::instance(address) else {
+        return Hit3D::default();
+    };
+    world_query(origin, direction, max_distance, layers).map_or_else(Hit3D::default, |query| {
+        query.first(model.query_geometry(), &rows)
+    })
+}
+
+#[doc(hidden)]
+pub fn ray_hit_subset(
+    model: &SceneModel,
+    origin: Point3D,
+    direction: Vector3D,
+    max_distance: f64,
+    rows: &[i64],
+    layers: Option<i64>,
+) -> VecModel<Hit3D> {
+    world_query(origin, direction, max_distance, layers).map_or_else(VecModel::default, |query| {
+        query.all(model.query_geometry(), &RayRows::subset(rows))
+    })
+}
+
+fn world_query(
+    origin: Point3D,
+    direction: Vector3D,
+    max_distance: f64,
+    layers: Option<i64>,
+) -> Option<SceneRay> {
+    let (ray, max) = world_ray(origin, direction, max_distance)?;
+    Some(SceneRay::new(
+        ray,
+        0.0,
+        max,
+        layers.map_or(MAIN_LAYER, |mask| mask as u64),
+    ))
+}
+
+/// Find the nearest posed triangle surface within a radius in world units.
+#[doc(hidden)]
+pub fn closest_point(
+    model: &SceneModel,
+    origin: Point3D,
+    radius: f64,
+    layers: Option<i64>,
+) -> Hit3D {
+    nearest_point(model, origin, radius, layers, None)
+}
+
+/// Find the nearest surface on the scene rows with the selected object ID.
+#[doc(hidden)]
+pub fn closest_point_on(
+    model: &SceneModel,
+    object_id: &str,
+    origin: Point3D,
+    radius: f64,
+    layers: Option<i64>,
+) -> Hit3D {
+    nearest_point(model, origin, radius, layers, Some(object_id))
+}
+
+fn nearest_point(
+    model: &SceneModel,
+    origin: Point3D,
+    radius: f64,
+    layers: Option<i64>,
+    object_id: Option<&str>,
+) -> Hit3D {
+    let layers = layers.map_or(MAIN_LAYER, |mask| mask as u64);
+    if layers == 0 || radius < 0.0 || !(radius as f32).is_finite() || origin.narrow().is_none() {
+        return Hit3D::default();
+    }
+    let point = Vector3::new(origin.x, origin.y, origin.z);
+    let mut best: Option<(usize, ClosestSurface)> = None;
+    model.visit_nearest(point, radius * radius, |index, limit| {
+        let object = &model[index];
+        if object.pickable
+            && object.layers & layers != 0
+            && object_id.is_none_or(|id| id == object.id)
+            && let Some(found) = object.closest_surface(point, limit)
+            && (found.distance_squared < limit || best.is_none_or(|(previous, _)| index < previous))
+        {
+            best = Some((index, found));
+            found.distance_squared
+        } else {
+            limit
+        }
+    });
+    best.map_or_else(Hit3D::default, |(index, hit)| {
+        model[index]
+            .describe_surface(
+                hit.position,
+                SurfaceHit {
+                    distance: hit.distance_squared.sqrt() as f32,
+                    vertex: hit.vertex,
+                    weights: hit.weights.map(|weight| weight as f32),
+                    back_face: false,
+                    blended: false,
+                },
+            )
+            .into()
+    })
+}
+
+#[derive(Clone, Copy)]
+struct ClosestSurface {
+    vertex: usize,
+    weights: [f64; 3],
+    distance_squared: f64,
+    position: Vector3<f32>,
 }
 
 fn world_ray(origin: Point3D, direction: Vector3D, max_distance: f64) -> Option<(Ray3D, f32)> {
@@ -1572,11 +2693,7 @@ pub struct BakedSurface {
 }
 
 pub(crate) fn bake_opaque(material: &MeshMaterial) -> bool {
-    material.alpha_mode != MeshAlphaMode::Blend
-        && material
-            .pbr
-            .as_ref()
-            .is_none_or(|pbr| pbr.transmission_blur().is_none())
+    material.depth_coverage().is_some() && material.transmission_blur().is_none()
 }
 
 /// A world-space ray with a unit-length direction.
@@ -1607,6 +2724,7 @@ impl Ray3D {
 pub struct RayHit<'a> {
     pub object_id: &'a str,
     pub row_index: Option<u32>,
+    pub imported_placement: Option<(u32, Option<u32>)>,
     pub distance: f32,
     pub position: [f32; 3],
     pub normal: [f32; 3],
@@ -1662,69 +2780,264 @@ pub fn raycast_all(objects: &[SceneObject], ray: Ray3D, max_distance: f32) -> Ve
     if !max_distance.is_finite() || max_distance < 0.0 {
         return Vec::new();
     }
-    sorted_surfaces(objects, ray, 0.0, max_distance, false, u64::MAX)
+    sorted_surfaces(objects, ray, max_distance)
         .into_iter()
         .map(|(index, surface)| objects[index].describe_hit(ray, surface))
         .collect()
 }
 
-pub(crate) fn trace_model_hits(
-    model: &[SceneObject],
+#[derive(Clone, Copy)]
+pub(crate) struct SceneRay {
     ray: Ray3D,
     min: f32,
     max: f32,
     layers: u64,
-) -> VecModel<Hit3D> {
-    let hits: Vec<_> = sorted_surfaces(model, ray, min, max, true, layers)
-        .into_iter()
-        .map(|(index, surface)| Hit3D::from(model[index].describe_hit(ray, surface)))
-        .collect();
-    hits.into()
 }
 
-fn sorted_surfaces(
-    objects: &[SceneObject],
-    ray: Ray3D,
-    min: f32,
-    max: f32,
-    group_rows: bool,
-    layers: u64,
-) -> Vec<(usize, SurfaceHit)> {
-    let mut hits: Vec<(usize, SurfaceHit)> = Vec::new();
-    for (index, object) in objects.iter().enumerate() {
-        if object.layers & layers == 0 {
-            continue;
-        }
-        // The model emits each authored row's mesh placements contiguously.
-        // Query only its nearest accepted surface, including rows without IDs.
-        if group_rows
-            && let Some(row) = object.source_row
-            && let Some((previous_index, previous)) = hits.last_mut()
-            && objects[*previous_index].source_row == Some(row)
-        {
-            if let Some(hit) = object.hit(ray, min, previous.distance)
-                && hit.precedes(Some(*previous))
-            {
-                *previous_index = index;
-                *previous = hit;
-            }
-        } else if let Some(hit) = object.hit(ray, min, max) {
-            hits.push((index, hit));
+pub(crate) enum RayRows {
+    All,
+    Row(i64),
+    Subset(Vec<u32>),
+    Instance([u32; 3]),
+}
+
+impl RayRows {
+    pub(crate) fn subset(rows: &[i64]) -> Self {
+        let mut rows: Vec<_> = rows
+            .iter()
+            .copied()
+            .filter_map(|row| u32::try_from(row).ok())
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        Self::Subset(rows)
+    }
+
+    pub(crate) fn instance([row, node, index]: [i64; 3]) -> Option<Self> {
+        Some(Self::Instance([
+            u32::try_from(row).ok()?,
+            u32::try_from(node).ok()?,
+            u32::try_from(index).ok()?,
+        ]))
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::All | Self::Instance(_) => false,
+            Self::Row(row) => u32::try_from(*row).is_err(),
+            Self::Subset(rows) => rows.is_empty(),
         }
     }
-    hits.sort_unstable_by(|(a_index, a), (b_index, b)| {
-        if a.distance != b.distance {
-            a.distance.total_cmp(&b.distance)
-        } else {
-            a.blended.cmp(&b.blended).then_with(|| {
-                if a.blended {
-                    b_index.cmp(a_index)
-                } else {
-                    a_index.cmp(b_index)
-                }
-            })
+
+    fn contains(&self, object: &SceneObject) -> bool {
+        let row = object.scene_row();
+        match self {
+            Self::All => true,
+            Self::Row(selected) => row.is_some_and(|row| i64::from(row) == *selected),
+            Self::Subset(rows) => row.is_some_and(|row| rows.binary_search(&row).is_ok()),
+            Self::Instance(address) => object.instance_address() == Some(*address),
         }
-    });
+    }
+}
+
+/// The rendered face and texture coordinates used for forwarding 2D input.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneTextureHit {
+    pub source: Arc<str>,
+    pub row: Option<u32>,
+    pub id: String,
+    pub placement: Option<(u32, Option<u32>)>,
+    pub uv: [f32; 2],
+}
+
+impl SceneRay {
+    pub(crate) fn new(ray: Ray3D, min: f32, max: f32, layers: u64) -> Self {
+        Self {
+            ray,
+            min,
+            max,
+            layers,
+        }
+    }
+
+    fn visit(
+        self,
+        geometry: &SceneGeometry,
+        rows: &RayRows,
+        intersect: impl Fn(&SceneObject, f32) -> Option<SurfaceHit>,
+        mut visit: impl FnMut((usize, SurfaceHit), f64) -> f64,
+    ) {
+        if self.layers == 0 || rows.is_empty() {
+            return;
+        }
+        let span = BoundsSegment {
+            origin: self.ray.origin.cast(),
+            direction: self.ray.direction.cast(),
+            min: f64::from(self.min),
+            max: f64::from(self.max),
+            expansion: Vector3::zeros(),
+        };
+        geometry.visit_ray(span, |index, limit| {
+            let object = &geometry[index];
+            if object.layers & self.layers != 0
+                && rows.contains(object)
+                && let Some(hit) = intersect(object, limit as f32)
+            {
+                visit((index, hit), limit)
+            } else {
+                limit
+            }
+        });
+    }
+
+    fn nearest(self, geometry: &SceneGeometry, rows: &RayRows) -> Option<(usize, SurfaceHit)> {
+        if let RayRows::Instance(address) = rows {
+            if self.layers == 0 {
+                return None;
+            }
+            let index = geometry.instance_index(*address)?;
+            let object = &geometry[index];
+            return (object.layers & self.layers != 0)
+                .then(|| object.hit(self.ray, self.min, self.max))
+                .flatten()
+                .map(|hit| (index, hit));
+        }
+        self.nearest_matching(geometry, rows, |object, max| {
+            object.hit(self.ray, self.min, max)
+        })
+    }
+
+    fn nearest_matching(
+        self,
+        geometry: &SceneGeometry,
+        rows: &RayRows,
+        intersect: impl Fn(&SceneObject, f32) -> Option<SurfaceHit>,
+    ) -> Option<(usize, SurfaceHit)> {
+        let mut nearest = None;
+        self.visit(geometry, rows, intersect, |hit, limit| {
+            if nearest.is_none_or(|prior| surface_order(&hit, &prior).is_lt()) {
+                nearest = Some(hit);
+                f64::from(hit.1.distance)
+            } else {
+                limit
+            }
+        });
+        nearest
+    }
+
+    pub(crate) fn item_texture(self, geometry: &SceneGeometry) -> Option<Option<SceneTextureHit>> {
+        let (index, hit) = self.nearest_matching(geometry, &RayRows::All, |object, max| {
+            object.surface_hit(self.ray, self.min, max, false)
+        })?;
+        let object = &geometry[index];
+        let parts = object.mesh.parts();
+        let index = parts.partition_point(|part| part.vertices.end <= hit.vertex);
+        let material = parts
+            .get(index)
+            .and_then(|part| object.mesh.materials().get(part.material));
+        Some(material.and_then(|material| {
+            let source = material
+                .base_item
+                .as_ref()
+                .filter(|_| object.pickable)?
+                .clone();
+            let tri = &object.mesh.vertices()[hit.vertex..hit.vertex + 3];
+            let uv = std::array::from_fn(|axis| {
+                tri[0].uv[axis] * hit.weights[0]
+                    + tri[1].uv[axis] * hit.weights[1]
+                    + tri[2].uv[axis] * hit.weights[2]
+            });
+            let uv = material
+                .base_texture
+                .as_ref()
+                .map_or(uv, |texture| texture.transform.map(uv));
+            uv.into_iter().all(f32::is_finite).then(|| SceneTextureHit {
+                source,
+                row: object.scene_row(),
+                id: object.id.clone(),
+                placement: object.imported_placement,
+                uv: uv.map(|value| value.clamp(0.0, 1.0)),
+            })
+        }))
+    }
+
+    pub(crate) fn id(self, geometry: &SceneGeometry) -> String {
+        self.nearest(geometry, &RayRows::All)
+            .map_or_else(String::new, |(index, _)| geometry[index].id.clone())
+    }
+
+    pub(crate) fn first(self, geometry: &SceneGeometry, rows: &RayRows) -> Hit3D {
+        self.nearest(geometry, rows)
+            .map_or_else(Hit3D::default, |(index, hit)| {
+                geometry[index].describe_hit(self.ray, hit).into()
+            })
+    }
+
+    pub(crate) fn all(self, geometry: &SceneGeometry, rows: &RayRows) -> VecModel<Hit3D> {
+        let mut hits = Vec::new();
+        self.visit(
+            geometry,
+            rows,
+            |object, max| object.hit(self.ray, self.min, max),
+            |hit, limit| {
+                hits.push(hit);
+                limit
+            },
+        );
+        hits.sort_unstable_by(surface_order);
+        // Ray traversal order is independent of authored order. By reducing the
+        // sorted hits, keep one ordinary surface per row and one per
+        // glTF instance address. The source node disambiguates instance tables.
+        let mut seen = std::collections::HashSet::new();
+        let hits: Vec<_> = hits
+            .into_iter()
+            .filter_map(|(index, hit)| {
+                let object = &geometry[index];
+                object
+                    .scene_row()
+                    .is_none_or(|row| {
+                        let placement = object
+                            .imported_placement()
+                            .and_then(|(node, instance)| instance.map(|index| (node, index)));
+                        seen.insert((row, placement))
+                    })
+                    .then(|| Hit3D::from(object.describe_hit(self.ray, hit)))
+            })
+            .collect();
+        hits.into()
+    }
+}
+
+fn surface_order(a: &(usize, SurfaceHit), b: &(usize, SurfaceHit)) -> std::cmp::Ordering {
+    let (a_index, a) = a;
+    let (b_index, b) = b;
+    if a.distance != b.distance {
+        a.distance.total_cmp(&b.distance)
+    } else {
+        a.blended.cmp(&b.blended).then_with(|| {
+            if a.blended {
+                b_index.cmp(a_index)
+            } else {
+                a_index.cmp(b_index)
+            }
+        })
+    }
+}
+
+fn sorted_surfaces(objects: &[SceneObject], ray: Ray3D, max: f32) -> Vec<(usize, SurfaceHit)> {
+    let mut hits: Vec<_> = objects
+        .iter()
+        .enumerate()
+        .filter_map(|(index, object)| {
+            // Keep layer-zero objects out of the public slice queries.
+            (object.layers != 0)
+                .then(|| object.hit(ray, 0.0, max))
+                .flatten()
+                .map(|hit| (index, hit))
+        })
+        .collect();
+    hits.sort_unstable_by(surface_order);
     hits
 }
 

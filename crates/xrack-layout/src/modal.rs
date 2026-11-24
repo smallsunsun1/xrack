@@ -467,6 +467,7 @@ pub(crate) fn index_overlays(
         overlays: &mut OverlayIndex,
     ) {
         if Node::SCROLL_PARTS.contains(&scene.kind)
+            || scene.scene_texture_only()
             || !scene.contains_scene_feature(xrack_runtime::SceneFeature::WindowOverlay)
         {
             return;

@@ -1,0 +1,86 @@
+struct DepthMap {
+    source: string, wrap-u: string, wrap-v: string, min-filter: string, mag-filter: string, mip-filter: string,
+}
+struct DepthMaterial {
+    base-color: color, base-color-map: DepthMap, alpha-mode: string, alpha-cutoff: float,
+    depth-draw-mode: string, unlit: bool, transmission: float, roughness: float,
+}
+struct DepthActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float, material: DepthMaterial, casts-shadow: bool,
+}
+
+export component MaterialDepthDemo inherits Window {
+    title: "XRack · Material depth";
+    width: 600px; height: 372px;
+    background: #192330;
+
+    in-out property <string> mode: "opaque-only";
+    in-out property <bool> blended: true;
+    in-out property <bool> masked: false;
+    in-out property <bool> smooth: false;
+    in-out property <bool> weighted: false;
+    in-out property <bool> shadows: false;
+    in-out property <bool> glass: false;
+
+    property <DepthMap> no-map: DepthMap {
+        source: "", wrap-u: "clamp", wrap-v: "clamp", min-filter: "nearest",
+        mag-filter: "nearest", mip-filter: "none",
+    };
+    property <DepthMaterial> flat: DepthMaterial {
+        base-color: #526681, base-color-map: root.no-map, alpha-mode: "opaque", alpha-cutoff: 0.75,
+        depth-draw-mode: "opaque-only", unlit: true, transmission: 0.0, roughness: 0.25,
+    };
+    property <DepthActor> base: DepthActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, camera-kind: "", camera-height: 4, material: root.flat, casts-shadow: false,
+    };
+    property <[DepthActor]> world: [
+        DepthActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
+        DepthActor {
+            id: "stripes", yaw: 42, scale-x: 4, scale-y: 3, casts-shadow: true,
+            material: DepthMaterial {
+                base-color: #d04d30, base-color-map: DepthMap {
+                    source: @texture-url("models/depth-stripes.png"), ..root.no-map
+                },
+                alpha-mode: root.masked ? "mask" : root.blended ? "blend" : "opaque",
+                depth-draw-mode: root.mode, unlit: !root.glass, transmission: root.glass ? 0.6 : 0.0,
+                ..root.flat
+            }, ..root.base
+        },
+        DepthActor {
+            id: "late", z: 0.4, scale-x: 4, scale-y: 3.2,
+            material: DepthMaterial {
+                base-color: #2876d0a0, alpha-mode: root.blended ? "blend" : "opaque", ..root.flat
+            }, ..root.base
+        },
+        DepthActor {
+            id: "background", z: -2, scale-x: 11, scale-y: 7,
+            material: DepthMaterial { unlit: !root.shadows, ..root.flat }, ..root.base
+        }
+    ];
+    out property <string> upper-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(600px, 320px), Point2D.new(220px, 88px));
+    out property <string> center-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(600px, 320px), Point2D.new(220px, 160px));
+    out property <string> lower-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(600px, 320px), Point2D.new(220px, 232px));
+
+    SceneView3D {
+        width: 600px; height: 320px; model: root.world; camera: "eye";
+        multisampling: root.smooth; order-independent-transparency: root.weighted;
+        shadows: root.shadows; shadow-map-size: 256; light-yaw: -50; light-elevation: 15;
+        ambient-intensity: 0.2; scene-background: #22334b;
+    }
+    depth-button := Button {
+        x: 12px; y: 334px; width: 190px; height: 30px; text: root.mode;
+        clicked => {
+            root.mode = root.mode == "opaque-only" ? "always" :
+                root.mode == "always" ? "never" : root.mode == "never" ? "opaque-prepass" : "opaque-only";
+        }
+    }
+    blend-toggle := CheckBox { x: 230px; y: 334px; width: 160px; text: "Alpha blend"; checked <=> root.blended; }
+    shadow-toggle := CheckBox { x: 420px; y: 334px; width: 150px; text: "Shadows"; checked <=> root.shadows; }
+}

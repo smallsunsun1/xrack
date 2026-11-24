@@ -14,6 +14,7 @@ use std::{
 
 pub const MAX_ANIMATION_NODES: usize = 4096;
 pub const MAX_ANIMATION_KEYS: usize = 1_000_000;
+pub const MAX_MESH_INSTANCES: usize = 4096;
 
 /// Prepared geometry for a static mesh or an animated glTF scene.
 #[doc(hidden)]
@@ -22,6 +23,7 @@ pub enum MeshAsset {
     Static(Mesh3D),
     Animated(Arc<AnimatedMesh>),
     Lods(Arc<MeshLods>),
+    Variants(Arc<MeshVariants>),
 }
 
 impl PartialEq for MeshAsset {
@@ -30,6 +32,7 @@ impl PartialEq for MeshAsset {
             (Self::Static(a), Self::Static(b)) => a == b,
             (Self::Animated(a), Self::Animated(b)) => Arc::ptr_eq(a, b),
             (Self::Lods(a), Self::Lods(b)) => Arc::ptr_eq(a, b),
+            (Self::Variants(a), Self::Variants(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -40,6 +43,7 @@ impl MeshAsset {
         match self {
             Self::Animated(rig) => !rig.cameras.is_empty(),
             Self::Lods(lods) => lods.primary().has_cameras(),
+            Self::Variants(variants) => variants.primary.has_cameras(),
             Self::Static(_) => false,
         }
     }
@@ -48,15 +52,135 @@ impl MeshAsset {
         match self {
             Self::Animated(rig) => !rig.lights.is_empty(),
             Self::Lods(lods) => lods.primary().has_lights(),
+            Self::Variants(variants) => variants.primary.has_lights(),
             Self::Static(_) => false,
         }
     }
 
     pub fn resolve(key: &str, imported: impl FnOnce(&str) -> Option<Self>) -> Option<Self> {
-        match key {
-            "primitive:box" => Some(Self::Static(Mesh3D::Box)),
-            "primitive:sphere" => Some(Self::Static(Mesh3D::Sphere)),
-            _ => imported(key),
+        Mesh3D::builtin(key)
+            .map(Self::Static)
+            .or_else(|| imported(key))
+    }
+}
+
+/// A single imported model with alternative prepared materials and vertex layouts.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct MeshVariants {
+    primary: MeshAsset,
+    alternatives: Box<[(String, Option<MeshAsset>)]>,
+}
+
+impl MeshVariants {
+    pub fn primary(&self) -> &MeshAsset {
+        &self.primary
+    }
+
+    pub fn alternatives(&self) -> &[(String, Option<MeshAsset>)] {
+        &self.alternatives
+    }
+
+    fn select(&self, selector: &str) -> &MeshAsset {
+        let selected = if let Some(index) = selector.strip_prefix('#') {
+            index
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| self.alternatives.get(index))
+        } else {
+            let mut matches = self
+                .alternatives
+                .iter()
+                .filter(|(name, _)| name == selector);
+            matches.next().filter(|_| matches.next().is_none())
+        };
+        selected
+            .and_then(|(_, alternative)| alternative.as_ref())
+            .unwrap_or(&self.primary)
+    }
+}
+
+impl MeshAsset {
+    #[doc(hidden)]
+    pub fn with_material_variants(self, alternatives: Vec<(String, Option<Self>)>) -> Self {
+        if alternatives.is_empty() {
+            return self;
+        }
+        let alternatives = alternatives
+            .into_iter()
+            .map(|(name, asset)| (name, asset.map(|asset| asset.share_variant_streams(&self))))
+            .collect();
+        Self::Variants(Arc::new(MeshVariants {
+            primary: self,
+            alternatives,
+        }))
+    }
+
+    pub(crate) fn select_material_variant(self, selector: &str) -> Self {
+        match self {
+            Self::Variants(variants) => variants.select(selector).clone(),
+            asset => asset,
+        }
+    }
+
+    /// Apply offline mesh processing independently to each material layout.
+    #[doc(hidden)]
+    pub fn map_material_variants<E>(
+        self,
+        mut prepare: impl FnMut(Self) -> Result<Self, E>,
+    ) -> Result<Self, E> {
+        let Self::Variants(variants) = self else {
+            return prepare(self);
+        };
+        let primary = prepare(variants.primary.clone())?;
+        let alternatives = variants
+            .alternatives
+            .iter()
+            .map(|(name, asset)| Ok((name.clone(), asset.clone().map(&mut prepare).transpose()?)))
+            .collect::<Result<Vec<_>, E>>()?;
+        Ok(primary.with_material_variants(alternatives))
+    }
+
+    fn share_variant_streams(self, primary: &Self) -> Self {
+        let share_meshes = |meshes: &mut [Mesh3D], source: &[Mesh3D]| {
+            for (mesh, reference) in meshes.iter_mut().zip(source) {
+                mesh.share_variant_streams(reference);
+            }
+        };
+        match (self, primary) {
+            (Self::Static(mut mesh), Self::Static(reference)) => {
+                mesh.share_variant_streams(reference);
+                Self::Static(mesh)
+            }
+            (Self::Animated(rig), Self::Animated(reference)) => {
+                let mut meshes = rig.meshes.clone();
+                share_meshes(&mut meshes, reference.meshes());
+                Self::Animated(Arc::new(rig.with_meshes(meshes)))
+            }
+            (Self::Lods(lods), Self::Lods(reference)) => {
+                let primary = lods
+                    .primary
+                    .clone()
+                    .share_variant_streams(&reference.primary);
+                let levels = lods
+                    .levels
+                    .iter()
+                    .map(|level| {
+                        let mut meshes = level.meshes.to_vec();
+                        if let Some(reference) = reference
+                            .levels
+                            .iter()
+                            .find(|other| other.max_size == level.max_size)
+                        {
+                            share_meshes(&mut meshes, &reference.meshes);
+                        }
+                        (level.max_size, meshes)
+                    })
+                    .collect();
+                primary.with_lods(levels)
+            }
+            (asset, Self::Lods(reference)) => asset.share_variant_streams(&reference.primary),
+            (asset, _) => asset,
         }
     }
 }
@@ -93,7 +217,7 @@ impl MeshLods {
                 MeshAsset::Animated(rig) => {
                     MeshAsset::Animated(Arc::new(rig.with_meshes(level.meshes.to_vec())))
                 }
-                MeshAsset::Lods(_) => self.primary.clone(),
+                MeshAsset::Lods(_) | MeshAsset::Variants(_) => self.primary.clone(),
             })
             .clone()
     }
@@ -107,6 +231,7 @@ impl MeshAsset {
             Self::Static(mesh) => std::slice::from_ref(mesh),
             Self::Animated(rig) => rig.meshes(),
             Self::Lods(lods) => lods.primary.geometry_meshes(),
+            Self::Variants(variants) => variants.primary.geometry_meshes(),
         }
     }
 
@@ -272,13 +397,72 @@ fn interpolate_rotation(a: [f32; 4], b: [f32; 4], t: f32) -> Option<[f32; 4]> {
     Some([q.i, q.j, q.k, q.w])
 }
 
+/// Affine transforms prepared once per imported glTF instance group.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct MeshInstances {
+    transforms: Arc<[Matrix4<f32>]>,
+}
+
+impl MeshInstances {
+    pub fn from_trs(transforms: impl ExactSizeIterator<Item = MeshNodeTransform>) -> Option<Self> {
+        if !(1..=MAX_MESH_INSTANCES).contains(&transforms.len()) {
+            return None;
+        }
+        Some(Self {
+            transforms: transforms
+                .map(|transform| {
+                    transform
+                        .matrix()
+                        .filter(|matrix| matrix.iter().all(|value| value.is_finite()))
+                })
+                .collect::<Option<Vec<_>>>()?
+                .into(),
+        })
+    }
+
+    pub fn packed_words(&self) -> impl Iterator<Item = f32> + '_ {
+        self.transforms.iter().flat_map(|matrix| {
+            matrix
+                .as_slice()
+                .chunks_exact(4)
+                .flat_map(|column| column[..3].iter().copied())
+        })
+    }
+
+    pub fn from_packed(bytes: &[u8]) -> Option<Self> {
+        let (instances, remainder) = bytes.as_chunks::<48>();
+        if !remainder.is_empty() || !(1..=MAX_MESH_INSTANCES).contains(&instances.len()) {
+            return None;
+        }
+        let transforms = instances.iter().map(|instance| {
+            let (axes, _) = instance.as_chunks::<4>();
+            let values: [f32; 12] = std::array::from_fn(|index| f32::from_le_bytes(axes[index]));
+            values.iter().all(|value| value.is_finite()).then(|| {
+                Matrix4::from_fn(|row, col| {
+                    if row == 3 {
+                        if col == 3 { 1.0 } else { 0.0 }
+                    } else {
+                        values[col * 3 + row]
+                    }
+                })
+            })
+        });
+        Some(Self {
+            transforms: transforms.collect::<Option<Vec<_>>>()?.into(),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct MeshAnimationNode {
+    pub source_node: u32,
     pub parent: Option<usize>,
     pub mesh: Option<usize>,
     pub skin: Option<usize>,
     pub morph_weights: MorphWeights,
     pub transform: MeshNodeTransform,
+    pub instances: Option<MeshInstances>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -718,6 +902,7 @@ impl AttachmentFrames {
 #[derive(Debug)]
 pub struct AnimatedMesh {
     meshes: Vec<Mesh3D>,
+    placements: usize,
     nodes: Arc<[MeshAnimationNode]>,
     clips: Arc<[MeshAnimationClip]>,
     clip_durations: Arc<[f32]>,
@@ -731,6 +916,7 @@ pub struct AnimatedMesh {
 
 pub(crate) struct MeshPlacement {
     pub mesh: usize,
+    pub source: (u32, Option<u32>),
     pub transform: Matrix4<f32>,
     pub skin: Option<JointPalette>,
     pub morph: Option<MorphWeights>,
@@ -758,10 +944,23 @@ impl AnimatedMesh {
             || nodes.iter().enumerate().any(|(index, node)| {
                 node.parent.is_some_and(|parent| parent >= index)
                     || node.mesh.is_some_and(|mesh| mesh >= meshes.len())
+                    || node.instances.is_some() && node.mesh.is_none()
                     || node.transform.matrix().is_none()
             })
         {
             return Err("invalid animated glTF node graph");
+        }
+        let placements: usize = nodes
+            .iter()
+            .filter(|node| node.mesh.is_some())
+            .map(|node| {
+                node.instances
+                    .as_ref()
+                    .map_or(1, |group| group.transforms.len())
+            })
+            .sum();
+        if placements > MAX_MESH_INSTANCES {
+            return Err("glTF exceeds the mesh instance placement limit");
         }
         if skins.iter().any(|skin| !skin.valid(nodes.len()))
             || nodes.iter().any(|node| match (node.mesh, node.skin) {
@@ -825,6 +1024,7 @@ impl AnimatedMesh {
         let attachment_frames = AttachmentFrames::new(&nodes, &lights, &cameras).map(Arc::new);
         Ok(Self {
             meshes,
+            placements,
             nodes: nodes.into(),
             clips: clips.into(),
             clip_durations,
@@ -837,10 +1037,12 @@ impl AnimatedMesh {
         })
     }
 
-    fn with_meshes(&self, meshes: Vec<Mesh3D>) -> Self {
+    #[doc(hidden)]
+    pub fn with_meshes(&self, meshes: Vec<Mesh3D>) -> Self {
         let mirrored = (0..meshes.len()).map(|_| OnceLock::new()).collect();
         Self {
             meshes,
+            placements: self.placements,
             nodes: self.nodes.clone(),
             clips: self.clips.clone(),
             clip_durations: self.clip_durations.clone(),
@@ -1120,72 +1322,104 @@ impl AnimatedMesh {
         let mut morph_channels =
             channel_pairs(from.morph_tracks(), to.morph_tracks(), |track| track.node).peekable();
         let palettes: Vec<_> = self.skins.iter().map(|skin| skin.palette(&world)).collect();
-        self.nodes
-            .iter()
-            .zip(world)
-            .enumerate()
-            .filter_map(|(index, (node, matrix))| {
-                let mesh = node.mesh?;
-                let channels = morph_channels
-                    .next_if(|(a, b)| a.or(*b).is_some_and(|track| track.node == index));
-                let overrides = morph_overrides.get(mesh).and_then(Option::as_ref);
-                let morph = match overrides {
-                    Some(MorphOverrides::Complete(weights)) => Some(weights.clone()),
-                    overrides => {
-                        let mut weights = channels
-                            .map(|(a, b)| {
-                                let mut a_buffer = [0.0; MAX_MORPH_TARGETS];
-                                let a = a.map_or(&*node.morph_weights, |track| {
-                                    track.sample(from.time, &mut a_buffer)
-                                });
-                                if blend.is_none() {
-                                    return Arc::from(a);
-                                }
-                                let mut b_buffer = [0.0; MAX_MORPH_TARGETS];
-                                let b = b.map_or(&*node.morph_weights, |track| {
-                                    track.sample(to.time, &mut b_buffer)
-                                });
-                                let mut weights = [0.0; MAX_MORPH_TARGETS];
-                                for ((out, &a), &b) in weights.iter_mut().zip(a).zip(b) {
-                                    *out = a * (1.0 - weight) + b * weight;
-                                }
-                                Arc::from(&weights[..a.len()])
-                            })
-                            .or_else(|| {
-                                (!node.morph_weights.is_empty()).then(|| node.morph_weights.clone())
+        let mut placements = Vec::with_capacity(self.placements);
+        for (index, (node, matrix)) in self.nodes.iter().zip(world).enumerate() {
+            let Some(mesh) = node.mesh else {
+                continue;
+            };
+            let channels =
+                morph_channels.next_if(|(a, b)| a.or(*b).is_some_and(|track| track.node == index));
+            let overrides = morph_overrides.get(mesh).and_then(Option::as_ref);
+            let morph = match overrides {
+                Some(MorphOverrides::Complete(weights)) => Some(weights.clone()),
+                overrides => {
+                    let mut weights = channels
+                        .map(|(a, b)| {
+                            let mut a_buffer = [0.0; MAX_MORPH_TARGETS];
+                            let a = a.map_or(&*node.morph_weights, |track| {
+                                track.sample(from.time, &mut a_buffer)
                             });
-                        if let Some((weights, MorphOverrides::Partial(overrides))) =
-                            weights.as_mut().zip(overrides)
-                            && overrides
-                                .iter()
-                                .any(|&(index, value)| weights[index] != value)
-                        {
-                            let weights = Arc::make_mut(weights);
-                            for &(index, value) in overrides {
-                                weights[index] = value;
+                            if blend.is_none() {
+                                return Arc::from(a);
                             }
+                            let mut b_buffer = [0.0; MAX_MORPH_TARGETS];
+                            let b = b.map_or(&*node.morph_weights, |track| {
+                                track.sample(to.time, &mut b_buffer)
+                            });
+                            let mut weights = [0.0; MAX_MORPH_TARGETS];
+                            for ((out, &a), &b) in weights.iter_mut().zip(a).zip(b) {
+                                *out = a * (1.0 - weight) + b * weight;
+                            }
+                            Arc::from(&weights[..a.len()])
+                        })
+                        .or_else(|| {
+                            (!node.morph_weights.is_empty()).then(|| node.morph_weights.clone())
+                        });
+                    if let Some((weights, MorphOverrides::Partial(overrides))) =
+                        weights.as_mut().zip(overrides)
+                        && overrides
+                            .iter()
+                            .any(|&(index, value)| weights[index] != value)
+                    {
+                        let weights = Arc::make_mut(weights);
+                        for &(index, value) in overrides {
+                            weights[index] = value;
                         }
-                        weights
                     }
-                };
-                if let Some(skin) = node.skin {
-                    // glTF applies the animated joint transforms in scene space.
-                    // The node bearing the mesh has no additional local transform.
-                    Some(MeshPlacement {
-                        mesh,
-                        transform: Matrix4::identity(),
-                        skin: Some(palettes[skin].as_ref()?.clone()),
-                        morph,
-                    })
-                } else {
-                    Some(MeshPlacement {
-                        mesh,
-                        transform: matrix?,
-                        skin: None,
-                        morph,
-                    })
+                    weights
                 }
-            })
-            .collect()
+            };
+            let push = |placements: &mut Vec<MeshPlacement>, instance, transform, skin| {
+                placements.push(MeshPlacement {
+                    mesh,
+                    source: (node.source_node, instance),
+                    transform,
+                    skin,
+                    morph: morph.clone(),
+                });
+            };
+            let palette = if let Some(skin) = node.skin {
+                let Some(palette) = &palettes[skin] else {
+                    continue;
+                };
+                Some(palette)
+            } else {
+                None
+            };
+            if let Some(instances) = &node.instances {
+                let Some(matrix) = matrix else {
+                    continue;
+                };
+                if let Some(palette) = palette {
+                    // The joint palette is in glTF scene space. Convert the instance
+                    // transform into that space before applying it to skinned vertices.
+                    let Some(inverse) = matrix.try_inverse() else {
+                        continue;
+                    };
+                    for (i, instance) in instances.transforms.iter().enumerate() {
+                        push(
+                            &mut placements,
+                            Some(i as u32),
+                            matrix * instance * inverse,
+                            Some(palette.clone()),
+                        );
+                    }
+                } else {
+                    for (i, instance) in instances.transforms.iter().enumerate() {
+                        push(&mut placements, Some(i as u32), matrix * instance, None);
+                    }
+                }
+            } else if let Some(palette) = palette {
+                push(
+                    &mut placements,
+                    None,
+                    Matrix4::identity(),
+                    Some(palette.clone()),
+                );
+            } else if let Some(matrix) = matrix {
+                push(&mut placements, None, matrix, None);
+            }
+        }
+        placements
     }
 }

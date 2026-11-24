@@ -1,4 +1,6 @@
 //! Weighted blended transparency with per-sample composition when MSAA is active.
+use std::collections::HashMap;
+
 use super::{DEPTH_FORMAT, attachment_view, pipeline::ColorOutput};
 
 pub(super) const ACCUMULATION: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -12,12 +14,13 @@ pub(super) struct Transparency {
 struct Mode {
     layout: wgpu::BindGroupLayout,
     pipelines: [Option<wgpu::RenderPipeline>; 2],
+    capture_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     layers: Option<Layers>,
 }
 
 struct Layers {
     size: [u32; 2],
-    depth: wgpu::TextureView,
+    depth: Option<wgpu::TextureView>,
     sampled_depth: Option<wgpu::TextureView>,
     colors: [wgpu::TextureView; 2],
     inputs: [Option<wgpu::BindGroup>; 2],
@@ -33,18 +36,23 @@ pub(super) struct TransparencyFrame<'a> {
 }
 
 impl Transparency {
-    pub fn prepare(
-        &mut self,
+    pub fn prepare<'a>(
+        &'a mut self,
         device: &wgpu::Device,
         size: [u32; 2],
         output: ColorOutput,
         retain_depth: bool,
-    ) -> TransparencyFrame<'_> {
+        depth_override: Option<&'a wgpu::TextureView>,
+    ) -> TransparencyFrame<'a> {
         let mode = self.modes[usize::from(output.multisampling)]
             .get_or_insert_with(|| Mode::new(device, output.multisampling));
         let hdr = usize::from(output.hdr);
-        let pipeline = mode.pipelines[hdr]
-            .get_or_insert_with(|| composite_pipeline(device, &mode.layout, output));
+        let create = || composite_pipeline(device, &mode.layout, output);
+        let pipeline = if let Some(format) = output.format_override {
+            mode.capture_pipelines.entry(format).or_insert_with(create)
+        } else {
+            mode.pipelines[hdr].get_or_insert_with(create)
+        };
         if mode
             .layers
             .as_ref()
@@ -66,14 +74,7 @@ impl Transparency {
             });
             Layers {
                 size,
-                depth: attachment_view(
-                    device,
-                    size,
-                    DEPTH_FORMAT,
-                    samples,
-                    wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    "XRack 3D depth shared with transparency",
-                ),
+                depth: None,
                 sampled_depth: None,
                 colors,
                 inputs: [None, None],
@@ -111,7 +112,9 @@ impl Transparency {
                 entries: &entries,
             })
         });
-        let depth = if retain_depth {
+        let depth = if let Some(depth) = depth_override {
+            depth
+        } else if retain_depth {
             layers.sampled_depth.get_or_insert_with(|| {
                 attachment_view(
                     device,
@@ -123,7 +126,16 @@ impl Transparency {
                 )
             })
         } else {
-            &layers.depth
+            layers.depth.get_or_insert_with(|| {
+                attachment_view(
+                    device,
+                    size,
+                    DEPTH_FORMAT,
+                    output.samples(),
+                    wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    "XRack 3D depth shared with transparency",
+                )
+            })
         };
         TransparencyFrame {
             depth,
@@ -157,6 +169,7 @@ impl Mode {
         Self {
             layout,
             pipelines: [None, None],
+            capture_pipelines: HashMap::new(),
             layers: None,
         }
     }
@@ -171,6 +184,7 @@ impl TransparencyFrame<'_> {
         &self,
         encoder: &'a mut wgpu::CommandEncoder,
         retain_depth: bool,
+        stencil_ops: Option<wgpu::Operations<u32>>,
     ) -> wgpu::RenderPass<'a> {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("XRack 3D transparent accumulation"),
@@ -199,7 +213,7 @@ impl TransparencyFrame<'_> {
                         wgpu::StoreOp::Discard
                     },
                 }),
-                stencil_ops: None,
+                stencil_ops,
             }),
             ..Default::default()
         })

@@ -1,0 +1,20 @@
+// CHECK-DAG: "xr.material_shader_url"() {{.*}}value = "effects/material_surface.wgsl"
+// CHECK-DAG: "xr.bind"{{.*}}name = "model"{{.*}}xr.update_effect = "paint"
+struct Finish { material-shader: string, shader-parameters: vector3d }
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    scale-x: float, scale-y: float, scale-z: float, material: Finish,
+}
+export component App inherits Window {
+    SceneView3D {
+        model: [Actor {
+            id: "panel", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+            yaw: 0, pitch: 0, roll: 0, color: #fff, scale-x: 1, scale-y: 1, scale-z: 1,
+            material: Finish {
+                material-shader: @material-shader-url("effects/material_surface.wgsl"),
+                shader-parameters: Vector3D.new(0.5, 0, 0),
+            },
+        }];
+    }
+}

@@ -48,12 +48,13 @@ pub(super) struct FocusOutput {
 struct Targets {
     size: [u32; 2],
     layers: [wgpu::TextureView; 4],
+    coverage: Option<wgpu::TextureView>,
     resolve: [Option<wgpu::TextureView>; 2],
 }
 
 pub(super) struct DepthOfField {
     shader: wgpu::ShaderModule,
-    reduce: [Option<Pass>; 2],
+    reduce: [Option<Pass>; 4],
     gather: Pass,
     sampler: wgpu::Sampler,
     composite: [[Option<Pass>; 2]; 2],
@@ -80,7 +81,7 @@ impl DepthOfField {
                 ..Default::default()
             }),
             shader,
-            reduce: [None, None],
+            reduce: [const { None }; 4],
             composite: [const { [None, None] }; 2],
             targets: VecDeque::new(),
         }
@@ -92,7 +93,7 @@ impl DepthOfField {
         color: &wgpu::TextureView,
         depth: &FocusDepth,
         settings: FocusSettings,
-        resolve: Option<wgpu::TextureFormat>,
+        (resolve, composite_alpha): (Option<wgpu::TextureFormat>, bool),
     ) -> FocusOutput {
         let device = ctx.device;
         let size = ctx.size;
@@ -109,6 +110,7 @@ impl DepthOfField {
                     wgpu::TextureFormat::R32Float,
                 ]
                 .map(|format| image(device, half, format)),
+                coverage: None,
                 resolve: [None, None],
             });
         self.targets.truncate(RETAINED_VIEW_SIZES - 1);
@@ -127,6 +129,11 @@ impl DepthOfField {
                 .clone()
         });
         let [reduced, blurred, foreground, foreground_depth] = &target.layers;
+        let coverage = composite_alpha.then(|| {
+            target
+                .coverage
+                .get_or_insert_with(|| image(device, half, wgpu::TextureFormat::R16Float))
+        });
         let output = resolved.as_ref().unwrap_or(ctx.target);
 
         let [near, far] = depth.camera.depth_limits();
@@ -147,7 +154,7 @@ impl DepthOfField {
                 } else {
                     0.0
                 },
-                0.0,
+                f32::from(u8::from(composite_alpha)),
             ],
         );
         append_floats(
@@ -163,22 +170,21 @@ impl DepthOfField {
         let sample = usize::from(depth.multisampled);
         let depth_input = (2 + sample as u32, &depth.view);
 
-        let reduce = self.reduce[sample].get_or_insert_with(|| {
+        let reduced_targets = 1 + usize::from(composite_alpha);
+        let reduce_slot = sample + 2 * usize::from(composite_alpha);
+        let reduce = self.reduce[reduce_slot].get_or_insert_with(|| {
             Pass::new(
                 device,
                 &self.shader,
-                if depth.multisampled {
-                    "reduce_msaa"
-                } else {
-                    "reduce"
-                },
-                &[HDR_FORMAT],
+                ["reduce", "reduce_msaa", "reduce_alpha", "reduce_alpha_msaa"][reduce_slot],
+                &[HDR_FORMAT, wgpu::TextureFormat::R16Float][..reduced_targets],
             )
         });
+        let coverage = coverage.as_deref().unwrap_or(reduced);
         reduce.draw(
             device,
             ctx.encoder,
-            &[reduced],
+            &[reduced, coverage][..reduced_targets],
             &uniform,
             &[(0, color), depth_input],
             None,
@@ -188,7 +194,7 @@ impl DepthOfField {
             ctx.encoder,
             &[blurred, foreground, foreground_depth],
             &uniform,
-            &[(4, reduced)],
+            &[(4, reduced), (9, coverage)],
             Some(&self.sampler),
         );
         let composite = self.composite[sample][format_index].get_or_insert_with(|| {
@@ -211,6 +217,7 @@ impl DepthOfField {
             &[
                 (0, color),
                 depth_input,
+                (4, reduced),
                 (5, blurred),
                 (6, foreground),
                 (7, foreground_depth),

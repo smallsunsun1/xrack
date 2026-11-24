@@ -687,6 +687,9 @@ fn rewrite_expr(
         | MeshUrl(spelling)
         | MeshUrlWithOptions { path: spelling, .. }
         | EnvironmentUrl(spelling)
+        | TextureUrl(spelling)
+        | ShaderUrl(spelling)
+        | MaterialShaderUrl(spelling)
         | SlicedImageUrl { path: spelling, .. } => rebase_asset(spelling, prefix),
         Unary { value, .. } => rewrite_expr(value, prefix, names, source),
         Binary { left, right, .. } => {

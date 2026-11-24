@@ -1,9 +1,11 @@
+override COMPOSITE_ALPHA: bool = false;
+
 struct Settings {
     // Exposure, bloom strength, SceneToneMap discriminant, filmic white point.
     tone: vec4<f32>,
     // Brightness, contrast, saturation, adjustments enabled.
     grade: vec4<f32>,
-    // LUT lattice size and blend amount.
+    // LUT lattice size and blend amount, then output width and height.
     lut: vec4<f32>,
 }
 
@@ -13,6 +15,7 @@ struct Settings {
 @group(0) @binding(3) var bloom_sampler: sampler;
 @group(0) @binding(4) var lookup_table: texture_2d<f32>;
 @group(0) @binding(5) var lookup_sampler: sampler;
+@group(0) @binding(6) var source_sampler: sampler;
 
 @vertex
 fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -94,28 +97,58 @@ fn lut_color(color: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(decode_srgb(mix(signal, graded, settings.lut.y)), color.a);
 }
 
+fn display_sample(sample: vec4<f32>, glow: vec3<f32>) -> vec4<f32> {
+    let radiance = sample.rgb + glow;
+    if !COMPOSITE_ALPHA || sample.a >= 1.0 {
+        return display_color(radiance);
+    }
+    // A glow can extend into pixels with no geometry. Give it coverage
+    // proportional to its display luminance so it can composite over 2D.
+    let halo = encode_srgb(clamp(map_radiance(glow), vec3<f32>(0.0), vec3<f32>(1.0)));
+    let alpha = max(sample.a, max(halo.r, max(halo.g, halo.b)));
+    if alpha <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(display_color(radiance / alpha).rgb, alpha);
+}
+
+fn encode_composite(color: vec4<f32>) -> vec4<f32> {
+    if !COMPOSITE_ALPHA || color.a >= 1.0 {
+        return color;
+    }
+    // The sRGB render attachment encodes RGB on write. FemtoVG reads these
+    // bytes through an unorm view and expects premultiplied display color.
+    return vec4<f32>(decode_srgb(encode_srgb(color.rgb) * color.a), color.a);
+}
+
+fn scene_sample(position: vec4<f32>) -> vec4<f32> {
+    if all(textureDimensions(source) == vec2<u32>(settings.lut.zw)) {
+        return textureLoad(source, vec2<i32>(position.xy), 0);
+    }
+    return textureSampleLevel(source, source_sampler, position.xy / settings.lut.zw, 0.0);
+}
+
+fn bloom_glow(position: vec4<f32>) -> vec3<f32> {
+    let uv = position.xy / settings.lut.zw;
+    return textureSampleLevel(bloom, bloom_sampler, uv, 0.0).rgb * settings.tone.y;
+}
+
 @fragment
 fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    return display_color(textureLoad(source, vec2<i32>(position.xy), 0).rgb);
+    return encode_composite(display_sample(scene_sample(position), vec3<f32>(0.0)));
 }
 
 @fragment
 fn fragment_bloom(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    return display_color(bloom_radiance(position));
-}
-
-fn bloom_radiance(position: vec4<f32>) -> vec3<f32> {
-    let uv = position.xy / vec2<f32>(textureDimensions(source));
-    let glow = textureSampleLevel(bloom, bloom_sampler, uv, 0.0).rgb * settings.tone.y;
-    return textureLoad(source, vec2<i32>(position.xy), 0).rgb + glow;
+    return encode_composite(display_sample(scene_sample(position), bloom_glow(position)));
 }
 
 @fragment
 fn fragment_lut(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    return lut_color(display_color(textureLoad(source, vec2<i32>(position.xy), 0).rgb));
+    return encode_composite(lut_color(display_sample(scene_sample(position), vec3<f32>(0.0))));
 }
 
 @fragment
 fn fragment_bloom_lut(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    return lut_color(display_color(bloom_radiance(position)));
+    return encode_composite(lut_color(display_sample(scene_sample(position), bloom_glow(position))));
 }

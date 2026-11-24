@@ -78,6 +78,7 @@ pub(crate) fn program(
     let aliases = AliasGraphs::from_module(module).map_err(Error::Invalid)?;
     let assets = Rc::new(AssetValues {
         images,
+        effects: scene_assets.effects.clone(),
         entry_file: entry_file.to_owned(),
         markdown: xrack_resources::collect_markdown(module).map_err(Error::Invalid)?,
         paths: paths
@@ -287,6 +288,7 @@ fn reference(op: Op<'_>, value: ValueRef<'_>) -> Result<Member> {
 
 #[derive(Default)]
 struct AssetValues<'m> {
+    effects: BTreeMap<String, std::sync::Arc<str>>,
     images: BTreeMap<String, ImageAsset>,
     entry_file: String,
     markdown: BTreeMap<&'m str, runtime::StyledText>,
@@ -1819,6 +1821,19 @@ impl<'m> Loader<'m> {
                 }
                 Expression::ScrollControlRead(member)
             }
+            "xr.material_shader_url" => Expression::Literal(Value::String(
+                runtime::material_shader::resource_key(spelling()?),
+            )),
+            "xr.shader_url" => Expression::Literal(Value::String(
+                self.assets
+                    .effects
+                    .get(spelling()?)
+                    .ok_or_else(|| invalid(op, "unresolved scene effect shader"))?
+                    .to_string(),
+            )),
+            "xr.texture_url" => Expression::Literal(Value::String(
+                runtime::scene3d::texture_resource_key(spelling()?),
+            )),
             "xr.environment_url" => Expression::Literal(Value::String(
                 runtime::scene3d::environment_resource_key(spelling()?),
             )),
@@ -2791,7 +2806,20 @@ const PROPERTIES: &[&str] = &[
     "scene-lut",
     "scene-lut-size",
     "scene-lut-strength",
+    "scene-effect",
+    "scene-effect-strength",
+    "scene-effect-depth",
+    "scene-effect-history-revision",
+    "scene-effect-animate",
+    "scene-effects",
+    "scene-captures",
+    "scene-color-capture",
+    "scene-depth-capture",
     "scene-background",
+    "texture-source",
+    "texture-only",
+    "texture-mipmaps",
+    "texture-input",
     "selected-object",
     "drag-key",
     "touch-drag-delay",

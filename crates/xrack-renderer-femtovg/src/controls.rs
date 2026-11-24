@@ -15,9 +15,7 @@ use xrack_runtime::{
 };
 
 fn fill(canvas: &mut Canvas<WGPURenderer>, rect: Rect, radius: f32, tint: Color) {
-    let mut path = Path::new();
-    path.rounded_rect(rect.x, rect.y, rect.width, rect.height, radius);
-    canvas.fill_path(&path, &Paint::color(color(tint)));
+    rectangle::fill_surface(canvas, rect, [radius; 4], Paint::color(color(tint)));
 }
 
 pub(crate) fn color_preview(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, tint: Color) {
@@ -724,6 +722,7 @@ impl Renderer {
                         text: caption,
                         paint: &paint,
                         cell_clip: Some(title),
+                        cell_fonts: None,
                     });
                 } else {
                     canvas.save();

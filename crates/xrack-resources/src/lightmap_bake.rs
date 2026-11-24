@@ -217,11 +217,9 @@ pub fn bake_lightmaps(
 
 fn receiver_material(material: Option<&xrack_runtime::scene3d::MeshMaterial>) -> bool {
     material.is_some_and(|material| {
-        material.alpha_mode != MeshAlphaMode::Blend
-            && material
-                .pbr
-                .as_ref()
-                .is_some_and(|pbr| pbr.transmission_blur().is_none())
+        material.depth_coverage().is_some()
+            && material.pbr.is_some()
+            && material.transmission_blur().is_none()
     })
 }
 
@@ -431,8 +429,11 @@ fn shade_tile(
                     };
                     let object = &objects[texel.object];
                     let seed = hash(tile.wrapping_mul(0xc2b2ae35) ^ (row * chunk + index) as u32);
+                    let back = texel.material.is_some_and(|material| {
+                        material.cull_mode == xrack_runtime::scene3d::MeshCullMode::Front
+                    });
                     *out = object
-                        .bake_sample(texel.vertex, texel.weights, texel.material, false)
+                        .bake_sample(texel.vertex, texel.weights, texel.material, back)
                         .map(|surface| lighting.irradiance(surface, seed));
                 }
             });
@@ -632,6 +633,14 @@ mod tests {
             .collect();
         let chart = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
         let material = MeshMaterial {
+            shader: None,
+            base_item: None,
+            channels: Default::default(),
+            vertex_colors: true,
+            vertex_masks: Default::default(),
+            cull_mode: Default::default(),
+            depth_draw_mode: Default::default(),
+            blend_mode: Default::default(),
             base_color: if emitter {
                 [1.0, 0.0, 0.0, 1.0]
             } else {
@@ -639,8 +648,9 @@ mod tests {
             },
             base_texture: None,
             alpha_mode: MeshAlphaMode::Opaque,
-            double_sided: false,
             pbr: (!emitter).then_some(MeshPbr {
+                anisotropy: None,
+                fresnel: Default::default(),
                 metallic: 0.0,
                 roughness: 1.0,
                 emissive: [0.0; 3],

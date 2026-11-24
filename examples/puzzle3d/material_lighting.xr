@@ -1,0 +1,102 @@
+struct LightStyle {
+    material-shader: string, shader-parameters: vector3d,
+    unlit: bool, roughness: float, metalness: float,
+}
+
+struct LitActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float,
+    material: LightStyle, visible: bool, casts-shadow: bool,
+}
+
+struct Lamp {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
+    casts-shadow: bool,
+}
+
+export component MaterialLightingDemo inherits Window {
+    title: "XRack · 材质光照函数";
+    width: 520px; height: 362px; resizable: false;
+    background: #172437;
+    in-out property <int> light-kind: 0;
+    in-out property <float> amount: 1.0;
+    in-out property <float> specular-gain: 0.0;
+    in-out property <bool> shadows: false;
+    in-out property <float> point-range: 8.0;
+    in-out property <bool> programmable: true;
+    property <LightStyle> stock: LightStyle {
+        material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
+        unlit: false, roughness: 0.62, metalness: 0,
+    };
+    property <LitActor> plate: LitActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 2.1, scale-y: 2.55, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #dedede, camera-kind: "", camera-height: 4,
+        material: root.stock, visible: true, casts-shadow: false,
+    };
+    property <Lamp> lamp: Lamp {
+        kind: "directional", x: 0, y: 0, z: 3, yaw: 0, elevation: 0,
+        intensity: 0, color: #fff, range: 8, inner-angle: 30, outer-angle: 46,
+        casts-shadow: false,
+    };
+    SceneView3D {
+        width: 520px; height: 270px; camera: "eye";
+        scene-background: #24354b; scene-tone-map: none; cache-rendering: true;
+        ambient-intensity: root.light-kind == 3 ? 0.75 : 0.035;
+        ambient-color: #ffffff; shadows: root.shadows; shadow-map-size: 512;
+        lights: [
+            Lamp {
+                kind: "directional", yaw: 34, intensity: root.light-kind == 0 ? 2.15 : 0,
+                casts-shadow: root.shadows, ..root.lamp
+            },
+            Lamp {
+                kind: "point", range: root.point-range,
+                intensity: root.light-kind == 1 ? 23.0 : 0, ..root.lamp
+            },
+            Lamp { kind: "spot", intensity: root.light-kind == 2 ? 24.0 : 0, ..root.lamp },
+        ];
+        model: [
+            LitActor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.plate },
+            LitActor {
+                id: "programmable", x: -1.35,
+                material: LightStyle {
+                    material-shader: root.programmable ? @material-shader-url("effects/material_lighting.wgsl") : "",
+                    shader-parameters: Vector3D.new(root.amount, root.specular-gain, 0),
+                    ..root.stock
+                },
+                ..root.plate
+            },
+            LitActor { id: "stock", x: 1.35, ..root.plate },
+            LitActor {
+                id: "occluder", mesh: "primitive:box", x: -0.61, z: 1.1,
+                scale-x: 0.31, scale-y: 0.52, scale-z: 0.24, color: #172437,
+                visible: root.shadows, casts-shadow: true, ..root.plate
+            },
+        ];
+    }
+
+    Label { x: 91px; y: 274px; width: 155px; height: 23px; text: "可编程光照"; }
+    Label { x: 316px; y: 274px; width: 135px; height: 23px; text: "内建 PBR"; }
+    directional := Button {
+        x: 11px; y: 310px; width: 88px; height: 32px;
+        text: "方向光"; clicked => { root.light-kind = 0; }
+    }
+    point := Button {
+        x: 111px; y: 310px; width: 82px; height: 32px;
+        text: "点光"; clicked => { root.light-kind = 1; }
+    }
+    spot := Button {
+        x: 205px; y: 310px; width: 87px; height: 32px;
+        text: "聚光"; clicked => { root.light-kind = 2; }
+    }
+    ambient := Button {
+        x: 304px; y: 310px; width: 85px; height: 32px;
+        text: "环境光"; clicked => { root.light-kind = 3; }
+    }
+    CheckBox {
+        x: 407px; y: 310px; width: 103px; height: 32px;
+        checked <=> root.shadows; text: "投影";
+    }
+}

@@ -14,6 +14,15 @@ pub struct MorphDelta {
     pub tangent: [f32; 3],
 }
 
+impl MorphDelta {
+    pub(crate) fn words(&self) -> [u32; 10] {
+        let [px, py, pz] = self.position.map(f32::to_bits);
+        let [nx, ny, nz] = self.normal.map(f32::to_bits);
+        let [tx, ty, tz] = self.tangent.map(f32::to_bits);
+        [self.target, px, py, pz, nx, ny, nz, tx, ty, tz]
+    }
+}
+
 type TargetBounds = Vec<Bounds>;
 pub(crate) enum MorphOverrides {
     Partial(Box<[(usize, f32)]>),
@@ -84,6 +93,11 @@ impl MorphGeometry {
         })
     }
 
+    #[doc(hidden)]
+    pub fn delta_count(&self) -> usize {
+        self.deltas.len()
+    }
+
     pub fn target_count(&self) -> usize {
         self.target_count
     }
@@ -137,24 +151,24 @@ impl MorphGeometry {
         }
     }
 
-    pub fn record_offset(&self) -> u32 {
-        self.offsets.len() as u32
-    }
-
     pub fn packed_words(&self) -> impl Iterator<Item = u32> + '_ {
         self.offsets
             .iter()
             .copied()
-            .chain(self.deltas.iter().flat_map(|delta| {
-                std::iter::once(delta.target).chain(
-                    delta
-                        .position
-                        .into_iter()
-                        .chain(delta.normal)
-                        .chain(delta.tangent)
-                        .map(f32::to_bits),
-                )
-            }))
+            .chain(self.deltas.iter().flat_map(MorphDelta::words))
+    }
+
+    /// Pack the sparse displacement table in the same row order as GPU vertex buffers.
+    #[doc(hidden)]
+    pub fn packed_draw_rows<'a>(&'a self, rows: &'a [u32]) -> impl Iterator<Item = u32> + 'a {
+        let deltas = rows.iter().map(|&row| self.vertex(row as usize));
+        let offsets = deltas.clone().scan(0, |offset, row| {
+            *offset += row.len() as u32;
+            Some(*offset)
+        });
+        std::iter::once(0)
+            .chain(offsets)
+            .chain(deltas.flatten().flat_map(MorphDelta::words))
     }
 
     pub(crate) fn mirrored_x(&self) -> (Vec<u32>, Vec<MorphDelta>) {
@@ -195,7 +209,7 @@ impl MorphGeometry {
         Some((offsets, deltas))
     }
 
-    fn vertex(&self, vertex: usize) -> &[MorphDelta] {
+    pub(crate) fn vertex(&self, vertex: usize) -> &[MorphDelta] {
         &self.deltas[self.offsets[vertex] as usize..self.offsets[vertex + 1] as usize]
     }
 

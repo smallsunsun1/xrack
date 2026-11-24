@@ -6060,8 +6060,14 @@ fn mixed_table_text_matches_after_prewarming_between_the_frozen_panes() {
                 continue;
             }
             for (column, cell) in item.children[0].children.iter_mut().enumerate() {
-                cell.properties
-                    .insert("text", format!("{row}:{column} שלום · 构建").into());
+                let text = if x == 110.0 && column % 2 != 0 {
+                    // The clipped suffix mixes fallback fonts. Its pixels
+                    // must match even before glyph masks are resident.
+                    format!("{row}:{column} Wide table · שלום · 构建")
+                } else {
+                    format!("{row}:{column} שלום · 构建")
+                };
+                cell.properties.insert("text", text.into());
                 if column % 2 == 0 {
                     cell.properties.insert(
                         "horizontal-alignment",
@@ -11139,6 +11145,154 @@ fn batched_rectangles_preserve_clipping_and_paint_order() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn fractional_window_rectangles_batch_inside_unpainted_groups()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, update_profile};
+
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut compositor = Renderer::with_device(device.clone())?;
+    let mut palette = Renderer::with_device(device)?;
+    palette.set_cached_layer_compositing_enabled(false);
+    let input = Interaction::default();
+    let mut window = Node::new("Window", None);
+    window
+        .properties
+        .insert("background", Color(0x172539ff).into());
+    let mut group = Node::new("Rectangle", None);
+    for index in 0..20 {
+        let mut rectangle = Node::new("Rectangle", None);
+        for (name, value) in [
+            ("x", 3.0 + f64::from(index % 8) * 5.125),
+            ("y", 3.0 + f64::from(index / 8) * 6.125),
+            ("width", 5.75),
+            ("height", 6.5),
+        ] {
+            rectangle.properties.insert(name, Length(value).into());
+        }
+        let tint = [0xf28b52ff, 0x44b48bff, 0x678ae4ff][index as usize % 3];
+        rectangle
+            .properties
+            .insert("background", Color(tint).into());
+        group.children.push(rectangle);
+    }
+    window.children.push(group);
+
+    let mut row = Node::new("HorizontalLayout", None);
+    for (name, value) in [("y", 32.0), ("height", 12.0), ("padding", 3.0)] {
+        row.properties.insert(name, Length(value).into());
+    }
+    for _ in 0..9 {
+        let mut rectangle = Node::new("Rectangle", None);
+        rectangle
+            .properties
+            .insert("background", Color(0x9467ccff).into());
+        row.children.push(rectangle);
+    }
+    window.children.push(row);
+
+    for (scale, z) in [(1.0, 0.0), (1.5, 1.0), (2.0, -1.0)] {
+        window.children[0].children[0]
+            .properties
+            .insert("z", z.into());
+        let mut actual = None;
+        let sample = update_profile::measure(|| {
+            actual = Some(compositor.snapshot(&window, 192, 128, scale, &input));
+        })
+        .ok_or("missing compositor profile")?;
+        let actual = actual.ok_or("missing compositor frame")??;
+        let expected = palette.snapshot(&window, 192, 128, scale, &input)?;
+        assert_eq!(actual.layout, expected.layout);
+        assert_eq!(sample.quad_batches, 1);
+        assert_eq!(compositor.rectangle_palette_uploads(), 0);
+        assert!(palette.rectangle_palette_uploads() > 0);
+        for (index, (actual, expected)) in actual.rgba.iter().zip(expected.rgba.iter()).enumerate()
+        {
+            assert!(
+                actual.abs_diff(*expected) <= 1,
+                "scale {scale}, channel {index}: {actual} vs {expected}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn window_rectangle_instances_grow_and_keep_the_unchanged_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, update_profile};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut compositor = Renderer::with_device(gpu.clone())?;
+    let mut palette = Renderer::with_device(gpu)?;
+    compositor.set_retained_geometry_enabled(false);
+    palette.set_retained_geometry_enabled(false);
+    palette.set_cached_layer_compositing_enabled(false);
+    let mut window = Node::new("Window", None);
+    window
+        .properties
+        .insert("background", Color(0x172539ff).into());
+    let mut group = Node::new("Rectangle", None);
+    for index in 0..2048 {
+        let mut rectangle = Node::new("Rectangle", None);
+        for (name, value) in [
+            ("x", 2.0 + f64::from(index % 32) * 5.125),
+            ("y", 2.0 + f64::from(index / 32) * 3.125),
+            ("width", 4.75),
+            ("height", 2.75),
+        ] {
+            rectangle.properties.insert(name, Length(value).into());
+        }
+        let tint = [0xf28b52ff, 0x44b48bff, 0x678ae4ff][index as usize % 3];
+        rectangle
+            .properties
+            .insert("background", Color(tint).into());
+        group.children.push(rectangle);
+    }
+    window.children.push(group);
+    let all_rectangles = window.children[0].children.clone();
+    let input = Interaction::default();
+
+    for (count, expect_upload) in [
+        (768, true),
+        (1536, true),
+        (640, false),
+        (1536, false),
+        (2048, true),
+    ] {
+        let group = &mut window.children[0];
+        group.children.clear();
+        group.children.extend_from_slice(&all_rectangles[..count]);
+        let mut actual = None;
+        let sample = update_profile::measure(|| {
+            actual = Some(compositor.snapshot(&window, 384, 448, 2.0, &input));
+        })
+        .ok_or("missing compositor profile")?;
+        let actual = actual.ok_or("missing compositor frame")??;
+        let expected = palette.snapshot(&window, 384, 448, 2.0, &input)?;
+        assert_eq!(sample.quad_batches, 1, "count {count}");
+        assert_eq!(compositor.rectangle_palette_uploads(), 0, "count {count}");
+        assert_eq!(sample.vertex_bytes != 0, expect_upload, "count {count}");
+        assert!(
+            actual
+                .rgba
+                .iter()
+                .zip(&expected.rgba)
+                .all(|(a, b)| a.abs_diff(*b) <= 1),
+            "covered rectangle output differs at count {count}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn rounded_atlas_reuses_fractional_tiles_across_frames() -> Result<(), Box<dyn std::error::Error>> {
     use rectangle_animation_ui::RectangleAnimation;
     use xrack_renderer_femtovg::RenderDevice;
@@ -11332,6 +11486,186 @@ fn opaque_window_background_clear_matches_the_regular_painter() {
         }
         if opacity == 1.0 && color.0 & 0xff == 0xff && radius == 0.0 && viewport.width == 80.0 {
             assert_eq!(solid.pixel(159, 50), Some(color.0.to_be_bytes()));
+        }
+    }
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn fractional_label_bands_keep_their_scissor_coverage() {
+    use xrack_runtime::{Color, Length, Node, TextHorizontalAlignment};
+
+    let mut renderer = pollster::block_on(Renderer::with_text(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+        xrack_renderer_femtovg::TextSystem::bundled_only(),
+    ))
+    .unwrap();
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene.fonts = BundledFontsDemo::new().render().fonts;
+    scene
+        .properties
+        .insert("default-font-family", "XRack Demo".to_owned().into());
+    for index in 0..6 {
+        let mut label = Node::new("Label", None);
+        for (name, value) in [
+            ("x", 4.0 + f64::from(index) * 24.0),
+            ("y", 5.125),
+            ("width", 20.0),
+            ("height", 5.25),
+            ("font-size", 10.0),
+        ] {
+            label.properties.insert(name, Length(value).into());
+        }
+        label.properties.insert("text", "W".to_owned().into());
+        label.properties.insert("color", Color(0x70db57cc).into());
+        label.properties.insert(
+            "horizontal-alignment",
+            TextHorizontalAlignment::Center.into(),
+        );
+        scene.children.push(label);
+    }
+
+    for (shift, scale) in [(0.0, 2.0), (0.125, 2.0), (0.125, 1.0), (0.25, 2.0)] {
+        for label in scene.children.iter_mut() {
+            label.properties.insert("y", Length(5.125 + shift).into());
+        }
+        renderer.set_display_batching_enabled(true);
+        let before = renderer.display_batch_stats();
+        let (width, height) = ((150.0 * scale) as u32, (24.0 * scale) as u32);
+        let batched = renderer
+            .snapshot(&scene, width, height, scale, &input)
+            .unwrap();
+        if scale == 2.0 {
+            assert_eq!(
+                renderer.display_batch_stats().clipped_text_runs - before.clipped_text_runs,
+                6
+            );
+        }
+        renderer.set_display_batching_enabled(false);
+        let direct = renderer
+            .snapshot(&scene, width, height, scale, &input)
+            .unwrap();
+        assert_same_pixels(&batched, &direct);
+    }
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn label_bands_with_hard_pixel_coverage_share_a_draw() {
+    use xrack_runtime::{Color, Length, Node, TextHorizontalAlignment};
+
+    let mut renderer = pollster::block_on(Renderer::with_text(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+        xrack_renderer_femtovg::TextSystem::bundled_only(),
+    ))
+    .unwrap();
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene.fonts = BundledFontsDemo::new().render().fonts;
+    scene
+        .properties
+        .insert("default-font-family", "XRack Demo".to_owned().into());
+    // At scale 2 the third row still needs the half-covered pixel. The
+    // integer and quarter-pixel edges can use the same cropped mask batch.
+    for y in [4.0, 16.125, 28.25, 40.375] {
+        for column in 0..12 {
+            let mut label = Node::new("Label", None);
+            for (name, value) in [
+                ("x", 4.0 + f64::from(column) * 24.0),
+                ("y", y),
+                ("width", 20.0),
+                ("height", 5.5),
+                ("font-size", 10.0),
+            ] {
+                label.properties.insert(name, Length(value).into());
+            }
+            label.properties.insert("text", "W".to_owned().into());
+            label.properties.insert("color", Color(0x70db57cc).into());
+            label.properties.insert(
+                "horizontal-alignment",
+                TextHorizontalAlignment::Center.into(),
+            );
+            scene.children.push(label);
+        }
+    }
+    for _ in 0..2 {
+        renderer.snapshot(&scene, 600, 104, 2.0, &input).unwrap();
+    }
+    let before = renderer.display_batch_stats();
+    let batched = renderer.snapshot(&scene, 600, 104, 2.0, &input).unwrap();
+    let after = renderer.display_batch_stats();
+    assert_eq!(after.glyph_batches - before.glyph_batches, 2);
+    assert_eq!(after.clipped_text_runs - before.clipped_text_runs, 48);
+    renderer.set_display_batching_enabled(false);
+    let direct = renderer.snapshot(&scene, 600, 104, 2.0, &input).unwrap();
+    assert_same_pixels(&batched, &direct);
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn mixed_label_styles_batch_in_paint_order() {
+    use xrack_runtime::{Color, Length, Node, TextHorizontalAlignment};
+
+    let mut renderer = pollster::block_on(Renderer::with_text(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+        xrack_renderer_femtovg::TextSystem::bundled_only(),
+    ))
+    .unwrap();
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene.fonts = BundledFontsDemo::new().render().fonts;
+    scene
+        .properties
+        .insert("default-font-family", "XRack Demo".to_owned().into());
+    let colors = [0xf05139cc, 0x70db57bb, 0x7394f4aa];
+    for index in 0..9 {
+        let mut label = Node::new("Label", None);
+        for (name, value) in [
+            ("x", 4.125 + index as f64 * 24.0),
+            ("y", 5.125),
+            ("width", 20.0),
+            ("height", 10.25),
+            ("font-size", 10.0),
+        ] {
+            label.properties.insert(name, Length(value).into());
+        }
+        label.properties.insert("text", "W".to_owned().into());
+        label
+            .properties
+            .insert("color", Color(colors[index % 3]).into());
+        label.properties.insert(
+            "horizontal-alignment",
+            TextHorizontalAlignment::Center.into(),
+        );
+        scene.children.push(label);
+    }
+
+    for overlap in [false, true] {
+        if overlap {
+            // This label must stay above the green label drawn before it.
+            scene.children[3]
+                .properties
+                .insert("x", Length(28.125).into());
+        }
+        renderer.set_display_batching_enabled(true);
+        let before = renderer.display_batch_stats();
+        let batched = renderer.snapshot(&scene, 440, 48, 2.0, &input).unwrap();
+        let after = renderer.display_batch_stats();
+        if !overlap {
+            assert_eq!(after.glyph_batches - before.glyph_batches, 3);
+            assert_eq!(after.text_runs - before.text_runs, 9);
+        }
+        renderer.set_display_batching_enabled(false);
+        let direct = renderer.snapshot(&scene, 440, 48, 2.0, &input).unwrap();
+        assert_same_pixels(&batched, &direct);
+        if overlap {
+            scene.children.swap(1, 3);
+            let reversed = renderer.snapshot(&scene, 440, 48, 2.0, &input).unwrap();
+            assert_ne!(direct.rgba, reversed.rgba);
         }
     }
 }
@@ -12985,6 +13319,68 @@ fn hinted_layers_share_textures_without_sharing_placement_or_lifetime()
 }
 
 #[test]
+fn opaque_rectangle_composition_matches_the_palette_without_uploading_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, update_profile};
+
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut composed = Renderer::with_device(device.clone())?;
+    let mut palette = Renderer::with_device(device)?;
+    palette.set_cached_layer_compositing_enabled(false);
+
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xdecdefff).into());
+    for index in 0..72 {
+        let mut item = Node::new("Rectangle", None);
+        for (name, value) in [
+            ("x", f64::from(index % 9 * 12 - 3)),
+            ("y", f64::from(index / 9 * 10 + 1)),
+            ("width", 16.0),
+            ("height", 13.0),
+        ] {
+            item.properties.insert(name, Length(value).into());
+        }
+        let fill = [0x683786ff, 0xd6513bff, 0x2175acff][index as usize % 3];
+        item.properties.insert("background", Color(fill).into());
+        scene.children.push(item);
+    }
+
+    let input = Interaction::default();
+    let rectangles = scene.children.clone();
+    let mut full_upload = 0;
+    for (count, z) in [(72, 0.0), (72, 2.0), (72, -2.0), (18, 2.0), (72, 2.0)] {
+        scene.children.clear();
+        scene.children.extend_from_slice(&rectangles[..count]);
+        scene.children[0].properties.insert("z", z.into());
+        let mut actual = None;
+        let profile = update_profile::measure(|| {
+            actual = Some(composed.snapshot(&scene, 208, 160, 2.0, &input));
+        })
+        .ok_or("missing compositor profile")?;
+        let actual = actual.ok_or("missing compositor frame")??;
+        let expected = palette.snapshot(&scene, 208, 160, 2.0, &input)?;
+        assert_same_pixels(&actual, &expected);
+        assert_eq!(profile.quad_batches, 1);
+        assert_eq!(composed.rectangle_palette_uploads(), 0);
+        if z == 0.0 {
+            full_upload = profile.vertex_bytes;
+            assert!(full_upload > 0);
+        }
+        if count == 18 {
+            assert!(profile.vertex_bytes <= full_upload / 4);
+        }
+    }
+    assert!(palette.rectangle_palette_uploads() > 0);
+    Ok(())
+}
+
+#[test]
 fn compositor_culls_clear_color_and_fully_occluded_layers() -> Result<(), Box<dyn std::error::Error>>
 {
     use xrack_renderer_femtovg::RenderDevice;
@@ -13084,6 +13480,93 @@ fn compositor_culls_clear_color_and_fully_occluded_layers() -> Result<(), Box<dy
             assert!(
                 actual.abs_diff(*expected) <= 1,
                 "behind={behind}, cover={cover:?}, byte={index}: {actual} vs {expected}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn compositor_batches_pixel_aligned_opacity_groups_without_cache_hints()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, update_profile};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut batched = Renderer::with_device(gpu.clone())?;
+    let mut separate = Renderer::with_device(gpu)?;
+    separate.set_cached_layer_compositing_enabled(false);
+    separate.set_opacity_tile_sharing_enabled(false);
+
+    let rectangle = |[x, y, width, height]: [f64; 4], color| {
+        let mut node = Node::new("Rectangle", None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node.properties.insert("background", Color(color).into());
+        node
+    };
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xe7e9eeff).into());
+    for index in 0..12 {
+        let x = 4.0 + f64::from(index % 4) * 92.0;
+        let y = 4.0 + f64::from(index / 4) * 87.0;
+        // Five unique 202-by-188 slots require a larger atlas than 512².
+        let tint = [0x263854ff, 0x973067ff, 0xa57430ff, 0x3773aaff, 0x77862aff][index as usize % 5];
+        let mut card = rectangle([x, y, 100.0, 93.0], tint);
+        card.properties.insert("border-radius", Length(4.0).into());
+        card.properties.insert("opacity", 0.55_f64.into());
+        card.children
+            .push(rectangle([3.0, 4.0, 17.0, 11.0], 0xeba858be));
+        scene.children.push(card);
+    }
+    let input = Interaction::default();
+    for (frame, x, batch) in [
+        (0, 4.0, false),
+        (1, 4.5, true),
+        // A changed group returns to the compositor after its next stable capture.
+        (2, 5.0, false),
+        (3, 5.5, false),
+        (4, 6.0, true),
+        (5, 6.25, false),
+    ] {
+        let first = &mut scene.children[0];
+        first.properties.insert("x", Length(x).into());
+        first
+            .properties
+            .insert("opacity", (0.57 + f64::from(frame) * 0.07).into());
+        if frame == 2 {
+            first.children[0]
+                .properties
+                .insert("background", Color(0xf39b85be).into());
+        }
+        let mut actual = None;
+        let before = batched.opacity_layer_stats();
+        let profile = update_profile::measure(|| {
+            actual = Some(batched.snapshot(&scene, 800, 560, 2.0, &input));
+        })
+        .ok_or("missing compositor profile")?;
+        let actual = actual.ok_or("missing compositor frame")??;
+        let expected = separate.snapshot(&scene, 800, 560, 2.0, &input)?;
+        assert_eq!(profile.quad_batches, usize::from(batch), "frame {frame}");
+        if frame == 0 {
+            assert_eq!(batched.opacity_layer_stats().rasterized, 5);
+            assert_eq!(separate.opacity_layer_stats().rasterized, 12);
+        }
+        if batch {
+            assert_eq!(profile.gpu_submissions, 1, "frame {frame}");
+            assert_eq!(batched.opacity_layer_stats().rasterized, before.rasterized);
+        }
+        assert_eq!(actual.layout, expected.layout);
+        for (byte, (&actual, &expected)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= 1,
+                "frame {frame}, byte {byte}: {actual} vs {expected}"
             );
         }
     }
@@ -14107,6 +14590,90 @@ fn moving_opacity_tiles_require_equal_paint_and_pixel_phase() {
 }
 
 #[test]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn transient_shadow_tiles_share_identical_captures_without_sharing_different_content()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut shared = Renderer::with_device(gpu.clone())?;
+    let mut separate = Renderer::with_device(gpu)?;
+    separate.set_opacity_tile_sharing_enabled(false);
+    let input = Interaction::default();
+    let rect = |[x, y, width, height]: [f64; 4], fill| {
+        let mut node = Node::new("Rectangle", None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node.properties.insert("background", Color(fill).into());
+        node
+    };
+    for frame in 0..7 {
+        let mut scene = Node::new("Window", None);
+        scene
+            .properties
+            .insert("background", Color(0xe7e9eeff).into());
+        let mut first = rect([14.0, 14.0, 43.0, 39.0], 0x263854ff);
+        first.properties.insert("opacity", 0.61_f64.into());
+        first.properties.insert("border-radius", Length(6.0).into());
+        first
+            .properties
+            .insert("drop-shadow-blur", Length(8.0).into());
+        first
+            .properties
+            .insert("drop-shadow-offset-y", Length(3.0).into());
+        first
+            .properties
+            .insert("drop-shadow-color", Color(0x10172666).into());
+        first
+            .children
+            .push(rect([6.0, 5.0, 27.0, 9.0], 0x659be700 | (240 + frame)));
+        let mut second = first.clone();
+        second.properties.insert("x", Length(38.0).into());
+        second.properties.insert("y", Length(31.0).into());
+        second.properties.insert("opacity", 0.74_f64.into());
+        let mut third = second.clone();
+        third.properties.insert("x", Length(77.0).into());
+        third.properties.insert("y", Length(52.0).into());
+        third
+            .properties
+            .insert("drop-shadow-color", Color(0x96241f66).into());
+        if frame >= 5 {
+            second.children[0]
+                .properties
+                .insert("background", Color(0xc7789a00 | (240 + frame)).into());
+        }
+        scene.children = vec![first, second, third];
+
+        let before = shared.opacity_atlas_stats();
+        let actual = shared.snapshot(&scene, 280, 224, 2.0, &input)?;
+        separate.set_opacity_atlas_enabled(frame != 0);
+        let expected = separate.snapshot(&scene, 280, 224, 2.0, &input)?;
+        let after = shared.opacity_atlas_stats();
+        assert_eq!(after.groups - before.groups, 3, "frame {frame}");
+        assert_eq!(
+            after.reused_tiles - before.reused_tiles,
+            u64::from(frame < 5),
+            "frame {frame}"
+        );
+        assert_eq!(actual.layout, expected.layout);
+        assert!(
+            actual
+                .rgba
+                .iter()
+                .zip(&expected.rgba)
+                .all(|(a, b)| a.abs_diff(*b) <= 1),
+            "frame {frame}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn shadowed_groups_reuse_filtered_pixels_and_track_visible_changes()
 -> Result<(), Box<dyn std::error::Error>> {
     use rectangle_animation_ui::LayerMotion;
@@ -14534,6 +15101,7 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
     let shadow = shadow_mode.is_some();
     let fading = shadow_mode.as_deref() != Some("opaque");
     let dynamic = std::env::var_os("XRACK_CARD_BENCH_DYNAMIC").is_some();
+    let distinct_titles = std::env::var_os("XRACK_CARD_BENCH_DISTINCT_TITLES").is_some();
     let scroll_progress = std::env::var_os("XRACK_CARD_BENCH_SCROLL_PROGRESS").is_some();
     let moving_clip = scroll_progress && std::env::var_os("XRACK_CARD_BENCH_MOVING_CLIP").is_some();
     let static_scroll_content =
@@ -14799,9 +15367,12 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
             .into(),
         );
         if dynamic {
-            card.children[0]
-                .properties
-                .insert("text", format!("CPU {frame:02}%").into());
+            let text = if distinct_titles {
+                format!("C{index:02} {frame:02}%")
+            } else {
+                format!("CPU {frame:02}%")
+            };
+            card.children[0].properties.insert("text", text.into());
         }
     };
     let move_viewport = |scene: &mut Node, frame, moving| {
@@ -15275,7 +15846,59 @@ fn styled_text_reuses_selection_geometry_on_resize_and_invalidates_on_font_chang
 
 #[test]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn large_styled_text_keeps_culling_and_selection_when_the_tail_changes()
+fn styled_text_reuses_a_layout_across_certified_widths() -> Result<(), Box<dyn std::error::Error>> {
+    use std::rc::Rc;
+    use xrack_layout::{LayoutNode, StyledTextLayout};
+    use xrack_runtime::{Length, Node, TextHorizontalAlignment};
+
+    fn plan(layout: &LayoutNode) -> &Rc<StyledTextLayout> {
+        layout
+            .at_path(&[0, 0])
+            .unwrap()
+            .styled_text
+            .as_ref()
+            .unwrap()
+    }
+
+    let size = Size::new(900.0, 480.0);
+    let mut scene = long_styled_text_scene(size, 240)?;
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let input = Interaction::default();
+    let layout_at = |renderer: &mut Renderer, scene: &mut Node, width| {
+        scene.children[0].children[0]
+            .properties
+            .insert("width", Length(width).into());
+        renderer.layout_with_input(scene, size, &input)
+    };
+
+    layout_at(&mut renderer, &mut scene, 750.0);
+    let first = layout_at(&mut renderer, &mut scene, 760.0);
+    let second = layout_at(&mut renderer, &mut scene, 780.0);
+    assert_ne!(
+        first.at_path(&[0, 0]).unwrap().bounds.width,
+        second.at_path(&[0, 0]).unwrap().bounds.width
+    );
+    assert!(Rc::ptr_eq(plan(&first), plan(&second)));
+
+    scene.children[0].children[0].properties.insert(
+        "horizontal-alignment",
+        TextHorizontalAlignment::Center.into(),
+    );
+    let first = layout_at(&mut renderer, &mut scene, 760.0);
+    let second = layout_at(&mut renderer, &mut scene, 780.0);
+    assert_ne!(
+        plan(&first).fragments[0].bounds.x,
+        plan(&second).fragments[0].bounds.x
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn large_styled_text_keeps_culling_and_selection_after_reflow_and_append()
 -> Result<(), Box<dyn std::error::Error>> {
     use xrack_renderer_femtovg::RenderDevice;
     use xrack_runtime::{Length, Orientation, StyledText, TextCommand, ViewportHandle};
@@ -15299,7 +15922,10 @@ fn large_styled_text_keeps_culling_and_selection_when_the_tail_changes()
     direct.set_styled_text_culling_enabled(false);
     direct.set_styled_text_incremental_enabled(false);
 
-    for appended in [false, true] {
+    for (width, appended) in [(440.0, false), (280.0, false), (280.0, true)] {
+        scene.children[0].children[0]
+            .properties
+            .insert("width", Length(width).into());
         if appended {
             source.push_str("**Latest update** · [build](out.xr:4) · שלום 🌐\n");
             scene.children[0].children[0]
@@ -17943,6 +18569,180 @@ fn selectable_styled_text_keeps_link_activation_and_copies_plain_text_in_both_ba
         document.text(),
         || (get("selected"), get("last-link")),
     );
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))]
+fn retained_styled_text_paints_selection_and_replays_a_prepared_frame()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_runtime::{ControlAction, Length, StyledText, TextCommand};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    assert!(renderer.set_retained_styled_text_enabled(true));
+    let text = "**Bold** [long link](#target), éclair and `code`.\n\nمرحبا XRack 🌐";
+    let document = StyledText::from_markdown(text)?;
+    let mut native = layout_ui::StyledTextDemo::new();
+    native.set_selectable(true);
+    native.set_body(document.clone());
+    let mut interpreted =
+        interpret_example("examples/layout/layout.xr").create("StyledTextDemo")?;
+    interpreted.set("selectable", true.into())?;
+    interpreted.set("body", document.clone().into())?;
+
+    let mut scenes = [
+        (*native.render_shared()).clone(),
+        (*interpreted.try_render()?).clone(),
+    ];
+    let mut input = Interaction::default();
+    let mut snapshots = Vec::new();
+    for scene in &mut scenes {
+        let body = &mut scene.children[1];
+        body.properties.remove("max-lines");
+        body.properties.remove("overflow");
+        body.properties.insert(
+            "selected-text-color",
+            xrack_runtime::Color(0xffffffff).into(),
+        );
+        let layout = renderer.layout_with_input(scene, Size::new(460.0, 268.0), &input);
+        let body = layout.at_path(&[1]).ok_or("missing styled text bounds")?;
+        let plan = body
+            .styled_text
+            .as_ref()
+            .ok_or("missing styled text plan")?;
+        assert!(
+            plan.fragments
+                .iter()
+                .all(|fragment| fragment.shaped_run().is_some())
+        );
+        let (_, link) = body
+            .text_link_regions()
+            .next()
+            .ok_or("missing link geometry")?;
+        assert!(
+            plan.selection_hit(Point {
+                x: link.x - body.bounds.x + link.width * 0.5,
+                y: link.y - body.bounds.y + link.height * 0.5,
+            })
+            .is_some()
+        );
+        let target = input
+            .accessibility_target(scene, &layout, &[1])
+            .ok_or("missing selection target")?;
+        input.focus_target(scene, &layout, target);
+        input.sync_editor(scene);
+        input.apply_text_selection(
+            scene,
+            TextCommand::SetSelection {
+                anchor: 0,
+                focus: document.text().len() as i64,
+            },
+        );
+        snapshots.push(renderer.snapshot_prepared(scene, layout, 920, 536, 2.0, &input)?);
+    }
+    assert_same_pixels(&snapshots[0], &snapshots[1]);
+    let action = ControlAction::ActivateTextLink(0);
+    assert!(native.control_at(&scenes[0], &[1], action));
+    assert!(interpreted.control_at(&scenes[1], &[1], action));
+    assert_eq!(native.get_last_link(), "#target");
+    assert_eq!(interpreted.get("last-link")?, "#target".to_owned().into());
+
+    let mut narrow = scenes[0].clone();
+    narrow.children[1]
+        .properties
+        .insert("width", Length(145.0).into());
+    let resized = renderer.snapshot(&narrow, 920, 536, 2.0, &input)?;
+    assert_ne!(snapshots[0].rgba, resized.rgba);
+    let replay = renderer.snapshot_prepared(
+        &scenes[0],
+        snapshots[0].layout.clone(),
+        920,
+        536,
+        2.0,
+        &input,
+    )?;
+    assert_same_pixels(&snapshots[0], &replay);
+
+    let mut deferred_scene = scenes[0].clone();
+    deferred_scene.children[1]
+        .properties
+        .insert("width", Length(302.0).into());
+    let deferred = renderer.layout_with_input(&deferred_scene, Size::new(460.0, 268.0), &input);
+    renderer.layout_with_input(&narrow, Size::new(460.0, 268.0), &input);
+    let delayed = renderer.snapshot_prepared(&deferred_scene, deferred, 920, 536, 2.0, &input)?;
+    let freshly_laid_out = renderer.snapshot(&deferred_scene, 920, 536, 2.0, &input)?;
+    assert_same_pixels(&delayed, &freshly_laid_out);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))]
+fn retained_styled_text_reuses_prefix_and_replays_an_edited_tail()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Length, MarkdownStream, Orientation, ViewportHandle};
+
+    let viewport = Size::new(640.0, 480.0);
+    let prefix = long_styled_text_markdown(190)?;
+    let mut stream = MarkdownStream::default();
+    let mut before = long_styled_text_scene(viewport, 190)?;
+    let handle = ViewportHandle::default();
+    handle.bind_offset(
+        Orientation::Vertical,
+        || Length(-f64::from(f32::MAX)),
+        |_| {},
+    );
+    before.children[0].viewport_handle = Some(handle);
+    let replace_text = |scene: &mut xrack_runtime::Node, text: xrack_runtime::StyledText| {
+        scene.children[0].children[0]
+            .properties
+            .insert("text", text.into());
+    };
+    replace_text(
+        &mut before,
+        stream.update(&format!("{prefix}**Before** [old tail](old.xr) שלום"))?,
+    );
+    let mut after = before.clone();
+    replace_text(
+        &mut after,
+        stream.update(&format!(
+            "{prefix}*After* [new tail](new.xr) 界面\n\n**Next**"
+        ))?,
+    );
+
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut renderer = Renderer::with_device(device.clone())?;
+    renderer.set_retained_styled_text_enabled(true);
+    let input = Interaction::default();
+    let before_layout = renderer.layout_with_input(&before, viewport, &input);
+    let after_layout = renderer.layout_with_input(&after, viewport, &input);
+    fn first(layout: &xrack_layout::LayoutNode) -> Option<&xrack_layout::StyledFragment> {
+        let fragments = &layout.at_path(&[0, 0])?.styled_text.as_ref()?.fragments;
+        assert!(fragments.has_shaped_runs());
+        fragments.placed().next().map(|(fragment, _)| fragment)
+    }
+    assert!(std::ptr::eq(
+        first(&before_layout).ok_or("missing old paragraph")?,
+        first(&after_layout).ok_or("missing retained paragraph")?,
+    ));
+
+    // Paint the old, still-deferred tail after preparing its replacement.
+    let old = renderer.snapshot_prepared(&before, before_layout, 1280, 960, 2.0, &input)?;
+    let new = renderer.snapshot_prepared(&after, after_layout, 1280, 960, 2.0, &input)?;
+    assert_ne!(old.rgba, new.rgba);
+    for (scene, actual) in [(&before, old), (&after, new)] {
+        let mut fresh = Renderer::with_device(device.clone())?;
+        fresh.set_retained_styled_text_enabled(true);
+        let expected = fresh.snapshot(scene, 1280, 960, 2.0, &input)?;
+        assert_eq!(actual.layout, expected.layout);
+        assert_same_pixels(&actual, &expected);
+    }
+    Ok(())
 }
 
 #[test]

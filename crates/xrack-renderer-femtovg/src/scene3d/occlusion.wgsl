@@ -9,11 +9,13 @@ struct Settings {
 @group(0) @binding(0) var depth_buffer: texture_depth_2d;
 @group(0) @binding(1) var<uniform> settings: Settings;
 
-@vertex
-fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
-    let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+struct OcclusionSamples {
+    size: vec2<u32>,
+    padding: vec2<u32>,
+    samples: array<vec2<f32>>,
 }
+
+@group(0) @binding(2) var<storage, read_write> output_samples: OcclusionSamples;
 
 fn orthographic() -> bool {
     return settings.options.z > 0.5;
@@ -41,10 +43,7 @@ fn delta(pixel: vec2<i32>, size: vec2<i32>, center: vec3<f32>) -> vec3<f32> {
     return view_point(at, size, z) - center;
 }
 
-@fragment
-fn fragment(@builtin(position) point: vec4<f32>) -> @location(0) vec2<f32> {
-    let size = vec2<i32>(textureDimensions(depth_buffer));
-    let pixel = vec2<i32>(point.xy);
+fn evaluate(pixel: vec2<i32>, size: vec2<i32>) -> vec2<f32> {
     let depth = textureLoad(depth_buffer, pixel, 0);
     if depth >= 1.0 {
         return vec2<f32>(0.0);
@@ -92,4 +91,16 @@ fn fragment(@builtin(position) point: vec4<f32>) -> @location(0) vec2<f32> {
         obscurance += hemisphere * falloff * falloff;
     }
     return vec2<f32>(clamp(obscurance * (3.0 / 16.0), 0.0, 1.0), center.z);
+}
+
+@compute @workgroup_size(8, 8)
+fn compute(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(depth_buffer);
+    if any(id.xy >= size) {
+        return;
+    }
+    if all(id.xy == vec2<u32>(0u)) {
+        output_samples.size = size;
+    }
+    output_samples.samples[id.y * size.x + id.x] = evaluate(vec2<i32>(id.xy), vec2<i32>(size));
 }

@@ -1,0 +1,81 @@
+struct ChannelFinish {
+    base-color: color, base-color-map: string, base-color-channel: string,
+    emissive-color: color, emissive-map: string, emissive-channel: string,
+    metalness: float, roughness: float, metallic-roughness-map: string,
+    metalness-channel: string, roughness-channel: string,
+    alpha-mode: string, alpha-cutoff: float, unlit: bool, depth-draw-mode: string,
+}
+struct ChannelActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float, visible: bool,
+    material: ChannelFinish, casts-shadow: bool,
+}
+
+export component MaterialChannelsDemo inherits Window {
+    title: "XRack · Material texture channels";
+    width: 600px; height: 372px;
+    background: #192330;
+
+    in-out property <string> base-channel: "rgb";
+    in-out property <string> shading-channel: "r";
+    in-out property <string> shading: "base";
+    in-out property <bool> shadows: false;
+
+    property <string> swatch: @texture-url("models/channel-swatch.png");
+    property <ChannelFinish> flat: ChannelFinish {
+        base-color: #536787, base-color-map: "", base-color-channel: "rgb",
+        emissive-color: #000, emissive-map: "", emissive-channel: "rgb",
+        metalness: 0, roughness: 0.45, metallic-roughness-map: "",
+        metalness-channel: "b", roughness-channel: "g",
+        alpha-mode: "opaque", alpha-cutoff: 0.5, unlit: true, depth-draw-mode: "opaque-only",
+    };
+    property <ChannelActor> base: ChannelActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, camera-kind: "", camera-height: 4, visible: true,
+        material: root.flat, casts-shadow: false,
+    };
+    property <[ChannelActor]> world: [
+        ChannelActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
+        ChannelActor {
+            id: "panel", scale-x: 2.2, scale-y: 1.8, casts-shadow: true,
+            material: ChannelFinish {
+                base-color: root.shading == "emissive" ? #000 : #fff,
+                base-color-map: root.swatch, base-color-channel: root.base-channel,
+                emissive-color: root.shading == "emissive" ? #fff : #000,
+                emissive-map: root.shading == "emissive" ? root.swatch : "",
+                emissive-channel: root.shading-channel,
+                metalness: root.shading == "pbr" ? 1 : 0,
+                roughness: 1, metallic-roughness-map: root.shading == "pbr" ? root.swatch : "",
+                metalness-channel: root.shading-channel, roughness-channel: "b",
+                alpha-mode: "mask", unlit: root.shading == "base", depth-draw-mode: "opaque-prepass",
+                ..root.flat
+            }, ..root.base
+        },
+        ChannelActor {
+            id: "backdrop", z: -2, scale-x: 11, scale-y: 7, visible: root.shadows,
+            material: ChannelFinish { unlit: false, ..root.flat }, ..root.base
+        }
+    ];
+    out property <string> center-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(600px, 320px), Point2D.new(300px, 160px));
+
+    SceneView3D {
+        width: 600px; height: 320px; model: root.world; camera: "eye";
+        shadows: root.shadows; shadow-map-size: 256;
+        light-yaw: -45; light-elevation: 20; ambient-intensity: 0.2; scene-background: #22334b;
+    }
+    channel-button := Button {
+        x: 12px; y: 334px; width: 165px; height: 30px; text: root.base-channel;
+        clicked => {
+            root.base-channel = root.base-channel == "rgb" ? "r" : root.base-channel == "r" ? "g" :
+                root.base-channel == "g" ? "b" : root.base-channel == "b" ? "a" : "rgb";
+        }
+    }
+    shading-button := Button {
+        x: 210px; y: 334px; width: 160px; height: 30px; text: root.shading;
+        clicked => { root.shading = root.shading == "base" ? "emissive" : root.shading == "emissive" ? "pbr" : "base"; }
+    }
+    CheckBox { x: 400px; y: 334px; width: 174px; text: "Shadows"; checked <=> root.shadows; }
+}

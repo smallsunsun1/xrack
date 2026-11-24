@@ -531,6 +531,8 @@ fn scene_asset_extensions(tokens: &[Token<'_>], index: usize) -> Option<&'static
     match tokens.get(index)?.text {
         "@mesh-url" => Some(MESH_SOURCE_EXTENSIONS),
         "@environment-url" => Some(&["hdr"]),
+        "@shader-url" | "@material-shader-url" => Some(&["wgsl"]),
+        "@texture-url" => Some(&["png", "jpg", "jpeg"]),
         "@image-url"
             if index >= 2
                 && matches!(
@@ -555,21 +557,23 @@ fn matches_asset_extension(path: &Path, extensions: &[&str]) -> bool {
         })
 }
 
-pub(super) fn scene_animation_values(
+pub(super) fn scene_asset_selector_values(
     source: &Source<'_>,
     tokens: &[Token<'_>],
     cursor: usize,
     workspace: &Workspace<'_>,
 ) -> Option<Vec<Value>> {
-    let (field, literal) = tokens.windows(3).enumerate().find_map(|(index, tokens)| {
+    let (field, kind, literal) = tokens.windows(3).enumerate().find_map(|(index, tokens)| {
         let [field, colon, string] = tokens else {
             return None;
         };
-        (matches!(field.text, "animation" | "animation-to")
-            && colon.text == ":"
+        (matches!(
+            field.text,
+            "animation" | "animation-to" | "material-variant"
+        ) && colon.text == ":"
             && string.text.starts_with('"')
             && string.blocks_completion(cursor))
-        .then_some((index, string))
+        .then_some((index, field.text, string))
     })?;
     let open = enclosing_block(tokens, field)?;
     if !name(tokens.get(open.checked_sub(1)?)?.text) {
@@ -581,15 +585,22 @@ pub(super) fn scene_animation_values(
         literal.range.start + 1,
         literal.range.end - usize::from(literal.quoted()),
     );
+    let (selectors, detail) = if kind == "material-variant" {
+        (
+            metadata.material_variant_selectors(),
+            "glTF material variant",
+        )
+    } else {
+        (metadata.animation_selectors(), "glTF animation clip")
+    };
     Some(
-        metadata
-            .animation_selectors()
+        selectors
             .into_iter()
             .filter(|label| label.starts_with(prefix))
             .map(|label| {
                 let replacement = json!(label).to_string();
                 json!({
-                    "label": label, "kind": 12, "detail": "glTF animation clip",
+                    "label": label, "kind": 12, "detail": detail,
                     "textEdit": {"range": range, "newText": &replacement[1..replacement.len() - 1]},
                 })
             })
@@ -613,9 +624,20 @@ fn enclosing_block(tokens: &[Token<'_>], before: usize) -> Option<usize> {
     })
 }
 
+enum RowMesh {
+    Asset(String),
+    Primitive(String),
+}
+
 fn scene_row_asset(tokens: &[Token<'_>], open: usize) -> Option<String> {
+    match scene_row_mesh(tokens, open)? {
+        RowMesh::Asset(path) => Some(path),
+        RowMesh::Primitive(_) => None,
+    }
+}
+
+fn scene_row_mesh(tokens: &[Token<'_>], open: usize) -> Option<RowMesh> {
     let mut depth = 0usize;
-    let mut asset = None;
     for (offset, token) in tokens[open + 1..].iter().enumerate() {
         if !token.code() {
             continue;
@@ -626,30 +648,620 @@ fn scene_row_asset(tokens: &[Token<'_>], open: usize) -> Option<String> {
             "}" => depth -= 1,
             "mesh" if depth == 0 => {
                 let start = open + offset + 1;
-                let Some([_, colon, url, paren, path, end]) = tokens.get(start..start + 6) else {
+                let Some([_, colon, value]) = tokens.get(start..start + 3) else {
                     continue;
                 };
-                if colon.text == ":"
-                    && url.text == "@mesh-url"
+                if colon.text != ":" {
+                    continue;
+                }
+                if value.quoted() {
+                    let key: String = serde_json::from_str(value.text).ok()?;
+                    if xrack_parser::builtins::scene_primitive_slots(&key).is_some() {
+                        return Some(RowMesh::Primitive(key));
+                    }
+                    continue;
+                }
+                let Some([paren, path, end]) = tokens.get(start + 3..start + 6) else {
+                    continue;
+                };
+                if value.text == "@mesh-url"
                     && paren.text == "("
                     && matches!(end.text, ")" | ",")
                     && path.quoted()
                 {
-                    asset = serde_json::from_str::<String>(path.text).ok();
+                    return serde_json::from_str::<String>(path.text)
+                        .ok()
+                        .map(RowMesh::Asset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+pub(super) fn scene_prototype_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+) -> Option<Vec<Value>> {
+    let (field, literal) = tokens.windows(3).enumerate().find_map(|(index, window)| {
+        let [field, colon, literal] = window else {
+            return None;
+        };
+        (field.text == "instance-of"
+            && colon.text == ":"
+            && literal.text.starts_with('"')
+            && literal.blocks_completion(cursor))
+        .then_some((index, literal))
+    })?;
+    let row = enclosing_block(tokens, field)?;
+    let record = tokens.get(row.checked_sub(1)?)?.text;
+    if !name(record) {
+        return None;
+    }
+    let list = enclosing_array(tokens, row)?;
+    let mut depth = 0usize;
+    let mut candidates = BTreeMap::new();
+    for (index, token) in tokens
+        .iter()
+        .enumerate()
+        .skip(list + 1)
+        .filter(|(_, token)| token.code())
+    {
+        match token.text {
+            "{" => {
+                if depth == 0
+                    && tokens
+                        .get(index - 1)
+                        .is_some_and(|token| token.text == record)
+                    && let Some(label) = scene_row_string(tokens, index, "id")
+                    && !label.is_empty()
+                {
+                    let eligible = index != row
+                        && scene_row_field(tokens, index, "mesh")
+                            .is_some_and(|mesh| mesh.text != r#""""#)
+                        && scene_row_field(tokens, index, "instance-of")
+                            .is_none_or(|target| target.text == r#""""#);
+                    candidates
+                        .entry(label)
+                        .and_modify(|valid| *valid = false)
+                        .or_insert(eligible);
+                }
+                depth += 1;
+            }
+            "[" | "(" => depth += 1,
+            "]" | "}" | ")" if depth == 0 => break,
+            "]" | "}" | ")" => depth -= 1,
+            _ => {}
+        }
+    }
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    Some(
+        candidates
+            .into_iter()
+            .filter(|(label, valid)| *valid && label.starts_with(prefix))
+            .map(|(label, _)| {
+                let replacement = json!(label).to_string();
+                json!({
+                    "label": label, "kind": 12, "detail": "Scene model prototype",
+                    "textEdit": {"range": range, "newText": &replacement[1..replacement.len() - 1]},
+                })
+            })
+            .collect(),
+    )
+}
+
+fn enclosing_array(tokens: &[Token<'_>], before: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens[..before]
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, token)| token.code())
+    {
+        match token.text {
+            "]" | "}" | ")" => depth += 1,
+            "[" if depth == 0 => return Some(index),
+            "{" | "(" if depth == 0 => return None,
+            "[" | "{" | "(" => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn scene_row_string(tokens: &[Token<'_>], open: usize, name: &str) -> Option<String> {
+    let value = scene_row_field(tokens, open, name)?;
+    serde_json::from_str(value.text).ok()
+}
+
+fn scene_row_field<'a>(tokens: &'a [Token<'_>], open: usize, name: &str) -> Option<&'a Token<'a>> {
+    let mut depth = 0usize;
+    for (offset, token) in tokens[open + 1..]
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| token.code())
+    {
+        match token.text {
+            "{" | "[" | "(" => depth += 1,
+            "}" | "]" | ")" if depth == 0 => break,
+            "}" | "]" | ")" => depth -= 1,
+            field if depth == 0 && field == name => {
+                let start = open + offset + 2;
+                let [colon, value] = tokens.get(start..start + 2)? else {
+                    return None;
+                };
+                if colon.text == ":" {
+                    return Some(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn literal_field_value(tokens: &[Token<'_>], open: usize, name: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open + 1) {
+        if !token.code() {
+            continue;
+        }
+        match token.text {
+            "{" | "[" | "(" => depth += 1,
+            "}" | "]" | ")" if depth == 0 => return None,
+            "}" | "]" | ")" => depth -= 1,
+            field if depth == 0 && field == name && tokens.get(index + 1)?.text == ":" => {
+                return Some(index + 2);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn literal_scene_rows(tokens: &[Token<'_>], view: usize, property: &str) -> Vec<usize> {
+    let Some(array) = literal_field_value(tokens, view, property)
+        .filter(|&array| tokens.get(array).is_some_and(|token| token.text == "["))
+    else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    let mut depth = 0usize;
+    for (index, token) in tokens
+        .iter()
+        .enumerate()
+        .skip(array + 1)
+        .filter(|(_, token)| token.code())
+    {
+        match token.text {
+            "{" if depth == 0 => {
+                rows.push(index);
+                depth += 1;
+            }
+            "{" | "[" | "(" => depth += 1,
+            "]" | "}" | ")" if depth == 0 => break,
+            "]" | "}" | ")" => depth -= 1,
+            _ => {}
+        }
+    }
+    rows
+}
+
+fn authored_mesh_slots(tokens: &[Token<'_>], row: usize) -> Option<BTreeMap<String, String>> {
+    let value = literal_field_value(tokens, row, "geometry")?;
+    let geometry = value + 1;
+    if tokens.get(geometry)?.text != "{" {
+        return None;
+    }
+    literal_field_value(tokens, geometry, "vertices")?;
+    let mut slots =
+        BTreeMap::from([("surface".into(), "Material for unassigned triangles".into())]);
+    if let Some(subsets) = literal_field_value(tokens, geometry, "subsets")
+        && tokens.get(subsets)?.text == "["
+    {
+        let mut depth = 0usize;
+        for (index, token) in tokens.iter().enumerate().skip(subsets + 1) {
+            if !token.code() {
+                continue;
+            }
+            match token.text {
+                "]" if depth == 0 => break,
+                "{" if depth == 0 => {
+                    depth += 1;
+                    if let Some(name) = literal_field_value(tokens, index, "name")
+                        .and_then(|at| tokens.get(at))
+                        .filter(|name| name.quoted())
+                        .and_then(|name| serde_json::from_str::<String>(name.text).ok())
+                        .filter(|name| !name.is_empty())
+                    {
+                        let selector = if name.starts_with('#') || name.starts_with("name:") {
+                            format!("name:{name}")
+                        } else {
+                            name
+                        };
+                        slots.insert(selector, "Authored mesh subset".into());
+                    }
+                }
+                "{" | "[" | "(" => depth += 1,
+                "}" | "]" | ")" => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    Some(slots)
+}
+
+pub(super) fn scene_material_slot_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    workspace: Option<&Workspace<'_>>,
+) -> Option<Vec<Value>> {
+    let (field, literal) = tokens.windows(3).enumerate().find_map(|(index, window)| {
+        let [field, colon, literal] = window else {
+            return None;
+        };
+        (field.text == "slot"
+            && colon.text == ":"
+            && literal.text.starts_with('"')
+            && literal.blocks_completion(cursor))
+        .then_some((index, literal))
+    })?;
+    let style = enclosing_block(tokens, field)?;
+    let palette = enclosing_block(tokens, style)?;
+    let mut binding = tokens[..palette].iter().rev().filter(|token| token.code());
+    binding.next()?;
+    if binding.next()?.text != ":" || binding.next()?.text != "material-slots" {
+        return None;
+    }
+    let row = enclosing_block(tokens, palette)?;
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    let slots = if let Some(slots) = authored_mesh_slots(tokens, row) {
+        slots
+    } else {
+        let mut slots = BTreeMap::new();
+        match scene_row_mesh(tokens, row)? {
+            RowMesh::Primitive(key) => {
+                for (index, &name) in xrack_parser::builtins::scene_primitive_slots(&key)?
+                    .iter()
+                    .enumerate()
+                {
+                    slots.insert(format!("#{index}"), "Built-in material slot".to_owned());
+                    if !name.is_empty() {
+                        slots.insert(name.to_owned(), format!("Built-in material #{index}"));
+                    }
+                }
+            }
+            RowMesh::Asset(asset) => {
+                let metadata = scene_metadata(&asset, workspace?)?;
+                for index in 0..metadata.material_count() {
+                    let name = metadata.material_name(index);
+                    let detail = name.map_or_else(
+                        || "glTF material index".into(),
+                        |name| format!("glTF material {name}"),
+                    );
+                    slots.insert(format!("#{index}"), detail);
+                    if let Some(name) = name {
+                        let selector = if name.starts_with('#') || name.starts_with("name:") {
+                            format!("name:{name}")
+                        } else {
+                            name.to_owned()
+                        };
+                        slots
+                            .entry(selector)
+                            .or_insert_with(|| format!("glTF material #{index}"));
+                    }
+                }
+                if metadata.uses_default_material() {
+                    slots.insert("#default".into(), "glTF implicit material".into());
+                }
+            }
+        }
+        slots
+    };
+    Some(
+        slots
+            .into_iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .map(|(name, detail)| {
+                let escaped = json!(name).to_string();
+                json!({"label": name, "kind": 12, "detail": detail,
+            "textEdit": {"range": range, "newText": &escaped[1..escaped.len() - 1]}})
+            })
+            .collect(),
+    )
+}
+
+fn shader_capture_view(tokens: &[Token<'_>], mut open: usize) -> Option<usize> {
+    loop {
+        open = enclosing_block(tokens, open)?;
+        if tokens.get(open.checked_sub(1)?)?.text == "SceneView3D" {
+            return Some(open);
+        }
+        let mut header = tokens[..open]
+            .iter()
+            .rev()
+            .filter(|token| token.code())
+            .take_while(|token| !matches!(token.text, "{" | "}" | ";"));
+        if header.any(|token| token.text == "component") {
+            break;
+        }
+    }
+    // A component property can supply a material without an enclosing view.
+    // Offer targets when the component has one unambiguous declaration site.
+    let mut depth = 1;
+    let mut view = None;
+    for (index, token) in tokens
+        .iter()
+        .enumerate()
+        .skip(open + 1)
+        .filter(|(_, token)| token.code())
+    {
+        match token.text {
+            "{" => {
+                depth += 1;
+                if tokens[index - 1].text == "SceneView3D"
+                    && literal_field_value(tokens, index, "scene-captures").is_some()
+                {
+                    if view.is_some() {
+                        return None;
+                    }
+                    view = Some(index);
+                }
+            }
+            "}" => {
+                depth -= 1;
+                if depth == 0 {
                     break;
                 }
             }
             _ => {}
         }
     }
-    asset
+    view
+}
+
+fn scene_capture_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    view: usize,
+    literal: &Token<'_>,
+    cursor: usize,
+    exclude_row: Option<usize>,
+) -> Option<Vec<Value>> {
+    if tokens.get(view.checked_sub(1)?)?.text != "SceneView3D" {
+        return None;
+    }
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    let names: BTreeSet<_> = literal_scene_rows(tokens, view, "scene-captures")
+        .into_iter()
+        .filter(|&row| {
+            exclude_row != Some(row)
+                && scene_row_field(tokens, row, "enabled").is_none_or(|value| value.text != "false")
+        })
+        .filter_map(|row| scene_row_string(tokens, row, "name"))
+        .filter(|name| !name.is_empty() && name.starts_with(prefix))
+        .collect();
+    Some(
+        names
+            .into_iter()
+            .map(|name| {
+                let escaped = json!(name).to_string();
+                json!({"label": name, "kind": 12, "detail": "Named scene capture",
+            "textEdit": {"range": range, "newText": &escaped[1..escaped.len() - 1]}})
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn scene_effect_buffer_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+) -> Option<Vec<Value>> {
+    let (field, kind, literal) = tokens.windows(3).enumerate().find_map(|(index, window)| {
+        let [field, colon, literal] = window else {
+            return None;
+        };
+        (matches!(
+            field.text,
+            "input"
+                | "name"
+                | "capture"
+                | "scene-color-capture"
+                | "scene-depth-capture"
+                | "color-source"
+                | "depth-source"
+                | "stencil-source"
+        ) && colon.text == ":"
+            && literal.text.starts_with('"')
+            && literal.blocks_completion(cursor))
+        .then_some((index, field.text, literal))
+    })?;
+    let row = enclosing_block(tokens, field)?;
+    if matches!(kind, "scene-color-capture" | "scene-depth-capture") {
+        return scene_capture_values(source, tokens, row, literal, cursor, None);
+    }
+    let previous_frame = kind == "name"
+        && scene_row_field(tokens, row, "previous-frame").is_some_and(|value| value.text == "true");
+    let binding_array = |list: usize, property| {
+        list.checked_sub(2)
+            .is_some_and(|start| tokens[start].text == property && tokens[start + 1].text == ":")
+    };
+    if matches!(kind, "color-source" | "depth-source" | "stencil-source") {
+        let captures = enclosing_array(tokens, row)?;
+        if !binding_array(captures, "scene-captures") {
+            return None;
+        }
+        let view = enclosing_block(tokens, captures)?;
+        return scene_capture_values(source, tokens, view, literal, cursor, Some(row));
+    }
+    if kind == "capture"
+        && let Some(textures) = enclosing_array(tokens, row)
+        && binding_array(textures, "shader-textures")
+    {
+        let view = shader_capture_view(tokens, textures)?;
+        return scene_capture_values(source, tokens, view, literal, cursor, None);
+    }
+    let pass = if kind != "input" {
+        let buffers = enclosing_array(tokens, row)?;
+        if !binding_array(buffers, "buffers") {
+            return None;
+        }
+        enclosing_block(tokens, buffers)?
+    } else {
+        row
+    };
+    let list = enclosing_array(tokens, pass)?;
+    if !binding_array(list, "scene-effects") {
+        return None;
+    }
+    if kind == "capture" {
+        let view = enclosing_block(tokens, list)?;
+        return scene_capture_values(source, tokens, view, literal, cursor, None);
+    }
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    let mut depth = 0;
+    let mut names = BTreeSet::new();
+    let end = if previous_frame { tokens.len() } else { pass };
+    for (offset, token) in tokens[list + 1..end]
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| token.code())
+    {
+        match token.text {
+            "{" => {
+                let output = list + 1 + offset;
+                if depth == 0
+                    && (!previous_frame
+                        || scene_row_field(tokens, output, "history")
+                            .is_some_and(|value| value.text == "true"))
+                    && let Some(name) = scene_row_string(tokens, output, "output")
+                    && !name.is_empty()
+                    && name.starts_with(prefix)
+                {
+                    names.insert(name);
+                }
+                depth += 1;
+            }
+            "[" | "(" => depth += 1,
+            "]" | "}" | ")" if depth == 0 => break,
+            "]" | "}" | ")" => depth -= 1,
+            _ => {}
+        }
+    }
+    Some(
+        names
+            .into_iter()
+            .map(|name| {
+                let escaped = json!(name).to_string();
+                let detail = if previous_frame {
+                    "Previous frame scene effect buffer"
+                } else {
+                    "Earlier scene effect buffer"
+                };
+                json!({"label": name, "kind": 12, "detail": detail,
+            "textEdit": {"range": range, "newText": &escaped[1..escaped.len() - 1]}})
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn scene_item_texture_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    text_len: usize,
+) -> Option<Vec<Value>> {
+    let literal = tokens.windows(3).enumerate().find_map(|(index, window)| {
+        let [field, colon, literal] = window else {
+            return None;
+        };
+        ((field.text == "base-item"
+            || field.text == "item" && in_shader_texture_inputs(tokens, index))
+            && colon.text == ":"
+            && literal.text.starts_with('"')
+            && literal.blocks_completion(cursor))
+        .then_some(literal)
+    })?;
+    let code: Vec<_> = tokens.iter().filter(|token| token.code()).collect();
+    let index = Index::new(&code, text_len);
+    let component = index.component(index.scope_at(cursor))?;
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    let names: BTreeSet<_> = tokens
+        .windows(3)
+        .filter_map(|window| {
+            let [field, colon, value] = window else {
+                return None;
+            };
+            if field.text != "texture-source" || colon.text != ":" || !value.quoted() {
+                return None;
+            }
+            let scope = index.scope_at(field.range.start);
+            if index.component(scope) != Some(component)
+                || !matches!(
+                    index.scopes[scope].role,
+                    Role::Element {
+                        kind: "Rectangle",
+                        ..
+                    }
+                )
+            {
+                return None;
+            }
+            serde_json::from_str::<String>(value.text)
+                .ok()
+                .filter(|name| !name.is_empty() && name.starts_with(prefix))
+        })
+        .collect();
+    Some(
+        names
+            .into_iter()
+            .map(|name| {
+                let escaped = json!(name).to_string();
+                json!({"label": name, "kind": 12, "detail": "2D texture source",
+            "textEdit": {"range": range, "newText": &escaped[1..escaped.len() - 1]}})
+            })
+            .collect(),
+    )
+}
+
+fn in_shader_texture_inputs(tokens: &[Token<'_>], field: usize) -> bool {
+    enclosing_block(tokens, field)
+        .and_then(|row| enclosing_array(tokens, row))
+        .and_then(|array| tokens.get(array.checked_sub(2)?..array))
+        .is_some_and(|prefix| {
+            matches!(prefix[0].text, "buffers" | "shader-textures") && prefix[1].text == ":"
+        })
 }
 
 pub(super) fn scene_camera_values(
     source: &Source<'_>,
     tokens: &[Token<'_>],
     cursor: usize,
-    workspace: &Workspace<'_>,
+    workspace: Option<&Workspace<'_>>,
 ) -> Option<Vec<Value>> {
     let (field, literal) = tokens.windows(3).enumerate().find_map(|(index, window)| {
         let [field, colon, literal] = window else {
@@ -661,11 +1273,51 @@ pub(super) fn scene_camera_values(
             && literal.blocks_completion(cursor))
         .then_some((index, literal))
     })?;
-    let view = enclosing_block(tokens, field)?;
-    if tokens.get(view.checked_sub(1)?)?.text != "SceneView3D" {
-        return None;
-    }
+    let container = enclosing_block(tokens, field)?;
+    let view = if tokens.get(container.checked_sub(1)?)?.text == "SceneView3D" {
+        container
+    } else {
+        let captures = enclosing_array(tokens, container)?;
+        let [property, colon] = tokens.get(captures.checked_sub(2)?..captures)? else {
+            return None;
+        };
+        if property.text != "scene-captures" || colon.text != ":" {
+            return None;
+        }
+        let view = enclosing_block(tokens, captures)?;
+        if tokens.get(view.checked_sub(1)?)?.text != "SceneView3D" {
+            return None;
+        }
+        view
+    };
     let prefix = &literal.text[1..cursor - literal.range.start];
+    if !prefix.contains('/') {
+        let range = source.range(
+            literal.range.start + 1,
+            literal.range.end - usize::from(literal.quoted()),
+        );
+        let cameras: BTreeSet<_> = literal_scene_rows(tokens, view, "model")
+            .into_iter()
+            .filter(|&row| {
+                scene_row_string(tokens, row, "camera-kind").is_some_and(|kind| {
+                    matches!(kind.as_str(), "perspective" | "orthographic" | "frustum")
+                })
+            })
+            .filter_map(|row| scene_row_string(tokens, row, "id"))
+            .filter(|name| !name.is_empty() && name.starts_with(prefix))
+            .collect();
+        return Some(
+            cameras
+                .into_iter()
+                .map(|name| {
+                    let escaped = json!(name).to_string();
+                    json!({"label": name, "kind": 12, "detail": "Scene camera",
+                "textEdit": {"range": range, "newText": &escaped[1..escaped.len() - 1]}})
+                })
+                .collect(),
+        );
+    }
+    let workspace = workspace?;
     let (owner, _) = prefix.rsplit_once('/')?;
     let mut open = view;
     let component = loop {
@@ -730,6 +1382,17 @@ pub(super) fn scene_camera_values(
     }).collect())
 }
 
+fn in_capture_record(tokens: &[Token<'_>], position: usize, name: &str) -> bool {
+    let Some(record) =
+        enclosing_block(tokens, position).and_then(|open| tokens.get(open.checked_sub(1)?))
+    else {
+        return false;
+    };
+    tokens
+        .windows(3)
+        .any(|field| field[0].text == name && field[1].text == ":" && field[2].text == record.text)
+}
+
 pub(super) fn scene_string_options(
     source: &Source<'_>,
     tokens: &[Token<'_>],
@@ -741,7 +1404,59 @@ pub(super) fn scene_string_options(
         return None;
     };
     let options = match field.text {
+        "mesh" | "emitter-mesh" | "particle-model" => {
+            xrack_parser::builtins::SCENE_PRIMITIVE_MESHES
+        }
+        "shape" => xrack_parser::builtins::SCENE_PARAMETRIC_SHAPES,
         "camera-kind" => xrack_parser::builtins::SCENE_CAMERA_KINDS,
+        "alpha-mode" => xrack_parser::builtins::SCENE_ALPHA_MODES,
+        "blend-mode" if in_capture_record(tokens, end - 3, "pipeline-state") => {
+            xrack_parser::builtins::SCENE_CAPTURE_BLENDS
+        }
+        "blend-mode" => xrack_parser::builtins::SCENE_MATERIAL_BLEND_MODES,
+        "compare" if in_capture_record(tokens, end - 3, "stencil") => {
+            xrack_parser::builtins::SCENE_CAPTURE_DEPTH_COMPARES
+        }
+        "fail" | "depth-fail" | "pass" if in_capture_record(tokens, end - 3, "stencil") => {
+            xrack_parser::builtins::SCENE_CAPTURE_STENCIL_OPS
+        }
+        "color-operation" | "alpha-operation"
+            if in_capture_record(tokens, end - 3, "target-blend") =>
+        {
+            xrack_parser::builtins::SCENE_CAPTURE_BLEND_OPERATIONS
+        }
+        "source-color" | "destination-color" | "source-alpha" | "destination-alpha"
+            if in_capture_record(tokens, end - 3, "target-blend") =>
+        {
+            xrack_parser::builtins::SCENE_CAPTURE_BLEND_FACTORS
+        }
+        "depth-compare" => xrack_parser::builtins::SCENE_CAPTURE_DEPTH_COMPARES,
+        "polygon-mode" => xrack_parser::builtins::SCENE_CAPTURE_POLYGON_MODES,
+        "depth-draw-mode" => xrack_parser::builtins::SCENE_DEPTH_DRAW_MODES,
+        "cull-mode" => xrack_parser::builtins::SCENE_CULL_MODES,
+        "wrap-u" | "wrap-v" => xrack_parser::builtins::SCENE_TEXTURE_WRAP,
+        "min-filter" | "mag-filter" => xrack_parser::builtins::SCENE_TEXTURE_FILTER,
+        "filter" if in_shader_texture_inputs(tokens, end - 3) => {
+            xrack_parser::builtins::SCENE_TEXTURE_FILTER
+        }
+        "attachment" if in_shader_texture_inputs(tokens, end - 3) => {
+            xrack_parser::builtins::SCENE_CAPTURE_ATTACHMENTS
+        }
+        "color-space" if in_shader_texture_inputs(tokens, end - 3) => {
+            xrack_parser::builtins::SCENE_EFFECT_COLOR_SPACES
+        }
+        "renderables"
+            if enclosing_block(tokens, end - 3)
+                .and_then(|row| enclosing_array(tokens, row))
+                .and_then(|list| tokens.get(list.checked_sub(2)?..list))
+                .is_some_and(|prefix| {
+                    prefix[0].text == "scene-captures" && prefix[1].text == ":"
+                }) =>
+        {
+            xrack_parser::builtins::SCENE_CAPTURE_RENDERABLES
+        }
+        "output-format" | "color-format" => xrack_parser::builtins::SCENE_EFFECT_FORMATS,
+        "mip-filter" => xrack_parser::builtins::SCENE_TEXTURE_MIPS,
         "refresh-mode" => xrack_parser::builtins::REFLECTION_REFRESH_MODES,
         "time-slicing" => xrack_parser::builtins::REFLECTION_TIME_SLICING,
         "lightmap-mode" => xrack_parser::builtins::LIGHTMAP_MODES,
@@ -752,7 +1467,19 @@ pub(super) fn scene_string_options(
         "affector-kind" => xrack_parser::builtins::PARTICLE_AFFECTOR_KINDS,
         "velocity-mode" => xrack_parser::builtins::PARTICLE_VELOCITY_MODES,
         "temporal-aa-mode" => xrack_parser::builtins::TEMPORAL_AA_MODES,
-        _ => return None,
+        property if xrack_parser::builtins::SCENE_VERTEX_MASK_FIELDS.contains(&property) => {
+            xrack_parser::builtins::SCENE_VERTEX_MASK_CHANNELS
+        }
+        property => {
+            let (_, rgb) = xrack_parser::builtins::SCENE_MATERIAL_CHANNEL_FIELDS
+                .iter()
+                .find(|(name, _)| *name == property)?;
+            if *rgb {
+                xrack_parser::builtins::COLOR_TEXTURE_CHANNELS
+            } else {
+                xrack_parser::builtins::SCALAR_TEXTURE_CHANNELS
+            }
+        }
     };
     if colon.text != ":" || !literal.text.starts_with('"') || !literal.blocks_completion(cursor) {
         return None;
@@ -881,7 +1608,28 @@ pub(super) fn mesh_asset_hover(
     let metadata = scene_metadata(&asset, workspace)?;
     let mut meshes = metadata.mesh_morph_counts().peekable();
     let mut message = String::new();
+    let mut groups = metadata.gpu_instance_groups().peekable();
+    if groups.peek().is_some() {
+        message.push_str("glTF GPU instancing (EXT_mesh_gpu_instancing)");
+        for (index, name, count) in groups.by_ref().take(8) {
+            let _ = write!(message, "\nNode #{index}");
+            if let Some(name) =
+                name.filter(|name| name.len() <= 80 && !name.chars().any(char::is_control))
+            {
+                let _ = write!(message, "  {name}");
+            }
+            if let Some(count) = count {
+                let _ = write!(message, "  {count} instances");
+            }
+        }
+        if groups.peek().is_some() {
+            message.push_str("\n…");
+        }
+    }
     if meshes.peek().is_some() {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
         message.push_str("glTF morph targets for morph-weights");
         for (mesh, count) in meshes.by_ref().take(8) {
             let names = if count <= 32 {
@@ -908,6 +1656,34 @@ pub(super) fn mesh_asset_hover(
         }
         if meshes.peek().is_some() {
             message.push_str("\n…");
+        }
+    }
+    if (0..metadata.material_count()).any(|index| metadata.material_name(index).is_some()) {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF material slots");
+        for index in 0..metadata.material_count().min(64) {
+            let _ = write!(message, "\n#{index}");
+            if let Some(name) = metadata.material_name(index) {
+                let _ = write!(message, "  {name}");
+            }
+        }
+        if metadata.uses_default_material() {
+            message.push_str("\n#default  implicit material");
+        }
+    }
+    let variants = metadata.material_variant_names();
+    if variants.len() != 0 {
+        if !message.is_empty() {
+            message.push_str("\n\n");
+        }
+        message.push_str("glTF material variants (material-variant)");
+        for (index, name) in variants.take(64).enumerate() {
+            let _ = write!(message, "\n#{index}");
+            if name.len() <= 80 && !name.chars().any(char::is_control) {
+                let _ = write!(message, "  {name}");
+            }
         }
     }
     let mut extensions = metadata.material_extensions().peekable();

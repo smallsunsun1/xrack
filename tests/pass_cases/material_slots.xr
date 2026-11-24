@@ -1,0 +1,22 @@
+// CHECK: "xr.mesh_url"() <{value = "named.gltf"}> : () -> !xr.string
+// CHECK: "xr.make_record"{{.*}}!xr.record<"Palette">
+// CHECK: "xr.bind"{{.*}}name = "model"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist<"Actor">
+
+struct Finish { slot: string, roughness: float }
+struct Palette { body: Finish }
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material-slots: Palette,
+}
+export component SlotPlan inherits Window {
+    in property <float> roughness: 0.2;
+    SceneView3D {
+        width: 80px; height: 80px;
+        model: [Actor {
+            id: "car", mesh: @mesh-url("named.gltf"), x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
+            material-slots: Palette { body: Finish { slot: "Body", roughness: root.roughness } }
+        }];
+    }
+}

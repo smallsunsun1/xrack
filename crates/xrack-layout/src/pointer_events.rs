@@ -117,6 +117,8 @@ pub struct PointerSequence {
     handle: PointerHandle,
     last: PointerEvent,
     press_and_hold: Option<PressAndHold>,
+    texture_capture: Option<crate::scene_texture_input::Capture>,
+    physical: Point,
 }
 
 pub struct PointerDelivery {
@@ -164,7 +166,7 @@ impl PointerSequence {
         input: &Interaction,
         scene: &Node,
         layout: &LayoutNode,
-        point: Point,
+        (point, texture_capture): (Point, Option<crate::scene_texture_input::Capture>),
         event: PointerEvent,
         now: Instant,
     ) -> Option<(Self, PointerDelivery)> {
@@ -177,6 +179,8 @@ impl PointerSequence {
             target,
             last: event,
             press_and_hold: None,
+            texture_capture,
+            physical: point,
         };
         let delivery = sequence.sample(
             input,
@@ -191,9 +195,10 @@ impl PointerSequence {
             if interval > 0
                 && let Some(deadline) = now.checked_add(Duration::from_millis(interval as u64))
             {
+                let local = sequence.routed_point(input, scene, layout, point)?;
                 sequence.press_and_hold = Some(PressAndHold::Pending {
-                    origin: point,
-                    point,
+                    origin: local,
+                    point: local,
                     deadline,
                 });
             }
@@ -206,8 +211,11 @@ impl PointerSequence {
     }
 
     pub fn is_live(&self, input: &Interaction, scene: &Node, layout: &LayoutNode) -> bool {
-        self.target_is_live(&self.target, input, scene, layout)
-            || self.moved_target(input, scene, layout).is_some()
+        (self.target_is_live(&self.target, input, scene, layout)
+            || self.moved_target(input, scene, layout).is_some())
+            && self
+                .routed_point(input, scene, layout, self.physical)
+                .is_some()
     }
 
     fn target_is_live(
@@ -284,9 +292,24 @@ impl PointerSequence {
         }
     }
 
-    pub fn constrain_press_and_hold(&mut self, layout: &LayoutNode, position: Option<Point>) {
+    pub fn constrain_press_and_hold(
+        &mut self,
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        position: Option<Point>,
+    ) {
         if let Some(PressAndHold::Pending { point, .. }) = self.press_and_hold {
-            let point = position.unwrap_or(point);
+            let physical = position.unwrap_or(self.physical);
+            let routed = if self.texture_capture.is_some() {
+                self.routed_point(input, scene, layout, physical)
+            } else {
+                Some(position.unwrap_or(point))
+            };
+            let Some(point) = routed else {
+                self.press_and_hold = None;
+                return;
+            };
             let inside = layout.at_path(&self.target.path).is_some_and(|item| {
                 item.contains_clip_point(point)
                     && item
@@ -294,6 +317,20 @@ impl PointerSequence {
                         .is_some_and(|local| item.bounds.contains(local))
             });
             self.update_hold_position(point, inside);
+        }
+    }
+
+    fn routed_point(
+        &self,
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        physical: Point,
+    ) -> Option<Point> {
+        if let Some(capture) = &self.texture_capture {
+            input.sample_scene_texture(capture, scene, layout, physical, self.last.button)
+        } else {
+            Some(physical)
         }
     }
 
@@ -315,7 +352,7 @@ impl PointerSequence {
             self.press_and_hold = None;
             return false;
         }
-        self.constrain_press_and_hold(layout, None);
+        self.constrain_press_and_hold(input, scene, layout, None);
         let pending = self.press_and_hold.take().is_some();
         if pending
             && !input.direct_pointer_claimed()
@@ -339,6 +376,8 @@ impl PointerSequence {
         modifiers: KeyModifiers,
     ) -> Option<PointerDelivery> {
         self.refresh_target(input, scene, layout)?;
+        self.physical = point;
+        let point = self.routed_point(input, scene, layout, point)?;
         let item = layout.at_path(&self.target.path)?;
         let (local, x, y) = local_position(item, point)?;
         self.last = PointerEvent {

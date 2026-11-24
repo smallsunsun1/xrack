@@ -1,0 +1,110 @@
+struct SegmentVertex { position: point3d, u: float, v: float, u1: float, v1: float }
+struct Segment { offset: int, count: int, name: string }
+struct SegmentedGeometry { vertices: [SegmentVertex], indices: [int], subsets: [Segment] }
+struct SegmentTexture { source: string, uv-set: int, min-filter: string, mag-filter: string, mip-filter: string }
+struct SegmentFinish {
+    slot: string, base-color: color, unlit: bool, alpha-mode: string,
+    specular-amount: float, emissive-color: color, emissive-map: SegmentTexture,
+}
+struct SegmentPalette { badge: SegmentFinish, surface: SegmentFinish, decor: SegmentFinish }
+struct SegmentedActor {
+    id: string, geometry: SegmentedGeometry, material-slots: SegmentPalette,
+    x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color,
+    camera-kind: string, camera-height: float, instance-of: string, visible: bool,
+}
+
+export component MeshSubsetsDemo inherits Window {
+    title: "XRack · Mesh material subsets";
+    width: 600px; height: 372px; background: #192330;
+
+    in-out property <bool> hidden-badge: false;
+    in-out property <bool> secondary-uv: true;
+    in-out property <bool> duplicate: false;
+    property <bool> moved: false;
+
+    pure function vertex(x: float, y: float) -> SegmentVertex {
+        SegmentVertex {
+            position: Point3D.new(x, y, 0), u: 0.25, v: 0.25, u1: 0.75, v1: 0.25,
+        }
+    }
+    property <[SegmentVertex]> vertices: [
+        root.vertex(-2.35, -0.85), root.vertex(-1.05, -0.85),
+        root.vertex(-1.05, 0.85), root.vertex(-2.35, 0.85),
+        root.vertex(-0.65, -0.85), root.vertex(0.65, -0.85),
+        root.vertex(0.65, 0.85), root.vertex(-0.65, 0.85),
+        root.vertex(1.05, -0.85), root.vertex(2.35, -0.85),
+        root.vertex(2.35, 0.85), root.vertex(1.05, 0.85),
+    ];
+    property <[int]> faces: [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11];
+    in-out property <[Segment]> segments: [
+        Segment { offset: 12, count: 6, name: "decor" },
+        Segment { offset: 0, count: 6, name: "badge" },
+    ];
+
+    callback replace-segment(int, int, int, string);
+    replace-segment(row, offset, count, name) => {
+        Model.set(root.segments, row, Segment { offset: offset, count: count, name: name });
+    }
+    callback move-badge();
+    move-badge => {
+        root.moved = !root.moved;
+        root.replace-segment(1, root.moved ? 6 : 0, 6, "badge");
+    }
+    property <SegmentTexture> empty-map: SegmentTexture {
+        source: "", uv-set: 0, min-filter: "nearest", mag-filter: "nearest", mip-filter: "none",
+    };
+    property <SegmentFinish> flat: SegmentFinish {
+        slot: "surface", base-color: #d9dde5, unlit: true, alpha-mode: "opaque",
+        specular-amount: 0, emissive-color: #000, emissive-map: root.empty-map,
+    };
+    property <SegmentPalette> palette: SegmentPalette {
+        badge: SegmentFinish {
+            slot: "badge", alpha-mode: "mask", base-color: root.hidden-badge ? #d8724900 : #d87249,
+            ..root.flat
+        },
+        surface: root.flat,
+        decor: SegmentFinish {
+            slot: "decor", base-color: #000, unlit: false, emissive-color: #fff,
+            emissive-map: SegmentTexture {
+                source: @texture-url("models/subset-swatches.png"), uv-set: root.secondary-uv ? 1 : 0,
+                ..root.empty-map
+            },
+            ..root.flat
+        },
+    };
+    property <SegmentedActor> defaults: SegmentedActor {
+        id: "", geometry: SegmentedGeometry { vertices: [], indices: [], subsets: [] },
+        material-slots: root.palette, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
+        camera-kind: "", camera-height: 4, instance-of: "", visible: true,
+    };
+    out property <[SegmentedActor]> world: [
+        SegmentedActor { id: "eye", camera-kind: "orthographic", z: 8, ..root.defaults },
+        SegmentedActor {
+            id: "tiles", geometry: SegmentedGeometry {
+                vertices: root.vertices, indices: root.faces, subsets: root.segments
+            }, ..root.defaults
+        },
+        SegmentedActor {
+            id: "copy", instance-of: "tiles", visible: root.duplicate, y: -1.35,
+            scale-x: 0.8, scale-y: 0.45, ..root.defaults
+        }
+    ];
+    out property <string> left-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(600px, 320px), Point2D.new(164px, 160px));
+    out property <string> middle-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(600px, 320px), Point2D.new(300px, 160px));
+
+    SceneView3D {
+        width: 600px; height: 320px; model: root.world; camera: "eye";
+        scene-background: #22334b; ambient-intensity: 0;
+    }
+    move-button := Button {
+        x: 12px; y: 334px; width: 132px; height: 30px; text: root.moved ? "Restore badge" : "Move badge";
+        clicked => { root.move-badge(); }
+    }
+    CheckBox { x: 153px; y: 334px; width: 130px; text: "Hide badge"; checked <=> root.hidden-badge; }
+    CheckBox { x: 293px; y: 334px; width: 138px; text: "Second UV"; checked <=> root.secondary-uv; }
+    CheckBox { x: 443px; y: 334px; width: 140px; text: "Instance"; checked <=> root.duplicate; }
+}

@@ -1,0 +1,112 @@
+struct CaptureStyle { unlit: bool }
+
+struct CaptureActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, layers: int, camera-kind: string, camera-height: float,
+    material: CaptureStyle,
+}
+
+struct CameraFeed {
+    name: string, camera: string, layers: int, scale: float, enabled: bool,
+}
+
+struct FeedInput { capture: string, filter: string }
+struct FeedDisplay {
+    shader: string, strength: float, parameters: vector3d, buffers: [FeedInput],
+}
+
+export component SceneCaptureDemo inherits Window {
+    title: "XRack · 命名场景画面";
+    width: 560px; height: 382px; resizable: false;
+    background: #172738;
+    in-out property <string> feed-camera: "near-eye";
+    in-out property <int> feed-layers: 2;
+    in-out property <float> feed-scale: 0.5;
+    in-out property <bool> feed-enabled: true;
+    in-out property <bool> display-feeds: true;
+    in-out property <float> exposure: 1.0;
+    in-out property <color> near-color: #e34540;
+
+    property <CaptureActor> base: CaptureActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, layers: 1, camera-kind: "", camera-height: 4,
+        material: CaptureStyle { unlit: true },
+    };
+    property <CameraFeed> feed: CameraFeed {
+        name: "detail", camera: root.feed-camera, layers: root.feed-layers, scale: root.feed-scale,
+        enabled: root.feed-enabled,
+    };
+
+    view := SceneView3D {
+        width: 560px; height: 280px; camera: "main-eye"; layer-mask: 1;
+        scene-background: #243a52; scene-tone-map: none; cache-rendering: true;
+        model: [
+            CaptureActor { id: "main-eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.base },
+            CaptureActor {
+                id: "near-eye", mesh: "", x: -1.4, z: 7, camera-kind: "orthographic",
+                camera-height: 2.8, ..root.base
+            },
+            CaptureActor {
+                id: "far-eye", mesh: "", x: 1.4, z: 7, camera-kind: "orthographic",
+                camera-height: 2.8, ..root.base
+            },
+            CaptureActor {
+                id: "main", y: -1, scale-x: 5, scale-y: 1.1,
+                color: #51bc83, ..root.base
+            },
+            CaptureActor {
+                id: "near", layers: 2, x: -1.4, scale-x: 1.8, scale-y: 2.2,
+                color: root.near-color, ..root.base
+            },
+            CaptureActor {
+                id: "far", layers: 2, x: 1.4, scale-x: 1.8, scale-y: 2.2,
+                color: #39aef0, ..root.base
+            },
+            CaptureActor {
+                id: "overlay", layers: 4, x: -1.4, scale-x: 1.8, scale-y: 2.2,
+                color: #ffbc42, ..root.base
+            },
+        ];
+        scene-captures: [
+            root.feed,
+            CameraFeed { name: "detail-alias", ..root.feed },
+            CameraFeed { name: "unused", camera: "main-eye", layers: 1, scale: 1, enabled: true },
+        ];
+        scene-effects: [
+            FeedDisplay {
+                shader: @shader-url("effects/scene_capture_display.wgsl"),
+                strength: root.display-feeds ? 1 : 0,
+                parameters: Vector3D.new(0, root.exposure, 0),
+                buffers: [FeedInput { capture: "detail", filter: "nearest" }],
+            },
+            FeedDisplay {
+                shader: @shader-url("effects/scene_capture_display.wgsl"),
+                strength: root.display-feeds ? 1 : 0,
+                parameters: Vector3D.new(1, 1, 0),
+                buffers: [FeedInput { capture: "detail-alias", filter: "linear" }],
+            },
+        ];
+    }
+
+    Label { x: 12px; y: 283px; width: 252px; height: 26px; text: "同一捕获 · 最近邻"; }
+    Label { x: 290px; y: 283px; width: 252px; height: 26px; text: "同一捕获 · 线性采样"; }
+    switch-camera := Button {
+        x: 12px; y: 325px; width: 115px; height: 33px;
+        text: "切换相机";
+        clicked => { root.feed-camera = root.feed-camera == "near-eye" ? "far-eye" : "near-eye"; }
+    }
+    switch-layer := Button {
+        x: 137px; y: 325px; width: 115px; height: 33px;
+        text: "切换图层"; clicked => { root.feed-layers = root.feed-layers == 2 ? 4 : 2; }
+    }
+    CheckBox {
+        x: 263px; y: 325px; width: 122px; height: 33px;
+        text: "启用捕获"; checked <=> root.feed-enabled;
+    }
+    CheckBox {
+        x: 395px; y: 325px; width: 151px; height: 33px;
+        text: "显示两路效果"; checked <=> root.display-feeds;
+    }
+}

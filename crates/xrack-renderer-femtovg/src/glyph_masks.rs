@@ -1,4 +1,4 @@
-use crate::{Canvas, Paint, Rect, TextSystem, WGPURenderer};
+use crate::{Canvas, Paint, TextSystem, WGPURenderer};
 use femtovg::{
     Atlas, Color, DrawCommand, FontId, GlyphDrawCommands, ImageFlags, ImageId, PixelFormat,
     PositionedGlyph, Quad, TextMetrics, renderer::RenderTarget,
@@ -69,13 +69,10 @@ struct Tile {
     ready: bool,
 }
 
-impl Tile {
-    fn edges(self, x: f32, y: f32) -> [f32; 4] {
-        let [left, top, right, bottom] = self.extent;
-        let x = x.trunc();
-        let y = y.round();
-        [x + left, y + top, x + right, y + bottom]
-    }
+fn placed_edges([left, top, right, bottom]: [f32; 4], x: f32, y: f32) -> [f32; 4] {
+    let x = x.trunc();
+    let y = y.round();
+    [x + left, y + top, x + right, y + bottom]
 }
 
 fn subpixel_phase(fract: f32) -> i8 {
@@ -150,8 +147,8 @@ impl GlyphMasks {
         }
     }
 
-    pub(super) fn can_prepare_during_paint(&self) -> bool {
-        cfg!(xrack_femtovg_glyph_samples) && !self.defer_preparation
+    pub(super) fn can_prepare_during_paint(&self, portable_cell: bool) -> bool {
+        (cfg!(xrack_femtovg_glyph_samples) || portable_cell) && !self.defer_preparation
     }
 
     pub(super) fn has_pending(&self) -> bool {
@@ -232,7 +229,7 @@ impl GlyphMasks {
                     continue;
                 }
                 used |= 1 << tile.region;
-                quads.push(quad(tile.edges(x, y), tile.uv, inverse));
+                quads.push(quad(placed_edges(tile.extent, x, y), tile.uv, inverse));
             } else {
                 ready = false;
                 if self.remaining != 0
@@ -260,35 +257,59 @@ impl GlyphMasks {
         paint: &Paint,
         scale: f32,
     ) {
+        self.prime_positioned(
+            canvas,
+            text,
+            metrics.glyphs.iter().map(|glyph| {
+                (
+                    glyph.font_id,
+                    glyph.glyph_id,
+                    glyph.x,
+                    glyph.y,
+                    !glyph.c.is_control(),
+                )
+            }),
+            paint,
+            scale,
+        );
+    }
+
+    pub(super) fn prime_positioned(
+        &mut self,
+        canvas: &mut Canvas<WGPURenderer>,
+        text: &TextSystem,
+        glyphs: impl Iterator<Item = (FontId, u16, f32, f32, bool)> + Clone,
+        paint: &Paint,
+        scale: f32,
+    ) {
         let size = paint.font_size();
         if self.fallback_runs == 0 || self.remaining == 0 || !(size > 0.0 && size * scale <= 40.0) {
             return;
         }
-        let Some(first) = metrics.glyphs.first() else {
+        let Some((first, _, _, _, _)) = glyphs.clone().next() else {
             return;
         };
         self.fallback_runs -= 1;
-        if !metrics
-            .glyphs
-            .iter()
-            .any(|glyph| glyph.font_id != first.font_id || glyph.glyph_id >= DENSE_GLYPH_IDS)
+        if !glyphs
+            .clone()
+            .any(|(font, glyph, _, _, _)| font != first || glyph >= DENSE_GLYPH_IDS)
         {
             return;
         }
         // Ordinary text has already drawn these glyphs. Use the same
         // font IDs and positions to request masks for a later frame.
-        for glyph in &metrics.glyphs {
+        for (font, glyph, x, y, drawable) in glyphs {
             if self.remaining == 0 {
                 break;
             }
-            if glyph.c.is_control() {
+            if !drawable {
                 continue;
             }
-            let Some(index) = mask_slot(glyph.glyph_id, glyph.x * scale, glyph.y * scale) else {
+            let Some(index) = mask_slot(glyph, x * scale, y * scale) else {
                 continue;
             };
-            let Some(page) = page(&mut self.pages, glyph.font_id, size, scale, || {
-                text.outline_glyph(glyph.font_id, glyph.glyph_id)
+            let Some(page) = page(&mut self.pages, font, size, scale, || {
+                text.outline_glyph(font, glyph)
                     .is_some_and(|outline| outline.bounds.is_some())
             }) else {
                 continue;
@@ -305,7 +326,7 @@ impl GlyphMasks {
                     slot.insert(texture)
                 }
             };
-            if page.schedule(text, texture, index, glyph.glyph_id, mask_phase(index)) {
+            if page.schedule(text, texture, index, glyph, mask_phase(index)) {
                 self.pending += 1;
                 self.remaining -= 1;
             }
@@ -466,6 +487,17 @@ impl Page {
         else {
             return false;
         };
+        self.schedule_extent(texture, index, glyph, phase, extent)
+    }
+
+    fn schedule_extent(
+        &mut self,
+        texture: &mut MaskTexture,
+        index: usize,
+        glyph: u16,
+        phase: i8,
+        extent: [f32; 4],
+    ) -> bool {
         let [left, top, right, bottom] = extent;
         let width = (right - left) as usize;
         let height = (bottom - top) as usize;
@@ -579,7 +611,7 @@ impl Page {
 pub(super) struct MaskBatch<'a> {
     texture: &'a mut MaskTexture,
     used: u8,
-    pages: &'a mut [Page],
+    pages: &'a mut Vec<Page>,
     page: Option<usize>,
     pending: &'a mut usize,
     remaining: &'a mut usize,
@@ -587,15 +619,20 @@ pub(super) struct MaskBatch<'a> {
     size: f32,
     scale: f32,
     inverse: f32,
-    empty_glyph: Option<u16>,
+    empty_glyph: Option<(FontId, u16)>,
     pub(super) quads: Vec<Quad>,
     pub(super) clipped: bool,
 }
 
 impl GlyphMasks {
-    pub(super) fn clipped_batch(&mut self, paint: &Paint, scale: f32) -> Option<MaskBatch<'_>> {
+    pub(super) fn clipped_batch(
+        &mut self,
+        paint: &Paint,
+        scale: f32,
+        portable_cell: bool,
+    ) -> Option<MaskBatch<'_>> {
         let size = paint.font_size();
-        let allow_preparation = self.can_prepare_during_paint();
+        let allow_preparation = self.can_prepare_during_paint(portable_cell);
         let texture = self.texture.as_mut()?;
         if !self.pages.iter().any(|page| {
             page.size == size
@@ -628,46 +665,63 @@ impl MaskBatch<'_> {
         font: FontId,
         glyph: u16,
         origin: [f32; 2],
-        clip: Rect,
+        edge: [f32; 4],
         text: &TextSystem,
     ) -> bool {
-        let page = if let Some(page) = self.page.filter(|&page| self.pages[page].font == font) {
-            page
-        } else {
-            self.empty_glyph = None;
-            let Some(page) = self.pages.iter().position(|page| {
-                page.font == font && page.size == self.size && page.scale == self.scale
-            }) else {
-                return false;
-            };
-            self.page = Some(page);
-            page
-        };
-        let page = &mut self.pages[page];
+        let page_index = self
+            .page
+            .filter(|&page| self.pages[page].font == font)
+            .or_else(|| {
+                self.pages.iter().position(|page| {
+                    page.font == font && page.size == self.size && page.scale == self.scale
+                })
+            });
+        self.page = page_index;
         let [x, y] = origin.map(|position| position * self.scale);
         let Some(index) = mask_slot(glyph, x, y) else {
             return false;
         };
-        let tile = if let Some(tile) = page.tile(index) {
-            if !tile.ready && !self.allow_preparation {
-                return false;
-            }
+        let outside = |[left, top, right, bottom]: [f32; 4]| {
+            right <= edge[0] || bottom <= edge[1] || left >= edge[2] || top >= edge[3]
+        };
+        let tile = if let Some(tile) = page_index.and_then(|page| self.pages[page].tile(index)) {
             tile
         } else {
-            if self.empty_glyph == Some(glyph) {
+            if self.empty_glyph == Some((font, glyph)) {
                 return true;
             }
-            if text
-                .outline_glyph(font, glyph)
-                .is_some_and(|outline| outline.bounds.is_none())
-            {
-                self.empty_glyph = Some(glyph);
+            let Some(outline) = text.outline_glyph(font, glyph) else {
+                return false;
+            };
+            if outline.bounds.is_none() {
+                self.empty_glyph = Some((font, glyph));
                 return true;
             }
-            if !self.allow_preparation
-                || *self.remaining == 0
-                || !page.schedule(text, self.texture, index, glyph, mask_phase(index))
-            {
+            let Some(extent) = outline
+                .atlas_extents(crate::text::atlas_size_range(self.size, self.scale))
+                .map(crate::text::GlyphExtents::padded_edges)
+            else {
+                return false;
+            };
+            // A hidden glyph neither requires a tile nor consumes a slot in
+            // the per-frame preparation budget for visible glyphs.
+            if outside(placed_edges(extent, x, y)) {
+                self.clipped = true;
+                return true;
+            }
+            if !self.allow_preparation || *self.remaining == 0 {
+                return false;
+            }
+            let page = if let Some(index) = page_index {
+                &mut self.pages[index]
+            } else {
+                let Some(page) = page(self.pages, font, self.size, self.scale, || true) else {
+                    return false;
+                };
+                self.page = Some(page.index);
+                page
+            };
+            if !page.schedule_extent(self.texture, index, glyph, mask_phase(index), extent) {
                 return false;
             }
             *self.pending += 1;
@@ -677,8 +731,7 @@ impl MaskBatch<'_> {
             };
             tile
         };
-        let mut edges = tile.edges(x, y);
-        let edge = [clip.x, clip.y, clip.x + clip.width, clip.y + clip.height];
+        let mut edges = placed_edges(tile.extent, x, y);
         let mut uv = tile.uv;
         if edges[0] < edge[0] || edges[1] < edge[1] || edges[2] > edge[2] || edges[3] > edge[3] {
             let clipped = [
@@ -688,6 +741,7 @@ impl MaskBatch<'_> {
                 edges[3].min(edge[3]),
             ];
             if clipped[0] >= clipped[2] || clipped[1] >= clipped[3] {
+                self.clipped = true;
                 return true;
             }
             let dy = if uv[3] > uv[1] { 1.0 } else { -1.0 };
@@ -696,6 +750,9 @@ impl MaskBatch<'_> {
             }
             edges = clipped;
             self.clipped = true;
+        }
+        if !tile.ready && !self.allow_preparation {
+            return false;
         }
         self.used |= 1 << tile.region;
         self.quads.push(quad(edges, uv, self.inverse));

@@ -484,6 +484,19 @@ impl<T> VecModel<T> {
         self.edit_stamp()
     }
 
+    pub(crate) fn remember_revision(&self, revision: u64) -> Box<dyn Fn() -> bool>
+    where
+        T: 'static,
+    {
+        let model = Rc::downgrade(&self.0);
+        Box::new(move || {
+            model.upgrade().is_some_and(|model| {
+                model.values.track();
+                model.edit_revision.get() == revision
+            })
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.0.count.track();
         self.0.rows.borrow().len()

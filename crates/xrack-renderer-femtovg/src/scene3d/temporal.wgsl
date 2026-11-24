@@ -46,7 +46,9 @@ fn reproject(@builtin(position) position: vec4<f32>) -> HistoryAndColor {
     let id = textureLoad(ids, pixel, 0).x;
     let vector = textureLoad(vectors, pixel, 0);
     let current_sample = vec4<f32>(current.rgb, vector.w);
-    if id == 0u || vector.z < -32.0 {
+    // History stores eye depth in its alpha slot. Only reproject radiance
+    // where the current surface fully covers the underlay.
+    if current.a < 1.0 || id == 0u || vector.z < -32.0 {
         return HistoryAndColor(current_sample, current);
     }
     let expected_id = previous_instances[id - 1u].identity.x;

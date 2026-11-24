@@ -1,0 +1,20 @@
+// CHECK: "xr.make_record"{{.*}}!xr.record<"Shape">
+// CHECK: "xr.bind"{{.*}}name = "model"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist<"Actor">
+
+struct Shape { shape: string, radius: float, tube-radius: float, segments: int }
+struct Actor {
+    id: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, geometry: Shape,
+}
+export component ProceduralPlan inherits Window {
+    in property <float> radius: 1.0;
+    SceneView3D {
+        width: 80px; height: 80px;
+        model: [Actor {
+            id: "ring", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
+            geometry: Shape { shape: "torus", radius: root.radius, tube-radius: 0.2, segments: 24 },
+        }];
+    }
+}

@@ -1,0 +1,23 @@
+// CHECK: "xr.make_record"
+// CHECK-SAME: !xr.record<"SurfaceStyle">
+// CHECK: "xr.bind"{{.*}}name = "model"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist<"Actor">
+
+struct SurfaceStyle { base-color: color, roughness: float, metalness: float, alpha-mode: string }
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: SurfaceStyle,
+}
+export component MaterialPlan inherits Window {
+    in property <float> roughness: 0.3;
+    SceneView3D {
+        width: 80px; height: 80px;
+        model: [Actor {
+            id: "ball", mesh: "primitive:sphere", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
+            material: SurfaceStyle {
+                roughness: root.roughness, metalness: 0.45, base-color: #8999bd, alpha-mode: "opaque"
+            }
+        }];
+    }
+}

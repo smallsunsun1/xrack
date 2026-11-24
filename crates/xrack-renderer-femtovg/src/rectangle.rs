@@ -115,6 +115,28 @@ fn surface_property(name: &str) -> bool {
     )
 }
 
+/// A square fill covering whole device pixels can skip the coverage fringe.
+pub(super) fn fill_surface(
+    canvas: &mut Canvas<WGPURenderer>,
+    bounds: Rect,
+    radii: [f32; 4],
+    mut paint: Paint,
+) {
+    let mut path = Path::new();
+    if radii == [0.0; 4] && bounds.width > 0.0 && bounds.height > 0.0 {
+        let transform = canvas_transform(canvas);
+        if crate::image::supports_quad_transform(transform)
+            && crate::image::quad_edges_are_pixel_aligned(bounds, transform)
+        {
+            paint.set_anti_alias(false);
+        }
+        path.rect(bounds.x, bounds.y, bounds.width, bounds.height);
+    } else {
+        append_rect(&mut path, bounds, radii);
+    }
+    canvas.fill_path(&path, &paint);
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Solid {
     bounds: Rect,
@@ -255,6 +277,17 @@ impl Solid {
 
     pub(super) fn plain_layer(self) -> Option<(Rect, Color)> {
         (!self.uses_mask()).then_some((self.bounds, self.tint()))
+    }
+
+    pub(super) fn window_opaque_layer(self, clip: Rect, scale: f32) -> Option<WindowLayer> {
+        if self.rounded() || self.opacity != 1.0 || self.color.a != 1.0 {
+            return None;
+        }
+        if !self.fractional {
+            return Some(WindowLayer::solid(self.bounds, self.color));
+        }
+        self.square_batchable(clip, scale)
+            .then(|| WindowLayer::covered_solid(self.bounds, self.color, scale))
     }
 
     pub(super) fn collect_square(&self, clip: Rect, scale: f32) -> bool {

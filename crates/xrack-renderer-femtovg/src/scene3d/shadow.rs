@@ -14,7 +14,8 @@ use super::{
     DEPTH_FORMAT, MeshCache, append_floats, buffer,
     cascade::{CascadeRequest, CascadeSplits, MAX_CASCADES},
     deform::{DeformationLayouts, GeometryBindings},
-    depth::DepthPipelines,
+    depth::{DepthPass, DepthPipelines},
+    particles::ModelParticleBatch,
 };
 
 const MAX_SHADOW_MAPS: usize = 4;
@@ -35,7 +36,8 @@ struct CachedAtlas {
     path: Vec<usize>,
     resolution: u32,
     lights: LightSlots,
-    objects: Arc<[SceneObject]>,
+    objects: Option<Arc<[SceneObject]>>,
+    particles: Option<ParticleShadowKey>,
     layer_filter: Option<Arc<SceneVisibility>>,
     cascades: Option<CascadeRequest>,
     fog_receiver: Option<[[f32; 3]; 8]>,
@@ -54,6 +56,7 @@ struct LayerContents {
     face: usize,
     rows: ClipRows,
     instances: Vec<Range<u32>>,
+    particle_batches: Vec<usize>,
 }
 
 pub(super) struct Shadows {
@@ -64,22 +67,33 @@ pub(super) struct Shadows {
     cache: VecDeque<CachedAtlas>,
     pub sampler: wgpu::Sampler,
     pub passes: u64,
+    particle_draws: u64,
 }
 
 pub(super) struct ShadowRequest<'a> {
     path: &'a [usize],
     resolution: u32,
     lights: LightSlots,
-    objects: &'a Arc<[SceneObject]>,
+    objects: Option<&'a Arc<[SceneObject]>>,
+    particles: Option<ParticleShadowKey>,
+    model_batches: &'a [ModelParticleBatch],
     layer_filter: Option<&'a Arc<SceneVisibility>>,
     cascades: Option<CascadeRequest>,
     fog_receiver: Option<[[f32; 3]; 8]>,
 }
 
+#[derive(PartialEq)]
+struct ParticleShadowKey {
+    emitters: Option<Value>,
+    affectors: Option<Value>,
+    time: f64,
+    layers: u64,
+}
+
 impl<'a> ShadowRequest<'a> {
     pub fn for_view(
         node: &Node,
-        objects: &'a Arc<[SceneObject]>,
+        (objects, model_batches): (Option<&'a Arc<[SceneObject]>>, &'a [ModelParticleBatch]),
         lights: &[SceneLight],
         camera: SceneCamera,
         path: &'a [usize],
@@ -102,11 +116,25 @@ impl<'a> ShadowRequest<'a> {
             .iter()
             .flatten()
             .any(|(_, light)| matches!(light, ShadowLight::Directional(_)));
+        let particles = model_batches
+            .iter()
+            .any(|batch| batch.shadow_bounds.is_some())
+            .then(|| ParticleShadowKey {
+                emitters: node.properties.get("particle-emitters").cloned(),
+                affectors: node.properties.get("particle-affectors").cloned(),
+                time: node.number("particle-time").unwrap_or(0.0),
+                layers: camera.layer_mask(),
+            });
+        if objects.is_none() && particles.is_none() {
+            return None;
+        }
         Some(Self {
             path,
             resolution,
             lights,
             objects,
+            particles,
+            model_batches,
             layer_filter,
             fog_receiver,
             cascades: directional
@@ -117,6 +145,16 @@ impl<'a> ShadowRequest<'a> {
 }
 
 impl Shadows {
+    pub fn invalidate_item_textures(&mut self) {
+        self.cache.retain(|atlas| {
+            atlas.objects.as_ref().is_none_or(|objects| {
+                !objects.iter().any(|object| {
+                    object.casts_shadow && super::mesh_samples_item_alpha(&object.mesh)
+                })
+            })
+        });
+    }
+
     pub fn discard_recorded_layers(&mut self) {
         self.cache.clear();
     }
@@ -141,6 +179,7 @@ impl Shadows {
                 ..Default::default()
             }),
             passes: 0,
+            particle_draws: 0,
         }
     }
 
@@ -151,18 +190,20 @@ impl Shadows {
         meshes: &mut MeshCache,
         geometry: GeometryBindings<'_>,
         request: Option<ShadowRequest<'_>>,
-    ) -> &ShadowAtlas {
+    ) -> (&ShadowAtlas, u64) {
         let Some(ShadowRequest {
             path,
             resolution,
             lights,
             objects,
+            particles,
+            model_batches,
             layer_filter,
             cascades,
             fog_receiver,
         }) = request
         else {
-            return &self.empty;
+            return (&self.empty, self.particle_draws);
         };
         let resolution = resolution.min(ctx.device.limits().max_texture_dimension_2d);
         if let Some(index) = self.cache.iter().position(|cached| {
@@ -171,10 +212,15 @@ impl Shadows {
                 && cached.cascades == cascades
                 && cached.fog_receiver == fog_receiver
                 && cached.layer_filter.as_ref() == layer_filter
-                && same_objects(&cached.objects, objects, layer_filter.map(Arc::as_ref))
+                && cached.particles == particles
+                && same_objects(
+                    cached.objects.as_ref(),
+                    objects,
+                    layer_filter.map(Arc::as_ref),
+                )
         }) {
             self.cache.rotate_left(index);
-            return self.current_atlas();
+            return (self.current_atlas(), self.particle_draws);
         }
 
         // Cascade projections snap to texels, so choose their resolution
@@ -195,14 +241,17 @@ impl Shadows {
             resolution
         };
         let plan = ShadowPlan::new(
-            objects,
+            (
+                objects.map_or(&[], |objects| objects.as_ref()),
+                model_batches,
+            ),
             layer_filter.map(Arc::as_ref),
             lights,
             cascades,
             fit_resolution,
             fog_receiver.as_ref(),
         );
-        let gpu = if plan.views.iter().any(|view| !view.draws.is_empty()) {
+        let gpu = if plan.views.iter().any(ShadowView::has_draws) {
             let layers = plan.views.len();
             let size = budget_resolution(fit_resolution, layers);
             let fits = |atlas: &RenderedAtlas| {
@@ -213,13 +262,8 @@ impl Shadows {
             // keep their depth. Distinct viewports may retain distinct atlases.
             let retain = self.cache.iter().position(|cached| {
                 cached.path == path
-                    && same_objects(&cached.objects, objects, None)
-                    && cached.gpu.as_ref().is_some_and(|atlas| {
-                        fits(atlas)
-                            && atlas.layers.iter().zip(&plan.views).any(|(old, view)| {
-                                old.as_ref().is_some_and(|old| view.matches_contents(old))
-                            })
-                    })
+                    && same_objects(cached.objects.as_ref(), objects, None)
+                    && cached.gpu.as_ref().is_some_and(fits)
             });
             let previous = if let Some(index) = retain {
                 self.cache.remove(index)
@@ -228,6 +272,9 @@ impl Shadows {
             } else {
                 None
             };
+            let same_particles = previous
+                .as_ref()
+                .is_some_and(|entry| entry.particles == particles);
             let (texture, previous_layers) = previous
                 .and_then(|entry| entry.gpu)
                 .filter(fits)
@@ -248,9 +295,9 @@ impl Shadows {
                 ctx,
                 queue,
                 meshes,
-                geometry,
+                (geometry, model_batches),
                 plan,
-                (texture, previous_layers),
+                (texture, previous_layers, same_particles),
             ))
         } else {
             self.cache.truncate(1);
@@ -260,13 +307,14 @@ impl Shadows {
             path: path.to_vec(),
             resolution,
             lights,
-            objects: objects.clone(),
+            objects: objects.cloned(),
+            particles,
             layer_filter: layer_filter.cloned(),
             cascades,
             fog_receiver,
             gpu,
         });
-        self.current_atlas()
+        (self.current_atlas(), self.particle_draws)
     }
 
     fn current_atlas(&self) -> &ShadowAtlas {
@@ -281,9 +329,9 @@ impl Shadows {
         ctx: &mut GpuPaintContext<'_>,
         queue: &wgpu::Queue,
         meshes: &mut MeshCache,
-        geometry: GeometryBindings<'_>,
+        (geometry, particles): (GeometryBindings<'_>, &[ModelParticleBatch]),
         plan: ShadowPlan<'_>,
-        (texture, previous): (wgpu::Texture, Vec<Option<LayerContents>>),
+        (texture, previous, same_particles): (wgpu::Texture, Vec<Option<LayerContents>>, bool),
     ) -> RenderedAtlas {
         let bindings = create_atlas(ctx.device, &texture, &plan);
         let mut layers = Vec::with_capacity(plan.views.len());
@@ -301,7 +349,8 @@ impl Shadows {
         });
         for (layer, shadow) in plan.views.into_iter().enumerate() {
             let contents = shadow.contents();
-            let unchanged = previous.get(layer) == Some(&contents);
+            let unchanged = (same_particles || shadow.particle_batches.is_empty())
+                && previous.get(layer) == Some(&contents);
             let empty = contents.is_none();
             layers.push(contents);
             if empty || unchanged {
@@ -347,8 +396,26 @@ impl Shadows {
                     &mut pass,
                     &mut active,
                     mesh,
-                    (range.clone(), geometry.deformation(range.start)),
+                    (
+                        range.clone(),
+                        geometry.deformation(range.start),
+                        DepthPass::Auxiliary(xrack_runtime::scene_effect::CaptureRenderables::All),
+                    ),
                 );
+            }
+            for index in &shadow.particle_batches {
+                let batch = &particles[*index];
+                pass.set_vertex_buffer(1, batch.instances.slice(..));
+                for mesh in batch.meshes.iter().filter(|mesh| mesh.has_opaque_parts()) {
+                    let mesh = meshes.get(ctx.device, queue, mesh);
+                    self.particle_draws += pipelines.draw(
+                        ctx.device,
+                        &mut pass,
+                        &mut active,
+                        mesh,
+                        (0..batch.count, None, DepthPass::Particles),
+                    );
+                }
             }
             self.passes = self.passes.saturating_add(1);
         }
@@ -367,24 +434,31 @@ struct ShadowView<'a> {
     face: usize,
     rows: ClipRows,
     draws: Vec<Draw<'a>>,
+    particle_batches: Vec<usize>,
 }
 
 impl ShadowView<'_> {
-    fn matches_contents(&self, old: &LayerContents) -> bool {
-        self.slot == old.slot
-            && self.face == old.face
-            && self.rows == old.rows
-            && self.draws.iter().map(|(_, range)| range).eq(&old.instances)
+    fn has_draws(&self) -> bool {
+        !(self.draws.is_empty() && self.particle_batches.is_empty())
     }
 
     fn contents(&self) -> Option<LayerContents> {
-        (!self.draws.is_empty()).then(|| LayerContents {
+        self.has_draws().then(|| LayerContents {
             slot: self.slot,
             face: self.face,
             rows: self.rows,
             instances: self.draws.iter().map(|(_, range)| range.clone()).collect(),
+            particle_batches: self.particle_batches.clone(),
         })
     }
+}
+
+type Bounds = [[f32; 3]; 2];
+
+struct ParticleCaster {
+    batch: usize,
+    bounds: Bounds,
+    corners: [[f32; 3]; 8],
 }
 
 #[derive(Default)]
@@ -397,7 +471,7 @@ struct ShadowPlan<'a> {
 
 impl<'a> ShadowPlan<'a> {
     fn new(
-        objects: &'a [SceneObject],
+        (objects, models): (&'a [SceneObject], &[ModelParticleBatch]),
         layer_filter: Option<&SceneVisibility>,
         lights: LightSlots,
         cascades: Option<CascadeRequest>,
@@ -410,17 +484,32 @@ impl<'a> ShadowPlan<'a> {
             })
         };
         let casters: Vec<_> = included()
-            .filter(|(_, object)| object.casts_shadow && object.mesh.has_opaque_parts())
+            .filter(|(_, object)| object.casts_shadow && object.mesh.has_auxiliary_depth())
             .collect();
-        if casters.is_empty() {
+        let particles: Vec<_> = models
+            .iter()
+            .enumerate()
+            .filter_map(|(batch, model)| {
+                let bounds = model.shadow_bounds?;
+                let corners = std::array::from_fn(|corner| {
+                    std::array::from_fn(|axis| bounds[(corner >> axis) & 1][axis])
+                });
+                Some(ParticleCaster {
+                    batch,
+                    bounds,
+                    corners,
+                })
+            })
+            .collect();
+        if casters.is_empty() && particles.is_empty() {
             return Self::default();
         }
-        let bounds: Vec<_> = included()
-            .map(|(_, object)| object.bounds_corners())
+        let corners: Vec<_> = included()
+            .flat_map(|(_, object)| object.bounds_corners())
+            .chain(particles.iter().flat_map(|particle| particle.corners))
+            .chain(fog_receiver.into_iter().flatten().copied())
             .collect();
-        let object_corners = bounds.as_flattened();
-        let receiver_corners = fog_receiver.map(|fog| [object_corners, fog.as_slice()].concat());
-        let corners = receiver_corners.as_deref().unwrap_or(object_corners);
+        let corners = corners.as_slice();
         let has_point = lights
             .iter()
             .flatten()
@@ -428,13 +517,8 @@ impl<'a> ShadowPlan<'a> {
         let caster_bounds: Vec<_> = if has_point {
             casters
                 .iter()
-                .map(|(index, object)| {
-                    let corners = if layer_filter.is_none() {
-                        bounds[*index]
-                    } else {
-                        object.bounds_corners()
-                    };
-                    corners.iter().fold(
+                .map(|(_, object)| {
+                    object.bounds_corners().iter().fold(
                         [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]],
                         |[min, max], p| {
                             [
@@ -461,7 +545,10 @@ impl<'a> ShadowPlan<'a> {
                     position,
                     inverse_range_squared,
                     corners,
-                    caster_bounds.iter().copied(),
+                    caster_bounds
+                        .iter()
+                        .copied()
+                        .chain(particles.iter().map(|particle| particle.bounds)),
                 ) {
                     let [near, far] = cube.near_far();
                     plan.parameters[slot] = [near, far, 0.0, 0.0];
@@ -470,7 +557,20 @@ impl<'a> ShadowPlan<'a> {
                             batches(casters.iter().copied().zip(&caster_bounds).filter_map(
                                 |(caster, bounds)| cube.overlaps(face, *bounds).then_some(caster),
                             ));
-                        plan.push(slot, face, cube.rows(face), draws);
+                        let particle_batches = particles
+                            .iter()
+                            .filter_map(|particle| {
+                                cube.overlaps(face, particle.bounds)
+                                    .then_some(particle.batch)
+                            })
+                            .collect();
+                        plan.push(ShadowView {
+                            slot,
+                            face,
+                            rows: cube.rows(face),
+                            draws,
+                            particle_batches,
+                        });
                     }
                 }
             } else if let (ShadowLight::Directional(axis), Some(request)) = (projection, cascades) {
@@ -481,16 +581,19 @@ impl<'a> ShadowPlan<'a> {
                         resolution,
                         axis,
                         &casters,
-                        &bounds,
+                        &particles,
                     );
                 }
             } else if let Some(rows) = projection.planar_projection(corners) {
-                plan.push(slot, 0, rows, batches(casters.iter().copied()));
+                plan.push(ShadowView {
+                    slot,
+                    face: 0,
+                    rows,
+                    draws: batches(casters.iter().copied()),
+                    particle_batches: particles.iter().map(|particle| particle.batch).collect(),
+                });
             }
-            if plan.views[start..]
-                .iter()
-                .any(|view| !view.draws.is_empty())
-            {
+            if plan.views[start..].iter().any(ShadowView::has_draws) {
                 // Zero means that this light has no shadow views.
                 plan.slots[light] = slot as u8 + 1;
             }
@@ -505,29 +608,40 @@ impl<'a> ShadowPlan<'a> {
         resolution: u32,
         axis: [f32; 3],
         casters: &[(usize, &'a SceneObject)],
-        bounds: &[[[f32; 3]; 8]],
+        particles: &[ParticleCaster],
     ) {
         let space = DirectionalShadowSpace::new(axis);
         let projected: Vec<_> = casters
             .iter()
-            .map(|(index, _)| space.bounds(&bounds[*index]))
+            .map(|(_, object)| space.bounds(&object.bounds_corners()))
+            .collect();
+        let particle_bounds: Vec<_> = particles
+            .iter()
+            .map(|particle| space.bounds(&particle.corners))
             .collect();
         self.parameters[slot] = [splits.near, splits.far, splits.count as f32, splits.blend];
         self.cascade_ends[slot] = splits.ends;
         for face in 0..splits.count {
-            let (rows, draws) = space
+            let (rows, draws, particle_batches) = space
                 .cascade(&request.camera, splits.range(face), resolution)
                 .map_or_else(
-                    || ([[0.0; 4]; 4], Vec::new()),
+                    || ([[0.0; 4]; 4], Vec::new(), Vec::new()),
                     |mut volume| {
                         let draws = batches(casters.iter().copied().zip(&projected).filter_map(
                             |(caster, bounds)| volume.include_caster((*bounds)?).then_some(caster),
                         ));
+                        let particle_batches = particles
+                            .iter()
+                            .zip(&particle_bounds)
+                            .filter_map(|(particle, bounds)| {
+                                volume.include_caster((*bounds)?).then_some(particle.batch)
+                            })
+                            .collect();
                         let rows = volume.rows();
                         if rows.iter().flatten().all(|value| value.is_finite()) {
-                            (rows, draws)
+                            (rows, draws, particle_batches)
                         } else {
-                            ([[0.0; 4]; 4], Vec::new())
+                            ([[0.0; 4]; 4], Vec::new(), Vec::new())
                         }
                     },
                 );
@@ -538,18 +652,14 @@ impl<'a> ShadowPlan<'a> {
                 face,
                 rows,
                 draws,
+                particle_batches,
             });
         }
     }
 
-    fn push(&mut self, slot: usize, face: usize, rows: ClipRows, draws: Vec<Draw<'a>>) {
-        if !draws.is_empty() && rows.iter().flatten().all(|value| value.is_finite()) {
-            self.views.push(ShadowView {
-                slot,
-                face,
-                rows,
-                draws,
-            });
+    fn push(&mut self, view: ShadowView<'a>) {
+        if view.has_draws() && view.rows.iter().flatten().all(|value| value.is_finite()) {
+            self.views.push(view);
         }
     }
 }
@@ -578,11 +688,15 @@ fn budget_resolution(resolution: u32, layers: usize) -> u32 {
 }
 
 fn same_objects(
-    a: &Arc<[SceneObject]>,
-    b: &Arc<[SceneObject]>,
+    a: Option<&Arc<[SceneObject]>>,
+    b: Option<&Arc<[SceneObject]>>,
     layers: Option<&SceneVisibility>,
 ) -> bool {
-    Arc::ptr_eq(a, b) || same_geometry(a, b, layers)
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || same_geometry(a, b, layers),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 fn same_geometry(a: &[SceneObject], b: &[SceneObject], layers: Option<&SceneVisibility>) -> bool {
@@ -591,18 +705,29 @@ fn same_geometry(a: &[SceneObject], b: &[SceneObject], layers: Option<&SceneVisi
             if layers.is_some_and(|layers| !layers.contains(index as u32)) {
                 return true;
             }
-            a.mesh == b.mesh
+            // Noncasters contribute only their bounds to projection fitting.
+            let same_mesh = if a.casts_shadow {
+                a.mesh.same_shadow_mesh(&b.mesh)
+            } else {
+                match (&a.mesh, &b.mesh) {
+                    (Mesh3D::Imported(left), Mesh3D::Imported(right)) => {
+                        Arc::ptr_eq(left.vertex_streams(), right.vertex_streams())
+                    }
+                    _ => a.mesh == b.mesh,
+                }
+            };
+            same_mesh
+                && a.mesh.shader_displacement() == b.mesh.shader_displacement()
                 && a.transform_rows() == b.transform_rows()
                 && a.skin_palette() == b.skin_palette()
                 && a.morph_weights() == b.morph_weights()
                 && a.casts_shadow == b.casts_shadow
                 && (!a.casts_shadow
                     || a.color.0 as u8 == b.color.0 as u8
-                    || !a.mesh.materials().iter().any(|mat| {
-                        matches!(
-                            mat.alpha_mode,
-                            xrack_runtime::scene3d::MeshAlphaMode::Mask(_)
-                        )
+                    || !a.mesh.materials().iter().any(|material| {
+                        material
+                            .depth_coverage()
+                            .is_some_and(|coverage| coverage.samples_alpha())
                     }))
         })
 }
@@ -640,7 +765,7 @@ fn create_atlas(
     let mut bytes = Vec::with_capacity(MAX_SHADOW_VIEWS * 64 + MAX_SHADOW_MAPS * 64);
     for (layer, view) in plan.views.iter().enumerate() {
         append_floats(&mut bytes, view.rows.iter().flatten().copied());
-        if !view.draws.is_empty() {
+        if view.has_draws() {
             indices[view.slot][view.face] = layer as i32 + 1;
         }
     }

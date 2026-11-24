@@ -110,7 +110,7 @@ xr_ui_library(
 
 该宏创建代码生成 action 和正常的 `rust_library`。Rust 应用依赖 `:counter_ui`，使用 `counter_ui::Counter`；不需要 `build.rs` 或手动管理生成路径。生成代码只依赖 `xrack-runtime`。
 
-生成的 Rust 源码带有 `CODEGEN_ABI_VERSION` 断言，编译器和运行时需要来自兼容的构建。索引模型投影、融合字符串拼接和 3D 球体查询使用对应的运行时入口，生成代码 ABI 为 18。Bazel 会重新生成受影响的 UI；复用外部 AOT 源码的项目需要同步更新运行时，并使用配套 `xrackc` 重新生成源码。
+生成的 Rust 源码带有 `CODEGEN_ABI_VERSION` 断言，编译器和运行时需要来自兼容的构建。索引模型投影、融合字符串拼接和 3D 球体查询使用对应的运行时入口，场景材质、贴图和槽位覆盖使用配套的运行时类型，生成代码 ABI 为 37。Bazel 会重新生成受影响的 UI；复用外部 AOT 源码的项目需要同步更新运行时，并使用配套 `xrackc` 重新生成源码。
 
 带图片的目标在 `xr_ui_library` 里用 `assets = ["assets/icon.svg"]` 声明每个资源。Bazel 会在资源内容变化时重新运行代码生成。编译后的程序可以脱离源目录运行。
 

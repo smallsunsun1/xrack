@@ -1,0 +1,89 @@
+struct MaterialInput {
+    texture: string, item: string, color-space: string, filter: string,
+    wrap-u: string, wrap-v: string, enabled: bool,
+}
+
+struct InputStyle {
+    unlit: bool, material-shader: string, shader-parameters: vector3d, shader-textures: [MaterialInput],
+}
+
+struct InputActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float, material: InputStyle,
+}
+
+export component MaterialTextureInputsDemo inherits Window {
+    title: "XRack · 材质贴图输入";
+    width: 480px; height: 310px; resizable: false;
+    background: #172332;
+
+    in-out property <bool> file-enabled: true;
+    in-out property <bool> live-enabled: true;
+    in-out property <bool> cool: true;
+    property <string> swatch: @texture-url("models/channel-swatch.png");
+    property <MaterialInput> input: MaterialInput {
+        texture: "", item: "", color-space: "srgb", filter: "linear",
+        wrap-u: "clamp", wrap-v: "clamp", enabled: true,
+    };
+    property <InputStyle> style: InputStyle {
+        unlit: true,
+        material-shader: @material-shader-url("effects/material_texture_inputs.wgsl"),
+        shader-parameters: Vector3D.new(0, 0, 0),
+        shader-textures: [
+            MaterialInput {
+                texture: root.swatch, enabled: root.file-enabled,
+                filter: "nearest", wrap-u: "repeat", ..root.input
+            },
+            MaterialInput {
+                texture: root.swatch, enabled: root.file-enabled,
+                color-space: "linear", wrap-u: "mirror", ..root.input
+            },
+            MaterialInput { item: "live-swatch", enabled: root.live-enabled, ..root.input },
+        ],
+    };
+    property <InputActor> panel: InputActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 2, scale-y: 2.8, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, camera-kind: "", camera-height: 4, material: root.style,
+    };
+
+    Rectangle {
+        width: 80px; height: 48px; texture-source: "live-swatch"; texture-only: true;
+        background: root.cool ? #40a0d080 : #d0806080;
+    }
+    SceneView3D {
+        width: 480px; height: 240px; cache-rendering: true;
+        scene-background: #24394e; scene-tone-map: none; camera: "eye";
+        model: [
+            InputActor { id: "eye", mesh: "", z: 6, camera-kind: "orthographic", ..root.panel },
+            InputActor { id: "file-srgb", x: -2.6, ..root.panel },
+            InputActor {
+                id: "file-linear",
+                material: InputStyle { shader-parameters: Vector3D.new(1, 0, 0), ..root.style },
+                ..root.panel
+            },
+            InputActor {
+                id: "live-item", x: 2.6,
+                material: InputStyle { shader-parameters: Vector3D.new(2, 0, 0), ..root.style },
+                ..root.panel
+            },
+        ];
+    }
+
+    Label { x: 19px; y: 241px; width: 145px; height: 25px; text: "文件 · sRGB"; }
+    Label { x: 176px; y: 241px; width: 145px; height: 25px; text: "文件 · 线性"; }
+    Label { x: 333px; y: 241px; width: 145px; height: 25px; text: "实时二维源"; }
+    switch-color := Button {
+        x: 15px; y: 271px; width: 125px; height: 29px;
+        text: "切换实时颜色"; clicked => { root.cool = !root.cool; }
+    }
+    CheckBox {
+        x: 164px; y: 271px; width: 129px; height: 29px;
+        text: "文件贴图"; checked <=> root.file-enabled;
+    }
+    CheckBox {
+        x: 310px; y: 271px; width: 142px; height: 29px;
+        text: "二维贴图"; checked <=> root.live-enabled;
+    }
+}

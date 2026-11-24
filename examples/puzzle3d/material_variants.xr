@@ -1,0 +1,54 @@
+struct VariantPaint { enabled: bool, slot: string, base-color: color }
+struct VariantPalette { shell: VariantPaint }
+struct VariantObject {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material-variant: string, material-slots: VariantPalette,
+    camera-kind: string, camera-height: float,
+}
+
+export component MaterialVariantsDemo inherits Window {
+    title: "XRack · glTF material variants";
+    width: 634px; height: 377px;
+    background: #1a2638;
+
+    in-out property <string> variant: "";
+    in-out property <bool> recolor: false;
+    property <VariantObject> base: VariantObject {
+        id: "", mesh: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, material-variant: "",
+        material-slots: VariantPalette {
+            shell: VariantPaint { enabled: false, slot: "", base-color: #fff },
+        },
+        camera-kind: "", camera-height: 5.4,
+    };
+    property <[VariantObject]> world: [
+        VariantObject { id: "eye", z: 8, camera-kind: "orthographic", ..root.base },
+        VariantObject {
+            id: "wall", mesh: "primitive:box", z: -1.7,
+            scale-x: 16, scale-y: 8, scale-z: 0.1, color: #48627d, ..root.base
+        },
+        VariantObject {
+            id: "model", mesh: @mesh-url("models/material-variants.gltf"),
+            material-variant: root.variant,
+            material-slots: VariantPalette {
+                shell: VariantPaint { enabled: root.recolor, slot: "Copper shell", base-color: #de8aff },
+            },
+            ..root.base
+        },
+    ];
+    out property <string> shell-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(634px, 324px), Point2D.new(183px, 162px));
+    SceneView3D {
+        width: 634px; height: 324px; model: root.world; camera: "eye";
+        scene-background: #263b54; ambient-intensity: 0.44; light-yaw: -22; light-elevation: 39;
+        shadows: true; shadow-map-size: 512; cache-rendering: true;
+    }
+    default-button := Button { x: 12px; y: 334px; width: 92px; text: "Default"; clicked => { root.variant = ""; } }
+    copper-button := Button { x: 112px; y: 334px; width: 92px; text: "Copper"; clicked => { root.variant = "Copper"; } }
+    cutout-button := Button { x: 212px; y: 334px; width: 92px; text: "Cutout"; clicked => { root.variant = "Cutout"; } }
+    uv-zero-button := Button { x: 312px; y: 334px; width: 82px; text: "UV 0"; clicked => { root.variant = "UV0"; } }
+    uv-one-button := Button { x: 402px; y: 334px; width: 82px; text: "UV 1"; clicked => { root.variant = "UV1"; } }
+    recolor-box := CheckBox { x: 496px; y: 334px; width: 125px; text: "Recolor copper"; checked <=> root.recolor; }
+}

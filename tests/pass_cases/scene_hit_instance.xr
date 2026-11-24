@@ -1,0 +1,29 @@
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "hit-instance-3d"{{.*}}!xr.hit3d
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "hit-instance-camera-3d"{{.*}}!xr.hit3d
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "ray-hit-instance-3d"{{.*}}!xr.hit3d
+// CHECK-DAG: "xr.literal"() <{value = ""}> : () -> !xr.hit3d
+// CHECK-NOT: "xr.geometry_function"
+
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color,
+}
+export component InstanceQueryPlan inherits Window {
+    in property <[Actor]> actors;
+    in property <int> address: 0;
+    out property <hit3d> orbit: Scene3D.hit-instance(
+        root.actors, 0, 0, 8, Point2D.new(200px, 200px), Point2D.new(100px, 100px), 1, 2, root.address);
+    out property <hit3d> camera: Scene3D.hit-instance-camera(
+        root.actors, "eye", Point2D.new(200px, 200px), Point2D.new(100px, 100px), 1, 2, root.address, 3);
+    out property <hit3d> ray: Scene3D.ray-hit-instance(
+        root.actors, Point3D.new(0, 0, 8), Vector3D.new(0, 0, -1), 64.0, 1, 2, root.address);
+    out property <hit3d> invalid: Scene3D.ray-hit-instance([
+        Actor { id: "box", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+                yaw: 0, pitch: 0, roll: 0, color: #fff }
+    ], Point3D.new(0, 0, 8), Vector3D.new(0, 0, -1), 64.0, 0, -1, 0);
+    out property <hit3d> masked: Scene3D.hit-instance-camera([
+        Actor { id: "box", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+                yaw: 0, pitch: 0, roll: 0, color: #fff }
+    ], "eye", Point2D.new(200px, 200px), Point2D.new(100px, 100px), 0, 2, 0, 0);
+}

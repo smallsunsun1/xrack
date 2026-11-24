@@ -51,13 +51,19 @@ impl DragMotion {
         }
     }
 
-    pub(crate) fn update(&mut self, point: Point, now: Instant) -> Option<Point> {
+    pub(crate) fn update(
+        &mut self,
+        point: Point,
+        now: Instant,
+        window_distance: Option<f32>,
+    ) -> Option<Point> {
         let mut delta = self.delta_to(point);
         let distance = delta.x.hypot(delta.y);
         if !distance.is_finite() || distance == 0.0 {
             return None;
         }
         if !self.dragging {
+            let distance = window_distance.unwrap_or(distance);
             if distance < DRAG_THRESHOLD {
                 return None;
             }
@@ -84,6 +90,10 @@ impl DragMotion {
         self.updated = now;
         self.dragging = true;
         Some(delta)
+    }
+
+    pub(crate) fn position(&self) -> Point {
+        self.point
     }
 
     pub(crate) fn delta_to(&self, point: Point) -> Point {

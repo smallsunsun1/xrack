@@ -1,7 +1,7 @@
 //! Shared opaque data, tracing and composition for screen-space lighting.
 use xrack_runtime::{
     Node,
-    scene3d::{Mesh3D, MeshAlphaMode, SceneCamera},
+    scene3d::{Mesh3D, MeshDepthDraw, SceneCamera},
 };
 
 use super::{Attachment, COLOR_FORMAT, HDR_FORMAT, append_floats, buffer};
@@ -41,15 +41,20 @@ impl ReflectionSettings {
         mesh.has_opaque_parts()
             && mesh.sections().any(|(_, material)| {
                 material.is_some_and(|material| {
-                    material.alpha_mode != MeshAlphaMode::Blend
+                    !material.is_blended()
+                        && material.depth_draw_mode != MeshDepthDraw::Never
                         && material.pbr.as_ref().is_some_and(|pbr| {
-                            pbr.transmission_blur().is_none()
+                            material.transmission_blur().is_none()
                                 && (pbr.roughness < self.roughness
                                     || pbr.metallic_roughness_texture.is_some()
+                                    || material.vertex_masks.masks_roughness()
                                     || pbr.clearcoat.as_ref().is_some_and(|coat| {
                                         coat.amount > 0.0
                                             && (coat.roughness < self.roughness
-                                                || coat.roughness_texture.is_some())
+                                                || coat.roughness_texture.is_some()
+                                                || material
+                                                    .vertex_masks
+                                                    .masks_clearcoat_roughness())
                                     }))
                         })
                 })
@@ -132,6 +137,7 @@ impl OpaqueSurfaces {
         depth: &wgpu::TextureView,
         clear: wgpu::Color,
         multisampled_color: Option<&wgpu::TextureView>,
+        depth_load: wgpu::LoadOp<f32>,
     ) -> wgpu::RenderPass<'a> {
         let colors = [
             Some(wgpu::RenderPassColorAttachment {
@@ -148,7 +154,7 @@ impl OpaqueSurfaces {
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                    load: depth_load,
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,

@@ -1778,6 +1778,11 @@ impl PreviewScene {
             }
             return true;
         }
+        if touch {
+            // Keep the full touch route available to arbitrate tap versus pan,
+            // including when the initial target is on a 3D material surface.
+            return cancelled;
+        }
         if self.input.begin_scroll_gesture_with_selection(
             scene,
             layout,
@@ -1796,7 +1801,9 @@ impl PreviewScene {
             .as_ref()
             .and_then(|target| scene.interactive_at_path(&target.path));
         let observed = hovered.is_some_and(|node| node.button_press_handle.is_some());
-        if !observed
+        let texture = self.input.texture_pointer_active();
+        if !texture
+            && !observed
             && !hovered.is_some_and(|node| {
                 (node.kind == "DelayButton" && !node.boolean("checked", false))
                     || (matches!(node.kind, "Button" | "ToolButton" | "RoundButton")
@@ -1809,7 +1816,7 @@ impl PreviewScene {
         let now = Instant::now();
         self.input.begin_pointer_delay(scene, layout, now);
         self.pointer_capture =
-            if self.input.begin_pointer_button_hold(scene, layout, now) || observed {
+            if self.input.begin_pointer_button_hold(scene, layout, now) || observed || texture {
                 Some(PointerCapture::ButtonHold)
             } else if self.input.delay_deadline().is_some() {
                 Some(PointerCapture::Delay)
@@ -2303,8 +2310,12 @@ impl PreviewScene {
                     .text
                     .scroll_editor_area(&mut self.input, scene, layout, delta)
             });
-            self.input
-                .scroll_wheel(layout, remaining, event.modifiers.shift && delta.x == 0.0);
+            self.input.scroll_wheel_in_scene(
+                scene,
+                layout,
+                remaining,
+                event.modifiers.shift && delta.x == 0.0,
+            );
         }
     }
 

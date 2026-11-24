@@ -794,6 +794,31 @@ impl Builder<'_> {
         row: Option<(RowKey, usize)>,
         view: Option<&'static str>,
     ) -> Option<NodeId> {
+        if !node.scene_texture_only() {
+            return self.visit_node(node, item, path, row, view);
+        }
+        let name = node.text("texture-source")?;
+        if !xrack_layout::scene_texture_source_active(self.scene, self.layout, path, name) {
+            return None;
+        }
+        // Keep the controls' semantics and actions. Their layout rectangles
+        // are in texture coordinates and have no single window location.
+        let start = self.nodes.len();
+        let result = self.visit_node(node, item, path, row, view);
+        for (_, accessible) in &mut self.nodes[start..] {
+            accessible.clear_bounds();
+        }
+        result
+    }
+
+    fn visit_node(
+        &mut self,
+        node: &Node,
+        item: &LayoutNode,
+        path: &mut Vec<usize>,
+        row: Option<(RowKey, usize)>,
+        view: Option<&'static str>,
+    ) -> Option<NodeId> {
         let rect = item.visible_window_bounds(
             item.tab_header
                 .or_else(|| item.visible.then_some(item.bounds))?,

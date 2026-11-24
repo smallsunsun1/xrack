@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::{collections::BTreeMap, ops::Range};
 
 pub const TEXTURE_TRANSFORM: &str = "KHR_texture_transform";
+pub const MESH_GPU_INSTANCING: &str = "EXT_mesh_gpu_instancing";
+pub const MATERIALS_VARIANTS: &str = "KHR_materials_variants";
 pub const LIGHTS_PUNCTUAL: &str = "KHR_lights_punctual";
 pub const CLEARCOAT: &str = "KHR_materials_clearcoat";
 pub const EMISSIVE_STRENGTH: &str = "KHR_materials_emissive_strength";
@@ -11,7 +13,8 @@ pub const SPECULAR: &str = "KHR_materials_specular";
 pub const TRANSMISSION: &str = "KHR_materials_transmission";
 pub const VOLUME: &str = "KHR_materials_volume";
 pub const DISPERSION: &str = "KHR_materials_dispersion";
-pub const EXTENDED_MATERIALS: [&str; 7] = [
+pub const ANISOTROPY: &str = "KHR_materials_anisotropy";
+pub const EXTENDED_MATERIALS: [&str; 8] = [
     CLEARCOAT,
     EMISSIVE_STRENGTH,
     IOR,
@@ -19,6 +22,7 @@ pub const EXTENDED_MATERIALS: [&str; 7] = [
     TRANSMISSION,
     VOLUME,
     DISPERSION,
+    ANISOTROPY,
 ];
 
 #[derive(Deserialize)]
@@ -33,6 +37,8 @@ pub struct GltfMetadata {
     textures: Vec<GltfTexture>,
     #[serde(default)]
     nodes: Vec<GltfNode>,
+    #[serde(default)]
+    accessors: Vec<GltfAccessor>,
     #[serde(default)]
     cameras: Vec<GltfCamera>,
     #[serde(default)]
@@ -49,6 +55,24 @@ pub struct GltfMetadata {
 struct GltfNode {
     camera: Option<usize>,
     name: Option<String>,
+    #[serde(default)]
+    extensions: GltfNodeExtensions,
+}
+
+#[derive(Deserialize)]
+struct GltfAccessor {
+    count: Option<usize>,
+}
+
+#[derive(Default, Deserialize)]
+struct GltfNodeExtensions {
+    #[serde(rename = "EXT_mesh_gpu_instancing")]
+    instances: Option<GltfInstances>,
+}
+
+#[derive(Deserialize)]
+struct GltfInstances {
+    attributes: BTreeMap<String, usize>,
 }
 
 #[derive(Deserialize)]
@@ -62,7 +86,39 @@ struct GltfCamera {
 struct GltfExtensions {
     #[serde(rename = "KHR_lights_punctual")]
     punctual: Option<GltfLightLibrary>,
+    #[serde(rename = "KHR_materials_variants")]
+    material_variants: Option<GltfVariantLibrary>,
 }
+
+#[derive(Deserialize)]
+struct GltfVariantLibrary {
+    variants: Vec<GltfVariant>,
+}
+
+#[derive(Deserialize)]
+struct GltfVariant {
+    name: String,
+}
+
+#[derive(Default, Deserialize)]
+struct GltfPrimitiveExtensions {
+    #[serde(rename = "KHR_materials_variants")]
+    material_variants: Option<GltfVariantMappings>,
+}
+
+#[derive(Deserialize)]
+struct GltfVariantMappings {
+    mappings: Vec<GltfVariantMapping>,
+}
+
+#[derive(Deserialize)]
+struct GltfVariantMapping {
+    material: usize,
+    variants: Vec<usize>,
+}
+
+#[doc(hidden)]
+pub type MaterialVariantMappings = BTreeMap<(usize, usize), usize>;
 
 #[derive(Deserialize)]
 struct GltfLightLibrary {
@@ -89,6 +145,7 @@ struct GltfSampler {
 
 #[derive(Deserialize)]
 struct GltfMaterial {
+    name: Option<String>,
     #[serde(default)]
     extensions: BTreeMap<String, serde::de::IgnoredAny>,
 }
@@ -107,8 +164,11 @@ struct GltfMesh {
 
 #[derive(Deserialize)]
 struct GltfPrimitive {
+    material: Option<usize>,
     #[serde(default)]
     targets: Vec<serde::de::IgnoredAny>,
+    #[serde(default)]
+    extensions: GltfPrimitiveExtensions,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +182,131 @@ enum MeshExtras {
 }
 
 impl GltfMetadata {
+    pub fn gpu_instance_attributes(
+        &self,
+    ) -> impl Iterator<Item = (usize, &BTreeMap<String, usize>)> {
+        self.nodes.iter().enumerate().filter_map(|(index, node)| {
+            Some((index, &node.extensions.instances.as_ref()?.attributes))
+        })
+    }
+
+    pub fn requires_gpu_instancing(&self) -> bool {
+        self.extensions_required
+            .iter()
+            .any(|name| name == MESH_GPU_INSTANCING)
+    }
+
+    pub fn gpu_instance_groups(
+        &self,
+    ) -> impl Iterator<Item = (usize, Option<&str>, Option<usize>)> {
+        self.gpu_instance_attributes().map(|(index, attributes)| {
+            let count = attributes
+                .values()
+                .next()
+                .and_then(|&index| self.accessors.get(index)?.count)
+                .filter(|&count| {
+                    attributes
+                        .values()
+                        .all(|&i| self.accessors.get(i).and_then(|a| a.count) == Some(count))
+                });
+            (index, self.nodes[index].name.as_deref(), count)
+        })
+    }
+
+    pub fn material_variant_names(&self) -> impl ExactSizeIterator<Item = &str> + Clone {
+        self.extensions
+            .material_variants
+            .as_ref()
+            .map_or(&[][..], |library| library.variants.as_slice())
+            .iter()
+            .map(|variant| variant.name.as_str())
+    }
+
+    pub fn material_variant_selectors(&self) -> Vec<String> {
+        let names = self.material_variant_names();
+        let mut counts = BTreeMap::new();
+        for name in names.clone() {
+            *counts.entry(name).or_insert(0usize) += 1;
+        }
+        let mut selectors = Vec::with_capacity(2 * names.len().min(64));
+        for (index, name) in names.take(64).enumerate() {
+            selectors.push(format!("#{index}"));
+            if counts.get(name) == Some(&1) && !name.is_empty() && !name.starts_with('#') {
+                selectors.push(name.to_owned());
+            }
+        }
+        selectors
+    }
+
+    /// Validate the source indices once before preparing the different materials.
+    #[doc(hidden)]
+    pub fn material_variant_mappings(&self) -> Result<Vec<MaterialVariantMappings>, &'static str> {
+        let names = self.material_variant_names();
+        if names.len() > 64 {
+            return Err("glTF exceeds the 64 material variant limit");
+        }
+        if self.extensions.material_variants.is_some()
+            && (names.len() == 0 || names.clone().any(str::is_empty))
+        {
+            return Err("glTF material variants require nonempty names");
+        }
+        if names.len() == 0
+            && self
+                .extensions_required
+                .iter()
+                .any(|name| name == MATERIALS_VARIANTS)
+        {
+            return Err("glTF requires a material variant library");
+        }
+        let mut variants = vec![BTreeMap::new(); names.len()];
+        for (mesh, source) in self.meshes.iter().enumerate() {
+            for (primitive, part) in source.primitives.iter().enumerate() {
+                let Some(extension) = &part.extensions.material_variants else {
+                    continue;
+                };
+                if extension.mappings.is_empty() {
+                    return Err("glTF material variant mappings must be nonempty");
+                }
+                for mapping in &extension.mappings {
+                    if mapping.material >= self.materials.len() || mapping.variants.is_empty() {
+                        return Err("invalid glTF material variant mapping");
+                    }
+                    for &index in &mapping.variants {
+                        let variant = variants
+                            .get_mut(index)
+                            .ok_or("invalid glTF material variant index")?;
+                        if variant
+                            .insert((mesh, primitive), mapping.material)
+                            .is_some()
+                        {
+                            return Err("glTF primitive maps a material variant more than once");
+                        }
+                    }
+                }
+            }
+        }
+        Ok(variants)
+    }
+
+    pub fn material_name(&self, index: usize) -> Option<&str> {
+        self.materials
+            .get(index)?
+            .name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+    }
+
+    pub fn material_count(&self) -> usize {
+        self.materials.len()
+    }
+
+    pub fn uses_default_material(&self) -> bool {
+        self.meshes
+            .iter()
+            .flat_map(|mesh| &mesh.primitives)
+            .any(|part| part.material.is_none())
+    }
+
     pub fn uses_texture_transform(&self) -> bool {
         self.extensions_used
             .iter()

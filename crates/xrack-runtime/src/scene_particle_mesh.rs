@@ -19,6 +19,7 @@ const CACHE_ENTRIES: usize = 8;
 #[derive(Debug)]
 pub struct ParticleMeshSurface {
     bytes: Vec<u8>,
+    pub(crate) radius: f64,
 }
 
 impl PartialEq for ParticleMeshSurface {
@@ -126,8 +127,12 @@ fn build_surface(asset: &MeshAsset, scale: [f32; 3]) -> Option<ParticleMeshSurfa
     }
     let alias = alias_table(&mut weights);
     let mut bytes = Vec::with_capacity(triangles.len() * TRIANGLE_BYTES);
+    let mut radius_squared = 0.0_f64;
     for (triangle, (probability, alias)) in triangles.into_iter().zip(alias) {
         let [a, b, c] = triangle.points;
+        for point in triangle.points {
+            radius_squared = radius_squared.max(Vector3::from(point).cast::<f64>().norm_squared());
+        }
         for value in a.into_iter().chain([probability]).chain(b) {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
@@ -141,7 +146,10 @@ fn build_surface(asset: &MeshAsset, scale: [f32; 3]) -> Option<ParticleMeshSurfa
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
     }
-    Some(ParticleMeshSurface { bytes })
+    Some(ParticleMeshSurface {
+        bytes,
+        radius: radius_squared.sqrt(),
+    })
 }
 
 fn alias_table(weights: &mut [f64]) -> Vec<(f32, u32)> {

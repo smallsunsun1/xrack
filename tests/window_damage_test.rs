@@ -118,6 +118,89 @@ fn assert_small(work: WindowDamage, screen: [u32; 2]) {
 }
 
 #[test]
+fn background_updates_reuse_geometry_and_remain_dirty_across_a_rebuild() -> TestResult {
+    use xrack_runtime::Color;
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut harness = Harness {
+        incremental: Renderer::with_device(gpu.clone())?,
+        reference: Renderer::with_device(gpu)?,
+        scale: 2.0,
+        width: 640,
+        height: 400,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        sample: Default::default(),
+    };
+    harness.incremental.set_window_damage_forced(true);
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0x18202bff).into());
+    let mut badge = Node::new("Rectangle", None);
+    for (name, value) in [("x", 8.0), ("y", 8.0), ("width", 56.0), ("height", 14.0)] {
+        badge.properties.insert(name, Length(value).into());
+    }
+    let first = Color(0x57cf82a0);
+    badge.properties.insert("background", first.into());
+    badge.mark_paint_only_background();
+    scene.children.push(badge);
+
+    let mut card = Node::new("Rectangle", None);
+    for (name, value) in [("x", 120.0), ("y", 65.0), ("width", 96.0), ("height", 40.0)] {
+        card.properties.insert(name, Length(value).into());
+    }
+    card.properties
+        .insert("background", Color(0xe8edf3ff).into());
+    let mut label = Node::new("Text", None);
+    label.properties.insert("text", "Static".to_owned().into());
+    card.children.push(label);
+    scene.children.push(card);
+
+    let input = Interaction::default();
+    let viewport = Size::new(320.0, 200.0);
+    let layout = Rc::new(
+        harness
+            .incremental
+            .layout_with_input(&scene, viewport, &input),
+    );
+    assert_eq!(
+        harness.compare_prepared(&scene, &layout, &input, true)?.0,
+        WindowDamage::Full
+    );
+    scene.children[0]
+        .properties
+        .insert("background", Color(0xf2ab567a).into());
+    assert_small(
+        harness.compare_prepared(&scene, &layout, &input, true)?.0,
+        [640, 400],
+    );
+    assert_eq!(harness.sample.window_geometry_builds, 0);
+    assert_eq!(
+        harness.compare_prepared(&scene, &layout, &input, true)?.0,
+        WindowDamage::Unchanged
+    );
+
+    // The rebuilt geometry has the same badge color as the original index.
+    // The current backing still contains the second color and needs repainting.
+    scene.children[0]
+        .properties
+        .insert("background", first.into());
+    scene.children[1]
+        .properties
+        .insert("x", Length(128.0).into());
+    let (work, _) = harness.compare(&scene, &input, true)?;
+    assert!(matches!(
+        work,
+        WindowDamage::Partial { .. } | WindowDamage::PartialRegions(_)
+    ));
+    assert_eq!(harness.sample.window_geometry_builds, 1);
+    Ok(())
+}
+
+#[test]
 fn dirty_regions_match_full_frames_through_aot_and_interpreter() -> TestResult {
     let compiled = xrack_compiler::compile(include_str!("window_damage.xr"), "window_damage.xr")?;
     let dynamic = xrack_interpreter::load_mlir(&compiled.mlir)?.create("DamageDemo")?;
@@ -366,13 +449,13 @@ fn prepared_geometry_reuse_keeps_disjoint_damage_out_of_idle_viewports() -> Test
             assert_eq!(harness.sample.window_image_transfers, 1);
             assert_eq!(harness.sample.gpu_submissions, 1);
 
-            // The pointer is outside the viewport, but the button overlaps it.
+            // A button overlapping the viewport requires its full replay,
+            // while the other viewports and unrelated paint groups stay cached.
             input.pointer_move(&scene, &layout, Point { x: 114.0, y: 115.0 });
-            assert_eq!(
-                harness.compare_prepared(&scene, &layout, &input, true)?.0,
-                WindowDamage::Full
-            );
-            assert_eq!(harness.sample.window_image_transfers, 0);
+            let (work, _) = harness.compare_prepared(&scene, &layout, &input, true)?;
+            assert!(matches!(work, WindowDamage::PartialRegions(_)), "{work:?}");
+            assert_eq!(harness.sample.window_image_transfers, 1);
+            assert_eq!(harness.sample.window_geometry_builds, 0);
 
             input.pointer_move(&scene, &layout, Point { x: 160.0, y: 40.0 });
             assert!(input.scroll_y(&layout, 72.0) || input.scroll_y(&layout, -72.0));
@@ -381,18 +464,24 @@ fn prepared_geometry_reuse_keeps_disjoint_damage_out_of_idle_viewports() -> Test
                     .incremental
                     .layout_with_input(&scene, viewport, &input),
             );
-            assert_eq!(
-                harness
-                    .compare_prepared(&scene, &scrolled, &input, false)?
-                    .0,
-                WindowDamage::Full
+            let (work, _) = harness.compare_prepared(&scene, &scrolled, &input, false)?;
+            assert!(
+                matches!(
+                    work,
+                    WindowDamage::Partial { .. } | WindowDamage::PartialRegions(_)
+                ),
+                "{work:?}"
             );
-            assert_eq!(harness.sample.window_image_transfers, 0);
+            assert_eq!(harness.sample.window_image_transfers, 1);
 
             input.pointer_move(&scene, &scrolled, left);
-            assert_eq!(
-                harness.compare_prepared(&scene, &scrolled, &input, true)?.0,
-                WindowDamage::Full
+            let (work, _) = harness.compare_prepared(&scene, &scrolled, &input, true)?;
+            assert!(
+                matches!(
+                    work,
+                    WindowDamage::Partial { .. } | WindowDamage::PartialRegions(_)
+                ),
+                "{work:?}"
             );
             assert_eq!(harness.sample.window_image_transfers, 1);
             input.pointer_move(&scene, &scrolled, right);
@@ -404,10 +493,82 @@ fn prepared_geometry_reuse_keeps_disjoint_damage_out_of_idle_viewports() -> Test
             ));
             assert_eq!(harness.sample.window_geometry_builds, 0);
 
+            let relaid = Rc::new(
+                harness
+                    .incremental
+                    .layout_with_input(&scene, viewport, &input),
+            );
+            assert_eq!(
+                harness.compare_prepared(&scene, &relaid, &input, false)?.0,
+                WindowDamage::Unchanged,
+            );
+
+            let pane = &scene.children[0];
+            let split = pane
+                .children
+                .iter()
+                .position(|node| node.kind == "SplitView")
+                .unwrap();
+            let handle = pane.children[split]
+                .children
+                .iter()
+                .position(|node| node.kind == "SplitHandle")
+                .unwrap();
+            let bounds = relaid.at_path(&[0, split, handle]).unwrap().bounds;
+            input.pointer_move(
+                &scene,
+                &relaid,
+                Point {
+                    x: bounds.x + bounds.width * 0.5,
+                    y: bounds.y + bounds.height * 0.5,
+                },
+            );
+            let (work, _) = harness.compare_prepared(&scene, &relaid, &input, true)?;
+            assert!(matches!(work, WindowDamage::PartialRegions(_)), "{work:?}");
+            assert_eq!(harness.sample.window_geometry_builds, 0);
+
+            let drop_index = pane
+                .children
+                .iter()
+                .position(|node| node.kind == "DropArea")
+                .unwrap();
+            let drop_path = [0, drop_index];
+            let drop_node = scene.at_path(&drop_path).unwrap();
+            input.file_drag_event(
+                &scene,
+                &relaid,
+                xrack_layout::FileDragInput::Moved {
+                    sequence: 1,
+                    point: Point { x: 36.0, y: 20.0 },
+                    paths: vec!["/workspace/mock.txt".to_owned()].into(),
+                },
+            );
+            assert!(input.is_drop_target(drop_node, &drop_path));
+            let (work, dragged) = harness.compare_prepared(&scene, &relaid, &input, false)?;
+            assert_small(work, [harness.width, harness.height]);
+            input.file_drag_event(
+                &scene,
+                &relaid,
+                xrack_layout::FileDragInput::Left { sequence: 1 },
+            );
+            let (work, idle) = harness.compare_prepared(&scene, &relaid, &input, true)?;
+            assert_small(work, [harness.width, harness.height]);
+            assert_ne!(idle, dragged);
+
+            // Changing the background itself affects the entire Pane, so
+            // its new paint must not be limited to the last hover region.
+            let mut recolored = scene.as_ref().clone();
+            recolored.children[0]
+                .properties
+                .insert("background", xrack_runtime::Color(0x624a34ff).into());
+            let (work, recolored) = harness.compare_prepared(&recolored, &relaid, &input, false)?;
+            assert_eq!(work, WindowDamage::Full);
+            assert_ne!(recolored, idle);
+
             // A translucent group across both buttons joins the regions
             // and is replayed once even when both hover states change.
             let mut overlap_scene = scene.as_ref().clone();
-            overlap_scene.children.truncate(2);
+            overlap_scene.children[0].children.truncate(2);
             let mut ribbon = Node::new("Rectangle", None);
             for (name, value) in [("x", 8.0), ("y", 41.0), ("width", 384.0), ("height", 38.0)] {
                 ribbon.properties.insert(name, Length(value).into());
@@ -415,7 +576,7 @@ fn prepared_geometry_reuse_keeps_disjoint_damage_out_of_idle_viewports() -> Test
             ribbon
                 .properties
                 .insert("background", xrack_runtime::Color(0x52a0e288).into());
-            overlap_scene.children.insert(0, ribbon);
+            overlap_scene.children[0].children.insert(0, ribbon);
             harness.incremental.set_window_damage_forced(false);
             harness.incremental.set_window_damage_forced(true);
             let mut input = Interaction::default();
@@ -439,6 +600,55 @@ fn prepared_geometry_reuse_keeps_disjoint_damage_out_of_idle_viewports() -> Test
                 matches!(work, WindowDamage::Partial { width, .. } if width >= (384.0 * scale) as u32),
                 "{work:?}"
             );
+
+            // A large rounded Pane below the scroll region touches its clip
+            // exactly. It must not pull the lower half of the window into a
+            // scroll repaint.
+            let mut touching = scene.as_ref().clone();
+            let children = &mut touching.children[0].children;
+            children.retain(|node| node.kind == "ScrollView");
+            let mut adjacent = Node::new("Pane", None);
+            for (name, value) in [
+                ("x", 0.0),
+                ("y", 128.0),
+                ("width", 400.0),
+                ("height", 112.0),
+                ("border-radius", 4.0),
+                ("border-width", 1.0),
+            ] {
+                adjacent.properties.insert(name, Length(value).into());
+            }
+            adjacent
+                .properties
+                .insert("background", xrack_runtime::Color(0xa34168ff).into());
+            children.push(adjacent);
+            harness.incremental.set_window_damage_forced(false);
+            harness.incremental.set_window_damage_forced(true);
+            let mut input = Interaction::default();
+            let layout = Rc::new(
+                harness
+                    .incremental
+                    .layout_with_input(&touching, viewport, &input),
+            );
+            assert_eq!(
+                harness
+                    .compare_prepared(&touching, &layout, &input, false)?
+                    .0,
+                WindowDamage::Full,
+            );
+            input.pointer_move(&touching, &layout, Point { x: 160.0, y: 48.0 });
+            assert!(input.scroll_y(&layout, 48.0));
+            let layout = Rc::new(
+                harness
+                    .incremental
+                    .layout_with_input(&touching, viewport, &input),
+            );
+            let (work, _) = harness.compare_prepared(&touching, &layout, &input, true)?;
+            assert!(
+                matches!(work, WindowDamage::Partial { y, height, .. } if y + height == (128.0 * scale) as u32),
+                "{work:?}",
+            );
+            assert_eq!(harness.sample.window_image_transfers, 1);
         }
     }
     Ok(())

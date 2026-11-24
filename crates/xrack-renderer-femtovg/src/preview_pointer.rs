@@ -287,7 +287,7 @@ impl Captures {
                 self.last_click = None;
                 continue;
             }
-            sequence.constrain_press_and_hold(cx.layout, None);
+            sequence.constrain_press_and_hold(cx.input, cx.scene, cx.layout, None);
             if sequence.advance_press_and_hold(cx.input, cx.scene, cx.layout, cx.component, now) {
                 changed = true;
                 self.last_click = None;

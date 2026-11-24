@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 18;
+pub const CODEGEN_ABI_VERSION: u32 = 37;
 
 mod animation;
 mod arithmetic;
@@ -26,23 +26,31 @@ mod focus;
 mod font_picker;
 mod geometry;
 #[doc(hidden)]
+pub mod material_shader;
+#[doc(hidden)]
 pub mod scene3d;
 mod scene_animation;
+mod scene_authored_mesh;
 mod scene_bounds;
 mod scene_camera;
 mod scene_cast;
+#[doc(hidden)]
+pub mod scene_effect;
 mod scene_environment;
 mod scene_fog;
 mod scene_hierarchy;
+mod scene_indices;
 mod scene_lighting;
 mod scene_lightmap;
 mod scene_material;
 mod scene_morph;
+mod scene_parametric;
 mod scene_particle_affectors;
 mod scene_particle_mesh;
 mod scene_particle_motion;
 mod scene_particles;
 mod scene_pick;
+mod scene_primitives;
 mod scene_projection;
 mod scene_skin;
 mod scene_surface;
@@ -300,7 +308,8 @@ pub use stack::{StackChange, StackEvent, StackNavigationArgument, StackNavigatio
 pub use stack::{StackNavigation, StackSnapshot, StackState};
 use std::{cell::OnceCell, collections::BTreeMap, rc::Rc, sync::Arc};
 pub use styled_text::{
-    MarkdownStream, StyledLink, StyledRun, StyledText, StyledTextError, TextStyle,
+    MarkdownStream, StyledLink, StyledLinkRewriter, StyledRun, StyledText, StyledTextError,
+    TextStyle,
 };
 pub use swipe_gesture::{SwipeHandle, SwipeSample};
 #[doc(hidden)]
@@ -1684,6 +1693,9 @@ pub enum Value {
     SceneReflections(Arc<[scene3d::ReflectionProbe]>),
     SceneFogVolumes(Arc<[scene3d::FogVolume3D]>),
     #[doc(hidden)]
+    SceneEffects(Arc<scene_effect::Chain>),
+    SceneCaptures(Arc<scene_effect::Captures>),
+    #[doc(hidden)]
     SceneParticleEmitters(Arc<[scene3d::ParticleEmitter]>),
     #[doc(hidden)]
     SceneParticleAffectors(Arc<[scene3d::ParticleAffector]>),
@@ -1920,6 +1932,8 @@ pub enum SceneFeature {
     WindowOverlay = 8,
     AttachedScrollBar = 16,
     ScrollEndpoint = 32,
+    SceneTextureSource = 64,
+    SceneViewport = 128,
 }
 
 /// Scene data shared by clones of a node. Mutating a node detaches its data.
@@ -1928,22 +1942,39 @@ pub enum SceneFeature {
 pub struct NodeData {
     pub kind: &'static str,
     #[doc(hidden)]
+    pub application_window: bool,
+    pub id: Option<&'static str>,
+    owned_id: Option<Arc<str>>,
+    pub properties: BTreeMap<&'static str, Value>,
+    pub children: Vec<Node>,
+    #[doc(hidden)]
+    pub media_frame: Option<MediaFrame>,
+    pub row_key: Option<RowKey>,
+    #[doc(hidden)]
+    pub row_scope: u64,
+    paint_only: u8,
+    static_paint_order: Option<ScenePlanSlice<usize>>,
+    precompiled_path: Option<&'static StaticVectorPath>,
+    loaded_path: Option<LoadedVectorPath>,
+    static_grid: Option<ScenePlanSlice<GridCellSlot>>,
+    metadata: Rc<NodeMetadata>,
+}
+
+/// Optional control and view state shared by copy-on-write scene snapshots.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeMetadata {
+    #[doc(hidden)]
     pub loader_mount: Option<LoaderMount>,
     #[doc(hidden)]
     pub loader_frame: Option<LoaderFrame>,
     #[doc(hidden)]
     pub external_component: Option<ExternalComponent>,
     #[doc(hidden)]
-    pub application_window: bool,
-    pub id: Option<&'static str>,
-    owned_id: Option<Arc<str>>,
-    pub properties: BTreeMap<&'static str, Value>,
-    #[doc(hidden)]
     pub fonts: Option<&'static EmbeddedFonts>,
     #[doc(hidden)]
     pub loaded_fonts: Option<LoadedFonts>,
     pub tumbler_items: Option<TumblerItems>,
-    pub children: Vec<Node>,
     #[doc(hidden)]
     pub table_column_window: TableColumnWindow,
     #[doc(hidden)]
@@ -1954,8 +1985,6 @@ pub struct NodeData {
     pub media: Option<MediaRegistration>,
     #[doc(hidden)]
     pub sound_effects: Vec<MediaRegistration>,
-    #[doc(hidden)]
-    pub media_frame: Option<MediaFrame>,
     #[doc(hidden)]
     pub native_dialogs: Vec<NativeDialogRegistration>,
     pub animations: BTreeMap<&'static str, Animation>,
@@ -2039,14 +2068,24 @@ pub struct NodeData {
     pub split_sizes: Option<Arc<[Option<f32>]>>,
     #[doc(hidden)]
     pub split_resize_handle: Option<SplitResizeHandle>,
-    pub row_key: Option<RowKey>,
-    #[doc(hidden)]
-    pub row_scope: u64,
-    paint_only: u8,
-    static_paint_order: Option<ScenePlanSlice<usize>>,
-    precompiled_path: Option<&'static StaticVectorPath>,
-    loaded_path: Option<LoadedVectorPath>,
-    static_grid: Option<ScenePlanSlice<GridCellSlot>>,
+}
+
+thread_local! {
+    static DEFAULT_NODE_METADATA: Rc<NodeMetadata> = Rc::new(NodeMetadata::default());
+}
+
+impl std::ops::Deref for NodeData {
+    type Target = NodeMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.metadata
+    }
+}
+
+impl std::ops::DerefMut for NodeData {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Rc::make_mut(&mut self.metadata)
+    }
 }
 
 impl std::ops::Deref for Node {
@@ -2075,82 +2114,35 @@ impl PartialEq for Node {
 
 impl NodeData {
     fn same_structure_and_state(&self, other: &Self) -> bool {
-        macro_rules! compare {
-            ($($field:ident),+ $(,)?) => {{
-                // An exhaustive pattern makes new scene fields opt in to comparison.
-                let Self { properties: _, children: _, paint_only: _, media_frame: _, $($field: _,)+ } = self;
-                $(self.$field == other.$field)&&+
-            }};
-        }
-        compare!(
-            kind,
-            loader_mount,
-            loader_frame,
-            external_component,
-            table_column_window,
-            application_window,
-            id,
-            owned_id,
-            fonts,
-            loaded_fonts,
-            tumbler_items,
-            timers,
-            image_playback,
-            media,
-            sound_effects,
-            native_dialogs,
-            animations,
-            state_timings,
-            focus_handle,
-            button_press_handle,
-            range_position_handle,
-            combo_popup_handle,
-            scale_rotate_handle,
-            swipe_handle,
-            swipe_preview,
-            hover_handle,
-            pointer_handle,
-            scroll_event_handler,
-            press_and_hold_handler,
-            viewport_handle,
-            scroll_target,
-            geometry_handle,
-            instance_geometry_handle,
-            initial_focus,
-            key_handlers,
-            list,
-            row_locator,
-            list_row_renderer,
-            row_heights,
-            list_sections,
-            list_section_renderer,
-            combo_option_renderer,
-            list_text_search,
-            standard_list_stamp,
-            table_header,
-            table_column_order,
-            table_selection,
-            table_selection_drag,
-            table_selection_parts,
-            table_cell_editor,
-            tree,
-            stack,
-            action,
-            button_group,
-            radio_option_blocks,
-            tree_selection,
-            split_weights,
-            split_fill_pane,
-            split_fill_index,
-            split_sizes,
-            split_resize_handle,
-            row_key,
-            row_scope,
-            precompiled_path,
-            loaded_path,
-            static_grid,
-            static_paint_order,
-        )
+        // Keep this exhaustive so new scene fields opt in to comparison.
+        let Self {
+            metadata: _,
+            application_window: _,
+            children: _,
+            id: _,
+            kind: _,
+            loaded_path: _,
+            media_frame: _,
+            owned_id: _,
+            paint_only: _,
+            precompiled_path: _,
+            properties: _,
+            row_key: _,
+            row_scope: _,
+            static_grid: _,
+            static_paint_order: _,
+        } = self;
+        self.kind == other.kind
+            && self.application_window == other.application_window
+            && self.id == other.id
+            && self.owned_id == other.owned_id
+            && self.row_key == other.row_key
+            && self.row_scope == other.row_scope
+            && self.precompiled_path == other.precompiled_path
+            && self.loaded_path == other.loaded_path
+            && self.static_grid == other.static_grid
+            && self.static_paint_order == other.static_paint_order
+            && (Rc::ptr_eq(&self.metadata, &other.metadata) || self.metadata == other.metadata)
     }
 }
 
@@ -2312,65 +2304,8 @@ impl Node {
             id,
             owned_id: None,
             properties: BTreeMap::new(),
-            fonts: None,
-            loaded_fonts: None,
-            tumbler_items: None,
             children: Vec::new(),
-            table_column_window: TableColumnWindow::default(),
-            timers: Vec::new(),
-            image_playback: None,
-            media: None,
-            sound_effects: Vec::new(),
             media_frame: None,
-            native_dialogs: Vec::new(),
-            animations: BTreeMap::new(),
-            state_timings: None,
-            focus_handle: None,
-            loader_mount: None,
-            loader_frame: None,
-            external_component: None,
-            button_press_handle: None,
-            range_position_handle: None,
-            combo_popup_handle: None,
-            scale_rotate_handle: None,
-            swipe_handle: None,
-            swipe_preview: None,
-            hover_handle: None,
-            pointer_handle: None,
-            scroll_event_handler: false,
-            press_and_hold_handler: false,
-            viewport_handle: None,
-            scroll_target: None,
-            geometry_handle: None,
-            instance_geometry_handle: None,
-            initial_focus: None,
-            key_handlers: 0,
-            list: None,
-            row_locator: None,
-            list_row_renderer: None,
-            row_heights: None,
-            list_sections: None,
-            list_section_renderer: None,
-            combo_option_renderer: None,
-            list_text_search: None,
-            standard_list_stamp: None,
-            table_header: None,
-            table_column_order: TableColumnOrder::default(),
-            table_selection: None,
-            table_selection_drag: None,
-            table_selection_parts: None,
-            table_cell_editor: None,
-            tree: None,
-            stack: None,
-            action: None,
-            button_group: None,
-            radio_option_blocks: None,
-            tree_selection: None,
-            split_weights: None,
-            split_fill_pane: None,
-            split_fill_index: None,
-            split_sizes: None,
-            split_resize_handle: None,
             row_key: None,
             row_scope: 0,
             paint_only: 0,
@@ -2378,6 +2313,9 @@ impl Node {
             precompiled_path: None,
             loaded_path: None,
             static_grid: None,
+            metadata: DEFAULT_NODE_METADATA
+                .try_with(Clone::clone)
+                .unwrap_or_default(),
         };
         Self(Rc::new(NodeStorage {
             data,
@@ -2456,6 +2394,16 @@ impl Node {
         use SceneFeature::*;
 
         let mut features = 0;
+        if self.kind == "Rectangle"
+            && self
+                .text("texture-source")
+                .is_some_and(|name| !name.is_empty())
+        {
+            features |= SceneTextureSource as u8;
+        }
+        if self.kind == "SceneView3D" {
+            features |= SceneViewport as u8;
+        }
         if self.list.is_some() {
             features |= VirtualList as u8 | ListPreparation as u8;
         }
@@ -2680,7 +2628,15 @@ impl Node {
                 | "scene-saturation"
                 | "scene-lut"
                 | "scene-lut-size"
-                | "scene-lut-strength",
+                | "scene-lut-strength"
+                | "scene-effect"
+                | "scene-effect-strength"
+                | "scene-effect-depth"
+                | "scene-effect-history-revision"
+                | "scene-effect-animate"
+                | "scene-effects"
+                | "scene-color-capture"
+                | "scene-depth-capture",
             ) => 64,
             (
                 _,
@@ -2799,7 +2755,16 @@ impl Node {
     /// Compare this node's paint inputs after the renderer has resolved its position.
     #[doc(hidden)]
     pub fn same_own_paint_except_position(&self, other: &Self) -> bool {
-        let paint_property = |(name, _): &(&&str, &Value)| !matches!(**name, "x" | "y");
+        self.same_own_paint_where(other, |name| !matches!(name, "x" | "y"))
+    }
+
+    #[doc(hidden)]
+    pub fn same_own_paint_except_background(&self, other: &Self) -> bool {
+        self.same_own_paint_where(other, |name| name != "background")
+    }
+
+    fn same_own_paint_where(&self, other: &Self, keep: impl Fn(&str) -> bool) -> bool {
+        let paint_property = |(name, _): &(&&str, &Value)| keep(name);
         self.shares_storage_with(other)
             || self.same_structure_and_state(other)
                 && self.media_frame == other.media_frame
@@ -2939,6 +2904,16 @@ impl Node {
     #[doc(hidden)]
     pub fn can_pull_to_refresh(&self) -> bool {
         self.boolean("pull-to-refresh", false) && !self.boolean("refreshing", false)
+    }
+
+    /// Keep this named source in its texture instead of the 2D window.
+    #[doc(hidden)]
+    pub fn scene_texture_only(&self) -> bool {
+        self.kind == "Rectangle"
+            && self.boolean("texture-only", false)
+            && self
+                .text("texture-source")
+                .is_some_and(|name| !name.is_empty())
     }
 
     pub fn boolean(&self, name: &str, default: bool) -> bool {
@@ -3714,6 +3689,22 @@ mod node_storage_tests {
         for feature in features {
             assert!(!edited.contains_scene_feature(feature));
         }
+    }
+
+    #[test]
+    fn scene_metadata_detaches_only_when_edited() {
+        let mut original = Node::new("Rectangle", None);
+        original.key_handlers = 1;
+        let mut moved = original.clone();
+        moved.properties.insert("x", Length(12.0).into());
+        assert!(Rc::ptr_eq(&original.metadata, &moved.metadata));
+        assert!(original.same_local_layout_inputs(&moved));
+
+        moved.key_handlers = 2;
+        assert!(!Rc::ptr_eq(&original.metadata, &moved.metadata));
+        assert_eq!(original.key_handlers, 1);
+        assert_eq!(moved.key_handlers, 2);
+        assert!(!original.same_local_layout_inputs(&moved));
     }
 
     #[test]

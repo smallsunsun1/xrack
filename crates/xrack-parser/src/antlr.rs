@@ -1020,6 +1020,12 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
         }
     } else if let Some(url) = ctx.environmentUrl() {
         ExprKind::EnvironmentUrl(url.STRING().required("environment URL").get_text())
+    } else if let Some(url) = ctx.textureUrl() {
+        ExprKind::TextureUrl(url.STRING().required("3D texture URL").get_text())
+    } else if let Some(url) = ctx.shaderUrl() {
+        ExprKind::ShaderUrl(url.STRING().required("shader URL").get_text())
+    } else if let Some(url) = ctx.materialShaderUrl() {
+        ExprKind::MaterialShaderUrl(url.STRING().required("material shader URL").get_text())
     } else if let Some(markdown) = ctx.markdown() {
         ExprKind::Markdown(markdown.STRING().required("Markdown string").get_text())
     } else if let Some(translation) = ctx.translation() {

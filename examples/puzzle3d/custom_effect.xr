@@ -1,0 +1,62 @@
+struct EffectActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    yaw: float, pitch: float, roll: float, color: color, scale-x: float, scale-y: float, scale-z: float,
+}
+
+export component CustomEffectDemo inherits Window {
+    title: "XRack · 3D 全息轮廓";
+    width: 480px; height: 310px; resizable: false;
+    background: #172332;
+    in-out property <bool> enabled-effect: true;
+    in-out property <bool> use-depth: true;
+    in-out property <bool> msaa: false;
+    in-out property <float> amount: 1;
+
+    Rectangle {
+        width: 480px; height: 244px; background: #24394e;
+        for stripe in 24: Rectangle {
+            x: stripe * 20px; width: 1px; height: 244px;
+            background: #36526a;
+        }
+    }
+    hologram := SceneView3D {
+        width: 480px; height: 244px;
+        cache-rendering: true;
+        scene-background: #00000000;
+        camera-yaw: 22; camera-pitch: 16; camera-distance: 6;
+        model: [
+            EffectActor {
+                id: "core", mesh: "primitive:box", x: 0, y: 0, z: 0,
+                yaw: 16, pitch: 0, roll: 0, color: #df875a,
+                scale-x: 1.25, scale-y: 1.25, scale-z: 1.25
+            },
+            EffectActor {
+                id: "satellite", mesh: "primitive:sphere", x: 1.7, y: 0.15, z: 0,
+                yaw: 0, pitch: 0, roll: 0, color: #e1cc80,
+                scale-x: 0.43, scale-y: 0.43, scale-z: 0.43
+            }
+        ];
+        scene-hdr: true;
+        multisampling: root.msaa;
+        scene-effect: root.enabled-effect ? @shader-url("effects/hologram.wgsl") : "";
+        scene-effect-depth: root.use-depth;
+        scene-effect-strength: root.amount;
+    }
+    effect-toggle := CheckBox {
+        x: 16px; y: 257px; width: 90px; height: 34px;
+        text: "全息"; checked <=> root.enabled-effect;
+    }
+    depth-toggle := CheckBox {
+        x: 114px; y: 257px; width: 105px; height: 34px;
+        text: "读深度"; checked <=> root.use-depth;
+    }
+    msaa-toggle := CheckBox {
+        x: 225px; y: 257px; width: 100px; height: 34px;
+        text: "4× MSAA"; checked <=> root.msaa;
+    }
+    boost := Slider {
+        x: 332px; y: 257px; width: 132px; height: 34px;
+        minimum: 0; maximum: 1; step: 0.01;
+        value <=> root.amount;
+    }
+}

@@ -36,3 +36,14 @@ fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     }
     return sum / (f32(input_size.x) * f32(input_size.y));
 }
+
+
+@fragment
+fn decode_item(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let texel = textureLoad(scene_color, vec2<i32>(position.xy), 0);
+    let encoded = clamp(texel.rgb / max(texel.a, 1e-6), vec3<f32>(0.0), vec3<f32>(1.0));
+    let linear = select(encoded / 12.92, pow((encoded + 0.055) / 1.055, vec3<f32>(2.4)),
+                        encoded > vec3<f32>(0.04045));
+    // The sRGB target preserves precision when it stores premultiplied radiance.
+    return vec4<f32>(linear * texel.a, texel.a);
+}

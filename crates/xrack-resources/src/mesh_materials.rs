@@ -18,13 +18,13 @@ use std::{
     sync::Arc,
 };
 use xrack_runtime::scene3d::{
-    MeshAlphaMode, MeshClearcoat, MeshDielectric, MeshImage, MeshMaterial, MeshNormalMap, MeshPbr,
-    MeshTexture, MeshTransmission, MeshVolume, TextureColorSpace, TextureFilter, TextureTransform,
-    TextureWrap,
+    MeshAlphaMode, MeshAnisotropy, MeshClearcoat, MeshCullMode, MeshDielectric, MeshImage,
+    MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPbr, MeshTexture, MeshTransmission,
+    MeshVolume, TextureColorSpace, TextureFilter, TextureTransform, TextureWrap,
 };
 use xrack_syntax::gltf_metadata::{
-    CLEARCOAT, DISPERSION, EMISSIVE_STRENGTH, EXTENDED_MATERIALS, IOR, SPECULAR, TEXTURE_TRANSFORM,
-    TRANSMISSION, VOLUME,
+    ANISOTROPY, CLEARCOAT, DISPERSION, EMISSIVE_STRENGTH, EXTENDED_MATERIALS, GltfMetadata, IOR,
+    SPECULAR, TEXTURE_TRANSFORM, TRANSMISSION, VOLUME,
 };
 
 const MAX_DECODED_TEXTURE_BYTES: usize = 64 * 1024 * 1024;
@@ -49,26 +49,35 @@ struct PreparedClearcoat {
     authored_normal_uv: Option<u32>,
 }
 
+#[derive(Default)]
+pub(super) struct MaterialImages {
+    images: BTreeMap<usize, Arc<MeshImage>>,
+    decoded_bytes: usize,
+    mip_bytes: usize,
+}
+
 pub(super) struct Materials<'a> {
     document: &'a gltf::Document,
     base: &'a Path,
     declared: Option<&'a BTreeSet<PathBuf>>,
     buffers: &'a [Vec<u8>],
     inputs: &'a mut BTreeSet<PathBuf>,
-    images: BTreeMap<usize, Arc<MeshImage>>,
+    images: &'a mut MaterialImages,
     material_indices: BTreeMap<Option<usize>, PreparedMaterial>,
     materials: Vec<MeshMaterial>,
-    decoded_bytes: usize,
-    mip_bytes: usize,
+    slots: Vec<MeshMaterialSlot>,
+    metadata: &'a GltfMetadata,
 }
 
 impl<'a> Materials<'a> {
     pub(super) fn new(
         document: &'a gltf::Document,
+        metadata: &'a GltfMetadata,
         base: &'a Path,
         declared: Option<&'a BTreeSet<PathBuf>>,
         buffers: &'a [Vec<u8>],
         inputs: &'a mut BTreeSet<PathBuf>,
+        images: &'a mut MaterialImages,
     ) -> Self {
         Self {
             document,
@@ -76,20 +85,23 @@ impl<'a> Materials<'a> {
             declared,
             buffers,
             inputs,
-            images: BTreeMap::new(),
+            images,
             material_indices: BTreeMap::new(),
             materials: Vec::new(),
-            decoded_bytes: 0,
-            mip_bytes: 0,
+            slots: Vec::new(),
+            metadata,
         }
     }
 
-    pub(super) fn finish(self) -> Vec<MeshMaterial> {
-        self.materials
+    pub(super) fn finish(&mut self) -> (Vec<MeshMaterial>, Vec<MeshMaterialSlot>) {
+        (
+            std::mem::take(&mut self.materials),
+            std::mem::take(&mut self.slots),
+        )
     }
 
     pub(super) fn is_blended(&self, index: usize) -> bool {
-        self.materials[index].alpha_mode == MeshAlphaMode::Blend
+        self.materials[index].is_blended()
     }
 
     pub(super) fn has_volume(&self, index: usize) -> bool {
@@ -187,6 +199,8 @@ impl<'a> Materials<'a> {
                 coat.material
             });
             Some(MeshPbr {
+                anisotropy: self.anisotropy(&material, &mut uv_sets)?.map(Box::new),
+                fresnel: Default::default(),
                 metallic: pbr.metallic_factor(),
                 roughness: pbr.roughness_factor(),
                 emissive: emission(&material)?,
@@ -213,12 +227,35 @@ impl<'a> Materials<'a> {
                         transform: normal.texture.transform,
                     }
                 });
+        let cull_mode =
+            if material.double_sided() && shading.as_ref().and_then(MeshPbr::volume).is_none() {
+                MeshCullMode::None
+            } else {
+                MeshCullMode::Back
+            };
         self.materials.push(MeshMaterial {
+            shader: None,
+            channels: Default::default(),
+            vertex_colors: true,
+            vertex_masks: Default::default(),
+            cull_mode,
+            depth_draw_mode: Default::default(),
+            blend_mode: Default::default(),
             base_color: pbr.base_color_factor(),
             base_texture,
+            base_item: None,
             alpha_mode,
-            double_sided: material.double_sided(),
             pbr: shading,
+        });
+        let source_index = key
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| "glTF material index exceeds u32")?;
+        self.slots.push(MeshMaterialSlot {
+            source_index,
+            name: key
+                .and_then(|index| self.metadata.material_name(index))
+                .map(str::to_owned),
         });
         let entry = PreparedMaterial {
             index,
@@ -270,6 +307,7 @@ impl<'a> Materials<'a> {
             .transpose()?;
         Ok(Some(PreparedClearcoat {
             material: MeshClearcoat {
+                fresnel: Default::default(),
                 amount: clearcoat.clearcoat_factor,
                 roughness: clearcoat.clearcoat_roughness_factor,
                 amount_texture,
@@ -277,6 +315,35 @@ impl<'a> Materials<'a> {
                 normal_map,
             },
             authored_normal_uv,
+        }))
+    }
+
+    fn anisotropy(
+        &mut self,
+        material: &Material<'_>,
+        uv_sets: &mut [Option<u32>; 2],
+    ) -> Result<Option<MeshAnisotropy>, String> {
+        let Some(term) = extension::<Anisotropy>(material, ANISOTROPY)? else {
+            return Ok(None);
+        };
+        if !(0.0..=1.0).contains(&term.anisotropy_strength) || !term.anisotropy_rotation.is_finite()
+        {
+            return Err("glTF anisotropy requires strength in 0..=1 and finite rotation".into());
+        }
+        if material
+            .extension_value("KHR_materials_pbrSpecularGlossiness")
+            .is_some()
+        {
+            return Err("glTF anisotropy requires a metallic-roughness material".into());
+        }
+        let texture = term
+            .anisotropy_texture
+            .map(|info| self.texture_info(info, uv_sets, TextureColorSpace::Linear))
+            .transpose()?;
+        Ok(Some(MeshAnisotropy {
+            strength: term.anisotropy_strength,
+            rotation: term.anisotropy_rotation.rem_euclid(std::f32::consts::TAU),
+            texture,
         }))
     }
 
@@ -394,6 +461,7 @@ impl<'a> Materials<'a> {
                     .transpose()?;
                 Ok::<_, String>(Box::new(MeshVolume {
                     thickness: volume.thickness_factor,
+                    thickness_in_prepared_space: false,
                     dispersion,
                     texture,
                     attenuation_distance: volume.attenuation_distance,
@@ -461,8 +529,8 @@ impl<'a> Materials<'a> {
         };
         let image = self.image(texture.source())?;
         if mip_filter.is_some() && image.size() != [1, 1] && image.prepared_mips(color).is_none() {
-            self.mip_bytes += image.mip_byte_len();
-            if self.mip_bytes > MAX_MIP_BYTES {
+            self.images.mip_bytes += image.mip_byte_len();
+            if self.images.mip_bytes > MAX_MIP_BYTES {
                 return Err(
                     "glTF material textures exceed 64 MiB of prepared mipmap pixels".into(),
                 );
@@ -485,7 +553,7 @@ impl<'a> Materials<'a> {
 
     fn image(&mut self, image: gltf::Image<'_>) -> Result<Arc<MeshImage>, String> {
         let index = image.index();
-        if let Some(image) = self.images.get(&index) {
+        if let Some(image) = self.images.images.get(&index) {
             return Ok(image.clone());
         }
         let pixels = match image.source() {
@@ -516,12 +584,12 @@ impl<'a> Materials<'a> {
                 pixels
             }
         };
-        self.decoded_bytes += pixels.rgba().len();
-        if self.decoded_bytes > MAX_DECODED_TEXTURE_BYTES {
+        self.images.decoded_bytes += pixels.rgba().len();
+        if self.images.decoded_bytes > MAX_DECODED_TEXTURE_BYTES {
             return Err("glTF material textures exceed 64 MiB of decoded pixels".into());
         }
         let pixels = Arc::new(pixels);
-        self.images.insert(index, pixels.clone());
+        self.images.images.insert(index, pixels.clone());
         Ok(pixels)
     }
 }
@@ -639,6 +707,14 @@ impl Default for IndexOfRefraction {
     }
 }
 
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct Anisotropy {
+    anisotropy_strength: f32,
+    anisotropy_rotation: f32,
+    anisotropy_texture: Option<TextureInfo>,
+}
+
 #[derive(Deserialize)]
 #[serde(default)]
 struct Specular {
@@ -708,6 +784,15 @@ fn wrap(wrap: WrappingMode) -> TextureWrap {
         WrappingMode::Repeat => TextureWrap::Repeat,
         WrappingMode::MirroredRepeat => TextureWrap::Mirror,
     }
+}
+
+pub(crate) fn prepare_scene_texture(bytes: &[u8]) -> Result<MeshImage, String> {
+    let image = decode(bytes, None)
+        .map_err(|error| error.replace("glTF material textures", "3D textures"))?;
+    for color in TextureColorSpace::ALL {
+        image.prepare_mips(color);
+    }
+    Ok(image)
 }
 
 fn decode(bytes: &[u8], mime: Option<&str>) -> Result<MeshImage, String> {

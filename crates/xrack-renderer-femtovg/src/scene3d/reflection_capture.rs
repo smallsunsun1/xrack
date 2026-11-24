@@ -7,6 +7,7 @@ use std::{
 
 use xrack_runtime::{
     Node, Value,
+    scene_effect::CaptureRead,
     scene3d::{ReflectionCapture, ReflectionProbe, ReflectionRefresh, ReflectionSlicing},
 };
 
@@ -113,20 +114,33 @@ struct Entry {
 struct CaptureImage {
     capture: ReflectionCapture,
     scene: Node,
+    feeds: Vec<(CaptureRead, u64)>,
     cube: CapturedCube,
 }
 
+pub(super) struct ProbeInputs<'a> {
+    pub scene: &'a Node,
+    pub feeds: &'a [(CaptureRead, u64)],
+    pub live_items: bool,
+}
+
 impl CaptureImage {
-    fn inputs_match(&self, scene: &Node, settings: ReflectionCapture, position: [f32; 3]) -> bool {
+    fn inputs_match(
+        &self,
+        sources: &ProbeInputs<'_>,
+        settings: ReflectionCapture,
+        position: [f32; 3],
+    ) -> bool {
         self.capture == settings
             && self.cube.position == position
             && (settings.refresh == ReflectionRefresh::FirstFrame
-                || same_inputs(&self.scene, scene))
+                || (self.feeds == sources.feeds && same_inputs(&self.scene, sources.scene)))
     }
 }
 
 struct CaptureJob {
     image: CaptureImage,
+    slicing: ReflectionSlicing,
     step: u32,
     recorded_frame: Option<u64>,
     complete: bool,
@@ -139,6 +153,7 @@ pub(super) struct CaptureStep {
     pub levels: Range<u32>,
     pub filter_faces: Range<u32>,
     pub complete: bool,
+    pub use_feeds: bool,
 }
 
 #[derive(Default)]
@@ -151,7 +166,7 @@ pub(super) struct ProbeFrame {
 impl CaptureJob {
     fn next(&mut self, frame: u64) -> CaptureStep {
         let last_mip = self.image.cube.last_mip;
-        let (faces, levels, filter_faces, complete) = match self.image.capture.slicing {
+        let (faces, levels, filter_faces, complete) = match self.slicing {
             ReflectionSlicing::None => (0..FACES, 1..last_mip + 1, 0..FACES, true),
             ReflectionSlicing::IndividualFaces if self.step < FACES => {
                 (self.step..self.step + 1, 0..0, 0..0, false)
@@ -178,6 +193,7 @@ impl CaptureJob {
             levels,
             filter_faces,
             complete,
+            use_feeds: !self.image.feeds.is_empty(),
         }
     }
 }
@@ -228,10 +244,30 @@ impl Reflections {
         }
     }
 
+    pub fn first_frame_ready(
+        &self,
+        (path, slot, generation): (&[usize], usize, u64),
+        probe: &ReflectionProbe,
+        capture: ReflectionCapture,
+        layers: u64,
+    ) -> bool {
+        capture.refresh == ReflectionRefresh::FirstFrame
+            && self.entries.iter().any(|entry| {
+                entry.path == path
+                    && entry.slot == slot
+                    && entry.generation == generation
+                    && entry.layers == layers
+                    && entry.pending.is_none()
+                    && entry.published.as_ref().is_some_and(|image| {
+                        image.capture == capture && image.cube.position == probe.position
+                    })
+            })
+    }
+
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
-        scene: &Node,
+        sources: ProbeInputs<'_>,
         (path, slot, generation): (&[usize], usize, u64),
         probe: &ReflectionProbe,
         capture: ReflectionCapture,
@@ -249,7 +285,7 @@ impl Reflections {
                     && entry
                         .published
                         .as_ref()
-                        .is_some_and(|image| image.inputs_match(scene, capture, probe.position))
+                        .is_some_and(|image| image.inputs_match(&sources, capture, probe.position))
             });
             if let Some(mut entry) = index.and_then(|index| self.entries.remove(index)) {
                 entry.frame = self.frame;
@@ -298,8 +334,18 @@ impl Reflections {
             CaptureJob {
                 image: CaptureImage {
                     capture,
-                    scene: scene.clone(),
+                    scene: sources.scene.clone(),
+                    feeds: sources.feeds.to_vec(),
                     cube,
+                },
+                // Sample a coherent source frame for all six directions.
+                slicing: match capture.slicing {
+                    ReflectionSlicing::IndividualFaces
+                        if sources.live_items || !sources.feeds.is_empty() =>
+                    {
+                        ReflectionSlicing::AllFacesAtOnce
+                    }
+                    slicing => slicing,
                 },
                 step: 0,
                 recorded_frame: None,
@@ -311,7 +357,8 @@ impl Reflections {
         if step.is_some() && job.complete {
             output = Some(job.image.cube.clone());
         }
-        let needs_redraw = !job.complete || !job.image.inputs_match(scene, capture, probe.position);
+        let needs_redraw =
+            !job.complete || !job.image.inputs_match(&sources, capture, probe.position);
         self.entries.push_front(entry);
         ProbeFrame {
             output,
@@ -400,7 +447,7 @@ impl Filter {
     }
 }
 
-fn same_inputs(a: &Node, b: &Node) -> bool {
+pub(super) fn same_inputs(a: &Node, b: &Node) -> bool {
     a.properties.len() == b.properties.len()
         && a.properties
             .iter()
@@ -415,7 +462,7 @@ fn same_inputs(a: &Node, b: &Node) -> bool {
 }
 
 /// Capture inputs have no dependencies on the observing camera or screen effects.
-pub(super) fn capture_node(view: &Node) -> Node {
+pub(super) fn capture_node(view: &Node, layers: u64) -> Node {
     let mut scene = Node::new("SceneView3D", None);
     for name in [
         "model",
@@ -437,6 +484,42 @@ pub(super) fn capture_node(view: &Node) -> Node {
     ] {
         if let Some(value) = view.properties.get(name) {
             scene.properties.insert(name, value.clone());
+        }
+    }
+    if let Some(Value::SceneParticleEmitters(emitters)) = view.properties.get("particle-emitters") {
+        let eligible = |emitter: &&xrack_runtime::scene3d::ParticleEmitter| {
+            emitter.layers & layers != 0
+                && emitter
+                    .model
+                    .as_ref()
+                    .is_some_and(|model| model.casts_reflections)
+        };
+        let reflected_layers = emitters
+            .iter()
+            .filter(eligible)
+            .fold(0, |mask, emitter| mask | emitter.layers);
+        if reflected_layers != 0 {
+            scene.properties.insert(
+                "particle-emitters",
+                Value::SceneParticleEmitters(emitters.iter().filter(eligible).cloned().collect()),
+            );
+            if let Some(time) = view.properties.get("particle-time") {
+                scene.properties.insert("particle-time", time.clone());
+            }
+            if let Some(Value::SceneParticleAffectors(affectors)) =
+                view.properties.get("particle-affectors")
+            {
+                scene.properties.insert(
+                    "particle-affectors",
+                    Value::SceneParticleAffectors(
+                        affectors
+                            .iter()
+                            .copied()
+                            .filter(|affector| affector.layers & reflected_layers & layers != 0)
+                            .collect(),
+                    ),
+                );
+            }
         }
     }
     scene

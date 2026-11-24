@@ -1,0 +1,67 @@
+struct PickActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, visible: bool, pickable: bool, layers: int,
+    camera-kind: string, camera-height: float, camera-near: float,
+}
+
+export component InstancePickingDemo inherits Window {
+    title: "XRack · Pick individual instances";
+    width: 640px; height: 374px;
+    background: #1a2638;
+
+    in-out property <int> target-row: 1;
+    in-out property <int> target-node: 2;
+    in-out property <int> target-instance: 1;
+    in-out property <int> mask: 3;
+    in-out property <float> near: 0.1;
+    in-out property <bool> covered: false;
+    in-out property <bool> pickable: true;
+    in-out property <point2d> pointer: Point2D.new(320px, 160px);
+    property <point2d> viewport: Point2D.new(640px, 320px);
+    property <point3d> origin: Point3D.new(0, 0, 8);
+    property <vector3d> direction: Vector3D.new(0, 0, -1);
+
+    property <PickActor> base: PickActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, visible: true, pickable: true, layers: 1,
+        camera-kind: "", camera-height: 4, camera-near: 0.1,
+    };
+    property <[PickActor]> world: [
+        PickActor { id: "eye", z: 8, camera-kind: "orthographic", camera-near: root.near, ..root.base },
+        PickActor { id: "stack", mesh: @mesh-url("models/instance-picking.gltf"),
+                    layers: 2, pickable: root.pickable, ..root.base },
+        PickActor { id: "cover", mesh: "primitive:box", z: 2, color: #4a7faa, visible: root.covered, ..root.base }
+    ];
+
+    out property <[hit3d]> hits: Scene3D.hit-all-camera(root.world, "eye", root.viewport, root.pointer, root.mask);
+    out property <[hit3d]> ray-hits: Scene3D.ray-hit-all(root.world, root.origin, root.direction, 64, root.mask);
+    out property <[hit3d]> selected-hits: Scene3D.hit-subset-camera(root.world, "eye", root.viewport, root.pointer, [1, 1], root.mask);
+    out property <hit3d> nearest: Scene3D.hit-camera(root.world, "eye", root.viewport, root.pointer, root.mask);
+    out property <hit3d> exact: Scene3D.hit-instance-camera(root.world, "eye", root.viewport, root.pointer,
+        root.target-row, root.target-node, root.target-instance, root.mask);
+    out property <hit3d> world-exact: Scene3D.ray-hit-instance(root.world, root.origin, root.direction, 64,
+        root.target-row, root.target-node, root.target-instance, root.mask);
+    out property <hit3d> orbit-exact: Scene3D.hit-instance(root.world, 0, 0, 8, root.viewport, root.pointer,
+        root.target-row, root.target-node, root.target-instance, root.mask);
+
+    SceneView3D {
+        width: 640px; height: 320px; camera: "eye"; model: root.world; layer-mask: root.mask;
+        scene-background: #263b54;
+    }
+    Label {
+        x: 16px; y: 334px; width: 310px; height: 28px;
+        text: root.exact.valid
+            ? "Node " + root.exact.mesh-node-index + " · Instance " + root.exact.instance-index
+            : "No instance at that address";
+    }
+    cover-toggle := CheckBox { x: 332px; y: 332px; width: 108px; text: "Cover"; checked <=> root.covered; }
+    switch-button := Button {
+        x: 464px; y: 332px; width: 156px; text: "Switch instance";
+        clicked => {
+            root.target-node = root.target-node == 2 ? 0 : 2;
+            root.target-instance = root.target-node == 2 ? 1 : 0;
+        }
+    }
+}

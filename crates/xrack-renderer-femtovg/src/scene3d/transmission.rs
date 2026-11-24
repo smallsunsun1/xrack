@@ -13,7 +13,7 @@ pub(super) struct Transmission {
 
 pub(super) struct Capture {
     size: [u32; 2],
-    hdr: bool,
+    format: wgpu::TextureFormat,
     pub sampled: wgpu::TextureView,
     pub levels: Vec<wgpu::TextureView>,
 }
@@ -31,7 +31,7 @@ impl Transmission {
         let levels = 1 + (max_mip * blur).ceil() as u32;
         let reusable = self.captures.iter().position(|capture| {
             capture.size == size
-                && capture.hdr == output.hdr
+                && capture.format == output.format()
                 && capture.levels.len() >= levels as usize
         });
         let capture = reusable
@@ -70,7 +70,7 @@ impl Capture {
         });
         Self {
             size,
-            hdr: output.hdr,
+            format: output.format(),
             sampled: texture.create_view(&Default::default()),
             levels: (0..mip_level_count)
                 .map(|base_mip_level| {
@@ -95,16 +95,10 @@ impl Capture {
         let mut size = self.size;
         for pair in self.levels[..levels].windows(2) {
             size = size.map(|side| (side / 2).max(1));
-            area.resolve(device, encoder, (&pair[0], &pair[1]), size, self.hdr);
+            area.resolve(device, encoder, (&pair[0], &pair[1]), size);
         }
         if let Some(target) = seed {
-            area.resolve(
-                device,
-                encoder,
-                (&self.levels[0], target),
-                self.size,
-                self.hdr,
-            );
+            area.resolve(device, encoder, (&self.levels[0], target), self.size);
         }
     }
 }

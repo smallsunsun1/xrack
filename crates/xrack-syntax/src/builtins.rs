@@ -633,6 +633,8 @@ operations!(GeometryFunction {
     MapVector => "map-vector",
     Pick3D => "pick-3d",
     PickCamera3D => "pick-camera-3d",
+    PickInRect3D => "pick-in-rect-3d",
+    PickInRectCamera3D => "pick-in-rect-camera-3d",
     Point3D => "point-3d",
     Vector3D => "vector-3d",
     Hit3D => "hit-3d",
@@ -641,6 +643,17 @@ operations!(GeometryFunction {
     HitAll3D => "hit-all-3d",
     HitAllCamera3D => "hit-all-camera-3d",
     RayHitAll3D => "ray-hit-all-3d",
+    HitRow3D => "hit-row-3d",
+    HitRowCamera3D => "hit-row-camera-3d",
+    RayHitRow3D => "ray-hit-row-3d",
+    HitInstance3D => "hit-instance-3d",
+    HitInstanceCamera3D => "hit-instance-camera-3d",
+    RayHitInstance3D => "ray-hit-instance-3d",
+    HitSubset3D => "hit-subset-3d",
+    HitSubsetCamera3D => "hit-subset-camera-3d",
+    RayHitSubset3D => "ray-hit-subset-3d",
+    ClosestPoint3D => "closest-point-3d",
+    ClosestPointOn3D => "closest-point-on-3d",
     SphereCast3D => "sphere-cast-3d",
     SphereOverlap3D => "sphere-overlap-3d",
     SphereSlide3D => "sphere-slide-3d",
@@ -649,6 +662,8 @@ operations!(GeometryFunction {
     ProjectCamera3D => "project-camera-3d",
     Unproject3D => "unproject-3d",
     UnprojectCamera3D => "unproject-camera-3d",
+    MapPosition3D => "map-position-3d",
+    MapDirection3D => "map-direction-3d",
 });
 
 impl GeometryFunction {
@@ -657,12 +672,25 @@ impl GeometryFunction {
             self,
             Self::Pick3D
                 | Self::PickCamera3D
+                | Self::PickInRect3D
+                | Self::PickInRectCamera3D
                 | Self::Hit3D
                 | Self::HitCamera3D
                 | Self::HitAll3D
                 | Self::HitAllCamera3D
                 | Self::RayHit3D
                 | Self::RayHitAll3D
+                | Self::HitRow3D
+                | Self::HitRowCamera3D
+                | Self::RayHitRow3D
+                | Self::HitInstance3D
+                | Self::HitInstanceCamera3D
+                | Self::RayHitInstance3D
+                | Self::HitSubset3D
+                | Self::HitSubsetCamera3D
+                | Self::RayHitSubset3D
+                | Self::ClosestPoint3D
+                | Self::ClosestPointOn3D
                 | Self::SphereCast3D
                 | Self::SphereOverlap3D
                 | Self::SphereSlide3D
@@ -675,17 +703,34 @@ impl GeometryFunction {
             Self::Point | Self::MapPoint => Type::Point2D,
             Self::Vector | Self::MapVector => Type::Vector2D,
             Self::Pick3D | Self::PickCamera3D => Type::String,
+            Self::PickInRect3D | Self::PickInRectCamera3D => Type::IntList,
             Self::Point3D
             | Self::Unproject3D
             | Self::UnprojectCamera3D
+            | Self::MapPosition3D
             | Self::SphereSlide3D
             | Self::SphereWalk3D => Type::Point3D,
             Self::Project3D | Self::ProjectCamera3D => Type::ProjectedPoint3D,
-            Self::Vector3D => Type::Vector3D,
-            Self::Hit3D | Self::HitCamera3D | Self::RayHit3D | Self::SphereCast3D => Type::Hit3D,
-            Self::HitAll3D | Self::HitAllCamera3D | Self::RayHitAll3D | Self::SphereOverlap3D => {
-                Type::Hit3DList
-            }
+            Self::Vector3D | Self::MapDirection3D => Type::Vector3D,
+            Self::Hit3D
+            | Self::HitCamera3D
+            | Self::RayHit3D
+            | Self::HitRow3D
+            | Self::HitRowCamera3D
+            | Self::RayHitRow3D
+            | Self::HitInstance3D
+            | Self::HitInstanceCamera3D
+            | Self::RayHitInstance3D
+            | Self::ClosestPoint3D
+            | Self::ClosestPointOn3D
+            | Self::SphereCast3D => Type::Hit3D,
+            Self::HitAll3D
+            | Self::HitAllCamera3D
+            | Self::RayHitAll3D
+            | Self::SphereOverlap3D
+            | Self::HitSubset3D
+            | Self::HitSubsetCamera3D
+            | Self::RayHitSubset3D => Type::Hit3DList,
             _ => Type::Transform2D,
         }
     }
@@ -694,14 +739,29 @@ impl GeometryFunction {
             self,
             Self::Pick3D
                 | Self::PickCamera3D
+                | Self::PickInRect3D
+                | Self::PickInRectCamera3D
                 | Self::ProjectCamera3D
                 | Self::UnprojectCamera3D
+                | Self::MapPosition3D
+                | Self::MapDirection3D
                 | Self::Hit3D
                 | Self::HitCamera3D
                 | Self::RayHit3D
                 | Self::HitAll3D
                 | Self::HitAllCamera3D
                 | Self::RayHitAll3D
+                | Self::HitRow3D
+                | Self::HitRowCamera3D
+                | Self::RayHitRow3D
+                | Self::HitInstance3D
+                | Self::HitInstanceCamera3D
+                | Self::RayHitInstance3D
+                | Self::HitSubset3D
+                | Self::HitSubsetCamera3D
+                | Self::RayHitSubset3D
+                | Self::ClosestPoint3D
+                | Self::ClosestPointOn3D
                 | Self::SphereCast3D
                 | Self::SphereOverlap3D
                 | Self::SphereSlide3D
@@ -908,7 +968,6 @@ const VECTOR: Parameter = Parameter::with_type("vector: vector2d", &Type::Vector
 
 pub const SCENE_OBJECT_FIELDS: &[(&str, Type)] = &[
     ("id", Type::String),
-    ("mesh", Type::String),
     ("x", Type::Float),
     ("y", Type::Float),
     ("z", Type::Float),
@@ -921,7 +980,184 @@ pub const SCENE_OBJECT_FIELDS: &[(&str, Type)] = &[
     ("color", Type::Color),
 ];
 
+/// Map properties that accept RGBA channel selectors. The boolean allows RGB.
+pub const SCENE_MATERIAL_CHANNEL_FIELDS: &[(&str, bool)] = &[
+    ("base-color-channel", true),
+    ("emissive-channel", true),
+    ("metalness-channel", false),
+    ("roughness-channel", false),
+    ("occlusion-channel", false),
+    ("specular-channel", false),
+    ("specular-color-channel", true),
+    ("transmission-channel", false),
+    ("thickness-channel", false),
+    ("clearcoat-channel", false),
+    ("clearcoat-roughness-channel", false),
+];
+
+pub const SCALAR_TEXTURE_CHANNELS: &[(&str, &str)] = &[
+    ("r", "Read the red channel"),
+    ("g", "Read the green channel"),
+    ("b", "Read the blue channel"),
+    ("a", "Read the alpha channel"),
+];
+
+pub const COLOR_TEXTURE_CHANNELS: &[(&str, &str)] = &[
+    ("rgb", "Use the texture color and alpha"),
+    SCALAR_TEXTURE_CHANNELS[0],
+    SCALAR_TEXTURE_CHANNELS[1],
+    SCALAR_TEXTURE_CHANNELS[2],
+    SCALAR_TEXTURE_CHANNELS[3],
+];
+
+pub const SCENE_VERTEX_MASK_FIELDS: &[&str] = &[
+    "vertex-metalness-channel",
+    "vertex-roughness-channel",
+    "vertex-occlusion-channel",
+    "vertex-specular-channel",
+    "vertex-normal-channel",
+    "vertex-clearcoat-channel",
+    "vertex-clearcoat-roughness-channel",
+    "vertex-clearcoat-normal-channel",
+    "vertex-transmission-channel",
+    "vertex-thickness-channel",
+];
+
+pub const SCENE_VERTEX_MASK_CHANNELS: &[(&str, &str)] = &[
+    ("none", "Use the material factor without a vertex mask"),
+    SCALAR_TEXTURE_CHANNELS[0],
+    SCALAR_TEXTURE_CHANNELS[1],
+    SCALAR_TEXTURE_CHANNELS[2],
+    SCALAR_TEXTURE_CHANNELS[3],
+];
+
+pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
+    ("material-shader", Type::String),
+    ("shader-parameters", Type::Vector3D),
+    ("shader-displacement", Type::Float),
+    ("base-item", Type::String),
+    ("normal-strength", Type::Float),
+    ("clearcoat-normal-strength", Type::Float),
+    ("enabled", Type::Bool),
+    ("vertex-colors", Type::Bool),
+    ("base-color", Type::Color),
+    ("metalness", Type::Float),
+    ("anisotropy-strength", Type::Float),
+    ("anisotropy-rotation", Type::Float),
+    ("roughness", Type::Float),
+    ("emissive-color", Type::Color),
+    ("emissive-strength", Type::Float),
+    ("alpha-mode", Type::String),
+    ("blend-mode", Type::String),
+    ("depth-draw-mode", Type::String),
+    ("cull-mode", Type::String),
+    ("alpha-cutoff", Type::Float),
+    ("unlit", Type::Bool),
+    ("clearcoat", Type::Float),
+    ("clearcoat-roughness", Type::Float),
+    ("transmission", Type::Float),
+    ("index-of-refraction", Type::Float),
+    ("occlusion-amount", Type::Float),
+    ("specular-amount", Type::Float),
+    ("specular-color", Type::Color),
+    ("thickness", Type::Float),
+    ("attenuation-color", Type::Color),
+    ("attenuation-distance", Type::Float),
+    ("dispersion", Type::Float),
+    ("fresnel-power", Type::Float),
+    ("fresnel-scale", Type::Float),
+    ("fresnel-bias", Type::Float),
+    ("fresnel-scale-bias-enabled", Type::Bool),
+    ("clearcoat-fresnel-power", Type::Float),
+    ("clearcoat-fresnel-scale", Type::Float),
+    ("clearcoat-fresnel-bias", Type::Float),
+    ("clearcoat-fresnel-scale-bias-enabled", Type::Bool),
+];
+
+pub const SCENE_MATERIAL_MAP_FIELDS: &[&str] = &[
+    "base-color-map",
+    "metallic-roughness-map",
+    "emissive-map",
+    "occlusion-map",
+    "normal-map",
+    "clearcoat-map",
+    "clearcoat-roughness-map",
+    "clearcoat-normal-map",
+    "transmission-map",
+    "specular-map",
+    "specular-color-map",
+    "thickness-map",
+    "anisotropy-map",
+];
+
+pub const SCENE_TEXTURE_FIELDS: &[(&str, Type)] = &[
+    ("source", Type::String),
+    ("wrap-u", Type::String),
+    ("wrap-v", Type::String),
+    ("min-filter", Type::String),
+    ("mag-filter", Type::String),
+    ("mip-filter", Type::String),
+    ("uv-set", Type::Int),
+    ("uv-scale-u", Type::Float),
+    ("uv-scale-v", Type::Float),
+    ("uv-offset-u", Type::Float),
+    ("uv-offset-v", Type::Float),
+    ("uv-rotation", Type::Float),
+];
+
+pub const SCENE_TEXTURE_WRAP: &[(&str, &str)] = &[
+    ("repeat", "Tile at the UV boundary"),
+    ("clamp", "Extend the edge texels"),
+    ("mirror", "Mirror every other tile"),
+];
+
+pub const SCENE_TEXTURE_FILTER: &[(&str, &str)] = &[
+    ("nearest", "Select the nearest texel"),
+    ("linear", "Interpolate between neighboring texels"),
+];
+
+pub const SCENE_TEXTURE_MIPS: &[(&str, &str)] = &[
+    ("none", "Use only the source level"),
+    ("nearest", "Select the nearest mip level"),
+    ("linear", "Interpolate between mip levels"),
+];
+
+pub const SCENE_MATERIAL_BLEND_MODES: &[(&str, &str)] = &[
+    ("source-over", "Composite with source alpha"),
+    ("screen", "Lighten using inverted multiplication"),
+    ("multiply", "Darken by multiplying colors"),
+];
+
+pub const SCENE_DEPTH_DRAW_MODES: &[(&str, &str)] = &[
+    (
+        "opaque-only",
+        "Write depth for opaque and alpha-cutout meshes",
+    ),
+    ("always", "Write depth for every surviving color fragment"),
+    ("never", "Keep depth testing and disable depth writes"),
+    (
+        "opaque-prepass",
+        "Write depth for opaque texels in a dedicated pass",
+    ),
+];
+
+pub const SCENE_CULL_MODES: &[(&str, &str)] = &[
+    ("back", "Discard back-facing triangles"),
+    ("front", "Discard front-facing triangles"),
+    ("none", "Render and pick both sides"),
+];
+
+pub const SCENE_ALPHA_MODES: &[(&str, &str)] = &[
+    ("opaque", "Opaque surface with depth writes"),
+    ("mask", "Cut out surfaces below alpha-cutoff"),
+    ("blend", "Composite partially transparent surfaces"),
+];
+
 pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("mesh", Type::String),
+    ("material-variant", Type::String),
+    ("instance-of", Type::String),
+    ("instance-template", Type::Bool),
     ("animation", Type::String),
     ("animation-time", Type::Float),
     ("animation-loop", Type::Bool),
@@ -971,6 +1207,210 @@ pub const SCENE_PARTICLE_FIELDS: &[(&str, Type)] = &[
     ("lifetime", Type::Float),
 ];
 
+pub const SCENE_CAPTURE_FIELDS: &[(&str, Type)] = &[("name", Type::String)];
+pub const SCENE_CAPTURE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("camera", Type::String),
+    ("color-source", Type::String),
+    ("color-format", Type::String),
+    ("depth-source", Type::String),
+    ("depth-clear", Type::Float),
+    ("stencil-clear", Type::Int),
+    ("stencil-source", Type::String),
+    ("renderables", Type::String),
+    ("layers", Type::Int),
+    ("scale", Type::Float),
+    ("background", Type::Color),
+    ("enabled", Type::Bool),
+];
+
+pub const SCENE_CAPTURE_RECT_FIELDS: &[&str] = &["x", "y", "width", "height"];
+
+pub const SCENE_CAPTURE_PIPELINE_FIELDS: &[(&str, Type)] = &[
+    ("enabled", Type::Bool),
+    ("depth-test", Type::Bool),
+    ("depth-write", Type::Bool),
+    ("depth-compare", Type::String),
+    ("color-write", Type::Bool),
+    ("polygon-mode", Type::String),
+    ("cull-mode", Type::String),
+    ("blend-mode", Type::String),
+];
+
+pub const SCENE_CAPTURE_POLYGON_MODES: &[(&str, &str)] = &[
+    ("fill", "Rasterize the complete triangle surface"),
+    ("line", "Rasterize triangle edges as a wireframe"),
+];
+
+pub const SCENE_CAPTURE_STENCIL_FIELDS: &[(&str, Type)] = &[
+    ("enabled", Type::Bool),
+    ("reference", Type::Int),
+    ("read-mask", Type::Int),
+    ("write-mask", Type::Int),
+    ("compare", Type::String),
+    ("fail", Type::String),
+    ("depth-fail", Type::String),
+    ("pass", Type::String),
+];
+
+pub const SCENE_CAPTURE_STENCIL_OPS: &[(&str, &str)] = &[
+    ("keep", "Preserve the existing stencil value"),
+    ("zero", "Write zero"),
+    ("replace", "Write the stencil reference"),
+    ("invert", "Invert each selected bit"),
+    ("increment-clamp", "Increment up to 255"),
+    ("decrement-clamp", "Decrement down to zero"),
+    ("increment-wrap", "Increment, wrapping from 255 to zero"),
+    ("decrement-wrap", "Decrement, wrapping from zero to 255"),
+];
+
+pub const SCENE_CAPTURE_DEPTH_COMPARES: &[(&str, &str)] = &[
+    ("material", "Use the material's depth comparison"),
+    ("never", "Reject every fragment"),
+    ("less", "Accept fragments nearer than the stored depth"),
+    ("less-equal", "Accept nearer fragments and equal depth"),
+    ("equal", "Accept fragments at the stored depth"),
+    ("not-equal", "Reject fragments at the stored depth"),
+    ("greater-equal", "Accept farther fragments and equal depth"),
+    ("greater", "Accept fragments farther than the stored depth"),
+    ("always", "Accept every fragment"),
+];
+
+pub const SCENE_CAPTURE_BLENDS: &[(&str, &str)] = &[
+    ("material", "Use the material's blend mode"),
+    ("replace", "Write incoming color directly"),
+    (
+        "source-over",
+        "Composite premultiplied color over the existing color",
+    ),
+    ("additive", "Add incoming color to the existing color"),
+    ("multiply", "Multiply existing color"),
+    ("screen", "Screen blend with existing color"),
+];
+
+pub const SCENE_CAPTURE_TARGET_BLEND_FIELDS: &[(&str, Type)] = &[
+    ("enabled", Type::Bool),
+    ("blend-enabled", Type::Bool),
+    ("write-mask", Type::Int),
+    ("constant", Type::Color),
+    ("source-color", Type::String),
+    ("destination-color", Type::String),
+    ("color-operation", Type::String),
+    ("source-alpha", Type::String),
+    ("destination-alpha", Type::String),
+    ("alpha-operation", Type::String),
+];
+
+pub const SCENE_CAPTURE_BLEND_FACTORS: &[(&str, &str)] = &[
+    ("zero", "Multiply by zero"),
+    ("one", "Multiply by one"),
+    ("src", "Multiply by the fragment channels"),
+    (
+        "one-minus-src",
+        "Multiply by one minus the fragment channels",
+    ),
+    ("src-alpha", "Multiply by the fragment alpha"),
+    (
+        "one-minus-src-alpha",
+        "Multiply by one minus the fragment alpha",
+    ),
+    ("dst", "Multiply by the attachment channels"),
+    (
+        "one-minus-dst",
+        "Multiply by one minus the attachment channels",
+    ),
+    ("dst-alpha", "Multiply by the attachment alpha"),
+    (
+        "one-minus-dst-alpha",
+        "Multiply by one minus the attachment alpha",
+    ),
+    (
+        "src-alpha-saturated",
+        "Multiply RGB by min(source alpha, 1 - destination alpha)",
+    ),
+    ("constant", "Multiply by the blend constant"),
+    (
+        "one-minus-constant",
+        "Multiply by one minus the blend constant",
+    ),
+];
+
+pub const SCENE_CAPTURE_BLEND_OPERATIONS: &[(&str, &str)] = &[
+    ("add", "Add the scaled fragment and attachment values"),
+    (
+        "subtract",
+        "Subtract the scaled attachment from the scaled fragment",
+    ),
+    (
+        "reverse-subtract",
+        "Subtract the scaled fragment from the scaled attachment",
+    ),
+    ("min", "Keep the lower unscaled channel value"),
+    ("max", "Keep the higher unscaled channel value"),
+];
+
+pub const SCENE_CAPTURE_RENDERABLES: &[(&str, &str)] = &[
+    ("all", "Render opaque and transparent geometry"),
+    ("opaque", "Render opaque and alpha-masked geometry"),
+    (
+        "transparent",
+        "Render blended geometry and translucent particles",
+    ),
+    (
+        "none",
+        "Compose capture inputs over the background without geometry",
+    ),
+];
+
+pub const SCENE_EFFECT_FIELDS: &[(&str, Type)] = &[("shader", Type::String)];
+
+pub const SCENE_EFFECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("strength", Type::Float),
+    ("depth", Type::Bool),
+    ("scale", Type::Float),
+    ("parameters", Type::Vector3D),
+    ("output", Type::String),
+    ("input", Type::String),
+    ("history", Type::Bool),
+    ("output-format", Type::String),
+];
+
+pub const SCENE_EFFECT_FORMATS: &[(&str, &str)] = &[
+    (
+        "rgba16f",
+        "Four 16-bit float channels for HDR color and alpha",
+    ),
+    (
+        "rgba8",
+        "Four normalized 8-bit channels for linear color and alpha",
+    ),
+    ("rg16f", "Two 16-bit float data channels"),
+    ("rg8", "Two normalized 8-bit data channels"),
+    ("r16f", "One 16-bit float data channel"),
+    ("r8", "One normalized 8-bit data channel"),
+];
+
+pub const SCENE_CAPTURE_ATTACHMENTS: &[(&str, &str)] = &[
+    ("color", "Scene-linear HDR color"),
+    ("depth", "Raw camera depth, sampled at the nearest pixel"),
+    (
+        "normal-roughness",
+        "World-space normal and material roughness",
+    ),
+    (
+        "base-color-metalness",
+        "Linear base color and material metalness",
+    ),
+    (
+        "emissive-occlusion",
+        "Linear HDR emission and material occlusion",
+    ),
+];
+
+pub const SCENE_EFFECT_COLOR_SPACES: &[(&str, &str)] = &[
+    ("srgb", "Decode a color texture from sRGB to linear RGB"),
+    ("linear", "Read texture channels as linear data"),
+];
+
 pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("end-size", Type::Float),
     ("start-time", Type::Float),
@@ -1013,6 +1453,13 @@ pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("trail-end-scale", Type::Float),
     ("trail-fade", Type::Float),
     ("trail-eol-fade", Type::Float),
+    ("particle-model", Type::String),
+    ("particle-rotation", Type::Vector3D),
+    ("particle-rotation-variation", Type::Vector3D),
+    ("particle-angular-velocity", Type::Vector3D),
+    ("particle-casts-shadow", Type::Bool),
+    ("particle-receives-shadow", Type::Bool),
+    ("particle-casts-reflections", Type::Bool),
 ];
 
 pub const SCENE_PARTICLE_AFFECTOR_FIELDS: &[(&str, Type)] = &[("affector-kind", Type::String)];
@@ -1205,6 +1652,72 @@ pub const REFLECTION_TIME_SLICING: &[(&str, &str)] = &[
     ),
 ];
 
+pub const SCENE_MESH_VERTEX_FIELDS: &[(&str, Type)] = &[
+    ("position", Type::Point3D),
+    ("normal", Type::Vector3D),
+    ("u", Type::Float),
+    ("v", Type::Float),
+    ("u1", Type::Float),
+    ("v1", Type::Float),
+    ("color", Type::Color),
+];
+
+pub const SCENE_MESH_SUBSET_FIELDS: &[(&str, Type)] = &[
+    ("offset", Type::Int),
+    ("count", Type::Int),
+    ("name", Type::String),
+];
+
+pub const SCENE_PARAMETRIC_FIELDS: &[(&str, Type)] = &[
+    ("shape", Type::String),
+    ("width", Type::Float),
+    ("height", Type::Float),
+    ("depth", Type::Float),
+    ("radius", Type::Float),
+    ("top-radius", Type::Float),
+    ("tube-radius", Type::Float),
+    ("segments", Type::Int),
+    ("rings", Type::Int),
+    ("capped", Type::Bool),
+];
+
+pub const SCENE_PARAMETRIC_SHAPES: &[(&str, &str)] = &[
+    ("plane", "Subdivided XY plane"),
+    ("box", "Box with six material slots"),
+    (
+        "sphere",
+        "UV sphere with configurable radius and tessellation",
+    ),
+    ("cylinder", "Cylinder or frustum with optional end caps"),
+    ("cone", "Cone with configurable top radius"),
+    ("capsule", "Y-aligned capsule with hemispherical ends"),
+    (
+        "torus",
+        "Ring in the XY plane with customizable tube radius",
+    ),
+];
+
+pub const SCENE_PRIMITIVE_MESHES: &[(&str, &str)] = &[
+    ("primitive:box", "Unit box centered at its origin"),
+    ("primitive:sphere", "Unit-radius sphere"),
+    (
+        "primitive:rectangle",
+        "Two-sided unit rectangle in the XY plane",
+    ),
+    ("primitive:cylinder", "Capped cylinder centered along Y"),
+    ("primitive:cone", "Capped cone from Y = 0 to Y = 1"),
+];
+
+pub fn scene_primitive_slots(key: &str) -> Option<&'static [&'static str]> {
+    match key {
+        "primitive:box" | "primitive:sphere" => Some(&[""]),
+        "primitive:rectangle" => Some(&["surface"]),
+        "primitive:cylinder" => Some(&["side", "top", "bottom"]),
+        "primitive:cone" => Some(&["side", "base"]),
+        _ => None,
+    }
+}
+
 pub const SCENE_CAMERA_KINDS: &[(&str, &str)] = &[
     (
         "perspective",
@@ -1255,6 +1768,17 @@ const fn geometry(
         GeometryFunction::HitAll3D => ("Scene3D", "hit-all", "[hit3d]"),
         GeometryFunction::HitAllCamera3D => ("Scene3D", "hit-all-camera", "[hit3d]"),
         GeometryFunction::RayHitAll3D => ("Scene3D", "ray-hit-all", "[hit3d]"),
+        GeometryFunction::HitRow3D => ("Scene3D", "hit-row", "hit3d"),
+        GeometryFunction::HitRowCamera3D => ("Scene3D", "hit-row-camera", "hit3d"),
+        GeometryFunction::RayHitRow3D => ("Scene3D", "ray-hit-row", "hit3d"),
+        GeometryFunction::HitInstance3D => ("Scene3D", "hit-instance", "hit3d"),
+        GeometryFunction::HitInstanceCamera3D => ("Scene3D", "hit-instance-camera", "hit3d"),
+        GeometryFunction::RayHitInstance3D => ("Scene3D", "ray-hit-instance", "hit3d"),
+        GeometryFunction::HitSubset3D => ("Scene3D", "hit-subset", "[hit3d]"),
+        GeometryFunction::HitSubsetCamera3D => ("Scene3D", "hit-subset-camera", "[hit3d]"),
+        GeometryFunction::RayHitSubset3D => ("Scene3D", "ray-hit-subset", "[hit3d]"),
+        GeometryFunction::ClosestPoint3D => ("Scene3D", "closest-point", "hit3d"),
+        GeometryFunction::ClosestPointOn3D => ("Scene3D", "closest-point-on", "hit3d"),
         GeometryFunction::SphereCast3D => ("Scene3D", "sphere-cast", "hit3d"),
         GeometryFunction::SphereOverlap3D => ("Scene3D", "sphere-overlap", "[hit3d]"),
         GeometryFunction::SphereSlide3D => ("Scene3D", "sphere-slide", "point3d"),
@@ -1264,10 +1788,14 @@ const fn geometry(
         GeometryFunction::MapVector => ("Transform2D", kind.name(), "vector2d"),
         GeometryFunction::Pick3D => ("Scene3D", "pick", "string"),
         GeometryFunction::PickCamera3D => ("Scene3D", "pick-camera", "string"),
+        GeometryFunction::PickInRect3D => ("Scene3D", "pick-in-rect", "[int]"),
+        GeometryFunction::PickInRectCamera3D => ("Scene3D", "pick-in-rect-camera", "[int]"),
         GeometryFunction::Project3D => ("Scene3D", "project", "projectedpoint3d"),
         GeometryFunction::ProjectCamera3D => ("Scene3D", "project-camera", "projectedpoint3d"),
         GeometryFunction::Unproject3D => ("Scene3D", "unproject", "point3d"),
         GeometryFunction::UnprojectCamera3D => ("Scene3D", "unproject-camera", "point3d"),
+        GeometryFunction::MapPosition3D => ("Scene3D", "map-position", "point3d"),
+        GeometryFunction::MapDirection3D => ("Scene3D", "map-direction", "vector3d"),
         _ => ("Transform2D", kind.name(), "transform2d"),
     };
     Function {
@@ -1298,6 +1826,11 @@ const NAMED_VIEW: [Parameter; 3] = [
     VIEWPORT,
 ];
 
+const SCENE_ENDPOINTS: [Parameter; 3] = [
+    NAMED_VIEW[0],
+    Parameter::with_type("from: string", &Type::String),
+    Parameter::with_type("to: string", &Type::String),
+];
 const XYZ: &[Parameter] = &[
     Parameter::with_type("x: float", &Type::Float),
     Parameter::with_type("y: float", &Type::Float),
@@ -1312,6 +1845,14 @@ const WORLD_RAY: &[Parameter] = &[
     LAYER_MASK,
 ];
 const SPHERE_RADIUS: Parameter = Parameter::with_type("radius: float", &Type::Float);
+const WORLD_CLOSEST_POINT: &[Parameter] = &[WORLD_RAY[0], WORLD_RAY[1], SPHERE_RADIUS, LAYER_MASK];
+const WORLD_CLOSEST_POINT_ON: &[Parameter] = &[
+    WORLD_RAY[0],
+    Parameter::with_type("object-id: string", &Type::String),
+    WORLD_RAY[1],
+    SPHERE_RADIUS,
+    LAYER_MASK,
+];
 const WORLD_SPHERE_CAST: &[Parameter] = &[
     WORLD_RAY[0],
     WORLD_RAY[1],
@@ -1353,6 +1894,51 @@ const ORBIT_HIT: &[Parameter] = &[
     LAYER_MASK,
 ];
 const CAMERA_HIT: &[Parameter] = &[NAMED_VIEW[0], NAMED_VIEW[1], VIEWPORT, POINTER, LAYER_MASK];
+const HIT_ROW: Parameter = Parameter::with_type("row: int", &Type::Int);
+const HIT_ROWS: Parameter = Parameter::with_type("rows: [int]", &Type::IntList);
+const HIT_INSTANCE: &[Parameter] = &[
+    Parameter::with_type("row-index: int", &Type::Int),
+    Parameter::with_type("mesh-node-index: int", &Type::Int),
+    Parameter::with_type("instance-index: int", &Type::Int),
+];
+const fn restrict_pick<const N: usize>(
+    parameters: &[Parameter],
+    selectors: &[Parameter],
+) -> [Parameter; N] {
+    let mut result = [LAYER_MASK; N];
+    let mut index = 0;
+    while index + 1 < parameters.len() {
+        result[index] = parameters[index];
+        index += 1;
+    }
+    let mut selector = 0;
+    while selector < selectors.len() {
+        result[index] = selectors[selector];
+        index += 1;
+        selector += 1;
+    }
+    result
+}
+const RECT_START: Parameter = Parameter::with_type("start: point2d", &Type::Point2D);
+const RECT_END: Parameter = Parameter::with_type("end: point2d", &Type::Point2D);
+const ORBIT_RECT: &[Parameter] = &[
+    NAMED_VIEW[0],
+    ORBIT_VIEW[0],
+    ORBIT_VIEW[1],
+    ORBIT_VIEW[2],
+    VIEWPORT,
+    RECT_START,
+    RECT_END,
+    LAYER_MASK,
+];
+const CAMERA_RECT: &[Parameter] = &[
+    NAMED_VIEW[0],
+    NAMED_VIEW[1],
+    VIEWPORT,
+    RECT_START,
+    RECT_END,
+    LAYER_MASK,
+];
 
 pub const FUNCTIONS: &[Function] = &[
     geometry(
@@ -1383,17 +1969,82 @@ pub const FUNCTIONS: &[Function] = &[
     geometry(
         GeometryFunction::HitAll3D,
         ORBIT_HIT,
-        "Returns the nearest accepted surface of each pickable scene row along the pointer ray, ordered nearest first.",
+        "Returns front-to-back hits along the pointer ray, preserving each imported glTF instance.",
     ),
     geometry(
         GeometryFunction::HitAllCamera3D,
         CAMERA_HIT,
-        "Returns front-to-back hits under a pointer using a named camera. Geometry remains subject to the camera clip planes.",
+        "Returns front-to-back hits under a pointer using a named camera. Instances keep their distinct addresses and respect camera clipping.",
     ),
     geometry(
         GeometryFunction::RayHitAll3D,
         WORLD_RAY,
-        "Returns front-to-back hits along a world-space ray, including objects behind other surfaces. Use Model.at or iterate the result as [hit3d].",
+        "Returns front-to-back hits along a world-space ray, including distinct instances behind other surfaces.",
+    ),
+    geometry(
+        GeometryFunction::HitRow3D,
+        &restrict_pick::<8>(ORBIT_HIT, &[HIT_ROW]),
+        "Returns the hit on a single scene row at a local logical-pixel point using the orbit camera. Rows outside the model or excluded by picking and clip planes return a miss.",
+    ),
+    geometry(
+        GeometryFunction::HitRowCamera3D,
+        &restrict_pick::<6>(CAMERA_HIT, &[HIT_ROW]),
+        "Returns the hit on a single scene row under a pointer using the named camera.",
+    ),
+    geometry(
+        GeometryFunction::RayHitRow3D,
+        &restrict_pick::<6>(WORLD_RAY, &[HIT_ROW]),
+        "Traces a world ray against the selected scene row, up to the given maximum distance.",
+    ),
+    geometry(
+        GeometryFunction::HitInstance3D,
+        &restrict_pick::<10>(ORBIT_HIT, HIT_INSTANCE),
+        "Picks one glTF instance under a pointer using the orbit camera. Pass row-index, mesh-node-index and instance-index from a hit3d value.",
+    ),
+    geometry(
+        GeometryFunction::HitInstanceCamera3D,
+        &restrict_pick::<8>(CAMERA_HIT, HIT_INSTANCE),
+        "Picks one glTF instance under a pointer using a named camera and its clip planes. All three address indices are zero-based.",
+    ),
+    geometry(
+        GeometryFunction::RayHitInstance3D,
+        &restrict_pick::<8>(WORLD_RAY, HIT_INSTANCE),
+        "Traces a world ray against the glTF instance identified by row, source node and instance indices. Other geometry is skipped.",
+    ),
+    geometry(
+        GeometryFunction::HitSubset3D,
+        &restrict_pick::<8>(ORBIT_HIT, &[HIT_ROWS]),
+        "Returns front-to-back pointer hits for the selected scene rows. The rows can come from pick-in-rect.",
+    ),
+    geometry(
+        GeometryFunction::HitSubsetCamera3D,
+        &restrict_pick::<6>(CAMERA_HIT, &[HIT_ROWS]),
+        "Returns front-to-back pointer hits for the selected rows using the named camera.",
+    ),
+    geometry(
+        GeometryFunction::RayHitSubset3D,
+        &restrict_pick::<6>(WORLD_RAY, &[HIT_ROWS]),
+        "Returns front-to-back hits along a world ray, restricted to the selected rows.",
+    ),
+    geometry(
+        GeometryFunction::PickInRect3D,
+        ORBIT_RECT,
+        "Returns the zero-based scene row indices of pickable models intersecting a logical-pixel view rectangle. Uses the orbit camera and includes obscured models.",
+    ),
+    geometry(
+        GeometryFunction::PickInRectCamera3D,
+        CAMERA_RECT,
+        "Returns scene row indices selected by a logical-pixel rectangle with the named camera. Respects camera clipping, letterboxing, and the layer mask.",
+    ),
+    geometry(
+        GeometryFunction::ClosestPoint3D,
+        WORLD_CLOSEST_POINT,
+        "Finds the nearest point on a pickable posed triangle within a world-space radius. Read valid before using position, distance, object-id, normals or UV.",
+    ),
+    geometry(
+        GeometryFunction::ClosestPointOn3D,
+        WORLD_CLOSEST_POINT_ON,
+        "Finds the nearest surface on pickable models with the specified object ID, within a world-space radius.",
     ),
     geometry(
         GeometryFunction::SphereCast3D,
@@ -1455,6 +2106,28 @@ pub const FUNCTIONS: &[Function] = &[
             WORLD_FALLBACK,
         ],
         "Maps a logical-pixel point at a positive forward-axis depth into world space using a named camera. Returns fallback if the camera or input is invalid.",
+    ),
+    geometry(
+        GeometryFunction::MapPosition3D,
+        &[
+            SCENE_ENDPOINTS[0],
+            SCENE_ENDPOINTS[1],
+            SCENE_ENDPOINTS[2],
+            Parameter::with_type("position: point3d", &Type::Point3D),
+            WORLD_FALLBACK,
+        ],
+        "Converts a position between scene node IDs, including inherited scale and pivots. An empty ID denotes world space. Invalid inputs return fallback.",
+    ),
+    geometry(
+        GeometryFunction::MapDirection3D,
+        &[
+            SCENE_ENDPOINTS[0],
+            SCENE_ENDPOINTS[1],
+            SCENE_ENDPOINTS[2],
+            Parameter::with_type("direction: vector3d", &Type::Vector3D),
+            Parameter::with_type("fallback: vector3d", &Type::Vector3D),
+        ],
+        "Converts a direction between scene node IDs using inherited rotations and preserving length. An empty ID denotes world space. Invalid inputs return fallback.",
     ),
     geometry(
         GeometryFunction::Pick3D,

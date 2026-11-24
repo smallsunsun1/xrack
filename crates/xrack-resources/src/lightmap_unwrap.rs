@@ -345,7 +345,9 @@ fn place(sizes: &[Point], scale: f64, resolution: u32) -> Option<Vec<Placement>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xrack_runtime::scene3d::{MeshAlphaMode, MeshMaterial, MeshPart, MeshVertex};
+    use xrack_runtime::scene3d::{
+        MeshAlphaMode, MeshMaterial, MeshMaterialSlot, MeshPart, MeshVertex,
+    };
 
     fn mesh(positions: &[[f32; 3]]) -> Result<Mesh3D, &'static str> {
         let vertices = positions
@@ -367,10 +369,17 @@ mod tests {
                 volume_inverse: None,
             }],
             vec![MeshMaterial {
+                shader: None,
+                base_item: None,
+                channels: Default::default(),
+                vertex_colors: true,
+                vertex_masks: Default::default(),
+                cull_mode: Default::default(),
+                depth_draw_mode: Default::default(),
+                blend_mode: Default::default(),
                 base_color: [1.0; 4],
                 base_texture: None,
                 alpha_mode: MeshAlphaMode::Opaque,
-                double_sided: false,
                 pbr: None,
             }],
         )
@@ -433,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_lod_retains_the_generated_texel_mapping() -> Result<(), String> {
+    fn automatic_lod_retains_texel_mapping_and_source_material_slots() -> Result<(), String> {
         let mut triangles = Vec::new();
         for row in 0..14 {
             for column in 0..14 {
@@ -445,7 +454,14 @@ mod tests {
                 triangles.extend([0, 1, 2, 0, 2, 3].map(|index| quad[index]));
             }
         }
-        let source = generate(MeshAsset::Static(mesh(&triangles)?))?;
+        let slots = [MeshMaterialSlot {
+            source_index: Some(7),
+            name: Some("Panel coat".into()),
+        }];
+        let tagged = mesh(&triangles)?
+            .with_material_slots(slots.clone().into())
+            .ok_or("invalid test material slots")?;
+        let source = generate(MeshAsset::Static(tagged))?;
         let MeshAsset::Static(original) = &source else {
             return Err("expected static mesh".into());
         };
@@ -464,6 +480,7 @@ mod tests {
         for level in lods.levels() {
             for mesh in &level.meshes {
                 assert_eq!(mesh.lightmap_min_size(), min_size);
+                assert_eq!(mesh.material_slots(), slots);
                 assert_eq!(mesh.vertices().len(), mesh.lightmap_uvs().len());
                 assert!(
                     mesh.vertices()

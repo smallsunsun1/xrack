@@ -283,6 +283,20 @@ fn drawable_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
     return window.inner_size();
 }
 
+fn request_resize_redraw(window: &Window) {
+    #[cfg(target_os = "macos")]
+    if let Some(view) = window_owner::native_window(window)
+        .ok()
+        .and_then(|window| window.contentView())
+    {
+        // AppKit coalesces this with its own resize invalidation. Winit's
+        // separate redraw queue can otherwise render the same size again.
+        view.setNeedsDisplay(true);
+        return;
+    }
+    window.request_redraw();
+}
+
 #[cfg(target_os = "android")]
 fn android_safe_area(window: &Window, ime_top: Option<u32>) -> [f64; 4] {
     let content = window.content_rect();
@@ -488,8 +502,7 @@ impl WindowState {
         let size = drawable_size(&self.window).to_logical::<f32>(self.window.scale_factor());
         Size::new(size.width, size.height)
     }
-    fn resize(&mut self) -> Result<(), String> {
-        let size = drawable_size(&self.window);
+    fn configure_surface(&mut self, size: winit::dpi::PhysicalSize<u32>) -> Result<(), String> {
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
@@ -3041,7 +3054,7 @@ impl<C: Component> Application<C> {
                 (true, false) => CaretFollow::Editor,
                 (true, true) => CaretFollow::Viewports,
             };
-            self.refresh_editor_with_caret(reveal);
+            self.refresh_editor_with_caret(reveal, Window::request_redraw);
         }
     }
 
@@ -3203,14 +3216,15 @@ impl<C: Component> Application<C> {
     }
 
     fn refresh_editor(&mut self, follow_caret: bool) {
-        self.refresh_editor_with_caret(if follow_caret {
+        let reveal = if follow_caret {
             CaretFollow::Viewports
         } else {
             CaretFollow::None
-        });
+        };
+        self.refresh_editor_with_caret(reveal, Window::request_redraw);
     }
 
-    fn refresh_editor_with_caret(&mut self, reveal: CaretFollow) {
+    fn refresh_editor_with_caret(&mut self, reveal: CaretFollow, request_redraw: fn(&Window)) {
         self.flush_swipe_events(None);
         if self.layout.is_some() && self.loader_events_scene.as_ptr() != Rc::as_ptr(&self.scene) {
             let _focus = self.focus_requests.enter();
@@ -3474,7 +3488,7 @@ impl<C: Component> Application<C> {
                 )
             });
         }
-        state.window.request_redraw();
+        request_redraw(&state.window);
         #[cfg(target_os = "ios")]
         self.sync_ios_text_drag();
     }
@@ -4957,7 +4971,9 @@ impl<C: Component> Application<C> {
         }) {
             self.cancel_pointer();
         } else if let (Some(capture), Some(layout)) = (&mut self.pointer_capture, &self.layout) {
-            capture.sequence.constrain_press_and_hold(layout, None);
+            capture
+                .sequence
+                .constrain_press_and_hold(&self.input, &self.scene, layout, None);
         }
         let mut index = 0;
         while index < self.additional_touch_captures.len() {
@@ -5023,9 +5039,12 @@ impl<C: Component> Application<C> {
             PointerEventKind::Cancel
         } else {
             if let (Some(capture), Some(layout)) = (&mut self.pointer_capture, &self.layout) {
-                capture
-                    .sequence
-                    .constrain_press_and_hold(layout, Some(point));
+                capture.sequence.constrain_press_and_hold(
+                    &self.input,
+                    &self.scene,
+                    layout,
+                    Some(point),
+                );
             }
             self.tick_pointer_hold(now);
             PointerEventKind::Up
@@ -7716,6 +7735,10 @@ impl<C: Component> Application<C> {
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
+        // Configuring waits for GPU work. Apply the latest size once before acquiring a drawable.
+        if (state.config.width, state.config.height) != (size.width, size.height) {
+            state.configure_surface(size)?;
+        }
         let inspector = self.component.window_inspector(&self.base_scene);
         let profile = inspector.as_ref().filter(|inspector| inspector.profiling());
         state
@@ -7744,17 +7767,21 @@ impl<C: Component> Application<C> {
                 }
                 wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
                 wgpu::CurrentSurfaceTexture::Outdated => {
-                    state.resize()?;
+                    state.configure_surface(drawable_size(&state.window))?;
                     self.relayout();
                     return Ok(());
                 }
                 wgpu::CurrentSurfaceTexture::Lost => {
+                    let size = drawable_size(&state.window);
+                    if size.width == 0 || size.height == 0 {
+                        return Ok(());
+                    }
                     state.surface = state
                         .renderer
                         .instance
                         .create_surface(state.window.clone())
                         .map_err(|e| e.to_string())?;
-                    state.resize()?;
+                    state.configure_surface(size)?;
                     self.relayout();
                     return Ok(());
                 }
@@ -7886,7 +7913,7 @@ impl<C: Component> Application<C> {
             state.window.request_redraw();
         }
         if suboptimal {
-            state.resize()?;
+            state.configure_surface(drawable_size(&state.window))?;
             self.relayout();
         } else if pointer_changed {
             self.publish_hover();
@@ -8689,17 +8716,16 @@ impl<C: Component> Application<C> {
                 self.update_system_appearance(color_scheme(Some(theme)), None);
             }
             change @ (WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }) => {
-                if matches!(change, WindowEvent::ScaleFactorChanged { .. }) {
-                    self.cancel_scale_rotate();
-                }
-                if let Some(state) = self.state.as_mut()
-                    && let Err(error) = state.resize()
-                {
-                    self.fail(error);
-                    return;
-                }
+                let request_redraw: fn(&Window) =
+                    if matches!(change, WindowEvent::ScaleFactorChanged { .. }) {
+                        self.cancel_scale_rotate();
+                        Window::request_redraw
+                    } else {
+                        request_resize_redraw
+                    };
                 self.publish_viewport();
-                self.relayout();
+                self.prepare_frame(self.transition_epoch.elapsed());
+                self.refresh_editor_with_caret(CaretFollow::Viewports, request_redraw);
             }
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.redraw() {
@@ -8945,7 +8971,8 @@ impl<C: Component> Application<C> {
                     }
                     let remaining = self.scroll_text_area(delta);
                     if self.layout.as_ref().is_some_and(|layout| {
-                        self.input.scroll_wheel(
+                        self.input.scroll_wheel_in_scene(
+                            &self.scene,
                             layout,
                             remaining,
                             self.modifiers.shift_key() && delta.x == 0.0,

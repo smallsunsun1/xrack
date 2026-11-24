@@ -19,7 +19,8 @@ use xrack_mlir::{Module, OperationRef};
 use xrack_runtime::{
     Image, ImageAsset,
     scene3d::{
-        EnvironmentProbe, MeshAsset, MeshImportOptions, environment_resource_key, mesh_resource_key,
+        EnvironmentProbe, MeshAsset, MeshImage, MeshImportOptions, environment_resource_key,
+        mesh_resource_key, texture_resource_key,
     },
 };
 
@@ -36,6 +37,9 @@ pub struct ResolvedAssets {
 pub struct SceneAssets {
     pub meshes: BTreeMap<String, MeshAsset>,
     pub environments: BTreeMap<String, Arc<EnvironmentProbe>>,
+    pub textures: BTreeMap<String, Arc<MeshImage>>,
+    pub material_shaders: BTreeMap<String, Arc<str>>,
+    pub effects: BTreeMap<String, Arc<str>>,
 }
 
 pub(super) fn walk<'m>(
@@ -65,6 +69,7 @@ pub fn resolve_assets(
     let mut chart_sources = BTreeMap::<(PathBuf, MeshSource), MeshAsset>::new();
     let mut lod_sources = BTreeMap::<((PathBuf, MeshSource), bool), MeshAsset>::new();
     let mut lut_images = Vec::new();
+    let mut texture_files = BTreeMap::<PathBuf, Arc<MeshImage>>::new();
     let mut visit = |op: OperationRef<'_>| {
         if op.name() == "xr.image_url" {
             let url = op.attr("value")?;
@@ -112,8 +117,9 @@ pub fn resolve_assets(
                     match chart_sources.entry(resolved.clone()) {
                         std::collections::btree_map::Entry::Occupied(chart) => chart.get().clone(),
                         std::collections::btree_map::Entry::Vacant(chart) => {
-                            let generated =
-                                kind.generate_lightmap_uv(mesh).map_err(error_at_mesh)?;
+                            let generated = mesh
+                                .map_material_variants(|asset| kind.generate_lightmap_uv(asset))
+                                .map_err(error_at_mesh)?;
                             chart.insert(generated).clone()
                         }
                     }
@@ -123,12 +129,78 @@ pub fn resolve_assets(
                 let mesh = if options.automatic_lod {
                     lod_sources
                         .entry((resolved, options.lightmap_uv))
-                        .or_insert_with(|| crate::mesh_lod::generate(mesh))
+                        .or_insert_with(|| {
+                            mesh.map_material_variants(|asset| Ok(crate::mesh_lod::generate(asset)))
+                                .unwrap_or_else(|never: std::convert::Infallible| match never {})
+                        })
                         .clone()
                 } else {
                     mesh
                 };
                 entry.insert(mesh);
+            }
+        } else if op.name() == "xr.texture_url" {
+            let url = op.attr("value")?;
+            let key = texture_resource_key(url);
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                assets.scene.textures.entry(key)
+            {
+                let error_at_texture = |error: String| {
+                    let span = op.span();
+                    let source = op.source_file().unwrap_or(&filename);
+                    format!(
+                        "{source}:{}:{}: texture {url:?}: {error}",
+                        span.line, span.column
+                    )
+                };
+                let path = local_path(url)
+                    .and_then(|path| asset_path(base, path, declared.as_ref(), "3D texture"))
+                    .map_err(error_at_texture)?;
+                let texture = match texture_files.entry(path.clone()) {
+                    std::collections::btree_map::Entry::Occupied(texture) => texture.get().clone(),
+                    std::collections::btree_map::Entry::Vacant(texture) => {
+                        let bytes = read_asset(&path, "3D texture").map_err(error_at_texture)?;
+                        let image = crate::mesh_materials::prepare_scene_texture(&bytes)
+                            .map_err(error_at_texture)?;
+                        texture.insert(Arc::new(image)).clone()
+                    }
+                };
+                assets.inputs.insert(path);
+                entry.insert(texture);
+            }
+        } else if matches!(op.name(), "xr.shader_url" | "xr.material_shader_url") {
+            let url = op.attr("value")?;
+            let material = op.name() == "xr.material_shader_url";
+            let load: fn(&Path) -> Result<Arc<str>, String> = if material {
+                crate::material_shader::load
+            } else {
+                crate::scene_effect::load
+            };
+            let (key, shaders) = if material {
+                (
+                    xrack_runtime::material_shader::resource_key(url),
+                    &mut assets.scene.material_shaders,
+                )
+            } else {
+                (url.to_owned(), &mut assets.scene.effects)
+            };
+            if let std::collections::btree_map::Entry::Vacant(entry) = shaders.entry(key) {
+                let resolve = || {
+                    let path =
+                        asset_path(base, local_path(url)?, declared.as_ref(), "WGSL shader")?;
+                    let source = load(&path)?;
+                    Ok::<_, String>((path, source))
+                };
+                let (path, shader) = resolve().map_err(|error| {
+                    let span = op.span();
+                    let source = op.source_file().unwrap_or(&filename);
+                    format!(
+                        "{source}:{}:{}: shader {url:?}: {error}",
+                        span.line, span.column
+                    )
+                })?;
+                assets.inputs.insert(path);
+                entry.insert(shader);
             }
         } else if op.name() == "xr.environment_url" {
             let url = op.attr("value")?;
@@ -250,6 +322,24 @@ pub fn require_scene_assets(module: &Module, scene: &SceneAssets) -> Result<(), 
                 let url = op.attr("value")?;
                 if !scene.meshes.contains_key(&mesh_resource_key(url, options)) {
                     return Err(format!("unresolved mesh {url:?}"));
+                }
+            } else if op.name() == "xr.texture_url" {
+                let url = op.attr("value")?;
+                if !scene.textures.contains_key(&texture_resource_key(url)) {
+                    return Err(format!("unresolved texture {url:?}"));
+                }
+            } else if op.name() == "xr.material_shader_url" {
+                let url = op.attr("value")?;
+                if !scene
+                    .material_shaders
+                    .contains_key(&xrack_runtime::material_shader::resource_key(url))
+                {
+                    return Err(format!("unresolved material shader {url:?}"));
+                }
+            } else if op.name() == "xr.shader_url" {
+                let url = op.attr("value")?;
+                if !scene.effects.contains_key(url) {
+                    return Err(format!("unresolved shader {url:?}"));
                 }
             } else if op.name() == "xr.environment_url" {
                 let url = op.attr("value")?;

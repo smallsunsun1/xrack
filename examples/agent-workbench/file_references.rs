@@ -1,5 +1,5 @@
 use std::{borrow::Cow, path::Path};
-use xrack_runtime::{MarkdownStream, StyledText};
+use xrack_runtime::{MarkdownStream, StyledLink, StyledLinkRewriter, StyledRun, StyledText};
 
 const LINK_PREFIX: &str = "workspace-file:";
 
@@ -162,40 +162,57 @@ fn looks_like_path(reference: &FileReference) -> bool {
         )
 }
 
-pub(super) fn transcript_document(text: &str, stream: Option<&mut MarkdownStream>) -> StyledText {
-    let parsed = match stream {
-        Some(stream) => stream.update(text),
-        None => StyledText::from_markdown(text),
+pub(super) struct TranscriptStream {
+    markdown: MarkdownStream,
+    links: StyledLinkRewriter,
+}
+
+impl Default for TranscriptStream {
+    fn default() -> Self {
+        Self {
+            markdown: MarkdownStream::default(),
+            links: StyledLinkRewriter::new(file_link, inline_file_link),
+        }
+    }
+}
+
+fn file_link(link: &StyledLink) -> Option<Cow<'static, str>> {
+    FileReference::parse(&link.href, true)?;
+    Some(format!("{LINK_PREFIX}{}", link.href).into())
+}
+
+fn inline_file_link(document: &StyledText, span: &StyledRun) -> Option<Cow<'static, str>> {
+    if !span.style.monospace {
+        return None;
+    }
+    let raw = &document.text()[span.start..span.end];
+    if !FileReference::parse(raw, false)
+        .as_ref()
+        .is_some_and(looks_like_path)
+    {
+        return None;
+    }
+    // Code spans contain literal % characters. Escape them before using the
+    // same link destination decoder as Markdown links.
+    let destination = if raw.starts_with("file://") {
+        raw.to_owned()
+    } else {
+        raw.replace('%', "%25")
     };
-    let Ok(document) = parsed else {
-        return StyledText::from_plain_text(text);
-    };
-    document.rewrite_links(
-        |link| {
-            FileReference::parse(&link.href, true)?;
-            Some(format!("{LINK_PREFIX}{}", link.href).into())
-        },
-        |span| {
-            if !span.style.monospace {
-                return None;
-            }
-            let raw = &document.text()[span.start..span.end];
-            if !FileReference::parse(raw, false)
-                .as_ref()
-                .is_some_and(looks_like_path)
-            {
-                return None;
-            }
-            // Code spans contain literal % characters. Escape them before using the
-            // same link destination decoder as Markdown links.
-            let destination = if raw.starts_with("file://") {
-                raw.to_owned()
-            } else {
-                raw.replace('%', "%25")
-            };
-            Some(format!("{LINK_PREFIX}{destination}").into())
-        },
-    )
+    Some(format!("{LINK_PREFIX}{destination}").into())
+}
+
+pub(super) fn transcript_document(text: &str, stream: Option<&mut TranscriptStream>) -> StyledText {
+    if let Some(stream) = stream {
+        return match stream.markdown.update(text) {
+            Ok(document) => stream.links.rewrite(document),
+            Err(_) => StyledText::from_plain_text(text),
+        };
+    }
+    match StyledText::from_markdown(text) {
+        Ok(document) => document.rewrite_links(file_link, |run| inline_file_link(&document, run)),
+        Err(_) => StyledText::from_plain_text(text),
+    }
 }
 
 #[cfg(test)]
@@ -302,15 +319,26 @@ mod tests {
 
     #[test]
     fn streamed_file_references_match_a_complete_parse() {
-        let mut stream = MarkdownStream::default();
+        let mut stream = TranscriptStream::default();
         let prefix = "**准备** [配置](src/config.rs:4) 和 `main.rs:11`\n\n";
         let document = transcript_document(prefix, Some(&mut stream));
         assert_eq!(document, transcript_document(prefix, None));
         let latest =
             format!("{prefix}[linked `embedded.rs:5`](https://example.invalid) `new.rs:8`");
+        let next = transcript_document(&latest, Some(&mut stream));
+        assert_eq!(next, transcript_document(&latest, None));
         assert_eq!(
-            transcript_document(&latest, Some(&mut stream)),
-            transcript_document(&latest, None)
+            next.verified_prefix_from(&document),
+            Some((
+                document.text().len(),
+                document.runs().len(),
+                document.links().len()
+            ))
         );
+
+        let changed = latest.replace("src/config.rs:4", "src/config.rs:7");
+        let edited = transcript_document(&changed, Some(&mut stream));
+        assert_eq!(edited, transcript_document(&changed, None));
+        assert!(edited.verified_prefix_from(&next).is_none());
     }
 }

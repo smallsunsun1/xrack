@@ -1,0 +1,81 @@
+struct BufferActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    scale-x: float, scale-y: float, scale-z: float,
+}
+
+struct BufferInput { name: string }
+
+struct BufferPass {
+    shader: string, strength: float, scale: float, parameters: vector3d,
+    input: string, output: string, buffers: [BufferInput],
+}
+
+export component NamedEffectBuffersDemo inherits Window {
+    title: "XRack · 命名后处理纹理";
+    width: 481px; height: 310px; resizable: false;
+    background: #172332;
+    in-out property <bool> use-accent: true;
+    in-out property <bool> sharp-input: true;
+    in-out property <float> tint-amount: 0.6;
+    property <BufferPass> defaults: BufferPass {
+        shader: "", strength: 1, scale: 1, parameters: Vector3D.new(0, 0, 0),
+        input: "", output: "", buffers: [],
+    };
+
+    Rectangle {
+        width: 481px; height: 245px; background: #24394e;
+    }
+    effect-view := SceneView3D {
+        width: 481px; height: 245px; scene-background: #00000000;
+        scene-hdr: true; cache-rendering: true;
+        camera-yaw: 22; camera-pitch: 16; camera-distance: 6;
+        model: [
+            BufferActor {
+                id: "core", mesh: "primitive:box", x: 0, y: 0, z: 0,
+                yaw: 16, pitch: 0, roll: 0, color: #df875a,
+                scale-x: 1.25, scale-y: 1.25, scale-z: 1.25,
+            },
+        ];
+        scene-effects: [
+            BufferPass {
+                shader: @shader-url("effects/grade.wgsl"),
+                strength: root.use-accent ? 1 : 0, output: "accent",
+                parameters: Vector3D.new(root.tint-amount, 0.06, 0.93), ..root.defaults,
+            },
+            BufferPass {
+                shader: @shader-url("effects/blur.wgsl"),
+                input: "accent", output: "soft-x", scale: 0.5,
+                parameters: Vector3D.new(8, 0, 0), ..root.defaults,
+            },
+            BufferPass {
+                shader: @shader-url("effects/blur.wgsl"),
+                input: "soft-x", output: "soft", scale: 0.5,
+                parameters: Vector3D.new(0, 4, 0), ..root.defaults,
+            },
+            BufferPass {
+                shader: @shader-url("effects/named_composite.wgsl"),
+                input: root.sharp-input ? "accent" : "",
+                buffers: [BufferInput { name: "soft" }, BufferInput { name: "accent" }],
+                ..root.defaults,
+            },
+            BufferPass {
+                shader: @shader-url("effects/grade.wgsl"),
+                parameters: Vector3D.new(0.05, 0.35, 0.5), ..root.defaults,
+            },
+        ];
+    }
+    accent-toggle := CheckBox {
+        x: 12px; y: 258px; width: 120px; height: 34px;
+        text: "冷色分支"; checked <=> root.use-accent;
+    }
+    input-toggle := CheckBox {
+        x: 140px; y: 258px; width: 154px; height: 34px;
+        text: "保留清晰分支"; checked <=> root.sharp-input;
+    }
+    tint-slider := Slider {
+        x: 306px; y: 258px; width: 148px; height: 34px;
+        minimum: 0; maximum: 1; step: 0.01;
+        value <=> root.tint-amount;
+    }
+}

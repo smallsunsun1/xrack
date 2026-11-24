@@ -1,0 +1,91 @@
+struct VertexFinish {
+    base-color: color, vertex-colors: bool,
+    alpha-mode: string, alpha-cutoff: float, depth-draw-mode: string, unlit: bool,
+    metalness: float, roughness: float, transmission: float,
+    vertex-metalness-channel: string, vertex-roughness-channel: string,
+    vertex-specular-channel: string,
+}
+struct VertexActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float, visible: bool,
+    material: VertexFinish, casts-shadow: bool,
+}
+
+export component VertexMasksDemo inherits Window {
+    title: "XRack · Vertex color masks";
+    width: 600px; height: 372px;
+    background: #192330;
+
+    in-out property <bool> vertex-tint: true;
+    in-out property <string> channel: "r";
+    in-out property <string> look: "color";
+    in-out property <bool> shadows: false;
+    in-out property <bool> motion: false;
+
+    property <VertexFinish> flat: VertexFinish {
+        base-color: #e0e4ef, vertex-colors: true,
+        alpha-mode: "opaque", alpha-cutoff: 0.5, depth-draw-mode: "opaque-only", unlit: true,
+        metalness: 0.0, roughness: 0.65, transmission: 0.0,
+        vertex-metalness-channel: "none", vertex-roughness-channel: "none", vertex-specular-channel: "none",
+    };
+    property <VertexActor> base: VertexActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, camera-kind: "", camera-height: 4, visible: true,
+        material: root.flat, casts-shadow: false,
+    };
+    property <[VertexActor]> world: [
+        VertexActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
+        VertexActor {
+            id: "panel", mesh: @mesh-url("models/vertex-colors.gltf"), casts-shadow: true,
+            material: VertexFinish {
+                base-color: root.look == "specular" ? #0c100f : #e0e4ef,
+                vertex-colors: root.vertex-tint,
+                alpha-mode: "mask", depth-draw-mode: "opaque-prepass", unlit: root.look == "color",
+                metalness: root.look == "metal" || root.look == "glass" ? 1.0 : 0.0,
+                roughness: root.look == "glass" ? 0.0 : 0.65,
+                transmission: root.look == "glass" ? 1.0 : 0.0,
+                vertex-metalness-channel: root.look == "metal" || root.look == "glass" ? root.channel : "none",
+                vertex-roughness-channel: root.look == "roughness" ? root.channel : "none",
+                vertex-specular-channel: root.look == "specular" ? root.channel : "none",
+                ..root.flat
+            }, ..root.base
+        },
+        VertexActor {
+            id: "backdrop", z: -2, scale-x: 11, scale-y: 7, visible: root.shadows || root.look == "glass",
+            material: VertexFinish { base-color: #7095c8, unlit: !root.shadows, ..root.flat }, ..root.base
+        }
+    ];
+    out property <string> left-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(600px, 320px), Point2D.new(220px, 160px));
+    out property <string> right-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(600px, 320px), Point2D.new(380px, 160px));
+
+    SceneView3D {
+        width: 600px; height: 320px; model: root.world; camera: "eye";
+        shadows: root.shadows; shadow-map-size: 256;
+        light-yaw: root.look == "specular" ? 0 : -45;
+        light-elevation: root.look == "specular" ? 0 : 20;
+        ambient-intensity: 0.32; scene-background: #22334b;
+        temporal-aa: root.motion; temporal-aa-mode: "motion-vectors";
+    }
+    tint-button := Button {
+        x: 12px; y: 334px; width: 165px; height: 30px; text: root.vertex-tint ? "Vertex RGBA" : "Material color";
+        clicked => { root.vertex-tint = !root.vertex-tint; }
+    }
+    looks := Button {
+        x: 210px; y: 334px; width: 155px; height: 30px; text: root.look;
+        clicked => {
+            root.look = root.look == "color" ? "metal" : root.look == "metal" ? "roughness" :
+                root.look == "roughness" ? "specular" : root.look == "specular" ? "glass" : "color";
+        }
+    }
+    mask-channel := Button {
+        x: 400px; y: 334px; width: 174px; height: 30px; text: root.channel;
+        clicked => {
+            root.channel = root.channel == "r" ? "g" : root.channel == "g" ? "a" :
+                root.channel == "a" ? "none" : "r";
+        }
+    }
+}

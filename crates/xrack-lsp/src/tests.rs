@@ -1129,6 +1129,66 @@ fn sprite_playback_values_complete_in_emitter_records() {
 }
 
 #[test]
+fn model_particle_fields_complete_in_typed_emitter_records() {
+    let items = complete_at(
+        r#"struct Emitter { particle-model: string, particle-angular-velocity: vector3d }
+        component App inherits Window {
+            property <Emitter> body: Emitter { particle-angular-v| };
+        }"#,
+    );
+    assert!(
+        items.iter().any(
+            |item| item["label"] == "particle-angular-velocity" && item["detail"] == "vector3d"
+        )
+    );
+}
+
+#[test]
+fn model_particle_lighting_flags_complete_as_booleans() {
+    let items = complete_at(
+        r#"struct Emitter {
+            particle-casts-shadow: bool, particle-casts-reflections: bool, particle-receives-shadow: bool,
+        }
+        component App inherits Window {
+            property <Emitter> body: Emitter { particle-casts-| };
+        }"#,
+    );
+    for field in ["particle-casts-shadow", "particle-casts-reflections"] {
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == field && item["detail"] == "bool")
+        );
+    }
+    let items = complete_at(
+        r#"struct Emitter { particle-receives-shadow: bool }
+        component App inherits Window {
+            property <Emitter> body: Emitter { particle-receives-s| };
+        }"#,
+    );
+    assert!(
+        items.iter().any(|item| {
+            item["label"] == "particle-receives-shadow" && item["detail"] == "bool"
+        })
+    );
+}
+
+#[test]
+fn particle_trail_fields_complete_in_typed_emitter_records() {
+    let items = complete_at(
+        r#"struct Emitter {
+            trail-segments: int, trail-duration: float, trail-end-scale: float,
+        }
+        component App inherits Window {
+            property <Emitter> tail: Emitter { trail-seg| };
+        }"#,
+    );
+    let segment = items.iter().find(|item| item["label"] == "trail-segments");
+    let segment = segment.expect("typed segment count completion");
+    assert_eq!(segment["detail"], "int");
+}
+
+#[test]
 fn particle_affectors_complete_list_and_typed_record_kinds() {
     let members = complete_at("component App inherits Window { SceneView3D { particle-af| } }");
     assert!(
@@ -2334,6 +2394,26 @@ fn geometry_values_complete_types_namespaces_and_typed_fields() {
 fn scene3d_completes_viewport_properties_and_geometry() {
     for (source, expected) in [
         (
+            "component App inherits Window { SceneView3D { scene-effect-st| } }",
+            "scene-effect-strength",
+        ),
+        (
+            "component App inherits Window { SceneView3D { scene-effect-d| } }",
+            "scene-effect-depth",
+        ),
+        (
+            "component App inherits Window { SceneView3D { scene-effec| } }",
+            "scene-effects",
+        ),
+        (
+            "component App inherits Window { SceneView3D { texture-in| } }",
+            "texture-input",
+        ),
+        (
+            "component App inherits Window { SceneView3D { scene-ba| } }",
+            "scene-background",
+        ),
+        (
             "component App inherits Window { SceneView3D { camer| } }",
             "camera",
         ),
@@ -2662,6 +2742,16 @@ fn hit_list_completion_and_signature_help_are_typed() {
             "int",
         ),
         (
+            "VerticalLayout { for contact in root.hits: Text { text: contact.instance-|",
+            "instance-index",
+            "int",
+        ),
+        (
+            "VerticalLayout { for contact in root.hits: Text { text: contact.mesh-node-|",
+            "mesh-node-index",
+            "int",
+        ),
+        (
             "VerticalLayout { for contact in root.hits: Text { text: contact.normal.|",
             "z",
             "float",
@@ -2818,6 +2908,182 @@ fn fog_volume_records_complete_spatial_noise_with_types() {
 }
 
 #[test]
+fn built_in_primitive_keys_and_material_slots_complete() {
+    for field in ["mesh", "emitter-mesh", "particle-model"] {
+        let source = format!(
+            r#"struct Actor {{ FIELD: string }} component App inherits Window {{
+                property <Actor> actor: Actor {{ FIELD: "primitive:c|" }};
+            }}"#,
+        )
+        .replace("FIELD", field);
+        let candidates = complete_at(&source);
+        assert!(
+            candidates
+                .iter()
+                .any(|item| item["label"] == "primitive:cylinder")
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|item| item["label"] == "primitive:cone")
+        );
+    }
+    let directory = workspace_fixture("primitive-slots");
+    let file = directory.join("main.xr");
+    let uri = format!("file://{}", file.display());
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let marked = r#"component App inherits Window { property <Actor> object: Actor {
+        mesh: "primitive:cylinder",
+        material-slots: Palette { cap: Style { slot: "t|" } }
+    } }"#;
+    let source = marked.replace('|', "");
+    let (line, column) = analysis::Source::new(&source).coordinates(marked.find('|').unwrap());
+    let values = completion::complete(&source, line, column, Some(&workspace));
+    assert!(values.iter().any(|item| item["label"] == "top"));
+}
+
+#[test]
+fn material_slot_selector_completion_uses_the_enclosing_mesh() {
+    let directory =
+        std::env::temp_dir().join(format!("xrack-material-slots-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("sample.gltf"),
+        r##"{
+        "asset":{"version":"2.0"},
+        "materials":[{"name":"Trim"},{"name":"Body finish"},{"name":"#custom"}],
+        "meshes":[{"primitives":[{"material":1},{}]}]
+    }"##,
+    )
+    .unwrap();
+    let file = directory.join("app.xr");
+    let uri = format!("file://{}", file.display());
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let prefix = r#"component App inherits Window { property <Actor> model: Actor {
+        mesh: @mesh-url("sample.gltf"),
+        material-slots: Palette { paint: Style { slot: ""#;
+    let options = completion::complete(
+        prefix,
+        2,
+        prefix.lines().last().unwrap().len(),
+        Some(&workspace),
+    );
+    for expected in ["#0", "#1", "#default", "Body finish", "name:#custom"] {
+        assert!(
+            options.iter().any(|item| item["label"] == expected),
+            "{expected}: {options:?}"
+        );
+    }
+    let asset_cursor =
+        analysis::Source::new(prefix).coordinates(prefix.find("sample.gltf").unwrap());
+    let hover = completion::query(
+        "textDocument/hover",
+        &uri,
+        prefix,
+        Some(asset_cursor),
+        Some(&workspace),
+    );
+    let details = hover["contents"]["value"].as_str().unwrap();
+    assert!(details.contains("#1  Body finish") && details.contains("#default  implicit material"));
+    let independent = r#"component App inherits Window { property <Style> chosen: Style { slot: ""#;
+    assert!(completion::complete(independent, 0, independent.len(), Some(&workspace)).is_empty());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn authored_texture_maps_complete_wrapping_and_sampler_filtering() {
+    let source = r#"struct Map { source: string, wrap-u: string, mip-filter: string }
+        struct Material { base-color-map: Map }
+        component App inherits Window {
+            property <Material> style: Material { base-color-map: Map { PREFIX } };
+        }"#;
+    let wrapping = complete_at(&source.replace("PREFIX", r#"wrap-u: "mi|""#));
+    assert!(wrapping.iter().any(|item| item["label"] == "mirror"));
+    let filtering = complete_at(&source.replace("PREFIX", r#"mip-filter: "no|""#));
+    assert!(filtering.iter().any(|item| item["label"] == "none"));
+    let expression = "component App inherits Window { property <string> map: @texture-url(";
+    let help = completion::signature_help(expression, (0, expression.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "@texture-url(path: string literal) -> string"
+    );
+}
+
+#[test]
+fn authored_scene_material_uses_typed_fields_and_alpha_options() {
+    let source = r#"struct SurfaceStyle { roughness: float, alpha-mode: string }
+        struct Actor { material: SurfaceStyle }
+        component App inherits Window {
+            property <Actor> model: Actor { material: SurfaceStyle { PREFIX } };
+        }"#;
+    let fields = complete_at(&source.replace("PREFIX", "roug|"));
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "roughness" && item["detail"] == "float")
+    );
+    let modes = complete_at(&source.replace("PREFIX", r#"alpha-mode: "bl|""#));
+    assert!(modes.iter().any(|item| item["label"] == "blend"));
+}
+
+#[test]
+fn filtered_picking_completes_row_and_subset_signatures() {
+    let items =
+        complete_at("component App inherits Window { property <hit3d> hit: Scene3D.hit-|; }");
+    for name in [
+        "hit-row",
+        "hit-row-camera",
+        "hit-subset",
+        "hit-subset-camera",
+    ] {
+        assert!(items.iter().any(|item| item["label"] == name));
+    }
+    let source = "component App inherits Window { property <[hit3d]> hits: Scene3D.ray-hit-subset(";
+    let signature = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "Scene3D.ray-hit-subset(objects: [record], origin: point3d, direction: vector3d, max-distance: float, rows: [int], layer-mask?: int) -> [hit3d]"
+    );
+}
+
+#[test]
+fn rectangle_picking_completes_both_camera_variants() {
+    let items =
+        complete_at("component App inherits Window { property <[int]> rows: Scene3D.pick-in-|; }");
+    for name in ["pick-in-rect", "pick-in-rect-camera"] {
+        assert!(items.iter().any(|item| item["label"] == name));
+    }
+    let source =
+        "component App inherits Window { property <[int]> rows: Scene3D.pick-in-rect-camera(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Scene3D.pick-in-rect-camera(objects: [record], camera: string, viewport: point2d, start: point2d, end: point2d, layer-mask?: int) -> [int]"
+    );
+}
+
+#[test]
+fn closest_point_queries_offer_signatures_with_target_and_radius() {
+    let items =
+        complete_at("component App inherits Window { property <hit3d> hit: Scene3D.closest-|; }");
+    for (member, target) in [
+        ("closest-point", ""),
+        ("closest-point-on", "object-id: string, "),
+    ] {
+        assert!(items.iter().any(|item| item["label"] == member));
+        let source =
+            format!("component App inherits Window {{ property <hit3d> hit: Scene3D.{member}(");
+        let signature = completion::signature_help(&source, (0, source.len()), None);
+        assert_eq!(
+            signature["signatures"][0]["label"],
+            format!(
+                "Scene3D.{member}(objects: [record], {target}origin: point3d, radius: float, layer-mask?: int) -> hit3d"
+            )
+        );
+    }
+}
+
+#[test]
 fn sphere_queries_complete_and_show_radius_and_layer_signatures() {
     let items =
         complete_at("component App inherits Window { property <hit3d> hit: Scene3D.sphere-|; }");
@@ -2896,6 +3162,7 @@ fn scene_asset_urls_complete_and_link_local_resources() {
         "roof.gltf",
         "room.bin",
         "room.hdr",
+        "room.wgsl",
         "room.png",
         "room.svg",
     ] {
@@ -2904,6 +3171,17 @@ fn scene_asset_urls_complete_and_link_local_resources() {
     let uris = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
     let uri = uris.uri(&root.join("app.xr")).unwrap();
     let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let shader =
+        r#"component App inherits Window { SceneView3D { scene-effect: @shader-url("models/ro"#;
+    let shaders = completion::complete(shader, 0, shader.len(), Some(&workspace));
+    assert_eq!(shaders.len(), 1);
+    assert_eq!(shaders[0]["textEdit"]["newText"], "room.wgsl");
+    let complete_shader = shader.to_owned() + r#"om.wgsl"); } }"#;
+    let links = completion::document_links(&complete_shader, &workspace);
+    assert_eq!(
+        links[0]["target"],
+        workspace.uri(&models.join("room.wgsl")).unwrap()
+    );
     let source = r#"component App inherits Window { property <string> mesh: @mesh-url("models/ro"#;
     let items = completion::complete(source, 0, source.len(), Some(&workspace));
     assert_eq!(
@@ -2917,6 +3195,37 @@ fn scene_asset_urls_complete_and_link_local_resources() {
     let emitter = r#"struct Emitter { emitter-mesh: string } component App inherits Window { property <Emitter> emitter: Emitter { emitter-mesh: @mesh-url("models/ro"#;
     let items = completion::complete(emitter, 0, emitter.len(), Some(&workspace));
     assert!(items.iter().any(|item| item["label"] == "room.glb"));
+    let model = emitter.replace("emitter-mesh", "particle-model");
+    let items = completion::complete(&model, 0, model.len(), Some(&workspace));
+    assert!(items.iter().any(|item| item["label"] == "room.glb"));
+    let texture =
+        r#"component App inherits Window { property <string> map: @texture-url("models/ro"#;
+    let textures = completion::complete(texture, 0, texture.len(), Some(&workspace));
+    assert_eq!(textures.len(), 1);
+    assert_eq!(textures[0]["textEdit"]["newText"], "room.png");
+    let complete_texture = texture.to_owned() + r#"om.png"); }"#;
+    let links = completion::document_links(&complete_texture, &workspace);
+    assert_eq!(
+        links[0]["target"],
+        workspace.uri(&models.join("room.png")).unwrap()
+    );
+    for field in [
+        "specular-map",
+        "specular-color-map",
+        "thickness-map",
+        "anisotropy-map",
+    ] {
+        let source = format!(
+            r#"struct Finish {{ {field}: string }} component App inherits Window {{
+                property <Finish> finish: Finish {{ {field}: @texture-url("models/ro"#
+        );
+        let cursor = source.lines().last().unwrap().len();
+        let items = completion::complete(&source, 1, cursor, Some(&workspace));
+        assert!(
+            items.iter().any(|item| item["label"] == "room.png"),
+            "{field}: {items:?}"
+        );
+    }
     let source =
         r#"component App inherits Window { SceneView3D { environment: @environment-url("models/ro"#;
     let items = completion::complete(source, 0, source.len(), Some(&workspace));
@@ -3341,6 +3650,11 @@ fn builtin_signatures_work_in_incomplete_buffers_and_diagnostics_cover_function_
             0,
             "@environment-url(path: string literal) -> string",
         ),
+        (
+            "@shader-url(",
+            0,
+            "@shader-url(path: string literal) -> string",
+        ),
     ] {
         let text =
             format!("component Demo inherits Window {{ button := Button {{ clicked => {{ {call}");
@@ -3349,6 +3663,13 @@ fn builtin_signatures_work_in_incomplete_buffers_and_diagnostics_cover_function_
         assert_eq!(hint["signatures"][0]["label"], signature);
         assert_eq!(hint["activeParameter"], parameter);
         assert_eq!(hint["signatures"][0]["documentation"]["kind"], "markdown");
+        if call == "@shader-url(" {
+            let help = hint["signatures"][0]["documentation"]["value"].to_string();
+            assert!(
+                help.contains("scene_surface") && help.contains("scene_buffer_world_position"),
+                "{help}"
+            );
+        }
     }
 
     for (call, expected) in [
@@ -6126,4 +6447,949 @@ fn model_lookup_completes_with_a_literal_field_path() {
     );
     let diagnostics = analysis::analyze(URI, source, None).diagnostics;
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn gltf_material_variant_selectors_complete_and_hover_inside_scene_rows() {
+    let directory = workspace_fixture("material-variant-selectors");
+    std::fs::write(
+        directory.join("sample.gltf"),
+        r##"{"asset":{"version":"2.0"},"extensions":{"KHR_materials_variants":{"variants":[
+            {"name":"Copper"},{"name":"Cool Silver"},{"name":"Repeat"},{"name":"Repeat"},{"name":"#1"}
+        ]}}}"##,
+    )
+    .unwrap();
+    let file = directory.join("app.xr");
+    let uri = format!("file://{}", file.display());
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let prefix = r#"component App inherits Window { property <Actor> model: Actor {
+        mesh: @mesh-url("sample.gltf", auto-lod),
+        material-variant: ""#;
+    let complete = |source: &str, cursor: usize| {
+        let (line, column) = analysis::Source::new(source).coordinates(cursor);
+        completion::complete(source, line, column, Some(&workspace))
+    };
+    let candidates = complete(prefix, prefix.len());
+    let labels = candidates
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        ["#0", "Copper", "#1", "Cool Silver", "#2", "#3", "#4"]
+    );
+    let complete_source = format!("{prefix}Co\" }}; }}");
+    let candidates = complete(&complete_source, prefix.len() + 2);
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        candidates
+            .iter()
+            .any(|item| item["textEdit"]["newText"] == "Cool Silver")
+    );
+    let asset_cursor =
+        analysis::Source::new(prefix).coordinates(prefix.find("sample.gltf").unwrap());
+    let hover = completion::query(
+        "textDocument/hover",
+        &uri,
+        prefix,
+        Some(asset_cursor),
+        Some(&workspace),
+    );
+    let details = hover["contents"]["value"].as_str().unwrap();
+    assert!(details.contains("glTF material variants (material-variant)"));
+    assert!(details.contains("#0  Copper"));
+}
+
+#[test]
+fn mesh_asset_hover_reports_gpu_instance_groups_and_accessors() {
+    let directory = workspace_fixture("gltf-instanced-asset-hover");
+    std::fs::write(
+        directory.join("forest.gltf"),
+        r#"{"asset":{"version":"2.0"},"nodes":[{},{
+        "name":"Forest","extensions":{"EXT_mesh_gpu_instancing":{"attributes":{"TRANSLATION":0,"ROTATION":1}}}
+        }],"accessors":[{"count":128},{"count":128}]}"#,
+    )
+    .unwrap();
+    let uri = format!("file://{}", directory.join("main.xr").display());
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let source =
+        r#"component App inherits Window { property <string> forest: @mesh-url("forest.gltf"); }"#;
+    let cursor = analysis::Source::new(source).coordinates(source.find("forest.gltf").unwrap());
+    let hover = completion::query(
+        "textDocument/hover",
+        &uri,
+        source,
+        Some(cursor),
+        Some(&workspace),
+    );
+    let details = hover["contents"]["value"].as_str().unwrap();
+    assert!(details.contains("EXT_mesh_gpu_instancing"));
+    assert!(details.contains("Node #1  Forest  128 instances"));
+}
+
+#[test]
+fn authored_instance_prototypes_complete_from_the_same_table() {
+    let source = r#"struct Actor { id: string, mesh: string, instance-of: string, instance-template: bool }
+        component App inherits Window {
+            property <[Actor]> other: [Actor { id: "sh-outside", mesh: "primitive:box" }];
+            property <[Actor]> world: [
+                Actor { id: "sh-duplicate", mesh: "primitive:box" },
+                Actor { id: "shape", mesh: "primitive:box", instance-template: true },
+                Actor { id: "sh-duplicate", mesh: "primitive:sphere" },
+                Actor { id: "sh-empty", mesh: "" },
+                Actor { id: "sh-copy", mesh: "primitive:sphere", instance-of: "shape" },
+                Actor { id: "sh-self", mesh: "primitive:box", instance-of: "sh|" },
+                Actor { id: "sh-asset", mesh: @mesh-url("house.glb") }
+            ];
+        }"#;
+    let items = complete_at(source);
+    let candidates = items
+        .iter()
+        .map(|item| item["label"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(candidates, ["sh-asset", "shape"]);
+    assert_eq!(items[1]["textEdit"]["newText"], "shape");
+    let partial = r#"component App inherits Window {
+        property <[Actor]> rows: [Actor { id: "prototype", mesh: "primitive:box" }, Actor { instance-of: "pr|"#;
+    assert!(
+        complete_at(partial)
+            .iter()
+            .any(|item| item["label"] == "prototype")
+    );
+}
+
+#[test]
+fn instance_picking_completion_and_signature_expose_the_full_address() {
+    let partial =
+        "component App inherits Window { property <hit3d> result: Scene3D.hit-instance-c|";
+    let items = complete_at(partial);
+    assert!(items.iter().any(|item| {
+        item["label"] == "hit-instance-camera"
+            && item["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("-> hit3d"))
+    }));
+
+    let call = "component App inherits Window { property <hit3d> result: Scene3D.ray-hit-instance(";
+    let help = completion::signature_help(call, (0, call.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Scene3D.ray-hit-instance(objects: [record], origin: point3d, direction: vector3d, max-distance: float, row-index: int, mesh-node-index: int, instance-index: int, layer-mask?: int) -> hit3d"
+    );
+}
+
+#[test]
+fn material_blend_modes_complete_in_record_values() {
+    let template = r#"struct Finish { blend-mode: string }
+        component App inherits Window { property <Finish> finish: Finish { blend-mode: VALUE } }"#;
+    for (prefix, expected) in [("sc", "screen"), ("mul", "multiply"), ("so", "source-over")] {
+        let text = template.replace("VALUE", &format!("\"{prefix}|\""));
+        let items = complete_at(&text);
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn material_depth_modes_complete_in_record_values() {
+    let template = r#"struct Finish { depth-draw-mode: string }
+        component App inherits Window { property <Finish> finish: Finish { depth-draw-mode: VALUE } }"#;
+    for (prefix, expected) in [
+        ("opaque-o", "opaque-only"),
+        ("opaque-p", "opaque-prepass"),
+        ("al", "always"),
+        ("ne", "never"),
+    ] {
+        let text = template.replace("VALUE", &format!("\"{prefix}|\""));
+        let items = complete_at(&text);
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn material_cull_modes_complete_in_record_values() {
+    let template = r#"struct Finish { cull-mode: string }
+        component App inherits Window { property <Finish> finish: Finish { cull-mode: VALUE } }"#;
+    for (prefix, expected) in [("ba", "back"), ("fr", "front"), ("no", "none")] {
+        let text = template.replace("VALUE", &format!("\"{prefix}|\""));
+        let items = complete_at(&text);
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn material_texture_channels_complete_for_color_and_scalar_maps() {
+    let template = r#"struct Finish { FIELD: string }
+        component App inherits Window { property <Finish> finish: Finish { FIELD: "|"} }"#;
+    for (field, rgb) in xrack_parser::builtins::SCENE_MATERIAL_CHANNEL_FIELDS {
+        let items = complete_at(&template.replace("FIELD", field));
+        for channel in ["r", "g", "b", "a"] {
+            assert!(
+                items.iter().any(|item| item["label"] == channel),
+                "{field}: {items:?}"
+            );
+        }
+        assert_eq!(
+            items.iter().any(|item| item["label"] == "rgb"),
+            *rgb,
+            "{field}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn vertex_color_mask_options_complete_for_full_and_partial_values() {
+    let template = r#"struct Finish { FIELD: string }
+        component App inherits Window { property <Finish> finish: Finish { FIELD: "VALUE"} }"#;
+    for field in xrack_parser::builtins::SCENE_VERTEX_MASK_FIELDS {
+        let source = template.replace("FIELD", field);
+        let items = complete_at(&source.replace("VALUE", "|"));
+        for channel in ["none", "r", "g", "b", "a"] {
+            assert!(
+                items.iter().any(|item| item["label"] == channel),
+                "{field}: {items:?}"
+            );
+        }
+        let partial = source.replace("VALUE\"", "no|");
+        let items = complete_at(&partial);
+        assert!(
+            items.iter().any(|item| item["label"] == "none"),
+            "{field}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn fresnel_fields_offer_record_completion_hover_and_types() {
+    let fields = r##"
+struct Finish {
+    fresnel-power: float, fresnel-bias: float,
+    clearcoat-fresnel-power: float, clearcoat-fresnel-scale-bias-enabled: bool,
+}
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: Finish,
+}
+export component FresnelScene inherits Window {
+    property <Finish> finish: Finish { FIELD };
+    SceneView3D { model: [
+        Actor {
+            id: "panel", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+            color: #fff, material: root.finish,
+        }
+    ]; }
+}
+"##;
+    let items = complete_at(&fields.replace("FIELD", "clearcoat-fresnel-sc|"));
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "clearcoat-fresnel-scale-bias-enabled"),
+        "{items:?}"
+    );
+    let valid = fields.replace("FIELD",
+        "fresnel-power: 5.0, fresnel-bias: 0.15, clearcoat-fresnel-power: 3.0, clearcoat-fresnel-scale-bias-enabled: true");
+    let diagnostics = analysis::analyze(URI, &valid, None).diagnostics;
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let source = analysis::Source::new(&valid);
+    let cursor = source.coordinates(valid.rfind("clearcoat-fresnel-power").unwrap());
+    let hover = completion::query("textDocument/hover", URI, &valid, Some(cursor), None);
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("clearcoat-fresnel-power: float")),
+        "{hover:?}"
+    );
+    let invalid = valid
+        .replace(
+            "clearcoat-fresnel-power: float",
+            "clearcoat-fresnel-power: string",
+        )
+        .replace(
+            "clearcoat-fresnel-power: 3.0",
+            "clearcoat-fresnel-power: \"wrong\"",
+        );
+    let diagnostics = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            let message = item["message"].as_str().unwrap_or_default();
+            message.contains("clearcoat-fresnel-power") && message.contains("float")
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn parametric_geometry_completes_shapes_and_checks_field_types() {
+    let template = r##"
+struct Shape { shape: string, segments: int }
+struct Actor {
+    id: string, x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color, geometry: Shape,
+}
+export component Demo inherits Window {
+    SceneView3D {
+        model: [Actor { id: "shape", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
+            geometry: Shape { shape: KIND, segments: VALUE },
+        }];
+    }
+}
+"##;
+    for (prefix, shape) in [
+        ("to", "torus"),
+        ("ca", "capsule"),
+        ("sp", "sphere"),
+        ("cy", "cylinder"),
+    ] {
+        let items = complete_at(
+            &template
+                .replace("KIND", &format!("\"{prefix}|\""))
+                .replace("VALUE", "16"),
+        );
+        assert!(items.iter().any(|item| item["label"] == shape), "{items:?}");
+    }
+    let good = template.replace("KIND", "\"torus\"").replace("VALUE", "16");
+    assert!(analysis::analyze(URI, &good, None).diagnostics.is_empty());
+    let bad = good
+        .replace("segments: int", "segments: float")
+        .replace("segments: 16", "segments: 16.5");
+    let diagnostics = analysis::analyze(URI, &bad, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            let message = item["message"].as_str().unwrap_or_default();
+            message.contains("3D geometry")
+                && message.contains("segments")
+                && message.contains("int")
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn triangle_mesh_records_complete_nested_fields_and_validate_vertex_types() {
+    let source = r##"
+struct Vertex { position: point3d, normal: vector3d, u: float, v: float }
+struct MeshData { vertices: [Vertex], indices: [int] }
+struct Actor {
+    id: string, x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color, geometry: MeshData,
+}
+export component App inherits Window {
+    in property <[Vertex]> points: [];
+    SceneView3D { model: [
+        Actor { id: "panel", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
+            geometry: MeshData { FIELD },
+        },
+    ]; }
+}
+"##;
+    let items = complete_at(&source.replace("FIELD", "ver|"));
+    assert!(
+        items.iter().any(|item| item["label"] == "vertices"),
+        "{items:?}"
+    );
+    let good = source.replace("FIELD", "vertices: root.points, indices: [0, 1, 2]");
+    assert!(analysis::analyze(URI, &good, None).diagnostics.is_empty());
+    let bad = good.replace("position: point3d", "position: vector3d");
+    let diagnostics = analysis::analyze(URI, &bad, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            let message = item["message"].as_str().unwrap_or_default();
+            message.contains("3D vertex")
+                && message.contains("position")
+                && message.contains("point3d")
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn authored_mesh_slot_completion_uses_literal_subset_names() {
+    let source = r##"
+struct Vertex { position: point3d, u1: float, v1: float }
+struct Subset { offset: int, count: int, name: string }
+struct MeshData { vertices: [Vertex], subsets: [Subset] }
+struct Finish { base-color: color, slot: string }
+struct Slots { face: Finish }
+struct Actor {
+    id: string, x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color,
+    geometry: MeshData, material-slots: Slots,
+}
+export component App inherits Window {
+    SceneView3D { model: [
+        Actor { id: "panel", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
+            geometry: MeshData { vertices: [], subsets: [
+                Subset { offset: 0, count: 6, name: "edge" },
+                Subset { offset: 6, count: 6, name: "#trim" },
+            ] },
+            material-slots: Slots { face: Finish { base-color: #fff, slot: SLOT } },
+        },
+    ]; }
+}
+"##;
+    let items = complete_at(&source.replace("SLOT", "\"|\""));
+    for slot in ["edge", "name:#trim", "surface"] {
+        assert!(items.iter().any(|item| item["label"] == slot), "{items:?}");
+    }
+    let items = complete_at(&source.replace("SLOT", "\"ed|\""));
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item["label"].as_str())
+            .collect::<Vec<_>>(),
+        [Some("edge")]
+    );
+    let valid = source.replace("SLOT", "\"edge\"");
+    assert!(analysis::analyze(URI, &valid, None).diagnostics.is_empty());
+    let invalid = valid
+        .replace("count: int", "count: float")
+        .replace("count: 6", "count: 6.0");
+    let diagnostics = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            let message = item["message"].as_str().unwrap_or_default();
+            message.contains("3D subset") && message.contains("count") && message.contains("int")
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn scene_node_coordinate_mapping_has_typed_completion_and_signature_help() {
+    for (member, input, kind) in [
+        ("map-position", "position", "point3d"),
+        ("map-direction", "direction", "vector3d"),
+    ] {
+        let partial =
+            format!("component Demo inherits Window {{ property <{kind}> p: Scene3D.map-|");
+        assert!(
+            complete_at(&partial)
+                .iter()
+                .any(|item| item["label"] == member)
+        );
+        let call = format!(
+            "component Demo inherits Window {{ property <{kind}> p: Scene3D.{member}(root.nodes, \"rig\", "
+        );
+        let help = completion::signature_help(&call, (0, call.len()), None);
+        assert_eq!(help["activeParameter"], 2);
+        assert_eq!(
+            help["signatures"][0]["label"],
+            format!(
+                "Scene3D.{member}(objects: [record], from: string, to: string, {input}: {kind}, fallback: {kind}) -> {kind}"
+            )
+        );
+    }
+}
+
+#[test]
+fn scene_material_completes_live_texture_sources_in_the_current_component() {
+    let property = complete_at("component App inherits Window { Rectangle { texture-so| } }");
+    assert!(
+        property
+            .iter()
+            .any(|item| item["label"] == "texture-source")
+    );
+    let mode = complete_at("component App inherits Window { Rectangle { texture-o| } }");
+    assert!(mode.iter().any(|item| item["label"] == "texture-only"));
+    let mipmaps = complete_at("component App inherits Window { Rectangle { texture-mi| } }");
+    assert!(
+        mipmaps
+            .iter()
+            .any(|item| item["label"] == "texture-mipmaps")
+    );
+    let items = complete_at(
+        r#"
+struct Finish { base-item: string, }
+component Other inherits Window {
+    Rectangle { texture-source: "dashboard-other"; }
+}
+component App inherits Window {
+    Rectangle { texture-source: "dashboard"; }
+    Rectangle { texture-source: "dial"; }
+    property <Finish> finish: Finish { base-item: "dash|"; };
+}
+"#,
+    );
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["label"], "dashboard");
+}
+
+#[test]
+fn scene_effect_buffer_completion_uses_only_earlier_outputs_in_the_chain() {
+    for request in [
+        r#"input: "so|", buffers: []"#,
+        r#"buffers: [BufferInput { name: "so|" }]"#,
+    ] {
+        let source = r#"
+            component Demo inherits Window {
+                SceneView3D { scene-effects: [
+                    Effect { output: "soft-unrelated" }
+                ]; }
+                SceneView3D { scene-effects: [
+                    Effect { output: "soft-main", buffers: [BufferInput { output: "soft-nested" }] },
+                    Effect { output: "soft-current", CURSOR },
+                    Effect { output: "soft-later" }
+                ]; }
+            }
+        "#.replace("CURSOR", request);
+        let items = complete_at(&source);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["label"], "soft-main");
+        assert_eq!(items[0]["textEdit"]["newText"], "soft-main");
+    }
+}
+
+#[test]
+fn previous_frame_effect_inputs_complete_persistent_outputs_including_self() {
+    let source = r#"
+        component Demo inherits Window {
+            SceneView3D { scene-effects: [
+                Effect { output: "trail-temporary", history: false },
+                Effect { output: "trail-self", history: true,
+                    buffers: [Buffer { previous-frame: true, name: "trail-|" }]
+                },
+                Effect { output: "trail-later", history: true }
+            ]; }
+        }
+    "#;
+    let items = complete_at(source);
+    assert_eq!(
+        items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<Vec<_>>(),
+        ["trail-later", "trail-self"]
+    );
+    for property in ["scene-effect-history-revision", "scene-effect-animate"] {
+        let items =
+            complete_at("component Demo inherits Window { SceneView3D { scene-effect-| } }");
+        assert!(
+            items.iter().any(|item| item["label"] == property),
+            "{property}"
+        );
+    }
+}
+
+#[test]
+fn scene_effect_buffers_complete_formats_and_sampling_options() {
+    for (field, expected) in [
+        (r#"output-format: "rg1|""#, "rg16f"),
+        (r#"buffers: [Read { filter: "nea|" }]"#, "nearest"),
+        (r#"buffers: [Read { wrap-u: "mir|" }]"#, "mirror"),
+    ] {
+        let source = r#"
+            struct Read { name: string, filter: string, wrap-u: string }
+            struct Pass { shader: string, output-format: string, buffers: [Read] }
+            component App inherits Window { SceneView3D { scene-effects: [Pass { FIELD }]; } }
+        "#
+        .replace("FIELD", field);
+        let items = complete_at(&source);
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn scene_effect_texture_inputs_complete_panel_names_and_color_space() {
+    let layout = r#"
+        struct TextureInput { item: string, texture: string, color-space: string }
+        struct Effect { shader: string, buffers: [TextureInput] }
+        component App inherits Window {
+            Rectangle { texture-source: "live-swatch"; }
+            SceneView3D { scene-effects: [Effect { buffers: [TextureInput { FIELD }] }]; }
+        }
+    "#;
+    for (field, expected) in [
+        (r#"item: "live-|""#, "live-swatch"),
+        (r#"color-space: "sr|""#, "srgb"),
+    ] {
+        let items = complete_at(&layout.replace("FIELD", field));
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn material_shader_inputs_complete_panel_names_and_sampling() {
+    let layout = r#"
+        struct TextureInput { item: string, texture: string, filter: string, color-space: string }
+        struct Style { shader-textures: [TextureInput] }
+        component App inherits Window {
+            Rectangle { texture-source: "live-swatch"; }
+            property <Style> style: Style { shader-textures: [TextureInput { FIELD }] };
+        }
+    "#;
+    for (field, expected) in [
+        (r#"item: "live-|""#, "live-swatch"),
+        (r#"color-space: "sr|""#, "srgb"),
+        (r#"filter: "nea|""#, "nearest"),
+    ] {
+        let items = complete_at(&layout.replace("FIELD", field));
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn material_shader_files_have_signature_path_completion_and_links() {
+    let root = workspace_fixture("material-shader-path");
+    std::fs::write(root.join("surface.wgsl"), "").unwrap();
+    std::fs::write(root.join("surface.png"), "").unwrap();
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let opening = "component App inherits Window { property <string> shader: @material-shader-url(";
+    let hints = completion::signature_help(opening, (0, opening.len()), Some(&workspace));
+    assert_eq!(
+        hints["signatures"][0]["label"],
+        "@material-shader-url(path: string literal) -> string"
+    );
+    let help = hints["signatures"][0]["documentation"].to_string();
+    assert!(
+        help.contains("scene_vertex")
+            && help.contains("shader-displacement")
+            && help.contains("scene_light")
+            && help.contains("scene_ambient"),
+        "{help}"
+    );
+    assert!(help.contains("material_texture_world_position"), "{help}");
+    let prefix = opening.to_owned() + "\"sur";
+    let completions = completion::complete(&prefix, 0, prefix.len(), Some(&workspace));
+    assert_eq!(completions.len(), 1, "{completions:?}");
+    assert_eq!(completions[0]["textEdit"]["newText"], "surface.wgsl");
+    let completed = prefix + "face.wgsl\"); }";
+    let links = completion::document_links(&completed, &workspace);
+    assert_eq!(
+        links[0]["target"],
+        workspace.uri(&root.join("surface.wgsl")).unwrap()
+    );
+}
+
+#[test]
+fn named_scene_capture_completion_stays_within_the_view_and_offers_cameras() {
+    let source = r#"
+        component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "detail-other" }]; }
+            SceneView3D {
+                model: [
+                    Object { id: "side-eye", camera-kind: "orthographic" },
+                    Object { id: "side-mesh", mesh: "primitive:box" }
+                ];
+                scene-captures: [
+                    Feed { name: "detail-main", camera: "CAMERA" },
+                    Feed { name: "detail-disabled", enabled: false }
+                ];
+                scene-effects: [Pass { buffers: [Input { capture: "CAPTURE" }] }];
+            }
+        }
+    "#;
+    for (text, expected) in [
+        (source.replace("CAPTURE", "detail-|"), "detail-main"),
+        (source.replace("CAMERA", "side-|"), "side-eye"),
+    ] {
+        let items = complete_at(&text);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["label"], expected);
+    }
+}
+
+#[test]
+fn shader_texture_capture_completion_uses_the_owning_viewport() {
+    let items = complete_at(
+        r#"
+        component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "source-other" }]; }
+            SceneView3D {
+                scene-captures: [
+                    Feed { name: "source-main" },
+                    Feed { name: "source-off", enabled: false }
+                ];
+                model: [Object { material-slots: Slots {
+                    body: Style { shader-textures: [Input { capture: "source-|" }] }
+                } }];
+            }
+        }
+    "#,
+    );
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["label"], "source-main");
+    let items = complete_at(
+        r#"
+        component App inherits Window {
+            property <Style> screen: Style { shader-textures: [Input { capture: "source-|" }] };
+            SceneView3D { scene-captures: [Feed { name: "source-main" }]; }
+        }
+    "#,
+    );
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["label"], "source-main");
+}
+
+#[test]
+fn named_capture_attachment_completion_works_in_effects_and_materials() {
+    let source = r#"
+        component App inherits Window {
+            SceneView3D { FIELD }
+        }
+    "#;
+    for (field, expected) in [
+        (
+            r#"scene-effects: [Pass { buffers: [Input { capture: "data", attachment: "dep|" }] }];"#,
+            "depth",
+        ),
+        (
+            r#"model: [Actor { material: Style { shader-textures: [Input { capture: "data", attachment: "norm|" }] } }];"#,
+            "normal-roughness",
+        ),
+        (
+            r#"scene-effects: [Pass { buffers: [Input { capture: "data", attachment: "base-col|" }] }];"#,
+            "base-color-metalness",
+        ),
+        (
+            r#"model: [Actor { material: Style { shader-textures: [Input { capture: "data", attachment: "emiss|" }] } }];"#,
+            "emissive-occlusion",
+        ),
+    ] {
+        let items = complete_at(&source.replace("FIELD", field));
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["label"], expected);
+    }
+}
+
+#[test]
+fn scene_capture_sources_complete_active_captures_from_the_same_view() {
+    for (prefix, property) in [
+        ("scene-color-cap", "scene-color-capture"),
+        ("scene-depth-cap", "scene-depth-capture"),
+    ] {
+        let properties = complete_at(&format!(
+            "component App inherits Window {{ SceneView3D {{ {prefix}| }} }}"
+        ));
+        assert!(properties.iter().any(|item| item["label"] == property));
+        let source = r#"
+        component App inherits Window {
+            SceneView3D {
+                scene-captures: [
+                    Feed { name: "stage-live", enabled: true },
+                    Feed { name: "stage-disabled", enabled: false },
+                ];
+                FIELD: "stage-|";
+            }
+            SceneView3D { scene-captures: [Feed { name: "stage-other" }]; }
+        }
+    "#;
+        let items = complete_at(&source.replace("FIELD", property));
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["label"], "stage-live");
+    }
+}
+
+#[test]
+fn capture_input_names_complete_other_enabled_feeds_in_the_owning_view() {
+    let source = r#"
+        struct Feed { name: string, color-source: string, depth-source: string, enabled: bool }
+        component App inherits Window {
+            SceneView3D {
+                scene-captures: [
+                    Feed { name: "stage-output", FIELD: "stage-|" },
+                    Feed { name: "stage-lighting", enabled: true },
+                    Feed { name: "stage-depth", enabled: true },
+                    Feed { name: "stage-disabled", enabled: false },
+                ];
+            }
+            SceneView3D { scene-captures: [Feed { name: "stage-other" }]; }
+        }
+    "#;
+    for field in ["color-source", "depth-source"] {
+        let items = complete_at(&source.replace("FIELD", field));
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert_eq!(items[0]["label"], "stage-depth");
+        assert_eq!(items[1]["label"], "stage-lighting");
+    }
+}
+
+#[test]
+fn capture_renderables_completes_transparent_mode() {
+    let items = complete_at(
+        r#"component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "glass", renderables: "tran|" }]; }
+        }"#,
+    );
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["label"], "transparent");
+}
+
+#[test]
+fn capture_override_shader_textures_use_the_owning_view() {
+    let items = complete_at(
+        r#"
+        component App inherits Window {
+            SceneView3D {
+                scene-captures: [
+                    Feed { name: "scene-color" },
+                    Feed { name: "mask", override-material: Mat { shader-textures: [Input { capture: "scene-|" }] } },
+                ];
+            }
+            SceneView3D { scene-captures: [Feed { name: "scene-other" }]; }
+        }
+    "#,
+    );
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["label"], "scene-color");
+}
+
+#[test]
+fn capture_pipeline_state_completes_depth_comparison_and_blend() {
+    for (field, expected) in [
+        (r#"depth-compare: "greater-e|""#, "greater-equal"),
+        (r#"blend-mode: "add|""#, "additive"),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ SceneView3D {{ scene-captures: [Feed {{ name: \"glass\", pipeline-state: State {{ {field} }} }}]; }} }}"
+        ));
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["label"], expected);
+    }
+}
+
+#[test]
+fn viewport_and_scissor_complete_typed_rectangle_fields() {
+    for field in ["viewport", "scissor"] {
+        let source = format!(
+            r#"
+            struct Bounds {{ x: float, y: float, width: float, height: float }}
+            struct State {{ {field}: Bounds }}
+            struct Feed {{ name: string, pipeline-state: State }}
+            component App inherits Window {{
+                SceneView3D {{ scene-captures: [Feed {{ name: "window", pipeline-state: State {{
+                    {field}: Bounds {{ wid| }}
+                }} }}]; }}
+            }}
+        "#
+        );
+        let items = complete_at(&source);
+        assert!(
+            items.iter().any(|item| item["label"] == "width"),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn capture_record_completes_depth_clear_field() {
+    let items = complete_at(
+        r#"
+        struct Feed { name: string, depth-clear: float }
+        component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "scene", depth-cl| }]; }
+        }
+    "#,
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "depth-clear"),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn stencil_source_and_operations_complete_inside_named_captures() {
+    let sources = complete_at(
+        r#"
+        component App inherits Window {
+            SceneView3D { scene-captures: [
+                Feed { name: "mask-inner" },
+                Feed { name: "panel", stencil-source: "mask-|" },
+            ]; }
+            SceneView3D { scene-captures: [Feed { name: "mask-other" }]; }
+        }
+    "#,
+    );
+    assert_eq!(sources.len(), 1, "{sources:?}");
+    assert_eq!(sources[0]["label"], "mask-inner");
+    for (field, expected) in [
+        (r#"depth-fail: "increment-w|""#, "increment-wrap"),
+        (r#"compare: "less-e|""#, "less-equal"),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ SceneView3D {{ scene-captures: [Feed {{ pipeline-state: Pass {{ stencil: Mask {{ {field} }} }} }}]; }} }}"
+        ));
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["label"], expected);
+    }
+}
+
+#[test]
+fn capture_polygon_mode_completes_wireframe_values() {
+    let items = complete_at(
+        r#"
+        component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "edges", pipeline-state: State {
+                polygon-mode: "li|"
+            } }]; }
+        }
+    "#,
+    );
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["label"], "line");
+}
+
+#[test]
+fn capture_target_blend_completes_operations_and_factors() {
+    for (field, expected) in [
+        (r#"destination-color: "one-minus-d|" "#, "one-minus-dst"),
+        (r#"source-alpha: "cons|" "#, "constant"),
+        (r#"alpha-operation: "rev|" "#, "reverse-subtract"),
+        (r#"color-operation: "ma|" "#, "max"),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ SceneView3D {{ scene-captures: [Feed {{ pipeline-state: Pass {{ target-blend: Blend {{ {field} }} }} }}]; }} }}"
+        ));
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{items:?}"
+        );
+    }
+    let items = complete_at(
+        r#"component App inherits Window { property <Style> style: Style { alpha-operation: "r|" }; }"#,
+    );
+    assert!(items.iter().all(|item| item["label"] != "reverse-subtract"));
+}
+
+#[test]
+fn capture_color_format_completes_linear_attachment_formats() {
+    let items = complete_at(
+        r#"
+        component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "mask", color-format: "rg|" }]; }
+        }
+        "#,
+    );
+    let labels: Vec<_> = items
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect();
+    for format in ["rg8", "rg16f", "rgba8", "rgba16f"] {
+        assert!(labels.contains(&format), "{labels:?}");
+    }
+    assert!(!labels.contains(&"r16f"), "{labels:?}");
 }

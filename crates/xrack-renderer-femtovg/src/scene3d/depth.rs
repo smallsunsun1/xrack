@@ -1,18 +1,50 @@
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
+
+use xrack_runtime::{
+    scene_effect::CaptureRenderables,
+    scene3d::{MeshCullMode, MeshDepthCoverage, MeshDepthDraw},
+};
 
 use super::{
     DEPTH_FORMAT, MeshBuffer,
-    deform::{Deformation, DeformationBinding, DeformationLayouts, SKIN_LAYOUT, shader_source},
-    pipeline::GEOMETRY_LAYOUTS,
+    deform::{Deformation, DeformationBinding, DeformationLayouts, SKIN_LAYOUT},
+    pipeline::{GEOMETRY_LAYOUTS, culled_face},
+    vertex_program::VertexPipelines,
 };
 
-pub(super) type DepthVariant = (bool, bool, Deformation);
+#[derive(Clone, Copy)]
+pub(super) enum DepthPass {
+    Auxiliary(CaptureRenderables),
+    Particles,
+    Material {
+        transmission: bool,
+        cull_override: Option<MeshCullMode>,
+        renderables: CaptureRenderables,
+        multisampling: bool,
+        reverse_winding: bool,
+    },
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct DepthVariant {
+    coverage: MeshDepthCoverage,
+    cull: MeshCullMode,
+    mode: Deformation,
+    particle: bool,
+    multisampling: bool,
+    reverse_winding: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct DepthPipelineKey {
+    variant: DepthVariant,
+    program: Option<usize>,
+}
 
 pub(super) struct DepthPipelines {
     camera: wgpu::BindGroupLayout,
     layouts: [wgpu::PipelineLayout; 4],
-    shader: wgpu::ShaderModule,
-    variants: [Option<wgpu::RenderPipeline>; 16],
+    pipelines: VertexPipelines<DepthVariant>,
     bias: wgpu::DepthBiasState,
 }
 
@@ -45,15 +77,10 @@ impl DepthPipelines {
                 immediate_size: 0,
             })
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("XRack 3D depth shader"),
-            source: shader_source(include_str!("depth.wgsl")),
-        });
         Self {
             camera,
             layouts,
-            shader,
-            variants: Default::default(),
+            pipelines: VertexPipelines::new(device, include_str!("depth.wgsl")),
             bias,
         }
     }
@@ -73,31 +100,72 @@ impl DepthPipelines {
         &mut self,
         device: &wgpu::Device,
         pass: &mut wgpu::RenderPass<'_>,
-        active: &mut Option<DepthVariant>,
+        active: &mut Option<DepthPipelineKey>,
         mesh: &MeshBuffer,
-        (range, deformation): (Range<u32>, Option<&DeformationBinding>),
+        (range, deformation, stage): (Range<u32>, Option<&DeformationBinding>, DepthPass),
     ) -> u64 {
-        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+        mesh.bind_geometry(pass);
         let mode = deformation.map_or(Deformation::Rigid, |binding| binding.mode);
         if mode.skin() {
             mesh.bind_skin(pass);
         }
+        let renderables = match stage {
+            DepthPass::Auxiliary(renderables) | DepthPass::Material { renderables, .. } => {
+                renderables
+            }
+            DepthPass::Particles => CaptureRenderables::All,
+        };
         let mut draws = 0;
-        for part in mesh
-            .parts
-            .iter()
-            .filter(|part| !part.surface.blend && !part.surface.transmission)
-        {
-            let variant = (part.mask, part.surface.double_sided, mode);
-            if *active != Some(variant) {
-                pass.set_pipeline(self.get(device, variant));
-                *active = Some(variant);
+        for part in &mesh.parts {
+            if !renderables.includes(part.surface.blend) {
+                continue;
+            }
+            let Some(coverage) = part.depth_coverage else {
+                continue;
+            };
+            let (multisampling, reverse_winding, cull) = match stage {
+                DepthPass::Material {
+                    transmission,
+                    cull_override,
+                    multisampling,
+                    reverse_winding,
+                    ..
+                } => {
+                    if part.surface.depth_draw != MeshDepthDraw::OpaquePrepass
+                        || part.surface.transmission != transmission
+                    {
+                        continue;
+                    }
+                    (
+                        multisampling,
+                        reverse_winding,
+                        cull_override.unwrap_or(part.surface.cull),
+                    )
+                }
+                _ => (false, false, part.surface.cull),
+            };
+            let variant = DepthVariant {
+                coverage,
+                cull,
+                mode,
+                particle: matches!(stage, DepthPass::Particles),
+                multisampling,
+                reverse_winding,
+            };
+            let program = part.material.vertex.as_ref();
+            let key = DepthPipelineKey {
+                variant,
+                program: program.map(|source| Arc::as_ptr(source) as *const () as usize),
+            };
+            if *active != Some(key) {
+                pass.set_pipeline(self.get(device, variant, program));
+                *active = Some(key);
             }
             if let Some(binding) = deformation {
                 pass.set_bind_group(3, &binding.group, &[]);
             }
             pass.set_bind_group(1, &part.material.base, &[]);
-            pass.draw(part.vertices.clone(), range.clone());
+            mesh.draw_range(pass, part.vertices.clone(), range.clone());
             draws += 1;
         }
         draws
@@ -106,59 +174,88 @@ impl DepthPipelines {
     fn get(
         &mut self,
         device: &wgpu::Device,
-        (mask, double_sided, mode): DepthVariant,
+        variant: DepthVariant,
+        program: Option<&Arc<str>>,
     ) -> &wgpu::RenderPipeline {
-        self.variants[2 * usize::from(mask) + usize::from(double_sided) + 4 * mode as usize]
-            .get_or_insert_with(|| {
-                let skinned_buffers = [
-                    GEOMETRY_LAYOUTS[0].clone(),
-                    GEOMETRY_LAYOUTS[1].clone(),
-                    None,
-                    SKIN_LAYOUT,
-                ];
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("XRack 3D depth-only mesh pipeline"),
-                    layout: Some(&self.layouts[mode as usize]),
-                    vertex: wgpu::VertexState {
-                        module: &self.shader,
-                        entry_point: Some(match (mask, mode) {
-                            (false, Deformation::Rigid) => "vertex_opaque",
-                            (true, Deformation::Rigid) => "vertex_mask",
-                            (false, Deformation::Skin) => "vertex_skin_opaque",
-                            (true, Deformation::Skin) => "vertex_skin_mask",
-                            (false, Deformation::Morph) => "vertex_morph_opaque",
-                            (true, Deformation::Morph) => "vertex_morph_mask",
-                            (false, Deformation::SkinMorph) => "vertex_skin_morph_opaque",
-                            (true, Deformation::SkinMorph) => "vertex_skin_morph_mask",
-                        }),
-                        compilation_options: Default::default(),
-                        buffers: if mode.skin() {
-                            &skinned_buffers
-                        } else {
-                            &GEOMETRY_LAYOUTS
-                        },
-                    },
-                    fragment: mask.then_some(wgpu::FragmentState {
-                        module: &self.shader,
-                        entry_point: Some("fragment_mask"),
-                        compilation_options: Default::default(),
-                        targets: &[],
+        let DepthVariant {
+            coverage,
+            cull,
+            mode,
+            particle,
+            multisampling,
+            reverse_winding,
+        } = variant;
+        let mask = coverage.samples_alpha();
+        self.pipelines.get(device, program, variant, |module| {
+            let skinned_buffers = [
+                GEOMETRY_LAYOUTS[0].clone(),
+                GEOMETRY_LAYOUTS[1].clone(),
+                None,
+                SKIN_LAYOUT,
+            ];
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("XRack 3D depth-only mesh pipeline"),
+                layout: Some(&self.layouts[mode as usize]),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some(match (mask, mode, particle) {
+                        (false, _, true) => "vertex_particle_opaque",
+                        (true, _, true) => "vertex_particle_mask",
+                        (false, Deformation::Rigid, false) => "vertex_opaque",
+                        (true, Deformation::Rigid, false) => "vertex_mask",
+                        (false, Deformation::Skin, false) => "vertex_skin_opaque",
+                        (true, Deformation::Skin, false) => "vertex_skin_mask",
+                        (false, Deformation::Morph, false) => "vertex_morph_opaque",
+                        (true, Deformation::Morph, false) => "vertex_morph_mask",
+                        (false, Deformation::SkinMorph, false) => "vertex_skin_morph_opaque",
+                        (true, Deformation::SkinMorph, false) => "vertex_skin_morph_mask",
                     }),
-                    primitive: wgpu::PrimitiveState {
-                        cull_mode: (!double_sided).then_some(wgpu::Face::Back),
+                    compilation_options: Default::default(),
+                    buffers: if mode.skin() {
+                        &skinned_buffers
+                    } else {
+                        &GEOMETRY_LAYOUTS
+                    },
+                },
+                fragment: mask.then_some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fragment_mask"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[(
+                            "DEPTH_ALPHA",
+                            match coverage {
+                                MeshDepthCoverage::Opaque | MeshDepthCoverage::Mask => 0.0,
+                                MeshDepthCoverage::NonzeroAlpha => 1.0,
+                                MeshDepthCoverage::OpaqueAlpha => 2.0,
+                            },
+                        )],
                         ..Default::default()
                     },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: DEPTH_FORMAT,
-                        depth_write_enabled: Some(true),
-                        depth_compare: Some(wgpu::CompareFunction::Less),
-                        stencil: Default::default(),
-                        bias: self.bias,
-                    }),
-                    multisample: Default::default(),
-                    multiview_mask: None,
-                    cache: None,
-                })
+                    targets: &[],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    front_face: if reverse_winding {
+                        wgpu::FrontFace::Cw
+                    } else {
+                        wgpu::FrontFace::Ccw
+                    },
+                    cull_mode: culled_face(cull),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: self.bias,
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: if multisampling { 4 } else { 1 },
+                    ..Default::default()
+                },
+                multiview_mask: None,
+                cache: None,
             })
+        })
     }
 }

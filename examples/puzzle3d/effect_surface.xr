@@ -1,0 +1,114 @@
+struct InspectStyle {
+    unlit: bool, roughness: float, material-shader: string,
+    shader-parameters: vector3d, shader-displacement: float,
+    base-color: color, alpha-mode: string,
+}
+
+struct InspectObject {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float,
+    material: InspectStyle, visible: bool,
+}
+
+struct InspectBuffer { name: string, filter: string }
+
+struct InspectPass {
+    shader: string, scale: float, strength: float, parameters: vector3d,
+    input: string, output: string, output-format: string, buffers: [InspectBuffer],
+}
+
+export component EffectSurfaceDemo inherits Window {
+    title: "XRack · 后处理表面数据";
+    width: 520px; height: 362px; resizable: false;
+    background: #182437;
+    in-out property <bool> inspect-surfaces: true;
+    in-out property <bool> use-perspective: false;
+    in-out property <bool> glass: true;
+    in-out property <int> mode: 0;
+    in-out property <float> lift: 0.5;
+
+    property <InspectStyle> standard: InspectStyle {
+        unlit: false, roughness: 0.76, material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
+        shader-displacement: 0, base-color: #fff, alpha-mode: "opaque",
+    };
+    property <InspectObject> object: InspectObject {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 2.1, scale-y: 2.55, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #9baabd, camera-kind: "", camera-height: 4,
+        material: root.standard, visible: true,
+    };
+    property <InspectPass> post: InspectPass {
+        shader: "", scale: 1, strength: 1, parameters: Vector3D.new(0, 0, 0),
+        input: "original", output: "", output-format: "rgba16f", buffers: [],
+    };
+
+    SceneView3D {
+        width: 520px; height: 270px; camera: "eye";
+        scene-background: #24354b; scene-tone-map: none; cache-rendering: true;
+        multisampling: true;
+        model: [
+            InspectObject {
+                id: "eye", mesh: "", z: 7,
+                camera-kind: root.use-perspective ? "perspective" : "orthographic",
+                ..root.object
+            },
+            InspectObject {
+                id: "authored", x: -1.35, z: 0.4,
+                material: InspectStyle {
+                    material-shader: @material-shader-url("effects/effect_surface_material.wgsl"),
+                    shader-parameters: Vector3D.new(root.lift, 0, 0), shader-displacement: 0.8,
+                    ..root.standard
+                },
+                ..root.object
+            },
+            InspectObject { id: "plain", x: 1.35, yaw: 35, z: -0.2, ..root.object },
+            InspectObject {
+                id: "transparent", x: -1.35, z: 2, yaw: -20,
+                scale-x: 1.9, scale-y: 2.05, visible: root.glass,
+                material: InspectStyle {
+                    roughness: 0, base-color: #35bc9080, alpha-mode: "blend", ..root.standard
+                },
+                ..root.object
+            },
+        ];
+        scene-effects: [
+            InspectPass {
+                shader: @shader-url("effects/effect_surface_data.wgsl"),
+                strength: root.inspect-surfaces ? 1 : 0, scale: 0.5, output: "roughness",
+                output-format: "r16f", ..root.post
+            },
+            InspectPass {
+                shader: root.inspect-surfaces ? @shader-url("effects/effect_surface_inspect.wgsl")
+                    : @shader-url("effects/effect_surface_passthrough.wgsl"),
+                buffers: [InspectBuffer { name: "roughness", filter: "nearest" }],
+                parameters: Vector3D.new(root.mode, 0, 0), ..root.post
+            },
+        ];
+    }
+
+    show-normals := Button {
+        x: 14px; y: 286px; width: 104px; height: 28px;
+        text: "法线"; clicked => { root.mode = 0; }
+    }
+    show-roughness := Button {
+        x: 127px; y: 286px; width: 104px; height: 28px;
+        text: "粗糙度"; clicked => { root.mode = 1; }
+    }
+    show-position := Button {
+        x: 240px; y: 286px; width: 104px; height: 28px;
+        text: "世界坐标"; clicked => { root.mode = 2; }
+    }
+    CheckBox {
+        x: 370px; y: 286px; width: 132px; height: 28px;
+        text: "表面采样"; checked <=> root.inspect-surfaces;
+    }
+    CheckBox {
+        x: 14px; y: 322px; width: 133px; height: 28px;
+        text: "透视相机"; checked <=> root.use-perspective;
+    }
+    CheckBox {
+        x: 150px; y: 322px; width: 131px; height: 28px;
+        text: "透明面"; checked <=> root.glass;
+    }
+}

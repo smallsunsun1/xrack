@@ -1,15 +1,18 @@
 //! Capture previous-frame coordinates for the visible 3D surfaces.
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, num::NonZeroU64, sync::Arc};
 
-use xrack_runtime::scene3d::{Mesh3D, SceneCamera, SceneObject};
+use xrack_runtime::scene3d::{Mesh3D, MeshCullMode, SceneCamera, SceneObject};
 
 use super::{
     Attachment, DEPTH_FORMAT, HDR_FORMAT, MeshCache, MeshColorDraws, append_floats,
     attachment_view, buffer,
-    deform::{Deformation, DeformationBinding, DeformationLayouts, SKIN_LAYOUT, shader_source},
-    pipeline::GEOMETRY_LAYOUTS,
+    deform::{Deformation, DeformationBinding, DeformationLayouts, SKIN_LAYOUT},
+    pipeline::{GEOMETRY_LAYOUTS, culled_face},
+    vertex_program::VertexPipelines,
 };
 
+const CAMERA_BYTES: u64 = 176;
+const VERTEX_PARAMETERS: u64 = 16;
 const ID_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 const USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
@@ -69,12 +72,21 @@ impl MotionPass {
         let correspondences =
             correspondences(objects, previous.as_ref().map(|frame| &frame.objects));
         let previous_camera = previous.as_ref().map_or(camera, |frame| frame.camera);
-        let mut uniforms = Vec::with_capacity(176);
+        let mut uniforms = Vec::with_capacity(CAMERA_BYTES as usize);
         for projection in [camera, previous_camera] {
             append_floats(&mut uniforms, projection.clip_rows().into_iter().flatten());
             append_floats(&mut uniforms, projection.depth_row());
         }
         append_floats(&mut uniforms, [size[0] as f32, size[1] as f32, 0.0, 0.0]);
+        let alignment = device.limits().min_uniform_buffer_offset_alignment as usize;
+        let parameters_start = uniforms.len().next_multiple_of(alignment);
+        uniforms.resize(parameters_start + VERTEX_PARAMETERS as usize, 0);
+        let parameter_offsets = append_previous_parameters(
+            &mut uniforms,
+            alignment,
+            parameters_start,
+            previous.as_ref().map(|frame| frame.objects.as_ref()),
+        );
         let uniform = buffer(
             device,
             "XRack motion cameras",
@@ -109,11 +121,23 @@ impl MotionPass {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: uniform.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &uniform,
+                        offset: 0,
+                        size: NonZeroU64::new(CAMERA_BYTES),
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &uniform,
+                        offset: parameters_start as u64,
+                        size: NonZeroU64::new(VERTEX_PARAMETERS),
+                    }),
                 },
             ],
         });
@@ -143,7 +167,8 @@ impl MotionPass {
             }),
             ..Default::default()
         });
-        encoder.set_bind_group(0, &globals, &[]);
+        encoder.set_bind_group(0, &globals, &[0]);
+        let mut active_parameters = 0;
         encoder.set_vertex_buffer(1, draws.set.buffer.slice(..));
         let mut active = None;
         let mut count = 0;
@@ -160,7 +185,7 @@ impl MotionPass {
                     continue;
                 }
                 let mesh = meshes.get(device, queue, kind);
-                let parts = mesh.parts.iter().filter(|part| {
+                let parts = mesh.parts.iter().enumerate().filter(|(_, part)| {
                     let surface = part.surface;
                     match phase {
                         Phase::Opaque => !surface.blend && !surface.transmission,
@@ -170,7 +195,7 @@ impl MotionPass {
                 });
                 let current = draws.geometry.deformation(source);
                 let mode = current.map_or(Deformation::Rigid, |binding| binding.mode);
-                encoder.set_vertex_buffer(0, mesh.vertices.slice(..));
+                mesh.bind_geometry(&mut encoder);
                 if mode.skin() {
                     mesh.bind_skin(&mut encoder);
                 }
@@ -182,20 +207,40 @@ impl MotionPass {
                     encoder.set_bind_group(2, &old.group, &[]);
                     encoder.set_bind_group(3, &current.group, &[]);
                 }
-                for part in parts {
+                for (index, part) in parts {
                     let key = Variant {
                         phase,
                         mode,
                         coverage: part.mask || part.surface.blend,
-                        double_sided: part.surface.double_sided,
+                        cull: part.surface.cull,
                     };
-                    if active != Some(key) {
-                        encoder.set_pipeline(pipelines.get(device, key));
-                        active = Some(key);
+                    let program = part.material.vertex.as_ref();
+                    let selection = (
+                        key,
+                        program.map(|source| Arc::as_ptr(source) as *const () as usize),
+                    );
+                    if active != Some(selection) {
+                        encoder.set_pipeline(pipelines.get(device, key, program));
+                        active = Some(selection);
+                    }
+                    let offset = program
+                        .and_then(|_| {
+                            let prior = correspondences[source as usize]?;
+                            let mesh = &previous.as_ref()?.objects.get(prior)?.mesh;
+                            let material = mesh.parts().get(index)?.material;
+                            let parameters = mesh.materials().get(material)?.vertex_parameters();
+                            parameter_offsets
+                                .get(&parameters.map(f32::to_bits))
+                                .copied()
+                        })
+                        .unwrap_or(0);
+                    if active_parameters != offset {
+                        encoder.set_bind_group(0, &globals, &[offset]);
+                        active_parameters = offset;
                     }
                     encoder.set_bind_group(1, &part.material.base, &[]);
                     for range in draws.visibility.runs(batch.clone()) {
-                        encoder.draw(part.vertices.clone(), range);
+                        mesh.draw_range(&mut encoder, part.vertices.clone(), range);
                         count += 1;
                     }
                 }
@@ -222,6 +267,49 @@ impl MotionPass {
     }
 }
 
+fn append_previous_parameters(
+    bytes: &mut Vec<u8>,
+    align: usize,
+    start: usize,
+    objects: Option<&[SceneObject]>,
+) -> HashMap<[u32; 4], u32> {
+    let mut offsets = HashMap::new();
+    for object in objects.into_iter().flatten() {
+        if object.mesh.shader_displacement() == 0.0 {
+            continue;
+        }
+        for material in object.mesh.materials() {
+            let parameters = material.vertex_parameters();
+            if parameters[3] == 0.0 {
+                continue;
+            }
+            offsets
+                .entry(parameters.map(f32::to_bits))
+                .or_insert_with(|| {
+                    let offset = bytes.len().next_multiple_of(align);
+                    bytes.resize(offset, 0);
+                    append_floats(bytes, parameters);
+                    (offset - start) as u32
+                });
+        }
+    }
+    offsets
+}
+
+fn same_vertex_programs(current: &Mesh3D, previous: &Mesh3D) -> bool {
+    if current.shader_displacement() == 0.0 && previous.shader_displacement() == 0.0 {
+        return true;
+    }
+    current.parts().len() == previous.parts().len()
+        && current.sections().zip(previous.sections()).all(
+            |((current, material), (previous, old))| {
+                current == previous
+                    && material.and_then(|material| material.vertex_program())
+                        == old.and_then(|material| material.vertex_program())
+            },
+        )
+}
+
 // Imported scenes may place the same mesh more than once. Preserve identity
 // through reordering when the authored name and mesh identify a unique object.
 fn correspondences(
@@ -234,15 +322,16 @@ fn correspondences(
     if Arc::ptr_eq(current, previous) {
         return (0..current.len()).map(Some).collect();
     }
-    fn key(object: &SceneObject) -> (&str, usize) {
+    type Identity<'a> = (&'a str, usize, Option<(u32, Option<u32>)>);
+    fn key(object: &SceneObject) -> Identity<'_> {
         let asset = match &object.mesh {
             Mesh3D::Box => 0,
             Mesh3D::Sphere => 1,
-            Mesh3D::Imported(mesh) => Arc::as_ptr(mesh) as usize,
+            Mesh3D::Imported(mesh) => Arc::as_ptr(mesh.geometry()) as usize,
         };
-        (&object.id, asset)
+        (&object.id, asset, object.imported_placement())
     }
-    fn unique(objects: &[SceneObject]) -> HashMap<(&str, usize), Option<usize>> {
+    fn unique(objects: &[SceneObject]) -> HashMap<Identity<'_>, Option<usize>> {
         let mut indices = HashMap::with_capacity(objects.len());
         for (index, object) in objects
             .iter()
@@ -266,32 +355,32 @@ fn correspondences(
             let index = old.get(&identity).copied().flatten()?;
             let other = &previous[index];
             (object.skin_palette().is_some() == other.skin_palette().is_some()
-                && object.morph_weights().is_some() == other.morph_weights().is_some())
+                && object.morph_weights().is_some() == other.morph_weights().is_some()
+                && same_vertex_programs(&object.mesh, &other.mesh))
             .then_some(index)
         })
         .collect()
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum Phase {
     Opaque,
     Refraction,
     Translucent,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct Variant {
     phase: Phase,
     mode: Deformation,
     coverage: bool,
-    double_sided: bool,
+    cull: MeshCullMode,
 }
 
 struct MotionPipelines {
     globals: wgpu::BindGroupLayout,
     layouts: [wgpu::PipelineLayout; 4],
-    shader: wgpu::ShaderModule,
-    variants: Vec<(Variant, wgpu::RenderPipeline)>,
+    pipelines: VertexPipelines<Variant>,
 }
 
 impl MotionPipelines {
@@ -323,6 +412,16 @@ impl MotionPipelines {
                     wgpu::BufferBindingType::Storage { read_only: true },
                     wgpu::ShaderStages::VERTEX,
                 ),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: NonZeroU64::new(VERTEX_PARAMETERS),
+                    },
+                    count: None,
+                },
             ],
         });
         let layouts = Deformation::ALL.map(|mode| {
@@ -334,93 +433,85 @@ impl MotionPipelines {
                 immediate_size: 0,
             })
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("XRack motion shader"),
-            source: shader_source(include_str!("motion.wgsl")),
-        });
         Self {
             globals,
             layouts,
-            shader,
-            variants: Vec::new(),
+            pipelines: VertexPipelines::new(device, include_str!("motion.wgsl")),
         }
     }
 
-    fn get(&mut self, device: &wgpu::Device, variant: Variant) -> &wgpu::RenderPipeline {
-        let index = self
-            .variants
-            .iter()
-            .position(|(key, _)| *key == variant)
-            .unwrap_or_else(|| {
-                let buffers = [
-                    GEOMETRY_LAYOUTS[0].clone(),
-                    GEOMETRY_LAYOUTS[1].clone(),
-                    None,
-                    SKIN_LAYOUT,
-                ];
-                let targets = [HDR_FORMAT, ID_FORMAT].map(|format| {
-                    Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })
-                });
-                let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("XRack motion vector pipeline"),
-                    layout: Some(&self.layouts[variant.mode as usize]),
-                    vertex: wgpu::VertexState {
-                        module: &self.shader,
-                        entry_point: Some(match variant.mode {
-                            Deformation::Rigid => "rigid",
-                            Deformation::Skin => "skinned",
-                            Deformation::Morph => "morphed",
-                            Deformation::SkinMorph => "skinned_morphed",
-                        }),
-                        compilation_options: Default::default(),
-                        buffers: if variant.mode.skin() {
-                            &buffers
-                        } else {
-                            &GEOMETRY_LAYOUTS
-                        },
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &self.shader,
-                        entry_point: Some("fragment"),
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &[
-                                ("TEST_COVERAGE", if variant.coverage { 1.0 } else { 0.0 }),
-                                (
-                                    "TRACK_SURFACE",
-                                    if variant.phase == Phase::Opaque {
-                                        1.0
-                                    } else {
-                                        0.0
-                                    },
-                                ),
-                            ],
-                            ..Default::default()
-                        },
-                        targets: &targets,
+    fn get(
+        &mut self,
+        device: &wgpu::Device,
+        variant: Variant,
+        program: Option<&Arc<str>>,
+    ) -> &wgpu::RenderPipeline {
+        self.pipelines.get(device, program, variant, |module| {
+            let buffers = [
+                GEOMETRY_LAYOUTS[0].clone(),
+                GEOMETRY_LAYOUTS[1].clone(),
+                None,
+                SKIN_LAYOUT,
+            ];
+            let targets = [HDR_FORMAT, ID_FORMAT].map(|format| {
+                Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("XRack motion vector pipeline"),
+                layout: Some(&self.layouts[variant.mode as usize]),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some(match variant.mode {
+                        Deformation::Rigid => "rigid",
+                        Deformation::Skin => "skinned",
+                        Deformation::Morph => "morphed",
+                        Deformation::SkinMorph => "skinned_morphed",
                     }),
-                    primitive: wgpu::PrimitiveState {
-                        cull_mode: (!variant.double_sided).then_some(wgpu::Face::Back),
+                    compilation_options: Default::default(),
+                    buffers: if variant.mode.skin() {
+                        &buffers
+                    } else {
+                        &GEOMETRY_LAYOUTS
+                    },
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fragment"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[
+                            ("TEST_COVERAGE", if variant.coverage { 1.0 } else { 0.0 }),
+                            (
+                                "TRACK_SURFACE",
+                                if variant.phase == Phase::Opaque {
+                                    1.0
+                                } else {
+                                    0.0
+                                },
+                            ),
+                        ],
                         ..Default::default()
                     },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: DEPTH_FORMAT,
-                        depth_write_enabled: Some(variant.phase != Phase::Translucent),
-                        depth_compare: Some(wgpu::CompareFunction::Less),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: Default::default(),
-                    multiview_mask: None,
-                    cache: None,
-                });
-                let index = self.variants.len();
-                self.variants.push((variant, pipeline));
-                index
-            });
-        &self.variants[index].1
+                    targets: &targets,
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: culled_face(variant.cull),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(variant.phase != Phase::Translucent),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        })
     }
 }

@@ -39,6 +39,29 @@ pub struct VisualTextLine {
 }
 
 impl VisualTextLine {
+    /// Places already shaped grapheme edges in logical and visual order.
+    #[doc(hidden)]
+    pub fn from_visual_graphemes(mut cells: Vec<VisualGrapheme>, width: f32, rtl: bool) -> Self {
+        cells.sort_unstable_by_key(|cell| cell.bytes.start);
+        let mut visual: Vec<_> = cells
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cell)| (cell.leading != cell.trailing).then_some(index))
+            .collect();
+        visual.sort_by(|&left, &right| {
+            cells[left]
+                .span()
+                .start
+                .total_cmp(&cells[right].span().start)
+        });
+        Self {
+            cells,
+            visual,
+            width,
+            rtl,
+        }
+    }
+
     #[doc(hidden)]
     pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of::<Self>()

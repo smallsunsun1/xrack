@@ -18,3 +18,14 @@ fn texture_gradient(transform: TextureTransform, gradient: vec2<f32>) -> vec2<f3
     }
     return vec2<f32>(dot(transform.u.xy, gradient), dot(transform.v.xy, gradient));
 }
+
+
+fn base_texture_uses_alpha(channels: vec4<u32>) -> bool {
+    // Scalar base-color selectors replicate a channel and use alpha one.
+    return (channels.x & 15u) == 4u;
+}
+
+fn coverage_vertex_alpha(channels: vec4<u32>, alpha: vec2<f32>) -> f32 {
+    // X includes the interpolated vertex alpha. Y carries only the instance alpha.
+    return select(alpha.x, alpha.y, (channels.z & 0x80000000u) != 0u);
+}

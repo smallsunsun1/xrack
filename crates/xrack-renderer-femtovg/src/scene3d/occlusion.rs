@@ -14,7 +14,8 @@ use super::{
     depth::DepthPipelines, instances::InstanceSet,
 };
 
-const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
+const AO_HEADER_BYTES: u64 = 16;
+const AO_SAMPLE_BYTES: u64 = 8;
 const MAX_RESIDENT_VIEWS: usize = 3;
 
 #[derive(Clone, Copy)]
@@ -44,7 +45,7 @@ pub(super) struct AmbientOcclusion {
     entries: VecDeque<Entry>,
     evaluator: Option<Evaluator>,
     pub depth_pipeline: Option<DepthPipelines>,
-    pub fallback: wgpu::TextureView,
+    pub fallback: wgpu::Buffer,
 }
 
 pub(super) struct OcclusionFrame {
@@ -52,13 +53,13 @@ pub(super) struct OcclusionFrame {
     pub occlusion_dirty: bool,
     pub size: [u32; 2],
     pub depth: wgpu::TextureView,
-    pub map: wgpu::TextureView,
+    pub map: wgpu::Buffer,
 }
 
 pub(super) struct OcclusionSource<'a> {
     pub instances: &'a Arc<InstanceSet>,
     pub visibility: Option<&'a Arc<SceneVisibility>>,
-    pub objects: &'a [SceneObject],
+    pub objects: &'a Arc<[SceneObject]>,
     pub deformation: &'a [Option<DeformationBinding>],
 }
 
@@ -71,24 +72,61 @@ impl OcclusionSource<'_> {
                 let binding = binding.as_ref()?;
                 let slot = index as u32;
                 (self.visibility.is_none_or(|mask| mask.contains(slot))
-                    && self.objects[index].mesh.has_opaque_parts())
+                    && self.objects[index].mesh.has_auxiliary_depth())
                 .then_some((slot, &binding.group))
             })
     }
 }
 
+fn same_depth_inputs(
+    before: &[SceneObject],
+    after: &[SceneObject],
+    visibility: Option<&SceneVisibility>,
+) -> bool {
+    before.len() == after.len()
+        && before
+            .iter()
+            .zip(after)
+            .enumerate()
+            .all(|(index, (before, after))| {
+                if visibility.is_some_and(|visible| !visible.contains(index as u32)) {
+                    return true;
+                }
+                let previous_depth = before.mesh.has_auxiliary_depth();
+                let next_depth = after.mesh.has_auxiliary_depth();
+                if !previous_depth && !next_depth {
+                    return true;
+                }
+                previous_depth == next_depth
+                    && before.mesh.has_opaque_parts() == after.mesh.has_opaque_parts()
+                    && before.mesh.same_shadow_mesh(&after.mesh)
+                    && before.transform_rows() == after.transform_rows()
+                    && before.color.0 as u8 == after.color.0 as u8
+            })
+}
+
 struct Entry {
     source: Weak<InstanceSet>,
+    objects: Arc<[SceneObject]>,
     visibility: Option<Arc<SceneVisibility>>,
     pose_groups: Vec<(u32, wgpu::BindGroup)>,
     camera: SceneCamera,
     parameters: [f32; 2],
     size: [u32; 2],
     depth: wgpu::TextureView,
-    map: wgpu::TextureView,
+    map: wgpu::Buffer,
 }
 
 impl AmbientOcclusion {
+    pub fn invalidate_item_textures(&mut self) {
+        self.entries.retain(|entry| {
+            !entry
+                .objects
+                .iter()
+                .any(|object| super::mesh_samples_item_alpha(&object.mesh))
+        });
+    }
+
     pub fn discard_recorded_maps(&mut self) {
         self.entries.clear();
     }
@@ -98,14 +136,12 @@ impl AmbientOcclusion {
             entries: VecDeque::new(),
             evaluator: None,
             depth_pipeline: None,
-            fallback: attachment_view(
-                device,
-                [1, 1],
-                FORMAT,
-                1,
-                wgpu::TextureUsages::TEXTURE_BINDING,
-                "XRack disabled ambient occlusion",
-            ),
+            fallback: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("XRack disabled ambient occlusion"),
+                size: AO_HEADER_BYTES + AO_SAMPLE_BYTES,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            }),
         }
     }
 
@@ -117,13 +153,28 @@ impl AmbientOcclusion {
         camera: SceneCamera,
         settings: OcclusionSettings,
     ) -> OcclusionFrame {
-        let size = size.map(|side| side.div_ceil(2));
+        let mut size = size.map(|side| side.div_ceil(2).max(1));
+        let bytes = |[width, height]: [u32; 2]| {
+            AO_HEADER_BYTES + AO_SAMPLE_BYTES * u64::from(width) * u64::from(height)
+        };
+        let limits = device.limits();
+        let budget = u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size);
+        // Very large viewports continue to use AO at a smaller raster size.
+        while bytes(size) > budget {
+            size = size.map(|side| side.div_ceil(2));
+        }
+        let map_bytes = bytes(size);
         let parameters = [settings.radius, settings.bias];
         let hit = self.entries.iter().position(|entry| {
-            entry.source.as_ptr() == Arc::as_ptr(source.instances)
-                && entry.size == size
+            entry.size == size
                 && entry.camera.same_frustum(&camera)
                 && entry.visibility.as_deref() == source.visibility.map(Arc::as_ref)
+                && (entry.source.as_ptr() == Arc::as_ptr(source.instances)
+                    || same_depth_inputs(
+                        &entry.objects,
+                        source.objects,
+                        entry.visibility.as_deref(),
+                    ))
                 && entry
                     .pose_groups
                     .iter()
@@ -138,16 +189,20 @@ impl AmbientOcclusion {
                 .flatten();
             let (depth, map) = evicted.filter(|entry| entry.size == size).map_or_else(
                 || {
-                    let [depth, map] = [DEPTH_FORMAT, FORMAT].map(|format| {
-                        attachment_view(
-                            device,
-                            size,
-                            format,
-                            1,
-                            wgpu::TextureUsages::RENDER_ATTACHMENT
-                                | wgpu::TextureUsages::TEXTURE_BINDING,
-                            "XRack half-resolution ambient occlusion targets",
-                        )
+                    let depth = attachment_view(
+                        device,
+                        size,
+                        DEPTH_FORMAT,
+                        1,
+                        wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                        "XRack half-resolution ambient occlusion depth",
+                    );
+                    let map = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("XRack half-resolution ambient occlusion samples"),
+                        size: map_bytes,
+                        usage: wgpu::BufferUsages::STORAGE,
+                        mapped_at_creation: false,
                     });
                     (depth, map)
                 },
@@ -155,6 +210,7 @@ impl AmbientOcclusion {
             );
             Entry {
                 source: Arc::downgrade(source.instances),
+                objects: source.objects.clone(),
                 visibility: source.visibility.cloned(),
                 pose_groups: source
                     .pose_groups()
@@ -169,6 +225,8 @@ impl AmbientOcclusion {
         });
         let occlusion_dirty = depth_dirty || entry.parameters != parameters;
         entry.parameters = parameters;
+        entry.source = Arc::downgrade(source.instances);
+        entry.objects = source.objects.clone();
         let frame = OcclusionFrame {
             depth_dirty,
             occlusion_dirty,
@@ -222,29 +280,24 @@ impl AmbientOcclusion {
                     binding: 1,
                     resource: uniform.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: frame.map.as_entire_binding(),
+                },
             ],
         });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("XRack screen-space ambient occlusion"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &frame.map,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
+            timestamp_writes: None,
         });
         pass.set_pipeline(&evaluator.pipeline);
         pass.set_bind_group(0, &inputs, &[]);
-        pass.draw(0..3, 0..1);
+        pass.dispatch_workgroups(frame.size[0].div_ceil(8), frame.size[1].div_ceil(8), 1);
     }
 }
 
 struct Evaluator {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
 }
 
@@ -254,29 +307,12 @@ impl Evaluator {
             label: Some("XRack screen-space ambient occlusion"),
             source: wgpu::ShaderSource::Wgsl(include_str!("occlusion.wgsl").into()),
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("XRack screen-space ambient occlusion"),
             layout: None,
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
+            module: &shader,
+            entry_point: Some("compute"),
+            compilation_options: Default::default(),
             cache: None,
         });
         let layout = pipeline.get_bind_group_layout(0);

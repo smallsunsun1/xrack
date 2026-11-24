@@ -1,0 +1,64 @@
+struct FieldRead {
+    name: string, filter: string, wrap-u: string, wrap-v: string,
+}
+
+struct FieldPass {
+    shader: string, output: string, output-format: string, scale: float,
+    buffers: [FieldRead],
+}
+
+export component EffectBufferFormatsDemo inherits Window {
+    title: "XRack · 后处理纹理格式";
+    width: 480px; height: 310px; resizable: false;
+    background: #172332;
+
+    in-out property <string> buffer-format: "r8";
+    in-out property <bool> linear-filter: false;
+    in-out property <string> addressing: "clamp";
+
+    SceneView3D {
+        width: 480px; height: 240px;
+        cache-rendering: true;
+        scene-background: #00000000;
+        scene-tone-map: none;
+        scene-effects: [
+            FieldPass {
+                shader: @shader-url("effects/format_field.wgsl"), output: "field",
+                output-format: root.buffer-format, scale: 0.25, buffers: [],
+            },
+            FieldPass {
+                shader: @shader-url("effects/format_compare.wgsl"), output: "",
+                output-format: "rgba16f", scale: 1,
+                buffers: [
+                    FieldRead {
+                        name: "field", filter: root.linear-filter ? "linear" : "nearest",
+                        wrap-u: root.addressing, wrap-v: "clamp",
+                    },
+                    FieldRead {
+                        name: "field", filter: "nearest", wrap-u: "clamp", wrap-v: "clamp",
+                    },
+                ],
+            },
+        ];
+    }
+    filtering := CheckBox {
+        x: 16px; y: 257px; width: 133px; height: 36px;
+        text: "左侧线性采样"; checked <=> root.linear-filter;
+    }
+    address-mode := Button {
+        x: 157px; y: 257px; width: 149px; height: 36px;
+        text: "寻址 " + root.addressing;
+        clicked => {
+            root.addressing = root.addressing == "clamp" ? "repeat"
+                : root.addressing == "repeat" ? "mirror" : "clamp";
+        }
+    }
+    texture-format := Button {
+        x: 314px; y: 257px; width: 150px; height: 36px;
+        text: "格式 " + root.buffer-format;
+        clicked => {
+            root.buffer-format = root.buffer-format == "r8" ? "rg16f"
+                : root.buffer-format == "rg16f" ? "rgba16f" : "r8";
+        }
+    }
+}

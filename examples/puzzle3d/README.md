@@ -18,6 +18,10 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 
 对公开的记录列表属性，AOT 宿主可以用生成的 `bind_model_*` 接入可变模型，解释器宿主可以用 `Instance::set` 绑定 `RecordList`。更新坐标、网格资源键或颜色会改变后续绘制和拾取。原生热重载示例在 `.xr` 内绑定 `room`，Rust 宿主通过玩家位置和机关状态驱动它。Rust 也可以构造 `SceneObject`，用 `Ray3D::new` 和 `raycast` 查询网格的表面交点。
 
+## 节点坐标与挂点
+
+运行 `bazel run //examples/puzzle3d:play_node_mapping`，或在 VS Code 中预览 [node_mapping.xr](node_mapping.xr)。金色球显示机架挂点的位置，绿色球显示世界空间的瞄准方向。旋转机架、拖动缩放滑块或隐藏机架，观察挂点的位置与方向如何变化。右侧按钮在世界坐标和橙色基座的局部坐标之间切换。
+
 ## glTF 节点动画
 
 运行 `bazel run //examples/puzzle3d:play_animation` 打开动画示例，也可以在 VS Code 中预览 [animation.xr](animation.xr)。计时器驱动 `animation-time`，窗口可以暂停，并在形变、骨骼蒙皮、节点平移和节点旋转片段之间切换。默认片段用两个面板演示单独的形变和形变叠加蒙皮。拖动「形变」滑块可以同时控制两个网格的 `extend` 目标，其他目标继续播放片段。暂停后可用滑块调整形变，也可以在 VS Code 中修改 `time` 的初值来查看指定的动画姿态。
@@ -43,6 +47,14 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 
 运行 `bazel run //examples/puzzle3d:play_content_layers`，或在 VS Code 预览 [content_layers.xr](content_layers.xr)。两个视口使用同一场景。左侧可切换主层、目标层、全部层或清空，右侧通过具名相机查看第二层。点击左侧模型可观察拾取结果。
 
+## 透明 3D 视口
+
+运行 `bazel run //examples/puzzle3d:play_transparent_view`，或在 VS Code 中预览 [transparent_view.xr](transparent_view.xr)。切换透明、半透明和实色背景，观察 2D 底色和标签如何从 3D 物体周围透出。右侧画质按钮可对照 MSAA、HDR、景深与泛光，玻璃开关可观察透射后的 2D 底色。
+
+## 实时 2D 材质贴图
+
+运行 `bazel run //examples/puzzle3d:play_item_texture`，或在 VS Code 预览 [item_texture.xr](item_texture.xr)。两块 3D 面片共用左下角的 2D 控制台。直接点击任一面片上的按钮或拖动滑块，可以操作同一个控制台。用「缩小观察」切到细条纹远景，切换「远景滤波」可以对照 mip 链的效果。「只在面片显示」移除窗口里的 2D 副本，面片上的按钮、滑块和键盘焦点仍可用。切到「滚动控制台」后，用滚轮可操作嵌套滚动区和滑块。用触摸或按住鼠标中键在面片内上拖，可滚动控制台并在松手时继续惯性滚动。
+
 ## 视口纹理尺寸
 
 运行 `bazel run //examples/puzzle3d:play_texture_size`，或在 VS Code 预览 [texture_size.xr](texture_size.xr)。按钮切换自动、半分辨率和 192×96 固定纹理。右侧滑块改变逻辑视口宽度。
@@ -50,6 +62,48 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 ## 3D 视口纹理缓存
 
 运行 `bazel run //examples/puzzle3d:play_viewport_cache`，或在 VS Code 预览 [viewport_cache.xr](viewport_cache.xr)。点「自动计数」持续刷新 2D 控件，用左侧按钮切换缓存，并用滑块转动主相机。右侧视口使用固定相机。
+
+## 声明式 PBR 材质
+
+```sh
+bazel run //examples/puzzle3d:play_authored_material
+```
+
+左侧球体直接使用 `.xr` 的材质记录。改变粗糙度、金属度和清漆，或切换裁切、半透明与透射。右侧 glTF 保留源贴图，可以切换材质因子覆盖。VS Code 可直接预览 `authored_material.xr`。
+
+## 可编程材质
+
+运行 `bazel run //examples/puzzle3d:play_material_shader` 或预览 [material_shader.xr](material_shader.xr)。外壳用 WGSL 产生条纹，并继续使用 PBR 光照。饰条使用独立的无光照程序，右侧槽位使用导入材质。开关和滑块可查看着色器、参数及透明裁切的效果。
+
+运行 `bazel run //examples/puzzle3d:play_material_texture_inputs` 或预览 [material_texture_inputs.xr](material_texture_inputs.xr)。左两块面板以 sRGB 和线性模式读取同一张图片，右侧材质采样窗口中的二维源。按钮可更新二维源颜色，开关可禁用贴图输入。
+
+运行 `bazel run //examples/puzzle3d:play_vertex_program` 或预览 [vertex_program.xr](vertex_program.xr)。红色模型的基础几何在镜头右侧，顶点程序将它移入画面。按钮和滑块修改位移参数，阴影跟随轮廓更新。可切换运动矢量 TAA 查看重投影结果。
+
+运行 `bazel run //examples/puzzle3d:play_material_lighting` 或预览 [material_lighting.xr](material_lighting.xr)。左边通过 WGSL 定制直射光的漫反射、高光和环境漫反射，右边展示内建 PBR。四个按钮可切换光源，投影开关用于观察自定义光照的阴影。
+
+## 基础图元
+
+```sh
+bazel run //examples/puzzle3d:play_primitive_meshes
+```
+
+三个模型分别使用矩形、圆柱和圆锥。升高视角可以看清单独着色的圆柱顶盖。切换矩形的裁切贴图，或者打开从圆锥表面发射的圆柱模型粒子。VS Code 可直接预览 `primitive_meshes.xr`。
+
+## 逐槽材质
+
+```sh
+bazel run //examples/puzzle3d:play_material_slots
+```
+
+一个 glTF 网格有三个并排的面板。左侧外壳可按名称或原始索引 `#2` 修改与裁切，中间饰条使用 `#0`，右边对应源模型的默认材质。VS Code 可预览 `material_slots.xr` 并查看槽位补全。
+
+## 声明式材质贴图
+
+```sh
+bazel run //examples/puzzle3d:play_authored_texture
+```
+
+拖动平铺和旋转滑块查看 UV 变化，切换裁切观察底色 alpha 在表面和阴影中的效果。右侧可切换法线贴图，也可以换成导入模型的 UV。VS Code 可直接预览 `authored_texture.xr`。
 
 ## glTF 材质对照
 
@@ -72,6 +126,8 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 运行 `bazel run //examples/puzzle3d:play_live_reflections`，或在 VS Code 预览 [live_reflections.xr](live_reflections.xr)。切换主相机背后的色卡，让球体上的反射随之改变。切到「固定首帧」后，点击「刷新探针」可显式更新立方体贴图。
 
 右侧按钮在同帧更新、逐面更新和分级预滤波之间切换。分帧期间球体会显示上一张完整反射，直到新贴图完成。
+
+运行 `bazel run //examples/puzzle3d:play_probe_capture_feed` 或预览 [probe_capture_feed.xr](probe_capture_feed.xr)。球体上的探针反射来自主镜头背后的屏幕，屏幕材质采样另一个相机的命名画面。可以切换源图层、固定或刷新探针，也可以打开读取同一张纹理的后处理小窗。
 
 ## glTF 导入相机
 
@@ -129,6 +185,34 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 
 运行 `bazel run //examples/puzzle3d:play_lut` 或在 VS Code 中预览 [lut.xr](lut.xr)。点击预设名称切换原色、恒等、暖调和反相，用「混合」滑块调整比例。选择「HDR + 泛光」可观察同一张 LUT 如何作用于 HDR 合成的最终颜色。
 
+## 自定义 3D 后处理
+
+运行 `bazel run //examples/puzzle3d:play_custom_effect`，或在 VS Code 预览 [custom_effect.xr](custom_effect.xr)。打开「全息」和「读深度」观察物体轮廓和扫描线。滑块改变混合强度，保留底层界面的网格背景。保存 [hologram.wgsl](effects/hologram.wgsl) 可以更新预览里的效果。
+
+运行 `bazel run //examples/puzzle3d:play_effect_chain`，或预览 [effect_chain.xr](effect_chain.xr)。两次半分辨率模糊之后，合成通道保留清晰的物体和柔和的光晕。切换「合成原图」或「先合成」可以查看不同顺序的结果，滑块调整模糊半径。
+
+运行 `bazel run //examples/puzzle3d:play_named_effect_buffers`，或预览 [named_effect_buffers.xr](named_effect_buffers.xr)。合成通道可以同时读取清晰的着色分支和柔化后的结果。关闭「冷色分支」可检查缺失命名纹理时的回退，关闭「保留清晰分支」可观察沿用前一通道的效果。
+
+运行 `bazel run //examples/puzzle3d:play_effect_history`，或预览 [effect_history.xr](effect_history.xr)。点击「移动方块」可看到上一帧留下的拖影。「连续衰减」会继续推进效果帧，「清除拖影」重置历史，滑块控制历史颜色的保留比例。
+
+运行 `bazel run //examples/puzzle3d:play_effect_buffer_formats`，或预览 [effect_buffer_formats.xr](effect_buffer_formats.xr)。两半画面读取同一张纹理。左侧可以切换过滤与寻址，右侧作为最近邻与边缘扩展的参考。切换输出格式可观察单通道遮罩、带符号的双通道数据和 HDR 颜色。
+
+运行 `bazel run //examples/puzzle3d:play_effect_texture_inputs`，或预览 [effect_texture_inputs.xr](effect_texture_inputs.xr)。左两栏以不同颜色空间读同一张 PNG，第三栏读取窗口中的实时二维源，最后一栏显示使用相同 PNG 的模型材质。
+
+运行 `bazel run //examples/puzzle3d:play_effect_surface` 或预览 [effect_surface.xr](effect_surface.xr)。按钮可查看材质法线、两种后处理分辨率读取的粗糙度，以及深度重建的世界坐标。透视相机、透明叠层和表面采样都可独立切换。
+
+运行 `bazel run //examples/puzzle3d:play_scene_capture` 或预览 [scene_capture.xr](scene_capture.xr)。上方两路效果使用不同的采样方式读取同一份侧相机画面。按钮可切换相机、图层或关闭捕获，下方展示主相机的内容。
+
+运行 `bazel run //examples/puzzle3d:play_capture_material` 或预览 [capture_material.xr](capture_material.xr)。两块屏幕分别读取中转捕获与原画面，顶部小窗由后处理采样。切换图层会同时刷新三处，循环开关展示缺失纹理的回退颜色。
+
+运行 `bazel run //examples/puzzle3d:play_capture_attachments` 或预览 [capture_attachments.xr](capture_attachments.xr)。上方后处理条和下方材质同时读取同一相机的深度与法线附件。移动源模型可以对比深度变化，关闭法线和后处理可以观察仅深度配置。
+
+运行 `bazel run //examples/puzzle3d:play_capture_positions` 或预览 [capture_positions.xr](capture_positions.xr)。上方效果和下方材质按颜色显示两个独立相机从深度重建的世界坐标。可以分别移动左捕获相机、移动平面或切换右侧偏轴透视。
+
+运行 `bazel run //examples/puzzle3d:play_capture_material_channels` 或预览 [capture_material_channels.xr](capture_material_channels.xr)。上方的延迟光照从原始深度重建世界坐标，读取法线、粗糙度、基础色、金属度、发光和遮蔽。下方两个材质面板各显示一个附件的 RGB 与 A。移动点光源复用几何附件，切换金属度会刷新材质数据，「只显示发光」模式只读取发光和遮蔽附件。
+
+运行 `bazel run //examples/puzzle3d:play_capture_composite` 或预览 [capture_composite.xr](capture_composite.xr)。延迟光照画面和它对应的深度进入主视口，玻璃在前向通道合成。点击「Front」可以让玻璃越过蓝色表面，「Depth」控制深度导入，「Weighted」切换视口透明混合模式。「Offscreen」让玻璃作为另一条命名捕获绘制，读取上游光照和深度，再把合成后的画面交给主视口。 离屏模式下可以用「All」按钮循环切换全部、不透明、透明和仅合成输入。 勾选「Override」可用独立材质绘制当前选择的几何。 勾选「Pipeline」会让玻璃通过深度测试，可以对照导入深度时的遮挡结果。 此时可以使用「Viewport」把玻璃缩到中央视口，再用「Scissor」只保留其中一部分。 离屏模式里的「Clear near」与「Clear far」使用 `greater` 比较并暂停深度导入，演示同一几何如何受初始深度影响。 勾选「Stencil」会用第一台相机生成模板遮罩，再让第二台相机的玻璃只在遮罩内合成。 点击「Wireframe」可画出三角形边缘，再点击「Fill」恢复填充。两种模式都可使用模板遮罩。
+
 ## 高度图地形
 
 ```sh
@@ -176,6 +260,30 @@ bazel run //examples/puzzle3d:play_fog_noise
 ```
 
 切换「雾团」对照均匀雾与三维噪声，调节滑块移动噪声，或打开「随风」开始动画。示例把高度衰减、体积光和遮挡叠加在同一雾体上。VS Code 可直接预览 `fog_noise.xr`。
+
+## 候选拾取
+
+```sh
+bazel run //examples/puzzle3d:play_filtered_picking
+```
+
+点击重叠的两个方块。「只拾取后方」开启时，只命中后方候选。取消勾选后，前方方块会出现在命中结果的首位。打开橙色模型所在的层也可以拾取匿名模型。VS Code 可直接预览 `filtered_picking.xr`。
+
+## 3D 框选
+
+```sh
+bazel run //examples/puzzle3d:play_marquee
+```
+
+在视口里任意方向拖动矩形。标签会显示框中的模型，包括藏在前方方块后面的模型和右侧匿名模型。切换正交相机、内容层或动画姿态，可以观察选择结果变化。VS Code 可直接预览 `marquee.xr`。
+
+## 最近表面点
+
+```sh
+bazel run //examples/puzzle3d:play_closest_surface
+```
+
+拖动探针滑块移动紫色探针，黄色标记会吸附到半径内最近的三角面。可只查找左侧面板，切换变形或骨骼动画，再拖动时间观察吸附点随着网格移动。勾选「包含右侧模型」后，查询也会遍历右侧模型所在的层。VS Code 可直接预览 `closest_surface.xr`。
 
 ## 球体扫掠
 
@@ -248,3 +356,89 @@ bazel run //examples/puzzle3d:play_particle_affectors
 ```
 
 蓝色粒子受影响器控制，橙色粒子沿原轨迹运动。点击左侧按钮切换吸引、排斥、重力和绕点旋转。拖动时间滑块查看同一粒子的不同年龄。开启「叠加重力」后，交换影响器顺序可以看到先吸引再下落和最后集中在目标两种结果。VS Code 可以直接预览 `particle_affectors.xr`。
+
+## 粒子拖尾
+
+```sh
+bazel run //examples/puzzle3d:play_particle_trails
+```
+
+蓝色条带显示粒子的历史位置，橙色精灵用来对照粒子当前的位置。切换段数可以看出直线和曲线的区别。开启旋转影响器后，条带会沿新的轨迹弯折。拖过寿命终点可查看冻结后淡出的残影。VS Code 可直接预览 `particle_trails.xr`。
+
+## 模型粒子
+
+```sh
+bazel run //examples/puzzle3d:play_particle_models
+```
+
+两个粒子共享立方体或 glTF 网格。拖动时间可观察它们独立移动、缩放和旋转。切换遮挡与半透明，查看模型粒子和普通网格在同一视口中的合成结果。VS Code 可直接预览 `particle_models.xr`。
+
+```sh
+bazel run //examples/puzzle3d:play_particle_lighting
+```
+
+`particle_lighting.xr` 展示模型粒子对墙面投射阴影，并进入镜面球旁的场景反射探针。拖动时间可以观察阴影与反射随粒子一起移动，切换逐面捕获可以观察探针分帧更新。
+
+### 材质贴图通道
+
+```sh
+bazel run //examples/puzzle3d:play_material_channels
+```
+
+打开 `material_channels.xr` 可在 VS Code 中预览。左侧按钮在 RGB 和四个单通道之间切换。同一张贴图可为底色、自发光和金属粗糙度提供数据。启用阴影可观察底色通道如何影响透明裁切和投影。
+
+### 顶点颜色遮罩
+
+```sh
+bazel run //examples/puzzle3d:play_vertex_masks
+```
+
+在 `vertex_masks.xr` 里点击左侧按钮，可切换顶点 RGBA 与纯材质颜色。关闭顶点色后，中间和右边的按钮可用同一份顶点数据测试金属度、粗糙度、高光和透射遮罩。
+
+### 光学材质
+
+```sh
+bazel run //examples/puzzle3d:play_material_optics
+```
+
+在 `material_optics.xr` 预览中，切换 Thin 和 Thick 可观察吸收效果。选择高光和遮蔽，再开关 Maps，可对比不同材质参数。启用条纹背景并调整 `dispersion`，可以观察带厚度的玻璃如何分离颜色。
+
+### 菲涅耳反射
+
+```sh
+bazel run //examples/puzzle3d:play_material_fresnel
+```
+
+左侧是底层材质，右侧带清漆。分别点击两个按钮，可以比较各自的标准曲线与偏移。启用 Sphere 和 Light probe 后，调整 `base-power` 或 `coat-power`，可观察边缘反射随视角的变化。
+
+### 拉丝金属
+
+```sh
+bazel run //examples/puzzle3d:play_material_anisotropy
+```
+
+在 `material_anisotropy.xr` 中切换横向和纵向高光。Direction map 会让贴图的两个上半区域分别显示不同的拉丝方向，下半区域保持各向同性。启用 Sphere 和 Light probe 后，可观察环境反射的方向变化。
+
+### 参数化网格
+
+```sh
+bazel run //examples/puzzle3d:play_parametric_geometry
+```
+
+在 `parametric_geometry.xr` 中切换形状，拖动滑块改变圆环、球体或圆柱的半径。Instance 可再放置一个使用相同网格的实例，Shadows 可观察形状变化如何影响阴影。
+
+### 自定义三角网格
+
+```sh
+bazel run //examples/puzzle3d:play_authored_mesh
+```
+
+在 `authored_mesh.xr` 中，Move corner 单独修改顶点表，Move triangle 单独修改索引表。两种操作都会改变面板轮廓和可碰撞区域。Instance 再放置一个使用同一网格的实例。
+
+### 网格材质分段
+
+```sh
+bazel run //examples/puzzle3d:play_mesh_subsets
+```
+
+在 `mesh_subsets.xr` 中，Move badge 把材质槽移到中间一组三角形。Hide badge 显示该槽的 alpha 裁切，以及它对拾取的影响。Second UV 切换右侧贴图使用的坐标组。

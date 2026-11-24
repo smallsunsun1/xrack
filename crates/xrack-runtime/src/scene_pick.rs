@@ -1,6 +1,7 @@
 //! A lazy mesh-space BVH used by ray queries on immutable geometry.
 use crate::{
     scene_bounds::{Bounds3D, BoundsTree},
+    scene_visibility::Frustum,
     scene3d::{MeshPart, MeshVertex},
 };
 use nalgebra::Vector3;
@@ -48,6 +49,32 @@ impl PickTree {
         span.visit(&self.0, |triangle, closest| visit(*triangle, closest));
     }
 
+    pub(crate) fn visit_nearest(
+        &self,
+        point: Vector3<f64>,
+        rows: [[f32; 4]; 3],
+        limit: f64,
+        mut visit: impl FnMut(usize, f64) -> f64,
+    ) {
+        self.0.visit_nearest(
+            limit,
+            |bounds| bounds.transform(rows).distance_squared(point),
+            |triangle, limit| visit(triangle.vertex as usize, limit),
+        );
+    }
+
+    pub(crate) fn intersects_selection(
+        &self,
+        region: &Frustum,
+        rows: [[f32; 4]; 3],
+        planes: u8,
+        test_faces: bool,
+        mut visit: impl FnMut(PickTriangle, u8) -> bool,
+    ) -> bool {
+        !self.0.nodes.is_empty()
+            && visit_selection(&self.0, 0, region, rows, planes, test_faces, &mut visit)
+    }
+
     /// Supply the closest accepted distance after visiting each triangle.
     pub fn visit(
         &self,
@@ -60,6 +87,33 @@ impl PickTree {
         visit_bounds(&self.0, origin, direction, min, max, |triangle, closest| {
             visit(*triangle, closest)
         });
+    }
+}
+
+fn visit_selection(
+    tree: &BoundsTree<PickTriangle>,
+    index: usize,
+    region: &Frustum,
+    rows: [[f32; 4]; 3],
+    planes: u8,
+    test_faces: bool,
+    visit: &mut impl FnMut(PickTriangle, u8) -> bool,
+) -> bool {
+    let node = &tree.nodes[index];
+    let Some(planes) = region.intersecting_planes(node.bounds.transform(rows), planes) else {
+        return false;
+    };
+    if planes == 0 && !test_faces {
+        return true;
+    }
+    if let Some(children) = node.children {
+        children
+            .into_iter()
+            .any(|index| visit_selection(tree, index, region, rows, planes, test_faces, visit))
+    } else {
+        tree.items[node.range.clone()]
+            .iter()
+            .any(|triangle| visit(*triangle, planes))
     }
 }
 
@@ -178,10 +232,10 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
-    #[test]
-    fn dense_static_grid_only_visits_triangles_near_the_ray() {
-        const SIDE: usize = 64;
-        let vertices: Vec<_> = (0..SIDE)
+    const SIDE: usize = 64;
+
+    fn grid_vertices() -> Vec<MeshVertex> {
+        (0..SIDE)
             .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
             .flat_map(|(x, y)| {
                 [[0.0, 0.0], [0.8, 0.0], [0.0, 0.8]].map(|[dx, dy]| MeshVertex {
@@ -192,7 +246,107 @@ mod tests {
                     color: [1.0; 4],
                 })
             })
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn nearest_surface_prunes_dense_geometry_after_a_sheared_world_transform() {
+        use crate::scene_surface::closest_triangle_point;
+
+        let vertices = grid_vertices();
+        let tree = PickTree::new(
+            &vertices,
+            &[MeshPart {
+                vertices: 0..vertices.len(),
+                material: 0,
+                volume_inverse: None,
+            }],
+        );
+        let rows = [
+            [2.0, 0.35, 0.0, 4.0],
+            [0.0, 0.65, 0.0, -6.0],
+            [0.0, 0.0, 1.0, 3.0],
+        ];
+        let point = Vector3::new(2.0 * 32.15 + 0.35 * 18.21 + 4.0, 0.65 * 18.21 - 6.0, 3.2);
+        let corners = vertices.as_chunks::<3>().0;
+        let world_distance = |vertex: usize| {
+            let triangle = corners[vertex / 3].map(|vertex| {
+                let [x, y, z] = vertex.position.map(f64::from);
+                Vector3::from(rows.map(|[a, b, c, d]| {
+                    f64::from(a) * x + f64::from(b) * y + f64::from(c) * z + f64::from(d)
+                }))
+            });
+            closest_triangle_point(point, triangle).1
+        };
+        let mut visited = 0;
+        let mut best = None;
+        tree.visit_nearest(point, rows, 2.0_f64.powi(2), |vertex, limit| {
+            visited += 1;
+            let distance = world_distance(vertex);
+            if distance < limit {
+                best = Some((vertex, distance));
+                distance
+            } else {
+                limit
+            }
+        });
+        let brute = (0..vertices.len())
+            .step_by(3)
+            .map(|vertex| (vertex, world_distance(vertex)))
+            .min_by(|(_, a), (_, b)| a.total_cmp(b));
+        assert_eq!(best, brute);
+        assert!(
+            visited <= 32,
+            "searched {visited} of {} triangles",
+            corners.len()
+        );
+        eprintln!(
+            "closest-point traversal tested {visited} of {} triangles",
+            corners.len()
+        );
+    }
+
+    #[test]
+    fn selection_in_dense_mesh_only_tests_nearby_triangles() {
+        use crate::{Length, Point2D, scene3d::SceneCamera};
+
+        let vertices = grid_vertices();
+        let tree = PickTree::new(
+            &vertices,
+            &[MeshPart {
+                vertices: 0..vertices.len(),
+                material: 0,
+                volume_inverse: None,
+            }],
+        );
+        let camera = SceneCamera::new(0.0, 0.0, 8.0, [512.0; 2]).expect("test camera");
+        let p = |x, y| Point2D::new(Length(x), Length(y));
+        let region = Frustum::selection(&camera, [p(255.5, 255.5), p(256.5, 256.5)])
+            .expect("nonempty selection");
+        let rows = [
+            [1.0, 0.0, 0.0, -32.15],
+            [0.0, 1.0, 0.0, -22.15],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        let triangles = vertices.as_chunks::<3>().0;
+        let mut tested = 0;
+        let found =
+            tree.intersects_selection(&region, rows, 0b11_1111, false, |triangle, planes| {
+                tested += 1;
+                let world = triangles[triangle.vertex as usize / 3].map(|vertex| {
+                    let [x, y, z] = vertex.position;
+                    [x + rows[0][3], y + rows[1][3], z]
+                });
+                region.triangle_intersects(world, planes)
+            });
+        assert!(found);
+        assert!((1..=16).contains(&tested), "tested {tested} triangles");
+        eprintln!("rectangle tested {tested} of {} triangles", triangles.len());
+    }
+
+    #[test]
+    fn dense_static_grid_only_visits_triangles_near_the_ray() {
+        let vertices = grid_vertices();
         let begin = Instant::now();
         let tree = PickTree::new(
             &vertices,

@@ -15,7 +15,7 @@ pub(super) const MAX_INSTANCES: usize = 1024;
 pub(super) const MAX_IMAGE_INSTANCES: usize = 4096;
 pub(super) const MIN_IMAGE_INSTANCES: usize = 64;
 pub(super) const IMAGE_MOTION_BYTES: u32 = size_of::<[f32; 4]>() as u32;
-const MIN_INSTANCES: usize = 8;
+pub(super) const MIN_INSTANCES: usize = 8;
 const REORDER_WINDOW: usize = 64;
 
 const SHADER: &str = r#"
@@ -78,6 +78,37 @@ struct SolidVertex {
     return vec4f(input.color.rgb * input.color.a, input.color.a);
 }
 
+struct CoveredVertex {
+    @builtin(position) position: vec4f,
+    @location(0) @interpolate(flat) edges: vec4f,
+    @location(1) @interpolate(flat) tint: u32,
+    @location(2) @interpolate(flat) scale: f32,
+}
+
+@vertex fn covered_vertex(
+    @builtin(vertex_index) index: u32,
+    @location(0) position: vec4f,
+    @location(1) edges: vec4f,
+    @location(2) tint: f32,
+    @location(3) scale_bits: u32,
+) -> CoveredVertex {
+    let corner = vec2f(f32(index & 1u), f32(index >> 1u));
+    return CoveredVertex(vec4f(mix(position.xy, position.zw, corner), 0.0, 1.0),
+        edges, u32(tint), bitcast<f32>(scale_bits));
+}
+
+fn rgb_tint(tint: u32) -> vec3f {
+    return vec3f(f32(tint >> 16u), f32((tint >> 8u) & 255u), f32(tint & 255u)) / 255.0;
+}
+
+@fragment fn covered_fragment(input: CoveredVertex) -> @location(0) vec4f {
+    let axis_distance = min(input.position.xy - input.edges.xy, input.edges.zw - input.position.xy);
+    let coverage = clamp(0.5 + min(axis_distance.x, axis_distance.y) * input.scale, 0.0, 1.0);
+    // Match the original palette's RGBA8 coverage before premultiplied blending.
+    let alpha = floor(255.0 * coverage + 0.5) / 255.0;
+    return vec4f(rgb_tint(input.tint) * alpha, alpha);
+}
+
 @fragment fn fragment(input: Vertex) -> @location(0) vec4f {
     return textureSampleLevel(layer_texture, layer_sampler, input.uv, 0.0) * input.paint_parameter;
 }
@@ -105,8 +136,7 @@ fn clip_coverage(input: Vertex) -> f32 {
 }
 
 fn tint_alpha(input: Vertex) -> vec4f {
-    let tint = u32(input.paint_parameter);
-    let rgb = vec3f(f32(tint >> 16u), f32((tint >> 8u) & 255u), f32(tint & 255u)) / 255.0;
+    let rgb = rgb_tint(u32(input.paint_parameter));
     let coverage = textureSampleLevel(layer_texture, layer_sampler, input.uv, 0.0).a;
     return vec4f(rgb * coverage, coverage);
 }
@@ -150,6 +180,7 @@ enum LayerShader {
     MaskedAlpha,
     Solid,
     OpaqueSolid,
+    CoveredSolid,
 }
 
 impl LayerShader {
@@ -158,6 +189,7 @@ impl LayerShader {
             WindowLayerSource::TintedAlpha { .. } if layer.mask.is_some() => Self::MaskedAlpha,
             WindowLayerSource::TintedAlpha { .. } => Self::Alpha,
             WindowLayerSource::Solid(_) => Self::Solid,
+            WindowLayerSource::CoveredSolid { .. } => Self::CoveredSolid,
             WindowLayerSource::Texture(_) if layer.mask.is_some() => Self::Masked,
             WindowLayerSource::Texture(_) => Self::Retained,
         }
@@ -248,12 +280,11 @@ impl<const STRIDE: usize> InstanceBuffer<STRIDE> {
                 resident: None,
             }
         } else {
-            InstanceStorage::Copied(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: (capacity * STRIDE) as u64,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
-                mapped_at_creation: false,
-            }))
+            InstanceStorage::Copied(instance_copy_buffer(
+                device,
+                (capacity * STRIDE) as u64,
+                label,
+            ))
         };
         Self {
             storage,
@@ -277,12 +308,30 @@ impl<const STRIDE: usize> InstanceBuffer<STRIDE> {
 
     fn upload(
         &mut self,
+        device: &wgpu::Device,
         staging: &mut wgpu::util::StagingBelt,
         encoder: &mut wgpu::CommandEncoder,
         instances: impl ExactSizeIterator<Item = [u8; STRIDE]>,
     ) -> Result<Option<(InstanceBinding, usize)>, String> {
-        if instances.len() == 0 {
+        let count = instances.len();
+        if count == 0 {
             return Ok(None);
+        }
+        let bytes = (count as u64).saturating_mul(STRIDE as u64);
+        let limit = device.limits().max_buffer_size;
+        if bytes > limit {
+            return Err("compositor instances exceed the device buffer limit".into());
+        }
+        if let InstanceStorage::Copied(buffer) = &mut self.storage
+            && buffer.size() < bytes
+        {
+            let capacity = bytes
+                .checked_next_power_of_two()
+                .unwrap_or(limit)
+                .min(limit);
+            *buffer = instance_copy_buffer(device, capacity, "XRack compositor instances");
+            // A newly allocated buffer has none of the previous prefix.
+            self.contents.clear();
         }
         let mut first_changed = None;
         let mut end = 0;
@@ -307,6 +356,8 @@ impl<const STRIDE: usize> InstanceBuffer<STRIDE> {
                 // schedule a remap once those draws complete.
                 *resident = None;
                 belt.recall();
+                // Only the active prefix needs to be in the new resident buffer.
+                self.contents.truncate(count);
                 let bytes = self.contents.as_flattened();
                 let Some(size) = wgpu::BufferSize::new(bytes.len() as u64) else {
                     return Ok(None);
@@ -347,6 +398,15 @@ impl<const STRIDE: usize> InstanceBuffer<STRIDE> {
             }
         }
     }
+}
+
+fn instance_copy_buffer(device: &wgpu::Device, size: u64, label: &str) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+        mapped_at_creation: false,
+    })
 }
 
 struct ImageInstances {
@@ -514,7 +574,7 @@ impl LayerCompositor {
                 label: Some("XRack cached layer compositor"),
                 layout: Some(match flavor {
                     LayerShader::Masked | LayerShader::MaskedAlpha => &self.masked_pipeline_layout,
-                    LayerShader::Solid | LayerShader::OpaqueSolid => &self.solid_pipeline_layout,
+                    LayerShader::Solid | LayerShader::OpaqueSolid | LayerShader::CoveredSolid => &self.solid_pipeline_layout,
                     LayerShader::ScrollImage => self.scroll_pipeline_layout.as_ref().unwrap_or(&self.pipeline_layout),
                     _ => &self.pipeline_layout,
                 }),
@@ -522,6 +582,7 @@ impl LayerCompositor {
                     module: &self.shader,
                     entry_point: Some(match flavor {
                         LayerShader::Solid | LayerShader::OpaqueSolid => "solid_vertex",
+                        LayerShader::CoveredSolid => "covered_vertex",
                         LayerShader::Image => "image_vertex",
                         LayerShader::ScrollImage => "scroll_image_vertex",
                         _ => "vertex",
@@ -548,6 +609,7 @@ impl LayerCompositor {
                         LayerShader::Alpha => "alpha_fragment",
                         LayerShader::MaskedAlpha => "masked_alpha_fragment",
                         LayerShader::Solid | LayerShader::OpaqueSolid => "solid_fragment",
+                        LayerShader::CoveredSolid => "covered_fragment",
                     }),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
@@ -633,7 +695,10 @@ impl LayerCompositor {
         let (instances, written) = if let Some(resident) = resident {
             (resident, 0)
         } else {
-            let Some(upload) = instances.buffer.upload(&mut self.staging, encoder, data)? else {
+            let Some(upload) = instances
+                .buffer
+                .upload(device, &mut self.staging, encoder, data)?
+            else {
                 return Ok(None);
             };
             instances.geometry = geometry.cloned();
@@ -737,11 +802,17 @@ impl Renderer {
                 width,
                 height,
             } = layer.bounds;
-            let (attributes, paint_parameter) = match &layer.source {
-                WindowLayerSource::Texture(_) => (layer.uv, layer.opacity),
+            let flags = u32::from(layer.sample_mask);
+            let (attributes, paint_parameter, flags) = match &layer.source {
+                WindowLayerSource::Texture(_) => (layer.uv, layer.opacity, flags),
                 // RGB8 fits exactly in one f32 and stays flat across the quad.
-                WindowLayerSource::TintedAlpha { tint, .. } => (layer.uv, *tint as f32),
-                WindowLayerSource::Solid(color) => ([color.r, color.g, color.b, color.a], 0.0),
+                WindowLayerSource::TintedAlpha { tint, .. } => (layer.uv, *tint as f32, flags),
+                WindowLayerSource::Solid(color) => {
+                    ([color.r, color.g, color.b, color.a], 0.0, flags)
+                }
+                WindowLayerSource::CoveredSolid { tint, edges } => {
+                    (*edges, *tint as f32, scale.to_bits())
+                }
             };
             let [a, b, c, d] = attributes;
             let geometry = [
@@ -759,7 +830,7 @@ impl Renderer {
             let mut bytes = [0; LAYER_INSTANCE_STRIDE];
             let (geometry_bytes, clip_bytes) = bytes.split_at_mut(IMAGE_INSTANCE_STRIDE);
             geometry_bytes.copy_from_slice(geometry.map(f32::to_ne_bytes).as_flattened());
-            clip_bytes[..4].copy_from_slice(&u32::from(layer.sample_mask).to_ne_bytes());
+            clip_bytes[..4].copy_from_slice(&flags.to_ne_bytes());
             clip_bytes[4..].copy_from_slice(origin.map(i32::to_ne_bytes).as_flattened());
             bytes
         });
@@ -775,9 +846,10 @@ impl Renderer {
                     label: Some("XRack cached layer commands"),
                 })
         });
-        let instances = compositor
-            .instances
-            .upload(&mut compositor.staging, encoder, data)?;
+        let instances =
+            compositor
+                .instances
+                .upload(&self.device, &mut compositor.staging, encoder, data)?;
         let mut scrolling = Vec::with_capacity(scrolls.len());
         for (index, images) in scrolls {
             let Some(draw) = compositor.prepare_image_draw(
@@ -888,6 +960,11 @@ pub(super) fn large_enough(count: usize) -> bool {
     (MIN_INSTANCES..=MAX_INSTANCES).contains(&count)
 }
 
+pub(super) fn rectangle_instance_limit(device: &wgpu::Device) -> usize {
+    let by_buffer = device.limits().max_buffer_size / LAYER_INSTANCE_STRIDE as u64;
+    usize::try_from(by_buffer.min(u64::from(u32::MAX))).unwrap_or(usize::MAX)
+}
+
 pub(super) fn supports_target(target: &wgpu::Texture) -> bool {
     target.sample_count() == 1
         && matches!(
@@ -921,7 +998,7 @@ fn material_key(
         WindowLayerSource::Texture(image) | WindowLayerSource::TintedAlpha { image, .. } => {
             Some(Rc::as_ptr(image))
         }
-        WindowLayerSource::Solid(_) => None,
+        WindowLayerSource::Solid(_) | WindowLayerSource::CoveredSolid { .. } => None,
     };
     (
         image,

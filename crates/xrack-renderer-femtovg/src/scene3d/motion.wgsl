@@ -23,10 +23,13 @@ struct Material {
     base: vec4<f32>,
     params: vec4<f32>,
     base_uv: TextureTransform,
+    channels: vec4<u32>,
+    shader_parameters: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> cameras: Cameras;
 @group(0) @binding(1) var<storage, read> previous_instances: array<PreviousInstance>;
+@group(0) @binding(2) var<uniform> previous_vertex_parameters: vec4<f32>;
 
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var base_texture: texture_2d<f32>;
@@ -50,14 +53,14 @@ struct RasterVertex {
     @location(0) previous_clip: vec4<f32>,
     @location(1) depth: vec2<f32>,
     @location(2) uv: vec2<f32>,
-    @location(3) alpha: f32,
+    @location(3) alpha: vec2<f32>,
     @location(4) @interpolate(flat) ids: vec2<u32>,
 }
 
 fn paired_vertex(vertex: Vertex, index: u32, current: vec3<f32>, previous: vec3<f32>) -> RasterVertex {
     let old = previous_instances[index];
-    let p = vec4<f32>(current, 1.0);
-    let q = vec4<f32>(previous, 1.0);
+    let p = vec4(xr_displaced_vertex(current, material.shader_parameters), 1.0);
+    let q = vec4(xr_displaced_vertex(previous, previous_vertex_parameters), 1.0);
     let world = vec4<f32>(dot(vertex.x, p), dot(vertex.y, p), dot(vertex.z, p), 1.0);
     let previous_world = vec4<f32>(dot(old.x, q), dot(old.y, q), dot(old.z, q), 1.0);
     return RasterVertex(
@@ -65,7 +68,7 @@ fn paired_vertex(vertex: Vertex, index: u32, current: vec3<f32>, previous: vec3<
         previous_world * cameras.previous.clip,
         vec2<f32>(dot(cameras.current.depth, world), dot(cameras.previous.depth, previous_world)),
         vertex.uv,
-        vertex.color.a * vertex.tint.a,
+        vec2<f32>(vertex.color.a * vertex.tint.a, vertex.tint.a),
         vec2<u32>(index + 1u, old.identity.x),
     );
 }
@@ -127,8 +130,8 @@ struct MotionOutput {
 @fragment
 fn fragment(vertex: RasterVertex) -> MotionOutput {
     if TEST_COVERAGE {
-        var opacity = material.base.a * vertex.alpha;
-        if material.params.z > 0.5 {
+        var opacity = material.base.a * coverage_vertex_alpha(material.channels, vertex.alpha);
+        if material.params.z > 0.5 && base_texture_uses_alpha(material.channels) {
             opacity *= textureSample(base_texture, base_sampler, texture_uv(material.base_uv, vertex.uv)).a;
         }
         if opacity < material.params.x || (material.params.w > 0.5 && opacity <= 0.0) {

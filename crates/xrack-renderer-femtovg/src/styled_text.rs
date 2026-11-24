@@ -7,6 +7,7 @@ use std::{
     cell::Cell,
     collections::{HashMap, VecDeque, hash_map::Entry},
     hash::BuildHasher,
+    num::NonZeroUsize,
     ops::Range,
     rc::{Rc, Weak},
     sync::Arc,
@@ -77,6 +78,7 @@ struct ShapedSpans {
     scope: FontScope,
     registered_fonts: [usize; 2],
     span_widths: SpanWidths,
+    short_widths: Vec<ShortWidth>,
     selection: SelectionShapes,
     selection_document: Option<SelectionDocument>,
 }
@@ -86,7 +88,32 @@ struct SelectionDocument {
     spans: StyledSelectionSpans,
 }
 
+const SHORT_WIDTH_CACHE_SLOTS: usize = 4096;
+
 type SpanWidths = HashMap<u64, (TextStyle, Box<str>, f32)>;
+#[derive(Clone, Copy, Default)]
+struct ShortWidth {
+    bytes: u64,
+    kind: u8,
+    width: f32,
+}
+
+fn short_width_key(text: &str, style_index: usize, capacity: usize) -> Option<(usize, u64, u8)> {
+    if capacity == 0 || !(1..=8).contains(&text.len()) {
+        return None;
+    }
+    // Store the complete UTF-8 sequence and its length. Even two keys
+    // that hash to the same slot can never alias each other's advance.
+    let mut bytes = [0_u8; 8];
+    bytes[..text.len()].copy_from_slice(text.as_bytes());
+    let encoded = u64::from_le_bytes(bytes);
+    let kind = (style_index as u8) << 4 | text.len() as u8;
+    let mixed = (encoded ^ u64::from(kind).wrapping_mul(0x9e3779b97f4a7c15))
+        .wrapping_mul(0xd6e8feb86659fd93);
+    let index = ((mixed ^ (mixed >> 32)) as usize) & (capacity - 1);
+    Some((index, encoded, kind))
+}
+
 type ShapingPaints = [Option<Paint>; 8];
 
 fn shaping_style_index(style: TextStyle) -> usize {
@@ -111,6 +138,7 @@ impl ShapedSpans {
     fn sync_fonts(&mut self, registered_fonts: [usize; 2]) {
         if self.registered_fonts != registered_fonts {
             self.span_widths.clear();
+            self.short_widths.fill(ShortWidth::default());
             self.clear_selection();
             self.registered_fonts = registered_fonts;
         }
@@ -197,6 +225,7 @@ struct CachedLayout {
     shaped_fragments: usize,
     selection_allocations: Vec<SelectionAllocation>,
     registered_fonts: [usize; 2],
+    reusable_widths: Option<Range<f32>>,
     prefix: Option<ReusedPrefix>,
     bytes: usize,
 }
@@ -379,6 +408,14 @@ impl LayoutCache {
                 key = intrinsic;
             }
         }
+        if !self.prefix_disabled
+            && document.text().len() >= 4096
+            && available.width > 0.0
+            && !self.entries.contains_key(&key)
+            && let Some(source) = self.reusable_width_key(system, &key, available)
+        {
+            key = source;
+        }
         if let Some(cached) = self.entries.get(&key)
             && (!selection || cached.shaped_fragments == cached.plan.fragments.len())
         {
@@ -423,6 +460,9 @@ impl LayoutCache {
             CachedLayout {
                 plan: Rc::new(plan),
                 document: document.clone(),
+                reusable_widths: lines
+                    .as_ref()
+                    .and_then(StyledTextLineIndex::reusable_widths),
                 lines: lines.map(Rc::new),
                 shaped_fragments: 0,
                 selection_allocations: Vec::new(),
@@ -441,6 +481,9 @@ impl LayoutCache {
                     .get_or_insert_with(|| shaping_paint(system, node, style));
             }
             let registered_fonts = system.registered_font_counts();
+            if registered_fonts != cached.registered_fonts {
+                cached.reusable_widths = None;
+            }
             let allocations = &mut cached.selection_allocations;
             let mut bytes = allocations.last().map_or(0, |entry| entry.total_bytes);
             let allocate = |first_fragment, allocation_bytes| {
@@ -527,6 +570,7 @@ impl LayoutCache {
                 },
                 registered_fonts,
                 span_widths: SpanWidths::new(),
+                short_widths: Vec::new(),
                 selection: SelectionShapes::default(),
                 selection_document: None,
             });
@@ -651,6 +695,7 @@ impl LayoutCache {
                 shaped_fragments: old.shaped_fragments.min(reused),
                 selection_allocations: old.selection_allocations[..retained_shapes].to_vec(),
                 registered_fonts,
+                reusable_widths: None,
                 prefix: Some(ReusedPrefix {
                     source: Rc::downgrade(&old.plan),
                     source_document: document_identity(&old.document),
@@ -660,6 +705,35 @@ impl LayoutCache {
             },
             reused,
         ))
+    }
+
+    fn reusable_width_key(
+        &self,
+        system: &TextSystem,
+        key: &LayoutKey,
+        available: Size,
+    ) -> Option<LayoutKey> {
+        let mut comparison = key.clone();
+        self.order
+            .iter()
+            .rev()
+            .take(16)
+            .find(|source| {
+                if source.document != key.document {
+                    return false;
+                }
+                comparison.settings.available = source.settings.available;
+                comparison == **source
+                    && self.entries.get(*source).is_some_and(|cached| {
+                        cached
+                            .reusable_widths
+                            .as_ref()
+                            .is_some_and(|range| range.contains(&available.width))
+                            && available.height >= cached.plan.size.height
+                            && cached.registered_fonts == system.registered_font_counts()
+                    })
+            })
+            .cloned()
     }
 
     fn take(&mut self, key: &LayoutKey) -> Option<CachedLayout> {
@@ -722,6 +796,8 @@ fn layout(
     mode: LayoutMode<'_>,
     mut spans: Option<&mut ShapedSpans>,
 ) -> (StyledTextLayout, Option<StyledTextLineIndex>) {
+    const REFLOW_WIDTH_CACHE_PRESSURE: usize = 1024;
+    let reflow = matches!(mode, LayoutMode::Reflow(_));
     // Wrap probes and final placement often measure the same short spans.
     let max_widths = if spans.is_some() { 16_384 } else { 1024 };
     let invalidated = Cell::new(false);
@@ -733,15 +809,17 @@ fn layout(
         None
     };
     let mut local_widths;
-    let mut widths = if let Some(spans) = &mut spans {
-        Some(&mut spans.span_widths)
+    let mut local_short = Vec::new();
+    let (mut widths, short) = if let Some(spans) = &mut spans {
+        (Some(&mut spans.span_widths), &mut spans.short_widths)
     } else {
         local_widths = (document.text().len() >= 4096).then(SpanWidths::new);
-        local_widths.as_mut()
+        (local_widths.as_mut(), &mut local_short)
     };
     let mut unretained_widths = 0_usize;
     let advance = |text: &str, style| {
-        let slot = &mut paints[shaping_style_index(style)];
+        let style_index = shaping_style_index(style);
+        let slot = &mut paints[style_index];
         let paint = match slot {
             Some(paint) => paint,
             None => {
@@ -761,24 +839,56 @@ fn layout(
                 if clear_widths && let Some(widths) = &mut widths {
                     widths.clear();
                 }
+                if clear_widths {
+                    short.fill(ShortWidth::default());
+                }
                 slot.insert(paint)
             }
         };
         let Some(widths) = widths.as_mut().filter(|_| text.len() <= 128) else {
             return system.advance_painted(text, paint);
         };
+        let short_key = short_width_key(text, style_index, short.len());
+        if let Some((index, bytes, kind)) = short_key {
+            let previous = short[index];
+            if previous.bytes == bytes && previous.kind == kind {
+                return previous.width;
+            }
+        }
         let key = widths.hasher().hash_one((style, text));
-        if let Some((cached_style, cached_text, width)) = widths.get(&key)
+        let width = if let Some((cached_style, cached_text, width)) = widths.get(&key)
             && *cached_style == style
             && cached_text.as_ref() == text
         {
-            return *width;
-        }
-        let width = system.advance_painted(text, paint);
-        if widths.len() < max_widths {
-            widths.insert(key, (style, text.into(), width));
+            *width
         } else {
-            unretained_widths += 1;
+            let width = system.advance_painted(text, paint);
+            if widths.len() < max_widths {
+                widths.insert(key, (style, text.into(), width));
+            } else {
+                unretained_widths += 1;
+                if reflow && unretained_widths == REFLOW_WIDTH_CACHE_PRESSURE {
+                    // Reflow probes frequently revisit short prefixes and
+                    // punctuation after the general width cache fills up.
+                    if short.is_empty() {
+                        short.resize(SHORT_WIDTH_CACHE_SLOTS, ShortWidth::default());
+                    }
+                    // Long reflows can evict the shaped runs needed by placement
+                    // and drawing before measurement finishes. Give this font
+                    // context a larger working set once the width cache is full.
+                    let context = system.context();
+                    context.resize_shaping_run_cache(
+                        NonZeroUsize::new(8_192).unwrap_or(NonZeroUsize::MIN),
+                    );
+                    context.resize_shaped_words_cache(
+                        NonZeroUsize::new(32_768).unwrap_or(NonZeroUsize::MIN),
+                    );
+                }
+            }
+            width
+        };
+        if let Some((index, bytes, kind)) = short_key {
+            short[index] = ShortWidth { bytes, kind, width };
         }
         width
     };
@@ -796,7 +906,7 @@ fn layout(
             reflow.registered_fonts = system.registered_font_counts();
             // A document with many misses at capacity benefits from retaining
             // complete spans by their source position on its next reflow.
-            if unretained_widths >= 1024 {
+            if unretained_widths >= REFLOW_WIDTH_CACHE_PRESSURE {
                 reflow.measurements.retain_span_advances();
             }
             (plan, Some(lines))
@@ -855,13 +965,22 @@ pub(crate) fn draw(
     let link_tint = node.color("link-color").unwrap_or(theme.focus);
     let highlight = Paint::color(color(theme.text_selection(node)));
     let selected_color = node.color("selected-text-color").map(color);
-    let mut paints = HashMap::new();
-    let base = system.paint_styled(node, color(tint), TextStyle::default());
-    let baseline = system
-        .context()
-        .measure_font(&base)
-        .map_or_else(|_| system.font_size(node), |metrics| metrics.ascender());
-    let visible = if scale.is_finite() && scale > 0.0 {
+    let prepared = plan.fragments.has_shaped_runs();
+    let baseline = if prepared {
+        0.0
+    } else {
+        let base = system.paint_styled(node, color(tint), TextStyle::default());
+        system
+            .context()
+            .measure_font(&base)
+            .map_or_else(|_| system.font_size(node), |metrics| metrics.ascender())
+    };
+    let prepared_clip = if prepared && system.styled_ink.borrow().enabled() {
+        crate::retained_text::clip_range(canvas, layout)
+    } else {
+        None
+    };
+    let visible = if !prepared && scale.is_finite() && scale > 0.0 {
         system.styled_ink.borrow_mut().visible_fragments(
             canvas,
             system,
@@ -873,11 +992,28 @@ pub(crate) fn draw(
     } else {
         None
     };
-    let fragments = visible.map_or(plan.fragments.as_slice(), |range| &plan.fragments[range]);
-    for fragment in fragments {
+    let flat = visible.map(|range| &plan.fragments[range]);
+    let placed = flat
+        .is_none()
+        .then(|| plan.fragments.placed_in_y_range(prepared_clip));
+    let fragments = flat
+        .into_iter()
+        .flatten()
+        .map(|fragment| (fragment, 0.0))
+        .chain(placed.into_iter().flatten());
+    let mut paints = HashMap::new();
+    for (fragment, offset) in fragments {
+        let local_y = fragment.bounds.y + offset;
+        if let Some((top, bottom)) = prepared_clip
+            && let Some([ink_top, ink_bottom]) = fragment.shaped_run().and_then(|run| run.ink)
+            && (local_y + ink_bottom.max(fragment.bounds.height) < top
+                || local_y + ink_top.min(0.0) > bottom)
+        {
+            continue;
+        }
         let spans = selection_spans(fragment, &selection);
         let x = bounds.x + fragment.bounds.x;
-        let y = bounds.y + fragment.bounds.y;
+        let y = bounds.y + local_y;
         if !spans.is_empty() {
             let mut path = Path::new();
             for span in &spans {
@@ -897,6 +1033,20 @@ pub(crate) fn draw(
         } else {
             style.color.unwrap_or(if link { link_tint } else { tint })
         };
+        if prepared {
+            crate::retained_text::paint_run(
+                canvas,
+                system,
+                fragment,
+                bounds,
+                Point { x, y },
+                color(tint),
+                &spans,
+                selected_color,
+            )
+            .map_err(|error| format!("styled glyph drawing failed: {error}"))?;
+            continue;
+        }
         style.underline |= link;
         let paint = paints
             .entry((style, tint))

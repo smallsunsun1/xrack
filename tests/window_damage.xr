@@ -58,47 +58,69 @@ export component MixedDamageDemo inherits Window {
     background: #18202b;
     in property <[string]> rows: ["One", "Two", "Three", "Four"];
 
-    left-action := Button {
-        x: 12px; y: 44px; width: 100px; height: 32px;
-        text: "Left";
-    }
-    right-action := Button {
-        x: 288px; y: 44px; width: 100px; height: 32px;
-        text: "Right";
-    }
-    scroll-region := ScrollView {
-        x: 132px; y: 16px; width: 136px; height: 112px;
+    Pane {
+        width: 400px; height: 240px;
+        background: #26374a;
+        padding: 0px; border-radius: 0px; border-width: 0px;
+        left-action := Button {
+            x: 12px; y: 44px; width: 100px; height: 32px;
+            text: "Left";
+        }
+        right-action := Button {
+            x: 288px; y: 44px; width: 100px; height: 32px;
+            text: "Right";
+        }
+        scroll-region := ScrollView {
+            x: 132px; y: 16px; width: 136px; height: 112px;
+            Rectangle {
+                width: 112px; height: 272px;
+                background: #35495e;
+                Text { x: 8px; y: 12px; text: "Visible first"; }
+                StyledText {
+                    x: 8px; y: 74px; width: 98px; height: 42px;
+                    text: @markdown("**滚动** · [链接](https://example.invalid)");
+                }
+                Text { x: 8px; y: 172px; text: "Visible later"; }
+            }
+        }
+        edge-action := Button {
+            x: 110px; y: 104px; width: 38px; height: 20px;
+            text: "Edge";
+        }
+        table-region := TableView {
+            x: 20px; y: 145px; width: 220px; height: 78px;
+            row-height: 22px;
+            header-height: 22px;
+            TableColumn { title: "Name"; }
+            for name in root.rows : TableRow {
+                TableCell { text: name; }
+            }
+        }
+        list-region := ListView {
+            x: 255px; y: 145px; width: 125px; height: 78px;
+            row-height: 22px;
+            for name in root.rows : Text { text: name; }
+        }
+        Shortcut { sequence: "Escape"; }
+        SplitView {
+            x: 12px; y: 94px; width: 84px; height: 38px;
+            handle-size: 4px;
+            Rectangle { preferred-width: 34px; background: #526589; }
+            SplitHandle {}
+            Rectangle { background: #27777a; }
+        }
+        // Enough bounded primitives to exercise the retained spatial index.
         Rectangle {
-            width: 112px; height: 272px;
-            background: #35495e;
-            Text { x: 8px; y: 12px; text: "Visible first"; }
-            Text { x: 8px; y: 172px; text: "Visible later"; }
+            x: 20px; y: 227px; width: 360px; height: 10px;
+            for index in 72 : Rectangle {
+                x: index * 5px; width: 4px; height: 8px;
+                background: #60778f;
+            }
         }
-    }
-    edge-action := Button {
-        x: 110px; y: 104px; width: 38px; height: 20px;
-        text: "Edge";
-    }
-    table-region := TableView {
-        x: 20px; y: 145px; width: 220px; height: 78px;
-        row-height: 22px;
-        header-height: 22px;
-        TableColumn { title: "Name"; }
-        for name in root.rows : TableRow {
-            TableCell { text: name; }
-        }
-    }
-    list-region := ListView {
-        x: 255px; y: 145px; width: 125px; height: 78px;
-        row-height: 22px;
-        for name in root.rows : Text { text: name; }
-    }
-    // Enough bounded primitives to exercise the retained spatial index.
-    Rectangle {
-        x: 20px; y: 227px; width: 360px; height: 10px;
-        for index in 72 : Rectangle {
-            x: index * 5px; width: 4px; height: 8px;
-            background: #60778f;
+        DropArea {
+            x: 12px; y: 10px; width: 100px; height: 24px;
+            accept-files: true;
+            Label { x: 4px; y: 1px; width: 92px; height: 22px; text: "Drop here"; }
         }
     }
 }

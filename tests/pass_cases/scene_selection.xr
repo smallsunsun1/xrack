@@ -1,0 +1,27 @@
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "pick-in-rect-3d"{{.*}}!xr.intlist
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "pick-in-rect-camera-3d"{{.*}}!xr.intlist
+// CHECK-DAG: "xr.int_array"() <{value = ""}> : () -> !xr.intlist
+// CHECK-NOT: "xr.geometry_function"
+
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color,
+}
+export component RectQueries inherits Window {
+    in property <[Actor]> actors;
+    in property <point2d> start;
+    in property <point2d> end;
+    out property <[int]> orbit: Scene3D.pick-in-rect(root.actors,
+        0, 0, 8, Point2D.new(200px, 200px), root.start, root.end);
+    out property <[int]> named: Scene3D.pick-in-rect-camera(root.actors,
+        "eye", Point2D.new(200px, 200px), root.start, root.end, 1);
+    out property <[int]> zero-area: Scene3D.pick-in-rect([
+        Actor { id: "box", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff }
+    ], 0, 0, 8, Point2D.new(200px, 200px), Point2D.new(20px, 10px), Point2D.new(50px, 10px));
+    out property <[int]> masked-out: Scene3D.pick-in-rect-camera([
+        Actor { id: "box", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff }
+    ], "eye", Point2D.new(200px, 200px), Point2D.new(8px, 8px), Point2D.new(70px, 80px), 0);
+}

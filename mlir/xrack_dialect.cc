@@ -43,7 +43,7 @@ void XrackDialect::initialize() {
 bool isExpression(Operation &op) {
   return isa<LiteralOp, ReadOp, DynamicActionOp, DynamicReadOp, LoaderMountedOp, LoaderExternalStatusOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, TreeSelectionKeysOp, ListSelectionKeysOp, ViewIndexOp, ViewCountOp, ListSelectionReadOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, TextAcceptsOp, TextValidityOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, TextSelectionReadOp, TextCommandAvailableOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ButtonPressedOp, ButtonCheckedOp, RadioCheckedOp, NavigationActiveOp, NavigationIndexOp, NavigationCountOp, ToggleStateReadOp, NumericValueReadOp, ComboStateReadOp, ComboPopupReadOp, RangePositionReadOp, ParamOp, UnaryOp, CastOp,
              ListRowSelectedOp, StringifyOp, BinaryOp, ConcatOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
              RoundOp, MathFunctionOp, GeometryFunctionOp, Point2DFieldOp, Point3DFieldOp,
              ProjectedPoint3DFieldOp, Hit3DFieldOp, Vector3DFieldOp, Vector2DFieldOp,
              StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, UpdateRecordOp, DefaultRecordOp, RecordArrayOp,
@@ -73,6 +73,24 @@ LogicalResult MeshLightmapUrlOp::verify() {
 LogicalResult MeshLodLightmapUrlOp::verify() {
   if (getValue().empty())
     return emitOpError("requires a nonempty mesh path");
+  return success();
+}
+
+LogicalResult TextureUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty texture path");
+  return success();
+}
+
+LogicalResult ShaderUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty shader path");
+  return success();
+}
+
+LogicalResult MaterialShaderUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty material shader path");
   return success();
 }
 
@@ -1477,16 +1495,18 @@ LogicalResult ElementOp::verify() {
            (name == "revision" && !isa<IntType>(type))))
         return child.emitOpError("CustomRender requires string renderer and data and integer revision");
       if (kind == "SceneView3D" &&
-          (((name == "model" || name == "lights" || name == "reflection-probes" || name == "fog-volumes" || name == "particle-emitters" || name == "particle-affectors") && !isa<RecordListType>(type)) ||
-           ((name == "selected-object" || name == "environment" || name == "camera" || name == "temporal-aa-mode") && !isa<StringType>(type)) ||
+          (((name == "model" || name == "lights" || name == "reflection-probes" || name == "fog-volumes" || name == "particle-emitters" || name == "particle-affectors" || name == "scene-effects" || name == "scene-captures") && !isa<RecordListType>(type)) ||
+           ((name == "selected-object" || name == "environment" || name == "camera" || name == "temporal-aa-mode" || name == "scene-effect" ||
+             name == "scene-color-capture" || name == "scene-depth-capture") && !isa<StringType>(type)) ||
            ((name == "shadows" || name == "imported-lights" || name == "environment-skybox" || name == "frustum-culling" ||
              name == "cache-rendering" || name == "multisampling" || name == "specular-aa" || name == "temporal-aa" || name == "order-independent-transparency" ||
              name == "ambient-occlusion" || name == "scene-hdr" || name == "bloom" || name == "screen-space-reflections" || name == "screen-space-global-illumination" ||
              name == "fog-depth-enabled" || name == "fog-height-enabled" ||
-             name == "fog-transmit-enabled" || name == "depth-of-field") && !isa<BoolType>(type)) ||
+             name == "fog-transmit-enabled" || name == "depth-of-field" || name == "scene-effect-depth" || name == "scene-effect-animate") && !isa<BoolType>(type)) ||
            ((name == "shadow-map-size" || name == "shadow-cascades" || name == "bloom-levels" ||
              name == "scene-lut-size" || name == "texture-width" || name == "texture-height" || name == "progressive-aa" || name == "ssr-steps" || name == "ssgi-rays" || name == "ssgi-steps" ||
-             name == "fog-volume-samples" || name == "fog-volume-density-samples" || name == "layer-mask") && !isa<IntType>(type)) ||
+             name == "fog-volume-samples" || name == "fog-volume-density-samples" || name == "layer-mask" ||
+             name == "scene-effect-history-revision") && !isa<IntType>(type)) ||
            (name == "scene-lut" && !isa<ImageType>(type)) ||
            (name == "dof-blur-radius" && !isa<LengthType>(type)) ||
            (name == "scene-tone-map" && !isa<SceneToneMapType>(type)) ||
@@ -1501,7 +1521,7 @@ LogicalResult ElementOp::verify() {
              name == "ssgi-strength" || name == "ssgi-occlusion" || name == "ssgi-radius" ||
              name == "ssgi-thickness" || name == "ssgi-scale" ||
              name == "scene-white-point" || name == "scene-brightness" ||
-             name == "scene-contrast" || name == "scene-saturation" || name == "scene-lut-strength" ||
+             name == "scene-contrast" || name == "scene-saturation" || name == "scene-lut-strength" || name == "scene-effect-strength" ||
              name == "fog-near" || name == "fog-far" || name == "fog-density" ||
              name == "fog-depth-curve" || name == "fog-height-start" || name == "fog-height-end" ||
              name == "fog-height-curve" || name == "fog-transmit-curve" ||
@@ -3926,6 +3946,16 @@ LogicalResult MathFunctionOp::verify() {
   return success();
 }
 
+void GeometryFunctionOp::getEffects(
+    llvm::SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  // Scene queries read mutable models, including nested vertex and index
+  // tables. An unchanged SSA model handle does not imply unchanged geometry.
+  if (llvm::any_of(getInputs(), [](Value input) {
+        return isa<RecordListType, IntListType>(input.getType());
+      }))
+    effects.emplace_back(MemoryEffects::Read::get());
+}
+
 LogicalResult GeometryFunctionOp::verify() {
   Type point = Point2DType::get(getContext());
   Type worldPoint = Point3DType::get(getContext());
@@ -3969,9 +3999,16 @@ LogicalResult GeometryFunctionOp::verify() {
     inputs = {number, number, number, point, point, number, worldPoint};
     output = worldPoint;
   } else if (operation == "pick-3d" || operation == "pick-camera-3d" ||
+             operation == "pick-in-rect-3d" || operation == "pick-in-rect-camera-3d" ||
+             operation == "hit-row-3d" || operation == "hit-row-camera-3d" || operation == "ray-hit-row-3d" ||
+             operation == "hit-instance-3d" || operation == "hit-instance-camera-3d" ||
+             operation == "ray-hit-instance-3d" ||
+             operation == "hit-subset-3d" || operation == "hit-subset-camera-3d" || operation == "ray-hit-subset-3d" ||
              operation == "project-camera-3d" || operation == "unproject-camera-3d" ||
+             operation == "map-position-3d" || operation == "map-direction-3d" ||
              operation == "hit-3d" || operation == "hit-camera-3d" || operation == "ray-hit-3d" ||
              operation == "hit-all-3d" || operation == "hit-all-camera-3d" || operation == "ray-hit-all-3d" ||
+             operation == "closest-point-3d" || operation == "closest-point-on-3d" ||
              operation == "sphere-cast-3d" || operation == "sphere-overlap-3d" || operation == "sphere-slide-3d" || operation == "sphere-walk-3d") {
     if (getInputs().empty() || !isa<RecordListType>(getInputs().front().getType()))
       return emitOpError("3D query requires a scene object record model");
@@ -3986,6 +4023,34 @@ LogicalResult GeometryFunctionOp::verify() {
     } else if (operation == "ray-hit-3d" || operation == "ray-hit-all-3d") {
       inputs = {model, worldPoint, worldVector, number};
       output = operation == "ray-hit-3d" ? hit : hitList;
+    } else if (operation == "hit-row-3d" || operation == "hit-subset-3d" ||
+               operation == "hit-row-camera-3d" || operation == "hit-subset-camera-3d" ||
+               operation == "ray-hit-row-3d" || operation == "ray-hit-subset-3d" ||
+               operation == "hit-instance-3d" || operation == "hit-instance-camera-3d" ||
+               operation == "ray-hit-instance-3d") {
+      bool subset = operation.contains("-subset-");
+      Type selector = subset ? Type(IntListType::get(getContext())) : Type(IntType::get(getContext()));
+      if (operation.starts_with("ray-"))
+        inputs = {model, worldPoint, worldVector, number, selector};
+      else if (operation.ends_with("-camera-3d"))
+        inputs = {model, string, point, point, selector};
+      else
+        inputs = {model, number, number, number, point, point, selector};
+      if (operation.contains("-instance-"))
+        inputs.append(2, IntType::get(getContext()));
+      output = subset ? hitList : hit;
+    } else if (operation == "pick-in-rect-3d" || operation == "pick-in-rect-camera-3d") {
+      if (operation == "pick-in-rect-3d")
+        inputs = {model, number, number, number, point, point, point};
+      else
+        inputs = {model, string, point, point, point};
+      output = IntListType::get(getContext());
+    } else if (operation == "closest-point-3d") {
+      inputs = {model, worldPoint, number};
+      output = hit;
+    } else if (operation == "closest-point-on-3d") {
+      inputs = {model, string, worldPoint, number};
+      output = hit;
     } else if (operation == "sphere-cast-3d") {
       inputs = {model, worldPoint, worldVector, number, number};
       output = hit;
@@ -3998,6 +4063,9 @@ LogicalResult GeometryFunctionOp::verify() {
     } else if (operation == "sphere-walk-3d") {
       inputs = {model, worldPoint, worldVector, number, number, number, number};
       output = worldPoint;
+    } else if (operation == "map-position-3d" || operation == "map-direction-3d") {
+      output = operation == "map-position-3d" ? worldPoint : worldVector;
+      inputs = {model, string, string, output, output};
     } else if (operation == "project-camera-3d") {
       inputs = {model, string, point, worldPoint};
       output = projection;
@@ -4017,7 +4085,12 @@ LogicalResult GeometryFunctionOp::verify() {
   if (getInputs().size() == inputs.size() + 1 &&
       llvm::StringSwitch<bool>(operation)
           .Cases({"pick-3d", "pick-camera-3d", "hit-3d", "hit-camera-3d", "hit-all-3d",
-                  "hit-all-camera-3d", "ray-hit-3d", "ray-hit-all-3d", "sphere-cast-3d", "sphere-overlap-3d", "sphere-slide-3d", "sphere-walk-3d"}, true)
+                  "hit-all-camera-3d", "ray-hit-3d", "ray-hit-all-3d",
+                  "pick-in-rect-3d", "pick-in-rect-camera-3d",
+                  "hit-row-3d", "hit-row-camera-3d", "ray-hit-row-3d",
+                  "hit-instance-3d", "hit-instance-camera-3d", "ray-hit-instance-3d",
+                  "hit-subset-3d", "hit-subset-camera-3d", "ray-hit-subset-3d",
+                  "closest-point-3d", "closest-point-on-3d", "sphere-cast-3d", "sphere-overlap-3d", "sphere-slide-3d", "sphere-walk-3d"}, true)
           .Default(false))
     inputs.push_back(IntType::get(getContext()));
   if (!llvm::equal(getInputs().getTypes(), inputs) || getResult().getType() != output)
@@ -4048,7 +4121,8 @@ LogicalResult Hit3DFieldOp::verify() {
   auto field = getValue();
   if ((field == "valid" && isa<BoolType>(type)) ||
       (field == "object-id" && isa<StringType>(type)) ||
-      (field == "row-index" && isa<IntType>(type)) ||
+      ((field == "row-index" || field == "mesh-node-index" || field == "instance-index") &&
+       isa<IntType>(type)) ||
       ((field == "distance" || field == "u" || field == "v") && isa<FloatType>(type)) ||
       ((field == "position" || field == "local-position") && isa<Point3DType>(type)) ||
       ((field == "normal" || field == "local-normal") && isa<Vector3DType>(type)))
@@ -5876,6 +5950,19 @@ static bool recordScalarType(llvm::StringRef type) {
       .Default(false);
 }
 
+static std::optional<llvm::StringRef> recordListElement(llvm::StringRef type) {
+  if (type.consume_front("[") && type.consume_back("]") && recordIdentifier(type))
+    return type;
+  return std::nullopt;
+}
+
+static bool validRecordFieldType(llvm::StringRef type) {
+  if (recordScalarType(type) || recordIdentifier(type))
+    return true;
+  auto element = recordListElement(type);
+  return element && (*element == "int" || !recordScalarType(*element));
+}
+
 static LogicalResult indexRecord(RecordDeclOp record, Records &records, EnumLayouts &enums) {
   if (!recordIdentifier(record.getSymName()) ||
       recordScalarType(record.getSymName()))
@@ -5897,9 +5984,9 @@ static LogicalResult indexRecord(RecordDeclOp record, Records &records, EnumLayo
     auto rustName = name.value_or("").str();
     std::replace(rustName.begin(), rustName.end(), '-', '_');
     if (!name || !recordIdentifier(*name) || !names.insert(rustName).second ||
-        !type || (!recordScalarType(*type) && !recordIdentifier(*type)))
+        !type || !validRecordFieldType(*type))
       return record.emitOpError(
-          "record fields require unique names and scalar, enum or named record types");
+          "record fields require unique names and supported types");
     fields.emplace_back(name->str(), type->str());
   }
   if (auto variants = record->getAttrOfType<ArrayAttr>("variants")) {
@@ -5949,7 +6036,7 @@ static LogicalResult indexRecord(RecordDeclOp record, Records &records, EnumLayo
           if (!fieldName || !recordIdentifier(*fieldName) ||
               *fieldName == "discriminant" || !fieldNames.insert(normalized).second ||
               (layout.tuple && *fieldName != positional) ||
-              !type || (!recordScalarType(*type) && !recordIdentifier(*type)))
+              !type || !validRecordFieldType(*type))
             return record.emitOpError("invalid enum payload field");
           layout.fields.emplace_back(fieldName->str(), type->str());
         }
@@ -5981,9 +6068,10 @@ static LogicalResult verifyRecordLayouts(ModuleOp module, const Records &records
       return record.emitOpError("cyclic record layout involving ") << name;
     auto visitFields = [&](const Fields &fields) -> LogicalResult {
       for (const auto &field : fields) {
-        if (recordScalarType(field.second))
+        llvm::StringRef type = field.second;
+        if (recordScalarType(type) || type == "[int]")
           continue;
-        auto target = declarations.find(field.second);
+        auto target = declarations.find(recordListElement(type).value_or(type));
         if (target == declarations.end())
           return record.emitOpError("unknown record type ") << field.second;
         if (failed(visit(visit, target->second)))
@@ -6319,14 +6407,94 @@ static LogicalResult verifySceneRecords(
   return success();
 }
 
+static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material,
+                                         const Records &records, const EnumLayouts &enums) {
+  auto style = records.find(material);
+    if (style == records.end() || enums.contains(material))
+      return op->emitOpError("3D model requires material to be a record");
+    for (const auto &[name, expected] :
+        std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+          {"enabled", "bool"}, {"vertex-colors", "bool"}, {"base-color", "color"}, {"base-item", "string"}, {"metalness", "float"},
+          {"material-shader", "string"}, {"shader-parameters", "vector3d"}, {"shader-displacement", "float"},
+          {"roughness", "float"}, {"emissive-color", "color"}, {"emissive-strength", "float"},
+          {"alpha-mode", "string"}, {"blend-mode", "string"}, {"depth-draw-mode", "string"}, {"cull-mode", "string"}, {"alpha-cutoff", "float"},
+          {"unlit", "bool"}, {"clearcoat", "float"}, {"clearcoat-roughness", "float"},
+          {"transmission", "float"}, {"index-of-refraction", "float"},
+          {"occlusion-amount", "float"}, {"specular-amount", "float"},
+          {"specular-color", "color"}, {"thickness", "float"},
+          {"attenuation-color", "color"}, {"attenuation-distance", "float"},
+          {"dispersion", "float"}, {"anisotropy-strength", "float"},
+          {"anisotropy-rotation", "float"},
+          {"fresnel-power", "float"}, {"fresnel-scale", "float"},
+          {"fresnel-bias", "float"}, {"fresnel-scale-bias-enabled", "bool"},
+          {"clearcoat-fresnel-power", "float"}, {"clearcoat-fresnel-scale", "float"},
+          {"clearcoat-fresnel-bias", "float"}, {"clearcoat-fresnel-scale-bias-enabled", "bool"},
+          {"normal-strength", "float"}, {"clearcoat-normal-strength", "float"}}) {
+      auto field = recordFieldType(records, enums, material, name);
+      if (field && *field != expected)
+        return op->emitOpError("invalid 3D material field ") << name << ", expected " << expected;
+    }
+    if (auto inputs = recordFieldType(records, enums, material, "shader-textures")) {
+      auto element = recordListElement(*inputs);
+      if (!element ||
+          (recordFieldType(records, enums, *element, "texture") != "string" &&
+           recordFieldType(records, enums, *element, "item") != "string" &&
+           recordFieldType(records, enums, *element, "capture") != "string"))
+        return op->emitOpError("3D material shader-textures requires a record list with a string field named texture, item or capture");
+      for (llvm::StringRef name : {"texture", "item", "capture", "attachment", "filter", "wrap-u", "wrap-v", "color-space"})
+        if (auto field = recordFieldType(records, enums, *element, name); field && *field != "string")
+          return op->emitOpError("3D material shader texture requires a string field named ") << name;
+      if (auto enabled = recordFieldType(records, enums, *element, "enabled"); enabled && *enabled != "bool")
+        return op->emitOpError("3D material shader texture requires a bool field named enabled");
+    }
+    for (llvm::StringRef name : {"base-color-channel", "emissive-channel", "metalness-channel", "roughness-channel", "occlusion-channel", "specular-channel", "specular-color-channel", "transmission-channel", "thickness-channel", "clearcoat-channel", "clearcoat-roughness-channel"}) {
+      if (auto field = recordFieldType(records, enums, material, name);
+          field && *field != "string")
+        return op->emitOpError("invalid 3D material channel ") << name << ", expected string";
+    }
+    for (llvm::StringRef name : {
+          "vertex-metalness-channel", "vertex-roughness-channel",
+          "vertex-occlusion-channel", "vertex-specular-channel",
+          "vertex-normal-channel", "vertex-clearcoat-channel",
+          "vertex-clearcoat-roughness-channel", "vertex-clearcoat-normal-channel",
+          "vertex-transmission-channel", "vertex-thickness-channel"}) {
+      if (auto field = recordFieldType(records, enums, material, name);
+          field && *field != "string")
+        return op->emitOpError("invalid 3D vertex mask channel ") << name << ", expected string";
+    }
+    for (llvm::StringRef name : {"base-color-map", "metallic-roughness-map",
+                               "emissive-map", "occlusion-map", "normal-map",
+                               "clearcoat-map", "clearcoat-roughness-map",
+                               "clearcoat-normal-map", "transmission-map",
+                               "specular-map", "specular-color-map", "thickness-map", "anisotropy-map"}) {
+    auto texture = recordFieldType(records, enums, material, name);
+    if (!texture || *texture == "string")
+      continue;
+    auto schema = records.find(*texture);
+    if (schema == records.end() || enums.contains(*texture))
+      return op->emitOpError("3D material map requires a texture key or record");
+    for (const auto &[setting, expected] :
+         std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+             {"source", "string"}, {"wrap-u", "string"}, {"wrap-v", "string"},
+             {"min-filter", "string"}, {"mag-filter", "string"}, {"mip-filter", "string"},
+             {"uv-set", "int"}, {"uv-scale-u", "float"}, {"uv-scale-v", "float"},
+             {"uv-offset-u", "float"}, {"uv-offset-v", "float"}, {"uv-rotation", "float"}}) {
+      auto field = recordFieldType(records, enums, *texture, setting);
+      if ((setting == "source" || field) && (!field || *field != expected))
+        return op->emitOpError("invalid 3D texture field ") << setting << ", expected " << expected;
+    }
+  }
+  return success();
+}
+
 static LogicalResult verifySceneModel(Operation *op, Type type, const Records &records,
                                       const EnumLayouts &enums) {
   if (failed(verifySceneRecords(
       op, type, records, enums, "3D model",
-      {{"id", "string"}, {"mesh", "string"}, {"x", "float"}, {"y", "float"}, {"z", "float"},
+      {{"id", "string"}, {"x", "float"}, {"y", "float"}, {"z", "float"},
        {"scale-x", "float"}, {"scale-y", "float"}, {"scale-z", "float"}, {"yaw", "float"},
        {"pitch", "float"}, {"roll", "float"}, {"color", "color"}},
-      {{"casts-shadow", "bool"}, {"receives-shadow", "bool"}, {"receives-reflections", "bool"},
+      {{"mesh", "string"}, {"casts-shadow", "bool"}, {"receives-shadow", "bool"}, {"receives-reflections", "bool"},
        {"casts-reflections", "bool"}, {"parent", "string"}, {"layers", "int"},
        {"visible", "bool"}, {"lod-of", "string"}, {"lod-max-size", "length"}, {"lod-bias", "float"},
        {"camera-lod-bias", "float"}, {"pickable", "bool"}, {"collidable", "bool"}, {"pivot-x", "float"}, {"pivot-y", "float"}, {"pivot-z", "float"},
@@ -6334,6 +6502,7 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
        {"camera-near", "float"}, {"camera-far", "float"}, {"camera-look-at", "string"},
        {"camera-left", "float"}, {"camera-right", "float"},
        {"camera-bottom", "float"}, {"camera-top", "float"},
+       {"material-variant", "string"}, {"instance-of", "string"}, {"instance-template", "bool"},
        {"animation", "string"}, {"animation-time", "float"}, {"animation-loop", "bool"},
        {"animation-to", "string"}, {"animation-to-time", "float"},
        {"animation-to-loop", "bool"}, {"animation-blend", "float"},
@@ -6348,6 +6517,70 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
           !llvm::all_of(schema->second, [](const auto &field) { return field.second == "float"; }))
         return op->emitOpError("3D model requires a morph-weights record with float fields");
     }
+  if (auto model = dyn_cast<RecordListType>(type)) {
+    if (auto geometry = recordFieldType(records, enums, model.getName(), "geometry")) {
+      if (!records.contains(*geometry) || enums.contains(*geometry))
+        return op->emitOpError("3D model requires geometry to be a record");
+      if (auto vertices = recordFieldType(records, enums, *geometry, "vertices")) {
+        if (recordFieldType(records, enums, *geometry, "shape"))
+          return op->emitOpError("3D geometry cannot declare both shape and vertices");
+        auto vertex = recordListElement(*vertices);
+        if (!vertex || !records.contains(*vertex) || enums.contains(*vertex))
+          return op->emitOpError("3D geometry requires vertices to be a list of vertex records");
+        for (const auto &[name, expected] :
+             std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+                 {"position", "point3d"}, {"normal", "vector3d"},
+                 {"u", "float"}, {"v", "float"}, {"u1", "float"}, {"v1", "float"}, {"color", "color"}}) {
+          auto field = recordFieldType(records, enums, *vertex, name);
+          if ((name == "position" || field) && (!field || *field != expected))
+            return op->emitOpError("invalid 3D vertex field ") << name << ", expected " << expected;
+        }
+        if (auto indices = recordFieldType(records, enums, *geometry, "indices"); indices && *indices != "[int]")
+          return op->emitOpError("3D geometry indices require [int]");
+        if (auto subsets = recordFieldType(records, enums, *geometry, "subsets")) {
+          auto subset = recordListElement(*subsets);
+          if (!subset || !records.contains(*subset) || enums.contains(*subset))
+            return op->emitOpError("3D geometry requires subsets to be a list of subset records");
+          for (const auto &[name, expected] :
+               std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+                   {"offset", "int"}, {"count", "int"}, {"name", "string"}}) {
+            auto field = recordFieldType(records, enums, *subset, name);
+            if (!field || *field != expected)
+              return op->emitOpError("invalid 3D subset field ") << name << ", expected " << expected;
+          }
+        }
+      } else {
+        if (recordFieldType(records, enums, *geometry, "subsets"))
+          return op->emitOpError("3D geometry requires vertices when declaring subsets");
+        for (const auto &[name, expected] :
+             std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+                 {"shape", "string"}, {"width", "float"}, {"height", "float"},
+                 {"depth", "float"}, {"radius", "float"}, {"top-radius", "float"},
+                 {"tube-radius", "float"}, {"segments", "int"}, {"rings", "int"},
+                 {"capped", "bool"}}) {
+          auto field = recordFieldType(records, enums, *geometry, name);
+          if ((name == "shape" || field) && (!field || *field != expected))
+            return op->emitOpError("invalid 3D geometry field ") << name << ", expected " << expected;
+        }
+      }
+    } else if (!recordFieldType(records, enums, model.getName(), "mesh")) {
+      return op->emitOpError("3D model requires a string mesh field or a geometry record");
+    }
+    if (auto material = recordFieldType(records, enums, model.getName(), "material"))
+      if (failed(verifySceneMaterial(op, *material, records, enums)))
+        return failure();
+    if (auto palette = recordFieldType(records, enums, model.getName(), "material-slots")) {
+      auto schema = records.find(*palette);
+      if (schema == records.end() || enums.contains(*palette))
+        return op->emitOpError("3D material-slots requires a record of material bindings");
+      for (const auto &[name, material] : schema->second) {
+        if (failed(verifySceneMaterial(op, material, records, enums)))
+          return failure();
+        if (auto slot = recordFieldType(records, enums, material, "slot"); slot && *slot != "string")
+          return op->emitOpError("3D material slot requires a string selector for ") << name;
+      }
+    }
+  }
   return success();
 }
 
@@ -6381,7 +6614,11 @@ static LogicalResult verifyParticleEmitters(BindOp emitters, const Records &reco
        {"velocity-cone-angle", "float"}, {"velocity-target", "point3d"},
        {"velocity-target-spread", "vector3d"}, {"velocity-speed-variation", "float"},
        {"trail-segments", "int"}, {"trail-duration", "float"}, {"trail-end-scale", "float"},
-       {"trail-fade", "float"}, {"trail-eol-fade", "float"}});
+       {"trail-fade", "float"}, {"trail-eol-fade", "float"},
+       {"particle-model", "string"}, {"particle-rotation", "vector3d"},
+       {"particle-rotation-variation", "vector3d"}, {"particle-angular-velocity", "vector3d"},
+       {"particle-casts-shadow", "bool"}, {"particle-receives-shadow", "bool"},
+       {"particle-casts-reflections", "bool"}});
 }
 
 static LogicalResult verifyParticleAffectors(BindOp affectors, const Records &records,
@@ -6417,6 +6654,105 @@ static LogicalResult verifySceneReflections(BindOp probes, const Records &record
        {"intensity", "float"}, {"parallax-correction", "bool"}, {"layers", "int"}});
 }
 
+static LogicalResult verifySceneCaptures(BindOp captures, const Records &records,
+                                          const EnumLayouts &enums) {
+  auto type = captures.getInput().getType();
+  if (failed(verifySceneRecords(
+          captures, type, records, enums, "3D scene captures", {{"name", "string"}},
+          {{"camera", "string"}, {"layers", "int"}, {"scale", "float"},
+           {"background", "color"}, {"enabled", "bool"}, {"color-source", "string"},
+           {"color-format", "string"},
+           {"depth-source", "string"}, {"depth-clear", "float"}, {"stencil-source", "string"},
+           {"stencil-clear", "int"}, {"renderables", "string"}})))
+    return failure();
+  if (auto list = dyn_cast<RecordListType>(type)) {
+    if (auto material = recordFieldType(records, enums, list.getName(), "override-material")) {
+      if (records.find(*material) == records.end() || enums.contains(*material))
+        return captures.emitOpError("3D scene captures requires a record field named override-material");
+      if (failed(verifySceneMaterial(captures, *material, records, enums)))
+        return failure();
+    }
+    if (auto state = recordFieldType(records, enums, list.getName(), "pipeline-state")) {
+      if (records.find(*state) == records.end() || enums.contains(*state))
+        return captures.emitOpError("3D scene captures requires a record field named pipeline-state");
+      for (const auto &[field, expected] :
+           std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+               {"enabled", "bool"}, {"depth-test", "bool"}, {"depth-write", "bool"},
+               {"depth-compare", "string"}, {"cull-mode", "string"}, {"blend-mode", "string"},
+               {"color-write", "bool"}, {"polygon-mode", "string"}})
+        if (auto actual = recordFieldType(records, enums, *state, field);
+            actual && *actual != expected)
+          return captures.emitOpError() << "3D capture pipeline state requires a " << expected
+                                        << " field named " << field;
+      if (auto stencil = recordFieldType(records, enums, *state, "stencil")) {
+        if (records.find(*stencil) == records.end() || enums.contains(*stencil))
+          return captures.emitOpError("3D capture pipeline state requires a record field named stencil");
+        for (const auto &[field, expected] :
+             std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+                 {"enabled", "bool"}, {"reference", "int"}, {"read-mask", "int"},
+                 {"write-mask", "int"}, {"compare", "string"}, {"fail", "string"},
+                 {"depth-fail", "string"}, {"pass", "string"}})
+          if (auto actual = recordFieldType(records, enums, *stencil, field);
+              actual && *actual != expected)
+            return captures.emitOpError() << "3D capture stencil state requires a " << expected
+                                          << " field named " << field;
+      }
+      if (auto blend = recordFieldType(records, enums, *state, "target-blend")) {
+        if (records.find(*blend) == records.end() || enums.contains(*blend))
+          return captures.emitOpError("3D capture pipeline state requires a record field named target-blend");
+        for (const auto &[field, expected] :
+             std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+                 {"enabled", "bool"}, {"blend-enabled", "bool"}, {"write-mask", "int"},
+                 {"constant", "color"}, {"source-color", "string"}, {"destination-color", "string"},
+                 {"source-alpha", "string"}, {"destination-alpha", "string"},
+                 {"color-operation", "string"}, {"alpha-operation", "string"}})
+          if (auto actual = recordFieldType(records, enums, *blend, field);
+              actual && *actual != expected)
+            return captures.emitOpError() << "3D capture target-blend state requires a "
+                                          << expected << " field named " << field;
+      }
+      for (llvm::StringRef region : {"viewport", "scissor"})
+        if (auto rect = recordFieldType(records, enums, *state, region)) {
+          if (records.find(*rect) == records.end() || enums.contains(*rect))
+            return captures.emitOpError() << "3D capture pipeline state requires a record field named " << region;
+          for (llvm::StringRef field : {"x", "y", "width", "height"})
+            if (recordFieldType(records, enums, *rect, field) != "float")
+              return captures.emitOpError() << "3D capture " << region << " requires a float field named " << field;
+          if (auto value = recordFieldType(records, enums, *rect, "enabled"); value && *value != "bool")
+            return captures.emitOpError() << "3D capture " << region << " requires a bool field named enabled";
+        }
+    }
+  }
+  return success();
+}
+
+static LogicalResult verifySceneEffects(BindOp effects, const Records &records,
+                                        const EnumLayouts &enums) {
+  auto type = effects.getInput().getType();
+  if (failed(verifySceneRecords(
+      effects, effects.getInput().getType(), records, enums, "3D effect passes",
+      {{"shader", "string"}},
+      {{"depth", "bool"}, {"strength", "float"}, {"scale", "float"}, {"parameters", "vector3d"},
+       {"input", "string"}, {"output", "string"}, {"history", "bool"}, {"output-format", "string"}})))
+    return failure();
+  if (auto model = dyn_cast<RecordListType>(type))
+    if (auto buffers = recordFieldType(records, enums, model.getName(), "buffers")) {
+      if (!buffers->consume_front("[") || !buffers->consume_back("]") ||
+          (recordFieldType(records, enums, *buffers, "name") != "string" &&
+           recordFieldType(records, enums, *buffers, "texture") != "string" &&
+           recordFieldType(records, enums, *buffers, "item") != "string" &&
+           recordFieldType(records, enums, *buffers, "capture") != "string"))
+        return effects.emitOpError("3D effect pass buffers requires a record list with a string field named name, texture, item or capture");
+      for (llvm::StringRef name : {"previous-frame", "enabled"})
+        if (auto type = recordFieldType(records, enums, *buffers, name); type && *type != "bool")
+          return effects.emitOpError("3D effect pass buffer requires a bool field named ") << name;
+      for (llvm::StringRef name : {"name", "texture", "item", "capture", "attachment", "filter", "wrap-u", "wrap-v", "color-space"})
+        if (auto type = recordFieldType(records, enums, *buffers, name); type && *type != "string")
+          return effects.emitOpError("3D effect pass buffer requires a string field named ") << name;
+    }
+  return success();
+}
+
 static LogicalResult verifyRecords(ModuleOp module, const Records &records,
                                    const EnumLayouts &enums,
                                    ComboValueTypes &comboValues) {
@@ -6427,8 +6763,16 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
         picking && (picking.getValue() == "pick-3d" || picking.getValue() == "pick-camera-3d" ||
                     picking.getValue() == "project-camera-3d" ||
                     picking.getValue() == "unproject-camera-3d" ||
+                    picking.getValue() == "map-position-3d" || picking.getValue() == "map-direction-3d" ||
                     picking.getValue() == "hit-3d" || picking.getValue() == "hit-camera-3d" ||
                     picking.getValue() == "ray-hit-3d" ||
+                    picking.getValue() == "hit-instance-3d" || picking.getValue() == "hit-instance-camera-3d" ||
+                    picking.getValue() == "ray-hit-instance-3d" ||
+                    picking.getValue() == "hit-row-3d" || picking.getValue() == "hit-row-camera-3d" ||
+                    picking.getValue() == "ray-hit-row-3d" || picking.getValue() == "hit-subset-3d" ||
+                    picking.getValue() == "hit-subset-camera-3d" || picking.getValue() == "ray-hit-subset-3d" ||
+                    picking.getValue() == "pick-in-rect-3d" || picking.getValue() == "pick-in-rect-camera-3d" ||
+                    picking.getValue() == "closest-point-3d" || picking.getValue() == "closest-point-on-3d" ||
                     picking.getValue() == "sphere-cast-3d" || picking.getValue() == "sphere-overlap-3d" ||
                     picking.getValue() == "sphere-slide-3d" || picking.getValue() == "sphere-walk-3d" ||
                     picking.getValue() == "hit-all-3d" ||
@@ -6445,6 +6789,8 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
             (binding.getName() == "particle-emitters" && failed(verifyParticleEmitters(binding, records, enums))) ||
             (binding.getName() == "particle-affectors" && failed(verifyParticleAffectors(binding, records, enums))) ||
             (binding.getName() == "fog-volumes" && failed(verifyFogVolumes(binding, records, enums))) ||
+            (binding.getName() == "scene-captures" && failed(verifySceneCaptures(binding, records, enums))) ||
+            (binding.getName() == "scene-effects" && failed(verifySceneEffects(binding, records, enums))) ||
             (binding.getName() == "reflection-probes" && failed(verifySceneReflections(binding, records, enums))))
           return WalkResult::interrupt();
     for (auto type : op->getResultTypes()) {

@@ -14,26 +14,42 @@ pub(super) struct Settings {
     pub(super) font_size: u32,
     pub(super) measurement_scale: u32,
     pub(super) fonts: [usize; 2],
+    pub(super) cell_fonts: Option<crate::text::CellFonts>,
 }
 
 #[derive(Clone, Copy)]
-struct Glyph {
-    advance: [f32; 2],
-    offset: [f32; 2],
-    font: FontId,
-    id: u16,
-    drawable: bool,
+pub(super) struct Glyph {
+    pub(super) advance: [f32; 2],
+    pub(super) offset: [f32; 2],
+    pub(super) font: FontId,
+    pub(super) id: u16,
+    pub(super) drawable: bool,
 }
 
 struct Entry {
     text: String,
     settings: Settings,
     run: Run,
+    portable: bool,
 }
 
-struct Run {
-    baseline: f32,
-    glyphs: Vec<Glyph>,
+pub(super) struct Run {
+    pub(super) baseline: f32,
+    pub(super) glyphs: Vec<Glyph>,
+}
+
+impl Run {
+    pub(super) fn from_metrics(metrics: &TextMetrics) -> Self {
+        Self {
+            baseline: metrics.baseline(),
+            glyphs: measured_glyphs(metrics).collect(),
+        }
+    }
+}
+
+pub(super) enum Measurement {
+    Legacy(TextMetrics),
+    Portable(Run),
 }
 
 fn measured_glyphs(metrics: &TextMetrics) -> impl Iterator<Item = Glyph> + '_ {
@@ -46,7 +62,7 @@ fn measured_glyphs(metrics: &TextMetrics) -> impl Iterator<Item = Glyph> + '_ {
     })
 }
 
-fn placed_glyphs(
+pub(super) fn placed_glyphs(
     glyphs: impl Iterator<Item = Glyph>,
     baseline: f32,
     origin: [f32; 2],
@@ -84,7 +100,7 @@ impl Cache {
         text: &str,
         settings: Settings,
         origin: [f32; 2],
-        measure: impl FnOnce() -> Option<TextMetrics>,
+        measure: impl FnOnce() -> Option<Measurement>,
         mut visit: impl FnMut(FontId, u16, f32, f32) -> bool,
     ) -> bool {
         const RECENT_ENTRIES: usize = 2048;
@@ -102,23 +118,52 @@ impl Cache {
         let Some(metrics) = measure() else {
             return false;
         };
-        // One-off cells encountered during a fast scroll only leave a hash.
-        if self.recent.is_empty() {
-            self.recent.resize(RECENT_ENTRIES, 0);
+        match metrics {
+            Measurement::Legacy(metrics) => {
+                // One-off cells encountered during a fast scroll only leave a hash.
+                if self.recent.is_empty() {
+                    self.recent.resize(RECENT_ENTRIES, 0);
+                }
+                let recent = &mut self.recent[key as usize % RECENT_ENTRIES];
+                if std::mem::replace(recent, key) == key {
+                    self.insert(key, text, settings, Run::from_metrics(&metrics), false);
+                }
+                placed_glyphs(measured_glyphs(&metrics), metrics.baseline(), origin, scale)
+                    .all(visit)
+            }
+            Measurement::Portable(run) => {
+                let result = placed_glyphs(run.glyphs.iter().copied(), run.baseline, origin, scale)
+                    .all(visit);
+                // The scalar draw can reuse this run immediately when a mask is missing.
+                self.insert(key, text, settings, run, true);
+                result
+            }
         }
-        let recent = &mut self.recent[key as usize % RECENT_ENTRIES];
-        if std::mem::replace(recent, key) == key {
-            self.insert(key, text, settings, &metrics);
-        }
-        placed_glyphs(measured_glyphs(&metrics), metrics.baseline(), origin, scale).all(visit)
     }
 
-    fn insert(&mut self, key: u64, text: &str, settings: Settings, metrics: &TextMetrics) {
+    pub(super) fn portable_run(
+        &mut self,
+        text: &str,
+        settings: Settings,
+        shape: impl FnOnce() -> Option<Run>,
+    ) -> Option<&Run> {
+        let key = self.entries.hasher().hash_one((text, settings));
+        if self
+            .entries
+            .get(&key)
+            .is_none_or(|entry| entry.text != text || entry.settings != settings)
+        {
+            let run = shape()?;
+            self.insert(key, text, settings, run, true);
+        }
+        self.entries
+            .get(&key)
+            .filter(|entry| entry.portable)
+            .map(|entry| &entry.run)
+    }
+
+    fn insert(&mut self, key: u64, text: &str, settings: Settings, run: Run, portable: bool) {
         const MAX_ENTRIES: usize = 2048;
-        let run = Run {
-            baseline: metrics.baseline(),
-            glyphs: measured_glyphs(metrics).collect(),
-        };
         if self.entries.contains_key(&key) {
             self.order.retain(|previous| *previous != key);
         } else if self.entries.len() >= MAX_ENTRIES
@@ -133,6 +178,7 @@ impl Cache {
                 text: text.to_owned(),
                 settings,
                 run,
+                portable,
             },
         );
     }

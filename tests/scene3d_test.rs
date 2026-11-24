@@ -5655,6 +5655,1305 @@ fn particle_affectors_follow_age_layers_and_row_order_in_both_backends() -> Test
 }
 
 #[test]
+fn particle_trails_follow_curves_rewind_and_fade_after_life_in_both_backends() -> TestResult {
+    use particle_trails_ui::ParticleTrailsDemo;
+
+    const NAME: &str = "examples/puzzle3d/particle_trails.xr";
+    let text = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&text, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let interpreted = program.create("ParticleTrailsDemo")?;
+    let app = ParticleTrailsDemo::new();
+    let weak = app.as_weak();
+    let mut generated = PreviewScene::new(Box::new(app));
+    let mut dynamic = PreviewScene::new(Box::new(interpreted.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy)]
+    struct State {
+        time: f64,
+        segments: i64,
+        history: f64,
+        rotate: bool,
+        retain: bool,
+    }
+    let base = State {
+        time: 0.9,
+        segments: 12,
+        history: 0.8,
+        rotate: false,
+        retain: true,
+    };
+    let mut render = |state: State| -> TestResult<_> {
+        let mut app = weak.upgrade().ok_or("missing particle trails demo")?;
+        app.set_time(state.time);
+        app.set_segments(state.segments);
+        app.set_history(state.history);
+        app.set_rotate_trails(state.rotate);
+        app.set_retain_trails(state.retain);
+        for (name, value) in [
+            ("time", Value::Float(state.time)),
+            ("segments", Value::Int(state.segments)),
+            ("history", Value::Float(state.history)),
+            ("rotate-trails", Value::Bool(state.rotate)),
+            ("retain-trails", Value::Bool(state.retain)),
+        ] {
+            interpreted.set(name, value)?;
+        }
+        let before = gpu.scene_draw_stats();
+        let png = generated.render(&mut gpu)?.to_vec();
+        assert!(png.as_slice() == dynamic.render(&mut other_gpu)?);
+        let after = gpu.scene_draw_stats();
+        Ok((
+            xrack_assets::decode_png(&png)?,
+            after.particle_draws - before.particle_draws,
+            after.particle_instances - before.particle_instances,
+            after.particle_trail_segments - before.particle_trail_segments,
+        ))
+    };
+    let blue = |pixel: &[u8; 4]| pixel[2] > 155 && pixel[1] > 105 && pixel[0] < 120;
+    let bounds = |image: &xrack_assets::Raster| {
+        let width = image.size[0] as usize;
+        let mut min = width;
+        let mut max = 0;
+        for (i, pixel) in image.rgba[..width * 352 * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+        {
+            if blue(pixel) {
+                let x = i % width;
+                min = min.min(x);
+                max = max.max(x);
+            }
+        }
+        (min <= max).then_some((min, max))
+    };
+    let y_midpath = |image: &xrack_assets::Raster| {
+        let width = image.size[0] as usize;
+        let mut sum = 0;
+        let mut count = 0;
+        for y in 0..352 {
+            for x in 308..327 {
+                if blue(&image.rgba.as_chunks::<4>().0[x + y * width]) {
+                    sum += y;
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 10);
+        sum / count
+    };
+
+    let (curve, draws, instances, segments) = render(base)?;
+    assert_eq!((draws, instances, segments), (2, 2, 12));
+    assert_eq!(render(base)?.1, 0);
+    let ((left, right), (short_left, short_right)) = (
+        bounds(&curve).ok_or("missing curve")?,
+        bounds(
+            &render(State {
+                history: 0.35,
+                ..base
+            })?
+            .0,
+        )
+        .ok_or("missing short trail")?,
+    );
+    assert!(right - left > 130 && short_left > left + 55 && right.abs_diff(short_right) < 3);
+    let (chord, _, _, segments) = render(State {
+        segments: 1,
+        ..base
+    })?;
+    assert_eq!(segments, 1);
+    assert!(y_midpath(&curve) + 15 < y_midpath(&chord));
+    let (points, draws, _, segments) = render(State {
+        segments: 0,
+        ..base
+    })?;
+    assert_eq!((draws, segments), (1, 0));
+    let (point_min, point_max) = bounds(&points).ok_or("missing point sprite")?;
+    assert!(point_max - point_min < 17);
+
+    let rotated = render(State {
+        rotate: true,
+        ..base
+    })?
+    .0;
+    assert_ne!(rotated.rgba[..670 * 352 * 4], curve.rgba[..670 * 352 * 4]);
+    assert_eq!(render(base)?.0.rgba, curve.rgba);
+    let early = render(State { time: 0.0, ..base })?.0;
+    assert!(
+        bounds(&early).is_none(),
+        "a newborn particle has no prior trail"
+    );
+
+    let end = render(State { time: 1.25, ..base })?.0;
+    let (faded, _, instances, segments) = render(State { time: 1.45, ..base })?;
+    assert_eq!((instances, segments), (2, 12));
+    let (_, end_x) = bounds(&end).ok_or("missing trail at end of life")?;
+    let (_, faded_x) = bounds(&faded).ok_or("missing retained trail")?;
+    assert!(
+        end_x.abs_diff(faded_x) <= 2,
+        "retained trail holds its terminal geometry"
+    );
+    let energy = |image: &xrack_assets::Raster| -> u32 {
+        image.rgba[..670 * 352 * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| u32::from(p[2].saturating_sub(100)))
+            .sum()
+    };
+    assert!(energy(&faded) < energy(&end));
+    assert!(
+        bounds(
+            &render(State {
+                time: 1.45,
+                retain: false,
+                ..base
+            })?
+            .0
+        )
+        .is_none()
+    );
+    let (expired, _, instances, segments) = render(State { time: 1.96, ..base })?;
+    assert_eq!((instances, segments), (1, 0));
+    assert!(bounds(&expired).is_none());
+    Ok(())
+}
+
+#[test]
+fn builtin_shapes_share_picking_sweeps_slots_particles_and_gpu_buffers() -> TestResult {
+    use primitive_meshes_ui::PrimitiveMeshesDemo;
+    use xrack_runtime::Hit3D;
+
+    const NAME: &str = "examples/puzzle3d/primitive_meshes.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("PrimitiveMeshesDemo")?;
+    let app = PrimitiveMeshesDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other) = (renderer()?, renderer()?);
+    let check_hit = |name, hit: Hit3D, id: &str| -> TestResult<Hit3D> {
+        assert!(hit.valid, "{name}");
+        assert_eq!(hit.object_id, id, "{name}");
+        assert_eq!(dynamic.get(name)?, Value::Hit3D(hit.clone()), "{name}");
+        Ok(hit)
+    };
+    let near = |actual: f64, expected: f64| {
+        assert!((actual - expected).abs() < 1e-3, "{actual} != {expected}");
+    };
+    {
+        let app = weak.upgrade().ok_or("missing primitives demo")?;
+        let rectangle = check_hit("rectangle-hit", app.get_rectangle_hit(), "rectangle")?;
+        near(rectangle.position.z, 0.30);
+        near(rectangle.u, 0.5);
+        near(rectangle.v, 0.5);
+        let side = check_hit("cylinder-hit", app.get_cylinder_hit(), "cylinder")?;
+        near(side.position.z, 0.98);
+        let cap = check_hit("cap-hit", app.get_cap_hit(), "cylinder")?;
+        near(cap.position.y, 1.27);
+        near(cap.normal.y, 1.0);
+        near(cap.u, 0.5);
+        near(cap.v, 0.5);
+        let cone = check_hit("cone-hit", app.get_cone_hit(), "cone")?;
+        near(cone.position.z, 0.22 + 0.98 * (1.0 - 1.14 / 2.43));
+        let sweep = check_hit("sweep", app.get_sweep(), "cylinder")?;
+        near(sweep.distance, 0.13);
+        for (name, shape, hit) in [
+            ("inside-cylinder", "cylinder", app.get_inside_cylinder()),
+            ("inside-cone", "cone", app.get_inside_cone()),
+        ] {
+            near(check_hit(name, hit, shape)?.distance, 0.0);
+        }
+        near(
+            check_hit("sweep-rectangle", app.get_sweep_rectangle(), "rectangle")?.distance,
+            1.0,
+        );
+    }
+    let mirrored = |aot: &mut PreviewScene,
+                    interpreted: &mut PreviewScene,
+                    gpu: &mut Renderer,
+                    other: &mut Renderer|
+     -> TestResult<Vec<u8>> {
+        let png = aot.render(gpu)?.to_vec();
+        assert_eq!(png, interpreted.render(other)?);
+        Ok(xrack_assets::decode_png(&png)?.rgba[..650 * 328 * 4].to_vec())
+    };
+    let first = mirrored(&mut aot, &mut interpreted, &mut gpu, &mut other)?;
+    let mesh_uploads = gpu.scene_mesh_uploads();
+    let instance_uploads = gpu.scene_instance_uploads();
+    let shadow_passes = gpu.scene_shadow_passes();
+    weak.upgrade()
+        .ok_or("missing primitives demo")?
+        .set_warm_cap(false);
+    dynamic.set("warm-cap", Value::Bool(false))?;
+    let recolored = mirrored(&mut aot, &mut interpreted, &mut gpu, &mut other)?;
+    assert_ne!(first, recolored);
+    assert_eq!(
+        [
+            gpu.scene_mesh_uploads(),
+            gpu.scene_instance_uploads(),
+            gpu.scene_shadow_passes()
+        ],
+        [mesh_uploads, instance_uploads, shadow_passes]
+    );
+
+    let mut app = weak.upgrade().ok_or("missing primitives demo")?;
+    app.set_cutout(true);
+    dynamic.set("cutout", Value::Bool(true))?;
+    check_hit("rectangle-hit", app.get_rectangle_hit(), "wall")?;
+    near(
+        check_hit("sweep-rectangle", app.get_sweep_rectangle(), "rectangle")?.distance,
+        1.0,
+    );
+    let masked = mirrored(&mut aot, &mut interpreted, &mut gpu, &mut other)?;
+    assert_ne!(masked, recolored);
+
+    let before = gpu.scene_draw_stats();
+    app.set_particles(true);
+    dynamic.set("particles", Value::Bool(true))?;
+    let particles = mirrored(&mut aot, &mut interpreted, &mut gpu, &mut other)?;
+    assert_ne!(particles, masked);
+    let after = gpu.scene_draw_stats();
+    assert_eq!(
+        after.particle_model_instances - before.particle_model_instances,
+        24
+    );
+    assert!(after.particle_model_draws > before.particle_model_draws);
+    assert!(after.particle_mesh_uploads > before.particle_mesh_uploads);
+    assert_eq!(gpu.scene_mesh_uploads(), mesh_uploads);
+    Ok(())
+}
+
+#[test]
+fn source_material_slots_isolate_color_and_picking_in_both_backends() -> TestResult {
+    use material_slots_ui::MaterialSlotsDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_slots.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MaterialSlotsDemo")?;
+    let app = MaterialSlotsDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    struct Frame {
+        patches: [Vec<[u8; 4]>; 3],
+        picked: String,
+        uploads: [u64; 3],
+    }
+    let mut render = |target: &str, warm, cutout, accent, implicit| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing material slot demo")?;
+        app.set_target(target.into());
+        app.set_warm(warm);
+        app.set_cutout(cutout);
+        app.set_accent(accent);
+        app.set_implicit_style(implicit);
+        for (name, value) in [
+            ("target", Value::String(target.into())),
+            ("warm", Value::Bool(warm)),
+            ("cutout", Value::Bool(cutout)),
+            ("accent", Value::Bool(accent)),
+            ("implicit-style", Value::Bool(implicit)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert_eq!(png, interpreted.render(&mut preview_gpu)?);
+        let picked = app.get_body_hit();
+        assert_eq!(dynamic.get("body-hit")?, Value::String(picked.clone()));
+        let (view, _) = inspect(&aot)?;
+        let Some(Value::SceneObjects(scene)) = view.properties.get("model") else {
+            return Err("missing slot scene".into());
+        };
+        let surface = scene
+            .iter()
+            .find(|object| object.id == "model")
+            .ok_or("missing glTF surface")?;
+        let slots = surface.mesh.material_slots();
+        assert_eq!(
+            slots
+                .iter()
+                .map(|slot| slot.source_index)
+                .collect::<Vec<_>>(),
+            [Some(2), Some(0), None]
+        );
+        assert_eq!(slots[0].name.as_deref(), Some("Body finish"));
+        assert_eq!(slots[1].name.as_deref(), Some("Trim"));
+
+        let raster = xrack_assets::decode_png(&png)?;
+        let pixels = raster.rgba.as_chunks::<4>().0;
+        let patches = [183, 317, 451].map(|x| {
+            (145..179)
+                .flat_map(|y| pixels[y * 634 + x - 17..y * 634 + x + 17].iter().copied())
+                .collect()
+        });
+        Ok(Frame {
+            patches,
+            picked,
+            uploads: [
+                gpu.scene_mesh_uploads(),
+                gpu.scene_instance_uploads(),
+                gpu.scene_shadow_passes(),
+            ],
+        })
+    };
+
+    let warm = render("Body finish", true, false, true, true)?;
+    let cool = render("Body finish", false, false, true, true)?;
+    assert_ne!(warm.patches[0], cool.patches[0]);
+    assert_eq!(warm.patches[1..], cool.patches[1..]);
+    assert_eq!(warm.uploads, cool.uploads);
+    assert_eq!(cool.picked, "model");
+
+    let by_index = render("#2", false, false, true, true)?;
+    assert_eq!(cool.patches, by_index.patches);
+    assert_eq!(cool.uploads, by_index.uploads);
+    let unused = render("#1", false, false, true, true)?;
+    assert_ne!(unused.patches[0], by_index.patches[0]);
+    assert_eq!(unused.patches[1..], by_index.patches[1..]);
+
+    let trim = render("#2", false, false, false, true)?;
+    assert_ne!(trim.patches[1], by_index.patches[1]);
+    assert_eq!(trim.patches[0], by_index.patches[0]);
+    assert_eq!(trim.patches[2], by_index.patches[2]);
+    let unstyled_default = render("#2", false, false, true, false)?;
+    assert_ne!(unstyled_default.patches[2], by_index.patches[2]);
+    assert_eq!(unstyled_default.patches[..2], by_index.patches[..2]);
+
+    let mask = render("#2", false, true, true, true)?;
+    assert_eq!(mask.picked, "wall");
+    assert_ne!(mask.patches[0], by_index.patches[0]);
+    assert_eq!(mask.patches[1..], by_index.patches[1..]);
+    assert_eq!(mask.uploads[..2], by_index.uploads[..2]);
+    assert!(mask.uploads[2] > by_index.uploads[2]);
+    Ok(())
+}
+
+#[test]
+fn authored_textures_share_mips_geometry_and_alpha_picking_in_both_backends() -> TestResult {
+    use authored_texture_ui::AuthoredTextureDemo;
+    use xrack_runtime::scene3d::TextureColorSpace;
+
+    const NAME: &str = "examples/puzzle3d/authored_texture.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("AuthoredTextureDemo")?;
+    let app = AuthoredTextureDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    struct Frame {
+        pixels: xrack_assets::Raster,
+        picked: String,
+        gpu: [u64; 4],
+    }
+    let mut draw = |repeat, rotation, bump, cutout, imported, wrap: &str| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing authored texture demo")?;
+        app.set_repeat(repeat);
+        app.set_rotation(rotation);
+        app.set_bump(bump);
+        app.set_cutout(cutout);
+        app.set_imported(imported);
+        app.set_wrap(wrap.into());
+        for (name, value) in [
+            ("repeat", Value::Float(repeat)),
+            ("rotation", Value::Float(rotation)),
+            ("bump", Value::Bool(bump)),
+            ("cutout", Value::Bool(cutout)),
+            ("imported", Value::Bool(imported)),
+            ("wrap", Value::String(wrap.into())),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert_eq!(png, interpreted.render(&mut preview_gpu)?);
+        let picked = app.get_picked();
+        assert_eq!(dynamic.get("picked")?, Value::String(picked.clone()));
+        let (view, _) = inspect(&aot)?;
+        let Some(Value::SceneObjects(scene)) = view.properties.get("model") else {
+            return Err("missing texture scene".into());
+        };
+        let panel = scene
+            .iter()
+            .find(|object| object.id == "panel")
+            .ok_or("missing panel")?;
+        let texture = panel.mesh.materials()[0]
+            .base_texture
+            .as_ref()
+            .ok_or("missing color map")?;
+        assert!(
+            TextureColorSpace::ALL
+                .iter()
+                .all(|&color| texture.image.prepared_mips(color).is_some())
+        );
+        Ok(Frame {
+            pixels: xrack_assets::decode_png(&png)?,
+            picked,
+            gpu: [
+                gpu.scene_mesh_uploads(),
+                gpu.scene_instance_uploads(),
+                gpu.scene_draw_stats().material_mip_levels_uploaded,
+                gpu.scene_shadow_passes(),
+            ],
+        })
+    };
+    let patch = |frame: &Frame, xs: std::ops::Range<usize>| {
+        frame
+            .pixels
+            .rgba
+            .chunks_exact(644 * 4)
+            .skip(82)
+            .take(141)
+            .flat_map(|row| row[4 * xs.start..4 * xs.end].iter().copied())
+            .collect::<Vec<_>>()
+    };
+    let initial = draw(1.5, 0.0, true, false, false, "repeat")?;
+    assert_eq!(initial.picked, "panel");
+    assert!(initial.gpu[2] > 0);
+    let tiled = draw(3.8, 33.0, true, false, false, "mirror")?;
+    assert_ne!(patch(&initial, 145..285), patch(&tiled, 145..285));
+    assert_eq!(
+        tiled.gpu, initial.gpu,
+        "UV changes reuse geometry, instances, textures and opaque shadows"
+    );
+    let flat = draw(3.8, 33.0, false, false, false, "mirror")?;
+    assert_ne!(patch(&tiled, 359..500), patch(&flat, 359..500));
+    assert_eq!(flat.gpu, initial.gpu);
+
+    let hole = draw(1.5, 0.0, true, true, false, "repeat")?;
+    assert_eq!(hole.picked, "backdrop");
+    assert_ne!(patch(&hole, 145..285), patch(&initial, 145..285));
+    assert!(hole.gpu[2] > initial.gpu[2] && hole.gpu[3] > initial.gpu[3]);
+    assert_eq!(hole.gpu[0], initial.gpu[0]);
+    let gltf = draw(1.5, 0.0, true, false, true, "repeat")?;
+    assert_ne!(patch(&gltf, 359..500), patch(&initial, 359..500));
+    let gltf_flat = draw(1.5, 0.0, false, false, true, "repeat")?;
+    assert_ne!(patch(&gltf, 359..500), patch(&gltf_flat, 359..500));
+    assert_eq!(
+        gltf.gpu, gltf_flat.gpu,
+        "the normal map never creates new imported vertex buffers"
+    );
+    Ok(())
+}
+
+#[test]
+fn authored_pbr_materials_share_geometry_and_match_the_interpreter() -> TestResult {
+    use authored_material_ui::AuthoredMaterialDemo;
+    use xrack_renderer_femtovg::SceneDrawStats;
+
+    const NAME: &str = "examples/puzzle3d/authored_material.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("AuthoredMaterialDemo")?;
+    let app = AuthoredMaterialDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    struct Frame {
+        viewport: Vec<u8>,
+        picked: String,
+        uploads: [u64; 3],
+        draw: SceneDrawStats,
+        atlas: Mesh3D,
+    }
+    let mut draw =
+        |roughness: f64, metalness: f64, mode: &str, enabled: bool| -> TestResult<Frame> {
+            let mut app = weak.upgrade().ok_or("missing material demo")?;
+            app.set_roughness(roughness);
+            app.set_metalness(metalness);
+            app.set_mode(mode.into());
+            app.set_style_import(enabled);
+            for (key, value) in [
+                ("roughness", Value::Float(roughness)),
+                ("metalness", Value::Float(metalness)),
+                ("mode", Value::String(mode.into())),
+                ("style-import", Value::Bool(enabled)),
+            ] {
+                dynamic.set(key, value)?;
+            }
+            let png = aot.render(&mut gpu)?.to_vec();
+            assert_eq!(png, interpreted.render(&mut preview_gpu)?);
+            let picked = app.get_picked().to_string();
+            assert_eq!(dynamic.get("picked")?, Value::String(picked.clone()));
+            let (viewport, _) = inspect(&aot)?;
+            let Some(Value::SceneObjects(model)) = viewport.properties.get("model") else {
+                return Err("missing material scene".into());
+            };
+            let atlas = model
+                .iter()
+                .find(|object| {
+                    object.id == "atlas"
+                        && object
+                            .mesh
+                            .materials()
+                            .iter()
+                            .any(|material| material.base_texture.is_some())
+                })
+                .ok_or("atlas lost its original texture")?
+                .mesh
+                .clone();
+            let raster = xrack_assets::decode_png(&png)?;
+            Ok(Frame {
+                viewport: raster.rgba[..646 * 322 * 4].to_vec(),
+                picked,
+                uploads: [
+                    gpu.scene_mesh_uploads(),
+                    gpu.scene_instance_uploads(),
+                    gpu.scene_shadow_passes(),
+                ],
+                draw: gpu.scene_draw_stats(),
+                atlas,
+            })
+        };
+    let atlas_area = |frame: &Frame| {
+        frame
+            .viewport
+            .chunks_exact(646 * 4)
+            .skip(90)
+            .take(130)
+            .flat_map(|row| row[360 * 4..500 * 4].iter().copied())
+            .collect::<Vec<_>>()
+    };
+    let initial = draw(0.26, 0.46, "opaque", true)?;
+    assert_eq!(initial.picked, "sample");
+    let rough = draw(0.73, 0.46, "opaque", true)?;
+    assert_ne!(rough.viewport, initial.viewport);
+    assert_eq!(
+        rough.uploads, initial.uploads,
+        "material factors keep geometry, transforms and shadows"
+    );
+    let metal = draw(0.73, 0.99, "opaque", true)?;
+    assert_ne!(metal.viewport, rough.viewport);
+    assert_eq!(metal.uploads, initial.uploads);
+
+    let disabled = draw(0.73, 0.99, "opaque", false)?;
+    assert_ne!(atlas_area(&disabled), atlas_area(&metal));
+    let (Mesh3D::Imported(styled), Mesh3D::Imported(original)) = (&metal.atlas, &disabled.atlas)
+    else {
+        return Err("missing imported atlas data".into());
+    };
+    assert!(std::sync::Arc::ptr_eq(
+        styled.geometry(),
+        original.geometry()
+    ));
+    assert_eq!(metal.uploads, disabled.uploads);
+    for (styled, original) in metal
+        .atlas
+        .materials()
+        .iter()
+        .zip(disabled.atlas.materials())
+    {
+        if let Some((a, b)) = styled
+            .base_texture
+            .as_ref()
+            .zip(original.base_texture.as_ref())
+        {
+            assert!(std::sync::Arc::ptr_eq(&a.image, &b.image));
+        }
+    }
+
+    let cutout = draw(0.26, 0.46, "mask", true)?;
+    assert_ne!(cutout.viewport, initial.viewport);
+    assert_eq!(cutout.picked, "wall");
+    let blend = draw(0.26, 0.46, "blend", true)?;
+    assert_ne!(blend.viewport, cutout.viewport);
+    assert_eq!(blend.picked, "sample");
+    let glass = draw(0.32, 0.46, "glass", true)?;
+    assert_ne!(glass.viewport, blend.viewport);
+    assert_eq!(glass.picked, "sample");
+    assert!(glass.draw.transmission_captures > blend.draw.transmission_captures);
+    assert_eq!(
+        glass.uploads[0], initial.uploads[0],
+        "all modes share the original geometry"
+    );
+    Ok(())
+}
+
+#[test]
+fn filtered_picks_agree_in_both_backends_and_preserve_row_identity() -> TestResult {
+    use filtered_picking_ui::FilteredPickingDemo;
+    use xrack_runtime::{Hit3D, Length, Point2D};
+
+    const NAME: &str = "examples/puzzle3d/filtered_picking.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("FilteredPickingDemo")?;
+    let mut app = FilteredPickingDemo::new();
+    let point = |x, y| Point2D::new(Length(x), Length(y));
+    let mut check = |orbit, rear_only, mask, row, candidates: &[i64], pointer| -> TestResult<_> {
+        app.set_orbit(orbit);
+        app.set_rear_only(rear_only);
+        app.set_mask(mask);
+        app.set_target_row(row);
+        app.set_candidates(candidates.to_vec());
+        app.set_pointer(pointer);
+        for (name, value) in [
+            ("orbit", Value::Bool(orbit)),
+            ("rear-only", Value::Bool(rear_only)),
+            ("mask", Value::Int(mask)),
+            ("target-row", Value::Int(row)),
+            ("candidates", Value::IntList(candidates.to_vec())),
+            ("pointer", Value::Point2D(pointer)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let hits = app.get_hits();
+        let ray_hits = app.get_ray_hits();
+        let target = app.get_target();
+        let ray_target = app.get_ray_target();
+        for (property, got) in [("hits", &hits), ("ray-hits", &ray_hits)] {
+            let Value::Hit3DList(preview_hits) = dynamic.get(property)? else {
+                return Err("filtered hits did not produce a hit list".into());
+            };
+            assert_eq!(&preview_hits.snapshot(), got, "{property}");
+        }
+        assert_eq!(dynamic.get("target")?, Value::Hit3D(target.clone()));
+        assert_eq!(dynamic.get("ray-target")?, Value::Hit3D(ray_target.clone()));
+        let rows = |hits: Vec<Hit3D>| {
+            hits.into_iter()
+                .map(|hit| hit.row_index)
+                .collect::<Vec<_>>()
+        };
+        Ok((rows(hits), target, rows(ray_hits), ray_target))
+    };
+    let center = point(269.0, 166.0);
+    for orbit in [false, true] {
+        let (hits, target, ray, ray_target) = check(orbit, true, 1, 2, &[1, 2], center)?;
+        assert_eq!(hits, [2]);
+        assert_eq!(ray, [2]);
+        assert_eq!(target.object_id, "rear");
+        assert_eq!(ray_target.object_id, "rear");
+        let (hits, target, ray, ray_target) =
+            check(orbit, false, 1, 2, &[2, 1, 2, 999, -1], center)?;
+        assert_eq!(hits, [1, 2]);
+        assert_eq!(ray, [1, 2]);
+        assert_eq!(target.row_index, 2);
+        assert_eq!(ray_target.row_index, 2);
+        let (hits, target, ray, ray_target) = check(orbit, false, 0, 2, &[1, 2], center)?;
+        assert!(hits.is_empty() && ray.is_empty() && !target.valid && !ray_target.valid);
+    }
+    let (hits, target, _, ray_target) = check(false, false, 3, 3, &[3, 3], point(408.0, 166.0))?;
+    assert_eq!(hits, [3]);
+    assert!(target.valid && target.object_id.is_empty() && !ray_target.valid);
+    let (hits, target, ray, ray_target) = check(false, false, 1, -1, &[], center)?;
+    assert!(hits.is_empty() && ray.is_empty() && !target.valid && !ray_target.valid);
+
+    // Compare generated and interpreted viewport feedback for the same pick.
+    check(false, true, 1, 2, &[1, 2], center)?;
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let mut gpu = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let image = aot.render(&mut gpu)?.to_vec();
+    assert_eq!(image, interpreted.render(&mut gpu)?);
+    Ok(())
+}
+
+#[test]
+fn marquee_selects_occluded_rows_once_and_tracks_drag_in_both_backends() -> TestResult {
+    use marquee_ui::MarqueeDemo;
+    use xrack_runtime::{Length, Point2D, PointerButton, PointerEvent};
+
+    const NAME: &str = "examples/puzzle3d/marquee.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MarqueeDemo")?;
+    let app = MarqueeDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let mut gpu = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let selected = || -> TestResult<Vec<i64>> {
+        let aot_rows = weak.upgrade().ok_or("missing marquee demo")?.get_selected();
+        let preview_rows = match dynamic.get("selected")? {
+            Value::IntModel(rows) => rows.snapshot(),
+            Value::IntList(rows) => rows,
+            _ => return Err("marquee selection was not an integer list".into()),
+        };
+        assert_eq!(aot_rows, preview_rows);
+        Ok(aot_rows)
+    };
+    let point = |x, y| Point2D::new(Length(x), Length(y));
+    let set = |named, mask, start, end| -> TestResult {
+        let mut app = weak.upgrade().ok_or("missing marquee demo")?;
+        app.set_named_camera(named);
+        app.set_mask(mask);
+        app.set_start(start);
+        app.set_end(end);
+        for (name, value) in [
+            ("named-camera", Value::Bool(named)),
+            ("mask", Value::Int(mask)),
+            ("start", Value::Point2D(start)),
+            ("end", Value::Point2D(end)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        Ok(())
+    };
+    assert!(selected()?.is_empty());
+    // A reversed rectangle clipped to the viewport covers the visible objects,
+    // including an anonymous sphere and both parts of one imported row.
+    set(true, 3, point(760.0, 400.0), point(-20.0, -20.0))?;
+    assert_eq!(selected()?, [1, 2, 3, 4]);
+    set(true, 1, point(0.0, 0.0), point(634.0, 350.0))?;
+    assert_eq!(selected()?, [1, 2, 4]);
+    set(true, 2, point(0.0, 0.0), point(634.0, 350.0))?;
+    assert_eq!(selected()?, [3]);
+    set(true, 0, point(0.0, 0.0), point(634.0, 350.0))?;
+    assert!(selected()?.is_empty());
+    set(true, 3, point(248.0, 140.0), point(248.0, 200.0))?;
+    assert!(selected()?.is_empty());
+    set(false, 3, point(228.0, 144.0), point(276.0, 212.0))?;
+    let orbit = selected()?;
+    assert!(orbit.contains(&1) && orbit.contains(&2), "{orbit:?}");
+    assert!(!orbit.contains(&3) && !orbit.contains(&5));
+
+    set(true, 3, point(312.0, 63.0), point(317.0, 68.0))?;
+    for (time, expected) in [(0.0, &[4][..]), (0.83, &[][..])] {
+        weak.upgrade().ok_or("missing marquee demo")?.set_time(time);
+        dynamic.set("time", Value::Float(time))?;
+        assert_eq!(selected()?, expected);
+    }
+    set(true, 3, point(0.0, 0.0), point(0.0, 0.0))?;
+    let initial = aot.render(&mut gpu)?.to_vec();
+    assert_eq!(initial, interpreted.render(&mut gpu)?);
+    let start = Point { x: 220.0, y: 143.0 };
+    let end = Point { x: 274.0, y: 208.0 };
+    let contact = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent {
+            button: PointerButton::Primary,
+            ..Default::default()
+        },
+    };
+    aot.press_contact(contact, start, false);
+    interpreted.press_contact(contact, start, false);
+    aot.move_contact(contact, end);
+    interpreted.move_contact(contact, end);
+    assert_eq!(selected()?, [1, 2]);
+    let dragging = aot.render(&mut gpu)?.to_vec();
+    assert_ne!(dragging, initial);
+    assert_eq!(dragging, interpreted.render(&mut gpu)?);
+    aot.finish_contact(contact, end, false, false);
+    interpreted.finish_contact(contact, end, false, false);
+    assert_eq!(selected()?, [1, 2]);
+    let finished = aot.render(&mut gpu)?.to_vec();
+    assert_ne!(finished, dragging);
+    assert_eq!(finished, interpreted.render(&mut gpu)?);
+    Ok(())
+}
+
+#[test]
+fn closest_point_queries_track_pose_target_and_layers_in_both_backends() -> TestResult {
+    use closest_surface_ui::ClosestSurfaceDemo;
+    use xrack_runtime::Hit3D;
+
+    const NAME: &str = "examples/puzzle3d/closest_surface.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ClosestSurfaceDemo")?;
+    let mut app = ClosestSurfaceDemo::new();
+    #[derive(Clone, Copy, Debug)]
+    struct Query<'a> {
+        x: f64,
+        radius: f64,
+        target: &'a str,
+        time: f64,
+        layers: i64,
+        skin: bool,
+        visible: bool,
+        pickable: bool,
+        yaw: f64,
+    }
+    let base = Query {
+        x: 0.25,
+        radius: 2.2,
+        target: "",
+        time: 0.0,
+        layers: 1,
+        skin: false,
+        visible: true,
+        pickable: true,
+        yaw: 0.0,
+    };
+    let mut query = |query: Query<'_>| -> TestResult<Hit3D> {
+        app.set_probe_x(query.x);
+        app.set_reach(query.radius);
+        app.set_target(query.target.into());
+        app.set_time(query.time);
+        app.set_layers(query.layers);
+        app.set_skin(query.skin);
+        app.set_visible_wall(query.visible);
+        app.set_pickable_wall(query.pickable);
+        app.set_wall_yaw(query.yaw);
+        for (name, value) in [
+            ("probe-x", Value::Float(query.x)),
+            ("reach", Value::Float(query.radius)),
+            ("target", Value::String(query.target.into())),
+            ("time", Value::Float(query.time)),
+            ("layers", Value::Int(query.layers)),
+            ("skin", Value::Bool(query.skin)),
+            ("visible-wall", Value::Bool(query.visible)),
+            ("pickable-wall", Value::Bool(query.pickable)),
+            ("wall-yaw", Value::Float(query.yaw)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let result = app.get_result();
+        assert_eq!(dynamic.get("result")?, Value::Hit3D(result.clone()));
+        Ok(result)
+    };
+    let near = |actual: f64, expected: f64| {
+        assert!((actual - expected).abs() < 1e-3, "{actual} != {expected}");
+    };
+    let wall = query(base)?;
+    assert!(wall.valid);
+    assert_eq!((&*wall.object_id, wall.row_index), ("wall", 1));
+    near(wall.position.x, 0.25);
+    near(wall.position.y, 0.3);
+    near(wall.position.z, 0.45);
+    near(wall.local_position.z, 0.5);
+    near(wall.distance, 1.4);
+    near(wall.normal.z, 1.0);
+
+    let tilted = query(Query { yaw: 30.0, ..base })?;
+    assert!(tilted.valid);
+    near(tilted.distance, 1.85 * 30.0_f64.to_radians().cos() - 0.45);
+    near(tilted.normal.x.abs(), 0.5);
+    near(tilted.normal.z, 30.0_f64.to_radians().cos());
+
+    for case in [
+        Query { layers: 0, ..base },
+        Query {
+            radius: 1.39,
+            ..base
+        },
+        Query {
+            radius: -1.0,
+            ..base
+        },
+        Query {
+            pickable: false,
+            radius: 1.6,
+            ..base
+        },
+        Query {
+            visible: false,
+            radius: 1.6,
+            ..base
+        },
+        Query {
+            target: "missing",
+            ..base
+        },
+        Query {
+            target: "beacon",
+            ..base
+        },
+    ] {
+        assert_eq!(query(case)?, Hit3D::default(), "{case:?}");
+    }
+
+    let beacon = query(Query {
+        target: "beacon",
+        layers: 3,
+        x: 2.7,
+        ..base
+    })?;
+    assert!(beacon.valid && beacon.object_id == "beacon" && beacon.row_index == 2);
+    near(beacon.position.z, 0.72);
+    near(beacon.distance, 1.13);
+
+    for skin in [false, true] {
+        let first = Query {
+            target: "panel",
+            x: if skin { -3.55 } else { -2.02 },
+            radius: 4.0,
+            skin,
+            ..base
+        };
+        let initial = query(first)?;
+        let moved = query(Query {
+            time: 0.83,
+            ..first
+        })?;
+        assert!(initial.valid && moved.valid && moved.object_id == "panel");
+        assert!(
+            (initial.distance - moved.distance).abs() > 0.02,
+            "initial={initial:?}, moved={moved:?}, skin={skin}"
+        );
+        assert_ne!(initial.local_position, moved.local_position);
+        assert!((0.0..=1.0).contains(&moved.u) && (0.0..=1.0).contains(&moved.v));
+        assert_eq!(query(first)?, initial);
+    }
+    Ok(())
+}
+
+#[test]
+fn model_particles_use_geometry_materials_and_depth_in_both_backends() -> TestResult {
+    use particle_models_ui::ParticleModelsDemo;
+
+    const NAME: &str = "examples/puzzle3d/particle_models.xr";
+    let text = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&text, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let interpreted = program.create("ParticleModelsDemo")?;
+    let app = ParticleModelsDemo::new();
+    let weak = app.as_weak();
+    let mut generated = PreviewScene::new(Box::new(app));
+    let mut dynamic = PreviewScene::new(Box::new(interpreted.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy)]
+    struct State {
+        time: f64,
+        imported: bool,
+        spin: bool,
+        cover: bool,
+        translucent: bool,
+        light: f64,
+    }
+    let base = State {
+        time: 0.7,
+        imported: false,
+        spin: true,
+        cover: false,
+        translucent: false,
+        light: 35.0,
+    };
+    #[derive(Debug)]
+    struct Work {
+        draws: u64,
+        models: u64,
+        sprites: u64,
+        transparency: u64,
+        mesh_uploads: u64,
+    }
+    let mut render = |state: State| -> TestResult<_> {
+        let mut app = weak.upgrade().ok_or("missing model particle demo")?;
+        app.set_time(state.time);
+        app.set_imported(state.imported);
+        app.set_spin(state.spin);
+        app.set_cover(state.cover);
+        app.set_translucent(state.translucent);
+        app.set_light_angle(state.light);
+        for (name, value) in [
+            ("time", Value::Float(state.time)),
+            ("imported", Value::Bool(state.imported)),
+            ("spin", Value::Bool(state.spin)),
+            ("cover", Value::Bool(state.cover)),
+            ("translucent", Value::Bool(state.translucent)),
+            ("light-angle", Value::Float(state.light)),
+        ] {
+            interpreted.set(name, value)?;
+        }
+        let before = gpu.scene_draw_stats();
+        let uploads = gpu.scene_mesh_uploads();
+        let png = generated.render(&mut gpu)?.to_vec();
+        assert!(png.as_slice() == dynamic.render(&mut other_gpu)?);
+        let after = gpu.scene_draw_stats();
+        Ok((
+            xrack_assets::decode_png(&png)?,
+            Work {
+                draws: after.particle_model_draws - before.particle_model_draws,
+                models: after.particle_model_instances - before.particle_model_instances,
+                sprites: after.particle_draws - before.particle_draws,
+                transparency: after.transparency_composites - before.transparency_composites,
+                mesh_uploads: gpu.scene_mesh_uploads() - uploads,
+            },
+        ))
+    };
+    let region = |image: &xrack_assets::Raster, left: bool| -> Vec<[u8; 4]> {
+        let range = if left { 166..345 } else { 346..513 };
+        (80..226)
+            .flat_map(|y| {
+                range
+                    .clone()
+                    .map(move |x| image.rgba.as_chunks::<4>().0[x + y * 670])
+            })
+            .collect()
+    };
+    let cyan = |pixels: &[[u8; 4]]| {
+        pixels
+            .iter()
+            .filter(|p| p[1] > 98 && p[2] > 130 && 2 * u16::from(p[0]) < u16::from(p[2]))
+            .count()
+    };
+    let (solid, stats) = render(base)?;
+    assert_eq!(
+        (stats.draws, stats.models, stats.sprites, stats.transparency),
+        (1, 2, 0, 0)
+    );
+    assert_eq!(
+        render(base)?.1.models,
+        0,
+        "a stationary viewport reuses its frame"
+    );
+    let left = region(&solid, true);
+    assert!(cyan(&left) > 150);
+    let stationary = render(State {
+        spin: false,
+        ..base
+    })?
+    .0;
+    assert_ne!(
+        left,
+        region(&stationary, true),
+        "particle rotation changes the model silhouette"
+    );
+    let relit = render(State {
+        light: -135.0,
+        ..base
+    })?
+    .0;
+    assert_ne!(
+        left,
+        region(&relit, true),
+        "particle normals use the viewport lighting"
+    );
+
+    let hidden = render(State {
+        cover: true,
+        ..base
+    })?
+    .0;
+    assert!(cyan(&region(&hidden, true)) < cyan(&left) / 6);
+    assert_eq!(
+        region(&solid, false),
+        region(&hidden, false),
+        "the cover only occludes the nearby particle"
+    );
+    let (faded, stats) = render(State {
+        translucent: true,
+        ..base
+    })?;
+    assert_eq!((stats.models, stats.draws, stats.transparency), (2, 2, 1));
+    assert_ne!(region(&faded, true), left);
+    assert_eq!(region(&faded, false), region(&solid, false));
+
+    let moved = render(State { time: 1.14, ..base })?.0;
+    assert_ne!(region(&moved, true), left);
+    assert_eq!(render(base)?.0.rgba, solid.rgba);
+
+    let imported = State {
+        imported: true,
+        ..base
+    };
+    let (model, stats) = render(imported)?;
+    assert!(stats.mesh_uploads > 0 && stats.draws > 0);
+    assert_ne!(region(&model, true), left);
+    let (model_later, later_stats) = render(State {
+        time: 1.16,
+        ..imported
+    })?;
+    assert_ne!(model_later.rgba, model.rgba);
+    assert_eq!(
+        later_stats.mesh_uploads, 0,
+        "animation only changes instance transforms"
+    );
+    assert_eq!(render(imported)?.0.rgba, model.rgba);
+    Ok(())
+}
+
+#[test]
+fn model_particle_shadows_and_sliced_reflections_match_in_both_backends() -> TestResult {
+    use particle_lighting_ui::ParticleLightingDemo;
+    use xrack_renderer_femtovg::SceneDrawStats;
+
+    const NAME: &str = "examples/puzzle3d/particle_lighting.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ParticleLightingDemo")?;
+    let app = ParticleLightingDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let work = |earlier: SceneDrawStats, later: SceneDrawStats| {
+        [
+            later.particle_shadow_draws - earlier.particle_shadow_draws,
+            later.particle_reflection_instances - earlier.particle_reflection_instances,
+            later.reflection_capture_faces - earlier.reflection_capture_faces,
+            later.reflection_cubemap_updates - earlier.reflection_cubemap_updates,
+        ]
+    };
+    let mut render =
+        |time: f64, cast: bool, reflect: bool, receive: bool, slicing: &str| -> TestResult<_> {
+            let mut app = weak.upgrade().ok_or("missing particle lighting demo")?;
+            app.set_time(time);
+            app.set_cast_shadow(cast);
+            app.set_cast_reflection(reflect);
+            app.set_receive_shadow(receive);
+            app.set_slicing(slicing.into());
+            for (name, value) in [
+                ("time", Value::Float(time)),
+                ("cast-shadow", Value::Bool(cast)),
+                ("cast-reflection", Value::Bool(reflect)),
+                ("receive-shadow", Value::Bool(receive)),
+                ("slicing", Value::String(slicing.into())),
+            ] {
+                dynamic.set(name, value)?;
+            }
+            let old_aot = gpu.scene_draw_stats();
+            let old_preview = preview_gpu.scene_draw_stats();
+            let png = aot.render_animated(&mut gpu)?.to_vec();
+            assert!(
+                png == interpreted.render_animated(&mut preview_gpu)?,
+                "{time} {slicing}"
+            );
+            let counters = work(old_aot, gpu.scene_draw_stats());
+            assert_eq!(counters, work(old_preview, preview_gpu.scene_draw_stats()));
+            Ok((xrack_assets::decode_png(&png)?, counters))
+        };
+    let region =
+        |image: &xrack_assets::Raster, x: std::ops::Range<usize>, y: std::ops::Range<usize>| {
+            let pixels = image.rgba.as_chunks::<4>().0;
+            y.flat_map(|row| {
+                pixels[row * 600 + x.start..row * 600 + x.end]
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>()
+        };
+    let mirror = |image: &xrack_assets::Raster| region(image, 382..471, 113..196);
+    let wall = |image: &xrack_assets::Raster| region(image, 225..350, 165..276);
+
+    let (unlit, initial) = render(0.65, false, false, false, "none")?;
+    assert_eq!(initial, [0, 0, 6, 1]);
+    let (lit, with_shadows) = render(0.65, true, false, false, "none")?;
+    assert_eq!(with_shadows, [1, 0, 0, 0]);
+    let darkened = wall(&unlit)
+        .iter()
+        .zip(wall(&lit))
+        .filter(|(before, after)| before[0] > after[0].saturating_add(20))
+        .count();
+    assert!(
+        darkened > 150,
+        "particle shadow darkened {darkened} wall pixels"
+    );
+    let (moving, updated) = render(1.2, true, false, false, "none")?;
+    assert_eq!(updated, [1, 0, 0, 0]);
+    assert!(wall(&moving) != wall(&lit));
+    assert_eq!(render(1.2, true, false, false, "none")?.1, [0, 0, 0, 0]);
+
+    let (near, reflected) = render(0.65, false, true, true, "none")?;
+    assert_eq!(
+        reflected,
+        [0, 1, 6, 1],
+        "six faces share one instance stream"
+    );
+    assert!(
+        mirror(&near) != mirror(&unlit),
+        "the particle appears in the mirror"
+    );
+    let (far, moved_reflection) = render(1.6, false, true, true, "none")?;
+    assert_eq!(moved_reflection, [0, 1, 6, 1]);
+    assert!(mirror(&near) != mirror(&far));
+
+    // The second face onward sees a newer app time. Publish all six faces
+    // from the same first sample, then converge to the newer snapshot.
+    for step in 0..24 {
+        let time = if step == 0 { 0.65 } else { 1.6 };
+        let (frame, counters) = render(time, false, true, true, "individual-faces")?;
+        let slice = step % 12;
+        let capture = u64::from(slice < 6);
+        assert_eq!(
+            counters,
+            [0, capture, capture, u64::from(slice == 11)],
+            "{step}"
+        );
+        let target = if (11..23).contains(&step) {
+            &near
+        } else {
+            &far
+        };
+        assert!(
+            mirror(&frame) == mirror(target),
+            "incoherent particle reflection at step {step}"
+        );
+    }
+    assert_eq!(
+        render(1.6, false, true, true, "individual-faces")?.1,
+        [0, 0, 0, 0]
+    );
+    Ok(())
+}
+
+#[test]
 fn sphere_walk_steps_snaps_and_respects_slope_and_headroom_in_both_backends() -> TestResult {
     use sphere_walk_ui::SphereWalkDemo;
     use xrack_runtime::scene3d::Point3D;
@@ -7989,6 +9288,8 @@ fn motion_vectors_track_gltf_skin_and_morph_poses() -> TestResult {
     combined.set_deformation(true);
     dynamic.set("automatic", Value::Bool(true))?;
     dynamic.set("deformation", Value::Bool(true))?;
+    combined.set_shadows(true);
+    dynamic.set("shadows", Value::Bool(true))?;
     let rest = draw(3, combined.render(), dynamic.render(), false, [480, 280])?;
     combined.set_time(0.65);
     dynamic.set("time", Value::Float(0.65))?;
@@ -10353,17 +11654,18 @@ fn exercise_frustum_culling(
             ],
             after.color_compaction_uploads,
             renderer.scene_instance_uploads(),
+            after,
         ))
     };
 
-    let (baseline, draws, compactions, instances) = frame(false, 0.0)?;
+    let (baseline, draws, compactions, instances, _) = frame(false, 0.0)?;
     assert_eq!(draws, [1, object_count, 0]);
-    let (culled, draws, packed, reused_instances) = frame(true, 0.0)?;
+    let (culled, draws, packed, reused_instances, _) = frame(true, 0.0)?;
     assert_eq!(culled, baseline);
     assert_eq!(draws, [1, 65, object_count - 65]);
     assert_eq!(packed, compactions + 1);
     assert_eq!(reused_instances, instances);
-    let (moved, draws, after_move, reused_instances) = frame(true, 0.05)?;
+    let (moved, draws, after_move, reused_instances, _) = frame(true, 0.05)?;
     assert_ne!(moved, culled);
     assert_eq!(draws, [1, 65, object_count - 65]);
     assert_eq!(
@@ -10371,12 +11673,119 @@ fn exercise_frustum_culling(
         "movement that keeps the same visible mask reuses the compact buffer"
     );
     assert_eq!(reused_instances, instances);
-    let (empty, draws, _, _) = frame(true, -80.0)?;
+    let (empty, draws, _, _, _) = frame(true, -80.0)?;
     assert_eq!(draws, [0, 0, object_count]);
     assert_eq!(
         scene_pixel(&xrack_assets::decode_png(&empty)?, [100, 100]),
         [8, 9, 10, 255]
     );
+    // A fragmented batch still has one draw, but its compacted buffer
+    // contains only visible rows. Check both buffers against single-row edits.
+    let (original, _, _, _, before) = frame(true, 0.0)?;
+    let render_node = || {
+        weak.upgrade()
+            .ok_or("missing AOT cull scene")
+            .map(|app| app.render())
+    };
+    let before_edit = render_node()?;
+    let tint = |index: usize, color| -> TestResult {
+        let mut row = generated_rows.row(index).ok_or("missing edited cube")?;
+        row.color = color;
+        generated_rows.set_row(index, row.clone());
+        records.model().set_row(index, record(&row));
+        Ok(())
+    };
+    tint(1, Color(0x38df8cff))?;
+    let (edited, _, _, _, tinted) = frame(true, 0.0)?;
+    let after_edit = render_node()?;
+    assert_ne!(edited, original);
+    assert_eq!(
+        tinted.instance_upload_bytes - before.instance_upload_bytes,
+        2 * 68
+    );
+    assert_eq!(
+        tinted.partial_instance_uploads - before.partial_instance_uploads,
+        2
+    );
+    assert_eq!(
+        tinted.instance_buffer_allocations,
+        before.instance_buffer_allocations
+    );
+
+    tint(2, Color(0x9ab1ffff))?;
+    let (hidden_edit, _, _, _, hidden) = frame(true, 0.0)?;
+    assert_eq!(hidden_edit, edited);
+    assert_eq!(
+        hidden.instance_upload_bytes - tinted.instance_upload_bytes,
+        68
+    );
+    assert_eq!(
+        hidden.partial_instance_uploads - tinted.partial_instance_uploads,
+        1
+    );
+    assert_eq!(
+        hidden.instance_buffer_allocations,
+        tinted.instance_buffer_allocations
+    );
+
+    for index in 1..=300 {
+        tint(index, Color(0x5568fcff))?;
+    }
+    let (_, _, _, _, dense) = frame(true, 0.0)?;
+    assert_eq!(
+        dense.instance_buffer_allocations - hidden.instance_buffer_allocations,
+        2
+    );
+    assert_eq!(
+        dense.partial_instance_uploads,
+        hidden.partial_instance_uploads
+    );
+    assert_eq!(
+        dense.instance_upload_bytes - hidden.instance_upload_bytes,
+        (object_count + 65) * 68
+    );
+
+    // wgpu queue writes run before the whole submission. Two views of
+    // different model snapshots in that submission must keep separate data.
+    let mut guarded = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let input = xrack_layout::Interaction::default();
+    let old = guarded.snapshot(&before_edit, 200, 200, 1.0, &input)?;
+    let changed = renderer.snapshot(&after_edit, 200, 200, 1.0, &input)?;
+    assert_ne!(old.rgba, changed.rgba);
+    let mut paired = Node::new("Window", None);
+    let view_of = |root: &Node| {
+        root.children
+            .iter()
+            .find(|node| node.kind == "SceneView3D")
+            .cloned()
+    };
+    paired
+        .children
+        .push(view_of(&before_edit).ok_or("missing original viewport")?);
+    let mut right = view_of(&after_edit).ok_or("missing edited viewport")?;
+    right
+        .properties
+        .insert("x", Value::Length(xrack_runtime::Length(200.0)));
+    paired.children.push(right);
+    let before = guarded.scene_draw_stats();
+    let combined = guarded.snapshot(&paired, 400, 200, 1.0, &input)?;
+    let after = guarded.scene_draw_stats();
+    assert_eq!(
+        after.partial_instance_uploads,
+        before.partial_instance_uploads
+    );
+    assert_eq!(
+        after.instance_buffer_allocations - before.instance_buffer_allocations,
+        2
+    );
+    for (y, row) in combined.rgba.chunks_exact(400 * 4).enumerate() {
+        let source = y * 200 * 4..(y + 1) * 200 * 4;
+        assert_eq!(&row[..200 * 4], &old.rgba[source.clone()]);
+        assert_eq!(&row[200 * 4..], &changed.rgba[source]);
+    }
     Ok(())
 }
 
@@ -10750,6 +12159,44 @@ fn exercise_lod(renderer: &mut Renderer) -> TestResult {
         let image = aot.render(renderer)?.to_vec();
         let after = renderer.scene_draw_stats();
         assert_eq!(image.as_slice(), interpreted.render(renderer)?);
+        if full_detail {
+            let (viewport, _) = inspect(&aot)?;
+            let Some(Value::SceneObjects(objects)) = viewport.properties.get("model") else {
+                return Err("missing deformed LOD models".into());
+            };
+            let mesh = &objects
+                .iter()
+                .find(|object| object.id == "target")
+                .ok_or("missing deformed LOD target")?
+                .mesh;
+            let direct_bytes = (mesh.vertices().len() * xrack_runtime::scene3d::MeshVertex::STRIDE
+                + size_of_val(mesh.tangents())
+                + mesh.influences().map_or(0, size_of_val)
+                + mesh
+                    .morph_geometry()
+                    .map_or(0, |morph| morph.packed_words().count() * size_of::<u32>()))
+                as u64;
+            let uploaded = after.mesh_vertex_bytes_uploaded - before.mesh_vertex_bytes_uploaded
+                + after.mesh_index_bytes_uploaded
+                - before.mesh_index_bytes_uploaded
+                + after.mesh_deformation_bytes_uploaded
+                - before.mesh_deformation_bytes_uploaded;
+            assert_eq!(after.indexed_mesh_uploads - before.indexed_mesh_uploads, 1);
+            assert!(
+                uploaded > 0 && uploaded * 2 < direct_bytes,
+                "{uploaded} vs {direct_bytes}"
+            );
+            eprintln!(
+                "Imported LOD GPU geometry (morph only={morph_only}): {uploaded} bytes indexed vs {direct_bytes} bytes expanded"
+            );
+        } else if time == 0.0 {
+            assert_eq!(after.indexed_mesh_uploads - before.indexed_mesh_uploads, 1);
+        } else {
+            assert_eq!(
+                after.mesh_deformation_bytes_uploaded,
+                before.mesh_deformation_bytes_uploaded
+            );
+        }
         Ok((
             hit,
             primary,
@@ -10910,8 +12357,9 @@ fn typed_scene_lights_require_their_fields() -> TestResult {
 
 #[test]
 fn typed_scene_requires_the_same_fields_for_drawing_and_picking() -> TestResult {
+    let schema = "id: string, x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float, color: color";
     let body = r#"
-        struct Bad { id: string }
+        struct Bad { SCHEMA }
         export component Test inherits Window {
             property <[Bad]> room: [];
             BODY
@@ -10921,7 +12369,7 @@ fn typed_scene_requires_the_same_fields_for_drawing_and_picking() -> TestResult 
         "SceneView3D { model: root.room; }",
         "out property <string> hit: Scene3D.pick(root.room, 0, 0, 8, Point2D.new(200px, 200px), Point2D.new(100px, 100px));",
     ] {
-        let source = body.replace("BODY", use_site);
+        let source = body.replace("SCHEMA", schema).replace("BODY", use_site);
         let error = xrack_compiler::compile(&source, "bad_scene_model.xr")
             .err()
             .expect("invalid model should produce a diagnostic");
@@ -10932,10 +12380,9 @@ fn typed_scene_requires_the_same_fields_for_drawing_and_picking() -> TestResult 
             "{error}"
         );
     }
-    let complete = body.replace(
-        "id: string",
-        "id: string, mesh: string, x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float, color: color, parent: bool",
-    ).replace("BODY", "SceneView3D { model: root.room; }");
+    let complete = body
+        .replace("SCHEMA", &format!("{schema}, mesh: string, parent: bool"))
+        .replace("BODY", "SceneView3D { model: root.room; }");
     let invalid_parent = xrack_compiler::compile(&complete, "bad_scene_parent.xr")
         .err()
         .ok_or("accepted a non-string scene parent")?;
@@ -10955,7 +12402,11 @@ fn typed_scene_requires_the_same_fields_for_drawing_and_picking() -> TestResult 
     let error = xrack_interpreter::load_mlir(&invalid)
         .err()
         .ok_or("invalid raw scene model was accepted")?;
-    assert!(error.to_string().contains("field named mesh"), "{error}");
+    let error = error.to_string();
+    assert!(
+        error.contains("mesh") && error.contains("geometry record"),
+        "{error}"
+    );
     Ok(())
 }
 
@@ -11039,10 +12490,17 @@ fn rigid_bvh_respects_masking_and_coplanar_draw_order() -> TestResult {
         let materials =
             [MeshAlphaMode::Mask(0.5), MeshAlphaMode::Blend, layer_mode].map(|alpha_mode| {
                 MeshMaterial {
+                    shader: None,
+                    channels: Default::default(),
+                    vertex_colors: true,
+                    vertex_masks: Default::default(),
+                    cull_mode: Default::default(),
+                    depth_draw_mode: Default::default(),
+                    blend_mode: Default::default(),
                     base_color: [1.0; 4],
                     alpha_mode,
-                    double_sided: false,
                     base_texture: None,
+                    base_item: None,
                     pbr: None,
                 }
             });
@@ -11106,10 +12564,17 @@ fn all_hits_keep_the_same_coplanar_priority_as_single_picking() -> TestResult {
                 volume_inverse: None,
             }],
             vec![MeshMaterial {
+                shader: None,
+                channels: Default::default(),
+                vertex_colors: true,
+                vertex_masks: Default::default(),
+                cull_mode: Default::default(),
+                depth_draw_mode: Default::default(),
+                blend_mode: Default::default(),
                 base_color: [1.0; 4],
                 alpha_mode,
-                double_sided: false,
                 base_texture: None,
+                base_item: None,
                 pbr: None,
             }],
         )?;
@@ -11215,5 +12680,6948 @@ fn raycast_reports_world_distance_and_respects_the_rotated_mesh() -> TestResult 
 
     let corner = Ray3D::new([0.85, 0.85, 3.0], [0.0, 0.0, -1.0]).ok_or("valid ray")?;
     assert!(raycast(&opened_room, corner, 10.0).is_none());
+    Ok(())
+}
+
+#[test]
+fn gltf_material_variants_keep_rendering_and_picking_in_sync() -> TestResult {
+    use material_variants_ui::MaterialVariantsDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_variants.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MaterialVariantsDemo")?;
+    let app = MaterialVariantsDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreter = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    struct Frame {
+        pixels: [[u8; 4]; 3],
+        pick: String,
+        counters: [u64; 3],
+    }
+    let mut render = |variant: &str, recolor: bool| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing material variant demo")?;
+        app.set_variant(variant.into());
+        app.set_recolor(recolor);
+        dynamic.set("variant", Value::String(variant.into()))?;
+        dynamic.set("recolor", Value::Bool(recolor))?;
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert_eq!(png, interpreter.render(&mut preview_gpu)?, "{variant}");
+        let pick = app.get_shell_hit();
+        assert_eq!(dynamic.get("shell-hit")?, Value::String(pick.clone()));
+        let counters = |renderer: &Renderer| {
+            [
+                renderer.scene_mesh_uploads(),
+                renderer.scene_instance_uploads(),
+                renderer.scene_shadow_passes(),
+            ]
+        };
+        assert_eq!(counters(&gpu), counters(&preview_gpu));
+        let raster = xrack_assets::decode_png(&png)?;
+        let pixels = raster.rgba.as_chunks::<4>().0;
+        Ok(Frame {
+            pixels: [183, 317, 451].map(|x| pixels[162 * 634 + x]),
+            pick,
+            counters: counters(&gpu),
+        })
+    };
+
+    let default = render("", false)?;
+    assert_eq!(default.pick, "model");
+    assert!(default.counters[2] > 0);
+    for selector in ["unknown", "Unmapped", "#4", "#100"] {
+        assert_eq!(
+            render(selector, false)?.pixels,
+            default.pixels,
+            "{selector}"
+        );
+    }
+    let copper = render("Copper", false)?;
+    assert_ne!(copper.pixels[0], default.pixels[0]);
+    assert_eq!(copper.pixels[1..], default.pixels[1..]);
+    assert_eq!(copper.counters, default.counters);
+    assert_eq!(render("#0", false)?.pixels, copper.pixels);
+
+    let recolored = render("#0", true)?;
+    assert_ne!(recolored.pixels[0], copper.pixels[0]);
+    assert_eq!(recolored.pixels[1..], copper.pixels[1..]);
+    assert_eq!(recolored.counters, copper.counters);
+
+    let cutout = render("Cutout", false)?;
+    assert_eq!(cutout.pick, "wall");
+    assert_eq!(cutout.pixels[1..], copper.pixels[1..]);
+    assert_eq!(cutout.counters[..2], copper.counters[..2]);
+    assert!(cutout.counters[2] > copper.counters[2]);
+
+    let uv0 = render("UV0", false)?;
+    let uv1 = render("UV1", false)?;
+    assert_eq!(uv0.pick, "model");
+    assert_eq!(uv1.pick, "model");
+    assert!(uv0.pixels[0][1] > uv0.pixels[0][2]);
+    assert!(uv1.pixels[0][2] > uv1.pixels[0][1]);
+    assert_eq!(uv0.pixels[1..], uv1.pixels[1..]);
+    assert_eq!(
+        uv0.counters[0], cutout.counters[0],
+        "the source mesh retains TEXCOORD_0"
+    );
+    assert_eq!(
+        uv1.counters[0],
+        uv0.counters[0] + 1,
+        "a different base UV slot uses its own stream"
+    );
+    assert_eq!(render("UV0", false)?.counters[0], uv1.counters[0]);
+    Ok(())
+}
+
+#[test]
+fn gltf_gpu_instancing_shares_meshes_and_keeps_animation_picking_and_culling_in_sync() -> TestResult
+{
+    use gpu_instancing_ui::GpuInstancingDemo;
+
+    const NAME: &str = "examples/puzzle3d/gpu_instancing.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("GpuInstancingDemo")?;
+    let generated = GpuInstancingDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut render = |time, blue| -> TestResult<_> {
+        let mut app = weak.upgrade().ok_or("missing GPU instancing demo")?;
+        app.set_time(time);
+        app.set_blue(blue);
+        dynamic.set("time", Value::Float(time))?;
+        dynamic.set("blue", Value::Bool(blue))?;
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        let after = gpu.scene_draw_stats();
+        assert_eq!(png.as_slice(), interpreted.render(&mut preview_gpu)?);
+        let expected = if time == 0.0 { "triangles" } else { "" };
+        assert_eq!(app.get_left_hit(), expected);
+        assert_eq!(dynamic.get("left-hit")?, Value::String(expected.into()));
+        let [node, instance] = if time == 0.0 { [1, 0] } else { [-1, -1] };
+        assert_eq!(app.get_left_node(), node);
+        assert_eq!(app.get_left_instance(), instance);
+        assert_eq!(dynamic.get("left-node")?, Value::Int(node));
+        assert_eq!(dynamic.get("left-instance")?, Value::Int(instance));
+        assert!(
+            app.get_base_hit().is_empty(),
+            "the source mesh has no extra draw"
+        );
+        assert_eq!(dynamic.get("base-hit")?, Value::String(String::new()));
+        let (view, _) = inspect(&aot)?;
+        let Some(Value::SceneObjects(model)) = view.properties.get("model") else {
+            return Err("missing instanced model".into());
+        };
+        assert_eq!(model.len(), 33);
+        assert_eq!(model[0].imported_placement(), Some((1, Some(0))));
+        assert_eq!(model[31].imported_placement(), Some((1, Some(31))));
+        assert_eq!(model[32].imported_placement(), Some((2, None)));
+        let position = |index: usize| model[index].transform_rows().map(|row| row[3]);
+        assert_eq!(position(0), [-2.0 + time as f32, 0.0, 0.0]);
+        assert_eq!(position(32), [1.0 + time as f32, 1.0, 0.0]);
+        let rot = model[1].transform_rows();
+        assert!(rot[0][0].abs() < 0.001 && (rot[0][1] + 2.0).abs() < 0.001);
+        assert_eq!(
+            model[3].transform_rows()[1][1],
+            2.0,
+            "sparse instance scale"
+        );
+        let (Mesh3D::Imported(first), Mesh3D::Imported(next)) = (&model[0].mesh, &model[1].mesh)
+        else {
+            return Err("missing imported triangle mesh".into());
+        };
+        assert!(
+            std::sync::Arc::ptr_eq(first, next),
+            "instances share the styled mesh"
+        );
+        assert_eq!(model[0].mesh.vertices().len(), 3);
+
+        let draws = after.color_draws - before.color_draws;
+        assert!(
+            (1..=2).contains(&draws),
+            "shared mesh batched into {draws} draws"
+        );
+        assert_eq!(after.color_instances - before.color_instances, 4);
+        assert_eq!(after.culled_instances - before.culled_instances, 29);
+        Ok((png, gpu.scene_mesh_uploads()))
+    };
+
+    let (original, uploads) = render(0.0, false)?;
+    let (moved, moved_uploads) = render(1.0, false)?;
+    assert_ne!(original, moved);
+    assert_eq!(uploads, moved_uploads);
+    let (blue, blue_uploads) = render(1.0, true)?;
+    assert_ne!(moved, blue);
+    assert_eq!(moved_uploads, blue_uploads);
+    Ok(())
+}
+
+#[test]
+fn authored_instance_tables_share_the_prototype_and_keep_row_identity() -> TestResult {
+    use instance_table_ui::InstanceTableDemo;
+    use xrack_runtime::Color;
+
+    const NAME: &str = "examples/puzzle3d/instance_table.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("InstanceTableDemo")?;
+    let generated = InstanceTableDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy)]
+    struct Frame {
+        shift: f64,
+        color: Color,
+        pickable: bool,
+        far: bool,
+        imported: bool,
+        phase: f64,
+    }
+    let original = Frame {
+        shift: 0.0,
+        color: Color(0xed9768ff),
+        pickable: true,
+        far: false,
+        imported: false,
+        phase: 0.0,
+    };
+    let mut render = |frame: Frame| -> TestResult<_> {
+        let mut app = weak.upgrade().ok_or("missing authored instance demo")?;
+        app.set_shift(frame.shift);
+        app.set_left_color(frame.color);
+        app.set_left_pickable(frame.pickable);
+        app.set_far(frame.far);
+        app.set_imported(frame.imported);
+        app.set_phase(frame.phase);
+        for (property, value) in [
+            ("shift", Value::Float(frame.shift)),
+            ("left-color", Value::Color(frame.color)),
+            ("left-pickable", Value::Bool(frame.pickable)),
+            ("far", Value::Bool(frame.far)),
+            ("imported", Value::Bool(frame.imported)),
+            ("phase", Value::Float(frame.phase)),
+        ] {
+            dynamic.set(property, value)?;
+        }
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        let after = gpu.scene_draw_stats();
+        assert_eq!(png.as_slice(), interpreted.render(&mut preview_gpu)?);
+        let hit = app.get_left_hit();
+        assert_eq!(Value::Hit3D(hit.clone()), dynamic.get("left-hit")?);
+
+        let (view, _) = inspect(&aot)?;
+        let Some(Value::SceneObjects(model)) = view.properties.get("model") else {
+            return Err("missing projected instance table".into());
+        };
+        let stride = if frame.imported { 33 } else { 1 };
+        assert_eq!(model.len(), 3 * stride);
+        assert_eq!(model[0].id, "left");
+        assert_eq!(model[stride].id, "right");
+        assert_eq!(model[2 * stride].id, "remote");
+        let (Mesh3D::Imported(left), Mesh3D::Imported(right)) =
+            (&model[0].mesh, &model[stride].mesh)
+        else {
+            return Err("missing shared styled mesh".into());
+        };
+        assert!(std::sync::Arc::ptr_eq(left, right));
+        assert_eq!(model[0].color, frame.color);
+        assert_eq!(model[stride].color, Color(0x74bfe9ff));
+        let left_origin = model[0].transform_rows().map(|row| row[3]);
+        assert!(
+            (left_origin[0]
+                - (-1.3
+                    + if frame.imported {
+                        -2.0 + frame.phase as f32
+                    } else {
+                        0.0
+                    }))
+            .abs()
+                < 0.001
+        );
+        assert_eq!(left_origin[1], frame.shift as f32);
+
+        if !frame.imported {
+            use xrack_runtime::{Point3D, Vector3D, scene3d::ray_hit};
+            for (id, row, x, y) in [("right", 5, 1.3, frame.shift), ("remote", 6, 60.0, 0.0)] {
+                let ray = ray_hit(
+                    model,
+                    Point3D::new(x, y, 8.0),
+                    Vector3D::new(0.0, 0.0, -1.0),
+                    16.0,
+                    None,
+                );
+                assert_eq!((&*ray.object_id, ray.row_index), (id, row));
+            }
+            assert!(app.get_center_hit().is_empty());
+            let wanted_hit = frame.pickable && frame.shift == 0.0 && !frame.far;
+            assert_eq!(hit.valid, wanted_hit);
+            if wanted_hit {
+                assert_eq!((&*hit.object_id, hit.row_index), ("left", 4));
+            }
+            let camera = model
+                .camera("eye", [640.0, 320.0])
+                .ok_or("missing named camera")?;
+            let selected = model.geometry(&camera);
+            assert_eq!(selected[0].id, "left");
+            assert_eq!(
+                selected[0].mesh.vertices().len() == model[0].mesh.vertices().len(),
+                !frame.far
+            );
+            assert_eq!(after.color_instances - before.color_instances, 2);
+            assert_eq!(after.color_draws - before.color_draws, 1);
+        }
+        Ok((png, gpu.scene_mesh_uploads()))
+    };
+
+    let (base, uploads) = render(original)?;
+    let (tinted, after_color) = render(Frame {
+        color: Color(0xade076ff),
+        ..original
+    })?;
+    assert_ne!(base, tinted);
+    assert_eq!(uploads, after_color);
+    let (moved, after_move) = render(Frame {
+        shift: 1.0,
+        ..original
+    })?;
+    assert_ne!(base, moved);
+    assert_eq!(uploads, after_move);
+    let (unpickable, after_pick) = render(Frame {
+        pickable: false,
+        ..original
+    })?;
+    assert_eq!(base, unpickable);
+    assert_eq!(uploads, after_pick);
+    render(Frame {
+        far: true,
+        ..original
+    })?;
+    let (rig, rig_uploads) = render(Frame {
+        imported: true,
+        ..original
+    })?;
+    let (animated, animated_uploads) = render(Frame {
+        imported: true,
+        phase: 1.0,
+        ..original
+    })?;
+    assert_ne!(rig, animated);
+    assert_eq!(rig_uploads, animated_uploads);
+    Ok(())
+}
+
+#[test]
+fn picking_preserves_and_requeries_distinct_gltf_instance_addresses() -> TestResult {
+    use instance_picking_ui::InstancePickingDemo;
+    use xrack_runtime::{Hit3D, Point2D};
+
+    const NAME: &str = "examples/puzzle3d/instance_picking.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("InstancePickingDemo")?;
+    let generated = InstancePickingDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    #[derive(Clone, Copy)]
+    struct State {
+        address: [i64; 3],
+        mask: i64,
+        near: f64,
+        covered: bool,
+        pickable: bool,
+        x: f64,
+    }
+    let default = State {
+        address: [1, 2, 1],
+        mask: 3,
+        near: 0.1,
+        covered: false,
+        pickable: true,
+        x: 320.0,
+    };
+    let mut render = |state: State| -> TestResult<_> {
+        let mut app = weak.upgrade().ok_or("missing instance picking demo")?;
+        let [row, node, instance] = state.address;
+        let pointer = Point2D::new(xrack_runtime::Length(state.x), xrack_runtime::Length(160.0));
+        app.set_target_row(row);
+        app.set_target_node(node);
+        app.set_target_instance(instance);
+        app.set_mask(state.mask);
+        app.set_near(state.near);
+        app.set_covered(state.covered);
+        app.set_pickable(state.pickable);
+        app.set_pointer(pointer);
+        for (key, value) in [
+            ("target-row", Value::Int(row)),
+            ("target-node", Value::Int(node)),
+            ("target-instance", Value::Int(instance)),
+            ("mask", Value::Int(state.mask)),
+            ("near", Value::Float(state.near)),
+            ("covered", Value::Bool(state.covered)),
+            ("pickable", Value::Bool(state.pickable)),
+            ("pointer", Value::Point2D(pointer)),
+        ] {
+            dynamic.set(key, value)?;
+        }
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert_eq!(png, interpreted.render(&mut preview_gpu)?);
+        let lists = [app.get_hits(), app.get_ray_hits(), app.get_selected_hits()];
+        for (name, list) in ["hits", "ray-hits", "selected-hits"]
+            .into_iter()
+            .zip(&lists)
+        {
+            let Value::Hit3DList(other) = dynamic.get(name)? else {
+                return Err(format!("missing interpreted list {name}").into());
+            };
+            assert_eq!(list, &other.snapshot());
+        }
+        let exact = [
+            app.get_exact(),
+            app.get_world_exact(),
+            app.get_orbit_exact(),
+        ];
+        for (name, hit) in ["exact", "world-exact", "orbit-exact"]
+            .into_iter()
+            .zip(&exact)
+        {
+            assert_eq!(dynamic.get(name)?, Value::Hit3D(hit.clone()));
+        }
+        let nearest = app.get_nearest();
+        assert_eq!(lists[0].first().cloned().unwrap_or_default(), nearest);
+        assert_eq!(dynamic.get("nearest")?, Value::Hit3D(nearest));
+        Ok((lists, exact))
+    };
+    let address = |hit: &Hit3D| [hit.row_index, hit.mesh_node_index, hit.instance_index];
+    let addresses = |hits: &[Hit3D]| hits.iter().map(address).collect::<Vec<_>>();
+    let expected = [[1, 2, 0], [1, 2, 1], [1, 0, 0], [1, 4, -1]];
+    let (hits, exact) = render(default)?;
+    for list in &hits {
+        assert_eq!(addresses(list), expected);
+        assert!(
+            list.windows(2)
+                .all(|pair| pair[0].distance < pair[1].distance)
+        );
+    }
+    assert_eq!(exact[0], hits[0][1]);
+    assert_eq!(exact[1], hits[1][1]);
+    assert!(
+        exact
+            .iter()
+            .all(|hit| hit.valid && address(hit) == default.address)
+    );
+
+    let rear = [1, 0, 0];
+    let (hits, exact) = render(State {
+        address: rear,
+        covered: true,
+        ..default
+    })?;
+    assert_eq!(hits[0][0].object_id, "cover");
+    assert_eq!(addresses(&hits[0][1..]), expected);
+    assert_eq!(addresses(&hits[2]), expected);
+    assert!(exact.iter().all(|hit| hit.valid && address(hit) == rear));
+
+    let (hits, exact) = render(State {
+        address: [1, 2, 0],
+        near: 7.5,
+        ..default
+    })?;
+    assert_eq!(addresses(&hits[0]), expected[1..]);
+    assert_eq!(addresses(&hits[2]), expected[1..]);
+    assert_eq!(addresses(&hits[1]), expected);
+    assert!(!exact[0].valid);
+    assert!(exact[1].valid && exact[2].valid);
+
+    let (side, exact) = render(State {
+        address: [1, 2, 2],
+        x: 528.0,
+        ..default
+    })?;
+    assert_eq!(addresses(&side[0]), [[1, 2, 2]]);
+    assert_eq!(address(&exact[0]), [1, 2, 2]);
+    assert!(
+        !exact[1].valid,
+        "the centered world ray misses the side instance"
+    );
+    assert!(render(State { x: -1.0, ..default })?.0[0].is_empty());
+
+    for [row, node, index] in [
+        [1, -1, 0],
+        [1, 4, 0],
+        [1, 2, 1i64 << 32],
+        [0, 2, 0],
+        [1, 2, 2],
+    ] {
+        let (_, misses) = render(State {
+            address: [row, node, index],
+            ..default
+        })?;
+        assert!(misses.iter().all(|hit| !hit.valid));
+    }
+    for state in [
+        State { mask: 0, ..default },
+        State { mask: 1, ..default },
+        State {
+            pickable: false,
+            ..default
+        },
+    ] {
+        let (hits, exact) = render(state)?;
+        assert!(hits.iter().all(Vec::is_empty));
+        assert!(exact.iter().all(|hit| !hit.valid));
+    }
+    Ok(())
+}
+
+#[test]
+fn material_blend_modes_match_linear_compositing_in_both_backends() -> TestResult {
+    use material_blend_ui::MaterialBlendDemo;
+    use xrack_runtime::Color;
+
+    const NAME: &str = "examples/puzzle3d/material_blend.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MaterialBlendDemo")?;
+    let generated = MaterialBlendDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy)]
+    struct State {
+        mode: &'static str,
+        coverage: &'static str,
+        tint: Color,
+        weighted: bool,
+        underlay: bool,
+        offscreen: bool,
+        smooth: bool,
+        particles: bool,
+    }
+    let default = State {
+        mode: "source-over",
+        coverage: "blend",
+        tint: Color(0xcc682880),
+        weighted: false,
+        underlay: false,
+        offscreen: false,
+        smooth: false,
+        particles: false,
+    };
+    let mut render = |state: State| -> TestResult<_> {
+        let mut app = weak.upgrade().ok_or("missing material blend demo")?;
+        app.set_mode(state.mode.into());
+        app.set_coverage(state.coverage.into());
+        app.set_tint(state.tint);
+        app.set_weighted(state.weighted);
+        app.set_underlay(state.underlay);
+        app.set_offscreen(state.offscreen);
+        app.set_smooth(state.smooth);
+        app.set_particles(state.particles);
+        for (key, value) in [
+            ("mode", Value::String(state.mode.into())),
+            ("coverage", Value::String(state.coverage.into())),
+            ("tint", Value::Color(state.tint)),
+            ("weighted", Value::Bool(state.weighted)),
+            ("underlay", Value::Bool(state.underlay)),
+            ("offscreen", Value::Bool(state.offscreen)),
+            ("smooth", Value::Bool(state.smooth)),
+            ("particles", Value::Bool(state.particles)),
+        ] {
+            dynamic.set(key, value)?;
+        }
+        let before = gpu.scene_draw_stats();
+        let image = aot.render(&mut gpu)?.to_vec();
+        assert_eq!(image, interpreted.render(&mut preview_gpu)?);
+        let after = gpu.scene_draw_stats();
+        let picked = app.get_picked();
+        assert_eq!(dynamic.get("picked")?, Value::String(picked.clone()));
+        let raster = xrack_assets::decode_png(&image)?;
+        assert_eq!(raster.size, [600, 352]);
+        let offset = 4 * (150 * 600 + 300);
+        let pixel = std::array::from_fn(|channel| raster.rgba[offset + channel]);
+        Ok((
+            pixel,
+            picked,
+            [
+                after.transparency_composites - before.transparency_composites,
+                after.color_draws - before.color_draws,
+                gpu.scene_mesh_uploads(),
+            ],
+        ))
+    };
+    let linear = |byte: u8| {
+        let s = f64::from(byte) / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let srgb = |l: f64| {
+        let s = if l <= 0.0031308 {
+            l * 12.92
+        } else {
+            1.055 * l.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0).round() as u8
+    };
+    let expected = |mode, alpha, underlay| {
+        let back = [0x40, 0x60, 0x90].map(linear);
+        let mid = [0x34, 0x98, 0xe8].map(linear);
+        let front = [0xcc, 0x68, 0x28].map(linear);
+        let mid_alpha = if underlay { 128.0 / 255.0 } else { 0.0 };
+        std::array::from_fn::<_, 3, _>(|channel| {
+            let dest = back[channel] + mid_alpha * (mid[channel] - back[channel]);
+            let source = front[channel];
+            let result = match mode {
+                "screen" => source + dest * (1.0 - source),
+                "multiply" => source * dest,
+                _ => source,
+            };
+            srgb(dest + alpha * (result - dest))
+        })
+    };
+    let assert_color = |actual: [u8; 4], target: [u8; 3]| {
+        assert_eq!(actual[3], 255);
+        assert!(
+            actual[..3]
+                .iter()
+                .zip(target)
+                .all(|(&a, b)| a.abs_diff(b) <= 2),
+            "{actual:?} != {target:?}"
+        );
+    };
+    let (_, _, base_stats) = render(default)?;
+    for mode in ["source-over", "screen", "multiply"] {
+        let (pixel, picked, stats) = render(State { mode, ..default })?;
+        assert_color(pixel, expected(mode, 128.0 / 255.0, false));
+        assert_eq!(picked, "overlay");
+        assert_eq!(stats[2], base_stats[2], "color compositing reuses geometry");
+    }
+
+    for mode in ["screen", "multiply"] {
+        let state = State {
+            mode,
+            underlay: true,
+            ..default
+        };
+        assert_color(render(state)?.0, expected(mode, 128.0 / 255.0, true));
+        let (pixel, _, stats) = render(State {
+            weighted: true,
+            smooth: true,
+            ..state
+        })?;
+        assert_color(pixel, expected(mode, 128.0 / 255.0, true));
+        assert_eq!(
+            stats[0], 0,
+            "visible custom blend needs sorted mesh composition"
+        );
+        assert_eq!(stats[1], 3);
+        let (pixel, _, stats) = render(State {
+            weighted: true,
+            particles: true,
+            ..state
+        })?;
+        assert_color(pixel, expected(mode, 128.0 / 255.0, true));
+        assert_eq!(
+            stats[0], 1,
+            "soft model particles retain their weighted pass"
+        );
+    }
+
+    let (pixel, picked, stats) = render(State {
+        mode: "multiply",
+        weighted: true,
+        underlay: true,
+        offscreen: true,
+        ..default
+    })?;
+    assert_color(pixel, expected("multiply", 0.0, true));
+    assert_eq!(picked, "underlay");
+    assert_eq!(
+        stats[0], 1,
+        "culled material does not disable weighted mesh composition"
+    );
+    let (pixel, picked, _) = render(State {
+        mode: "screen",
+        coverage: "mask",
+        tint: Color(0xcc682840),
+        ..default
+    })?;
+    assert_color(pixel, [0x40, 0x60, 0x90]);
+    assert_eq!(picked, "background");
+    let (pixel, picked, _) = render(State {
+        mode: "screen",
+        coverage: "mask",
+        tint: Color(0xcc6828c0),
+        ..default
+    })?;
+    assert_color(pixel, expected("screen", 1.0, false));
+    assert_eq!(picked, "overlay");
+    Ok(())
+}
+
+#[test]
+fn material_depth_modes_preserve_coverage_and_transmission_in_both_backends() -> TestResult {
+    use material_depth_ui::MaterialDepthDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_depth.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MaterialDepthDemo")?;
+    let generated = MaterialDepthDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    #[derive(Clone, Copy)]
+    struct State {
+        mode: &'static str,
+        blended: bool,
+        masked: bool,
+        smooth: bool,
+        weighted: bool,
+        shadows: bool,
+        glass: bool,
+    }
+    let initial = State {
+        mode: "opaque-only",
+        blended: true,
+        masked: false,
+        smooth: false,
+        weighted: false,
+        shadows: false,
+        glass: false,
+    };
+    struct Frame {
+        pixels: [[u8; 4]; 3],
+        hits: [String; 3],
+        prepass: u64,
+        oit: u64,
+        captures: u64,
+        uploads: u64,
+        shadows: u64,
+        shadow_region: Vec<u8>,
+    }
+    let mut render = |state: State| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing material depth demo")?;
+        app.set_mode(state.mode.into());
+        app.set_blended(state.blended);
+        app.set_masked(state.masked);
+        app.set_smooth(state.smooth);
+        app.set_weighted(state.weighted);
+        app.set_shadows(state.shadows);
+        app.set_glass(state.glass);
+        for (name, value) in [
+            ("mode", Value::String(state.mode.into())),
+            ("blended", Value::Bool(state.blended)),
+            ("masked", Value::Bool(state.masked)),
+            ("smooth", Value::Bool(state.smooth)),
+            ("weighted", Value::Bool(state.weighted)),
+            ("shadows", Value::Bool(state.shadows)),
+            ("glass", Value::Bool(state.glass)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert_eq!(png, interpreted.render(&mut preview_gpu)?);
+        let after = gpu.scene_draw_stats();
+        let hits = [
+            app.get_upper_hit(),
+            app.get_center_hit(),
+            app.get_lower_hit(),
+        ];
+        for (name, hit) in ["upper-hit", "center-hit", "lower-hit"]
+            .into_iter()
+            .zip(&hits)
+        {
+            assert_eq!(dynamic.get(name)?, Value::String(hit.clone()));
+        }
+        let raster = xrack_assets::decode_png(&png)?;
+        assert_eq!(raster.size, [600, 372]);
+        let pixels = [88, 160, 232].map(|y| {
+            let start = (y * 600 + 220) * 4;
+            std::array::from_fn(|channel| raster.rgba[start + channel])
+        });
+        Ok(Frame {
+            hits,
+            pixels,
+            prepass: after.material_depth_prepass_draws - before.material_depth_prepass_draws,
+            oit: after.transparency_composites - before.transparency_composites,
+            captures: after.transmission_captures - before.transmission_captures,
+            uploads: gpu.scene_mesh_uploads(),
+            shadows: gpu.scene_shadow_passes(),
+            shadow_region: raster
+                .rgba
+                .chunks_exact(2400)
+                .take(320)
+                .flat_map(|row| row[..4 * 135].iter().chain(&row[4 * 465..]).copied())
+                .collect(),
+        })
+    };
+
+    let opaque = render(State {
+        blended: false,
+        ..initial
+    })?;
+    let never = render(State {
+        mode: "never",
+        blended: false,
+        ..initial
+    })?;
+    let red = [0xd0, 0x4d, 0x30, 255];
+    let blue = [0x28, 0x76, 0xd0, 255];
+    assert_eq!(opaque.pixels, [red; 3]);
+    assert_eq!(never.pixels, [blue; 3]);
+    assert_eq!(opaque.hits, never.hits);
+    assert_eq!(opaque.uploads, never.uploads);
+    assert_eq!(never.prepass, 0);
+
+    let blended = render(initial)?;
+    let always = render(State {
+        mode: "always",
+        ..initial
+    })?;
+    let prepass = render(State {
+        mode: "opaque-prepass",
+        ..initial
+    })?;
+    assert_eq!(blended.hits, ["stripes", "stripes", "late"]);
+    assert_eq!(prepass.hits, blended.hits);
+    assert_eq!(always.hits, blended.hits);
+    assert_eq!(prepass.prepass, 1);
+    assert_eq!(blended.prepass, 0);
+    assert_eq!(always.prepass, 0);
+    assert_ne!(blended.pixels[0], red);
+    assert_eq!(always.pixels[0], red);
+    assert_eq!(prepass.pixels[0], red);
+    assert_ne!(always.pixels[1], blended.pixels[1]);
+    assert_eq!(prepass.pixels[1], blended.pixels[1]);
+    assert_eq!(prepass.pixels[2], blended.pixels[2]);
+    assert_eq!(always.pixels[2], blended.pixels[2]);
+    assert_eq!(prepass.uploads, blended.uploads);
+
+    let smooth = render(State {
+        mode: "opaque-prepass",
+        smooth: true,
+        ..initial
+    })?;
+    assert_eq!(smooth.pixels, prepass.pixels);
+    assert_eq!(smooth.prepass, 1);
+    let weighted = render(State {
+        mode: "opaque-prepass",
+        weighted: true,
+        ..initial
+    })?;
+    assert_eq!(weighted.pixels[0], red);
+    assert_eq!(weighted.oit, 1);
+    let sorted = render(State {
+        mode: "always",
+        weighted: true,
+        ..initial
+    })?;
+    assert_eq!(sorted.pixels, always.pixels);
+    assert_eq!(sorted.oit, 0);
+
+    let masked = render(State {
+        mode: "opaque-prepass",
+        masked: true,
+        ..initial
+    })?;
+    assert_eq!(masked.hits, ["stripes", "late", "late"]);
+    assert_eq!(masked.pixels[0], red);
+    assert_eq!(masked.prepass, 1);
+    let glass = render(State {
+        mode: "opaque-prepass",
+        glass: true,
+        ..initial
+    })?;
+    assert_eq!(glass.captures, 1);
+    assert_eq!(glass.prepass, 1);
+    assert_eq!(glass.hits, blended.hits);
+    let unshadowed = render(State {
+        shadows: true,
+        ..initial
+    })?;
+    let shadowed = render(State {
+        mode: "opaque-prepass",
+        shadows: true,
+        ..initial
+    })?;
+    assert!(shadowed.shadows > unshadowed.shadows);
+    assert_ne!(shadowed.shadow_region, unshadowed.shadow_region);
+    let no_shadow = render(State {
+        mode: "never",
+        shadows: true,
+        ..initial
+    })?;
+    assert_eq!(no_shadow.shadow_region, unshadowed.shadow_region);
+    Ok(())
+}
+
+#[test]
+fn material_culling_matches_rendering_rays_and_marquee_for_mirrored_meshes() -> TestResult {
+    use material_cull_ui::MaterialCullDemo;
+    use xrack_runtime::Hit3D;
+
+    const NAME: &str = "examples/puzzle3d/material_cull.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MaterialCullDemo")?;
+    let generated = MaterialCullDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy)]
+    struct State {
+        mode: &'static str,
+        rear: bool,
+        slot_override: bool,
+        prepass: bool,
+        motion: bool,
+        shadows: bool,
+        perspective: bool,
+    }
+    let initial = State {
+        mode: "back",
+        rear: false,
+        slot_override: false,
+        prepass: false,
+        motion: false,
+        shadows: false,
+        perspective: false,
+    };
+    struct Frame {
+        pixels: [[u8; 4]; 2],
+        hits: [Hit3D; 2],
+        rows: [Vec<i64>; 2],
+        uploads: u64,
+        prepasses: u64,
+        motion_draws: u64,
+        shadow: Vec<u8>,
+    }
+    let mut render = |state: State| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing material culling demo")?;
+        app.set_mode(state.mode.into());
+        app.set_rear(state.rear);
+        app.set_slot_override(state.slot_override);
+        app.set_prepass(state.prepass);
+        app.set_motion(state.motion);
+        app.set_shadows(state.shadows);
+        app.set_perspective(state.perspective);
+        for (name, value) in [
+            ("mode", Value::String(state.mode.into())),
+            ("rear", Value::Bool(state.rear)),
+            ("slot-override", Value::Bool(state.slot_override)),
+            ("prepass", Value::Bool(state.prepass)),
+            ("motion", Value::Bool(state.motion)),
+            ("shadows", Value::Bool(state.shadows)),
+            ("perspective", Value::Bool(state.perspective)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert_eq!(png, interpreted.render(&mut preview_gpu)?);
+        let after = gpu.scene_draw_stats();
+        let hits = [app.get_left_hit(), app.get_right_hit()];
+        for (name, hit) in ["left-hit", "right-hit"].into_iter().zip(&hits) {
+            assert_eq!(dynamic.get(name)?, Value::Hit3D(hit.clone()));
+        }
+        let rows = [app.get_all_rows(), app.get_partial_rows()];
+        for (name, list) in ["all-rows", "partial-rows"].into_iter().zip(&rows) {
+            let dynamic_rows = match dynamic.get(name)? {
+                Value::IntList(values) => values.to_vec(),
+                Value::IntModel(model) => model.snapshot(),
+                _ => return Err(format!("missing interpreted selection {name}").into()),
+            };
+            assert_eq!(list, &dynamic_rows, "{name}");
+        }
+        let raster = xrack_assets::decode_png(&png)?;
+        assert_eq!(raster.size, [600, 372]);
+        let columns = if state.perspective {
+            [240, 360]
+        } else {
+            [200, 400]
+        };
+        let pixels = columns.map(|x| {
+            let start = (160 * 600 + x) * 4;
+            std::array::from_fn(|channel| raster.rgba[start + channel])
+        });
+        Ok(Frame {
+            pixels,
+            hits,
+            rows,
+            uploads: gpu.scene_mesh_uploads(),
+            prepasses: after.material_depth_prepass_draws - before.material_depth_prepass_draws,
+            motion_draws: after.motion_vector_draws - before.motion_vector_draws,
+            shadow: raster
+                .rgba
+                .chunks_exact(2400)
+                .take(320)
+                .flat_map(|row| row[..4 * 150].iter().chain(&row[4 * 455..]).copied())
+                .collect(),
+        })
+    };
+
+    let panel = [0xe4, 0x68, 0x32, 255];
+    let clear = [0x22, 0x33, 0x4b, 255];
+    let check = |frame: &Frame, visible, rear| {
+        assert_eq!(frame.pixels, [if visible { panel } else { clear }; 2]);
+        for hit in &frame.hits {
+            assert_eq!(hit.valid, visible);
+            if visible {
+                assert_eq!(hit.object_id, "panels");
+                assert!(if rear {
+                    hit.normal.z < -0.99
+                } else {
+                    hit.normal.z > 0.99
+                });
+            }
+        }
+        for list in &frame.rows {
+            assert_eq!(list.as_slice(), if visible { &[2][..] } else { &[][..] });
+        }
+    };
+
+    let original = render(initial)?;
+    check(&original, true, false);
+    for (mode, rear, visible) in [
+        ("back", true, false),
+        ("front", false, false),
+        ("front", true, true),
+        ("none", false, true),
+        ("none", true, true),
+    ] {
+        let frame = render(State {
+            mode,
+            rear,
+            ..initial
+        })?;
+        check(&frame, visible, rear);
+        assert_eq!(
+            frame.uploads, original.uploads,
+            "culling changes pipeline state, not mesh buffers"
+        );
+    }
+
+    check(
+        &render(State {
+            mode: "front",
+            slot_override: true,
+            ..initial
+        })?,
+        true,
+        false,
+    );
+    check(
+        &render(State {
+            mode: "front",
+            perspective: true,
+            ..initial
+        })?,
+        false,
+        false,
+    );
+    check(
+        &render(State {
+            mode: "front",
+            perspective: true,
+            rear: true,
+            ..initial
+        })?,
+        true,
+        true,
+    );
+
+    let prepass = render(State {
+        mode: "front",
+        prepass: true,
+        ..initial
+    })?;
+    check(&prepass, false, false);
+    assert!(prepass.prepasses > 0);
+    check(
+        &render(State {
+            mode: "front",
+            prepass: true,
+            rear: true,
+            ..initial
+        })?,
+        true,
+        true,
+    );
+    let motion = render(State {
+        mode: "front",
+        motion: true,
+        rear: true,
+        ..initial
+    })?;
+    check(&motion, true, true);
+    assert!(motion.motion_draws > 0);
+
+    let shadowed = render(State {
+        shadows: true,
+        ..initial
+    })?;
+    let culled_shadow = render(State {
+        mode: "front",
+        shadows: true,
+        ..initial
+    })?;
+    assert!(
+        shadowed
+            .shadow
+            .iter()
+            .zip(&culled_shadow.shadow)
+            .any(|(&a, &b)| a.abs_diff(b) > 5)
+    );
+    Ok(())
+}
+
+#[test]
+fn material_texture_channels_share_render_picking_and_depth_rules() -> TestResult {
+    use material_channels_ui::MaterialChannelsDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_channels.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MaterialChannelsDemo")?;
+    let generated = MaterialChannelsDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    struct Frame {
+        pixel: [u8; 4],
+        hit: String,
+        depth_draws: u64,
+        meshes: u64,
+        mip_levels: u64,
+        shadow_passes: u64,
+        shadow_region: Vec<u8>,
+    }
+    let mut render =
+        |base: &str, shading: &str, channel: &str, shadows: bool| -> TestResult<Frame> {
+            let mut app = weak.upgrade().ok_or("missing material channels demo")?;
+            app.set_base_channel(base.into());
+            app.set_shading(shading.into());
+            app.set_shading_channel(channel.into());
+            app.set_shadows(shadows);
+            for (name, value) in [
+                ("base-channel", base),
+                ("shading", shading),
+                ("shading-channel", channel),
+            ] {
+                dynamic.set(name, Value::String(value.into()))?;
+            }
+            dynamic.set("shadows", Value::Bool(shadows))?;
+
+            let before = gpu.scene_draw_stats();
+            let png = aot.render(&mut gpu)?.to_vec();
+            assert!(
+                png == interpreted.render(&mut preview_gpu)?,
+                "different GPU output with {base}/{shading}/{channel} and shadows={shadows}"
+            );
+            let raster = xrack_assets::decode_png(&png)?;
+            assert_eq!(raster.size, [600, 372]);
+            let pixel = (160 * 600 + 300) * 4;
+            let hit = app.get_center_hit();
+            assert_eq!(dynamic.get("center-hit")?, Value::String(hit.clone()));
+            let stats = gpu.scene_draw_stats();
+            Ok(Frame {
+                pixel: std::array::from_fn(|channel| raster.rgba[pixel + channel]),
+                hit: hit.to_string(),
+                depth_draws: stats.material_depth_prepass_draws
+                    - before.material_depth_prepass_draws,
+                meshes: gpu.scene_mesh_uploads(),
+                mip_levels: stats.material_mip_levels_uploaded,
+                shadow_passes: gpu.scene_shadow_passes(),
+                shadow_region: if shadows {
+                    raster
+                        .rgba
+                        .chunks_exact(2400)
+                        .take(320)
+                        .flat_map(|row| row[..4 * 200].iter().chain(&row[4 * 400..]).copied())
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+            })
+        };
+
+    let rgb = render("rgb", "base", "r", false)?;
+    assert_eq!(rgb.pixel, [0x22, 0x33, 0x4b, 255]);
+    assert_eq!(rgb.hit, "");
+    assert!(rgb.mip_levels > 0);
+    for (channel, expected) in [("r", 218), ("g", 92), ("b", 26), ("a", 99)] {
+        let frame = render(channel, "base", "r", false)?;
+        assert_eq!(frame.hit, "panel");
+        assert!(frame.depth_draws > 0);
+        for value in &frame.pixel[..3] {
+            assert!(
+                value.abs_diff(expected) <= 1,
+                "{channel}: {:?}",
+                frame.pixel
+            );
+        }
+        assert_eq!(
+            (frame.meshes, frame.mip_levels),
+            (rgb.meshes, rgb.mip_levels)
+        );
+    }
+
+    let red = render("r", "emissive", "r", false)?;
+    let green = render("r", "emissive", "g", false)?;
+    assert!(
+        red.pixel[0] > green.pixel[0] + 50,
+        "{:?} vs {:?}",
+        red.pixel,
+        green.pixel
+    );
+    assert_eq!(red.mip_levels, green.mip_levels);
+
+    let metallic = render("r", "pbr", "r", false)?;
+    let dielectric = render("r", "pbr", "a", false)?;
+    assert_ne!(metallic.pixel, dielectric.pixel);
+    assert_eq!(
+        (metallic.meshes, metallic.mip_levels),
+        (dielectric.meshes, dielectric.mip_levels)
+    );
+
+    let empty = render("rgb", "base", "r", true)?;
+    let shadowed = render("r", "base", "r", true)?;
+    assert!(shadowed.shadow_passes > empty.shadow_passes);
+    assert!(
+        shadowed
+            .shadow_region
+            .iter()
+            .zip(&empty.shadow_region)
+            .any(|(&a, &b)| a.abs_diff(b) > 5)
+    );
+    let same_shadow = render("g", "base", "r", true)?;
+    assert_eq!(same_shadow.shadow_passes, shadowed.shadow_passes);
+    assert!(same_shadow.shadow_region == shadowed.shadow_region);
+    Ok(())
+}
+
+#[test]
+fn vertex_color_masks_preserve_shared_coverage_and_plan_transmission() -> TestResult {
+    use vertex_masks_ui::VertexMasksDemo;
+
+    const NAME: &str = "examples/puzzle3d/vertex_masks.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("VertexMasksDemo")?;
+    let generated = VertexMasksDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy, Debug)]
+    struct State {
+        look: &'static str,
+        channel: &'static str,
+        tint: bool,
+        shadows: bool,
+        motion: bool,
+    }
+
+    struct Frame {
+        pixels: [[u8; 4]; 2],
+        hits: [String; 2],
+        mesh_uploads: u64,
+        shadow_passes: u64,
+        prepass_draws: u64,
+        motion_draws: u64,
+        transmission_captures: u64,
+        shadow_region: Vec<u8>,
+    }
+
+    let mut render = |state: State| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing vertex colors demo")?;
+        app.set_look(state.look.into());
+        app.set_channel(state.channel.into());
+        app.set_vertex_tint(state.tint);
+        app.set_shadows(state.shadows);
+        app.set_motion(state.motion);
+        for (name, value) in [
+            ("look", Value::String(state.look.into())),
+            ("channel", Value::String(state.channel.into())),
+            ("vertex-tint", Value::Bool(state.tint)),
+            ("shadows", Value::Bool(state.shadows)),
+            ("motion", Value::Bool(state.motion)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let hits = [app.get_left_hit(), app.get_right_hit()];
+        for (name, hit) in ["left-hit", "right-hit"].into_iter().zip(&hits) {
+            assert_eq!(dynamic.get(name)?, Value::String(hit.clone()));
+        }
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert!(
+            png == interpreted.render(&mut preview_gpu)?,
+            "different output for {state:?}"
+        );
+        let raster = xrack_assets::decode_png(&png)?;
+        assert_eq!(raster.size, [600, 372]);
+        let pixel =
+            |x: usize| std::array::from_fn(|channel| raster.rgba[(160 * 600 + x) * 4 + channel]);
+        let after = gpu.scene_draw_stats();
+        Ok(Frame {
+            pixels: [pixel(220), pixel(380)],
+            hits: hits.map(|hit| hit.to_string()),
+            mesh_uploads: gpu.scene_mesh_uploads(),
+            shadow_passes: gpu.scene_shadow_passes(),
+            prepass_draws: after.material_depth_prepass_draws - before.material_depth_prepass_draws,
+            motion_draws: after.motion_vector_draws - before.motion_vector_draws,
+            transmission_captures: after.transmission_captures - before.transmission_captures,
+            shadow_region: if state.shadows {
+                raster
+                    .rgba
+                    .chunks_exact(2400)
+                    .take(320)
+                    .skip(265)
+                    .flatten()
+                    .copied()
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        })
+    };
+
+    let original = State {
+        look: "color",
+        channel: "r",
+        tint: true,
+        shadows: false,
+        motion: false,
+    };
+    let tint = render(original)?;
+    let untinted = render(State {
+        tint: false,
+        ..original
+    })?;
+    assert_eq!(tint.pixels[0], [0x22, 0x33, 0x4b, 255]);
+    assert_ne!(tint.pixels[1], untinted.pixels[1]);
+    assert_eq!(untinted.pixels, [[0xe0, 0xe4, 0xef, 255]; 2]);
+    assert_eq!(tint.hits, ["", "panel"]);
+    assert_eq!(untinted.hits, ["panel"; 2]);
+    assert!(untinted.prepass_draws > 0);
+    assert_eq!(tint.mesh_uploads, untinted.mesh_uploads);
+    let tracked = render(State {
+        tint: false,
+        motion: true,
+        ..original
+    })?;
+    assert!(tracked.motion_draws > 0);
+
+    for look in ["metal", "roughness", "specular"] {
+        let red = State {
+            look,
+            tint: false,
+            ..original
+        };
+        let first = render(red)?;
+        let second = render(State {
+            channel: "g",
+            ..red
+        })?;
+        let uniform = render(State {
+            channel: "none",
+            ..red
+        })?;
+        assert!(
+            first.pixels[0][0].abs_diff(first.pixels[1][0]) > 1,
+            "{look}: {:?}",
+            first.pixels
+        );
+        for (l, r) in first.pixels[0].into_iter().zip(second.pixels[1]) {
+            assert!(l.abs_diff(r) <= 1, "{look}");
+        }
+        assert!(
+            uniform.pixels[0][0].abs_diff(uniform.pixels[1][0]) <= 1,
+            "{look}"
+        );
+        assert_eq!(first.mesh_uploads, second.mesh_uploads);
+    }
+
+    let shadow = State {
+        look: "metal",
+        shadows: true,
+        ..original
+    };
+    let masked_shadow = render(shadow)?;
+    let whole_shadow = render(State {
+        tint: false,
+        ..shadow
+    })?;
+    let same_shadow = render(State {
+        tint: false,
+        channel: "g",
+        ..shadow
+    })?;
+    assert!(whole_shadow.shadow_passes > masked_shadow.shadow_passes);
+    assert!(
+        whole_shadow
+            .shadow_region
+            .iter()
+            .zip(&masked_shadow.shadow_region)
+            .any(|(&a, &b)| a.abs_diff(b) > 5)
+    );
+    assert_eq!(same_shadow.shadow_passes, whole_shadow.shadow_passes);
+
+    let glass = State {
+        look: "glass",
+        tint: false,
+        ..original
+    };
+    let metal = render(State {
+        channel: "none",
+        ..glass
+    })?;
+    let transmissive = render(glass)?;
+    assert_eq!(metal.transmission_captures, 0);
+    assert_eq!(transmissive.transmission_captures, 1);
+    assert_ne!(metal.pixels, transmissive.pixels);
+    assert_eq!(metal.mesh_uploads, transmissive.mesh_uploads);
+    Ok(())
+}
+
+#[test]
+fn authored_optics_share_the_imported_pipeline_and_keep_mesh_coordinates() -> TestResult {
+    use material_optics_ui::MaterialOpticsDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_optics.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MaterialOpticsDemo")?;
+    let generated = MaterialOpticsDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy, Debug)]
+    struct State {
+        look: &'static str,
+        thickness: f64,
+        attenuation: f64,
+        dispersion: f64,
+        specular: f64,
+        specular_tint: xrack_runtime::Color,
+        occlusion: f64,
+        channel: &'static str,
+        mapped: bool,
+        patterned: bool,
+        imported: bool,
+        inherit: bool,
+        depth_scale: f64,
+    }
+    struct Frame {
+        raster: xrack_assets::Raster,
+        volume_captures: u64,
+        mesh_uploads: u64,
+        mip_levels_uploaded: u64,
+    }
+    let mut render = |state: State| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing optics demo")?;
+        app.set_look(state.look.into());
+        app.set_thickness(state.thickness);
+        app.set_attenuation(state.attenuation);
+        app.set_dispersion(state.dispersion);
+        app.set_specular(state.specular);
+        app.set_specular_tint(state.specular_tint);
+        app.set_occlusion(state.occlusion);
+        app.set_channel(state.channel.into());
+        app.set_mapped(state.mapped);
+        app.set_patterned(state.patterned);
+        app.set_imported(state.imported);
+        app.set_inherit(state.inherit);
+        app.set_depth_scale(state.depth_scale);
+        for (name, value) in [
+            ("look", Value::String(state.look.into())),
+            ("thickness", Value::Float(state.thickness)),
+            ("attenuation", Value::Float(state.attenuation)),
+            ("dispersion", Value::Float(state.dispersion)),
+            ("specular", Value::Float(state.specular)),
+            ("specular-tint", Value::Color(state.specular_tint)),
+            ("occlusion", Value::Float(state.occlusion)),
+            ("channel", Value::String(state.channel.into())),
+            ("mapped", Value::Bool(state.mapped)),
+            ("patterned", Value::Bool(state.patterned)),
+            ("imported", Value::Bool(state.imported)),
+            ("inherit", Value::Bool(state.inherit)),
+            ("depth-scale", Value::Float(state.depth_scale)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert!(
+            png == interpreted.render(&mut preview_gpu)?,
+            "different optical render for {state:?}"
+        );
+        let raster = xrack_assets::decode_png(&png)?;
+        assert_eq!(raster.size, [600, 372]);
+        let after = gpu.scene_draw_stats();
+        Ok(Frame {
+            raster,
+            volume_captures: after.volume_depth_captures - before.volume_depth_captures,
+            mesh_uploads: gpu.scene_mesh_uploads(),
+            mip_levels_uploaded: after.material_mip_levels_uploaded,
+        })
+    };
+    let pixel = |frame: &Frame, [x, y]: [usize; 2]| {
+        let offset = (600 * y + x) * 4;
+        std::array::from_fn::<_, 4, _>(|channel| frame.raster.rgba[offset + channel])
+    };
+    let center = |frame: &Frame| pixel(frame, [300, 160]);
+    let initial = State {
+        look: "glass",
+        thickness: 0.0,
+        attenuation: 1.0,
+        dispersion: 0.0,
+        specular: 1.0,
+        specular_tint: xrack_runtime::Color(0xffffffff),
+        occlusion: 1.0,
+        channel: "r",
+        mapped: false,
+        patterned: false,
+        imported: false,
+        inherit: false,
+        depth_scale: 1.0,
+    };
+    let thin = render(initial)?;
+    let thick = State {
+        thickness: 1.6,
+        ..initial
+    };
+    let tinted = render(thick)?;
+    assert_eq!(thin.volume_captures, 0);
+    assert_eq!(tinted.volume_captures, 1);
+    assert_eq!(thin.mesh_uploads, tinted.mesh_uploads);
+    assert!(center(&thin)[2].saturating_sub(center(&tinted)[2]) > 40);
+    let no_absorption = render(State {
+        attenuation: 0.0,
+        ..thick
+    })?;
+    assert_eq!(center(&thin), center(&no_absorption));
+
+    let red = render(State {
+        mapped: true,
+        ..thick
+    })?;
+    let alpha = render(State {
+        mapped: true,
+        channel: "a",
+        ..thick
+    })?;
+    assert!(center(&alpha)[2].saturating_sub(center(&red)[2]) > 30);
+    assert_eq!(red.mip_levels_uploaded, alpha.mip_levels_uploaded);
+    assert_eq!(red.mesh_uploads, alpha.mesh_uploads);
+
+    let striped = State {
+        patterned: true,
+        attenuation: 0.0,
+        ..thick
+    };
+    let undispersed = render(striped)?;
+    let dispersed = render(State {
+        dispersion: 14.0,
+        ..striped
+    })?;
+    let changed = (105..210)
+        .flat_map(|y| (210..390).map(move |x| [x, y]))
+        .filter(|&p| pixel(&undispersed, p) != pixel(&dispersed, p))
+        .count();
+    assert!(changed > 300, "{changed} dispersed pixels");
+    assert_eq!(undispersed.mesh_uploads, dispersed.mesh_uploads);
+
+    let imported = State {
+        imported: true,
+        ..thick
+    };
+    let authored = render(imported)?;
+    let inherited = render(State {
+        inherit: true,
+        ..imported
+    })?;
+    let blues = |frame: &Frame| [168, 432].map(|x| pixel(frame, [x, 120])[2]);
+    let [left, right] = blues(&authored);
+    assert!(left.abs_diff(right) <= 1, "{left} vs {right}");
+    let [left, right] = blues(&inherited);
+    assert!(left.saturating_sub(right) > 10, "{left} vs {right}");
+    assert_eq!(authored.mesh_uploads, inherited.mesh_uploads);
+    let stretched = render(State {
+        depth_scale: 1.5,
+        ..imported
+    })?;
+    assert!(blues(&authored)[0].saturating_sub(blues(&stretched)[0]) > 12);
+
+    let highs = State {
+        look: "highlights",
+        thickness: 2.0,
+        ..initial
+    };
+    let matte = render(State {
+        specular: 0.0,
+        ..highs
+    })?;
+    let white_highlight = render(highs)?;
+    assert_eq!(white_highlight.volume_captures, 0);
+    assert!(center(&white_highlight)[0].saturating_sub(center(&matte)[0]) > 25);
+    let tinted_highlight = render(State {
+        specular_tint: xrack_runtime::Color(0x4890e8ff),
+        ..highs
+    })?;
+    let [r, _, b, _] = center(&tinted_highlight);
+    assert!(b.saturating_sub(r) > 25, "{b} vs {r}");
+    let high_red = render(State {
+        mapped: true,
+        ..highs
+    })?;
+    let high_alpha = render(State {
+        channel: "a",
+        mapped: true,
+        ..highs
+    })?;
+    let [r, _, b, _] = center(&high_red);
+    assert!(r.saturating_sub(b) > 20, "{r} vs {b}");
+    assert!(r.saturating_sub(center(&high_alpha)[0]) > 25);
+    assert_eq!(high_red.mip_levels_uploaded, high_alpha.mip_levels_uploaded);
+
+    let shaded = State {
+        look: "occlusion",
+        ..initial
+    };
+    let occluded = render(shaded)?;
+    let unoccluded = render(State {
+        occlusion: 0.0,
+        ..shaded
+    })?;
+    assert!(center(&unoccluded)[0].saturating_sub(center(&occluded)[0]) > 12);
+    Ok(())
+}
+
+#[test]
+fn fresnel_material_curves_match_backends_and_feed_direct_probe_and_screen_reflections()
+-> TestResult {
+    use material_fresnel_ui::FresnelDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_fresnel.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("FresnelDemo")?;
+    let generated = FresnelDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy, Debug)]
+    struct Curve {
+        enabled: bool,
+        power: f64,
+        scale: f64,
+        bias: f64,
+    }
+    #[derive(Clone, Copy, Debug)]
+    struct State {
+        base: Curve,
+        coat: Curve,
+        curved: bool,
+        probe: bool,
+        floor: bool,
+        ssr: bool,
+    }
+    struct Frame {
+        raster: xrack_assets::Raster,
+        mesh_uploads: u64,
+        environment_uploads: u64,
+        ssr_resolves: u64,
+    }
+    let mut render = |state: State| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing Fresnel demo")?;
+        app.set_base_controls(state.base.enabled);
+        app.set_base_power(state.base.power);
+        app.set_base_scale(state.base.scale);
+        app.set_base_bias(state.base.bias);
+        app.set_coat_controls(state.coat.enabled);
+        app.set_coat_power(state.coat.power);
+        app.set_coat_scale(state.coat.scale);
+        app.set_coat_bias(state.coat.bias);
+        app.set_curved(state.curved);
+        app.set_probe(state.probe);
+        app.set_floor(state.floor);
+        app.set_screen_reflections(state.ssr);
+        for (name, value) in [
+            ("base-controls", Value::Bool(state.base.enabled)),
+            ("base-power", Value::Float(state.base.power)),
+            ("base-scale", Value::Float(state.base.scale)),
+            ("base-bias", Value::Float(state.base.bias)),
+            ("coat-controls", Value::Bool(state.coat.enabled)),
+            ("coat-power", Value::Float(state.coat.power)),
+            ("coat-scale", Value::Float(state.coat.scale)),
+            ("coat-bias", Value::Float(state.coat.bias)),
+            ("curved", Value::Bool(state.curved)),
+            ("probe", Value::Bool(state.probe)),
+            ("floor", Value::Bool(state.floor)),
+            ("screen-reflections", Value::Bool(state.ssr)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert!(
+            png == interpreted.render(&mut preview_gpu)?,
+            "different Fresnel output for {state:?}"
+        );
+        let raster = xrack_assets::decode_png(&png)?;
+        assert_eq!(raster.size, [600, 372]);
+        Ok(Frame {
+            raster,
+            mesh_uploads: gpu.scene_mesh_uploads(),
+            environment_uploads: gpu.scene_environment_uploads(),
+            ssr_resolves: gpu.scene_draw_stats().screen_reflection_resolves
+                - before.screen_reflection_resolves,
+        })
+    };
+    let pixel = |frame: &Frame, x: usize, y: usize| {
+        let offset = 4 * (y * 600 + x);
+        std::array::from_fn::<_, 4, _>(|channel| frame.raster.rgba[offset + channel])
+    };
+    let difference =
+        |before: &Frame, after: &Frame, x: std::ops::Range<usize>, y: std::ops::Range<usize>| {
+            y.flat_map(|y| x.clone().map(move |x| [x, y]))
+                .filter(|&[x, y]| {
+                    pixel(before, x, y)
+                        .into_iter()
+                        .zip(pixel(after, x, y))
+                        .any(|(before, after)| before.abs_diff(after) > 4)
+                })
+                .count()
+        };
+    let standard = Curve {
+        enabled: false,
+        power: 5.0,
+        scale: 1.0,
+        bias: 0.0,
+    };
+    let initial = State {
+        base: standard,
+        coat: standard,
+        curved: false,
+        probe: false,
+        floor: false,
+        ssr: false,
+    };
+    let direct = render(initial)?;
+    let ignored = render(State {
+        base: Curve {
+            scale: 0.0,
+            bias: 0.6,
+            ..standard
+        },
+        coat: Curve {
+            scale: 0.0,
+            bias: 0.7,
+            ..standard
+        },
+        ..initial
+    })?;
+    assert_eq!(difference(&direct, &ignored, 0..600, 0..320), 0);
+    let bases = render(State {
+        base: Curve {
+            enabled: true,
+            bias: 0.30,
+            ..standard
+        },
+        ..initial
+    })?;
+    let coats = render(State {
+        coat: Curve {
+            enabled: true,
+            bias: 0.30,
+            ..standard
+        },
+        ..initial
+    })?;
+    assert!(pixel(&bases, 180, 160)[0].saturating_sub(pixel(&direct, 180, 160)[0]) > 40);
+    assert!(pixel(&coats, 420, 160)[0].saturating_sub(pixel(&direct, 420, 160)[0]) > 40);
+    assert_eq!(pixel(&bases, 420, 160), pixel(&direct, 420, 160));
+    assert_eq!(pixel(&coats, 180, 160), pixel(&direct, 180, 160));
+    assert_eq!(direct.mesh_uploads, bases.mesh_uploads);
+    assert_eq!(direct.mesh_uploads, coats.mesh_uploads);
+
+    let probe = State {
+        curved: true,
+        probe: true,
+        ..initial
+    };
+    let normal = render(probe)?;
+    let base_power = render(State {
+        base: Curve {
+            power: 1.0,
+            ..standard
+        },
+        ..probe
+    })?;
+    let coat_power = render(State {
+        coat: Curve {
+            power: 1.0,
+            ..standard
+        },
+        ..probe
+    })?;
+    assert!(difference(&normal, &base_power, 90..270, 65..255) > 500);
+    assert!(difference(&normal, &coat_power, 330..510, 65..255) > 500);
+    assert_eq!(difference(&normal, &base_power, 330..510, 65..255), 0);
+    assert_eq!(difference(&normal, &coat_power, 90..270, 65..255), 0);
+    assert_eq!(normal.mesh_uploads, coat_power.mesh_uploads);
+    assert_eq!(normal.environment_uploads, coat_power.environment_uploads);
+
+    let floor = State {
+        floor: true,
+        ..initial
+    };
+    let without_ssr = render(floor)?;
+    let with_ssr = render(State { ssr: true, ..floor })?;
+    assert!(with_ssr.ssr_resolves > 0);
+    assert!(difference(&without_ssr, &with_ssr, 0..600, 0..320) > 100);
+    let zero = State {
+        base: Curve {
+            enabled: true,
+            scale: 0.0,
+            ..standard
+        },
+        ..floor
+    };
+    let zero_smooth = render(zero)?;
+    let zero_ssr = render(State { ssr: true, ..zero })?;
+    assert_eq!(difference(&zero_smooth, &zero_ssr, 0..600, 0..320), 0);
+    assert_eq!(zero_smooth.mesh_uploads, zero_ssr.mesh_uploads);
+    Ok(())
+}
+
+#[test]
+fn anisotropic_material_rotates_highlights_and_imports_direction_maps_in_both_backends()
+-> TestResult {
+    use material_anisotropy_ui::MaterialAnisotropyDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_anisotropy.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MaterialAnisotropyDemo")?;
+    let generated = MaterialAnisotropyDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    #[derive(Clone, Copy, Debug)]
+    struct State {
+        strength: f64,
+        rotation: f64,
+        mapped: bool,
+        imported: bool,
+        inherit: bool,
+        sphere: bool,
+        probe: bool,
+        coat: bool,
+        ao: bool,
+        yaw: f64,
+    }
+    struct Frame {
+        raster: xrack_assets::Raster,
+        meshes: u64,
+        mip_levels: u64,
+        environment: u64,
+        ao_evaluations: u64,
+    }
+    let mut render = |state: State| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing anisotropic material demo")?;
+        app.set_strength(state.strength);
+        app.set_rotation(state.rotation);
+        app.set_mapped(state.mapped);
+        app.set_imported(state.imported);
+        app.set_inherit(state.inherit);
+        app.set_sphere(state.sphere);
+        app.set_probe(state.probe);
+        app.set_coat(state.coat);
+        app.set_ao(state.ao);
+        app.set_yaw(state.yaw);
+        for (name, value) in [
+            ("strength", Value::Float(state.strength)),
+            ("rotation", Value::Float(state.rotation)),
+            ("mapped", Value::Bool(state.mapped)),
+            ("imported", Value::Bool(state.imported)),
+            ("inherit", Value::Bool(state.inherit)),
+            ("sphere", Value::Bool(state.sphere)),
+            ("probe", Value::Bool(state.probe)),
+            ("coat", Value::Bool(state.coat)),
+            ("ao", Value::Bool(state.ao)),
+            ("yaw", Value::Float(state.yaw)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert!(
+            png == interpreted.render(&mut preview_gpu)?,
+            "different brushed material output for {state:?}"
+        );
+        let raster = xrack_assets::decode_png(&png)?;
+        assert_eq!(raster.size, [600, 372]);
+        let after = gpu.scene_draw_stats();
+        Ok(Frame {
+            raster,
+            meshes: gpu.scene_mesh_uploads(),
+            mip_levels: after.material_mip_levels_uploaded,
+            environment: gpu.scene_environment_uploads(),
+            ao_evaluations: after.occlusion_evaluations - before.occlusion_evaluations,
+        })
+    };
+    let pixel = |frame: &Frame, x: usize, y: usize| {
+        let offset = 4 * (y * 600 + x);
+        std::array::from_fn::<_, 4, _>(|channel| frame.raster.rgba[offset + channel])
+    };
+    let initial = State {
+        strength: 0.85,
+        rotation: 0.0,
+        mapped: false,
+        imported: false,
+        inherit: false,
+        sphere: false,
+        probe: false,
+        coat: false,
+        ao: false,
+        yaw: 0.0,
+    };
+    let horizontal = render(initial)?;
+    let vertical = render(State {
+        rotation: 90.0,
+        ..initial
+    })?;
+    assert!(pixel(&horizontal, 300, 120)[0].saturating_sub(pixel(&vertical, 300, 120)[0]) > 30);
+    assert_eq!(horizontal.meshes, vertical.meshes);
+
+    let authored = State {
+        imported: true,
+        mapped: true,
+        ..initial
+    };
+    let direction_map = render(authored)?;
+    let inherited = render(State {
+        inherit: true,
+        ..authored
+    })?;
+    for (x, y) in [(220, 110), (380, 110), (220, 212), (380, 212)] {
+        for (authored, imported) in pixel(&direction_map, x, y)
+            .into_iter()
+            .zip(pixel(&inherited, x, y))
+        {
+            assert!(
+                authored.abs_diff(imported) <= 1,
+                "material and glTF at {x},{y}"
+            );
+        }
+    }
+    let isotropic = render(State {
+        strength: 0.0,
+        ..authored
+    })?;
+    let top = [220, 380].map(|x| pixel(&direction_map, x, 110)[0]);
+    let bottom = [220, 380].map(|x| pixel(&direction_map, x, 212)[0]);
+    assert!(top[0].saturating_sub(top[1]) > 30, "{top:?}");
+    assert_eq!(bottom, [220, 380].map(|x| pixel(&isotropic, x, 212)[0]));
+    assert_eq!(direction_map.meshes, inherited.meshes);
+
+    let combined = State {
+        ao: true,
+        coat: true,
+        ..authored
+    };
+    let first = render(combined)?;
+    let rotated = render(State {
+        rotation: 90.0,
+        ..combined
+    })?;
+    assert!(first.ao_evaluations > 0);
+    assert_eq!(rotated.ao_evaluations, 0);
+    assert!(pixel(&first, 220, 110)[0].abs_diff(pixel(&rotated, 220, 110)[0]) > 25);
+    assert_eq!(first.meshes, rotated.meshes);
+    assert_eq!(first.mip_levels, rotated.mip_levels);
+
+    let probe = State {
+        sphere: true,
+        probe: true,
+        ..initial
+    };
+    let before = render(probe)?;
+    let after = render(State {
+        rotation: 90.0,
+        ..probe
+    })?;
+    let distinct = (70..250)
+        .flat_map(|y| (160..440).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            pixel(&before, x, y)
+                .into_iter()
+                .zip(pixel(&after, x, y))
+                .any(|(a, b)| a.abs_diff(b) > 4)
+        })
+        .count();
+    assert!(
+        distinct > 500,
+        "{distinct} pixels changed in the light probe"
+    );
+    assert_eq!(before.environment, after.environment);
+    assert_eq!(before.meshes, after.meshes);
+    Ok(())
+}
+
+#[test]
+fn parametric_geometry_keeps_rendering_and_collision_in_sync_and_reuses_meshes() -> TestResult {
+    use parametric_geometry_ui::ParametricGeometryDemo;
+
+    const NAME: &str = "examples/puzzle3d/parametric_geometry.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ParametricGeometryDemo")?;
+    let generated = ParametricGeometryDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    #[derive(Clone, Copy, Debug)]
+    struct State {
+        shape: &'static str,
+        radius: f64,
+        resolution: i64,
+        offset: f64,
+        tint: xrack_runtime::Color,
+        shadows: bool,
+        duplicate: bool,
+        auxiliary: bool,
+    }
+    struct Frame {
+        raster: xrack_assets::Raster,
+        center_hit: String,
+        ring_hit: String,
+        sweep: xrack_runtime::Hit3D,
+        uploads: u64,
+        submitted_vertices: u64,
+        depth_draws: u64,
+        motion_draws: u64,
+        indexed_uploads: u64,
+        geometry_bytes: u64,
+        shadow_passes: u64,
+    }
+    let mut render = |state: State| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing parametric geometry demo")?;
+        app.set_shape(state.shape.into());
+        app.set_radius(state.radius);
+        app.set_resolution(state.resolution);
+        app.set_offset(state.offset);
+        app.set_tint(state.tint);
+        app.set_shadows(state.shadows);
+        app.set_duplicate(state.duplicate);
+        app.set_auxiliary(state.auxiliary);
+        for (name, value) in [
+            ("shape", Value::String(state.shape.into())),
+            ("radius", Value::Float(state.radius)),
+            ("resolution", Value::Int(state.resolution)),
+            ("offset", Value::Float(state.offset)),
+            ("tint", Value::Color(state.tint)),
+            ("shadows", Value::Bool(state.shadows)),
+            ("duplicate", Value::Bool(state.duplicate)),
+            ("auxiliary", Value::Bool(state.auxiliary)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert!(
+            png == interpreted.render(&mut preview_gpu)?,
+            "different output for {state:?}"
+        );
+        let center_hit = app.get_center_hit();
+        let ring_hit = app.get_ring_hit();
+        let sweep = app.get_center_sweep();
+        assert_eq!(
+            dynamic.get("center-hit")?,
+            Value::String(center_hit.clone())
+        );
+        assert_eq!(dynamic.get("ring-hit")?, Value::String(ring_hit.clone()));
+        assert_eq!(dynamic.get("center-sweep")?, Value::Hit3D(sweep.clone()));
+        let raster = xrack_assets::decode_png(&png)?;
+        assert_eq!(raster.size, [600, 372]);
+        let after = gpu.scene_draw_stats();
+        Ok(Frame {
+            raster,
+            center_hit: center_hit.to_string(),
+            ring_hit: ring_hit.to_string(),
+            sweep,
+            uploads: gpu.scene_mesh_uploads(),
+            submitted_vertices: after.color_vertices - before.color_vertices,
+            depth_draws: after.material_depth_prepass_draws - before.material_depth_prepass_draws,
+            motion_draws: after.motion_vector_draws - before.motion_vector_draws,
+            indexed_uploads: after.indexed_mesh_uploads,
+            geometry_bytes: after.mesh_vertex_bytes_uploaded + after.mesh_index_bytes_uploaded,
+            shadow_passes: gpu.scene_shadow_passes(),
+        })
+    };
+    let pixel = |frame: &Frame, x: usize, y: usize| {
+        let start = (y * 600 + x) * 4;
+        std::array::from_fn::<_, 4, _>(|channel| frame.raster.rgba[start + channel])
+    };
+    let initial = State {
+        shape: "torus",
+        radius: 0.9,
+        resolution: 32,
+        offset: 0.0,
+        tint: xrack_runtime::Color(0xec843fff),
+        shadows: false,
+        duplicate: false,
+        auxiliary: false,
+    };
+    let clear = [0x22, 0x33, 0x4b, 255];
+    let warm = render(State {
+        shape: "plane",
+        resolution: 1,
+        ..initial
+    })?;
+    let ring = render(initial)?;
+    assert_eq!(ring.indexed_uploads, warm.indexed_uploads + 1);
+    let compact_bytes = ring.geometry_bytes - warm.geometry_bytes;
+    let direct_bytes = ring.submitted_vertices * xrack_runtime::scene3d::MeshVertex::STRIDE as u64;
+    assert!(
+        compact_bytes * 3 < direct_bytes,
+        "{compact_bytes} vs {direct_bytes}"
+    );
+    eprintln!(
+        "Procedural torus GPU geometry: {compact_bytes} bytes indexed vs {direct_bytes} bytes expanded"
+    );
+    assert_eq!(pixel(&ring, 300, 160), clear);
+    assert_eq!(pixel(&ring, 372, 160), [0xec, 0x84, 0x3f, 255]);
+    assert_eq!(ring.center_hit, "");
+    assert_eq!(ring.ring_hit, "piece");
+    assert!(!ring.sweep.valid);
+    let moved = render(State {
+        offset: 0.12,
+        ..initial
+    })?;
+    let tint = render(State {
+        tint: xrack_runtime::Color(0x496aaaff),
+        ..initial
+    })?;
+    assert_eq!(moved.uploads, ring.uploads);
+    assert_eq!(tint.uploads, ring.uploads);
+    assert_eq!(pixel(&tint, 372, 160), [0x49, 0x6a, 0xaa, 255]);
+
+    let copy = render(State {
+        duplicate: true,
+        ..initial
+    })?;
+    assert_eq!(copy.uploads, ring.uploads);
+    assert_eq!(copy.geometry_bytes, ring.geometry_bytes);
+    assert_eq!(copy.submitted_vertices, 2 * ring.submitted_vertices);
+    assert_eq!(pixel(&copy, 564, 160), [0x66, 0xb8, 0xff, 255]);
+    let coarse = render(State {
+        resolution: 7,
+        ..initial
+    })?;
+    assert!(coarse.uploads > copy.uploads);
+    assert!(coarse.submitted_vertices < ring.submitted_vertices);
+    let restored = render(initial)?;
+    assert_eq!(restored.uploads, coarse.uploads);
+    assert!(restored.raster.rgba == ring.raster.rgba);
+
+    for shape in ["plane", "box", "sphere", "cylinder", "cone", "capsule"] {
+        let solid = render(State { shape, ..initial })?;
+        assert_eq!(solid.center_hit, "piece", "{shape}");
+        assert!(solid.sweep.valid, "{shape}");
+        // The cone begins at Y = 0. Sample a pixel above that edge.
+        let sample_y = if shape == "cone" { 120 } else { 160 };
+        assert_eq!(
+            pixel(&solid, 300, sample_y),
+            [0xec, 0x84, 0x3f, 255],
+            "{shape}"
+        );
+    }
+    let invalid = render(State {
+        shape: "capsule",
+        radius: 1.5,
+        ..initial
+    })?;
+    assert_eq!(invalid.center_hit, "");
+    assert_eq!(pixel(&invalid, 300, 160), clear);
+
+    let box_state = State {
+        shape: "box",
+        ..initial
+    };
+    let solid = render(box_state)?;
+    let unused_radius = render(State {
+        radius: 1.03,
+        ..box_state
+    })?;
+    assert_eq!(solid.uploads, unused_radius.uploads);
+
+    let shadow_state = State {
+        shadows: true,
+        ..initial
+    };
+    let shadow = render(shadow_state)?;
+    let next = render(State {
+        radius: 1.08,
+        ..shadow_state
+    })?;
+    assert!(shadow.shadow_passes > 0 && next.shadow_passes > shadow.shadow_passes);
+    let shadow_diff = (175..312)
+        .flat_map(|y| (420..580).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(&shadow, x, y)[0].abs_diff(pixel(&next, x, y)[0]) > 5)
+        .count();
+    assert!(shadow_diff > 100, "{shadow_diff} differing shadow pixels");
+    let auxiliary = render(State {
+        auxiliary: true,
+        ..shadow_state
+    })?;
+    assert!(auxiliary.depth_draws > 0 && auxiliary.motion_draws > 0);
+    assert_eq!(auxiliary.ring_hit, "piece");
+    assert_eq!(auxiliary.uploads, next.uploads);
+    Ok(())
+}
+
+#[test]
+fn authored_mesh_tracks_nested_model_edits_and_keeps_rendering_and_collision_in_sync() -> TestResult
+{
+    use authored_mesh_ui::AuthoredMeshDemo;
+
+    const NAME: &str = "examples/puzzle3d/authored_mesh.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("AuthoredMeshDemo")?;
+    let generated = AuthoredMeshDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut app = weak.upgrade().ok_or("missing authored mesh demo")?;
+    let world_stamp = || {
+        let Value::RecordList(model) = dynamic.get("world")? else {
+            return Err(xrack_interpreter::Error::Unsupported(
+                "missing world model".into(),
+            ));
+        };
+        Ok(model.model().edit_stamp())
+    };
+    let outer = world_stamp()?;
+
+    struct Frame {
+        raster: xrack_assets::Raster,
+        hit: String,
+        sweep: xrack_runtime::Hit3D,
+        uploads: u64,
+        submitted: u64,
+    }
+    let mut render = |app: &mut AuthoredMeshDemo| -> TestResult<Frame> {
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert!(
+            png == interpreted.render(&mut preview_gpu)?,
+            "authored mesh backend mismatch"
+        );
+        let hit = app.get_corner_hit();
+        let sweep = app.get_corner_sweep();
+        assert_eq!(dynamic.get("corner-hit")?, Value::String(hit.clone()));
+        assert_eq!(dynamic.get("corner-sweep")?, Value::Hit3D(sweep.clone()));
+        let raster = xrack_assets::decode_png(&png)?;
+        assert_eq!(raster.size, [600, 372]);
+        Ok(Frame {
+            raster,
+            hit: hit.to_string(),
+            sweep,
+            uploads: gpu.scene_mesh_uploads(),
+            submitted: gpu.scene_draw_stats().color_vertices - before.color_vertices,
+        })
+    };
+    let pixel = |frame: &Frame, x: usize, y: usize| {
+        let start = (y * 600 + x) * 4;
+        std::array::from_fn::<_, 4, _>(|channel| frame.raster.rgba[start + channel])
+    };
+    let clear = [0x22, 0x33, 0x4b, 255];
+    let orange = [0xed, 0x99, 0x51, 255];
+    let full = render(&mut app)?;
+    assert_eq!(pixel(&full, 250, 112), orange);
+    assert_eq!(full.hit, "panel");
+    assert_eq!(full.sweep.object_id, "panel");
+    assert_eq!(full.submitted, 6);
+
+    app.invoke_move_corner();
+    dynamic.invoke("move-corner", &[])?;
+    assert_eq!(app.get_before_edit(), "panel");
+    assert_eq!(app.get_after_edit(), "");
+    assert_eq!(dynamic.get("before-edit")?, Value::String("panel".into()));
+    assert_eq!(dynamic.get("after-edit")?, Value::String("".into()));
+    assert_eq!(world_stamp()?, outer);
+    let cut = render(&mut app)?;
+    assert_eq!(pixel(&cut, 250, 112), clear);
+    assert_eq!(cut.hit, "");
+    assert!(!cut.sweep.valid);
+    assert_eq!(cut.uploads, full.uploads + 1);
+
+    app.invoke_move_corner();
+    dynamic.invoke("move-corner", &[])?;
+    assert_eq!(world_stamp()?, outer);
+    let restored = render(&mut app)?;
+    assert_eq!(pixel(&restored, 250, 112), orange);
+    assert_eq!(restored.uploads, cut.uploads);
+    assert_eq!(restored.sweep, full.sweep);
+
+    app.invoke_set_last_index(1);
+    dynamic.invoke("set-last-index", &[Value::Int(1)])?;
+    assert_eq!(world_stamp()?, outer);
+    let indexed = render(&mut app)?;
+    assert_eq!(pixel(&indexed, 250, 112), clear);
+    assert!(!indexed.sweep.valid);
+    assert_eq!(indexed.uploads, restored.uploads + 1);
+
+    app.invoke_set_last_index(999);
+    dynamic.invoke("set-last-index", &[Value::Int(999)])?;
+    let invalid = render(&mut app)?;
+    assert_eq!(invalid.submitted, 0);
+    assert_eq!(pixel(&invalid, 350, 200), clear);
+    assert_eq!(invalid.uploads, indexed.uploads);
+
+    app.invoke_set_last_index(3);
+    dynamic.invoke("set-last-index", &[Value::Int(3)])?;
+    assert_eq!(world_stamp()?, outer);
+    let repaired = render(&mut app)?;
+    assert_eq!(repaired.hit, "panel");
+    assert_eq!(repaired.sweep, full.sweep);
+    assert_eq!(repaired.uploads, indexed.uploads);
+    assert_eq!(pixel(&repaired, 250, 112), orange);
+
+    // A copied instance and a color/transform edit only affect the instance resources.
+    app.set_duplicate(true);
+    dynamic.set("duplicate", Value::Bool(true))?;
+    app.set_tint(xrack_runtime::Color(0x77aeffff));
+    dynamic.set("tint", Value::Color(xrack_runtime::Color(0x77aeffff)))?;
+    app.set_offset(0.1);
+    dynamic.set("offset", Value::Float(0.1))?;
+    let before = gpu.scene_draw_stats();
+    let png = aot.render(&mut gpu)?.to_vec();
+    assert!(png == interpreted.render(&mut preview_gpu)?);
+    assert_eq!(gpu.scene_mesh_uploads(), repaired.uploads);
+    assert_eq!(
+        gpu.scene_draw_stats().color_vertices - before.color_vertices,
+        12
+    );
+    Ok(())
+}
+
+#[test]
+fn authored_subsets_keep_material_picking_and_uv_sets_in_sync_without_vertex_uploads() -> TestResult
+{
+    use mesh_subsets_ui::MeshSubsetsDemo;
+
+    const NAME: &str = "examples/puzzle3d/mesh_subsets.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("MeshSubsetsDemo")?;
+    let generated = MeshSubsetsDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut app = weak.upgrade().ok_or("missing mesh subsets demo")?;
+    let world_stamp = || -> TestResult<(u64, u64)> {
+        let Value::RecordList(world) = dynamic.get("world")? else {
+            return Err("missing world model".into());
+        };
+        Ok(world.model().edit_stamp())
+    };
+
+    struct Frame {
+        pixels: [[u8; 4]; 3],
+        hits: [String; 2],
+        uploads: u64,
+        draws: u64,
+        submitted: u64,
+    }
+    let mut render = |app: &mut MeshSubsetsDemo| -> TestResult<Frame> {
+        let before = gpu.scene_draw_stats();
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert!(
+            png == interpreted.render(&mut preview_gpu)?,
+            "mesh subsets backend mismatch"
+        );
+        let raster = xrack_assets::decode_png(&png)?;
+        assert_eq!(raster.size, [600, 372]);
+        let pixels = [164_usize, 300, 436].map(|x| {
+            let offset = (160 * 600 + x) * 4;
+            std::array::from_fn(|channel| raster.rgba[offset + channel])
+        });
+        let hits = [app.get_left_hit(), app.get_middle_hit()];
+        for (name, hit) in ["left-hit", "middle-hit"].into_iter().zip(&hits) {
+            assert_eq!(dynamic.get(name)?, Value::String(hit.clone()));
+        }
+        let after = gpu.scene_draw_stats();
+        Ok(Frame {
+            pixels,
+            hits: hits.map(|hit| hit.to_string()),
+            uploads: gpu.scene_mesh_uploads(),
+            draws: after.color_draws - before.color_draws,
+            submitted: after.color_vertices - before.color_vertices,
+        })
+    };
+
+    let badge = [0xd8, 0x72, 0x49, 255];
+    let surface = [0xd9, 0xdd, 0xe5, 255];
+    let green = [0x19, 0xdc, 0x76, 255];
+    let blue = [0x20, 0x52, 0xe8, 255];
+    let clear = [0x22, 0x33, 0x4b, 255];
+    let initial = render(&mut app)?;
+    assert_eq!(initial.pixels, [badge, surface, green]);
+    assert_eq!((initial.draws, initial.submitted), (3, 18));
+
+    app.set_secondary_uv(false);
+    dynamic.set("secondary-uv", Value::Bool(false))?;
+    let uv0 = render(&mut app)?;
+    assert_eq!(uv0.pixels, [badge, surface, blue]);
+    assert_eq!(uv0.uploads, initial.uploads);
+    app.set_secondary_uv(true);
+    dynamic.set("secondary-uv", Value::Bool(true))?;
+
+    app.set_hidden_badge(true);
+    dynamic.set("hidden-badge", Value::Bool(true))?;
+    let masked = render(&mut app)?;
+    assert_eq!(masked.pixels, [clear, surface, green]);
+    assert_eq!(masked.hits, ["", "tiles"]);
+    let outer_stamp = world_stamp()?;
+    app.invoke_move_badge();
+    dynamic.invoke("move-badge", &[])?;
+    assert_eq!(world_stamp()?, outer_stamp);
+    let moved = render(&mut app)?;
+    assert_eq!(moved.pixels, [surface, clear, green]);
+    assert_eq!(moved.hits, ["tiles", ""]);
+    assert_eq!(moved.uploads, initial.uploads);
+
+    app.set_hidden_badge(false);
+    dynamic.set("hidden-badge", Value::Bool(false))?;
+    app.invoke_replace_segment(0, 12, 6, "badge".into());
+    dynamic.invoke(
+        "replace-segment",
+        &[
+            Value::Int(0),
+            Value::Int(12),
+            Value::Int(6),
+            Value::String("badge".into()),
+        ],
+    )?;
+    let merged = render(&mut app)?;
+    assert_eq!(merged.pixels, [surface, badge, badge]);
+    assert_eq!((merged.draws, merged.submitted), (2, 18));
+    assert_eq!(merged.uploads, initial.uploads);
+
+    app.invoke_replace_segment(1, 12, 6, "badge".into());
+    dynamic.invoke(
+        "replace-segment",
+        &[
+            Value::Int(1),
+            Value::Int(12),
+            Value::Int(6),
+            Value::String("badge".into()),
+        ],
+    )?;
+    let invalid = render(&mut app)?;
+    assert_eq!(invalid.pixels, [clear; 3]);
+    assert_eq!(invalid.hits, ["", ""]);
+    app.invoke_replace_segment(1, 6, 6, "badge".into());
+    dynamic.invoke(
+        "replace-segment",
+        &[
+            Value::Int(1),
+            Value::Int(6),
+            Value::Int(6),
+            Value::String("badge".into()),
+        ],
+    )?;
+    let repaired = render(&mut app)?;
+    assert_eq!(repaired.pixels, merged.pixels);
+    assert_eq!(repaired.uploads, initial.uploads);
+
+    app.set_duplicate(true);
+    dynamic.set("duplicate", Value::Bool(true))?;
+    let instances = render(&mut app)?;
+    assert_eq!(instances.submitted, 2 * initial.submitted);
+    assert_eq!(instances.uploads, initial.uploads);
+    Ok(())
+}
+
+#[test]
+fn scene_node_coordinate_mapping_matches_backends_and_layout() -> TestResult {
+    use node_mapping_ui::NodeMappingDemo;
+    use xrack_runtime::{Point3D, Vector3D};
+
+    const NAME: &str = "examples/puzzle3d/node_mapping.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("NodeMappingDemo")?;
+    let generated = NodeMappingDemo::new();
+    let weak = generated.as_weak();
+    let mut aot = PreviewScene::new(Box::new(generated));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let mut gpu = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+
+    fn close(actual: [f64; 3], expected: [f64; 3]) {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| (a - b).abs() < 2e-6),
+            "{actual:?} vs {expected:?}"
+        );
+    }
+
+    let mut render = |yaw: f64, stretch: f64, visible: bool, target: &str| -> TestResult<_> {
+        let mut app = weak.upgrade().ok_or("missing node mapping instance")?;
+        app.set_yaw(yaw);
+        app.set_stretch(stretch);
+        app.set_show_rig(visible);
+        app.set_destination(target.into());
+        for (name, value) in [
+            ("yaw", Value::Float(yaw)),
+            ("stretch", Value::Float(stretch)),
+            ("show-rig", Value::Bool(visible)),
+            ("destination", Value::String(target.into())),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        for (name, point) in [
+            ("socket-world", app.get_socket_world()),
+            ("socket-relative", app.get_socket_relative()),
+            ("round-trip", app.get_round_trip()),
+        ] {
+            assert_eq!(dynamic.get(name)?, Value::Point3D(point));
+        }
+        for (name, direction) in [
+            ("aim-world", app.get_aim_world()),
+            ("aim-relative", app.get_aim_relative()),
+            ("aim-round-trip", app.get_aim_round_trip()),
+        ] {
+            assert_eq!(dynamic.get(name)?, Value::Vector3D(direction));
+        }
+        let point = app.get_socket_world();
+        let length = (0.8 - 0.25) * stretch;
+        let (sin, cos) = yaw.to_radians().sin_cos();
+        close(
+            [point.x, point.y, point.z],
+            [0.65 + length * cos, 0.1125, -length * sin],
+        );
+        let heading = app.get_aim_world();
+        let (sin, cos) = (yaw + 30.0).to_radians().sin_cos();
+        close(
+            [heading.x, heading.y, heading.z],
+            [1.65 * sin, 0.0, 1.65 * cos],
+        );
+        if target == "absent" {
+            assert_eq!(app.get_socket_relative(), Point3D::new(-99.0, -99.0, -99.0));
+            assert_eq!(app.get_aim_relative(), Vector3D::new(-99.0, -99.0, -99.0));
+        } else {
+            let round_trip = app.get_round_trip();
+            close([round_trip.x, round_trip.y, round_trip.z], [0.0; 3]);
+            let aim = app.get_aim_round_trip();
+            close([aim.x, aim.y, aim.z], [0.0, 0.0, 1.65]);
+        }
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert_eq!(png.as_slice(), interpreted.render(&mut gpu)?);
+        Ok(png)
+    };
+    let initial = render(0.0, 1.5, true, "dock")?;
+    let rotated = render(62.0, 1.5, true, "dock")?;
+    assert!(initial != rotated);
+    let scaled = render(62.0, 2.5, true, "")?;
+    assert!(rotated != scaled);
+    let hidden = render(62.0, 2.5, false, "")?;
+    assert!(scaled != hidden);
+    let _ = render(62.0, 2.5, false, "absent")?;
+    Ok(())
+}
+
+#[test]
+fn transparent_view_composites_over_two_dimensional_content_across_passes() -> TestResult {
+    use transparent_view_ui::TransparentViewDemo;
+    use xrack_renderer_femtovg::SceneDrawStats;
+
+    const NAME: &str = "examples/puzzle3d/transparent_view.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("TransparentViewDemo")?;
+    let app = TransparentViewDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy, Debug)]
+    struct View {
+        clear: &'static str,
+        quality: &'static str,
+        camera: &'static str,
+        alternate: bool,
+        objects: bool,
+        glass: bool,
+        fog: bool,
+        sky: bool,
+    }
+    let initial = View {
+        clear: "transparent",
+        quality: "normal",
+        camera: "eye",
+        alternate: false,
+        objects: true,
+        glass: false,
+        fog: false,
+        sky: false,
+    };
+    struct Frame {
+        image: xrack_assets::Raster,
+        stats: SceneDrawStats,
+    }
+    impl Frame {
+        fn pixel(&self, x: usize, y: usize) -> [u8; 4] {
+            self.image.rgba.as_chunks::<4>().0[600 * y + x]
+        }
+    }
+    let backdrop = [116, 84, 72, 255];
+    let alternative = [40, 76, 100, 255];
+    let mut draw = |view: View| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing transparent view")?;
+        app.set_clear_mode(view.clear.into());
+        app.set_quality(view.quality.into());
+        app.set_camera_id(view.camera.into());
+        app.set_alternate(view.alternate);
+        app.set_models_visible(view.objects);
+        app.set_glass(view.glass);
+        app.set_fog(view.fog);
+        app.set_sky(view.sky);
+        for (name, value) in [
+            ("clear-mode", Value::String(view.clear.into())),
+            ("quality", Value::String(view.quality.into())),
+            ("camera-id", Value::String(view.camera.into())),
+            ("alternate", Value::Bool(view.alternate)),
+            ("models-visible", Value::Bool(view.objects)),
+            ("glass", Value::Bool(view.glass)),
+            ("fog", Value::Bool(view.fog)),
+            ("sky", Value::Bool(view.sky)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        assert_eq!(dynamic.get("picked")?, Value::String(app.get_picked()));
+        assert_eq!(
+            app.get_picked(),
+            if view.objects && view.camera != "absent" {
+                "orb"
+            } else {
+                ""
+            }
+        );
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert!(png == interpreted.render(&mut preview_gpu)?, "{view:?}");
+        Ok(Frame {
+            image: xrack_assets::decode_png(&png)?,
+            stats: gpu.scene_draw_stats(),
+        })
+    };
+    let plain = draw(initial)?;
+    assert_eq!(plain.pixel(10, 10), backdrop);
+    assert_eq!(plain.pixel(158, 145), [255, 230, 144, 255]);
+    assert!(plain.stats.alpha_composite_resolves > 0);
+    let changed = draw(View {
+        alternate: true,
+        ..initial
+    })?;
+    assert_eq!(changed.pixel(10, 10), alternative);
+    assert_eq!(changed.pixel(158, 145), plain.pixel(158, 145));
+    assert_ne!(changed.pixel(442, 145), plain.pixel(442, 145));
+    assert_eq!(changed.stats.viewport_renders, plain.stats.viewport_renders);
+    assert_eq!(
+        changed.stats.alpha_composite_resolves,
+        plain.stats.alpha_composite_resolves
+    );
+    assert!(changed.stats.viewport_cache_hits > plain.stats.viewport_cache_hits);
+
+    let close = |actual: [u8; 4], expected: [u8; 4]| {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 2),
+            "{actual:?} vs {expected:?}"
+        );
+    };
+    let tinted = draw(View {
+        clear: "tint",
+        ..initial
+    })?;
+    close(tinted.pixel(10, 10), [142, 74, 52, 255]);
+    let opaque = draw(View {
+        clear: "opaque",
+        ..initial
+    })?;
+    assert_eq!(opaque.pixel(10, 10), [168, 64, 32, 255]);
+    assert_eq!(
+        opaque.stats.alpha_composite_resolves,
+        tinted.stats.alpha_composite_resolves
+    );
+
+    for quality in [
+        "msaa",
+        "ssaa",
+        "hdr",
+        "weighted",
+        "screen",
+        "lut",
+        "focus",
+        "bloom",
+        "progressive",
+        "temporal",
+        "particles",
+    ] {
+        let state = View { quality, ..initial };
+        let frame = draw(state)?;
+        assert_eq!(frame.pixel(10, 10), backdrop, "{quality}");
+        let before_controls = 600 * 290 * 4;
+        if matches!(quality, "focus" | "bloom" | "screen" | "lut" | "particles") {
+            assert!(frame.image.rgba[..before_controls] != plain.image.rgba[..before_controls]);
+        }
+        match quality {
+            "msaa" => assert!(frame.stats.multisample_resolves > 0),
+            "ssaa" => assert!(frame.stats.supersample_resolves > 0),
+            "hdr" => assert!(frame.stats.hdr_resolves > 0),
+            "weighted" => assert!(frame.stats.transparency_composites > 0),
+            "screen" => assert!(frame.stats.screen_reflection_resolves > 0),
+            "lut" => assert!(frame.stats.lut_resolves > 0),
+            "focus" => assert!(frame.stats.depth_of_field_passes > 0),
+            "particles" => {
+                assert!(frame.stats.particle_draws > 0);
+                assert_ne!(frame.pixel(103, 217), backdrop);
+            }
+            _ => {}
+        }
+        if quality == "bloom" {
+            assert_ne!(frame.pixel(360, 145), backdrop, "glow spans beyond the orb");
+        }
+        if matches!(quality, "temporal" | "progressive") {
+            let next = draw(state)?;
+            assert_eq!(next.pixel(10, 10), backdrop, "{quality} history");
+            assert!(next.stats.viewport_renders > frame.stats.viewport_renders);
+        }
+    }
+
+    let glass = draw(View {
+        glass: true,
+        ..initial
+    })?;
+    let glass_alt = draw(View {
+        glass: true,
+        alternate: true,
+        ..initial
+    })?;
+    assert_eq!(glass.pixel(10, 10), backdrop);
+    assert!(glass.pixel(442, 145)[0].abs_diff(glass_alt.pixel(442, 145)[0]) > 45);
+    assert!(glass.stats.transmission_captures > 0);
+    let fog = draw(View {
+        fog: true,
+        ..initial
+    })?;
+    assert_ne!(fog.pixel(506, 47), backdrop);
+    assert_eq!(fog.pixel(10, 10), backdrop);
+    let sky = draw(View {
+        sky: true,
+        ..initial
+    })?;
+    let other_sky = draw(View {
+        sky: true,
+        alternate: true,
+        ..initial
+    })?;
+    assert_ne!(sky.pixel(10, 10), backdrop);
+    assert_eq!(sky.pixel(10, 10), other_sky.pixel(10, 10));
+
+    let bars = draw(View {
+        camera: "rig/Hero",
+        clear: "tint",
+        ..initial
+    })?;
+    close(bars.pixel(10, 10), [142, 74, 52, 255]);
+    close(bars.pixel(360, 145), bars.pixel(10, 10));
+    let empty = draw(View {
+        objects: false,
+        ..initial
+    })?;
+    assert_eq!(empty.pixel(300, 145), backdrop);
+    let no_camera = draw(View {
+        camera: "absent",
+        ..initial
+    })?;
+    assert_eq!(no_camera.pixel(300, 145), backdrop);
+    Ok(())
+}
+
+#[test]
+fn scene_item_textures_refresh_in_place_and_reuse_gpu_meshes() -> TestResult {
+    use item_texture_ui::ItemTextureDemo;
+    use xrack_renderer_femtovg::SceneDrawStats;
+    use xrack_runtime::Length;
+
+    const NAME: &str = "examples/puzzle3d/item_texture.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ItemTextureDemo")?;
+    let app = ItemTextureDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+
+    #[derive(Clone, Copy, Debug)]
+    struct State {
+        active: bool,
+        heading: f64,
+        visible: bool,
+        duplicate: bool,
+        width: f64,
+        name: &'static str,
+    }
+    struct Frame {
+        image: xrack_assets::Raster,
+        stats: SceneDrawStats,
+        meshes: u64,
+    }
+    impl Frame {
+        fn pixel(&self, x: usize, y: usize) -> [u8; 4] {
+            self.image.rgba.as_chunks::<4>().0[y * 600 + x]
+        }
+    }
+
+    let mut draw = |state: State| -> TestResult<Frame> {
+        let mut app = weak.upgrade().ok_or("missing 2D item source demo")?;
+        app.set_active(state.active);
+        app.set_camera_turn(state.heading);
+        app.set_source_visible(state.visible);
+        app.set_duplicate(state.duplicate);
+        app.set_panel_width(Length(state.width));
+        app.set_texture_name(state.name.into());
+        for (name, value) in [
+            ("active", Value::Bool(state.active)),
+            ("camera-turn", Value::Float(state.heading)),
+            ("source-visible", Value::Bool(state.visible)),
+            ("duplicate", Value::Bool(state.duplicate)),
+            ("panel-width", Value::Length(Length(state.width))),
+            ("texture-name", Value::String(state.name.into())),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        assert_eq!(dynamic.get("picked")?, Value::String(app.get_picked()));
+        let rendered = aot.render(&mut gpu)?.to_vec();
+        assert!(
+            rendered == interpreted.render(&mut preview_gpu)?,
+            "{state:?}"
+        );
+        let image = xrack_assets::decode_png(&rendered)?;
+        assert_eq!(image.size, [600, 350]);
+        Ok(Frame {
+            image,
+            stats: gpu.scene_draw_stats(),
+            meshes: gpu.scene_mesh_uploads(),
+        })
+    };
+    let state = State {
+        active: false,
+        heading: 0.0,
+        visible: true,
+        duplicate: false,
+        width: 174.0,
+        name: "dashboard",
+    };
+    let first = draw(state)?;
+    assert_eq!(first.stats.item_texture_allocations, 1);
+    assert_eq!(first.stats.item_texture_captures, 1);
+    assert_eq!(first.pixel(177, 145), [113, 67, 57, 255]);
+    assert_eq!(first.pixel(423, 145), first.pixel(177, 145));
+    let repeated = draw(state)?;
+    assert_eq!(
+        repeated.stats.item_texture_captures,
+        first.stats.item_texture_captures
+    );
+    assert_eq!(
+        repeated.stats.viewport_renders,
+        first.stats.viewport_renders
+    );
+    assert!(repeated.stats.item_texture_reuses > first.stats.item_texture_reuses);
+
+    let activated = State {
+        active: true,
+        ..state
+    };
+    let changed = draw(activated)?;
+    assert_eq!(changed.pixel(177, 145), [56, 92, 115, 255]);
+    assert_eq!(changed.pixel(423, 145), changed.pixel(177, 145));
+    assert_eq!(
+        changed.stats.item_texture_captures,
+        first.stats.item_texture_captures + 1
+    );
+    assert_eq!(
+        changed.stats.item_texture_allocations,
+        first.stats.item_texture_allocations
+    );
+    assert_eq!(changed.meshes, first.meshes);
+
+    let tilted = draw(State {
+        heading: 8.0,
+        ..activated
+    })?;
+    assert_eq!(
+        tilted.stats.item_texture_captures,
+        changed.stats.item_texture_captures
+    );
+    assert!(tilted.stats.viewport_renders > changed.stats.viewport_renders);
+    assert!(tilted.image.rgba[..600 * 224 * 4] != changed.image.rgba[..600 * 224 * 4]);
+    let wide = draw(State {
+        width: 194.0,
+        ..activated
+    })?;
+    assert_eq!(
+        wide.stats.item_texture_allocations,
+        changed.stats.item_texture_allocations + 1
+    );
+    assert_eq!(wide.meshes, changed.meshes);
+
+    let ambiguous = draw(State {
+        duplicate: true,
+        ..activated
+    })?;
+    assert_eq!(ambiguous.pixel(177, 145), [255; 4]);
+    let restore = draw(activated)?;
+    assert_eq!(restore.pixel(177, 145), changed.pixel(177, 145));
+    let hidden = draw(State {
+        visible: false,
+        ..activated
+    })?;
+    assert_eq!(hidden.pixel(177, 145), [255; 4]);
+    let unused = draw(State {
+        name: "unregistered",
+        ..activated
+    })?;
+    assert_eq!(unused.pixel(177, 145), [255; 4]);
+    assert_eq!(
+        unused.stats.item_texture_captures,
+        hidden.stats.item_texture_captures
+    );
+    Ok(())
+}
+
+#[test]
+fn texture_input_routes_buttons_ranges_and_touch_by_surface() -> TestResult {
+    use item_texture_ui::ItemTextureDemo;
+    use xrack_runtime::{KeyEvent, PointerButton, PointerEvent};
+
+    const NAME: &str = "examples/puzzle3d/item_texture.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ItemTextureDemo")?;
+    let app = ItemTextureDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    fn render(
+        aot: &mut PreviewScene,
+        interpreted: &mut PreviewScene,
+        gpu: &mut Renderer,
+        preview_gpu: &mut Renderer,
+    ) -> TestResult<(Vec<u8>, xrack_renderer_femtovg::SceneDrawStats)> {
+        let before = aot.render(gpu)?.to_vec();
+        assert!(before == interpreted.render(preview_gpu)?);
+        Ok((before, gpu.scene_draw_stats()))
+    }
+    let state = weak.upgrade().ok_or("missing item texture input demo")?;
+    let check = |activations, downs, ups, cancels| -> TestResult {
+        for (name, actual, expected) in [
+            ("activations", state.get_activations(), activations),
+            ("downs", state.get_downs(), downs),
+            ("ups", state.get_ups(), ups),
+            ("cancels", state.get_cancels(), cancels),
+        ] {
+            assert_eq!(dynamic.get(name)?, Value::Int(expected));
+            assert_eq!(actual, expected, "{name}");
+        }
+        Ok(())
+    };
+
+    let on_face = |center: f32, u: f32, v: f32| Point {
+        x: center + (u - 0.5) * (224.0 / 4.2) * 2.5,
+        y: 112.0 + (v - 0.5) * (224.0 / 4.2) * 1.62,
+    };
+    let left = 300.0 - 2.3 * (224.0 / 4.2);
+    let right = 300.0 + 2.3 * (224.0 / 4.2);
+    let left_button = on_face(left, 0.48, 0.44);
+    let right_button = on_face(right, 0.48, 0.44);
+    let range_start = on_face(left, 0.24, 0.733);
+    let range_end = on_face(left, 0.84, 0.733);
+    let badge = on_face(left, 32.0 / 174.0, 18.0 / 102.0);
+    let outside = Point { x: 305.0, y: 20.0 };
+    let mouse = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent {
+            button: PointerButton::Primary,
+            ..Default::default()
+        },
+    };
+    let touch = PointerContact {
+        id: 2,
+        primary: true,
+        event: PointerEvent {
+            is_touch: true,
+            ..mouse.event
+        },
+    };
+    let (initial, initial_stats) = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+    for view in [&mut aot, &mut interpreted] {
+        assert!(view.press_contact(mouse, left_button, false));
+    }
+    let (pressed, pressed_stats) = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+    assert!(
+        xrack_assets::decode_png(&pressed)?.rgba[..600 * 224 * 4]
+            != xrack_assets::decode_png(&initial)?.rgba[..600 * 224 * 4],
+        "3D shows the source's pressed state"
+    );
+    assert_eq!(
+        initial_stats.item_texture_allocations,
+        pressed_stats.item_texture_allocations
+    );
+    check(0, 0, 0, 0)?;
+
+    for view in [&mut aot, &mut interpreted] {
+        view.finish_contact(mouse, left_button, true, false);
+    }
+    check(1, 0, 0, 0)?;
+    let _ = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+    for view in [&mut aot, &mut interpreted] {
+        assert!(view.press_contact(mouse, left_button, false));
+        view.move_contact(mouse, right_button);
+        view.finish_contact(mouse, right_button, true, false);
+        view.press_contact(touch, right_button, false);
+        view.finish_contact(touch, right_button, true, false);
+    }
+    check(2, 0, 0, 0)?;
+    let _ = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+
+    for view in [&mut aot, &mut interpreted] {
+        assert!(view.press_contact(mouse, range_start, false));
+        view.move_contact(mouse, range_end);
+        view.finish_contact(mouse, range_end, true, false);
+    }
+    let level = state.get_level();
+    assert_eq!(dynamic.get("level")?, Value::Float(level));
+    assert!(level > 78.0 && level <= 100.0, "{level}");
+    let _ = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+
+    for view in [&mut aot, &mut interpreted] {
+        assert!(view.press_contact(touch, badge, false));
+        view.finish_contact(touch, badge, true, false);
+        assert!(view.press_contact(mouse, badge, false));
+        view.move_contact(mouse, outside);
+        view.finish_contact(mouse, outside, true, false);
+    }
+    check(2, 2, 1, 1)?;
+    for (property, coordinate, expected) in [
+        ("contact-x", state.get_contact_x(), 22.0),
+        ("contact-y", state.get_contact_y(), 7.0),
+    ] {
+        assert_eq!(dynamic.get(property)?, Value::Length(coordinate));
+        assert!(
+            (coordinate.0 - expected).abs() < 0.05,
+            "{property}: {coordinate:?}"
+        );
+    }
+
+    let mut state = state;
+    state.set_blocker(true);
+    dynamic.set("blocker", Value::Bool(true))?;
+    let _ = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+    for view in [&mut aot, &mut interpreted] {
+        view.click(left_button);
+    }
+    assert_eq!(
+        state.get_activations(),
+        2,
+        "a visible non-pickable occluder covers the panel"
+    );
+    state.set_blocker(false);
+    dynamic.set("blocker", Value::Bool(false))?;
+    state.set_input_enabled(false);
+    dynamic.set("input-enabled", Value::Bool(false))?;
+    let _ = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+    for view in [&mut aot, &mut interpreted] {
+        view.click(left_button);
+        view.click(Point { x: 100.0, y: 270.0 });
+    }
+    assert_eq!(state.get_activations(), 3, "the real 2D button also works");
+    assert_eq!(dynamic.get("activations")?, Value::Int(3));
+    state.set_input_enabled(true);
+    dynamic.set("input-enabled", Value::Bool(true))?;
+    state.set_offscreen_only(true);
+    dynamic.set("offscreen-only", Value::Bool(true))?;
+    let (material_only, _) = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+    let rgba = xrack_assets::decode_png(&material_only)?.rgba;
+    let pixel = |x, y| rgba.as_chunks::<4>().0[600 * y + x];
+    assert_eq!(pixel(25usize, 239usize), [23, 35, 50, 255]);
+    assert_eq!(pixel(10usize, 10usize), [37, 61, 82, 255]);
+    assert_eq!(pixel(177usize, 145usize), [56, 92, 115, 255]);
+
+    for view in [&mut aot, &mut interpreted] {
+        view.click(Point { x: 100.0, y: 270.0 });
+        view.click(Point { x: 100.0, y: 43.0 });
+    }
+    assert_eq!(
+        state.get_activations(),
+        3,
+        "the panel has no direct window hit region"
+    );
+    for view in [&mut aot, &mut interpreted] {
+        view.click(left_button);
+    }
+    assert_eq!(state.get_activations(), 4);
+    let _ = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+    let focused_id = |preview: &PreviewScene| {
+        let (scene, _, path) = preview.inspect_frame()?;
+        scene.at_path(path?)?.element_id().map(str::to_owned)
+    };
+    assert_eq!(focused_id(&aot).as_deref(), Some("panel-power"));
+    assert_eq!(focused_id(&aot), focused_id(&interpreted));
+    let space = KeyEvent {
+        key: " ".into(),
+        ..Default::default()
+    };
+    for (preview, renderer) in [(&mut aot, &mut gpu), (&mut interpreted, &mut preview_gpu)] {
+        let _ = preview.keyboard(renderer, &space, true);
+        let _ = preview.keyboard(renderer, &space, false);
+    }
+    assert_eq!(state.get_activations(), 5);
+    assert_eq!(dynamic.get("activations")?, Value::Int(5));
+
+    state.set_input_enabled(false);
+    dynamic.set("input-enabled", Value::Bool(false))?;
+    let _ = render(&mut aot, &mut interpreted, &mut gpu, &mut preview_gpu)?;
+    assert_ne!(focused_id(&aot).as_deref(), Some("panel-power"));
+    assert_eq!(focused_id(&aot), focused_id(&interpreted));
+    Ok(())
+}
+
+#[test]
+fn live_item_mipmaps_filter_alpha_coverage_and_keep_warm_gpu_textures() -> TestResult {
+    use item_texture_ui::ItemTextureDemo;
+
+    const NAME: &str = "examples/puzzle3d/item_texture.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ItemTextureDemo")?;
+    let app = ItemTextureDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut app = weak.upgrade().ok_or("missing live mipmap fixture")?;
+    app.set_fine_grid(true);
+    app.set_offscreen_only(true);
+    dynamic.set("fine-grid", Value::Bool(true))?;
+    dynamic.set("offscreen-only", Value::Bool(true))?;
+
+    let mut draw = |app: &mut ItemTextureDemo, mips, height, active| -> TestResult<_> {
+        app.set_mipmaps(mips);
+        app.set_camera_height(height);
+        app.set_active(active);
+        dynamic.set("mipmaps", Value::Bool(mips))?;
+        dynamic.set("camera-height", Value::Float(height))?;
+        dynamic.set("active", Value::Bool(active))?;
+        let png = aot.render(&mut gpu)?.to_vec();
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        Ok((xrack_assets::decode_png(&png)?, gpu.scene_draw_stats()))
+    };
+    let colors = |image: &xrack_assets::Raster| {
+        let texels = image.rgba.as_chunks::<4>().0;
+        (110..115)
+            .flat_map(|y| (287..294).map(move |x| texels[y * 600 + x]))
+            .collect::<Vec<_>>()
+    };
+    let spread = |colors: &[[u8; 4]]| -> u8 {
+        let channels = colors.iter().map(|rgba| rgba[0]);
+        channels.clone().max().unwrap_or_default() - channels.min().unwrap_or_default()
+    };
+    let (unfiltered, before) = draw(&mut app, false, 54.0, false)?;
+    assert_eq!(before.item_texture_mip_passes, 0);
+    let (filtered, after) = draw(&mut app, true, 54.0, false)?;
+    assert_eq!(after.item_texture_mip_allocations, 1);
+    assert_eq!(after.item_texture_mip_passes, 8);
+    assert_eq!(
+        after.item_texture_allocations,
+        before.item_texture_allocations
+    );
+    let direct = colors(&unfiltered);
+    let mip = colors(&filtered);
+    assert!(spread(&direct) > 50, "{direct:?}");
+    assert!(spread(&mip) < 12, "{mip:?}");
+    // Half white premultiplied coverage over the blue viewport. Filtering
+    // straight color would leave a dark fringe around the transparent stripes.
+    assert!(
+        mip.iter().all(|pixel| (179..=203).contains(&pixel[0])),
+        "{mip:?}"
+    );
+
+    let (_, camera) = draw(&mut app, true, 50.0, false)?;
+    assert_eq!(
+        camera.item_texture_mip_passes,
+        after.item_texture_mip_passes
+    );
+    assert_eq!(camera.item_texture_captures, after.item_texture_captures);
+    let (changed_color, repaint) = draw(&mut app, true, 54.0, true)?;
+    assert_eq!(repaint.item_texture_mip_allocations, 1);
+    assert_eq!(
+        repaint.item_texture_mip_passes,
+        after.item_texture_mip_passes + 8
+    );
+    assert_eq!(
+        repaint.item_texture_captures,
+        camera.item_texture_captures + 1
+    );
+    assert_eq!(
+        repaint.item_texture_allocations,
+        before.item_texture_allocations
+    );
+    assert!(
+        colors(&changed_color)
+            .iter()
+            .all(|pixel| pixel[0] < 105 && pixel[1] > 145)
+    );
+    let (_, stable) = draw(&mut app, true, 54.0, true)?;
+    assert_eq!(
+        stable.item_texture_mip_passes,
+        repaint.item_texture_mip_passes
+    );
+    assert_eq!(stable.viewport_renders, repaint.viewport_renders);
+    let (restored, off) = draw(&mut app, false, 54.0, false)?;
+    assert_eq!(off.item_texture_mip_passes, stable.item_texture_mip_passes);
+    assert_eq!(colors(&restored), direct);
+    Ok(())
+}
+
+#[test]
+fn scene_texture_scroll_preserves_local_positions_and_nested_routes() -> TestResult {
+    use item_texture_ui::ItemTextureDemo;
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{Length, PointerButton, PointerEvent, WheelEvent};
+
+    const NAME: &str = "examples/puzzle3d/item_texture.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ItemTextureDemo")?;
+    let app = ItemTextureDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut app = weak.upgrade().ok_or("missing texture wheel example")?;
+    app.set_scroll_console(true);
+    app.set_offscreen_only(true);
+    app.set_accept_wheel(true);
+    for (name, value) in [
+        ("scroll-console", true),
+        ("offscreen-only", true),
+        ("accept-wheel", true),
+    ] {
+        dynamic.set(name, Value::Bool(value))?;
+    }
+
+    struct SceneInputs<'a> {
+        aot: &'a mut PreviewScene,
+        interpreted: &'a mut PreviewScene,
+        gpu: &'a mut Renderer,
+        preview_gpu: &'a mut Renderer,
+    }
+    impl SceneInputs<'_> {
+        fn draw(&mut self) -> TestResult<Vec<u8>> {
+            let png = self.aot.render(self.gpu)?.to_vec();
+            assert!(png == self.interpreted.render(self.preview_gpu)?);
+            Ok(png)
+        }
+
+        fn wheel(&mut self, point: Point, delta: f64) {
+            let event = WheelEvent {
+                delta_y: Length(delta),
+                ..Default::default()
+            };
+            self.aot.wheel_event_with_renderer(self.gpu, point, event);
+            self.interpreted
+                .wheel_event_with_renderer(self.preview_gpu, point, event);
+        }
+    }
+    let mut inputs = SceneInputs {
+        aot: &mut aot,
+        interpreted: &mut interpreted,
+        gpu: &mut gpu,
+        preview_gpu: &mut preview_gpu,
+    };
+    let on_face = |direction: f32, x: f32, y: f32| Point {
+        x: 300.0 + (direction * 2.3 + (x / 174.0 - 0.5) * 2.5) * (224.0 / 4.2),
+        y: 112.0 + (y / 102.0 - 0.5) * 1.62 * (224.0 / 4.2),
+    };
+    let inner = on_face(-1.0, 75.0, 20.0);
+    let slider_left = on_face(-1.0, 75.0, 79.0);
+    let slider_right = on_face(1.0, 75.0, 79.0);
+    let assert_offsets = |app: &ItemTextureDemo, expected: [f64; 3]| -> TestResult {
+        for (name, actual, value) in [
+            ("inner-offset", app.get_inner_offset(), expected[0]),
+            ("outer-offset", app.get_outer_offset(), expected[1]),
+            ("viewport-offset", app.get_viewport_offset(), expected[2]),
+        ] {
+            assert_eq!(dynamic.get(name)?, Value::Length(actual));
+            assert!(
+                (actual.0 - value).abs() < 0.05,
+                "{name}: {actual:?} vs {value}"
+            );
+        }
+        Ok(())
+    };
+    let baseline = inputs.draw()?;
+    inputs.wheel(inner, 72.0);
+    let _ = inputs.draw()?;
+    assert_eq!(app.get_wheel_events(), 1);
+    for (name, actual, expected) in [
+        ("wheel-x", app.get_wheel_x(), 75.0),
+        ("wheel-y", app.get_wheel_y(), 20.0),
+        ("wheel-delta", app.get_wheel_delta(), 72.0),
+    ] {
+        assert_eq!(dynamic.get(name)?, Value::Length(actual));
+        assert!((actual.0 - expected).abs() < 0.05, "{name}: {actual:?}");
+    }
+    assert_offsets(&app, [0.0; 3])?;
+    app.set_accept_wheel(false);
+    dynamic.set("accept-wheel", Value::Bool(false))?;
+    let _ = inputs.draw()?;
+    inputs.wheel(inner, 72.0);
+    assert!(inputs.draw()? != baseline);
+    assert_offsets(&app, [-28.0, -44.0, 0.0])?;
+    inputs.wheel(inner, 100.0);
+    let _ = inputs.draw()?;
+    assert_offsets(&app, [-28.0, -100.0, -44.0])?;
+
+    let reset = |app: &mut ItemTextureDemo| -> TestResult {
+        app.set_inner_offset(Length(0.0));
+        app.set_outer_offset(Length(0.0));
+        app.set_viewport_offset(Length(0.0));
+        for name in ["inner-offset", "outer-offset", "viewport-offset"] {
+            dynamic.set(name, Value::Length(Length(0.0)))?;
+        }
+        Ok(())
+    };
+    reset(&mut app)?;
+    let _ = inputs.draw()?;
+    inputs.wheel(slider_left, -28.0);
+    assert_eq!(app.get_level(), 17.0);
+    assert_eq!(dynamic.get("level")?, Value::Float(17.0));
+    inputs.wheel(slider_left, -14.0);
+    inputs.wheel(slider_right, -14.0);
+    assert_eq!(
+        app.get_level(),
+        17.0,
+        "fractional steps stay on their own surface"
+    );
+    inputs.wheel(slider_right, -14.0);
+    assert_eq!(app.get_level(), 18.0);
+    assert_eq!(dynamic.get("level")?, Value::Float(18.0));
+    assert_offsets(&app, [0.0; 3])?;
+
+    app.set_blocker(true);
+    dynamic.set("blocker", Value::Bool(true))?;
+    let _ = inputs.draw()?;
+    let events = app.get_wheel_events();
+    inputs.wheel(inner, 20.0);
+    let _ = inputs.draw()?;
+    assert_eq!(app.get_wheel_events(), events);
+    assert_eq!(dynamic.get("wheel-events")?, Value::Int(events));
+    assert_offsets(&app, [0.0, 0.0, -20.0])?;
+
+    reset(&mut app)?;
+    let _ = inputs.draw()?;
+    inputs.wheel(Point { x: 110.0, y: 18.0 }, 20.0);
+    let _ = inputs.draw()?;
+    assert_eq!(app.get_wheel_events(), events);
+    assert_offsets(&app, [0.0, 0.0, -20.0])?;
+
+    app.set_blocker(false);
+    dynamic.set("blocker", Value::Bool(false))?;
+    let start = on_face(-1.0, 98.0, 48.0);
+    let jitter = on_face(-1.0, 98.0, 44.0);
+    let end = on_face(-1.0, 98.0, 4.0);
+    let face_scale = (224.0 / 4.2) * 1.62 / 102.0;
+    let outer = 44.0 - 8.0 / face_scale - 28.0;
+    let touch = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent {
+            is_touch: true,
+            button: PointerButton::Primary,
+            ..Default::default()
+        },
+    };
+    let middle = PointerContact {
+        id: 2,
+        event: PointerEvent {
+            is_touch: false,
+            button: PointerButton::Middle,
+            ..touch.event
+        },
+        ..touch
+    };
+    for contact in [touch, middle] {
+        reset(&mut app)?;
+        let _ = inputs.draw()?;
+        let allocations = inputs.gpu.scene_draw_stats().item_texture_allocations;
+        for view in [&mut *inputs.aot, &mut *inputs.interpreted] {
+            assert!(view.press_contact(contact, start, !contact.event.is_touch));
+            view.move_contact(contact, jitter);
+        }
+        let _ = inputs.draw()?;
+        assert_offsets(&app, [0.0; 3])?;
+        for view in [&mut *inputs.aot, &mut *inputs.interpreted] {
+            assert!(view.move_contact(contact, end));
+            view.finish_contact(contact, end, false, false);
+        }
+        let _ = inputs.draw()?;
+        assert_offsets(&app, [-28.0, -outer, 0.0])?;
+        assert_eq!(
+            inputs.gpu.scene_draw_stats().item_texture_allocations,
+            allocations
+        );
+        let later = Instant::now() + Duration::from_millis(25);
+        inputs.aot.advance_at(inputs.gpu, later);
+        inputs.interpreted.advance_at(inputs.preview_gpu, later);
+        assert!(app.get_outer_offset().0 < -outer - 1.0);
+        assert!(
+            matches!(dynamic.get("outer-offset")?, Value::Length(offset) if offset.0 < -outer - 1.0)
+        );
+        assert_eq!(app.get_viewport_offset(), Length(0.0));
+        assert_eq!(dynamic.get("viewport-offset")?, Value::Length(Length(0.0)));
+    }
+
+    // Crossing onto the duplicated material cannot retarget the drag or start a fling.
+    reset(&mut app)?;
+    let _ = inputs.draw()?;
+    let other_face = on_face(1.0, 98.0, 88.0);
+    for view in [&mut *inputs.aot, &mut *inputs.interpreted] {
+        assert!(view.press_contact(touch, start, false));
+        assert!(view.move_contact(touch, end));
+        view.move_contact(touch, other_face);
+        view.move_contact(touch, start);
+        view.finish_contact(touch, start, true, false);
+    }
+    let later = Instant::now() + Duration::from_millis(25);
+    inputs.aot.advance_at(inputs.gpu, later);
+    inputs.interpreted.advance_at(inputs.preview_gpu, later);
+    assert_offsets(&app, [-28.0, -outer, 0.0])?;
+    assert_eq!(app.get_activations(), 0);
+    assert_eq!(dynamic.get("activations")?, Value::Int(0));
+    reset(&mut app)?;
+    let _ = inputs.draw()?;
+    for view in [&mut *inputs.aot, &mut *inputs.interpreted] {
+        assert!(view.press_contact(touch, start, false));
+        view.finish_contact(touch, start, true, false);
+    }
+    let _ = inputs.draw()?;
+    assert_eq!(app.get_activations(), 1);
+    assert_eq!(dynamic.get("activations")?, Value::Int(1));
+    Ok(())
+}
+
+#[test]
+fn custom_scene_effect_reads_depth_and_reuses_pipelines_in_both_backends() -> TestResult {
+    use custom_effect_ui::CustomEffectDemo;
+    use xrack_assets::{Raster, decode_png};
+    use xrack_renderer_femtovg::SceneDrawStats;
+
+    const NAME: &str = "examples/puzzle3d/custom_effect.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    assert!(
+        inputs
+            .iter()
+            .any(|path| path.ends_with("effects/hologram.wgsl"))
+    );
+    let dynamic = program.create("CustomEffectDemo")?;
+    let app = CustomEffectDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<(Raster, SceneDrawStats)> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let stats = gpu.scene_draw_stats();
+        let interpreted_stats = preview_gpu.scene_draw_stats();
+        assert_eq!(
+            stats.custom_effect_passes,
+            interpreted_stats.custom_effect_passes
+        );
+        assert_eq!(
+            stats.custom_effect_pipelines,
+            interpreted_stats.custom_effect_pipelines
+        );
+        Ok((decode_png(png)?, stats))
+    };
+    let pixel = |image: &Raster, x: u32, y: u32| -> [u8; 4] {
+        let at = ((y * image.size[0] + x) * 4) as usize;
+        image.rgba[at..at + 4].try_into().expect("four channels")
+    };
+    let mut app = weak.upgrade().ok_or("missing effect demo")?;
+    app.set_enabled_effect(false);
+    dynamic.set("enabled-effect", Value::Bool(false))?;
+    let (plain, stats) = draw()?;
+    let original = pixel(&plain, 240, 122);
+    let background = pixel(&plain, 56, 44);
+    assert_eq!(stats.custom_effect_passes, 0);
+    assert_eq!(stats.custom_effect_pipelines, 0);
+
+    app.set_enabled_effect(true);
+    app.set_use_depth(false);
+    dynamic.set("enabled-effect", Value::Bool(true))?;
+    dynamic.set("use-depth", Value::Bool(false))?;
+    let (color_only, stats) = draw()?;
+    assert_eq!(pixel(&color_only, 240, 122), original);
+    assert_eq!(pixel(&color_only, 56, 44), background);
+    assert_eq!(stats.custom_effect_passes, 1);
+    assert_eq!(stats.custom_effect_pipelines, 1);
+
+    app.set_use_depth(true);
+    dynamic.set("use-depth", Value::Bool(true))?;
+    let (hologram, stats) = draw()?;
+    let tinted = pixel(&hologram, 240, 122);
+    assert!(
+        tinted[0] < original[0] && tinted[2] > original[2],
+        "{original:?} vs {tinted:?}"
+    );
+    assert_eq!(pixel(&hologram, 56, 44), background);
+    assert_eq!(stats.custom_effect_passes, 2);
+    assert_eq!(stats.custom_effect_pipelines, 2);
+    let (_, reused) = draw()?;
+    assert_eq!(reused.custom_effect_passes, stats.custom_effect_passes);
+    assert_eq!(reused.viewport_renders, stats.viewport_renders);
+
+    app.set_amount(0.5);
+    dynamic.set("amount", Value::Float(0.5))?;
+    let (half, stats) = draw()?;
+    let mixed = pixel(&half, 240, 122);
+    assert!(original[2] < mixed[2] && mixed[2] < tinted[2]);
+    assert_ne!(mixed, original);
+    assert_eq!(stats.custom_effect_passes, 3);
+    assert_eq!(stats.custom_effect_pipelines, 2);
+
+    app.set_msaa(true);
+    dynamic.set("msaa", Value::Bool(true))?;
+    let (multisampled, stats) = draw()?;
+    assert!(pixel(&multisampled, 240, 122)[2] > original[2]);
+    assert_eq!(pixel(&multisampled, 56, 44), background);
+    assert_eq!(stats.custom_effect_passes, 4);
+    assert_eq!(stats.custom_effect_pipelines, 3);
+    assert!(stats.multisample_resolves > 0);
+
+    app.set_amount(0.0);
+    dynamic.set("amount", Value::Float(0.0))?;
+    let (disabled, stats) = draw()?;
+    assert_eq!(pixel(&disabled, 240, 122), original);
+    assert_eq!(stats.custom_effect_passes, 4);
+    assert_eq!(stats.custom_effect_pipelines, 3);
+    Ok(())
+}
+
+#[test]
+fn scene_effect_chain_reuses_half_resolution_targets_and_composites_the_original() -> TestResult {
+    use effect_chain_ui::EffectChainDemo;
+    use xrack_renderer_femtovg::SceneDrawStats;
+
+    const NAME: &str = "examples/puzzle3d/effect_chain.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    for name in ["effects/blur.wgsl", "effects/halo.wgsl"] {
+        assert!(inputs.iter().any(|path| path.ends_with(name)));
+    }
+    let dynamic = program.create("EffectChainDemo")?;
+    let app = EffectChainDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<(Vec<u8>, SceneDrawStats)> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let stats = gpu.scene_draw_stats();
+        let interpreted_stats = preview_gpu.scene_draw_stats();
+        assert_eq!(
+            stats.custom_effect_passes,
+            interpreted_stats.custom_effect_passes
+        );
+        assert_eq!(
+            stats.custom_effect_pixels,
+            interpreted_stats.custom_effect_pixels
+        );
+        assert_eq!(
+            stats.custom_effect_target_allocations,
+            interpreted_stats.custom_effect_target_allocations,
+        );
+        assert_eq!(
+            stats.custom_effect_pipelines,
+            interpreted_stats.custom_effect_pipelines
+        );
+        let raster = xrack_assets::decode_png(png)?;
+        assert_eq!(raster.size, [481, 310]);
+        Ok((raster.rgba[..481 * 245 * 4].to_vec(), stats))
+    };
+    let mut app = weak.upgrade().ok_or("missing scene effect chain demo")?;
+    app.set_apply_effects(false);
+    dynamic.set("apply-effects", Value::Bool(false))?;
+    let (original, baseline) = draw()?;
+    assert_eq!(baseline.custom_effect_passes, 0);
+    assert_eq!(baseline.custom_effect_target_allocations, 0);
+
+    app.set_apply_effects(true);
+    app.set_composite(false);
+    dynamic.set("apply-effects", Value::Bool(true))?;
+    dynamic.set("composite", Value::Bool(false))?;
+    let (blurred, blur) = draw()?;
+    const HALF_PIXELS: u64 = 241 * 123;
+    const FULL_PIXELS: u64 = 481 * 245;
+    assert_eq!(blur.custom_effect_passes, 2);
+    assert_eq!(blur.custom_effect_pixels, 2 * HALF_PIXELS);
+    assert_eq!(blur.custom_effect_pipelines, 1);
+    assert_eq!(blur.custom_effect_target_allocations, 2);
+    assert_ne!(blurred, original);
+
+    app.set_composite(true);
+    dynamic.set("composite", Value::Bool(true))?;
+    let (halo, composed) = draw()?;
+    assert_eq!(composed.custom_effect_passes - blur.custom_effect_passes, 3);
+    assert_eq!(
+        composed.custom_effect_pixels - blur.custom_effect_pixels,
+        2 * HALF_PIXELS + FULL_PIXELS
+    );
+    assert_eq!(composed.custom_effect_pipelines, 2);
+    assert_eq!(composed.custom_effect_target_allocations, 3);
+    let center = (122 * 481 + 240) * 4;
+    assert_eq!(&halo[center..center + 4], &original[center..center + 4]);
+    assert!(
+        original
+            .chunks_exact(4)
+            .zip(halo.chunks_exact(4))
+            .any(|(before, after)| { before == [36, 57, 78, 255] && after[2] > before[2] + 12 }),
+        "composite should add a blue halo outside the original geometry"
+    );
+
+    let (_, cached) = draw()?;
+    assert_eq!(cached.custom_effect_passes, composed.custom_effect_passes);
+    assert_eq!(cached.viewport_renders, composed.viewport_renders);
+    app.set_radius(14.0);
+    dynamic.set("radius", Value::Float(14.0))?;
+    let (wider, active) = draw()?;
+    assert_ne!(wider, halo);
+    assert_eq!(
+        active.custom_effect_pipelines,
+        composed.custom_effect_pipelines
+    );
+    assert_eq!(
+        active.custom_effect_target_allocations,
+        composed.custom_effect_target_allocations
+    );
+
+    app.set_composite_first(true);
+    dynamic.set("composite-first", Value::Bool(true))?;
+    let (reordered, active) = draw()?;
+    assert_ne!(reordered, wider);
+    assert_eq!(
+        active.custom_effect_pipelines,
+        composed.custom_effect_pipelines
+    );
+    assert_eq!(
+        active.custom_effect_target_allocations,
+        composed.custom_effect_target_allocations
+    );
+    Ok(())
+}
+
+#[test]
+fn named_effect_buffers_survive_intervening_passes_and_release_after_the_last_read() -> TestResult {
+    use named_effect_buffers_ui::NamedEffectBuffersDemo;
+    use xrack_renderer_femtovg::SceneDrawStats;
+
+    const NAME: &str = "examples/puzzle3d/named_effect_buffers.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let interpreted_instance = program.create("NamedEffectBuffersDemo")?;
+    let app = NamedEffectBuffersDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(interpreted_instance.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<(Vec<u8>, SceneDrawStats)> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let stats = gpu.scene_draw_stats();
+        let interpreted_stats = preview_gpu.scene_draw_stats();
+        assert_eq!(
+            stats.custom_effect_passes,
+            interpreted_stats.custom_effect_passes
+        );
+        assert_eq!(
+            stats.custom_effect_pipelines,
+            interpreted_stats.custom_effect_pipelines
+        );
+        assert_eq!(
+            stats.custom_effect_target_allocations,
+            interpreted_stats.custom_effect_target_allocations
+        );
+        let raster = xrack_assets::decode_png(png)?;
+        Ok((raster.rgba[..481 * 245 * 4].to_vec(), stats))
+    };
+    let center = (122 * 481 + 240) * 4;
+    let mut app = weak.upgrade().ok_or("missing named effect buffers demo")?;
+    let (cool, initial) = draw()?;
+    assert!(cool[center + 2] > cool[center] + 25);
+    assert_eq!(initial.custom_effect_passes, 5);
+    // The fifth pass can overwrite the first pass's full-size scratch texture.
+    assert_eq!(initial.custom_effect_target_allocations, 4);
+    assert_eq!(initial.custom_effect_pipelines, 3);
+
+    app.set_tint_amount(0.95);
+    interpreted_instance.set("tint-amount", Value::Float(0.95))?;
+    let (stronger, refreshed) = draw()?;
+    assert!(stronger[center + 2] > cool[center + 2]);
+    assert_eq!(
+        refreshed.custom_effect_target_allocations,
+        initial.custom_effect_target_allocations
+    );
+    assert_eq!(
+        refreshed.custom_effect_pipelines,
+        initial.custom_effect_pipelines
+    );
+
+    app.set_sharp_input(false);
+    interpreted_instance.set("sharp-input", Value::Bool(false))?;
+    let (blurred, routed) = draw()?;
+    assert_ne!(blurred, stronger);
+    assert_eq!(
+        routed.custom_effect_target_allocations,
+        initial.custom_effect_target_allocations
+    );
+
+    app.set_sharp_input(true);
+    app.set_use_accent(false);
+    interpreted_instance.set("sharp-input", Value::Bool(true))?;
+    interpreted_instance.set("use-accent", Value::Bool(false))?;
+    let (warm, fallback) = draw()?;
+    assert!(warm[center] > warm[center + 2] + 25);
+    assert_eq!(
+        fallback.custom_effect_passes - routed.custom_effect_passes,
+        4
+    );
+    assert_eq!(
+        fallback.custom_effect_target_allocations,
+        initial.custom_effect_target_allocations
+    );
+    assert_eq!(
+        fallback.custom_effect_pipelines,
+        initial.custom_effect_pipelines
+    );
+    Ok(())
+}
+
+#[test]
+fn scene_effect_history_matches_between_backends_and_reuses_two_textures() -> TestResult {
+    use effect_history_ui::EffectHistoryDemo;
+
+    const NAME: &str = "examples/puzzle3d/effect_history.xr";
+    const BACKGROUND: [u8; 4] = [36, 57, 78, 255];
+    const LEFT: u32 = 170;
+    const RIGHT: u32 = 310;
+
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("EffectHistoryDemo")?;
+    let app = EffectHistoryDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<(xrack_assets::Raster, [u64; 2], bool)> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let work = |gpu: &Renderer| {
+            [
+                gpu.scene_draw_stats().custom_effect_passes,
+                gpu.scene_draw_stats().custom_effect_history_allocations,
+            ]
+        };
+        assert_eq!(work(&gpu), work(&preview_gpu));
+        assert_eq!(gpu.needs_redraw(), preview_gpu.needs_redraw());
+        Ok((
+            xrack_assets::decode_png(png)?,
+            work(&gpu),
+            gpu.needs_redraw(),
+        ))
+    };
+    let pixel = |image: &xrack_assets::Raster, x: u32| -> [u8; 4] {
+        let offset = ((121 * image.size[0] + x) * 4) as usize;
+        image.rgba[offset..offset + 4]
+            .try_into()
+            .expect("RGBA texel")
+    };
+    let mut app = weak.upgrade().ok_or("missing history demo")?;
+    let (initial, work, pending) = draw()?;
+    assert_eq!(work, [1, 1]);
+    assert!(!pending);
+    assert_ne!(pixel(&initial, LEFT), BACKGROUND);
+    assert_eq!(pixel(&initial, RIGHT), BACKGROUND);
+    assert_eq!(
+        draw()?.1,
+        work,
+        "a cached idle view does not advance feedback"
+    );
+
+    app.set_object_x(1.4);
+    dynamic.set("object-x", Value::Float(1.4))?;
+    let (moved, work, _) = draw()?;
+    let ghost = pixel(&moved, LEFT)[0];
+    assert!(ghost > BACKGROUND[0] + 30);
+    assert_ne!(pixel(&moved, RIGHT), BACKGROUND);
+    assert_eq!(work, [2, 2]);
+
+    app.set_animate_history(true);
+    dynamic.set("animate-history", Value::Bool(true))?;
+    let (fade, work, pending) = draw()?;
+    assert!(pixel(&fade, LEFT)[0] < ghost);
+    assert_eq!(work, [3, 2]);
+    assert!(pending);
+    let (further, work, pending) = draw()?;
+    assert!(pixel(&further, LEFT)[0] < pixel(&fade, LEFT)[0]);
+    assert_eq!(work, [4, 2]);
+    assert!(pending);
+
+    app.set_animate_history(false);
+    app.set_history_revision(1);
+    dynamic.set("animate-history", Value::Bool(false))?;
+    dynamic.set("history-revision", Value::Int(1))?;
+    let (reset, work, pending) = draw()?;
+    assert_eq!(pixel(&reset, LEFT), BACKGROUND);
+    assert_eq!(work, [5, 3]);
+    assert!(!pending);
+
+    app.set_object_x(-1.4);
+    dynamic.set("object-x", Value::Float(-1.4))?;
+    let (moved, _, _) = draw()?;
+    assert_ne!(pixel(&moved, RIGHT), BACKGROUND);
+    app.set_view_width(xrack_runtime::Length(440.0));
+    dynamic.set("view-width", Value::Length(xrack_runtime::Length(440.0)))?;
+    let (resized, work, _) = draw()?;
+    assert_eq!(pixel(&resized, RIGHT), BACKGROUND);
+    assert_eq!(work, [7, 5]);
+    app.set_object_x(1.4);
+    dynamic.set("object-x", Value::Float(1.4))?;
+    let (moved, work, _) = draw()?;
+    assert_ne!(pixel(&moved, 150), BACKGROUND);
+    assert_eq!(work, [8, 6]);
+    app.set_history_format("rgba8".into());
+    dynamic.set("history-format", Value::String("rgba8".into()))?;
+    let (converted, work, _) = draw()?;
+    assert_eq!(pixel(&converted, 150), BACKGROUND);
+    assert_eq!(work, [9, 7]);
+    Ok(())
+}
+
+#[test]
+fn aborted_effect_frame_and_other_viewport_generations_do_not_publish_history() -> TestResult {
+    use effect_history_ui::EffectHistoryDemo;
+    use xrack_layout::Interaction;
+    use xrack_runtime::Length;
+
+    let mut app = EffectHistoryDemo::new();
+    let mut gpu = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let interaction = Interaction::default();
+    let pixel = |rgba: &[u8], x: usize| -> [u8; 4] {
+        let offset = (121 * 480 + x) * 4;
+        rgba[offset..offset + 4].try_into().expect("RGBA texel")
+    };
+    let background = [36, 57, 78, 255];
+    gpu.set_scene_observation(700, false);
+    gpu.snapshot(&app.render(), 480, 310, 1.0, &interaction)?;
+
+    app.set_object_x(1.4);
+    let registration = xrack_renderer_femtovg::register_gpu("abort-effect-history", |_| {
+        Err("failed after recording history output".into())
+    })?;
+    let mut failed = app.render();
+    let mut broken = Node::new("CustomRender", Some("abort"));
+    for (name, value) in [
+        ("renderer", Value::String("abort-effect-history".into())),
+        ("width", Value::Length(Length(12.0))),
+        ("height", Value::Length(Length(12.0))),
+        ("z", Value::Float(200.0)),
+    ] {
+        broken.properties.insert(name, value);
+    }
+    failed.children.push(broken);
+    let aborted = gpu
+        .snapshot(&failed, 480, 310, 1.0, &interaction)
+        .err()
+        .ok_or("expected failed frame")?;
+    assert!(aborted.contains("failed after recording history output"));
+    assert_eq!(gpu.scene_draw_stats().custom_effect_passes, 2);
+    drop(registration);
+
+    app.set_object_x(0.0);
+    let recovered = gpu.snapshot(&app.render(), 480, 310, 1.0, &interaction)?;
+    assert_ne!(pixel(&recovered.rgba, 170), background);
+    assert_eq!(pixel(&recovered.rgba, 310), background);
+
+    gpu.set_scene_observation(701, false);
+    let new_generation = gpu.snapshot(&app.render(), 480, 310, 1.0, &interaction)?;
+    assert_eq!(pixel(&new_generation.rgba, 170), background);
+    assert_eq!(pixel(&new_generation.rgba, 310), background);
+
+    gpu.set_scene_observation(700, false);
+    let old_generation = gpu.snapshot(&app.render(), 480, 310, 1.0, &interaction)?;
+    assert_eq!(old_generation.rgba, recovered.rgba);
+    Ok(())
+}
+
+#[test]
+fn scene_effect_data_formats_and_independent_sampling_match_between_backends() -> TestResult {
+    use effect_buffer_formats_ui::EffectBufferFormatsDemo;
+    use xrack_renderer_femtovg::SceneDrawStats;
+
+    const NAME: &str = "examples/puzzle3d/effect_buffer_formats.xr";
+    const FIELD_PIXELS: u64 = 120 * 60;
+    const OUTPUT_PIXELS: u64 = 480 * 240;
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("EffectBufferFormatsDemo")?;
+    let app = EffectBufferFormatsDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<(xrack_assets::Raster, SceneDrawStats)> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let stats = gpu.scene_draw_stats();
+        let other = preview_gpu.scene_draw_stats();
+        assert_eq!(stats.custom_effect_passes, other.custom_effect_passes);
+        assert_eq!(stats.custom_effect_pipelines, other.custom_effect_pipelines);
+        assert_eq!(
+            stats.custom_effect_bytes_allocated,
+            other.custom_effect_bytes_allocated
+        );
+        Ok((xrack_assets::decode_png(png)?, stats))
+    };
+    let half = |frame: &xrack_assets::Raster, x: usize| -> Vec<u8> {
+        frame
+            .rgba
+            .chunks_exact(480 * 4)
+            .take(240)
+            .flat_map(|row| row[x * 4..(x + 240) * 4].iter().copied())
+            .collect()
+    };
+    let mut app = weak.upgrade().ok_or("missing buffer format demo")?;
+    let (base, initial) = draw()?;
+    assert_eq!(initial.custom_effect_passes, 2);
+    assert_eq!(initial.custom_effect_pipelines, 2);
+    assert_eq!(initial.custom_effect_target_allocations, 2);
+    assert_eq!(
+        initial.custom_effect_bytes_allocated,
+        FIELD_PIXELS + OUTPUT_PIXELS * 8
+    );
+
+    app.set_linear_filter(true);
+    dynamic.set("linear-filter", Value::Bool(true))?;
+    let (linear, sampled) = draw()?;
+    assert_ne!(half(&linear, 0), half(&base, 0));
+    assert_eq!(half(&linear, 240), half(&base, 240));
+    assert_eq!(
+        sampled.custom_effect_pipelines,
+        initial.custom_effect_pipelines
+    );
+    assert_eq!(
+        sampled.custom_effect_bytes_allocated,
+        initial.custom_effect_bytes_allocated
+    );
+
+    let mut previous = linear;
+    for mode in ["repeat", "mirror"] {
+        app.set_addressing(mode.into());
+        dynamic.set("addressing", Value::String(mode.into()))?;
+        let (next, stats) = draw()?;
+        assert_ne!(half(&next, 0), half(&previous, 0), "{mode}");
+        assert_eq!(half(&next, 240), half(&base, 240));
+        assert_eq!(
+            stats.custom_effect_pipelines,
+            initial.custom_effect_pipelines
+        );
+        assert_eq!(
+            stats.custom_effect_bytes_allocated,
+            initial.custom_effect_bytes_allocated
+        );
+        previous = next;
+    }
+
+    let mut bytes = initial.custom_effect_bytes_allocated;
+    let mut pipelines = initial.custom_effect_pipelines;
+    let center = (121 * 480 + 300) * 4;
+    let mut ldr_blue = 0;
+    for (format, texel_bytes) in [
+        ("r16f", 2),
+        ("rg8", 2),
+        ("rg16f", 4),
+        ("rgba8", 4),
+        ("rgba16f", 8),
+    ] {
+        app.set_buffer_format(format.into());
+        dynamic.set("buffer-format", Value::String(format.into()))?;
+        let (next, stats) = draw()?;
+        bytes += FIELD_PIXELS * texel_bytes;
+        pipelines += 1;
+        assert_eq!(stats.custom_effect_bytes_allocated, bytes, "{format}");
+        assert_eq!(stats.custom_effect_pipelines, pipelines, "{format}");
+        match format {
+            "rg16f" => assert!(next.rgba[center + 1] > 160, "signed channel was lost"),
+            "rgba8" => ldr_blue = next.rgba[center + 2],
+            "rgba16f" => assert!(
+                next.rgba[center + 2] > ldr_blue + 10,
+                "HDR channel was clipped"
+            ),
+            _ => assert!(next.rgba[center + 1] < 70),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn effect_file_and_live_inputs_share_images_and_decode_alpha_correctly() -> TestResult {
+    use effect_texture_inputs_ui::EffectTextureInputsDemo;
+
+    const NAME: &str = "examples/puzzle3d/effect_texture_inputs.xr";
+    const BACKGROUND: [u8; 4] = [36, 57, 78, 255];
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    assert!(
+        inputs
+            .iter()
+            .any(|path| path.ends_with("models/channel-swatch.png"))
+    );
+    let dynamic = program.create("EffectTextureInputsDemo")?;
+    let app = EffectTextureInputsDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 4]; 4], xrack_renderer_femtovg::SceneDrawStats)> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let stats = gpu.scene_draw_stats();
+        let other = preview_gpu.scene_draw_stats();
+        assert_eq!(stats.scene_image_uploads, other.scene_image_uploads);
+        assert_eq!(stats.item_texture_captures, other.item_texture_captures);
+        assert_eq!(stats.custom_effect_pipelines, other.custom_effect_pipelines);
+        let raster = xrack_assets::decode_png(png)?;
+        let pixels = [60, 180, 300, 390].map(|x| {
+            let offset = ((120 * raster.size[0] + x) * 4) as usize;
+            raster.rgba[offset..offset + 4]
+                .try_into()
+                .expect("RGBA texel")
+        });
+        Ok((pixels, stats))
+    };
+    let near = |actual: [u8; 4], expected: [u8; 4]| {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 3),
+            "{actual:?} vs {expected:?}"
+        );
+    };
+
+    let mut app = weak.upgrade().ok_or("missing texture input demo")?;
+    app.set_show_object(false);
+    dynamic.set("show-object", Value::Bool(false))?;
+    let (colors, initial) = draw()?;
+    near(colors[0], [218, 92, 26, 255]);
+    near(colors[1], [238, 162, 90, 255]);
+    near(colors[2], [64, 160, 208, 255]);
+    assert_eq!(colors[3], BACKGROUND);
+    assert_eq!(initial.scene_image_uploads, 1);
+    assert_eq!(initial.material_mip_levels_uploaded, 0);
+    assert_eq!(initial.item_texture_captures, 1);
+
+    app.set_show_object(true);
+    dynamic.set("show-object", Value::Bool(true))?;
+    let (shared, after_object) = draw()?;
+    assert_eq!(&shared[..3], &colors[..3]);
+    assert_ne!(shared[3], BACKGROUND);
+    assert_eq!(
+        after_object.scene_image_uploads, 1,
+        "material and effect share the uploaded image"
+    );
+
+    app.set_cool(false);
+    dynamic.set("cool", Value::Bool(false))?;
+    let (live, updated) = draw()?;
+    near(live[2], [208, 128, 96, 255]);
+    assert_eq!(updated.scene_image_uploads, 1);
+    assert_eq!(
+        updated.item_texture_captures,
+        initial.item_texture_captures + 1
+    );
+    assert_eq!(
+        updated.item_texture_allocations,
+        initial.item_texture_allocations
+    );
+
+    app.set_item_mips(true);
+    dynamic.set("item-mips", Value::Bool(true))?;
+    let (mips, mipmapped) = draw()?;
+    near(mips[2], live[2]);
+    assert!(mipmapped.item_texture_mip_passes > updated.item_texture_mip_passes);
+
+    app.set_live_enabled(false);
+    app.set_file_enabled(false);
+    dynamic.set("live-enabled", Value::Bool(false))?;
+    dynamic.set("file-enabled", Value::Bool(false))?;
+    let (disabled, stats) = draw()?;
+    assert_eq!(&disabled[..3], &[BACKGROUND; 3]);
+    assert_eq!(disabled[3], shared[3]);
+    assert_eq!(
+        stats.custom_effect_pipelines,
+        initial.custom_effect_pipelines
+    );
+    assert_eq!(stats.scene_image_uploads, 1);
+    Ok(())
+}
+
+#[test]
+fn authored_material_shader_is_slot_local_and_keeps_alpha_coverage_in_both_backends() -> TestResult
+{
+    use material_shader_ui::MaterialShaderDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_shader.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    for asset in [
+        "effects/material_surface.wgsl",
+        "effects/material_trim.wgsl",
+    ] {
+        assert!(inputs.iter().any(|path| path.ends_with(asset)), "{asset}");
+    }
+    let dynamic = program.create("MaterialShaderDemo")?;
+    let app = MaterialShaderDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 4]; 3], [u64; 3])> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let work = |gpu: &Renderer| {
+            [
+                gpu.scene_draw_stats().custom_material_pipeline_builds,
+                gpu.scene_draw_stats().mesh_vertex_bytes_uploaded,
+                gpu.scene_shadow_passes(),
+            ]
+        };
+        assert_eq!(work(&gpu), work(&preview_gpu));
+        let raster = xrack_assets::decode_png(png)?;
+        let pixels = [183, 317, 451].map(|x| {
+            let i = (162 * 634 + x) * 4;
+            raster.rgba[i..i + 4].try_into().expect("RGBA texel")
+        });
+        Ok((pixels, work(&gpu)))
+    };
+    let mut app = weak.upgrade().ok_or("missing material shader demo")?;
+    let (initial, compiled) = draw()?;
+    assert!(initial[0][2] > initial[0][0] + 35);
+    assert!(initial[1][0] > initial[1][2] + 35);
+    assert_eq!(compiled[0], 2);
+    assert_eq!(app.get_body_hit(), "model");
+    assert_eq!(dynamic.get("body-hit")?, Value::String("model".into()));
+
+    app.set_intensity(0.18);
+    dynamic.set("intensity", Value::Float(0.18))?;
+    let (changed, reused) = draw()?;
+    assert_ne!(changed[0], initial[0]);
+    assert_eq!(&changed[1..], &initial[1..]);
+    assert_eq!(
+        reused, compiled,
+        "shader parameters reuse color pipelines, geometry and shadows"
+    );
+
+    app.set_trim_program(false);
+    dynamic.set("trim-program", Value::Bool(false))?;
+    let (plain_trim, reused) = draw()?;
+    assert_eq!(plain_trim[0], changed[0]);
+    assert_ne!(plain_trim[1], changed[1]);
+    assert_eq!(plain_trim[2], changed[2]);
+    assert_eq!(reused, compiled);
+    assert_eq!(dynamic.get("body-hit")?, Value::String("model".into()));
+
+    app.set_cutout(true);
+    dynamic.set("cutout", Value::Bool(true))?;
+    let (cut, _) = draw()?;
+    assert_ne!(cut[0], plain_trim[0]);
+    assert_eq!(app.get_body_hit(), "wall");
+    assert_eq!(dynamic.get("body-hit")?, Value::String("wall".into()));
+    Ok(())
+}
+
+#[test]
+fn material_texture_inputs_share_uploads_and_refresh_live_items_in_both_backends() -> TestResult {
+    use material_texture_inputs_ui::MaterialTextureInputsDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_texture_inputs.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    for asset in [
+        "effects/material_texture_inputs.wgsl",
+        "models/channel-swatch.png",
+    ] {
+        assert!(inputs.iter().any(|path| path.ends_with(asset)), "{asset}");
+    }
+    let dynamic = program.create("MaterialTextureInputsDemo")?;
+    let app = MaterialTextureInputsDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 4]; 3], [u64; 5])> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let work = |gpu: &Renderer| {
+            let stats = gpu.scene_draw_stats();
+            [
+                stats.custom_material_pipeline_builds,
+                stats.mesh_vertex_bytes_uploaded,
+                stats.scene_image_uploads,
+                stats.item_texture_captures,
+                stats.item_texture_allocations,
+            ]
+        };
+        assert_eq!(work(&gpu), work(&preview_gpu));
+        let raster = xrack_assets::decode_png(png)?;
+        let pixels = [84, 240, 396].map(|x| {
+            let i = (120 * 480 + x) * 4;
+            raster.rgba[i..i + 4].try_into().expect("RGBA texel")
+        });
+        Ok((pixels, work(&gpu)))
+    };
+    let near = |actual: [u8; 4], expected: [u8; 4]| {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 3),
+            "{actual:?} vs {expected:?}",
+        );
+    };
+    let mut app = weak.upgrade().ok_or("missing material texture demo")?;
+    let (initial, compiled) = draw()?;
+    near(initial[0], [218, 92, 26, 255]);
+    near(initial[1], [238, 162, 90, 255]);
+    near(initial[2], [64, 160, 208, 255]);
+    assert_eq!(compiled[0], 1);
+    assert_eq!(compiled[2], 1, "both color spaces share a GPU upload");
+    assert_eq!(compiled[3], 1);
+
+    app.set_cool(false);
+    dynamic.set("cool", Value::Bool(false))?;
+    let (changed, reused) = draw()?;
+    assert_eq!(&changed[..2], &initial[..2]);
+    near(changed[2], [208, 128, 96, 255]);
+    assert_eq!(&reused[..3], &compiled[..3]);
+    assert_eq!(reused[3], compiled[3] + 1);
+    assert_eq!(reused[4], compiled[4]);
+
+    app.set_file_enabled(false);
+    app.set_live_enabled(false);
+    dynamic.set("file-enabled", Value::Bool(false))?;
+    dynamic.set("live-enabled", Value::Bool(false))?;
+    let (disabled, reused) = draw()?;
+    assert_eq!(disabled, [disabled[0]; 3]);
+    assert_ne!(disabled[0], initial[0]);
+    assert_eq!(&reused[..3], &compiled[..3]);
+    Ok(())
+}
+
+#[test]
+fn programmable_vertex_displacement_moves_color_shadows_and_motion_into_view() -> TestResult {
+    use vertex_program_ui::VertexProgramDemo;
+
+    const NAME: &str = "examples/puzzle3d/vertex_program.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    assert!(
+        inputs
+            .iter()
+            .any(|path| path.ends_with("effects/vertex_program.wgsl"))
+    );
+    let dynamic = program.create("VertexProgramDemo")?;
+    let app = VertexProgramDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<(xrack_assets::Raster, [u64; 5])> {
+        let png = aot.render_animated(&mut gpu)?;
+        assert!(png == interpreted.render_animated(&mut preview_gpu)?);
+        let work = |gpu: &Renderer| {
+            let stats = gpu.scene_draw_stats();
+            [
+                stats.custom_material_pipeline_builds,
+                stats.mesh_vertex_bytes_uploaded,
+                gpu.scene_shadow_passes(),
+                stats.motion_vector_draws,
+                stats.temporal_reprojections,
+            ]
+        };
+        assert_eq!(work(&gpu), work(&preview_gpu));
+        Ok((xrack_assets::decode_png(png)?, work(&gpu)))
+    };
+    let pixel = |image: &xrack_assets::Raster, x: usize, y: usize| -> [u8; 3] {
+        let start = 4 * (y * image.size[0] as usize + x);
+        std::array::from_fn(|channel| image.rgba[start + channel])
+    };
+    let red = |rgb: [u8; 3]| rgb[0] > rgb[1].saturating_add(100);
+    let mut app = weak.upgrade().ok_or("missing vertex program demo")?;
+    let (initial, before) = draw()?;
+    assert!(red(pixel(&initial, 188, 160)));
+    assert!(!red(pixel(&initial, 380, 160)));
+    assert!(before[2] > 0 && before[3] > 0, "{before:?}");
+
+    app.set_travel(-2.4);
+    dynamic.set("travel", Value::Float(-2.4))?;
+    let (moved, after) = draw()?;
+    assert!(!red(pixel(&moved, 188, 160)));
+    assert!(red(pixel(&moved, 380, 160)));
+    let shadow_pixels = (40..280)
+        .flat_map(|y| (50..470).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let previous = pixel(&initial, x, y);
+            let current = pixel(&moved, x, y);
+            !red(previous) && !red(current) && previous[2].abs_diff(current[2]) > 20
+        })
+        .count();
+    assert!(shadow_pixels > 200, "{shadow_pixels} changed shadow pixels");
+    assert_eq!(
+        &before[..2],
+        &after[..2],
+        "reuse pipelines and vertex buffers"
+    );
+    assert!(after[2] > before[2] && after[3] > before[3] && after[4] > before[4]);
+
+    app.set_travel(-60.0);
+    dynamic.set("travel", Value::Float(-60.0))?;
+    let (clamped, _) = draw()?;
+    // The displacement bound is six local units. The clamped mesh centers
+    // at x = -2.1, still inside the viewport.
+    assert!(red(pixel(&clamped, 92, 160)));
+    Ok(())
+}
+
+#[test]
+fn programmable_material_lighting_preserves_attenuation_shadows_and_pipeline_reuse() -> TestResult {
+    use material_lighting_ui::MaterialLightingDemo;
+
+    const NAME: &str = "examples/puzzle3d/material_lighting.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    assert!(
+        inputs
+            .iter()
+            .any(|path| path.ends_with("effects/material_lighting.wgsl")),
+        "{inputs:?}",
+    );
+    let dynamic = program.create("MaterialLightingDemo")?;
+    let app = MaterialLightingDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreter = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 2], [u64; 3])> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreter.render(&mut preview_gpu)?);
+        let work = |gpu: &Renderer| {
+            let stats = gpu.scene_draw_stats();
+            [
+                stats.custom_material_pipeline_builds,
+                stats.mesh_vertex_bytes_uploaded,
+                gpu.scene_shadow_passes(),
+            ]
+        };
+        assert_eq!(work(&gpu), work(&preview_gpu));
+        let raster = xrack_assets::decode_png(png)?;
+        let pixels = [169, 351].map(|x| {
+            let start = (135 * 520 + x) * 4;
+            std::array::from_fn(|channel| raster.rgba[start + channel])
+        });
+        Ok((pixels, work(&gpu)))
+    };
+    let mut app = weak.upgrade().ok_or("missing lighting demo")?;
+    let mut set_kind = |kind| -> TestResult {
+        app.set_light_kind(kind);
+        dynamic.set("light-kind", Value::Int(kind))?;
+        Ok(())
+    };
+
+    let (directional, initial) = draw()?;
+    assert!(
+        directional[0][0] > directional[0][1].saturating_add(90),
+        "{directional:?}"
+    );
+    assert_eq!(initial[0], 1);
+    set_kind(1)?;
+    let (point, reuse) = draw()?;
+    assert!(point[0][1] > point[0][2].saturating_add(80), "{point:?}");
+    assert_eq!(reuse, initial);
+    set_kind(2)?;
+    let (spot, reuse) = draw()?;
+    assert!(spot[0][2] > spot[0][1].saturating_add(80), "{spot:?}");
+    assert_eq!(reuse, initial);
+    set_kind(3)?;
+    let (ambient, reuse) = draw()?;
+    assert!(
+        ambient[0][1] > ambient[0][2].saturating_add(50),
+        "{ambient:?}"
+    );
+    assert_eq!(reuse, initial);
+
+    set_kind(1)?;
+    app.set_point_range(1.0);
+    dynamic.set("point-range", Value::Float(1.0))?;
+    let (outside, reuse) = draw()?;
+    assert!(
+        outside[0][1].saturating_add(120) < point[0][1],
+        "{outside:?}"
+    );
+    assert_eq!(reuse, initial);
+    app.set_light_kind(0);
+    dynamic.set("light-kind", Value::Int(0))?;
+    app.set_specular_gain(1.0);
+    dynamic.set("specular-gain", Value::Float(1.0))?;
+    let (highlight, reuse) = draw()?;
+    assert!(
+        highlight[0][2] > directional[0][2].saturating_add(90),
+        "{highlight:?}"
+    );
+    assert_eq!(highlight[1], directional[1]);
+    assert_eq!(reuse, initial);
+
+    app.set_shadows(true);
+    dynamic.set("shadows", Value::Bool(true))?;
+    let (shadowed, shadow_work) = draw()?;
+    assert!(
+        shadowed[0][0].saturating_add(140) < highlight[0][0],
+        "{shadowed:?}"
+    );
+    assert_eq!(shadowed[1], directional[1]);
+    assert!(shadow_work[2] > 0);
+
+    app.set_shadows(false);
+    app.set_specular_gain(0.0);
+    app.set_amount(0.0);
+    dynamic.set("shadows", Value::Bool(false))?;
+    dynamic.set("specular-gain", Value::Float(0.0))?;
+    dynamic.set("amount", Value::Float(0.0))?;
+    let (identity, _) = draw()?;
+    app.set_programmable(false);
+    dynamic.set("programmable", Value::Bool(false))?;
+    let (stock, _) = draw()?;
+    assert_eq!(identity, stock);
+    Ok(())
+}
+
+#[test]
+fn scene_effect_surface_inputs_share_capture_and_follow_material_geometry() -> TestResult {
+    use effect_surface_ui::EffectSurfaceDemo;
+
+    const NAME: &str = "examples/puzzle3d/effect_surface.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    for asset in [
+        "effect_surface_data.wgsl",
+        "effect_surface_inspect.wgsl",
+        "effect_surface_material.wgsl",
+        "effect_surface_passthrough.wgsl",
+    ] {
+        assert!(inputs.iter().any(|path| path.ends_with(asset)), "{asset}");
+    }
+    let dynamic = program.create("EffectSurfaceDemo")?;
+    let app = EffectSurfaceDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreter = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 3], [u64; 4])> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreter.render(&mut preview_gpu)?);
+        let raster = xrack_assets::decode_png(png)?;
+        let pixels = [169, 260, 351].map(|x| {
+            let i = (135 * 520 + x) * 4;
+            std::array::from_fn(|c| raster.rgba[i + c])
+        });
+        let work = |gpu: &Renderer| {
+            let stats = gpu.scene_draw_stats();
+            [
+                stats.custom_effect_surface_passes,
+                stats.custom_effect_surface_draws,
+                stats.custom_effect_passes,
+                stats.mesh_vertex_bytes_uploaded,
+            ]
+        };
+        let stats = work(&gpu);
+        assert_eq!(stats, work(&preview_gpu));
+        Ok((pixels, stats))
+    };
+    let near = |actual: [u8; 3], expected: [u8; 3]| {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 3),
+            "{actual:?} vs {expected:?}"
+        );
+    };
+
+    let (normals, work) = draw()?;
+    near(normals[0], [188, 231, 243]);
+    near(normals[1], [36, 53, 75]);
+    near(normals[2], [229, 188, 245]);
+    assert_eq!(
+        &work[..3],
+        &[1, 2, 2],
+        "both shader passes share opaque surface data"
+    );
+    assert_eq!(
+        draw()?.1,
+        work,
+        "unchanged viewport retains the final result"
+    );
+
+    let mut app = weak.upgrade().ok_or("missing effect surface demo")?;
+    app.set_glass(false);
+    dynamic.set("glass", Value::Bool(false))?;
+    let (without_glass, _) = draw()?;
+    assert_eq!(normals, without_glass);
+    app.set_mode(1);
+    dynamic.set("mode", Value::Int(1))?;
+    let (roughness, work1) = draw()?;
+    near(roughness[0], [124, 124, 0]);
+    near(roughness[2], [226, 226, 0]);
+    assert_eq!(
+        work[3], work1[3],
+        "switching the diagnostic reads the original mesh streams"
+    );
+
+    app.set_mode(2);
+    dynamic.set("mode", Value::Int(2))?;
+    let (world, _) = draw()?;
+    near(world[0], [146, 187, 211]);
+    app.set_use_perspective(true);
+    dynamic.set("use-perspective", Value::Bool(true))?;
+    let (perspective, _) = draw()?;
+    assert_ne!(
+        perspective[0][0], world[0][0],
+        "camera changes the sampled world X"
+    );
+    assert!(
+        perspective[0][2].abs_diff(world[0][2]) <= 2,
+        "world Z is projection independent"
+    );
+    app.set_lift(0.2);
+    dynamic.set("lift", Value::Float(0.2))?;
+    let (lifted, active) = draw()?;
+    assert!(lifted[0][2].abs_diff(188) <= 2);
+
+    app.set_inspect_surfaces(false);
+    dynamic.set("inspect-surfaces", Value::Bool(false))?;
+    let (color, disabled) = draw()?;
+    assert_ne!(color[0], lifted[0]);
+    assert_eq!(
+        &disabled[..2],
+        &active[..2],
+        "unreachable helper does not request a capture"
+    );
+    assert_eq!(disabled[2], active[2] + 1);
+    Ok(())
+}
+
+#[test]
+fn named_scene_captures_share_targets_and_invalidate_only_on_scene_input_changes() -> TestResult {
+    use scene_capture_ui::SceneCaptureDemo;
+
+    const NAME: &str = "examples/puzzle3d/scene_capture.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    assert!(
+        inputs
+            .iter()
+            .any(|path| path.ends_with("scene_capture_display.wgsl"))
+    );
+    let dynamic = program.create("SceneCaptureDemo")?;
+    let app = SceneCaptureDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreter = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 3], [u64; 4])> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreter.render(&mut preview_gpu)?);
+        let raster = xrack_assets::decode_png(png)?;
+        let pixels = [(140, 70), (420, 70), (280, 210)].map(|(x, y)| {
+            let start = (y * 560 + x) * 4;
+            std::array::from_fn(|channel| raster.rgba[start + channel])
+        });
+        let work = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_reuses,
+                stats.scene_capture_bytes_allocated,
+                stats.mesh_vertex_bytes_uploaded,
+            ]
+        };
+        assert_eq!(work(&gpu), work(&preview_gpu));
+        Ok((pixels, work(&gpu)))
+    };
+
+    let (near, first) = draw()?;
+    assert_eq!(near, [[227, 69, 64], [227, 69, 64], [81, 188, 131]]);
+    assert_eq!(
+        &first[..3],
+        &[1, 1, 280 * 140 * 8],
+        "both aliases share one HDR target"
+    );
+    assert_eq!(draw()?.1, first, "retained viewport");
+    let mut app = weak.upgrade().ok_or("missing scene capture demo")?;
+
+    app.set_exposure(0.4);
+    dynamic.set("exposure", Value::Float(0.4))?;
+    let (dim, reused) = draw()?;
+    assert!(dim[0][0] < near[0][0]);
+    assert_eq!(&dim[1..], &near[1..]);
+    assert_eq!(reused, [first[0], first[1] + 2, first[2], first[3]]);
+
+    app.set_exposure(1.0);
+    app.set_feed_camera("far-eye".into());
+    dynamic.set("exposure", Value::Float(1.0))?;
+    dynamic.set("feed-camera", Value::String("far-eye".into()))?;
+    let (far, changed) = draw()?;
+    assert_eq!(far, [[57, 174, 240], [57, 174, 240], near[2]]);
+    assert_eq!(changed[0], first[0] + 1);
+    assert_eq!(&changed[2..], &first[2..]);
+
+    app.set_feed_camera("near-eye".into());
+    app.set_feed_layers(4);
+    dynamic.set("feed-camera", Value::String("near-eye".into()))?;
+    dynamic.set("feed-layers", Value::Int(4))?;
+    let (other_layer, changed) = draw()?;
+    assert_eq!(other_layer, [[255, 188, 66], [255, 188, 66], near[2]]);
+    assert_eq!(changed[0], first[0] + 2);
+
+    app.set_feed_layers(2);
+    app.set_near_color(xrack_runtime::Color(0xb048deff));
+    dynamic.set("feed-layers", Value::Int(2))?;
+    dynamic.set("near-color", Value::Color(xrack_runtime::Color(0xb048deff)))?;
+    let (new_color, changed) = draw()?;
+    assert_eq!(new_color, [[176, 72, 222], [176, 72, 222], near[2]]);
+    assert_eq!(changed[0], first[0] + 3);
+    assert_eq!(changed[2], first[2]);
+
+    app.set_feed_scale(0.75);
+    dynamic.set("feed-scale", Value::Float(0.75))?;
+    let (scaled, changed) = draw()?;
+    assert_eq!(scaled, new_color);
+    assert_eq!(changed[0], first[0] + 4);
+    assert_eq!(changed[2], first[2] + 420 * 210 * 8);
+
+    app.set_feed_camera("missing".into());
+    dynamic.set("feed-camera", Value::String("missing".into()))?;
+    let (missing, missing_work) = draw()?;
+    assert_eq!(missing, [[66, 72, 82], [66, 72, 82], near[2]]);
+    assert_eq!(missing_work, changed);
+
+    app.set_feed_camera("near-eye".into());
+    app.set_display_feeds(false);
+    dynamic.set("feed-camera", Value::String("near-eye".into()))?;
+    dynamic.set("display-feeds", Value::Bool(false))?;
+    let (off, unrequested) = draw()?;
+    assert_eq!(off, [[36, 58, 82], [36, 58, 82], near[2]]);
+    assert_eq!(unrequested, changed);
+    Ok(())
+}
+
+#[test]
+fn capture_backed_materials_share_sources_resolve_dependencies_and_break_cycles() -> TestResult {
+    use capture_material_ui::CaptureMaterialDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_material.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, resources) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    for asset in [
+        "capture_material_display.wgsl",
+        "capture_material_inset.wgsl",
+    ] {
+        assert!(resources.iter().any(|path| path.ends_with(asset)));
+    }
+    let dynamic = program.create("CaptureMaterialDemo")?;
+    let app = CaptureMaterialDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreter = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 3], [u64; 5])> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreter.render(&mut preview_gpu)?);
+        let raster = xrack_assets::decode_png(png)?;
+        let pixels = [(163, 140), (357, 140), (260, 36)].map(|(x, y)| {
+            let i = (y * 520 + x) * 4;
+            std::array::from_fn(|c| raster.rgba[i + c])
+        });
+        let work = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.scene_capture_material_bindings,
+                stats.scene_capture_feedback_edges,
+                stats.mesh_vertex_bytes_uploaded,
+            ]
+        };
+        assert_eq!(work(&gpu), work(&preview_gpu));
+        Ok((pixels, work(&gpu)))
+    };
+
+    let (base, first) = draw()?;
+    assert_eq!(base, [[220, 78, 66]; 3]);
+    assert_eq!(first[0], 2, "inset and direct material share the producer");
+    assert_eq!(first[1], 2 * 260 * 140 * 8);
+    assert!(first[2] > 0);
+    assert_eq!(first[3], 0);
+    assert_eq!(draw()?.1, first, "unchanged viewport");
+
+    let mut app = weak.upgrade().ok_or("missing capture material demo")?;
+    app.set_source_layer(8);
+    dynamic.set("source-layer", Value::Int(8))?;
+    let (alternate, changed) = draw()?;
+    assert_eq!(alternate, [[70, 142, 210]; 3]);
+    assert_eq!(
+        changed,
+        [first[0] + 2, first[1], first[2], first[3], first[4]]
+    );
+
+    app.set_inset(false);
+    dynamic.set("inset", Value::Bool(false))?;
+    let (material_only, reused) = draw()?;
+    assert_eq!(material_only, [alternate[0], alternate[1], [35, 56, 79]]);
+    assert_eq!(
+        reused, changed,
+        "material demand keeps the same capture targets"
+    );
+
+    app.set_source_layer(4);
+    app.set_feedback(true);
+    app.set_inset(true);
+    dynamic.set("source-layer", Value::Int(4))?;
+    dynamic.set("feedback", Value::Bool(true))?;
+    dynamic.set("inset", Value::Bool(true))?;
+    let (cycle, fallback) = draw()?;
+    assert_eq!(cycle, [[196, 44, 196]; 3]);
+    assert_eq!(
+        fallback[3], 2,
+        "both edges in the cycle use missing-texture values"
+    );
+    assert_eq!(fallback[0], changed[0] + 2);
+    assert_eq!(fallback[1], changed[1]);
+
+    app.set_inset(false);
+    app.set_direct_visible(false);
+    dynamic.set("inset", Value::Bool(false))?;
+    dynamic.set("direct-visible", Value::Bool(false))?;
+    let (single, pruned) = draw()?;
+    assert_eq!(single, [cycle[0], [35, 56, 79], [35, 56, 79]]);
+    assert_eq!(
+        pruned[0],
+        fallback[0] + 1,
+        "a disconnected producer is not rendered"
+    );
+
+    app.set_inset(true);
+    app.set_direct_visible(true);
+    dynamic.set("inset", Value::Bool(true))?;
+    dynamic.set("direct-visible", Value::Bool(true))?;
+    app.set_feedback(false);
+    dynamic.set("feedback", Value::Bool(false))?;
+    let (restored, last) = draw()?;
+    assert_eq!(restored, base);
+    assert_eq!(last[0], pruned[0] + 2);
+    assert_eq!(last[1], first[1]);
+    assert_eq!(last[3], pruned[3]);
+    Ok(())
+}
+
+#[test]
+fn reflection_probes_sample_named_captures_and_keep_sliced_faces_coherent() -> TestResult {
+    use probe_capture_feed_ui::ProbeCaptureFeedDemo;
+
+    const NAME: &str = "examples/puzzle3d/probe_capture_feed.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    assert!(
+        inputs
+            .iter()
+            .any(|path| path.ends_with("capture_material_display.wgsl"))
+    );
+    let dynamic = program.create("ProbeCaptureFeedDemo")?;
+    let app = ProbeCaptureFeedDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 2], [u64; 5])> {
+        let png = aot.render_animated(&mut gpu)?;
+        assert!(png == interpreted.render_animated(&mut preview_gpu)?);
+        let raster = xrack_assets::decode_png(png)?;
+        let pixels = [(266, 135), (452, 47)].map(|(x, y)| {
+            let start = (y * 532 + x) * 4;
+            std::array::from_fn(|c| raster.rgba[start + c])
+        });
+        let work = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.reflection_capture_faces,
+                stats.reflection_cubemap_updates,
+                stats.reflection_prefilter_passes,
+            ]
+        };
+        assert_eq!(work(&gpu), work(&preview_gpu));
+        Ok((pixels, work(&gpu)))
+    };
+    let (warm, first) = draw()?;
+    assert!(warm[0][0] > warm[0][2].saturating_add(100), "{warm:?}");
+    assert_eq!(&first[..4], &[1, 266 * 135 * 8, 6, 1]);
+    assert_eq!(
+        draw()?.1,
+        first,
+        "unchanged inputs reuse color and cubemap textures"
+    );
+    let mut app = weak.upgrade().ok_or("missing probe capture feed demo")?;
+
+    // This changes only the capture descriptor. The probe projection and
+    // source scene stay stable, so the feed revision must invalidate it.
+    app.set_source_layer(4);
+    dynamic.set("source-layer", Value::Int(4))?;
+    let (cool, changed) = draw()?;
+    assert!(cool[0][2] > cool[0][0].saturating_add(100), "{cool:?}");
+    assert_eq!(&changed[..4], &[2, first[1], 12, 2]);
+
+    app.set_inset(true);
+    dynamic.set("inset", Value::Bool(true))?;
+    let (inset, reused) = draw()?;
+    assert_eq!(inset, [cool[0], [71, 142, 216]]);
+    assert_eq!(
+        reused, changed,
+        "direct effect and probe share the same feed"
+    );
+
+    app.set_refresh("first-frame".into());
+    dynamic.set("refresh", Value::String("first-frame".into()))?;
+    let (fixed, locked) = draw()?;
+    assert_eq!(fixed, inset);
+    assert_eq!(&locked[..4], &[2, first[1], 18, 3]);
+    app.set_source_layer(2);
+    app.set_inset(false);
+    dynamic.set("source-layer", Value::Int(2))?;
+    dynamic.set("inset", Value::Bool(false))?;
+    let (frozen, skipped) = draw()?;
+    assert_eq!(frozen[0], cool[0]);
+    assert_eq!(
+        skipped, locked,
+        "the completed first-frame probe no longer needs its private feed"
+    );
+
+    app.set_revision(1);
+    dynamic.set("revision", Value::Int(1))?;
+    let (refresh, updated) = draw()?;
+    assert_eq!(refresh[0], warm[0]);
+    assert_eq!(&updated[..4], &[3, first[1], 24, 4]);
+
+    app.set_source_layer(4);
+    app.set_refresh("on-change".into());
+    app.set_slicing("individual-faces".into());
+    dynamic.set("source-layer", Value::Int(4))?;
+    dynamic.set("refresh", Value::String("on-change".into()))?;
+    dynamic.set("slicing", Value::String("individual-faces".into()))?;
+    let (previous, sliced) = draw()?;
+    assert_eq!(
+        previous[0], warm[0],
+        "old cube is published while filtering"
+    );
+    assert_eq!(&sliced[..4], &[4, first[1], 30, 4]);
+    assert_eq!(
+        sliced[4], updated[4],
+        "all live base faces are recorded before filtering"
+    );
+    app.set_source_layer(2);
+    dynamic.set("source-layer", Value::Int(2))?;
+    let (while_filtering, dirty) = draw()?;
+    assert_eq!(while_filtering[0], warm[0]);
+    assert_eq!(
+        &dirty[..4],
+        &[sliced[0] + 1, sliced[1], sliced[2], sliced[3]]
+    );
+    let mut complete = false;
+    for _ in 0..6 {
+        let (frame, stats) = draw()?;
+        assert_eq!(
+            &stats[..3],
+            &dirty[..3],
+            "filter work reuses the captured faces"
+        );
+        if stats[3] > sliced[3] {
+            assert_eq!(frame[0], cool[0]);
+            complete = true;
+            break;
+        }
+        assert_eq!(frame[0], warm[0]);
+    }
+    assert!(complete);
+
+    let (still_cool, next) = draw()?;
+    assert_eq!(still_cool[0], cool[0]);
+    assert_eq!(
+        &next[..4],
+        &[dirty[0], dirty[1], sliced[2] + 6, sliced[3] + 1]
+    );
+    let mut refreshed = false;
+    for _ in 0..6 {
+        let (frame, stats) = draw()?;
+        assert_eq!(&stats[..3], &next[..3]);
+        if stats[3] > next[3] {
+            assert_eq!(frame[0], warm[0]);
+            refreshed = true;
+            break;
+        }
+        assert_eq!(frame[0], cool[0]);
+    }
+    assert!(
+        refreshed,
+        "the newer feed is published after the first complete cube"
+    );
+    Ok(())
+}
+
+#[test]
+fn named_depth_and_normal_attachments_share_geometry_and_sample_in_materials_and_effects()
+-> TestResult {
+    use capture_attachments_ui::CaptureAttachmentsDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_attachments.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    for asset in [
+        "capture_attachment_material.wgsl",
+        "capture_attachment_strip.wgsl",
+    ] {
+        assert!(inputs.iter().any(|path| path.ends_with(asset)));
+    }
+    let dynamic = program.create("CaptureAttachmentsDemo")?;
+    let app = CaptureAttachmentsDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreter = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let work = |gpu: &Renderer| {
+        let stats = gpu.scene_draw_stats();
+        [
+            stats.scene_capture_passes,
+            stats.scene_capture_bytes_allocated,
+            stats.scene_capture_geometry_draws,
+            stats.custom_effect_surface_draws,
+        ]
+    };
+    let pixels = |png: &[u8]| -> TestResult<[[u8; 3]; 6]> {
+        let raster = xrack_assets::decode_png(png)?;
+        Ok([
+            (163, 140),
+            (357, 140),
+            (130, 36),
+            (370, 36),
+            (7, 36),
+            (451, 47),
+        ]
+        .map(|(x, y)| {
+            let start = 4 * (y * 520 + x);
+            std::array::from_fn(|channel| raster.rgba[start + channel])
+        }))
+    };
+    let mut draw = || -> TestResult<([[u8; 3]; 6], [u64; 4])> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreter.render(&mut preview_gpu)?);
+        assert_eq!(work(&gpu), work(&preview_gpu));
+        Ok((pixels(png)?, work(&gpu)))
+    };
+    let (base, first) = draw()?;
+    assert_eq!(
+        base[0],
+        [188, 188, 188],
+        "orthographic near/far depth in material"
+    );
+    assert_eq!(
+        base[1],
+        [188, 231, 243],
+        "programmable surface normal in material"
+    );
+    assert_eq!(base[2], base[0], "effect and material read the same depth");
+    assert_eq!(
+        base[3],
+        [124, 203, 231],
+        "roughness and normal channels in effect"
+    );
+    assert_eq!(base[4], [255; 3], "background depth clears to far");
+    assert_eq!(first, [1, 260 * 140 * 12, 2, 0]);
+    assert_eq!(draw()?.1, first);
+
+    let mut app = weak.upgrade().ok_or("missing capture attachments demo")?;
+    app.set_source_z(4.0);
+    dynamic.set("source-z", Value::Float(4.0))?;
+    let (moved, changed) = draw()?;
+    assert_eq!(moved[0], [137; 3]);
+    assert_eq!(moved[1], base[1]);
+    assert_eq!(moved[2], moved[0]);
+    assert_eq!(changed, [2, first[1], first[2] * 2, 0]);
+
+    app.set_color_inset(true);
+    dynamic.set("color-inset", Value::Bool(true))?;
+    let (color, added) = draw()?;
+    assert_eq!(&color[..5], &moved[..5]);
+    assert_ne!(color[5], moved[5]);
+    assert_eq!(added, [3, first[1] + 260 * 140 * 8, changed[2], 0]);
+
+    // A depth-only configuration keeps the float depth target and skips the
+    // normal MRT even when the same descriptor previously requested both.
+    let mut depth_app = CaptureAttachmentsDemo::new();
+    depth_app.set_diagnostic_strip(false);
+    depth_app.set_normals(false);
+    let depth_dynamic = program.create("CaptureAttachmentsDemo")?;
+    depth_dynamic.set("diagnostic-strip", Value::Bool(false))?;
+    depth_dynamic.set("normals", Value::Bool(false))?;
+    let mut depth_aot = PreviewScene::new(Box::new(depth_app));
+    let mut depth_interpreted = PreviewScene::new(Box::new(depth_dynamic));
+    let (mut depth_gpu, mut depth_preview_gpu) = (renderer()?, renderer()?);
+    let png = depth_aot.render(&mut depth_gpu)?;
+    assert!(png == depth_interpreted.render(&mut depth_preview_gpu)?);
+    assert_eq!(pixels(png)?[0], base[0]);
+    assert_eq!(work(&depth_gpu), [1, 260 * 140 * 4, 2, 0]);
+    assert_eq!(work(&depth_preview_gpu), work(&depth_gpu));
+    Ok(())
+}
+
+#[test]
+fn capture_world_positions_use_each_attachment_camera_and_reuse_projection_uploads() -> TestResult {
+    use capture_positions_ui::CapturePositionsDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_positions.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    for asset in [
+        "capture_position_material.wgsl",
+        "capture_position_strip.wgsl",
+    ] {
+        assert!(inputs.iter().any(|path| path.ends_with(asset)));
+    }
+    let dynamic = program.create("CapturePositionsDemo")?;
+    let app = CapturePositionsDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 4], [u64; 4])> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let raster = xrack_assets::decode_png(png)?;
+        let pixels = [(172, 140), (368, 140), (135, 28), (405, 28)].map(|(x, y)| {
+            let start = 4 * (y * 540 + x);
+            std::array::from_fn(|channel| raster.rgba[start + channel])
+        });
+        let work = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.scene_capture_projection_uploads,
+                stats.mesh_vertex_bytes_uploaded,
+            ]
+        };
+        let stats = work(&gpu);
+        assert_eq!(stats, work(&preview_gpu));
+        Ok((pixels, stats))
+    };
+    let near = |actual: [u8; 3], expected: [u8; 3]| {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 4),
+            "{actual:?} vs {expected:?}"
+        );
+    };
+    let (base, first) = draw()?;
+    near(base[0], [150, 188, 153]);
+    near(base[1], [218, 188, 184]);
+    near(base[2], base[0]);
+    near(base[3], base[1]);
+    assert_eq!(&first[..2], &[2, 270 * 140 * 16]);
+    assert_eq!(draw()?.1, first);
+
+    let mut app = weak.upgrade().ok_or("missing capture positions demo")?;
+    app.set_west_shift(0.6);
+    dynamic.set("west-shift", Value::Float(0.6))?;
+    let (camera, update) = draw()?;
+    assert!(camera[0][0] > base[0][0] + 12);
+    assert_eq!([camera[1], camera[3]], [base[1], base[3]]);
+    near(camera[2], camera[0]);
+    assert_eq!(
+        update[1], first[1],
+        "camera changes update an already allocated depth texture"
+    );
+    assert!(
+        update[2] > first[2],
+        "moving the camera uploads the new projection"
+    );
+    assert_eq!(update[3], first[3]);
+
+    app.set_west_z(3.0);
+    dynamic.set("west-z", Value::Float(3.0))?;
+    let (geometry, newer) = draw()?;
+    assert!(geometry[0][2] > camera[0][2] + 25);
+    near(geometry[2], geometry[0]);
+    assert_eq!(
+        &newer[1..],
+        &update[1..],
+        "geometry updates reuse the camera uniforms"
+    );
+
+    app.set_asymmetric(true);
+    dynamic.set("asymmetric", Value::Bool(true))?;
+    let (perspective, _) = draw()?;
+    assert_eq!([perspective[0], perspective[2]], [geometry[0], geometry[2]]);
+    assert!(
+        perspective[1][0] > geometry[1][0] + 7,
+        "off-center lens: {perspective:?}"
+    );
+    assert!(perspective[1][2].abs_diff(geometry[1][2]) <= 2);
+    near(perspective[3], perspective[1]);
+    Ok(())
+}
+
+#[test]
+fn named_material_channels_relight_without_recapturing_geometry() -> TestResult {
+    use capture_material_channels_ui::CaptureMaterialChannelsDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_material_channels.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, inputs) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    for asset in [
+        "capture_surface_swatch.wgsl",
+        "capture_surface_inspector.wgsl",
+        "capture_surface_light.wgsl",
+        "channel-swatch.png",
+    ] {
+        assert!(inputs.iter().any(|path| path.ends_with(asset)));
+    }
+    let dynamic = program.create("CaptureMaterialChannelsDemo")?;
+    let app = CaptureMaterialChannelsDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let pixels = |png: &[u8]| -> TestResult<[[u8; 3]; 6]> {
+        let bitmap = xrack_assets::decode_png(png)?;
+        Ok([
+            (161, 122),
+            (379, 122),
+            (108, 270),
+            (220, 270),
+            (330, 270),
+            (442, 270),
+        ]
+        .map(|(x, y)| {
+            let start = 4 * (y * 540 + x);
+            std::array::from_fn(|channel| bitmap.rgba[start + channel])
+        }))
+    };
+    let work = |renderer: &Renderer| {
+        let stats = renderer.scene_draw_stats();
+        [
+            stats.scene_capture_passes,
+            stats.scene_capture_bytes_allocated,
+            stats.scene_capture_geometry_draws,
+            stats.scene_capture_projection_uploads,
+            stats.mesh_vertex_bytes_uploaded,
+        ]
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 6], [u64; 5])> {
+        let png = aot.render(&mut gpu)?;
+        assert!(png == interpreted.render(&mut preview_gpu)?);
+        let stats = work(&gpu);
+        assert_eq!(stats, work(&preview_gpu));
+        Ok((pixels(png)?, stats))
+    };
+    let near = |actual: [u8; 3], expected: [u8; 3]| {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 3),
+            "{actual:?} vs {expected:?}"
+        );
+    };
+    let (base, initial) = draw()?;
+    near(base[2], [89, 160, 211]); // Linear RGB from scene_material.
+    near(base[3], [137; 3]); // 0.25 metalness, stored separately from RGB.
+    near(base[4], [39, 80, 118]); // HDR emission from scene_material.
+    near(base[5], [99; 3]); // Raw alpha-channel occlusion from the PNG.
+    assert_eq!(&initial[..4], &[1, 270 * 150 * 28, 2, 1]);
+
+    let mut app = weak
+        .upgrade()
+        .ok_or("missing capture material channels demo")?;
+    app.set_light_x(2.0);
+    dynamic.set("light-x", Value::Float(2.0))?;
+    let (lit, updated_light) = draw()?;
+    assert!(base[0][2] > lit[0][2] + 18, "{base:?} -> {lit:?}");
+    assert!(lit[1][0] > base[1][0] + 18, "{base:?} -> {lit:?}");
+    assert_eq!(&lit[2..], &base[2..]);
+    assert_eq!(
+        updated_light, initial,
+        "the light moves only in the post-effect"
+    );
+
+    app.set_metalness(0.8);
+    dynamic.set("metalness", Value::Float(0.8))?;
+    let (finish, changed) = draw()?;
+    near(finish[3], [231; 3]);
+    assert_eq!(
+        [finish[2], finish[4], finish[5]],
+        [base[2], base[4], base[5]]
+    );
+    assert_eq!(changed, [2, initial[1], 4, initial[3], initial[4]]);
+
+    let mut emission_app = CaptureMaterialChannelsDemo::new();
+    emission_app.set_emission_only(true);
+    let emission_dynamic = program.create("CaptureMaterialChannelsDemo")?;
+    emission_dynamic.set("emission-only", Value::Bool(true))?;
+    let mut emission_aot = PreviewScene::new(Box::new(emission_app));
+    let mut emission_interpreted = PreviewScene::new(Box::new(emission_dynamic));
+    let (mut emission_gpu, mut emission_preview_gpu) = (renderer()?, renderer()?);
+    let png = emission_aot.render(&mut emission_gpu)?;
+    assert!(png == emission_interpreted.render(&mut emission_preview_gpu)?);
+    near(pixels(png)?[0], base[4]);
+    assert_eq!(&work(&emission_gpu)[..4], &[1, 270 * 150 * 8, 2, 0]);
+    assert_eq!(work(&emission_gpu), work(&emission_preview_gpu));
+    Ok(())
+}
+
+#[test]
+fn named_capture_depth_occludes_forward_glass_in_both_backends() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, resources) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    assert!(
+        resources
+            .iter()
+            .any(|path| path.ends_with("capture_composite_light.wgsl"))
+    );
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    let app = CaptureCompositeDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 2], [u64; 5])> {
+        let image = aot.render(&mut gpu)?;
+        assert!(image == interpreted.render(&mut preview_gpu)?);
+        let image = xrack_assets::decode_png(image)?;
+        let pixels = [220, 72].map(|x| {
+            let start = 4 * (144 * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let work = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_composite_draws,
+                stats.scene_capture_bytes_allocated,
+                stats.transparency_composites,
+                stats.screen_reflection_resolves,
+            ]
+        };
+        let stats = work(&gpu);
+        assert_eq!(stats, work(&preview_gpu));
+        Ok((pixels, stats))
+    };
+    let near = |actual: [u8; 3], expected: [u8; 3]| {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 3),
+            "{actual:?} vs {expected:?}"
+        );
+    };
+    let (occluded, first) = draw()?;
+    assert!(occluded[0][2] > occluded[0][0] + 85, "{occluded:?}");
+    assert!(occluded[1][0] > occluded[1][2] + 55, "{occluded:?}");
+    assert_eq!(first, [2, 1, 480 * 288 * 36, 0, 0]);
+    assert_eq!(draw()?.1, first, "clean view reuses the completed frame");
+
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+    app.set_share_depth(false);
+    dynamic.set("share-depth", Value::Bool(false))?;
+    let (color_only, second) = draw()?;
+    assert!(color_only[0][0] > occluded[0][0] + 85, "{color_only:?}");
+    near(color_only[1], occluded[1]);
+    assert_eq!(
+        second,
+        [2, 2, first[2], 0, 0],
+        "switching depth reuses both captures"
+    );
+
+    app.set_share_depth(true);
+    dynamic.set("share-depth", Value::Bool(true))?;
+    app.set_different_camera(true);
+    dynamic.set("different-camera", Value::Bool(true))?;
+    let (mismatched, work) = draw()?;
+    assert_eq!(
+        mismatched, color_only,
+        "foreign projection cannot seed viewport depth"
+    );
+    assert_eq!(
+        work,
+        [2, 3, first[2], 0, 0],
+        "incompatible depth never allocates a target"
+    );
+
+    app.set_different_camera(false);
+    dynamic.set("different-camera", Value::Bool(false))?;
+    app.set_glass_depth(2.0);
+    dynamic.set("glass-depth", Value::Float(2.0))?;
+    let (foreground, _) = draw()?;
+    near(foreground[0], color_only[0]);
+    near(foreground[1], color_only[1]);
+
+    app.set_weighted(true);
+    dynamic.set("weighted", Value::Bool(true))?;
+    app.set_antialias(true);
+    dynamic.set("antialias", Value::Bool(true))?;
+    app.set_reflections(true);
+    dynamic.set("reflections", Value::Bool(true))?;
+    let (weighted_front, weighted) = draw()?;
+    near(weighted_front[0], foreground[0]);
+    near(weighted_front[1], foreground[1]);
+    assert!(weighted[3] > 0 && weighted[4] > 0, "{weighted:?}");
+    app.set_glass_depth(0.0);
+    dynamic.set("glass-depth", Value::Float(0.0))?;
+    let (weighted_back, _) = draw()?;
+    near(weighted_back[0], occluded[0]);
+    near(weighted_back[1], occluded[1]);
+
+    app.set_use_color(false);
+    dynamic.set("use-color", Value::Bool(false))?;
+    let (depth_only, _) = draw()?;
+    near(depth_only[0], [25, 45, 68]);
+    assert!(depth_only[1][0] > depth_only[1][2] + 55, "{depth_only:?}");
+    app.set_share_depth(false);
+    dynamic.set("share-depth", Value::Bool(false))?;
+    let (normal, _) = draw()?;
+    assert!(normal[0][0] > depth_only[0][0] + 85, "{normal:?}");
+
+    // Editor previews use fractional pixel scales. The capture must keep the
+    // viewport's logical camera even when the GPU texture aspect rounds.
+    let mut aot_scaled = PreviewScene::new(Box::new(CaptureCompositeDemo::new()));
+    let mut interp_scaled = PreviewScene::new(Box::new(program.create("CaptureCompositeDemo")?));
+    let scaled = aot_scaled.render_scaled(&mut gpu, 1.37)?;
+    assert!(scaled == interp_scaled.render_scaled(&mut preview_gpu, 1.37)?);
+    let bitmap = xrack_assets::decode_png(scaled)?;
+    let [width, height] = bitmap.size.map(|side| side as usize);
+    let index = 4 * ((144 * height / 350) * width + 220 * width / 480);
+    let scaled_center = std::array::from_fn(|channel| bitmap.rgba[index + channel]);
+    near(scaled_center, occluded[0]);
+    Ok(())
+}
+
+#[test]
+fn color_captures_load_upstream_attachments_and_share_resolved_aliases() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    dynamic.set("offscreen-composition", Value::Bool(true))?;
+    dynamic.set("compare-capture-alias", Value::Bool(true))?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    app.set_compare_capture_alias(true);
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut preview_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 2], [u64; 4])> {
+        let rendered = aot.render(&mut gpu)?;
+        assert!(rendered == interpreted.render(&mut preview_gpu)?);
+        let image = xrack_assets::decode_png(rendered)?;
+        let pixels = [220, 72].map(|x| {
+            let start = 4 * (144 * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.scene_capture_composite_draws,
+                stats.scene_capture_feedback_edges,
+            ]
+        };
+        let work = counts(&gpu);
+        assert_eq!(work, counts(&preview_gpu));
+        Ok((pixels, work))
+    };
+    let (occluded, first) = draw()?;
+    assert!(occluded[0][2] > occluded[0][0] + 85, "{occluded:?}");
+    assert!(occluded[1][0] > occluded[1][2] + 55, "{occluded:?}");
+    assert_eq!(
+        first,
+        [3, 480 * 288 * 44, 2, 0],
+        "two aliases share one forward pass"
+    );
+    assert_eq!(draw()?.1, first);
+
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+    app.set_share_depth(false);
+    dynamic.set("share-depth", Value::Bool(false))?;
+    let (no_depth, unchanged_allocation) = draw()?;
+    assert!(no_depth[0][0] > occluded[0][0] + 85, "{no_depth:?}");
+    assert_eq!(no_depth[1], occluded[1]);
+    assert_eq!(unchanged_allocation, [4, first[1], first[2] + 2, 0]);
+
+    app.set_share_depth(true);
+    dynamic.set("share-depth", Value::Bool(true))?;
+    app.set_different_camera(true);
+    dynamic.set("different-camera", Value::Bool(true))?;
+    assert_eq!(draw()?, (no_depth, [4, first[1], first[2] + 3, 0]));
+
+    app.set_different_camera(false);
+    dynamic.set("different-camera", Value::Bool(false))?;
+    app.set_compare_capture_alias(false);
+    dynamic.set("compare-capture-alias", Value::Bool(false))?;
+    app.set_lighting_source("relay".to_string());
+    dynamic.set("lighting-source", Value::String("relay".to_string()))?;
+    let (cycle, work) = draw()?;
+    assert!(
+        cycle[0]
+            .into_iter()
+            .zip([25, 45, 68])
+            .all(|(a, b)| a.abs_diff(b) <= 2),
+        "{cycle:?}"
+    );
+    assert!(cycle[1][0] > cycle[1][2] + 55, "{cycle:?}");
+    assert_eq!(work[3], 2, "both feedback edges are removed");
+    assert_eq!(
+        work[1], first[1],
+        "unused relay never allocates a color target"
+    );
+
+    app.set_lighting_source("lighting".to_string());
+    dynamic.set("lighting-source", Value::String("lighting".to_string()))?;
+    assert_eq!(draw()?.0, occluded);
+    Ok(())
+}
+
+#[test]
+fn named_capture_renderables_filter_sections_and_skip_unused_material_inputs() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    dynamic.set("offscreen-composition", Value::Bool(true))?;
+    dynamic.set("mixed-mesh", Value::Bool(true))?;
+    dynamic.set("capture-renderables", Value::String("transparent".into()))?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    app.set_mixed_mesh(true);
+    app.set_capture_renderables("transparent".into());
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let new_renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (new_renderer()?, new_renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 2], [u64; 4])> {
+        let image = aot.render(&mut gpu)?;
+        assert!(image == interpreted.render(&mut other_gpu)?);
+        let image = xrack_assets::decode_png(image)?;
+        let pixels = [110, 240].map(|x| {
+            let start = 4 * (144 * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.color_instances,
+                stats.material_depth_prepass_draws,
+            ]
+        };
+        let work = counts(&gpu);
+        assert_eq!(work, counts(&other_gpu));
+        Ok((pixels, work))
+    };
+    let (transparent, first) = draw()?;
+    assert!(
+        transparent[0][2] > transparent[0][0] + 70,
+        "{transparent:?}"
+    );
+    assert!(transparent[1][0] > 120, "{transparent:?}");
+    assert_eq!(
+        first[0..2],
+        [3, 480 * 288 * 44],
+        "the excluded masked part does not request its color capture"
+    );
+    assert_eq!(draw()?.1, first);
+
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+    app.set_capture_renderables("opaque".into());
+    dynamic.set("capture-renderables", Value::String("opaque".into()))?;
+    let (opaque, second) = draw()?;
+    assert!(opaque[0][1] > opaque[0][2] + 70, "{opaque:?}");
+    assert!(opaque[1][2] > opaque[1][0] + 70, "{opaque:?}");
+    assert_eq!(
+        second[0..2],
+        [5, 480 * 288 * 52],
+        "one upstream target and the selected forward pass"
+    );
+    assert_eq!(
+        second[2] - first[2],
+        2,
+        "one accent producer and one masked part"
+    );
+    assert_eq!(
+        second[3] - first[3],
+        1,
+        "only the selected masked part reaches the prepass"
+    );
+
+    app.set_capture_renderables("none".into());
+    dynamic.set("capture-renderables", Value::String("none".into()))?;
+    let (inputs, third) = draw()?;
+    assert_eq!(inputs, [transparent[0], opaque[1]]);
+    assert_eq!(
+        third,
+        [6, second[1], second[2], second[3]],
+        "composition-only mode submits no geometry or depth prepass"
+    );
+
+    app.set_capture_renderables("all".into());
+    dynamic.set("capture-renderables", Value::String("all".into()))?;
+    let (all, fourth) = draw()?;
+    assert_eq!(all, [opaque[0], transparent[1]]);
+    assert_eq!(
+        fourth[0..2],
+        [7, second[1]],
+        "all stages reuse the named targets"
+    );
+    assert_eq!(
+        fourth[2] - third[2],
+        3,
+        "three sections of the original glTF"
+    );
+    Ok(())
+}
+
+#[test]
+fn capture_material_override_filters_original_sections_and_reuses_mesh_streams() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    for field in ["offscreen-composition", "mixed-mesh", "override-enabled"] {
+        dynamic.set(field, Value::Bool(true))?;
+    }
+    dynamic.set("capture-renderables", Value::String("opaque".into()))?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    app.set_mixed_mesh(true);
+    app.set_override_enabled(true);
+    app.set_capture_renderables("opaque".into());
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let new_renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (new_renderer()?, new_renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 2], [u64; 4])> {
+        let image = aot.render(&mut gpu)?;
+        assert!(image == interpreted.render(&mut other_gpu)?);
+        let image = xrack_assets::decode_png(image)?;
+        let pixels = [110, 240].map(|x| {
+            let start = 4 * (144 * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.mesh_vertex_bytes_uploaded,
+                stats.mesh_index_bytes_uploaded,
+            ]
+        };
+        let work = counts(&gpu);
+        assert_eq!(work, counts(&other_gpu));
+        Ok((pixels, work))
+    };
+    let near = |actual: [u8; 3], expected: [u8; 3]| {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 2),
+            "{actual:?} vs {expected:?}"
+        );
+    };
+    let (opaque, first) = draw()?;
+    near(opaque[0], [226, 68, 147]);
+    assert!(opaque[1][2] > opaque[1][0] + 70, "{opaque:?}");
+    assert_eq!(
+        first[0..2],
+        [3, 480 * 288 * 44],
+        "the original material's capture is unused"
+    );
+    assert_eq!(draw()?.1, first);
+
+    let mut app = weak.upgrade().ok_or("missing capture demo")?;
+    app.set_override_color(xrack_runtime::Color(0x33a9f4ff));
+    dynamic.set(
+        "override-color",
+        Value::Color(xrack_runtime::Color(0x33a9f4ff)),
+    )?;
+    let (new_color, recolored) = draw()?;
+    near(new_color[0], [51, 169, 244]);
+    assert_eq!(new_color[1], opaque[1]);
+    assert_eq!(
+        recolored,
+        [4, first[1], first[2], first[3]],
+        "changing the material keeps shared vertex streams"
+    );
+
+    app.set_capture_renderables("transparent".into());
+    dynamic.set("capture-renderables", Value::String("transparent".into()))?;
+    let (blended_sections, filtered) = draw()?;
+    assert!(
+        blended_sections[0][2] > blended_sections[0][0] + 70,
+        "{blended_sections:?}"
+    );
+    near(blended_sections[1], [51, 169, 244]);
+    assert_eq!(filtered, [5, first[1], first[2], first[3]]);
+
+    app.set_override_shader(true);
+    dynamic.set("override-shader", Value::Bool(true))?;
+    let (shader, after) = draw()?;
+    near(shader[1], [66, 228, 109]);
+    assert_eq!(shader[0], blended_sections[0]);
+    assert_eq!(after[0..2], [7, first[1] + 480 * 288 * 8]);
+    Ok(())
+}
+
+#[test]
+fn capture_pipeline_state_controls_depth_culling_and_direct_blending() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    dynamic.set("offscreen-composition", Value::Bool(true))?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (renderer()?, renderer()?);
+    let mut draw_number = 0;
+    let mut draw = || -> TestResult<([[u8; 3]; 4], [u64; 5])> {
+        let image = aot.render(&mut gpu)?;
+        draw_number += 1;
+        assert!(
+            image == interpreted.render(&mut other_gpu)?,
+            "different output on draw {draw_number}"
+        );
+        let image = xrack_assets::decode_png(image)?;
+        let pixels = [(220, 144), (72, 144), (326, 54), (397, 54)].map(|(x, y)| {
+            let start = 4 * (y * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.mesh_vertex_bytes_uploaded,
+                stats.transparency_composites,
+                stats.particle_model_draws,
+            ]
+        };
+        let stats = counts(&gpu);
+        assert_eq!(stats, counts(&other_gpu));
+        Ok((pixels, stats))
+    };
+    let (occluded, first) = draw()?;
+    assert!(occluded[0][2] > occluded[0][0] + 80);
+    assert!(occluded[1][0] > occluded[1][2] + 55);
+
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+    app.set_pipeline_enabled(true);
+    dynamic.set("pipeline-enabled", Value::Bool(true))?;
+    let (bypassed, second) = draw()?;
+    assert!(bypassed[0][0] > occluded[0][0] + 100);
+    assert_eq!(bypassed[1], occluded[1]);
+    assert_eq!(
+        second,
+        [first[0] + 1, first[1], first[2], first[3], first[4]]
+    );
+
+    app.set_capture_depth_test(true);
+    dynamic.set("capture-depth-test", Value::Bool(true))?;
+    app.set_capture_depth_compare("greater".into());
+    dynamic.set("capture-depth-compare", Value::String("greater".into()))?;
+    let (farther, _) = draw()?;
+    assert_eq!(farther[0], bypassed[0], "test against the imported depth");
+    assert!(farther[1][0] < 40, "{farther:?}");
+
+    app.set_capture_cull_mode("front".into());
+    dynamic.set("capture-cull-mode", Value::String("front".into()))?;
+    assert_eq!(draw()?.0[0], occluded[0], "front-facing glass is culled");
+
+    app.set_capture_depth_test(false);
+    dynamic.set("capture-depth-test", Value::Bool(false))?;
+    app.set_capture_cull_mode("material".into());
+    dynamic.set("capture-cull-mode", Value::String("material".into()))?;
+    app.set_weighted(true);
+    dynamic.set("weighted", Value::Bool(true))?;
+    app.set_capture_blend_mode("replace".into());
+    dynamic.set("capture-blend-mode", Value::String("replace".into()))?;
+    let (replace, ordered) = draw()?;
+    assert!(replace[0][2] + 50 < bypassed[0][2], "{replace:?}");
+    assert_eq!(
+        ordered[3], first[3],
+        "a fixed blend state uses direct color output"
+    );
+
+    app.set_capture_blend_mode("additive".into());
+    dynamic.set("capture-blend-mode", Value::String("additive".into()))?;
+    app.set_particle_fixture(true);
+    dynamic.set("particle-fixture", Value::Bool(true))?;
+    let (additive, particles) = draw()?;
+    assert!(additive[0][2] > bypassed[0][2] + 30, "{additive:?}");
+    assert!(additive[2][0] > occluded[2][0] + 30, "{additive:?}");
+    assert!(additive[3][0] > occluded[3][0] + 30, "{additive:?}");
+    assert_eq!(particles[3], first[3]);
+    assert!(
+        particles[4] > ordered[4],
+        "translucent model particles reach the direct pass"
+    );
+
+    app.set_particle_fixture(false);
+    dynamic.set("particle-fixture", Value::Bool(false))?;
+    app.set_depth_fixture(true);
+    dynamic.set("depth-fixture", Value::Bool(true))?;
+    app.set_share_depth(false);
+    dynamic.set("share-depth", Value::Bool(false))?;
+    app.set_use_color(false);
+    dynamic.set("use-color", Value::Bool(false))?;
+    app.set_capture_blend_mode("material".into());
+    dynamic.set("capture-blend-mode", Value::String("material".into()))?;
+    app.set_capture_depth_test(true);
+    dynamic.set("capture-depth-test", Value::Bool(true))?;
+    app.set_capture_depth_compare("less".into());
+    dynamic.set("capture-depth-compare", Value::String("less".into()))?;
+    let green = draw()?.0[0];
+    assert!(green[1] > green[0] + 95, "{green:?}");
+    app.set_capture_depth_write(true);
+    dynamic.set("capture-depth-write", Value::Bool(true))?;
+    let red = draw()?.0[0];
+    assert!(red[0] > red[1] + 130, "{red:?}");
+    Ok(())
+}
+
+#[test]
+fn capture_viewport_and_scissor_align_color_depth_and_world_positions() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    dynamic.set("offscreen-composition", Value::Bool(true))?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 4], [u64; 5])> {
+        let image = aot.render(&mut gpu)?;
+        assert!(image == interpreted.render(&mut other_gpu)?);
+        let image = xrack_assets::decode_png(image)?;
+        let pixels = [220, 72, 270, 192].map(|x| {
+            let start = 4 * (144 * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.mesh_vertex_bytes_uploaded,
+                stats.color_instances,
+                stats.transparency_composites,
+            ]
+        };
+        let stats = counts(&gpu);
+        assert_eq!(stats, counts(&other_gpu));
+        Ok((pixels, stats))
+    };
+    let (occluded, first) = draw()?;
+    assert!(occluded[0][2] > occluded[0][0] + 80);
+    assert!(occluded[1][0] > occluded[1][2] + 55);
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+
+    app.set_pipeline_enabled(true);
+    dynamic.set("pipeline-enabled", Value::Bool(true))?;
+    app.set_capture_viewport(true);
+    dynamic.set("capture-viewport", Value::Bool(true))?;
+    let (inset, moved) = draw()?;
+    assert!(inset[0][0] > occluded[0][0] + 100);
+    assert!(inset[1][0] < 40, "{inset:?}");
+    assert_eq!(moved[..3], [first[0] + 1, first[1], first[2]]);
+
+    app.set_capture_scissor(true);
+    dynamic.set("capture-scissor", Value::Bool(true))?;
+    let (clipped, _) = draw()?;
+    assert_eq!(clipped, [occluded[0], inset[1], inset[2], occluded[3]]);
+
+    app.set_weighted(true);
+    dynamic.set("weighted", Value::Bool(true))?;
+    let (weighted, work) = draw()?;
+    assert_eq!(
+        [weighted[0], weighted[1], weighted[3]],
+        [clipped[0], clipped[1], clipped[3]]
+    );
+    assert!(weighted[2][0] > occluded[2][0] + 80);
+    assert!(work[4] > moved[4]);
+
+    app.set_capture_scissor_width(0.2501);
+    dynamic.set("capture-scissor-width", Value::Float(0.2501))?;
+    assert_eq!(
+        draw()?,
+        (weighted, work),
+        "the same scissor pixels reuse the capture"
+    );
+
+    app.set_capture_scissor_width(0.0);
+    dynamic.set("capture-scissor-width", Value::Float(0.0))?;
+    let (empty, outside) = draw()?;
+    assert_eq!(empty, [occluded[0], inset[1], occluded[2], occluded[3]]);
+    assert_eq!(outside, [work[0] + 1, work[1], work[2], work[3], work[4]]);
+
+    app.set_capture_scissor(false);
+    dynamic.set("capture-scissor", Value::Bool(false))?;
+    app.set_capture_depth_test(true);
+    dynamic.set("capture-depth-test", Value::Bool(true))?;
+    let (foreign, _) = draw()?;
+    assert!(
+        foreign[0][0] > occluded[0][0] + 90,
+        "depth from the original viewport cannot occlude an inset"
+    );
+
+    app.set_map_surface(true);
+    dynamic.set("map-surface", Value::Bool(true))?;
+    let (matched, _) = draw()?;
+    assert!(
+        matched[0][2] > matched[0][0] + 90,
+        "matching raster projections share depth"
+    );
+
+    app.set_capture_renderables("none".into());
+    dynamic.set("capture-renderables", Value::String("none".into()))?;
+    app.set_probe_position(true);
+    dynamic.set("probe-position", Value::Bool(true))?;
+    let (position, _) = draw()?;
+    let check_position = |actual: [u8; 3]| {
+        // Pixel (192,144) maps to approximately (-1.32, -0.014, 1)
+        // on the inset orthographic plane before channel encoding.
+        assert!(
+            actual
+                .into_iter()
+                .zip([157, 187, 99])
+                .all(|(a, b)| a.abs_diff(b) <= 3),
+            "{actual:?}"
+        );
+    };
+    check_position(position[3]);
+    let image = aot.render_scaled(&mut gpu, 1.37)?;
+    assert!(image == interpreted.render_scaled(&mut other_gpu, 1.37)?);
+    let image = xrack_assets::decode_png(image)?;
+    let [width, height] = image.size.map(|side| side as usize);
+    let start = 4 * ((144 * height / 350) * width + 192 * width / 480);
+    check_position(std::array::from_fn(|channel| image.rgba[start + channel]));
+    Ok(())
+}
+
+#[test]
+fn named_depth_clear_seeds_comparison_and_preserves_invalid_positions() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    app.set_pipeline_enabled(true);
+    app.set_capture_depth_test(true);
+    app.set_capture_depth_compare("greater".into());
+    app.set_share_depth(false);
+    for field in [
+        "offscreen-composition",
+        "pipeline-enabled",
+        "capture-depth-test",
+    ] {
+        dynamic.set(field, Value::Bool(true))?;
+    }
+    dynamic.set("capture-depth-compare", Value::String("greater".into()))?;
+    dynamic.set("share-depth", Value::Bool(false))?;
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 2], [u64; 3])> {
+        let image = aot.render(&mut gpu)?;
+        assert!(image == interpreted.render(&mut other_gpu)?);
+        let image = xrack_assets::decode_png(image)?;
+        let pixels = [220, 72].map(|x| {
+            let start = 4 * (144 * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.mesh_vertex_bytes_uploaded,
+            ]
+        };
+        let stats = counts(&gpu);
+        assert_eq!(stats, counts(&other_gpu));
+        Ok((pixels, stats))
+    };
+    let near = |actual: [u8; 3], expected: [u8; 3]| {
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| a.abs_diff(b) <= 3),
+            "{actual:?} vs {expected:?}"
+        );
+    };
+    let (far, first) = draw()?;
+    assert!(far[0][2] > far[0][0] + 80 && far[1][0] < 40, "{far:?}");
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+
+    app.set_capture_depth_clear(0.0);
+    dynamic.set("capture-depth-clear", Value::Float(0.0))?;
+    let (visible, near_stats) = draw()?;
+    assert!(visible[0][0] > far[0][0] + 100 && visible[1][0] > far[1][0] + 100);
+    assert_eq!(near_stats, [first[0] + 1, first[1], first[2]]);
+
+    app.set_capture_depth_clear(1.5);
+    dynamic.set("capture-depth-clear", Value::Float(1.5))?;
+    assert_eq!(draw()?.0, far);
+    app.set_share_depth(true);
+    dynamic.set("share-depth", Value::Bool(true))?;
+    app.set_seed_depth(true);
+    dynamic.set("seed-depth", Value::Bool(true))?;
+    let (imported, seed_stats) = draw()?;
+    assert_eq!(
+        imported, visible,
+        "a capture with no renderables can seed depth"
+    );
+    assert_eq!(
+        seed_stats[..2],
+        [near_stats[0] + 3, first[1] + 480 * 288 * 4]
+    );
+    app.set_seed_depth_clear(0.75);
+    dynamic.set("seed-depth-clear", Value::Float(0.75))?;
+    let (rejected, later) = draw()?;
+    assert_eq!(rejected, far);
+    assert_eq!(later, [seed_stats[0] + 2, seed_stats[1], seed_stats[2]]);
+
+    app.set_seed_depth_clear(0.0);
+    dynamic.set("seed-depth-clear", Value::Float(0.0))?;
+    assert_eq!(draw()?.0, visible, "zero is a valid imported clear");
+
+    app.set_use_color(false);
+    dynamic.set("use-color", Value::Bool(false))?;
+    let (_, seed_only) = draw()?;
+    app.set_glass_depth(0.2);
+    dynamic.set("glass-depth", Value::Float(0.2))?;
+    let (_, moved) = draw()?;
+    assert_eq!(
+        moved,
+        [seed_only[0] + 1, seed_only[1], seed_only[2]],
+        "moving the glass reuses the uniform producer"
+    );
+    app.set_use_color(true);
+    dynamic.set("use-color", Value::Bool(true))?;
+
+    app.set_capture_renderables("none".into());
+    dynamic.set("capture-renderables", Value::String("none".into()))?;
+    app.set_surface_depth_clear(0.24);
+    dynamic.set("surface-depth-clear", Value::Float(0.24))?;
+    app.set_inspect_clear(true);
+    dynamic.set("inspect-clear", Value::Bool(true))?;
+    let (decoded, _) = draw()?;
+    near(decoded[0], [180, 231, 203]);
+    near(decoded[1], [134, 124, 89]);
+    app.set_effect_inspect_clear(true);
+    dynamic.set("effect-inspect-clear", Value::Bool(true))?;
+    let (effect, _) = draw()?;
+    near(effect[0], decoded[0]);
+    near(effect[1], decoded[1]);
+    app.set_surface_depth_clear(5.0 / 11.0);
+    dynamic.set("surface-depth-clear", Value::Float(5.0 / 11.0))?;
+    let (equal, _) = draw()?;
+    near(equal[0], decoded[0]);
+    near(equal[1], [180, 124, 89]);
+
+    app.set_surface_depth_clear(0.0);
+    dynamic.set("surface-depth-clear", Value::Float(0.0))?;
+    let (effect_zero, _) = draw()?;
+    near(effect_zero[0], decoded[0]);
+    near(effect_zero[1], [0, 124, 89]);
+    app.set_effect_inspect_clear(false);
+    dynamic.set("effect-inspect-clear", Value::Bool(false))?;
+    let (material_zero, _) = draw()?;
+    near(material_zero[1], effect_zero[1]);
+    Ok(())
+}
+
+#[test]
+fn named_stencil_capture_masks_another_camera_and_reuses_the_output() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    dynamic.set("offscreen-composition", Value::Bool(true))?;
+    dynamic.set("stencil-demo", Value::Bool(true))?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    app.set_stencil_demo(true);
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 2], [u64; 5])> {
+        let image = aot.render(&mut gpu)?;
+        assert!(image == interpreted.render(&mut other_gpu)?);
+        let image = xrack_assets::decode_png(image)?;
+        let pixels = [220, 320].map(|x| {
+            let start = 4 * (144 * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.scene_capture_stencil_copies,
+                stats.mesh_vertex_bytes_uploaded,
+                stats.transparency_composites,
+            ]
+        };
+        let stats = counts(&gpu);
+        assert_eq!(stats, counts(&other_gpu));
+        Ok((pixels, stats))
+    };
+    let (masked, first) = draw()?;
+    assert!(
+        masked[0][0] > 150 && masked[1][2] > masked[1][0] + 90,
+        "{masked:?}"
+    );
+    assert_eq!(first[..3], [4, 480 * 288 * 52, 1]);
+    assert_eq!(
+        draw()?.1,
+        first,
+        "completed captures need no stencil transfer"
+    );
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+
+    app.set_stencil_read_ref(2);
+    dynamic.set("stencil-read-ref", Value::Int(2))?;
+    let (outside, changed) = draw()?;
+    assert!(
+        outside[0][2] > outside[0][0] + 90 && outside[1][0] > 150,
+        "{outside:?}"
+    );
+    let background = [outside[0], masked[1]];
+    assert_eq!(
+        changed,
+        [first[0] + 1, first[1], first[2] + 1, first[3], first[4]]
+    );
+
+    app.set_stencil_read_ref(3);
+    dynamic.set("stencil-read-ref", Value::Int(3))?;
+    app.set_stencil_compare("not-equal".into());
+    dynamic.set("stencil-compare", Value::String("not-equal".into()))?;
+    let (inverted, before_fail) = draw()?;
+    assert_eq!(inverted[0], background[0]);
+    assert!(inverted[1][0] > 150, "{inverted:?}");
+
+    app.set_stencil_depth_fail(true);
+    dynamic.set("stencil-depth-fail", Value::Bool(true))?;
+    let (depth_fail, after_fail) = draw()?;
+    assert_eq!(
+        depth_fail, inverted,
+        "the mask can be written by the depth-fail operation"
+    );
+    assert_eq!(
+        after_fail,
+        [
+            before_fail[0] + 2,
+            before_fail[1],
+            before_fail[2] + 1,
+            before_fail[3],
+            before_fail[4]
+        ]
+    );
+
+    app.set_weighted(true);
+    dynamic.set("weighted", Value::Bool(true))?;
+    let (weighted, weight_stats) = draw()?;
+    assert_eq!(
+        weighted[0], inverted[0],
+        "weighted transparency retains the stencil attachment"
+    );
+    assert!(weighted[1][0] > 150, "{weighted:?}");
+    assert!(weight_stats[4] > after_fail[4]);
+
+    app.set_stencil_compare("equal".into());
+    dynamic.set("stencil-compare", Value::String("equal".into()))?;
+    app.set_stencil_mask_scale(0.5);
+    dynamic.set("stencil-mask-scale", Value::Float(0.5))?;
+    let (mismatched, mismatch_stats) = draw()?;
+    assert_eq!(mismatched, background);
+    assert_eq!(
+        mismatch_stats[..3],
+        [weight_stats[0] + 1, weight_stats[1], weight_stats[2]]
+    );
+    Ok(())
+}
+
+#[test]
+fn capture_wireframe_rasterizes_edges_through_stencil_and_reuses_meshes() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    app.set_stencil_demo(true);
+    for field in ["offscreen-composition", "stencil-demo"] {
+        dynamic.set(field, Value::Bool(true))?;
+    }
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([usize; 3], [u64; 5])> {
+        let image = aot.render(&mut gpu)?;
+        assert!(image == interpreted.render(&mut other_gpu)?);
+        let image = xrack_assets::decode_png(image)?;
+        let tint = |start: usize, end: usize| {
+            (86..205)
+                .map(|y| {
+                    (start..end)
+                        .filter(|x| image.rgba[4 * (480 * y + x)] > 150)
+                        .count()
+                })
+                .sum()
+        };
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.mesh_vertex_bytes_uploaded,
+                stats.mesh_wireframe_uploads,
+                stats.particle_draws,
+            ]
+        };
+        let stats = counts(&gpu);
+        assert_eq!(stats, counts(&other_gpu));
+        Ok(([tint(112, 270), tint(278, 382), tint(112, 235)], stats))
+    };
+    let (fill, initial) = draw()?;
+    assert!(fill[0] > 10_000 && fill[1] == 0, "{fill:?}");
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+    app.set_capture_polygon_mode("line".into());
+    dynamic.set("capture-polygon-mode", Value::String("line".into()))?;
+    let (line, stencil) = draw()?;
+    assert!(line[0] > 100 && line[0] < fill[0] / 8, "{line:?}");
+    assert_eq!(line[1], 0, "line fragments obey the imported stencil");
+    assert_eq!(
+        stencil,
+        [
+            initial[0] + 1,
+            initial[1],
+            initial[2],
+            initial[3],
+            initial[4]
+        ]
+    );
+    assert_eq!(draw()?.1, stencil);
+
+    app.set_stencil_demo(false);
+    dynamic.set("stencil-demo", Value::Bool(false))?;
+    app.set_pipeline_enabled(true);
+    dynamic.set("pipeline-enabled", Value::Bool(true))?;
+    app.set_particle_fixture(true);
+    dynamic.set("particle-fixture", Value::Bool(true))?;
+    app.set_capture_polygon_mode("fill".into());
+    dynamic.set("capture-polygon-mode", Value::String("fill".into()))?;
+    let (_, solid) = draw()?;
+    app.set_capture_polygon_mode("line".into());
+    dynamic.set("capture-polygon-mode", Value::String("line".into()))?;
+    let (_, wire) = draw()?;
+    assert_eq!(wire[1], solid[1]);
+    assert!(
+        wire[4] > solid[4],
+        "sprite particles reach the wireframe pass"
+    );
+    if std::env::var_os("XRACK_FORCE_SHADER_WIREFRAME").is_some_and(|value| value == "1") {
+        assert!(wire[3] > solid[3] && wire[2] > solid[2], "{wire:?}");
+    } else if wire[3] == solid[3] {
+        assert_eq!(
+            wire[2], solid[2],
+            "native polygon lines retain indexed vertices"
+        );
+    }
+    app.set_capture_polygon_mode("fill".into());
+    dynamic.set("capture-polygon-mode", Value::String("fill".into()))?;
+    assert_eq!(draw()?.1[2..4], wire[2..4]);
+    app.set_capture_polygon_mode("line".into());
+    dynamic.set("capture-polygon-mode", Value::String("line".into()))?;
+    assert_eq!(draw()?.1[2..4], wire[2..4]);
+    app.set_capture_scissor(true);
+    dynamic.set("capture-scissor", Value::Bool(true))?;
+    let (clipped, reused) = draw()?;
+    assert_eq!(
+        clipped[2], 0,
+        "the scissor excludes wireframe fragments on the left"
+    );
+    assert!(clipped[1] > 100, "{clipped:?}");
+    assert_eq!(reused[2..4], wire[2..4]);
+    Ok(())
+}
+
+#[test]
+fn capture_target_blend_writes_selected_channels_and_reuses_fixed_state() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    app.set_pipeline_enabled(true);
+    app.set_custom_blend(true);
+    app.set_particle_fixture(true);
+    app.set_weighted(true);
+    app.set_capture_write_mask(0);
+    let red = xrack_runtime::Color(0xff00_0066);
+    app.set_capture_blend_constant(red);
+    for field in [
+        "offscreen-composition",
+        "pipeline-enabled",
+        "custom-blend",
+        "particle-fixture",
+        "weighted",
+    ] {
+        dynamic.set(field, Value::Bool(true))?;
+    }
+    dynamic.set("capture-write-mask", Value::Int(0))?;
+    dynamic.set("capture-blend-constant", Value::Color(red))?;
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 3], [u64; 5])> {
+        let image = aot.render(&mut gpu)?;
+        assert!(image == interpreted.render(&mut other_gpu)?);
+        let image = xrack_assets::decode_png(image)?;
+        let pixels = [(220, 144), (326, 54), (397, 54)].map(|(x, y)| {
+            let start = 4 * (y * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.mesh_vertex_bytes_uploaded,
+                stats.transparency_composites,
+                stats.custom_material_pipeline_builds,
+            ]
+        };
+        let stats = counts(&gpu);
+        assert_eq!(stats, counts(&other_gpu));
+        Ok((pixels, stats))
+    };
+    let (unchanged, initial) = draw()?;
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+    app.set_capture_write_mask(1);
+    dynamic.set("capture-write-mask", Value::Int(1))?;
+    let (added, red_only) = draw()?;
+    for (after, before) in added.into_iter().zip(unchanged) {
+        assert!(after[0] > before[0] + 20, "{added:?} {unchanged:?}");
+        assert_eq!(after[1..], before[1..], "the RGB mask retains G and B");
+    }
+    assert_eq!(
+        red_only[1..4],
+        initial[1..4],
+        "fixed blending reuses the capture and draws directly"
+    );
+    app.set_capture_color_operation("reverse-subtract".into());
+    dynamic.set(
+        "capture-color-operation",
+        Value::String("reverse-subtract".into()),
+    )?;
+    let (subtracted, _) = draw()?;
+    assert!(subtracted[0][0] + 10 < unchanged[0][0], "{subtracted:?}");
+    assert_eq!(subtracted[0][1..], unchanged[0][1..]);
+
+    app.set_capture_color_operation("add".into());
+    dynamic.set("capture-color-operation", Value::String("add".into()))?;
+    app.set_inspect_blend_alpha(true);
+    dynamic.set("inspect-blend-alpha", Value::Bool(true))?;
+    let (alpha_preserved, _) = draw()?;
+    app.set_capture_write_mask(15);
+    dynamic.set("capture-write-mask", Value::Int(15))?;
+    let (scaled_alpha, _) = draw()?;
+    assert!(scaled_alpha[0][0] + 70 < alpha_preserved[0][0]);
+    assert_eq!(scaled_alpha[0], [scaled_alpha[0][0]; 3]);
+    app.set_capture_alpha_operation("max".into());
+    dynamic.set("capture-alpha-operation", Value::String("max".into()))?;
+    assert_eq!(draw()?.0[0], alpha_preserved[0], "max compares raw alpha");
+    app.set_capture_blend_enabled(false);
+    dynamic.set("capture-blend-enabled", Value::Bool(false))?;
+    let (unblended_alpha, _) = draw()?;
+    assert!(unblended_alpha[0][0] > scaled_alpha[0][0] + 30);
+    assert!(unblended_alpha[0][0] + 20 < alpha_preserved[0][0]);
+
+    app.set_capture_blend_enabled(true);
+    app.set_inspect_blend_alpha(false);
+    app.set_override_enabled(true);
+    app.set_override_shader(true);
+    for (field, value) in [
+        ("capture-blend-enabled", true),
+        ("inspect-blend-alpha", false),
+        ("override-enabled", true),
+        ("override-shader", true),
+    ] {
+        dynamic.set(field, Value::Bool(value))?;
+    }
+    let (before, compiled) = draw()?;
+    assert!(compiled[4] > initial[4]);
+    let green = xrack_runtime::Color(0x00ff_0066);
+    app.set_capture_blend_constant(green);
+    dynamic.set("capture-blend-constant", Value::Color(green))?;
+    let (after, reused) = draw()?;
+    assert_ne!(after, before);
+    assert_eq!(reused[0], compiled[0] + 1);
+    assert_eq!(
+        reused[1..],
+        compiled[1..],
+        "changing the dynamic constant reuses geometry, textures and pipelines"
+    );
+    assert_eq!(draw()?.1, reused);
+    Ok(())
+}
+
+#[test]
+fn capture_color_formats_keep_attachment_sizes_and_separate_incompatible_aliases() -> TestResult {
+    use capture_composite_ui::CaptureCompositeDemo;
+
+    const NAME: &str = "examples/puzzle3d/capture_composite.xr";
+    const PIXELS: u64 = 480 * 288;
+    let preview =
+        xrack_compiler::prepare_preview(&std::fs::read_to_string(NAME)?, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("CaptureCompositeDemo")?;
+    let mut app = CaptureCompositeDemo::new();
+    app.set_offscreen_composition(true);
+    app.set_compare_capture_alias(true);
+    app.set_weighted(true);
+    for field in ["offscreen-composition", "compare-capture-alias", "weighted"] {
+        dynamic.set(field, Value::Bool(true))?;
+    }
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let renderer = || {
+        pollster::block_on(Renderer::new(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+            None,
+        ))
+    };
+    let (mut gpu, mut other_gpu) = (renderer()?, renderer()?);
+    let mut draw = || -> TestResult<([[u8; 3]; 2], [u64; 6])> {
+        let image = aot.render(&mut gpu)?;
+        assert!(image == interpreted.render(&mut other_gpu)?);
+        let image = xrack_assets::decode_png(image)?;
+        let pixels = [220, 72].map(|x| {
+            let start = 4 * (144 * 480 + x);
+            std::array::from_fn(|channel| image.rgba[start + channel])
+        });
+        let counts = |renderer: &Renderer| {
+            let stats = renderer.scene_draw_stats();
+            [
+                stats.scene_capture_passes,
+                stats.scene_capture_bytes_allocated,
+                stats.mesh_vertex_bytes_uploaded,
+                stats.transparency_composites,
+                stats.transmission_captures,
+                stats.transmission_mip_passes,
+            ]
+        };
+        let work = counts(&gpu);
+        assert_eq!(work, counts(&other_gpu));
+        Ok((pixels, work))
+    };
+    let (hdr, mut work) = draw()?;
+    assert!(
+        hdr[0][2] > hdr[0][0] + 60 && work[3] > 0,
+        "{hdr:?} {work:?}"
+    );
+    let mut app = weak.upgrade().ok_or("missing capture composition demo")?;
+    for (format, channels, bytes) in [
+        ("rgba8", 3, 4),
+        ("r8", 1, 1),
+        ("r16f", 1, 2),
+        ("rg8", 2, 2),
+        ("rg16f", 2, 4),
+        ("rgba16f", 3, 8),
+    ] {
+        app.set_capture_color_format(format.into());
+        dynamic.set("capture-color-format", Value::String(format.into()))?;
+        let (pixels, next) = draw()?;
+        for (actual, reference) in pixels.into_iter().zip(hdr) {
+            assert!(
+                actual[..channels]
+                    .iter()
+                    .zip(&reference[..channels])
+                    .all(|(&a, &b)| a.abs_diff(b) <= 6),
+                "{format} {pixels:?} {hdr:?}"
+            );
+            assert!(actual[channels..].iter().all(|&channel| channel == 0));
+        }
+        assert_eq!(
+            next,
+            [
+                work[0] + 1,
+                work[1] + PIXELS * bytes,
+                work[2],
+                work[3] + 1,
+                work[4],
+                work[5],
+            ],
+            "{format} only recreates the shared color attachment"
+        );
+        assert_eq!(draw()?.1, next);
+        work = next;
+    }
+
+    app.set_capture_alias_color_format("r8".into());
+    dynamic.set("capture-alias-color-format", Value::String("r8".into()))?;
+    let (distinct, split) = draw()?;
+    assert_eq!(
+        distinct[0],
+        [255, 0, 255],
+        "shader sees distinct alias data"
+    );
+    assert_eq!(split[0], work[0] + 1);
+    assert_eq!(split[1], work[1] + PIXELS);
+    app.set_compare_capture_alias(false);
+    dynamic.set("compare-capture-alias", Value::Bool(false))?;
+
+    app.set_capture_refractive(true);
+    app.set_glass_depth(2.0);
+    app.set_share_depth(false);
+    dynamic.set("capture-refractive", Value::Bool(true))?;
+    dynamic.set("glass-depth", Value::Float(2.0))?;
+    dynamic.set("share-depth", Value::Bool(false))?;
+    let (_, transmission) = draw()?;
+    assert!(transmission[4] > split[4] && transmission[5] > split[5]);
+    app.set_capture_color_format("r16f".into());
+    dynamic.set("capture-color-format", Value::String("r16f".into()))?;
+    let (reduced, refracted) = draw()?;
+    assert_eq!(reduced[0][1..], [0, 0]);
+    assert_eq!(refracted[1], transmission[1] + PIXELS * 2);
+    assert_eq!(refracted[2], transmission[2]);
+    assert!(refracted[4] > transmission[4] && refracted[5] > transmission[5]);
+    assert_eq!(draw()?.1, refracted);
     Ok(())
 }

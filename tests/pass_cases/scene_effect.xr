@@ -1,0 +1,43 @@
+// CHECK-DAG: "xr.shader_url"() {{.*}}value = "effects/hologram.wgsl"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-effect"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-effect-strength"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-effect-depth"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-effects"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-effect-history-revision"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.bind"{{.*}}name = "scene-effect-animate"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: "xr.texture_url"() {{.*}}value = "models/channel-swatch.png"
+struct Pass {
+    shader: string, scale: float, strength: float, output: string, buffers: [Buffer], history: bool,
+    output-format: string,
+}
+struct Buffer { name: string, previous-frame: bool, filter: string, wrap-u: string }
+struct TextureInput { texture: string, color-space: string, enabled: bool }
+struct FilePass { shader: string, buffers: [TextureInput] }
+export component App inherits Window {
+    in property <float> strength: 0.8;
+    SceneView3D {
+        scene-effect: @shader-url("effects/hologram.wgsl");
+        scene-effect-strength: root.strength;
+        scene-effect-depth: true;
+    }
+    SceneView3D {
+        scene-effect-history-revision: 2;
+        scene-effect-animate: true;
+        scene-effects: [
+            Pass { shader: @shader-url("effects/blur.wgsl"), scale: 0.5, strength: root.strength,
+                output: "soft", buffers: [], history: true, output-format: "rg16f" },
+            Pass { shader: @shader-url("effects/halo.wgsl"), scale: 1, strength: 1,
+                output: "", history: false, output-format: "rgba16f",
+                buffers: [Buffer { name: "soft", previous-frame: true, filter: "nearest", wrap-u: "mirror" }] }
+        ];
+    }
+    SceneView3D {
+        scene-effects: [
+            FilePass { shader: @shader-url("effects/texture_inputs.wgsl"),
+                buffers: [TextureInput {
+                    texture: @texture-url("models/channel-swatch.png"), color-space: "linear", enabled: true
+                }]
+            }
+        ];
+    }
+}

@@ -1,19 +1,22 @@
 use crate::{
     CanvasTransform, Paint, PaintFrame, Palette, Point, Rect, Renderer, canvas_transform, color,
     image::{ImageQuad, QuadBounds},
-    layer_compositor::{MAX_IMAGE_INSTANCES, MAX_INSTANCES, MIN_IMAGE_INSTANCES, large_enough},
+    layer_compositor::{
+        MAX_IMAGE_INSTANCES, MAX_INSTANCES, MIN_IMAGE_INSTANCES, MIN_INSTANCES, large_enough,
+    },
     primitive::Primitive,
-    rectangle::RoundedPanel,
+    rectangle::{RoundedPanel, Solid},
     retained_layers::{WindowLayer, WindowLayerSource, passive_content},
     scroll_images::{MAX_SCROLL_BATCHES, WindowImageBatch},
 };
 use femtovg::{DrawCommand, FontId, GlyphDrawCommands, ImageId, PositionedGlyph, Quad};
-use std::rc::Rc;
+use std::{cell::OnceCell, rc::Rc};
 use xrack_layout::{LayoutNode, RoundedClip, Size, TextMeasurer};
 use xrack_runtime::{Color as UiColor, Node, Orientation};
 
 const MAX_OCCLUDERS: usize = 4;
 const MIN_OCCLUDER_PIXELS: f32 = 32.0 * 32.0;
+const DEFERRED_LABEL_PASSES: usize = 2;
 
 /// The canvas state is stable while this list is collected and submitted. The
 /// clip is the rectangular extent; any inherited path clip remains on the canvas.
@@ -21,6 +24,7 @@ pub(super) struct DisplayList<'a> {
     transform: CanvasTransform,
     clip: Rect,
     scale: f32,
+    pub(super) viewport_label_masks: bool,
     first: Option<Primitive<'a>>,
     rest: Vec<Primitive<'a>>,
 }
@@ -43,7 +47,7 @@ impl WindowImages {
     ) -> Result<bool, String> {
         let in_layout = xrack_layout::is_layout(node.kind);
         for (_, node, layout) in layout.children_in_paint_order(node) {
-            if !layout.visible || node.opacity() == 0.0 {
+            if !layout.visible || node.opacity() == 0.0 || node.scene_texture_only() {
                 continue;
             }
             let visible = layout.bounds.intersect(layout.clip);
@@ -207,6 +211,9 @@ impl<'a> WindowLayers<'a> {
         clip: WindowClip,
         in_layout: bool,
     ) -> Option<()> {
+        if node.scene_texture_only() {
+            return Some(());
+        }
         let order = self.layers.len() + self.pending.len();
         if order + self.capsule_layers >= MAX_INSTANCES
             || layout.has_ancestor_clip_chain() != clip.mask.is_some()
@@ -558,7 +565,7 @@ fn mark_redundant_layers(
                     [fill.r, fill.g, fill.b] == [clear.r, clear.g, clear.b]
                 }
                 WindowLayerSource::TintedAlpha { tint, .. } => *tint == background.0 >> 8,
-                WindowLayerSource::Texture(_) => false,
+                WindowLayerSource::Texture(_) | WindowLayerSource::CoveredSolid { .. } => false,
             }
         {
             layer.bounds.width = 0.0;
@@ -902,6 +909,35 @@ impl<'a> DisplayList<'a> {
         })
     }
 
+    pub(super) fn window_opaque_rectangles(
+        root: &Node,
+        layout: &LayoutNode,
+        scale: f32,
+        max_instances: usize,
+    ) -> Option<Vec<WindowLayer>> {
+        if layout.allows_overflow() || !Self::plain_window(root) {
+            return None;
+        }
+        let mut layers = Vec::new();
+        collect_window_rectangles(root, layout, layout.clip, scale, max_instances, &mut layers)?;
+        if layers.len() < MIN_INSTANCES {
+            return None;
+        }
+        if layers
+            .iter()
+            .any(|layer| matches!(layer.source, WindowLayerSource::CoveredSolid { .. }))
+        {
+            // A rectangle on an exact pixel boundary has full coverage.
+            // Submit both kinds in one ordered draw when coverage is needed.
+            for layer in &mut layers {
+                if let WindowLayerSource::Solid(color) = &layer.source {
+                    *layer = WindowLayer::covered_solid(layer.bounds, *color, scale);
+                }
+            }
+        }
+        Some(layers)
+    }
+
     pub(super) fn window_image_quads(
         renderer: &mut Renderer,
         root: &Node,
@@ -989,6 +1025,7 @@ impl<'a> DisplayList<'a> {
             transform: canvas_transform(&renderer.canvas),
             clip,
             scale,
+            viewport_label_masks: false,
             first: None,
             rest: Vec::new(),
         }
@@ -1101,7 +1138,13 @@ impl<'a> DisplayList<'a> {
                 item @ Primitive::Label { .. }
                     if image_quads && matches!(items.peek(), Some(Primitive::Label { .. })) =>
                 {
-                    renderer.draw_label_batch(item, &mut items, self.transform)?;
+                    renderer.draw_label_batch(
+                        item,
+                        &mut items,
+                        self.transform,
+                        self.viewport_label_masks,
+                        DEFERRED_LABEL_PASSES,
+                    )?;
                 }
                 item @ Primitive::Text {
                     cell_clip: Some(_), ..
@@ -1119,6 +1162,7 @@ impl<'a> DisplayList<'a> {
                     text,
                     paint,
                     cell_clip: None,
+                    ..
                 } if can_batch => {
                     if !matches!(items.peek(), Some(Primitive::Text { paint: next, cell_clip: None, .. }) if std::ptr::eq(paint, *next))
                     {
@@ -1127,6 +1171,7 @@ impl<'a> DisplayList<'a> {
                             text,
                             paint,
                             cell_clip: None,
+                            cell_fonts: None,
                         })?;
                         continue;
                     }
@@ -1136,6 +1181,7 @@ impl<'a> DisplayList<'a> {
                         text,
                         paint: next,
                         cell_clip: None,
+                        ..
                     }) = items.peek()
                     {
                         if !std::ptr::eq(paint, *next) {
@@ -1151,6 +1197,7 @@ impl<'a> DisplayList<'a> {
                                 text,
                                 paint,
                                 cell_clip: None,
+                                cell_fonts: None,
                             })?;
                         }
                     }
@@ -1160,6 +1207,41 @@ impl<'a> DisplayList<'a> {
         }
         Ok(())
     }
+}
+
+fn collect_window_rectangles(
+    parent: &Node,
+    layout: &LayoutNode,
+    clip: Rect,
+    scale: f32,
+    max_instances: usize,
+    layers: &mut Vec<WindowLayer>,
+) -> Option<()> {
+    for (_, node, item) in layout.children_in_paint_order(parent) {
+        if !item.visible || node.scene_texture_only() {
+            continue;
+        }
+        if let Some(rectangle) = Solid::from_node(node, item, scale) {
+            if rectangle.visible() {
+                if layers.len() == max_instances
+                    || !contains_rect(clip, item.clip.intersect(item.bounds))
+                {
+                    return None;
+                }
+                layers.push(rectangle.window_opaque_layer(clip, scale)?);
+            }
+        } else if Renderer::is_unpainted_group(node, item)
+            && !item.allows_overflow()
+            && item.child_clip_shape().is_none()
+        {
+            // Transparent groups add their rectangular clip to child layout.
+            // The flattened draw inherits the same window scissor as its parent.
+            collect_window_rectangles(node, item, clip, scale, max_instances, layers)?;
+        } else {
+            return None;
+        }
+    }
+    Some(())
 }
 
 fn batch_order(item: &Primitive<'_>) -> usize {
@@ -1380,7 +1462,8 @@ struct ClippedGlyphLine<'a> {
     origin: Point,
     text: &'a str,
     clip: GlyphClip,
-    cell: Option<CellGlyphContext>,
+    cell: Option<CellGlyphContext<'a>>,
+    label: Option<&'a crate::text::PreparedLabel>,
     shared_scissor: bool,
 }
 
@@ -1427,9 +1510,11 @@ impl GlyphClip {
 }
 
 #[derive(Clone, Copy)]
-struct CellGlyphContext {
+struct CellGlyphContext<'a> {
     scale: f32,
     fonts: [usize; 2],
+    cell_fonts: Option<&'a crate::text::CellFonts>,
+    measurement_paint: &'a OnceCell<Paint>,
 }
 
 pub(super) fn label_tint(node: &Node, layout: &LayoutNode, theme: Palette) -> UiColor {
@@ -1446,6 +1531,8 @@ impl Renderer {
         first: Primitive<'a>,
         rest: &mut std::iter::Peekable<impl Iterator<Item = Primitive<'a>>>,
         transform: CanvasTransform,
+        viewport_label_masks: bool,
+        deferred_passes: usize,
     ) -> Result<(), String> {
         const MAX_DEFERRED_LABELS: usize = 256;
         let Primitive::Label {
@@ -1471,6 +1558,7 @@ impl Renderer {
             || scale < 1.0 / 16.0
             || *dpi < 1.0
             || size * atlas_scale > 90.0
+            || !matches!(rest.peek(), Some(Primitive::Label { .. }))
         {
             return self.draw_primitive(first);
         }
@@ -1478,39 +1566,80 @@ impl Renderer {
             return self.draw_primitive(first);
         };
         let style = self.text.font_attributes(Some(node));
-        let bounds = layout.bounds;
-        let first_layout = self.text.prepared_label(
-            node,
-            Size::new(bounds.width, bounds.height),
-            layout.layout_direction_override(),
-        );
-        let paint = first_layout.paint(color(*tint));
+        let font = self.text.label_font(style, size);
+        let prepare = |node: &Node, layout: &LayoutNode| {
+            let bounds = layout.bounds;
+            self.text.prepared_label_with_font(
+                node,
+                Size::new(bounds.width, bounds.height),
+                layout.layout_direction_override(),
+                font,
+            )
+        };
+        let first_label = prepare(node, layout);
+        let paint = first_label.paint(color(*tint));
+        let append = |label: &crate::text::PreparedLabel,
+                      bounds: Rect,
+                      clip: GlyphClip,
+                      dpi: f32,
+                      batch: &mut GlyphBatch| {
+            // Glyphs from different lines can overlap, while an atlas batch
+            // groups drawing by texture.
+            let [line] = label.layout.lines.as_slice() else {
+                return false;
+            };
+            self.append_clipped_glyphs(
+                ClippedGlyphLine {
+                    origin: Point {
+                        x: bounds.x + line.origin.x,
+                        y: bounds.y + line.origin.y,
+                    },
+                    text: &line.text,
+                    clip,
+                    cell: None,
+                    label: Some(label),
+                    shared_scissor: crate::has_device_scale(transform, dpi),
+                },
+                &paint,
+                transform,
+                atlas_scale,
+                dpi,
+                batch,
+            )
+        };
         let mut batch = GlyphBatch::default();
-        if !self.append_label_glyphs(&first, clip, &paint, transform, atlas_scale, &mut batch) {
+        if !append(&first_label, layout.bounds, clip, *dpi, &mut batch) {
             return self.draw_primitive(first);
         }
         let mut count = 1;
         let mut deferred = Vec::new();
+        let mut mixed_styles = false;
         let mut deferred_clips = PaintRegions::default();
         let fringe = edge_reach(*dpi);
-        while let Some(
-            next @ Primitive::Label {
-                node,
-                clip,
-                tint: next_tint,
-                ..
-            },
-        ) = rest.peek()
+        while let Some(Primitive::Label {
+            node,
+            layout,
+            clip,
+            tint: next_tint,
+            scale,
+        }) = rest.peek()
         {
             let Some(clip) = GlyphClip::project(*clip, transform) else {
                 break;
             };
             let bounds = (!deferred.is_empty()).then(|| sampled_bounds(clip.pixels, fringe));
-            if *next_tint == *tint
+            let same_style = *next_tint == *tint
                 && self.text.font_attributes(Some(node)) == style
-                && self.text.font_size(node) == size
+                && self.text.font_size(node) == size;
+            if same_style
                 && !bounds.is_some_and(|bounds| deferred_clips.overlaps(bounds))
-                && self.append_label_glyphs(next, clip, &paint, transform, atlas_scale, &mut batch)
+                && append(
+                    &prepare(node, layout),
+                    layout.bounds,
+                    clip,
+                    *scale,
+                    &mut batch,
+                )
             {
                 rest.next();
                 count += 1;
@@ -1520,6 +1649,7 @@ impl Renderer {
                 if deferred.len() == MAX_DEFERRED_LABELS {
                     break;
                 }
+                mixed_styles |= !same_style;
                 deferred_clips.add(bounds.unwrap_or_else(|| sampled_bounds(clip.pixels, fringe)));
                 deferred.extend(rest.next());
             }
@@ -1527,60 +1657,27 @@ impl Renderer {
         if count == 1 {
             self.draw_primitive(first)?;
         } else {
-            self.draw_positioned_batch(batch, &paint, count)?;
+            self.draw_positioned_batch(batch, &paint, count, viewport_label_masks.then_some(*dpi))?;
         }
-        for label in deferred {
-            self.draw_primitive(label)?;
+        // Deferred labels retain their order, so a second style can use the
+        // same overlap checks. Bound the number of scans for many unique styles.
+        if mixed_styles && deferred_passes > 0 && deferred.len() > 1 {
+            let mut labels = deferred.into_iter().peekable();
+            while let Some(label) = labels.next() {
+                self.draw_label_batch(
+                    label,
+                    &mut labels,
+                    transform,
+                    viewport_label_masks,
+                    deferred_passes - 1,
+                )?;
+            }
+        } else {
+            for label in deferred {
+                self.draw_primitive(label)?;
+            }
         }
         Ok(())
-    }
-
-    fn append_label_glyphs(
-        &self,
-        item: &Primitive<'_>,
-        clip: GlyphClip,
-        paint: &Paint,
-        transform: CanvasTransform,
-        atlas_scale: f32,
-        batch: &mut GlyphBatch,
-    ) -> bool {
-        let Primitive::Label {
-            node,
-            layout,
-            scale: dpi,
-            ..
-        } = item
-        else {
-            return false;
-        };
-        let bounds = layout.bounds;
-        let label = self.text.prepared_label(
-            node,
-            Size::new(bounds.width, bounds.height),
-            layout.layout_direction_override(),
-        );
-        // Keep multiline labels on the original path. Glyphs from different
-        // lines can overlap, and an atlas batch groups drawing by texture.
-        let [line] = label.layout.lines.as_slice() else {
-            return false;
-        };
-        self.append_clipped_glyphs(
-            ClippedGlyphLine {
-                origin: Point {
-                    x: bounds.x + line.origin.x,
-                    y: bounds.y + line.origin.y,
-                },
-                text: &line.text,
-                clip,
-                cell: None,
-                shared_scissor: false,
-            },
-            paint,
-            transform,
-            atlas_scale,
-            *dpi,
-            batch,
-        )
     }
 
     fn draw_clipped_text_batch<'a>(
@@ -1596,6 +1693,7 @@ impl Renderer {
             text,
             paint,
             cell_clip: Some(clip),
+            cell_fonts,
         } = first
         else {
             return self.draw_primitive(first);
@@ -1617,6 +1715,7 @@ impl Renderer {
         let Some(clip) = GlyphClip::project(clip, transform) else {
             return self.draw_primitive(first);
         };
+        let measurement_paint = OnceCell::new();
         let cell = (crate::has_device_scale(transform, dpi)
             && paint.text_align() == femtovg::Align::Left
             && paint.text_baseline() == femtovg::Baseline::Top
@@ -1624,6 +1723,8 @@ impl Renderer {
             .then(|| CellGlyphContext {
                 scale: crate::cell_glyphs::measurement_scale(dpi),
                 fonts: self.text.registered_font_counts(),
+                cell_fonts: cell_fonts.filter(|_| self.cell_shaping_scale(transform).is_some()),
+                measurement_paint: &measurement_paint,
             })
             .filter(|cell| cell.scale.is_finite() && cell.scale > 0.0);
         let shared_scissor = crate::has_device_scale(transform, dpi);
@@ -1632,6 +1733,7 @@ impl Renderer {
             text,
             clip,
             cell,
+            label: None,
             shared_scissor,
         };
         if crop_glyphs
@@ -1654,6 +1756,7 @@ impl Renderer {
             text,
             paint: next_paint,
             cell_clip: Some(clip),
+            ..
         }) = rest.peek()
         {
             if !std::ptr::eq(paint, *next_paint) {
@@ -1670,6 +1773,7 @@ impl Renderer {
                         text,
                         clip,
                         cell,
+                        label: None,
                         shared_scissor,
                     },
                     paint,
@@ -1694,7 +1798,7 @@ impl Renderer {
         if count == 1 && (!batch.positions.is_empty() || !batch.scissors.is_empty()) {
             self.draw_primitive(first)?;
         } else if count > 1 {
-            self.draw_positioned_batch(batch, paint, count)?;
+            self.draw_positioned_batch(batch, paint, count, None)?;
         }
         for item in deferred {
             self.draw_primitive(item)?;
@@ -1704,7 +1808,7 @@ impl Renderer {
 
     fn draw_clipped_masks<'a>(
         &mut self,
-        first: &ClippedGlyphLine<'a>,
+        first: &ClippedGlyphLine<'_>,
         paint: &Paint,
         transform: CanvasTransform,
         scale: f32,
@@ -1713,7 +1817,8 @@ impl Renderer {
         let Some(cell) = first.cell else {
             return Ok(false);
         };
-        let Some(mut masks) = self.glyph_masks.clipped_batch(paint, scale) else {
+        let portable_cell = cell.cell_fonts.is_some();
+        let Some(mut masks) = self.glyph_masks.clipped_batch(paint, scale, portable_cell) else {
             return Ok(false);
         };
         let text_system = &self.text;
@@ -1726,9 +1831,16 @@ impl Renderer {
                 return false;
             }
             let start = masks.quads.len();
+            let bounds = clip.pixels;
+            let edges = [
+                bounds.x,
+                bounds.y,
+                bounds.x + bounds.width,
+                bounds.y + bounds.height,
+            ];
             masks.clipped = false;
             if !Self::visit_cell_glyphs(text_system, text, origin, paint, cell, |font, id, x, y| {
-                masks.append(font, id, [x, y], clip.pixels, text_system)
+                masks.append(font, id, [x, y], edges, text_system)
             }) {
                 masks.quads.truncate(start);
                 return false;
@@ -1748,6 +1860,7 @@ impl Renderer {
             text,
             paint: next_paint,
             cell_clip: Some(clip),
+            ..
         }) = rest.peek()
         {
             if !std::ptr::eq(paint, *next_paint)
@@ -1761,7 +1874,7 @@ impl Renderer {
         }
         let (image, quads) = masks.finish();
         if !quads.is_empty() {
-            if self.glyph_masks.can_prepare_during_paint()
+            if self.glyph_masks.can_prepare_during_paint(portable_cell)
                 && self.glyph_masks.has_pending()
                 && !self.glyph_masks.prepare(&mut self.canvas)
             {
@@ -1783,13 +1896,14 @@ impl Renderer {
         text: &str,
         origin: Point,
         paint: &Paint,
-        cell: CellGlyphContext,
+        cell: CellGlyphContext<'_>,
         visit: impl FnMut(FontId, u16, f32, f32) -> bool,
     ) -> bool {
         let settings = crate::cell_glyphs::Settings {
             font_size: paint.font_size().to_bits(),
             measurement_scale: cell.scale.to_bits(),
             fonts: cell.fonts,
+            cell_fonts: cell.cell_fonts.copied(),
         };
         text_system.cell_glyphs.borrow_mut().visit(
             text,
@@ -1798,11 +1912,10 @@ impl Renderer {
             || {
                 // Measure at the origin in shaping units. Placement can
                 // share this cache across both scroll axes.
-                let paint = paint.clone().with_font_size(paint.font_size() * cell.scale);
-                text_system
-                    .context()
-                    .measure_text(0.0, 0.0, text, &paint)
-                    .ok()
+                let paint = cell
+                    .measurement_paint
+                    .get_or_init(|| paint.clone().with_font_size(paint.font_size() * cell.scale));
+                text_system.measure_cell(text, paint, cell.cell_fonts)
             },
             visit,
         )
@@ -1810,15 +1923,22 @@ impl Renderer {
 
     fn draw_positioned_batch(
         &mut self,
-        batch: GlyphBatch,
+        mut batch: GlyphBatch,
         paint: &Paint,
         runs: u64,
+        viewport_scale: Option<f32>,
     ) -> Result<(), String> {
         let Some(font) = batch.font else {
             return Ok(());
         };
         let clipped_runs = batch.scissors.iter().map(|band| band.runs).sum::<u64>();
         self.draw_glyph_positions(font, batch.positions, paint, runs - clipped_runs)?;
+        if let Some(scale) = viewport_scale
+            && matches!(scale, 1.0 | 2.0 | 4.0)
+            && crate::has_device_scale(canvas_transform(&self.canvas), scale)
+        {
+            self.draw_pixel_clipped_label_bands(font, &mut batch.scissors, paint, scale)?;
+        }
         // Accepted cells occupy disjoint pixel regions. Only the axis on
         // which each run already fits can be widened to span other cells.
         for band in batch.scissors {
@@ -1832,6 +1952,81 @@ impl Renderer {
             if band.runs > 1 {
                 self.display_batch_stats.clipped_text_runs += band.runs;
             }
+        }
+        Ok(())
+    }
+
+    fn draw_pixel_clipped_label_bands(
+        &mut self,
+        font: FontId,
+        bands: &mut Vec<ClippedGlyphBand>,
+        paint: &Paint,
+        scale: f32,
+    ) -> Result<(), String> {
+        if bands.len() < 2 {
+            return Ok(());
+        }
+        let Some(mut masks) = self.glyph_masks.clipped_batch(paint, scale, false) else {
+            return Ok(());
+        };
+        let mut runs = 0;
+        bands.retain(|band| {
+            let clip = band.clip.scaled(scale);
+            let mut edges = [
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::INFINITY,
+            ];
+            let axis = match band.axis {
+                Orientation::Horizontal => {
+                    edges[0] = clip.x;
+                    edges[2] = (band.clip.x + band.clip.width) * scale;
+                    0
+                }
+                Orientation::Vertical => {
+                    edges[1] = clip.y;
+                    edges[3] = (band.clip.y + band.clip.height) * scale;
+                    1
+                }
+            };
+            // The other axis already contains the glyph samples. On this
+            // axis a scissor ramps over 1/scale device pixels. Rounding the
+            // edge is exact when every pixel center is outside that ramp.
+            let full_coverage = 0.5 - 0.5 / scale;
+            for edge in [axis, axis + 2] {
+                let pixel_edge = edges[edge].round();
+                if !((edges[edge] - pixel_edge).abs() <= full_coverage) {
+                    return true;
+                }
+                edges[edge] = pixel_edge;
+            }
+            let start = masks.quads.len();
+            if !band.positions.iter().all(|glyph| {
+                masks.append(font, glyph.glyph_id, [glyph.x, glyph.y], edges, &self.text)
+            }) {
+                masks.quads.truncate(start);
+                return true;
+            }
+            runs += band.runs;
+            false
+        });
+        let (image, quads) = masks.finish();
+        if quads.is_empty() {
+            return Ok(());
+        }
+        if self.glyph_masks.can_prepare_during_paint(false)
+            && self.glyph_masks.has_pending()
+            && !self.glyph_masks.prepare(&mut self.canvas)
+        {
+            return Err("failed to rasterize label glyph masks".into());
+        }
+        crate::glyph_masks::draw_mask_quads(&mut self.canvas, image, quads, paint);
+        if runs > 1 {
+            xrack_runtime::update_profile::glyph_batch();
+            self.display_batch_stats.glyph_batches += 1;
+            self.display_batch_stats.text_runs += runs;
+            self.display_batch_stats.clipped_text_runs += runs;
         }
         Ok(())
     }
@@ -1900,7 +2095,12 @@ impl Renderer {
         } else {
             clip.inset(edge_reach(dpi))
         };
-        if batch.clips.overlaps(clip) {
+        let coverage = if line.shared_scissor && !aligned {
+            sampled_bounds(clip, edge_reach(dpi))
+        } else {
+            clip
+        };
+        if batch.clips.overlaps(coverage) {
             return false;
         }
         let [tx, ty] = transform.translation();
@@ -1966,7 +2166,7 @@ impl Renderer {
                     {
                         return true;
                     }
-                    if !(aligned && line.shared_scissor) {
+                    if !line.shared_scissor {
                         return false;
                     }
                     let axis = match (fits_x, fits_y) {
@@ -1987,7 +2187,8 @@ impl Renderer {
                 });
                 true
             };
-            if let Some(cell) = line.cell.filter(|_| line.text.len() <= 128) {
+            if let Some(mut cell) = line.cell.filter(|_| line.text.len() <= 128) {
+                cell.cell_fonts = cell.cell_fonts.filter(|_| line.clip.aligned);
                 return Self::visit_cell_glyphs(
                     &self.text,
                     line.text,
@@ -1996,6 +2197,17 @@ impl Renderer {
                     cell,
                     add_glyph,
                 );
+            }
+            if let Some(label) = line.label
+                && line.shared_scissor
+                && let Some(accepted) = label.visit_glyphs(
+                    self.text.context(),
+                    line.origin,
+                    crate::cell_glyphs::measurement_scale(dpi),
+                    &mut add_glyph,
+                )
+            {
+                return accepted;
             }
             self.canvas
                 .measure_text(line.origin.x, line.origin.y, line.text, paint)
@@ -2010,7 +2222,7 @@ impl Renderer {
         if fits {
             batch.font = font;
             if batch.positions.len() != start {
-                batch.clips.add(clip);
+                batch.clips.add(coverage);
                 if let Some(axis) = scissor_axis {
                     batch.clip_band(logical, axis, start);
                 }
@@ -2107,6 +2319,7 @@ impl Renderer {
                     text: &line.text,
                     paint: &paint,
                     cell_clip: None,
+                    cell_fonts: None,
                 });
             }
         }
@@ -2135,7 +2348,7 @@ impl Renderer {
         layout
             .children_in_paint_order(node)
             .all(|(_, child, item)| {
-                if !item.visible {
+                if !item.visible || child.scene_texture_only() {
                     return true;
                 }
                 if square_batch

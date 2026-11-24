@@ -1,4 +1,6 @@
 //! Offscreen supersampling and a linear-light area resolve.
+use std::collections::HashMap;
+
 use xrack_runtime::Node;
 
 use super::{COLOR_FORMAT, HDR_FORMAT, buffer};
@@ -48,7 +50,8 @@ pub(super) fn extent(device: &wgpu::Device, size: [u32; 2], requested: f32) -> [
 
 pub(super) struct Supersampling {
     shader: wgpu::ShaderModule,
-    pipelines: [Option<wgpu::RenderPipeline>; 2],
+    pipelines: [Option<wgpu::RenderPipeline>; 3],
+    capture_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
 }
 
 impl Supersampling {
@@ -58,7 +61,8 @@ impl Supersampling {
                 label: Some("XRack 3D supersampling"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("supersampling.wgsl").into()),
             }),
-            pipelines: [None, None],
+            pipelines: [None, None, None],
+            capture_pipelines: HashMap::new(),
         }
     }
 
@@ -68,9 +72,43 @@ impl Supersampling {
         encoder: &mut wgpu::CommandEncoder,
         (source, target): (&wgpu::TextureView, &wgpu::TextureView),
         size: [u32; 2],
-        hdr: bool,
     ) {
-        let pipeline = self.pipelines[usize::from(hdr)].get_or_insert_with(|| {
+        let mut bytes = [0; 8];
+        bytes[..4].copy_from_slice(&size[0].to_ne_bytes());
+        bytes[4..].copy_from_slice(&size[1].to_ne_bytes());
+        let dimensions = buffer(
+            device,
+            "XRack 3D supersampling output dimensions",
+            &bytes,
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let pipeline = self.pipeline(device, target.texture().format(), false);
+        Self::draw(
+            device,
+            encoder,
+            (source, target),
+            pipeline,
+            Some(&dimensions),
+        );
+    }
+
+    pub fn decode_item(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        views: (&wgpu::TextureView, &wgpu::TextureView),
+    ) {
+        let pipeline = self.pipeline(device, COLOR_FORMAT, true);
+        Self::draw(device, encoder, views, pipeline, None);
+    }
+
+    fn pipeline(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        decode_item: bool,
+    ) -> &wgpu::RenderPipeline {
+        let create = || {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("XRack 3D supersampling resolve"),
                 layout: None,
@@ -82,10 +120,14 @@ impl Supersampling {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &self.shader,
-                    entry_point: Some("fragment"),
+                    entry_point: Some(if decode_item {
+                        "decode_item"
+                    } else {
+                        "fragment"
+                    }),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: if hdr { HDR_FORMAT } else { COLOR_FORMAT },
+                        format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -96,29 +138,41 @@ impl Supersampling {
                 multiview_mask: None,
                 cache: None,
             })
-        });
-        let mut bytes = [0; 8];
-        bytes[..4].copy_from_slice(&size[0].to_ne_bytes());
-        bytes[4..].copy_from_slice(&size[1].to_ne_bytes());
-        let dimensions = buffer(
-            device,
-            "XRack 3D supersampling output dimensions",
-            &bytes,
-            wgpu::BufferUsages::UNIFORM,
-        );
+        };
+        let index = match (decode_item, format) {
+            (true, _) => 2,
+            (false, COLOR_FORMAT) => 0,
+            (false, HDR_FORMAT) => 1,
+            (false, format) => return self.capture_pipelines.entry(format).or_insert_with(create),
+        };
+        self.pipelines[index].get_or_insert_with(create)
+    }
+
+    fn draw(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        (source, target): (&wgpu::TextureView, &wgpu::TextureView),
+        pipeline: &wgpu::RenderPipeline,
+        dimensions: Option<&wgpu::Buffer>,
+    ) {
+        let source = wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(source),
+        };
+        let mut inputs = [source.clone(), source];
+        let count = if let Some(dimensions) = dimensions {
+            inputs[1] = wgpu::BindGroupEntry {
+                binding: 1,
+                resource: dimensions.as_entire_binding(),
+            };
+            2
+        } else {
+            1
+        };
         let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("XRack 3D supersampling input"),
+            label: Some("XRack 3D area filter input"),
             layout: &pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: dimensions.as_entire_binding(),
-                },
-            ],
+            entries: &inputs[..count],
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("XRack 3D supersampling resolve"),

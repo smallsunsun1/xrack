@@ -1,11 +1,15 @@
 //! Camera projections shared by rendering, shadow cascades and viewport picking.
-use nalgebra::{UnitQuaternion, Vector3};
+use crate::scene_visibility::Frustum;
+use nalgebra::{Matrix4, UnitQuaternion, Vector3};
 
 use crate::{
-    Length, Point2D, VecModel,
+    Length, Node, Point2D, Value, VecModel,
     scene_bounds::Bounds3D,
     scene_hierarchy::SceneModel,
-    scene3d::{Hit3D, Ray3D, SceneObject, direction, trace_id, trace_model_hits, trace_surfaces},
+    scene3d::{
+        Hit3D, Ray3D, RayRows, SceneObject, SceneRay, SceneTextureHit, direction, trace_id,
+        trace_surfaces,
+    },
 };
 
 const NEAR: f32 = 0.1;
@@ -190,9 +194,38 @@ pub struct SceneCamera {
     layers: u64,
     settings: SceneCameraSettings,
     clip_offset: [f32; 2],
+    clip_viewport: Option<[f32; 4]>,
 }
 
 impl SceneCamera {
+    #[doc(hidden)]
+    pub fn for_view(node: &Node, viewport: [f64; 2]) -> Option<Self> {
+        let camera_id = node.text("camera").unwrap_or_default();
+        let camera = if camera_id.is_empty() {
+            Self::new(
+                node.number("camera-yaw").unwrap_or(25.0),
+                node.number("camera-pitch").unwrap_or(24.0),
+                node.number("camera-distance").unwrap_or(10.0),
+                viewport,
+            )
+        } else {
+            match node.properties.get("model") {
+                Some(Value::SceneObjects(model)) => model.camera(camera_id, viewport),
+                _ => None,
+            }
+        };
+        camera.map(|camera| camera.with_layer_mask(node.int("layer-mask")))
+    }
+
+    #[doc(hidden)]
+    pub fn item_texture_at(
+        &self,
+        model: &SceneModel,
+        point: Point2D,
+    ) -> Option<Option<SceneTextureHit>> {
+        self.scene_ray(point)?.item_texture(&model.geometry(self))
+    }
+
     /// A cube face follows the GPU's cubemap orientation. It reverses raster winding.
     #[doc(hidden)]
     pub fn reflection_face(origin: [f32; 3], face: usize, layers: u64) -> Option<Self> {
@@ -215,6 +248,7 @@ impl SceneCamera {
             lod_bias: 0.0,
             layers,
             clip_offset: [0.0; 2],
+            clip_viewport: None,
             settings: SceneCameraSettings {
                 projection: Projection::Perspective(1.0),
                 aspect: None,
@@ -250,6 +284,7 @@ impl SceneCamera {
             layers: crate::scene3d::MAIN_LAYER,
             settings,
             clip_offset: [0.0; 2],
+            clip_viewport: None,
         })
     }
 
@@ -266,6 +301,7 @@ impl SceneCamera {
             layers: node.layers,
             settings: node.settings,
             clip_offset: [0.0; 2],
+            clip_viewport: None,
         };
         if let Some(forward) = node
             .target
@@ -307,12 +343,20 @@ impl SceneCamera {
             && self.horizontal_scale == other.horizontal_scale
             && self.settings == other.settings
             && self.clip_offset == other.clip_offset
+            && self.clip_viewport == other.clip_viewport
     }
 
     /// Offset a raster sample in NDC, leaving the camera pose and depth range intact.
     #[doc(hidden)]
     pub fn with_clip_offset(mut self, offset: [f32; 2]) -> Self {
         self.clip_offset = offset;
+        self
+    }
+
+    /// Map the projection into a normalized framebuffer rectangle without changing depth.
+    #[doc(hidden)]
+    pub fn with_clip_viewport(mut self, bounds: [f32; 4]) -> Self {
+        self.clip_viewport = Some(bounds);
         self
     }
 
@@ -342,6 +386,16 @@ impl SceneCamera {
         ]
     }
 
+    /// Rows of the clip-to-world transform for reconstruction from depth.
+    #[doc(hidden)]
+    pub fn inverse_clip_rows(&self) -> Option<[[f32; 4]; 4]> {
+        let inverse = Matrix4::from_row_slice(self.clip_rows().as_flattened()).try_inverse()?;
+        inverse
+            .iter()
+            .all(|value| value.is_finite())
+            .then(|| std::array::from_fn(|row| std::array::from_fn(|col| inverse[(row, col)])))
+    }
+
     /// The lateral clip scales and NDC offsets before the depth divide.
     #[doc(hidden)]
     pub fn clip_lens(&self) -> [f32; 4] {
@@ -349,12 +403,23 @@ impl SceneCamera {
             Projection::Frustum { shift, .. } => shift,
             _ => [0.0; 2],
         };
-        [
+        let (sx, sy) = (
             self.horizontal_scale,
             self.settings.projection.vertical_scale(),
-            dx + self.clip_offset[0],
-            dy + self.clip_offset[1],
-        ]
+        );
+        let (dx, dy) = (dx + self.clip_offset[0], dy + self.clip_offset[1]);
+        if let Some([left, top, right, bottom]) = self.clip_viewport {
+            let width = right - left;
+            let height = bottom - top;
+            [
+                sx * width,
+                sy * height,
+                dx * width + left + right - 1.0,
+                dy * height + 1.0 - top - bottom,
+            ]
+        } else {
+            [sx, sy, dx, dy]
+        }
     }
 
     fn row(&self, axis: Vector3<f32>, offset: f32) -> [f32; 4] {
@@ -436,6 +501,14 @@ impl SceneCamera {
         let [width, height] = extent(far);
         let radius = Vector3::new(width, height, far - middle).norm();
         (corners, center.into(), radius)
+    }
+
+    pub(crate) fn toward_viewer(&self, position: Vector3<f32>) -> Vector3<f32> {
+        if self.is_orthographic() {
+            -self.forward
+        } else {
+            self.eye - position
+        }
     }
 
     pub fn eye_position(&self) -> [f32; 3] {
@@ -628,7 +701,9 @@ pub fn pick_model(
         String::new,
         |camera| {
             let camera = camera.with_layer_mask(layers);
-            pick(&model.geometry(&camera), Some(camera), point)
+            camera
+                .scene_ray(point)
+                .map_or_else(String::new, |ray| ray.id(&model.geometry(&camera)))
         },
     )
 }
@@ -645,7 +720,9 @@ pub fn pick_camera(
         .camera(id, [viewport.x.0, viewport.y.0])
         .map_or_else(String::new, |camera| {
             let camera = camera.with_layer_mask(layers);
-            pick(&model.geometry(&camera), Some(camera), point)
+            camera
+                .scene_ray(point)
+                .map_or_else(String::new, |ray| ray.id(&model.geometry(&camera)))
         })
 }
 
@@ -685,7 +762,9 @@ pub fn hit_model(
         Hit3D::default,
         |camera| {
             let camera = camera.with_layer_mask(layers);
-            hit(&model.geometry(&camera), Some(camera), point)
+            camera.scene_ray(point).map_or_else(Hit3D::default, |ray| {
+                ray.first(&model.geometry(&camera), &RayRows::All)
+            })
         },
     )
 }
@@ -702,23 +781,198 @@ pub fn hit_camera(
         .camera(id, [viewport.x.0, viewport.y.0])
         .map_or_else(Hit3D::default, |camera| {
             let camera = camera.with_layer_mask(layers);
-            hit(&model.geometry(&camera), Some(camera), point)
+            camera.scene_ray(point).map_or_else(Hit3D::default, |ray| {
+                ray.first(&model.geometry(&camera), &RayRows::All)
+            })
         })
 }
 
-fn hit_all(model: &SceneModel, camera: Option<SceneCamera>, point: Point2D) -> VecModel<Hit3D> {
+fn pick_rect_rows(
+    model: &SceneModel,
+    camera: Option<SceneCamera>,
+    corners: [Point2D; 2],
+) -> VecModel<i64> {
+    let Some(camera) = camera.filter(|camera| camera.layer_mask() != 0) else {
+        return VecModel::default();
+    };
+    let Some(region) = Frustum::selection(&camera, corners) else {
+        return VecModel::default();
+    };
+    let geometry = model.geometry(&camera);
+    let mut rows = Vec::new();
+    geometry.visit_selection(&region, |index, planes| {
+        let object = &geometry[index];
+        if object.layers & camera.layer_mask() != 0
+            && let Some(row) = object.scene_row()
+            && object.intersects_selection(&camera, &region, planes)
+        {
+            rows.push(i64::from(row));
+        }
+    });
+    rows.sort_unstable();
+    rows.dedup();
+    rows.into()
+}
+
+/// Geometry intersecting a view rectangle, reported in authored row order.
+#[doc(hidden)]
+pub fn pick_in_rect(
+    model: &SceneModel,
+    yaw: f64,
+    pitch: f64,
+    distance: f64,
+    viewport: Point2D,
+    corners: [Point2D; 2],
+    layers: Option<i64>,
+) -> VecModel<i64> {
+    let camera = SceneCamera::new(yaw, pitch, distance, [viewport.x.0, viewport.y.0])
+        .map(|camera| camera.with_layer_mask(layers));
+    pick_rect_rows(model, camera, corners)
+}
+
+#[doc(hidden)]
+pub fn pick_in_rect_camera(
+    model: &SceneModel,
+    id: &str,
+    viewport: Point2D,
+    corners: [Point2D; 2],
+    layers: Option<i64>,
+) -> VecModel<i64> {
+    let camera = model
+        .camera(id, [viewport.x.0, viewport.y.0])
+        .map(|camera| camera.with_layer_mask(layers));
+    pick_rect_rows(model, camera, corners)
+}
+
+impl SceneCamera {
+    fn scene_ray(&self, point: Point2D) -> Option<SceneRay> {
+        let (ray, min, max) = self.pointer_ray(point)?;
+        Some(SceneRay::new(ray, min, max, self.layer_mask()))
+    }
+}
+
+fn hit_all(
+    model: &SceneModel,
+    camera: Option<SceneCamera>,
+    point: Point2D,
+    rows: &RayRows,
+) -> VecModel<Hit3D> {
     camera
         .and_then(|camera| {
-            let (ray, min, max) = camera.pointer_ray(point)?;
-            Some(trace_model_hits(
-                &model.geometry(&camera),
-                ray,
-                min,
-                max,
-                camera.layer_mask(),
-            ))
+            let ray = camera.scene_ray(point)?;
+            Some(ray.all(&model.geometry(&camera), rows))
         })
         .unwrap_or_default()
+}
+
+#[doc(hidden)]
+pub fn hit_row(
+    model: &SceneModel,
+    orbit: [f64; 3],
+    viewport: Point2D,
+    point: Point2D,
+    row: i64,
+    layers: Option<i64>,
+) -> Hit3D {
+    let [yaw, pitch, distance] = orbit;
+    let camera = SceneCamera::new(yaw, pitch, distance, [viewport.x.0, viewport.y.0])
+        .map(|camera| camera.with_layer_mask(layers));
+    hit_filtered(model, camera, point, &RayRows::Row(row))
+}
+
+#[doc(hidden)]
+pub fn hit_row_camera(
+    model: &SceneModel,
+    id: &str,
+    viewport: Point2D,
+    point: Point2D,
+    row: i64,
+    layers: Option<i64>,
+) -> Hit3D {
+    let camera = model
+        .camera(id, [viewport.x.0, viewport.y.0])
+        .map(|camera| camera.with_layer_mask(layers));
+    hit_filtered(model, camera, point, &RayRows::Row(row))
+}
+
+#[doc(hidden)]
+pub fn hit_instance(
+    model: &SceneModel,
+    orbit: [f64; 3],
+    viewport: Point2D,
+    point: Point2D,
+    address: [i64; 3],
+    layers: Option<i64>,
+) -> Hit3D {
+    let Some(rows) = RayRows::instance(address) else {
+        return Hit3D::default();
+    };
+    let [yaw, pitch, distance] = orbit;
+    let camera = SceneCamera::new(yaw, pitch, distance, [viewport.x.0, viewport.y.0])
+        .map(|camera| camera.with_layer_mask(layers));
+    hit_filtered(model, camera, point, &rows)
+}
+
+#[doc(hidden)]
+pub fn hit_instance_camera(
+    model: &SceneModel,
+    id: &str,
+    viewport: Point2D,
+    point: Point2D,
+    address: [i64; 3],
+    layers: Option<i64>,
+) -> Hit3D {
+    let Some(rows) = RayRows::instance(address) else {
+        return Hit3D::default();
+    };
+    let camera = model
+        .camera(id, [viewport.x.0, viewport.y.0])
+        .map(|camera| camera.with_layer_mask(layers));
+    hit_filtered(model, camera, point, &rows)
+}
+
+fn hit_filtered(
+    model: &SceneModel,
+    camera: Option<SceneCamera>,
+    point: Point2D,
+    rows: &RayRows,
+) -> Hit3D {
+    camera
+        .and_then(|camera| {
+            let ray = camera.scene_ray(point)?;
+            Some(ray.first(&model.geometry(&camera), rows))
+        })
+        .unwrap_or_default()
+}
+
+#[doc(hidden)]
+pub fn hit_subset(
+    model: &SceneModel,
+    orbit: [f64; 3],
+    viewport: Point2D,
+    point: Point2D,
+    rows: &[i64],
+    layers: Option<i64>,
+) -> VecModel<Hit3D> {
+    let [yaw, pitch, distance] = orbit;
+    let camera = SceneCamera::new(yaw, pitch, distance, [viewport.x.0, viewport.y.0])
+        .map(|camera| camera.with_layer_mask(layers));
+    hit_all(model, camera, point, &RayRows::subset(rows))
+}
+
+#[doc(hidden)]
+pub fn hit_subset_camera(
+    model: &SceneModel,
+    id: &str,
+    viewport: Point2D,
+    point: Point2D,
+    rows: &[i64],
+    layers: Option<i64>,
+) -> VecModel<Hit3D> {
+    let camera = model
+        .camera(id, [viewport.x.0, viewport.y.0])
+        .map(|camera| camera.with_layer_mask(layers));
+    hit_all(model, camera, point, &RayRows::subset(rows))
 }
 
 #[doc(hidden)]
@@ -733,7 +987,7 @@ pub fn hit_all_objects(
 ) -> VecModel<Hit3D> {
     let camera = SceneCamera::new(yaw, pitch, distance, [viewport.x.0, viewport.y.0])
         .map(|camera| camera.with_layer_mask(layers));
-    hit_all(model, camera, point)
+    hit_all(model, camera, point, &RayRows::All)
 }
 
 #[doc(hidden)]
@@ -747,7 +1001,7 @@ pub fn hit_all_camera(
     let camera = model
         .camera(id, [viewport.x.0, viewport.y.0])
         .map(|camera| camera.with_layer_mask(layers));
-    hit_all(model, camera, point)
+    hit_all(model, camera, point, &RayRows::All)
 }
 
 #[doc(hidden)]

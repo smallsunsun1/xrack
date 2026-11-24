@@ -9,6 +9,9 @@ const MAX_CACHED_ROWS: usize = 512;
 const MAX_CACHED_SCROLL_VIEWS: usize = 8;
 const MAX_SCROLL_CONTENT_NODES: usize = 4096;
 const MAX_LOCAL_SUBTREE_NODES: usize = 128;
+// Preserve the previous worst-case number of cached layout nodes while
+// allowing more small subtrees to share the budget.
+const MAX_CACHED_LOCAL_NODES: usize = MAX_CACHED_ROWS * MAX_LOCAL_SUBTREE_NODES;
 const MAX_ABSOLUTE_LEAVES: usize = 1024;
 
 #[derive(Clone, Copy)]
@@ -84,6 +87,14 @@ struct Row {
     used: bool,
 }
 
+struct LocalLayout {
+    node: Node,
+    inputs: RowInputs,
+    layout: LayoutNode,
+    nodes: usize,
+    last_frame: u64,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct AbsoluteLeafInputs {
     pub content: Rect,
@@ -93,7 +104,7 @@ pub(super) struct AbsoluteLeafInputs {
 }
 
 struct AbsoluteLeaf {
-    node: Node,
+    identity: SharedNodeIdentity,
     inputs: AbsoluteLeafInputs,
     layout: LayoutNode,
 }
@@ -178,7 +189,10 @@ pub struct RowLayoutCache {
     stats: RowLayoutStats,
     scroll_views: BTreeMap<Vec<usize>, ScrollViewEntry>,
     table_sizes: BTreeMap<Vec<usize>, crate::table::ColumnSizing>,
-    local_subtrees: BTreeMap<Vec<usize>, Row>,
+    local_subtrees: BTreeMap<Vec<usize>, LocalLayout>,
+    local_nodes: usize,
+    local_frame: u64,
+    local_visited: usize,
     absolute_leaves: Vec<AbsoluteLeaf>,
     next_absolute_leaf: usize,
 }
@@ -190,10 +204,13 @@ impl RowLayoutCache {
 
     pub(super) fn begin_frame(&mut self, scene: &Rc<Node>, typography: Option<Rc<()>>) {
         self.next_absolute_leaf = 0;
+        self.local_frame = self.local_frame.wrapping_add(1);
+        self.local_visited = 0;
         let typography = typography.as_ref().map_or_else(Weak::new, Rc::downgrade);
         if !self.typography.ptr_eq(&typography) {
             self.typography = typography;
             self.local_subtrees.clear();
+            self.local_nodes = 0;
             self.absolute_leaves.clear();
             self.views.clear();
             self.entries = 0;
@@ -213,9 +230,6 @@ impl RowLayoutCache {
             }
             for sizing in self.table_sizes.values_mut() {
                 sizing.invalidate_scene();
-            }
-            for row in self.local_subtrees.values_mut() {
-                row.used = false;
             }
         }
         for sizing in self.table_sizes.values_mut() {
@@ -247,7 +261,7 @@ impl RowLayoutCache {
         let leaf = self.absolute_leaves.get(slot)?;
         // Traversal order only selects the slot. Exact snapshot and parent
         // geometry checks still apply when a sibling enters or moves.
-        if leaf.inputs != inputs || !leaf.node.shares_storage_with(node) {
+        if leaf.inputs != inputs || !leaf.identity.matches(node) {
             return None;
         }
         self.stats.subtree_reuses += 1;
@@ -264,7 +278,7 @@ impl RowLayoutCache {
     ) {
         debug_assert!(layout.children.is_empty());
         let leaf = AbsoluteLeaf {
-            node: node.clone(),
+            identity: node.snapshot_identity(),
             inputs,
             layout: layout.clone(),
         };
@@ -286,7 +300,8 @@ impl RowLayoutCache {
         if row.inputs != inputs || !kind.matches(&row.node, node) {
             return None;
         }
-        row.used = true;
+        self.local_visited += usize::from(row.last_frame != self.local_frame);
+        row.last_frame = self.local_frame;
         self.stats.subtree_reuses += 1;
         Some(&row.layout)
     }
@@ -333,18 +348,30 @@ impl RowLayoutCache {
             .map(|entry| entry.prepare_rows(order, scope, headers, first))
     }
 
-    pub(super) fn can_store_local_layout(
+    pub(super) fn local_layout_node_count(
         &self,
         path: &[usize],
         node: &Node,
         kind: LocalSubtree,
-    ) -> bool {
-        let mut remaining = MAX_LOCAL_SUBTREE_NODES;
-        self.typography.strong_count() != 0
-            && (self.local_subtrees.len() < MAX_CACHED_ROWS
-                || self.local_subtrees.contains_key(path))
-            && scroll_child(node, &mut remaining)
-            && MAX_LOCAL_SUBTREE_NODES - remaining >= kind.minimum_nodes()
+    ) -> Option<usize> {
+        if self.typography.strong_count() == 0 {
+            return None;
+        }
+        let limit =
+            (MAX_CACHED_LOCAL_NODES - self.local_nodes_with(path, 0)).min(MAX_LOCAL_SUBTREE_NODES);
+        if limit < kind.minimum_nodes() {
+            return None;
+        }
+        let mut remaining = limit;
+        if !scroll_child(node, &mut remaining) {
+            return None;
+        }
+        let nodes = limit - remaining;
+        (nodes >= kind.minimum_nodes()).then_some(nodes)
+    }
+
+    fn local_nodes_with(&self, path: &[usize], nodes: usize) -> usize {
+        self.local_nodes - self.local_subtrees.get(path).map_or(0, |entry| entry.nodes) + nodes
     }
 
     pub(super) fn store_local_layout(
@@ -353,16 +380,26 @@ impl RowLayoutCache {
         node: &Node,
         inputs: RowInputs,
         layout: &LayoutNode,
+        nodes: usize,
     ) {
-        self.local_subtrees.insert(
+        // Measuring this subtree may also have filled the cache with children.
+        let total = self.local_nodes_with(path, nodes);
+        if total > MAX_CACHED_LOCAL_NODES {
+            return;
+        }
+        let previous = self.local_subtrees.insert(
             path.to_vec(),
-            Row {
+            LocalLayout {
                 node: node.clone(),
                 inputs,
                 layout: layout.clone(),
-                used: true,
+                nodes,
+                last_frame: self.local_frame,
             },
         );
+        self.local_nodes = total;
+        self.local_visited +=
+            usize::from(previous.is_none_or(|entry| entry.last_frame != self.local_frame));
     }
 
     pub(super) fn scroll_geometry(
@@ -476,7 +513,20 @@ impl RowLayoutCache {
         self.scroll_views.retain(|_, view| view.used);
         if self.scene_changed {
             self.table_sizes.retain(|_, sizing| sizing.used);
-            self.local_subtrees.retain(|_, row| row.used);
+        }
+        // No pruning is needed when every entry was visited or replaced.
+        // This is common in frames that only reposition cached subtrees.
+        if self.scene_changed && self.local_visited != self.local_subtrees.len() {
+            let mut retained_nodes = 0;
+            self.local_subtrees.retain(|_, entry| {
+                if entry.last_frame == self.local_frame {
+                    retained_nodes += entry.nodes;
+                    true
+                } else {
+                    false
+                }
+            });
+            self.local_nodes = retained_nodes;
         }
         for sizing in self.table_sizes.values_mut() {
             sizing.finish_frame();
@@ -518,6 +568,7 @@ fn scroll_child(node: &Node, budget: &mut usize) -> bool {
             | "ButtonContent"
     ) && node.list.is_none()
         && !node.boolean("clip", false)
+        && !node.scene_texture_only()
         && node
             .properties
             .keys()
@@ -529,25 +580,27 @@ fn scroll_child(node: &Node, budget: &mut usize) -> bool {
 }
 
 pub(super) fn cacheable(node: &Node) -> bool {
-    matches!(
-        node.kind,
-        "ListRow"
-            | "TableCell"
-            | "Row"
-            | "Column"
-            | "HorizontalLayout"
-            | "VerticalLayout"
-            | "GridLayout"
-            | "Rectangle"
-            | "Text"
-            | "Label"
-            | "Image"
-            | "Button"
-            | "CheckBox"
-            | "Switch"
-            | "SwitchThumb"
-            | "ToggleIndicator"
-    ) && node.list.is_none()
+    !node.scene_texture_only()
+        && matches!(
+            node.kind,
+            "ListRow"
+                | "TableCell"
+                | "Row"
+                | "Column"
+                | "HorizontalLayout"
+                | "VerticalLayout"
+                | "GridLayout"
+                | "Rectangle"
+                | "Text"
+                | "Label"
+                | "Image"
+                | "Button"
+                | "CheckBox"
+                | "Switch"
+                | "SwitchThumb"
+                | "ToggleIndicator"
+        )
+        && node.list.is_none()
         && !node.boolean("clip", false)
         && node
             .properties

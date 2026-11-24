@@ -276,6 +276,7 @@ rust_test(
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
         "//crates/xrack-runtime:xrack_runtime",
+        "//tests:gpu_readback",
         "@crates//:pollster",
         "@crates//:wgpu",
     ],

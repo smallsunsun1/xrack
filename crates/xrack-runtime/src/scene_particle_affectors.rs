@@ -68,6 +68,55 @@ enum Kind {
     PointRotator = 4,
 }
 
+impl ParticleAffector {
+    pub(crate) fn expand_particle_bounds(&self, [min, max]: &mut [[f64; 3]; 2], age: f64) {
+        let age = age - f64::from(self.position_age[3]);
+        if age < 0.0 {
+            return;
+        }
+        let position = self.position_age.map(f64::from);
+        let vector = self.vector_value.map(f64::from);
+        match self.control[0] {
+            kind if kind == Kind::Attractor as u32 => {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(position[axis] - vector[axis]);
+                    max[axis] = max[axis].max(position[axis] + vector[axis]);
+                }
+            }
+            kind if kind == Kind::Repeller as u32 => {
+                for axis in 0..3 {
+                    min[axis] -= vector[3];
+                    max[axis] += vector[3];
+                }
+            }
+            kind if kind == Kind::Gravity as u32 => {
+                let scale = 0.5 * age * age;
+                for axis in 0..3 {
+                    let offset = vector[axis] * scale;
+                    min[axis] += offset.min(0.0);
+                    max[axis] += offset.max(0.0);
+                }
+            }
+            kind if kind == Kind::PointRotator as u32 => {
+                let radius = (0..3)
+                    .map(|axis| {
+                        (min[axis] - position[axis])
+                            .abs()
+                            .max((max[axis] - position[axis]).abs())
+                            .powi(2)
+                    })
+                    .sum::<f64>()
+                    .sqrt();
+                for axis in 0..3 {
+                    min[axis] = position[axis] - radius;
+                    max[axis] = position[axis] + radius;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl ParticleAffectorDefinition {
     pub fn prepare(self) -> Option<ParticleAffector> {
         let kind = match self.affector_kind.as_str() {

@@ -1,0 +1,99 @@
+struct MappingActor {
+    id: string, parent: string, mesh: string,
+    x: float, y: float, z: float,
+    yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    pivot-x: float, pivot-y: float, pivot-z: float,
+    color: color, visible: bool, pickable: bool,
+}
+
+export component NodeMappingDemo inherits Window {
+    title: "XRack · 节点坐标";
+    width: 600px; height: 412px; resizable: false;
+    background: #152232;
+    in-out property <float> yaw: 0;
+    in-out property <float> stretch: 1.5;
+    in-out property <bool> show-rig: true;
+    in-out property <string> destination: "dock";
+
+    property <MappingActor> base: MappingActor {
+        id: "", parent: "", mesh: "",
+        x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, pivot-x: 0, pivot-y: 0, pivot-z: 0,
+        color: #ffffff, visible: true, pickable: true,
+    };
+    property <MappingActor> rig: MappingActor {
+        id: "rig", mesh: "primitive:box", x: 0.65, yaw: root.yaw,
+        scale-x: root.stretch, scale-y: 0.45, scale-z: 0.65,
+        pivot-x: 0.25, color: #5c9fdc, visible: root.show-rig, ..root.base
+    };
+    property <MappingActor> socket: MappingActor {
+        id: "socket", parent: "rig", x: 0.8, y: 0.25, yaw: 30, ..root.base
+    };
+    property <MappingActor> dock: MappingActor {
+        id: "dock", mesh: "primitive:cylinder", x: -1.5, y: -0.3, z: -0.6, yaw: 35,
+        scale-x: 0.7, scale-y: 0.2, scale-z: 0.7, color: #c5824c, ..root.base
+    };
+    property <[MappingActor]> nodes: [root.rig, root.socket, root.dock];
+    property <point3d> zero: Point3D.new(0, 0, 0);
+    property <point3d> missing-point: Point3D.new(-99, -99, -99);
+    property <vector3d> missing-direction: Vector3D.new(-99, -99, -99);
+    property <vector3d> forward: Vector3D.new(0, 0, 1.65);
+    out property <point3d> socket-world: Scene3D.map-position(
+        root.nodes, "socket", "", root.zero, root.missing-point);
+    out property <point3d> socket-relative: Scene3D.map-position(
+        root.nodes, "socket", root.destination, root.zero, root.missing-point);
+    out property <point3d> round-trip: Scene3D.map-position(
+        root.nodes, root.destination, "socket", root.socket-relative, root.missing-point);
+    out property <vector3d> aim-world: Scene3D.map-direction(
+        root.nodes, "socket", "", root.forward, root.missing-direction);
+    out property <vector3d> aim-relative: Scene3D.map-direction(
+        root.nodes, "socket", root.destination, root.forward, root.missing-direction);
+    out property <vector3d> aim-round-trip: Scene3D.map-direction(
+        root.nodes, root.destination, "socket", root.aim-relative, root.missing-direction);
+
+    property <[MappingActor]> display: [
+        root.rig, root.socket, root.dock,
+        MappingActor {
+            mesh: "primitive:sphere", x: root.socket-world.x, y: root.socket-world.y, z: root.socket-world.z,
+            scale-x: 0.24, scale-y: 0.24, scale-z: 0.24,
+            color: #ffd658, pickable: false, ..root.base
+        },
+        MappingActor {
+            mesh: "primitive:sphere",
+            x: root.socket-world.x + root.aim-world.x,
+            y: root.socket-world.y + root.aim-world.y,
+            z: root.socket-world.z + root.aim-world.z,
+            scale-x: 0.17, scale-y: 0.17, scale-z: 0.17, color: #71efbc, pickable: false, ..root.base
+        },
+    ];
+    SceneView3D {
+        width: 600px; height: 304px;
+        model: root.display; scene-background: #243c53;
+        camera-yaw: -24; camera-pitch: 31; camera-distance: 8.6;
+        multisampling: true; cache-rendering: true;
+    }
+    rotate-rig := Button {
+        x: 14px; y: 316px; width: 93px; height: 36px; text: "旋转";
+        clicked => { root.yaw = root.yaw + 45; }
+    }
+    Slider {
+        x: 120px; y: 316px; width: 162px; height: 36px;
+        minimum: 0.4; maximum: 2.5; step: 0.1; value <=> root.stretch;
+    }
+    CheckBox {
+        x: 305px; y: 316px; width: 130px; height: 36px;
+        text: "显示机架"; checked <=> root.show-rig;
+    }
+    coordinate-mode := Button {
+        x: 447px; y: 316px; width: 138px; height: 36px;
+        text: root.destination == "" ? "世界坐标" : "基座坐标";
+        clicked => { root.destination = root.destination == "" ? "dock" : ""; }
+    }
+    Label {
+        x: 14px; y: 369px; width: 570px; height: 30px;
+        text: "挂点  X " + Math.round(root.socket-relative.x * 100) / 100.0
+            + "  Y " + Math.round(root.socket-relative.y * 100) / 100.0
+            + "  Z " + Math.round(root.socket-relative.z * 100) / 100.0;
+    }
+}

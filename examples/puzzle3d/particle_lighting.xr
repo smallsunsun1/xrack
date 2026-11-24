@@ -1,0 +1,85 @@
+struct ParticleLightEmitter {
+    position: point3d, size: float, color: color, lifetime: float, burst-count: int,
+    velocity: vector3d, fade-out: float, particle-model: string,
+    particle-angular-velocity: vector3d,
+    particle-casts-shadow: bool, particle-receives-shadow: bool, particle-casts-reflections: bool,
+}
+
+struct ParticleLightObject {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float,
+    casts-shadow: bool, receives-shadow: bool, casts-reflections: bool, receives-reflections: bool,
+}
+
+struct ParticleLightProbe {
+    position: point3d, box-size: vector3d, capture-size: int, refresh-mode: string,
+    time-slicing: string, intensity: float,
+}
+
+export component ParticleLightingDemo inherits Window {
+    title: "XRack · 粒子阴影与反射";
+    width: 600px; height: 430px;
+    background: #182333;
+
+    in-out property <bool> cast-shadow: true;
+    in-out property <bool> cast-reflection: true;
+    in-out property <bool> receive-shadow: true;
+    in-out property <float> time: 0.65;
+    in-out property <float> light-angle: -25;
+    in-out property <string> slicing: "none";
+    in-out property <int> population: 1;
+
+    property <ParticleLightObject> defaults: ParticleLightObject {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, camera-kind: "", camera-height: 6,
+        casts-shadow: false, receives-shadow: true,
+        casts-reflections: false, receives-reflections: false,
+    };
+    property <[ParticleLightObject]> model: [
+        ParticleLightObject { id: "eye", mesh: "", z: 11, camera-kind: "orthographic", ..root.defaults },
+        ParticleLightObject {
+            id: "wall", z: -1.9, scale-x: 13, scale-y: 7, scale-z: 0.1,
+            color: #839aaf, ..root.defaults
+        },
+        ParticleLightObject {
+            id: "mirror", mesh: @mesh-url("models/probe-sphere.gltf"), x: 2.35,
+            scale-x: 1.32, scale-y: 1.32, scale-z: 1.32,
+            receives-reflections: true, ..root.defaults
+        },
+    ];
+    property <ParticleLightEmitter> sparks: ParticleLightEmitter {
+        position: Point3D.new(-1.9, 1, 1.15), size: 1.35, color: #ff8848,
+        lifetime: 3.0, burst-count: root.population, fade-out: 0.2,
+        velocity: Vector3D.new(0, -0.62, 0.1), particle-model: "primitive:box",
+        particle-angular-velocity: Vector3D.new(45, 64, 18),
+        particle-casts-shadow: root.cast-shadow,
+        particle-receives-shadow: root.receive-shadow,
+        particle-casts-reflections: root.cast-reflection,
+    };
+    property <[ParticleLightProbe]> probes: [
+        ParticleLightProbe {
+            position: Point3D.new(2.35, 0, 0), box-size: Vector3D.new(14, 10, 10),
+            capture-size: 64, refresh-mode: "on-change", time-slicing: root.slicing,
+            intensity: 2.5,
+        },
+    ];
+    SceneView3D {
+        width: 600px; height: 310px; model: root.model; camera: "eye";
+        reflection-probes: root.probes; particle-emitters: [root.sparks]; particle-time: root.time;
+        scene-background: #273d52; scene-hdr: true; cache-rendering: true;
+        shadows: true; shadow-map-size: 512; shadow-bias: 0.0015;
+        light-yaw: root.light-angle; light-elevation: 33; ambient-intensity: 0.35;
+    }
+    shadow-toggle := CheckBox { x: 14px; y: 321px; width: 124px; height: 36px; text: "投射阴影"; checked <=> root.cast-shadow; }
+    reflection-toggle := CheckBox { x: 146px; y: 321px; width: 127px; height: 36px; text: "进入反射"; checked <=> root.cast-reflection; }
+    receive-toggle := CheckBox { x: 274px; y: 321px; width: 126px; height: 36px; text: "接收阴影"; checked <=> root.receive-shadow; }
+    slicing-toggle := Button {
+        x: 414px; y: 321px; width: 165px; height: 36px;
+        text: root.slicing == "none" ? "同帧捕获" : "逐面捕获";
+        clicked => { root.slicing = root.slicing == "none" ? "individual-faces" : "none"; }
+    }
+    Label { x: 14px; y: 371px; width: 70px; height: 42px; text: "粒子时间"; }
+    time-slider := Slider { x: 90px; y: 371px; width: 488px; height: 42px; minimum: 0; maximum: 2.9; value <=> root.time; }
+}

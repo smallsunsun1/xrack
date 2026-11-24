@@ -1,0 +1,87 @@
+{
+  "asset": {
+    "version": "2.0"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "COLOR_0": 1
+          },
+          "indices": 2
+        }
+      ]
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,ZmYGwAAAoL8AAAAAmpkZvgAAoL8AAAAAmpkZvgAAoD8AAAAAZmYGwAAAoD8AAAAAmpkZPgAAoL8AAAAAZmYGQAAAoL8AAAAAZmYGQAAAoD8AAAAAmpkZPgAAoD8AAAAAzcxMPs3MTD+amZk+zcxMPs3MTD7NzEw/mpmZPs3MTD7NzEw+zcxMP5qZmT7NzEw+zcxMPs3MTD+amZk+zcxMPs3MTD/NzEw+mpmZPs3MTD/NzEw/zcxMPpqZmT7NzEw/zcxMP83MTD6amZk+zcxMP83MTD/NzEw+mpmZPs3MTD8AAAEAAgAAAAIAAwAEAAUABgAEAAYABwA=",
+      "byteLength": 248
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 96,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 96,
+      "byteLength": 128,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 224,
+      "byteLength": 24,
+      "target": 34963
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 8,
+      "type": "VEC3",
+      "min": [
+        -2.1,
+        -1.25,
+        0
+      ],
+      "max": [
+        2.1,
+        1.25,
+        0
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 8,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5123,
+      "count": 12,
+      "type": "SCALAR"
+    }
+  ]
+}

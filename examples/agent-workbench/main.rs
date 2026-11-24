@@ -44,7 +44,7 @@ use workbench_ui::{
     TranscriptSection,
 };
 use xrack_platform_winit::{run_with_viewport_and_system_color_scheme, spawn_local};
-use xrack_runtime::{Length, MarkdownStream, StyledText};
+use xrack_runtime::{Length, StyledText};
 
 #[derive(Parser)]
 struct Args {
@@ -91,7 +91,10 @@ fn activity_status(state: ActivityState) -> &'static str {
     }
 }
 
-fn transcript_row(entry: &Entry, markdown: Option<&mut MarkdownStream>) -> TranscriptEntry {
+fn transcript_row(
+    entry: &Entry,
+    markdown: Option<&mut file_references::TranscriptStream>,
+) -> TranscriptEntry {
     let blank = String::new();
     let (kind, heading, status, tone, body) = match entry {
         Entry::User(message) => (
@@ -411,7 +414,7 @@ fn update(
     ui: &mut AgentWorkbench,
     snapshot: &Snapshot,
     previous: Option<&Snapshot>,
-    markdown: &mut MarkdownStream,
+    markdown: &mut file_references::TranscriptStream,
 ) {
     sidebar_actions::update(ui, snapshot, previous);
     update_projects(ui, snapshot, previous);
@@ -440,7 +443,7 @@ fn update(
         ui.set_session_search_text(snapshot.history_query.clone());
     }
     if conversation_changed {
-        *markdown = MarkdownStream::default();
+        *markdown = file_references::TranscriptStream::default();
         ui.set_handoff_open(false);
         ui.set_worktree_start_open(false);
         ui.set_worktree_setup_log_open(false);
@@ -567,7 +570,7 @@ fn update(
         }
     }
     if !streaming {
-        *markdown = MarkdownStream::default();
+        *markdown = file_references::TranscriptStream::default();
     }
     let removed = model.len() > snapshot.view.entries.len();
     while model.len() > snapshot.view.entries.len() {
@@ -1139,7 +1142,7 @@ fn attach(
         if let Err(error) = spawn_local(async move {
             let mut saved = HashMap::new();
             let mut answers = HashMap::new();
-            let mut markdown = MarkdownStream::default();
+            let mut markdown = file_references::TranscriptStream::default();
             loop {
                 let snapshot = output.borrow_and_update().clone();
                 if commands.is_current(&snapshot) {
@@ -1912,7 +1915,12 @@ mod tests {
     use session::TurnDiff;
 
     fn update(ui: &mut AgentWorkbench, snapshot: &Snapshot, previous: Option<&Snapshot>) {
-        super::update(ui, snapshot, previous, &mut MarkdownStream::default());
+        super::update(
+            ui,
+            snapshot,
+            previous,
+            &mut file_references::TranscriptStream::default(),
+        );
     }
 
     #[test]

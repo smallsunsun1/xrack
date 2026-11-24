@@ -123,7 +123,7 @@ owned_value!(Hit3D, rt::Hit3D);
 #[pymethods]
 impl Hit3D {
     #[new]
-    #[pyo3(signature = (object_id, distance, position, normal, local_position, local_normal, uv, *, row_index = -1))]
+    #[pyo3(signature = (object_id, distance, position, normal, local_position, local_normal, uv, *, row_index = -1, mesh_node_index = -1, instance_index = -1))]
     fn new(
         object_id: String,
         distance: f64,
@@ -133,11 +133,15 @@ impl Hit3D {
         local_normal: Vector3D,
         uv: (f64, f64),
         row_index: i64,
+        mesh_node_index: i64,
+        instance_index: i64,
     ) -> Self {
         Self(rt::Hit3D::from_data(rt::scene3d::Hit3DData {
             valid: true,
             object_id,
             row_index,
+            mesh_node_index,
+            instance_index,
             distance,
             position: position.0,
             normal: normal.0,
@@ -164,6 +168,14 @@ impl Hit3D {
     #[getter]
     fn row_index(&self) -> i64 {
         self.0.row_index
+    }
+    #[getter]
+    fn mesh_node_index(&self) -> i64 {
+        self.0.mesh_node_index
+    }
+    #[getter]
+    fn instance_index(&self) -> i64 {
+        self.0.instance_index
     }
     #[getter]
     fn distance(&self) -> f64 {
@@ -882,7 +894,7 @@ macro_rules! bridge_values {
                 HostValue::Image(value) => convert!(Image(value.into())),
                 // The combo projection is renderer data and has no public ValueType.
                 HostValue::ComboModel(_) => Err(PyTypeError::new_err("invalid public XRack combo projection")),
-                HostValue::SceneObjects(_) | HostValue::SceneLights(_) | HostValue::SceneEnvironment(_) | HostValue::SceneReflections(_) | HostValue::SceneFogVolumes(_) | HostValue::SceneParticleEmitters(_) | HostValue::SceneParticleAffectors(_) => Err(PyTypeError::new_err("invalid public XRack scene projection")),
+                HostValue::SceneObjects(_) | HostValue::SceneLights(_) | HostValue::SceneEnvironment(_) | HostValue::SceneReflections(_) | HostValue::SceneFogVolumes(_) | HostValue::SceneEffects(_) | HostValue::SceneParticleEmitters(_) | HostValue::SceneParticleAffectors(_) => Err(PyTypeError::new_err("invalid public XRack scene projection")),
                 $(HostValue::$tag(value) => convert!($wrapper(value)),)+
                 $(HostValue::$name(value) => convert!($name::from(value)),)+
             }

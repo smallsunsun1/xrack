@@ -1,0 +1,20 @@
+// CHECK-DAG: "xr.bind"{{.*}}name = "texture-source"{{.*}}xr.update_effect = "paint"{{.*}}!xr.string
+// CHECK-DAG: "xr.bind"{{.*}}name = "texture-mipmaps"{{.*}}xr.update_effect = "paint"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "texture-only"{{.*}}!xr.bool
+// CHECK-DAG: "xr.bind"{{.*}}name = "model"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist<"Actor">
+
+struct Finish { base-item: string, }
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: Finish,
+}
+
+component Example inherits Window {
+    in property <string> name;
+    in property <bool> offscreen;
+    in property <bool> mipmaps;
+    in property <[Actor]> objects;
+    SceneView3D { model: root.objects; }
+    Rectangle { texture-source: root.name; texture-only: root.offscreen; texture-mipmaps: root.mipmaps; }
+}

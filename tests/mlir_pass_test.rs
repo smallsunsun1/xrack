@@ -2019,3 +2019,48 @@ fn parsed_operator_signatures_match_xr_expression_types() {
         );
     }
 }
+
+#[test]
+fn changing_viewport_capture_names_only_invalidates_paint() {
+    let module = raw(
+        r#"
+        struct Feed { name: string, color-source: string, depth-source: string }
+        export component Demo inherits Window {
+            in property <string> feed: "stage";
+            SceneView3D {
+                scene-captures: [Feed {
+                    name: "forward", color-source: root.feed, depth-source: root.feed,
+                }];
+                scene-color-capture: root.feed;
+                scene-depth-capture: root.feed;
+            }
+        }
+        "#,
+        "capture-source-update.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = module
+        .operations()
+        .find(|op| op.name() == "xr.component")
+        .unwrap();
+    let window = component
+        .children()
+        .find(|op| op.attribute("kind") == Some("Window"))
+        .unwrap();
+    let viewport = window
+        .children()
+        .find(|op| op.attribute("kind") == Some("SceneView3D"))
+        .unwrap();
+    for name in [
+        "scene-captures",
+        "scene-color-capture",
+        "scene-depth-capture",
+    ] {
+        let binding = viewport
+            .children()
+            .find(|op| op.name() == "xr.bind" && op.attribute("name") == Some(name))
+            .unwrap();
+        assert_eq!(binding.attribute("xr.update_effect"), Some("paint"));
+    }
+}

@@ -22,7 +22,9 @@ mod input;
 mod keyboard;
 mod label;
 mod linear;
+mod scene_texture_input;
 pub use linear::IntrinsicMeasurements;
+pub use scene_texture_input::scene_texture_source_active;
 mod list_anchor;
 mod menu;
 mod modal;
@@ -46,6 +48,7 @@ mod shortcut;
 mod spin;
 mod split;
 mod stack_transition;
+mod styled_fragments;
 mod styled_text;
 mod swipe_delegate;
 mod swipe_gesture;
@@ -109,9 +112,10 @@ pub use spin::SpinGeometry;
 pub use split::{SplitGeometry, SplitHandle, SplitHandleRange};
 pub use stack_transition::{StackSlide, StackTransitions};
 use std::{collections::BTreeMap, rc::Rc};
+pub use styled_fragments::{StyledFragmentBlock, StyledFragmentSource, StyledFragments};
 pub use styled_text::{
-    StyledFragment, StyledSelectionSpans, StyledTextLayout, StyledTextLineIndex,
-    StyledTextMeasurements,
+    StyledFragment, StyledGlyph, StyledGlyphFont, StyledGlyphRun, StyledSelectionSpans,
+    StyledTextLayout, StyledTextLineIndex, StyledTextMeasurements,
 };
 pub use swipe_delegate::SwipeDelegateGeometry;
 pub use swipe_gesture::SwipeDelivery;
@@ -237,6 +241,7 @@ struct TransformPlacement {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct LayoutDetails {
+    texture_only: bool,
     content_bounds: Option<Rect>,
     list_section_headers: Option<Box<[ListSectionHeader]>>,
     horizontal_scroll: Option<ScrollLayout>,
@@ -544,6 +549,12 @@ impl LayoutNode {
         }
     }
 
+    pub(crate) fn is_texture_only(&self) -> bool {
+        self.details
+            .as_ref()
+            .is_some_and(|details| details.texture_only)
+    }
+
     fn details_mut(&mut self) -> &mut LayoutDetails {
         Rc::make_mut(
             self.details
@@ -827,11 +838,14 @@ impl LayoutNode {
         self.styled_text
             .iter()
             .filter(|_| self.visible)
-            .flat_map(|plan| &plan.fragments)
-            .filter_map(move |fragment| {
+            .flat_map(move |plan| {
+                plan.fragments
+                    .placed_in_y_range(Some((top - self.bounds.y, bottom - self.bounds.y)))
+            })
+            .filter_map(move |(fragment, offset)| {
                 let link = fragment.link()?;
                 let rect = fragment.bounds;
-                let y = self.bounds.y + rect.y;
+                let y = self.bounds.y + (rect.y + offset);
                 // Reject rows outside the local viewport before projecting
                 // this fragment through its transformed ancestor clips.
                 if y > bottom || y + rect.height < top {
@@ -1105,6 +1119,7 @@ fn place_in_direction(mut rect: Rect, content: Rect, direction: LayoutDirection)
 fn participates_in_flow(node: &Node) -> bool {
     !is_window_overlay(node.kind)
         && !matches!(node.kind, "Menu" | "Tooltip" | "Shortcut")
+        && !node.scene_texture_only()
         && node.is_visible()
 }
 
@@ -1873,8 +1888,33 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         parent_enabled: bool,
         row_children: Option<grid::RowPlacements>,
     ) -> LayoutNode {
+        if node.scene_texture_only() {
+            let size = |axis| {
+                node.length(axis)
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                    .unwrap_or(0.0)
+            };
+            let canvas = Rect::new(0.0, 0.0, size("width"), size("height"));
+            let outside = self.space.take();
+            let previous_direction = self.layout_direction;
+            self.layout_direction = node.layout_direction().or(previous_direction);
+            let mut layout = self.place_without_ancestor_clip(
+                node,
+                canvas,
+                canvas,
+                parent_visible,
+                parent_enabled,
+            );
+            layout.details_mut().texture_only = true;
+            self.space = outside;
+            self.layout_direction = previous_direction;
+            return layout;
+        }
         if row_children.is_none()
-            && matches!(node.kind, "Rectangle" | "TableCell" | "TreeCell")
+            && matches!(
+                node.kind,
+                "Rectangle" | "Image" | "AnimatedImage" | "TableCell" | "TreeCell"
+            )
             && self.can_place_leaf(node)
         {
             return self.place_leaf(node, bounds, clip, parent_visible, parent_enabled);
@@ -1923,8 +1963,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         layout
     }
 
-    fn is_rectangle_leaf(&self, node: &Node) -> bool {
-        node.kind == "Rectangle" && self.can_place_leaf(node)
+    fn is_absolute_leaf(&self, node: &Node) -> bool {
+        matches!(node.kind, "Rectangle" | "Image" | "AnimatedImage")
+            && !node.scene_texture_only()
+            && self.can_place_leaf(node)
     }
 
     fn can_place_leaf(&self, node: &Node) -> bool {
@@ -1936,7 +1978,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             && self.resolved_table.is_none()
     }
 
-    fn place_absolute_rectangle(
+    fn place_absolute_leaf(
         &mut self,
         node: &Node,
         content: Rect,
@@ -2108,13 +2150,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         {
             return row_layout::clone_in_view(local, bounds, clip, self.ancestor_shapes.as_ref());
         }
-        if !self
+        let Some(nodes) = self
             .row_layouts
             .as_ref()
-            .is_some_and(|cache| cache.can_store_local_layout(&self.path, node, kind))
-        {
+            .and_then(|cache| cache.local_layout_node_count(&self.path, node, kind))
+        else {
             return self.place_node(node, bounds, clip, visible, enabled, None);
-        }
+        };
         let mut local = self.place_without_ancestor_clip(
             node,
             Rect::new(0.0, 0.0, bounds.width, bounds.height),
@@ -2123,7 +2165,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             enabled,
         );
         if let Some(cache) = self.row_layouts.as_deref_mut() {
-            cache.store_local_layout(&self.path, node, inputs, &local);
+            cache.store_local_layout(&self.path, node, inputs, &local, nodes);
         }
         row_layout::place_in_view(&mut local, bounds, clip, self.ancestor_shapes.as_ref());
         local
@@ -3032,8 +3074,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             .take(count)
             .map_while(|(index, child)| {
                 let placement = if let Some(content) = absolute_content {
-                    if self.is_rectangle_leaf(child) {
-                        return Some(self.place_absolute_rectangle(
+                    if self.is_absolute_leaf(child) {
+                        return Some(self.place_absolute_leaf(
                             child,
                             content,
                             child_clip,
@@ -3605,13 +3647,15 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             return Rect::new(content.x, content.y, 0.0, 0.0);
         }
         let available = Size::new(content.width, content.height);
-        let size = linear::fixed_size(child, available).unwrap_or_else(|| {
-            let metrics = linear::measure(child, available, self.text);
-            Size::new(
-                absolute_width(child, metrics.x, content.width),
-                absolute_height(child, metrics.y, content.height),
-            )
-        });
+        let size = linear::fixed_size(child, available)
+            .or_else(|| linear::fill_size_with_fixed_cross_axis(child, available, self.text))
+            .unwrap_or_else(|| {
+                let metrics = linear::measure(child, available, self.text);
+                Size::new(
+                    absolute_width(child, metrics.x, content.width),
+                    absolute_height(child, metrics.y, content.height),
+                )
+            });
         Rect::new(
             content.x + child.length("x").unwrap_or(0.0),
             content.y + child.length("y").unwrap_or(0.0),

@@ -1,27 +1,67 @@
 use std::{
-    collections::HashMap,
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
+    rc::Rc,
     sync::{Arc, Weak},
 };
+use xrack_runtime::material_shader::{MAX_TEXTURES, MaterialHooks};
+use xrack_runtime::scene_effect::{BufferSampling, CaptureAttachment, ExternalTexture};
 use xrack_runtime::scene3d::{
-    MeshAlphaMode, MeshDielectric, MeshImage, MeshMaterial, MeshTexture, TextureColorSpace,
-    TextureFilter, TextureTransform, TextureWrap,
+    MeshAlphaMode, MeshDielectric, MeshFresnel, MeshImage, MeshMaterial, MeshShader, MeshTexture,
+    TextureColorSpace, TextureFilter, TextureTransform, TextureWrap,
 };
 
-use super::buffer;
+use super::{
+    buffer,
+    color_capture::{CaptureViews, SharedProjectionBuffers},
+    item_textures::ItemTextureView,
+};
 
-pub(super) const MATERIAL_TEXTURES: u32 = 9;
+pub(super) const MATERIAL_TEXTURES: u32 = 10;
 pub(super) const CLEARCOAT_TEXTURES: u32 = 3;
 pub(super) const CLEARCOAT_SETTINGS_BINDING: u32 = 1 + 2 * (MATERIAL_TEXTURES + CLEARCOAT_TEXTURES);
+pub(super) const FIRST_SHADER_TEXTURE_BINDING: u32 = CLEARCOAT_SETTINGS_BINDING + 1;
+pub(super) const SHADER_CAPTURE_BINDING: u32 = FIRST_SHADER_TEXTURE_BINDING + MAX_TEXTURES as u32;
+// Shadow atlas, baked lightmap, and environment cubemap also occupy fragment slots.
+const LIGHTING_TEXTURES: u32 = 3;
+
+pub(crate) fn material_texture_limit(supported: u32) -> u32 {
+    supported.min(MATERIAL_TEXTURES + CLEARCOAT_TEXTURES + LIGHTING_TEXTURES + MAX_TEXTURES as u32)
+}
+
+pub(super) fn shader_texture_slots(device: &wgpu::Device, coated: bool) -> usize {
+    let used = LIGHTING_TEXTURES + MATERIAL_TEXTURES + u32::from(coated) * CLEARCOAT_TEXTURES;
+    (device
+        .limits()
+        .max_sampled_textures_per_shader_stage
+        .saturating_sub(used) as usize)
+        .min(MAX_TEXTURES)
+}
+
+fn shader_texture_flags(sampling: BufferSampling, encoding: u32) -> u32 {
+    let wrap = |mode| match mode {
+        TextureWrap::Clamp => 0,
+        TextureWrap::Repeat => 1,
+        TextureWrap::Mirror => 2,
+    };
+    1 | (u32::from(sampling.filter == TextureFilter::Linear) << 1)
+        | (wrap(sampling.wrap[0]) << 2)
+        | (wrap(sampling.wrap[1]) << 4)
+        | (encoding << 6)
+}
 
 #[derive(Clone)]
 pub(super) struct MaterialBindings {
     pub base: wgpu::BindGroup,
-    pub clearcoat: Option<wgpu::BindGroup>,
+    color: Option<wgpu::BindGroup>,
+    pub coated: bool,
+    pub shader: Option<(Arc<str>, usize)>,
+    pub vertex: Option<Arc<str>>,
 }
 
 impl MaterialBindings {
     pub fn color(&self) -> &wgpu::BindGroup {
-        self.clearcoat.as_ref().unwrap_or(&self.base)
+        self.color.as_ref().unwrap_or(&self.base)
     }
 }
 
@@ -57,6 +97,97 @@ struct UploadedImage {
     variants: [Option<UploadedTexture>; 3],
 }
 
+#[derive(Default)]
+pub(super) struct Images {
+    images: HashMap<usize, UploadedImage>,
+    pub mip_levels_uploaded: u64,
+    pub uploads: u64,
+}
+
+pub(super) type SharedImages = Rc<RefCell<Images>>;
+
+impl Images {
+    pub fn prune(&mut self) {
+        self.images
+            .retain(|_, image| image.owner.strong_count() != 0);
+    }
+
+    pub fn base_view(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &Arc<MeshImage>,
+        color: TextureColorSpace,
+    ) -> wgpu::TextureView {
+        self.view(device, queue, image, color, (false, false))
+    }
+
+    fn view(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &Arc<MeshImage>,
+        color: TextureColorSpace,
+        (mipmapped, prepared): (bool, bool),
+    ) -> wgpu::TextureView {
+        let mipmapped = mipmapped && image.size() != [1, 1];
+        let entry = self
+            .images
+            .entry(Arc::as_ptr(image) as usize)
+            .or_insert_with(|| UploadedImage {
+                owner: Arc::downgrade(image),
+                variants: Default::default(),
+            });
+        // The two encodings share level zero. For a base-level sampler use any
+        // resident copy before allocating another texture.
+        let colors = [color, TextureColorSpace::ALL[1 - color.slot()]];
+        let chain_color = if mipmapped {
+            Some(color)
+        } else if entry.variants[0].is_some() {
+            None
+        } else {
+            colors
+                .into_iter()
+                .find(|color| entry.variants[1 + color.slot()].is_some())
+                .or_else(|| {
+                    prepared
+                        .then(|| {
+                            colors
+                                .into_iter()
+                                .find(|color| image.prepared_mips(*color).is_some())
+                        })
+                        .flatten()
+                })
+        };
+        let slot = chain_color.map_or(0, |color| 1 + color.slot());
+        let uploaded = entry.variants[slot].get_or_insert_with(|| {
+            let chain = chain_color.map(|color| image.prepare_mips(color));
+            let mut offset = 0;
+            let levels = image.mip_extents().filter_map(|[width, height]| {
+                let chain = chain?;
+                let len = width as usize * height as usize * 4;
+                let start = offset;
+                offset += len;
+                Some(([width, height], &chain[start..offset]))
+            });
+            if chain.is_some() {
+                self.mip_levels_uploaded += image.mip_extents().count() as u64;
+            }
+            self.uploads += 1;
+            upload(device, queue, image.size(), image.rgba(), levels)
+        });
+        let views = if mipmapped {
+            &uploaded.full
+        } else {
+            uploaded.base.as_ref().unwrap_or(&uploaded.full)
+        };
+        match color {
+            TextureColorSpace::Linear => views.linear.clone(),
+            TextureColorSpace::Srgb => views.srgb.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct SamplerKey {
     wrap: [TextureWrap; 2],
@@ -86,10 +217,14 @@ impl SamplerKey {
 
 pub(super) struct Materials {
     layouts: [wgpu::BindGroupLayout; 2],
+    shader_layouts: [[Option<wgpu::BindGroupLayout>; 2]; 2],
     white: ImageViews,
-    images: HashMap<usize, UploadedImage>,
-    pub(super) mip_levels_uploaded: u64,
+    images: SharedImages,
     samplers: HashMap<SamplerKey, wgpu::Sampler>,
+    pub(super) items: BTreeMap<String, ItemTextureView>,
+    pub(super) captures: CaptureViews,
+    projections: SharedProjectionBuffers,
+    item_sampler: Option<wgpu::Sampler>,
 }
 
 impl Materials {
@@ -97,19 +232,20 @@ impl Materials {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         layouts: [wgpu::BindGroupLayout; 2],
+        shader_layouts: [[Option<wgpu::BindGroupLayout>; 2]; 2],
+        (images, projections): (SharedImages, SharedProjectionBuffers),
     ) -> Self {
         Self {
             layouts,
+            shader_layouts,
             white: upload(device, queue, [1, 1], &[255; 4], std::iter::empty()).full,
-            mip_levels_uploaded: 0,
-            images: HashMap::new(),
+            images,
             samplers: HashMap::new(),
+            items: BTreeMap::new(),
+            captures: CaptureViews::new(),
+            projections,
+            item_sampler: None,
         }
-    }
-
-    pub(super) fn prune(&mut self) {
-        self.images
-            .retain(|_, image| image.owner.strong_count() != 0);
     }
 
     pub(super) fn bind(
@@ -119,6 +255,10 @@ impl Materials {
         material: Option<&MeshMaterial>,
         volume_inverse: Option<[[f32; 3]; 3]>,
     ) -> MaterialBindings {
+        let item = material
+            .and_then(|material| material.base_item.as_deref())
+            .and_then(|name| self.items.get(name))
+            .cloned();
         let base_texture = material.and_then(|material| material.base_texture.as_ref());
         let pbr = material.and_then(|material| material.pbr.as_ref());
         let mr = pbr.and_then(|pbr| pbr.metallic_roughness_texture.as_ref());
@@ -129,12 +269,18 @@ impl Materials {
         let dielectric = pbr.and_then(|pbr| pbr.dielectric.as_deref());
         let specular_texture = dielectric.and_then(|material| material.specular_texture.as_ref());
         let specular_color = dielectric.and_then(|material| material.color_texture.as_ref());
-        let transmission = pbr.and_then(|pbr| pbr.transmission.as_deref());
+        let transmission = pbr
+            .and_then(|pbr| pbr.transmission.as_deref())
+            .filter(|term| term.factor > 0.0);
         let transmission_texture = transmission.and_then(|term| term.texture.as_ref());
-        let volume = pbr.and_then(|pbr| pbr.volume());
+        let volume = transmission.and(pbr).and_then(|pbr| pbr.volume());
         let thickness_texture = volume.and_then(|volume| volume.texture.as_ref());
-        let bindings = [
-            (base_texture, true),
+        let anisotropy = pbr
+            .and_then(|pbr| pbr.anisotropy.as_deref())
+            .filter(|term| term.strength > 0.0);
+        let anisotropy_map = anisotropy.and_then(|term| term.texture.as_ref());
+        let mut bindings = [
+            (base_texture.filter(|_| item.is_none()), true),
             (mr, false),
             (emissive_texture, true),
             (occlusion, false),
@@ -143,8 +289,24 @@ impl Materials {
             (specular_color, true),
             (transmission_texture, false),
             (thickness_texture, false),
+            (anisotropy_map, false),
         ]
         .map(|(texture, srgb)| self.texture(device, queue, texture, srgb));
+        let item_kind = item
+            .as_ref()
+            .map(|item| if item.linear_premultiplied { 3.0 } else { 2.0 });
+        if let Some(item) = item {
+            let sampler = self.item_sampler.get_or_insert_with(|| {
+                device.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some("XRack live 2D material texture sampler"),
+                    min_filter: wgpu::FilterMode::Linear,
+                    mag_filter: wgpu::FilterMode::Linear,
+                    mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                    ..Default::default()
+                })
+            });
+            bindings[0] = (item.view, sampler.clone());
+        }
 
         let rgba = material.map_or([1.0; 4], |material| material.base_color);
         let mode = material.map_or(MeshAlphaMode::Opaque, |material| material.alpha_mode);
@@ -156,7 +318,7 @@ impl Materials {
         let flags = [
             cutoff,
             flag(material.is_some()),
-            flag(base_texture.is_some()),
+            item_kind.unwrap_or_else(|| flag(base_texture.is_some())),
             flag(mode == MeshAlphaMode::Blend),
         ];
         let factors = pbr.map_or([0.0; 4], |pbr| {
@@ -180,10 +342,47 @@ impl Materials {
             .and_then(|volume| volume.attenuation_distance)
             .unwrap_or(0.0);
         let volume_inverse = volume_inverse.unwrap_or([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]);
+        let fresnel = pbr.map_or_else(MeshFresnel::default, |pbr| pbr.fresnel);
+        let mut channels = material
+            .map_or_else(Default::default, |material| material.channels)
+            .gpu_words();
+        if let Some(material) = material {
+            channels[2] = material.vertex_masks.gpu_word(material.vertex_colors);
+        }
+        let shader = material.and_then(|material| material.shader.as_ref());
+        let coat = pbr
+            .and_then(|pbr| pbr.clearcoat.as_ref())
+            .filter(|coat| coat.amount > 0.0);
+        let slots = shader
+            .filter(|shader| {
+                !shader.textures.is_empty() && MaterialHooks::from_source(&shader.source).fragment()
+            })
+            .map_or(0, |_| shader_texture_slots(device, coat.is_some()));
+        let (texture_flags, shader_views) = self.shader_textures(device, queue, shader, slots);
+        let projections = shader
+            .filter(|shader| {
+                slots != 0 && MaterialHooks::from_source(&shader.source).capture_position
+            })
+            .map(|shader| {
+                self.projections.borrow_mut().get(
+                    device,
+                    slots,
+                    shader.textures.iter().map(|texture| {
+                        let ExternalTexture::Capture(read) = texture.external_texture()? else {
+                            return None;
+                        };
+                        self.captures.get(read)?.projection.as_deref()
+                    }),
+                )
+            });
+        let parameters = shader.map_or([0.0; 4], MeshShader::vertex_parameters);
         let bytes: Vec<_> = rgba
             .into_iter()
             .chain(flags)
             .chain(transform_words(base_texture))
+            // The shader reads this uniform word as u32, preserving its packed bits.
+            .chain(channels.map(f32::from_bits))
+            .chain(parameters)
             .chain(factors)
             .chain([r, g, b, normal_scale])
             .chain([
@@ -227,6 +426,13 @@ impl Materials {
                 .into_iter()
                 .flat_map(transform_words),
             )
+            .chain(fresnel.gpu_factors())
+            .chain(anisotropy.map_or([0.0, 1.0, 0.0, -1.0], |term| {
+                let (sine, cosine) = term.rotation.sin_cos();
+                [term.strength, cosine, sine, slot(anisotropy_map)]
+            }))
+            .chain(transform_words(anisotropy_map))
+            .chain(texture_flags.map(f32::from_bits))
             .flat_map(f32::to_ne_bytes)
             .collect();
         let uniform = buffer(
@@ -245,49 +451,144 @@ impl Materials {
             layout: &self.layouts[0],
             entries: &entries,
         });
-        let clearcoat = pbr
-            .and_then(|pbr| pbr.clearcoat.as_ref())
-            .filter(|coat| coat.amount > 0.0)
-            .map(|coat| {
-                let normal = coat.normal_map.as_ref();
-                let textures = [
-                    coat.amount_texture.as_ref(),
-                    coat.roughness_texture.as_ref(),
-                    normal.map(|normal| &normal.texture),
-                ];
-                let bytes: Vec<_> = [
-                    coat.amount,
-                    coat.roughness,
-                    normal.map_or(1.0, |normal| normal.scale),
-                    0.0,
-                ]
-                .into_iter()
-                .chain(textures.map(slot))
-                .chain([0.0])
-                .chain(textures.into_iter().flat_map(transform_words))
-                .flat_map(f32::to_ne_bytes)
-                .collect();
-                let uniform = buffer(
-                    device,
-                    "XRack 3D clearcoat factors",
-                    &bytes,
-                    wgpu::BufferUsages::UNIFORM,
-                );
-                let bindings = textures.map(|texture| self.texture(device, queue, texture, false));
-                // The shadow pass uses the base binding and its existing alpha test.
-                let mut entries = entries;
-                texture_entries(&mut entries, MATERIAL_TEXTURES, &bindings);
-                entries.push(wgpu::BindGroupEntry {
-                    binding: CLEARCOAT_SETTINGS_BINDING,
-                    resource: uniform.as_entire_binding(),
-                });
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("XRack 3D clearcoat material"),
-                    layout: &self.layouts[1],
-                    entries: &entries,
-                })
+        let color = if let Some(coat) = coat {
+            let normal = coat.normal_map.as_ref();
+            let textures = [
+                coat.amount_texture.as_ref(),
+                coat.roughness_texture.as_ref(),
+                normal.map(|normal| &normal.texture),
+            ];
+            let bytes: Vec<_> = [
+                coat.amount,
+                coat.roughness,
+                normal.map_or(1.0, |normal| normal.scale),
+                0.0,
+            ]
+            .into_iter()
+            .chain(textures.map(slot))
+            .chain([0.0])
+            .chain(textures.into_iter().flat_map(transform_words))
+            .chain(coat.fresnel.gpu_factors())
+            .flat_map(f32::to_ne_bytes)
+            .collect();
+            let uniform = buffer(
+                device,
+                "XRack 3D clearcoat factors",
+                &bytes,
+                wgpu::BufferUsages::UNIFORM,
+            );
+            let bindings = textures.map(|texture| self.texture(device, queue, texture, false));
+            // The shadow pass uses the base binding and its existing alpha test.
+            let mut entries = entries;
+            texture_entries(&mut entries, MATERIAL_TEXTURES, &bindings);
+            entries.push(wgpu::BindGroupEntry {
+                binding: CLEARCOAT_SETTINGS_BINDING,
+                resource: uniform.as_entire_binding(),
             });
-        MaterialBindings { base, clearcoat }
+            Some(self.color_binding(device, true, entries, &shader_views, projections.as_ref()))
+        } else if slots > 0 {
+            Some(self.color_binding(device, false, entries, &shader_views, projections.as_ref()))
+        } else {
+            None
+        };
+        MaterialBindings {
+            base,
+            color,
+            coated: coat.is_some(),
+            shader: shader.map(|shader| (shader.source.clone(), slots)),
+            vertex: shader.and_then(MeshShader::vertex_program).cloned(),
+        }
+    }
+
+    fn color_binding<'a>(
+        &self,
+        device: &wgpu::Device,
+        coated: bool,
+        mut entries: Vec<wgpu::BindGroupEntry<'a>>,
+        views: &'a [wgpu::TextureView],
+        projections: Option<&'a wgpu::Buffer>,
+    ) -> wgpu::BindGroup {
+        let index = usize::from(coated);
+        let layout =
+            if let Some(layout) =
+                self.shader_layouts[index][usize::from(projections.is_some())].as_ref()
+                && !views.is_empty()
+            {
+                entries.extend(views.iter().enumerate().map(|(index, view)| {
+                    wgpu::BindGroupEntry {
+                        binding: FIRST_SHADER_TEXTURE_BINDING + index as u32,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    }
+                }));
+                if let Some(projections) = projections {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: SHADER_CAPTURE_BINDING,
+                        resource: projections.as_entire_binding(),
+                    });
+                }
+                layout
+            } else {
+                &self.layouts[index]
+            };
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("XRack 3D color material"),
+            layout,
+            entries: &entries,
+        })
+    }
+
+    fn shader_textures(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        shader: Option<&MeshShader>,
+        slots: usize,
+    ) -> ([u32; MAX_TEXTURES], Vec<wgpu::TextureView>) {
+        let mut flags = [0; MAX_TEXTURES];
+        let views = flags[..slots]
+            .iter_mut()
+            .enumerate()
+            .map(|(index, flag)| {
+                let Some(input) = shader.and_then(|shader| shader.textures.get(index)) else {
+                    return self.white.linear.clone();
+                };
+                let mut sampling = input.sampling;
+                let (view, encoding) = match input.external_texture() {
+                    Some(ExternalTexture::Image(image)) => (
+                        self.images.borrow_mut().base_view(
+                            device,
+                            queue,
+                            &image.image,
+                            image.color,
+                        ),
+                        0,
+                    ),
+                    Some(ExternalTexture::Item(name)) if let Some(item) = self.items.get(name) => (
+                        item.view.clone(),
+                        if item.linear_premultiplied { 1 } else { 2 },
+                    ),
+                    Some(ExternalTexture::Capture(read))
+                        if let Some(capture) = self.captures.get(read) =>
+                    {
+                        if read.attachment == CaptureAttachment::Depth {
+                            sampling.filter = TextureFilter::Nearest;
+                        }
+                        (
+                            capture.view.clone(),
+                            match read.attachment {
+                                CaptureAttachment::Color => 1,
+                                CaptureAttachment::Depth => 3,
+                                _ => 0,
+                            },
+                        )
+                    }
+                    _ => return self.white.linear.clone(),
+                };
+                *flag = shader_texture_flags(sampling, encoding);
+                view
+            })
+            .collect();
+        (flags, views)
     }
 
     fn texture(
@@ -297,57 +598,23 @@ impl Materials {
         texture: Option<&MeshTexture>,
         srgb: bool,
     ) -> (wgpu::TextureView, wgpu::Sampler) {
-        let views = if let Some(texture) = texture {
-            let image = &texture.image;
-            let color = if srgb {
-                TextureColorSpace::Srgb
-            } else {
-                TextureColorSpace::Linear
-            };
-            let mipmapped = texture.mip_filter.is_some() && image.size() != [1, 1];
-            let chain_color = if mipmapped {
-                Some(color)
-            } else {
-                // An unmipped sampler can share the source level of either prepared chain.
-                [color, TextureColorSpace::ALL[1 - color.slot()]]
-                    .into_iter()
-                    .find(|color| image.prepared_mips(*color).is_some())
-            };
-            let entry = self
-                .images
-                .entry(Arc::as_ptr(image) as usize)
-                .or_insert_with(|| UploadedImage {
-                    owner: Arc::downgrade(image),
-                    variants: Default::default(),
-                });
-            let slot = chain_color.map_or(0, |color| 1 + color.slot());
-            let uploaded = entry.variants[slot].get_or_insert_with(|| {
-                let chain = chain_color.map(|color| image.prepare_mips(color));
-                let mut offset = 0;
-                let levels = image.mip_extents().filter_map(|[width, height]| {
-                    let chain = chain?;
-                    let len = width as usize * height as usize * 4;
-                    let start = offset;
-                    offset += len;
-                    Some(([width, height], &chain[start..offset]))
-                });
-                if chain.is_some() {
-                    self.mip_levels_uploaded += image.mip_extents().count() as u64;
-                }
-                upload(device, queue, image.size(), image.rgba(), levels)
-            });
-            if mipmapped {
-                &uploaded.full
-            } else {
-                uploaded.base.as_ref().unwrap_or(&uploaded.full)
-            }
+        let color = if srgb {
+            TextureColorSpace::Srgb
         } else {
-            &self.white
+            TextureColorSpace::Linear
         };
-        let view = if srgb {
-            views.srgb.clone()
+        let view = if let Some(texture) = texture {
+            self.images.borrow_mut().view(
+                device,
+                queue,
+                &texture.image,
+                color,
+                (texture.mip_filter.is_some(), true),
+            )
+        } else if srgb {
+            self.white.srgb.clone()
         } else {
-            views.linear.clone()
+            self.white.linear.clone()
         };
         let key = SamplerKey::from_texture(texture);
         let sampler = self.samplers.entry(key).or_insert_with(|| {
@@ -396,7 +663,7 @@ fn texture_entries<'a>(
     }
 }
 
-fn address(wrap: TextureWrap) -> wgpu::AddressMode {
+pub(super) fn address(wrap: TextureWrap) -> wgpu::AddressMode {
     match wrap {
         TextureWrap::Clamp => wgpu::AddressMode::ClampToEdge,
         TextureWrap::Repeat => wgpu::AddressMode::Repeat,
@@ -404,7 +671,7 @@ fn address(wrap: TextureWrap) -> wgpu::AddressMode {
     }
 }
 
-fn filter(filter: TextureFilter) -> wgpu::FilterMode {
+pub(super) fn filter(filter: TextureFilter) -> wgpu::FilterMode {
     match filter {
         TextureFilter::Linear => wgpu::FilterMode::Linear,
         TextureFilter::Nearest => wgpu::FilterMode::Nearest,

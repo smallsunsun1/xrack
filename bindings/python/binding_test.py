@@ -181,6 +181,8 @@ class BindingTest(unittest.TestCase):
             self.assertEqual(hit.position, xrack.Point3D(0.0, 0.0, 0.5))
             self.assertEqual(hit.normal, xrack.Vector3D(0.0, 0.0, 1.0))
             self.assertEqual(hit.row_index, 0)
+            self.assertEqual(hit.mesh_node_index, -1)
+            self.assertEqual(hit.instance_index, -1)
             self.assertEqual(ui.get("hits"), [hit])
             ui.on("reflect-hits", lambda hits: hits)
             self.assertEqual(ui.invoke("reflect-hits", [hit]), [hit])

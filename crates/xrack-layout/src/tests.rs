@@ -5,6 +5,157 @@ mod stack_back;
 mod touch_spin;
 
 #[test]
+fn moving_small_subtrees_share_the_local_layout_node_budget() {
+    struct View;
+    impl xrack_runtime::Component for View {
+        fn render(&self) -> Node {
+            Node::hidden()
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+    struct Metrics(Rc<()>);
+    impl TextMeasurer for Metrics {
+        fn measure(&mut self, text: &str, font_size: f32, _: f32) -> Size {
+            Size::new(text.len() as f32 * font_size * 0.5, font_size)
+        }
+        fn typography_revision(&self) -> Option<Rc<()>> {
+            Some(self.0.clone())
+        }
+    }
+
+    let mut cell = Node::new("Rectangle", None);
+    length(&mut cell, "width", 16.0);
+    length(&mut cell, "height", 16.0);
+    for kind in ["Rectangle", "Image", "Label"] {
+        let mut leaf = Node::new(kind, None);
+        length(&mut leaf, "width", 12.0);
+        length(&mut leaf, "height", 12.0);
+        cell.children.push(leaf);
+    }
+    let repeated = vec![cell.into_shared(); 768];
+    let mut window = Rc::new(Node::new("Window", None));
+    let mut cache = RowLayoutCache::default();
+    let mut text = Metrics(Rc::new(()));
+    let viewport = Size::new(720.0, 480.0);
+    let input = Interaction::default();
+
+    for (frame, (count, reused, narrow_first)) in [
+        (768, 0, false),
+        (768, 768, false),
+        (32, 32, false),
+        (768, 32, false),
+        (768, 768, false),
+        (768, 767, true),
+        (768, 768, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let scene = Rc::make_mut(&mut window);
+        scene.children.clear();
+        scene.children.extend_from_slice(&repeated[..count]);
+        for (index, tile) in scene.children.iter_mut().enumerate() {
+            length(tile, "x", (index % 36 * 19 + frame) as f64 + 0.125);
+            length(tile, "y", (index / 36 * 20 + frame) as f64 + 0.25);
+        }
+        if narrow_first {
+            length(&mut scene.children[0], "width", 10.0);
+        }
+        let before = cache.stats().subtree_reuses;
+        let (_, cached) = prepare_scene_with_row_cache(
+            &View,
+            window.clone(),
+            viewport,
+            &mut text,
+            &input,
+            &mut cache,
+        );
+        let (_, fresh) =
+            prepare_scene_with_input(&View, window.clone(), viewport, &mut text, &input);
+        assert_eq!(cached, fresh, "frame {frame}");
+        assert_eq!(
+            cache.stats().subtree_reuses - before,
+            reused,
+            "frame {frame}"
+        );
+    }
+}
+
+#[test]
+fn fixed_cross_axis_fill_matches_linear_measurement() {
+    for (kind, main_constraint, cross_size) in [
+        ("HorizontalLayout", "min-width", "height"),
+        ("VerticalLayout", "min-height", "width"),
+    ] {
+        let mut line = node(kind, "line");
+        line.properties
+            .insert(cross_size, xrack_runtime::Percent(0.5).into());
+        length(&mut line, "spacing", 7.25);
+        length(&mut line, "padding", 3.0);
+        line.children.push(node("Rectangle", "first"));
+        line.children.push(node("Path", "second"));
+        let mut hidden = node("Text", "hidden");
+        hidden.properties.insert("visible", false.into());
+        hidden.properties.insert("text", "label".to_owned().into());
+        line.children.push(hidden);
+
+        for mixed in [false, true] {
+            if mixed {
+                length(&mut line.children[0], main_constraint, 50.0);
+                line.children[2].properties.insert("visible", true.into());
+            }
+            for viewport in [Size::new(4.0, 6.0), Size::new(180.0, 200.0)] {
+                let expected = linear::measure(&line, viewport, &mut Text);
+                assert_eq!(
+                    linear::fill_size_with_fixed_cross_axis(&line, viewport, &mut Text),
+                    Some(Size::new(
+                        expected.x.clamp(viewport.width),
+                        expected.y.clamp(viewport.height),
+                    ))
+                );
+            }
+        }
+        length(&mut line, main_constraint, 100.0);
+        assert!(
+            linear::fill_size_with_fixed_cross_axis(&line, Size::new(20.0, 30.0), &mut Text)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn geometric_primitives_preserve_relative_sizes_and_axis_constraints() {
+    for kind in ["Rectangle", "Path", "TouchArea"] {
+        let mut primitive = node(kind, "primitive");
+        let mut child = node("Text", "child");
+        length(&mut child, "width", 128.0);
+        length(&mut child, "height", 40.0);
+        primitive.children.push(child);
+        let available = Size::new(200.0, 80.0);
+        let natural = linear::measure(&primitive, available, &mut Text);
+        assert_eq!(natural.x.preferred, 0.0);
+        assert_eq!(natural.y.max, f32::INFINITY);
+        assert_eq!(natural.x.stretch, 1.0);
+
+        primitive
+            .properties
+            .insert("width", xrack_runtime::Percent(0.25).into());
+        primitive.properties.insert("vertical-stretch", 2.0.into());
+        length(&mut primitive, "min-height", 12.0);
+        length(&mut primitive, "preferred-height", 30.0);
+        length(&mut primitive, "max-height", 24.0);
+        let constrained = linear::measure(&primitive, available, &mut Text);
+        assert_eq!(constrained.x.preferred, 50.0);
+        assert_eq!(constrained.x.max, 50.0);
+        assert_eq!(constrained.y.min, 12.0);
+        assert_eq!(constrained.y.preferred, 24.0);
+        assert_eq!(constrained.y.stretch, 2.0);
+    }
+}
+
+#[test]
 fn continued_styled_layout_accounts_for_shared_and_replaced_shapes() {
     use xrack_runtime::StyledText;
 
@@ -245,7 +396,7 @@ fn cloning_a_cached_layout_projects_each_nested_clip_once() {
 }
 
 #[test]
-fn static_absolute_rectangles_reuse_layout_until_their_inputs_change() {
+fn static_absolute_leaves_reuse_layout_until_their_inputs_change() {
     struct View;
 
     impl Component for View {
@@ -287,14 +438,17 @@ fn static_absolute_rectangles_reuse_layout_until_their_inputs_change() {
         length(&mut flickable, name, value);
     }
     window.children.push(flickable);
-    for (id, x) in [("left", 20.0), ("right", 90.0)] {
-        let mut rectangle = node("Rectangle", id);
-        length(&mut rectangle, "x", x);
-        length(&mut rectangle, "height", 16.0);
-        rectangle
-            .properties
+    for (kind, id, x) in [
+        ("Rectangle", "left", 20.0),
+        ("Image", "center", 90.0),
+        ("AnimatedImage", "right", 150.0),
+    ] {
+        let mut leaf = node(kind, id);
+        length(&mut leaf, "x", x);
+        length(&mut leaf, "height", 16.0);
+        leaf.properties
             .insert("width", Value::Percent(xrack_runtime::Percent(0.25)));
-        window.children.push(rectangle);
+        window.children.push(leaf);
     }
 
     let mut root = Rc::new(window);
@@ -306,7 +460,7 @@ fn static_absolute_rectangles_reuse_layout_until_their_inputs_change() {
         scale: 1.0,
     };
     let mut previous = None;
-    for (frame, expected_reuses) in [0, 2, 2, 1, 0, 0, 0].into_iter().enumerate() {
+    for (frame, expected_reuses) in [0, 3, 3, 2, 0, 0, 1].into_iter().enumerate() {
         match frame {
             1 => assert!(input.accessibility_scroll_to(
                 previous.as_ref().unwrap(),
@@ -6233,4 +6387,38 @@ fn positioning_a_child_resolves_pending_offsets_and_the_current_instance() {
     let moved = layout_with_input(&view, size, &mut Text, &input);
     assert_eq!(moved.scroll.unwrap().offset, 85.0);
     assert!(input.focused.is_none());
+}
+
+#[test]
+fn texture_only_source_has_its_own_size_without_consuming_layout_space() {
+    let mut root = node("VerticalLayout", "test-layout");
+    let mut source = node("Rectangle", "source");
+    length(&mut source, "x", 300.0);
+    length(&mut source, "y", 220.0);
+    length(&mut source, "width", 114.0);
+    length(&mut source, "height", 66.0);
+    source
+        .properties
+        .insert("texture-source", Value::String("control-panel".into()));
+    source.properties.insert("texture-only", Value::Bool(true));
+    let mut child = node("Rectangle", "inside");
+    length(&mut child, "x", 6.0);
+    length(&mut child, "y", 8.0);
+    length(&mut child, "width", 35.0);
+    length(&mut child, "height", 20.0);
+    source.children.push(child);
+    let mut sibling = node("Rectangle", "visible");
+    length(&mut sibling, "width", 90.0);
+    length(&mut sibling, "height", 30.0);
+    root.children.extend([source, sibling]);
+
+    let placed = layout(&root, Size::new(160.0, 64.0), &mut Text);
+    let offscreen = &placed.children[0];
+    assert_eq!(offscreen.bounds, Rect::new(0.0, 0.0, 114.0, 66.0));
+    assert_eq!(offscreen.clip, offscreen.bounds);
+    assert_eq!(
+        offscreen.children[0].bounds,
+        Rect::new(6.0, 8.0, 35.0, 20.0)
+    );
+    assert_eq!(placed.children[1].bounds.y, 0.0);
 }

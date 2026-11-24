@@ -1,7 +1,7 @@
 use crate::{
     assets::{asset_path, local_path, read_asset},
-    mesh_animation, mesh_lights,
-    mesh_materials::{Materials, NormalCoordinates},
+    mesh_animation, mesh_instances, mesh_lights,
+    mesh_materials::{MaterialImages, Materials, NormalCoordinates},
     mesh_morph::{self, MorphData},
     mesh_skin, mesh_tangents,
 };
@@ -22,7 +22,12 @@ use xrack_assets::MAX_ASSET_BYTES;
 use xrack_runtime::scene3d::{
     AnimatedMesh, MAX_ANIMATION_NODES, MAX_IMPORTED_VERTICES, MAX_MORPH_DELTAS, MAX_MORPH_TARGETS,
     Mesh3D, MeshAnimationNode, MeshAsset, MeshCamera, MeshCameraProjection, MeshInfluence,
-    MeshLight, MeshNodeTransform, MeshPart, MeshTangent, MeshVertex,
+    MeshInstances, MeshLight, MeshNodeTransform, MeshPart, MeshTangent, MeshVertex,
+    TextureTransform,
+};
+use xrack_syntax::gltf_metadata::{
+    EXTENDED_MATERIALS, GltfMetadata, LIGHTS_PUNCTUAL, MATERIALS_VARIANTS, MESH_GPU_INSTANCING,
+    MaterialVariantMappings, TEXTURE_TRANSFORM, json_chunk,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -84,15 +89,19 @@ pub(super) fn load_mesh(
     declared: Option<&BTreeSet<PathBuf>>,
 ) -> Result<(MeshAsset, BTreeSet<PathBuf>), String> {
     let bytes = read_asset(path, "mesh")?;
+    let json = json_chunk(&bytes).ok_or("invalid glTF JSON chunk")?;
+    let metadata: GltfMetadata = serde_json::from_slice(json).map_err(|error| error.to_string())?;
+    let variant_mappings = metadata.material_variant_mappings()?;
     let parsed =
         gltf::Gltf::from_slice_without_validation(&bytes).map_err(|error| error.to_string())?;
     let mut root = parsed.document.into_json();
     // These extensions are checked by the resource loader itself. Run all
     // glTF validation, including rejection of other unsupported requirements.
-    use xrack_syntax::gltf_metadata::{EXTENDED_MATERIALS, LIGHTS_PUNCTUAL, TEXTURE_TRANSFORM};
     root.extensions_required.retain(|name| {
         name != TEXTURE_TRANSFORM
             && name != LIGHTS_PUNCTUAL
+            && name != MATERIALS_VARIANTS
+            && name != MESH_GPU_INSTANCING
             && !EXTENDED_MATERIALS.contains(&name.as_str())
     });
     let document = gltf::Document::from_json(root).map_err(|error| error.to_string())?;
@@ -132,9 +141,72 @@ pub(super) fn load_mesh(
             return Err("glTF buffer view is out of bounds".into());
         }
     }
-    let attached_lights = mesh_lights::attachments(&document)?;
-    let mut materials = Materials::new(&document, &base, declared, &buffers, &mut inputs);
-    if !attached_lights.is_empty()
+    let hierarchy = ImportHierarchy {
+        lights: mesh_lights::attachments(&document)?,
+        instances: mesh_instances::read(&document, &metadata, &buffers)?,
+    };
+    let mut images = MaterialImages::default();
+    let mut prepare = |variant, primary| {
+        let mut materials = Materials::new(
+            &document,
+            &metadata,
+            &base,
+            declared,
+            &buffers,
+            &mut inputs,
+            &mut images,
+        );
+        prepare_mesh(
+            &document,
+            &metadata,
+            &buffers,
+            &mut materials,
+            &hierarchy,
+            variant,
+            primary,
+        )
+    };
+    let primary = prepare(None, None)?;
+    let mut expanded_vertices = 0;
+    let mut expanded_deltas = 0;
+    let mut alternatives = Vec::with_capacity(variant_mappings.len());
+    for (name, mappings) in metadata.material_variant_names().zip(&variant_mappings) {
+        let alternative = if mappings.is_empty() {
+            None
+        } else {
+            let asset = prepare(Some(mappings), Some(&primary))?;
+            for mesh in asset.geometry_meshes() {
+                expanded_vertices += mesh.vertices().len();
+                expanded_deltas += mesh.morph_geometry().map_or(0, |morph| morph.delta_count());
+            }
+            if expanded_vertices > 4 * MAX_IMPORTED_VERTICES
+                || expanded_deltas > 4 * MAX_MORPH_DELTAS
+            {
+                return Err("glTF exceeds the expanded material variant geometry limit".into());
+            }
+            Some(asset)
+        };
+        alternatives.push((name.to_owned(), alternative));
+    }
+    Ok((primary.with_material_variants(alternatives), inputs))
+}
+
+struct ImportHierarchy {
+    lights: BTreeMap<usize, xrack_runtime::scene3d::SceneLight>,
+    instances: BTreeMap<usize, MeshInstances>,
+}
+
+fn prepare_mesh(
+    document: &gltf::Document,
+    metadata: &GltfMetadata,
+    buffers: &[Vec<u8>],
+    materials: &mut Materials<'_>,
+    hierarchy: &ImportHierarchy,
+    variant: Option<&MaterialVariantMappings>,
+    primary: Option<&MeshAsset>,
+) -> Result<MeshAsset, String> {
+    if !hierarchy.instances.is_empty()
+        || !hierarchy.lights.is_empty()
         || document.nodes().any(|node| node.camera().is_some())
         || document.animations().next().is_some()
         || document.skins().next().is_some()
@@ -143,8 +215,14 @@ pub(super) fn load_mesh(
                 .any(|primitive| primitive.morph_targets().len() != 0)
         })
     {
-        let mesh = animated_mesh(&document, &bytes, &buffers, materials, &attached_lights)?;
-        return Ok((MeshAsset::Animated(Arc::new(mesh)), inputs));
+        let rig = match primary {
+            Some(MeshAsset::Animated(rig)) => Some(rig.as_ref()),
+            _ => None,
+        };
+        let mesh = animated_mesh(
+            document, metadata, buffers, materials, hierarchy, variant, rig,
+        )?;
+        return Ok(MeshAsset::Animated(Arc::new(mesh)));
     }
     let mut geometry = MeshGeometry::default();
     let scene = document
@@ -164,7 +242,15 @@ pub(super) fn load_mesh(
             let columns = node.transform().matrix();
             let transform = parent * Matrix4::from_fn(|row, column| columns[column][row]);
             if let Some(mesh) = node.mesh() {
-                append_mesh(mesh, &buffers, &transform, &mut geometry, &mut materials)?;
+                append_mesh(
+                    document,
+                    mesh,
+                    buffers,
+                    &transform,
+                    &mut geometry,
+                    materials,
+                    variant,
+                )?;
             }
             let start = pending.len();
             pending.extend(node.children().map(|child| (child, transform)));
@@ -174,37 +260,40 @@ pub(super) fn load_mesh(
         // Mesh-only assets can be exported without a scene or nodes.
         for mesh in document.meshes() {
             append_mesh(
+                document,
                 mesh,
-                &buffers,
+                buffers,
                 &Matrix4::identity(),
                 &mut geometry,
-                &mut materials,
+                materials,
+                variant,
             )?;
         }
     }
+    let (materials, slots) = materials.finish();
     let mesh = Mesh3D::imported(
         geometry.vertices,
         geometry.tangents,
         geometry.parts,
-        materials.finish(),
+        materials,
     )?
+    .with_material_slots(slots.into())
+    .ok_or("invalid glTF material slots")?
     .with_lightmap_uv(geometry.lightmap_uv)
     .ok_or("invalid glTF lightmap coordinates")?;
-    Ok((MeshAsset::Static(mesh), inputs))
+    Ok(MeshAsset::Static(mesh))
 }
 
 fn animated_mesh(
     document: &gltf::Document,
-    source: &[u8],
+    metadata: &GltfMetadata,
     buffers: &[Vec<u8>],
-    mut materials: Materials<'_>,
-    attached_lights: &BTreeMap<usize, xrack_runtime::scene3d::SceneLight>,
+    materials: &mut Materials<'_>,
+    hierarchy: &ImportHierarchy,
+    variant: Option<&MaterialVariantMappings>,
+    primary: Option<&AnimatedMesh>,
 ) -> Result<AnimatedMesh, String> {
     use gltf::scene::Transform;
-    use xrack_syntax::gltf_metadata::{GltfMetadata, json_chunk};
-
-    let json = json_chunk(source).ok_or("invalid glTF JSON chunk")?;
-    let metadata: GltfMetadata = serde_json::from_slice(json).map_err(|error| error.to_string())?;
     let names: BTreeMap<_, _> = metadata
         .camera_nodes()
         .into_iter()
@@ -272,11 +361,13 @@ fn animated_mesh(
                         ..MeshGeometry::default()
                     };
                     append_mesh(
+                        document,
                         mesh,
                         buffers,
                         &Matrix4::identity(),
                         &mut prepared,
-                        &mut materials,
+                        materials,
+                        variant,
                     )?;
                     vertex_count += prepared.vertices.len();
                     if vertex_count > MAX_IMPORTED_VERTICES {
@@ -309,7 +400,7 @@ fn animated_mesh(
                 scale,
             },
         };
-        if let Some(&light) = attached_lights.get(&node.index()) {
+        if let Some(&light) = hierarchy.lights.get(&node.index()) {
             lights.push(MeshLight { node: index, light });
         }
         if let Some(camera) = node.camera() {
@@ -340,17 +431,22 @@ fn animated_mesh(
             });
         }
         nodes.push(MeshAnimationNode {
+            source_node: u32::try_from(node.index())
+                .map_err(|_| "glTF node index exceeds the supported range")?,
             parent,
             mesh,
             skin,
             morph_weights,
             transform,
+            instances: hierarchy.instances.get(&node.index()).cloned(),
         });
         let start = pending.len();
         pending.extend(node.children().map(|child| (child, Some(index))));
         pending[start..].reverse();
     }
-    let materials: Arc<[xrack_runtime::scene3d::MeshMaterial]> = materials.finish().into();
+    let (materials, slots) = materials.finish();
+    let materials: Arc<[_]> = materials.into();
+    let slots: Arc<[_]> = slots.into();
     let geometry = geometry
         .into_iter()
         .map(|(mesh, names)| {
@@ -360,6 +456,8 @@ fn animated_mesh(
                 mesh.parts,
                 materials.clone(),
             )?
+            .with_material_slots(slots.clone())
+            .ok_or("invalid glTF material slots")?
             .with_lightmap_uv(mesh.lightmap_uv)
             .ok_or("invalid glTF lightmap coordinates")?;
             let prepared = if let Some(weights) = mesh.weights {
@@ -378,6 +476,9 @@ fn animated_mesh(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if let Some(primary) = primary {
+        return Ok(primary.with_meshes(geometry));
+    }
     let skins = authored_skins
         .into_iter()
         .map(|skin| mesh_skin::read_skin(skin, &indices, buffers))
@@ -508,14 +609,24 @@ struct MeshGeometry {
 }
 
 fn append_mesh(
+    document: &gltf::Document,
     mesh: gltf::Mesh<'_>,
     buffers: &[Vec<u8>],
     transform: &Matrix4<f32>,
     geometry: &mut MeshGeometry,
     materials: &mut Materials<'_>,
+    variant: Option<&MaterialVariantMappings>,
 ) -> Result<(), String> {
     for primitive in mesh.primitives() {
-        let material = materials.get(primitive.material())?;
+        let index = variant.and_then(|mapping| mapping.get(&(mesh.index(), primitive.index())));
+        let material = match index {
+            Some(&index) => document
+                .materials()
+                .nth(index)
+                .ok_or("invalid glTF variant material")?,
+            None => primitive.material(),
+        };
+        let material = materials.get(material)?;
         let start = geometry.vertices.len();
         let tangents = append_primitive(
             primitive,
@@ -637,6 +748,16 @@ fn append_primitive(
             .ok_or_else(|| "unable to read glTF texture coordinates".to_owned())?;
         Ok::<_, String>(coordinates.into_f32().collect::<Vec<_>>())
     };
+    // Retain authored coordinates so a later material override can use them.
+    let mut uv_sets = uv_sets;
+    for set in [0, 1] {
+        if !uv_sets.contains(&Some(set))
+            && primitive.get(&Semantic::TexCoords(set)).is_some()
+            && let Some(slot) = uv_sets.iter_mut().find(|slot| slot.is_none())
+        {
+            *slot = Some(set);
+        }
+    }
     let [uv, uv1] = uv_sets.map(|slot| slot.map(read_uv).transpose());
     let (uv, uv1) = (uv?, uv1?);
     let dedicated =
@@ -707,6 +828,15 @@ fn append_primitive(
     }
     let orientation = transform.fixed_view::<3, 3>(0, 0).determinant().signum();
     let start = vertices.len();
+    let normal_coordinates = normal_coordinates.or_else(|| {
+        (primitive.get(&Semantic::Normals).is_some()
+            && primitive.get(&Semantic::Tangents).is_some())
+        .then_some(NormalCoordinates {
+            slot: 0,
+            overrides_source_set: false,
+            transform: TextureTransform::IDENTITY,
+        })
+    });
     let mut tangent_faces = normal_coordinates.map(|coordinates| (coordinates, Vec::new()));
     for triangle in 0..count {
         let offsets = match mode {

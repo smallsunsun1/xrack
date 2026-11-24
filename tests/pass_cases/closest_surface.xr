@@ -1,0 +1,25 @@
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "closest-point-3d"{{.*}}!xr.hit3d
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "closest-point-on-3d"{{.*}}!xr.hit3d
+// CHECK-DAG: "xr.literal"() <{value = ""}> : () -> !xr.hit3d
+// CHECK-NOT: "xr.geometry_function"
+
+struct Target {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color,
+}
+
+export component ClosestPlan inherits Window {
+    in property <[Target]> models;
+    in property <point3d> origin;
+    out property <hit3d> closest: Scene3D.closest-point(root.models, root.origin, 1.0);
+    out property <hit3d> specific: Scene3D.closest-point-on(root.models, "step", root.origin, 3.0, 1);
+    out property <hit3d> disabled: Scene3D.closest-point([
+        Target { id: "step", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff }
+    ], Point3D.new(0, 0, 0), 2.0, 0);
+    out property <hit3d> invalid: Scene3D.closest-point-on([
+        Target { id: "step", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff }
+    ], "step", Point3D.new(0, 0, 0), -1.0);
+}

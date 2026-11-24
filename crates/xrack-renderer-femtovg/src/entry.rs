@@ -126,14 +126,14 @@ impl TextSystem {
             return item
                 .styled_text
                 .iter()
-                .flat_map(|plan| &plan.fragments)
-                .flat_map(|fragment| {
+                .flat_map(|plan| plan.fragments.placed())
+                .flat_map(|(fragment, offset)| {
                     crate::styled_text::selection_spans(fragment, &selection)
                         .into_iter()
                         .map(move |span| {
                             Rect::new(
                                 item.bounds.x + fragment.bounds.x + span.start,
-                                item.bounds.y + fragment.bounds.y,
+                                item.bounds.y + (fragment.bounds.y + offset),
                                 span.end - span.start,
                                 fragment.bounds.height,
                             )
@@ -388,10 +388,11 @@ impl PointerCaret {
         point: Point,
         selecting: bool,
     ) -> Option<Self> {
+        let routed = input.control_pointer(&target.path, point)?;
         let mut pointer = Self {
             target: target.clone(),
-            origin,
-            point,
+            origin: if origin == point { routed } else { origin },
+            point: routed,
             selecting,
             initial_view: false,
             mode: EditorPointerMode::Caret,

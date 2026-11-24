@@ -3510,6 +3510,12 @@ impl Instance {
                                     program.scene_assets.meshes.get(key).cloned()
                                 })
                         },
+                        |key| {
+                            let program = self.program();
+                            program.scene_projections.particle_model(key, |key| {
+                                program.scene_assets.meshes.get(key).cloned()
+                            })
+                        },
                     )),
                 );
             } else if node.kind == "SceneView3D" && name == "particle-affectors" {
@@ -3529,6 +3535,35 @@ impl Instance {
                 node.properties.insert(
                     name,
                     Value::SceneFogVolumes(xrack_runtime::scene3d::record_fog_volumes(&model)),
+                );
+            } else if node.kind == "SceneView3D" && name == "scene-captures" {
+                let Value::RecordList(model) = value else {
+                    return Err(evaluation("expected a scene capture record list"));
+                };
+                node.properties.insert(
+                    name,
+                    Value::SceneCaptures(xrack_runtime::scene_effect::record_captures(
+                        &model,
+                        |key| self.program().scene_assets.textures.get(key).cloned(),
+                        |key| {
+                            self.program()
+                                .scene_assets
+                                .material_shaders
+                                .get(key)
+                                .cloned()
+                        },
+                    )),
+                );
+            } else if node.kind == "SceneView3D" && name == "scene-effects" {
+                let Value::RecordList(model) = value else {
+                    return Err(evaluation("expected a 3D effect pass record list"));
+                };
+                node.properties.insert(
+                    name,
+                    Value::SceneEffects(xrack_runtime::scene_effect::record_passes(
+                        &model,
+                        |key| self.program().scene_assets.textures.get(key).cloned(),
+                    )),
                 );
             } else if node.kind == "SceneView3D" && name == "reflection-probes" {
                 let Value::RecordList(model) = value else {
@@ -6695,6 +6730,17 @@ fn geometry_function(
         [Value::Int(mask)] => Ok(Some(*mask)),
         _ => Err(evaluation("invalid scene layer mask")),
     };
+    fn query_rows(value: &Value) -> Result<std::borrow::Cow<'_, [i64]>> {
+        match value {
+            Value::IntList(rows) => Ok(std::borrow::Cow::Borrowed(rows)),
+            Value::IntModel(rows) => Ok(std::borrow::Cow::Owned(rows.snapshot())),
+            _ => Err(evaluation("invalid scene row list")),
+        }
+    }
+    let query_row = |value: &Value| match value {
+        Value::Int(row) => Ok(*row),
+        _ => Err(evaluation("invalid scene row index")),
+    };
     Ok(match (kind, inputs) {
         (Point, [Value::Length(x), Value::Length(y)]) => Point2D::new(*x, *y).into(),
         (Vector, [Value::Length(x), Value::Length(y)]) => Vector2D::new(*x, *y).into(),
@@ -6767,7 +6813,7 @@ fn geometry_function(
                 Value::Float(distance),
                 layers @ ..,
             ],
-        ) => scene3d::ray_hit(
+        ) => scene3d::ray_hit_model(
             &program.prepare_scene(model, true),
             *origin,
             *direction,
@@ -6810,6 +6856,244 @@ fn geometry_function(
             camera,
             *viewport,
             *pointer,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            HitInstance3D,
+            [
+                Value::RecordList(model),
+                Value::Float(yaw),
+                Value::Float(pitch),
+                Value::Float(distance),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                Value::Int(row),
+                Value::Int(node),
+                Value::Int(instance),
+                layers @ ..,
+            ],
+        ) => scene3d::hit_instance(
+            &program.prepare_scene(model, true),
+            [*yaw, *pitch, *distance],
+            *viewport,
+            *pointer,
+            [*row, *node, *instance],
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            HitInstanceCamera3D,
+            [
+                Value::RecordList(model),
+                Value::String(camera),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                Value::Int(row),
+                Value::Int(node),
+                Value::Int(instance),
+                layers @ ..,
+            ],
+        ) => scene3d::hit_instance_camera(
+            &program.prepare_scene(model, true),
+            camera,
+            *viewport,
+            *pointer,
+            [*row, *node, *instance],
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            RayHitInstance3D,
+            [
+                Value::RecordList(model),
+                Value::Point3D(origin),
+                Value::Vector3D(direction),
+                Value::Float(distance),
+                Value::Int(row),
+                Value::Int(node),
+                Value::Int(instance),
+                layers @ ..,
+            ],
+        ) => scene3d::ray_hit_instance(
+            &program.prepare_scene(model, true),
+            *origin,
+            *direction,
+            *distance,
+            [*row, *node, *instance],
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            HitRow3D | HitSubset3D,
+            [
+                Value::RecordList(model),
+                Value::Float(yaw),
+                Value::Float(pitch),
+                Value::Float(distance),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                rows,
+                layers @ ..,
+            ],
+        ) => {
+            let scene = program.prepare_scene(model, true);
+            let orbit = [*yaw, *pitch, *distance];
+            let layers = optional_layers(layers)?;
+            if kind == HitRow3D {
+                scene3d::hit_row(&scene, orbit, *viewport, *pointer, query_row(rows)?, layers)
+                    .into()
+            } else {
+                scene3d::hit_subset(
+                    &scene,
+                    orbit,
+                    *viewport,
+                    *pointer,
+                    &query_rows(rows)?,
+                    layers,
+                )
+                .into()
+            }
+        }
+        (
+            HitRowCamera3D | HitSubsetCamera3D,
+            [
+                Value::RecordList(model),
+                Value::String(camera),
+                Value::Point2D(viewport),
+                Value::Point2D(pointer),
+                rows,
+                layers @ ..,
+            ],
+        ) => {
+            let scene = program.prepare_scene(model, true);
+            let layers = optional_layers(layers)?;
+            if kind == HitRowCamera3D {
+                scene3d::hit_row_camera(
+                    &scene,
+                    camera,
+                    *viewport,
+                    *pointer,
+                    query_row(rows)?,
+                    layers,
+                )
+                .into()
+            } else {
+                scene3d::hit_subset_camera(
+                    &scene,
+                    camera,
+                    *viewport,
+                    *pointer,
+                    &query_rows(rows)?,
+                    layers,
+                )
+                .into()
+            }
+        }
+        (
+            RayHitRow3D | RayHitSubset3D,
+            [
+                Value::RecordList(model),
+                Value::Point3D(origin),
+                Value::Vector3D(direction),
+                Value::Float(distance),
+                rows,
+                layers @ ..,
+            ],
+        ) => {
+            let scene = program.prepare_scene(model, true);
+            let layers = optional_layers(layers)?;
+            if kind == RayHitRow3D {
+                scene3d::ray_hit_row(
+                    &scene,
+                    *origin,
+                    *direction,
+                    *distance,
+                    query_row(rows)?,
+                    layers,
+                )
+                .into()
+            } else {
+                scene3d::ray_hit_subset(
+                    &scene,
+                    *origin,
+                    *direction,
+                    *distance,
+                    &query_rows(rows)?,
+                    layers,
+                )
+                .into()
+            }
+        }
+        (
+            PickInRect3D,
+            [
+                Value::RecordList(model),
+                Value::Float(yaw),
+                Value::Float(pitch),
+                Value::Float(distance),
+                Value::Point2D(viewport),
+                Value::Point2D(start),
+                Value::Point2D(end),
+                layers @ ..,
+            ],
+        ) => scene3d::pick_in_rect(
+            &program.prepare_scene(model, true),
+            *yaw,
+            *pitch,
+            *distance,
+            *viewport,
+            [*start, *end],
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            PickInRectCamera3D,
+            [
+                Value::RecordList(model),
+                Value::String(camera),
+                Value::Point2D(viewport),
+                Value::Point2D(start),
+                Value::Point2D(end),
+                layers @ ..,
+            ],
+        ) => scene3d::pick_in_rect_camera(
+            &program.prepare_scene(model, true),
+            camera,
+            *viewport,
+            [*start, *end],
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            ClosestPoint3D,
+            [
+                Value::RecordList(model),
+                Value::Point3D(origin),
+                Value::Float(radius),
+                layers @ ..,
+            ],
+        ) => scene3d::closest_point(
+            &program.prepare_scene(model, true),
+            *origin,
+            *radius,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            ClosestPointOn3D,
+            [
+                Value::RecordList(model),
+                Value::String(object_id),
+                Value::Point3D(origin),
+                Value::Float(radius),
+                layers @ ..,
+            ],
+        ) => scene3d::closest_point_on(
+            &program.prepare_scene(model, true),
+            object_id,
+            *origin,
+            *radius,
             optional_layers(layers)?,
         )
         .into(),
@@ -6960,6 +7244,34 @@ fn geometry_function(
             *fallback,
         )
         .into(),
+        (
+            MapPosition3D,
+            [
+                Value::RecordList(model),
+                Value::String(from),
+                Value::String(to),
+                Value::Point3D(position),
+                Value::Point3D(fallback),
+            ],
+        ) => program
+            .prepare_scene(model, false)
+            .map_position(from, to, *position)
+            .unwrap_or(*fallback)
+            .into(),
+        (
+            MapDirection3D,
+            [
+                Value::RecordList(model),
+                Value::String(from),
+                Value::String(to),
+                Value::Vector3D(direction),
+                Value::Vector3D(fallback),
+            ],
+        ) => program
+            .prepare_scene(model, false)
+            .map_direction(from, to, *direction)
+            .unwrap_or(*fallback)
+            .into(),
         (
             PickCamera3D,
             [

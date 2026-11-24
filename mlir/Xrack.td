@@ -411,6 +411,15 @@ def XR_MeshLightmapUrlOp : XR_ExpressionOp<"mesh_lightmap_url", (ins), XR_String
 def XR_MeshLodLightmapUrlOp : XR_ExpressionOp<"mesh_lod_lightmap_url", (ins), XR_String, [Pure]> {
   let hasVerifier = 1;
 }
+def XR_TextureUrlOp : XR_ExpressionOp<"texture_url", (ins), XR_String, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_ShaderUrlOp : XR_ExpressionOp<"shader_url", (ins), XR_String, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_MaterialShaderUrlOp : XR_ExpressionOp<"material_shader_url", (ins), XR_String, [Pure]> {
+  let hasVerifier = 1;
+}
 def XR_EnvironmentUrlOp : XR_ExpressionOp<"environment_url", (ins), XR_String, [Pure]> {
   let hasVerifier = 1;
 }
@@ -584,8 +593,9 @@ def XR_MathFunctionOp : XR_ExpressionOp<"math_function", (ins Variadic<XR_MathOp
     AnyTypeOf<[XR_MathOperand, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
 def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Point3D, XR_Vector3D, XR_Hit3D, XR_Hit3DList, XR_ProjectedPoint3D]>;
 def XR_GeometryFunctionOp : XR_ExpressionOp<"geometry_function",
-    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_RecordList, XR_String, XR_Int]>>:$inputs),
-    AnyTypeOf<[XR_GeometryValue, XR_String]>, [Pure]> { let hasVerifier = 1; }
+    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_RecordList, XR_String, XR_Int, XR_IntList]>>:$inputs),
+    AnyTypeOf<[XR_GeometryValue, XR_String, XR_IntList]>,
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> { let hasVerifier = 1; }
 def XR_Point2DFieldOp : XR_ExpressionOp<"point2d_field", (ins XR_Point2D:$input), XR_Length, [Pure]> {
   let hasVerifier = 1;
 }

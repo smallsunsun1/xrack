@@ -1,0 +1,8 @@
+// CHECK-DAG: "xr.hit3d_field"{{.*}}value = "mesh-node-index"{{.*}}!xr.hit3d{{.*}}!xr.int
+// CHECK-DAG: "xr.hit3d_field"{{.*}}value = "instance-index"{{.*}}!xr.hit3d{{.*}}!xr.int
+
+export component PickInstance inherits Window {
+    in property <hit3d> hit;
+    out property <int> node: root.hit.mesh-node-index;
+    out property <int> instance: root.hit.instance-index;
+}

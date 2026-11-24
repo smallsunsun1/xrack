@@ -452,7 +452,7 @@
         },
         {
           "name": "support.function.xrack",
-          "match": "@(?:image-url|mesh-url|environment-url|markdown|tr|linear-gradient|radial-gradient|children|slot)(?![A-Za-z_0-9-])"
+          "match": "@(?:image-url|mesh-url|texture-url|environment-url|shader-url|material-shader-url|markdown|tr|linear-gradient|radial-gradient|children|slot)(?![A-Za-z_0-9-])"
         },
         {
           "match": "(?<![A-Za-z_0-9.-])(Math|Strings|Model|Colors|Dates|Times|I18n|Log|Point2D|Point3D|Vector2D|Vector3D|Transform2D|Scene3D)(\\.)([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(?=\\s*\\()",

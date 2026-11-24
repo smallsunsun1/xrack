@@ -1,0 +1,145 @@
+struct OverlaySurface {
+    base-color: color, unlit: bool, alpha-mode: string,
+    metalness: float, roughness: float, transmission: float,
+    emissive-color: color, emissive-strength: float,
+}
+struct OverlayActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, visible: bool, camera-kind: string, camera-height: float,
+    material: OverlaySurface,
+}
+struct OverlayFog {
+    position: point3d, size: vector3d, density: float, color: color,
+}
+
+struct OverlaySprite {
+    position: point3d, color: color, size: float, lifetime: float,
+    burst-count: int, particle-blend-mode: string,
+}
+
+export component TransparentViewDemo inherits Window {
+    title: "XRack · 透明 3D 视口";
+    width: 600px; height: 354px; resizable: false;
+    background: #172332;
+
+    in-out property <bool> alternate: false;
+    in-out property <bool> models-visible: true;
+    in-out property <bool> glass: false;
+    in-out property <bool> fog: false;
+    in-out property <bool> sky: false;
+    in-out property <string> clear-mode: "transparent";
+    in-out property <string> quality: "normal";
+    in-out property <string> camera-id: "eye";
+
+    property <OverlaySurface> opaque: OverlaySurface {
+        base-color: #ffe690, unlit: true, alpha-mode: "opaque",
+        metalness: 0, roughness: 0.2, transmission: 0,
+        emissive-color: #000000, emissive-strength: 1,
+    };
+    property <OverlayActor> defaults: OverlayActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, visible: root.models-visible, camera-kind: "", camera-height: 5,
+        material: root.opaque,
+    };
+    property <[OverlayActor]> actors: [
+        OverlayActor { id: "eye", mesh: "", z: 8, visible: true, camera-kind: "orthographic", ..root.defaults },
+        OverlayActor { id: "rig", mesh: @mesh-url("models/camera-rig.gltf"), visible: true, ..root.defaults },
+        OverlayActor { id: "plate", x: -2.45, roll: 23, scale-x: 1.8, scale-y: 1.48, ..root.defaults },
+        OverlayActor {
+            id: "orb", mesh: "primitive:sphere", scale-x: 0.61, scale-y: 0.61, scale-z: 0.61,
+            material: OverlaySurface {
+                base-color: #80e4c2, unlit: root.quality != "bloom" && root.quality != "screen",
+                metalness: root.quality == "screen" ? 0.6 : 0,
+                emissive-color: #50dea0, emissive-strength: root.quality == "bloom" ? 7 : 0,
+                ..root.opaque
+            },
+            ..root.defaults
+        },
+        OverlayActor {
+            id: "pane", x: 2.45, scale-x: 1.8, scale-y: 1.5,
+            material: OverlaySurface {
+                base-color: root.glass ? #ffffff : #f29b4b70,
+                unlit: !root.glass, alpha-mode: root.glass ? "opaque" : "blend",
+                transmission: root.glass ? 0.92 : 0, ..root.opaque
+            },
+            ..root.defaults
+        },
+    ];
+    property <[OverlayFog]> no-fog: [];
+    property <[OverlayFog]> volume: root.fog ? [
+        OverlayFog {
+            position: Point3D.new(3.6, 1.65, -1.2), size: Vector3D.new(1.4, 1.05, 1.8),
+            density: 1.1, color: #afb9fe,
+        },
+    ] : root.no-fog;
+    property <[OverlaySprite]> sprites: root.quality == "particles" ? [
+        OverlaySprite {
+            position: Point3D.new(-3.4, -1.25, 0.3), color: #e8fec899, size: 0.68, lifetime: 1,
+            burst-count: 1, particle-blend-mode: "additive",
+        },
+    ] : root.no-sprites;
+    property <[OverlaySprite]> no-sprites: [];
+    property <color> backdrop: root.alternate ? #284c64 : #745448;
+    out property <string> picked: Scene3D.pick-camera(
+        root.actors, root.camera-id, Point2D.new(600px, 290px), Point2D.new(300px, 145px));
+
+    Rectangle { width: 600px; height: 290px; background: root.backdrop; }
+    Rectangle {
+        x: 0px; y: 224px; width: 600px; height: 48px;
+        background: root.alternate ? #305972 : #835f4f;
+    }
+    Label {
+        x: 18px; y: 235px; width: 183px; height: 27px;
+        text: "2D 界面背景"; color: #e8eef7;
+    }
+    SceneView3D {
+        width: 600px; height: 290px; model: root.actors; camera: root.camera-id;
+        scene-background: root.clear-mode == "transparent" ? #a8402000
+            : root.clear-mode == "tint" ? #a8402080 : #a84020;
+        multisampling: root.quality == "msaa" || root.quality == "weighted"
+            || root.quality == "focus" || root.quality == "screen";
+        supersampling: root.quality == "ssaa" ? 2 : 1;
+        progressive-aa: root.quality == "progressive" ? 4 : 0;
+        temporal-aa: root.quality == "temporal";
+        temporal-aa-mode: "motion-vectors";
+        order-independent-transparency: root.quality == "weighted";
+        scene-hdr: root.quality == "hdr" || root.quality == "bloom";
+        scene-brightness: root.quality == "hdr" ? 1.18 : 1;
+        screen-space-reflections: root.quality == "screen";
+        scene-lut: root.quality == "lut" ? @image-url("models/lut-invert.png") : @image-url("");
+        particle-emitters: root.sprites; particle-time: 0.2;
+        bloom: root.quality == "bloom";
+        depth-of-field: root.quality == "focus";
+        dof-focus-distance: 12;
+        dof-focus-range: 1.0;
+        dof-blur-radius: 18px;
+        environment: root.sky ? @environment-url("models/studio.hdr") : "";
+        environment-skybox: root.sky;
+        fog-volumes: root.volume; cache-rendering: true;
+    }
+    clear-mode := Button {
+        x: 12px; y: 306px; width: 118px; height: 36px;
+        text: root.clear-mode == "transparent" ? "透明视口" : root.clear-mode == "tint" ? "半透明" : "实色";
+        clicked => {
+            root.clear-mode = root.clear-mode == "transparent" ? "tint" : root.clear-mode == "tint" ? "opaque" : "transparent";
+        }
+    }
+    backdrop-toggle := CheckBox {
+        x: 141px; y: 306px; width: 140px; height: 36px;
+        text: "切换 2D 底色"; checked <=> root.alternate;
+    }
+    glass-toggle := CheckBox {
+        x: 291px; y: 306px; width: 114px; height: 36px;
+        text: "玻璃透射"; checked <=> root.glass;
+    }
+    effects := Button {
+        x: 418px; y: 306px; width: 169px; height: 36px;
+        text: "画质 · " + root.quality;
+        clicked => {
+            root.quality = root.quality == "normal" ? "msaa" : root.quality == "msaa" ? "hdr"
+                : root.quality == "hdr" ? "focus" : root.quality == "focus" ? "bloom" : "normal";
+        }
+    }
+}

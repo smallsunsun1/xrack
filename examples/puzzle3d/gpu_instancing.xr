@@ -1,0 +1,47 @@
+struct SharedCoat { roughness: float }
+struct InstancedActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float,
+    animation: string, animation-time: float, material-variant: string, material: SharedCoat,
+}
+
+export component GpuInstancingDemo inherits Window {
+    title: "XRack · glTF GPU instancing";
+    width: 640px; height: 374px;
+    background: #1a2638;
+
+    in-out property <float> time: 0;
+    in-out property <bool> blue: false;
+    property <InstancedActor> base: InstancedActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, camera-kind: "", camera-height: 4,
+        animation: "", animation-time: 0, material-variant: "",
+        material: SharedCoat { roughness: 0.7 },
+    };
+    property <[InstancedActor]> world: [
+        InstancedActor { id: "eye", z: 8, camera-kind: "orthographic", ..root.base },
+        InstancedActor {
+            id: "triangles", mesh: @mesh-url("models/gpu-instances.gltf"),
+            animation: "Slide", animation-time: root.time, material-variant: root.blue ? "Blue" : "",
+            ..root.base
+        },
+    ];
+    property <hit3d> picked-left: Scene3D.hit-camera(
+        root.world, "eye", Point2D.new(640px, 320px), Point2D.new(132px, 172px));
+    out property <string> left-hit: root.picked-left.object-id;
+    out property <int> left-instance: root.picked-left.instance-index;
+    out property <int> left-node: root.picked-left.mesh-node-index;
+    out property <string> base-hit: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(640px, 320px), Point2D.new(400px, 240px));
+    SceneView3D {
+        width: 640px; height: 320px; model: root.world; camera: "eye";
+        scene-background: #263b54; frustum-culling: true;
+    }
+    slide-button := Button {
+        x: 12px; y: 332px; width: 140px; text: "Move group";
+        clicked => { root.time = root.time == 0 ? 1 : 0; }
+    }
+    tint-toggle := CheckBox { x: 164px; y: 332px; width: 130px; text: "Blue coat"; checked <=> root.blue; }
+}

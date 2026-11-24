@@ -2,7 +2,7 @@ use super::{LayoutNode, Node, PaintFrame, Palette, Rect, Renderer, Role, TextMea
 use std::{
     cell::OnceCell,
     collections::BTreeMap,
-    rc::{Rc, Weak},
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -25,7 +25,7 @@ impl DamageRect {
         }
     }
 
-    fn as_rect(self) -> Rect {
+    pub(super) fn as_rect(self) -> Rect {
         Rect::new(
             self.x as f32,
             self.y as f32,
@@ -53,6 +53,13 @@ impl DamageRegions {
         self.rectangles()
             .iter()
             .any(|rect| overlap(rect.as_rect(), extent))
+    }
+
+    fn extend(&mut self, other: Self) -> bool {
+        other
+            .rectangles()
+            .iter()
+            .all(|rect| self.insert(rect.as_rect()))
     }
 
     // Restart when a union grows. That union may reach an earlier rectangle.
@@ -129,34 +136,35 @@ impl WindowDamage {
     }
 
     fn between(before: &Scene, after: &Scene) -> Self {
-        if before.style != after.style
-            || !after.geometry.islands_match(
-                &before.geometry,
-                before.layout.as_ref(),
-                after.layout.as_ref(),
-            )
-        {
+        if before.style != after.style {
             return Self::Full;
         }
         let same_geometry = Rc::ptr_eq(&before.geometry, &after.geometry);
-        let mut damage = DamageRegions::default();
+        let mut damage = after.paint_updates;
+        if !before.viewport_damage(after, &mut damage) {
+            return Self::Full;
+        }
         if same_geometry {
             // Input-only changes can compare sparse state on retained bounds.
-            // An installed editor is dirty even if its target path did not change.
+            // Editors and active drop outlines can repaint at an unchanged path.
             if !before.input.iter().chain(&after.input).all(|(&index, _)| {
                 !before.input_changed(index, after, index)
                     || damage.insert(after.geometry.items[index].extent)
             }) {
                 return Self::Full;
             }
-        } else if !before.changed_geometry(after, &mut damage) {
+        } else if !damage.extend(before.paint_since_geometry)
+            || !before.changed_geometry(after, &mut damage)
+        {
             return Self::Full;
         }
         if damage.len == 0 {
             return Self::Unchanged;
         }
+        // Bound large texture replays independently of the CPU savings
+        // estimate used to choose whether an eligible plan is profitable.
         let maximum_area =
-            after.geometry.index.viewport.width * after.geometry.index.viewport.height * 0.5;
+            after.geometry.index.viewport.width * after.geometry.index.viewport.height * 0.7;
         // Preserve complete overlapping paint groups and batches, including
         // their original coverage math. A group crossing two regions merges them.
         for _ in 0..4 {
@@ -186,13 +194,7 @@ impl WindowDamage {
                 .iter()
                 .map(|r| r.width as f32 * r.height as f32)
                 .sum();
-            if area >= maximum_area
-                || after
-                    .geometry
-                    .islands
-                    .iter()
-                    .any(|&i| damage.intersects(after.geometry.items[i].extent))
-            {
+            if area >= maximum_area {
                 return Self::Full;
             }
             if damage == old {
@@ -222,10 +224,13 @@ impl WindowDamage {
 
 struct Scene {
     root: Node,
-    layout: Option<Weak<LayoutNode>>,
+    layout: Option<Rc<LayoutNode>>,
     geometry: Rc<Geometry>,
     input: BTreeMap<usize, PaintInput>,
+    active_viewports: Vec<usize>,
     style: SceneStyle,
+    paint_updates: DamageRegions,
+    paint_since_geometry: DamageRegions,
 }
 
 struct SceneStyle {
@@ -281,40 +286,86 @@ impl Scene {
             text_scale: renderer.text.text_scale(),
             generation: renderer.scene_generation,
         };
-        let layout_key = frame.prepared_layout.map(Rc::downgrade);
-        let geometry = if let Some(previous) = previous.filter(|previous| {
-            previous.style == style
-                && previous.root.shares_storage_with(scene)
-                && same_layout(previous.layout.as_ref(), layout_key.as_ref())
-                && previous.geometry.scale == frame.scale
-                && previous.geometry.index.viewport.width == target.width() as f32
-                && previous.geometry.index.viewport.height == target.height() as f32
-        }) {
+        let layout_key = frame.prepared_layout.cloned();
+        let mut paint_updates = DamageRegions::default();
+        let mut paint_since_geometry = DamageRegions::default();
+        let can_reuse = previous
+            .filter(|previous| {
+                previous.style == style
+                    && same_layout(previous.layout.as_ref(), layout_key.as_ref())
+                    && previous.geometry.scale == frame.scale
+                    && previous.geometry.index.viewport.width == target.width() as f32
+                    && previous.geometry.index.viewport.height == target.height() as f32
+                    && collect_background_changes(
+                        &previous.root,
+                        scene,
+                        layout,
+                        frame,
+                        previous.geometry.index.viewport,
+                        &mut paint_updates,
+                    )
+            })
+            .filter(|previous| {
+                paint_since_geometry = previous.paint_since_geometry;
+                paint_since_geometry.extend(paint_updates)
+            });
+        let geometry = if let Some(previous) = can_reuse {
             previous.geometry.index.enable_grid();
             previous.geometry.clone()
         } else {
+            paint_updates = DamageRegions::default();
+            paint_since_geometry = DamageRegions::default();
             let viewport = Rect::new(0.0, 0.0, target.width() as f32, target.height() as f32);
             let mut geometry = Geometry::new(viewport, frame.scale);
             geometry.capture_item(scene, layout, &mut Vec::new(), frame)?;
             xrack_runtime::update_profile::build_window_geometry();
             Rc::new(geometry)
         };
-        if !geometry.islands_idle(scene, layout, frame) {
-            return None;
-        }
         Some(Self {
             root: scene.clone(),
             layout: layout_key,
             input: geometry.paint_input(frame),
+            active_viewports: geometry.active_viewports(scene, layout, frame),
             geometry,
             style,
+            paint_updates,
+            paint_since_geometry,
         })
+    }
+
+    fn viewport_damage(&self, after: &Self, damage: &mut DamageRegions) -> bool {
+        let old = &self.geometry.islands;
+        let new = &after.geometry.islands;
+        if old.len() != new.len() {
+            return false;
+        }
+        let same_layout = same_layout(self.layout.as_ref(), after.layout.as_ref());
+        old.iter()
+            .zip(new)
+            .enumerate()
+            .all(|(position, (&old, &new))| {
+                let before = &self.geometry.items[old];
+                let current = &after.geometry.items[new];
+                if before.path != current.path {
+                    return false;
+                }
+                let active = self.active_viewports.binary_search(&position).is_ok()
+                    || after.active_viewports.binary_search(&position).is_ok();
+                let unchanged = !active
+                    && (before.node.shares_storage_with(&current.node)
+                        || before.node == current.node)
+                    && (same_layout
+                        || self.layout.as_ref().zip(after.layout.as_ref()).is_some_and(
+                            |(old, new)| old.at_path(&before.path) == new.at_path(&current.path),
+                        ));
+                unchanged || damage.insert(before.extent) && damage.insert(current.extent)
+            })
     }
 
     fn input_changed(&self, old: usize, after: &Self, new: usize) -> bool {
         let old = self.input.get(&old).copied().unwrap_or_default();
         let new = after.input.get(&new).copied().unwrap_or_default();
-        old.editing || new.editing || old != new
+        old.editing || new.editing || old.drop_target || new.drop_target || old != new
     }
 
     fn changed_geometry(&self, after: &Self, damage: &mut DamageRegions) -> bool {
@@ -355,8 +406,57 @@ impl Scene {
     }
 }
 
-fn same_layout(old: Option<&Weak<LayoutNode>>, new: Option<&Weak<LayoutNode>>) -> bool {
-    old.zip(new).is_some_and(|(old, new)| old.ptr_eq(new))
+fn collect_background_changes(
+    before: &Node,
+    after: &Node,
+    layout: &LayoutNode,
+    frame: PaintFrame<'_>,
+    viewport: Rect,
+    damage: &mut DamageRegions,
+) -> bool {
+    if before.shares_storage_with(after) {
+        return true;
+    }
+    if is_paint_viewport(before.kind)
+        || before.children.len() != after.children.len()
+        || after.children.len() != layout.children.len()
+    {
+        return false;
+    }
+    if !before.same_own_paint_inputs(after) {
+        let visible_fill = |node| {
+            super::rectangle::Solid::from_node(node, layout, frame.scale)
+                .is_some_and(|rectangle| rectangle.visible())
+        };
+        let opaque = |node: &Node| {
+            node.color("background")
+                .is_some_and(|color| color.0 & 0xff == 0xff)
+        };
+        if after.kind != "Rectangle"
+            || !after.children.is_empty()
+            || !before.same_own_paint_except_background(after)
+            || opaque(before) != opaque(after)
+            || !visible_fill(before)
+            || !visible_fill(after)
+        {
+            return false;
+        }
+        let bounds = paint_extent(after, layout, frame);
+        return damage
+            .insert(device_extent(after, layout, bounds, frame.scale).intersect(viewport));
+    }
+    before
+        .children
+        .iter()
+        .zip(&after.children)
+        .zip(&layout.children)
+        .all(|((before, after), layout)| {
+            collect_background_changes(before, after, layout, frame, viewport, damage)
+        })
+}
+
+fn same_layout(old: Option<&Rc<LayoutNode>>, new: Option<&Rc<LayoutNode>>) -> bool {
+    old.zip(new).is_some_and(|(old, new)| Rc::ptr_eq(old, new))
 }
 
 struct Geometry {
@@ -383,32 +483,14 @@ impl Geometry {
         }
     }
 
-    fn islands_match(
+    fn active_viewports(
         &self,
-        before: &Self,
-        old_layout: Option<&Weak<LayoutNode>>,
-        new_layout: Option<&Weak<LayoutNode>>,
-    ) -> bool {
-        if self.islands.is_empty() && before.islands.is_empty() {
-            return true;
-        }
-        same_layout(old_layout, new_layout)
-            && self.islands.len() == before.islands.len()
-            && before
-                .islands
-                .iter()
-                .zip(&self.islands)
-                .all(|(&old, &new)| {
-                    let (old, new) = (&before.items[old], &self.items[new]);
-                    old.path == new.path
-                        && old.extent == new.extent
-                        && old.node.shares_storage_with(&new.node)
-                })
-    }
-
-    fn islands_idle(&self, scene: &Node, layout: &LayoutNode, frame: PaintFrame<'_>) -> bool {
+        scene: &Node,
+        layout: &LayoutNode,
+        frame: PaintFrame<'_>,
+    ) -> Vec<usize> {
         if self.islands.is_empty() {
-            return true;
+            return Vec::new();
         }
         let input = frame.input;
         if input.scroll_motion_active()
@@ -419,26 +501,31 @@ impl Geometry {
             || input.table_resize_drag(scene, layout).is_some()
             || input.table_row_resize_drag(scene, layout).is_some()
         {
-            return false;
+            return (0..self.islands.len()).collect();
         }
-        self.islands.iter().all(|&index| {
-            let item = &self.items[index];
-            !input
-                .window_paint_targets()
-                .any(|path| path.starts_with(item.path.as_slice()))
-                && !input.pointer_position().is_some_and(|point| {
-                    item.extent.contains(super::Point {
-                        x: point.x * self.scale,
-                        y: point.y * self.scale,
+        self.islands
+            .iter()
+            .enumerate()
+            .filter_map(|(position, &index)| {
+                let item = &self.items[index];
+                let active = input
+                    .window_paint_targets()
+                    .any(|path| path.starts_with(item.path.as_slice()))
+                    || input.pointer_position().is_some_and(|point| {
+                        item.extent.contains(super::Point {
+                            x: point.x * self.scale,
+                            y: point.y * self.scale,
+                        })
                     })
-                })
-                && [
-                    xrack_runtime::Orientation::Horizontal,
-                    xrack_runtime::Orientation::Vertical,
-                ]
-                .into_iter()
-                .all(|axis| !input.scroll_bar_highlighted(&item.path, axis))
-        })
+                    || [
+                        xrack_runtime::Orientation::Horizontal,
+                        xrack_runtime::Orientation::Vertical,
+                    ]
+                    .into_iter()
+                    .any(|axis| input.scroll_bar_highlighted(&item.path, axis));
+                active.then_some(position)
+            })
+            .collect()
     }
 
     fn paint_input(&self, frame: PaintFrame<'_>) -> BTreeMap<usize, PaintInput> {
@@ -471,19 +558,14 @@ impl Geometry {
         path: &mut Vec<usize>,
         frame: PaintFrame<'_>,
     ) -> Option<Batchable> {
-        if !layout.visible || node.opacity() == 0.0 {
+        if !layout.visible
+            || node.opacity() == 0.0
+            || node.kind == "Shortcut"
+            || node.scene_texture_only()
+        {
             return Some(Batchable::Primitives(None));
         }
-        let viewport = matches!(
-            node.kind,
-            "ScrollView"
-                | "ListView"
-                | "StandardListView"
-                | "GridView"
-                | "TableView"
-                | "StandardTableView"
-                | "TreeView"
-        );
+        let viewport = is_paint_viewport(node.kind);
         let island_work = if viewport {
             frame.prepared_layout?;
             // A frozen viewport can be skipped only if all its visible content
@@ -519,16 +601,23 @@ impl Geometry {
             return None;
         }
         let extent = if shadow::nonempty(extent) {
-            device_extent(extent, frame.scale).intersect(self.index.viewport)
+            device_extent(node, layout, extent, frame.scale).intersect(self.index.viewport)
         } else {
             Rect::default()
         };
         let button = xrack_runtime::is_button(node.kind);
         let editor = xrack_runtime::is_text_input(node.kind);
+        let styled = node.kind == "StyledText";
+        let drop_area = node.kind == "DropArea";
+        let tracks_input = button
+            || editor
+            || styled
+            || drop_area
+            || matches!(node.kind, "FocusScope" | "SplitHandle" | "Pane");
         let index = self.items.len();
         self.items.push(Item {
             node: node.clone(),
-            path: if viewport || button || editor || node.kind == "FocusScope" {
+            path: if viewport || tracks_input {
                 path.clone()
             } else {
                 Vec::new()
@@ -544,7 +633,7 @@ impl Geometry {
             overflow: layout.allows_overflow(),
         });
         let paintless = paintless_container(node);
-        if !path.is_empty() && !paintless {
+        if !path.is_empty() && !paintless && !can_clip_surface(node, layout, frame) {
             self.index.add(
                 extent,
                 island_work.unwrap_or_else(|| paint_weight(node, button, editor)),
@@ -554,10 +643,10 @@ impl Geometry {
             self.islands.push(index);
             return Some(Batchable::Barrier);
         }
-        if button || editor || node.kind == "FocusScope" {
+        if tracks_input {
             self.paths.insert(path.clone(), index);
         }
-        if editor || button && node.button_press_handle.is_some() {
+        if editor || styled || drop_area || button && node.button_press_handle.is_some() {
             self.independent.push(index);
         }
         let mut run = None;
@@ -580,9 +669,13 @@ impl Geometry {
         self.record_batch(run);
         // Retain a superset of each paint run so culling never changes its atlas
         // or glyph batch membership.
-        let batchable = if paintless && !has_barrier {
+        let batchable = if paintless
+            && !has_barrier
+            && layout.child_clip_shape().is_none()
+            && Renderer::is_unpainted_group(node, layout)
+        {
             Batchable::Primitives(run)
-        } else if matches!(node.kind, "Text" | "Image")
+        } else if matches!(node.kind, "Text" | "Label" | "Image")
             || node.kind == "Rectangle"
                 && super::rectangle::Solid::from_node(node, layout, frame.scale).is_some()
         {
@@ -594,6 +687,19 @@ impl Geometry {
     }
 }
 
+pub(super) fn is_paint_viewport(kind: &str) -> bool {
+    matches!(
+        kind,
+        "ScrollView"
+            | "ListView"
+            | "StandardListView"
+            | "GridView"
+            | "TableView"
+            | "StandardTableView"
+            | "TreeView"
+    )
+}
+
 fn basic_painter(kind: &str) -> bool {
     matches!(
         kind,
@@ -601,7 +707,13 @@ fn basic_painter(kind: &str) -> bool {
             | "Empty"
             | "Rectangle"
             | "Text"
+            | "Label"
+            | "StyledText"
             | "Image"
+            | "Path"
+            | "Pane"
+            | "ButtonContent"
+            | "DropArea"
             | "FocusScope"
             | "Row"
             | "HorizontalLayout"
@@ -614,6 +726,8 @@ fn basic_painter(kind: &str) -> bool {
             | "Button"
             | "ToolButton"
             | "RoundButton"
+            | "SplitView"
+            | "SplitHandle"
     ) || xrack_runtime::is_text_input(kind)
 }
 
@@ -621,21 +735,16 @@ fn static_viewport_work(node: &Node, layout: &LayoutNode) -> Option<u32> {
     if !layout.visible || node.opacity() == 0.0 {
         return Some(0);
     }
-    if node.boolean("pull-to-refresh", false)
+    if node.kind == "DropArea"
+        || node.boolean("pull-to-refresh", false)
         || node.button_press_handle.is_some()
         || xrack_runtime::is_text_input(node.kind)
         || !layout.list_section_headers().is_empty()
         || !(basic_painter(node.kind)
+            || is_paint_viewport(node.kind)
             || matches!(
                 node.kind,
-                "ScrollView"
-                    | "ListView"
-                    | "StandardListView"
-                    | "GridView"
-                    | "TableView"
-                    | "StandardTableView"
-                    | "TreeView"
-                    | "ListRow"
+                "ListRow"
                     | "StandardListItem"
                     | "ItemDelegate"
                     | "TableRow"
@@ -649,6 +758,18 @@ fn static_viewport_work(node: &Node, layout: &LayoutNode) -> Option<u32> {
             ))
     {
         return None;
+    }
+    // An empty content scissor skips the subtree's paint work. Keep the
+    // viewport's painter eligibility checks independent of that estimate.
+    let clip = layout.bounds.intersect(layout.clip);
+    if !layout.allows_overflow()
+        && (clip.width <= 0.0 || clip.height <= 0.0)
+        && !node
+            .properties
+            .keys()
+            .any(|name| name.starts_with("drop-shadow-"))
+    {
+        return Some(0);
     }
     let weight = paint_weight(node, xrack_runtime::is_button(node.kind), false);
     layout
@@ -698,24 +819,42 @@ struct PaintInput {
     pressed: bool,
     focused: bool,
     editing: bool,
+    focused_link: Option<usize>,
+    drop_target: bool,
 }
 
 impl PaintInput {
     fn capture(node: &Node, path: &[usize], frame: PaintFrame<'_>) -> Self {
         let button = xrack_runtime::is_button(node.kind);
         let editor = xrack_runtime::is_text_input(node.kind);
+        let split_handle = node.kind == "SplitHandle";
+        let styled = node.kind == "StyledText";
         let input = frame.input;
         Self {
-            hovered: button && input.is_hovered(path),
+            hovered: (button || split_handle) && input.is_hovered(path),
             pressed: button
                 && (input.is_pressed(path)
                     || node
                         .button_press_handle
                         .as_ref()
                         .is_some_and(xrack_runtime::ButtonPressHandle::is_synthetic_pressed)),
-            focused: (editor || button || node.kind == "FocusScope") && input.is_focused(path),
-            editing: editor
+            focused: (editor
+                || button
+                || split_handle
+                || matches!(node.kind, "FocusScope" | "Pane"))
+                && input.is_focused(path),
+            editing: (editor || styled)
                 && (input.editor_active(path) || input.displayed_editor(node, path).is_some()),
+            focused_link: if styled {
+                input
+                    .focused
+                    .as_ref()
+                    .filter(|target| target.path == path)
+                    .and_then(xrack_layout::Target::text_link_index)
+            } else {
+                None
+            },
+            drop_target: node.kind == "DropArea" && input.is_drop_target(node, path),
         }
     }
 }
@@ -833,7 +972,12 @@ fn paint_weight(node: &Node, button: bool, editor: bool) -> u32 {
             .map_or(0, |text| text.len().min(1024).div_ceil(8) as u32)
     };
     let content = match node.kind {
-        "Text" => 3 + text(),
+        "Text" | "Label" => 3 + text(),
+        "StyledText" => {
+            3 + node.styled_text("text").map_or(0, |document| {
+                document.text().len().min(1024).div_ceil(8) as u32
+            })
+        }
         "Image" => 4,
         _ if button || editor => 8 + text(),
         _ => 1,
@@ -842,9 +986,37 @@ fn paint_weight(node: &Node, button: bool, editor: bool) -> u32 {
     content + if shadow { 8 } else { 0 }
 }
 
-fn device_extent(bounds: Rect, scale: f32) -> Rect {
-    // Cover antialiasing and quantization of the bounds in device space.
-    super::retained_layers::device_bounds(bounds, scale).inset(-2.0)
+fn device_extent(node: &Node, layout: &LayoutNode, bounds: Rect, scale: f32) -> Rect {
+    let raster = super::retained_layers::device_bounds(bounds, scale);
+    let grouped = is_paint_viewport(node.kind)
+        || matches!(
+            node.kind,
+            "Pane" | "Button" | "ToolButton" | "RoundButton" | "SplitHandle"
+        )
+        || node.kind == "Rectangle"
+            && (!node.children.is_empty()
+                || super::rectangle::Solid::from_node(node, layout, scale)
+                    .is_some_and(|rectangle| !rectangle.uses_mask()));
+    if grouped
+        && node.opacity() == 1.0
+        && !node.boolean("cache-rendering-hint", false)
+        && !layout.allows_overflow()
+        && layout.world_transform().is_identity()
+        && !layout.has_ancestor_clip_chain()
+        && layout.table_pane_clip().is_none()
+        && !node
+            .properties
+            .keys()
+            .any(|name| name.starts_with("drop-shadow-"))
+        && super::pixel_aligned(bounds, scale)
+    {
+        // These painters clip their whole group with an axis-aligned scissor.
+        // At integral edges the first outside pixel has zero coverage.
+        raster
+    } else {
+        // Cover antialiasing and quantization in the general case.
+        raster.inset(-2.0)
+    }
 }
 
 fn has_edge_effect(node: &Node) -> bool {
@@ -873,9 +1045,38 @@ fn paintless_container(node: &Node) -> bool {
             | "FlexboxLayout"
             | "FlowLayout"
             | "GridLayout"
+            | "SplitView"
+            | "ButtonContent"
+            | "DropArea"
     ) && node.opacity() == 1.0
         && !node.properties.contains_key("background")
         && !has_edge_effect(node)
+}
+
+/// Opaque square container surfaces can be replayed through the damage scissor.
+pub(super) fn can_clip_surface(node: &Node, layout: &LayoutNode, frame: PaintFrame<'_>) -> bool {
+    if !matches!(node.kind, "Rectangle" | "Pane")
+        || node.children.is_empty()
+        || node.opacity() != 1.0
+        || node.boolean("cache-rendering-hint", false)
+        || layout.allows_overflow()
+        || !layout.world_transform().is_identity()
+        || layout.has_ancestor_clip_chain()
+        || layout.table_pane_clip().is_some()
+        || has_edge_effect(node)
+        || xrack_layout::corner_radii(node, layout.bounds) != [0.0; 4]
+        || !super::pixel_aligned(layout.bounds.intersect(layout.clip), frame.scale)
+    {
+        return false;
+    }
+    match node.properties.get("background") {
+        Some(xrack_runtime::Value::Color(color))
+        | Some(xrack_runtime::Value::Brush(xrack_runtime::Brush::Solid(color))) => {
+            color.0 & 0xff == 0xff
+        }
+        None if node.kind == "Pane" => frame.theme.role(Role::Surface).0 & 0xff == 0xff,
+        _ => false,
+    }
 }
 
 fn paint_extent(node: &Node, layout: &LayoutNode, frame: PaintFrame<'_>) -> Rect {
@@ -907,14 +1108,103 @@ pub(super) fn intersects_damage(
     damage: DamageRegions,
 ) -> bool {
     let extent = paint_extent(node, layout, frame);
-    shadow::nonempty(extent) && damage.intersects(device_extent(extent, frame.scale))
+    shadow::nonempty(extent) && damage.intersects(device_extent(node, layout, extent, frame.scale))
 }
 
 struct WindowBacking {
     texture: wgpu::Texture,
     scale: f32,
     valid: bool,
-    blitter: Option<wgpu::util::TextureBlitter>,
+    blitter: Option<WindowBlitter>,
+}
+
+struct WindowBlitter {
+    pipeline: wgpu::RenderPipeline,
+    source: wgpu::BindGroup,
+}
+
+impl WindowBlitter {
+    fn new(device: &wgpu::Device, source: &wgpu::Texture) -> Self {
+        let format = source.format();
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("XRack window image input"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("XRack window image transfer"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("XRack window image transfer"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("pixel_blit.wgsl").into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("XRack window image transfer"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vertex"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fragment"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let view = source.create_view(&Default::default());
+        let source = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("XRack window image input"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
+        });
+        Self { pipeline, source }
+    }
+
+    fn copy(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::Texture) {
+        let view = target.create_view(&Default::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("XRack transfer window image"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    // The full-screen triangle replaces the previous image.
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.source, &[]);
+        pass.draw(0..3, 0..1);
+    }
 }
 
 impl WindowBacking {
@@ -977,15 +1267,8 @@ impl WindowBacking {
             );
         } else {
             self.blitter
-                .get_or_insert_with(|| {
-                    wgpu::util::TextureBlitter::new(&renderer.device, target.format())
-                })
-                .copy(
-                    &renderer.device,
-                    &mut encoder,
-                    &self.texture.create_view(&Default::default()),
-                    &target.create_view(&Default::default()),
-                );
+                .get_or_insert_with(|| WindowBlitter::new(&renderer.device, &self.texture))
+                .copy(&mut encoder, target);
         }
         encoder.finish()
     }
@@ -1088,15 +1371,15 @@ impl WindowDamageState {
         let reference = *self.direct.work.get_or_insert(full.max(1));
         let ratio = (skipped as f64 / reference as f64).min(1.0);
         let saved = self.direct.typical.mul_f64(ratio);
-        let active = self.backing.as_ref().is_some_and(|backing| backing.valid);
         let analysis = analysis_start.elapsed();
         let typical_analysis = self
             .last_analysis_cost
             .replace(analysis)
             .map_or(analysis, |last| last.min(analysis));
         let budget = transfer_budget + typical_analysis;
-        // Enter with a margin and keep reusing the image at a lower threshold.
-        saved >= if active { budget } else { budget.mul_f32(1.5) }
+        // A new backing is still primed only after consecutive
+        // profitable plans; an existing backing uses the same estimate.
+        saved >= budget
     }
 
     fn direct_paint(

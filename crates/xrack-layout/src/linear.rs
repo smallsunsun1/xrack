@@ -395,6 +395,76 @@ pub(crate) fn fixed_size(node: &Node, reference: Size) -> Option<Size> {
     Some(Size::new(width, height))
 }
 
+pub(crate) fn fill_size_with_fixed_cross_axis(
+    node: &Node,
+    reference: Size,
+    text: &mut impl TextMeasurer,
+) -> Option<Size> {
+    let axis = match node.kind {
+        "HorizontalLayout" => Axis::Horizontal,
+        "VerticalLayout" => Axis::Vertical,
+        _ => return None,
+    };
+    let cross = axis.other();
+    let fixed = node
+        .relative_length(cross.properties()[0], cross.extent(reference))?
+        .max(0.0);
+    let main_properties = axis.properties();
+    if main_properties
+        .iter()
+        .any(|name| node.properties.contains_key(name))
+    {
+        return None;
+    }
+
+    let available = match axis {
+        Axis::Horizontal => Size::new(measurement_width(node, reference), fixed),
+        Axis::Vertical => Size::new(fixed, reference.height),
+    };
+    let padding = Padding::read(node);
+    let inner = padding.inner_size(available);
+    let (mut minimum, mut maximum, mut count) = (0.0_f64, 0.0_f64, 0usize);
+    for child in node
+        .children
+        .iter()
+        .filter(|child| linear_child(node, child))
+    {
+        if geometry_primitive(child.kind)
+            && !child
+                .properties
+                .keys()
+                .any(|name| main_properties.contains(name))
+        {
+            maximum += f64::INFINITY;
+        } else {
+            let main = measure(child, inner, text).along(axis);
+            minimum += f64::from(main.min);
+            maximum += f64::from(main.max);
+        }
+        count += 1;
+    }
+
+    // The explicit cross size overrides intrinsic sizing on that axis.
+    // The other axis fills the available extent within its min and max.
+    let gaps = f64::from(spacing(node)) * count.saturating_sub(1) as f64;
+    let extra = gaps + f64::from(axis.extent(padding.size()));
+    let min = (minimum + extra) as f32;
+    let max = if layout_alignment(node) == LayoutAlignment::Stretch {
+        ((maximum + extra) as f32).max(min)
+    } else {
+        f32::INFINITY
+    };
+    let main = axis.extent(reference).clamp(min, max);
+    Some(match axis {
+        Axis::Horizontal => Size::new(main, fixed),
+        Axis::Vertical => Size::new(fixed, main),
+    })
+}
+
+fn geometry_primitive(kind: &str) -> bool {
+    matches!(kind, "Rectangle" | "Path" | "TouchArea")
+}
+
 pub(crate) fn measure_with_width(
     node: &Node,
     reference: Size,
@@ -435,6 +505,23 @@ fn compute_measurement(
         return Metrics {
             x: AxisInfo::fixed(size.width),
             y: AxisInfo::fixed(size.height),
+        };
+    }
+    if geometry_primitive(node.kind) {
+        // These primitives fill allocated space. Their children and paint
+        // properties do not contribute an intrinsic size.
+        let axis = AxisInfo::flexible(0.0);
+        let has_size_properties = node.properties.keys().any(|property| {
+            Axis::Horizontal.properties().contains(property)
+                || Axis::Vertical.properties().contains(property)
+        });
+        return if has_size_properties {
+            Metrics {
+                x: axis.with_properties(node, Axis::Horizontal, reference),
+                y: axis.with_properties(node, Axis::Vertical, reference),
+            }
+        } else {
+            Metrics { x: axis, y: axis }
         };
     }
     let relative_width = |name| {

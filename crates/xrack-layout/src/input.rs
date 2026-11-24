@@ -242,6 +242,7 @@ pub enum WheelAdjustment {
 
 #[derive(Clone, Debug)]
 struct WheelSteps {
+    texture: Option<crate::scene_texture_input::Capture>,
     path: Vec<usize>,
     row: Option<RowKey>,
     handle: Option<usize>,
@@ -560,6 +561,15 @@ struct ScrollRoute {
     axes: [Option<ScrollTarget>; 2],
     mouse_viewport: bool,
     pan_device: PanDevice,
+    surface: Option<Box<crate::scene_texture_input::Capture>>,
+}
+
+impl ScrollRoute {
+    fn input_scope(&self) -> &[usize] {
+        self.surface
+            .as_ref()
+            .map_or(self.scope.as_slice(), |surface| surface.source_path())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -567,6 +577,7 @@ struct ScrollGesture {
     route: ScrollRoute,
     motion: DragMotion,
     tap: Option<Hit>,
+    window_origin: Point,
     touch_point: Option<Point>,
     popup: (bool, bool),
     menu_pan: Option<MenuPan>,
@@ -1074,6 +1085,7 @@ enum ScrollInput<'a> {
 
 #[derive(Clone, Copy, Default)]
 struct AxisMotion {
+    remaining: f32,
     bounded: bool,
     elastic: bool,
     dismiss_keyboard: bool,
@@ -1106,6 +1118,8 @@ pub struct Interaction {
     pub focused: Option<Target>,
     focus_reason: xrack_runtime::FocusReason,
     pub pressed: Option<Target>,
+    scene_texture_pointer: Option<crate::scene_texture_input::Projection>,
+    pressed_scene_texture: Option<crate::scene_texture_input::Capture>,
     drag: Option<crate::drag::DragSession>,
     file_drag: crate::file_drop::FileDrag,
     hovered_scroll_bar: Option<ScrollTarget>,
@@ -1257,10 +1271,11 @@ struct RetainedSelection {
     editor: TextEdit,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Hit {
     None,
     Blocked(Vec<usize>),
+    SceneTexture(Vec<usize>, xrack_runtime::scene3d::SceneTextureHit),
     StackSlide,
     WindowMove(Target),
     Target(Target),
@@ -1463,6 +1478,20 @@ fn hit(
     transitioning_stacks: &BTreeSet<Vec<usize>>,
     purpose: HitPurpose<'_>,
 ) -> Hit {
+    if node.scene_texture_only() {
+        return Hit::None;
+    }
+    hit_subtree(node, layout, window, path, transitioning_stacks, purpose)
+}
+
+fn hit_subtree(
+    node: &Node,
+    layout: &LayoutNode,
+    window: Point,
+    path: &mut Vec<usize>,
+    transitioning_stacks: &BTreeSet<Vec<usize>>,
+    purpose: HitPurpose<'_>,
+) -> Hit {
     if node.is_control_part() {
         return Hit::None;
     }
@@ -1626,6 +1655,18 @@ fn hit(
             return child;
         }
     }
+    if node.kind == "SceneView3D"
+        && matches!(
+            purpose,
+            HitPurpose::Button(_) | HitPurpose::Hover | HitPurpose::Gesture("WheelHandler")
+        )
+        && let Some(hit) = crate::scene_texture_input::viewport_hit(node, layout, point)
+    {
+        return match (layout.enabled, hit) {
+            (true, Some(hit)) => Hit::SceneTexture(path.clone(), hit),
+            _ => Hit::Blocked(path.clone()),
+        };
+    }
     if let Some((index, _)) = layout
         .text_link_regions()
         .find(|(_, rect)| rect.contains(point))
@@ -1706,7 +1747,8 @@ fn hit_children(
 }
 
 fn inspect_at(node: &Node, layout: &LayoutNode, point: Point, path: &mut Vec<usize>) -> bool {
-    if node.is_control_part() || !layout.contains_subtree_point(point) {
+    if node.is_control_part() || node.scene_texture_only() || !layout.contains_subtree_point(point)
+    {
         return false;
     }
     // Virtual rows are not individual instances in the inspected tree.
@@ -1796,6 +1838,9 @@ impl crate::FileDropScope {
 }
 
 pub(crate) fn valid(target: &Target, scene: &Node, layout: &LayoutNode) -> bool {
+    if !crate::scene_texture_input::focus_allowed(scene, layout, &target.path) {
+        return false;
+    }
     let Some(node) = target.node_in(scene) else {
         return false;
     };
@@ -2153,6 +2198,11 @@ pub(crate) fn focus_targets_with_reveal(
         {
             return;
         }
+        if node.scene_texture_only()
+            && !crate::scene_texture_input::focus_allowed(root.0, root.1, path)
+        {
+            return;
+        }
         let clip = layout.clip_rect(layout.bounds);
         if !clipped_candidates
             && !layout.allows_overflow()
@@ -2369,12 +2419,34 @@ impl Interaction {
         if self.menu_open() || self.choice_open() {
             return None;
         }
-        let Hit::Target(target) =
-            self.hit_at_for(scene, layout, point, HitPurpose::Button(event.button))
-        else {
+        let (hit, projection) =
+            self.hit_at_for_position(scene, layout, point, HitPurpose::Button(event.button));
+        let Hit::Target(target) = hit else {
             return None;
         };
-        crate::PointerSequence::begin(target, self, scene, layout, point, event, now)
+        crate::PointerSequence::begin(
+            target,
+            self,
+            scene,
+            layout,
+            (point, projection.map(|projection| projection.capture)),
+            event,
+            now,
+        )
+    }
+
+    pub(crate) fn sample_scene_texture(
+        &self,
+        capture: &crate::scene_texture_input::Capture,
+        scene: &Node,
+        layout: &LayoutNode,
+        physical: Point,
+        button: xrack_runtime::PointerButton,
+    ) -> Option<Point> {
+        self.hit_at_for_position(scene, layout, physical, HitPurpose::Button(button))
+            .1
+            .filter(|projection| &projection.capture == capture)
+            .map(|projection| projection.point)
     }
 
     pub(crate) fn touch_area_hover<'a>(
@@ -2386,9 +2458,11 @@ impl Interaction {
         if self.menu_open() || self.choice_open() {
             return None;
         }
-        let Hit::Target(target) = self.hit_at_for(scene, layout, point, HitPurpose::Hover) else {
+        let (hit, projection) = self.hit_at_for_position(scene, layout, point, HitPurpose::Hover);
+        let Hit::Target(target) = hit else {
             return None;
         };
+        let point = projection.map_or(point, |projection| projection.point);
         let node = scene.interactive_at_path(&target.path)?;
         if node.kind != "TouchArea" {
             return None;
@@ -2491,7 +2565,20 @@ impl Interaction {
             return None;
         }
         let point = self.pointer?;
-        let (path, scope_depth) = self.gesture_hit_path(scene, layout, point, "WheelHandler")?;
+        let scope = self.pointer_scope(layout, point);
+        let (hit, projected) =
+            self.hit_at_for_position(scene, layout, point, HitPurpose::Gesture("WheelHandler"));
+        let (point, scope) = projected.as_ref().map_or((point, scope), |projection| {
+            (projection.point, projection.capture.source_path())
+        });
+        let path = match hit {
+            Hit::Target(target) | Hit::ControlPart(target, _) => target.path,
+            Hit::Blocked(path) => path,
+            Hit::ScrollBar(target) if projected.is_some() => target.path,
+            Hit::None if projected.is_some() => scope.to_vec(),
+            _ => return None,
+        };
+        let scope_depth = scope.len();
         let mut deliveries = Vec::new();
         for depth in (scope_depth..=path.len()).rev() {
             let path = &path[..depth];
@@ -3292,9 +3379,19 @@ impl Interaction {
         point: Point,
         purpose: HitPurpose<'_>,
     ) -> Hit {
+        self.hit_at_for_position(scene, layout, point, purpose).0
+    }
+
+    fn hit_at_for_position(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        purpose: HitPurpose<'_>,
+    ) -> (Hit, Option<crate::scene_texture_input::Projection>) {
         let scope = self.pointer_scope(layout, point);
         let Some((node, item)) = scene.at_path(scope).zip(layout.at_path(scope)) else {
-            return Hit::None;
+            return (Hit::None, None);
         };
         let mut result = hit(
             node,
@@ -3304,6 +3401,36 @@ impl Interaction {
             &self.transitioning_stacks,
             purpose,
         );
+        let mut projected = None;
+        if let Hit::SceneTexture(path, surface) = result {
+            projected =
+                crate::scene_texture_input::project(scene, layout, path.clone(), surface, scope)
+                    .filter(|projection| {
+                        self.pressed_scene_texture
+                            .as_ref()
+                            .is_none_or(|capture| capture == &projection.capture)
+                    });
+            result = projected
+                .as_ref()
+                .and_then(|projection| {
+                    let source = projection.capture.source_path();
+                    let (node, layout) = scene.at_path(source).zip(layout.at_path(source))?;
+                    Some(hit_subtree(
+                        node,
+                        layout,
+                        projection.point,
+                        &mut source.to_vec(),
+                        &self.transitioning_stacks,
+                        purpose,
+                    ))
+                })
+                .unwrap_or(Hit::Blocked(path));
+        } else if self.pressed_scene_texture.is_some() {
+            result = Hit::None;
+        }
+        let routed_point = projected
+            .as_ref()
+            .map_or(point, |projection| projection.point);
         if let Some(motion) = &self.swipe_page_motion {
             let moving = &motion.page.target.path;
             let hit_path = match &result {
@@ -3315,7 +3442,7 @@ impl Interaction {
                 _ => None,
             };
             if hit_path.is_some_and(|path| path.starts_with(moving)) {
-                return Hit::StackSlide;
+                return (Hit::StackSlide, None);
             }
         }
         if matches!(result, Hit::None) && node.kind == "PopupWindow" && item.bounds.contains(point)
@@ -3327,7 +3454,10 @@ impl Interaction {
                 target.row_key = scene.row_key_at(&target.path);
                 target.tab_close = (|| {
                     let item = layout.at_path(&target.path)?;
-                    if !item.tab_close?.contains(item.map_from_window(point)?) {
+                    if !item
+                        .tab_close?
+                        .contains(item.map_from_window(routed_point)?)
+                    {
                         return None;
                     }
                     tab_close_identity(scene, &target.path)
@@ -3339,7 +3469,7 @@ impl Interaction {
             Hit::ScrollBar(target) => target.row_key = scene.row_key_at(&target.path),
             _ => {}
         }
-        result
+        (result, projected)
     }
 
     pub fn scale_rotate_target_at(
@@ -4028,6 +4158,29 @@ impl Interaction {
         })
     }
 
+    #[doc(hidden)]
+    pub fn texture_pointer_active(&self) -> bool {
+        self.scene_texture_pointer.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn control_pointer(&self, path: &[usize], physical: Point) -> Option<Point> {
+        if self.pointer == Some(physical)
+            && let Some(projection) = &self.scene_texture_pointer
+            && path.starts_with(projection.capture.source_path())
+        {
+            return Some(projection.point);
+        }
+        if self
+            .pressed_scene_texture
+            .as_ref()
+            .is_some_and(|capture| path.starts_with(capture.source_path()))
+        {
+            return None;
+        }
+        Some(physical)
+    }
+
     pub fn pointer_position(&self) -> Option<Point> {
         self.pointer
     }
@@ -4179,6 +4332,111 @@ impl Interaction {
         let x = self.scroll_x(layout, delta.x);
         let y = self.scroll_y(layout, delta.y);
         x || y
+    }
+
+    /// Apply wheel input in scene coordinates, including a material surface's 2D source.
+    pub fn scroll_wheel_in_scene(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        delta: Point,
+        shift: bool,
+    ) -> bool {
+        if self.pointer_on_stack_slide || !delta.x.is_finite() || !delta.y.is_finite() {
+            return false;
+        }
+        let Some(window) = self.pointer else {
+            return false;
+        };
+        let Some(source) = self
+            .hit_at_for_position(scene, layout, window, HitPurpose::Hover)
+            .1
+        else {
+            return self.scroll_wheel(layout, delta, shift);
+        };
+        let scope_depth = self.pointer_scope(layout, window).len();
+        if shift
+            && delta.x == 0.0
+            && let Some(changed) = self.scroll_texture_axis(
+                layout,
+                &source,
+                scope_depth,
+                delta.y,
+                Orientation::Horizontal,
+            )
+        {
+            return changed;
+        }
+        let x = self
+            .scroll_texture_axis(
+                layout,
+                &source,
+                scope_depth,
+                delta.x,
+                Orientation::Horizontal,
+            )
+            .unwrap_or(false);
+        let y = self
+            .scroll_texture_axis(layout, &source, scope_depth, delta.y, Orientation::Vertical)
+            .unwrap_or(false);
+        x || y
+    }
+
+    fn scroll_texture_axis(
+        &mut self,
+        layout: &LayoutNode,
+        source: &crate::scene_texture_input::Projection,
+        scope_depth: usize,
+        delta: f32,
+        orientation: Orientation,
+    ) -> Option<bool> {
+        if delta == 0.0 {
+            return None;
+        }
+        let source_path = source.capture.source_path();
+        let scrollable = |item: &LayoutNode| {
+            item.scroll_on(orientation)
+                .is_some_and(|scroll| scroll.max_offset > 0.0)
+        };
+        let projected = Self::scroll_path(layout, source.point, source_path, |_, item| {
+            scrollable(item)
+        });
+        let result = projected.as_ref().map_or_else(
+            || AxisMotion {
+                remaining: delta,
+                ..AxisMotion::default()
+            },
+            |path| {
+                self.consume_scroll(
+                    layout,
+                    path,
+                    source_path.len(),
+                    delta,
+                    orientation,
+                    ScrollInput::Wheel,
+                )
+            },
+        );
+        // Any overflow belongs to the physical view's enclosing scroll
+        // containers. A donor's unrelated 2D parents are outside this route.
+        let viewport = source.capture.view_path();
+        let physical = (scope_depth..viewport.len())
+            .rev()
+            .find(|&depth| layout.at_path(&viewport[..depth]).is_some_and(scrollable));
+        let bubbled = physical.is_some_and(|depth| {
+            result.remaining != 0.0
+                && self
+                    .consume_scroll(
+                        layout,
+                        &viewport[..depth],
+                        scope_depth,
+                        result.remaining,
+                        orientation,
+                        ScrollInput::Wheel,
+                    )
+                    .changed()
+        });
+        (projected.is_some() || physical.is_some()).then_some(result.changed() || bubbled)
     }
 
     /// Scroll only the named container, without pointer hit testing or ancestor bubbling.
@@ -4748,6 +5006,9 @@ impl Interaction {
                 .rev()
                 .filter_map(|index| layout.child_at(index).map(|child| (index, child)))
             {
+                if child.is_texture_only() {
+                    continue;
+                }
                 path.push(index);
                 if target(child, point, path, accepts) {
                     return true;
@@ -4899,6 +5160,7 @@ impl Interaction {
                 record_motion(owners, item, orientation);
             }
         }
+        result.remaining = delta as f32;
         result
     }
 
@@ -4984,9 +5246,11 @@ impl Interaction {
                 axes,
                 mouse_viewport: true,
                 pan_device: PanDevice::LeftMouse,
+                surface: None,
             },
             motion: DragMotion::new(point, now),
             tap: None,
+            window_origin: point,
             touch_point: None,
             popup: (false, false),
             menu_pan: None,
@@ -5037,7 +5301,14 @@ impl Interaction {
         if !point.x.is_finite() || !point.y.is_finite() {
             return false;
         }
-        let hit = self.hit_at(scene, layout, point);
+        let (hit, projected) = self.hit_at_for_position(
+            scene,
+            layout,
+            point,
+            HitPurpose::Button(xrack_runtime::PointerButton::Primary),
+        );
+        let window = point;
+        let point = projected.as_ref().map_or(window, |surface| surface.point);
         // Let the time picker's footer receive a tap even while its wheel moves.
         let picker_button = match (&hit, &self.tumbler_flick) {
             (Hit::Target(target), Some(flick)) => self
@@ -5058,12 +5329,16 @@ impl Interaction {
             kind,
             ScrollGestureKind::Touch | ScrollGestureKind::MouseControl
         ) && !interrupted
-            && self.start_table_selection_handle(scene, layout, point, touch, true)
+            && projected.is_none()
+            && self.start_table_selection_handle(scene, layout, window, touch, true)
         {
             return true;
         }
         let popup = (self.menu_open(), self.choice_open());
-        let scope = self.pointer_scope(layout, point).to_vec();
+        let scope = self.pointer_scope(layout, window).to_vec();
+        let input_scope = projected
+            .as_ref()
+            .map_or(scope.as_slice(), |surface| surface.capture.source_path());
         if !popup.0 && !popup.1 && matches!(hit, Hit::StackSlide) {
             return false;
         }
@@ -5119,24 +5394,27 @@ impl Interaction {
             Hit::Target(target)
                 if !popup.0 && !popup.1 && kind != ScrollGestureKind::MouseTumbler =>
             {
-                (scope.len()..=target.path.len()).rev().find_map(|depth| {
-                    let path = &target.path[..depth];
-                    let node = scene.interactive_at_path(path)?;
-                    let item = layout.at_path(path)?;
-                    let ancestor = Target::from_node(
-                        path.to_vec(),
-                        node,
-                        focusable(node),
-                        scene.row_key_at(path),
-                    );
-                    SwipeDrag::new(ancestor, node, item, item.map_from_window(point)?)
-                })
+                (input_scope.len()..=target.path.len())
+                    .rev()
+                    .find_map(|depth| {
+                        let path = &target.path[..depth];
+                        let node = scene.interactive_at_path(path)?;
+                        let item = layout.at_path(path)?;
+                        let ancestor = Target::from_node(
+                            path.to_vec(),
+                            node,
+                            focusable(node),
+                            scene.row_key_at(path),
+                        );
+                        SwipeDrag::new(ancestor, node, item, item.map_from_window(point)?)
+                    })
             }
             _ => None,
         };
         let table_gesture = match &hit {
             Hit::Target(target)
                 if !interrupted
+                    && projected.is_none()
                     && popup == (false, false)
                     && matches!(
                         kind,
@@ -5149,6 +5427,7 @@ impl Interaction {
         };
         let swipe = (!popup.0
             && !popup.1
+            && projected.is_none()
             && tumbler.is_none()
             && tab_move.is_none()
             && swipe_delegate.is_none()
@@ -5181,19 +5460,23 @@ impl Interaction {
         let pages = if popup.0 || popup.1 || left_mouse_pan {
             Vec::new()
         } else {
-            Self::page_swipes(scene, layout, point, &scope, &hit)
+            Self::page_swipes(scene, layout, point, input_scope, &hit)
         };
-        let drawer =
-            if popup.0 || popup.1 || left_mouse_pan || self.popup_at(layout, point).is_some() {
-                None
-            } else {
-                self.drawer_swipe(scene, layout, point)
-            };
+        let drawer = if popup.0
+            || popup.1
+            || left_mouse_pan
+            || projected.is_some()
+            || self.popup_at(layout, window).is_some()
+        {
+            None
+        } else {
+            self.drawer_swipe(scene, layout, point)
+        };
         let axes = [Orientation::Horizontal, Orientation::Vertical].map(|orientation| {
             if popup.0 || popup.1 {
                 return None;
             }
-            let path = Self::scroll_path(layout, point, &scope, |path, item| {
+            let path = Self::scroll_path(layout, point, input_scope, |path, item| {
                 item.accepts_pan(orientation, pan_device)
                     && item.scroll_on(orientation).is_some_and(|scroll| {
                         scroll.max_offset > 0.0
@@ -5250,7 +5533,7 @@ impl Interaction {
             && swipe_delegate.is_none()
             && swipe.is_none()
         {
-            self.take_drag_overscroll(layout, &axes, scope.len(), pan_device)
+            self.take_drag_overscroll(layout, &axes, input_scope.len(), pan_device)
         } else {
             Overscroll::default()
         };
@@ -5265,10 +5548,10 @@ impl Interaction {
         self.pointer_leave();
         let delay_touch = delay_target.is_some_and(|target| {
             self.set_focus(Some(target.clone()));
-            self.begin_delay(scene, layout, target, DelaySource::Touch(point), now)
+            self.begin_delay(scene, layout, target, DelaySource::Touch(window), now)
         });
         if let Some(target) = repeat_target {
-            self.begin_button_hold(scene, layout, target, DelaySource::Touch(point), now);
+            self.begin_button_hold(scene, layout, target, DelaySource::Touch(window), now);
         }
         if popup == (false, false)
             && let Some(Hit::Target(target)) = &tap
@@ -5297,10 +5580,12 @@ impl Interaction {
                 axes,
                 mouse_viewport: false,
                 pan_device,
+                surface: projected.map(|surface| Box::new(surface.capture)),
             },
             motion: DragMotion::new(point, now),
             tap,
-            touch_point: (kind == ScrollGestureKind::Touch).then_some(point),
+            window_origin: window,
+            touch_point: (kind == ScrollGestureKind::Touch).then_some(window),
             popup,
             menu_pan,
             choice_pan,
@@ -5515,6 +5800,10 @@ impl Interaction {
             && scene.row_key_at(&route.scope) == route.scope_row
             && scene.at_path(&route.scope).and_then(Node::element_id)
                 == route.scope_id.as_ref().map(ElementId::as_str)
+            && route
+                .surface
+                .as_ref()
+                .is_none_or(|surface| surface.is_attached(scene, layout))
             && (!route.mouse_viewport
                 || route.axes.iter().flatten().any(|target| {
                     target.resolve(scene, layout).is_some_and(|(_, item)| {
@@ -5556,7 +5845,7 @@ impl Interaction {
             self.consume_scroll(
                 layout,
                 path,
-                route.scope.len(),
+                route.input_scope().len(),
                 movement,
                 target.orientation,
                 ScrollInput::Pan {
@@ -5638,29 +5927,47 @@ impl Interaction {
         if gesture.touch_point.is_some() {
             gesture.touch_point = Some(point);
         }
-        if !self.scroll_route_is_current(scene, layout, &gesture.route)
-            || gesture.popup != (self.menu_open(), self.choice_open())
-        {
+        let window = point;
+        let routed = gesture
+            .route
+            .surface
+            .as_deref()
+            .map_or(Some(window), |surface| {
+                self.sample_scene_texture(
+                    surface,
+                    scene,
+                    layout,
+                    window,
+                    xrack_runtime::PointerButton::Primary,
+                )
+            });
+        let Some(point) = routed.filter(|_| {
+            self.scroll_route_is_current(scene, layout, &gesture.route)
+                && gesture.popup == (self.menu_open(), self.choice_open())
+        }) else {
             self.viewport_motion.clear();
             let cleared = self.overscroll.clear() | self.swipe_page_motion.take().is_some();
             self.swipe_events
                 .extend(gesture.swipe.take().and_then(SwipeRoute::cancel));
             self.cancel_touch_delay();
             self.cancel_touch_button_hold();
+            let canceled_contact = self.finish_button_contact(ButtonContactSource::Gesture, false);
             let tumbler_cleared = gesture.tumbler.is_some_and(|mut drag| drag.cancel());
             return cleared
+                || canceled_contact
+                || (gesture.motion.dragging && gesture.route.surface.is_some())
                 || tumbler_cleared
                 || (gesture.motion.dragging && gesture.tab_move.is_some())
                 || gesture.switch.is_some_and(|drag| drag.position.is_some())
                 || gesture
                     .swipe_delegate
                     .is_some_and(|drag| drag.has_preview());
-        }
+        };
         if gesture.delay_touch
             && let Some(hold) = &mut self.delay_hold
             && matches!(hold.source, DelaySource::Touch(_))
         {
-            hold.source = DelaySource::Touch(point);
+            hold.source = DelaySource::Touch(window);
             if !layout
                 .at_path(&hold.target.path)
                 .is_some_and(|item| item.contains_subtree_point(point))
@@ -5671,8 +5978,8 @@ impl Interaction {
         if let Some(repeat) = &mut self.button_hold
             && matches!(repeat.source, DelaySource::Touch(_))
         {
-            repeat.source = DelaySource::Touch(point);
-            if repeat.moved_too_far(point)
+            repeat.source = DelaySource::Touch(window);
+            if repeat.moved_too_far(window)
                 || !layout
                     .at_path(&repeat.target.path)
                     .is_some_and(|item| item.contains_subtree_point(point))
@@ -5705,7 +6012,11 @@ impl Interaction {
             }
         }
         let elastic_frame = self.overscroll.frame();
-        let scrolled = gesture.motion.update(point, now).is_some_and(|delta| {
+        let window_distance = gesture.route.surface.as_ref().map(|_| {
+            (gesture.window_origin.x - window.x).hypot(gesture.window_origin.y - window.y)
+        });
+        let movement = gesture.motion.update(point, now, window_distance);
+        let scrolled = movement.is_some_and(|delta| {
             if let Some(pan) = &mut gesture.menu_pan {
                 return self
                     .menu
@@ -6020,9 +6331,17 @@ impl Interaction {
             };
         };
         let inside = !gesture.motion.dragging
-            && gesture
-                .tap
-                .is_some_and(|hit| hit == self.hit_at(scene, layout, point));
+            && gesture.tap.is_some_and(|hit| {
+                let (next, projected) = self.hit_at_for_position(
+                    scene,
+                    layout,
+                    point,
+                    HitPurpose::Button(xrack_runtime::PointerButton::Primary),
+                );
+                hit == next
+                    && gesture.route.surface.as_deref()
+                        == projected.as_ref().map(|projection| &projection.capture)
+            });
         self.finish_button_contact(ButtonContactSource::Gesture, inside);
         let tap = inside && !gesture.delay_touch;
         match gesture.swipe {
@@ -6131,7 +6450,7 @@ impl Interaction {
             let control = page.action(
                 scene,
                 layout,
-                point,
+                gesture.motion.position(),
                 gesture.motion.measured_release_velocities(now),
             );
             if control.is_some()
@@ -6626,8 +6945,16 @@ impl Interaction {
         {
             return None;
         }
-        let point = self.pointer?;
-        let target = self.pointer_hover_target(scene, layout)?;
+        let physical = self.pointer?;
+        let (hit, projected) = self.hit_at_for_position(scene, layout, physical, HitPurpose::Hover);
+        let target = match hit {
+            Hit::Target(target) | Hit::ControlPart(target, _) | Hit::TableRowGrip(target, _) => {
+                target
+            }
+            _ => return None,
+        };
+        let point = projected.as_ref().map_or(physical, |route| route.point);
+        let texture = projected.map(|route| route.capture);
         let (path, node) = slider_target(&target, scene, layout).or_else(|| {
             let node = scene.interactive_at_path(&target.path)?;
             valid(&target, scene, layout).then_some((target.path.as_slice(), node))
@@ -6689,6 +7016,7 @@ impl Interaction {
         let row = scene.row_key_at(path);
         let mut total = units;
         if let Some(previous) = previous
+            && previous.texture == texture
             && previous.path == path
             && previous.row == row
             && previous.handle == handle
@@ -6707,6 +7035,7 @@ impl Interaction {
         };
         let remainder = total.fract();
         self.wheel_steps = (remainder != 0.0).then(|| WheelSteps {
+            texture,
             path: path.to_vec(),
             row,
             handle,
@@ -8753,7 +9082,18 @@ impl Interaction {
         }) {
             self.reset_wheel_adjustment();
         }
-        let hit = self.hit_at(scene, layout, point);
+        let (hit, projection) = self.hit_at_for_position(
+            scene,
+            layout,
+            point,
+            HitPurpose::Button(xrack_runtime::PointerButton::Primary),
+        );
+        if self.wheel_steps.as_ref().is_some_and(|steps| {
+            steps.texture.as_ref() != projection.as_ref().map(|projection| &projection.capture)
+        }) {
+            self.reset_wheel_adjustment();
+        }
+        self.scene_texture_pointer = projection;
         let cancelled_delay = self.delay_hold.as_ref().is_some_and(|hold| {
             matches!(hold.source, DelaySource::Pointer)
                 && !matches!(&hit, Hit::Target(target) if *target == hold.target)
@@ -8902,6 +9242,7 @@ impl Interaction {
             self.button_hold = None;
         }
         self.pointer = None;
+        self.scene_texture_pointer = None;
         self.set_split_hover(None);
         self.tumbler_wheel = None;
         self.reset_wheel_adjustment();
@@ -8998,6 +9339,12 @@ impl Interaction {
         self.tooltip.source = TooltipSource::Pointer;
         self.tooltip.dismiss();
         self.pressed = self.hovered.clone();
+        self.pressed_scene_texture = self.pressed.as_ref().and_then(|target| {
+            self.scene_texture_pointer
+                .as_ref()
+                .filter(|projection| target.path.starts_with(projection.capture.source_path()))
+                .map(|projection| projection.capture.clone())
+        });
         self.pressed_radio.clone_from(&self.hovered_radio);
         self.pressed_list_row = self.hovered_list_row.clone();
         self.pressed_tree_indicator = self.hovered_tree_indicator;
@@ -9235,7 +9582,7 @@ impl Interaction {
         let (path, node) = slider_target(target, scene, layout)?;
         let item = layout.at_path(path)?;
         let bounds = item.bounds;
-        let point = item.map_from_window(self.pointer?)?;
+        let point = item.map_from_window(self.control_pointer(&target.path, self.pointer?)?)?;
         if node.kind == "ColorPlane" {
             return Some(RangeInput {
                 path: target.path.clone(),
@@ -9316,7 +9663,7 @@ impl Interaction {
         let (owner, node) = slider_target(target, scene, layout)?;
         let item = layout.at_path(owner)?;
         let bounds = item.bounds;
-        let point = item.map_from_window(self.pointer?)?;
+        let point = item.map_from_window(self.control_pointer(&target.path, self.pointer?)?)?;
         if node.kind == "ColorPlane" {
             return Some(RangeInput {
                 path: target.path.clone(),
@@ -11416,6 +11763,7 @@ impl Interaction {
 
     pub fn pointer_release_target(&mut self) -> Option<Target> {
         self.text_selection_scroll = None;
+        self.pressed_scene_texture = None;
         if self.pressed.is_some() {
             self.last_editor_click = self.editor_press.take().filter(|press| {
                 self.pressed.as_ref() == Some(&press.target)
@@ -13631,6 +13979,7 @@ impl Interaction {
     }
     pub fn cancel_press(&mut self) {
         self.text_selection_scroll = None;
+        self.pressed_scene_texture = None;
         self.editor_press = None;
         self.last_editor_click = None;
         self.button_press_events.extend(
@@ -13778,17 +14127,19 @@ impl Interaction {
         });
     }
 
-    fn finish_button_contact(&mut self, source: ButtonContactSource, released: bool) {
-        if let Some(index) = self
+    fn finish_button_contact(&mut self, source: ButtonContactSource, released: bool) -> bool {
+        let Some(index) = self
             .button_contacts
             .iter()
             .position(|contact| contact.source == source)
-        {
-            self.button_press_events.push((
-                self.button_contacts.remove(index),
-                if released { "released" } else { "canceled" },
-            ));
-        }
+        else {
+            return false;
+        };
+        self.button_press_events.push((
+            self.button_contacts.remove(index),
+            if released { "released" } else { "canceled" },
+        ));
+        true
     }
 
     /// Publish the reactive state before delivering events to their original buttons.

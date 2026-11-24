@@ -14,6 +14,11 @@ struct Sparks {
     emitter-yaw: float, emitter-pitch: float, emitter-roll: float,
     velocity-mode: string, velocity-cone-angle: float, velocity-target: point3d,
     velocity-target-spread: vector3d, velocity-speed-variation: float,
+    trail-segments: int, trail-duration: float, trail-end-scale: float,
+    trail-fade: float, trail-eol-fade: float,
+    particle-model: string, particle-rotation: vector3d,
+    particle-rotation-variation: vector3d, particle-angular-velocity: vector3d,
+    particle-casts-shadow: bool, particle-receives-shadow: bool, particle-casts-reflections: bool,
 }
 
 struct Field {

@@ -51,7 +51,7 @@ impl Accumulator {
     pub fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("XRack progressive 3D AA"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("progressive.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../pixel_blit.wgsl").into()),
         });
         let blend = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::Constant,

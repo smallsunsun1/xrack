@@ -1266,19 +1266,29 @@ pub(crate) fn complete_with_imports(
     if let Some(kinds) = imports::scene_string_options(&source, &tokens, cursor, text.len()) {
         return kinds;
     }
+    if let Some(items) = imports::scene_effect_buffer_values(&source, &tokens, cursor) {
+        return items;
+    }
+    if let Some(items) = imports::scene_item_texture_values(&source, &tokens, cursor, text.len()) {
+        return items;
+    }
+    if let Some(prototypes) = imports::scene_prototype_values(&source, &tokens, cursor) {
+        return prototypes;
+    }
     if let Some(paths) = workspace
         .and_then(|workspace| imports::scene_asset_paths(&source, &tokens, cursor, workspace))
     {
         return paths;
     }
-    if let Some(clips) = workspace
-        .and_then(|workspace| imports::scene_animation_values(&source, &tokens, cursor, workspace))
-    {
+    if let Some(slots) = imports::scene_material_slot_values(&source, &tokens, cursor, workspace) {
+        return slots;
+    }
+    if let Some(clips) = workspace.and_then(|workspace| {
+        imports::scene_asset_selector_values(&source, &tokens, cursor, workspace)
+    }) {
         return clips;
     }
-    if let Some(cameras) = workspace
-        .and_then(|workspace| imports::scene_camera_values(&source, &tokens, cursor, workspace))
-    {
+    if let Some(cameras) = imports::scene_camera_values(&source, &tokens, cursor, workspace) {
         return cameras;
     }
     let code: Vec<_> = tokens.iter().filter(|t| t.code()).collect();

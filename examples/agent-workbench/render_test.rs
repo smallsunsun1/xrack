@@ -111,11 +111,18 @@ fn long_transcript_scroll_benchmark() -> Result<(), Box<dyn std::error::Error>> 
 fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
         fmt::Write as _,
+        rc::Rc,
         time::{Duration, Instant},
     };
+    use xrack_layout::StackTransitions;
+    use xrack_renderer_femtovg::{RenderDevice, WindowDamage};
     use xrack_runtime::Orientation;
 
     let follow_latest = std::env::var_os("XRACK_TRANSCRIPT_BENCH_LATEST").is_some();
+    let window_entry = std::env::var_os("XRACK_TRANSCRIPT_BENCH_WINDOW_ENTRY").is_some();
+    let bgra = std::env::var_os("XRACK_TRANSCRIPT_BENCH_BGRA").is_some();
+    let verify_damage =
+        window_entry && std::env::var_os("XRACK_TRANSCRIPT_BENCH_VERIFY_DAMAGE").is_some();
     let paragraphs = std::env::var("XRACK_TRANSCRIPT_BENCH_PARAGRAPHS")
         .map_or(Ok(0_usize), |count| count.parse())?;
     let rounds = std::env::var("XRACK_TRANSCRIPT_BENCH_ROUNDS")
@@ -128,11 +135,15 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     let scale = 2;
     let ui = transcript_benchmark_window()?;
     let entries = ui.model_entries();
-    let mut renderer = pollster::block_on(Renderer::new(
+    let device = pollster::block_on(RenderDevice::request(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
         None,
     ))?;
-    let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+    let mut renderer = Renderer::with_device(device.clone())?;
+    if window_entry && std::env::var_os("XRACK_TRANSCRIPT_BENCH_FORCE_DAMAGE").is_some() {
+        renderer.set_window_damage_forced(true);
+    }
+    let texture = wgpu::TextureDescriptor {
         label: Some("XRack transcript benchmark"),
         size: wgpu::Extent3d {
             width: viewport.width as u32 * scale,
@@ -142,14 +153,35 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: if bgra {
+            wgpu::TextureFormat::Bgra8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        },
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | if verify_damage {
+                wgpu::TextureUsages::COPY_SRC
+            } else {
+                wgpu::TextureUsages::empty()
+            },
         view_formats: &[],
-    });
+    };
+    let target = renderer.device.create_texture(&texture);
+    let alternate = window_entry.then(|| renderer.device.create_texture(&texture));
+    let mut verification = verify_damage
+        .then(|| {
+            let target = renderer.device.create_texture(&texture);
+            Renderer::with_device(device).map(|reference| (reference, target))
+        })
+        .transpose()?;
+    let transitions = StackTransitions::default();
     let mut input = Interaction::default();
-    let (mut scene, mut layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let (mut scene, initial_layout) =
+        renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let mut layout = Rc::new(initial_layout);
     let mut long_reply = String::new();
     let mut streamed_markdown = xrack_runtime::MarkdownStream::default();
+    let mut linked_markdown = file_references::TranscriptStream::default();
     for index in 0..paragraphs {
         writeln!(
             long_reply,
@@ -175,6 +207,8 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         let mut submit = Vec::with_capacity(60);
         let mut gpu = Vec::with_capacity(60);
         let mut total = Vec::with_capacity(60);
+        let mut damage_counts = [0; 3];
+        let mut max_channel_delta = 0;
         for pass in 0..passes {
             let frame = pass % 70;
             input.pointer_move(&scene, &layout, Point { x: 650.0, y: 340.0 });
@@ -189,7 +223,7 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
                     ))?
                 } else {
                     writeln!(long_reply, "**输出 {pass}** · `tests/gpu_test.rs:5`\n")?;
-                    file_references::transcript_document(&long_reply, Some(&mut streamed_markdown))
+                    file_references::transcript_document(&long_reply, Some(&mut linked_markdown))
                 };
                 entries.set_row(last, reply);
             }
@@ -200,16 +234,68 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
             }
             let base = ui.render_shared();
             let generated = Instant::now();
-            (scene, layout) = renderer.prepare_scene(&ui, base, viewport, &input);
+            let next;
+            (scene, next) = renderer.prepare_scene(&ui, base, viewport, &input);
+            layout = Rc::new(next);
             let prepared = Instant::now();
-            renderer.draw_with_layout(&scene, &layout, &texture, scale as f32, &input)?;
+            let target = alternate
+                .as_ref()
+                .filter(|_| pass % 2 != 0)
+                .unwrap_or(&target);
+            let damage = if window_entry {
+                Some(renderer.draw_window_prepared(
+                    &scene,
+                    &layout,
+                    target,
+                    scale as f32,
+                    &input,
+                    &transitions,
+                )?)
+            } else {
+                renderer.draw_with_layout(&scene, &layout, target, scale as f32, &input)?;
+                None
+            };
             let submitted = Instant::now();
             renderer.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: Some(Duration::from_secs(10)),
             })?;
             let completed = Instant::now();
+            if let Some((reference, reference_target)) = &mut verification {
+                reference.draw_with_layout(
+                    &scene,
+                    &layout,
+                    reference_target,
+                    scale as f32,
+                    &input,
+                )?;
+                let actual = gpu_readback::read_texture(&renderer, target)?;
+                let expected = gpu_readback::read_texture(reference, reference_target)?;
+                for (byte, (a, b)) in actual.iter().zip(&expected).enumerate() {
+                    let delta = a.abs_diff(*b);
+                    max_channel_delta = max_channel_delta.max(delta);
+                    // The backing blit and ordinary drawing can round a
+                    // channel differently at the target's 8-bit precision.
+                    if delta > 1 {
+                        let pixel = byte / 4;
+                        let width = texture.size.width as usize;
+                        let (x, y) = (pixel % width, pixel / width);
+                        return Err(format!(
+                            "damage {damage:?}, streaming={streaming}, frame {pass}, pixel ({x}, {y}), channel {}: {a} vs {b}",
+                            byte % 4,
+                        ).into());
+                    }
+                }
+            }
             if frame >= 10 {
+                if let Some(damage) = damage {
+                    let index = match damage {
+                        WindowDamage::Full => 0,
+                        WindowDamage::Partial { .. } | WindowDamage::PartialRegions(_) => 1,
+                        WindowDamage::Unchanged => 2,
+                    };
+                    damage_counts[index] += 1;
+                }
                 model.push(updated - start);
                 scene_update.push(generated - updated);
                 layout_time.push(prepared - generated);
@@ -225,9 +311,19 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
             assert!(position > 0.0 && (position + size - 1.0).abs() < 1e-6);
         }
         println!(
-            "transcript GPU benchmark: {} rows, streaming={streaming}",
-            entries.len()
+            "transcript GPU benchmark: {} rows, streaming={streaming}, window={window_entry}, {:?}",
+            entries.len(),
+            texture.format,
         );
+        if window_entry {
+            let [full, partial, unchanged] = damage_counts;
+            println!("window damage: {full} full, {partial} partial, {unchanged} unchanged");
+        }
+        if verify_damage {
+            println!(
+                "verified {passes} frames against full repaint, maximum channel delta {max_channel_delta}"
+            );
+        }
         for (stage, samples) in [
             ("update model", &mut model),
             ("generate scene", &mut scene_update),

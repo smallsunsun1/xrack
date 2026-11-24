@@ -262,6 +262,9 @@ impl Module {
                 | "xr.mesh_lod_url"
                 | "xr.mesh_lightmap_url"
                 | "xr.mesh_lod_lightmap_url"
+                | "xr.texture_url"
+                | "xr.shader_url"
+                | "xr.material_shader_url"
                 | "xr.environment_url" => Some("value"),
                 _ => None,
             };

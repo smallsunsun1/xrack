@@ -96,10 +96,15 @@ pub(crate) fn grapheme_boundaries(text: &str) -> Vec<usize> {
         .collect()
 }
 
-pub(crate) fn fitting_prefix(
+pub(crate) fn fitting_prefix(start: usize, last: usize, fits: impl FnMut(usize) -> bool) -> usize {
+    fitting_prefix_until(start, last, fits, |_, _| false)
+}
+
+pub(crate) fn fitting_prefix_until(
     start: usize,
     last: usize,
     mut fits: impl FnMut(usize) -> bool,
+    mut final_fit: impl FnMut(usize, usize) -> bool,
 ) -> usize {
     let mut fit = start;
     let mut probe = (start + 1).min(last);
@@ -107,7 +112,7 @@ pub(crate) fn fitting_prefix(
         fit = probe;
         probe = (start + (fit - start).saturating_mul(2)).min(last);
     }
-    while probe > fit + 1 {
+    while probe > fit + 1 && !final_fit(fit, probe - 1) {
         let middle = fit + (probe - fit) / 2;
         if fits(middle) {
             fit = middle;

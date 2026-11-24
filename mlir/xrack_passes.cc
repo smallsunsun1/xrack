@@ -492,6 +492,15 @@ LogicalResult replaceGeometryLiteral(PatternRewriter &rewriter, Operation *op,
   return success();
 }
 
+// Dropping an unevaluated scene expression could drop a callback or a trap.
+static bool staticGeometryArgument(Value value) {
+  if (value.getDefiningOp<LiteralOp>())
+    return true;
+  auto *op = value.getDefiningOp();
+  return op && isa<RecordArrayOp, MakeRecordOp, IntArrayOp>(op) &&
+         llvm::all_of(op->getOperands(), staticGeometryArgument);
+}
+
 struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -520,11 +529,103 @@ struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
           op, op.getResult().getType(), ValueRange{}, "");
       return success();
     }
+    if (operation == "hit-row-3d" || operation == "hit-row-camera-3d" || operation == "ray-hit-row-3d" ||
+        operation == "hit-subset-3d" || operation == "hit-subset-camera-3d" || operation == "ray-hit-subset-3d" ||
+        operation == "hit-instance-3d" || operation == "hit-instance-camera-3d" || operation == "ray-hit-instance-3d") {
+      bool subset = operation.contains("-subset-");
+      const unsigned selectorIndex = operation.starts_with("ray-") || operation.ends_with("-camera-3d") ? 4u : 6u;
+      const unsigned count = operation.contains("-instance-") ? 3u : 1u;
+      if (inputs.size() < selectorIndex + count)
+        return failure();
+      bool empty = false;
+      if (subset) {
+        auto rows = inputs[selectorIndex].getDefiningOp<IntArrayOp>();
+        empty = rows && rows.getItems().empty();
+      } else {
+        empty = llvm::any_of(inputs.slice(selectorIndex, count), [](Value value) {
+          auto literal = value.getDefiningOp<LiteralOp>();
+          int64_t index;
+          return literal && !literal.getValue().getAsInteger(10, index) &&
+                 (index < 0 || index > std::numeric_limits<uint32_t>::max());
+        });
+      }
+      if (inputs.size() == selectorIndex + count + 1)
+        if (auto mask = inputs.back().getDefiningOp<LiteralOp>()) {
+          int64_t bits;
+          empty |= !mask.getValue().getAsInteger(10, bits) && bits == 0;
+        }
+      if (!empty || !llvm::all_of(inputs, staticGeometryArgument))
+        return failure();
+      if (subset)
+        rewriter.replaceOpWithNewOp<Hit3DArrayOp>(op, op.getResult().getType(), ValueRange{}, "");
+      else
+        replaceLiteral(rewriter, op, "");
+      return success();
+    }
+    if (operation == "pick-in-rect-3d" || operation == "pick-in-rect-camera-3d") {
+      const unsigned endIndex = operation == "pick-in-rect-3d" ? 6u : 4u;
+      if (inputs.size() <= endIndex)
+        return failure();
+      auto model = inputs.front().getDefiningOp<RecordArrayOp>();
+      auto start = geometryNumbers(inputs[endIndex - 1]);
+      auto end = geometryNumbers(inputs[endIndex]);
+      bool empty = (model && model.getItems().empty()) ||
+                   (start && end && ((*start)[0] == (*end)[0] ||
+                                     (*start)[1] == (*end)[1]));
+      if (inputs.size() == endIndex + 2)
+        if (auto mask = inputs.back().getDefiningOp<LiteralOp>()) {
+          int64_t bits;
+          empty |= !mask.getValue().getAsInteger(10, bits) && bits == 0;
+        }
+      if (!empty || !llvm::all_of(inputs, staticGeometryArgument))
+        return failure();
+      rewriter.replaceOpWithNewOp<IntArrayOp>(
+          op, op.getResult().getType(), ValueRange{}, "");
+      return success();
+    }
+    if (operation == "closest-point-3d" || operation == "closest-point-on-3d") {
+      const unsigned radiusIndex = operation == "closest-point-3d" ? 2u : 3u;
+      if (inputs.size() <= radiusIndex)
+        return failure();
+      auto model = inputs.front().getDefiningOp<RecordArrayOp>();
+      auto radius = geometryNumbers(inputs[radiusIndex]);
+      bool miss = (model && model.getItems().empty()) ||
+                  (radius && radius->front() < 0.0);
+      if (inputs.size() == radiusIndex + 2)
+        if (auto mask = inputs.back().getDefiningOp<LiteralOp>()) {
+          int64_t bits;
+          miss |= !mask.getValue().getAsInteger(10, bits) && bits == 0;
+        }
+      if (!miss || !llvm::all_of(inputs, staticGeometryArgument))
+        return failure();
+      replaceLiteral(rewriter, op, "");
+      return success();
+    }
     if ((operation == "sphere-slide-3d" || operation == "sphere-walk-3d") && inputs.size() >= 4) {
       auto displacement = geometryNumbers(inputs[2]);
       if (displacement && displacement->size() == 3 &&
           llvm::all_of(*displacement, [](double value) { return value == 0.0; })) {
         rewriter.replaceOp(op, inputs[1]);
+        return success();
+      }
+      return failure();
+    }
+    if (operation == "map-position-3d" || operation == "map-direction-3d") {
+      if (inputs.size() != 5 || !llvm::all_of(inputs, staticGeometryArgument))
+        return failure();
+      auto from = stringLiteral(inputs[1].getDefiningOp<LiteralOp>());
+      auto to = stringLiteral(inputs[2].getDefiningOp<LiteralOp>());
+      if (!from || !to)
+        return failure();
+      if (from->empty() && to->empty()) {
+        if (!geometryNumbers(inputs[3]))
+          return failure();
+        rewriter.replaceOp(op, inputs[3]);
+        return success();
+      }
+      if (auto model = inputs.front().getDefiningOp<RecordArrayOp>();
+          model && model.getItems().empty()) {
+        rewriter.replaceOp(op, inputs[4]);
         return success();
       }
       return failure();

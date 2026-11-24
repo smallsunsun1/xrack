@@ -1,17 +1,20 @@
 //! Camera-facing sprites evaluated from emitter uniforms and GPU instance indices.
-use std::collections::HashMap;
+use std::sync::Arc;
+use std::{collections::HashMap, ops::Deref};
 
+use xrack_runtime::scene_effect::{CapturePipelineState, CaptureRenderables};
 use xrack_runtime::{
     Node, Value,
     scene3d::{
-        MAX_PARTICLE_EMITTERS, MAX_PARTICLES, ParticleAffector, ParticleBlend, ParticleEmitter,
-        ParticleSample, SceneCamera,
+        CaptureMaterial, MAX_PARTICLE_EMITTERS, MAX_PARTICLES, Mesh3D, ParticleAffector,
+        ParticleBlend, ParticleEmitter, ParticleSample, SceneCamera,
     },
 };
 
 use super::{
-    DEPTH_FORMAT, append_floats, buffer, linear_rgb,
+    append_floats, buffer, linear_rgb,
     particle_affectors::AffectorBuffers,
+    particle_instances::{ModelInputs, ModelInstanceGenerator},
     particle_meshes::{MeshSurfaceBuffers, SurfaceBinding},
     particle_textures::{SpriteBinding, SpriteTextures},
     pipeline::ColorOutput,
@@ -22,6 +25,7 @@ const VIEW_BYTES: usize = 96;
 const EMITTER_BYTES: usize = 160;
 const MOTION_BYTES: usize = 160;
 const TRAIL_BYTES: usize = 16;
+const MODEL_BYTES: usize = 48;
 
 fn vertex_entry(
     mesh: bool,
@@ -76,12 +80,39 @@ fn vertex_entry(
 }
 
 pub(super) struct ParticleDraw<'a> {
-    emitters: Vec<(&'a ParticleEmitter, ParticleSample)>,
+    emitters: Vec<(DrawEmitter<'a>, ParticleSample)>,
     affectors: &'a [ParticleAffector],
+}
+
+enum DrawEmitter<'a> {
+    Source(&'a ParticleEmitter),
+    Override(Box<ParticleEmitter>),
+}
+
+impl Deref for DrawEmitter<'_> {
+    type Target = ParticleEmitter;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Source(emitter) => emitter,
+            Self::Override(emitter) => emitter,
+        }
+    }
 }
 
 impl<'a> ParticleDraw<'a> {
     pub fn sample(node: &'a Node, camera: &SceneCamera) -> Option<Self> {
+        Self::sample_filtered(node, camera, CaptureRenderables::All)
+    }
+
+    pub fn sample_filtered(
+        node: &'a Node,
+        camera: &SceneCamera,
+        renderables: CaptureRenderables,
+    ) -> Option<Self> {
+        if renderables == CaptureRenderables::None {
+            return None;
+        }
         let Some(Value::SceneParticleEmitters(emitters)) = node.properties.get("particle-emitters")
         else {
             return None;
@@ -96,8 +127,26 @@ impl<'a> ParticleDraw<'a> {
             let Some(sample) = emitter.sample(time, remaining) else {
                 continue;
             };
+            if renderables != CaptureRenderables::All
+                && !emitter.model.as_ref().map_or_else(
+                    || renderables.includes(true),
+                    |model| {
+                        let fading = model_fading(emitter, &sample);
+                        model.meshes.iter().any(|mesh| {
+                            renderables.includes(false)
+                                && !fading
+                                && (mesh.has_opaque_parts()
+                                    || mesh.has_depth_writing_transmission())
+                                || renderables.includes(true)
+                                    && (fading || !mesh.blended_parts().is_empty())
+                        })
+                    },
+                )
+            {
+                continue;
+            }
             remaining -= sample.count;
-            active.push((emitter, sample));
+            active.push((DrawEmitter::Source(emitter), sample));
             if remaining == 0 {
                 break;
             }
@@ -112,17 +161,100 @@ impl<'a> ParticleDraw<'a> {
         })
     }
 
+    pub fn sample_with_capture_material(
+        node: &'a Node,
+        camera: &SceneCamera,
+        filter: CaptureRenderables,
+        material: Option<&Arc<CaptureMaterial>>,
+    ) -> Option<Self> {
+        let mut draw = Self::sample_filtered(node, camera, filter)?;
+        if let Some(material) = material {
+            draw.emitters.retain_mut(|(emitter, sample)| {
+                let Some(model) = &emitter.model else {
+                    return true;
+                };
+                let filter = if model_fading(emitter, sample) {
+                    if !filter.includes(true) {
+                        return false;
+                    }
+                    CaptureRenderables::All
+                } else {
+                    filter
+                };
+                let meshes: Arc<[_]> = model
+                    .meshes
+                    .iter()
+                    .filter_map(|mesh| material.project(mesh, filter))
+                    .collect();
+                if meshes.is_empty() {
+                    return false;
+                }
+                let mut projected = (**emitter).clone();
+                if let Some(model) = &mut projected.model {
+                    model.meshes = meshes;
+                }
+                *emitter = DrawEmitter::Override(Box::new(projected));
+                true
+            });
+        }
+        (!draw.emitters.is_empty()).then_some(draw)
+    }
+
     pub fn has_source_over(&self) -> bool {
-        self.emitters
-            .iter()
-            .any(|(emitter, _)| emitter.blend == ParticleBlend::SourceOver)
+        self.emitters.iter().any(|(emitter, _)| {
+            emitter.model.is_none() && emitter.blend == ParticleBlend::SourceOver
+        })
     }
 
     pub fn has_custom_blend(&self) -> bool {
+        self.emitters.iter().any(|(emitter, _)| {
+            emitter.model.is_none() && emitter.blend != ParticleBlend::SourceOver
+        })
+    }
+
+    pub fn model_meshes(&self) -> impl Iterator<Item = &Mesh3D> {
         self.emitters
             .iter()
-            .any(|(emitter, _)| emitter.blend != ParticleBlend::SourceOver)
+            .filter_map(|(emitter, _)| emitter.model.as_ref())
+            .flat_map(|model| model.meshes.iter())
     }
+
+    pub fn has_model_transparency(&self) -> bool {
+        self.emitters.iter().any(|(emitter, sample)| {
+            emitter.model.as_ref().is_some_and(|model| {
+                model_fading(emitter, sample)
+                    || model
+                        .meshes
+                        .iter()
+                        .any(|mesh| !mesh.blended_parts().is_empty())
+            })
+        })
+    }
+
+    pub fn model_meshes_with_fading(&self) -> impl Iterator<Item = (&Mesh3D, bool)> {
+        self.emitters
+            .iter()
+            .filter_map(|(emitter, sample)| {
+                Some((emitter.model.as_ref()?, model_fading(emitter, sample)))
+            })
+            .flat_map(|(model, fading)| model.meshes.iter().map(move |mesh| (mesh, fading)))
+    }
+
+    pub fn model_transmission(&self, renderables: CaptureRenderables) -> Option<(f32, bool, bool)> {
+        self.model_meshes_with_fading()
+            .filter_map(|(mesh, fading)| {
+                super::instances::mesh_transmission(mesh, renderables, fading)
+            })
+            .reduce(|a, b| (a.0.max(b.0), a.1 || b.1, a.2 || b.2))
+    }
+}
+
+fn model_fading(emitter: &ParticleEmitter, sample: &ParticleSample) -> bool {
+    emitter.color.0 as u8 != 255
+        || emitter.color_table.is_some()
+        || emitter.fade[0] > sample.youngest_age()
+        || (emitter.fade[1] > 0.0
+            && sample.oldest_age().next_up() >= emitter.lifetime as f32 - emitter.fade[1])
 }
 
 struct Material {
@@ -131,6 +263,9 @@ struct Material {
     blend: ParticleBlend,
     mesh: Option<SurfaceBinding>,
     trail_segments: u32,
+    model: Option<Arc<[Mesh3D]>>,
+    fading: bool,
+    casts_shadow: bool,
 }
 
 impl Material {
@@ -139,6 +274,13 @@ impl Material {
             |binding: &Option<SpriteBinding>| binding.as_ref().map(|texture| texture.identity);
         self.blend == other.blend
             && self.trail_segments == other.trail_segments
+            && self.fading == other.fading
+            && self.casts_shadow == other.casts_shadow
+            && match (&self.model, &other.model) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
             && self.mesh.as_ref().map(|mesh| mesh.key) == other.mesh.as_ref().map(|mesh| mesh.key)
             && identity(&self.sprite) == identity(&other.sprite)
             && identity(&self.color_table) == identity(&other.color_table)
@@ -149,16 +291,28 @@ struct Batch {
     bytes: Vec<u8>,
     motion: Vec<u8>,
     trails: Vec<u8>,
+    model_settings: Vec<u8>,
     material: Material,
     instances: u32,
     emitters: usize,
     affected: bool,
+    shadow_bounds: Option<[[f32; 3]; 2]>,
 }
 
 impl Batch {
     fn push(&mut self, emitter: &ParticleEmitter, sample: ParticleSample, mask: u32) {
         self.instances += sample.count;
         self.affected |= mask != 0;
+        if let Some(model) = &emitter.model {
+            let shadow = if model.receives_shadow { 2.0 } else { 0.0 };
+            for ([x, y, z], flags) in [
+                (model.rotation, 0.0),
+                (model.rotation_variation, 0.0),
+                (model.angular_velocity, shadow),
+            ] {
+                append_floats(&mut self.model_settings, [x, y, z, flags]);
+            }
+        }
         if let Some(trail) = emitter.trail {
             append_floats(
                 &mut self.trails,
@@ -273,9 +427,20 @@ impl Batch {
                     wgpu::BufferUsages::UNIFORM,
                 )
             }),
+            model_settings: (!self.model_settings.is_empty()).then(|| {
+                self.model_settings
+                    .resize(MAX_PARTICLE_EMITTERS * MODEL_BYTES, 0);
+                buffer(
+                    device,
+                    "XRack model particle rotation",
+                    &self.model_settings,
+                    wgpu::BufferUsages::UNIFORM,
+                )
+            }),
             material: self.material,
             instances: self.instances,
             affected: self.affected,
+            shadow_bounds: self.shadow_bounds,
         }
     }
 }
@@ -284,9 +449,11 @@ pub(super) struct GpuParticleBatch {
     uniforms: wgpu::Buffer,
     motion: Option<wgpu::Buffer>,
     trails: Option<wgpu::Buffer>,
+    model_settings: Option<wgpu::Buffer>,
     material: Material,
     pub instances: u32,
     affected: bool,
+    shadow_bounds: Option<[[f32; 3]; 2]>,
 }
 
 impl GpuParticleBatch {
@@ -300,6 +467,15 @@ pub(super) struct ParticleBatches {
     pub direct: Vec<GpuParticleBatch>,
     pub weighted: Vec<GpuParticleBatch>,
     pub affectors: Option<wgpu::Buffer>,
+    pub models: Vec<ModelParticleBatch>,
+}
+
+pub(super) struct ModelParticleBatch {
+    pub meshes: Arc<[Mesh3D]>,
+    pub fading: bool,
+    pub instances: wgpu::Buffer,
+    pub count: u32,
+    pub shadow_bounds: Option<[[f32; 3]; 2]>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -323,10 +499,16 @@ impl Composite {
                 dst_factor,
                 operation: wgpu::BlendOperation::Add,
             },
-            alpha: wgpu::BlendComponent {
-                src_factor: Zero,
-                dst_factor: One,
-                operation: wgpu::BlendOperation::Add,
+            // A multiply filter only modifies existing scene color. Emissive
+            // sprites also need coverage when the scene is composed over 2D.
+            alpha: if matches!(self, Self::Direct(ParticleBlend::Multiply)) {
+                wgpu::BlendComponent {
+                    src_factor: Zero,
+                    dst_factor: One,
+                    operation: wgpu::BlendOperation::Add,
+                }
+            } else {
+                wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING.alpha
             },
         }
     }
@@ -363,22 +545,32 @@ impl Composite {
 
 #[derive(Default)]
 pub(super) struct ParticlePipelines {
-    shader: Option<wgpu::ShaderModule>,
-    variants: HashMap<([bool; 8], Composite), wgpu::RenderPipeline>,
+    shaders: [Option<wgpu::ShaderModule>; 2],
+    variants: HashMap<
+        (
+            [bool; 9],
+            Composite,
+            CapturePipelineState,
+            super::wireframe::RasterMode,
+            Option<wgpu::TextureFormat>,
+        ),
+        wgpu::RenderPipeline,
+    >,
     sampler: Option<wgpu::Sampler>,
     textures: SpriteTextures,
     mesh_surfaces: MeshSurfaceBuffers,
     affectors: AffectorBuffers,
+    model_instances: ModelInstanceGenerator,
 }
 
 impl ParticlePipelines {
     pub fn prepare(
         &mut self,
-        draw: ParticleDraw<'_>,
-        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        draw: &ParticleDraw<'_>,
+        (device, queue, encoder): (&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder),
         camera: SceneCamera,
         weight_scale: f32,
-        weighted: bool,
+        (weighted, shadows): (bool, bool),
     ) -> ParticleBatches {
         let mut header = Vec::with_capacity(VIEW_BYTES);
         append_floats(&mut header, camera.clip_rows().into_iter().flatten());
@@ -387,6 +579,7 @@ impl ParticlePipelines {
         append_floats(&mut header, [sx, sy, weight_scale, 0.0]);
         let mut direct: Vec<Batch> = Vec::new();
         let mut oit: Vec<Batch> = Vec::new();
+        let mut models: Vec<Batch> = Vec::new();
         let matches =
             |affector: &ParticleAffector, emitter: &ParticleEmitter, sample: &ParticleSample| {
                 affector.layers & emitter.layers & camera.layer_mask() != 0
@@ -403,7 +596,9 @@ impl ParticlePipelines {
                     .any(|(emitter, sample)| matches(affector, emitter, sample))
             })
             .collect();
-        for (emitter, sample) in draw.emitters {
+        for (emitter, sample) in &draw.emitters {
+            let emitter = emitter.deref();
+            let sample = *sample;
             let mesh = if let Some(surface) = &emitter.mesh {
                 let Some(binding) = self.mesh_surfaces.get(device, surface) else {
                     continue;
@@ -415,6 +610,7 @@ impl ParticlePipelines {
             let sprite = emitter
                 .sprite
                 .as_ref()
+                .filter(|_| emitter.model.is_none())
                 .and_then(|sprite| self.textures.get(device, queue, &sprite.image));
             let color_table = emitter
                 .color_table
@@ -426,9 +622,23 @@ impl ParticlePipelines {
                 blend: emitter.blend,
                 mesh,
                 trail_segments: emitter.trail.map_or(0, |trail| trail.segments),
+                model: emitter.model.as_ref().map(|model| model.meshes.clone()),
+                fading: emitter.model.is_some() && model_fading(emitter, &sample),
+                casts_shadow: shadows
+                    && emitter
+                        .model
+                        .as_ref()
+                        .is_some_and(|model| model.casts_shadow),
             };
-            let accumulation = weighted && emitter.blend == ParticleBlend::SourceOver;
-            let batches = if accumulation { &mut oit } else { &mut direct };
+            let accumulation =
+                weighted && emitter.model.is_none() && emitter.blend == ParticleBlend::SourceOver;
+            let batches = if emitter.model.is_some() {
+                &mut models
+            } else if accumulation {
+                &mut oit
+            } else {
+                &mut direct
+            };
             // Ordinary blending retains emitter order. Weighted blending can
             // combine all emitters with the same texture bindings.
             let index = if accumulation {
@@ -446,10 +656,12 @@ impl ParticlePipelines {
                     bytes: header.clone(),
                     motion: Vec::new(),
                     trails: Vec::new(),
+                    model_settings: Vec::new(),
                     material,
                     instances: 0,
                     emitters: 0,
                     affected: false,
+                    shadow_bounds: None,
                 });
                 batches.len() - 1
             });
@@ -459,16 +671,72 @@ impl ParticlePipelines {
                 .fold(0, |mask, (index, affector)| {
                     mask | (u32::from(matches(affector, emitter, &sample)) << index)
                 });
-            batches[index].push(emitter, sample, mask);
+            let batch = &mut batches[index];
+            if batch.material.casts_shadow
+                && let Some(bounds) = emitter.shadow_bounds(
+                    &sample,
+                    selected.iter().enumerate().filter_map(|(index, affector)| {
+                        (mask & (1 << index) != 0).then_some(affector)
+                    }),
+                )
+            {
+                batch.shadow_bounds = Some(batch.shadow_bounds.map_or(bounds, |previous| {
+                    [
+                        std::array::from_fn(|axis| previous[0][axis].min(bounds[0][axis])),
+                        std::array::from_fn(|axis| previous[1][axis].max(bounds[1][axis])),
+                    ]
+                }));
+            }
+            batch.push(emitter, sample, mask);
         }
-        let has_affectors = direct.iter().chain(&oit).any(|batch| batch.affected);
+        let has_affectors = direct
+            .iter()
+            .chain(&oit)
+            .chain(&models)
+            .any(|batch| batch.affected);
+        let affectors = has_affectors.then(|| self.affectors.get(device, selected));
+        let mut computed = Vec::with_capacity(models.len());
+        for batch in models {
+            let batch = batch.upload(device);
+            let (Some(meshes), Some(settings)) = (batch.material.model, batch.model_settings)
+            else {
+                continue;
+            };
+            let tint = batch
+                .material
+                .color_table
+                .as_ref()
+                .map(|color| (&color.view, particle_sampler(&mut self.sampler, device)));
+            let input = ModelInputs {
+                emitters: &batch.uniforms,
+                motion: batch.motion.as_ref(),
+                surface: batch.material.mesh.as_ref().map(|surface| &surface.buffer),
+                affectors: affectors.as_ref().filter(|_| batch.affected),
+                settings: &settings,
+                tint,
+                count: batch.instances,
+            };
+            if let Some(instances) =
+                self.model_instances
+                    .write(device, encoder, computed.len(), input)
+            {
+                computed.push(ModelParticleBatch {
+                    meshes,
+                    fading: batch.material.fading,
+                    instances,
+                    count: batch.instances,
+                    shadow_bounds: batch.shadow_bounds,
+                });
+            }
+        }
         ParticleBatches {
             direct: direct
                 .into_iter()
                 .map(|batch| batch.upload(device))
                 .collect(),
             weighted: oit.into_iter().map(|batch| batch.upload(device)).collect(),
-            affectors: has_affectors.then(|| self.affectors.get(device, selected)),
+            affectors,
+            models: computed,
         }
     }
 
@@ -496,10 +764,17 @@ impl ParticlePipelines {
         if batches.is_empty() {
             return;
         }
-        let shader = self.shader.get_or_insert_with(|| {
+        let wireframe = output.raster == super::wireframe::RasterMode::ShaderLine;
+        let shader = self.shaders[usize::from(wireframe)].get_or_insert_with(|| {
+            let source = include_str!("particles.wgsl");
+            let source = if wireframe {
+                std::borrow::Cow::Owned(super::wireframe::particles(source))
+            } else {
+                std::borrow::Cow::Borrowed(source)
+            };
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("XRack 3D sprites"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("particles.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(source),
             })
         });
         for batch in batches {
@@ -512,7 +787,11 @@ impl ParticlePipelines {
             let composite = if weighted {
                 Composite::Weighted
             } else {
-                Composite::Direct(batch.material.blend)
+                Composite::Direct(if output.pipeline_state.blend.is_some() {
+                    ParticleBlend::SourceOver
+                } else {
+                    batch.material.blend
+                })
             };
             let key = (
                 [
@@ -524,14 +803,25 @@ impl ParticlePipelines {
                     trail,
                     output.multisampling,
                     output.hdr && !weighted,
+                    output.stenciled,
                 ],
                 composite,
+                super::pipeline::fixed_state(output.pipeline_state),
+                output.raster,
+                if weighted {
+                    None
+                } else {
+                    output.format_override
+                },
             );
             let pipeline = self.variants.entry(key).or_insert_with(|| {
                 let ordinary = [Some(wgpu::ColorTargetState {
                     format: output.format(),
-                    blend: Some(composite.blend_state()),
-                    write_mask: wgpu::ColorWrites::ALL,
+                    blend: output.pipeline_state.blend.map_or_else(
+                        || Some(composite.blend_state()),
+                        super::pipeline::override_blend,
+                    ),
+                    write_mask: super::pipeline::color_writes(output.pipeline_state),
                 })];
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("XRack 3D particle sprites"),
@@ -563,13 +853,23 @@ impl ParticlePipelines {
                     }),
                     primitive: wgpu::PrimitiveState {
                         topology: wgpu::PrimitiveTopology::TriangleStrip,
+                        polygon_mode: output.raster.polygon_mode(),
+                        cull_mode: output
+                            .pipeline_state
+                            .cull
+                            .and_then(super::pipeline::culled_face),
                         ..Default::default()
                     },
                     depth_stencil: Some(wgpu::DepthStencilState {
-                        format: DEPTH_FORMAT,
-                        depth_write_enabled: Some(false),
-                        depth_compare: Some(wgpu::CompareFunction::Less),
-                        stencil: Default::default(),
+                        format: output.depth_format(),
+                        depth_write_enabled: Some(
+                            output.pipeline_state.depth_write.unwrap_or(false),
+                        ),
+                        depth_compare: Some(super::pipeline::depth_compare(
+                            output.pipeline_state,
+                            wgpu::CompareFunction::Less,
+                        )),
+                        stencil: super::pipeline::stencil_state(output.pipeline_state),
                         bias: Default::default(),
                     }),
                     multisample: wgpu::MultisampleState {
@@ -615,14 +915,7 @@ impl ParticlePipelines {
                 });
             }
             if textured || tinted {
-                let sampler = self.sampler.get_or_insert_with(|| {
-                    device.create_sampler(&wgpu::SamplerDescriptor {
-                        label: Some("XRack particle sheet sampler"),
-                        min_filter: wgpu::FilterMode::Linear,
-                        mag_filter: wgpu::FilterMode::Linear,
-                        ..Default::default()
-                    })
-                });
+                let sampler = particle_sampler(&mut self.sampler, device);
                 entries.push(wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(sampler),
@@ -655,4 +948,18 @@ impl ParticlePipelines {
             pass.draw(0..vertices, 0..batch.instances);
         }
     }
+}
+
+fn particle_sampler<'a>(
+    sampler: &'a mut Option<wgpu::Sampler>,
+    device: &wgpu::Device,
+) -> &'a wgpu::Sampler {
+    sampler.get_or_insert_with(|| {
+        device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("XRack particle sheet sampler"),
+            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        })
+    })
 }

@@ -143,9 +143,39 @@ impl StyledText {
     /// Ranges come from the document's validated annotations, in source order.
     pub fn rewrite_links(
         &self,
+        destination: impl FnMut(&StyledLink) -> Option<Cow<'static, str>>,
+        run_destination: impl FnMut(&StyledRun) -> Option<Cow<'static, str>>,
+    ) -> Self {
+        self.rewrite_links_from(None, destination, run_destination)
+    }
+
+    fn rewrite_links_from(
+        &self,
+        previous: Option<(&Self, &Self)>,
         mut destination: impl FnMut(&StyledLink) -> Option<Cow<'static, str>>,
         mut run_destination: impl FnMut(&StyledRun) -> Option<Cow<'static, str>>,
     ) -> Self {
+        let (runs, explicit, mut links, prefix) = previous
+            .and_then(|(source, rewritten)| {
+                let (bytes, runs, links) = self.verified_prefix_from(source)?;
+                let Storage::Owned(rewritten) = &rewritten.0 else {
+                    return None;
+                };
+                let kept = rewritten.links.partition_point(|link| link.end <= bytes);
+                let prefix = VerifiedPrefix {
+                    previous: Arc::downgrade(rewritten),
+                    bytes,
+                    runs,
+                    links: kept,
+                };
+                Some((
+                    &self.runs()[runs..],
+                    &self.links()[links..],
+                    rewritten.links[..kept].to_vec(),
+                    Some(prefix),
+                ))
+            })
+            .unwrap_or_else(|| (self.runs(), self.links(), Vec::new(), None));
         let mut remap = |link: &StyledLink| {
             destination(link).map(|href| StyledLink {
                 start: link.start,
@@ -153,9 +183,8 @@ impl StyledText {
                 href,
             })
         };
-        let mut explicit = self.links().iter().peekable();
-        let mut links = Vec::new();
-        for run in self.runs() {
+        let mut explicit = explicit.iter().peekable();
+        for run in runs {
             while let Some(link) = explicit.next_if(|link| link.end <= run.start) {
                 links.extend(remap(link));
             }
@@ -170,14 +199,25 @@ impl StyledText {
             }
         }
         links.extend(explicit.filter_map(remap));
-        if links == self.links() {
+        if links == self.links()
+            && prefix.as_ref().is_none_or(|prefix| {
+                matches!(&self.0, Storage::Owned(input)
+                    if input.prefix.as_ref().is_some_and(|original|
+                        original.previous.ptr_eq(&prefix.previous)))
+            })
+        {
             return self.clone();
         }
         let (text, runs) = match &self.0 {
             Storage::Compiled(text, runs, _) => (Arc::from(*text), Arc::from(*runs)),
             Storage::Owned(document) => (document.text.clone(), document.runs.clone()),
         };
-        Self::from_owned(text, runs, links.into())
+        Self(Storage::Owned(Arc::new(OwnedText {
+            text,
+            runs,
+            links: links.into(),
+            prefix,
+        })))
     }
 
     /// The unchanged text bytes, complete style runs, and complete links
@@ -203,6 +243,40 @@ impl StyledText {
             builder.push_event(event)?;
         }
         Ok(builder.finish())
+    }
+}
+
+/// Reuses rewritten links in verified prefixes of successive documents.
+/// The supplied rules must return the same result for the same annotation
+/// and its text. If the rules change, start a new rewriter.
+pub struct StyledLinkRewriter {
+    destination: fn(&StyledLink) -> Option<Cow<'static, str>>,
+    run_destination: fn(&StyledText, &StyledRun) -> Option<Cow<'static, str>>,
+    previous: Option<(StyledText, StyledText)>,
+}
+
+impl StyledLinkRewriter {
+    pub fn new(
+        destination: fn(&StyledLink) -> Option<Cow<'static, str>>,
+        run_destination: fn(&StyledText, &StyledRun) -> Option<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            destination,
+            run_destination,
+            previous: None,
+        }
+    }
+
+    pub fn rewrite(&mut self, document: StyledText) -> StyledText {
+        let result = document.rewrite_links_from(
+            self.previous
+                .as_ref()
+                .map(|(source, output)| (source, output)),
+            self.destination,
+            |run| (self.run_destination)(&document, run),
+        );
+        self.previous = Some((document, result.clone()));
+        result
     }
 }
 

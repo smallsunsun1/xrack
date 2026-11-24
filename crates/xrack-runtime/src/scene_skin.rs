@@ -14,7 +14,7 @@ pub type JointPalette = Arc<[JointRows]>;
 pub(crate) type Bounds = ([f32; 3], [f32; 3]);
 type JointBounds = Vec<(usize, Bounds)>;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeshInfluence {
     pub joints: [u16; SKIN_INFLUENCES],
     pub weights: [f32; SKIN_INFLUENCES],

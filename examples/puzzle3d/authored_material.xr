@@ -1,0 +1,103 @@
+struct PrincipledStyle {
+    enabled: bool, base-color: color, metalness: float, roughness: float,
+    emissive-color: color, emissive-strength: float,
+    alpha-mode: string, alpha-cutoff: float, cull-mode: string, unlit: bool,
+    clearcoat: float, clearcoat-roughness: float,
+    transmission: float, index-of-refraction: float,
+}
+
+struct StyledActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    material: PrincipledStyle, casts-shadow: bool,
+    camera-kind: string, camera-height: float,
+}
+
+export component AuthoredMaterialDemo inherits Window {
+    title: "XRack · 声明式 PBR";
+    width: 646px; height: 436px;
+    resizable: false;
+    background: #182537;
+
+    in-out property <float> roughness: 0.26;
+    in-out property <float> metalness: 0.46;
+    in-out property <float> coat: 0.55;
+    in-out property <bool> warm: true;
+    in-out property <bool> style-import: true;
+    in-out property <string> mode: "opaque";
+
+    property <PrincipledStyle> finish: PrincipledStyle {
+        enabled: true,
+        base-color: root.mode == "mask" ? #6cc5ed44
+            : root.mode == "blend" ? #6cc5ed99
+            : root.warm ? #e7af6d : #69b8e8,
+        metalness: root.mode == "glass" ? 0 : root.metalness,
+        roughness: root.roughness,
+        emissive-color: #000000, emissive-strength: 1,
+        alpha-mode: root.mode == "glass" ? "opaque" : root.mode,
+        alpha-cutoff: 0.5, cull-mode: "back", unlit: false,
+        clearcoat: root.coat, clearcoat-roughness: 0.14,
+        transmission: root.mode == "glass" ? 0.88 : 0,
+        index-of-refraction: 1.5,
+    };
+    property <StyledActor> base: StyledActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, material: PrincipledStyle { enabled: false, ..root.finish },
+        camera-kind: "", camera-height: 6.2, casts-shadow: true,
+    };
+    property <[StyledActor]> model: [
+        StyledActor { id: "eye", mesh: "", z: 9, camera-kind: "orthographic", ..root.base },
+        StyledActor {
+            id: "wall", z: -1.95, scale-x: 14, scale-y: 8, scale-z: 0.1,
+            color: #4a6378, casts-shadow: false, ..root.base
+        },
+        StyledActor {
+            id: "sample", mesh: "primitive:sphere", x: -2.12, y: 0.12, z: 0.4,
+            scale-x: 1.28, scale-y: 1.28, scale-z: 1.28,
+            material: root.finish, ..root.base
+        },
+        StyledActor {
+            id: "atlas", mesh: @mesh-url("models/uv-atlas.gltf"), x: 2.05, y: 0.1, z: 0.12,
+            scale-x: 0.57, scale-y: 0.57, scale-z: 0.57,
+            material: PrincipledStyle {
+                enabled: root.style-import, base-color: #ffffff, alpha-mode: "opaque",
+                cull-mode: "none", transmission: 0, ..root.finish
+            },
+            casts-shadow: false, ..root.base
+        },
+    ];
+    out property <string> picked: Scene3D.pick-camera(
+        root.model, "eye", Point2D.new(646px, 322px), Point2D.new(213px, 155px));
+    SceneView3D {
+        width: 646px; height: 322px;
+        model: root.model; camera: "eye"; environment: @environment-url("models/studio.hdr");
+        environment-intensity: 0.8; ambient-intensity: 0.38; light-yaw: -38; light-elevation: 51;
+        scene-background: #233a51; scene-hdr: true; cache-rendering: true;
+        shadows: true; shadow-map-size: 512; shadow-bias: 0.003;
+    }
+    Label { x: 16px; y: 329px; width: 64px; height: 34px; text: "粗糙度"; }
+    roughness-slider := Slider {
+        x: 81px; y: 329px; width: 219px; height: 34px;
+        minimum: 0.035; maximum: 1; value <=> root.roughness;
+    }
+    Label { x: 320px; y: 329px; width: 64px; height: 34px; text: "金属度"; }
+    metal-slider := Slider {
+        x: 392px; y: 329px; width: 236px; height: 34px; minimum: 0; maximum: 1;
+        value <=> root.metalness;
+    }
+    tone-toggle := CheckBox { x: 15px; y: 378px; width: 100px; height: 36px; text: "暖色"; checked <=> root.warm; }
+    atlas-toggle := CheckBox { x: 115px; y: 378px; width: 159px; height: 36px; text: "覆盖 glTF 参数"; checked <=> root.style-import; }
+    mode-toggle := Button {
+        x: 290px; y: 377px; width: 137px; height: 35px;
+        text: root.mode == "opaque" ? "不透明" : root.mode == "mask" ? "透明裁切" : root.mode == "blend" ? "半透明" : "透射";
+        clicked => {
+            root.mode = root.mode == "opaque" ? "mask" : root.mode == "mask" ? "blend"
+                : root.mode == "blend" ? "glass" : "opaque";
+        }
+    }
+    Label { x: 442px; y: 378px; width: 49px; height: 36px; text: "清漆"; }
+    coat-slider := Slider { x: 493px; y: 378px; width: 135px; height: 36px; minimum: 0; maximum: 1; value <=> root.coat; }
+}

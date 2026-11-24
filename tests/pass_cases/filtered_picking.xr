@@ -1,0 +1,27 @@
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "hit-row-3d"{{.*}}!xr.hit3d
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "hit-subset-camera-3d"{{.*}}!xr.hit3dlist
+// CHECK-DAG: "xr.geometry_function"{{.*}}value = "ray-hit-subset-3d"{{.*}}!xr.hit3dlist
+// CHECK-DAG: "xr.literal"() <{value = ""}> : () -> !xr.hit3d
+// CHECK-DAG: "xr.hit3d_array"() <{value = ""}> : () -> !xr.hit3dlist
+// CHECK-NOT: "xr.geometry_function"
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color,
+}
+export component FilteredPlan inherits Window {
+    in property <[Actor]> actors;
+    in property <[int]> rows;
+    in property <point2d> pointer;
+    out property <hit3d> at-row: Scene3D.hit-row(root.actors, 0, 0, 8, Point2D.new(200px, 200px), root.pointer, 1);
+    out property <[hit3d]> named: Scene3D.hit-subset-camera(root.actors, "eye", Point2D.new(200px, 200px), root.pointer, root.rows, 1);
+    out property <[hit3d]> world: Scene3D.ray-hit-subset(root.actors, Point3D.new(0, 0, 2), Vector3D.new(0, 0, -1), 5.0, root.rows);
+    out property <hit3d> invalid: Scene3D.ray-hit-row([
+        Actor { id: "box", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff }
+    ], Point3D.new(0, 0, 2), Vector3D.new(0, 0, -1), 5.0, -1);
+    out property <[hit3d]> empty: Scene3D.ray-hit-subset([
+        Actor { id: "box", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff }
+    ], Point3D.new(0, 0, 2), Vector3D.new(0, 0, -1), 5.0, []);
+}

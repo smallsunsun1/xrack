@@ -74,6 +74,13 @@ impl MeshContact {
             valid: true,
             object_id: object.id.clone(),
             row_index: object.scene_row().map_or(-1, i64::from),
+            mesh_node_index: object
+                .imported_placement()
+                .map_or(-1, |(node, _)| i64::from(node)),
+            instance_index: object
+                .imported_placement()
+                .and_then(|(_, instance)| instance)
+                .map_or(-1, i64::from),
             distance: self.contact.distance,
             position: Point3D::new(x, y, z),
             normal: Vector3D::new(nx, ny, nz),

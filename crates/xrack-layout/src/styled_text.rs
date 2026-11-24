@@ -1,6 +1,7 @@
 use crate::{
-    LabelPlan, Point, Rect, Size, TextAlignment, TextAreaMotion, TextEdit, TextPosition,
-    VisualTextLine, label::PreparedLabel,
+    LabelPlan, Point, Rect, Size, StyledFragments, TextAlignment, TextAreaMotion, TextEdit,
+    TextPosition, VisualTextLine,
+    label::{PreparedLabel, WidthInterval},
 };
 use std::{
     borrow::Cow,
@@ -45,11 +46,26 @@ impl StyledBidi {
     }
 }
 
+struct LineBidi<'a> {
+    paragraph: ParagraphBidiInfo<'a>,
+    runs: Vec<(Range<usize>, Level)>,
+}
+
+impl LineBidi<'_> {
+    fn new() -> Self {
+        Self {
+            paragraph: ParagraphBidiInfo::new("", None),
+            runs: Vec::new(),
+        }
+    }
+}
+
 /// Source-order spans and byte-page lookups shared by every width of a document.
 struct PreparedSpans {
     styles: Vec<StyleSpan>,
     advances: Option<Vec<Cell<[f32; 2]>>>,
     level_ends: Vec<u32>,
+    l1_limits: Vec<u32>,
     pages: Vec<SpanPage>,
 }
 
@@ -93,6 +109,26 @@ impl PreparedSpans {
             .collect();
         level_ends.push(len as u32);
 
+        // Outside explicit directional formatting and separators, rule L1
+        // only resets trailing whitespace. Record the first class that
+        // requires the full algorithm in each paragraph.
+        let l1_limits = bidi
+            .paragraphs
+            .iter()
+            .map(|paragraph| {
+                let start = paragraph.range.start;
+                let end = paragraph.range.end;
+                let special = bidi.classes[start..end].iter().position(|class| {
+                    use BidiClass::*;
+                    matches!(
+                        class,
+                        B | S | FSI | LRI | RLI | PDI | RLE | LRE | RLO | LRO | PDF | BN
+                    )
+                });
+                special.map_or(end, |offset| start + offset) as u32
+            })
+            .collect();
+
         let mut paragraph = 0;
         let mut level = 0;
         let mut style = 0;
@@ -121,6 +157,7 @@ impl PreparedSpans {
             styles,
             advances: None,
             level_ends,
+            l1_limits,
             pages,
         })
     }
@@ -137,12 +174,16 @@ impl PreparedSpans {
         Some(index)
     }
 
-    fn level_end(&self, start: usize) -> usize {
+    fn level_run(&self, start: usize) -> usize {
         let mut index = self.pages[start / Self::PAGE_BYTES].level as usize;
         while self.level_ends[index] as usize <= start {
             index += 1;
         }
-        self.level_ends[index] as usize
+        index
+    }
+
+    fn level_end(&self, start: usize) -> usize {
+        self.level_ends[self.level_run(start)] as usize
     }
 
     fn visit_styles(
@@ -222,7 +263,7 @@ pub struct StyledTextMeasurements {
     bidi: StyledBidi,
     prepared: Option<PreparedLabel>,
     spans: Option<PreparedSpans>,
-    widths: HashMap<LineKey, f32>,
+    widths: RetainedWidths,
     lines: RetainedLines,
     shared_widths: SharedWidths,
 }
@@ -471,6 +512,56 @@ impl LineKey {
     }
 }
 
+struct RetainedWidth {
+    width: f32,
+    generation: u32,
+}
+
+#[derive(Default)]
+struct RetainedWidths {
+    values: HashMap<LineKey, RetainedWidth>,
+    generation: u32,
+    trimmed: bool,
+}
+
+impl RetainedWidths {
+    const MAX_PROBES: usize = 224 * 1024;
+
+    fn begin_layout(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.trimmed = false;
+    }
+
+    fn clear(&mut self) {
+        self.values.clear();
+    }
+
+    fn get(&mut self, key: &LineKey) -> Option<f32> {
+        let value = self.values.get_mut(key)?;
+        value.generation = self.generation;
+        Some(value.width)
+    }
+
+    fn insert(&mut self, key: LineKey, width: f32) {
+        if self.values.len() >= Self::MAX_PROBES && !self.trimmed {
+            // Reserve room for new widths while keeping the probes used by
+            // this layout or the preceding layout.
+            self.values
+                .retain(|_, value| self.generation.wrapping_sub(value.generation) <= 1);
+            self.trimmed = true;
+        }
+        if self.values.len() < Self::MAX_PROBES {
+            self.values.insert(
+                key,
+                RetainedWidth {
+                    width,
+                    generation: self.generation,
+                },
+            );
+        }
+    }
+}
+
 struct RetainedFragment {
     range: Range<u32>,
     link: u32,
@@ -499,6 +590,7 @@ impl RetainedFragment {
             flags: self.flags,
             bounds: Rect::new(x, y, self.width, height),
             visual: None,
+            glyphs: None,
         }
     }
 }
@@ -547,7 +639,7 @@ impl StyledTextMeasurements {
             bidi,
             prepared,
             spans,
-            widths: HashMap::new(),
+            widths: RetainedWidths::default(),
             lines: RetainedLines::default(),
             shared_widths: SharedWidths::default(),
         }
@@ -575,6 +667,9 @@ impl StyledTextMeasurements {
             }
         }
         spans.advances = Some(advances);
+        if let Some(prepared) = &mut self.prepared {
+            prepared.skip_stable_word_probes = true;
+        }
     }
 
     pub fn clear_widths(&mut self) {
@@ -594,7 +689,7 @@ struct RetainedMeasurements<'a> {
     bidi: &'a StyledBidi,
     prepared: Option<&'a PreparedLabel>,
     spans: Option<&'a PreparedSpans>,
-    widths: &'a mut HashMap<LineKey, f32>,
+    widths: &'a mut RetainedWidths,
     lines: &'a mut RetainedLines,
     shared_widths: &'a mut SharedWidths,
     shared_hit: bool,
@@ -627,9 +722,8 @@ impl RetainedMeasurements<'_> {
         key: Option<LineKey>,
         advance: impl FnOnce() -> f32,
     ) -> f32 {
-        const MAX_PROBES: usize = 224 * 1024;
         if let Some(width) = key.and_then(|key| self.widths.get(&key)) {
-            return *width;
+            return width;
         }
         let shared = self.spans.and_then(|spans| {
             self.shared_widths
@@ -643,9 +737,7 @@ impl RetainedMeasurements<'_> {
         let width = cached.unwrap_or_else(advance);
         // A probe that changed the font set can contain widths from two generations.
         if !self.invalidate_if_requested() {
-            if let Some(key) = key
-                && self.widths.len() < MAX_PROBES
-            {
+            if let Some(key) = key {
                 self.widths.insert(key, width);
             }
             if cached.is_none()
@@ -671,7 +763,7 @@ fn piece_text<'a>(document: &'a StyledText, range: &Range<usize>, rtl_mark: bool
 }
 
 /// One shaped span in visual order. Bounds are local to the label.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct StyledFragment {
     // Source pieces are nonempty. An empty range represents an ellipsis.
     range: Range<usize>,
@@ -681,6 +773,67 @@ pub struct StyledFragment {
     flags: u8,
     pub bounds: Rect,
     visual: Option<Arc<VisualTextLine>>,
+    glyphs: Option<Arc<StyledGlyphRun>>,
+}
+
+impl PartialEq for StyledFragment {
+    fn eq(&self, other: &Self) -> bool {
+        self.eq_placed(0.0, other, 0.0)
+    }
+}
+
+/// An already shaped, positioned glyph relative to the origin of its text run.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StyledGlyph {
+    pub id: u16,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// A font resource kept alive by positioned text snapshots.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct StyledGlyphFont {
+    pub key: (u64, u32),
+    pub bytes: Arc<dyn AsRef<[u8]> + Send + Sync>,
+    pub ink: Option<[f32; 2]>,
+}
+
+impl AsRef<[u8]> for StyledGlyphFont {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes.as_ref().as_ref()
+    }
+}
+
+impl std::fmt::Debug for StyledGlyphFont {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("StyledGlyphFont")
+            .field(&self.key)
+            .finish()
+    }
+}
+
+impl PartialEq for StyledGlyphFont {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key || (self.key.1 == other.key.1 && self.as_ref() == other.as_ref())
+    }
+}
+
+/// Immutable glyph and caret geometry for an independently positioned run.
+#[doc(hidden)]
+#[derive(Debug, PartialEq)]
+pub struct StyledGlyphRun {
+    pub font: Arc<StyledGlyphFont>,
+    pub font_size: f32,
+    pub baseline: f32,
+    pub ink: Option<[f32; 2]>,
+    pub variations: Box<[i16]>,
+    pub glyphs: Box<[StyledGlyph]>,
+    pub underline: [f32; 2],
+    pub strikethrough: [f32; 2],
+    pub visual: Option<Arc<VisualTextLine>>,
 }
 
 impl StyledFragment {
@@ -691,6 +844,30 @@ impl StyledFragment {
     const UNDERLINE: u8 = 1 << 4;
     const COLOR: u8 = 1 << 5;
     const RTL_MARK: u8 = 1 << 6;
+
+    pub(crate) fn eq_placed(&self, y: f32, other: &Self, other_y: f32) -> bool {
+        let mut bounds = self.bounds;
+        bounds.y += y;
+        let mut other_bounds = other.bounds;
+        other_bounds.y += other_y;
+        bounds == other_bounds
+            && self.range == other.range
+            && self.link == other.link
+            && self.color == other.color
+            && self.flags == other.flags
+            && (self
+                .visual
+                .as_ref()
+                .zip(other.visual.as_ref())
+                .is_some_and(|(left, right)| Arc::ptr_eq(left, right))
+                || self.visual == other.visual)
+            && (self
+                .glyphs
+                .as_ref()
+                .zip(other.glyphs.as_ref())
+                .is_some_and(|(left, right)| Arc::ptr_eq(left, right))
+                || self.glyphs == other.glyphs)
+    }
 
     fn from_piece(piece: Piece, bounds: Rect) -> Self {
         let Piece {
@@ -712,7 +889,40 @@ impl StyledFragment {
                 | (u8::from(rtl_mark) * Self::RTL_MARK),
             bounds,
             visual: None,
+            glyphs: None,
         }
+    }
+
+    #[doc(hidden)]
+    pub fn from_shaped_run(
+        range: Range<usize>,
+        style: TextStyle,
+        link: Option<usize>,
+        bounds: Rect,
+        glyphs: Arc<StyledGlyphRun>,
+    ) -> Self {
+        let mut fragment = Self::from_piece(
+            Piece {
+                range,
+                style,
+                link,
+                rtl_mark: false,
+            },
+            bounds,
+        );
+        fragment.glyphs = Some(glyphs);
+        fragment
+    }
+
+    #[doc(hidden)]
+    pub fn shaped_run(&self) -> Option<&StyledGlyphRun> {
+        self.glyphs.as_deref()
+    }
+
+    fn visual(&self) -> Option<&Arc<VisualTextLine>> {
+        self.visual
+            .as_ref()
+            .or_else(|| self.shaped_run()?.visual.as_ref())
     }
 
     fn rtl_mark(&self) -> bool {
@@ -755,7 +965,7 @@ impl StyledFragment {
     #[doc(hidden)]
     pub fn selection_geometry(&self) -> Option<(&VisualTextLine, Range<usize>, usize)> {
         Some((
-            self.visual.as_deref()?,
+            self.visual()?.as_ref(),
             self.source_range()?,
             if self.rtl_mark() {
                 '\u{200f}'.len_utf8()
@@ -776,7 +986,7 @@ impl StyledFragment {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StyledTextLayout {
     pub size: Size,
-    pub fragments: Vec<StyledFragment>,
+    pub fragments: StyledFragments,
 }
 
 #[derive(Clone, Copy)]
@@ -790,10 +1000,17 @@ struct IndexedLine {
 #[doc(hidden)]
 #[derive(Clone, Default)]
 pub struct StyledTextLineIndex {
+    reusable_widths: Option<WidthInterval>,
     lines: Vec<IndexedLine>,
 }
 
 impl StyledTextLineIndex {
+    #[doc(hidden)]
+    pub fn reusable_widths(&self) -> Option<Range<f32>> {
+        self.reusable_widths
+            .map(|interval| interval.minimum..interval.maximum)
+    }
+
     pub fn allocated_bytes(&self) -> usize {
         self.lines.capacity() * std::mem::size_of::<IndexedLine>()
     }
@@ -837,10 +1054,11 @@ impl SelectionEntries {
         };
         let signature = fragment.range.end as u32 * 2 + u32::from(fragment.rtl_mark());
         if let Some(index) = slot.checked_sub(1) {
+            // At a new wrap width the same start byte can have a different end.
+            // Keep the latest exact span so the next layout can reuse it.
             let entry = &mut self.shapes[index as usize];
-            if entry.end_and_direction == signature {
-                entry.line = Arc::downgrade(line);
-            }
+            entry.end_and_direction = signature;
+            entry.line = Arc::downgrade(line);
         } else if self.shapes.len() < MAX_SPANS {
             self.shapes.push(SelectionEntry {
                 end_and_direction: signature,
@@ -877,7 +1095,7 @@ impl StyledTextLayout {
             + self
                 .fragments
                 .iter()
-                .filter_map(|fragment| fragment.visual.as_ref())
+                .filter_map(StyledFragment::visual)
                 .filter(|line| counted.insert(Arc::as_ptr(line)))
                 .map(|line| line.allocated_bytes())
                 .sum::<usize>()
@@ -998,17 +1216,17 @@ impl StyledTextLayout {
         };
         let (fragment, _) = self
             .fragments
-            .iter()
-            .filter(|fragment| fragment.visual.is_some())
-            .map(|fragment| {
-                let y = distance(point.y, fragment.bounds.y, fragment.bounds.height);
+            .placed()
+            .filter(|(fragment, _)| fragment.visual().is_some())
+            .map(|(fragment, offset)| {
+                let y = distance(point.y, fragment.bounds.y + offset, fragment.bounds.height);
                 (fragment, y)
             })
             .min_by(|(a, ay), (b, by)| {
                 let x = |f: &StyledFragment| distance(point.x, f.bounds.x, f.bounds.width);
                 ay.total_cmp(by).then_with(|| x(a).total_cmp(&x(b)))
             })?;
-        fragment.position(fragment.visual.as_ref()?.hit(point.x - fragment.bounds.x))
+        fragment.position(fragment.visual()?.hit(point.x - fragment.bounds.x))
     }
 
     #[doc(hidden)]
@@ -1022,14 +1240,14 @@ impl StyledTextLayout {
         let caret = editor.position(text);
         let items = self
             .fragments
-            .iter()
+            .placed()
             .enumerate()
-            .filter_map(|(index, fragment)| {
+            .filter_map(|(index, (fragment, y))| {
                 let (visual, range, prefix) = fragment.selection_geometry()?;
-                Some((index, fragment, visual, range, prefix))
+                Some((index, fragment, y, visual, range, prefix))
             });
-        let Some((index, fragment, visual, range, prefix)) =
-            items.min_by_key(|(_, _, _, range, _)| {
+        let Some((index, fragment, y, visual, range, prefix)) =
+            items.min_by_key(|(_, _, _, _, range, _)| {
                 let distance = range.start.saturating_sub(caret.offset)
                     + caret.offset.saturating_sub(range.end);
                 let wrong_edge = if caret.trailing {
@@ -1054,20 +1272,23 @@ impl StyledTextLayout {
                     .step(local, right)
                     .and_then(|position| fragment.position(position))
                     .or_else(|| {
-                        let adjacent = if right {
-                            self.fragments[index + 1..]
-                                .iter()
-                                .find(|fragment| fragment.visual.is_some())
+                        let (adjacent, adjacent_y) = if right {
+                            self.fragments
+                                .placed()
+                                .skip(index + 1)
+                                .find(|(fragment, _)| fragment.visual().is_some())
                         } else {
-                            self.fragments[..index]
-                                .iter()
+                            self.fragments
+                                .placed()
                                 .rev()
-                                .find(|fragment| fragment.visual.is_some())
+                                .skip(self.fragments.len() - index)
+                                .find(|(fragment, _)| fragment.visual().is_some())
                         }?;
-                        let visual = adjacent.visual.as_ref()?;
+                        let visual = adjacent.visual()?;
                         let edge = visual.edge(!right);
                         let position = adjacent.position(edge)?;
-                        if adjacent.bounds.y == fragment.bounds.y && position.offset == caret.offset
+                        if adjacent.bounds.y + adjacent_y == fragment.bounds.y + y
+                            && position.offset == caret.offset
                         {
                             visual
                                 .step(edge, right)
@@ -1094,7 +1315,7 @@ impl StyledTextLayout {
                 };
                 self.selection_hit(Point {
                     x,
-                    y: fragment.bounds.y + fragment.bounds.height * 0.5 + delta,
+                    y: (fragment.bounds.y + y) + fragment.bounds.height * 0.5 + delta,
                 })
             }
             _ => return false,
@@ -1189,6 +1410,53 @@ impl StyledTextLayout {
         if invalidated.replace(false) {
             measurements.clear_widths();
         }
+        if let Some(prepared) = &measurements.prepared {
+            prepared.reusable_widths.set(None);
+            prepared.replayed_widths.set(false);
+        }
+        measurements.widths.begin_layout();
+        if let Some(prepared) = &mut measurements.prepared
+            && let Some(spans) = &measurements.spans
+            && !measurements.shared_widths.leading_widths.is_empty()
+        {
+            let text = measurements.document.text();
+            let bidi = &measurements.bidi;
+            let shared = &measurements.shared_widths;
+            let leading = |range: &Range<usize>| {
+                let index = spans.paragraph(bidi, range.start)?;
+                let paragraph = bidi.paragraphs.get(index)?;
+                if range.start != paragraph.range.start || range.end > paragraph.range.end {
+                    return None;
+                }
+                let width = *shared.leading_widths.get(index)?;
+                if !width.is_finite() {
+                    return None;
+                }
+                let tail = spans.styles[spans.first_style(range.start)].end as usize;
+                if !(2..=8).contains(&(tail - range.start))
+                    || tail >= range.end
+                    || !text.as_bytes()[range.start..tail]
+                        .iter()
+                        .all(u8::is_ascii_alphanumeric)
+                {
+                    return None;
+                }
+                // The complete heading's advance joins the shape key.
+                // The planner checks any probes that end inside it.
+                Some((
+                    width.to_bits(),
+                    tail - range.start,
+                    shared.hash.hash_one(&text[tail..range.end]),
+                ))
+            };
+            prepared.prepare_repeated(leading, |a, b, heading| {
+                let a = (a.start + heading)..a.end;
+                let b = (b.start + heading)..b.end;
+                text[a.clone()] == text[b.clone()]
+                    && same_bidi_slice(bidi, spans, &a, &b)
+                    && spans.same_style_slices(&a, &b)
+            });
+        }
         let mut lines = StyledTextLineIndex::default();
         let layout = Self::build(
             node,
@@ -1211,6 +1479,10 @@ impl StyledTextLayout {
         if invalidated.replace(false) {
             measurements.clear_widths();
         }
+        lines.reusable_widths = measurements
+            .prepared
+            .as_ref()
+            .and_then(|prepared| prepared.reusable_widths.get());
         (layout, lines)
     }
 
@@ -1262,10 +1534,16 @@ impl StyledTextLayout {
         );
         let mut fragments = Vec::with_capacity(prefix_fragments + tail.fragments.len());
         fragments.extend_from_slice(&self.fragments[..prefix_fragments]);
-        fragments.append(&mut tail.fragments);
+        fragments.append(&mut tail.fragments.into_vec());
         (
-            Self { size, fragments },
-            StyledTextLineIndex { lines },
+            Self {
+                size,
+                fragments: fragments.into(),
+            },
+            StyledTextLineIndex {
+                lines,
+                reusable_widths: None,
+            },
             prefix_fragments,
         )
     }
@@ -1286,7 +1564,7 @@ impl StyledTextLayout {
             owned_bidi = StyledBidi::new(document.text());
             &owned_bidi
         };
-        let mut line_bidi = ParagraphBidiInfo::new("", None);
+        let mut line_bidi = LineBidi::new();
         let spans = retained.as_ref().and_then(|retained| retained.spans);
         let advance_cache = spans
             .and_then(|spans| spans.advances.as_deref().map(|cache| (spans, cache)))
@@ -1357,7 +1635,8 @@ impl StyledTextLayout {
         );
         // Keep the initial layout on the ordinary placement path unless the
         // measurement traversal has already found reusable suffixes.
-        let share_templates = retained.as_ref().is_some_and(|entry| entry.shared_hit);
+        let share_templates = retained.as_ref().is_some_and(|entry| entry.shared_hit)
+            || prepared.is_some_and(|prepared| prepared.replayed_widths.get());
         let mut fragments = Vec::new();
         for (line_index, line) in plan.lines.into_iter().enumerate() {
             if let Some(index) = index.as_deref_mut() {
@@ -1482,7 +1761,7 @@ impl StyledTextLayout {
         }
         Self {
             size: plan.size,
-            fragments,
+            fragments: fragments.into(),
         }
     }
 }
@@ -1491,7 +1770,7 @@ fn collect_pieces<'text>(
     document: &'text StyledText,
     bidi: &StyledBidi,
     spans: Option<&PreparedSpans>,
-    line_bidi: &mut ParagraphBidiInfo<'text>,
+    line_bidi: &mut LineBidi<'text>,
     range: Range<usize>,
     ellipsis: bool,
     pieces: &mut Vec<Piece>,
@@ -1504,7 +1783,7 @@ fn collect_pieces<'text>(
             bidi.paragraphs
                 .partition_point(|paragraph| paragraph.range.end <= range.start)
         });
-    for paragraph in &bidi.paragraphs[first..] {
+    for (number, paragraph) in bidi.paragraphs.iter().enumerate().skip(first) {
         let line = paragraph.range.start.max(range.start)..paragraph.range.end.min(range.end);
         if line.start > range.end {
             break;
@@ -1525,19 +1804,28 @@ fn collect_pieces<'text>(
             split_run(document, line, paragraph.level.is_rtl(), spans, pieces);
             continue;
         }
+        if let Some(spans) = spans
+            && line.end <= spans.l1_limits[number] as usize
+        {
+            simple_visual_runs(bidi, spans, paragraph.level, line, &mut line_bidi.runs);
+            for (run, level) in &line_bidi.runs {
+                split_run(document, run.clone(), level.is_rtl(), Some(spans), pieces);
+            }
+            continue;
+        }
         // L1 and L2 operate on the line and use the paragraph's resolved
         // levels. Supplying just this slice bounds visual_runs' level copy.
         let start = line.start;
-        line_bidi.text = &document.text()[line.clone()];
-        line_bidi.paragraph_level = paragraph.level;
-        line_bidi.is_pure_ltr = false;
-        line_bidi.original_classes.clear();
-        line_bidi
-            .original_classes
+        let info = &mut line_bidi.paragraph;
+        info.text = &document.text()[line.clone()];
+        info.paragraph_level = paragraph.level;
+        info.is_pure_ltr = false;
+        info.original_classes.clear();
+        info.original_classes
             .extend_from_slice(&bidi.classes[line.clone()]);
-        line_bidi.levels.clear();
-        line_bidi.levels.extend_from_slice(levels);
-        let (levels, runs) = line_bidi.visual_runs(0..line.len());
+        info.levels.clear();
+        info.levels.extend_from_slice(levels);
+        let (levels, runs) = info.visual_runs(0..line.len());
         for run in runs {
             let rtl = levels[run.start].is_rtl();
             split_run(
@@ -1560,6 +1848,61 @@ fn collect_pieces<'text>(
             pieces.insert(0, mark);
         } else {
             pieces.push(mark);
+        }
+    }
+}
+
+fn simple_visual_runs(
+    bidi: &StyledBidi,
+    spans: &PreparedSpans,
+    base: Level,
+    line: Range<usize>,
+    runs: &mut Vec<(Range<usize>, Level)>,
+) {
+    runs.clear();
+    // L1 resets only the trailing whitespace in this range.
+    let mut suffix = line.end;
+    while suffix > line.start && bidi.classes[suffix - 1] == BidiClass::WS {
+        suffix -= 1;
+    }
+    let mut start = line.start;
+    for &end in &spans.level_ends[spans.level_run(start)..] {
+        let end = (end as usize).min(suffix);
+        if end > start {
+            runs.push((start..end, bidi.levels[start]));
+        }
+        start = end;
+        if start == suffix {
+            break;
+        }
+    }
+    if suffix < line.end {
+        if let Some((last, level)) = runs.last_mut()
+            && *level == base
+        {
+            last.end = line.end;
+        } else {
+            runs.push((suffix..line.end, base));
+        }
+    }
+
+    let (min, max) = runs.iter().fold((u8::MAX, 0), |(min, max), (_, level)| {
+        (min.min(level.number()), max.max(level.number()))
+    });
+    // L2 reverses contiguous runs at each embedding level down to the lowest odd level.
+    for level in ((min | 1)..=max).rev() {
+        let mut start = 0;
+        while start < runs.len() {
+            if runs[start].1.number() < level {
+                start += 1;
+                continue;
+            }
+            let mut end = start + 1;
+            while end < runs.len() && runs[end].1.number() >= level {
+                end += 1;
+            }
+            runs[start..end].reverse();
+            start = end;
         }
     }
 }
@@ -1626,6 +1969,116 @@ fn visit_style_spans(
 mod tests {
     use super::*;
     use xrack_runtime::{StyledLink, StyledRun};
+
+    #[test]
+    fn full_width_cache_keeps_recent_probes_and_admits_new_ones() {
+        let mut cache = RetainedWidths::default();
+        for index in 0..RetainedWidths::MAX_PROBES {
+            cache.insert(LineKey(index as u64), index as f32);
+        }
+
+        cache.begin_layout();
+        let previous = LineKey(1);
+        assert_eq!(cache.get(&previous), Some(1.0));
+        cache.begin_layout();
+        let current = LineKey(2);
+        assert_eq!(cache.get(&current), Some(2.0));
+        let new = LineKey(RetainedWidths::MAX_PROBES as u64);
+        cache.insert(new, 42.0);
+
+        assert_eq!(cache.get(&previous), Some(1.0));
+        assert_eq!(cache.get(&current), Some(2.0));
+        assert_eq!(cache.get(&new), Some(42.0));
+        assert_eq!(cache.get(&LineKey(3)), None);
+        assert_eq!(cache.values.len(), 3);
+    }
+
+    #[test]
+    fn certified_widths_preserve_geometry_and_exclude_unstable_fonts() {
+        use xrack_runtime::TextWrap;
+
+        let document = StyledText::from_markdown(
+            "**Alpha** abcdefgh · [go](destination) שלום 12345\n\nBeta 🎧 *(longword)* tail",
+        )
+        .unwrap();
+        let mut node = Node::new("StyledText", None);
+        node.properties.insert("text", document.clone().into());
+        let invalidated = Cell::new(false);
+        let measure = |text: &str, style: TextStyle| {
+            ((text.len() * 11 + usize::from(style.bold) * 5) % 37) as f32
+        };
+        let mut checked = 0;
+        let mut bounded = 0;
+        for wrap in [TextWrap::WordWrap, TextWrap::CharWrap, TextWrap::NoWrap] {
+            node.properties.insert("wrap", wrap.into());
+            let mut measurements = StyledTextMeasurements::new(document.clone());
+            for width in (8..160).step_by(3) {
+                let (layout, lines) = StyledTextLayout::indexed_with_measurements(
+                    &node,
+                    Size::new(width as f32, f32::INFINITY),
+                    12.0,
+                    &mut measurements,
+                    &invalidated,
+                    measure,
+                );
+                let Some(range) = lines.reusable_widths() else {
+                    continue;
+                };
+                let maximum = if range.end.is_finite() {
+                    bounded += 1;
+                    range.end.next_down()
+                } else {
+                    range.start + 60.0
+                };
+                for width in [range.start.max(0.5), maximum] {
+                    assert!(range.contains(&width));
+                    let (expected, _) = StyledTextLayout::indexed(
+                        &node,
+                        &document,
+                        Size::new(width, f32::INFINITY),
+                        12.0,
+                        measure,
+                    );
+                    assert_eq!(layout, expected, "width={width}, wrap={wrap:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 30);
+        assert!(bounded > 0);
+
+        let size = Size::new(160.0, f32::INFINITY);
+        let mut measurements = StyledTextMeasurements::new(document);
+        let changed = Cell::new(false);
+        let (_, lines) = StyledTextLayout::indexed_with_measurements(
+            &node,
+            size,
+            12.0,
+            &mut measurements,
+            &invalidated,
+            |text, style| {
+                if !changed.replace(true) {
+                    invalidated.set(true);
+                }
+                measure(text, style)
+            },
+        );
+        assert!(changed.get());
+        assert!(lines.reusable_widths().is_none());
+        node.properties.insert(
+            "horizontal-alignment",
+            TextHorizontalAlignment::Center.into(),
+        );
+        let (_, lines) = StyledTextLayout::indexed_with_measurements(
+            &node,
+            size,
+            12.0,
+            &mut measurements,
+            &invalidated,
+            measure,
+        );
+        assert!(lines.reusable_widths().is_none());
+    }
 
     #[test]
     fn shared_suffix_width_requires_matching_style_splits_and_bidi_levels() {
@@ -1834,6 +2287,51 @@ mod tests {
     }
 
     #[test]
+    fn selection_spans_reuse_recent_geometry_after_a_wrap_change() {
+        let document = StyledText::from_plain_text("abcdef");
+        let mut node = Node::new("StyledText", None);
+        node.properties.insert("text", document.clone().into());
+        node.properties
+            .insert("wrap", xrack_runtime::TextWrap::CharWrap.into());
+        let mut spans = StyledSelectionSpans::new(document.clone());
+        let mut shaped = 0;
+        let mut plan = |width| {
+            let mut layout = StyledTextLayout::new(
+                &node,
+                &document,
+                Size::new(width, f32::INFINITY),
+                12.0,
+                |text, _| text.len() as f32 * 5.0,
+            );
+            layout.shape_selection_recording_by_span(
+                0,
+                &mut spans,
+                |text, _| {
+                    shaped += 1;
+                    Arc::new(VisualTextLine::new(
+                        text,
+                        text.char_indices().map(|(index, _)| (index, 5.0)),
+                    ))
+                },
+                |_, _| {},
+            );
+            layout
+        };
+        let wide = plan(30.0);
+        let narrow = plan(16.0);
+        let resized = plan(17.0);
+
+        assert_eq!(wide.fragments[0].source_span().0, Some(0..6));
+        assert_eq!(narrow.fragments[0].source_span().0, Some(0..3));
+        assert_eq!(narrow, resized);
+        assert_eq!(shaped, 3);
+        assert!(Arc::ptr_eq(
+            narrow.fragments[0].visual.as_ref().unwrap(),
+            resized.fragments[0].visual.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
     fn compact_line_keys_preserve_offsets_and_ellipsis_without_truncation() {
         let limit = (u32::MAX >> 1) as usize;
         let full = LineKey::new(&(limit - 2..limit), false).unwrap();
@@ -1917,7 +2415,7 @@ mod tests {
 
     #[test]
     fn a_probe_that_registers_fonts_invalidates_all_cached_widths() {
-        let mut widths = HashMap::new();
+        let mut widths = RetainedWidths::default();
         let bidi = StyledBidi::new("hello");
         let invalidated = Cell::new(false);
         let mut lines = RetainedLines::default();
@@ -1986,6 +2484,56 @@ mod tests {
     }
 
     #[test]
+    fn prepared_bidi_runs_match_unicode_bidi_for_all_slice_boundaries() {
+        let samples = [
+            "English (אב 42) ג and 123  שלום  ",
+            "اب 123 (12.3) a b שלום  مرحبا \u{2002} ",
+            "start अ́ 🧑‍🔧 שלום 77\u{a0} tail  ",
+            "س\tאב (45)\u{2067} isolated\u{2069}\nabc  \u{202e}explicit\u{202c} text  ",
+            "English (مرحبا+12) אב 99\u{2028} more שלום\u{2029} tail אב  ",
+        ];
+        let mut runs = Vec::new();
+        let mut compared = 0;
+        let mut excluded = 0;
+        for text in samples {
+            let document = StyledText::from_plain_text(text);
+            let text = document.text();
+            let original = BidiInfo::new(text, None);
+            let bidi = StyledBidi::new(text);
+            let spans = PreparedSpans::new(&document, &bidi).unwrap();
+            for (number, paragraph) in original.paragraphs.iter().enumerate() {
+                let start = paragraph.range.start;
+                let offsets: Vec<_> = text[paragraph.range.clone()]
+                    .char_indices()
+                    .map(|(offset, _)| start + offset)
+                    .chain([paragraph.range.end])
+                    .collect();
+                for (index, &start) in offsets.iter().enumerate() {
+                    for &end in &offsets[index + 1..] {
+                        if end > spans.l1_limits[number] as usize {
+                            excluded += 1;
+                            continue;
+                        }
+                        let line = start..end;
+                        simple_visual_runs(&bidi, &spans, paragraph.level, line.clone(), &mut runs);
+                        let (levels, reference) = original.visual_runs(paragraph, line.clone());
+                        assert!(
+                            runs.iter().cloned().eq(reference.into_iter().map(|range| {
+                                let level = levels[range.start];
+                                (range, level)
+                            })),
+                            "{text:?}, {line:?}"
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        assert!(compared > 500);
+        assert!(excluded > 0);
+    }
+
+    #[test]
     fn bidi_line_slices_match_paragraph_runs_at_wrap_boundaries() {
         let text = format!("{}\nس (42)\tאב ABC \u{2067}ب 77\u{2069} س", "x".repeat(57));
         let document = StyledText::from_plain_text(text);
@@ -2000,7 +2548,7 @@ mod tests {
             .map(|(byte, _)| byte)
             .chain([text.len()])
             .collect();
-        let mut line_bidi = ParagraphBidiInfo::new("", None);
+        let mut line_bidi = LineBidi::new();
         let mut pieces = Vec::new();
         for (i, &start) in boundaries.iter().enumerate() {
             for &end in &boundaries[i + 1..] {

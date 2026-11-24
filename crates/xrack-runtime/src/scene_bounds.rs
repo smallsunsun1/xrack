@@ -1,4 +1,5 @@
 //! Shared bounds and spatial partitioning for scene and mesh queries.
+use nalgebra::Vector3;
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,6 +49,17 @@ impl Bounds3D {
         Self { min, max }
     }
 
+    pub fn distance_squared(self, point: Vector3<f64>) -> f64 {
+        (0..3)
+            .map(|axis| {
+                let low = f64::from(self.min[axis]);
+                let high = f64::from(self.max[axis]);
+                let separation = (low - point[axis]).max(point[axis] - high).max(0.0);
+                separation * separation
+            })
+            .sum()
+    }
+
     fn center(self, axis: usize) -> f32 {
         f32::midpoint(self.min[axis], self.max[axis])
     }
@@ -75,6 +87,49 @@ impl<T> BoundsTree<T> {
         Self {
             nodes: nodes.into_boxed_slice(),
             items: candidates.into_iter().map(|(_, value)| value).collect(),
+        }
+    }
+
+    /// Visit nearer nodes first, allowing the caller to reduce its search radius.
+    pub fn visit_nearest(
+        &self,
+        mut limit: f64,
+        distance: impl Fn(Bounds3D) -> f64,
+        mut visit: impl FnMut(&T, f64) -> f64,
+    ) {
+        if self
+            .nodes
+            .first()
+            .is_some_and(|root| distance(root.bounds) <= limit)
+        {
+            self.visit_node(0, &mut limit, &distance, &mut visit);
+        }
+    }
+
+    fn visit_node(
+        &self,
+        index: usize,
+        limit: &mut f64,
+        distance: &impl Fn(Bounds3D) -> f64,
+        visit: &mut impl FnMut(&T, f64) -> f64,
+    ) {
+        let node = &self.nodes[index];
+        if let Some([left, right]) = node.children {
+            let left_distance = distance(self.nodes[left].bounds);
+            let right_distance = distance(self.nodes[right].bounds);
+            let mut children = [(left, left_distance), (right, right_distance)];
+            if right_distance < left_distance {
+                children.swap(0, 1);
+            }
+            for (child, distance_to_bounds) in children {
+                if distance_to_bounds <= *limit {
+                    self.visit_node(child, limit, distance, visit);
+                }
+            }
+        } else {
+            for item in &self.items[node.range.clone()] {
+                *limit = visit(item, *limit);
+            }
         }
     }
 

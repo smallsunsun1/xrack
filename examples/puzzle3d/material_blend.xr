@@ -1,0 +1,70 @@
+struct BlendMaterial {
+    base-color: color, unlit: bool, alpha-mode: string, alpha-cutoff: float, blend-mode: string,
+}
+struct BlendActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float, visible: bool, material: BlendMaterial,
+}
+struct BlendEmitter {
+    position: point3d, color: color, size: float, lifetime: float,
+    burst-count: int, particle-model: string,
+}
+
+export component MaterialBlendDemo inherits Window {
+    title: "XRack · 3D material blend modes";
+    width: 600px; height: 352px;
+    background: #192330;
+
+    in-out property <string> mode: "source-over";
+    in-out property <string> coverage: "blend";
+    in-out property <color> tint: #cc682880;
+    in-out property <bool> weighted: false;
+    in-out property <bool> underlay: false;
+    in-out property <bool> offscreen: false;
+    in-out property <bool> smooth: false;
+    in-out property <bool> particles: false;
+
+    property <BlendMaterial> opaque: BlendMaterial {
+        base-color: #406090, unlit: true, alpha-mode: "opaque", alpha-cutoff: 0.5, blend-mode: "source-over",
+    };
+    property <BlendActor> base: BlendActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, camera-kind: "", camera-height: 4, visible: true, material: root.opaque,
+    };
+    property <[BlendActor]> model: [
+        BlendActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
+        BlendActor { id: "background", z: -2, scale-x: 10, scale-y: 6, ..root.base },
+        BlendActor { id: "underlay", z: -1, scale-x: 4, scale-y: 3.1, visible: root.underlay,
+                     material: BlendMaterial { base-color: #3498e880, alpha-mode: "blend", ..root.opaque },
+                     ..root.base },
+        BlendActor { id: "overlay", x: root.offscreen ? 22 : 0, scale-x: 2.8, scale-y: 2.4,
+                     material: BlendMaterial {
+                         base-color: root.tint, alpha-mode: root.coverage, blend-mode: root.mode, ..root.opaque
+                     }, ..root.base },
+    ];
+    property <[BlendEmitter]> no-sprites: [];
+    property <[BlendEmitter]> sprites: root.particles ? [
+        BlendEmitter { position: Point3D.new(2.6, 0.4, 0.4), color: #aac7ff70,
+                     size: 0.65, lifetime: 2, burst-count: 1, particle-model: "primitive:box" }
+    ] : root.no-sprites;
+    out property <string> picked: Scene3D.pick-camera(
+        root.model, "eye", Point2D.new(600px, 300px), Point2D.new(300px, 150px));
+
+    SceneView3D {
+        width: 600px; height: 300px; camera: "eye"; model: root.model;
+        order-independent-transparency: root.weighted; multisampling: root.smooth;
+        particle-emitters: root.sprites; particle-time: 0.5;
+        frustum-culling: true; scene-background: #22334b;
+    }
+    mode-button := Button {
+        x: 12px; y: 312px; width: 168px; height: 30px;
+        text: root.mode;
+        clicked => {
+            root.mode = root.mode == "source-over" ? "screen" : root.mode == "screen" ? "multiply" : "source-over";
+        }
+    }
+    underlay-toggle := CheckBox { x: 216px; y: 312px; width: 145px; text: "Underlay"; checked <=> root.underlay; }
+    weighted-toggle := CheckBox { x: 390px; y: 312px; width: 177px; text: "Weighted OIT"; checked <=> root.weighted; }
+}

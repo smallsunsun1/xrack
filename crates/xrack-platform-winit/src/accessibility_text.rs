@@ -451,10 +451,12 @@ pub(crate) fn project_styled_text(
     let mut fragments = layout
         .styled_text
         .iter()
-        .flat_map(|plan| &plan.fragments)
-        .filter_map(|fragment| {
+        .flat_map(|plan| plan.fragments.placed())
+        .filter_map(|(fragment, offset)| {
             let (visual, range, prefix) = fragment.selection_geometry()?;
-            Some((range, fragment.bounds, visual, prefix))
+            let mut bounds = fragment.bounds;
+            bounds.y += offset;
+            Some((range, bounds, visual, prefix))
         })
         .collect::<Vec<_>>();
     fragments.sort_by_key(|(range, ..)| range.start);

@@ -18,8 +18,8 @@ const SHADOW_MASK_LIFETIME: u64 = 60;
 const MAX_OPACITY_ATLAS_EDGE: u32 = 1536;
 const OPACITY_ATLAS_LIFETIME: u64 = 60;
 const MAX_SHARED_OPACITY_TILES: usize = 32;
-const WINDOW_ATLAS_EDGE: u32 = 512;
-const WINDOW_ATLAS_BYTES: u64 = WINDOW_ATLAS_EDGE as u64 * WINDOW_ATLAS_EDGE as u64 * 4;
+const MIN_WINDOW_ATLAS_EDGE: u32 = 512;
+const MAX_WINDOW_ATLAS_EDGE: u32 = 1024;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LayerStats {
@@ -58,6 +58,7 @@ struct OpacityImage {
     image: ImageId,
     bytes: u64,
     cached: Option<Rc<CachedLayerImage>>,
+    fonts: Option<[usize; 2]>,
 }
 
 pub(super) struct CachedLayerImage {
@@ -78,12 +79,12 @@ struct WindowAtlasTile {
 }
 
 impl WindowOpacityAtlas {
-    fn new(device: &wgpu::Device, frame: u64) -> Self {
+    fn new(device: &wgpu::Device, edge: u32, frame: u64) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("XRack compositor opacity atlas"),
             size: wgpu::Extent3d {
-                width: WINDOW_ATLAS_EDGE,
-                height: WINDOW_ATLAS_EDGE,
+                width: edge,
+                height: edge,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -98,10 +99,14 @@ impl WindowOpacityAtlas {
                 texture,
                 binding: OnceCell::new(),
             }),
-            packing: Atlas::new(WINDOW_ATLAS_EDGE as usize, WINDOW_ATLAS_EDGE as usize),
+            packing: Atlas::new(edge as usize, edge as usize),
             tiles: HashMap::new(),
             last_frame: frame,
         }
+    }
+
+    fn bytes(edge: u32) -> u64 {
+        u64::from(edge) * u64::from(edge) * 4
     }
 
     fn tile(
@@ -178,6 +183,10 @@ pub(super) enum WindowLayerSource {
         tint: u32,
     },
     Solid(Color),
+    CoveredSolid {
+        tint: u32,
+        edges: [f32; 4],
+    },
 }
 
 pub(super) struct WindowLayer {
@@ -270,6 +279,24 @@ impl WindowLayer {
         }
     }
 
+    pub(super) fn covered_solid(bounds: Rect, color: Color, scale: f32) -> Self {
+        let [r, g, b] = [color.r, color.g, color.b].map(|value| (value * 255.0).round() as u32);
+        let edges = [
+            bounds.x,
+            bounds.y,
+            bounds.x + bounds.width,
+            bounds.y + bounds.height,
+        ]
+        .map(|edge| edge * scale);
+        Self {
+            source: WindowLayerSource::CoveredSolid {
+                tint: (r << 16) | (g << 8) | b,
+                edges,
+            },
+            ..Self::solid(logical_bounds(device_bounds(bounds, scale), scale), color)
+        }
+    }
+
     pub(super) fn crop(&mut self, clip: Rect) {
         let source = self.bounds;
         let visible = source.intersect(clip);
@@ -306,20 +333,18 @@ impl OpacityLayer {
         }
     }
 
-    fn shares_hint(
+    fn shares_capture(
         &self,
         node: &Node,
         layout: &LayoutNode,
         style: OpacityTileStyle,
         bounds: Rect,
+        origin: Option<Point>,
     ) -> bool {
-        // The source may have moved since capture. Its original sampling
-        // phase is stored relative to its own layout origin.
-        let origin = Point {
-            x: bounds.x - layout.bounds.x,
-            y: bounds.y - layout.bounds.y,
-        };
-        if self.resample_origin != Some(origin)
+        // A sampled capture stores its original offset from the layout
+        // origin. An exact capture must use the same device-pixel phase.
+        if self.resample_origin != origin
+            || self.surface_only
             || self.scale != style.scale
             || self.palette != style.palette
             || self.in_layout != style.in_layout
@@ -333,9 +358,18 @@ impl OpacityLayer {
             x: layout.bounds.x - self.captured_layout.bounds.x,
             y: layout.bounds.y - self.captured_layout.bounds.y,
         };
+        let sampled = origin.is_some();
+        if !sampled
+            && (!self.full_coverage
+                || self.capture_clip != self.captured_layout.bounds
+                || (offset.x * style.scale).fract() != 0.0
+                || (offset.y * style.scale).fract() != 0.0)
+        {
+            return false;
+        }
         let mut motion = LayoutMove::new(self.capture_clip, layout.bounds, offset, 0.0);
         self.captured_layout
-            .matches_translated(layout, true, |before, after| {
+            .matches_translated(layout, sampled, |before, after| {
                 translated_geometry_matches(before, after, &mut motion)
             })
     }
@@ -583,6 +617,14 @@ struct OpacityTile {
     device: Rect,
     position: [u32; 2],
     style: OpacityTileStyle,
+    capture: OpacityTileCapture,
+}
+
+#[derive(Clone, Copy)]
+struct OpacityTileCapture {
+    moving: bool,
+    mask: Option<shadow::ShadowDraw>,
+    fonts: [usize; 2],
 }
 
 impl OpacityTile {
@@ -593,8 +635,11 @@ impl OpacityTile {
         clip: Rect,
         device: Rect,
         style: OpacityTileStyle,
+        capture: OpacityTileCapture,
     ) -> bool {
         if self.style != style
+            || self.capture.moving != capture.moving
+            || self.capture.fonts != capture.fonts
             || self.device.width != device.width
             || self.device.height != device.height
             || self.layout.bounds.width != layout.bounds.width
@@ -608,7 +653,13 @@ impl OpacityTile {
             x: layout.bounds.x - self.layout.bounds.x,
             y: layout.bounds.y - self.layout.bounds.y,
         };
-        if offset.x * style.scale != device.x - self.device.x
+        let shadow_matches = match (self.capture.mask, capture.mask) {
+            (Some(previous), Some(next)) => previous.matches_translation(next, offset),
+            (None, None) => true,
+            _ => false,
+        };
+        if !shadow_matches
+            || offset.x * style.scale != device.x - self.device.x
             || offset.y * style.scale != device.y - self.device.y
             || Rect::new(
                 self.clip.x + offset.x,
@@ -877,10 +928,9 @@ impl RetainedLayers {
             u64::from(atlas.texture.width()) * u64::from(atlas.texture.height()) * 4
         });
         let mut charged = HashSet::new();
-        let window = self
-            .window_opacity_atlas
-            .as_ref()
-            .map_or(0, |_| WINDOW_ATLAS_BYTES);
+        let window = self.window_opacity_atlas.as_ref().map_or(0, |atlas| {
+            WindowOpacityAtlas::bytes(atlas.image.texture.width())
+        });
         atlas
             + window
             + self
@@ -929,6 +979,7 @@ impl RetainedLayers {
         node: &Node,
         placement: LayerPlacement,
         repeated_phase_change: bool,
+        defer_new_capture: bool,
     ) -> bool {
         if let Some(group) = self.changing_groups.get_mut(owner) {
             let same_paint = group.node.same_paint_except_layer_composition(node);
@@ -950,10 +1001,9 @@ impl RetainedLayers {
             return false;
         }
         if !repeated_phase_change
-            && self
-                .opacity
-                .get(owner)
-                .is_none_or(|layer| layer.node.same_paint_except_layer_composition(node))
+            && self.opacity.get(owner).map_or(!defer_new_capture, |layer| {
+                layer.node.same_paint_except_layer_composition(node)
+            })
         {
             return true;
         }
@@ -983,8 +1033,8 @@ impl Renderer {
             (!layer.surface_only
                 && texture.format() == wgpu::TextureFormat::Rgba8Unorm
                 && texture.usage().contains(wgpu::TextureUsages::COPY_SRC)
-                && texture.width() + 2 <= WINDOW_ATLAS_EDGE
-                && texture.height() + 2 <= WINDOW_ATLAS_EDGE)
+                && texture.width() + 2 <= MIN_WINDOW_ATLAS_EDGE
+                && texture.height() + 2 <= MIN_WINDOW_ATLAS_EDGE)
                 .then_some(image)
         }
 
@@ -1000,28 +1050,43 @@ impl Renderer {
                 .all(|tile| tile.source.strong_count() == 0)
         {
             atlas.tiles.clear();
-            atlas
-                .packing
-                .reset(WINDOW_ATLAS_EDGE as usize, WINDOW_ATLAS_EDGE as usize);
+            let edge = atlas.image.texture.width() as usize;
+            atlas.packing.reset(edge, edge);
         }
         if cache.window_opacity_atlas.is_none() {
-            let mut candidates = layers.iter().filter_map(source);
-            let Some(first) = candidates.next() else {
-                return;
-            };
-            if !candidates.any(|image| !Rc::ptr_eq(first, image))
-                || WINDOW_ATLAS_EDGE > self.device.limits().max_texture_dimension_2d
-                || WINDOW_ATLAS_BYTES > cache.budget.saturating_sub(cache.resident_bytes())
-            {
+            let mut demand = OpacityDemand::default();
+            let mut sources = HashSet::new();
+            for image in layers.iter().filter_map(source) {
+                if sources.insert(Rc::as_ptr(image)) {
+                    demand.record(image.texture.width() + 2, image.texture.height() + 2);
+                }
+            }
+            if demand.groups < 2 {
                 return;
             }
-            cache.window_opacity_atlas =
-                Some(WindowOpacityAtlas::new(&self.device, cache.frame_number));
+            let limit = self
+                .device
+                .limits()
+                .max_texture_dimension_2d
+                .min(MAX_WINDOW_ATLAS_EDGE);
+            let desired = demand.atlas_edge(0, 0, limit).max(MIN_WINDOW_ATLAS_EDGE);
+            let available = cache.budget.saturating_sub(cache.resident_bytes());
+            let Some(edge) = [desired, MIN_WINDOW_ATLAS_EDGE]
+                .into_iter()
+                .find(|&edge| edge <= limit && WindowOpacityAtlas::bytes(edge) <= available)
+            else {
+                return;
+            };
+            cache.window_opacity_atlas = Some(WindowOpacityAtlas::new(
+                &self.device,
+                edge,
+                cache.frame_number,
+            ));
         }
         let Some(atlas) = &mut cache.window_opacity_atlas else {
             return;
         };
-        let edge = WINDOW_ATLAS_EDGE as f32;
+        let edge = atlas.image.texture.width() as f32;
         for layer in layers {
             let Some(image) = source(layer) else { continue };
             let Some([x, y]) = atlas.tile(image, &self.device, &mut self.custom_encoder) else {
@@ -1211,7 +1276,9 @@ impl Renderer {
             && layout.clip.x + layout.clip.width >= bounds.x + bounds.width
             && layout.clip.y + layout.clip.height >= bounds.y + bounds.height;
         let hinted = node.boolean("cache-rendering-hint", false);
-        if !(hinted || Self::can_cache_window_surface(node, layout, frame.scale))
+        let whole_group =
+            hinted || Self::can_composite_exact_opacity(node, layout, frame.scale, opacity);
+        if !(whole_group || Self::can_cache_window_surface(node, layout, frame.scale))
             || !opacity.is_finite()
             || layout.allows_overflow()
             || !layout.local_transform().is_identity()
@@ -1222,7 +1289,9 @@ impl Renderer {
         }
         let owner = self.opacity_owner(path);
         let layer = self.retained_layers.opacity.get_mut(&owner)?;
-        if layer.scale != frame.scale
+        // Group opacity must also apply to the children of the surface.
+        if layer.surface_only == whole_group
+            || layer.scale != frame.scale
             || layer.palette != frame.theme
             || layer.in_layout != in_layout
             || !full_coverage && layer.resample_origin.is_none()
@@ -1241,8 +1310,7 @@ impl Renderer {
             };
             // The background raster covers only the panel surface. Descendant
             // layout and the current ancestor clip are handled by the compositor.
-            if hinted
-                || !captured.preserves_surface_raster(current)
+            if !captured.preserves_surface_raster(current)
                 || !layer.node.same_own_paint_except_position(node)
             {
                 return None;
@@ -1275,6 +1343,21 @@ impl Renderer {
             mask: None,
             sample_mask: false,
         })
+    }
+
+    fn can_composite_exact_opacity(
+        node: &Node,
+        layout: &LayoutNode,
+        scale: f32,
+        opacity: f32,
+    ) -> bool {
+        0.0 < opacity
+            && opacity < 1.0
+            && !node.children.is_empty()
+            && scale >= 1.0
+            && !layout.has_ancestor_clip_chain()
+            && layout.clip.intersect(layout.bounds) == layout.bounds
+            && crate::pixel_aligned(layout.bounds, scale)
     }
 
     pub(super) fn can_cache_window_surface(node: &Node, layout: &LayoutNode, scale: f32) -> bool {
@@ -1395,6 +1478,7 @@ impl Renderer {
                     image: raster.image,
                     bytes: raster.bytes,
                     cached: Some(image.clone()),
+                    fonts: None,
                 }),
                 raster_bounds: raster.bounds,
                 resample_origin: None,
@@ -1675,12 +1759,28 @@ impl Renderer {
             if !passive_content(node) {
                 return Ok(false);
             }
+            // A cold atlas can handle shadowed siblings in one pass. Admit
+            // a persistent capture only if the group's paint stays stable.
+            let defer_new_capture = shadow.is_some()
+                && node.opacity() < 1.0
+                && self.retained_layers.previous_opacity_demand.groups < 2
+                && self.retained_layers.opacity_atlas.is_some()
+                && !self.retained_layers.vectors.opacity_passthrough
+                && transient_opacity_bounds(
+                    node,
+                    layout,
+                    frame.scale,
+                    self.opacity_atlas_limit(),
+                    shadow,
+                )
+                .is_some();
             if defer_unstable
                 && !self.retained_layers.admit_stable_group(
                     &owner,
                     node,
                     placement,
                     repeated_phase_change,
+                    defer_new_capture,
                 )
             {
                 if resample && let Some(layer) = self.retained_layers.opacity.remove(&owner) {
@@ -1745,14 +1845,28 @@ impl Renderer {
                 palette: frame.theme,
                 in_layout,
             };
-            let shared = (resample
-                && self.retained_layers.hinted_layer_sharing
-                && self.retained_layers.opacity.len() < MAX_LAYERS)
+            let exact = !resample
+                && shadow.is_none()
+                && Self::can_composite_exact_opacity(node, layout, frame.scale, node.opacity());
+            let origin = resample.then_some(Point {
+                x: raster_bounds.x - layout.bounds.x,
+                y: raster_bounds.y - layout.bounds.y,
+            });
+            let share = if resample {
+                self.retained_layers.hinted_layer_sharing
+            } else {
+                exact && self.retained_layers.opacity_tile_sharing
+            };
+            let fonts = self.text.registered_font_counts();
+            let shared = (share && self.retained_layers.opacity.len() < MAX_LAYERS)
                 .then(|| {
                     self.retained_layers
                         .opacity
                         .values()
-                        .find(|layer| layer.shares_hint(node, layout, style, raster_bounds))
+                        .find(|layer| {
+                            (resample || layer.image.fonts == Some(fonts))
+                                && layer.shares_capture(node, layout, style, raster_bounds, origin)
+                        })
                         .map(|layer| layer.image.clone())
                 })
                 .flatten();
@@ -1778,12 +1892,15 @@ impl Renderer {
                 Rc::new(OpacityImage {
                     image: raster.image,
                     bytes: raster.bytes,
-                    cached: resample.then(|| {
+                    // At texel centers the compositor's linear sampler
+                    // gives the same pixels as the exact retained layer.
+                    cached: (resample || exact).then(|| {
                         Rc::new(CachedLayerImage {
                             texture: captured.texture,
                             binding: OnceCell::new(),
                         })
                     }),
+                    fonts: (exact && fonts == self.text.registered_font_counts()).then_some(fonts),
                 })
             };
             let raster = Raster {
@@ -1800,10 +1917,7 @@ impl Renderer {
                     full_coverage,
                     image,
                     raster_bounds,
-                    resample_origin: resample.then_some(Point {
-                        x: raster.bounds.x - layout.bounds.x,
-                        y: raster.bounds.y - layout.bounds.y,
-                    }),
+                    resample_origin: origin,
                     sampled_clips: resample.then(|| sampled_clip_regions(layout)),
                     scale: frame.scale,
                     palette: frame.theme,
@@ -1859,11 +1973,11 @@ impl Renderer {
         extent.next_power_of_two().max(256).min(limit)
     }
 
-    pub(super) fn prepare_rectangle_opacity_atlas(
+    pub(super) fn prepare_opacity_atlas_for_children(
         &mut self,
         node: &Node,
         layout: &LayoutNode,
-        scale: f32,
+        frame: PaintFrame<'_>,
     ) {
         if cfg!(any(target_os = "ios", target_os = "android"))
             || self.retained_layers.opacity_atlas_disabled
@@ -1880,27 +1994,35 @@ impl Renderer {
             if !item.visible
                 || !(0.0 < opacity && opacity < 1.0)
                 || !item.local_transform().is_identity()
-                || item.has_ancestor_clip_chain()
                 || item.table_pane_clip().is_some()
-                || !crate::rectangle::single_fill(child, item)
+                || frame.damage.is_some_and(|damage| {
+                    !crate::window_damage::intersects_damage(child, item, frame, damage)
+                })
             {
                 continue;
             }
-            let clip = item.clip.intersect(item.bounds);
-            if !shadow::nonempty(clip)
-                || (crate::pixel_aligned(clip, scale) && crate::pixel_aligned(item.bounds, scale))
+            let shadow = shadow::OuterShadow::clipped_for_node(
+                child,
+                item,
+                frame.scale,
+                frame.theme.role(crate::Role::Border),
+            );
+            let Some((clip, device)) =
+                transient_opacity_bounds(child, item, frame.scale, limit, shadow.as_ref())
+            else {
+                continue;
+            };
+            if shadow.is_none()
+                && !(child.children.is_empty()
+                    && (!crate::pixel_aligned(clip, frame.scale)
+                        || !crate::pixel_aligned(item.bounds, frame.scale)))
             {
                 continue;
             }
-            let device = device_bounds(clip, scale);
-            let width = device.width as u32;
-            let height = device.height as u32;
-            if opacity_tile_fits(width, height, limit) {
-                demand.record(width, height);
-            }
+            demand.record(device.width as u32, device.height as u32);
         }
         if demand.groups >= 2 {
-            // Size the cold atlas from the imminent sibling fills.
+            // Allocate for these siblings before recording the first capture.
             self.create_opacity_atlas(demand.atlas_edge(0, 0, limit));
         }
     }
@@ -1922,31 +2044,22 @@ impl Renderer {
             || self.retained_layers.opacity_atlas_disabled
             || !self.can_retain_layer(frame.scale)
             || self.retained_layers.vectors.opacity_passthrough
-            || layout.has_ancestor_clip_chain()
-            || node.children.is_empty() && !crate::rectangle::single_fill(node, layout)
-            || !passive_content(node)
         {
             return Ok(false);
         }
-        let content = layout.clip.intersect(layout.bounds);
-        let clip = shadow.map_or(content, |(_, effect)| shadow::union(content, *effect));
-        if !shadow::nonempty(clip) {
-            return Ok(false);
-        }
-        let device = device_bounds(clip, frame.scale);
-        let raster = logical_bounds(device, frame.scale);
         let limit = self.opacity_atlas_limit();
+        let Some((clip, device)) =
+            transient_opacity_bounds(node, layout, frame.scale, limit, shadow)
+        else {
+            return Ok(false);
+        };
+        let raster = logical_bounds(device, frame.scale);
         let [width, height] = [device.width as u32, device.height as u32];
-        if !opacity_tile_fits(width, height, limit) {
-            return Ok(false);
-        }
-        if shadow.is_some_and(|(shadow, _)| shadow.mask_tile(frame.scale, layout.clip).is_none()) {
-            return Ok(false);
-        }
         self.retained_layers.opacity_demand.record(width, height);
         let demand = self.retained_layers.previous_opacity_demand;
         if demand.groups < 2
-            && !(node.children.is_empty() && self.retained_layers.opacity_atlas.is_some())
+            && !(self.retained_layers.opacity_atlas.is_some()
+                && (node.children.is_empty() || shadow.is_some()))
         {
             return Ok(false);
         }
@@ -1963,12 +2076,16 @@ impl Renderer {
         {
             self.create_opacity_atlas(desired_edge);
         }
-        let share_tiles =
-            moving_layer && self.retained_layers.opacity_tile_sharing && frame.scale >= 1.0;
+        let share_tiles = self.retained_layers.opacity_tile_sharing && frame.scale >= 1.0;
         let style = OpacityTileStyle {
             scale: frame.scale,
             palette: frame.theme,
             in_layout,
+        };
+        let capture = OpacityTileCapture {
+            moving: moving_layer,
+            mask,
+            fonts: self.text.registered_font_counts(),
         };
         let Some(atlas) = self.retained_layers.opacity_atlas.as_mut() else {
             return Ok(false);
@@ -1979,7 +2096,7 @@ impl Renderer {
             atlas
                 .tiles
                 .iter()
-                .find(|tile| tile.matches(node, layout, clip, device, style))
+                .find(|tile| tile.matches(node, layout, clip, device, style, capture))
                 .map(|tile| tile.position)
         } else {
             None
@@ -2043,6 +2160,7 @@ impl Renderer {
                 Ok(Some(())) => {}
             }
             if share_tiles
+                && capture.fonts == self.text.registered_font_counts()
                 && let Some(atlas) = &mut self.retained_layers.opacity_atlas
                 && atlas.image == image
                 && atlas.tiles.len() < MAX_SHARED_OPACITY_TILES
@@ -2054,6 +2172,7 @@ impl Renderer {
                     device,
                     position,
                     style,
+                    capture,
                 });
             }
         }
@@ -2279,7 +2398,43 @@ impl Renderer {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let rendered = self.with_capture_canvas(|renderer| {
+        let rendered = self.paint_capture_target(&texture, bounds, scale, draw)?;
+        Ok(rendered.map(|()| CapturedTexture {
+            texture,
+            bounds,
+            bytes,
+        }))
+    }
+
+    pub(super) fn capture_scene_item(
+        &mut self,
+        bounds: Rect,
+        scale: f32,
+        previous: Option<&wgpu::Texture>,
+        draw: impl FnOnce(&mut Self) -> Result<(), String>,
+    ) -> Result<Option<wgpu::Texture>, String> {
+        let physical = device_bounds(bounds, scale);
+        if let Some(texture) = previous.filter(|texture| {
+            texture.width() == physical.width as u32 && texture.height() == physical.height as u32
+        }) {
+            return Ok(self
+                .paint_capture_target(texture, logical_bounds(physical, scale), scale, draw)?
+                .map(|()| texture.clone()));
+        }
+        Ok(self
+            .capture_device_texture(physical, scale, draw)?
+            .map(|captured| captured.texture))
+    }
+
+    fn paint_capture_target(
+        &mut self,
+        texture: &wgpu::Texture,
+        bounds: Rect,
+        scale: f32,
+        draw: impl FnOnce(&mut Self) -> Result<(), String>,
+    ) -> Result<Option<()>, String> {
+        let (width, height) = (texture.width(), texture.height());
+        self.with_capture_canvas(|renderer| {
             renderer.canvas.set_size(width, height, scale);
             renderer.canvas.reset();
             renderer
@@ -2289,15 +2444,10 @@ impl Renderer {
             renderer.canvas.translate(-bounds.x, -bounds.y);
             renderer.images.begin_frame();
             let result = draw(renderer);
-            renderer.submit_canvas(&texture);
+            renderer.submit_canvas(texture);
             renderer.images.end_frame(&mut renderer.canvas);
             result
-        })?;
-        Ok(rendered.map(|()| CapturedTexture {
-            texture,
-            bounds,
-            bytes,
-        }))
+        })
     }
 
     fn with_capture_canvas<T>(
@@ -2329,6 +2479,31 @@ impl Renderer {
         self.retained_layers.capturing = false;
         result.map(Some)
     }
+}
+
+fn transient_opacity_bounds(
+    node: &Node,
+    layout: &LayoutNode,
+    scale: f32,
+    limit: u32,
+    shadow: Option<&(shadow::OuterShadow, Rect)>,
+) -> Option<(Rect, Rect)> {
+    if layout.allows_overflow()
+        || layout.has_ancestor_clip_chain()
+        || node.children.is_empty() && !crate::rectangle::single_fill(node, layout)
+        || !passive_content(node)
+    {
+        return None;
+    }
+    let content = layout.clip.intersect(layout.bounds);
+    let clip = shadow.map_or(content, |(_, effect)| shadow::union(content, *effect));
+    if !shadow::nonempty(clip) {
+        return None;
+    }
+    let device = device_bounds(clip, scale);
+    (opacity_tile_fits(device.width as u32, device.height as u32, limit)
+        && shadow.is_none_or(|(shadow, _)| shadow.mask_tile(scale, layout.clip).is_some()))
+    .then_some((clip, device))
 }
 
 fn opacity_tile_fits(width: u32, height: u32, limit: u32) -> bool {

@@ -1,0 +1,25 @@
+// CHECK: "xr.texture_url"() <{value = "textures/tile.png"}> : () -> !xr.string
+// CHECK: "xr.make_record"
+// CHECK-SAME: !xr.record<"Sampler">
+// CHECK: "xr.bind"{{.*}}name = "model"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist<"Actor">
+
+struct Sampler { source: string, wrap-u: string, uv-rotation: float }
+struct Surface { base-color: color, base-color-map: Sampler }
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: Surface,
+}
+export component TexturePlan inherits Window {
+    in property <float> angle: 0;
+    SceneView3D {
+        width: 80px; height: 80px;
+        model: [Actor {
+            id: "tile", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
+            material: Surface { base-color: #fff, base-color-map: Sampler {
+                source: @texture-url("textures/tile.png"), wrap-u: "mirror", uv-rotation: root.angle
+            }}
+        }];
+    }
+}

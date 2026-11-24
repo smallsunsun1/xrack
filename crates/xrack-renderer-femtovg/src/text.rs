@@ -33,10 +33,32 @@ pub(crate) fn fill_selected_text(
     spans: &[Range<f32>],
     selected_color: Option<Color>,
 ) -> Result<(), ErrorKind> {
+    fill_with_selection(
+        canvas,
+        clip,
+        origin.x,
+        paint,
+        spans,
+        selected_color,
+        |canvas, paint| {
+            text_system
+                .fill_text(canvas, origin.x, origin.y, text, paint)
+                .map(|_| ())
+        },
+    )
+}
+
+pub(crate) fn fill_with_selection(
+    canvas: &mut Canvas<WGPURenderer>,
+    clip: Rect,
+    origin_x: f32,
+    paint: &Paint,
+    spans: &[Range<f32>],
+    selected_color: Option<Color>,
+    mut draw: impl FnMut(&mut Canvas<WGPURenderer>, &Paint) -> Result<(), ErrorKind>,
+) -> Result<(), ErrorKind> {
     let Some(selected_color) = selected_color.filter(|_| !spans.is_empty()) else {
-        return text_system
-            .fill_text(canvas, origin.x, origin.y, text, paint)
-            .map(|_| ());
+        return draw(canvas, paint);
     };
 
     // Draw the complete shaped line through disjoint clips. Splitting the
@@ -46,8 +68,8 @@ pub(crate) fn fill_selected_text(
     let right = clip.x + clip.width;
     let mut left = clip.x;
     for span in spans {
-        let start = (origin.x + span.start).max(left);
-        let end = (origin.x + span.end).min(right);
+        let start = (origin_x + span.start).max(left);
+        let end = (origin_x + span.end).min(right);
         if end <= start {
             continue;
         }
@@ -58,9 +80,7 @@ pub(crate) fn fill_selected_text(
         left = end;
     }
     if selected.is_empty() {
-        return text_system
-            .fill_text(canvas, origin.x, origin.y, text, paint)
-            .map(|_| ());
+        return draw(canvas, paint);
     }
     if left < right {
         normal.rect(left, clip.y, right - left, clip.height);
@@ -68,9 +88,9 @@ pub(crate) fn fill_selected_text(
     let mut fill = |path: &Path, paint: &Paint| {
         canvas.save();
         canvas.clip_path(path, FillRule::NonZero);
-        let result = text_system.fill_text(canvas, origin.x, origin.y, text, paint);
+        let result = draw(canvas, paint);
         canvas.restore();
-        result.map(|_| ())
+        result
     };
     if !normal.is_empty() {
         fill(&normal, paint)?;
@@ -95,6 +115,12 @@ struct StyledFace {
     italic: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct LabelFont {
+    size: f32,
+    face: Option<StyledFace>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct LabelSettings {
     available: [u32; 2],
@@ -114,11 +140,55 @@ struct CachedLabel {
 pub(crate) struct PreparedLabel {
     pub(crate) layout: LabelLayout<'static>,
     paint: Paint,
+    glyphs: RefCell<Option<(f32, crate::cell_glyphs::Run)>>,
 }
 
 impl PreparedLabel {
+    const MAX_CACHED_TEXT_BYTES: usize = 64;
+
     pub(crate) fn paint(&self, tint: Color) -> Paint {
         self.paint.clone().with_color(tint)
+    }
+
+    pub(super) fn visit_glyphs(
+        &self,
+        context: &TextContext,
+        origin: Point,
+        scale: f32,
+        mut visit: impl FnMut(FontId, u16, f32, f32) -> bool,
+    ) -> Option<bool> {
+        let [line] = self.layout.lines.as_slice() else {
+            return None;
+        };
+        let text = &line.text;
+        if text.len() > Self::MAX_CACHED_TEXT_BYTES || !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let mut cached = self.glyphs.borrow_mut();
+        if cached
+            .as_ref()
+            .is_none_or(|(measured_scale, _)| *measured_scale != scale)
+        {
+            let paint = self
+                .paint
+                .clone()
+                .with_font_size(self.paint.font_size() * scale);
+            let metrics = context.measure_text(0.0, 0.0, text, &paint).ok()?;
+            if metrics.glyphs.len() > text.len() {
+                return None;
+            }
+            *cached = Some((scale, crate::cell_glyphs::Run::from_metrics(&metrics)));
+        }
+        let (_, run) = cached.as_ref()?;
+        Some(
+            crate::cell_glyphs::placed_glyphs(
+                run.glyphs.iter().copied(),
+                run.baseline,
+                [origin.x, origin.y],
+                scale,
+            )
+            .all(|(font, glyph, x, y)| visit(font, glyph, x, y)),
+        )
     }
 }
 
@@ -179,7 +249,19 @@ impl LabelCache {
                     })
                     .sum::<usize>(),
             );
-        let label = Rc::new(PreparedLabel { layout, paint });
+        let glyph_bytes = match layout.lines.as_slice() {
+            // Reserve a bounded glyph allocation in the same cache budget.
+            [line] if line.text.len() <= PreparedLabel::MAX_CACHED_TEXT_BYTES => {
+                line.text.len() * size_of::<crate::cell_glyphs::Glyph>()
+            }
+            _ => 0,
+        };
+        let bytes = bytes.saturating_add(glyph_bytes);
+        let label = Rc::new(PreparedLabel {
+            layout,
+            paint,
+            glyphs: RefCell::new(None),
+        });
         if bytes > MAX_BYTES {
             return label;
         }
@@ -637,6 +719,15 @@ fn font_family_names(system: &Database, bundled: Option<&Database>) -> Vec<Strin
     families
 }
 
+mod cell_shaping;
+
+pub(super) type CellFonts = [Option<FontId>; 8];
+
+pub(super) struct CellPaint {
+    pub(super) paint: Paint,
+    pub(super) fonts: CellFonts,
+}
+
 /// One font registry and shaping cache shared by measurement and drawing.
 pub struct TextSystem {
     base: FontContext,
@@ -655,8 +746,11 @@ pub struct TextSystem {
     edit_line: RefCell<Option<EditLine>>,
     label_layouts: RefCell<LabelCache>,
     outline_glyphs: RefCell<HashMap<(FontId, u16), Option<OutlineGlyph>>>,
+    cell_shapes: RefCell<cell_shaping::Cache>,
     pub(super) cell_glyphs: RefCell<crate::cell_glyphs::Cache>,
     styled_layouts: RefCell<crate::styled_text::LayoutCache>,
+    retained_styled_text_enabled: bool,
+    retained_text: RefCell<Option<crate::retained_text::Cache>>,
     pub(crate) styled_ink: RefCell<crate::styled_ink::InkCache>,
     #[cfg(target_os = "android")]
     android_emoji: Option<RefCell<Emoji>>,
@@ -849,8 +943,11 @@ impl TextSystem {
             edit_line: RefCell::default(),
             label_layouts: RefCell::default(),
             outline_glyphs: RefCell::default(),
+            cell_shapes: RefCell::default(),
             cell_glyphs: RefCell::default(),
             styled_layouts: RefCell::default(),
+            retained_styled_text_enabled: false,
+            retained_text: RefCell::default(),
             styled_ink: RefCell::default(),
             #[cfg(target_os = "android")]
             android_emoji: None,
@@ -974,6 +1071,40 @@ impl TextSystem {
             (Some((_, context)), Some(_)) => context,
             _ => &self.base,
         }
+    }
+
+    pub(super) fn shape_cell(
+        &self,
+        text: &str,
+        size: f32,
+        fonts: &CellFonts,
+    ) -> Option<crate::cell_glyphs::Run> {
+        if cfg!(any(
+            xrack_femtovg_glyph_samples,
+            target_os = "android",
+            target_os = "ios"
+        )) {
+            return None;
+        }
+        self.cell_shapes.borrow_mut().shape(self, text, size, fonts)
+    }
+
+    pub(super) fn measure_cell(
+        &self,
+        text: &str,
+        paint: &Paint,
+        fonts: Option<&CellFonts>,
+    ) -> Option<crate::cell_glyphs::Measurement> {
+        use crate::cell_glyphs::Measurement;
+        if let Some(fonts) = fonts
+            && let Some(run) = self.shape_cell(text, paint.font_size(), fonts)
+        {
+            return Some(Measurement::Portable(run));
+        }
+        self.context()
+            .measure_text(0.0, 0.0, text, paint)
+            .ok()
+            .map(Measurement::Legacy)
     }
 
     pub(crate) fn context(&self) -> &TextContext {
@@ -1122,8 +1253,51 @@ impl TextSystem {
         (family, weight, italic)
     }
 
+    pub(crate) fn set_retained_styled_text_enabled(&mut self, enabled: bool) -> bool {
+        if self.retained_styled_text_enabled == enabled {
+            return false;
+        }
+        self.retained_styled_text_enabled = enabled;
+        self.invalidate_intrinsic_measurements();
+        self.styled_layouts.get_mut().clear();
+        true
+    }
+
+    fn retained_styled_text_available(&self) -> bool {
+        self.retained_styled_text_enabled
+            && !cfg!(any(
+                target_os = "ios",
+                target_os = "android",
+                target_arch = "wasm32"
+            ))
+            && self.active_fonts.is_none()
+            && !self.base.fallback.is_empty()
+    }
+
+    pub(crate) fn retained_text_font<'a>(&'a self, node: &'a Node) -> (&'a str, u16, bool) {
+        let (family, weight, italic) = self.font_attributes(Some(node));
+        (family, self.effective_weight(weight), italic)
+    }
+
+    pub(crate) fn retained_glyph_font(
+        &self,
+        font: &xrack_layout::StyledGlyphFont,
+    ) -> Result<FontId, ErrorKind> {
+        self.retained_text
+            .borrow_mut()
+            .get_or_insert_with(Default::default)
+            .register_font(self, font)
+    }
+
     fn face(&self, node: Option<&Node>, style: TextStyle) -> Option<StyledFace> {
-        let (family, weight, italic) = self.font_attributes(node);
+        self.resolve_face(self.font_attributes(node), style)
+    }
+
+    fn resolve_face(
+        &self,
+        (family, weight, italic): (&str, u16, bool),
+        style: TextStyle,
+    ) -> Option<StyledFace> {
         let family = if style.monospace { "monospace" } else { family };
         let weight = if style.bold { weight.max(700) } else { weight };
         let weight = self.effective_weight(weight);
@@ -1183,6 +1357,15 @@ impl TextSystem {
         )
     }
 
+    pub(super) fn cell_paint(&self, node: &Node, size: f32, color: Color) -> CellPaint {
+        self.paint_with_fonts(
+            self.face(Some(node), TextStyle::default()),
+            size,
+            color,
+            false,
+        )
+    }
+
     pub(crate) fn paint_styled(&self, node: &Node, tint: Color, style: TextStyle) -> Paint {
         let mut paint = self.paint_face(
             self.face(Some(node), style),
@@ -1206,6 +1389,17 @@ impl TextSystem {
         color: Color,
         centered: bool,
     ) -> Paint {
+        self.paint_with_fonts(face, font_size, color, centered)
+            .paint
+    }
+
+    fn paint_with_fonts(
+        &self,
+        face: Option<StyledFace>,
+        font_size: f32,
+        color: Color,
+        centered: bool,
+    ) -> CellPaint {
         let mut paint = Paint::color(color);
         let fallback = &self.font_context().fallback;
         #[cfg(target_os = "ios")]
@@ -1215,21 +1409,21 @@ impl TextSystem {
             .as_ref()
             .filter(|_| self.system_bold_text)
             .map_or(fallback, |native| &native.bold_fonts);
-        if let Some(face) = face.and_then(|face| face.id) {
-            let mut fonts = [face; 8];
-            let fallback = fallback
+        let primary = face.and_then(|face| face.id);
+        let ordered = primary.into_iter().chain(
+            fallback
                 .iter()
                 .copied()
-                .filter(|font| *font != face)
-                .take(7);
-            let mut len = 1;
-            for font in fallback {
-                fonts[len] = font;
-                len += 1;
-            }
-            paint.set_font(&fonts[..len]);
-        } else {
-            paint.set_font(fallback);
+                .filter(|font| Some(*font) != primary),
+        );
+        let mut fonts = [None; 8];
+        for (slot, font) in fonts.iter_mut().zip(ordered) {
+            *slot = Some(font);
+        }
+        if let Some(first) = fonts[0] {
+            let paint_fonts = fonts.map(|font| font.unwrap_or(first));
+            let count = fonts.iter().take_while(|font| font.is_some()).count();
+            paint.set_font(&paint_fonts[..count]);
         }
         if let Some(face) = face {
             paint.set_font_weight(f32::from(face.weight));
@@ -1238,7 +1432,7 @@ impl TextSystem {
         paint.set_font_size(font_size);
         paint.set_text_baseline(Baseline::Top);
         paint.set_text_align(if centered { Align::Center } else { Align::Left });
-        paint
+        CellPaint { paint, fonts }
     }
 
     pub fn shape(&self, text: &str, size: f32) -> Result<TextMetrics, String> {
@@ -1386,8 +1580,24 @@ impl TextSystem {
         available: Size,
         direction: Option<LayoutDirection>,
     ) -> Rc<PreparedLabel> {
-        let size = self.font_size(node);
-        let face = self.face(Some(node), TextStyle::default());
+        let font = self.label_font(self.font_attributes(Some(node)), self.font_size(node));
+        self.prepared_label_with_font(node, available, direction, font)
+    }
+
+    pub(super) fn label_font(&self, attributes: (&str, u16, bool), size: f32) -> LabelFont {
+        LabelFont {
+            size,
+            face: self.resolve_face(attributes, TextStyle::default()),
+        }
+    }
+
+    pub(super) fn prepared_label_with_font(
+        &self,
+        node: &Node,
+        available: Size,
+        direction: Option<LayoutDirection>,
+        LabelFont { size, face }: LabelFont,
+    ) -> Rc<PreparedLabel> {
         let text = node.text("text").unwrap_or("");
         let style = LabelStyle::for_node(node, direction);
         let settings = LabelSettings {
@@ -1462,6 +1672,15 @@ impl TextMeasurer for TextSystem {
         node: &Node,
         available: Size,
     ) -> Option<Rc<StyledTextLayout>> {
+        if self.retained_styled_text_available()
+            && let Some(plan) = self
+                .retained_text
+                .borrow_mut()
+                .get_or_insert_with(Default::default)
+                .layout(self, node, available)
+        {
+            return Some(plan);
+        }
         self.styled_layouts
             .borrow_mut()
             .get(self, node, available, true)
@@ -1469,6 +1688,15 @@ impl TextMeasurer for TextSystem {
 
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
         let available = Size::new(max_width, f32::INFINITY);
+        if self.retained_styled_text_available()
+            && let Some(size) = self
+                .retained_text
+                .borrow_mut()
+                .get_or_insert_with(Default::default)
+                .measure(self, node, max_width)
+        {
+            return size;
+        }
         self.styled_layouts
             .borrow_mut()
             .get(self, node, available, false)

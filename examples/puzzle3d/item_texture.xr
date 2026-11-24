@@ -1,0 +1,214 @@
+struct ScreenMaterial {
+    base-color: color, base-item: string, unlit: bool, alpha-mode: string,
+}
+struct DisplayActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float, visible: bool, pickable: bool,
+    material: ScreenMaterial,
+}
+
+export component ItemTextureDemo inherits Window {
+    title: "XRack · 3D 面板贴图";
+    width: 600px; height: 350px; resizable: false;
+    background: #172332;
+
+    in-out property <bool> active: false;
+    in-out property <bool> source-visible: true;
+    in-out property <bool> offscreen-only: false;
+    in-out property <bool> mipmaps: false;
+    in-out property <bool> fine-grid: false;
+    in-out property <bool> scroll-console: false;
+    in-out property <bool> accept-wheel: false;
+    in-out property <length> inner-offset: 0px;
+    in-out property <length> outer-offset: 0px;
+    in-out property <length> viewport-offset: 0px;
+    out property <int> wheel-events: 0;
+    out property <length> wheel-x;
+    out property <length> wheel-y;
+    out property <length> wheel-delta;
+    in-out property <float> camera-height: 4.2;
+    in-out property <bool> duplicate: false;
+    in-out property <bool> input-enabled: true;
+    in-out property <bool> source-enabled: true;
+    in-out property <bool> blocker: false;
+    in-out property <float> level: 16;
+    out property <int> activations: 0;
+    out property <int> downs: 0;
+    out property <int> ups: 0;
+    out property <int> cancels: 0;
+    out property <length> contact-x;
+    out property <length> contact-y;
+
+    callback toggle-power();
+    toggle-power => {
+        root.active = !root.active;
+        root.activations += 1;
+    }
+    in-out property <float> camera-turn: 0;
+    in-out property <length> panel-width: 174px;
+    in-out property <string> texture-name: "dashboard";
+
+    property <ScreenMaterial> finish: ScreenMaterial {
+        base-color: #ffffff, base-item: root.texture-name, unlit: true, alpha-mode: "blend",
+    };
+    property <DisplayActor> base: DisplayActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 2.5, scale-y: 1.62, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, camera-kind: "", camera-height: root.camera-height, visible: true, pickable: true,
+        material: root.finish,
+    };
+    property <[DisplayActor]> world: [
+        DisplayActor {
+            id: "eye", mesh: "", z: 8, yaw: root.camera-turn, camera-kind: "orthographic", ..root.base
+        },
+        DisplayActor { id: "left", x: -2.3, ..root.base },
+        DisplayActor { id: "right", x: 2.3, ..root.base },
+        DisplayActor {
+            id: "cover", x: -2.3, z: 1, visible: root.blocker, pickable: false,
+            material: ScreenMaterial { base-color: #50384e, base-item: "", alpha-mode: "opaque", ..root.finish },
+            ..root.base
+        },
+    ];
+    out property <string> picked: Scene3D.pick-camera(
+        root.world, "eye", Point2D.new(600px, 224px), Point2D.new(177px, 112px));
+
+    viewport-scroll := ScrollView {
+        width: 600px; height: 224px;
+        content-height: root.scroll-console ? 284px : 224px;
+        content-y <=> root.viewport-offset;
+        vertical-scroll-bar-policy: always-off;
+        SceneView3D {
+            width: 600px; height: 224px; model: root.world; camera: "eye";
+            scene-background: #253d52; cache-rendering: true; texture-input: root.input-enabled;
+        }
+    }
+    source-panel := Rectangle {
+        x: 18px; y: 230px; width: root.panel-width; height: 102px;
+        texture-source: "dashboard"; texture-only: root.offscreen-only; visible: root.source-visible;
+        texture-mipmaps: root.mipmaps;
+        background: root.fine-grid ? #00000000 : root.active ? #385c73 : #714339;
+        Rectangle {
+            x: 10px; y: 11px; width: 44px; height: 14px;
+            visible: !root.fine-grid && !root.scroll-console;
+            background: root.active ? #73efd5 : #ffb47e;
+        }
+        contact-badge := TouchArea {
+            visible: !root.fine-grid && !root.scroll-console;
+            enabled: root.source-enabled;
+            x: 10px; y: 11px; width: 44px; height: 14px;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.downs += 1;
+                    root.contact-x = event.x;
+                    root.contact-y = event.y;
+                }
+                if event.kind == PointerEventKind.up { root.ups += 1; }
+                if event.kind == PointerEventKind.cancel { root.cancels += 1; }
+            }
+        }
+        panel-power := Button {
+            visible: !root.fine-grid && !root.scroll-console;
+            enabled: root.source-enabled;
+            x: 13px; y: 30px; width: 151px; height: 28px;
+            text: root.active ? "控制台已连接" : "等待连接";
+            clicked => { root.toggle-power(); }
+        }
+        panel-level := Slider {
+            visible: !root.fine-grid && !root.scroll-console;
+            enabled: root.source-enabled;
+            x: 13px; y: 65px; width: 150px; height: 20px;
+            value <=> root.level; minimum: 0; maximum: 100;
+        }
+        if root.scroll-console: console-wheel := WheelHandler {
+            width: root.panel-width; height: 102px;
+            wheel(event) => {
+                root.wheel-events += 1;
+                root.wheel-x = event.x;
+                root.wheel-y = event.y;
+                root.wheel-delta = event.delta-y;
+                root.accept-wheel ? accept : reject
+            }
+            console-scroll := ScrollView {
+                width: root.panel-width; height: 102px;
+                content-height: 202px; content-y <=> root.outer-offset;
+                vertical-scroll-bar-policy: always-off;
+                inner-console := ScrollView {
+                    width: root.panel-width; height: 54px;
+                    content-height: 82px; content-y <=> root.inner-offset;
+                    vertical-scroll-bar-policy: always-off;
+                    Rectangle {
+                        width: root.panel-width; height: 32px; background: #607ea1;
+                        Label { x: 8px; y: 4px; width: 157px; height: 24px; text: "控制台 · 运行状态"; }
+                    }
+                    Rectangle {
+                        y: 32px; width: root.panel-width; height: 50px; background: #9b704b;
+                        Label { x: 8px; y: 8px; width: 70px; height: 28px; text: "滚动记录"; }
+                        console-confirm := Button {
+                            x: 82px; y: 5px; width: 84px; height: 28px;
+                            text: "确认";
+                            clicked => { root.toggle-power(); }
+                        }
+                    }
+                }
+                wheel-level := Slider {
+                    x: 12px; y: 68px; width: 150px; height: 23px;
+                    value <=> root.level; minimum: 0; maximum: 100; step: 1;
+                    wheel-enabled: true;
+                }
+                Rectangle {
+                    y: 105px; width: root.panel-width; height: 97px; background: #3c8871;
+                    Label { x: 8px; y: 7px; width: 156px; height: 28px; text: "控制台 · 诊断"; }
+                }
+            }
+        }
+        if root.fine-grid: Rectangle {
+            width: root.panel-width; height: 102px;
+            for stripe in 44: Rectangle {
+                x: stripe * 4px; width: 2px; height: 102px;
+                background: root.active ? #58da87 : #ffffff;
+            }
+        }
+    }
+    Rectangle {
+        x: 201px; y: 230px; width: 12px; height: 12px;
+        visible: root.duplicate; texture-source: "dashboard"; background: #599466;
+    }
+    power := Button {
+        x: 232px; y: 250px; width: 146px; height: 35px;
+        text: root.active ? "断开" : "连接";
+        clicked => { root.toggle-power(); }
+    }
+    rotate-camera := Button {
+        x: 401px; y: 250px; width: 175px; height: 35px;
+        text: root.fine-grid ? "恢复近景" : "缩小观察";
+        clicked => {
+            root.fine-grid = !root.fine-grid;
+            root.camera-height = root.fine-grid ? 54 : 4.2;
+        }
+    }
+    source-toggle := CheckBox {
+        x: 232px; y: 294px; width: 202px; height: 35px;
+        text: "显示 2D 贴图源"; checked <=> root.source-visible;
+    }
+    scroll-mode := Button {
+        x: 232px; y: 225px; width: 165px; height: 23px;
+        text: root.scroll-console ? "恢复面板" : "滚动控制台";
+        clicked => {
+            root.scroll-console = !root.scroll-console;
+            root.offscreen-only = root.scroll-console;
+            root.inner-offset = 0px;
+            root.outer-offset = 0px;
+            root.viewport-offset = 0px;
+        }
+    }
+    filter-mips := CheckBox {
+        x: 418px; y: 225px; width: 163px; height: 24px;
+        text: "远景滤波"; checked <=> root.mipmaps;
+    }
+    display-mode := Button {
+        x: 421px; y: 294px; width: 156px; height: 35px;
+        text: root.offscreen-only ? "恢复 2D 面板" : "只在面片显示";
+        clicked => { root.offscreen-only = !root.offscreen-only; }
+    }
+}

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::scene_particle_motion::ParticleMotion;
 use crate::{Color, Image, ImageAsset, ImageFormat, RecordList, Value, VecModel, Vector3D};
 
-use super::scene3d::{MAIN_LAYER, ParticleMeshSurface, Point3D};
+use super::scene3d::{MAIN_LAYER, Mesh3D, ParticleMeshSurface, Point3D};
 
 pub const MAX_PARTICLE_EMITTERS: usize = 16;
 pub const MAX_PARTICLES: u32 = 8192;
@@ -58,6 +58,13 @@ pub struct ParticleEmitterDefinition {
     pub trail_end_scale: f64,
     pub trail_fade: f64,
     pub trail_eol_fade: f64,
+    pub particle_model: String,
+    pub particle_rotation: Vector3D,
+    pub particle_rotation_variation: Vector3D,
+    pub particle_angular_velocity: Vector3D,
+    pub particle_casts_shadow: bool,
+    pub particle_receives_shadow: bool,
+    pub particle_casts_reflections: bool,
 }
 
 impl Default for ParticleEmitterDefinition {
@@ -108,6 +115,13 @@ impl Default for ParticleEmitterDefinition {
             trail_end_scale: 0.12,
             trail_fade: 1.0,
             trail_eol_fade: 0.0,
+            particle_model: String::new(),
+            particle_rotation: Vector3D::default(),
+            particle_rotation_variation: Vector3D::default(),
+            particle_angular_velocity: Vector3D::default(),
+            particle_casts_shadow: false,
+            particle_receives_shadow: true,
+            particle_casts_reflections: false,
         }
     }
 }
@@ -132,9 +146,22 @@ pub struct ParticleEmitter {
     pub motion: Option<ParticleMotion>,
     pub mesh: Option<Arc<ParticleMeshSurface>>,
     pub trail: Option<ParticleTrail>,
+    pub model: Option<ParticleModel>,
     start_time: f64,
     rate: f64,
     burst_count: u32,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParticleModel {
+    pub meshes: Arc<[Mesh3D]>,
+    pub rotation: [f32; 3],
+    pub rotation_variation: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    pub casts_shadow: bool,
+    pub receives_shadow: bool,
+    pub casts_reflections: bool,
 }
 
 #[doc(hidden)]
@@ -284,6 +311,7 @@ impl ParticleEmitterDefinition {
     pub fn prepare(
         self,
         resolve_surface: impl FnOnce(&str, [f32; 3]) -> Option<Arc<ParticleMeshSurface>>,
+        resolve_model: impl FnOnce(&str) -> Option<Arc<[Mesh3D]>>,
     ) -> Option<ParticleEmitter> {
         let position = [self.position.x, self.position.y, self.position.z];
         let velocity = [self.velocity.x, self.velocity.y, self.velocity.z];
@@ -330,6 +358,26 @@ impl ParticleEmitterDefinition {
         } else {
             None
         };
+        let model = if self.particle_model.is_empty() {
+            None
+        } else {
+            let angles = |value: Vector3D| {
+                let values = [value.x, value.y, value.z];
+                values
+                    .iter()
+                    .all(|value| (-1.0e8..=1.0e8).contains(value))
+                    .then(|| values.map(|value| value as f32))
+            };
+            Some(ParticleModel {
+                meshes: resolve_model(&self.particle_model)?,
+                rotation: angles(self.particle_rotation)?,
+                rotation_variation: angles(self.particle_rotation_variation)?.map(f32::abs),
+                angular_velocity: angles(self.particle_angular_velocity)?,
+                casts_shadow: self.particle_casts_shadow,
+                receives_shadow: self.particle_receives_shadow,
+                casts_reflections: self.particle_casts_reflections,
+            })
+        };
         Some(ParticleEmitter {
             position: position.map(|value| value as f32),
             velocity: velocity.map(|value| value as f32),
@@ -344,7 +392,12 @@ impl ParticleEmitterDefinition {
             layers: self.layers as u64,
             sprite: self.prepare_sprite(),
             motion: self.prepare_motion(velocity),
-            trail: self.prepare_trail(),
+            trail: if model.is_none() {
+                self.prepare_trail()
+            } else {
+                None
+            },
+            model,
             mesh,
             color_table: particle_png(&self.color_table).map(|_| self.color_table),
             blend: ParticleBlend::from_name(&self.particle_blend_mode),
@@ -356,6 +409,7 @@ impl ParticleEmitterDefinition {
 }
 
 #[doc(hidden)]
+#[derive(Clone, Copy)]
 pub struct ParticleSample {
     pub count: u32,
     pub burst_count: u32,
@@ -366,6 +420,14 @@ pub struct ParticleSample {
 }
 
 impl ParticleSample {
+    pub fn youngest_age(&self) -> f32 {
+        if self.count == self.burst_count {
+            self.burst_age
+        } else {
+            self.youngest_age
+        }
+    }
+
     pub fn oldest_age(&self) -> f32 {
         let emitted = self.count - self.burst_count;
         let oldest_stream = if emitted == 0 {
@@ -378,6 +440,79 @@ impl ParticleSample {
 }
 
 impl ParticleEmitter {
+    /// Conservatively fit one emitter without reading instance positions back from the GPU.
+    pub fn shadow_bounds<'a>(
+        &self,
+        sample: &ParticleSample,
+        affectors: impl Iterator<Item = &'a crate::scene_particle_affectors::ParticleAffector>,
+    ) -> Option<[[f32; 3]; 2]> {
+        let model = self.model.as_ref()?;
+        if !model.casts_shadow || !model.meshes.iter().any(Mesh3D::has_opaque_parts) {
+            return None;
+        }
+        let youngest = f64::from(sample.youngest_age().next_down()).max(0.0);
+        let oldest = f64::from(sample.oldest_age().next_up());
+        let spawn = self.motion.as_ref().map_or([0.0; 3], |motion| {
+            motion.spawn_extent(self.mesh.as_ref().map(|mesh| mesh.radius))
+        });
+        let speed = self
+            .motion
+            .as_ref()
+            .and_then(ParticleMotion::max_directed_speed);
+        let position = self.position.map(f64::from);
+        let axes: [[f64; 2]; 3] = std::array::from_fn(|axis| {
+            let velocity = f64::from(self.velocity[axis]);
+            let spread = f64::from(self.velocity_spread[axis]);
+            let [slow, fast] = speed.map_or([velocity - spread, velocity + spread], |v| [-v, v]);
+            let acceleration = f64::from(self.gravity[axis]);
+            let extreme = |v: f64, select: fn(f64, f64) -> f64| {
+                let offset = |age: f64| age * (v + 0.5 * age * acceleration);
+                let turn = if acceleration != 0.0 {
+                    (-v / acceleration).clamp(youngest, oldest)
+                } else {
+                    youngest
+                };
+                select(select(offset(youngest), offset(oldest)), offset(turn))
+            };
+            [
+                position[axis] + extreme(slow, f64::min) - spawn[axis],
+                position[axis] + extreme(fast, f64::max) + spawn[axis],
+            ]
+        });
+        let mut bounds = [axes.map(|axis| axis[0]), axes.map(|axis| axis[1])];
+        for affector in affectors {
+            affector.expand_particle_bounds(&mut bounds, oldest);
+        }
+        let extent = model
+            .meshes
+            .iter()
+            .map(|mesh| {
+                let (min, max) = mesh.bounds();
+                (0..3)
+                    .map(|axis| f64::from(min[axis].abs().max(max[axis].abs())).powi(2))
+                    .sum::<f64>()
+            })
+            .fold(0.0, f64::max)
+            .sqrt();
+        let scale = f64::from(self.size[0].max(self.size[1]));
+        let result = std::array::from_fn(|side| {
+            std::array::from_fn(|axis| {
+                let value = bounds[side][axis];
+                let margin = extent * scale + value.abs() * f64::from(32.0 * f32::EPSILON);
+                if side == 0 {
+                    ((value - margin) as f32).next_down()
+                } else {
+                    ((value + margin) as f32).next_up()
+                }
+            })
+        });
+        result
+            .iter()
+            .flatten()
+            .all(|value| value.is_finite())
+            .then_some(result)
+    }
+
     pub fn sample(&self, time: f64, remaining: u32) -> Option<ParticleSample> {
         let elapsed = time - self.start_time;
         if !elapsed.is_finite() || elapsed < 0.0 {
@@ -433,6 +568,7 @@ pub fn model_particles<T: Clone>(
 pub fn record_particles(
     list: &RecordList,
     resolve_surface: impl Fn(&str, [f32; 3]) -> Option<Arc<ParticleMeshSurface>>,
+    resolve_model: impl Fn(&str) -> Option<Arc<[Mesh3D]>>,
 ) -> Arc<[ParticleEmitter]> {
     model_particles(list.model(), |row| {
         let Value::Point3D(position) = row.field("position")? else {
@@ -520,7 +656,16 @@ pub fn record_particles(
             trail_end_scale: float("trail-end-scale").unwrap_or(defaults.trail_end_scale),
             trail_fade: float("trail-fade").unwrap_or(defaults.trail_fade),
             trail_eol_fade: float("trail-eol-fade").unwrap_or(defaults.trail_eol_fade),
+            particle_model: name("particle-model"),
+            particle_rotation: vector("particle-rotation"),
+            particle_rotation_variation: vector("particle-rotation-variation"),
+            particle_angular_velocity: vector("particle-angular-velocity"),
+            particle_casts_shadow: row.field("particle-casts-shadow") == Some(&Value::Bool(true)),
+            particle_receives_shadow: row.field("particle-receives-shadow")
+                != Some(&Value::Bool(false)),
+            particle_casts_reflections: row.field("particle-casts-reflections")
+                == Some(&Value::Bool(true)),
         }
-        .prepare(&resolve_surface)
+        .prepare(&resolve_surface, &resolve_model)
     })
 }

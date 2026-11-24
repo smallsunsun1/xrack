@@ -8,7 +8,11 @@ use super::{
     Attachment, COLOR_FORMAT, HDR_FORMAT, append_floats, attachment_view,
     bloom::{Bloom, BloomSettings},
     buffer,
+    color_capture::CaptureViews,
+    custom_effect::{EffectList, EffectSurface, Effects},
     depth_of_field::{DepthOfField, FocusDepth, FocusSettings},
+    effect_history::Owner,
+    item_textures::ItemTextureView,
     lut::{LutCache, LutSettings},
     motion::MotionInputs,
     progressive::Accumulator,
@@ -17,9 +21,10 @@ use super::{
     temporal::TemporalFilter,
 };
 
-pub(super) struct PostSettings {
+pub(super) struct PostSettings<'a> {
     pub hdr: bool,
     linear_intermediate: bool,
+    composite_alpha: bool,
     pub focus: Option<FocusSettings>,
     exposure: f32,
     bloom: Option<BloomSettings>,
@@ -27,10 +32,16 @@ pub(super) struct PostSettings {
     white_point: f32,
     adjustments: Option<[f32; 3]>,
     lut: Option<LutSettings>,
+    effects: EffectList<'a>,
 }
 
-impl PostSettings {
-    pub fn from_node(node: &Node, environment: bool, has_geometry: bool) -> Self {
+impl<'a> PostSettings<'a> {
+    pub fn from_node(
+        node: &'a Node,
+        environment: bool,
+        has_geometry: bool,
+        composite_alpha: bool,
+    ) -> Self {
         let bloom = BloomSettings::from_node(node);
         let curve = match node.properties.get("scene-tone-map") {
             Some(Value::SceneToneMap(curve)) => Some(*curve),
@@ -38,12 +49,14 @@ impl PostSettings {
         };
         let adjustments = ["scene-brightness", "scene-contrast", "scene-saturation"]
             .map(|name| node.float(name).unwrap_or(1.0).clamp(0.0, 4.0));
+        let effects = EffectList::from_node(node);
         Self {
             hdr: environment
                 || node.boolean("scene-hdr", false)
                 || bloom.is_some()
                 || curve.is_some(),
             linear_intermediate: false,
+            composite_alpha: composite_alpha || !effects.is_empty(),
             focus: has_geometry
                 .then(|| FocusSettings::from_node(node))
                 .flatten(),
@@ -59,6 +72,7 @@ impl PostSettings {
                 .clamp(0.01, 65_000.0),
             adjustments: (adjustments != [1.0; 3]).then_some(adjustments),
             lut: LutSettings::from_node(node),
+            effects,
         }
     }
 
@@ -67,14 +81,27 @@ impl PostSettings {
     }
 
     pub fn uses_linear_intermediate(&self) -> bool {
-        self.hdr || self.linear_intermediate
+        self.hdr || self.linear_intermediate || !self.effects.is_empty()
+    }
+
+    pub fn needs_effect_depth(&self) -> bool {
+        self.effects.needs_depth()
+    }
+
+    pub fn needs_effect_surface(&self) -> bool {
+        self.effects.needs_surface()
     }
 
     pub fn needs_target(&self) -> bool {
         self.uses_linear_intermediate()
             || self.focus.is_some()
+            || self.composite_alpha
             || self.adjustments.is_some()
             || self.lut.is_some()
+    }
+
+    pub fn composites_alpha(&self) -> bool {
+        self.composite_alpha
     }
 
     pub fn has_adjustments(&self) -> bool {
@@ -88,6 +115,12 @@ pub(super) struct PostStats {
     pub bloom_pixels: u64,
     pub bloom_target_allocations: u64,
     pub focus_filtered_pixels: u64,
+    pub custom_effect_passes: u64,
+    pub custom_effect_pipelines: u64,
+    pub custom_effect_pixels: u64,
+    pub custom_effect_target_allocations: u64,
+    pub custom_effect_history_allocations: u64,
+    pub custom_effect_bytes_allocated: u64,
     pub lut_resolves: u64,
     pub lut_uploads: u64,
 }
@@ -98,15 +131,22 @@ pub(super) const RETAINED_VIEW_SIZES: usize = 2;
 pub(super) struct PostProcess {
     colors: [VecDeque<Attachment>; 4],
     supersampling: Option<Supersampling>,
-    tone_maps: [Option<ToneMap>; 4],
+    tone_maps: [Option<ToneMap>; 8],
+    resolve_sampler: Option<wgpu::Sampler>,
     accumulator: Option<Accumulator>,
     temporal: TemporalFilter,
     bloom: Option<Bloom>,
     focus: Option<DepthOfField>,
     luts: Option<LutCache>,
+    pub(super) effects: Effects,
 }
 
 impl PostProcess {
+    pub(super) fn area_filter(&mut self, device: &wgpu::Device) -> &mut Supersampling {
+        self.supersampling
+            .get_or_insert_with(|| Supersampling::new(device))
+    }
+
     pub fn target(
         &mut self,
         device: &wgpu::Device,
@@ -139,16 +179,28 @@ impl PostProcess {
     pub fn resolve(
         &mut self,
         ctx: &mut GpuPaintContext<'_>,
-        queue: &wgpu::Queue,
+        (queue, items, captures): (
+            &wgpu::Queue,
+            &std::collections::BTreeMap<String, ItemTextureView>,
+            Option<&CaptureViews>,
+        ),
         (source, raster_size): (&wgpu::TextureView, [u32; 2]),
-        depth: Option<&FocusDepth>,
-        (settings, sample, motion): (&PostSettings, Option<&AaSample>, Option<&MotionInputs>),
+        (depth, surface): (Option<&FocusDepth>, Option<&EffectSurface>),
+        (settings, sample, motion, owner): (
+            &PostSettings<'_>,
+            Option<&AaSample>,
+            Option<&MotionInputs>,
+            Option<Owner<'_>>,
+        ),
     ) -> PostStats {
         let supersampled = raster_size != ctx.size;
         let linear = settings.uses_linear_intermediate();
         let format = if linear { HDR_FORMAT } else { COLOR_FORMAT };
-        let convert =
-            linear || settings.adjustments.is_some() || settings.lut.is_some() || sample.is_some();
+        let convert = linear
+            || settings.composite_alpha
+            || settings.adjustments.is_some()
+            || settings.lut.is_some()
+            || sample.is_some();
         let focus = settings.focus.zip(depth).map(|(focus, depth)| {
             let mut focus_ctx = GpuPaintContext {
                 size: raster_size,
@@ -162,7 +214,10 @@ impl PostProcess {
                     source,
                     depth,
                     focus,
-                    (convert || supersampled).then_some(format),
+                    (
+                        (convert || supersampled).then_some(format),
+                        settings.composite_alpha,
+                    ),
                 )
         });
         let focus_filtered_pixels = focus.as_ref().map_or(0, |result| result.filtered_pixels);
@@ -170,15 +225,12 @@ impl PostProcess {
         let source = resolved_focus.as_ref().unwrap_or(source);
         let reduced = if supersampled {
             let reduced = convert.then(|| self.target(ctx.device, ctx.size, linear, false));
-            self.supersampling
-                .get_or_insert_with(|| Supersampling::new(ctx.device))
-                .resolve(
-                    ctx.device,
-                    ctx.encoder,
-                    (source, reduced.as_ref().unwrap_or(ctx.target)),
-                    ctx.size,
-                    linear,
-                );
+            self.area_filter(ctx.device).resolve(
+                ctx.device,
+                ctx.encoder,
+                (source, reduced.as_ref().unwrap_or(ctx.target)),
+                ctx.size,
+            );
             reduced
         } else {
             None
@@ -208,10 +260,21 @@ impl PostProcess {
         } else {
             temporal.as_ref().unwrap_or(source)
         };
+        let (effect_output, effect_stats) = self.effects.render(
+            ctx,
+            source,
+            (depth, surface),
+            &settings.effects,
+            owner,
+            (queue, items, captures),
+        );
+        let (source, source_size) = effect_output
+            .as_ref()
+            .map_or((source, ctx.size), |output| (&output.view, output.size));
         let glow = settings.bloom.and_then(|bloom| {
             self.bloom
                 .get_or_insert_with(|| Bloom::new(ctx.device))
-                .render(ctx.device, ctx.encoder, source, ctx.size, bloom)
+                .render(ctx.device, ctx.encoder, source, source_size, bloom)
         });
         let lut = settings.lut.as_ref().and_then(|lut| {
             self.luts
@@ -219,7 +282,17 @@ impl PostProcess {
                 .bind(ctx.device, queue, lut)
         });
         let mode = usize::from(glow.is_some()) + 2 * usize::from(lut.is_some());
-        let tone_map = self.tone_maps[mode].get_or_insert_with(|| ToneMap::new(ctx.device, mode));
+        let slot = mode + 4 * usize::from(settings.composite_alpha);
+        let tone_map = self.tone_maps[slot]
+            .get_or_insert_with(|| ToneMap::new(ctx.device, mode, settings.composite_alpha));
+        let sampler = self.resolve_sampler.get_or_insert_with(|| {
+            ctx.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("XRack 3D tone mapping source sampler"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            })
+        });
         let strength = settings.bloom.map_or(0.0, |bloom| bloom.strength);
         let curve = if settings.hdr {
             settings.tone_map
@@ -250,12 +323,18 @@ impl PostProcess {
                 },
             ],
         );
+        let [lut_size, lut_strength] = settings
+            .lut
+            .as_ref()
+            .map_or([0.0; 2], |lut| [lut.size as f32, lut.strength]);
         append_floats(
             &mut bytes,
-            settings
-                .lut
-                .as_ref()
-                .map_or([0.0; 4], |lut| [lut.size as f32, lut.strength, 0.0, 0.0]),
+            [
+                lut_size,
+                lut_strength,
+                ctx.size[0] as f32,
+                ctx.size[1] as f32,
+            ],
         );
         let uniform = buffer(
             ctx.device,
@@ -271,6 +350,10 @@ impl PostProcess {
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::Sampler(sampler),
             },
         ];
         if let Some(glow) = &glow {
@@ -323,6 +406,12 @@ impl PostProcess {
             bloom_pixels: glow.as_ref().map_or(0, |glow| glow.pixels),
             bloom_target_allocations: glow.as_ref().map_or(0, |glow| glow.allocations),
             focus_filtered_pixels,
+            custom_effect_passes: effect_stats.passes,
+            custom_effect_pipelines: effect_stats.pipelines,
+            custom_effect_pixels: effect_stats.pixels,
+            custom_effect_target_allocations: effect_stats.allocations,
+            custom_effect_history_allocations: effect_stats.history_allocations,
+            custom_effect_bytes_allocated: effect_stats.allocated_bytes,
             lut_resolves: u64::from(lut.is_some()),
             lut_uploads: u64::from(lut.is_some_and(|lut| lut.uploaded)),
         }
@@ -335,7 +424,7 @@ struct ToneMap {
 }
 
 impl ToneMap {
-    fn new(device: &wgpu::Device, mode: usize) -> Self {
+    fn new(device: &wgpu::Device, mode: usize, composite_alpha: bool) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("XRack 3D tone mapping"),
             source: wgpu::ShaderSource::Wgsl(include_str!("tone_map.wgsl").into()),
@@ -359,7 +448,10 @@ impl ToneMap {
                         "fragment_bloom_lut",
                     ][mode],
                 ),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("COMPOSITE_ALPHA", f64::from(u8::from(composite_alpha)))],
+                    ..Default::default()
+                },
                 targets: &[Some(wgpu::ColorTargetState {
                     format: COLOR_FORMAT,
                     blend: None,

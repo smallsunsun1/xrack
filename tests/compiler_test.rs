@@ -3718,7 +3718,7 @@ fn standard_table_checks_column_fields_in_source_and_mlir() {
     let output = compile(source, "standard-table.xr").unwrap();
     assert!(output.mlir.contains("kind = \"StandardTableView\""));
     let rust = output.rust.to_string();
-    assert!(rust.contains("render_standard_table_rows"));
+    assert!(rust.contains("__table_row_cache_view . render"));
     assert!(rust.contains("TableField :: cell_text (& item . device_name)"));
     assert!(rust.contains("TableField :: cell_text (& item . header_label)"));
     for (replacement, expected) in [
@@ -11781,4 +11781,642 @@ fn rejects_exhaustiveness_scope_and_invalid_projections() {
             .expect("invalid declaration should fail");
         assert!(error.to_string().contains(expected), "{error}");
     }
+}
+
+#[test]
+fn custom_scene_effect_validates_and_embeds_imported_shader_assets() {
+    let dir = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-scene-effect-{}", std::process::id()));
+    let assets = dir.join("panels");
+    std::fs::create_dir_all(&assets).unwrap();
+    let entry = dir.join("app.xr");
+    let panel = assets.join("panel.xr");
+    let shader = assets.join("warm.wgsl");
+    let source = r#"
+        import { Panel } from "panels/panel.xr";
+        export component Demo inherits Window { Panel {} }
+    "#;
+    std::fs::write(
+        &panel,
+        r#"export component Panel inherits SceneView3D {
+            scene-effect: @shader-url("warm.wgsl");
+            scene-effect-strength: 0.5;
+        }"#,
+    )
+    .unwrap();
+    let valid_shader = "fn scene_effect(uv: vec2<f32>) -> vec4<f32> { return scene_color(uv); }";
+    std::fs::write(&shader, valid_shader).unwrap();
+    let (rust, inputs) = xrack_compiler::compile_with_inputs(
+        source,
+        entry.to_str().unwrap(),
+        None,
+        Some(std::slice::from_ref(&shader)),
+    )
+    .unwrap();
+    assert!(rust.to_string().contains(valid_shader));
+    assert!(inputs.contains(&shader.canonicalize().unwrap()));
+    for (shader_source, captures_surface) in [
+        (
+            "fn read(uv: vec2<f32>) -> vec4<f32> { return vec4(scene_surface(uv).normal, 1.0); } fn scene_effect(uv: vec2<f32>) -> vec4<f32> { return read(uv); }",
+            true,
+        ),
+        (
+            "fn unused(uv: vec2<f32>) -> vec4<f32> { return vec4(scene_surface(uv).normal, 1.0); } fn scene_effect(uv: vec2<f32>) -> vec4<f32> { return scene_color(uv); }",
+            false,
+        ),
+    ] {
+        std::fs::write(&shader, shader_source).unwrap();
+        let result = compile(source, entry.to_str().unwrap()).unwrap();
+        assert_eq!(
+            result
+                .rust
+                .to_string()
+                .contains("XRack effect needs opaque surfaces"),
+            captures_surface,
+        );
+    }
+    for (wgsl, uses_position) in [
+        (
+            "fn read(uv: vec2<f32>) -> vec4<f32> { let p = scene_buffer_world_position(0u, uv); return vec4(p.position, 1.0); } fn scene_effect(uv: vec2<f32>) -> vec4<f32> { return read(uv); }",
+            true,
+        ),
+        (
+            "fn unused(uv: vec2<f32>) -> vec4<f32> { return vec4(scene_buffer_world_position(0u, uv).position, 1.0); } fn scene_effect(uv: vec2<f32>) -> vec4<f32> { return scene_color(uv); }",
+            false,
+        ),
+    ] {
+        std::fs::write(&shader, wgsl).unwrap();
+        let result = compile(source, entry.to_str().unwrap()).unwrap();
+        assert_eq!(
+            result
+                .rust
+                .to_string()
+                .contains("XRack effect needs capture projection"),
+            uses_position,
+            "{wgsl}",
+        );
+    }
+    let missing =
+        xrack_compiler::compile_with_inputs(source, entry.to_str().unwrap(), None, Some(&[]))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        missing.contains("not declared in xr_ui_library"),
+        "{missing}"
+    );
+    std::fs::write(
+        &shader,
+        "fn scene_effect(uv: vec2<f32>) -> f32 { return scene_depth(uv); }",
+    )
+    .unwrap();
+    let failed = compile(source, entry.to_str().unwrap())
+        .err()
+        .expect("invalid shader")
+        .to_string();
+    assert!(
+        failed.contains("panel.xr") && failed.contains("warm.wgsl"),
+        "{failed}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn scene_effect_chain_validates_record_types_in_dsl_and_mlir() {
+    let invalid = r#"
+        struct Effect { shader: string, scale: length }
+        export component App inherits Window {
+            SceneView3D { scene-effects: [Effect { shader: "", scale: 1px }]; }
+        }
+    "#;
+    let error = compile(invalid, "effect-chain.xr")
+        .err()
+        .expect("invalid scale");
+    assert!(
+        error.contains("requires a float field named `scale`"),
+        "{error}"
+    );
+
+    let raw = lower(
+        r#"
+        struct Fog { position: point3d, size: vector3d, density: float, color: color }
+        export component App inherits Window {
+            SceneView3D {
+                fog-volumes: [Fog { position: Point3D.new(0, 0, 0),
+                    size: Vector3D.new(1, 1, 1), density: 0.4, color: #223344 }];
+            }
+        }
+    "#,
+        "effect-chain.xr",
+    );
+    let altered = raw.replace("name = \"fog-volumes\"", "name = \"scene-effects\"");
+    assert_ne!(altered, raw);
+    let error = mlir::process(&altered).expect_err("invalid shader field");
+    assert!(
+        error.contains("3D effect passes requires a string field named shader"),
+        "{error}"
+    );
+}
+
+#[test]
+fn scene_effect_pass_requires_string_names_for_nested_buffer_records() {
+    let source = r#"
+        struct Input { name: int }
+        struct Pass { shader: string, buffers: [Input] }
+        export component App inherits Window {
+            SceneView3D {
+                scene-effects: [Pass { shader: "", buffers: [Input { name: 4 }] }];
+            }
+        }
+    "#;
+    let error = compile(source, "named-buffer.xr")
+        .err()
+        .expect("invalid buffer reference");
+    assert!(
+        error.contains(
+            "3D effect pass buffers requires a record list with a string field named `name`"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn scene_effect_output_format_and_sampling_fields_have_string_types() {
+    for (pass_format_type, fmt, filter_type, filter, diagnostic) in [
+        (
+            "bool",
+            "false",
+            "string",
+            "\"nearest\"",
+            "requires a string field named `output-format`",
+        ),
+        (
+            "string",
+            "\"rg16f\"",
+            "int",
+            "1",
+            "optional string fields `filter`, `wrap-u` and `wrap-v`",
+        ),
+    ] {
+        let source = format!(
+            r#"
+            struct Buffer {{ name: string, filter: {filter_type} }}
+            struct Pass {{ shader: string, output-format: {pass_format_type}, buffers: [Buffer] }}
+            export component App inherits Window {{ SceneView3D {{
+                scene-effects: [Pass {{ shader: "", output-format: {fmt},
+                    buffers: [Buffer {{ name: "field", filter: {filter} }}] }}];
+            }} }}
+        "#
+        );
+        let error = compile(&source, "formats.xr")
+            .err()
+            .expect("invalid effect record");
+        assert!(error.contains(diagnostic), "{error}");
+    }
+}
+
+#[test]
+fn material_shader_files_are_embedded_and_reject_fragment_discard() {
+    let dir = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-material-shader-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let asset = dir.join("surface.wgsl");
+    let source = r#"export component App inherits Window {
+        out property <string> shader: @material-shader-url("surface.wgsl");
+    }"#;
+    let filename = dir.join("app.xr");
+    let valid = "fn scene_material(input: XrMaterialInput, surface: XrMaterialSurface) -> XrMaterialSurface { return surface; }";
+    std::fs::write(&asset, valid).unwrap();
+    let (code, inputs) = xrack_compiler::compile_with_inputs(
+        source,
+        filename.to_str().unwrap(),
+        None,
+        Some(std::slice::from_ref(&asset)),
+    )
+    .unwrap();
+    assert!(code.to_string().contains(valid));
+    assert!(inputs.contains(&asset.canonicalize().unwrap()));
+    let invalid = r#"
+        fn helper(value: f32) { if value < 0.5 { discard; } }
+        fn scene_material(input: XrMaterialInput, surface: XrMaterialSurface) -> XrMaterialSurface {
+            helper(input.uv0.x);
+            return surface;
+        }
+    "#;
+    std::fs::write(&asset, invalid).unwrap();
+    let error = compile(source, filename.to_str().unwrap())
+        .err()
+        .expect("discard must be rejected");
+    assert!(
+        error.contains("surface.wgsl") && error.contains("cannot discard fragments"),
+        "{error}"
+    );
+    let vertex_only =
+        "fn scene_vertex(input: XrVertexInput) -> vec3<f32> { return input.parameters; }";
+    std::fs::write(&asset, vertex_only).unwrap();
+    let result = compile(source, filename.to_str().unwrap()).unwrap();
+    assert!(result.rust.to_string().contains(vertex_only));
+    let light_only = "fn scene_light(input: XrLightInput, response: XrLightResponse) -> XrLightResponse { return response; }";
+    std::fs::write(&asset, light_only).unwrap();
+    let result = compile(source, filename.to_str().unwrap()).unwrap();
+    assert!(result.rust.to_string().contains(light_only));
+    for (program, message) in [
+        (
+            "fn scene_vertex(input: XrVertexInput) -> f32 { return 0.0; }",
+            "scene_vertex",
+        ),
+        (
+            "fn helper() -> vec3<f32> { return material_texture(0u, vec2(0.0)).rgb; } fn scene_vertex(input: XrVertexInput) -> vec3<f32> { return helper(); }",
+            "scene_vertex cannot sample fragment material textures",
+        ),
+        (
+            "fn scene_light(input: XrLightInput, response: XrLightResponse) -> vec3<f32> { return response.diffuse; }",
+            "scene_light",
+        ),
+        (
+            "fn scene_ambient(input: XrAmbientInput, diffuse: vec3<f32>) -> f32 { return diffuse.x; }",
+            "scene_ambient",
+        ),
+        (
+            "fn scene_vertex(input: XrVertexInput) -> vec3<f32> { return material_texture_world_position(0u, input.position.xy).position; }",
+            "scene_vertex cannot sample fragment material textures",
+        ),
+    ] {
+        std::fs::write(&asset, program).unwrap();
+        let Err(error) = compile(source, filename.to_str().unwrap()) else {
+            panic!("accepted an invalid material hook: {program}");
+        };
+        assert!(
+            error.contains("surface.wgsl") && error.contains(message),
+            "{error}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn material_shader_texture_inputs_require_valid_record_fields() {
+    for (input_field, value, message) in [
+        (
+            "texture: int",
+            "texture: 0",
+            "string field named texture, item or capture",
+        ),
+        (
+            "item: string, filter: int",
+            "item: \"swatch\", filter: 0",
+            "shader texture field `filter` requires string",
+        ),
+        (
+            "item: string, capture: int",
+            "item: \"swatch\", capture: 4",
+            "shader texture field `capture` requires string",
+        ),
+    ] {
+        let source = format!(
+            r#"
+            struct Input {{ {input_field} }}
+            struct Style {{ shader-textures: [Input] }}
+            struct Actor {{
+                id: string, mesh: string, x: float, y: float, z: float,
+                scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+                color: color, material: Style,
+            }}
+            export component App inherits Window {{
+                SceneView3D {{
+                    model: [Actor {{
+                        id: "plate", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+                        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+                        color: #fff, material: Style {{ shader-textures: [Input {{ {value} }}] }},
+                    }}];
+                }}
+            }}
+        "#
+        );
+        let error = compile(&source, "material-textures.xr")
+            .err()
+            .expect("invalid shader texture input");
+        assert!(error.contains(message), "{error}");
+    }
+}
+
+#[test]
+fn named_scene_capture_records_are_typed_in_dsl_and_mlir() {
+    let source = r#"
+        struct Feed { name: string, camera: string, layers: int, scale: float, background: color }
+        struct Input { capture: string }
+        struct Pass { shader: string, buffers: [Input] }
+        export component Demo inherits Window { SceneView3D {
+            scene-captures: [Feed { name: "detail", camera: "", layers: 2, scale: 0.5, background: #00000000 }];
+            scene-effects: [Pass { shader: "", buffers: [Input { capture: "detail" }] }];
+        } }
+    "#;
+    let compiled = compile(source, "scene-capture.xr").unwrap();
+    assert!(compiled.mlir.contains("scene-captures"));
+    assert!(compiled.rust.to_string().contains("model_captures"));
+    let wrong = source
+        .replace("scale: float", "scale: bool")
+        .replace("scale: 0.5", "scale: true");
+    let error = compile(&wrong, "scene-capture.xr")
+        .err()
+        .expect("capture scale type");
+    assert!(
+        error.contains("requires a float field named `scale`"),
+        "{error}"
+    );
+    let wrong = source
+        .replace("capture: string", "capture: int")
+        .replace(r#"capture: "detail""#, "capture: 4");
+    let error = compile(&wrong, "scene-capture.xr")
+        .err()
+        .expect("capture input type");
+    assert!(
+        error.contains("effect pass buffers requires") && error.contains("`capture`"),
+        "{error}"
+    );
+
+    let wrong = source
+        .replace(
+            "struct Input { capture: string }",
+            "struct Input { capture: string, attachment: bool }",
+        )
+        .replace(
+            r#"Input { capture: "detail" }"#,
+            r#"Input { capture: "detail", attachment: true }"#,
+        );
+    let error = compile(&wrong, "scene-capture.xr")
+        .err()
+        .expect("capture attachment type");
+    assert!(error.contains("effect pass buffers requires"), "{error}");
+
+    let raw = lower(
+        r#"
+        struct Fog { position: point3d, size: vector3d, density: float, color: color }
+        export component Demo inherits Window {
+            SceneView3D {
+                fog-volumes: [Fog { position: Point3D.new(0, 0, 0),
+                    size: Vector3D.new(1, 1, 1), density: 0.4, color: #223344 }];
+            }
+        }
+        "#,
+        "scene-capture.xr",
+    );
+    let invalid_mlir = raw.replace("name = \"fog-volumes\"", "name = \"scene-captures\"");
+    assert_ne!(invalid_mlir, raw);
+    let error = mlir::process(&invalid_mlir).expect_err("capture name type");
+    assert!(
+        error.contains("3D scene captures requires a string field named name"),
+        "{error}"
+    );
+}
+
+#[test]
+fn scene_capture_sources_require_string_names_in_dsl_and_mlir() {
+    for property in ["scene-color-capture", "scene-depth-capture"] {
+        let source =
+            format!("export component App inherits Window {{ SceneView3D {{ {property}: 50; }} }}");
+        assert!(compile(&source, "capture-source.xr").is_err());
+        let raw = lower(
+            "export component App inherits Window { SceneView3D { camera-yaw: 50; } }",
+            "capture-source.xr",
+        );
+        let malformed = raw.replace("name = \"camera-yaw\"", &format!("name = \"{property}\""));
+        assert_ne!(malformed, raw);
+        let error = mlir::process(&malformed).expect_err("capture name must be a string");
+        assert!(error.contains("SceneView3D"), "{error}");
+    }
+}
+
+#[test]
+fn named_color_capture_inputs_require_strings_in_dsl_and_mlir() {
+    let source = r#"
+        struct Feed { name: string, spare-source: int }
+        export component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "stage", spare-source: 42 }]; }
+        }
+    "#;
+    let raw = lower(source, "capture-inputs.xr");
+    for field in ["color-source", "depth-source", "renderables"] {
+        let source = source.replace("spare-source", field);
+        let diagnostic = compile(&source, "capture-inputs.xr")
+            .err()
+            .expect("invalid capture input field");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+        let broken = raw.replace("spare-source", field);
+        let diagnostic = mlir::process(&broken).expect_err("verify capture input type");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+    }
+}
+
+#[test]
+fn capture_override_material_uses_scene_material_type_rules() {
+    let source = r#"
+        struct Paint { marker: int }
+        struct Feed { name: string, override-material: Paint }
+        export component App inherits Window {
+            SceneView3D {
+                scene-captures: [Feed { name: "mask", override-material: Paint { marker: 1 } }];
+            }
+        }
+    "#;
+    let invalid = source.replace("marker", "base-color");
+    let diagnostic = compile(&invalid, "capture-override.xr")
+        .err()
+        .expect("invalid material field");
+    assert!(diagnostic.contains("base-color"), "{diagnostic}");
+    let raw = lower(source, "capture-override.xr").replace("marker", "base-color");
+    let diagnostic = mlir::process(&raw).expect_err("verify override material fields");
+    assert!(diagnostic.contains("base-color"), "{diagnostic}");
+}
+
+#[test]
+fn capture_pipeline_state_enforces_field_types_in_source_and_mlir() {
+    let source = r#"
+        struct Pipeline { marker: int }
+        struct Feed { name: string, pipeline-state: Pipeline }
+        export component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "glass", pipeline-state: Pipeline { marker: 1 } }]; }
+        }
+    "#;
+    let raw = lower(source, "capture-pipeline.xr");
+    for field in [
+        "depth-test",
+        "depth-write",
+        "cull-mode",
+        "depth-compare",
+        "blend-mode",
+    ] {
+        let invalid = source.replace("marker", field);
+        let diagnostic = compile(&invalid, "capture-pipeline.xr")
+            .err()
+            .expect("invalid pipeline field");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+        let invalid = raw.replace("marker", field);
+        let diagnostic = mlir::process(&invalid).expect_err("verify pipeline state");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+    }
+}
+
+#[test]
+fn capture_raster_rectangles_require_float_coordinates_in_source_and_mlir() {
+    let source = r#"
+        struct Bounds { x: float, y: float, width: int, height: float }
+        struct Pipeline { margin: Bounds }
+        struct Feed { name: string, pipeline-state: Pipeline }
+        export component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "window", pipeline-state: Pipeline {
+                margin: Bounds { x: 0.0, y: 0.0, width: 1, height: 1.0 },
+            } }]; }
+        }
+    "#;
+    let raw = lower(source, "capture-region.xr");
+    for field in ["viewport", "scissor"] {
+        let invalid = source.replace("margin", field);
+        let diagnostic = compile(&invalid, "capture-region.xr")
+            .err()
+            .expect("invalid capture rectangle");
+        assert!(
+            diagnostic.contains(field) && diagnostic.contains("width"),
+            "{diagnostic}"
+        );
+        let invalid = raw.replace("margin", field);
+        let diagnostic = mlir::process(&invalid).expect_err("verify capture rectangle");
+        assert!(
+            diagnostic.contains(field) && diagnostic.contains("width"),
+            "{diagnostic}"
+        );
+    }
+}
+
+#[test]
+fn named_capture_depth_clear_requires_a_float_in_source_and_mlir() {
+    let source = r#"
+        struct Feed { name: string, marker: int }
+        export component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "scene", marker: 1 }]; }
+        }
+    "#;
+    let invalid = source.replace("marker", "depth-clear");
+    let diagnostic = compile(&invalid, "capture-clear.xr")
+        .err()
+        .expect("invalid clear value type");
+    assert!(diagnostic.contains("depth-clear"), "{diagnostic}");
+    let invalid = lower(source, "capture-clear.xr").replace("marker", "depth-clear");
+    let diagnostic = mlir::process(&invalid).expect_err("verify clear value type");
+    assert!(diagnostic.contains("depth-clear"), "{diagnostic}");
+}
+
+#[test]
+fn named_capture_stencil_validates_reference_and_masks_in_source_and_mlir() {
+    let source = r#"
+        struct Mask { marker: float }
+        struct Pipeline { stencil: Mask }
+        struct Feed { name: string, pipeline-state: Pipeline }
+        export component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "mask", pipeline-state: Pipeline {
+                stencil: Mask { marker: 0.5 },
+            } }]; }
+        }
+    "#;
+    let raw = lower(source, "capture-stencil.xr");
+    for field in [
+        "reference",
+        "read-mask",
+        "write-mask",
+        "compare",
+        "depth-fail",
+    ] {
+        let invalid = source.replace("marker", field);
+        let diagnostic = compile(&invalid, "capture-stencil.xr")
+            .err()
+            .expect("invalid stencil state type");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+        let invalid = raw.replace("marker", field);
+        let diagnostic = mlir::process(&invalid).expect_err("verify stencil state type");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+    }
+}
+
+#[test]
+fn capture_polygon_mode_requires_a_string_in_source_and_mlir() {
+    let source = r#"
+        struct Pipeline { marker: int }
+        struct Feed { name: string, pipeline-state: Pipeline }
+        export component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "overlay", pipeline-state: Pipeline {
+                marker: 1,
+            } }]; }
+        }
+    "#;
+    let invalid = source.replace("marker", "polygon-mode");
+    let diagnostic = compile(&invalid, "capture-wireframe.xr")
+        .err()
+        .expect("invalid polygon mode type");
+    assert!(diagnostic.contains("polygon-mode"), "{diagnostic}");
+    let raw = lower(source, "capture-wireframe.xr").replace("marker", "polygon-mode");
+    let diagnostic = mlir::process(&raw).expect_err("verify polygon mode type");
+    assert!(diagnostic.contains("polygon-mode"), "{diagnostic}");
+}
+
+#[test]
+fn capture_target_blend_validates_the_record_in_source_and_mlir() {
+    let source = r#"
+        struct Blend { marker: float }
+        struct Pipeline { target-blend: Blend, spare: int }
+        struct Feed { name: string, pipeline-state: Pipeline }
+        export component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "overlay", pipeline-state: Pipeline {
+                target-blend: Blend { marker: 0.5 }, spare: 0,
+            } }]; }
+        }
+    "#;
+    let raw = lower(source, "capture-blend.xr");
+    for field in [
+        "write-mask",
+        "source-color",
+        "alpha-operation",
+        "constant",
+        "blend-enabled",
+    ] {
+        let invalid = source.replace("marker", field);
+        let diagnostic = compile(&invalid, "capture-blend.xr")
+            .err()
+            .expect("invalid target blend field");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+        let invalid = raw.replace("marker", field);
+        let diagnostic = mlir::process(&invalid).expect_err("verify target blend field");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+    }
+    let rename = |source: &str| {
+        source
+            .replace("target-blend", "former-blend")
+            .replace("spare", "target-blend")
+    };
+    let diagnostic = compile(&rename(source), "capture-blend.xr")
+        .err()
+        .expect("target blend must be a record");
+    assert!(diagnostic.contains("target-blend"), "{diagnostic}");
+    let diagnostic = mlir::process(&rename(&raw)).expect_err("verify target blend record");
+    assert!(diagnostic.contains("target-blend"), "{diagnostic}");
+}
+
+#[test]
+fn capture_color_format_requires_a_string_in_source_and_mlir() {
+    let source = r#"
+        struct Feed { name: string, marker: int }
+        export component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "data", marker: 1 }]; }
+        }
+    "#;
+    let invalid = source.replace("marker", "color-format");
+    let diagnostic = compile(&invalid, "capture-format.xr")
+        .err()
+        .expect("invalid capture color format type");
+    assert!(diagnostic.contains("color-format"), "{diagnostic}");
+    let raw = lower(source, "capture-format.xr").replace("marker", "color-format");
+    let diagnostic = mlir::process(&raw).expect_err("verify capture format type");
+    assert!(diagnostic.contains("color-format"), "{diagnostic}");
 }

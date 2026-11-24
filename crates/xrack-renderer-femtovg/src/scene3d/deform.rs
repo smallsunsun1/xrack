@@ -4,7 +4,7 @@ use std::{
 };
 
 use xrack_runtime::scene3d::{
-    JointPalette, MAX_MORPH_TARGETS, MAX_SKIN_JOINTS, Mesh3D, MeshData, MeshInfluence,
+    JointPalette, MAX_MORPH_TARGETS, MAX_SKIN_JOINTS, Mesh3D, MeshGeometry, MeshInfluence,
     MorphWeights, SceneObject,
 };
 
@@ -18,7 +18,7 @@ pub(super) const SKIN_LAYOUT: Option<wgpu::VertexBufferLayout<'static>> = Some(
     },
 );
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Deformation {
     Rigid,
     Skin,
@@ -105,7 +105,7 @@ impl GeometryBindings<'_> {
 pub(super) struct DeformationBinding {
     pub mode: Deformation,
     pub group: wgpu::BindGroup,
-    morph_source: Option<Weak<MeshData>>,
+    morph_source: Option<Weak<MeshGeometry>>,
 }
 
 #[derive(PartialEq)]
@@ -170,13 +170,12 @@ impl DeformationBuffers {
                     let Mesh3D::Imported(source) = &object.mesh else {
                         return None;
                     };
-                    morph_source = Some(Arc::downgrade(source));
-                    let geometry = object.mesh.morph_geometry()?;
+                    morph_source = Some(Arc::downgrade(source.geometry()));
                     let mesh = meshes.get(device, queue, &object.mesh);
-                    let data = mesh.morph.as_ref()?.clone();
+                    let morph = mesh.morph.as_ref()?;
                     Some((
-                        self.morph_buffer(device, geometry.record_offset(), weights),
-                        data,
+                        self.morph_buffer(device, morph.record_offset, weights),
+                        morph.entries.clone(),
                     ))
                 } else {
                     None

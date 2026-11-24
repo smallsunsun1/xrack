@@ -8,8 +8,10 @@ pub mod lightmap_bake;
 mod lightmap_unwrap;
 pub mod literal;
 mod localization;
+mod material_shader;
 mod mesh;
 mod mesh_animation;
+mod mesh_instances;
 mod mesh_lights;
 mod mesh_lod;
 mod mesh_lod_motion;
@@ -17,6 +19,7 @@ mod mesh_materials;
 mod mesh_morph;
 mod mesh_skin;
 mod mesh_tangents;
+mod scene_effect;
 mod scene_plan;
 pub mod visual;
 

@@ -1,0 +1,87 @@
+struct TextureInput {
+    texture: string, item: string, color-space: string, filter: string, enabled: bool,
+}
+
+struct TextureEffect {
+    shader: string, buffers: [TextureInput],
+}
+
+struct SwatchMap { source: string, mip-filter: string }
+struct SwatchMaterial { base-color: color, base-color-map: SwatchMap, unlit: bool, alpha-mode: string }
+struct SwatchActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    scale-x: float, scale-y: float, scale-z: float, material: SwatchMaterial, visible: bool,
+}
+
+export component EffectTextureInputsDemo inherits Window {
+    title: "XRack · 外部后处理贴图";
+    width: 480px; height: 310px; resizable: false;
+    background: #172332;
+
+    property <string> swatch: @texture-url("models/channel-swatch.png");
+    in-out property <bool> file-enabled: true;
+    in-out property <bool> live-enabled: true;
+    in-out property <bool> cool: true;
+    in-out property <bool> item-mips: false;
+    in-out property <bool> show-object: true;
+
+    Rectangle { width: 480px; height: 240px; background: #24394e; }
+    Rectangle {
+        width: 80px; height: 48px;
+        texture-source: "live-swatch"; texture-only: true;
+        texture-mipmaps: root.item-mips;
+        background: root.cool ? #40a0d080 : #d0806080;
+    }
+    SceneView3D {
+        width: 480px; height: 240px; cache-rendering: true;
+        scene-background: #00000000; scene-tone-map: none;
+        camera-yaw: 0; camera-pitch: 0; camera-distance: 6;
+        model: [
+            SwatchActor {
+                id: "textured-object", mesh: "primitive:rectangle", x: 3, y: 0, z: 0,
+                yaw: 0, pitch: 0, roll: 0, scale-x: 1.35, scale-y: 2, scale-z: 1, color: #fff,
+                material: SwatchMaterial {
+                    base-color: #fff, base-color-map: SwatchMap { source: root.swatch, mip-filter: "none" },
+                    unlit: true, alpha-mode: "opaque",
+                },
+                visible: root.show-object,
+            },
+        ];
+        scene-effects: [
+            TextureEffect {
+                shader: @shader-url("effects/texture_inputs.wgsl"),
+                buffers: [
+                    TextureInput {
+                        texture: root.swatch, item: "", color-space: "srgb",
+                        filter: "nearest", enabled: root.file-enabled,
+                    },
+                    TextureInput {
+                        texture: root.swatch, item: "", color-space: "linear",
+                        filter: "nearest", enabled: root.file-enabled,
+                    },
+                    TextureInput {
+                        texture: "", item: "live-swatch", color-space: "",
+                        filter: "linear", enabled: root.live-enabled,
+                    },
+                ],
+            },
+        ];
+    }
+    Label { x: 7px; y: 241px; width: 113px; height: 25px; text: "文件 · sRGB"; }
+    Label { x: 127px; y: 241px; width: 113px; height: 25px; text: "文件 · 线性"; }
+    Label { x: 247px; y: 241px; width: 113px; height: 25px; text: "实时二维源"; }
+    Label { x: 367px; y: 241px; width: 113px; height: 25px; text: "模型材质"; }
+    switch-color := Button {
+        x: 15px; y: 270px; width: 117px; height: 29px;
+        text: "切换实时颜色"; clicked => { root.cool = !root.cool; }
+    }
+    file-source := CheckBox {
+        x: 143px; y: 270px; width: 118px; height: 29px;
+        text: "文件输入"; checked <=> root.file-enabled;
+    }
+    item-source := CheckBox {
+        x: 271px; y: 270px; width: 150px; height: 29px;
+        text: "二维输入"; checked <=> root.live-enabled;
+    }
+}

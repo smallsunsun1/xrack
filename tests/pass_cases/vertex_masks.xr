@@ -1,0 +1,20 @@
+// CHECK: "xr.make_record"{{.*}}!xr.record<"Actor">
+// CHECK: "xr.bind"{{.*}}name = "model"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist<"Actor">
+
+struct Finish { vertex-colors: bool, vertex-metalness-channel: string }
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: Finish,
+}
+export component VertexMasksPlan inherits Window {
+    in property <string> mode: "r";
+    SceneView3D {
+        width: 80px; height: 80px;
+        model: [Actor {
+            id: "panel", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
+            material: Finish { vertex-colors: false, vertex-metalness-channel: root.mode },
+        }];
+    }
+}

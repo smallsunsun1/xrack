@@ -6,7 +6,7 @@ use femtovg::{
     Canvas, Color, FillRule, ImageFilter, ImageFlags, ImageId, LayerEffects, MorphologyOperator,
     Paint, Path, renderer::WGPURenderer,
 };
-use xrack_layout::{Rect, corner_radii, normalize_radii};
+use xrack_layout::{LayoutNode, Point, Rect, corner_radii, normalize_radii};
 use xrack_runtime::{Brush, Color as UiColor, Node, Value};
 
 // Match the Gaussian chain's device-pixel limit and bound morphology to
@@ -150,6 +150,21 @@ pub(super) struct ShadowDraw {
 }
 
 impl ShadowDraw {
+    pub(super) fn matches_translation(self, next: Self, offset: Point) -> bool {
+        let translate = |rect: Rect| {
+            Rect::new(
+                rect.x + offset.x,
+                rect.y + offset.y,
+                rect.width,
+                rect.height,
+            )
+        };
+        self.image == next.image
+            && self.tint == next.tint
+            && translate(self.bounds) == next.bounds
+            && translate(self.sample) == next.sample
+    }
+
     pub(super) fn draw(self, canvas: &mut Canvas<WGPURenderer>) {
         let Rect {
             x,
@@ -191,6 +206,22 @@ impl ShadowPaint<'_> {
 }
 
 impl OuterShadow {
+    pub(super) fn clipped_for_node(
+        node: &Node,
+        layout: &LayoutNode,
+        scale: f32,
+        fallback_border: UiColor,
+    ) -> Option<(Self, Rect)> {
+        let shadow = Self::for_node(
+            node,
+            layout.bounds,
+            scale * layout.world_transform().max_scale(),
+            fallback_border,
+        )?;
+        let clip = layout.clip.intersect(shadow.paint_bounds());
+        nonempty(clip).then_some((shadow, clip))
+    }
+
     pub(crate) fn for_node(
         node: &Node,
         bounds: Rect,

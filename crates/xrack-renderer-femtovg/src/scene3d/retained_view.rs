@@ -1,7 +1,7 @@
 //! Reuse completed viewport images across 2D frames and canvas changes.
 use std::{collections::VecDeque, sync::Arc};
 
-use xrack_runtime::{Node, SharedNodeIdentity, Value};
+use xrack_runtime::{Node, RowKey, SharedNodeIdentity, Value};
 
 use crate::transient_textures::{bytes, create_render_texture};
 
@@ -21,10 +21,18 @@ pub(crate) struct ViewSize {
     pub logical: [f32; 2],
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct ViewInputs {
+    pub reflections: [u64; 8],
+    pub items: u64,
+}
+
 #[derive(Clone, Copy, Default, PartialEq)]
 pub(crate) struct Sampling {
     progressive: u8,
     temporal: Option<TemporalSettings>,
+    feedback: bool,
+    animate_feedback: bool,
 }
 
 impl Sampling {
@@ -55,7 +63,15 @@ impl Sampling {
                 progressive
             },
             temporal,
+            feedback: false,
+            animate_feedback: false,
         }
+    }
+
+    pub(crate) fn with_feedback(mut self, active: bool, animate: bool) -> Self {
+        self.feedback = active;
+        self.animate_feedback = active && animate;
+        self
     }
 
     pub(crate) fn is_active(self) -> bool {
@@ -98,11 +114,13 @@ struct Entry {
     size: ViewSize,
     node: SharedNodeIdentity,
     settings: Vec<(&'static str, Value)>,
-    reflections: [u64; 8],
+    inputs: ViewInputs,
     texture: wgpu::Texture,
     frame: u64,
     committed: bool,
     id: Option<&'static str>,
+    scope: [Option<RowKey>; 2],
+    feedback_id: Option<String>,
     sampling: Sampling,
     progress: Option<Progress>,
     temporal: TemporalHistory,
@@ -111,10 +129,11 @@ struct Entry {
 }
 
 impl Entry {
-    fn matches(&self, node: &Node, size: ViewSize, reflections: [u64; 8]) -> bool {
+    fn matches(&self, node: &Node, size: ViewSize, inputs: ViewInputs) -> bool {
         if self.size != size
-            || self.reflections != reflections
+            || self.inputs != inputs
             || self.sampling.temporal.is_some() && self.id != node.id
+            || self.sampling.feedback && self.feedback_id.as_deref() != node.element_id()
         {
             return false;
         }
@@ -171,20 +190,22 @@ impl Entry {
         &self,
         node: &Node,
         size: ViewSize,
-        reflections: [u64; 8],
+        inputs: ViewInputs,
         sampling: Sampling,
     ) -> bool {
         sampling.temporal.is_some()
             && self.sampling == sampling
             && self.size == size
             && self.id == node.id
-            && self.reflections == reflections
+            && self.inputs == inputs
             && [
                 "camera",
                 "layer-mask",
                 "environment",
                 "scene-hdr",
                 "scene-background",
+                "scene-color-capture",
+                "scene-depth-capture",
                 "particle-emitters",
                 "particle-time",
                 "particle-affectors",
@@ -231,7 +252,7 @@ impl ViewportTextures {
 
     pub(crate) fn clear_disabled_temporal(
         &mut self,
-        (path, generation): (&[usize], u64),
+        (path, generation, scope): (&[usize], u64, [Option<RowKey>; 2]),
         sampling: Sampling,
     ) {
         if sampling.temporal.is_none() {
@@ -239,6 +260,7 @@ impl ViewportTextures {
                 entry.sampling.temporal.is_none()
                     || entry.generation != generation
                     || entry.path != path
+                    || entry.scope != scope
             });
         }
     }
@@ -247,24 +269,30 @@ impl ViewportTextures {
         &mut self,
         device: &wgpu::Device,
         node: &Node,
-        (path, generation): (&[usize], u64),
+        (path, generation, scope): (&[usize], u64, [Option<RowKey>; 2]),
         size: ViewSize,
-        reflections: [u64; 8],
+        inputs: ViewInputs,
         sampling: Sampling,
     ) -> Option<ViewTexture> {
         let required = bytes(size.pixels);
         if required > MAX_BYTES {
             return None;
         }
-        let same_owner = |entry: &Entry| entry.path == path && entry.generation == generation;
+        let same_owner = |entry: &Entry| {
+            entry.path == path && entry.generation == generation && entry.scope == scope
+        };
         let index = self.entries.iter().position(|entry| {
             entry.sampling == sampling
-                && (sampling.temporal.is_none() && entry.committed && !entry.needs_redraw
+                && (sampling.temporal.is_none()
+                    && !sampling.feedback
+                    && entry.committed
+                    && !entry.needs_redraw
                     || same_owner(entry) && (entry.committed || entry.frame == self.frame))
-                && entry.matches(node, size, reflections)
+                && entry.matches(node, size, inputs)
         });
         if let Some(mut entry) = index.and_then(|index| self.entries.remove(index)) {
-            let solve_next_sample = entry.needs_redraw && entry.frame != self.frame;
+            let solve_next_sample =
+                (entry.needs_redraw || sampling.animate_feedback) && entry.frame != self.frame;
             entry.frame = self.frame;
             entry.node = node.snapshot_identity();
             let result = if solve_next_sample {
@@ -307,7 +335,7 @@ impl ViewportTextures {
             resident -= bytes(evicted.size.pixels);
         }
         let (texture, history, temporal) = if let Some(entry) = recycled {
-            let keep_history = entry.preserves_temporal_history(node, size, reflections, sampling);
+            let keep_history = entry.preserves_temporal_history(node, size, inputs, sampling);
             (
                 entry.texture,
                 entry
@@ -341,11 +369,17 @@ impl ViewportTextures {
             settings: scene_settings(node)
                 .map(|(name, value)| (name, value.clone()))
                 .collect(),
-            reflections,
+            inputs,
             texture,
             frame: self.frame,
             committed: false,
             id: node.id,
+            scope,
+            feedback_id: if sampling.feedback {
+                node.element_id().map(str::to_owned)
+            } else {
+                None
+            },
             sampling,
             progress: (sampling.progressive != 0).then_some(Progress { next: 0, history }),
             temporal,
@@ -368,6 +402,7 @@ fn scene_settings(node: &Node) -> impl Iterator<Item = (&'static str, &Value)> {
         (!matches!(
             name,
             "cache-rendering"
+                | "texture-input"
                 | "x"
                 | "y"
                 | "z"

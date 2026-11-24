@@ -1,0 +1,110 @@
+struct FeedInput { capture: string, filter: string }
+
+struct SignalMaterial {
+    enabled: bool, unlit: bool, material-shader: string, shader-textures: [FeedInput],
+}
+
+struct SignalActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    layers: int, camera-kind: string, camera-height: float,
+    casts-reflections: bool, receives-reflections: bool, material: SignalMaterial,
+}
+
+struct SignalFeed { name: string, camera: string, layers: int, scale: float }
+struct SignalProbe {
+    position: point3d, box-size: vector3d, parallax-correction: bool, intensity: float,
+    capture-size: int, refresh-mode: string, capture-revision: int, time-slicing: string,
+}
+struct SignalEffect { shader: string, strength: float, buffers: [FeedInput] }
+
+export component ProbeCaptureFeedDemo inherits Window {
+    title: "XRack · 探针反射命名画面";
+    width: 532px; height: 366px; resizable: false;
+    background: #172437;
+
+    in-out property <int> source-layer: 2;
+    in-out property <string> refresh: "on-change";
+    in-out property <string> slicing: "none";
+    in-out property <bool> inset: false;
+    in-out property <int> revision: 0;
+
+    property <SignalMaterial> builtin: SignalMaterial {
+        enabled: false, unlit: false, material-shader: "", shader-textures: [],
+    };
+    property <SignalMaterial> card: SignalMaterial {
+        enabled: true, unlit: true,
+        material-shader: @material-shader-url("effects/capture_material_display.wgsl"),
+        shader-textures: [FeedInput { capture: "signal", filter: "nearest" }],
+    };
+    property <SignalActor> defaults: SignalActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0, color: #fff,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        layers: 1, camera-kind: "", camera-height: 4,
+        casts-reflections: true, receives-reflections: true, material: root.builtin,
+    };
+
+    SceneView3D {
+        width: 532px; height: 270px; camera-distance: 8;
+        camera-yaw: 0; camera-pitch: 0; layer-mask: 1;
+        scene-background: #24354d; scene-hdr: true; scene-tone-map: none;
+        light-yaw: -30; light-elevation: 58; cache-rendering: true;
+        model: [
+            SignalActor {
+                id: "mirror", mesh: @mesh-url("models/probe-sphere.gltf"),
+                scale-x: 1.55, scale-y: 1.55, scale-z: 1.55, casts-reflections: false, ..root.defaults
+            },
+            SignalActor {
+                id: "reflection-card", z: 10, scale-x: 11, scale-y: 9, scale-z: 0.3,
+                material: root.card, receives-reflections: false, ..root.defaults
+            },
+            SignalActor {
+                id: "color-camera", mesh: "", z: 8, camera-kind: "orthographic", camera-height: 2.6, ..root.defaults
+            },
+            SignalActor {
+                id: "warm-source", layers: 2, scale-x: 6, scale-y: 4, scale-z: 0.12, color: #df6843,
+                material: SignalMaterial { enabled: true, unlit: true, ..root.builtin }, ..root.defaults
+            },
+            SignalActor {
+                id: "cool-source", layers: 4, scale-x: 6, scale-y: 4, scale-z: 0.12, color: #478ed8,
+                material: SignalMaterial { enabled: true, unlit: true, ..root.builtin }, ..root.defaults
+            },
+        ];
+        scene-captures: [
+            SignalFeed { name: "signal", camera: "color-camera", layers: root.source-layer, scale: 0.5 }
+        ];
+        reflection-probes: [
+            SignalProbe {
+                position: Point3D.new(0, 0, 0), box-size: Vector3D.new(8, 8, 24),
+                parallax-correction: true, capture-size: 32, refresh-mode: root.refresh,
+                capture-revision: root.revision, time-slicing: root.slicing, intensity: 1.65,
+            }
+        ];
+        scene-effects: [
+            SignalEffect {
+                shader: @shader-url("effects/probe_capture_inset.wgsl"),
+                strength: root.inset ? 1 : 0,
+                buffers: [FeedInput { capture: "signal", filter: "linear" }],
+            }
+        ];
+    }
+
+    change-source := Button {
+        x: 14px; y: 291px; width: 112px; height: 33px;
+        text: "切换画面"; clicked => { root.source-layer = root.source-layer == 2 ? 4 : 2; }
+    }
+    refresh-policy := Button {
+        x: 133px; y: 291px; width: 115px; height: 33px;
+        text: root.refresh == "first-frame" ? "固定首帧" : "按变化刷新";
+        clicked => { root.refresh = root.refresh == "first-frame" ? "on-change" : "first-frame"; }
+    }
+    refresh-cube := Button {
+        x: 257px; y: 291px; width: 109px; height: 33px;
+        text: "刷新探针"; clicked => { root.revision += 1; }
+    }
+    CheckBox {
+        x: 385px; y: 291px; width: 132px; height: 33px;
+        text: "显示源小窗"; checked <=> root.inset;
+    }
+}

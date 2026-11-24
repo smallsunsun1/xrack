@@ -139,7 +139,12 @@ impl Program {
     ) -> std::sync::Arc<xrack_runtime::scene3d::SceneModel> {
         let imported = |key: &str| self.scene_assets.meshes.get(key).cloned();
         if renderables {
-            self.scene_projections.record_objects(model, imported)
+            self.scene_projections.record_objects(
+                model,
+                imported,
+                |key| self.scene_assets.textures.get(key).cloned(),
+                |key| self.scene_assets.material_shaders.get(key).cloned(),
+            )
         } else {
             self.scene_projections.record_cameras(model, imported)
         }

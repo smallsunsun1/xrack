@@ -172,6 +172,8 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
                         "lights"
                             | "reflection-probes"
                             | "fog-volumes"
+                            | "scene-effects"
+                            | "scene-captures"
                             | "particle-emitters"
                             | "particle-affectors"
                     )
@@ -1119,6 +1121,9 @@ pub fn visual_cache_operand(
                 | "xr.mesh_lod_url"
                 | "xr.mesh_lightmap_url"
                 | "xr.mesh_lod_lightmap_url"
+                | "xr.texture_url"
+                | "xr.shader_url"
+                | "xr.material_shader_url"
                 | "xr.environment_url"
                 | "xr.param"
         ))

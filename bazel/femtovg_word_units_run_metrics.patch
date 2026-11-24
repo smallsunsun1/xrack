@@ -1,9 +1,69 @@
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -234,6 +234,8 @@
+     shaping_run_cache: textlayout::ShapingRunCache<fnv::FnvBuildHasher>,
+     #[cfg(feature = "textlayout")]
+     shaped_words_cache: textlayout::ShapedWordsCache<fnv::FnvBuildHasher>,
++    #[cfg(feature = "textlayout")]
++    word_slice_hints: Vec<u64>,
+     #[cfg(feature = "swash")]
+     swash_scale_context: Rc<RefCell<swash::scale::ScaleContext>>,
+ }
+@@ -263,6 +265,8 @@
+                 std::num::NonZeroUsize::new(DEFAULT_LRU_CACHE_CAPACITY).unwrap(),
+                 fnv_words,
+             ),
++            #[cfg(feature = "textlayout")]
++            word_slice_hints: Vec::new(),
+             #[cfg(feature = "swash")]
+             swash_scale_context: Rc::new(RefCell::new(swash::scale::ScaleContext::new())),
+         }
+@@ -386,6 +390,8 @@
+         self.shaping_run_cache.clear();
+         #[cfg(feature = "textlayout")]
+         self.shaped_words_cache.clear();
++        #[cfg(feature = "textlayout")]
++        self.word_slice_hints.fill(0);
+     }
+
+     pub fn measure_font(
 diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
 --- a/src/text/textlayout.rs
 +++ b/src/text/textlayout.rs
-@@ -113,7 +113,14 @@
+@@ -37,6 +37,29 @@
+     // and letter spacing after retrieving each shaped word.
+     glyphs: Vec<ShapedGlyph>,
+     units_per_em: u16,
++    ascii_slice: Option<Box<AsciiWordSlice>>,
++}
++
++#[derive(Clone, Debug)]
++struct AsciiWordSlice {
++    source: [u8; 24],
++    len: u8,
++    safe_cuts: u32,
++    latin: bool,
++}
++
++const WORD_SLICE_HINT_SLOTS: usize = 16_384;
++const MIN_WORD_CACHE_FOR_SLICES: usize = 8_192;
++
++fn word_slice_hint(word: &[u8], suffix: bool) -> Option<usize> {
++    let key = if suffix {
++        word.get(word.len().checked_sub(4)?..)?
++    } else {
++        word.get(..4)?
++    };
++    let key = u32::from_le_bytes(key.try_into().ok()?);
++    let slot = (key.wrapping_mul(0x9e3779b1) >> 18) as usize;
++    Some(usize::from(suffix) * WORD_SLICE_HINT_SLOTS + slot)
  }
- 
+
+ #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+@@ -113,7 +136,14 @@
+ }
+
  pub(super) type ShapedWordsCache<H> = LruCache<WordId, Result<ShapedWord, ErrorKind>, H>;
 -pub(super) type ShapingRunCache<H> = LruCache<ShapingId, TextMetrics, H>;
 +pub(super) type ShapingRunCache<H> = LruCache<ShapingId, ShapingRun, H>;
@@ -14,29 +74,75 @@ diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
 +    descender: f32,
 +    unwrapped_advance: f32,
 +}
- 
+
  impl super::TextContext {
      /// Returns information on how the provided text will be drawn with the specified paint.
-@@ -125,6 +132,18 @@
-         paint: &Paint,
-     ) -> Result<TextMetrics, ErrorKind> {
+@@ -127,6 +157,52 @@
          self.0.borrow_mut().measure_text(x, y, text, &paint.text)
-+    }
-+
+     }
+
 +    /// Measures the line width without copying or placing the cached glyphs.
 +    pub fn measure_text_width(&self, text: &str, paint: &Paint) -> Result<f32, ErrorKind> {
 +        let mut context = self.0.borrow_mut();
-+        cached_run(&mut context, &paint.text, text, None).map(|run| run.metrics.width())
++        let settings = &paint.text;
++        if !text.bytes().all(|byte| (b' '..=b'~').contains(&byte)) {
++            return cached_run(&mut context, settings, text, None).map(|run| run.metrics.width());
++        }
++
++        let id = ShapingId::new(
++            settings.font_size,
++            settings.font_ids,
++            text,
++            None,
++            &settings.font_variations,
++            settings.letter_spacing,
++        );
++        if let Some(run) = context.shaping_run_cache.get(&id) {
++            return Ok(run.metrics.width());
++        }
++
++        // Printable ASCII has one left-to-right run. Reuse the same shaped
++        // words and accumulation order as shape_run, without positioning glyphs.
++        let mut width = 0.0;
++        for word in text.split_word_bounds() {
++            if let Some(advance) = sliced_word_width(&context, word, settings) {
++                width += advance;
++            } else if let Some(word) = cached_word(
++                &mut context,
++                word,
++                rustybuzz::Direction::LeftToRight,
++                settings.font_ids,
++                &settings.font_variations,
++            ) {
++                width += word.width(word.scale(settings.font_size), settings.letter_spacing);
++            }
++        }
++        context.find_font(&settings.font_ids, |_| (false, ()))?;
++        Ok(width)
 +    }
 +
 +    /// Returns the sum of finite glyph advances on the first line.
 +    pub fn unwrapped_advance(&self, text: &str, paint: &Paint) -> f32 {
 +        let mut context = self.0.borrow_mut();
 +        cached_run(&mut context, &paint.text, text, None).map_or(0.0, |run| run.unwrapped_advance)
-     }
- 
++    }
++
      /// Returns the maximum index-th byte of text that will fit inside `max_width`.
-@@ -278,6 +297,18 @@
+     ///
+     /// The retuned index will always lie at the start and/or end of a UTF-8 code point sequence or at the start or end of the text
+@@ -165,6 +241,11 @@
+
+     pub fn resize_shaped_words_cache(&mut self, capacity: std::num::NonZeroUsize) {
+         self.shaped_words_cache.resize(capacity);
++        if capacity.get() < MIN_WORD_CACHE_FOR_SLICES {
++            self.word_slice_hints = Vec::new();
++        } else if self.word_slice_hints.is_empty() {
++            self.word_slice_hints.resize(2 * WORD_SLICE_HINT_SLOTS, 0);
++        }
+     }
+
+     pub fn measure_text<S: AsRef<str>>(
+@@ -278,6 +359,18 @@
      text: &str,
      max_width: Option<f32>,
  ) -> Result<TextMetrics, ErrorKind> {
@@ -55,7 +161,7 @@ diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
      let variations = &text_settings.font_variations;
      let id = ShapingId::new(
          text_settings.font_size,
-@@ -298,16 +329,26 @@
+@@ -298,16 +391,26 @@
              max_width,
              variations,
          );
@@ -90,12 +196,136 @@ diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
 +
 +    context.shaping_run_cache.get(&id).ok_or(ErrorKind::UnknownError)
  }
- 
+
  fn shape_run(
-@@ -520,14 +561,38 @@
+@@ -430,6 +533,60 @@
+     result
+ }
+
++fn sliced_word_width(context: &super::TextContextImpl, word: &str, settings: &TextSettings) -> Option<f32> {
++    if context.word_slice_hints.is_empty()
++        || !(4..=8).contains(&word.len())
++        || !word.bytes().all(|byte| byte.is_ascii_alphanumeric())
++    {
++        return None;
++    }
++
++    let latin = word.bytes().any(|byte| byte.is_ascii_alphabetic());
++    let variation_hash = settings.font_variations.hash();
++    for suffix in [false, true] {
++        let slot = word_slice_hint(word.as_bytes(), suffix)?;
++        let word_hash = context.word_slice_hints[slot];
++        if word_hash == 0 {
++            continue;
++        }
++        let id = WordId {
++            word_hash,
++            font_ids: settings.font_ids,
++            variation_hash,
++            rtl: false,
++        };
++        let Some(Ok(parent)) = context.shaped_words_cache.peek(&id) else {
++            continue;
++        };
++        let Some(slice) = parent.ascii_slice.as_deref() else {
++            continue;
++        };
++        let source = &slice.source[..usize::from(slice.len)];
++        if slice.latin != latin || source.len() <= word.len() {
++            continue;
++        }
++
++        // Shaping the source and slice must pick the same script and font.
++        // A matching hint is useful only at a cluster break Rustybuzz marked safe.
++        let cut = if suffix { source.len() - word.len() } else { word.len() };
++        if slice.safe_cuts & (1 << cut) == 0 {
++            continue;
++        }
++        let glyphs = if suffix && source.ends_with(word.as_bytes()) {
++            &parent.glyphs[cut..]
++        } else if !suffix && source.starts_with(word.as_bytes()) {
++            &parent.glyphs[..cut]
++        } else {
++            continue;
++        };
++        let scale = parent.scale(settings.font_size);
++        return Some(glyphs.iter().fold(0.0, |width, glyph| {
++            width + (glyph.advance_x * scale + settings.letter_spacing)
++        }));
++    }
++    None
++}
++
+ fn cached_word<'a>(
+     context: &'a mut super::TextContextImpl,
+     word: &str,
+@@ -447,6 +604,13 @@
+     };
+     if !context.shaped_words_cache.contains(&id) {
+         let shaped = shape_word(word, direction, context, &font_ids, variations);
++        if shaped.as_ref().is_ok_and(|word| word.ascii_slice.is_some()) {
++            for suffix in [false, true] {
++                if let Some(slot) = word_slice_hint(word.as_bytes(), suffix) {
++                    context.word_slice_hints[slot] = id.word_hash;
++                }
++            }
++        }
+         context.shaped_words_cache.put(id, shaped);
+     }
+     context.shaped_words_cache.get(&id)?.as_ref().ok()
+@@ -461,7 +625,13 @@
+ ) -> Result<ShapedWord, ErrorKind> {
+     // find_font will call the closure with each font matching the provided style
+     // until a font capable of shaping the word is found
++    let might_slice = !context.word_slice_hints.is_empty()
++        && hb_direction == rustybuzz::Direction::LeftToRight
++        && (9..=24).contains(&word.len())
++        && word.bytes().all(|byte| byte.is_ascii_alphanumeric());
++    let mut attempts = 0;
+     context.find_font(font_ids, |(font_id, font)| {
++        attempts += 1;
+         let font_face = font.face_ref_with_variations(variations);
+         let normalized_coords = font.normalize_variations(variations);
+         // Call harfbuzz
+@@ -479,6 +649,7 @@
+         let mut shaped_word = ShapedWord {
+             glyphs: Vec::with_capacity(positions.len()),
+             units_per_em: font_face.0.units_per_em(),
++            ascii_slice: None,
+         };
+
+         let mut has_missing = false;
+@@ -516,18 +687,65 @@
+             shaped_word.glyphs.push(g);
+         }
+
++        // A slice might select a different fallback face. Keep hints only
++        // when all glyphs resolved in the first face, one per input byte.
++        if might_slice
++            && attempts == 1
++            && !has_missing
++            && infos.len() == word.len()
++            && infos.iter().enumerate().all(|(index, glyph)| glyph.cluster as usize == index)
++        {
++            let mut source = [0; 24];
++            source[..word.len()].copy_from_slice(word.as_bytes());
++            let safe_cuts = infos
++                .iter()
++                .enumerate()
++                .filter(|(_, glyph)| !glyph.unsafe_to_break())
++                .fold(0, |mask, (index, _)| mask | (1 << index));
++            shaped_word.ascii_slice = Some(Box::new(AsciiWordSlice {
++                source,
++                len: word.len() as u8,
++                safe_cuts,
++                latin: word.bytes().any(|byte| byte.is_ascii_alphabetic()),
++            }));
++        }
++
+         (has_missing, shaped_word)
      })
  }
- 
+
 +// Resolve the font metrics once per shaped run. The caller's origin and
 +// alignment only affect placement, so this can live in the shaping cache.
 +fn run_extents(
@@ -137,9 +367,9 @@ diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
 +fn layout(x: f32, y: f32, res: &mut TextMetrics, text_settings: &TextSettings, [ascender, descender]: [f32; 2]) {
      let mut cursor_x = x;
      let mut cursor_y = y;
- 
-@@ -542,26 +607,6 @@
- 
+
+@@ -542,26 +760,6 @@
+
      let mut min_y = cursor_y;
      let mut max_y = cursor_y;
 -
@@ -162,11 +392,11 @@ diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
 -    if descender.abs() < f32::EPSILON {
 -        descender = primary_metrics.descender();
 -    }
- 
+
      // Baseline alignment
      let alignment_offset_y = match text_settings.text_baseline {
-@@ -591,6 +636,4 @@
- 
+@@ -591,6 +789,4 @@
+
      res.y = min_y;
      res.height = max_y - min_y;
 -

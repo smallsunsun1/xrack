@@ -1,4 +1,4 @@
-//! Closest-point correspondence used when validating simplification of deformed meshes.
+//! Shared nearest-point geometry for scene queries and mesh simplification.
 use crate::scene_bounds::{Bounds3D, BoundsTree};
 use nalgebra::Vector3;
 
@@ -50,67 +50,42 @@ pub fn corresponding_vertices(
                 });
             }
             let point = Vector3::from(point.map(f64::from));
-            let mut best = None;
-            search(&tree, 0, positions, point, &mut best);
-            best.map(|(sample, _)| sample)
+            let mut best: Option<SurfaceSample> = None;
+            tree.visit_nearest(
+                f64::INFINITY,
+                |bounds| bounds.distance_squared(point),
+                |&vertices, limit| {
+                    let triangle =
+                        vertices.map(|index| Vector3::from(positions[index].map(f64::from)));
+                    let (weights, distance) = closest_triangle_point(point, triangle);
+                    if distance < limit
+                        || distance == limit
+                            && best.is_none_or(|previous| vertices < previous.vertices)
+                    {
+                        best = Some(SurfaceSample { vertices, weights });
+                        distance
+                    } else {
+                        limit
+                    }
+                },
+            );
+            best
         })
         .collect()
 }
 
-fn search(
-    tree: &BoundsTree<[usize; 3]>,
-    index: usize,
-    positions: &[[f32; 3]],
+pub(crate) fn closest_triangle_point(
     point: Vector3<f64>,
-    best: &mut Option<(SurfaceSample, f64)>,
-) {
-    let node = &tree.nodes[index];
-    if best.is_some_and(|(_, distance)| bounds_distance(node.bounds, point) > distance) {
-        return;
-    }
-    if let Some([a, b]) = node.children {
-        let left = bounds_distance(tree.nodes[a].bounds, point);
-        let right = bounds_distance(tree.nodes[b].bounds, point);
-        let (first, second) = if left <= right { (a, b) } else { (b, a) };
-        search(tree, first, positions, point, best);
-        search(tree, second, positions, point, best);
-    } else {
-        for &vertices in &tree.items[node.range.clone()] {
-            let triangle = vertices.map(|index| Vector3::from(positions[index].map(f64::from)));
-            let (weights, distance) = closest(point, triangle);
-            if best.is_none_or(|(previous, old)| {
-                distance < old || distance == old && vertices < previous.vertices
-            }) {
-                *best = Some((SurfaceSample { vertices, weights }, distance));
-            }
-        }
-    }
-}
-
-fn bounds_distance(bounds: Bounds3D, point: Vector3<f64>) -> f64 {
-    (0..3)
-        .map(|axis| {
-            let low = f64::from(bounds.min[axis]);
-            let high = f64::from(bounds.max[axis]);
-            let separation = point[axis] - point[axis].clamp(low, high);
-            separation * separation
-        })
-        .sum()
-}
-
-fn closest(point: Vector3<f64>, [a, b, c]: [Vector3<f64>; 3]) -> ([f64; 3], f64) {
+    [a, b, c]: [Vector3<f64>; 3],
+) -> ([f64; 3], f64) {
     let ab = b - a;
     let ac = c - a;
     let ap = point - a;
-    let aa = ab.dot(&ab);
-    let bb = ac.dot(&ac);
-    let cross = ab.dot(&ac);
-    let denominator = aa * bb - cross * cross;
-    if denominator > 1e-24 {
-        let x = ap.dot(&ab);
-        let y = ap.dot(&ac);
-        let u = (bb * x - cross * y) / denominator;
-        let v = (aa * y - cross * x) / denominator;
+    let normal = ab.cross(&ac);
+    let denominator = normal.norm_squared();
+    if denominator > 0.0 {
+        let u = ap.cross(&ac).dot(&normal) / denominator;
+        let v = ab.cross(&ap).dot(&normal) / denominator;
         if u >= 0.0 && v >= 0.0 && u + v <= 1.0 {
             return ([1.0 - u - v, u, v], (ap - u * ab - v * ac).norm_squared());
         }

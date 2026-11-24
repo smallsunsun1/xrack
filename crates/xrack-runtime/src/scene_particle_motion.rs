@@ -37,6 +37,28 @@ pub struct ParticleMotion {
     pub modes: [u32; 4],
 }
 
+impl ParticleMotion {
+    pub(crate) fn spawn_extent(&self, mesh_radius: Option<f64>) -> [f64; 3] {
+        if let Some(radius) = mesh_radius {
+            return [radius; 3];
+        }
+        if self.modes[0] == EmitterShape::Point as u32 {
+            return [0.0; 3];
+        }
+        std::array::from_fn(|axis| {
+            self.shape
+                .iter()
+                .map(|column| f64::from(column[axis].abs()))
+                .sum()
+        })
+    }
+
+    pub(crate) fn max_directed_speed(&self) -> Option<f64> {
+        (self.modes[2] != VelocityMode::Vector as u32)
+            .then(|| f64::from(self.axis_speed[3]) + f64::from(self.up_variation[3]))
+    }
+}
+
 impl ParticleEmitterDefinition {
     pub(crate) fn prepare_motion(&self, velocity: [f64; 3]) -> Option<ParticleMotion> {
         let mut extents = [

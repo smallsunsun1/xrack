@@ -24,6 +24,7 @@ mod retained_geometry;
 mod retained_layers;
 mod scene3d;
 pub use scene3d::SceneDrawStats;
+mod retained_text;
 mod scroll_images;
 mod shader_effect;
 mod shadow;
@@ -301,9 +302,11 @@ pub struct Renderer {
     transient_textures: transient_textures::TransientTextures,
     scene3d: scene3d::SceneRenderer,
     viewport_textures: scene3d::retained_view::ViewportTextures,
+    scene_item_textures: scene3d::item_textures::ItemTextures,
     inline_target: Option<wgpu::Texture>,
     window_damage: window_damage::WindowDamageState,
     geometry_row: Option<xrack_runtime::RowKey>,
+    effect_mount: Option<xrack_runtime::RowKey>,
     display_batching: bool,
     display_batch_stats: DisplayBatchStats,
     custom_encoder: Option<wgpu::CommandEncoder>,
@@ -346,7 +349,15 @@ impl RenderDevice {
             .await
             .map_err(|e| format!("no compatible GPU adapter: {e}"))?;
         let supported_limits = adapter.limits();
-        let required_limits = wgpu::Limits::default().using_resolution(supported_limits.clone());
+        let mut required_limits =
+            wgpu::Limits::default().using_resolution(supported_limits.clone());
+        // Programmable materials use samplerless loads and share the device's
+        // sampled-texture budget with the built-in material and lighting maps.
+        required_limits.max_sampled_textures_per_shader_stage = required_limits
+            .max_sampled_textures_per_shader_stage
+            .max(scene3d::material_texture_limit(
+                supported_limits.max_sampled_textures_per_shader_stage,
+            ));
         let features = adapter.features();
         let scroll_immediates = features.contains(wgpu::Features::IMMEDIATES)
             && supported_limits.max_immediate_size >= layer_compositor::IMAGE_MOTION_BYTES;
@@ -393,6 +404,9 @@ impl RenderDevice {
         };
         if scroll_immediates {
             required_features |= wgpu::Features::IMMEDIATES;
+        }
+        if std::env::var_os("XRACK_FORCE_SHADER_WIREFRAME").is_none_or(|value| value != "1") {
+            required_features |= features & wgpu::Features::POLYGON_MODE_LINE;
         }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -469,6 +483,7 @@ impl Renderer {
             transient_textures: Default::default(),
             scene3d: Default::default(),
             viewport_textures: Default::default(),
+            scene_item_textures: Default::default(),
             render_scene: Default::default(),
             scene_generation: 0,
             inspect_scene: false,
@@ -476,6 +491,7 @@ impl Renderer {
             inline_target: None,
             window_damage: Default::default(),
             geometry_row: None,
+            effect_mount: None,
             display_batching: true,
             display_batch_stats: DisplayBatchStats::default(),
             custom_encoder: None,
@@ -577,6 +593,15 @@ impl Renderer {
     #[doc(hidden)]
     pub fn set_styled_text_incremental_enabled(&mut self, enabled: bool) {
         self.text.set_styled_text_incremental_enabled(enabled);
+    }
+
+    /// Enable experimental paragraph shaping for desktop system-font rich text.
+    pub fn set_retained_styled_text_enabled(&mut self, enabled: bool) -> bool {
+        if !self.text.set_retained_styled_text_enabled(enabled) {
+            return false;
+        }
+        self.invalidate_text_layout();
+        true
     }
 
     #[doc(hidden)]
@@ -981,6 +1006,7 @@ impl Renderer {
             self.images = image::Images::default();
             self.scroll_images = Default::default();
             self.retained_layers.reset_canvas();
+            self.scene_item_textures.clear();
         }
         self.glyph_masks.begin_frame();
         self.rectangle_batches.begin_frame(canvas_changed);
@@ -1009,6 +1035,14 @@ impl Renderer {
         let window_background = window_clear_background(scene, layout, scrim_bounds, scale);
         self.images.begin_frame();
         self.scroll_images.begin_frame();
+        let frame = if self.prepare_scene_item_textures(scene, layout, frame)? {
+            PaintFrame {
+                damage: None,
+                ..frame
+            }
+        } else {
+            frame
+        };
         let mut live_paints = Vec::new();
         let composed = if self.cached_layer_compositing
             && self.display_batching
@@ -1032,6 +1066,15 @@ impl Renderer {
                     live_paints = composition.live_paints;
                 }
                 encoded
+            } else if !self.rectangle_batches.disabled
+                && let Some(layers) = DisplayList::window_opaque_rectangles(
+                    scene,
+                    layout,
+                    scale,
+                    layer_compositor::rectangle_instance_limit(&self.device),
+                )
+            {
+                self.encode_cached_layers(target, background, scale, layers, Vec::new())?
             } else if let Some(images) =
                 DisplayList::window_image_quads(self, scene, layout, scale)?
             {
@@ -1251,11 +1294,38 @@ impl Renderer {
         frame: PaintFrame<'_>,
         in_layout: bool,
     ) -> Result<(), String> {
+        if node.scene_texture_only() {
+            return Ok(());
+        }
+        self.paint_subtree(node, layout, path, frame, in_layout)
+    }
+
+    fn paint_subtree(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+        in_layout: bool,
+    ) -> Result<(), String> {
         let previous = self.geometry_row;
+        let previous_mount = self.effect_mount;
         let row = node.routing_row_key().or(previous);
         self.geometry_row = row;
+        self.effect_mount = node.dynamic_mount_key().or(previous_mount);
+        // The damage plan expands to a viewport's complete paint extent.
+        // Replay that viewport with its usual clips and batch boundaries.
+        let frame = if frame.damage.is_some() && window_damage::is_paint_viewport(node.kind) {
+            PaintFrame {
+                damage: None,
+                ..frame
+            }
+        } else {
+            frame
+        };
         let result = self.paint_with_transform(node, layout, path, frame, in_layout);
         self.geometry_row = previous;
+        self.effect_mount = previous_mount;
         result
     }
 
@@ -1316,18 +1386,15 @@ impl Renderer {
             return Ok(());
         }
         let content = layout.clip.intersect(layout.bounds);
-        let shadow = shadow::OuterShadow::for_node(
+        let shadow = shadow::OuterShadow::clipped_for_node(
             node,
-            layout.bounds,
-            frame.scale * layout.world_transform().max_scale(),
+            layout,
+            frame.scale,
             frame.theme.role(Role::Border),
-        )
-        .and_then(|shadow| {
-            let effect = layout.clip.intersect(shadow.paint_bounds());
-            shadow::nonempty(effect).then_some((shadow, effect))
-        });
+        );
         let overflow = layout.allows_overflow();
         let retain_opaque_group = self.geometry_cache.enabled
+            && !(frame.damage.is_some() && window_damage::can_clip_surface(node, layout, frame))
             && node.kind == "Rectangle"
             && node
                 .color("background")
@@ -1540,6 +1607,23 @@ impl Renderer {
             self.paint_group(content, 1.0, |renderer| {
                 renderer.paint_surface(node, layout, path, frame, in_layout)
             })?;
+        } else if let Some(damage) = frame.damage
+            && window_damage::can_clip_surface(node, layout, frame)
+        {
+            // Large opaque surfaces no longer expand the damage plan.
+            // Keep each fill's original geometry and restrict its writes.
+            for rect in damage.rectangles() {
+                let clip = rect.as_rect().scaled(1.0 / frame.scale).intersect(content);
+                if clip.width <= 0.0 || clip.height <= 0.0 {
+                    continue;
+                }
+                self.canvas.save();
+                self.canvas
+                    .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
+                let result = self.paint_surface(node, layout, path, frame, in_layout);
+                self.canvas.restore();
+                result?;
+            }
         } else {
             self.paint_surface(node, layout, path, frame, in_layout)?;
         }
@@ -1863,9 +1947,7 @@ impl Renderer {
         };
         let radii = corner_radii(node, bounds);
         if let Some(background) = background {
-            let mut path = Path::new();
-            append_rect(&mut path, bounds, radii);
-            self.canvas.fill_path(&path, &background);
+            rectangle::fill_surface(&mut self.canvas, bounds, radii, background);
         }
         let image_scale = scale * layout.world_transform().max_scale();
         shadow::draw_inner(&mut self.canvas, node, bounds, radii, image_scale);
@@ -2452,6 +2534,7 @@ impl Renderer {
                         text: shown_line(i),
                         paint: &paint,
                         cell_clip: None,
+                        cell_fonts: None,
                     });
                 }
                 display.submit(self)
@@ -2696,9 +2779,25 @@ impl Renderer {
         // Keep offscreen cache captures complete during a window repaint.
         let damage = frame.damage.filter(|_| !self.using_capture_canvas());
         let mut display = DisplayList::new(self, batch_clip, scale);
+        // Cropped glyph quads can replace a band scissor when its only
+        // enclosing scissor is the full device-pixel viewport.
+        display.viewport_label_masks = batch_images
+            && path.is_empty()
+            && node.kind == "Window"
+            && DisplayList::plain_window(node)
+            && damage.is_none()
+            && layout.child_clip_shape().is_none()
+            && batch_clip.scaled(scale)
+                == Rect::new(
+                    0.0,
+                    0.0,
+                    self.canvas.width() as f32,
+                    self.canvas.height() as f32,
+                );
         for (i, node, layout) in children {
             // Hidden branches emit no commands and cannot break a batch.
             if !layout.visible
+                || node.scene_texture_only()
                 || is_window_overlay(node.kind)
                 || Node::PROGRESS_PARTS.contains(&node.kind)
                 || Node::SCROLL_PARTS.contains(&node.kind)
@@ -2738,16 +2837,6 @@ impl Renderer {
                 }
                 continue;
             }
-            if let Some((parent, parent_layout)) = prepare_opacity_for
-                && layout.visible
-                && rectangle::single_fill(node, layout)
-            {
-                let opacity = node.opacity();
-                if 0.0 < opacity && opacity < 1.0 {
-                    self.prepare_rectangle_opacity_atlas(parent, parent_layout, scale);
-                    prepare_opacity_for = None;
-                }
-            }
             if batch_images
                 && let Some(image) = self.display_image(node, layout, is_layout, scale, transform)
             {
@@ -2774,6 +2863,13 @@ impl Renderer {
                 path.pop();
                 if collected {
                     continue;
+                }
+            }
+            if let Some((parent, parent_layout)) = prepare_opacity_for {
+                let opacity = node.opacity();
+                if 0.0 < opacity && opacity < 1.0 {
+                    self.prepare_opacity_atlas_for_children(parent, parent_layout, frame);
+                    prepare_opacity_for = None;
                 }
             }
             display.submit(self)?;
@@ -2805,7 +2901,7 @@ impl Renderer {
         layout: &'a LayoutNode,
         path: &mut Vec<usize>,
         frame: PaintFrame<'_>,
-        cell_paint: &'a std::cell::OnceCell<Paint>,
+        cell_paint: &'a std::cell::OnceCell<text::CellPaint>,
         display: &mut DisplayList<'a>,
     ) -> bool {
         // Leave row chrome and custom delegates on the ordinary painter.
@@ -2862,7 +2958,7 @@ impl Renderer {
         layout: &LayoutNode,
         path: &[usize],
         frame: PaintFrame<'_>,
-        row_paint: &'a std::cell::OnceCell<Paint>,
+        row_paint: &'a std::cell::OnceCell<text::CellPaint>,
         display: &mut DisplayList<'a>,
     ) -> bool {
         if node.kind != "TableCell"
@@ -2900,10 +2996,10 @@ impl Renderer {
         if !pixel_aligned(clip, frame.scale) {
             return false;
         }
-        let paint = row_paint.get_or_init(|| {
+        let text::CellPaint { paint, fonts } = row_paint.get_or_init(|| {
             let size = self.text.entry_font_size(node, layout.bounds);
             let tint = color(frame.theme.editor_foreground(node, false, layout.enabled));
-            self.text.paint_node_at_size(node, size, tint, false)
+            self.text.cell_paint(node, size, tint)
         });
         // Power-of-two scaling preserves the advances and their sum exactly.
         // Measure at the glyph batch's size so both can use the same run.
@@ -2931,6 +3027,7 @@ impl Renderer {
             text,
             paint,
             cell_clip: Some(clip),
+            cell_fonts: Some(fonts),
         });
         true
     }

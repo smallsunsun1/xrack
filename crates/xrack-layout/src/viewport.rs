@@ -1037,7 +1037,7 @@ fn plan_scroll(
     let mut plan = Vec::new();
     for depth in (scope + 1..ancestors.len()).rev() {
         let (child, item) = ancestors[depth];
-        if is_window_overlay(child.kind) {
+        if is_window_overlay(child.kind) || child.scene_texture_only() {
             let clipped = item.clip_rect(rect);
             return (clipped.width > 0.0 && clipped.height > 0.0).then_some(plan);
         }

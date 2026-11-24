@@ -179,6 +179,7 @@ pub(super) enum Primitive<'a> {
         paint: &'a Paint,
         /// Passive table cells use the window's default entry text style.
         cell_clip: Option<Rect>,
+        cell_fonts: Option<&'a crate::text::CellFonts>,
     },
     Label {
         node: &'a Node,
@@ -276,7 +277,13 @@ impl Renderer {
                 text,
                 paint,
                 cell_clip,
+                cell_fonts,
             } => {
+                if let (Some(clip), Some(fonts)) = (cell_clip, cell_fonts)
+                    && self.draw_shaped_cell(origin, text, paint, clip, fonts)?
+                {
+                    return Ok(());
+                }
                 if let Some(clip) = cell_clip {
                     self.canvas.save();
                     self.canvas
@@ -455,6 +462,7 @@ impl Renderer {
                             text,
                             paint: &paint,
                             cell_clip: None,
+                            cell_fonts: None,
                         })?;
                     }
                     continue;
@@ -472,12 +480,12 @@ impl Renderer {
         path: &[usize],
         scale: f32,
     ) -> Result<(), String> {
-        use crate::scene3d::retained_view::{Sampling, ViewSize, ViewTexture};
+        use crate::scene3d::retained_view::{Sampling, ViewInputs, ViewSize, ViewTexture};
 
         if !usable_rect(bounds) {
             return Ok(());
         }
-        let camera = crate::scene3d::SceneRenderer::camera_for_view(
+        let camera = xrack_runtime::scene3d::SceneCamera::for_view(
             node,
             [f64::from(bounds.width), f64::from(bounds.height)],
         );
@@ -490,12 +498,40 @@ impl Renderer {
                 height: height as f32,
             }
         });
-        if content != bounds {
-            fill_rect(
-                &mut self.canvas,
-                bounds,
-                &Paint::color(color(crate::scene3d::background(node))),
-            );
+        let background = crate::scene3d::background(node);
+        let alpha = background.0.to_be_bytes()[3];
+        if content != bounds && alpha == 255 {
+            fill_rect(&mut self.canvas, bounds, &Paint::color(color(background)));
+        } else if content != bounds && alpha != 0 {
+            let right = content.x + content.width;
+            let bottom = content.y + content.height;
+            let bars = [
+                Rect {
+                    width: content.x - bounds.x,
+                    ..bounds
+                },
+                Rect {
+                    x: right,
+                    width: bounds.x + bounds.width - right,
+                    ..bounds
+                },
+                Rect {
+                    x: content.x,
+                    width: content.width,
+                    height: content.y - bounds.y,
+                    ..bounds
+                },
+                Rect {
+                    x: content.x,
+                    y: bottom,
+                    width: content.width,
+                    height: bounds.y + bounds.height - bottom,
+                },
+            ];
+            let paint = Paint::color(color(background));
+            for bar in bars.into_iter().filter(|bar| usable_rect(*bar)) {
+                fill_rect(&mut self.canvas, bar, &paint);
+            }
         }
         if !usable_rect(content) {
             return Ok(());
@@ -512,24 +548,40 @@ impl Renderer {
             data: "",
             revision: 0,
         };
-        let (cubes, reflection_redraw) = if crate::scene3d::has_scene_reflections(node)
+        let feedback = crate::scene3d::has_effect_history(node);
+        let animate_feedback = feedback && node.boolean("scene-effect-animate", false);
+        self.needs_redraw |= animate_feedback;
+        let scope = [self.geometry_row, self.effect_mount];
+        let effect_owner = crate::scene3d::effect_history::Owner {
+            path,
+            generation: self.scene_generation,
+            scope,
+            id: node.element_id(),
+            logical_size: [content.width, content.height],
+            revision: node.int("scene-effect-history-revision").unwrap_or(0),
+        };
+        let reflections = if crate::scene3d::has_scene_reflections(node)
             && let Some(camera) = camera
         {
             let encoder = native_encoder(&mut self.custom_encoder, &self.device);
             self.scene3d.capture_reflections(
                 node,
                 (&self.device, &self.queue, encoder),
-                path,
+                (effect_owner, texture_size),
                 camera,
-                self.scene_generation,
                 context,
             )
         } else {
-            (Vec::new(), false)
+            crate::scene3d::ReflectionFrame::default()
         };
-        self.needs_redraw |= reflection_redraw;
-        let sampling = camera.map_or_else(Sampling::default, |_| Sampling::from_node(node));
-        let owner = (path, self.scene_generation);
+        self.needs_redraw |= reflections.needs_redraw;
+        let cubes = reflections.cubes;
+        let captures = RefCell::new(reflections.captures);
+        self.scene3d.visit_effect_history(effect_owner, feedback);
+        let sampling = camera
+            .map_or_else(Sampling::default, |_| Sampling::from_node(node))
+            .with_feedback(feedback, animate_feedback);
+        let owner = (path, self.scene_generation, scope);
         self.viewport_textures
             .clear_disabled_temporal(owner, sampling);
         let (cached_target, sample) =
@@ -544,17 +596,20 @@ impl Renderer {
                 let target = self.viewport_textures.get(
                     &self.device,
                     node,
-                    (path, self.scene_generation),
+                    owner,
                     ViewSize {
                         pixels: texture_size,
                         logical: [content.width, content.height],
                     },
-                    std::array::from_fn(|index| {
-                        cubes
-                            .get(index)
-                            .and_then(Option::as_ref)
-                            .map_or(0, |cube| cube.revision)
-                    }),
+                    ViewInputs {
+                        reflections: std::array::from_fn(|index| {
+                            cubes
+                                .get(index)
+                                .and_then(Option::as_ref)
+                                .map_or(0, |cube| cube.revision)
+                        }),
+                        items: self.scene3d.item_texture_revision(node),
+                    },
                     sampling,
                 );
                 self.scene3d.stats.viewport_cache_allocations = self.viewport_textures.allocations;
@@ -584,9 +639,9 @@ impl Renderer {
                 node,
                 context,
                 &queue,
-                path,
+                effect_owner,
                 camera,
-                (&cubes, sample.as_ref()),
+                (&cubes, sample.as_ref(), captures.take()),
             );
             Ok(())
         };
@@ -846,5 +901,97 @@ fn fill_rect(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, paint: &Paint) {
         let mut path = Path::new();
         path.rect(bounds.x, bounds.y, bounds.width, bounds.height);
         canvas.fill_path(&path, paint);
+    }
+}
+
+impl Renderer {
+    pub(super) fn cell_shaping_scale(&self, transform: crate::CanvasTransform) -> Option<f32> {
+        if cfg!(any(
+            xrack_femtovg_glyph_samples,
+            target_os = "android",
+            target_os = "ios"
+        )) || !self.display_batching
+            || !self.can_cache_on_main_canvas()
+            || self.glyph_masks.defer_preparation
+            || self.retained_layers.vectors.opacity_passthrough
+        {
+            return None;
+        }
+        let [scale, sy] = transform.axis_scales()?;
+        (scale == sy && matches!(scale, 1.0 | 2.0 | 4.0) && transform.translation() == [0.0, 0.0])
+            .then_some(scale)
+    }
+
+    fn draw_shaped_cell(
+        &mut self,
+        origin: Point,
+        text: &str,
+        paint: &Paint,
+        clip: Rect,
+        fonts: &crate::text::CellFonts,
+    ) -> Result<bool, String> {
+        if text.len() > 128
+            || paint.text_align() != femtovg::Align::Left
+            || paint.text_baseline() != femtovg::Baseline::Top
+            || paint.letter_spacing() != 0.0
+            || !paint.text_decoration().is_none()
+        {
+            return Ok(false);
+        }
+        let transform = canvas_transform(&self.canvas);
+        let Some(scale) = self.cell_shaping_scale(transform) else {
+            return Ok(false);
+        };
+        if !crate::pixel_aligned(clip, scale) {
+            return Ok(false);
+        }
+        let measurement_scale = crate::cell_glyphs::measurement_scale(scale);
+        let settings = crate::cell_glyphs::Settings {
+            font_size: paint.font_size().to_bits(),
+            measurement_scale: measurement_scale.to_bits(),
+            fonts: self.text.registered_font_counts(),
+            cell_fonts: Some(*fonts),
+        };
+        let positions = {
+            let mut cache = self.text.cell_glyphs.borrow_mut();
+            let Some(run) = cache.portable_run(text, settings, || {
+                self.text
+                    .shape_cell(text, paint.font_size() * measurement_scale, fonts)
+            }) else {
+                return Ok(false);
+            };
+            crate::cell_glyphs::placed_glyphs(
+                run.glyphs.iter().copied(),
+                run.baseline,
+                [origin.x, origin.y],
+                measurement_scale,
+            )
+            .collect::<Vec<_>>()
+        };
+        self.canvas.save();
+        self.canvas
+            .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
+        // Preserve consecutive font runs and the original cell scissor.
+        let result = positions.chunk_by(|a, b| a.0 == b.0).try_for_each(|run| {
+            self.canvas.fill_glyph_run(
+                run[0].0,
+                &[],
+                run.iter()
+                    .map(|&(_, glyph_id, x, y)| femtovg::PositionedGlyph { x, y, glyph_id }),
+                paint,
+            )
+        });
+        self.canvas.restore();
+        result.map_err(|error| format!("text drawing failed: {error}"))?;
+        self.glyph_masks.prime_positioned(
+            &mut self.canvas,
+            &self.text,
+            positions
+                .iter()
+                .map(|&(font, id, x, y)| (font, id, x, y, true)),
+            paint,
+            scale,
+        );
+        Ok(true)
     }
 }

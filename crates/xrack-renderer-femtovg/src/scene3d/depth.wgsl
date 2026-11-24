@@ -1,3 +1,5 @@
+override DEPTH_ALPHA: u32 = 0u;
+
 struct Projection {
     x: vec4<f32>,
     y: vec4<f32>,
@@ -9,6 +11,8 @@ struct Material {
     base: vec4<f32>,
     params: vec4<f32>,
     base_uv: TextureTransform,
+    channels: vec4<u32>,
+    shader_parameters: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> clip: Projection;
@@ -24,7 +28,7 @@ struct Geometry {
 }
 
 fn project(vertex: Geometry) -> vec4<f32> {
-    let local = vec4<f32>(vertex.position, 1.0);
+    let local = vec4(xr_displaced_vertex(vertex.position, material.shader_parameters), 1.0);
     let world = vec4<f32>(dot(vertex.x, local), dot(vertex.y, local), dot(vertex.z, local), 1.0);
     return vec4<f32>(dot(clip.x, world), dot(clip.y, world), dot(clip.z, world), dot(clip.w, world));
 }
@@ -37,13 +41,32 @@ fn vertex_opaque(vertex: Geometry) -> @builtin(position) vec4<f32> {
 struct MaskVertex {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) alpha: f32,
+    @location(1) alpha: vec2<f32>,
 }
 
 @vertex
 fn vertex_mask(vertex: Geometry, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>,
                @location(7) tint: vec4<f32>) -> MaskVertex {
-    return MaskVertex(project(vertex), uv, color.a * tint.a);
+    return MaskVertex(project(vertex), uv, vec2<f32>(color.a * tint.a, tint.a));
+}
+
+// Instance alpha also covers particles hidden by an affector or lifetime fade.
+fn particle_shadow_position(vertex: Geometry, alpha: f32) -> vec4<f32> {
+    if alpha < 0.5 {
+        return vec4<f32>(0.0, 0.0, 2.0, 1.0);
+    }
+    return project(vertex);
+}
+
+@vertex
+fn vertex_particle_opaque(vertex: Geometry, @location(7) tint: vec4<f32>) -> @builtin(position) vec4<f32> {
+    return particle_shadow_position(vertex, tint.a);
+}
+
+@vertex
+fn vertex_particle_mask(vertex: Geometry, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>,
+                        @location(7) tint: vec4<f32>) -> MaskVertex {
+    return MaskVertex(particle_shadow_position(vertex, tint.a), uv, vec2<f32>(color.a, 1.0));
 }
 
 @vertex
@@ -58,7 +81,7 @@ fn vertex_skin_mask(vertex: Geometry, weights: SkinWeights, @location(2) uv: vec
                     @location(3) color: vec4<f32>, @location(7) tint: vec4<f32>) -> MaskVertex {
     var deformed = vertex;
     deformed.position = skin_point(skin_transform(weights), vertex.position);
-    return MaskVertex(project(deformed), uv, color.a * tint.a);
+    return MaskVertex(project(deformed), uv, vec2<f32>(color.a * tint.a, tint.a));
 }
 
 @vertex
@@ -73,7 +96,7 @@ fn vertex_morph_mask(vertex: Geometry, @builtin(vertex_index) index: u32, @locat
                      @location(3) color: vec4<f32>, @location(7) tint: vec4<f32>) -> MaskVertex {
     var deformed = vertex;
     deformed.position += morph_displacement(index).position;
-    return MaskVertex(project(deformed), uv, color.a * tint.a);
+    return MaskVertex(project(deformed), uv, vec2<f32>(color.a * tint.a, tint.a));
 }
 
 @vertex
@@ -90,16 +113,24 @@ fn vertex_skin_morph_mask(vertex: Geometry, weights: SkinWeights, @builtin(verte
                           @location(7) tint: vec4<f32>) -> MaskVertex {
     var deformed = vertex;
     deformed.position = skin_point(skin_transform(weights), vertex.position + morph_displacement(index).position);
-    return MaskVertex(project(deformed), uv, color.a * tint.a);
+    return MaskVertex(project(deformed), uv, vec2<f32>(color.a * tint.a, tint.a));
 }
 
 @fragment
 fn fragment_mask(vertex: MaskVertex) {
-    var alpha = material.base.a * vertex.alpha;
-    if material.params.z > 0.5 {
+    var alpha = material.base.a * coverage_vertex_alpha(material.channels, vertex.alpha);
+    if material.params.z > 0.5 && base_texture_uses_alpha(material.channels) {
         alpha *= textureSample(base_texture, base_sampler, texture_uv(material.base_uv, vertex.uv)).a;
     }
-    if alpha < material.params.x {
+    if DEPTH_ALPHA == 1u {
+        if alpha <= 0.0 {
+            discard;
+        }
+    } else if DEPTH_ALPHA == 2u {
+        if alpha < 1.0 {
+            discard;
+        }
+    } else if alpha < material.params.x {
         discard;
     }
 }

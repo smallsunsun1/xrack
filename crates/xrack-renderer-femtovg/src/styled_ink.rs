@@ -6,8 +6,9 @@ use crate::{
 };
 use femtovg::{Canvas, Color, Paint, renderer::WGPURenderer};
 use std::{
-    collections::{HashMap, VecDeque, hash_map::Entry},
-    hash::BuildHasher,
+    borrow::Cow,
+    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
+    hash::{BuildHasher, RandomState},
     ops::Range,
     rc::{Rc, Weak},
 };
@@ -17,6 +18,10 @@ use xrack_runtime::{Node, StyledText, TextStyle};
 const MAX_DOCUMENTS: usize = 8;
 const CACHE_BYTES: usize = 16 * 1024 * 1024;
 const MIN_FRAGMENTS: usize = 128;
+const MIN_COVERAGE_FRAGMENTS: usize = 4096;
+const MAX_COVERED_RUNS: usize = 65_536;
+const RUN_OFFSET_BITS: u32 = 29;
+const _: () = assert!(CACHE_BYTES < (1 << RUN_OFFSET_BITS));
 
 #[derive(PartialEq, Eq)]
 struct Run {
@@ -26,12 +31,9 @@ struct Run {
 
 impl Run {
     fn for_fragment(fragment: &StyledFragment) -> Self {
-        let mut style = fragment.style();
-        style.color = None;
-        style.underline |= fragment.link().is_some();
         Self {
             source: fragment.source_span(),
-            style,
+            style: ink_style(fragment),
         }
     }
 }
@@ -57,6 +59,8 @@ struct InkSpans {
     entries: HashMap<u64, (TextStyle, Box<str>, Ink)>,
     bytes: usize,
     max_bytes: usize,
+    covered_runs: HashSet<u64>,
+    covered_ink: Ink,
 }
 
 impl InkSpans {
@@ -64,6 +68,8 @@ impl InkSpans {
         Self {
             entries: HashMap::new(),
             bytes: 0,
+            covered_runs: HashSet::new(),
+            covered_ink: Ink::default(),
             max_bytes: CACHE_BYTES
                 .saturating_sub(document_bytes)
                 .min(2 * 1024 * 1024),
@@ -73,10 +79,20 @@ impl InkSpans {
     fn clear(&mut self) {
         self.entries = HashMap::new();
         self.bytes = 0;
+        self.covered_runs = HashSet::new();
+        self.covered_ink = Ink::default();
+    }
+
+    fn cover<'a>(&mut self, ink: Ink, fragments: impl Iterator<Item = &'a StyledFragment>) {
+        self.covered_ink = ink;
+        let room = MAX_COVERED_RUNS - self.covered_runs.len();
+        self.covered_runs
+            .extend(fragments.take(room).map(source_run_key));
     }
 
     fn measure(
         &mut self,
+        key: u64,
         text: &str,
         style: TextStyle,
         measure: impl FnOnce() -> Option<Ink>,
@@ -84,7 +100,6 @@ impl InkSpans {
         if text.len() > 128 {
             return measure();
         }
-        let key = self.entries.hasher().hash_one((text, style));
         match self.entries.entry(key) {
             Entry::Occupied(entry) => {
                 let (cached_style, cached_text, ink) = entry.get();
@@ -127,7 +142,10 @@ struct CachedInk {
 
 impl CachedInk {
     fn resident_bytes(&self) -> usize {
-        self.bytes + self.spans.as_ref().map_or(0, |spans| spans.bytes)
+        self.bytes
+            + self.spans.as_ref().map_or(0, |spans| {
+                spans.bytes + spans.covered_runs.capacity() * std::mem::size_of::<u64>()
+            })
     }
 }
 
@@ -140,6 +158,9 @@ pub(crate) struct InkCache {
 }
 
 impl InkCache {
+    pub(crate) fn enabled(&self) -> bool {
+        !self.disabled
+    }
     pub(crate) fn set_incremental_enabled(&mut self, enabled: bool) {
         self.prefix_disabled = !enabled;
     }
@@ -372,23 +393,118 @@ impl InkCache {
     }
 }
 
+fn ink_style(fragment: &StyledFragment) -> TextStyle {
+    let mut style = fragment.style();
+    style.color = None;
+    style.underline |= fragment.link().is_some();
+    style
+}
+
+fn paint_slot(style: TextStyle) -> usize {
+    let TextStyle {
+        bold,
+        italic,
+        monospace,
+        underline,
+        strikethrough,
+        color: _,
+    } = style;
+    usize::from(bold)
+        | (usize::from(italic) << 1)
+        | (usize::from(monospace) << 2)
+        | (usize::from(underline) << 3)
+        | (usize::from(strikethrough) << 4)
+}
+
+// Admitted documents fit both offsets. The empty span identifies an ellipsis.
+fn source_run_key(fragment: &StyledFragment) -> u64 {
+    let (source, rtl) = fragment.source_span();
+    let (start, end) = source.map_or((0, 0), |range| (range.start as u64, range.end as u64));
+    start
+        | (end << RUN_OFFSET_BITS)
+        | ((paint_slot(ink_style(fragment)) as u64) << (2 * RUN_OFFSET_BITS))
+        | (u64::from(rtl) << 63)
+}
+
 fn measure_ink(
     system: &TextSystem,
     node: &Node,
     document: &StyledText,
     fragments: &[StyledFragment],
     baseline: f32,
+    spans: Option<&mut InkSpans>,
+) -> Option<Ink> {
+    let Some(spans) = spans else {
+        return measure_ink_runs(system, node, document, fragments.iter(), baseline, None);
+    };
+    if fragments.len() < MIN_COVERAGE_FRAGMENTS {
+        return measure_ink_runs(
+            system,
+            node,
+            document,
+            fragments.iter(),
+            baseline,
+            Some(spans),
+        );
+    }
+    if !spans.covered_runs.is_empty() {
+        // Across widths of the same immutable document, an exact run keeps
+        // its ink relative to the baseline. A wider envelope is safe to clip.
+        let pending: Vec<_> = fragments
+            .iter()
+            .filter(|fragment| !spans.covered_runs.contains(&source_run_key(fragment)))
+            .collect();
+        if pending.is_empty() {
+            return Some(spans.covered_ink);
+        }
+        let registered_fonts = system.registered_font_counts();
+        let pending_ink = measure_ink_runs(
+            system,
+            node,
+            document,
+            pending.iter().copied(),
+            baseline,
+            Some(spans),
+        );
+        if system.registered_font_counts() == registered_fonts {
+            let mut ink = spans.covered_ink;
+            let pending_ink = pending_ink?;
+            ink.add(pending_ink.top, pending_ink.bottom)?;
+            spans.cover(ink, pending.into_iter());
+            return Some(ink);
+        }
+        // A new fallback face can change the ink of previously covered runs.
+    }
+    let ink = measure_ink_runs(
+        system,
+        node,
+        document,
+        fragments.iter(),
+        baseline,
+        Some(spans),
+    )?;
+    spans.cover(ink, fragments.iter());
+    Some(ink)
+}
+
+fn measure_ink_runs<'a>(
+    system: &TextSystem,
+    node: &Node,
+    document: &StyledText,
+    fragments: impl Iterator<Item = &'a StyledFragment> + Clone,
+    baseline: f32,
     mut spans: Option<&mut InkSpans>,
 ) -> Option<Ink> {
     let mut ink = Ink::default();
-    let mut paints: HashMap<TextStyle, Paint> = HashMap::new();
+    let mut paints: [Option<(TextStyle, Paint)>; 32] = std::array::from_fn(|_| None);
     let registered_fonts = spans.as_ref().map(|_| system.registered_font_counts());
-    // Register the document's faces before measuring any fallback runs.
-    for fragment in fragments {
-        let style = Run::for_fragment(fragment).style;
-        paints
-            .entry(style)
-            .or_insert_with(|| system.paint_styled(node, Color::white(), style));
+    // Preserve first-use order when the paints register fallback fonts.
+    for fragment in fragments.clone() {
+        let style = ink_style(fragment);
+        let slot = &mut paints[paint_slot(style)];
+        if slot.is_none() {
+            *slot = Some((style, system.paint_styled(node, Color::white(), style)));
+        }
     }
     if let Some(registered_fonts) = registered_fonts
         && system.registered_font_counts() != registered_fonts
@@ -396,35 +512,40 @@ fn measure_ink(
     {
         spans.clear();
     }
-    let mut seen = HashMap::new();
+    // Use the same digest for frame-local deduplication and the retained ink cache.
+    let hasher = spans
+        .as_ref()
+        .map_or_else(RandomState::new, |spans| spans.entries.hasher().clone());
+    let mut seen = HashMap::<u64, (Cow<'_, str>, TextStyle)>::new();
     for fragment in fragments {
-        let style = Run::for_fragment(fragment).style;
-        let Entry::Vacant(entry) = seen.entry((fragment.text(document), style)) else {
+        let style = ink_style(fragment);
+        let text = fragment.text(document);
+        let key = hasher.hash_one((text.as_ref(), style));
+        if seen
+            .get(&key)
+            .is_some_and(|(old, old_style)| *old == text && *old_style == style)
+        {
             continue;
-        };
-        let text = entry.key().0.as_ref();
-        let paint = paints.get(&style)?;
-        // Layout and shaping use font-unit metrics. Measure in user space so
-        // zoom and rotation can reuse extents without reshaping the document.
+        }
+        let (_, paint) = paints[paint_slot(style)].as_ref()?;
         let measure = || {
             let metrics = system
                 .context()
-                .measure_text(0.0, baseline, text, paint)
+                .measure_text(0.0, baseline, text.as_ref(), paint)
                 .ok()?;
             let mut span = Ink::default();
             span.add(metrics.y, metrics.y + metrics.height())?;
             Some(span)
         };
-        let span = if let Some(spans) = &mut spans {
-            spans.measure(text, style, measure)
+        let shape = if let Some(spans) = &mut spans {
+            spans.measure(key, text.as_ref(), style, measure)
         } else {
             measure()
         }?;
-        ink.add(span.top, span.bottom)?;
-        entry.insert(());
+        ink.add(shape.top, shape.bottom)?;
+        seen.insert(key, (text, style));
     }
-    // Link underlines and strikeout rules are separate from the glyph ink.
-    for (style, paint) in &paints {
+    for (style, paint) in paints.iter().flatten() {
         if style.underline || style.strikethrough {
             let font = system.context().measure_font(paint).ok()?;
             for (enabled, position, thickness) in [

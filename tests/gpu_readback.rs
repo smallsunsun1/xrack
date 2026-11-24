@@ -1,6 +1,6 @@
 use xrack_renderer_femtovg::Renderer;
 
-pub(super) fn read_texture(
+pub fn read_texture(
     renderer: &Renderer,
     target: &wgpu::Texture,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {

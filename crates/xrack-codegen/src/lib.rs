@@ -62,6 +62,273 @@ fn field_access<'a>(path: impl IntoIterator<Item = &'a str>) -> TokenStream {
     quote!(#(.#fields)*)
 }
 
+fn project_scene_maps(
+    fields: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    let maps = xrack_syntax::builtins::SCENE_MATERIAL_MAP_FIELDS
+        .iter()
+        .filter_map(|name| {
+            let field = fields.iter().find(|field| field.name == *name)?;
+            let member = ident(name);
+            let base_color = *name == "base-color-map";
+            let sampler = if let Type::Record(record) = &field.ty {
+                let schema = records.get(record.as_ref())?;
+                let fields = xrack_syntax::builtins::SCENE_TEXTURE_FIELDS
+                    .iter()
+                    .filter(|(name, _)| schema.iter().any(|field| field.name == *name))
+                    .map(|(name, ty)| {
+                        let field = ident(name);
+                        if *ty == Type::String {
+                            quote!(#field: &__texture.#field)
+                        } else {
+                            quote!(#field: __texture.#field)
+                        }
+                    });
+                quote!({
+                    let __texture = &__style.#member;
+                    ::xrack_runtime::scene3d::SceneTexture {
+                        #(#fields,)*
+                        ..::core::default::Default::default()
+                    }
+                })
+            } else {
+                quote!(::xrack_runtime::scene3d::SceneTexture {
+                    source: &__style.#member, ..::core::default::Default::default()
+                })
+            };
+            Some(quote!(#member: ::core::option::Option::Some(
+                #sampler.prepare(#base_color, __xr_texture)
+            )))
+        })
+        .collect::<Vec<_>>();
+    if maps.is_empty() {
+        quote!(::core::option::Option::None)
+    } else {
+        quote!(::core::option::Option::Some(::std::sync::Arc::new(
+            ::xrack_runtime::scene3d::SceneMaterialMaps {
+                #(#maps,)*
+                ..::core::default::Default::default()
+            }
+        )))
+    }
+}
+
+fn scene_schema<'a>(
+    fields: &[Parameter],
+    records: &'a BTreeMap<&str, Vec<Parameter>>,
+    name: &str,
+) -> Option<&'a [Parameter]> {
+    let field = fields.iter().find(|field| field.name == name)?;
+    let Type::Record(schema) = &field.ty else {
+        return None;
+    };
+    records.get(schema.as_ref()).map(Vec::as_slice)
+}
+
+fn embed_fresnel(fresnel: xrack_runtime::scene3d::MeshFresnel) -> TokenStream {
+    let xrack_runtime::scene3d::MeshFresnel {
+        power,
+        scale,
+        bias,
+        scale_bias_enabled,
+    } = fresnel;
+    quote!(::xrack_runtime::scene3d::MeshFresnel {
+        power: #power, scale: #scale, bias: #bias, scale_bias_enabled: #scale_bias_enabled,
+    })
+}
+
+fn project_scene_material(
+    input: TokenStream,
+    fields: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    let has = |name: &str| fields.iter().any(|field| field.name == name);
+    let enabled = if has("enabled") {
+        quote!(__style.enabled)
+    } else {
+        quote!(true)
+    };
+    let factors = xrack_syntax::builtins::SCENE_MATERIAL_FIELDS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| {
+            !matches!(
+                *name,
+                "enabled" | "alpha-mode" | "blend-mode" | "depth-draw-mode" | "cull-mode"
+            ) && has(name)
+        })
+        .map(|name| {
+            let field = ident(name);
+            if name == "material-shader" {
+                quote!(#field: ::core::option::Option::Some(__xr_material_shader(&__style.#field)))
+            } else if name == "base-item" {
+                quote!(#field: ::core::option::Option::Some(__style.#field.to_string()))
+            } else {
+                quote!(#field: ::core::option::Option::Some(__style.#field))
+            }
+        });
+    let shader_textures = fields
+        .iter()
+        .find(|field| field.name == "shader-textures")
+        .and_then(|field| match &field.ty {
+            Type::RecordList(record) => records.get(record.as_ref()),
+            _ => None,
+        })
+        .map(|fields| {
+            let inputs = project_buffer_inputs(&quote!(&__style.shader_textures), fields, false);
+            quote!(shader_textures: ::core::option::Option::Some((#inputs).into()),)
+        });
+    let maps = project_scene_maps(fields, records);
+    let alpha_mode = has("alpha-mode").then(|| {
+            let threshold = if has("alpha-cutoff") {
+                quote!(::core::option::Option::Some(__style.alpha_cutoff))
+            } else { quote!(::core::option::Option::None) };
+            quote!(alpha_mode: ::xrack_runtime::scene3d::SceneMaterial::alpha(&__style.alpha_mode, #threshold),)
+        });
+    let blend_mode = has("blend-mode").then(
+        || quote!(blend_mode: ::xrack_runtime::scene3d::MeshBlendMode::named(&__style.blend_mode),),
+    );
+    let depth_draw_mode = has("depth-draw-mode").then(|| {
+        quote!(depth_draw_mode: ::xrack_runtime::scene3d::MeshDepthDraw::named(&__style.depth_draw_mode),)
+    });
+    let cull_mode = has("cull-mode").then(
+        || quote!(cull_mode: ::xrack_runtime::scene3d::MeshCullMode::named(&__style.cull_mode),),
+    );
+    let channels = xrack_syntax::builtins::SCENE_MATERIAL_CHANNEL_FIELDS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| has(name))
+        .map(|name| {
+            let field = ident(name);
+            quote!((#name, __style.#field.as_str()))
+        });
+    let vertex_masks = xrack_syntax::builtins::SCENE_VERTEX_MASK_FIELDS
+        .iter()
+        .filter(|name| has(name))
+        .map(|name| {
+            let field = ident(name);
+            quote!((#name, __style.#field.as_str()))
+        });
+    quote!({
+        let __style = #input;
+        (#enabled).then(|| ::xrack_runtime::scene3d::SceneMaterial {
+            #(#factors,)*
+            #alpha_mode
+            #blend_mode
+            #depth_draw_mode
+            #cull_mode
+            #shader_textures
+            maps: #maps,
+            vertex_masks: ::xrack_runtime::scene3d::VertexColorMasks::from_fields([#(#vertex_masks),*]),
+            channels: ::xrack_runtime::scene3d::MaterialChannels::from_fields([#(#channels),*]),
+            ..::core::default::Default::default()
+        })
+    })
+}
+
+fn project_scene_material_slots(
+    palette: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    let mut fields: Vec<_> = palette.iter().collect();
+    fields.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    let bindings = fields
+        .into_iter()
+        .filter_map(|field| {
+            let Type::Record(style) = &field.ty else {
+                return None;
+            };
+            let schema = records.get(style.as_ref())?;
+            let label = &field.name;
+            let member = ident(label);
+            let reference = quote!(&object.material_slots.#member);
+            let slot = if schema.iter().any(|field| field.name == "slot") {
+                quote!(::core::option::Option::Some(object.material_slots.#member.slot.as_str()))
+            } else {
+                quote!(::core::option::Option::None)
+            };
+            let prepared = project_scene_material(reference, schema, records);
+            Some(quote!((#prepared).and_then(|style| {
+                ::xrack_runtime::scene3d::SceneMaterialBinding::for_field(#label, #slot, style)
+            })))
+        })
+        .collect::<Vec<_>>();
+    if bindings.is_empty() {
+        quote!(::std::vec::Vec::new())
+    } else {
+        quote!([#(#bindings),*].into_iter().flatten().collect())
+    }
+}
+
+fn project_scene_geometry(
+    schema: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    if let Some(Type::RecordList(vertices)) = schema
+        .iter()
+        .find(|field| field.name == "vertices")
+        .map(|field| &field.ty)
+    {
+        let fields = records
+            .get(vertices.as_ref())
+            .map_or(&[][..], |fields| fields.as_slice());
+        let optional = xrack_syntax::builtins::SCENE_MESH_VERTEX_FIELDS
+            .iter()
+            .filter(|(name, _)| {
+                *name != "position" && fields.iter().any(|field| field.name == *name)
+            })
+            .map(|(name, _)| {
+                let field = ident(name);
+                if matches!(*name, "normal" | "color" | "u1" | "v1") {
+                    quote!(#field: ::core::option::Option::Some(vertex.#field))
+                } else {
+                    quote!(#field: vertex.#field)
+                }
+            });
+        let indices = if schema.iter().any(|field| field.name == "indices") {
+            quote!(::xrack_runtime::scene3d::SceneMeshIndices::Model(
+                &object.geometry.indices
+            ))
+        } else {
+            quote!(::xrack_runtime::scene3d::SceneMeshIndices::Sequential)
+        };
+        let subsets = if schema.iter().any(|field| field.name == "subsets") {
+            quote!(mesh_inputs.subsets(&object.geometry.subsets, |subset| {
+                ::core::option::Option::Some(::xrack_runtime::scene3d::SceneMeshSubset {
+                    offset: subset.offset,
+                    count: subset.count,
+                    name: subset.name.clone(),
+                })
+            }))
+        } else {
+            quote!(::core::option::Option::Some(::std::vec::Vec::new()))
+        };
+        return quote!(mesh_inputs.geometry(&object.geometry.vertices, #indices, #subsets, |vertex| {
+            ::core::option::Option::Some(::xrack_runtime::scene3d::SceneMeshVertex {
+                position: vertex.position,
+                #(#optional,)*
+                ..::core::default::Default::default()
+            })
+        }));
+    }
+    let fields = xrack_syntax::builtins::SCENE_PARAMETRIC_FIELDS
+        .iter()
+        .filter(|(name, _)| *name != "shape" && schema.iter().any(|field| field.name == *name))
+        .map(|(name, _)| {
+            let field = ident(name);
+            quote!(#field: ::core::option::Option::Some(object.geometry.#field))
+        });
+    quote!(::core::option::Option::Some(::xrack_runtime::scene3d::SceneGeometryInput::Parametric(
+        ::xrack_runtime::scene3d::SceneParametricGeometry {
+            shape: object.geometry.shape.as_str(),
+            #(#fields,)*
+
+            ..::core::default::Default::default()
+        }
+    )))
+}
+
 fn project_scene_objects(
     model: &TokenStream,
     ty: &Type,
@@ -72,6 +339,18 @@ fn project_scene_objects(
     let field = |name, default| scene_field(fields, name, "object", default);
     let parent = field("parent", quote!(::std::string::String::new()));
     let look_at = field("camera-look-at", quote!(::std::string::String::new()));
+    let mesh = field("mesh", quote!(::std::string::String::new()));
+    let renderables = !cameras_only;
+    let instance_of = field("instance-of", quote!(::std::string::String::new()));
+    let geometry = scene_schema(fields, records, "geometry").map_or_else(
+        || quote!(::core::option::Option::None),
+        |schema| {
+            let geometry = project_scene_geometry(schema, records);
+            quote!(if (#instance_of).is_empty() { #geometry } else { ::core::option::Option::None })
+        },
+    );
+    let material_variant = field("material-variant", quote!(::std::string::String::new()));
+    let instance_template = field("instance-template", quote!(false));
     let playback = |clip, time, looping| {
         let clip = field(clip, quote!(::std::string::String::new()));
         let time = field(time, quote!(0.0));
@@ -95,6 +374,22 @@ fn project_scene_objects(
             let member = ident(name);
             quote!((#name, object.morph_weights.#member))
         });
+    let material = if cameras_only {
+        quote!(::core::option::Option::None)
+    } else {
+        scene_schema(fields, records, "material").map_or_else(
+            || quote!(::core::option::Option::None),
+            |style| project_scene_material(quote!(&object.material), style, records),
+        )
+    };
+    let material_slots = if cameras_only {
+        quote!(::std::vec::Vec::new())
+    } else {
+        scene_schema(fields, records, "material-slots").map_or_else(
+            || quote!(::std::vec::Vec::new()),
+            |palette| project_scene_material_slots(palette, records),
+        )
+    };
     let [pivot_x, pivot_y, pivot_z] =
         ["pivot-x", "pivot-y", "pivot-z"].map(|name| field(name, quote!(0.0)));
     let visible = field("visible", quote!(true));
@@ -154,10 +449,14 @@ fn project_scene_objects(
         _ => "",
     };
     quote! {
-        __XR_SCENE_PROJECTIONS.with(|cache| cache.#prepare(&(#model), #schema, |object| {
+        __XR_SCENE_PROJECTIONS.with(|cache| cache.#prepare(&(#model), #schema, |object, mesh_inputs| {
             ::xrack_runtime::scene3d::SceneNodeDefinition {
                 id: object.id,
-                mesh: &object.mesh,
+                mesh: &(#mesh),
+                geometry: #geometry,
+                material_variant: &(#material_variant),
+                instance_of: #instance_of,
+                instance_template: #instance_template,
                 animation: ::xrack_runtime::scene3d::MeshAnimationBlend { from: #from, to: #to, weight: #weight },
                 morph_weights: &[#(#weight_fields),*],
                 parent: #parent,
@@ -169,6 +468,8 @@ fn project_scene_objects(
                 angles: [object.yaw, object.pitch, object.roll],
                 pivot: [#pivot_x, #pivot_y, #pivot_z],
                 color: object.color,
+                material: #material,
+                material_slots: #material_slots,
                 lightmap: #lightmap,
                 casts_shadow: #casts,
                 receives_shadow: #receives,
@@ -181,7 +482,7 @@ fn project_scene_objects(
                 lod_max_size: (#lod_size).0,
                 lod_bias: #lod_bias,
                 camera_lod_bias: #camera_lod_bias,
-            }.prepare(__xr_scene_mesh)
+            }.prepare(__xr_scene_mesh, #renderables)
         }))
     }
 }
@@ -216,6 +517,8 @@ fn project_particles(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
                 ..::core::default::Default::default()
             }.prepare(|key, scale| {
                 __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_surface(key, scale, __xr_scene_mesh))
+            }, |key| {
+                __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_model(key, __xr_scene_mesh))
             })
         })
     }
@@ -240,6 +543,279 @@ fn project_particle_affectors(model: &TokenStream, fields: &[Parameter]) -> Toke
                 #(#options,)*
                 ..::core::default::Default::default()
             }.prepare()
+        })
+    }
+}
+
+fn project_buffer_inputs(model: &TokenStream, fields: &[Parameter], named: bool) -> TokenStream {
+    let string = |name| scene_field(fields, name, "buffer", quote!(""));
+    let empty_name = quote!(::std::string::String::new());
+    let (name, previous, limit) = if named {
+        (
+            scene_field(fields, "name", "buffer", empty_name),
+            scene_field(fields, "previous-frame", "buffer", quote!(false)),
+            quote!(::xrack_runtime::scene_effect::MAX_BUFFERS),
+        )
+    } else {
+        (
+            empty_name,
+            quote!(false),
+            quote!(::xrack_runtime::material_shader::MAX_TEXTURES),
+        )
+    };
+    let texture = string("texture");
+    let item = string("item");
+    let capture = string("capture");
+    let attachment = string("attachment");
+    let space = string("color-space");
+    let enabled = scene_field(fields, "enabled", "buffer", quote!(true));
+    let filter = scene_field(fields, "filter", "buffer", quote!("linear"));
+    let wrap_u = scene_field(fields, "wrap-u", "buffer", quote!("clamp"));
+    let wrap_v = scene_field(fields, "wrap-v", "buffer", quote!("clamp"));
+    quote!(::xrack_runtime::scene_effect::model_buffer_inputs(
+        #model,
+        #limit,
+        |buffer| ::xrack_runtime::scene_effect::BufferInputDefinition {
+            name: #name,
+            previous_frame: #previous,
+            texture: &(#texture),
+            item: &(#item),
+            capture: &(#capture),
+            attachment: ::xrack_runtime::scene_effect::CaptureAttachment::parse(&(#attachment)),
+            color_space: &(#space),
+            enabled: #enabled,
+            sampling: ::xrack_runtime::scene_effect::BufferSampling::new(
+                &(#filter), &(#wrap_u), &(#wrap_v)
+            ),
+        }.prepare(__xr_texture)
+    ))
+}
+
+fn project_scene_captures(
+    model: &TokenStream,
+    fields: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    let field = |name, default| scene_field(fields, name, "capture", default);
+    let camera = field("camera", quote!(""));
+    let color_source = field("color-source", quote!(""));
+    let depth_source = field("depth-source", quote!(""));
+    let stencil_source = field("stencil-source", quote!(""));
+    let stencil_clear = field("stencil-clear", quote!(0));
+    let renderables = field("renderables", quote!("all"));
+    let override_material = fields
+        .iter()
+        .find(|field| field.name == "override-material")
+        .and_then(|field| match &field.ty {
+            Type::Record(record) => records.get(record.as_ref()),
+            _ => None,
+        })
+        .map_or_else(
+            || quote!(::core::option::Option::None),
+            |schema| project_scene_material(quote!(&capture.override_material), schema, records),
+        );
+    let pipeline_state = fields
+        .iter()
+        .find(|field| field.name == "pipeline-state")
+        .and_then(|field| match &field.ty {
+            Type::Record(record) => records.get(record.as_ref()),
+            _ => None,
+        })
+        .map_or_else(
+            || quote!(::core::default::Default::default()),
+            |schema| {
+                let state = |name, default| scene_field(schema, name, "__state", default);
+                let optional_bool = |name| {
+                    let field = ident(name);
+                    if schema.iter().any(|parameter| parameter.name == name) {
+                        quote!(::core::option::Option::Some(__state.#field))
+                    } else {
+                        quote!(::core::option::Option::None)
+                    }
+                };
+                let enabled = state("enabled", quote!(true));
+                let depth_test = optional_bool("depth-test");
+                let depth_write = optional_bool("depth-write");
+                let depth_compare = state("depth-compare", quote!(""));
+                let cull = state("cull-mode", quote!(""));
+                let blend = state("blend-mode", quote!(""));
+                let viewport = project_capture_rect(schema, records, "viewport");
+                let scissor = project_capture_rect(schema, records, "scissor");
+                let stencil = project_capture_stencil(schema, records);
+                let target_blend = project_capture_target_blend(schema, records);
+                let color_write = state("color-write", quote!(true));
+                let polygon_mode = state("polygon-mode", quote!("fill"));
+                quote!({
+                    let __state = &capture.pipeline_state;
+                    if #enabled {
+                        (
+                            ::xrack_runtime::scene_effect::CapturePipelineState::new(
+                                #depth_test, #depth_write, &(#depth_compare), &(#cull), &(#blend),
+                            ).with_stencil(#stencil, #color_write)
+                                .with_target_blend(#target_blend).with_polygon_mode(&(#polygon_mode)),
+                            ::xrack_runtime::scene_effect::CaptureRasterSettings {
+                                viewport: #viewport,
+                                scissor: #scissor,
+                            },
+                        )
+                    } else {
+                        ::core::default::Default::default()
+                    }
+                })
+            },
+        );
+    let scale = field("scale", quote!(1.0));
+    let background = field("background", quote!(::xrack_runtime::Color(0)));
+    let color_format = field("color-format", quote!("rgba16f"));
+    let depth_clear = field("depth-clear", quote!(1.0));
+    let enabled = field("enabled", quote!(true));
+    let layers = if fields.iter().any(|param| param.name == "layers") {
+        quote!(::core::option::Option::Some(capture.layers))
+    } else {
+        quote!(::core::option::Option::None)
+    };
+    quote! {
+        ::xrack_runtime::scene_effect::model_captures(&(#model), |capture| {
+            let (pipeline_state, raster) = #pipeline_state;
+            ::xrack_runtime::scene_effect::CaptureDefinition {
+                name: &capture.name, camera: &(#camera), layers: #layers,
+                scale: #scale, background: #background, enabled: #enabled, depth_clear: #depth_clear,
+                color_format: ::xrack_runtime::scene_effect::OutputFormat::parse(&(#color_format)),
+                color_source: &(#color_source), depth_source: &(#depth_source),
+                stencil_source: &(#stencil_source), stencil_clear: #stencil_clear,
+                renderables: &(#renderables),
+                override_material: #override_material,
+                pipeline_state, raster,
+            }.prepare()
+        })
+    }
+}
+
+fn project_capture_stencil(
+    schema: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    let Some(fields) = schema
+        .iter()
+        .find(|field| field.name == "stencil")
+        .and_then(|field| match &field.ty {
+            Type::Record(record) => records.get(record.as_ref()),
+            _ => None,
+        })
+    else {
+        return quote!(::core::option::Option::None);
+    };
+    let prop = |name, default| scene_field(fields, name, "__stencil", default);
+    let enabled = prop("enabled", quote!(true));
+    let reference = prop("reference", quote!(0));
+    let read_mask = prop("read-mask", quote!(255));
+    let write_mask = prop("write-mask", quote!(255));
+    let compare = prop("compare", quote!(""));
+    let fail = prop("fail", quote!(""));
+    let depth_fail = prop("depth-fail", quote!(""));
+    let pass = prop("pass", quote!(""));
+    quote!({
+        let __stencil = &__state.stencil;
+        (#enabled).then(|| ::xrack_runtime::scene_effect::CaptureStencilState::new(
+            [#reference, #read_mask, #write_mask], &(#compare), [&(#fail), &(#depth_fail), &(#pass)],
+        ))
+    })
+}
+
+fn project_capture_rect(
+    schema: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+    name: &str,
+) -> TokenStream {
+    let Some(rect) =
+        schema
+            .iter()
+            .find(|field| field.name == name)
+            .and_then(|field| match &field.ty {
+                Type::Record(record) => records.get(record.as_ref()),
+                _ => None,
+            })
+    else {
+        return quote!(::core::option::Option::None);
+    };
+    let field = ident(name);
+    let enabled = scene_field(rect, "enabled", "__rect", quote!(true));
+    quote!({
+        let __rect = &__state.#field;
+        (#enabled).then(|| ::xrack_runtime::scene_effect::CaptureRect::new(
+            __rect.x, __rect.y, __rect.width, __rect.height,
+        ))
+    })
+}
+
+fn project_capture_target_blend(
+    schema: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    let Some(fields) = schema
+        .iter()
+        .find(|field| field.name == "target-blend")
+        .and_then(|field| match &field.ty {
+            Type::Record(record) => records.get(record.as_ref()),
+            _ => None,
+        })
+    else {
+        return quote!(::core::option::Option::None);
+    };
+    let prop = |name, default| scene_field(fields, name, "__blend", default);
+    let enabled = prop("enabled", quote!(true));
+    let blend_enabled = prop("blend-enabled", quote!(true));
+    let write_mask = prop("write-mask", quote!(15));
+    let constant = prop("constant", quote!(::xrack_runtime::Color(0)));
+    let color =
+        ["source-color", "destination-color", "color-operation"].map(|name| prop(name, quote!("")));
+    let alpha =
+        ["source-alpha", "destination-alpha", "alpha-operation"].map(|name| prop(name, quote!("")));
+    quote!({
+        let __blend = &__state.target_blend;
+        (#enabled).then(|| ::xrack_runtime::scene_effect::CaptureTargetBlend::new(
+            #blend_enabled, #write_mask, [#(&(#color)),*], [#(&(#alpha)),*], #constant,
+        ))
+    })
+}
+
+fn project_scene_effects(
+    model: &TokenStream,
+    fields: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    let field = |name, default| scene_field(fields, name, "pass", default);
+    let strength = field("strength", quote!(1.0));
+    let depth = field("depth", quote!(false));
+    let scale = field("scale", quote!(1.0));
+    let parameters = field("parameters", quote!(::xrack_runtime::Vector3D::default()));
+    let history = field("history", quote!(false));
+    let format = field("output-format", quote!("rgba16f"));
+    let add_buffers = if fields
+        .iter()
+        .any(|item| matches!(item.name.as_str(), "input" | "output" | "buffers"))
+    {
+        let output = field("output", quote!(::std::string::String::new()));
+        let input = field("input", quote!(::std::string::String::new()));
+        let buffers = if let Some(Type::RecordList(record)) = fields
+            .iter()
+            .find(|item| item.name == "buffers")
+            .map(|item| &item.ty)
+        {
+            let fields = records.get(record.as_ref()).map_or(&[][..], Vec::as_slice);
+            project_buffer_inputs(&quote!(&pass.buffers), fields, true)
+        } else {
+            quote!(::std::vec::Vec::new())
+        };
+        quote!(.map(|effect| effect.with_buffers(#output, #input, #buffers)))
+    } else {
+        TokenStream::new()
+    };
+    quote! {
+        ::xrack_runtime::scene_effect::model_passes(&(#model), |pass| {
+            ::xrack_runtime::scene_effect::Pass::new(pass.shader, #strength, #depth, #scale, #parameters)
+                #add_buffers
+                .map(|effect| effect.with_history(#history).with_output_format(&(#format)))
         })
     }
 }
@@ -2569,6 +3145,15 @@ impl<'a> Generator<'a> {
                     .ok_or_else(|| "missing compiled Markdown literal".to_string())?;
                 quote!(#name.clone())
             }
+            "xr.material_shader_url" => {
+                let key = xrack_runtime::material_shader::resource_key(value);
+                quote!(::std::string::String::from(#key))
+            }
+            "xr.shader_url" => quote!(::std::string::String::from(__xr_scene_effect(#value))),
+            "xr.texture_url" => {
+                let key = xrack_runtime::scene3d::texture_resource_key(value);
+                quote!(::std::string::String::from(#key))
+            }
             "xr.environment_url" => {
                 let key = xrack_runtime::scene3d::environment_resource_key(value);
                 quote!(#key.to_owned())
@@ -3047,6 +3632,16 @@ impl<'a> Generator<'a> {
                         |mask| quote!(::core::option::Option::Some(#mask)),
                     )
                 };
+                let query_model = |model: &TokenStream| {
+                    let ty = value_type(self.operand(op, 0)?)?;
+                    Ok::<TokenStream, String>(project_scene_objects(
+                        model,
+                        &ty,
+                        self.scene_record_fields(&ty),
+                        self.records,
+                        false,
+                    ))
+                };
                 match (kind, args.as_slice()) {
                     (Point, [x, y]) => quote!(::xrack_runtime::Point2D::new(#x, #y)),
                     (Point3D, [x, y, z]) => quote!(::xrack_runtime::Point3D::new(#x, #y, #z)),
@@ -3055,7 +3650,7 @@ impl<'a> Generator<'a> {
                         let query = if kind == RayHitAll3D {
                             quote!(ray_hit_all)
                         } else {
-                            quote!(ray_hit)
+                            quote!(ray_hit_model)
                         };
                         let model_type = value_type(self.operand(op, 0)?)?;
                         let objects = project_scene_objects(
@@ -3067,6 +3662,169 @@ impl<'a> Generator<'a> {
                         );
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::#query(&#objects, #origin, #direction, #distance, #layers))
+                    }
+                    (
+                        HitInstance3D,
+                        [
+                            model,
+                            yaw,
+                            pitch,
+                            distance,
+                            viewport,
+                            pointer,
+                            row,
+                            node,
+                            instance,
+                            layers @ ..,
+                        ],
+                    ) => {
+                        let objects = query_model(model)?;
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::hit_instance(&#objects, [#yaw, #pitch, #distance],
+                            #viewport, #pointer, [#row, #node, #instance], #layers))
+                    }
+                    (
+                        HitInstanceCamera3D,
+                        [
+                            model,
+                            camera,
+                            viewport,
+                            pointer,
+                            row,
+                            node,
+                            instance,
+                            layers @ ..,
+                        ],
+                    ) => {
+                        let objects = query_model(model)?;
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::hit_instance_camera(&#objects, &#camera,
+                            #viewport, #pointer, [#row, #node, #instance], #layers))
+                    }
+                    (
+                        RayHitInstance3D,
+                        [
+                            model,
+                            origin,
+                            direction,
+                            distance,
+                            row,
+                            node,
+                            instance,
+                            layers @ ..,
+                        ],
+                    ) => {
+                        let objects = query_model(model)?;
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::ray_hit_instance(&#objects, #origin,
+                            #direction, #distance, [#row, #node, #instance], #layers))
+                    }
+                    (
+                        HitRow3D | HitSubset3D,
+                        [
+                            model,
+                            yaw,
+                            pitch,
+                            distance,
+                            viewport,
+                            pointer,
+                            selector,
+                            layers @ ..,
+                        ],
+                    ) => {
+                        let objects = query_model(model)?;
+                        let layers = optional_layers(layers);
+                        let (function, selector) = if kind == HitRow3D {
+                            (quote!(hit_row), quote!(#selector))
+                        } else {
+                            (quote!(hit_subset), quote!(&(#selector).snapshot()))
+                        };
+                        quote!(::xrack_runtime::scene3d::#function(&#objects, [#yaw, #pitch, #distance],
+                            #viewport, #pointer, #selector, #layers))
+                    }
+                    (
+                        HitRowCamera3D | HitSubsetCamera3D,
+                        [model, camera, viewport, pointer, selector, layers @ ..],
+                    ) => {
+                        let objects = query_model(model)?;
+                        let layers = optional_layers(layers);
+                        let (function, selector) = if kind == HitRowCamera3D {
+                            (quote!(hit_row_camera), quote!(#selector))
+                        } else {
+                            (quote!(hit_subset_camera), quote!(&(#selector).snapshot()))
+                        };
+                        quote!(::xrack_runtime::scene3d::#function(&#objects, &#camera,
+                            #viewport, #pointer, #selector, #layers))
+                    }
+                    (
+                        RayHitRow3D | RayHitSubset3D,
+                        [model, origin, direction, distance, selector, layers @ ..],
+                    ) => {
+                        let objects = query_model(model)?;
+                        let layers = optional_layers(layers);
+                        let (function, selector) = if kind == RayHitRow3D {
+                            (quote!(ray_hit_row), quote!(#selector))
+                        } else {
+                            (quote!(ray_hit_subset), quote!(&(#selector).snapshot()))
+                        };
+                        quote!(::xrack_runtime::scene3d::#function(&#objects, #origin,
+                            #direction, #distance, #selector, #layers))
+                    }
+                    (
+                        PickInRect3D,
+                        [
+                            model,
+                            yaw,
+                            pitch,
+                            distance,
+                            viewport,
+                            start,
+                            end,
+                            layers @ ..,
+                        ],
+                    ) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::pick_in_rect(&#objects, #yaw, #pitch,
+                            #distance, #viewport, [#start, #end], #layers))
+                    }
+                    (PickInRectCamera3D, [model, camera, viewport, start, end, layers @ ..]) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::pick_in_rect_camera(&#objects, &#camera,
+                            #viewport, [#start, #end], #layers))
+                    }
+                    (ClosestPoint3D, [model, origin, radius, layers @ ..])
+                    | (ClosestPointOn3D, [model, _, origin, radius, layers @ ..]) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            false,
+                        );
+                        let layers = optional_layers(layers);
+                        if kind == ClosestPointOn3D {
+                            let object_id = &args[1];
+                            quote!(::xrack_runtime::scene3d::closest_point_on(&#objects, &#object_id, #origin, #radius, #layers))
+                        } else {
+                            quote!(::xrack_runtime::scene3d::closest_point(&#objects, #origin, #radius, #layers))
+                        }
                     }
                     (SphereCast3D, [model, origin, direction, distance, radius, layers @ ..]) => {
                         let model_type = value_type(self.operand(op, 0)?)?;
@@ -3160,6 +3918,25 @@ impl<'a> Generator<'a> {
                             true,
                         );
                         quote!(::xrack_runtime::scene3d::unproject_camera(&#objects, &(#camera), #viewport, #point, #depth, #fallback))
+                    }
+                    (
+                        kind @ (MapPosition3D | MapDirection3D),
+                        [model, from, to, value, fallback],
+                    ) => {
+                        let model_type = value_type(self.operand(op, 0)?)?;
+                        let objects = project_scene_objects(
+                            model,
+                            &model_type,
+                            self.scene_record_fields(&model_type),
+                            self.records,
+                            true,
+                        );
+                        let method = if kind == MapPosition3D {
+                            quote!(map_position)
+                        } else {
+                            quote!(map_direction)
+                        };
+                        quote!((#objects).#method(&(#from), &(#to), #value).unwrap_or(#fallback))
                     }
                     (Vector, [x, y]) => quote!(::xrack_runtime::Vector2D::new(#x, #y)),
                     (Identity, []) => quote!(::xrack_runtime::Transform2D::IDENTITY),
@@ -8775,6 +9552,18 @@ impl<'a> Generator<'a> {
                     let ty = operand_type(binding).ok_or("missing fog volume model type")?;
                     let volumes = project_fog_volumes(&value, self.scene_record_fields(&ty));
                     quote!(::xrack_runtime::Value::SceneFogVolumes(#volumes))
+                }
+                (Ok("SceneView3D"), "scene-captures") => {
+                    let ty = operand_type(binding).ok_or("missing scene capture list type")?;
+                    let captures =
+                        project_scene_captures(&value, self.scene_record_fields(&ty), self.records);
+                    quote!(::xrack_runtime::Value::SceneCaptures(#captures))
+                }
+                (Ok("SceneView3D"), "scene-effects") => {
+                    let ty = operand_type(binding).ok_or("missing 3D effect pass list type")?;
+                    let effects =
+                        project_scene_effects(&value, self.scene_record_fields(&ty), self.records);
+                    quote!(::xrack_runtime::Value::SceneEffects(#effects))
                 }
                 (Ok("SceneView3D"), "reflection-probes") => {
                     let ty = operand_type(binding).ok_or("missing reflection probe model type")?;
@@ -15272,6 +16061,42 @@ fn binds_scene_environment(op: OperationRef<'_>) -> bool {
         || op.children().any(binds_scene_environment)
 }
 
+fn embed_scene_textures(assets: &xrack_resources::SceneAssets) -> Result<TokenStream, String> {
+    let mut declarations = TokenStream::new();
+    let mut entries = TokenStream::new();
+    let mut known = BTreeMap::<usize, Ident>::new();
+    for (key, texture) in &assets.textures {
+        let identity = ::std::sync::Arc::as_ptr(texture) as usize;
+        let index = known.len();
+        let name = match known.entry(identity) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.get().clone(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let name = format_ident!("__XR_TEXTURE_{index}");
+                let packed =
+                    proc_macro2::Literal::byte_string(&xrack_resources::pack_mesh_image(texture)?);
+                let [width, height] = texture.size();
+                declarations.extend(quote! {
+                    static #name: ::std::sync::LazyLock<::core::option::Option<::std::sync::Arc<::xrack_runtime::scene3d::MeshImage>>> =
+                        ::std::sync::LazyLock::new(|| ::xrack_runtime::scene3d::MeshImage::from_packed(
+                            [#width, #height], #packed
+                        ).map(::std::sync::Arc::new));
+                });
+                entry.insert(name).clone()
+            }
+        };
+        entries.extend(quote!(#key => (*#name).clone(),));
+    }
+    Ok(quote! {
+        #declarations
+        fn __xr_texture(key: &::core::primitive::str) -> ::core::option::Option<::std::sync::Arc<::xrack_runtime::scene3d::MeshImage>> {
+            match key {
+                #entries
+                _ => ::core::option::Option::None,
+            }
+        }
+    })
+}
+
 fn embed_environments(assets: &xrack_resources::SceneAssets) -> Result<TokenStream, String> {
     let mut declarations = TokenStream::new();
     let mut entries = TokenStream::new();
@@ -15335,11 +16160,19 @@ fn embed_scene_meshes(
     })
 }
 
+struct PackedVertexStreams {
+    vertices: Ident,
+    tangents: Ident,
+    first_mesh: Ident,
+}
+
 #[derive(Default)]
 struct MeshEmitter {
     geometry: BTreeMap<usize, Ident>,
+    vertex_bytes: BTreeMap<usize, PackedVertexStreams>,
     rigs: BTreeMap<usize, Ident>,
     lods: BTreeMap<usize, Ident>,
+    variants: BTreeMap<usize, Ident>,
     images: BTreeMap<usize, Ident>,
     declarations: TokenStream,
 }
@@ -15349,6 +16182,7 @@ impl MeshEmitter {
         embed_mesh_geometry(
             mesh,
             &mut self.geometry,
+            &mut self.vertex_bytes,
             &mut self.images,
             &mut self.declarations,
         )
@@ -15395,6 +16229,63 @@ impl MeshEmitter {
                 };
                 quote!((*#name).clone())
             }
+            MeshAsset::Variants(variants) => {
+                let identity = ::std::sync::Arc::as_ptr(variants) as usize;
+                let name = if let Some(name) = self.variants.get(&identity) {
+                    name.clone()
+                } else {
+                    let name = format_ident!("PACKED_VARIANTS_{}", self.variants.len());
+                    let primary = self.asset(variants.primary())?;
+                    let alternatives = variants
+                        .alternatives()
+                        .iter()
+                        .map(|(label, alternative)| {
+                            let selected = match alternative {
+                                Some(MeshAsset::Animated(rig))
+                                    if matches!(variants.primary(), MeshAsset::Animated(_)) =>
+                                {
+                                    let meshes = rig
+                                        .meshes()
+                                        .iter()
+                                        .map(|mesh| self.mesh(mesh))
+                                        .collect::<Result<Vec<_>, _>>()?;
+                                    quote!({
+                                        let ::xrack_runtime::scene3d::MeshAsset::Animated(rig) =
+                                            &primary
+                                        else {
+                                            return None;
+                                        };
+                                        Some(::xrack_runtime::scene3d::MeshAsset::Animated(
+                                            ::std::sync::Arc::new(rig.with_meshes(
+                                                ::std::vec![#((#meshes).as_ref()?.clone()),*],
+                                            )),
+                                        ))
+                                    })
+                                }
+                                Some(asset) => {
+                                    let alternative = self.asset(asset)?;
+                                    quote!(Some((#alternative)?))
+                                }
+                                None => quote!(None),
+                            };
+                            Ok::<_, String>(
+                                quote!((::std::string::String::from(#label), #selected)),
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.declarations.extend(quote! {
+                        static #name: ::std::sync::LazyLock<::core::option::Option<::xrack_runtime::scene3d::MeshAsset>> =
+                            ::std::sync::LazyLock::new(|| {
+                                let primary = (#primary)?;
+                                let alternatives = ::std::vec![#(#alternatives),*];
+                                Some(primary.with_material_variants(alternatives))
+                            });
+                    });
+                    self.variants.insert(identity, name.clone());
+                    name
+                };
+                quote!((*#name).clone())
+            }
             MeshAsset::Lods(lods) => {
                 let identity = ::std::sync::Arc::as_ptr(lods) as usize;
                 let name = if let Some(name) = self.lods.get(&identity) {
@@ -15435,40 +16326,64 @@ impl MeshEmitter {
 fn embed_mesh_geometry(
     mesh: &xrack_runtime::scene3d::Mesh3D,
     known: &mut BTreeMap<usize, Ident>,
+    vertex_bytes: &mut BTreeMap<usize, PackedVertexStreams>,
     images: &mut BTreeMap<usize, Ident>,
     declarations: &mut TokenStream,
 ) -> Result<Ident, String> {
     use xrack_runtime::scene3d::MeshAlphaMode;
-    let identity = mesh.vertices().as_ptr() as usize;
+    let (identity, streams) = match mesh {
+        xrack_runtime::scene3d::Mesh3D::Imported(data) => (
+            ::std::sync::Arc::as_ptr(data) as usize,
+            ::std::sync::Arc::as_ptr(data.vertex_streams()) as usize,
+        ),
+        _ => (
+            mesh.vertices().as_ptr() as usize,
+            mesh.vertices().as_ptr() as usize,
+        ),
+    };
     let next = known.len();
     let entry = match known.entry(identity) {
         std::collections::btree_map::Entry::Occupied(entry) => return Ok(entry.get().clone()),
         std::collections::btree_map::Entry::Vacant(entry) => entry,
     };
     let name = format_ident!("PACKED_MESH_{next}");
-    let bytes: Vec<u8> = mesh
-        .vertices()
-        .iter()
-        .flat_map(|vertex| {
-            vertex
-                .position
-                .into_iter()
-                .chain(vertex.normal)
-                .chain(vertex.uv)
-                .chain(vertex.color)
-                .chain(vertex.uv1)
-        })
-        .flat_map(f32::to_le_bytes)
-        .collect();
-    let bytes = Literal::byte_string(&bytes);
-    let tangents: Vec<_> = mesh
-        .tangents()
-        .iter()
-        .flatten()
-        .copied()
-        .flat_map(i16::to_le_bytes)
-        .collect();
-    let tangents = Literal::byte_string(&tangents);
+    let stream_index = vertex_bytes.len();
+    let streams = vertex_bytes.entry(streams).or_insert_with(|| {
+        let bytes: Vec<u8> = mesh
+            .vertices()
+            .iter()
+            .flat_map(|vertex| {
+                vertex
+                    .position
+                    .into_iter()
+                    .chain(vertex.normal)
+                    .chain(vertex.uv)
+                    .chain(vertex.color)
+                    .chain(vertex.uv1)
+            })
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let bytes = Literal::byte_string(&bytes);
+        let tangents: Vec<_> = mesh
+            .tangents()
+            .iter()
+            .flatten()
+            .copied()
+            .flat_map(i16::to_le_bytes)
+            .collect();
+        let tangents = Literal::byte_string(&tangents);
+        let vertices_name = format_ident!("PACKED_VERTICES_{stream_index}");
+        let tangents_name = format_ident!("PACKED_TANGENTS_{stream_index}");
+        declarations.extend(quote! {
+            static #vertices_name: &[u8] = #bytes;
+            static #tangents_name: &[u8] = #tangents;
+        });
+        PackedVertexStreams {
+            vertices: vertices_name,
+            tangents: tangents_name,
+            first_mesh: name.clone(),
+        }
+    });
     let parts = mesh.parts().iter().map(|part| {
         let start = part.vertices.start;
         let end = part.vertices.end;
@@ -15501,7 +16416,6 @@ fn embed_mesh_geometry(
                     quote!(::xrack_runtime::scene3d::MeshAlphaMode::Blend)
                 }
             };
-            let double_sided = material.double_sided;
             let base_texture =
                 embed_optional_mesh_texture(&material.base_texture, images, declarations)?;
             let pbr = if let Some(pbr) = &material.pbr {
@@ -15512,13 +16426,27 @@ fn embed_mesh_geometry(
                 ]
                 .map(|texture| embed_optional_mesh_texture(texture, images, declarations));
                 let (mr, emissive_texture, occlusion) = (mr?, emissive_texture?, occlusion?);
+                let anisotropy = if let Some(term) = pbr.anisotropy.as_deref() {
+                    let strength = term.strength;
+                    let rotation = term.rotation;
+                    let texture = embed_optional_mesh_texture(&term.texture, images, declarations)?;
+                    quote!(::core::option::Option::Some(::std::boxed::Box::new(
+                        ::xrack_runtime::scene3d::MeshAnisotropy {
+                            strength: #strength, rotation: #rotation, texture: #texture,
+                        }
+                    )))
+                } else {
+                    quote!(::core::option::Option::None)
+                };
                 let metallic = pbr.metallic;
+                let fresnel = embed_fresnel(pbr.fresnel);
                 let roughness = pbr.roughness;
                 let [r, g, b] = pbr.emissive;
                 let occlusion_strength = pbr.occlusion_strength;
                 let normal_map = embed_mesh_normal(pbr.normal_map.as_ref(), images, declarations)?;
                 let clearcoat = if let Some(coat) = &pbr.clearcoat {
                     let amount = coat.amount;
+                    let fresnel = embed_fresnel(coat.fresnel);
                     let roughness = coat.roughness;
                     let amount_texture =
                         embed_optional_mesh_texture(&coat.amount_texture, images, declarations)?;
@@ -15527,6 +16455,7 @@ fn embed_mesh_geometry(
                     let normal_map =
                         embed_mesh_normal(coat.normal_map.as_ref(), images, declarations)?;
                     quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshClearcoat {
+                        fresnel: #fresnel,
                         amount: #amount,
                         roughness: #roughness,
                         amount_texture: #amount_texture,
@@ -15562,6 +16491,7 @@ fn embed_mesh_geometry(
                     let texture = embed_optional_mesh_texture(&material.texture, images, declarations)?;
                     let volume = if let Some(volume) = material.volume.as_deref() {
                         let thickness = volume.thickness;
+                        let thickness_in_prepared_space = volume.thickness_in_prepared_space;
                         let dispersion = volume.dispersion;
                         let thickness_texture = embed_optional_mesh_texture(&volume.texture, images, declarations)?;
                         let [r,g,b] = volume.attenuation_color;
@@ -15571,7 +16501,7 @@ fn embed_mesh_geometry(
                         };
                         quote!(::core::option::Option::Some(::std::boxed::Box::new(
                             ::xrack_runtime::scene3d::MeshVolume {
-                                thickness: #thickness, dispersion: #dispersion, texture: #thickness_texture,
+                                thickness: #thickness, thickness_in_prepared_space: #thickness_in_prepared_space, dispersion: #dispersion, texture: #thickness_texture,
                                 attenuation_distance: #distance, attenuation_color: [#r,#g,#b],
                             }
                         )))
@@ -15585,6 +16515,8 @@ fn embed_mesh_geometry(
                     quote!(::core::option::Option::None)
                 };
                 quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshPbr {
+                    fresnel: #fresnel,
+                    anisotropy: #anisotropy,
                     metallic: #metallic, roughness: #roughness, emissive: [#r, #g, #b],
                     occlusion_strength: #occlusion_strength,
                     metallic_roughness_texture: #mr,
@@ -15598,18 +16530,61 @@ fn embed_mesh_geometry(
             } else {
                 quote!(::core::option::Option::None)
             };
+            let blend_mode = match material.blend_mode {
+                xrack_runtime::scene3d::MeshBlendMode::SourceOver => quote!(SourceOver),
+                xrack_runtime::scene3d::MeshBlendMode::Screen => quote!(Screen),
+                xrack_runtime::scene3d::MeshBlendMode::Multiply => quote!(Multiply),
+            };
+            let depth_draw_mode = match material.depth_draw_mode {
+                xrack_runtime::scene3d::MeshDepthDraw::OpaqueOnly => quote!(OpaqueOnly),
+                xrack_runtime::scene3d::MeshDepthDraw::Always => quote!(Always),
+                xrack_runtime::scene3d::MeshDepthDraw::Never => quote!(Never),
+                xrack_runtime::scene3d::MeshDepthDraw::OpaquePrepass => quote!(OpaquePrepass),
+            };
+            let cull_mode = match material.cull_mode {
+                xrack_runtime::scene3d::MeshCullMode::Back => quote!(Back),
+                xrack_runtime::scene3d::MeshCullMode::Front => quote!(Front),
+                xrack_runtime::scene3d::MeshCullMode::None => quote!(None),
+            };
+            let channels = material.channels.authored_fields().map(|(name, value)| quote!((#name, #value)));
+            let vertex_colors = material.vertex_colors;
+            let vertex_masks = material.vertex_masks.authored_fields().map(|(name, value)| quote!((#name, #value)));
             Ok(quote!(::xrack_runtime::scene3d::MeshMaterial {
+                shader: ::core::option::Option::None,
+                blend_mode: ::xrack_runtime::scene3d::MeshBlendMode::#blend_mode,
+                depth_draw_mode: ::xrack_runtime::scene3d::MeshDepthDraw::#depth_draw_mode,
+                cull_mode: ::xrack_runtime::scene3d::MeshCullMode::#cull_mode,
+                channels: ::xrack_runtime::scene3d::MaterialChannels::from_fields([#(#channels),*]),
+                vertex_colors: #vertex_colors,
+                vertex_masks: ::xrack_runtime::scene3d::VertexColorMasks::from_fields([#(#vertex_masks),*]),
                 base_color: [#r, #g, #b, #a],
                 base_texture: #base_texture,
+                base_item: ::core::option::Option::None,
                 alpha_mode: #alpha_mode,
-                double_sided: #double_sided,
                 pbr: #pbr,
             }))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let (bytes, tangents) = (&streams.vertices, &streams.tangents);
     let prepared = quote!(::xrack_runtime::scene3d::Mesh3D::from_packed(
         #bytes, #tangents, ::std::vec![#(#parts),*], ::std::vec![#(#materials),*],
     ));
+    let prepared = if mesh.material_slots().is_empty() {
+        prepared
+    } else {
+        let slots = mesh.material_slots().iter().map(|slot| {
+            let index = slot.source_index.map_or_else(
+                || quote!(::core::option::Option::None),
+                |index| quote!(::core::option::Option::Some(#index)),
+            );
+            let name = slot.name.as_deref().map_or_else(
+                || quote!(::core::option::Option::None),
+                |name| quote!(::core::option::Option::Some(::std::string::String::from(#name))),
+            );
+            quote!(::xrack_runtime::scene3d::MeshMaterialSlot { source_index: #index, name: #name })
+        });
+        quote!((#prepared).and_then(|mesh| mesh.with_material_slots(::std::sync::Arc::from([#(#slots),*]))))
+    };
     let prepared = if mesh.lightmap_uvs().is_empty() {
         prepared
     } else {
@@ -15643,6 +16618,15 @@ fn embed_mesh_geometry(
         quote!((#prepared).and_then(|mesh| mesh.with_packed_morph(#count, &[#(#names),*], #packed)))
     } else {
         prepared
+    };
+    let first = &streams.first_mesh;
+    let prepared = if first == &name {
+        prepared
+    } else {
+        quote!((#prepared).and_then(|mut mesh| {
+            mesh.share_variant_streams((#first).as_ref()?);
+            Some(mesh)
+        }))
     };
     declarations.extend(quote! {
         static #name: ::std::sync::LazyLock<::core::option::Option<::xrack_runtime::scene3d::Mesh3D>> =
@@ -15735,6 +16719,7 @@ fn embed_animation_node(node: &xrack_runtime::scene3d::MeshAnimationNode) -> Tok
             |index| quote!(::core::option::Option::Some(#index)),
         )
     };
+    let source_node = node.source_node;
     let parent = optional(node.parent);
     let mesh = optional(node.mesh);
     let skin = optional(node.skin);
@@ -15754,8 +16739,17 @@ fn embed_animation_node(node: &xrack_runtime::scene3d::MeshAnimationNode) -> Tok
             })
         }
     };
+    let instances = node.instances.as_ref().map_or_else(
+        || quote!(::core::option::Option::None),
+        |instances| {
+            let packed: Vec<_> = instances.packed_words().flat_map(f32::to_le_bytes).collect();
+            let packed = Literal::byte_string(&packed);
+            quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshInstances::from_packed(#packed)?))
+        },
+    );
     quote!(::xrack_runtime::scene3d::MeshAnimationNode {
-        parent: #parent, mesh: #mesh, skin: #skin, transform: #transform, morph_weights: ::std::sync::Arc::from([#(#weights),*])
+        source_node: #source_node, parent: #parent, mesh: #mesh, skin: #skin, transform: #transform,
+        morph_weights: ::std::sync::Arc::from([#(#weights),*]), instances: #instances
     })
 }
 
@@ -15960,7 +16954,7 @@ fn generate_with_resources(
     let with_locale = translations.is_some() || module.operations().any(uses_locale);
     let mut out = quote! {
         const _: () = assert!(
-            ::xrack_runtime::CODEGEN_ABI_VERSION == 18,
+            ::xrack_runtime::CODEGEN_ABI_VERSION == 37,
             "xrackc and xrack-runtime have incompatible code generation interfaces"
         );
     };
@@ -15968,8 +16962,49 @@ fn generate_with_resources(
     if !scene_assets.meshes.is_empty() || uses_scene {
         out.extend(embed_scene_meshes(&scene_assets.meshes)?);
     }
+    if !scene_assets.textures.is_empty() || uses_scene {
+        out.extend(embed_scene_textures(scene_assets)?);
+    }
+    if !scene_assets.material_shaders.is_empty() || uses_scene {
+        let mut items = TokenStream::new();
+        let shaders = scene_assets
+            .material_shaders
+            .iter()
+            .enumerate()
+            .map(|(index, (key, source))| {
+                let name = format_ident!("__XR_MATERIAL_SHADER_{index}");
+                let source = source.as_ref();
+                items.extend(quote! {
+                    static #name: ::std::sync::LazyLock<::std::sync::Arc<::core::primitive::str>> =
+                        ::std::sync::LazyLock::new(|| ::std::sync::Arc::from(#source));
+                });
+                quote!(#key => ::core::option::Option::Some((*#name).clone()),)
+            })
+            .collect::<Vec<_>>();
+        out.extend(items);
+        out.extend(quote! {
+            fn __xr_material_shader(key: &::core::primitive::str)
+                -> ::core::option::Option<::std::sync::Arc<::core::primitive::str>> {
+                match key { #(#shaders)* _ => ::core::option::Option::None }
+            }
+        });
+    }
     if !scene_assets.environments.is_empty() || module.operations().any(binds_scene_environment) {
         out.extend(embed_environments(scene_assets)?);
+    }
+    if !scene_assets.effects.is_empty() {
+        let shaders = scene_assets.effects.iter().map(|(url, source)| {
+            let source = source.as_ref();
+            quote!(#url => #source,)
+        });
+        out.extend(quote! {
+            fn __xr_scene_effect(url: &::core::primitive::str) -> &'static ::core::primitive::str {
+                match url {
+                    #(#shaders)*
+                    _ => "",
+                }
+            }
+        });
     }
     if !globals.is_empty() {
         let mut fields = TokenStream::new();

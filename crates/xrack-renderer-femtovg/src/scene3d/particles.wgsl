@@ -87,6 +87,7 @@ struct Sprite {
     @location(2) @interpolate(flat) depth: f32,
     @location(3) @interpolate(flat) sheet: vec4<f32>,
     @location(4) @interpolate(flat) frames: vec3<f32>,
+    // XRack wireframe varying
 }
 
 struct SpriteVertex {
@@ -346,7 +347,9 @@ fn sprite_vertex(vertex: u32, source: ParticleCenter, visible: bool) -> SpriteVe
     let clip = vec4<f32>(xy + offset, dot(view.clip_z, world), dot(view.clip_w, world));
     let alpha = select(0.0, base_alpha(emitter, age), visible);
     let sprite = Sprite(clip, uv, vec4<f32>(emitter.color.rgb * alpha, alpha),
-        dot(view.view_depth, world), emitter.sheet, frames);
+        dot(view.view_depth, world), emitter.sheet, frames,
+        // XRack wireframe corner
+    );
     return SpriteVertex(sprite, age_fraction, seed);
 }
 
@@ -524,10 +527,13 @@ struct Ribbon {
     @location(2) depth: f32,
     @location(3) @interpolate(flat) sheet: vec4<f32>,
     @location(4) @interpolate(flat) frames: vec3<f32>,
+    // XRack wireframe varying
 }
 
 fn ribbon(sprite: Sprite) -> Ribbon {
-    return Ribbon(sprite.position, sprite.uv, sprite.color, sprite.depth, sprite.sheet, sprite.frames);
+    return Ribbon(sprite.position, sprite.uv, sprite.color, sprite.depth, sprite.sheet, sprite.frames,
+        // XRack wireframe ribbon
+    );
 }
 
 struct TrailInterval {
@@ -598,7 +604,9 @@ fn trail_vertex(vertex: u32, sample: Displaced, interval: TrailInterval,
         * (1.0 - settings.z * interval.fraction) * interval.end_opacity, sample.visible);
     let world = vec4<f32>(sample.source.center, 1.0);
     let sprite = Sprite(vec4<f32>(xy, clip.zw), vec2<f32>(side, 1.0 - 2.0 * interval.fraction),
-        vec4<f32>(emitter.color.rgb * alpha, alpha), dot(view.view_depth, world), emitter.sheet, frames);
+        vec4<f32>(emitter.color.rgb * alpha, alpha), dot(view.view_depth, world), emitter.sheet, frames,
+        // XRack wireframe corner
+    );
     return SpriteVertex(sprite, life_fraction, particle.seed);
 }
 
@@ -676,6 +684,7 @@ fn vertex_mesh_trail_affected_tinted(@builtin(vertex_index) vertex: u32, @builti
 }
 
 fn trail_color(sprite: Ribbon) -> vec4<f32> {
+    // XRack wireframe discard
     let coverage = 1.0 - smoothstep(0.35, 1.0, abs(sprite.uv.x));
     return sprite.color * coverage;
 }
@@ -701,6 +710,7 @@ fn fragment_sprite(sprite: Sprite) -> @location(0) vec4<f32> {
 }
 
 fn sprite_color(sprite: Sprite) -> vec4<f32> {
+    // XRack wireframe discard
     let coverage = 1.0 - smoothstep(0.15, 1.0, length(sprite.uv));
     return sprite.color * coverage;
 }
@@ -721,10 +731,12 @@ fn sprite_sample(coordinates: vec2<f32>, sheet: vec4<f32>, frames: vec3<f32>) ->
 }
 
 fn texture_color(sprite: Sprite) -> vec4<f32> {
+    // XRack wireframe discard
     return sprite_sample(sprite.uv, sprite.sheet, sprite.frames) * sprite.color;
 }
 
 fn ribbon_texture(sprite: Ribbon) -> vec4<f32> {
+    // XRack wireframe discard
     return sprite_sample(sprite.uv, sprite.sheet, sprite.frames) * sprite.color;
 }
 

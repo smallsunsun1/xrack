@@ -944,6 +944,9 @@ pub enum ExprKind {
         options: Vec<String>,
     },
     EnvironmentUrl(String),
+    TextureUrl(String),
+    ShaderUrl(String),
+    MaterialShaderUrl(String),
     SlicedImageUrl {
         path: String,
         slice: String,

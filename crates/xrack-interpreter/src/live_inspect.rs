@@ -518,6 +518,7 @@ fn public_properties(instance: &Instance, limit: usize) -> Vec<Json> {
 fn describe_hit(value: &xrack_runtime::Hit3D) -> Json {
     json!({
         "valid": value.valid, "object-id": shortened(&value.object_id), "row-index": value.row_index, "distance": value.distance,
+        "mesh-node-index": value.mesh_node_index, "instance-index": value.instance_index,
         "position": {"x": value.position.x, "y": value.position.y, "z": value.position.z},
         "normal": {"x": value.normal.x, "y": value.normal.y, "z": value.normal.z},
         "local-position": {"x": value.local_position.x, "y": value.local_position.y, "z": value.local_position.z},

@@ -65,6 +65,8 @@ macro_rules! builtin_value_fields {
                 "valid" => valid: Bool,
                 "object-id" => object_id: String,
                 "row-index" => row_index: Int,
+                "mesh-node-index" => mesh_node_index: Int,
+                "instance-index" => instance_index: Int,
                 "distance" => distance: Float,
                 "position" => position: Point3D,
                 "normal" => normal: Vector3D,

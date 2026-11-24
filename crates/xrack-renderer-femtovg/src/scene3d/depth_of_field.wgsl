@@ -1,5 +1,5 @@
 struct Settings {
-    // Near, far (zero for infinite perspective), orthographic flag.
+    // Near, far (zero for infinite perspective), orthographic flag, alpha flag.
     projection: vec4<f32>,
     // Focus distance, half of the in-focus range, physical blur radii (x, y).
     focus: vec4<f32>,
@@ -14,6 +14,7 @@ struct Settings {
 @group(0) @binding(6) var foreground: texture_2d<f32>;
 @group(0) @binding(7) var foreground_depth: texture_2d<f32>;
 @group(0) @binding(8) var reduced_sampler: sampler;
+@group(0) @binding(9) var reduced_coverage: texture_2d<f32>;
 
 const SAMPLE_COUNT = 24u;
 const DISK = array<vec2<f32>, 24>(
@@ -86,17 +87,23 @@ fn depth_tolerance(view_depth: f32) -> f32 {
     return max(view_depth * 0.025, 0.01);
 }
 
-fn prefilter(pixels: array<vec2<i32>, 4>, clips: vec4<f32>) -> vec4<f32> {
+struct ReducedLayers {
+    @location(0) color_depth: vec4<f32>,
+    @location(1) coverage: f32,
+}
+
+fn prefilter(pixels: array<vec2<i32>, 4>, clips: vec4<f32>) -> ReducedLayers {
     let nearest = linear_depth(min(min(clips.x, clips.y), min(clips.z, clips.w)));
-    var sum = vec3<f32>(0.0);
+    var sum = vec4<f32>(0.0);
     var weight = 0.0;
     for (var i = 0u; i < 4u; i += 1u) {
         let depth = linear_depth(clips[i]);
         let w = max(1.0 - (depth - nearest) / depth_tolerance(nearest), 0.0);
-        sum += textureLoad(source, pixels[i], 0).rgb * w;
+        sum += textureLoad(source, pixels[i], 0) * w;
         weight += w;
     }
-    return vec4<f32>(sum / max(weight, 1.0), encode_depth(nearest));
+    let averaged = sum / max(weight, 1.0);
+    return ReducedLayers(vec4<f32>(averaged.rgb, encode_depth(nearest)), averaged.a);
 }
 
 fn quad(point: vec4<f32>) -> array<vec2<i32>, 4> {
@@ -108,8 +115,7 @@ fn quad(point: vec4<f32>) -> array<vec2<i32>, 4> {
     );
 }
 
-@fragment
-fn reduce(@builtin(position) point: vec4<f32>) -> @location(0) vec4<f32> {
+fn reduce_sample(point: vec4<f32>) -> ReducedLayers {
     let pixels = quad(point);
     return prefilter(pixels, vec4<f32>(
         textureLoad(depth, pixels[0], 0), textureLoad(depth, pixels[1], 0),
@@ -117,13 +123,32 @@ fn reduce(@builtin(position) point: vec4<f32>) -> @location(0) vec4<f32> {
     ));
 }
 
-@fragment
-fn reduce_msaa(@builtin(position) point: vec4<f32>) -> @location(0) vec4<f32> {
+fn reduce_sample_msaa(point: vec4<f32>) -> ReducedLayers {
     let pixels = quad(point);
     return prefilter(pixels, vec4<f32>(
         nearest_sample(pixels[0]), nearest_sample(pixels[1]),
         nearest_sample(pixels[2]), nearest_sample(pixels[3])
     ));
+}
+
+@fragment
+fn reduce(@builtin(position) point: vec4<f32>) -> @location(0) vec4<f32> {
+    return reduce_sample(point).color_depth;
+}
+
+@fragment
+fn reduce_msaa(@builtin(position) point: vec4<f32>) -> @location(0) vec4<f32> {
+    return reduce_sample_msaa(point).color_depth;
+}
+
+@fragment
+fn reduce_alpha(@builtin(position) point: vec4<f32>) -> ReducedLayers {
+    return reduce_sample(point);
+}
+
+@fragment
+fn reduce_alpha_msaa(@builtin(position) point: vec4<f32>) -> ReducedLayers {
+    return reduce_sample_msaa(point);
 }
 
 struct Components {
@@ -132,15 +157,21 @@ struct Components {
     @location(2) near_depth: f32,
 }
 
-fn sample_color(at: vec2<f32>, limit: vec2<i32>, nearest: vec4<f32>) -> vec3<f32> {
-    let filtered = textureSampleLevel(reduced, reduced_sampler,
-                                      (at + 0.5) / vec2<f32>(limit + 1), 0.0);
+fn sample_color(at: vec2<f32>, limit: vec2<i32>, nearest: vec4<f32>) -> vec4<f32> {
+    let uv = (at + 0.5) / vec2<f32>(limit + 1);
+    let filtered = textureSampleLevel(reduced, reduced_sampler, uv, 0.0);
     let depth = decode_depth(nearest.a);
-    // Interpolate subpixel colors only within the same depth layer.
-    if abs(decode_depth(filtered.a) - depth) < depth_tolerance(depth) {
-        return filtered.rgb;
+    // Interpolate subpixel colors and coverage only within the same depth layer.
+    let matches_depth = abs(decode_depth(filtered.a) - depth) < depth_tolerance(depth);
+    var alpha = 1.0;
+    if settings.projection.w > 0.5 {
+        if matches_depth {
+            alpha = textureSampleLevel(reduced_coverage, reduced_sampler, uv, 0.0).r;
+        } else {
+            alpha = textureLoad(reduced_coverage, vec2<i32>(round(at)), 0).r;
+        }
     }
-    return nearest.rgb;
+    return vec4<f32>(select(nearest.rgb, filtered.rgb, matches_depth), alpha);
 }
 
 @fragment
@@ -154,10 +185,13 @@ fn gather(@builtin(position) point: vec4<f32>) -> Components {
     let max_radius = max(half_radius.x, half_radius.y);
     let base_radius = abs(center_coc) * half_radius;
     let bias = depth_tolerance(center_depth);
-    var base = center.rgb;
+    var alpha = 1.0;
+    if settings.projection.w > 0.5 {
+        alpha = textureLoad(reduced_coverage, pixel, 0).r;
+    }
+    var base = vec4<f32>(center.rgb, alpha);
     var base_count = 1.0;
-    var near_color = vec3<f32>(0.0);
-    var near_count = 0.0;
+    var near_color = vec4<f32>(0.0);
     var nearest = linear_depth(1.0);
     for (var i = 0u; i < SAMPLE_COUNT; i += 1u) {
         let direction = DISK[i];
@@ -179,17 +213,18 @@ fn gather(@builtin(position) point: vec4<f32>) -> Components {
             let weight = clamp((radius - length(direction * max_radius)) / 1.5, 0.0, 1.0);
             if weight > 0.0 {
                 near_color += sample_color(at, limit, near) * weight;
-                near_count += weight;
                 nearest = min(nearest, z);
             }
         }
     }
-    return Components(vec4<f32>(base / base_count, center.a),
-                      vec4<f32>(near_color, near_count) / f32(SAMPLE_COUNT), nearest);
+    let base_color = base / base_count;
+    return Components(vec4<f32>(base_color.rgb, select(center.a, base_color.a, settings.projection.w > 0.5)),
+                      near_color / f32(SAMPLE_COUNT), nearest);
 }
 
 fn composite_pixel(pixel: vec2<i32>, clip: f32) -> vec4<f32> {
-    let sharp = textureLoad(source, pixel, 0).rgb;
+    let sharp = textureLoad(source, pixel, 0);
+    let composite_alpha = settings.projection.w > 0.5;
     let linear = linear_depth(clip);
     let coc = abs(circle_of_confusion(linear));
     let size = vec2<i32>(textureDimensions(blurred));
@@ -197,7 +232,7 @@ fn composite_pixel(pixel: vec2<i32>, clip: f32) -> vec4<f32> {
     let tile = vec2<i32>(floor(at));
     let fraction = fract(at);
     let tolerance = depth_tolerance(linear);
-    var base = vec3<f32>(0.0);
+    var base = vec4<f32>(0.0);
     var base_weight = 0.0;
     var overlay = vec4<f32>(0.0);
     for (var i = 0u; i < 4u; i += 1u) {
@@ -207,8 +242,14 @@ fn composite_pixel(pixel: vec2<i32>, clip: f32) -> vec4<f32> {
         let weight = bilinear.x * bilinear.y;
         if coc > 0.0 {
             let sample = textureLoad(blurred, tap, 0);
-            let matching = max(1.0 - abs(decode_depth(sample.a) - linear) / tolerance, 0.0) * weight;
-            base += sample.rgb * matching;
+            var depth = sample.a;
+            var alpha = 1.0;
+            if composite_alpha {
+                depth = textureLoad(reduced, tap, 0).a;
+                alpha = sample.a;
+            }
+            let matching = max(1.0 - abs(decode_depth(depth) - linear) / tolerance, 0.0) * weight;
+            base += vec4<f32>(sample.rgb, alpha) * matching;
             base_weight += matching;
         }
         let near = textureLoad(foreground, tap, 0);
@@ -218,7 +259,8 @@ fn composite_pixel(pixel: vec2<i32>, clip: f32) -> vec4<f32> {
     }
     let mixing = coc * min(1.0, base_weight * 3.0);
     let color = mix(sharp, base / max(base_weight, 1e-6), mixing);
-    return vec4<f32>(color * (1.0 - overlay.a) + overlay.rgb, 1.0);
+    let premultiplied = color * (1.0 - overlay.a) + overlay;
+    return vec4<f32>(premultiplied.rgb, select(1.0, premultiplied.a, composite_alpha));
 }
 
 @fragment
