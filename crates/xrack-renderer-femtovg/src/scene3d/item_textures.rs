@@ -67,7 +67,13 @@ impl MipChain {
         filter.decode_item(&renderer.device, encoder, (source, &self.levels[0]));
         for (previous, levels) in self.levels.windows(2).enumerate() {
             let size = mip_extent(self.size, previous + 1);
-            filter.resolve(&renderer.device, encoder, (&levels[0], &levels[1]), size);
+            filter.resolve(
+                &renderer.device,
+                encoder,
+                (&levels[0], &levels[1]),
+                size,
+                super::COLOR_FORMAT,
+            );
         }
         renderer.scene3d.stats.item_texture_mip_passes += self.levels.len() as u64;
     }

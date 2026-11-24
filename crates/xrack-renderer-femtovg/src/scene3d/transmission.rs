@@ -95,10 +95,16 @@ impl Capture {
         let mut size = self.size;
         for pair in self.levels[..levels].windows(2) {
             size = size.map(|side| (side / 2).max(1));
-            area.resolve(device, encoder, (&pair[0], &pair[1]), size);
+            area.resolve(device, encoder, (&pair[0], &pair[1]), size, self.format);
         }
         if let Some(target) = seed {
-            area.resolve(device, encoder, (&self.levels[0], target), self.size);
+            area.resolve(
+                device,
+                encoder,
+                (&self.levels[0], target),
+                self.size,
+                self.format,
+            );
         }
     }
 }

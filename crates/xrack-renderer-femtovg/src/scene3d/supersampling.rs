@@ -66,12 +66,14 @@ impl Supersampling {
         }
     }
 
+    // Use the view's format, which can be sRGB over a linear backing texture.
     pub fn resolve(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         (source, target): (&wgpu::TextureView, &wgpu::TextureView),
         size: [u32; 2],
+        format: wgpu::TextureFormat,
     ) {
         let mut bytes = [0; 8];
         bytes[..4].copy_from_slice(&size[0].to_ne_bytes());
@@ -82,7 +84,7 @@ impl Supersampling {
             &bytes,
             wgpu::BufferUsages::UNIFORM,
         );
-        let pipeline = self.pipeline(device, target.texture().format(), false);
+        let pipeline = self.pipeline(device, format, false);
         Self::draw(
             device,
             encoder,

@@ -230,6 +230,11 @@ impl PostProcess {
                 ctx.encoder,
                 (source, reduced.as_ref().unwrap_or(ctx.target)),
                 ctx.size,
+                if reduced.is_some() {
+                    format
+                } else {
+                    ctx.format
+                },
             );
             reduced
         } else {
