@@ -37,7 +37,7 @@ Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 c
 
 在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 重试，脚本会校验已发布的版本及对应的源码提交。升版本时同步 workspace 版本、内部 crate 依赖、宿主包版本、Bazel 目标版本和 Cargo 消费示例。
 
-如果已有 tag 的流水线需要使用更新后的 CI 配置，在 `main` 上手动运行 **Release XRack**，输入版本并勾选 **Publish an existing release tag from main**。`crates-io` 环境需允许 `main` 发布。工作流会从已有 tag 对应的提交重新构建并验证所有平台的产物。
+如果已有稳定 tag 的流水线需要更新发布工具，在 `main` 上手动运行 **Release XRack**，输入版本并勾选 **Publish an existing release tag from main**。`crates-io` 环境需允许 `main` 发布。工作流从 tag 读取源码，复用该提交通过 main CI 时生成的产物，并用当前工作流版本的打包工具重新验证和发布。主 CI 会逐个平台检查编译器和 MLIR 的 Cargo 包大小。
 
 ## VS Code Marketplace
 

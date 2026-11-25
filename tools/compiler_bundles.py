@@ -4,12 +4,15 @@ import gzip
 import hashlib
 import json
 import lzma
+import os
 from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
 import tomllib
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(
+    os.environ.get("XRACK_RELEASE_SOURCE_ROOT", Path(__file__).resolve().parents[1])
+).resolve()
 
 
 def hosts():
@@ -80,9 +83,12 @@ def install_bundle(
     package = workspace / "bundles/compiler" / host
     windows = "windows" in host
     executable = "xrackc.exe" if windows else "xrackc"
-    payload = "xrackc.xz" if windows else "xrackc.gz"
+    with (workspace / "crates/xrack-build/Cargo.toml").open("rb") as manifest:
+        bundled = tomllib.load(manifest).get("features", {}).get("bundled", ())
+    supports_xz = "dep:lzma-rust2" in bundled
+    payload = "xrackc.xz" if supports_xz else "xrackc.gz"
     filters = [{"id": lzma.FILTER_LZMA2, "preset": 8}]
-    if host == "x86_64-pc-windows-msvc":
+    if host.startswith("x86_64-"):
         # Normalize relative branch targets before compressing x86 instructions.
         filters.insert(0, {"id": lzma.FILTER_X86})
     compiler_digest = hashlib.sha256()
@@ -96,7 +102,7 @@ def install_bundle(
                 with bundle.extractfile(entry) as source, (package / payload).open("wb") as output:
                     writer = (
                         lzma.LZMAFile(output, "wb", filters=filters)
-                        if windows
+                        if supports_xz
                         else gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0)
                     )
                     with writer as compressed:

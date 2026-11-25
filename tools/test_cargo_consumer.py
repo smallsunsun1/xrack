@@ -233,9 +233,8 @@ def main():
             env.pop(key, None)
         if args.interpreter:
             archive, _ = bundles.verified_archive(archives, version, args.host)
-            if "windows" in args.host:
-                commit = subprocess.check_output(("git", "rev-parse", "HEAD"), cwd=root, text=True).strip()
-                bundles.install_bundle(workspace, archives, version, args.host, commit)
+            commit = subprocess.check_output(("git", "rev-parse", "HEAD"), cwd=root, text=True).strip()
+            bundles.install_bundle(workspace, archives, version, args.host, commit)
             mlir_bundles.stage_bundle(workspace, archive, args.host)
             compiler = bundles.extract_compiler(archive, stage)
             check_interpreter(app, compiler, env)
@@ -269,7 +268,7 @@ def main():
                 command.extend(("--config", f"patch.crates-io.{name}.path={json.dumps(path)}"))
             if args.interpreter or args.media:
                 names = [f"xrack-media-bin-{args.host}" if args.media else f"xrack-mlir-bin-{args.host}"]
-                if args.interpreter and "windows" in args.host:
+                if args.interpreter:
                     names.append(bundles.crate_name(args.host))
                 packages = ["cargo", "package", "--locked", "--no-verify", "--allow-dirty"]
                 for name in names:
