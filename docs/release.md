@@ -37,13 +37,13 @@ Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 c
 
 在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 重试，脚本会校验已发布的版本及对应的源码提交。升版本时同步 workspace 版本、内部 crate 依赖、宿主包版本、Bazel 目标版本和 Cargo 消费示例。
 
-如果已有稳定 tag 的流水线需要更新发布工具，在 `main` 上手动运行 **Release XRack**，输入版本并勾选 **Publish an existing release tag from main**。`crates-io` 环境需允许 `main` 发布。工作流从 tag 读取源码，复用该提交通过 main CI 时生成的产物，并用当前工作流版本的打包工具重新验证和发布。主 CI 会逐个平台检查编译器和 MLIR 的 Cargo 包大小。
+如果已有稳定 tag 的流水线需要更新发布工具，在 `main` 上手动运行 **Release XRack**，输入版本并勾选 **Publish an existing release tag from main**。`crates-io` 环境需允许 `main` 发布。工作流从 tag 读取源码，复用该提交通过 main CI 时生成的产物，并用当前工作流版本的打包工具重新验证和发布 Cargo 包与 GitHub 归档。主 CI 会逐个平台检查编译器和 MLIR 的 Cargo 包大小。
 
 ## VS Code Marketplace
 
 稳定版本和 Cargo 使用同一个 `vX.Y.Z` tag。先同步 Cargo workspace 与 `crates/xrack-lsp/vscode/package.json` 的版本，并确保该提交的 main CI 通过。发布工作流复用 CI 的五个平台 VSIX，通过 `vscode-marketplace` 环境和 Marketplace 的 GitHub OIDC 信任策略发布。 [Release XRack](../.github/workflows/release-crates.yml) · [Marketplace](https://marketplace.visualstudio.com/items?itemName=SunJiahe.xrack)
 
-如果 Cargo 已发布而 Marketplace 需要补发，可以从 `main` 手动运行 **Release XRack**，输入同一个稳定版本并勾选 **Publish the verified VSIX packages for an existing stable Cargo release**。补发使用原 tag 对应的 CI 产物，并检查该 tag 已成功发布 Cargo。手动运行期间，`vscode-marketplace` 环境需要允许 `main` 部署。
+如果 Marketplace 环境仅允许版本标签，Cargo 补发成功后，重跑原 tag 的发布工作流。工作流会按来源校验已发布的 Cargo 包并跳过重复上传。允许 `main` 部署到 Marketplace 时，也可以从 `main` 手动运行 **Release XRack**，输入同一个稳定版本并勾选 **Publish the verified VSIX packages for an existing stable Cargo release**。补发使用原 tag 对应的 CI 产物，并检查该 tag 已成功发布 Cargo。手动运行期间，`vscode-marketplace` 环境需要允许 `main` 部署。
 
 ## PyPI
 

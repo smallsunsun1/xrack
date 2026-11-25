@@ -87,7 +87,9 @@ jobs:
               echo "::error::The release commit must pass CI on main before publishing."
               exit 1
             fi
-            marketplace=true
+            if [[ "$GITHUB_EVENT_NAME" == push || "$VSCODE_ONLY" == true ]]; then
+              marketplace=true
+            fi
           fi
           if [[ "$VSCODE_ONLY" == true ]]; then
             release_run=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/release-crates.yml/runs" \
