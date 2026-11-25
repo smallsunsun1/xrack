@@ -39,7 +39,11 @@ pub fn materialize(out: &Path) -> io::Result<PathBuf> {
     let temporary = out.join("xrackc-extract.tmp");
     {
         let mut file = fs::File::create(&temporary)?;
-        io::copy(&mut flate2::read::GzDecoder::new(COMPILER), &mut file)?;
+        if COMPILER.starts_with(b"\xfd7zXZ\0") {
+            io::copy(&mut lzma_rust2::XzReader::new(COMPILER, false), &mut file)?;
+        } else {
+            io::copy(&mut flate2::read::GzDecoder::new(COMPILER), &mut file)?;
+        }
     }
     #[cfg(unix)]
     {

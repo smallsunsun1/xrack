@@ -4879,6 +4879,7 @@ name = "xrack-build"
 version = "0.8.0"
 dependencies = [
  "flate2",
+ "lzma-rust2",
  "xrackc-bin-aarch64-apple-darwin",
  "xrackc-bin-aarch64-pc-windows-msvc",
  "xrackc-bin-aarch64-unknown-linux-gnu",

@@ -3,6 +3,7 @@
 import gzip
 import hashlib
 import json
+import lzma
 from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
@@ -72,25 +73,38 @@ def extract_compiler(archive, destination):
     raise ValueError(f"{archive}: missing {executable}")
 
 
-def install_bundle(workspace, archives, version, host, source_commit):
+def install_bundle(
+    workspace: Path, archives: Path, version: str, host: str, source_commit: str
+) -> dict[str, str | None]:
     archive, digest = verified_archive(archives, version, host)
     package = workspace / "bundles/compiler" / host
-    executable = "xrackc.exe" if "windows" in host else "xrackc"
+    windows = "windows" in host
+    executable = "xrackc.exe" if windows else "xrackc"
+    payload = "xrackc.xz" if windows else "xrackc.gz"
+    filters = [{"id": lzma.FILTER_LZMA2, "preset": 8}]
+    if host == "x86_64-pc-windows-msvc":
+        # Normalize relative branch targets before compressing x86 instructions.
+        filters.insert(0, {"id": lzma.FILTER_X86})
     compiler_digest = hashlib.sha256()
-    native_tail = None
+    native_tail: bytes | None = None
     found = False
     with tarfile.open(archive, "r:gz") as bundle:
         for relative, entry in archive_members(bundle, archive):
             if relative == PurePosixPath(executable):
                 if found or entry.size == 0:
                     raise ValueError(f"{archive}: invalid compiler entry")
-                with bundle.extractfile(entry) as source, (package / "xrackc.gz").open("wb") as output:
-                    with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
+                with bundle.extractfile(entry) as source, (package / payload).open("wb") as output:
+                    writer = (
+                        lzma.LZMAFile(output, "wb", filters=filters)
+                        if windows
+                        else gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0)
+                    )
+                    with writer as compressed:
                         for chunk in iter(lambda: source.read(1024 * 1024), b""):
                             compiler_digest.update(chunk)
                             compressed.write(chunk)
                 found = True
-            elif relative.as_posix() == "mlir/xrack_mlir_native.lib.xz.tail" and "windows" in host:
+            elif relative.as_posix() == "mlir/xrack_mlir_native.lib.xz.tail" and windows:
                 native_tail = bundle.extractfile(entry).read()
                 (package / "mlir-tail.xz").write_bytes(native_tail)
             elif relative.parts[:1] == ("licenses",) or relative.name in ("LICENSE-APACHE", "LICENSE-MIT"):
@@ -107,8 +121,8 @@ def install_bundle(workspace, archives, version, host, source_commit):
         raise ValueError(f"{manifest}: expected a compiler placeholder")
     manifest.write_text(text.replace("publish = false\n", "").replace('../stub.rs', 'src/lib.rs'))
     (package / "src").mkdir()
-    source = 'pub const COMPILER: &[u8] = include_bytes!("../xrackc.gz");\n'
-    if "windows" in host:
+    source = f'pub const COMPILER: &[u8] = include_bytes!("../{payload}");\n'
+    if windows:
         source += ('pub const MLIR_TAIL: &[u8] = include_bytes!("../mlir-tail.xz");\n'
                    if native_tail else 'pub const MLIR_TAIL: &[u8] = &[];\n')
     (package / "src/lib.rs").write_text(source)

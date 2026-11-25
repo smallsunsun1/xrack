@@ -22,7 +22,9 @@ TARGETS = (
 )
 
 
-def native_inputs(bazel, options, bin_dir, host, directory):
+def native_inputs(
+    bazel: Path, options: tuple[str, ...], bin_dir: Path, host: str, directory: Path
+) -> list[tuple[Path, str]]:
     """Produce independently compressed static libraries and generated sources."""
     missing = (bin_dir / "mlir/xrack_mlir_native_linkdeps.txt").read_text().strip()
     if missing:
@@ -69,16 +71,19 @@ def native_inputs(bazel, options, bin_dir, host, directory):
              for name in ("native-libraries.txt", "system-libraries.txt")]
     for source in libraries:
         compressed = directory / (source.name + ".xz")
-        with source.open("rb") as input_file, lzma.open(compressed, "wb", preset=6) as output:
+        split_windows_archive = windows and source.name == archive_name
+        preset = 9 if split_windows_archive else 6
+        with source.open("rb") as input_file, lzma.open(compressed, "wb", preset=preset) as output:
             shutil.copyfileobj(input_file, output)
-        # Keep COFF objects intact and distribute the compressed stream across
-        # the two existing platform crates when the native archive is large.
-        if windows and source.name == archive_name:
+        # Keep COFF objects intact and leave room for the bundled C++ runtime
+        # and metadata under the 10 MB crates.io limit.
+        if split_windows_archive:
+            head_size = 8_900_000
             with compressed.open("r+b") as payload:
-                payload.seek(8_000_000)
+                payload.seek(head_size)
                 tail = payload.read()
                 if tail:
-                    payload.truncate(8_000_000)
+                    payload.truncate(head_size)
                     part = directory / (compressed.name + ".tail")
                     part.write_bytes(tail)
                     files.append((part, "mlir/" + part.name))
