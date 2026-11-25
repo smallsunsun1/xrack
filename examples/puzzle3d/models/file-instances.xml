@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<InstanceTable>
+  <Instance position="-2 0 0" scale="0.42 0.42 0.42" color="red" custom="0.2 0.3 0.4 0.5"/>
+  <Instance position="0 0 0" scale="0.4 0.6 0.4" quaternion="0 0 1 0" color="lime" custom="0.7 0.5 0.2 1"/>
+  <Instance position="2 0 0" scale="-0.45 0.45 0.45" color="blue" custom="0.3 0.6"/>
+</InstanceTable>

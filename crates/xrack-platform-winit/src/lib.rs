@@ -2297,11 +2297,18 @@ impl<C: Component> Application<C> {
             let base = xrack_layout::apply_system_layout_direction(base, direction);
             base
         };
-        let (mut scene, mut layout) = state.frame.prepare(base, viewport, &self.input, |base| {
+        let (mut scene, mut layout) =
             state
-                .renderer
-                .prepare_scene(&self.component, prepare_base(base), viewport, &self.input)
-        });
+                .frame
+                .prepare_reusing(base, viewport, &self.input, |base, previous| {
+                    state.renderer.prepare_scene_recycling(
+                        &self.component,
+                        prepare_base(base),
+                        viewport,
+                        &self.input,
+                        previous,
+                    )
+                });
         #[cfg(target_os = "ios")]
         if let Some(base) = floating_base {
             let caret = floating_keyboard.and_then(|_| {
@@ -2314,14 +2321,18 @@ impl<C: Component> Application<C> {
                 .input
                 .avoid_floating_keyboard(&scene, &layout, floating_keyboard, caret)
             {
-                (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
-                    state.renderer.prepare_scene(
-                        &self.component,
-                        prepare_base(base),
-                        viewport,
-                        &self.input,
-                    )
-                });
+                (scene, layout) =
+                    state
+                        .frame
+                        .prepare_reusing(base, viewport, &self.input, |base, previous| {
+                            state.renderer.prepare_scene_recycling(
+                                &self.component,
+                                prepare_base(base),
+                                viewport,
+                                &self.input,
+                                previous,
+                            )
+                        });
             }
         }
         if self
@@ -2348,14 +2359,18 @@ impl<C: Component> Application<C> {
         if let Some(base) = resized_base
             && self.input.reveal_focused_editor(&scene, &layout)
         {
-            (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
-                state.renderer.prepare_scene(
-                    &self.component,
-                    prepare_base(base),
-                    viewport,
-                    &self.input,
-                )
-            });
+            (scene, layout) =
+                state
+                    .frame
+                    .prepare_reusing(base, viewport, &self.input, |base, previous| {
+                        state.renderer.prepare_scene_recycling(
+                            &self.component,
+                            prepare_base(base),
+                            viewport,
+                            &self.input,
+                            previous,
+                        )
+                    });
         }
         #[cfg(target_os = "ios")]
         let native_editor = self
@@ -2382,14 +2397,18 @@ impl<C: Component> Application<C> {
             let Some(state) = self.state.as_mut() else {
                 return false;
             };
-            (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
-                state.renderer.prepare_scene(
-                    &self.component,
-                    prepare_base(base),
-                    viewport,
-                    &self.input,
-                )
-            });
+            (scene, layout) =
+                state
+                    .frame
+                    .prepare_reusing(base, viewport, &self.input, |base, previous| {
+                        state.renderer.prepare_scene_recycling(
+                            &self.component,
+                            prepare_base(base),
+                            viewport,
+                            &self.input,
+                            previous,
+                        )
+                    });
             self.input
                 .reconcile_with_native_editor(&scene, &layout, native_editor.as_ref());
         }
@@ -7733,6 +7752,7 @@ impl<C: Component> Application<C> {
         };
         let size = drawable_size(&state.window);
         if size.width == 0 || size.height == 0 {
+            self.timers.reset_frame_baselines();
             return Ok(());
         }
         // Configuring waits for GPU work. Apply the latest size once before acquiring a drawable.
@@ -7765,7 +7785,10 @@ impl<C: Component> Application<C> {
                     state.window.request_redraw();
                     return Ok(());
                 }
-                wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+                wgpu::CurrentSurfaceTexture::Occluded => {
+                    self.timers.reset_frame_baselines();
+                    return Ok(());
+                }
                 wgpu::CurrentSurfaceTexture::Outdated => {
                     state.configure_surface(drawable_size(&state.window))?;
                     self.relayout();
@@ -7789,6 +7812,16 @@ impl<C: Component> Application<C> {
                     return Err("GPU surface validation failed".into());
                 }
             }
+        };
+        if self.timers.has_frame_animations() {
+            for delivery in self.timers.frame_deliveries(Instant::now()) {
+                if self.timers.frame_delivery_is_current(&delivery) && delivery.fire() {
+                    self.refresh_after_update(false);
+                }
+            }
+        }
+        let Some(state) = &mut self.state else {
+            return Ok(());
         };
         let target = frame.as_ref().map(|frame| &frame.texture);
         #[cfg(target_os = "macos")]
@@ -7896,7 +7929,10 @@ impl<C: Component> Application<C> {
         let completion = state.renderer.take_painted_combo_completion();
         self.input
             .set_painted_combo_completion(completion.filter(|_| state.window.has_focus()));
-        if state.renderer.needs_redraw() || self.stack_transitions.is_active() {
+        if state.renderer.needs_redraw()
+            || self.stack_transitions.is_active()
+            || self.timers.has_frame_animations()
+        {
             #[cfg(target_os = "ios")]
             self.animation_wake
                 .get_or_insert(Instant::now() + Duration::from_millis(16));
@@ -9209,6 +9245,7 @@ impl<C: Component> Application<C> {
             }
             WindowEvent::Occluded(occluded) => {
                 if occluded {
+                    self.timers.reset_frame_baselines();
                     self.cancel_scale_rotate();
                     if let Some(state) = &mut self.state {
                         state.finish_client_resize();

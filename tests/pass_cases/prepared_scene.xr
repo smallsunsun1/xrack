@@ -1,0 +1,41 @@
+// RAW: "xr.geometry_function"{{.*}}value = "prepare-3d"{{.*}} -> !xr.scenemodel3d
+// RAW: "xr.physics_function"{{.*}}value = "step"
+// RAW: "xr.geometry_function"{{.*}}value = "map-position-3d"
+// CHECK: "xr.callback"() <{name = "sample"
+// CHECK: [[BEFORE:%[0-9]+]] = "xr.geometry_function"{{.*}}value = "prepare-3d"{{.*}} -> !xr.scenemodel3d
+// CHECK: [[FROZEN:%[0-9]+]] = "xr.local"([[BEFORE]])
+// CHECK: [[STEP:%[0-9]+]] = "xr.physics_function"{{.*}}value = "step"
+// CHECK: "xr.evaluate"([[STEP]])
+// CHECK: "xr.geometry_function"([[FROZEN]], {{.*}}value = "map-position-3d"
+// CHECK: "xr.geometry_function"{{.*}}value = "prepare-3d"{{.*}} -> !xr.scenemodel3d
+// CHECK: "xr.geometry_function"{{.*}}value = "map-position-3d"
+
+struct Actor {
+    id: string, mesh: string, physics-body: string,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component App inherits Window {
+    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    property <[Actor]> actors: [
+        Actor { id: "object", mesh: "primitive:box", physics-body: "rigid",
+            x: 0, y: 2, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+            yaw: 0, pitch: 0, roll: 0, color: #ffffff },
+    ];
+    out property <float> old-x: 0;
+    out property <float> new-x: 0;
+
+    callback sample();
+    sample() => {
+        let frozen = Scene3D.prepare(root.actors, root.world);
+        Physics3D.step(root.world);
+        let zero = Point3D.new(0, 0, 0);
+        let previous = Scene3D.map-position(frozen, "object", "", zero, zero);
+        root.old-x = previous.x;
+        let current = Scene3D.map-position(Scene3D.prepare(root.actors, root.world), "object", "", zero, zero);
+        root.new-x = current.x;
+    }
+
+    SceneView3D { model: Scene3D.prepare(root.actors, root.world); }
+}

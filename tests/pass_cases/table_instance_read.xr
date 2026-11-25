@@ -1,0 +1,23 @@
+// RAW: "xr.geometry_function"{{.*}}value = "table-instance-3d"
+// CHECK: "xr.geometry_function"{{.*}}value = "table-instance-3d"{{.*}} -> !xr.instance3d
+// CHECK: "xr.property"{{.*}}name = "sample"
+// CHECK: "xr.geometry_function"{{.*}}value = "table-instance-3d"{{.*}} -> !xr.instance3d
+// CHECK: "xr.property"{{.*}}name = "read-before-invalid"
+// CHECK-NOT: "xr.geometry_function"{{.*}}value = "table-instance-3d"
+// CHECK: "xr.literal"() <{value = ""}> : () -> !xr.instance3d
+// CHECK: "xr.property"{{.*}}name = "negative"
+// CHECK-NOT: "xr.geometry_function"{{.*}}value = "table-instance-3d"
+// CHECK: "xr.property"{{.*}}name = "past-end"
+
+struct Entry { color: color }
+
+export component App inherits Window {
+    in-out property <instancetable3d> source;
+    in-out property <int> index: 0;
+    out property <instance3d> sample: Scene3D.table-instance(root.source, root.index);
+    out property <instance3d> read-before-invalid: Scene3D.table-instance(root.source, -1);
+    out property <instance3d> negative: Scene3D.table-instance(
+        Scene3D.instance-table([Entry { color: #fff }]), -1);
+    out property <instance3d> past-end: Scene3D.table-instance(
+        Scene3D.instance-table([Entry { color: #fff }]), 1);
+}

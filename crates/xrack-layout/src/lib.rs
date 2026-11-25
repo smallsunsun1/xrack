@@ -90,8 +90,8 @@ pub use input::{
 };
 pub use keyboard::KeyRoute;
 pub use label::{
-    LabelLayout, LabelLine, LabelPlan, LabelStyle, PlannedLabelLine, TextAlignment, elide_to_width,
-    uses_label_layout,
+    LabelLayout, LabelLine, LabelMeasurements, LabelPlan, LabelStyle, PlannedLabelLine,
+    TextAlignment, elide_to_width, uses_label_layout,
 };
 pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow, NativeTextMenu};
 pub use modal::{dialog_title_height, drawer_grip};
@@ -456,6 +456,26 @@ impl LayoutNode {
             };
         }
         layout_placement_fields!(clone_placed)
+    }
+
+    #[inline]
+    fn clone_placement_from(
+        &mut self,
+        template: &Self,
+        bounds: Rect,
+        clip: Rect,
+        ancestors: Option<&Rc<ClipChain>>,
+    ) {
+        self.bounds = bounds;
+        self.clip = clip;
+        self.ancestor_shapes = ancestors.or(template.ancestor_shapes.as_ref()).cloned();
+        macro_rules! copy_placed {
+            (copy [$($copy:ident,)*] clone [$($clone:ident,)*]) => {{
+                $(self.$copy = template.$copy;)*
+                $(self.$clone.clone_from(&template.$clone);)*
+            }};
+        }
+        layout_placement_fields!(copy_placed)
     }
 
     /// Compare a retained layout with a new placement in one traversal.
@@ -2143,12 +2163,18 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             enabled,
             layout_direction: self.layout_direction,
         };
-        if let Some(local) = self
+        if let Some((local, reuse)) = self
             .row_layouts
             .as_deref_mut()
             .and_then(|cache| cache.local_layout(&self.path, node, inputs, kind))
         {
-            return row_layout::clone_in_view(local, bounds, clip, self.ancestor_shapes.as_ref());
+            return row_layout::clone_in_view_reusing(
+                local,
+                bounds,
+                clip,
+                self.ancestor_shapes.as_ref(),
+                reuse,
+            );
         }
         let Some(nodes) = self
             .row_layouts

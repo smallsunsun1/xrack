@@ -35,6 +35,48 @@ fn visual_slots(module: &Module) -> usize {
 }
 
 #[test]
+fn compiled_rotation_tracks_fold_metadata_and_reject_malformed_keys() {
+    let source = r#"
+        module {
+          "xr.component"() <{exported = "true", sym_name = "Demo"}> ({
+            %0 = "xr.literal"() <{value = "0 0 0 0 1 2 0 0 1 2"}> : () -> !xr.rotationtrack3d
+            %1 = "xr.rotation_track3d_field"(%0) <{value = "duration"}> : (!xr.rotationtrack3d) -> !xr.float
+            %2 = "xr.rotation_track3d_field"(%0) <{value = "count"}> : (!xr.rotationtrack3d) -> !xr.int
+            %3 = "xr.rotation_track3d_field"(%0) <{value = "valid"}> : (!xr.rotationtrack3d) -> !xr.bool
+            "xr.property"(%1) <{name = "duration", visibility = "out"}> : (!xr.float) -> ()
+            "xr.property"(%2) <{name = "count", visibility = "out"}> : (!xr.int) -> ()
+            "xr.property"(%3) <{name = "valid", visibility = "out"}> : (!xr.bool) -> ()
+            "xr.element"() <{id = "", kind = "Window"}> ({
+              "xr.end"() : () -> ()
+            }) : () -> ()
+            "xr.end"() : () -> ()
+          }) : () -> ()
+        }
+    "#;
+    let optimized = Module::parse(source).unwrap().optimize().unwrap();
+    optimized.verify().unwrap();
+    let component = optimized.operations().next().unwrap();
+    for (name, expected) in [("duration", "2"), ("count", "2"), ("valid", "true")] {
+        let value = definition(member(component, "xr.property", name), 0);
+        assert_eq!(value.name(), "xr.literal");
+        assert_eq!(value.attribute("value"), Some(expected));
+    }
+    for corrupt in [
+        "0 0 0 0",
+        "-1 0 0 0 1",
+        "0 0 0 0 1 0 0 0 1 2",
+        "0 0 0 nan 1",
+    ] {
+        let source = source.replace("0 0 0 0 1 2 0 0 1 2", corrupt);
+        assert!(
+            Module::parse(&source)
+                .and_then(|module| module.verify())
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn fused_string_concatenation_is_valid_in_visual_bindings() {
     let module = raw(
         r#"

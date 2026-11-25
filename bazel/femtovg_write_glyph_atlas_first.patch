@@ -1,0 +1,279 @@
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -430,6 +430,7 @@
+     overflow_state: State,
+     warned_overflow: bool,
+     commands: Vec<Command>,
++    glyph_writes: text::GlyphAtlasWrites,
+     verts: Vec<Vertex>,
+     images: ImageStore<T::Image>,
+     pending_image_deletions: HashSet<ImageId>,
+@@ -531,6 +532,7 @@
+             overflow_state: State::default(),
+             warned_overflow: false,
+             commands: Vec::new(),
++            glyph_writes: Default::default(),
+             verts: Vec::new(),
+             images: ImageStore::new(),
+             pending_image_deletions: HashSet::new(),
+@@ -576,6 +578,7 @@
+             overflow_state: State::default(),
+             warned_overflow: false,
+             commands: Vec::new(),
++            glyph_writes: Default::default(),
+             verts: Vec::new(),
+             images: ImageStore::new(),
+             pending_image_deletions: HashSet::new(),
+@@ -717,12 +720,8 @@
+     /// Call this at the end of each frame.
+     pub fn flush_to_output(&mut self, output: impl Into<T::RenderOutput>) -> T::CommandBuffer {
+         self.upload_fill_masks();
+-        let command_buffer = self.renderer.render(
+-            output,
+-            &mut self.images,
+-            &self.verts,
+-            std::mem::take(&mut self.commands),
+-        );
++        let commands = self.glyph_writes.prepend(std::mem::take(&mut self.commands));
++        let command_buffer = self.renderer.render(output, &mut self.images, &self.verts, commands);
+         self.verts.clear();
+         for image in self.clip_masks.end_frame() {
+             self.images.remove(&mut self.renderer, image);
+@@ -2703,8 +2702,9 @@
+     /// Call this at the end of each frame.
+     pub fn flush(&mut self) {
+         self.upload_fill_masks();
++        let commands = self.glyph_writes.prepend(std::mem::take(&mut self.commands));
+         self.renderer
+-            .render_surfaceless(&mut self.images, &self.verts, std::mem::take(&mut self.commands));
++            .render_surfaceless(&mut self.images, &self.verts, commands);
+         self.verts.clear();
+         for image in self.clip_masks.end_frame() {
+             self.images.remove(&mut self.renderer, image);
+diff --git a/src/renderer.rs b/src/renderer.rs
+--- a/src/renderer.rs
++++ b/src/renderer.rs
+@@ -337,6 +337,12 @@
+ 
+     /// Associated type to hold commands created via `flush_to_output`.
+     type CommandBuffer;
++
++    /// Whether internal glyph atlas writes can be grouped before scene draws.
++    #[doc(hidden)]
++    fn groups_glyph_atlas_writes(&self) -> bool {
++        false
++    }
+ 
+     /// Set the size of the renderer.
+     fn set_size(&mut self, width: u32, height: u32, dpi: f32);
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -1143,6 +1143,10 @@
+     type ExternalTexture = wgpu::ExternalTexture;
+     type RenderOutput = WGPURenderOutput;
+     type CommandBuffer = Option<wgpu::CommandBuffer>;
++
++    fn groups_glyph_atlas_writes(&self) -> bool {
++        true
++    }
+ 
+     fn set_size(&mut self, _width: u32, _height: u32, _dpi: f32) {}
+ 
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -477,6 +477,16 @@
+ const COMMANDS_PER_MASK: usize = 1 + MASK_SAMPLES.len();
+ 
+ impl PendingMask<'_> {
++    fn confines_vertices(&self, vertices: &[crate::renderer::Vertex]) -> bool {
++        let (x, y, width, height) = self.cell;
++        vertices.iter().all(|vertex| {
++            (x as f32) < vertex.x
++                && vertex.x < (x + width) as f32
++                && (y as f32) < vertex.y
++                && vertex.y < (y + height) as f32
++        })
++    }
++
+     // Clears the glyph's atlas cell and draws the path into it with 8x supersampling.
+     // Must be called inside an offscreen_pass() with the atlas texture as the render target,
+     // because it changes the current state.
+@@ -529,34 +539,22 @@
+ }
+ 
+ impl GlyphMaskBatches {
+-    fn record<T: Renderer>(
+-        &mut self,
+-        canvas: &Canvas<T>,
+-        start: usize,
+-        first_vertex: usize,
+-        cell: (u32, u32, u32, u32),
+-    ) {
++    fn record<T: Renderer>(&mut self, canvas: &Canvas<T>, start: usize, confined: bool) {
+         use crate::renderer::CommandType;
+ 
+         let end = canvas.commands.len();
+         let commands = &canvas.commands[start..end];
+-        let (x, y, width, height) = cell;
+         // The atlas packer gives each mask a disjoint cell. Also verify the
+         // actual tessellated vertices, including the sample offsets and cover
+         // quads. An outline that exceeds its font's metrics keeps its draw order.
+-        let isolated = commands.len() == COMMANDS_PER_MASK
++        let isolated = confined
++            && commands.len() == COMMANDS_PER_MASK
+             && matches!(commands[0].cmd_type, CommandType::ClearRect { keep_clip: false, .. })
+             && commands[1..].iter().all(|command| {
+                 matches!(command.cmd_type, CommandType::ConcaveFill { .. })
+                     && !command.clip_active
+                     && command.triangles_verts.is_some_and(|(_, count)| count == 4)
+                     && command.drawables.iter().all(|drawable| drawable.stroke_verts.is_none())
+-            })
+-            && canvas.verts[first_vertex..].iter().all(|vertex| {
+-                (x as f32) < vertex.x
+-                    && vertex.x < (x + width) as f32
+-                    && (y as f32) < vertex.y
+-                    && vertex.y < (y + height) as f32
+             });
+         // A render-target change inserts a command between the masks.
+         if !isolated || self.current.end != start {
+@@ -641,6 +639,90 @@
+     }
+ }
+ 
++/// The atlas packer never reuses a cell in a live page. Reads of earlier
++/// glyphs can pass writes to other cells, if all new paths actually stay
++/// inside their reserved cells. Draw order within each page is preserved.
++#[derive(Debug, Default)]
++pub(crate) struct GlyphAtlasWrites {
++    spans: Vec<std::ops::Range<usize>>,
++    keep_inline: bool,
++}
++
++impl GlyphAtlasWrites {
++    fn record(&mut self, start: usize, commands: &[crate::renderer::Command], previous: RenderTarget) {
++        use crate::renderer::CommandType;
++
++        let span = &commands[start..];
++        if self.keep_inline || span.is_empty() {
++            return;
++        }
++        // These scopes begin by binding an atlas page and end by restoring
++        // the caller's target. A clip or any other command keeps the frame
++        // in its original order.
++        if matches!(
++            span.first().map(|command| &command.cmd_type),
++            Some(CommandType::SetRenderTarget(RenderTarget::Image(_)))
++        ) && matches!(
++            span.last().map(|command| &command.cmd_type),
++            Some(CommandType::SetRenderTarget(target)) if *target == previous
++        ) && span[..span.len() - 1].iter().all(|command| {
++            !command.clip_active
++                && matches!(
++                    command.cmd_type,
++                    CommandType::SetRenderTarget(RenderTarget::Image(_))
++                        | CommandType::ClearRect { keep_clip: false, .. }
++                        | CommandType::ConvexFill { .. }
++                        | CommandType::ConcaveFill { .. }
++                )
++        }) {
++            self.spans.push(start..commands.len());
++        } else {
++            self.keep_inline = true;
++        }
++    }
++
++    pub(crate) fn prepend(&mut self, commands: Vec<crate::renderer::Command>) -> Vec<crate::renderer::Command> {
++        use crate::renderer::{Command, CommandType};
++
++        let spans = std::mem::take(&mut self.spans);
++        if std::mem::take(&mut self.keep_inline) || spans.len() < 2 {
++            return commands;
++        }
++        let mut scene = Vec::new();
++        let mut pages: Vec<(RenderTarget, Vec<Command>)> = Vec::new();
++        let mut original = commands.into_iter();
++        let mut cursor = 0;
++        for span in spans {
++            scene.extend(original.by_ref().take(span.start - cursor));
++            // The first command selects a page, and the last restores the
++            // prior target. That restore belongs to the original scene.
++            let mut page = 0;
++            for command in original.by_ref().take(span.len() - 1) {
++                if let CommandType::SetRenderTarget(target) = command.cmd_type {
++                    page = pages.iter().position(|(key, _)| *key == target).unwrap_or_else(|| {
++                        pages.push((target, Vec::new()));
++                        pages.len() - 1
++                    });
++                } else {
++                    pages[page].1.push(command);
++                }
++            }
++            original.next();
++            cursor = span.end;
++        }
++        scene.extend(original);
++        let mut reordered =
++            Vec::with_capacity(scene.len() + pages.iter().map(|(_, page)| page.len() + 1).sum::<usize>() + 1);
++        for (target, commands) in pages {
++            reordered.push(Command::new(CommandType::SetRenderTarget(target)));
++            reordered.extend(commands);
++        }
++        reordered.push(Command::new(CommandType::SetRenderTarget(RenderTarget::Screen)));
++        reordered.extend(scene);
++        reordered
++    }
++}
++
+ pub struct GlyphAtlas {
+     pub rendered_glyphs: RefCell<FnvHashMap<RenderedGlyphId, Option<RenderedGlyph>>>,
+     pub glyph_textures: RefCell<Vec<FontTexture>>,
+@@ -691,6 +773,7 @@
+             0.0
+         };
+ 
++        let record_writes = canvas.renderer.groups_glyph_atlas_writes() && !canvas.glyph_writes.keep_inline;
+         let mut add_glyph = |canvas: &mut Canvas<T>,
+                              glyph: PositionedGlyph,
+                              batches: &mut GlyphMaskBatches|
+@@ -739,8 +822,13 @@
+                         canvas.set_render_target(RenderTarget::Image(mask.image_id));
+                         let first_command = canvas.commands.len();
+                         let first_vertex = mask.draw(canvas, mode);
++                        let confined =
++                            mode == RenderMode::Fill && mask.confines_vertices(&canvas.verts[first_vertex..]);
+                         if mode == RenderMode::Fill {
+-                            batches.record(canvas, first_command, first_vertex, mask.cell);
++                            batches.record(canvas, first_command, confined);
++                        }
++                        if record_writes && !confined {
++                            canvas.glyph_writes.keep_inline = true;
+                         }
+                     }
+                     glyph_cache_entry.insert_entry(placed.map(|(rendered, _)| rendered))
+@@ -793,12 +881,21 @@
+         // and render target when it ends, also when a glyph fails. It is opened on the caller's
+         // own render target, so no target switch is queued unless a mask is drawn.
+         let target = canvas.current_render_target;
+-        canvas.offscreen_pass(target, Transform2D::identity(), |canvas| {
++        let start = canvas.commands.len();
++        let result = canvas.offscreen_pass(target, Transform2D::identity(), |canvas| {
+             let mut batches = GlyphMaskBatches::default();
+             let result = glyphs.try_for_each(|glyph| add_glyph(canvas, glyph, &mut batches));
+             batches.finish(canvas);
+             result
+-        })?;
++        });
++        if record_writes {
++            if result.is_ok() {
++                canvas.glyph_writes.record(start, &canvas.commands, target);
++            } else {
++                canvas.glyph_writes.keep_inline = true;
++            }
++        }
++        result?;
+ 
+         Ok(GlyphDrawCommands {
+             alpha_glyphs: alpha_cmd_map.drain().map(|(_, cmd)| cmd).collect(),

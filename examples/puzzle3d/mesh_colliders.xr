@@ -1,0 +1,122 @@
+struct MeshColliderPart {
+    shape: string, mesh: string, size: vector3d,
+}
+
+struct MeshColliderVisual {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component MeshCollidersDemo inherits Window {
+    title: "XRack · 模型与地形碰撞";
+    width: 714px; height: 474px;
+    resizable: false; background: #18283a;
+
+    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    property <point3d> origin: Point3D.new(0, 0, 0);
+    property <vector3d> identity: Vector3D.new(0, 0, 0);
+    property <string> terrain: @mesh-url("models/ridge.png", lightmap-uv, auto-lod);
+    property <string> panels: @mesh-url("models/cull-panels.gltf");
+    property <string> gem: @mesh-url("models/amber.glb");
+    property <vector3d> terrain-size: Vector3D.new(8, 1.15, 6.4);
+    property <vector3d> panel-size: Vector3D.new(1, 1.5, 1);
+    property <point3d> panel-origin: Point3D.new(0, 1.6, 0);
+    property <vector3d> projectile-scale: Vector3D.new(0.25, 0.25, 0.25);
+
+    out property <int> terrain-body: 0;
+    out property <int> panels-body: 0;
+    out property <int> projectile: 0;
+    out property <int> mode: 0;
+    out property <int> ticks: 0;
+    in-out property <bool> running: false;
+    property <point3d> start: root.mode == 0
+        ? Point3D.new(0, 2.8, 1.15)
+        : Point3D.new(root.mode == 1 ? 0 : 1.25, 1.8, -2.0);
+    out property <point3d> position: root.projectile == 0 ? root.start : Physics3D.position(root.world, root.projectile);
+    out property <vector3d> angles: Physics3D.rotation(root.world, root.projectile);
+    out property <hit3d> surface: Scene3D.ray-hit(root.terrain-only,
+        Point3D.new(root.position.x, 6, root.position.z), Vector3D.new(0, -1, 0), 10);
+
+    callback launch(mode: int);
+    launch(mode) => {
+        Physics3D.clear(root.world);
+        root.mode = mode;
+        root.terrain-body = Physics3D.add-body(root.world, root.origin, root.identity, [
+            MeshColliderPart { shape: "heightfield", mesh: root.terrain, size: root.terrain-size },
+        ], 0, 0.8, 0);
+        root.panels-body = Physics3D.add-body(root.world, root.panel-origin, root.identity, [
+            MeshColliderPart { shape: "mesh", mesh: root.panels, size: root.panel-size },
+        ], 0, 0.3, 0);
+        root.projectile = Physics3D.add-body(root.world, root.start, root.identity, [
+            MeshColliderPart {
+                shape: mode == 0 ? "sphere" : "convex-mesh",
+                mesh: root.gem,
+                size: mode == 0 ? Vector3D.new(0.5, 0.5, 0.5) : root.projectile-scale,
+            },
+        ], 1, 0.7, 0);
+        if mode != 0 {
+            Physics3D.apply-impulse(root.world, root.projectile, Vector3D.new(0, 0, 11));
+        }
+        root.running = false;
+        root.ticks = 0;
+    }
+    callback advance();
+    advance() => {
+        if root.projectile == 0 { root.launch(0); }
+        if Physics3D.step(root.world) {
+            root.ticks += 1;
+            if root.ticks >= 100 || root.position.z > 2.7 { root.running = false; }
+        }
+    }
+    clock := Timer {
+        interval: 16; repeat: true; running: root.running;
+        triggered => { root.advance(); }
+    }
+
+    pure function part(id: string, mesh: string, center: point3d, size: vector3d, angles: vector3d, tint: color) -> MeshColliderVisual {
+        MeshColliderVisual {
+            id: id, mesh: mesh, x: center.x, y: center.y, z: center.z,
+            scale-x: size.x, scale-y: size.y, scale-z: size.z,
+            yaw: angles.x, pitch: angles.y, roll: angles.z, color: tint,
+        }
+    }
+    property <MeshColliderVisual> terrain-visual: root.part("terrain", root.terrain,
+        root.origin, root.terrain-size, root.identity, #81aa87);
+    property <[MeshColliderVisual]> terrain-only: [root.terrain-visual];
+    property <[MeshColliderVisual]> visuals: [
+        root.terrain-visual,
+        root.part("panels", root.panels, root.panel-origin, root.panel-size, root.identity, #a1bfd5),
+        root.part("projectile", root.mode == 0 ? "primitive:sphere" : root.gem,
+            root.position, root.projectile-scale, root.angles, #f9b85e),
+    ];
+    SceneView3D {
+        width: 714px; height: 400px; model: root.visuals;
+        camera-yaw: -21; camera-pitch: 34; camera-distance: 10.2;
+        scene-background: #213a50; ambient-intensity: 0.45; multisampling: true;
+    }
+    mesh-status := Text {
+        x: 18px; y: 15px; color: #e1edf4;
+        text: (root.mode == 0 ? "高度场落地" : root.mode == 1 ? "穿过网格间隙" : "撞向镜像网格")
+            + "   ·   Z " + Math.round(root.position.z * 100) / 100.0
+            + "   ·   离地 " + Math.round((root.position.y - root.surface.position.y) * 100) / 100.0
+            + "   ·   步数 " + root.ticks;
+    }
+    HorizontalLayout {
+        x: 14px; y: 412px; width: 686px; height: 44px; spacing: 11px;
+        drop-button := Button {
+            width: 122px; text: "落到地形";
+            clicked => { root.launch(0); root.running = true; }
+        }
+        gap-button := Button {
+            width: 122px; text: "穿过间隙";
+            clicked => { root.launch(1); root.running = true; }
+        }
+        hit-button := Button {
+            width: 122px; text: "撞向网格";
+            clicked => { root.launch(2); root.running = true; }
+        }
+        step-button := Button { width: 108px; text: "单步"; clicked => { root.advance(); } }
+        reset-button := Button { width: 105px; text: "重置"; clicked => { root.launch(0); } }
+    }
+}

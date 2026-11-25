@@ -7,7 +7,7 @@ use super::{
     Attachment, DEPTH_FORMAT, HDR_FORMAT, MeshCache, MeshColorDraws, append_floats,
     attachment_view, buffer,
     deform::{Deformation, DeformationBinding, DeformationLayouts, SKIN_LAYOUT},
-    pipeline::{GEOMETRY_LAYOUTS, culled_face},
+    pipeline::{GEOMETRY_LAYOUTS, INSTANCE_DATA_LAYOUT, culled_face, orient_depth_compare},
     vertex_program::VertexPipelines,
 };
 
@@ -55,6 +55,8 @@ impl MotionPass {
         history: &mut MotionHistory,
     ) -> (MotionInputs, u64) {
         let device = ctx.device;
+        let reverses_winding = camera.reverses_winding();
+        let reverse_depth = camera.reverse_depth();
         // A supersampled color image resolves to this grid before temporal filtering.
         let size = ctx.size;
         let previous = history.last.take().filter(|frame| frame.size == size);
@@ -93,18 +95,23 @@ impl MotionPass {
             &uniforms,
             wgpu::BufferUsages::UNIFORM,
         );
-        let mut transforms = Vec::with_capacity(objects.len() * 64);
+        let mut transforms = Vec::with_capacity(objects.len() * 80);
         for (object, index) in objects.iter().zip(&correspondences) {
-            let old = index.and_then(|index| previous.as_ref()?.objects.get(index));
-            append_floats(
-                &mut transforms,
-                old.unwrap_or(object).transform_rows().into_iter().flatten(),
-            );
+            let old = index
+                .and_then(|index| previous.as_ref()?.objects.get(index))
+                .unwrap_or(object);
+            append_floats(&mut transforms, old.transform_rows().into_iter().flatten());
             transforms.extend(
-                [index.map_or(0, |index| index as u32 + 1), 0, 0, 0]
-                    .into_iter()
-                    .flat_map(u32::to_ne_bytes),
+                [
+                    index.map_or(0, |index| index as u32 + 1),
+                    (old.shader_instance_index() << 1) | u32::from(object.motion_vector_enabled()),
+                    object.motion_vector_scale().to_bits(),
+                    old.color.0,
+                ]
+                .into_iter()
+                .flat_map(u32::to_ne_bytes),
             );
+            append_floats(&mut transforms, old.instance_data());
         }
         let instances = buffer(
             device,
@@ -160,7 +167,7 @@ impl MotionPass {
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(camera.depth_clear()),
                     store: wgpu::StoreOp::Discard,
                 }),
                 stencil_ops: None,
@@ -169,13 +176,14 @@ impl MotionPass {
         });
         encoder.set_bind_group(0, &globals, &[0]);
         let mut active_parameters = 0;
-        encoder.set_vertex_buffer(1, draws.set.buffer.slice(..));
+        let mut bound_instances = None;
         let mut active = None;
         let mut count = 0;
         for phase in [Phase::Opaque, Phase::Refraction, Phase::Translucent] {
             for batch in &draws.set.draws {
                 let source = batch.start;
-                let kind = &objects[source as usize].mesh;
+                let object = &objects[source as usize];
+                let kind = &object.mesh;
                 let draws_phase = match phase {
                     Phase::Opaque => kind.has_opaque_parts(),
                     Phase::Refraction => kind.has_depth_writing_transmission(),
@@ -184,6 +192,9 @@ impl MotionPass {
                 if !draws_phase || draws.visibility.runs(batch.clone()).next().is_none() {
                     continue;
                 }
+                draws
+                    .geometry
+                    .bind_instance_range(&mut encoder, &mut bound_instances, source);
                 let mesh = meshes.get(device, queue, kind);
                 let parts = mesh.parts.iter().enumerate().filter(|(_, part)| {
                     let surface = part.surface;
@@ -213,6 +224,8 @@ impl MotionPass {
                         mode,
                         coverage: part.mask || part.surface.blend,
                         cull: part.surface.cull,
+                        reflected: object.is_reflected() ^ reverses_winding,
+                        reverse_depth,
                     };
                     let program = part.material.vertex.as_ref();
                     let selection = (
@@ -375,6 +388,8 @@ struct Variant {
     mode: Deformation,
     coverage: bool,
     cull: MeshCullMode,
+    reflected: bool,
+    reverse_depth: bool,
 }
 
 struct MotionPipelines {
@@ -451,7 +466,8 @@ impl MotionPipelines {
                 GEOMETRY_LAYOUTS[0].clone(),
                 GEOMETRY_LAYOUTS[1].clone(),
                 None,
-                SKIN_LAYOUT,
+                SKIN_LAYOUT.filter(|_| variant.mode.skin()),
+                INSTANCE_DATA_LAYOUT,
             ];
             let targets = [HDR_FORMAT, ID_FORMAT].map(|format| {
                 Some(wgpu::ColorTargetState {
@@ -472,11 +488,7 @@ impl MotionPipelines {
                         Deformation::SkinMorph => "skinned_morphed",
                     }),
                     compilation_options: Default::default(),
-                    buffers: if variant.mode.skin() {
-                        &buffers
-                    } else {
-                        &GEOMETRY_LAYOUTS
-                    },
+                    buffers: &buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
                     module,
@@ -498,13 +510,21 @@ impl MotionPipelines {
                     targets: &targets,
                 }),
                 primitive: wgpu::PrimitiveState {
+                    front_face: if variant.reflected {
+                        wgpu::FrontFace::Cw
+                    } else {
+                        wgpu::FrontFace::Ccw
+                    },
                     cull_mode: culled_face(variant.cull),
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(variant.phase != Phase::Translucent),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_compare: Some(orient_depth_compare(
+                        wgpu::CompareFunction::Less,
+                        variant.reverse_depth,
+                    )),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),

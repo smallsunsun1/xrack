@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use xrack_runtime::scene3d::EnvironmentProbe;
+use xrack_runtime::scene3d::{EnvironmentProbe, ViewportEnvironment};
 
 const MAX_PIXELS: usize = 8192 * 1024;
 const FILTER_SAMPLES: u32 = 64;
@@ -341,6 +341,273 @@ fn cube_direction(face: u32, x: f32, y: f32) -> Vector3<f32> {
         _ => [-x, -y, -1.0],
     };
     Vector3::from(direction).normalize()
+}
+
+/// Decoded base-level HDR radiance for repeated CPU ray queries.
+pub(crate) struct EnvironmentRadiance {
+    faces: Box<[Vector3<f32>]>,
+    yaw: (f32, f32),
+    pub(crate) importance: Option<EnvironmentImportance>,
+}
+
+impl EnvironmentRadiance {
+    const SIDE: i32 = EnvironmentProbe::FACE_SIZE as i32;
+    const BASE_PIXELS: usize = (Self::SIDE * Self::SIDE * 6) as usize;
+
+    pub(crate) fn new(input: ViewportEnvironment<'_>) -> Self {
+        let faces: Box<[_]> = input
+            .probe
+            .texels()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .take(Self::BASE_PIXELS)
+            .map(|bytes| {
+                let packed = u32::from_le_bytes(*bytes);
+                // RGB9E5 stores three mantissas with a shared, biased exponent.
+                let scale = f32::from_bits(((packed >> 27) + (127 - 24)) << 23) * input.intensity;
+                Vector3::new(
+                    (packed & 511) as f32,
+                    ((packed >> 9) & 511) as f32,
+                    ((packed >> 18) & 511) as f32,
+                ) * scale
+            })
+            .collect();
+        let yaw = input.yaw.sin_cos();
+        let importance = EnvironmentImportance::new(&faces, yaw);
+        Self {
+            faces,
+            yaw,
+            importance,
+        }
+    }
+
+    pub(crate) fn sample(&self, direction: Vector3<f32>) -> Vector3<f32> {
+        let rotated = rotate_y(direction, self.yaw);
+        if !rotated.iter().all(|value| value.is_finite()) || rotated == Vector3::zeros() {
+            return Vector3::zeros();
+        }
+        let (face, [u, v]) = face_uv(rotated);
+        let texel = |coord| (coord + 1.0) * (Self::SIDE as f32 * 0.5) - 0.5;
+        let (x, y): (f32, f32) = (texel(u), texel(v));
+        let (column, row) = (x.floor() as i32, y.floor() as i32);
+        let (fx, fy) = (x - column as f32, y - row as f32);
+        let top = self
+            .tap(face, column, row)
+            .lerp(&self.tap(face, column + 1, row), fx);
+        let bottom = self
+            .tap(face, column, row + 1)
+            .lerp(&self.tap(face, column + 1, row + 1), fx);
+        top.lerp(&bottom, fy)
+    }
+
+    fn tap(&self, face: u32, column: i32, row: i32) -> Vector3<f32> {
+        let (face, column, row) =
+            if (0..Self::SIDE).contains(&column) && (0..Self::SIDE).contains(&row) {
+                (face, column, row)
+            } else {
+                // Reproject edge taps onto the neighboring face, as with seamless cubemap filtering.
+                let center = |pixel: i32| (pixel as f32 + 0.5) * 2.0 / Self::SIDE as f32 - 1.0;
+                let (other, [u, v]) = face_uv(cube_direction(face, center(column), center(row)));
+                let index = |value: f32| {
+                    (((value + 1.0) * 0.5 * Self::SIDE as f32) as i32).clamp(0, Self::SIDE - 1)
+                };
+                (other, index(u), index(v))
+            };
+        self.faces[((face as i32 * Self::SIDE + row) * Self::SIDE + column) as usize]
+    }
+}
+
+/// A luminance-weighted distribution on the cubemap's texel footprints.
+pub(crate) struct EnvironmentImportance {
+    cumulative: Box<[f64]>,
+    total: f64,
+    yaw: (f32, f32),
+}
+
+impl EnvironmentImportance {
+    const SIDE: usize = EnvironmentProbe::FACE_SIZE as usize;
+    const TEXEL: f32 = 2.0 / Self::SIDE as f32;
+
+    fn new(faces: &[Vector3<f32>], yaw: (f32, f32)) -> Option<Self> {
+        let luminance = |rgb: &Vector3<f32>| 0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z;
+        let (total, peak) = faces
+            .iter()
+            .map(luminance)
+            .fold((0.0_f64, 0.0_f32), |(total, peak), value| {
+                (total + f64::from(value), peak.max(value))
+            });
+        // A broad, nearly uniform environment is already well sampled by the cosine lobe.
+        if !total.is_finite() || f64::from(peak) * faces.len() as f64 <= 4.0 * total {
+            return None;
+        }
+        let mut cumulative = Vec::with_capacity(faces.len() + 1);
+        cumulative.push(0.0);
+        let mut total = 0.0;
+        for (i, rgb) in faces.iter().enumerate() {
+            let x = (i % Self::SIDE) as f32;
+            let y = (i / Self::SIDE % Self::SIDE) as f32;
+            let u = (x + 0.5) * Self::TEXEL - 1.0;
+            let v = (y + 0.5) * Self::TEXEL - 1.0;
+            total += f64::from(luminance(rgb)) / f64::from(inverse_cube_jacobian(u, v));
+            cumulative.push(total);
+        }
+        Some(Self {
+            cumulative: cumulative.into_boxed_slice(),
+            total,
+            yaw,
+        })
+    }
+
+    pub(crate) fn sample(&self, selection: f32, vertical: f32) -> (Vector3<f32>, f32) {
+        let target = f64::from(selection) * self.total;
+        let index = self.cumulative.partition_point(|&bound| bound <= target) - 1;
+        let mass = self.cumulative[index + 1] - self.cumulative[index];
+        // The position inside the CDF interval supplies a uniform horizontal sub-texel sample.
+        let horizontal = ((target - self.cumulative[index]) / mass) as f32;
+        let x = (index % Self::SIDE) as f32;
+        let y = (index / Self::SIDE % Self::SIDE) as f32;
+        let u = (x + horizontal) * Self::TEXEL - 1.0;
+        let v = (y + vertical) * Self::TEXEL - 1.0;
+        let face = (index / (Self::SIDE * Self::SIDE)) as u32;
+        let (sin, cos) = self.yaw;
+        let world = rotate_y(cube_direction(face, u, v), (-sin, cos));
+        (world, self.solid_angle_pdf(mass, u, v))
+    }
+
+    pub(crate) fn pdf(&self, world: Vector3<f32>) -> f32 {
+        let (face, [u, v]) = face_uv(rotate_y(world, self.yaw));
+        let pixel = |coord| (((coord + 1.0) / Self::TEXEL) as usize).min(Self::SIDE - 1);
+        let index = (face as usize * Self::SIDE + pixel(v)) * Self::SIDE + pixel(u);
+        let mass = self.cumulative[index + 1] - self.cumulative[index];
+        self.solid_angle_pdf(mass, u, v)
+    }
+
+    fn solid_angle_pdf(&self, mass: f64, u: f32, v: f32) -> f32 {
+        // Our conditional samples are uniform on the cube plane. Convert their density to sr^-1.
+        (mass / self.total) as f32 * inverse_cube_jacobian(u, v) / (Self::TEXEL * Self::TEXEL)
+    }
+}
+
+fn inverse_cube_jacobian(u: f32, v: f32) -> f32 {
+    let length_squared = 1.0 + u * u + v * v;
+    length_squared * length_squared.sqrt()
+}
+
+fn rotate_y(direction: Vector3<f32>, (sin, cos): (f32, f32)) -> Vector3<f32> {
+    Vector3::new(
+        cos * direction.x - sin * direction.z,
+        direction.y,
+        sin * direction.x + cos * direction.z,
+    )
+}
+
+fn face_uv(direction: Vector3<f32>) -> (u32, [f32; 2]) {
+    let [x, y, z]: [f32; 3] = direction.into();
+    let [ax, ay, az] = [x.abs(), y.abs(), z.abs()];
+    if ax >= ay.max(az) {
+        let face = u32::from(x < 0.0);
+        (face, [if face == 0 { -z / ax } else { z / ax }, -y / ax])
+    } else if ay >= az {
+        let face = 2 + u32::from(y < 0.0);
+        (face, [x / ay, if face == 2 { z / ay } else { -z / ay }])
+    } else {
+        let face = 4 + u32::from(z < 0.0);
+        (face, [if face == 4 { x / az } else { -x / az }, -y / az])
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_probe(color: impl Fn(Vector3<f32>) -> [f32; 3]) -> Option<EnvironmentProbe> {
+    let mut texels = Vec::with_capacity(EnvironmentProbe::BYTE_LEN);
+    let side = EnvironmentProbe::FACE_SIZE;
+    let center = |index: u32| (index as f32 + 0.5) * 2.0 / side as f32 - 1.0;
+    for face in 0..6 {
+        for row in 0..side {
+            for column in 0..side {
+                let rgb = color(cube_direction(face, center(column), center(row)));
+                texels.extend_from_slice(&pack_rgb9e5(rgb).to_le_bytes());
+            }
+        }
+    }
+    texels.resize(EnvironmentProbe::BYTE_LEN, 0);
+    EnvironmentProbe::new([[0.0; 3]; 9], texels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_environment_samples_all_faces_and_filters_across_the_seam() -> Result<(), String> {
+        let probe = Arc::new(
+            test_probe(|direction| ((direction + Vector3::repeat(1.0)) * 0.5).into())
+                .ok_or("invalid synthetic probe")?,
+        );
+        let view = ViewportEnvironment {
+            probe: &probe,
+            intensity: 0.5,
+            yaw: 0.0,
+            skybox: false,
+        };
+        let environment = EnvironmentRadiance::new(view);
+        assert!(
+            environment.importance.is_none(),
+            "a low-contrast probe uses cosine sampling"
+        );
+        for axis in [
+            Vector3::x(),
+            -Vector3::x(),
+            Vector3::y(),
+            -Vector3::y(),
+            Vector3::z(),
+            -Vector3::z(),
+        ] {
+            let expected = (axis + Vector3::repeat(1.0)) * 0.25;
+            assert!(
+                (environment.sample(axis) - expected).norm() < 0.006,
+                "{axis:?}"
+            );
+        }
+        let a = environment.sample(Vector3::new(1.005, 0.1, 1.0));
+        let b = environment.sample(Vector3::new(1.0, 0.1, 1.005));
+        assert!((a - b).norm() < 0.006, "{a:?}, {b:?}");
+        let rotated = EnvironmentRadiance::new(ViewportEnvironment {
+            yaw: std::f32::consts::FRAC_PI_2,
+            ..view
+        });
+        assert!((rotated.sample(Vector3::z()) - environment.sample(-Vector3::x())).norm() < 0.006);
+        Ok(())
+    }
+
+    #[test]
+    fn environment_pdf_matches_samples_after_rotation() -> Result<(), String> {
+        let probe = Arc::new(
+            test_probe(|ray| if ray.z > 0.99 { [32.0; 3] } else { [0.0; 3] })
+                .ok_or("invalid synthetic probe")?,
+        );
+        let environment = EnvironmentRadiance::new(ViewportEnvironment {
+            probe: &probe,
+            intensity: 1.0,
+            yaw: std::f32::consts::FRAC_PI_2,
+            skybox: false,
+        });
+        let importance = environment
+            .importance
+            .as_ref()
+            .ok_or("missing HDR distribution")?;
+        assert_eq!(importance.pdf(-Vector3::x()), 0.0);
+        for i in 0..256 {
+            let (direction, density) = importance.sample(
+                (i as f32 + 0.37) / 256.0,
+                (((i * 17) % 256) as f32 + 0.61) / 256.0,
+            );
+            assert!(direction.x > 0.98);
+            assert!(density > 0.0);
+            assert!((density - importance.pdf(direction)).abs() < density * 0.0001);
+        }
+        Ok(())
+    }
 }
 
 fn pack_rgb9e5(rgb: [f32; 3]) -> u32 {

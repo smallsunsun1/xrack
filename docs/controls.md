@@ -872,6 +872,8 @@ glTF 材质使用金属度与粗糙度模型。导入器读取 `metallicFactor`�
 
 `OPAQUE` 以不透明表面绘制。对 `MASK`，绘制和拾取都应用 alpha 阈值，射线可以穿过被裁剪的区域。`BLEND` 在不透明和裁剪子网格之后绘制。透明子网格按包围盒中心的相机深度从远到近排序，测试已有深度，在同一个视口附件中以线性颜色混合。相交的透明面采用子网格排序。拾取选择最近的可见表面，跳过零 alpha 的混合表面，纹理 alpha 以基础层的放大滤波方式采样。
 
+模型记录可设置 `depth-bias: float`。默认 0，单位与场景坐标相同。正值将透明子网格的排序键推远，使它较早绘制。负值使它较晚绘制。偏移用于按深度排序的透明合成，几何深度、着色、阴影和拾取仍使用真实位置。只改变偏移时，渲染器会重新排序并继续复用 GPU 网格和实例缓冲。加权透明继续按片元的真实深度计算权重。
+
 设置 `order-independent-transparency: true;` 可以让视口使用加权顺序无关透明。它按每个片元的相机深度和不透明度加权，在相交处也能反映两边不同的前后关系。加权结果是透明叠色的近似，适合重叠的半透明模型。默认仍使用子网格排序。
 
 加权透明复用不透明几何的深度，允许同网格的透明实例合批。开启 MSAA 时按样本合成，HDR 视口在合成后做色调映射。视锥裁剪后没有可见透明实例时，视口沿用普通颜色通道。`Renderer::scene_draw_stats()` 的 `transparency_composites` 记录累计合成次数。拾取仍返回实际最近的可见表面。 [相交透明面示例](../examples/puzzle3d/transparency.xr)
@@ -908,6 +910,14 @@ struct SurfaceStyle {
 | `transmission`、`index-of-refraction` | `float`，范围分别为 0 到 1 和 1 到 3。透射使用视口当前的背景和深度，导入模型的厚度或体积参数继续生效。 |
 
 材质调整属于绘制更新。网格、蒙皮和已有的贴图可以在参数变化时留在 GPU 上。只改变粗糙度、清漆或底色 RGB 时，阴影图可继续复用。 [声明式材质示例](../examples/puzzle3d/authored_material.xr)
+
+#### 镜面光泽工作流
+
+将材质记录中的 `material-workflow: string` 设为 `"specular-glossiness"`，可以分别指定漫反射色和镜面反射色。`base-color` 和 `base-color-map` 提供漫反射色，`specular-color` 和 `specular-color-map` 给出法线方向的镜面反射。金属度字段在此工作流中不参与混合。`glossiness: float` 范围为 0 到 1，首次切换时默认 1，光泽越高，高光越集中。折射率仍可独立控制透射。
+
+`glossiness-map` 支持纹理键或采样器记录。默认读取 A 通道，可通过 `glossiness-channel` 改用 R、G 或 B。光泽系数和贴图通道值相乘，再转换为粗糙度。材质使用已有的表面参数纹理槽位，调整光泽系数或线性数据图的通道时可以复用网格、贴图和阴影资源。
+
+导入的 glTF 可以直接使用 `KHR_materials_pbrSpecularGlossiness`。扩展里的漫反射贴图按 sRGB 采样，打包的镜面光泽贴图使用 sRGB 的 RGB 和线性的 A。示例中左侧为 `.xr` 材质，右侧是使用这个 glTF 扩展的面板。 [材质对照示例](../examples/puzzle3d/authored_material.xr)
 
 #### 可编程材质
 
@@ -985,11 +995,93 @@ glTF 的 `COLOR_0` 默认与材质底色相乘，顶点 alpha 也参与 `"mask"`
 
 渲染器为引用同一原型的行共享已准备的材质和动画姿态，并批量提交可见实例。改变某行的位置或颜色会复用 GPU 网格。同样大小的实例缓冲可以更新连续的变化行，视锥裁剪后压紧的颜色批次也适用。大范围变化、行数变化或同一帧已使用该缓冲时，渲染器会准备独立的完整缓冲。Rust 的 `Renderer::scene_draw_stats()` 提供实例上传字节数、部分更新次数和缓冲分配次数。编译器将这类模型绑定作为绘制更新处理。VS Code 可以在同一列表的记录字面量里补全原型 ID。 [实例表和 LOD 示例](../examples/puzzle3d/instance_table.xr)
 
+#### 种子生成的实例表
+
+模型行的 `random-instances` 接收一条描述记录。必填的 `count: int` 控制数量，`seed: int` 默认 0。可选的 `enabled: bool` 默认开启，设为 `false` 时按普通模型绘制。可以给同一模型列表中的其他行关闭生成。
+
+`Scene3D.random-instance-table(settings: record) -> instancetable3d` 接收相同的描述记录，返回可在多个模型之间共享的表。通过 `Scene3D.table-instance` 可以在建立场景前读取任意一行。表保存种子和归一化配置，绘制、碰撞和行查询按索引采样，构造时无需分配全部实例行。各个模型可独立用 `instance-count-override` 截取前缀。`enabled: false` 返回未加载的表，`count: 0` 返回已加载的空表。 [共享种子表和旧字段对照](../examples/puzzle3d/random_instances.xr)
+
+用 `position-min/max`、`rotation-min/max`、`scale-min/max` 指定三个 `vector3d` 范围。旋转分量按 X、Y、Z 表示角度。`proportional-scale: true` 让三个缩放轴使用同一个插值比例。`data-min/max` 接受与 `instance-data` 同形的四浮点记录。每对范围可只写一个端点以指定固定值。
+
+`color-min/max` 提供颜色端点。`color-model: string` 的默认值为 `"rgb"`，按 sRGB 各通道采样。`"hsv"` 按色相、饱和度和 V 值采样，`"hsl"` 按色相、饱和度和亮度采样。采样结果以线性 RGB 乘入模型颜色，默认各通道独立采样。`proportional-color: true` 让四个通道沿两端点使用同一个插值比例。HSV 和 HSL 可用 `hue-min/max: float` 指定归一化色相，例如 `0` 到 `1` 表示整个色轮。灰度端点借用另一端点的色相。切换颜色设置沿用同一组位置、旋转、缩放和自定义数据样本。 [种子颜色示例](../examples/puzzle3d/random_instances.xr)
+
+`grid-spacing: vector3d` 在正分量对应的轴上启用格点间距。实例按种子遍历不同格点，数量受格点容量和场景的 4096 个位置预算限制。保持相同种子和范围时，增减数量会保留先生成的实例。指定了 `instance-root` 会沿用其坐标系，生成的实例共用模型、材质、LOD 和碰撞形状。
+
+普通几何的 `mesh-node-index` 为 `-1`，`instance-index` 是生成顺序中的零基编号。导入资产保留其源节点，叠加在导入实例表上时，实例编号为外层编号乘 4096 再加内层编号。可把拾取地址传给 `Scene3D.instance` 或精确拾取接口。 [种子实例示例](../examples/puzzle3d/random_instances.xr)
+
+#### 材质的实例数据
+
+模型记录可声明 `instance-data`，字段类型是包含 `x`、`y`、`z`、`w` 四个 `float` 的记录。每个实例独立绑定这四个值。WGSL 的 `XrVertexInput.instance_data` 和 `XrMaterialInput.instance_data` 都以 `vec4<f32>` 读取它们。省略该字段时使用资产实例数据，资产也未提供时使用四个零。顶点位移继续受 `shader-displacement` 限制，阴影、深度和运动矢量使用相同数据，TAA 会读取上一帧的实例值计算旧顶点位置。
+
+顶点和片元输入还提供 `instance_index: u32` 与 `instance_color: vec4<f32>`。glTF 实例使用源实例表的零基编号，声明式实例使用模型行号，模型粒子使用其 GPU 实例流中的槽位。裁剪、透明排序和压紧都沿用这些编号。颜色的 RGB 是归一化 sRGB，alpha 保持线性。顶点输入的 `instance_transform: mat4x4<f32>` 把变形后的模型局部坐标转换到世界空间，包含父节点和实例根变换。
+
+实例数据独立于网格与颜色变换缓冲。合批和视锥裁剪后的压紧按相同实例顺序提交这四个量，更新个别行时可只上传变化的范围。 [实例数据示例](../examples/puzzle3d/instance_data.xr) · [WGSL 程序](../examples/puzzle3d/effects/instance_data.wgsl)
+
+#### 四元数姿态
+
+`quaternion3d` 表示单位旋转，默认值为 `Quaternion3D.identity()`。用 `Quaternion3D.new(x, y, z, w)` 归一化原始分量，也可用 `from-axis-angle(axis, degrees)` 或 `from-euler(angles)` 构造。轴角和欧拉角都使用度，欧拉向量的三个分量依次表示 X、Y、Z 轴。零长度或非有限分量返回单位旋转。
+
+`Quaternion3D.compose(first, next)` 先应用 `first`，再应用 `next`。`inverse` 求逆，`slerp(from, to, progress)` 沿最短旋转弧插值，`rotate(rotation, vector)` 旋转向量。分量 `x/y/z/w` 可读。模型记录和实例表行可以写 `orientation: quaternion3d`，优先使用该字段决定局部旋转。层级、镜像缩放、拾取和相机都使用同一份场景变换。 [四元数示例](../examples/puzzle3d/quaternion_scene.xr)
+
+`Quaternion3D.look-rotation(forward: vector3d, up?: vector3d)` 将局部 −Z 指向指定方向，并让 +Y 对齐向上向量在垂直平面上的投影。`Quaternion3D.look-at(from: point3d, target: point3d, up?: vector3d)` 从两个位置确定前向。方向、位置和向上向量应使用同一坐标空间。省略向上向量或传入零向量时使用 +Y。方向为零、位置重合或前向包含非有限数时返回单位旋转。前向与向上向量平行时，选择与前向最不平行的坐标轴确定正交基。
+
+`Quaternion3D.track(keys: [record]) -> rotationtrack3d` 将具有 `time: float` 和 `orientation: quaternion3d` 的记录模型准备成不可变轨道。时间以秒计，必须有限、非负、严格递增。轨道提供 `valid`、`count` 和 `duration`，时长是最后一帧的时间。空列表、有重复时间或逆序的列表返回无效轨道。共享模型修改后，后续读取会准备新快照，之前取得的轨道仍保持原有关键帧。
+
+`Quaternion3D.sample(track, time)` 沿相邻关键帧的最短旋转弧插值，时间超出范围时停在对应端点。无效轨道或 NaN 时间返回单位旋转。可用 `FrameAnimation.triggered` 提供每帧的累计秒数，把采样结果作为节点、相机和实例的 `orientation`，空间查询会使用同一姿态。Rust 和 Python 可以构造轨道并调用 `sample(time)`。 [轨道播放示例](../examples/puzzle3d/quaternion_scene.xr)
+
+编译器会特化直接写在 `track([...])` 里的固定时间轴。字面量姿态可随轨道一起编入程序，动态姿态按原顺序求值后直接生成轨道。来自可变记录模型的轨道按模型版本更新。播放示例的相机使用静态关键帧，模型和实例的姿态由 `target` 属性驱动。
+
+#### 从业务模型构造实例表
+
+`Scene3D.instance-table(rows: [record]) -> instancetable3d` 将结构体列表转换成实例表。可在多个场景模型行的 `instance-table` 上绑定同一个表，也可用 `instance-count-override` 截取实例前缀。
+
+每行可声明 `position: point3d`、`scale: vector3d`、`rotation: vector3d`、`color: color` 和 `data-x` 到 `data-w` 四个 `float` 字段。缺省位置、角度和数据为零，缩放各轴为 1，颜色为白色。`rotation` 使用角度，X 为 pitch，Y 为 yaw，Z 为 roll，应用顺序与场景节点一致。缩放的绝对值范围是 0.0001 到 200，位置各轴范围是 −200 到 200。单个表最多 4096 行。
+
+表是不可变快照。编辑源模型后，依赖它的绑定会重新读取表，同一模型版本的多个绑定可以共享准备好的数据。有效空表的 `loaded` 为 true，`count` 为 0。行含非有限数值或不可逆缩放时，结果为未加载的表。实例编号沿用源列表顺序。 [数据表和文件表对照示例](../examples/puzzle3d/file_instances.xr)
+
+`Scene3D.table-instance(table: instancetable3d, index: int) -> instance3d` 直接读取表里的零基行。结果的 `origin` 和 `axis-x/y/z` 使用表的局部坐标，包含负缩放和剪切，颜色和 `data-x` 到 `data-w` 来自该行。原始行用 `instance-index` 标识，`row-index` 和 `mesh-node-index` 为 `-1`。未加载、空表或越界索引返回 `valid: false`。该函数可在构造场景前使用，`instance-count-override` 只控制实际放置前缀。Rust 和 Python 提供 `InstanceTable3D.instance(index)`。 [查询原始行示例](../examples/puzzle3d/file_instances.xr)
+
+#### 从文件加载实例表
+
+`@instance-table-url("models/table.xml")` 返回可共享的 `instancetable3d`。把它绑定到模型记录的 `instance-table`，多个模型即可引用同一份表。该值提供 `loaded: bool` 和 `count: int`，Python 也可通过 `InstanceTable3D` 读取。表优先于种子生成设置，加载成功的空表生成零个实例。模型行可用 `instance-count-override: int` 截取表或种子序列的前缀。默认 `-1` 使用全部可用实例。
+
+如果实例数据已驻留在 GPU，缩短前缀或在驻留范围内恢复数量可以直接绘制原缓冲里的相应区间。共享表的各个模型也可分别引用自己的区间。拾取和碰撞只使用当前前缀。超出驻留范围或修改实例内容时，渲染器按需要上传数据。
+
+在模型记录上设 `instance-has-transparency: true`，可让文件表、记录列表、种子实例和 glTF GPU 实例使用颜色的 alpha。默认是 `false`。开启后，不透明材质用实例 alpha 混合，遮罩材质先按自身的裁剪阈值判断覆盖，再用实例 alpha 混合。已声明 `alpha-mode: "blend"` 的材质继续把材质和实例的 alpha 相乘。透明实例可参与默认排序或视口的加权顺序无关透明。透明度为零的混合实例会被精确拾取跳过。 [实例透明示例](../examples/puzzle3d/instance_transparency.xr)
+
+`instance-depth-sorting: bool` 控制常规透明混合中的表内画序。默认 `false` 按实例表行号绘制，`true` 按当前相机的深度从远到近绘制。深度相同时按表行号决定顺序。每张表作为一个单元参与场景排序，用模型原点和 `depth-bias` 决定它与其他透明模型的前后关系。glTF 内部的 GPU 实例组各自使用所属节点的原点。加权透明直接按片元合成。依次绘制且使用相同材质和实例缓冲区间的行可以合批，改变画序时沿用原实例编号。
+
+`instance-shadow-bounds-min: vector3d` 和 `instance-shadow-bounds-max: vector3d` 可为整个实例组指定阴影拟合包围盒。两端需要同时存在、数值有限且每个轴的下界小于上界。引擎用表所在坐标空间解释这对值。有 `instance-root` 时使用它的局部空间，否则使用模型的局部空间。范围应包含所有实例在动画、形变和着色器位移后的几何。缺省或无效范围会回到逐实例拟合。
+
+带共享范围的实例组向每次阴影拟合贡献一个包围盒。方向光、级联阴影、点光源和聚光灯都使用该范围拟合投影。点光源各面与级联的投影物体筛选继续使用实际实例范围，视口外的物体仍可以投影。着色、拾取和碰撞继续读取实际实例。Rust 的 `Renderer::scene_draw_stats().shadow_fit_bounds` 记录新拟合使用的场景包围盒数，阴影缓存命中时沿用已有投影。 [实例阴影示例](../examples/puzzle3d/instance_shadow_bounds.xr)
+
+导入支持 Qt Quick 3D 的 UTF-8 XML `InstanceTable` 和小端 QtIR 1.0 `.bin`。XML 行可指定位置、缩放、欧拉角或四元数、SVG 颜色和四个自定义值。文件行的 `custom` 用于该实例的材质输入。文件需要有限的数值和可逆变换。负缩放会镜像相应的轴，也可直接写在模型记录的 `scale-x`、`scale-y`、`scale-z` 上。正向和镜像实例共享网格，渲染批次按朝向选择正面，拾取和碰撞使用相同的世界变换。文件路径相对于声明它的 `.xr`，并由 `xr_ui_library(assets = [...])` 声明。AOT 嵌入解码后的表，解释器读取同一资源。 [XML 和二进制对照示例](../examples/puzzle3d/file_instances.xr)
+
+#### 实例的共享坐标原点
+
+设置 `instance-root: string` 可以引用同一模型列表中的一个具名节点作为实例坐标原点。可以写在原型上让各实例继承，也可以写在某一个实例行上指定自己的根。声明式实例先应用原型相对根节点的变换，再应用实例行的变换，最后将结果放入世界空间。实例行省略 `parent` 时会挂到实例根下，随根节点一起移动。显式填写 `parent` 时，该父节点提供实例行的坐标系。场景挂点查询返回实例行的坐标系，原型相对根的偏移随各实例独立旋转。
+
+直接引用 glTF 的模型行用该根重新解释资产实例表中的变换。若根的世界变换是 `G`、实例表中的变换是 `I`，模型和网格相对根的变换是 `L`，则绘制变换为 `G × I × L`。选择的 LOD、拾取和网格碰撞沿用这套变换，普通节点以及导入的相机和灯光继续使用场景节点的变换。通过 `instance-of` 引用 glTF 原型时，共享根作用于声明式实例，原型内部的排列随整个实例一起变换。根隐藏、名称不唯一、引用缺失或形成挂载循环时，受影响的实例不参与绘制与拾取。VS Code 可从同一个记录列表补全可用的根名称。 [共享坐标示例](../examples/puzzle3d/instance_root.xr)
+
+#### 按相机距离显示实例
+
+模型记录可以设置 `instancing-lod-min: float` 和 `instancing-lod-max: float`。距离从相机眼点到每个实例的世界坐标原点计算，单位与场景一致。区间包含下界，排除上界，下界默认 0，负数上界表示无上限。把两组实例的上界和下界设为同一个值，可以在边界只绘制其中一组。导入 glTF 实例表时，各实例用各自经过父级和动画变换的原点计算距离。
+
+距离范围和屏幕尺寸的网格 LOD 可同时使用。每个视口独立筛选，并将同一组实例用于颜色、阴影、视口拾取和框选。具名场景捕获使用捕获相机，反射 cubemap 使用探针位置。世界空间射线查询和物理碰撞仍使用完整场景。筛选保留行号和原始 GPU 实例缓冲，可通过 `Renderer::scene_draw_stats().distance_filtered_instances` 查看累计排除数。 [实例表示例](../examples/puzzle3d/instance_table.xr)
+
+用 `instancing-lod-factor: float` 固定一行使用的网格级别，同一行展开的 glTF 实例共用这个级别。因子 0 选择主网格，1 选择最低细节级别。中间值乘以替代级别数并取最近的整数，从主网格逐级选向最粗网格。替代网格沿用 `lod-max-size` 从大到小的顺序。省略字段或设为负数时按投影尺寸选择，超过 1 按 1 处理。视口或模型的 LOD bias 为 0 时都使用主网格。
+
+手写替代网格和 `auto-lod` 生成的网格都可以用同一因子控制。场景只有固定级别时，各视口共享选出的几何。距离范围仍逐实例判断，视口拾取跟随选中的网格。 [可调因子示例](../examples/puzzle3d/lod.xr)
+
 #### glTF GPU 实例化
 
 带有 `EXT_mesh_gpu_instancing` 的 glTF 或 GLB 可以用同一个 `@mesh-url` 引入一组物体。节点上的 `TRANSLATION`、`ROTATION` 和 `SCALE` 属性分别提供每个实例的平移、四元数旋转和缩放，省略时使用单位变换。节点的动画或父级变换会作用于整组。该节点的子节点仍沿普通层级绘制一次。
 
 实例共用网格和材质，在视锥内按可见批次提交。拾取和碰撞使用每个实例的变换。`hit3d.row-index` 指向所属的 `.xr` 模型记录，`mesh-node-index` 是 glTF 源节点索引，`instance-index` 是实例表中的零基索引。缺少对应身份或未命中时，相应字段为 `-1`。可以为整组绑定 `material-variant`，各实例共用选中的材质。资产的自定义实例属性以 `_` 开头，XRack 校验它们的访问器和数量。当前实例数据最多准备 4096 个模型位置。VS Code 悬停 `@mesh-url` 可查看实例组的源节点及实例数。 [GPU 实例化示例](../examples/puzzle3d/gpu_instancing.xr)
+
+XRack 识别两个常用的自定义实例通道。`_COLOR_0` 和别名 `_COLOR` 接受线性 RGB 或 RGBA，可用浮点或归一化无符号整数存储。颜色在线性空间与模型行的 `color` 相乘，再量化为场景使用的 8 位 sRGB tint，alpha 沿用材质的覆盖规则。两个颜色名同时出现时使用 `_COLOR_0`。
+
+`_INSTANCE_DATA` 接受四通道浮点或归一化整数，按实例索引送入 WGSL 的 `input.instance_data`。同一行显式绑定的 `instance-data` 覆盖该行所有导入实例的数据，四个零也是有效覆盖。资源随 AOT 嵌入，在解释器中从同一 glTF 读取。VS Code 悬停资源引用会列出这两个通道。 [导入与覆盖示例](../examples/puzzle3d/gltf_instance_data.xr)
 
 #### glTF 材质变体
 
@@ -1092,7 +1184,7 @@ struct Sampler {
 
 要把 2D 界面用作底色贴图，在同一窗口的可见 `Rectangle` 上写 `texture-source: "dashboard";`，再在场景材质记录中声明 `base-item: string`，并填入同一个名字。矩形的背景和子项会一起画进 GPU 纹理。多个材质可共享同一源。用 `unlit: true` 可保留面板配色，也可以交由 PBR 材质照明。底色使用 UV0；`alpha-mode: "blend"` 会合成源的透明区域。
 
-镜头移动时复用已有贴图。源内容变化时重画到已有纹理，源尺寸变化时分配新的纹理。每窗最多保留 8 个贴图源，单张纹理边长上限为 2048 个设备像素，总预算为 16 MiB。隐藏、缺失或重名时使用材质原有底色贴图或底色。源子树要由 2D 内容组成。编辑器可补全当前组件里声明的名称。 [实时 2D 材质贴图示例](../examples/puzzle3d/item_texture.xr)
+镜头移动时复用已有贴图。源内容变化时优先重画到已有纹理，源尺寸变化或逐面捕获正在保留该纹理时会分配新纹理。每窗最多保留 8 个实时贴图源，单张纹理边长上限为 2048 个设备像素，实时版本的总预算为 16 MiB。隐藏、缺失或重名时使用材质原有底色贴图或底色。源子树要由 2D 内容组成。编辑器可补全当前组件里声明的名称。 [实时 2D 材质贴图示例](../examples/puzzle3d/item_texture.xr)
 
 在来源矩形上设置 `texture-mipmaps: true;` 可为远景或斜视角启用 mip 过滤，默认关闭。GPU 在线性光中对预乘 alpha 的颜色做面积过滤，再按屏幕上的覆盖范围选级。源重新绘制时更新整条链，转相机和复用已缓存视口时沿用已有级别。普通贴图源优先使用显存预算，剩余空间用于可选的 mip 链。
 
@@ -1139,9 +1231,21 @@ glTF 材质默认剔除背面。`doubleSided` 使背面参与绘制和拾取，�
 
 视口可以用 `camera: "overview"` 选择模型中的具名相机。相机行设置 `camera-kind: "perspective"` 或 `camera-kind: "orthographic"`，通常用 `mesh: ""` 声明为只提供变换的节点。相机沿局部 −Z 观察，可以随父节点移动、旋转和显隐。父节点的缩放会影响相机位置，镜头方向由局部和父节点的旋转决定。
 
-透视相机使用 `camera-fov` 设定垂直视角，默认 45°。正交相机通过 `camera-height` 设定垂直覆盖的世界单位，默认 10。两个投影都用当前视口宽高比确定横向范围。可选的 `camera-look-at` 接收同一模型里的节点 ID，目标或相机移动时会重新朝向目标的世界原点。目标缺失、隐藏或与相机重合时沿用声明的旋转。可选的 `camera-near` 和 `camera-far` 裁剪距离默认分别为 0.1 和 100。空相机名使用 `camera-yaw`、`camera-pitch` 和 `camera-distance` 控制的绕视镜头。显式相机找不到、被隐藏或投影参数无效时，视口显示背景且拾取返回空字符串。
+透视相机使用 `camera-fov` 设定垂直视角，默认 45°。正交相机通过 `camera-height` 设定垂直覆盖的世界单位，默认 10。两个投影都用当前视口宽高比确定横向范围。可选的 `camera-near` 和 `camera-far` 裁剪距离默认分别为 0.1 和 100。空相机名使用 `camera-yaw`、`camera-pitch` 和 `camera-distance` 控制的绕视镜头。显式相机找不到、被隐藏或投影参数无效时，视口显示背景且拾取返回空字符串。
+
+相机可用 `camera-look-at: string` 跟随同一模型内的可见节点。目标 ID 为空、缺失或隐藏时，使用可选的 `camera-look-at-point: point3d` 作为世界坐标目标。目标缺失、无效或与相机重合时沿用声明的旋转。`camera-up: vector3d` 指定世界向上方向，可以控制俯视地图和镜头滚转。省略时使用相机声明姿态的 +Y。在俯视或仰视的极点，优先用声明姿态的右向保持取景方向。场景准备阶段解析相机朝向，渲染、裁剪、投影和拾取复用该姿态。 [相机跟踪示例](../examples/puzzle3d/camera_aim.xr)
 
 使用 `camera-kind: "frustum"` 可声明偏轴透视镜头。在相机记录中添加 `camera-left`、`camera-right`、`camera-bottom` 和 `camera-top` 四个 `float` 字段。它们是 `camera-near` 平面上相对相机光轴的局部坐标，单位与场景一致。每个轴的下界必须小于上界。省略某条边时使用 `±camera-near × tan(22.5°)`，正负号取决于边所在的一侧。四条边会映射到整个视口，独立决定横向和纵向的覆盖范围。一起平移同一轴的两条边可以移动构图，保留相机的位置和朝向。
+
+`camera-kind: "orthographic"` 也支持这四个边界字段。它们直接表示相对光轴的局部坐标，整个观察深度使用同一范围。可用 `camera-width: float` 和 `camera-height: float` 独立指定横纵覆盖范围。显式边界优先，缺省边界取对应覆盖范围的一半并带上该侧符号。省略宽度时，横向默认范围按最终纵向跨度和视口宽高比计算。边界排序无效时该相机视图显示背景，拾取返回空字符串。 [偏轴透视与正交切换示例](../examples/puzzle3d/off_axis_camera.xr)
+
+透视与正交相机都可以用 `camera-clip-normal: vector3d` 倾斜深度裁剪。法向使用相机局部坐标，+X 向右、+Y 向上、−Z 向前。默认法向为 `Vector3D.new(0, 0, -1)`，也可用 `Vector3D.new(0.5, 0, -1)` 让画面右侧的深度裁剪提前。近远裁剪距离仍表示平面与光轴的交点。正交相机的两个裁剪面保持平行，透视相机沿各像素射线与齐次裁剪面求交。法向须有限且 Z 为负，整个有效取景范围的近裁剪交点须位于相机前方。渲染、拾取、AO、屏幕空间反射和间接光、景深及体积雾使用相同的深度裁剪。 [斜裁剪示例](../examples/puzzle3d/oblique_camera.xr)
+
+`camera-kind: "custom"` 使用 `camera-projection` 指定的 4×4 投影矩阵。该记录有 16 个 `float` 字段，从 `m11` 到 `m44`，首位表示行，次位表示列。矩阵将相机局部坐标的列向量映射到齐次裁剪空间，相机仍以 −Z 为前向。矩阵直接覆盖视口，近远裁剪和宽高比都由矩阵给出。可选的 `camera-clip-space` 默认为 `"webgpu"`，深度范围为 0 到 1。Qt 和 OpenGL 风格的矩阵可设为 `"opengl"`，深度范围为 −1 到 1。运行时会把输入矩阵映射到相机实际使用的 GPU 深度方向。有效矩阵须有限且可逆，整个视口的裁剪体须位于相机前方，屏幕射线沿正向深度穿过裁剪体。远平面可延伸到无穷远。 [自定义投影示例](../examples/puzzle3d/custom_camera.xr)
+
+矩阵第一行或第二行取反可镜像画面。颜色、深度和运动向量根据相机投影和对象变换共同确定正面，单面材质和拾取仍使用相同的物理表面。AOT 和解释器按矩阵系数与裁剪深度约定缓存验证结果，节点移动或模型更新时可以复用固定投影。
+
+相机可选 `camera-reverse-depth: bool`，默认 `false`。开启后，GPU 深度缓冲把近端映射为 1，把远端和空白映射为 0，并优先保留较大的深度值。透视镜头使用浮点深度缓冲时，这能提高远处贴近表面的深度分辨率。这个字段也适用于自定义矩阵，输入矩阵的深度约定仍由 `camera-clip-space` 指定。拾取和投影查询继续使用正的相机空间距离。 [远距离深度精度示例](../examples/puzzle3d/reverse_depth.xr)
 
 投影、反投影、拾取、视锥裁剪、级联阴影、天空和屏幕空间环境遮蔽使用同一视锥。更改边界会更新受影响的视口，不会重新上传未变化的场景网格和实例缓冲。VS Code 在记录字面量的 `camera-kind` 字符串中补全 `frustum`。 [非对称视锥示例](../examples/puzzle3d/off_axis_camera.xr)
 
@@ -1179,6 +1283,8 @@ glTF 材质默认剔除背面。`doubleSided` 使背面参与绘制和拾取，�
 
 使用 `temporal-aa-mode: "motion-vectors";` 可启用运动向量重投影，默认模式为 `"blend"`。运动通道用相机、实例的世界变换以及骨骼和 morph 的前后两帧姿态求出历史坐标。重投影检查物体身份和深度，并用当前邻域限制历史颜色，减少遮挡变化和快速运动时的拖影。天空、透明和透射覆盖区域使用当前帧颜色。
 
+模型记录可单独设置 `motion-vector-enabled: bool` 和 `motion-vector-scale: float`。默认启用，倍率为 1。设为 `false` 时，该模型覆盖的像素使用当前帧颜色，被它遮住的模型也不会为这些像素提供历史。倍率调整相机和物体一起产生的屏幕空间位移，设为 0 时在当前像素位置查找历史，仍检查模型身份和深度。仅运动向量模式读取这两个字段，更新时复用已有网格和颜色实例缓冲。
+
 运动向量模式在静止时独立收敛八个亚像素样本，不进入渐进 AA 序列。运动通道仅在该模式启用且视口需要更新时执行，使用视口输出纹理尺寸，并保留两张身份贴图。可通过 `Renderer::scene_draw_stats()` 的 `motion_vector_draws` 和 `temporal_reprojections` 查看绘制及历史重投影次数。 [运动对照示例](../examples/puzzle3d/temporal_aa.xr)
 
 开启 `screen-space-reflections: true;` 后，视口用不透明场景的颜色、深度和材质法线追踪反射。反射落在可见表面时按材质 BRDF 混合屏幕上的颜色，离屏、被挡住或缺少可信交点时保留天空或局部反射探针。反射接收器使用带 PBR 材质的不透明 glTF 网格，基础层和清漆层中选出较明显的一层做屏幕追踪。混合透明绘制在之后，透射材质可以折射已经合成的屏幕反射。
@@ -1197,22 +1303,67 @@ HDR、景深及色调映射继续在反射和透明合成之后处理。可以�
 
 `lightmap-mode: "indirect"` 用贴图替换运行时环境漫反射，仍计算实时灯的漫反射、阴影和镜面高光。`"diffuse"` 用贴图提供完整漫反射，实时灯仍提供视角相关的镜面高光。适用于不透明或带遮罩的静态 PBR 表面。缺少光照 UV 的三角形继续使用动态光照。启用 SSGI 时，烘焙表面可作为其他表面的光源，其自身继续使用已烘焙的漫反射。
 
+`lightmap-mode: "mixed"` 使用 `--bake-mode mixed` 生成的图集。同一个场景的灯光记录可以分别设置 `bake-mode: string`。
+
+- `"disabled"` 是默认值。灯光完全实时，混合模式烘焙会跳过它。
+- `"indirect"` 将这盏灯产生的漫反射反弹写入图集，直接光和阴影继续实时计算。
+- `"all"` 烘焙这盏灯的直接漫反射、阴影和反弹。使用图集的表面会跳过它的实时漫反射和镜面高光，未使用图集的表面继续接收实时光照。
+
+图集记录烘焙时的灯光、几何和材质。修改已写入图集的部分后需要重新烘焙。使用 `"disabled"` 的动态灯可直接改变位置、强度和颜色，实时补光继续使用视口的阴影设置。
+
+模型记录用 `bake-role: string` 选择自己参与离线烘焙的方式。
+
+- `"auto"` 是默认值。模型参与烘焙，具有合格光照图表的静态 PBR 表面会获得图集区域。
+- `"receiver"` 要求为模型生成图集区域。模型需要 ID 和合格的静态光照图表。
+- `"contributor"` 只参与遮挡、反弹和自发光，适合无需分配贴图的静态道具。
+- `"excluded"` 让动态物体退出离线烘焙。它继续绘制、拾取，并按原有灯光和材质设置参与实时阴影。
+
+使用 `--bake-receiver` 可以缩小接收贴图的模型范围，参与烘焙的其他静态模型仍会遮挡和反弹光线。显式请求 `"contributor"` 或 `"excluded"` 模型的图集区域会得到包含模型 ID 的诊断。
+
+模型记录可用 `lightmap-size: int` 指定正方形贴图的边长，范围为 8 到 512 像素。设为 0 时，烘焙器使用模型的 `lightmap-texels-per-unit: float`，再依次回退到命令行的 `--bake-texels-per-unit` 和 `--bake-size`。密度使用每世界单位的像素数，烘焙器根据世界空间三角形面积和 UV 覆盖率估算边长。密度估算会保留自动展开所需的最小尺寸。固定尺寸低于该下限时会报告模型 ID 和所需分辨率。
+
+不同分辨率的接收体共享一张图集，每个区域四周保留两个像素的边距。生成的 `lightmaps.json` 中，`atlas_size` 记录图集长宽，`regions[].resolution` 记录模型的实际边长。
+
 同一张图集可供多个实例共享。`lightmap-u`、`lightmap-v`、`lightmap-width`、`lightmap-height` 是归一化的左上角坐标和长宽，默认 `0, 0, 1, 1`。采样限制在对应区域内，使用同一图集的相邻实例仍能合批。AOT 嵌入贴图和光照 UV，解释器从相同资源加载。示例展示手工绑定已有图集。 [光照图集示例](../examples/puzzle3d/lightmaps.xr)
 
 缺少专用光照 UV 时，可以用 `@mesh-url("models/room.gltf", lightmap-uv)` 在静态 glTF 资源准备阶段展开光照图表。生成结果使用独立 UV 通道，原有材质 UV 和顶点顺序保留。图表沿可投影的相邻面展开，遇到重叠会拆分，并在最小烘焙分辨率上保留采样间距。与 `auto-lod` 一起使用时先生成光照 UV，再简化网格。AOT 嵌入生成结果，解释器在加载资源时生成一次。
 
 准备好作者提供的 `TEXCOORD_1` 或生成的光照图表后，可用 `xrackc --emit lightmaps` 重新生成图集。工具从组件的初始状态读取 `SceneView3D`，与实时渲染共用节点变换、灯光层、遮罩和几何射线查询。它追踪点光、聚光和方向光的遮挡，并用确定性的半球路径估算环境遮蔽和漫反射反弹。间接光沿表面降噪，直接光的阴影边界保留。贴图中只存光照，运行时再乘材质漫反射颜色。
 
+烘焙还会读取视口的 `environment`、`environment-yaw` 和 `environment-intensity`。射线离开场景时，会采样实时渲染使用的 HDR 立方体贴图，把环境颜色、几何遮挡和漫反射反弹写入图集。环境照明与天空盒开关独立。已烘焙表面从图集读取漫反射，镜面环境反射仍由当前视口计算。修改环境烘焙参数后，从源场景重新采样并生成图集。
+
+高对比 HDR 会自动混合余弦半球采样和亮度加权的环境方向采样。两种方式共用 `--bake-samples` 的射线预算，按立方体面像素的立体角和采样概率密度校正光照贡献。亮度变化较小的环境沿用余弦半球采样。
+
+`SceneView3D.bake-denoise-passes: int` 设置间接光降噪的遍数，默认 1，支持 0 到 4。每遍扩大取样间距，同时检查邻域的几何位置、法线和 UV 覆盖。设为 0 可查看原始采样。直接光单独写入图集，保留硬阴影边界。
+
+`SceneView3D.bake-indirect-factor: float` 是有限的非负间接光倍率，默认 1。设为 0 时，烘焙器直接输出所选模式的直接光，并跳过间接采样和降噪。命令行 `--bake-denoise-passes` 和 `--bake-indirect-factor` 可以覆盖视口设置。实际设置写在图集清单的 `sampling` 中。
+
 ```sh
 bazel run //crates/xrack-compiler:xrackc -- \
   "$PWD/examples/puzzle3d/lightmap_bake_scene.xr" --emit lightmaps \
-  --bake-receiver plate --bake-receiver figure --bake-size 64 --bake-samples 48 --bake-bounces 1 \
+  --bake-mode mixed \
+  --bake-size 64 --bake-samples 48 --bake-bounces 1 \
   -o "$PWD/baked-room"
 ```
 
-输出为 `atlas.png`、`lighting.xr` 和 `lightmaps.json`。从 `lighting.xr` 导入 `BakedLightmaps`，将 atlas、mode、intensity 和对象的 region 绑定到已有光照贴图字段。输出目录遵循包生成命令的约定，使用新路径。文件有多个可选组件或视口时，用 `--bake-component` 和 `--bake-viewport` 指定。设为 `--bake-mode indirect` 时保留实时直接漫反射。
+输出为 `atlas.png`、`lighting.xr` 和 `lightmaps.json`。从 `lighting.xr` 导入 `BakedLightmaps`，将 atlas、mode、intensity 和对象的 region 绑定到已有光照贴图字段。输出目录使用新路径。文件有多个可选组件或视口时，用 `--bake-component` 和 `--bake-viewport` 指定。`--bake-mode indirect` 用全部灯光计算反弹并保留实时直接漫反射，`--bake-mode diffuse` 用全部灯光烘焙漫反射。
 
-目前 CPU 烘焙使用解析灯光和环境常量，支持不透明及遮罩网格。启用自动展开的网格会记录图表所需的最小烘焙分辨率。图集生成、AOT 和加载同一图集的解释器路径可在烘焙房间示例中比较。 [源场景](../examples/puzzle3d/lightmap_bake_scene.xr) · [生成图集的使用方式](../examples/puzzle3d/lightmap_baked_view.xr)
+加上 `--bake-save-samples` 会在输出目录写入 `samples.xrlm`。它保存降噪前的线性直接光、间接光和几何引导数据。可以直接从该文件调整降噪遍数和间接光强度，重建图集并生成可继续导入的 `lighting.xr`。
+
+```sh
+bazel run //crates/xrack-compiler:xrackc -- \
+  "$PWD/examples/puzzle3d/lightmap_bake_scene.xr" --emit lightmaps \
+  --bake-mode mixed --bake-save-samples -o "$PWD/baked-room-samples"
+bazel run //crates/xrack-compiler:xrackc -- \
+  "$PWD/baked-room-samples/samples.xrlm" --emit lightmaps-from-samples \
+  --bake-denoise-passes 3 --bake-indirect-factor 0.8 -o "$PWD/baked-room-tuned"
+```
+
+重建时省略后处理选项会沿用采样文件中的设置。改变灯光、几何或射线采样参数后，再从源场景生成采样文件。若初次烘焙把间接光倍率设为 0，启用间接光前需要重新采样。将生成的图集和模块用于常规 AOT 构建或 VS Code 预览。
+
+要在 VS Code 预览混合光照示例，请把上面命令的输出目录设为 `"$PWD/examples/puzzle3d/baked"`，然后打开 `examples/puzzle3d/lightmap_baked_view.xr` 并运行 **XRack: Open Live Preview**。
+
+CPU 烘焙支持解析灯光、环境常量和 HDR 环境光，以及不透明及遮罩网格。启用自动展开的网格会记录图表所需的最小烘焙分辨率。图集生成、AOT 和加载同一图集的解释器路径可在烘焙房间示例中比较。 [源场景](../examples/puzzle3d/lightmap_bake_scene.xr) · [生成图集的使用方式](../examples/puzzle3d/lightmap_baked_view.xr)
 
 `specular-aa: true;` 缓和镜头移动时镜面高光的闪烁，默认关闭。着色器根据相邻片元的法线变化调宽 GGX 高光，在 PBR 基材和清漆层分别计算，方向光、点光、聚光灯的高光以及环境探针反射共用过滤后的粗糙度。法线贴图也参与计算。它只使用当前帧，和 MSAA、超采样及透明合成可以一起使用。高光可能会变宽，视口分辨率和绘制通道与开关关闭时相同。 [镜面高光示例](../examples/puzzle3d/specular_aa.xr)
 
@@ -1297,7 +1448,7 @@ SceneView3D {
 | 函数 | 数据 |
 | --- | --- |
 | `scene_color(uv)` | 线性 RGBA，可读取相邻像素。 |
-| `scene_depth(uv)` | 深度缓冲中的归一化深度。近端为 0，远端和空白为 1。开启 `scene-effect-depth` 后保留深度，MSAA 下取最近的采样。 |
+| `scene_depth(uv)` | GPU 深度缓冲中的归一化深度。默认近端为 0，远端和空白为 1。启用反向深度时近端为 1，远端和空白为 0。开启 `scene-effect-depth` 后保留深度，MSAA 下取最近的采样。 |
 | `scene_surface(uv)` | 返回 `XrEffectSurface`，包含最近不透明表面的世界坐标 `position`、世界空间 `normal`、`roughness`、原始 `depth` 和 `valid`。 |
 | `scene_size()` | 效果输出纹理的像素宽高。 |
 | `scene_input_size()` | 当前通道读入的颜色纹理像素宽高。 |
@@ -1544,9 +1695,33 @@ SceneView3D {
 
 运行 `bazel run //examples/puzzle3d:play_capture_composite`，开启 **Offscreen** 后点 **Capture R8** 或 **Capture HDR** 对比。格式字段支持 VS Code 补全。
 
+**在一次绘制中输出颜色和材质数据**
+
+在捕获记录中声明 `combine-attachments: bool`，并设置 `combine-attachments: true` 和 `renderables: "opaque"`，可以让同一个捕获在一次几何绘制中写出着色颜色、材质数据和深度。颜色仍可作为 `scene-color-capture`，其余附件通过效果或材质的捕获输入读取。只分配有消费者请求的附件。
+
+合并后的附件共享几何覆盖和缓存刷新。颜色写入采用捕获的混合状态，材质数据保留原有编码。调度器会先完成着色器用到的上游捕获，再执行联合绘制。导入的 `color-source` 写到颜色附件，使用相同初始模板的附件共享模板测试。存在传递依赖的结果会分开绘制，避免合并后产生循环。
+
+设备会按附件格式核对每样本的总字节数，超出限制时自动使用独立阶段。带 `depth-source`、材质覆盖、独立背景绘制或透射预处理的阶段也沿用各自的绘制顺序。
+
+运行 `bazel run //examples/puzzle3d:play_capture_composite`，开启 **Offscreen** 后点 **MRT**。左边显示着色结果，右边显示从法线和深度附件读取的结果。**Source** 接入上游颜色和数据，**Split** 切换到独立绘制。Rust 的 `scene_capture_mrt_passes` 可观察实际发生的合并。
+
+**读取材质着色器的自定义数据**
+
+`@material-shader-url` 加载的 WGSL 可定义 `scene_material_data`。它接收当前片元的 UV、世界位置、视线、顶点色和材质参数，也能读取材质贴图与已应用 `scene_material` 的表面数据。返回值作为四个线性数据通道保存。
+
+```wgsl
+fn scene_material_data(input: XrMaterialInput, surface: XrMaterialSurface) -> vec4<f32> {
+    return vec4(input.parameters.x, input.uv0.y, surface.metallic, -0.25);
+}
+```
+
+将 `attachment: "material-data"` 写进指定 `capture` 的材质 `shader-textures` 或效果 `buffers`，再用 `material_texture` 或 `scene_buffer_color` 读取。没有定义钩子的材质写入零。捕获记录可用 `material-data-format: string` 单独选格式，支持与 `color-format` 相同的六种值，默认 `"rgba16f"`。浮点格式可保存负数，8 位归一化格式会把值约束在 0 到 1。
+
+仅有颜色消费者时，渲染器跳过数据钩子与数据附件。符合 `combine-attachments` 条件且设备容量足够时，颜色和自定义数据会一起写入；其余请求使用单独的数据捕获。运行 `bazel run //examples/puzzle3d:play_capture_composite`，开启 **Offscreen**，再点 **MRT** 和 **Data** 查看效果。
+
 **初始化捕获深度**
 
-捕获记录可用 `depth-clear: float` 设置初始深度，默认 1，取值限制在 0 到 1。例如，把初始深度设为 0，再使用 `pipeline-state.depth-compare: "greater"`，更远的片元就能通过本阶段的深度测试。需要给后续捕获提供统一阈值时，可以创建一个 `renderables: "none"` 且自定义清除值的捕获，再通过 `depth-source` 导入它的深度。导入仍按相机投影和阶段深度合成规则处理。
+捕获记录可用 `depth-clear: float` 设置初始深度，默认 1，取值限制在 0 到 1。这个字段与 `pipeline-state.depth-compare` 使用近 0、远 1 的逻辑约定，渲染时映射到相机实际使用的深度方向。例如，把初始深度设为 0，再使用 `pipeline-state.depth-compare: "greater"`，更远的片元就能通过本阶段的深度测试。需要给后续捕获提供统一阈值时，可以创建一个 `renderables: "none"` 且自定义清除值的捕获，再通过 `depth-source` 导入它的深度。导入仍按相机投影和阶段深度合成规则处理。
 
 通过 `material_texture` 或 `scene_buffer_color` 读取命名深度时，空白像素的 R 通道是实际清除值。世界坐标重建用独立的空白标记判断有效性，即使自定义清除值与某个有效表面的深度数值恰好相同，也可以区分两者。自定义深度清除沿用每像素 4 字节的附件。
 
@@ -1605,7 +1780,7 @@ scene-captures: [
 scene-color-capture: "glow";
 ```
 
-自定义颜色混合按绘制顺序直接写入目标，适用于模型、精灵和粒子。运行 `bazel run //examples/puzzle3d:play_capture_composite`，打开 **Offscreen** 后点击 **Custom blend** 可以对比材质和自定义混合。
+自定义颜色混合按绘制顺序直接写入目标，适用于模型、精灵和粒子。运行 `bazel run //examples/puzzle3d:play_capture_composite`，打开 **Offscreen** 后点击 **Blend** 可以对比材质和自定义混合。
 
 **跨帧效果纹理**
 
@@ -1677,11 +1852,33 @@ glTF 相机可通过场景行 ID 加选择器引用，例如 `camera: "rig/Hero"
 
 静态查询复用场景和网格的 BVH。蒙皮及形变网格使用当前姿态，碰撞查询始终使用主网格。半径必须为正，距离为非负世界单位。位置、方向或范围无效时返回未命中。想约束移动时，可以用返回距离限制球心的目标位置。 [扫掠与高度图碰撞示例](../examples/puzzle3d/sphere_cast.xr)
 
+场景行可以声明 `collision-shapes: [Collider]`，用一组局部形状作为球体和胶囊查询的碰撞体。每项至少声明 `shape: string`，支持 `"box"`、`"sphere"`、`"cylinder"`、`"cone"`、`"capsule"` 和 `"mesh"`。可选 `position: point3d`、`size: vector3d`、`yaw`、`pitch`、`roll` 描述局部位姿和尺寸，默认位置和角度为零，尺寸为 `(1, 1, 1)`。圆锥的局部原点在底面中心。图元的尺寸向量给出局部外包尺寸，胶囊沿局部 Y 轴，`size.y` 为总高且至少为 `size.x`。网格形状另外声明 `mesh: string`，可用 `@mesh-url(...)` 引用 glTF 或高度图。其 `size` 用作资源局部缩放，glTF 网格使用静止姿态与资源内部节点变换。
+
+形状继承场景行和父行的变换、层及可见状态。非空形状列表为该行提供碰撞几何，空列表回到主视觉网格。场景行也可以只声明碰撞形状。绘制和视觉射线查询使用视觉网格，球体、胶囊与触发区查询使用碰撞几何。复合触发区把同一行的重叠闭合图元视为一个区域，离开一块独立区域再进入下一块时会产生新的事件。三角网格形状用于表面碰撞，触发区使用闭合基础图元。
+
 `Scene3D.sphere-slide(objects, origin, displacement, radius, layer-mask?)` 返回球体移动后的中心 `point3d`。传入本次请求的世界坐标位移。遇到墙时，先推进到接触前，再将剩余位移投影到可移动的方向。多个接触面会一起限制剩余位移，例如进到两面墙的拐角后，仍可沿两面墙的交线移动。
 
 滑移只处理阻挡运动的接触，纯相切和分离方向可以继续移动。球心起始于封闭图元内部时停在原处。每次调用处理最多八次阻挡接触，并在接近表面时沿进入方向留出半径万分之一的间隙。这个函数使用同一场景 BVH、网格 BVH 和 `collidable` 字段。 [沿墙滑移示例](../examples/puzzle3d/sphere_slide.xr)
 
 `Scene3D.sphere-walk(objects, origin, displacement, radius, step-height, snap-distance, max-slope, layer-mask?)` 为空间移动加入贴地规则，返回移动后的球心 `point3d`。Y 轴向上，`max-slope` 是允许向上走的坡度角，范围为 0 到 90 度。过陡的上坡接触会同时限制朝坡内的水平运动，仍可沿坡横向移动。
+
+直立胶囊体有对应的 `Scene3D.capsule-cast`、`capsule-overlap`、`capsule-slide` 和 `capsule-walk`。在球体版本的半径参数之后传入 `segment-height: float`，它是两个半球中心间的距离。胶囊体总高为 `segment-height + 2 * radius`，`origin` 或 `center` 是其中心。轴线长度为 0 时，编译器可把调用化简为等价的球体查询。
+
+胶囊体用整段轴线连续检测场景三角面，返回的接触位置和 UV 均在原始碰撞面上。`capsule-walk` 复用上台阶、坡度限制和贴地规则，抬升时也会检查头顶空间。轴线已经穿过碰撞面时，查询报告距离 0，位移求解停在起点。 [球体与胶囊体行走示例](../examples/puzzle3d/sphere_walk.xr)
+
+盒、球、圆柱和圆锥的模型记录可以设为 `trigger: true`，成为可穿过的触发区。查询默认使用第一层。
+
+- `Scene3D.capsule-trigger-overlap(objects, center, radius, segment-height, layer-mask?)` 查询当前位置重叠的触发区，返回 `[hit3d]`。
+- `Scene3D.capsule-trigger-crossings(objects, from, to, radius, segment-height, layer-mask?)` 查询沿直线移动的进入和离开，返回 `[hit3d]`。
+- `Scene3D.capsule-walk-result(objects, origin, displacement, radius, segment-height, step-height, snap-distance, max-slope, layer-mask?)` 接受与 `capsule-walk` 相同的参数，一次求解返回 `walkresult3d`。它的 `position: point3d` 是终点，`crossings: [hit3d]` 记录实际滑移、抬升和落地路径上的进入和离开。只需要终点时可调用 `capsule-walk`。
+
+`Scene3D.capsule-walk-with-contacts` 接受同样的参数，并在 `walkresult3d.contacts` 中返回 `[hit3d]` 碰撞明细。每项包含碰撞物体的 ID、模型行、接触点和法线。`distance` 是角色沿实际路线走到该阻挡位置的累计距离。明细按碰撞发生顺序排列，也包含采用路线中上台阶和贴地时的实际撞击。普通 `capsule-walk-result` 的碰撞明细为空列表，适合只读取状态和触发区事件的调用。
+
+详细查询的 `walkresult3d.support` 是终点的支撑接触，类型为 `hit3d`。静止查询也能拿到脚下物体的 ID、接触点和法线。腾空时 `support.valid` 为 `false`。支撑单独保存在结果中，站在平台上可以读到支撑，同时碰撞明细列表保持为空。
+
+`walkresult3d` 还提供三个布尔字段。`grounded` 表示终点有坡度合规的地面支撑，静止时也能查询。`hit-wall` 表示本次采用的路径被侧面或过陡的坡面阻挡。`hit-ceiling` 表示本次路径被朝下的表面阻挡。成功上台阶时，只有实际采用的路线会贡献接触状态。跳跃可以用 `grounded` 决定起跳和落地，用 `hit-ceiling` 清零向上的速度。
+
+交叉事件按行程排列，`hit.entering` 为 `true` 时表示进入，为 `false` 时表示离开。`hit.distance` 是从移动起点累计的世界空间路程。一步跨过一个区域会收到两个事件，留在区内时重叠仍可查询。示例在提交新位置后，按事件顺序调用 `trigger-entered` 和 `trigger-exited`。
 
 起点有地面支撑且位移朝水平或向下时，`step-height` 启用上台阶。系统检查头顶空间、抬高后的水平路线及可行走的落脚点，且台阶路线须比普通滑移推进更远。`snap-distance` 控制下坡或下台阶后的最大贴地距离。两个值均为非负世界单位，设为 0 可分别关闭。向上移动和从空中开始的移动继续使用本次传入的位移，跳过踏步与吸附。恒定零位移在编译时折叠为原位置。 [地面行走示例](../examples/puzzle3d/sphere_walk.xr)
 
@@ -1715,6 +1912,10 @@ struct SceneLight3D {
 
 灯光记录可以声明 `casts-shadow: bool`，物体记录可以声明 `casts-shadow: bool` 和 `receives-shadow: bool`。字段省略时按 `true` 处理。阴影只减弱相应灯光的直接光照。环境光、自发光和 unlit 材质按原有规则显示。`MASK` 按材质的 alpha 阈值投影，`BLEND` 的半透明图元可以接收阴影。绕视和改变光强时复用深度图，移动投影物体、移动点光源或调整光照方向时更新。对于点光源，偏移量按阴影视锥的最远距离缩放，以保留远处遮挡的精度。
 
+每盏灯的记录可用 `shadow-filter: string` 选择 `"hard"`、`"bilinear"`、`"pcf4"`、`"pcf8"` 或 `"pcf16"`。默认 `"bilinear"` 用一次硬件采样插值相邻像素的深度比较结果。`"hard"` 比较一个深度像素，PCF 模式分别做 4、8 或 16 次过滤采样。点光源会按每个采样方向选择立方体面，软边可跨面连续过滤。
+
+`shadow-radius: float` 以深度图像素为单位控制 PCF 半径，默认 2，范围 0 到 16，设为 0 时退回单次双线性比较。`shadow-strength: float` 控制遮挡量，默认 1，范围 0 到 1，设为 0 时跳过阴影采样。灯光记录的 `shadow-bias: float` 可以覆盖视口的偏移量，有效范围 0 到 0.05。这四项影响实时采样，现有深度图可继续复用。 [阴影过滤示例](../examples/puzzle3d/shadow_filters.xr)
+
 方向光可以用 `shadow-cascades` 将相机深度范围分成 1 到 4 级，默认 1。近处切片覆盖更小的世界范围，能用相同分辨率分辨更细的阴影。级联数量大于 1 时，`shadow-distance` 设置从相机开始的最远投影距离，0 表示按场景范围计算。`shadow-split-balance` 在均匀分割（0）和对数分割（1）之间插值，默认 0.5。`shadow-cascade-blend` 控制相邻切片的过渡比例，范围 0 到 1，默认 0.1。
 
 级联使用与深度图像素网格对齐的投影。给定固定的距离和视口比例时，小于一个深度图像素的相机变化可复用已有深度图。相机移动后，点光、聚光灯和投影仍相同的级联层可以继续复用。相机画面外的物体也可以给画面内的表面投影。
@@ -1729,6 +1930,8 @@ struct SceneLight3D {
 
 局部探针沿用 HDR 预滤波和 GPU 纹理缓存。移动镜头时可以复用网格与实例缓冲。同一批次内相邻且使用同一探针的模型仍可合批。探针绑定属于绘制更新。 [局部反射示例](../examples/puzzle3d/reflection_probes.xr)
 
+探针记录可以用 `debug-view: bool` 显示青色影响盒和橙色采样中心，默认关闭。辅助线按场景深度遮挡，在视口后处理完成后叠加。使用默认的按变化刷新模式时，仅切换辅助线会复用现有反射贴图和命名捕获。运行 `bazel run //examples/puzzle3d:play_live_reflections`，点击 **探针范围** 即可查看。 [实时场景反射示例](../examples/puzzle3d/live_reflections.xr)
+
 场景捕获为匹配接收模型的探针渲染六个 HDR 面，并在 GPU 上为不同粗糙度生成 mip。`capture-size: int` 指定每面像素尺寸，默认 128，范围为 32 到 256。模型记录可用 `casts-reflections: false` 退出捕获。捕获使用当前视口的场景灯光、全局环境和匹配的层。本地探针从全局环境获取反射输入，避免构成立方体捕获的递归依赖。
 
 `refresh-mode: "on-change"` 在捕获输入变化时刷新，且为默认模式。`"first-frame"` 保留初次捕获的内容，适合静态布景。`"every-frame"` 在视口绘制时更新。`capture-revision: int` 可显式请求刷新。改变探针位置或面尺寸也会更新捕获。仅移动观察相机时，按变化刷新的探针可以复用现有立方体贴图。`cache-rendering` 也会跟踪立方体贴图版本。Rust 可查询 `reflection_cubemap_updates`、`reflection_capture_faces` 和 `reflection_prefilter_passes`。 [实时场景反射示例](../examples/puzzle3d/live_reflections.xr)
@@ -1736,6 +1939,22 @@ struct SceneLight3D {
 `time-slicing: "none"` 默认在同一帧完成捕获和预滤波。`"individual-faces"` 分六帧捕获六面，再分六帧逐面生成 mip。`"all-faces-at-once"` 在第一帧捕获六面，之后每帧为六面生成一级粗糙度 mip。两种分帧模式都按每个探针调度。
 
 分帧捕获使用开始时的场景和探针位置。更新完成后才发布整张立方体贴图，并切换视口缓存使用的版本。期间继续合成上一张已完成的贴图。初次捕获期间使用全局环境。按变化刷新时，捕获期间的新输入会安排到下一轮。原生窗口和 VS Code 预览会按需请求帧，直到当前任务收尾。
+
+逐面捕获每帧绘制一个基础面，六个基础面共享任务启动时读取的命名捕获与实时 2D 项目纹理。上游重绘被保留的图像时才分配新纹理。启用 2D mip 链时，探针保留它实际采样的 mip 链，原始 2D 捕获可以继续复用。最后一个基础面提交后释放保留的输入，接下来的过滤只读取立方体自身。按变化刷新会跟踪探针实际使用的 2D 源。
+
+运行 `bazel run //examples/puzzle3d:play_probe_capture_feed`，点 **逐面捕获**、**控件贴图** 后切换源画面，可以同时观察实时小窗和分帧更新的镜面。**开启 Mip** 可对照带 mip 的控件贴图。
+
+同一个 `SceneView3D` 的探针可共享三项帧预算：
+
+| 属性 | 每帧上限 |
+| --- | --- |
+| `reflection-faces-per-frame: int` | 渲染到立方体的基础面数。 |
+| `reflection-filter-passes-per-frame: int` | 粗糙度预滤波提交次数。每次处理一个完整或部分 mip 面。 |
+| `reflection-filter-texels-per-frame: int` | 预滤波处理的 texel 数。预算小于一个 mip 面时按区域分帧。 |
+
+每项默认 0，工作量由 `time-slicing` 决定。正数可进一步限制任何模式。等待最久的探针优先推进，预算中途变化时接着处理原任务。部分面沿用已经写入的区域和同一组滤波采样。跨帧基础面共用任务启动时的输入，完整贴图就绪后才发布。Rust 可通过 `reflection_prefilter_texels` 读取提交过滤的 texel 数。上游命名捕获沿用自己的调度。
+
+在同一示例点 **限制帧预算** 可启用两个探针，并将每帧工作量限制为 1 个基础面、2 次过滤和 128 个过滤 texel。
 
 结合 `TouchArea` 的本地指针坐标，可以调用 `Scene3D.pick` 取得最近可见物体的 ID。传入和视口一致的记录模型、相机属性和布局尺寸。空 ID 的物体仍会遮挡后方物体。Rust 宿主可以通过 `xrack_runtime::scene3d::raycast` 发出世界空间射线，获取命中的 ID、距离、位置和法线。查看 [3D 解谜示例](../examples/puzzle3d/README.md) 中的绕视、拾取和原生 Play。
 
@@ -1747,7 +1966,11 @@ struct SceneLight3D {
 
 #### 拾取单个 glTF 实例
 
-`Scene3D.hit-instance`、`Scene3D.hit-instance-camera` 和 `Scene3D.ray-hit-instance` 在相应射线参数之后依次接收 `row-index`、`mesh-node-index`、`instance-index`，最后可以传入层掩码。三个索引都从零开始，可以直接使用一次 `hit3d` 的结果。即使实例在另一个表面之后，也可验证射线是否命中它。相机裁剪、透明度、背面和 `pickable` 继续生效。缺失或无效的地址返回 `valid: false`。 [实例拾取示例](../examples/puzzle3d/instance_picking.xr)
+`Scene3D.hit-instance`、`Scene3D.hit-instance-camera` 和 `Scene3D.ray-hit-instance` 在相应射线参数之后依次接收 `row-index`、`mesh-node-index`、`instance-index`，最后可以传入层掩码。索引从零开始，可直接使用一次 `hit3d` 的结果。生成的普通几何以 `-1` 表示无导入节点。即使实例在另一个表面之后，也可验证射线是否命中它。相机裁剪、透明度、背面和 `pickable` 继续生效。缺失或无效的地址返回 `valid: false`。 [实例拾取示例](../examples/puzzle3d/instance_picking.xr)
+
+`Scene3D.instance(model, row-index, mesh-node-index, instance-index)` 返回不可变的 `instance3d`。可以直接使用 `hit3d` 的三个索引。普通声明式模型把后两个索引设为 `-1`，普通 glTF 节点保留节点索引并把实例索引设为 `-1`。查询失败时 `valid` 为 `false`。
+
+有效结果提供 `color`、`data-x` 到 `data-w`、`origin`、`axis-x` 到 `axis-z`，以及对象 ID 和源索引。三个世界坐标基保留非均匀缩放和剪切，分别是局部三个单位向量变换后的结果。`Scene3D.instance-camera` 和 `Scene3D.instance-orbit` 使用相应视口选择的 LOD。原始查询使用主网格。相机查询返回模型数据，实例即使被视锥裁掉也可以按索引读取。Python 的 `SceneModel3D` 也提供对应的方法。 [点选读数示例](../examples/puzzle3d/gltf_instance_data.xr)
 
 #### 视口框选
 
@@ -1760,6 +1983,234 @@ struct SceneLight3D {
 `Scene3D.closest-point(objects, origin, radius, layer-mask?)` 在世界空间半径内找最近的可拾取表面。`Scene3D.closest-point-on(objects, object-id, origin, radius, layer-mask?)` 将搜索限定到该 ID 对应的模型。两者返回 `hit3d`，包含命中对象、记录索引、世界与模型坐标、法线、UV 和从查询点到表面的距离。未命中时 `valid` 为 `false`。距离相同时按场景顺序选取。
 
 查询使用动画后、经过父节点与实例变换的三角面。距离使用世界单位，非均匀缩放也会参与计算。它从三角面的任一侧计算几何距离，法线沿用模型朝向。隐藏或 `pickable: false` 的模型会跳过，`collidable` 由球体扫掠等碰撞查询使用。层掩码省略时搜索主层，0 表示任何层都不搜索。半径 0 可查询恰好位于表面上的点。 [吸附标记示例](../examples/puzzle3d/closest_surface.xr)
+
+#### 3D 刚体模拟
+
+`Physics3D.new(gravity: vector3d, timestep: float)` 创建独立的 `physicsworld3d`。重力单位为世界单位每秒平方，固定步长以秒为单位。将世界保存在属性中，后续操作会复用同一模拟和接触状态。
+
+- `Physics3D.add-box(world, center, size, mass, friction, restitution)` 添加盒体，`size` 为完整宽高深。
+- `Physics3D.add-sphere(world, center, radius, mass, friction, restitution)` 添加球体。两种形状均以质量 0 创建固定刚体，正质量创建动态刚体。返回的整数句柄属于创建它的世界，0 表示创建失败。
+- `Physics3D.add-kinematic-box(world, center, size, rotation, friction, restitution)` 创建由脚本控制的运动学盒体，`rotation` 用度表示偏航、俯仰和滚转。运动学刚体可以推动动态刚体，自身轨迹由脚本决定。
+- `Physics3D.set-kinematic-target(world, body, center, rotation)` 将世界空间位姿排入下一步。一次步进前设定多次时，最后一次有效设定生效。读取的位姿在步进后更新。建议每个固定时间步小幅移动平台，让同一步的接触求解带动平台上的物体。
+- `Physics3D.step(world)` 推进一步。动态刚体受重力影响，并与同一世界的刚体发生碰撞。动态刚体启用了连续碰撞检测。
+- `Physics3D.position(world, body)`、`velocity(world, body)` 和 `rotation(world, body)` 查询位置、线速度和角度。角度向量对应场景行的 `yaw`、`pitch` 和 `roll`，单位为度。绑定会随模拟更新。
+- `Physics3D.apply-impulse(world, body, impulse)` 在动态刚体的质心施加冲量。`remove(world, body)` 移除一个刚体，`clear(world)` 清空世界。已移除的句柄不会在同一世界内重新分配。
+
+添加、设定目标、步进、移除和冲量操作写在回调中。示例用 `Timer` 驱动固定步进，也提供暂停和单步。升起平台时，平台的接触力会托起木块。刚体位姿用于更新 `SceneView3D` 的模型行。 [刚体与升降平台示例](../examples/puzzle3d/rigid_bodies.xr)
+
+**刚体触发区**由 `Physics3D.add-box-trigger(world, center, size, rotation)` 创建。它使用同一个物理世界的碰撞形状，`size` 是完整宽高深，`rotation` 使用场景的角度顺序。刚体可以从触发区穿过。触发区之间的重叠不计入报告。
+
+- `Physics3D.trigger-count(world, trigger)` 返回重叠的刚体数量，`trigger-overlaps(world, trigger, body)` 查询指定刚体。
+- `Physics3D.trigger-entered(world, trigger)` 和 `trigger-exited(world, trigger)` 返回最近一次已执行步进的调用中发生的刚体句柄列表 `[int]`。推进至少一步后遍历列表即可执行机关逻辑。物体留在区域内时不会重复产生进入报告。
+- 删除区域内的刚体会立即更新重叠状态，并在下一次步进报告离开。清空世界也会清除触发区和待处理报告。
+
+示例中，升起的平台将木块送入感应区，降低平台后木块离开。两次变化分别更新界面的进入和离开次数。 [刚体感应区示例](../examples/puzzle3d/rigid_bodies.xr)
+
+**碰撞分组**通过 `Physics3D.set-collision-filter(world, body, group, ignore-groups)` 设置。组索引范围是 0 到 31。忽略掩码使用 32 位无符号整数，第 `i` 位为 1 时忽略第 `i` 组。默认值为组 0、掩码 0。两方中任意一方忽略对方时，该对刚体就不产生接触或感应重叠。连续碰撞检测也使用同一过滤规则。
+
+在回调中设置过滤。步进前仍能读取上一帧的重叠状态。下一次步进会报告过滤引起的离开或进入，物体留在原位也适用。无效句柄或超出范围的数字返回 `false`。示例将木块置于组 1，把感应区设为组 2 并始终忽略组 0。用「感应启用」开关切换是否忽略木块所在的组。 [碰撞分组示例](../examples/puzzle3d/rigid_bodies.xr)
+
+#### 3D 刚体声明同步
+
+在回调中调用 `Physics3D.sync-bodies(world, bodies)`，把一份刚体记录列表同步到物理世界。每行包含唯一的非空 `id: string`、`body-kind: string`、`position: point3d` 和 `shapes: [Collider]`。`shapes` 使用与 `Physics3D.add-body` 相同的局部碰撞体记录。`body-kind` 可以是 `"fixed"`、`"dynamic"`、`"kinematic"` 或 `"trigger"`。可选字段有 `rotation: vector3d`（默认零角度）、`mass: float`（动态体默认 1）、`friction: float`（默认 0.5）及 `restitution: float`（默认 0）。动态体和感应区接受凸形状。三角网格和高度场用于固定体或运动学刚体，平面只能单独用于固定体。
+
+`Physics3D.body-by-id(world, id)` 可在绑定中读取当前句柄，缺失时返回 0。重排列表或编辑其他行时，内容和碰撞资源均保持一致的行会保留句柄、模拟位姿、速度和接触状态。修改某行会替换其刚体并移除连到旧刚体的关节。删除一行会移除对应刚体。手动添加的刚体可以留在同一世界中。提交遇到重复 ID 或无效碰撞体时，函数返回 `false`，该批声明不会应用。 [刚体声明同步示例](../examples/puzzle3d/authored_physics.xr)
+
+#### 3D 刚体与关节一起同步
+
+在回调里调用 `Physics3D.sync-scene(world, bodies, joints)`，可以一次提交刚体和关节声明。关节记录包含非空 `id: string`、`joint-kind: string`、`first: string`、`second: string`、`first-anchor: point3d` 和 `second-anchor: point3d`。两个端点指向本批刚体的 ID，至少有一个端点声明为动态刚体。锚点和可选的 `first-rotation: vector3d`、`second-rotation: vector3d` 都以各自刚体的局部坐标表达，旋转默认零角度，使用偏航、俯仰和滚转顺序。
+
+关节类型支持 `fixed`、`spherical`、`revolute`、`prismatic` 和 `distance`。旋转和滑动关节沿局部 X 轴，可用 `min: float` 和 `max: float` 限制角度或行程。距离关节要求正的 `max`，`min` 默认 0。`Physics3D.joint-by-id(world, id)` 返回当前关节句柄，缺失时返回 0。
+
+重排或编辑其他项时，未变的刚体和关节保留句柄、速度、限位及马达。替换刚体时，关联的声明式关节会用局部坐标重建并获得新句柄。重建后的关节使用声明中的限位，外部设置的马达可以用新句柄重新配置。提交存在重复 ID、缺失端点、无效刚体或无效限位时，整批返回 `false`。 [门轴与滑轨示例](../examples/puzzle3d/physics_joints.xr)
+
+#### 3D 模型跟随刚体
+
+将世界绑定到 `SceneView3D.physics-world`，在模型记录中添加可选字段 `physics-body: string`，值填 `Physics3D.sync-bodies` 使用的刚体 ID。关联成功时，刚体的世界坐标和旋转覆盖该行的位姿，模型的缩放和枢轴继续生效。子节点继承更新后的变换，场景层级仍决定可见性。若 ID 为空或刚体尚未创建，视图显示原有的模型位姿。通过 `Physics3D.set-pose-interpolation` 开启插值的刚体会按当前插值比例呈现。
+
+`Scene3D.prepare(objects, world?)` 返回 `scenemodel3d` 场景快照。传入 `world` 时解析当前插值位姿，省略时使用记录中的位姿。将同一个快照绑定到 `SceneView3D.model` 并传给 `Scene3D.ray-hit`、`Scene3D.pick`、`Scene3D.map-position` 等查询，即可共享几何、相机、层级和空间索引。绑定会随模型或有关的物理位姿更新。在回调中存下快照，可以在之后的步进里查询当时的场景，或者继续显示当时的画面。
+
+给视图直接传入原始记录时，`SceneView3D.physics-world` 会解析物理位姿。给视图传入快照时，`physics-world` 可用于调试线框，画面使用快照中的位姿。刚体位姿未变时复用场景投影，位姿更新也会复用已准备的网格、材质和实例动画数据。 [刚体模型示例](../examples/puzzle3d/authored_physics.xr)
+
+#### 3D 运动学接触报告
+
+`Physics3D.set-kinematic-contact-reports(world, static-kinematic, kinematic-kinematic)` 分别开启固定体与运动学刚体、两个运动学刚体之间的几何接触报告。两项默认关闭，可在运行时修改。`Physics3D.report-static-kinematic-collisions(world)` 和 `Physics3D.report-kinematic-kinematic-collisions(world)` 可用于绑定读取开关。清空世界会保留这两项配置。
+
+`Physics3D.contacts` 复用原有的发送、接收规则。采集在每个子步提交位姿后进行，使用形状交叠的真实接触点及法线。报告中的 `normal-impulse` 和 `impulse` 为零。各预设目标位置照常提交，碰撞分组与关节的接触限制照常参与筛选。 [两类运动学接触对照](../examples/puzzle3d/kinematic_reports.xr)
+
+#### 3D 世界设置与连续碰撞检测
+
+- `Physics3D.set-ccd-substeps(world, maximum)` 设置世界连续碰撞检测的子步限额，范围 0 到 64，默认 1。0 会关闭世界的 CCD 扫掠。`Physics3D.ccd-substeps(world)` 读取配置。
+- `Physics3D.set-body-ccd(world, body, enabled)` 设置刚体是否使用包含动态目标的完整 CCD，`Physics3D.body-ccd(world, body)` 读取配置。世界 CCD 启用时，Rapier 也会自动扫掠高速动态体与固定体的碰撞。
+- `Physics3D.set-soft-ccd(world, body, distance)` 设置预测接触的世界空间距离，`Physics3D.soft-ccd(world, body)` 读取该距离。0 关闭预测。预测接触可以在世界扫掠关闭时独立启用，距离越大，宽相位需要考虑的候选越多。
+- `Physics3D.set-length-unit(world, length)` 按场景单位设置 Rapier 的几何容差和速度限值。米制场景通常为 1，厘米制场景通常为 100。`Physics3D.length-unit(world)` 读取该值。应用同时用所选单位表达尺寸、位移、速度和重力。
+- `Physics3D.set-gravity(world, gravity)` 更新世界重力并唤醒刚体，`Physics3D.gravity(world)` 读取世界加速度。角色默认跟随世界，调用 `Physics3D.set-character-gravity` 可以独立配置，调用 `Physics3D.use-character-world-gravity(world, body)` 恢复跟随。`Physics3D.character-gravity(world, body)` 读取角色的有效重力。
+
+上述设置在回调中执行。世界级配置随 `Physics3D.clear` 保留，可释放的运动学刚体也保留其 CCD 配置。感应区报告反映模拟在各已提交步里的重叠，高速穿越路径可另用形状扫掠查询。 [薄壁、预测接触与单位缩放对照](../examples/puzzle3d/physics_ccd.xr)
+
+#### 3D 碰撞体调试视图
+
+给 `SceneView3D.physics-world` 绑定要查看的 `physicsworld3d`，用 `SceneView3D.physics-debug` 开关碰撞线框。调试默认关闭。`SceneView3D.physics-debug-body` 为 0 时显示该世界的全部有效碰撞体，传入刚体句柄时只显示所属形状。
+
+线框使用求解器的碰撞几何和已提交位姿，包含基础图元、复合体、凸网格、三角网格与高度场。蓝色表示固定体、橙色表示动态体、青色表示运动学刚体、紫色表示感应区。线框在视口合成后叠加，遮挡区域里的轮廓依然可见。视口可以只显示线框，也可以同时绑定视觉模型。 [碰撞体调试示例](../examples/puzzle3d/physics_debug.xr)
+
+#### 帧动画驱动
+
+`FrameAnimation` 是组件根部的命名声明。默认 `running: false`，支持双向绑定和 `start()`、`stop()`、`restart()`。`triggered(frame-time, elapsed-time, current-frame)` 在视图绘制前执行，两个时间参数单位为秒，帧号从 1 开始。启动、重启和窗口恢复绘制时，首帧间隔为 0。窗口被遮挡的时间不计入下一帧间隔。把 `running` 设为 `false` 后再次启动会重新累计帧号与时间。对运行中的 `FrameAnimation` 调用 `restart()` 会重置帧时钟并保留当前 `running` 绑定。
+
+原生窗口按绘制时钟触发回调，编辑器预览按预览帧调度触发。可将 `frame-time` 传给 `Physics3D.advance(world, frame-time, max-steps)`，模拟仍使用世界的固定步长和追帧上限。 [物理时钟示例](../examples/puzzle3d/physics_clock.xr)
+
+#### 3D 物理时钟与渲染插值
+
+- `Physics3D.advance(world, elapsed, max-steps)` 接收实际经过的秒数，按创建世界时指定的固定时长执行子步，并返回执行步数。限额为 1 到 128。超过限额的完整子步计入 `Physics3D.dropped-time(world)`，不足一步的时间累积到下一次调用。可用 `Physics3D.simulation-time(world)` 读取已提交的模拟秒数。
+- `Physics3D.advance-realtime(world, max-steps)` 使用单调时钟，可由 `Timer` 驱动。第一次调用建立基准。暂停、恢复、变速、手动步进、清空世界或切到显式秒数时重新建立基准。
+- `Physics3D.set-running(world, running)` 和 `Physics3D.set-time-scale(world, scale)` 控制是否消耗经过时间及消耗速率，初始为开启和 1 倍。倍率为非负有限数，0 倍冻结推进。`Physics3D.is-running(world)` 和 `Physics3D.time-scale(world)` 供绑定读取。`Physics3D.step(world)` 随时提交一次固定步进，并清空待累计的不足一步时间。
+- `Physics3D.set-pose-interpolation(world, body, enabled)` 为指定刚体保留上一次位姿。`Physics3D.interpolated-position(world, body)` 和 `Physics3D.interpolated-rotation(world, body)` 用 `Physics3D.interpolation-alpha(world)` 在最新两次提交的位姿之间采样，包括最短路径的四元数插值。普通位置、碰撞查询和刚体控制使用已提交的物理位姿。手动步进及传送从准确的新位置采样。
+
+事件报告覆盖最近一次至少执行一步的调用。一次批量调用内发生的感应区进入、离开、刚体接触和角色碰撞都会保留。推进返回 0 时可以继续显示插值，用返回步数来决定是否消费事件。 [卡顿帧、插值与单步示例](../examples/puzzle3d/physics_clock.xr)
+
+#### 3D 刚体接管与释放
+
+`Physics3D.set-kinematic(world, body, true)` 将动态刚体切换为运动学控制，同时清除已有速度以及一次性和持续的力与扭矩。调用 `Physics3D.set-kinematic(world, body, false)` 释放刚体，沿用上一次已提交的运动学步进的质心线速度和角速度。没有移动的步进对应零速度。释放前尚未执行的目标会丢弃。模式切换沿用原句柄、碰撞体、关节和质量属性，状态可通过 `Physics3D.is-kinematic(world, body)` 绑定读取。
+
+`Physics3D.set-kinematic-target-with-pivot(world, body, position, rotation, pivot)` 在下一次步进绕局部枢轴转动。若目标旋转为 R，最终刚体原点为 `position + pivot - R * pivot`，因此局部枢轴的世界位置为 `position + pivot`。同一步进前多次提交时采用最后一个目标。枢轴为零时等价于 `Physics3D.set-kinematic-target`。
+
+由凸形或其复合体组成的运动学刚体可以释放为动态刚体，也可以在接管期间设置质量。三角网格和高度图运动学刚体支持目标位姿。其释放请求与固定刚体、感应区、角色控制器的切换请求会返回 `false`。 [枢轴、接管和释放示例](../examples/puzzle3d/physics_kinematic.xr)
+
+#### 3D 刚体质量属性
+
+质量设置用于动态刚体和可释放的凸体运动学刚体。创建时给定的正质量按碰撞体的均匀密度分配，质量为 0 时创建固定刚体。下面的设置在回调中执行，写入成功后立即参与下一次力或冲量的计算。
+
+| 内建函数 | 作用 |
+| --- | --- |
+| `Physics3D.set-mass(world, body, mass)` | 指定总质量，并按碰撞体重新计算质心和惯量。 |
+| `Physics3D.set-density(world, body, density)` | 用指定密度从碰撞体的体积计算质量、质心和惯量。密度单位为质量每立方世界单位。 |
+| `Physics3D.use-default-density(world, body)` | 使用世界默认密度，并跟随其后续修改。选择其他质量设置后退出跟随。 |
+| `Physics3D.set-default-density(world, density)` | 修改世界默认密度，初始为 1。一次更新所有跟随的动态刚体。 |
+| `Physics3D.set-mass-properties(world, body, mass, local-center, principal-inertia, principal-rotation)` | 指定局部质心、三个主惯量和主轴朝向。朝向使用场景的 yaw、pitch、roll 顺序，单位为度。 |
+| `Physics3D.set-inertia-matrix(world, body, mass, local-center, column-x, column-y, column-z)` | 用三列向量指定绕局部质心的 3×3 惯量矩阵。矩阵必须对称正定。 |
+
+质量和密度必须有限且为正。显式主惯量取有限非负值，其中零表示对应主轴具有无限惯量。无效参数或刚体句柄返回 `false`。`Physics3D.mass`、`Physics3D.default-density`、`Physics3D.center-of-mass`、`Physics3D.local-center-of-mass`、`Physics3D.principal-inertia` 与 `Physics3D.inertia-column` 可用于绑定。质心有世界坐标和刚体局部坐标两种读法，惯量矩阵列索引从 0 到 2。 [质量、偏心质心和惯量矩阵示例](../examples/puzzle3d/physics_mass.xr)
+
+#### 3D 物理材质
+
+`Physics3D.set-material(world, body, static-friction, dynamic-friction, restitution)` 在回调中设置固定、动态或运动学刚体的材质，应用到这个刚体的所有碰撞体。摩擦系数必须有限且大于等于 0，弹性范围为 0 到 1。无效参数、失效句柄和感应区返回 `false`。创建刚体时传入的 `friction` 同时初始化两个摩擦系数。
+
+`Physics3D.static-friction(world, body)`、`Physics3D.dynamic-friction(world, body)` 与 `Physics3D.restitution(world, body)` 读取当前值，可直接用于绑定。修改后立即读到新值，下一步使用新材质求解接触。更换材质会唤醒接触中的刚体，并保留原有位置、速度和碰撞形状。
+
+双方的系数按 Rapier 默认规则取平均。静止或近静止的接触使用静摩擦。当流形中任一接触的切向相对速度超过 0.03 世界单位每秒时切换到动摩擦，低于 0.01 时恢复静摩擦。速度包含接触点处的转动贡献。这个切换在更新接触时发生。两个系数相等的刚体直接使用求解器的普通材质路径。 [轻推、滑动和回弹对比](../examples/puzzle3d/physics_materials.xr)
+
+当前 Rapier 版本在某些轴锁组合下会失去切向摩擦，例如同时锁定全部转动轴与平面接触的一个切向平移轴。示例给方块保留两个切向平移自由度。
+
+#### 3D 物理射线查询
+
+`Physics3D.ray-cast(world, origin, direction, max-distance, group-mask?, ignore-body?, include-sensors?)` 返回最近的 `physicshit3d`，包含 `body: int`、`distance: float`、`position: point3d`、`normal: vector3d` 和 `sensor: bool`。未命中时 `body` 为 0。`Physics3D.ray-cast-all` 参数相同，返回 `[physicshit3d]`。每个刚体保留最近的一个交点，按世界空间距离从近到远排列，距离相同时按刚体句柄递增。
+
+查询归一化非零方向，距离使用世界单位。起点位于闭合碰撞体内部时，沿射线查找前方的出射面。位置和分组按查询时的世界读取，因此立即发生的插入、删除、位姿重置或分组修改无需先步进。运动学目标和物理速度仍在步进时推进实际位姿。查询使用物理世界中真实的基础碰撞体、复合体和导入碰撞网格。
+
+默认查询所有 32 个分组，`group-mask` 的第 i 位可选择第 i 组。可用 `ignore-body` 跳过发出射线的角色，默认 0 表示不跳过任何刚体。`include-sensors` 默认关闭。开启后，感应区的交点也出现在距离排序中，`sensor` 为真。模型接口支持 `Model.count`、`Model.at` 和迭代。 [物理射线示例](../examples/puzzle3d/physics_ray_cast.xr)
+
+#### 3D 物理体积查询
+
+`Physics3D.shape-cast(world, center, rotation, shapes, direction, max-distance, group-mask?, ignore-body?, include-sensors?)` 沿世界方向平移整个体积，在扫掠中保持朝向。返回的 `physicshit3d` 包含碰撞体上的接触点和朝向探测体的法线，`distance` 是探测体移动的世界单位。起点已经重叠时距离为 0。相同参数的 `Physics3D.shape-cast-all` 每个刚体保留一个最早的接触，按距离和句柄排序。
+
+`Physics3D.shape-overlap(world, center, rotation, shapes, group-mask?, ignore-body?, include-sensors?)` 在指定姿态检查实际形状是否相交，返回按句柄排序的 `[int]`，一个刚体最多出现一次。三种查询共享射线查询的默认分组、排除刚体和感应区规则，并可在同一个回调内观察刚发生的碰撞体修改。
+
+`shapes` 沿用 `add-body` 的记录列表。探测体可由盒、球、胶囊、圆柱、圆锥、凸网格及其组合构成，每个部件沿用局部位姿和尺寸。世界内的地形、三角网格和平面也能作为查询目标。空探测体、非法尺寸或把平面、凹网格或高度图作为探测体时返回未命中或空列表。 [物理空间查询示例](../examples/puzzle3d/physics_ray_cast.xr)
+
+#### 3D 物理角色控制
+
+`Physics3D.add-character(world, center, radius, segment-height)` 创建直立胶囊角色并返回刚体句柄。胶囊总高为 `segment-height + 2 * radius`。角色沿世界 +Y 轴直立，初始采用世界重力，通过 `Physics3D.position` 读取步进后的中心位置。
+
+- `Physics3D.set-character-movement(world, body, velocity)` 设置持续的目标速度，单位为世界单位每秒。每次 `step` 根据世界里的碰撞体求出可行位移。
+- `Physics3D.set-character-options(world, body, step-height, snap-distance, max-slope, push-mass)` 设置台阶高度、贴地距离、可爬坡度和推物时使用的有效质量。坡度为 0 到 90 度之间的角度。台阶高度、贴地距离或推物质量为 0 时关闭对应功能。
+- `Physics3D.set-character-gravity(world, body, gravity)` 设置角色重力。使用零向量会清除累计下落速度。`Physics3D.set-character-mid-air-control(world, body, enabled)` 决定空中是否接受新速度，默认开启。关闭后用离地时的输入继续移动。
+- `Physics3D.jump-character(world, body, speed)` 在接地时沿 +Y 跳起。`Physics3D.teleport-character(world, body, center)` 直接移动到新中心并清除下落和支撑状态。
+- `Physics3D.character-grounded`、`Physics3D.character-hit-wall` 和 `Physics3D.character-hit-ceiling` 查询接地、侧面碰撞和撞顶。它们都接收 `(world, body)`。`Physics3D.character-collisions(world, body)` 将侧面、上方和地面编码为 1、2 和 4，`Physics3D.character-support(world, body)` 返回当前支撑刚体的句柄。
+
+`Physics3D.set-character-hit-reports(world, body, enabled)` 开启角色撞击报告，默认关闭。`Physics3D.character-hits(world, body)` 返回最近一批已执行步进中角色扫掠得到的 `[physicscontact3d]`。每项包含被撞刚体句柄、世界坐标接触点和朝向角色的表面法线。推动动态刚体时，`impulse` 记录刚体接收冲量的反向量，`normal-impulse` 是沿法线的分量。静态和运动学表面的冲量为零。同一刚体可以产生多个撞击点。关闭报告或传送角色会清除快照。
+
+运动学平台在当前步进执行目标位姿时，角色按同一次变换被带动。角色和动态刚体、感应区共用一个世界，感应区继续通过 `Physics3D.trigger-entered` 和 `Physics3D.trigger-exited` 报告进入与离开。 [台阶、升降平台与推箱示例](../examples/puzzle3d/physics_character.xr)
+
+#### 3D 动态刚体控制
+
+下列操作在回调中调用，输入的力、冲量、速度和施力点使用世界坐标。有效的动态刚体返回 `true`。句柄失效、刚体类型不适用或输入超出范围时返回 `false`。
+
+| 内建函数 | 作用 |
+| --- | --- |
+| `Physics3D.apply-force(world, body, force)`、`Physics3D.apply-force-at(world, body, force, point)` | 为下一次步进累加质心力或偏心力。偏心施力也会产生扭矩。 |
+| `Physics3D.apply-torque(world, body, torque)` | 为下一次步进累加扭矩。 |
+| `Physics3D.set-continuous-load(world, body, force, torque)`、`Physics3D.clear-forces(world, body)` | 替换持续载荷，或同时清除待执行和持续载荷。逐步载荷叠加到持续载荷上。 |
+| `Physics3D.apply-impulse-at(world, body, impulse, point)`、`Physics3D.apply-torque-impulse(world, body, impulse)` | 立即改变动量或角动量。 |
+| `Physics3D.set-linear-velocity(world, body, velocity)`、`Physics3D.set-angular-velocity(world, body, velocity)` | 设置世界线速度或角速度，角速度为绕 X、Y、Z 的弧度每秒。用 `Physics3D.angular-velocity(world, body)` 读取。 |
+| `Physics3D.set-gravity-scale(world, body, scale)`、`Physics3D.set-damping(world, body, linear, angular)` | 重力倍率 1 表示使用世界重力，0 表示关闭，负值反转方向。线性和角阻尼均为非负数。 |
+| `Physics3D.set-axis-locks(world, body, linear-mask, angular-mask)` | 用 1、2、4 对应世界 X、Y、Z 轴，可分别组合平移和旋转掩码。 |
+| `Physics3D.reset-body(world, body, center, rotation)` | 直接重置位姿、速度和载荷。角度向量沿用场景的 yaw、pitch、roll，单位为度。 |
+| `Physics3D.is-sleeping(world, body)` | 查询动态刚体当前是否休眠。待执行载荷在下一次步进唤醒刚体。 |
+
+[逐步施力与偏心冲量示例](../examples/puzzle3d/body_dynamics.xr) 同时显示线速度和角速度。
+
+#### 3D 刚体接触报告
+
+在回调中用 `Physics3D.set-contact-reports(world, body, send, receive)` 配置刚体。两个方向默认关闭。一方发送而另一方接收时，接收方会得到该次求解的接触点。感应区继续使用进入和离开报告。
+
+`Physics3D.contacts(world, body)` 返回最近一次 `step` 收到的接触点列表 `[physicscontact3d]`，可在执行步进后直接遍历或用 `Model.count`、`Model.at` 读取。每个 `physicscontact3d` 包含对方句柄 `body`、接触点的世界坐标 `position`、朝向接收刚体的世界空间法线 `normal`、法向冲量大小 `normal-impulse`，以及法向乘以该大小得到的向量 `impulse`。
+
+每次实际推进模拟的调用都会替换报告快照。持续受力的接触也会报告，批内的子步都可以产生报告。可以在回调里保存影响最大的接触，供动画、音效或游戏规则使用。删除刚体或清空世界也会清除相关报告。 [接触点与冲量示例](../examples/puzzle3d/body_contacts.xr)
+
+#### 3D 实体接触事件
+
+`Physics3D.set-contact-events(world, body, enabled)` 在回调中订阅一个实体刚体的接触变化，默认关闭。接触事件独立于冲量报告。每个刚体句柄在一次接触中只计一次，复合碰撞体的多个碰撞点不会重复计数。事件沿用物理世界的碰撞分组、关节接触规则和运动学接触开关。感应区使用 `trigger-entered` 和 `trigger-exited`。
+
+- `Physics3D.contact-bodies(world, body)` 返回最近一个已执行子步结束时仍在接触的刚体。
+- `Physics3D.contact-entered(world, body)` 和 `Physics3D.contact-exited(world, body)` 返回最近一批实际步进中的接触与分离。每个子步按句柄记录变化，同一刚体在不同子步重新接触时可以再次出现。推进 0 步会保留上一批报告。
+- 删除接触中的对方会立即更新当前列表，并在下一次实际步进报告一次分离。关闭订阅或清空世界会清除相应状态。
+
+接触变化在固定子步结束时采样。同一个子步内完成的短时撞击可用冲量报告观察。 [反弹与批量步进示例](../examples/puzzle3d/body_contacts.xr)
+
+#### 3D 复合碰撞形状
+
+`Physics3D.add-body(world, center, rotation, shapes, mass, friction, restitution)` 在指定的世界位姿创建刚体。质量 0 表示固定，正数表示动态刚体的总质量。`Physics3D.add-kinematic-body(world, center, rotation, shapes, friction, restitution)` 创建用 `Physics3D.set-kinematic-target` 驱动的刚体。`Physics3D.add-trigger(world, center, rotation, shapes)` 创建可穿过的固定感应区。三种接口都返回一个句柄。
+
+`shapes` 是记录列表，必填 `shape: string`，可选 `position: point3d`、`size: vector3d`、`yaw: float`、`pitch: float` 和 `roll: float`。位置和角度以刚体局部坐标表示，默认都是零。角度单位为度，尺寸默认是 `(1, 1, 1)`，并表示完整外包尺寸。
+
+| `shape` | 尺寸约定 |
+| --- | --- |
+| `"box"` | 三个方向的完整边长。 |
+| `"sphere"` | 三个方向的直径相同。 |
+| `"cylinder"`、`"cone"` | Y 为高度，X 和 Z 为相同的直径。圆锥的局部原点在底面中心。 |
+| `"capsule"` | Y 为包含两端半球的总高，X 和 Z 为相同的直径，总高至少等于直径。 |
+| `"plane"` | 无限平面，局部 +Y 指向外侧，尺寸不参与计算。通过 `add-body` 以质量 0 单独创建。 |
+
+创建时读取形状列表，并在物理世界中保留合成结果。两个立柱之间的空隙仍然可以通过。感应区的部件共用重叠状态，物体同时碰到多个部件时只报告一次进入。空列表、无效尺寸或不支持的形状组合返回 0。 [复合门框示例](../examples/puzzle3d/compound_bodies.xr)
+
+#### 3D 资源碰撞形状
+
+碰撞形状记录可声明 `mesh: string`，通过 `@mesh-url(...)` 引用场景资源。这三类形状的 `size` 是资源的 X、Y、Z 缩放，默认 `(1, 1, 1)`。
+
+| `shape` | 资源与适用刚体 |
+| --- | --- |
+| `"convex-mesh"` | 使用资源顶点的凸包。可用于固定、动态、运动学刚体和感应区，也能和其他凸形状组合。 |
+| `"mesh"` | 保留资源的三角表面和间隙，用于固定或运动学刚体。可以和同一刚体的其他形状配合。 |
+| `"heightfield"` | 把灰度 PNG 的高度样本交给原生高度场，X、Z 缩放控制覆盖范围，Y 缩放控制高度，用于固定或运动学刚体。 |
+
+glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换和镜像。渲染动画照常播放，碰撞几何在创建时固定。同一资源、缩放和形状类型近期创建过时，会复用准备好的几何。混合网格刚体的不同部件共用一个句柄和感应状态。 [模型与地形碰撞示例](../examples/puzzle3d/mesh_colliders.xr)
+
+#### 3D 刚体关节
+
+关节用两个刚体句柄连接同一世界里的物体，至少一端需要是动态刚体。锚点和轴在创建时用世界坐标指定，之后随各自刚体移动。相连的两端默认不产生接触，仍能与其他允许碰撞的物体交互。创建成功返回关节句柄，失败返回 0。
+
+| 内建函数 | 约束 |
+| --- | --- |
+| `Physics3D.add-fixed-joint(world, first, second, anchor)` | 保持两个刚体创建时的相对位姿。 |
+| `Physics3D.add-spherical-joint(world, first, second, anchor)` | 保持锚点重合，允许绕锚点自由转动。 |
+| `Physics3D.add-revolute-joint(world, first, second, anchor, axis, min, max)` | 只允许绕给定轴旋转，初始角度为 0，限位范围为 −180 到 180 度。 |
+| `Physics3D.add-prismatic-joint(world, first, second, anchor, axis, min, max)` | 只允许沿给定轴滑动，限位使用相对于初始位置的世界单位。 |
+| `Physics3D.add-distance-joint(world, first, second, first-anchor, second-anchor, min, max)` | 约束两个锚点之间的距离。下限须非负，上限须为正数。 |
+
+在回调里调用 `Physics3D.set-joint-limits(world, joint, min, max)` 可以更新旋转、滑动或距离关节的限位。两种轴向关节还可以用 `Physics3D.set-joint-motor(world, joint, velocity, max-force)` 驱动，速度单位分别为度每秒和世界单位每秒，最大力或扭矩为 0 时关闭马达。更新在下一次步进生效。
+
+`Physics3D.joint-position(world, joint)` 可绑定界面，读取旋转角度、滑动行程或锚点距离。其他类型或失效句柄返回 0。用 `Physics3D.remove-joint(world, joint)` 单独解除约束。删除任一端刚体或清空世界也会清理相应关节。 [刚体关节示例](../examples/puzzle3d/physics_joints.xr)
 
 #### 3D 粒子
 

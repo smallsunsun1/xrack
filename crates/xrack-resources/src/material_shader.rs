@@ -30,19 +30,25 @@ pub(super) fn load(path: &Path) -> Result<Arc<str>, String> {
         surface: find("scene_material").is_some(),
         light: find("scene_light").is_some(),
         ambient: find("scene_ambient").is_some(),
-        capture_position: ["scene_material", "scene_light", "scene_ambient"]
-            .into_iter()
-            .filter_map(find)
-            .any(|entry| {
-                crate::scene_effect::reaches_function(
-                    &module,
-                    &module.functions[entry].body,
-                    &["material_texture_world_position"],
-                )
-            }),
+        data: find("scene_material_data").is_some(),
+        capture_position: [
+            "scene_material",
+            "scene_light",
+            "scene_ambient",
+            "scene_material_data",
+        ]
+        .into_iter()
+        .filter_map(find)
+        .any(|entry| {
+            crate::scene_effect::reaches_function(
+                &module,
+                &module.functions[entry].body,
+                &["material_texture_world_position"],
+            )
+        }),
     };
     if !hooks.fragment() && !hooks.vertex {
-        return Err("material shader must define scene_material, scene_vertex, scene_light or scene_ambient".into());
+        return Err("material shader must define scene_material, scene_vertex, scene_light, scene_ambient or scene_material_data".into());
     }
     if module
         .functions
@@ -56,7 +62,7 @@ pub(super) fn load(path: &Path) -> Result<Arc<str>, String> {
         "{prepared}\n{INTERFACE}\n{CAPTURE_POSITION}\n{VALIDATION_TEXTURES}\n{VERTEX_APPLICATION}\n{VALIDATION_ENTRY}\n{VALIDATION_VERTEX_ENTRY}"
     );
     let validated = parse(&wgsl)
-        .map_err(|error| format!("invalid material hook interface (scene_material, scene_vertex, scene_light, scene_ambient)\n{error}"))?;
+        .map_err(|error| format!("invalid material hook interface (scene_material, scene_vertex, scene_light, scene_ambient, scene_material_data)\n{error}"))?;
     crate::scene_effect::validate(&validated, &wgsl)?;
     if let Some(vertex) = vertex
         && crate::scene_effect::reaches_function(

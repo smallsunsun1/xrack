@@ -1,7 +1,7 @@
 struct Settings {
-    lens: vec4<f32>,
-    // Near, far (zero means infinite), orthographic flag, strength.
-    projection: vec4<f32>,
+    depth_mapping: ClipDepthMapping,
+    // Reflection strength (remaining lanes reserved for alignment).
+    reflection: vec4<f32>,
     // Travel, depth thickness, roughness cutoff, maximum steps.
     trace: vec4<f32>,
     // Opaque raster extent and reduced reflection extent.
@@ -24,32 +24,34 @@ fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 }
 
 fn orthographic() -> bool {
-    return settings.projection.z > 0.5;
+    return settings.depth_mapping.distances.z > 0.5;
 }
 
-fn view_depth(depth: f32) -> f32 {
-    let near = settings.projection.x;
-    let far = settings.projection.y;
-    if orthographic() {
-        return mix(near, far, depth);
-    }
-    let ratio = select(0.0, near / max(far, near), far > 0.0);
-    return near / max((1.0 - depth) + depth * ratio, 1e-12);
+fn view_depth(pixel: vec2<i32>, depth: f32) -> f32 {
+    return depth_at_pixel(settings.depth_mapping, pixel, settings.extents.xy, depth);
 }
 
 fn point(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-    let z = view_depth(depth);
-    let ndc = (uv * 2.0 - 1.0) * vec2<f32>(1.0, -1.0);
-    let plane = (ndc - settings.lens.zw) / settings.lens.xy;
-    return vec3<f32>(plane * select(z, 1.0, orthographic()), z);
+    return view_point_from_clip(settings.depth_mapping, uv, depth);
 }
 
 fn project(p: vec3<f32>) -> vec2<f32> {
-    let ndc = p.xy / select(p.z, 1.0, orthographic()) * settings.lens.xy + settings.lens.zw;
+    if MATRIX_CLIP_PROJECTION {
+        let clip = matrix_clip_from_view(settings.depth_mapping, p);
+        return clip.xy / clip.w * vec2<f32>(0.5, -0.5) + 0.5;
+    }
+    let ndc = p.xy / select(p.z, 1.0, orthographic()) * settings.depth_mapping.lens.xy + settings.depth_mapping.lens.zw;
     return ndc * vec2<f32>(0.5, -0.5) + 0.5;
 }
 
-fn segment_depth(a: f32, b: f32, fraction: f32) -> f32 {
+fn segment_fraction(weights: vec2<f32>, fraction: f32) -> f32 {
+    return (fraction * weights.y) / mix(weights.x, weights.y, fraction);
+}
+
+fn segment_depth(a: f32, b: f32, fraction: f32, weights: vec2<f32>) -> f32 {
+    if MATRIX_CLIP_PROJECTION {
+        return mix(a, b, segment_fraction(weights, fraction));
+    }
     if orthographic() {
         return mix(a, b, fraction);
     }
@@ -64,12 +66,13 @@ fn address(uv: vec2<f32>) -> vec2<i32> {
     return vec2<i32>(uv * settings.extents.xy);
 }
 
-fn error_at(a: vec3<f32>, b: vec3<f32>, uv: vec2<f32>, t: f32) -> f32 {
-    let depth = scene_depth(address(uv));
-    if depth >= 1.0 {
+fn error_at(a: vec3<f32>, b: vec3<f32>, uv: vec2<f32>, t: f32, weights: vec2<f32>) -> f32 {
+    let pixel = address(uv);
+    let depth = scene_depth(pixel);
+    if is_clear_clip_depth(depth) {
         return -1.0;
     }
-    return segment_depth(a.z, b.z, t) - view_depth(depth);
+    return segment_depth(a.z, b.z, t, weights) - view_depth(pixel, depth);
 }
 
 struct ScreenHit {
@@ -84,15 +87,48 @@ fn trace_ray(origin: vec3<f32>, n: vec3<f32>, ray: vec3<f32>, limits: vec3<f32>,
     let step_limit = limits.z;
     let bias = clamp(thickness * 0.3, 0.01, 0.12);
     let start = origin + n * bias + ray * bias;
-    let near = settings.projection.x * 1.01;
-    if start.z <= near {
+    let near = settings.depth_mapping.distances.x * 1.01;
+    var start_depth = start.z;
+    var ray_depth = ray.z;
+    if OBLIQUE_CLIP_DEPTH {
+        let tilt = settings.depth_mapping.tilt_limits.xy;
+        start_depth += dot(tilt, start.xy);
+        ray_depth += dot(tilt, ray.xy);
+    }
+    if !MATRIX_CLIP_PROJECTION && start_depth <= near {
         return ScreenHit(vec2<f32>(0.0), 0.0, false);
     }
     var travel = radius;
-    if ray.z < 0.0 {
-        travel = min(travel, (start.z - near) / -ray.z);
+    if !MATRIX_CLIP_PROJECTION && ray_depth < 0.0 {
+        travel = min(travel, (start_depth - near) / -ray_depth);
+    }
+    if OBLIQUE_CLIP_DEPTH && !orthographic() && ray.z < 0.0 {
+        let forward_limit = settings.depth_mapping.tilt_limits.z;
+        travel = min(travel, max(start.z - forward_limit, 0.0) / -ray.z);
+    }
+    if MATRIX_CLIP_PROJECTION {
+        let clip = settings.depth_mapping.view_to_clip;
+        let p = vec4<f32>(start, 1.0);
+        let v = vec4<f32>(ray, 0.0);
+        let distances = vec2<f32>(dot(clip[2], p), dot(clip[3] - clip[2], p));
+        if any(distances <= vec2<f32>(0.0)) {
+            return ScreenHit(vec2<f32>(0.0), 0.0, false);
+        }
+        let rates = vec2<f32>(dot(clip[2], v), dot(clip[3] - clip[2], v));
+        if rates.x < 0.0 {
+            travel = min(travel, -distances.x / rates.x);
+        }
+        if rates.y < 0.0 {
+            travel = min(travel, -distances.y / rates.y);
+        }
+        travel *= 0.9999;
     }
     let end = start + ray * travel;
+    var weights = vec2<f32>(1.0);
+    if MATRIX_CLIP_PROJECTION {
+        let w = settings.depth_mapping.view_to_clip[3];
+        weights = 1.0 / vec2<f32>(dot(w, vec4<f32>(start,1.0)), dot(w, vec4<f32>(end,1.0)));
+    }
     let uv0 = project(start);
     let uv1 = project(end);
     let pixels = abs((uv1 - uv0) * settings.extents.xy);
@@ -113,7 +149,7 @@ fn trace_ray(origin: vec3<f32>, n: vec3<f32>, ray: vec3<f32>, limits: vec3<f32>,
         if distance(candidate * settings.extents.xy, origin_pixel) < 2.0 {
             continue;
         }
-        let error = error_at(start, end, candidate, fraction);
+        let error = error_at(start, end, candidate, fraction, weights);
         if error < 0.0 {
             continue;
         }
@@ -122,18 +158,21 @@ fn trace_ray(origin: vec3<f32>, n: vec3<f32>, ray: vec3<f32>, limits: vec3<f32>,
         for (var j = 0; j < 4; j += 1) {
             let mid = 0.5 * (lo + hi);
             let at = mix(uv0, uv1, mid);
-            if within(at) && error_at(start, end, at, mid) >= 0.0 {
+            if within(at) && error_at(start, end, at, mid, weights) >= 0.0 {
                 hi = mid;
             } else {
                 lo = mid;
             }
         }
         let hit_uv = mix(uv0, uv1, hi);
-        let gap = error_at(start, end, hit_uv, hi);
+        let gap = error_at(start, end, hit_uv, hi, weights);
         if gap < 0.0 || gap > thickness {
             // We crossed the edge of a foreground object with no plausible
             // surface intersection. Looking behind it is not observable.
             break;
+        }
+        if MATRIX_CLIP_PROJECTION {
+            return ScreenHit(hit_uv, travel * segment_fraction(weights, hi), true);
         }
         let perspective_fraction = (hi / end.z) / mix(1.0 / start.z, 1.0 / end.z, hi);
         return ScreenHit(hit_uv, travel * select(perspective_fraction, hi, orthographic()), true);
@@ -157,7 +196,14 @@ fn trace(@builtin(position) position: vec4<f32>) -> TraceOutput {
     let n = normalize(surface.xyz);
     let center_uv = (vec2<f32>(pixel) + 0.5) / settings.extents.xy;
     let origin = point(center_uv, scene_depth(pixel));
-    let eye_ray = select(normalize(origin), vec3<f32>(0.0, 0.0, 1.0), orthographic());
+    var eye_ray = select(normalize(origin), vec3<f32>(0.0, 0.0, 1.0), orthographic());
+    if MATRIX_CLIP_PROJECTION {
+        let viewer = settings.depth_mapping.viewer;
+        eye_ray = viewer.xyz;
+        if viewer.w != 0.0 {
+            eye_ray = normalize((origin - viewer.xyz) * viewer.w);
+        }
+    }
     let ray = reflect(eye_ray, n);
     let result = trace_ray(origin, n, ray, settings.trace.xyw, false);
     if !result.hit {
@@ -169,12 +215,12 @@ fn trace(@builtin(position) position: vec4<f32>) -> TraceOutput {
     let spread = i32(ceil(surface.w * surface.w * 7.0));
     var weight = 1.0;
     if spread > 0 {
-        let z = view_depth(scene_depth(hit));
+        let z = view_depth(hit, scene_depth(hit));
         let taps = array<vec2<i32>, 4>(vec2<i32>(1, 0), vec2<i32>(-1, 0), vec2<i32>(0, 1), vec2<i32>(0, -1));
         for (var tap = 0; tap < 4; tap += 1) {
             let at = clamp(hit + taps[tap] * spread, vec2<i32>(0), vec2<i32>(settings.extents.xy) - 1);
             let raw = scene_depth(at);
-            if raw < 1.0 && abs(view_depth(raw) - z) <= settings.trace.y * 2.0 {
+            if !is_clear_clip_depth(raw) && abs(view_depth(at, raw) - z) <= settings.trace.y * 2.0 {
                 color += textureLoad(radiance, at, 0).rgb;
                 weight += 1.0;
             }
@@ -193,7 +239,7 @@ fn trace(@builtin(position) position: vec4<f32>) -> TraceOutput {
 }
 
 fn reflection_delta(position: vec2<f32>, sample: u32) -> vec3<f32> {
-    if settings.projection.w <= 0.0 {
+    if settings.reflection.x <= 0.0 {
         return vec3<f32>(0.0);
     }
     let pixel = vec2<i32>(position);
@@ -201,7 +247,7 @@ fn reflection_delta(position: vec2<f32>, sample: u32) -> vec3<f32> {
     if dot(surface.xyz, surface.xyz) < 0.5 || surface.w >= settings.trace.z {
         return vec3<f32>(0.0);
     }
-    let center_depth = view_depth(sample_depth(pixel, sample));
+    let center_depth = view_depth(pixel, sample_depth(pixel, sample));
     let site = position / settings.extents.xy * settings.extents.zw - 0.5;
     let base = vec2<i32>(floor(site));
     let fraction = fract(site);
@@ -226,7 +272,7 @@ fn reflection_delta(position: vec2<f32>, sample: u32) -> vec3<f32> {
     let fallback = probe_at(pixel, sample);
     // Replace only the selected specular lobe. A miss leaves the probe and
     // the rest of the original illumination unchanged.
-    return settings.projection.w * (gathered.rgb * response - gathered.a * fallback);
+    return settings.reflection.x * (gathered.rgb * response - gathered.a * fallback);
 }
 
 @fragment

@@ -1,0 +1,98 @@
+struct DebugActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+struct DebugCollider {
+    shape: string, position: point3d, size: vector3d, yaw: float, mesh: string,
+}
+
+export component PhysicsDebugDemo inherits Window {
+    title: "XRack · 碰撞体调试";
+    width: 736px; height: 462px; resizable: false; background: #172735;
+
+    property <vector3d> zero: Vector3D.new(0, 0, 0);
+    property <point3d> origin: Point3D.new(0, 0, 0);
+    property <physicsworld3d> world: Physics3D.new(root.zero, 0.1);
+    property <string> panels: @mesh-url("models/cull-panels.gltf");
+    out property <int> compound: 0;
+    out property <int> platform: 0;
+    out property <int> surface: 0;
+    out property <int> trigger: 0;
+    out property <int> frame: 0;
+    in-out property <bool> debug: true;
+    in-out property <bool> focus: false;
+    in-out property <bool> show-model: true;
+
+    callback reset();
+    reset() => {
+        Physics3D.clear(root.world);
+        Physics3D.add-box(root.world, Point3D.new(0, -0.1, 0),
+            Vector3D.new(8.6, 0.2, 5.6), 0, 0.4, 0);
+        root.compound = Physics3D.add-body(root.world, Point3D.new(-1.6, 0.9, 0.35), root.zero, [
+            DebugCollider { shape: "box", position: Point3D.new(-0.53, 0, 0), size: Vector3D.new(0.75, 0.9, 0.72), yaw: 35, mesh: "" },
+            DebugCollider { shape: "sphere", position: Point3D.new(0.49, 0.14, 0), size: Vector3D.new(0.95, 0.95, 0.95), yaw: 0, mesh: "" },
+        ], 2.5, 0.35, 0);
+        root.platform = Physics3D.add-kinematic-box(root.world, Point3D.new(1.35, 0.75, 0.85),
+            Vector3D.new(1.7, 0.32, 0.8), root.zero, 0.4, 0);
+        root.trigger = Physics3D.add-box-trigger(root.world, Point3D.new(0.65, 0.73, -1.4),
+            Vector3D.new(1.45, 1.45, 1.6), Vector3D.new(-21, 0, 0));
+        root.surface = Physics3D.add-body(root.world, Point3D.new(2.35, 1, -1.55),
+            Vector3D.new(-14, 0, 0), [
+                DebugCollider { shape: "mesh", position: root.origin, size: Vector3D.new(0.78, 0.9, 0.78), yaw: 0, mesh: root.panels },
+            ], 0, 0, 0);
+        root.frame = 0;
+    }
+    callback move-colliders();
+    move-colliders() => {
+        if root.compound == 0 { root.reset(); }
+        root.frame = (root.frame + 1) % 4;
+        Physics3D.reset-body(root.world, root.compound, Point3D.new(-1.6 + root.frame * 0.55, 0.9, 0.35),
+            Vector3D.new(root.frame * 25, 0, 0));
+        Physics3D.set-kinematic-target(root.world, root.platform,
+            Point3D.new(1.35, 0.75 + root.frame * 0.2, 0.85), Vector3D.new(root.frame * 12, 0, 0));
+        Physics3D.step(root.world);
+    }
+
+    pure function block(id: string, mesh: string, point: point3d, size: vector3d, tint: color) -> DebugActor {
+        DebugActor {
+            id: id, mesh: mesh, x: point.x, y: point.y, z: point.z,
+            scale-x: size.x, scale-y: size.y, scale-z: size.z,
+            yaw: 0, pitch: 0, roll: 0, color: tint,
+        }
+    }
+    property <[DebugActor]> actors: [
+        root.block("floor", "primitive:box", Point3D.new(0, -0.1, 0), Vector3D.new(8.6, 0.2, 5.6), #293f50),
+        root.block("model", "primitive:box", Point3D.new(-1.6, 0.9, 0.35), Vector3D.new(1.3, 1.05, 0.95), #4b5c69),
+        root.block("platform-model", "primitive:box", Point3D.new(1.35, 0.75, 0.85), Vector3D.new(1.7, 0.32, 0.8), #475b68),
+    ];
+    property <[DebugActor]> empty-model;
+    view := SceneView3D {
+        width: 736px; height: 378px;
+        cache-rendering: true;
+        model: root.show-model ? root.actors : root.empty-model;
+        camera-yaw: -16; camera-pitch: 32; camera-distance: 10.5;
+        scene-background: #20394a; ambient-intensity: 0.55; multisampling: true;
+        physics-world: root.world;
+        physics-debug: root.debug;
+        physics-debug-body: root.focus ? root.compound : 0;
+    }
+    debug-status := Text {
+        x: 18px; y: 14px; color: #eef4f7;
+        text: (root.debug ? (root.focus ? "复合体线框" : "物理世界线框") : "关闭线框")
+            + "   ·   移动 " + root.frame;
+    }
+    Text {
+        x: 18px; y: 44px; color: #bccfe0;
+        text: "蓝 固定体   ·   橙 动态体   ·   青 运动学   ·   紫 感应区";
+    }
+    HorizontalLayout {
+        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
+        start := Button { text: "加载碰撞体"; clicked => { root.reset(); } }
+        overlay := Button { text: root.debug ? "关闭线框" : "打开线框"; clicked => { root.debug = !root.debug; } }
+        focus := Button { text: root.focus ? "显示全部" : "只看复合体"; clicked => { root.focus = !root.focus; } }
+        blocks := Button { text: root.show-model ? "隐藏模型" : "显示模型"; clicked => { root.show-model = !root.show-model; } }
+        move := Button { text: "移动碰撞体"; clicked => { root.move-colliders(); } }
+    }
+}

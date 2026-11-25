@@ -1,0 +1,142 @@
+struct RayActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, visible: bool,
+}
+
+struct ProbeShape { shape: string, position: point3d, size: vector3d }
+
+export component PhysicsRayDemo inherits Window {
+    title: "XRack · 物理空间查询";
+    width: 720px; height: 466px; resizable: false; background: #182937;
+
+    property <vector3d> zero: Vector3D.new(0, 0, 0);
+    property <physicsworld3d> world: Physics3D.new(root.zero, 0.1);
+    property <point3d> origin: Point3D.new(-3, 0.65, 0);
+    property <vector3d> direction: Vector3D.new(2, 0, 0);
+    property <point3d> sensor-center: Point3D.new(-1.55, 0.65, 0);
+    property <point3d> box-start: Point3D.new(0, 0.65, 0);
+    property <point3d> back-center: Point3D.new(2.2, 0.65, 0);
+    property <vector3d> box-size: Vector3D.new(0.7, 1.3, 0.75);
+    property <vector3d> sensor-size: Vector3D.new(0.55, 1.3, 1.35);
+    property <vector3d> back-size: Vector3D.new(0.7, 1.3, 1.35);
+    property <point3d> ledge-center: Point3D.new(-0.65, 1.26, 0);
+    property <vector3d> ledge-size: Vector3D.new(0.75, 0.52, 1.55);
+    property <point3d> overlap-center: Point3D.new(-1.1, 0.84, 0);
+    property <vector3d> sphere-size: Vector3D.new(0.9, 0.9, 0.9);
+    property <vector3d> twin-size: Vector3D.new(0.9, 0.9, 0.56);
+    property <[ProbeShape]> sphere-probe: [
+        ProbeShape { shape: "sphere", position: Point3D.new(0, 0, 0), size: root.sphere-size },
+    ];
+    property <[ProbeShape]> twin-probe: [
+        ProbeShape { shape: "box", position: Point3D.new(0, 0, -0.48), size: root.twin-size },
+        ProbeShape { shape: "box", position: Point3D.new(0, 0, 0.48), size: root.twin-size },
+    ];
+    property <[ProbeShape]> sweep-probe: root.mode == 2 ? root.twin-probe : root.sphere-probe;
+    in-out property <int> mode: 0;
+    out property <int> ledge-body: 0;
+    out property <int> sensor-body: 0;
+    out property <int> moving-body: 0;
+    out property <int> back-body: 0;
+    in-out property <bool> include-sensors: false;
+    in-out property <bool> group-only: false;
+    in-out property <bool> skip-moving: false;
+    property <int> groups: root.group-only ? 2 : 4294967295;
+    property <int> ignored: root.skip-moving ? root.moving-body : 0;
+    property <physicshit3d> miss;
+    out property <point3d> moving-center: root.moving-body > 0 ? Physics3D.position(root.world, root.moving-body) : root.box-start;
+    out property <physicshit3d> nearest: root.mode == 0
+        ? Physics3D.ray-cast(root.world, root.origin, root.direction, 6, root.groups, root.ignored, root.include-sensors)
+        : root.mode == 3 ? root.miss : Physics3D.shape-cast(
+            root.world, root.origin, root.zero, root.sweep-probe, root.direction, 6,
+            root.groups, root.ignored, root.include-sensors);
+    out property <[physicshit3d]> hits: root.mode == 0
+        ? Physics3D.ray-cast-all(root.world, root.origin, root.direction, 6, root.groups, root.ignored, root.include-sensors)
+        : root.mode == 3 ? [] : Physics3D.shape-cast-all(
+            root.world, root.origin, root.zero, root.sweep-probe, root.direction, 6,
+            root.groups, root.ignored, root.include-sensors);
+    out property <[int]> overlaps: root.mode == 3
+        ? Physics3D.shape-overlap(root.world, root.overlap-center, root.zero, root.sphere-probe,
+            root.groups, root.ignored, root.include-sensors)
+        : [];
+    property <point3d> stop-center: Point3D.new(root.origin.x + root.nearest.distance, root.origin.y, root.origin.z);
+    out property <int> hit-count: Model.count(root.hits);
+    out property <physicshit3d> second: Model.at(root.hits, 1, root.miss);
+    out property <[physicshit3d]> nearest-list: root.nearest.body > 0 ? [root.nearest] : [];
+
+    callback reset();
+    reset() => {
+        Physics3D.clear(root.world);
+        root.sensor-body = Physics3D.add-box-trigger(root.world, root.sensor-center, root.sensor-size, root.zero);
+        root.moving-body = Physics3D.add-box(root.world, root.box-start, root.box-size, 1.0, 0, 0);
+        root.back-body = Physics3D.add-box(root.world, root.back-center, root.back-size, 0, 0, 0);
+        Physics3D.set-collision-filter(root.world, root.back-body, 1, 0);
+        root.ledge-body = Physics3D.add-box(root.world, root.ledge-center, root.ledge-size, 0, 0, 0);
+    }
+    callback advance();
+    advance() => {
+        if root.moving-body == 0 { root.reset(); }
+        Physics3D.set-linear-velocity(root.world, root.moving-body, Vector3D.new(0, 0, 4));
+        Physics3D.step(root.world);
+    }
+    callback make-front-group-visible();
+    make-front-group-visible() => { Physics3D.set-collision-filter(root.world, root.moving-body, 1, 0); }
+
+    pure function part(id: string, shape: string, center: point3d, size: vector3d, tint: color, visible: bool) -> RayActor {
+        RayActor {
+            id: id, mesh: shape, x: center.x, y: center.y, z: center.z,
+            scale-x: size.x, scale-y: size.y, scale-z: size.z,
+            yaw: 0, pitch: 0, roll: 0, color: tint, visible: visible,
+        }
+    }
+    property <[RayActor]> actors: [
+        root.part("floor", "primitive:box", Point3D.new(0, -0.095, 0), Vector3D.new(7.5, 0.18, 4), #325062, true),
+        root.part("ray", "primitive:box", Point3D.new(0, 0.65, 0), Vector3D.new(6, 0.027, 0.027), #a7dee8, root.mode < 3),
+        root.part("ledge", "primitive:box", root.ledge-center, root.ledge-size, #ca9b73, true),
+        root.part("sphere-probe", "primitive:sphere", root.mode == 1 ? root.stop-center : root.overlap-center,
+            root.sphere-size, #62dfc37b, root.mode == 1 || root.mode == 3),
+        root.part("left-probe", "primitive:box", Point3D.new(root.stop-center.x, root.stop-center.y, -0.48),
+            root.twin-size, #62dfc37b, root.mode == 2),
+        root.part("right-probe", "primitive:box", Point3D.new(root.stop-center.x, root.stop-center.y, 0.48),
+            root.twin-size, #62dfc37b, root.mode == 2),
+        root.part("sensor", "primitive:box", Point3D.new(root.sensor-center.x, 0.014, root.sensor-center.z),
+            Vector3D.new(root.sensor-size.x, 0.028, root.sensor-size.z), #b487e9, true),
+        root.part("front", "primitive:box", root.moving-center, root.box-size, #6dd0bc, true),
+        root.part("back", "primitive:box", root.back-center, root.back-size, #8ca4ed, true),
+        root.part("hit", "primitive:sphere", root.nearest.position, Vector3D.new(0.14, 0.14, 0.14), #ffd371, root.nearest.body > 0),
+    ];
+    SceneView3D {
+        x: 0px; y: 0px; width: 720px; height: 380px; model: root.actors;
+        camera-yaw: -18; camera-pitch: 32; camera-distance: 9.5;
+        scene-background: #20394d; ambient-intensity: 0.55; multisampling: true;
+    }
+    ray-status := Text {
+        x: 18px; y: 14px; color: #e9f1fa;
+        text: root.mode == 3 ? "重叠 " + Model.count(root.overlaps)
+            : "最近 " + root.nearest.body + "   ·   命中 " + root.hit-count
+            + "   ·   距离 " + Math.round(root.nearest.distance * 1000) / 1000.0;
+    }
+    VerticalLayout {
+        x: 18px; y: 44px; width: 138px; height: 98px;
+        for hit in root.hits : Text {
+            text: (hit.sensor ? "感应区 " : "刚体 ") + hit.body;
+            color: hit.sensor ? #dcc3ff : #b9e9e2;
+        }
+        for body in root.overlaps : Text {
+            text: (body == root.sensor-body ? "感应区 " : "刚体 ") + body;
+            color: body == root.sensor-body ? #dcc3ff : #b9e9e2;
+        }
+    }
+    HorizontalLayout {
+        x: 16px; y: 395px; width: 688px; height: 45px; spacing: 9px;
+        start := Button { text: "重置场景"; clicked => { root.reset(); } }
+        mode-button := Button {
+            text: root.mode == 0 ? "射线" : root.mode == 1 ? "球体扫掠" : root.mode == 2 ? "复合扫掠" : "重叠查询";
+            clicked => { root.mode = (root.mode + 1) % 4; }
+        }
+        move := Button { text: "移动前箱"; clicked => { root.advance(); } }
+        sensors := Button { text: root.include-sensors ? "包含感应区" : "忽略感应区"; clicked => { root.include-sensors = !root.include-sensors; } }
+        groups := Button { text: root.group-only ? "第 2 组" : "全部分组"; clicked => { root.group-only = !root.group-only; } }
+        ignored := Button { text: root.skip-moving ? "跳过前箱" : "检测前箱"; clicked => { root.skip-moving = !root.skip-moving; } }
+    }
+}

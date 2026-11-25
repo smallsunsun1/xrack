@@ -4,6 +4,9 @@ use std::{collections::BTreeMap, ops::Range};
 
 pub const TEXTURE_TRANSFORM: &str = "KHR_texture_transform";
 pub const MESH_GPU_INSTANCING: &str = "EXT_mesh_gpu_instancing";
+pub const INSTANCE_COLOR_ATTRIBUTE: &str = "_COLOR_0";
+pub const INSTANCE_COLOR_ALIAS: &str = "_COLOR";
+pub const INSTANCE_DATA_ATTRIBUTE: &str = "_INSTANCE_DATA";
 pub const MATERIALS_VARIANTS: &str = "KHR_materials_variants";
 pub const LIGHTS_PUNCTUAL: &str = "KHR_lights_punctual";
 pub const CLEARCOAT: &str = "KHR_materials_clearcoat";
@@ -14,7 +17,9 @@ pub const TRANSMISSION: &str = "KHR_materials_transmission";
 pub const VOLUME: &str = "KHR_materials_volume";
 pub const DISPERSION: &str = "KHR_materials_dispersion";
 pub const ANISOTROPY: &str = "KHR_materials_anisotropy";
-pub const EXTENDED_MATERIALS: [&str; 8] = [
+pub const SPECULAR_GLOSSINESS: &str = "KHR_materials_pbrSpecularGlossiness";
+pub const EXTENDED_MATERIALS: [&str; 9] = [
+    SPECULAR_GLOSSINESS,
     CLEARCOAT,
     EMISSIVE_STRENGTH,
     IOR,
@@ -198,7 +203,7 @@ impl GltfMetadata {
 
     pub fn gpu_instance_groups(
         &self,
-    ) -> impl Iterator<Item = (usize, Option<&str>, Option<usize>)> {
+    ) -> impl Iterator<Item = (usize, Option<&str>, Option<usize>, &BTreeMap<String, usize>)> {
         self.gpu_instance_attributes().map(|(index, attributes)| {
             let count = attributes
                 .values()
@@ -209,7 +214,7 @@ impl GltfMetadata {
                         .values()
                         .all(|&i| self.accessors.get(i).and_then(|a| a.count) == Some(count))
                 });
-            (index, self.nodes[index].name.as_deref(), count)
+            (index, self.nodes[index].name.as_deref(), count, attributes)
         })
     }
 

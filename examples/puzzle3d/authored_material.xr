@@ -1,5 +1,7 @@
 struct PrincipledStyle {
     enabled: bool, base-color: color, metalness: float, roughness: float,
+    material-workflow: string, glossiness: float, glossiness-map: string,
+    glossiness-channel: string, specular-color: color,
     emissive-color: color, emissive-strength: float,
     alpha-mode: string, alpha-cutoff: float, cull-mode: string, unlit: bool,
     clearcoat: float, clearcoat-roughness: float,
@@ -17,7 +19,7 @@ struct StyledActor {
 
 export component AuthoredMaterialDemo inherits Window {
     title: "XRack · 声明式 PBR";
-    width: 646px; height: 436px;
+    width: 646px; height: 474px;
     resizable: false;
     background: #182537;
 
@@ -25,6 +27,9 @@ export component AuthoredMaterialDemo inherits Window {
     in-out property <float> metalness: 0.46;
     in-out property <float> coat: 0.55;
     in-out property <bool> warm: true;
+    in-out property <bool> glossy: false;
+    in-out property <float> glossiness: 0.86;
+    in-out property <string> glossiness-channel: "a";
     in-out property <bool> style-import: true;
     in-out property <string> mode: "opaque";
 
@@ -32,7 +37,13 @@ export component AuthoredMaterialDemo inherits Window {
         enabled: true,
         base-color: root.mode == "mask" ? #6cc5ed44
             : root.mode == "blend" ? #6cc5ed99
+            : root.glossy ? #2f3946
             : root.warm ? #e7af6d : #69b8e8,
+        material-workflow: root.glossy ? "specular-glossiness" : "metallic-roughness",
+        glossiness: root.glossiness,
+        glossiness-map: @texture-url("models/gloss-pattern.png"),
+        glossiness-channel: root.glossiness-channel,
+        specular-color: root.glossy ? (root.warm ? #ebaf6b : #6bc7eb) : #ffffff,
         metalness: root.mode == "glass" ? 0 : root.metalness,
         roughness: root.roughness,
         emissive-color: #000000, emissive-strength: 1,
@@ -60,10 +71,12 @@ export component AuthoredMaterialDemo inherits Window {
             material: root.finish, ..root.base
         },
         StyledActor {
-            id: "atlas", mesh: @mesh-url("models/uv-atlas.gltf"), x: 2.05, y: 0.1, z: 0.12,
+            id: "atlas",
+            mesh: root.glossy ? @mesh-url("models/specular-gloss-panel.gltf") : @mesh-url("models/uv-atlas.gltf"),
+            x: 2.05, y: 0.1, z: 0.12,
             scale-x: 0.57, scale-y: 0.57, scale-z: 0.57,
             material: PrincipledStyle {
-                enabled: root.style-import, base-color: #ffffff, alpha-mode: "opaque",
+                enabled: root.style-import && !root.glossy, base-color: #ffffff, alpha-mode: "opaque",
                 cull-mode: "none", transmission: 0, ..root.finish
             },
             casts-shadow: false, ..root.base
@@ -78,18 +91,22 @@ export component AuthoredMaterialDemo inherits Window {
         scene-background: #233a51; scene-hdr: true; cache-rendering: true;
         shadows: true; shadow-map-size: 512; shadow-bias: 0.003;
     }
-    Label { x: 16px; y: 329px; width: 64px; height: 34px; text: "粗糙度"; }
+    Label { x: 16px; y: 329px; width: 64px; height: 34px; text: root.glossy ? "光泽度" : "粗糙度"; }
     roughness-slider := Slider {
         x: 81px; y: 329px; width: 219px; height: 34px;
-        minimum: 0.035; maximum: 1; value <=> root.roughness;
+        minimum: 0.035; maximum: 1; value <=> root.roughness; visible: !root.glossy;
     }
-    Label { x: 320px; y: 329px; width: 64px; height: 34px; text: "金属度"; }
+    glossiness-slider := Slider {
+        x: 81px; y: 329px; width: 219px; height: 34px;
+        minimum: 0; maximum: 1; value <=> root.glossiness; visible: root.glossy;
+    }
+    Label { x: 320px; y: 329px; width: 64px; height: 34px; text: "金属度"; visible: !root.glossy; }
     metal-slider := Slider {
         x: 392px; y: 329px; width: 236px; height: 34px; minimum: 0; maximum: 1;
-        value <=> root.metalness;
+        value <=> root.metalness; visible: !root.glossy;
     }
     tone-toggle := CheckBox { x: 15px; y: 378px; width: 100px; height: 36px; text: "暖色"; checked <=> root.warm; }
-    atlas-toggle := CheckBox { x: 115px; y: 378px; width: 159px; height: 36px; text: "覆盖 glTF 参数"; checked <=> root.style-import; }
+    atlas-toggle := CheckBox { x: 115px; y: 378px; width: 159px; height: 36px; text: "覆盖 glTF 参数"; checked <=> root.style-import; enabled: !root.glossy; }
     mode-toggle := Button {
         x: 290px; y: 377px; width: 137px; height: 35px;
         text: root.mode == "opaque" ? "不透明" : root.mode == "mask" ? "透明裁切" : root.mode == "blend" ? "半透明" : "透射";
@@ -100,4 +117,18 @@ export component AuthoredMaterialDemo inherits Window {
     }
     Label { x: 442px; y: 378px; width: 49px; height: 36px; text: "清漆"; }
     coat-slider := Slider { x: 493px; y: 378px; width: 135px; height: 36px; minimum: 0; maximum: 1; value <=> root.coat; }
+    workflow-toggle := CheckBox {
+        x: 16px; y: 420px; width: 184px; height: 36px;
+        text: "镜面光泽工作流"; checked <=> root.glossy;
+    }
+    channel-toggle := Button {
+        x: 214px; y: 420px; width: 140px; height: 36px;
+        text: root.glossiness-channel == "a" ? "光泽通道 A" : "光泽通道 R";
+        visible: root.glossy;
+        clicked => { root.glossiness-channel = root.glossiness-channel == "a" ? "r" : "a"; }
+    }
+    Label {
+        x: 373px; y: 420px; width: 242px; height: 36px;
+        text: "右侧 · glTF 镜面光泽"; visible: root.glossy;
+    }
 }

@@ -1,0 +1,133 @@
+struct DynamicsModel {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component BodyDynamicsDemo inherits Window {
+    title: "XRack · 动态刚体控制";
+    width: 714px; height: 474px;
+    resizable: false; background: #162638;
+
+    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    property <point3d> start: Point3D.new(-1.8, 0.78, 0);
+    property <vector3d> zero: Vector3D.new(0, 0, 0);
+    property <vector3d> box-size: Vector3D.new(1.05, 0.62, 0.68);
+    out property <int> body: 0;
+    out property <int> ticks: 0;
+    in-out property <bool> running: false;
+    out property <bool> driving: false;
+    out property <bool> locked: false;
+    out property <bool> gravity: false;
+    out property <point3d> position: root.body == 0 ? root.start : Physics3D.position(root.world, root.body);
+    out property <vector3d> orientation: Physics3D.rotation(root.world, root.body);
+    out property <vector3d> speed: Physics3D.velocity(root.world, root.body);
+    out property <vector3d> spin: Physics3D.angular-velocity(root.world, root.body);
+    out property <bool> sleeping: Physics3D.is-sleeping(root.world, root.body);
+
+    callback drive(enabled: bool);
+    drive(enabled) => {
+        if root.body == 0 { root.reset(); }
+        Physics3D.set-continuous-load(root.world, root.body,
+            enabled ? Vector3D.new(3, 0, 0) : root.zero, root.zero);
+        root.driving = enabled;
+    }
+    callback lock(enabled: bool);
+    lock(enabled) => {
+        if root.body == 0 { root.reset(); }
+        Physics3D.set-axis-locks(root.world, root.body, 4, enabled ? 7 : 0);
+        root.locked = enabled;
+    }
+    callback enable-gravity(enabled: bool);
+    enable-gravity(enabled) => {
+        if root.body == 0 { root.reset(); }
+        Physics3D.set-gravity-scale(root.world, root.body, enabled ? 1 : 0);
+        root.gravity = enabled;
+    }
+    callback reset();
+    reset() => {
+        if root.body == 0 {
+            Physics3D.add-box(root.world, Point3D.new(0, -0.12, 0), Vector3D.new(8, 0.24, 4), 0, 0.35, 0);
+            root.body = Physics3D.add-box(root.world, root.start, root.box-size, 1, 0.3, 0);
+        }
+        Physics3D.reset-body(root.world, root.body, root.start, root.zero);
+        Physics3D.set-axis-locks(root.world, root.body, 4, 0);
+        Physics3D.set-gravity-scale(root.world, root.body, 0);
+        Physics3D.set-damping(root.world, root.body, 0, 0);
+        root.ticks = 0;
+        root.driving = false;
+        root.locked = false;
+        root.gravity = false;
+        root.running = false;
+    }
+    callback push-once();
+    push-once() => {
+        if root.body == 0 { root.reset(); }
+        Physics3D.apply-force(root.world, root.body, Vector3D.new(6, 0, 0));
+    }
+    callback kick();
+    kick() => {
+        if root.body == 0 { root.reset(); }
+        Physics3D.apply-impulse-at(root.world, root.body, Vector3D.new(2, 0, 0),
+            Point3D.new(root.position.x, root.position.y + 0.3, root.position.z));
+    }
+    callback advance();
+    advance() => {
+        if root.body == 0 { root.reset(); }
+        if Physics3D.step(root.world) {
+            root.ticks += 1;
+            if root.position.x > 3.3 || root.ticks >= 180 { root.running = false; }
+        }
+    }
+    clock := Timer {
+        interval: 16; repeat: true; running: root.running;
+        triggered => { root.advance(); }
+    }
+
+    pure function box(id: string, center: point3d, scale: vector3d, rotation: vector3d, tint: color) -> DynamicsModel {
+        DynamicsModel {
+            id: id, mesh: "primitive:box", x: center.x, y: center.y, z: center.z,
+            scale-x: scale.x, scale-y: scale.y, scale-z: scale.z,
+            yaw: rotation.x, pitch: rotation.y, roll: rotation.z, color: tint,
+        }
+    }
+    property <[DynamicsModel]> model: [
+        root.box("platform", Point3D.new(0, -0.12, 0), Vector3D.new(8, 0.24, 4), root.zero, #355963),
+        root.box("lane", Point3D.new(0, 0.007, 0), Vector3D.new(7.2, 0.014, 0.06), root.zero, #6899a7),
+        root.box("load", root.position, root.box-size, root.orientation, root.locked ? #73dbc6 : #f5aa62),
+    ];
+    SceneView3D {
+        width: 714px; height: 400px; model: root.model;
+        camera-yaw: -16; camera-pitch: 27; camera-distance: 9;
+        scene-background: #203a50; ambient-intensity: 0.45; multisampling: true;
+    }
+    dynamics-status := Text {
+        x: 18px; y: 16px; color: #e4eef6;
+        text: "线速度 X " + Math.round(root.speed.x * 100) / 100.0
+              + "   ·   角速度 Z " + Math.round(root.spin.z * 100) / 100.0
+              + "   ·   步数 " + root.ticks + (root.sleeping ? "   ·   休眠" : "");
+    }
+    drive-toggle := Button {
+        x: 19px; y: 44px; width: 123px; height: 34px;
+        text: root.driving ? "持续推力 开" : "持续推力 关";
+        clicked => { root.drive(!root.driving); }
+    }
+    lock-toggle := Button {
+        x: 150px; y: 44px; width: 123px; height: 34px;
+        text: root.locked ? "锁定旋转 开" : "锁定旋转 关";
+        clicked => { root.lock(!root.locked); }
+    }
+    gravity-toggle := Button {
+        x: 281px; y: 44px; width: 112px; height: 34px;
+        text: root.gravity ? "重力 开" : "重力 关";
+        clicked => { root.enable-gravity(!root.gravity); }
+    }
+    HorizontalLayout {
+        x: 14px; y: 412px; width: 686px; height: 44px; spacing: 10px;
+        push-button := Button { width: 120px; text: "施加一步力"; clicked => { root.push-once(); } }
+        kick-button := Button { width: 120px; text: "偏心冲量"; clicked => { root.kick(); root.running = true; } }
+        run-button := Button { width: 111px; text: root.running ? "暂停" : "运行"; clicked => { root.running = !root.running; } }
+        step-button := Button { width: 111px; text: "单步"; clicked => { root.advance(); } }
+        reset-button := Button { width: 111px; text: "重置"; clicked => { root.reset(); } }
+    }
+}

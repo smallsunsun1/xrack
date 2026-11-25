@@ -1,6 +1,7 @@
 use crate::{CanvasTransform, canvas_transform};
 use femtovg::renderer::WGPURenderer;
 use femtovg::{Atlas, Canvas, ImageFlags, ImageId, ImageInfo, PixelFormat, Quad};
+use std::rc::Rc;
 use xrack_layout::Rect;
 
 const EDGE: usize = 1024;
@@ -108,6 +109,9 @@ pub(super) struct CoverageAtlas {
     view: wgpu::TextureView,
     packing: Atlas,
     bytes: Vec<u8>,
+    rasterized: Vec<u8>,
+    rasterized_source: Option<Rc<()>>,
+    changed: Vec<u8>,
     vertices: wgpu::Buffer,
     pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
@@ -159,6 +163,9 @@ impl CoverageAtlas {
             view,
             packing: Atlas::new(EDGE, EDGE),
             bytes: Vec::new(),
+            rasterized: Vec::new(),
+            rasterized_source: None,
+            changed: Vec::new(),
             vertices,
             pipeline: pipeline(device),
             sampler,
@@ -253,9 +260,44 @@ impl CoverageAtlas {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         source: &wgpu::Texture,
+        source_key: &Rc<()>,
     ) -> Option<wgpu::CommandBuffer> {
         if self.bytes.is_empty() {
             return None;
+        }
+        // The source page changes identity when it replaces a tile in place.
+        // Identical UVs can then refer to different source pixels.
+        let same_source = self
+            .rasterized_source
+            .as_ref()
+            .is_some_and(|previous| Rc::ptr_eq(previous, source_key));
+        if same_source && self.rasterized.starts_with(&self.bytes) {
+            return None;
+        }
+        let mut load = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+        let mut instances = self.bytes.as_slice();
+        if same_source {
+            // The command contains the output tile rectangle and every sampling
+            // parameter. A match identifies an unchanged, disjoint tile, even
+            // when the caller moves it by a whole device pixel.
+            let stride = INSTANCE_BYTES as usize;
+            let matches = |(index, tile): (usize, &[u8])| {
+                let start = index * stride;
+                self.rasterized.get(start..start + stride) == Some(tile)
+            };
+            let mut tiles = self.bytes.chunks_exact(stride).enumerate();
+            if let Some(first) = tiles.position(matches) {
+                self.changed.clear();
+                self.changed
+                    .extend_from_slice(&self.bytes[..first * stride]);
+                for (index, tile) in tiles {
+                    if !matches((index, tile)) {
+                        self.changed.extend_from_slice(tile);
+                    }
+                }
+                load = wgpu::LoadOp::Load;
+                instances = &self.changed;
+            }
         }
         let bind_group = match &mut self.source {
             Some((texture, bind_group)) if texture == source => bind_group,
@@ -278,7 +320,7 @@ impl CoverageAtlas {
                 &slot.insert((source.clone(), group)).1
             }
         };
-        queue.write_buffer(&self.vertices, 0, &self.bytes);
+        queue.write_buffer(&self.vertices, 0, instances);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("XRack rasterize antialiased image tiles"),
         });
@@ -290,7 +332,7 @@ impl CoverageAtlas {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -299,8 +341,11 @@ impl CoverageAtlas {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
-            pass.draw(0..4, 0..(self.bytes.len() as u64 / INSTANCE_BYTES) as u32);
+            pass.draw(0..4, 0..(instances.len() as u64 / INSTANCE_BYTES) as u32);
         }
+        self.rasterized.clear();
+        self.rasterized.extend_from_slice(&self.bytes);
+        self.rasterized_source = Some(source_key.clone());
         Some(encoder.finish())
     }
 }

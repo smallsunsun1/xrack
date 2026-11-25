@@ -1,0 +1,18 @@
+// RAW: value = "quaternion-look-rotation"
+// RAW: value = "quaternion-look-at"
+// CHECK: %[[IDENTITY:[0-9]+]] = "xr.literal"() <{value = "0 0 0 1"}> : () -> !xr.quaternion3d
+// CHECK: "xr.property"(%[[IDENTITY]]) <{name = "forward", visibility = "out"}>
+// CHECK: "xr.property"(%[[IDENTITY]]) <{name = "coincident", visibility = "out"}>
+// CHECK: "xr.property"(%[[IDENTITY]]) <{name = "aligned", visibility = "out"}>
+// CHECK: "xr.geometry_function"{{.*}}value = "quaternion-look-at"
+// CHECK: "xr.property"{{.*}}name = "dynamic"
+
+export component App inherits Window {
+    in-out property <point3d> target;
+    out property <quaternion3d> forward: Quaternion3D.look-rotation(Vector3D.new(0, 0, -7));
+    out property <quaternion3d> coincident: Quaternion3D.look-at(
+        Point3D.new(4, 2, 1), Point3D.new(4, 2, 1), Vector3D.new(1, 0, 0));
+    out property <quaternion3d> aligned: Quaternion3D.look-at(
+        Point3D.new(1, 1, 10), Point3D.new(1, 1, -1), Vector3D.new(0, 2, 0));
+    out property <quaternion3d> dynamic: Quaternion3D.look-at(Point3D.new(4, 0, 8), root.target);
+}

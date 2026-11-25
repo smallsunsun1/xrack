@@ -13,7 +13,92 @@ pub struct SceneLight {
     pub source: SceneLightSource,
     pub radiance: [f32; 3],
     pub casts_shadow: bool,
+    pub shadow: ShadowSampling,
+    pub bake_mode: LightBakeMode,
     pub layers: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LightBakeMode {
+    #[default]
+    Disabled,
+    Indirect,
+    All,
+}
+
+impl LightBakeMode {
+    fn from_name(name: &str) -> Self {
+        match name {
+            "indirect" => Self::Indirect,
+            "all" => Self::All,
+            _ => Self::Disabled,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ShadowFilter {
+    Hard,
+    #[default]
+    Bilinear,
+    Pcf4,
+    Pcf8,
+    Pcf16,
+}
+
+impl ShadowFilter {
+    pub fn taps(self) -> u32 {
+        match self {
+            Self::Hard => 0,
+            Self::Bilinear => 1,
+            Self::Pcf4 => 4,
+            Self::Pcf8 => 8,
+            Self::Pcf16 => 16,
+        }
+    }
+}
+
+/// Receiver-side settings. Shadow map projection and depth caching are independent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowSampling {
+    pub filter: ShadowFilter,
+    pub strength: f32,
+    pub radius: f32,
+    pub bias: Option<f32>,
+}
+
+impl Default for ShadowSampling {
+    fn default() -> Self {
+        Self {
+            filter: ShadowFilter::Bilinear,
+            strength: Self::DEFAULT_STRENGTH as f32,
+            radius: Self::DEFAULT_RADIUS as f32,
+            bias: None,
+        }
+    }
+}
+
+impl ShadowSampling {
+    pub const DEFAULT_STRENGTH: f64 = 1.0;
+    pub const DEFAULT_RADIUS: f64 = 2.0;
+
+    fn prepare(filter: &str, strength: f64, radius: f64, bias: Option<f64>) -> Self {
+        let default = Self::default();
+        let bounded =
+            |value: f64, maximum: f64| value.is_finite().then(|| value.clamp(0.0, maximum) as f32);
+        Self {
+            filter: match filter {
+                "hard" => ShadowFilter::Hard,
+                "pcf4" => ShadowFilter::Pcf4,
+                "pcf8" => ShadowFilter::Pcf8,
+                "pcf16" => ShadowFilter::Pcf16,
+                _ => default.filter,
+            },
+            strength: bounded(strength, 1.0).unwrap_or(default.strength),
+            radius: bounded(radius, 16.0).unwrap_or(default.radius),
+            bias: bias.and_then(|value| bounded(value, 0.05)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,6 +133,11 @@ pub struct SceneLightDefinition<'a> {
     pub inner_angle: f64,
     pub outer_angle: f64,
     pub casts_shadow: bool,
+    pub shadow_filter: &'a str,
+    pub shadow_strength: f64,
+    pub shadow_radius: f64,
+    pub shadow_bias: Option<f64>,
+    pub bake_mode: &'a str,
     pub layers: u64,
 }
 
@@ -119,6 +209,13 @@ impl SceneLightDefinition<'_> {
             source,
             radiance,
             casts_shadow: self.casts_shadow,
+            shadow: ShadowSampling::prepare(
+                self.shadow_filter,
+                self.shadow_strength,
+                self.shadow_radius,
+                self.shadow_bias,
+            ),
+            bake_mode: LightBakeMode::from_name(self.bake_mode),
             layers: self.layers,
         })
     }
@@ -127,14 +224,15 @@ impl SceneLightDefinition<'_> {
 /// Convert the RGB portion of an XRack color to linear light.
 pub fn linear_color(color: Color) -> [f32; 3] {
     let [r, g, b, _] = color.0.to_be_bytes();
-    [r, g, b].map(|encoded| {
-        let channel = f32::from(encoded) / 255.0;
-        if channel <= 0.04045 {
-            channel / 12.92
-        } else {
-            ((channel + 0.055) / 1.055).powf(2.4)
-        }
-    })
+    [r, g, b].map(|encoded| linear_srgb_channel(f32::from(encoded) / 255.0))
+}
+
+pub(crate) fn linear_srgb_channel(channel: f32) -> f32 {
+    if channel <= 0.04045 {
+        channel / 12.92
+    } else {
+        ((channel + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 impl SceneLight {
@@ -341,6 +439,10 @@ pub fn record_lights(list: &RecordList) -> Arc<SceneLightModel> {
         let Value::Color(color) = row.field("color")? else {
             return None;
         };
+        let text = |field| match row.field(field) {
+            Some(Value::String(value)) => value.as_str(),
+            _ => "",
+        };
         SceneLightDefinition {
             kind,
             position: [number("x")?, number("y")?, number("z")?],
@@ -352,6 +454,11 @@ pub fn record_lights(list: &RecordList) -> Arc<SceneLightModel> {
             inner_angle: number("inner-angle")?,
             outer_angle: number("outer-angle")?,
             casts_shadow: row.field("casts-shadow") != Some(&Value::Bool(false)),
+            shadow_filter: text("shadow-filter"),
+            shadow_strength: number("shadow-strength").unwrap_or(ShadowSampling::DEFAULT_STRENGTH),
+            shadow_radius: number("shadow-radius").unwrap_or(ShadowSampling::DEFAULT_RADIUS),
+            shadow_bias: number("shadow-bias"),
+            bake_mode: text("bake-mode"),
             layers: match row.field("layers") {
                 Some(Value::Int(layers)) => *layers as u64,
                 _ => MAIN_LAYER,
@@ -582,15 +689,18 @@ pub struct DirectionalShadowCascade {
 
 impl DirectionalShadowCascade {
     /// Include occluders upstream of the camera slice, including off-screen ones.
-    pub fn include_caster(&mut self, [min, max]: [[f32; 3]; 2]) -> bool {
-        let overlaps =
-            (0..2).all(|axis| min[axis] <= self.max[axis] && max[axis] >= self.min[axis]);
-        if overlaps && min[2] <= self.max[2] {
-            self.min[2] = self.min[2].min(min[2]);
+    pub fn include_caster(&mut self, bounds: [[f32; 3]; 2]) -> bool {
+        if self.overlaps_caster(bounds) {
+            self.min[2] = self.min[2].min(bounds[0][2]);
             true
         } else {
             false
         }
+    }
+
+    pub fn overlaps_caster(&self, [min, max]: [[f32; 3]; 2]) -> bool {
+        min[2] <= self.max[2]
+            && (0..2).all(|axis| min[axis] <= self.max[axis] && max[axis] >= self.min[axis])
     }
 
     pub fn rows(mut self) -> [[f32; 4]; 4] {
@@ -761,6 +871,8 @@ pub fn viewport_lighting(
         },
         radiance: [2.4; 3],
         casts_shadow: true,
+        shadow: ShadowSampling::default(),
+        bake_mode: LightBakeMode::Disabled,
         layers: u64::MAX,
     };
     let ambient = linear_color(node.color("ambient-color").unwrap_or(Color(0xffffffff)))

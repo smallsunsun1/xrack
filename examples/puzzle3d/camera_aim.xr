@@ -1,0 +1,96 @@
+struct AimActor {
+    id: string, parent: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float,
+    orientation: quaternion3d, visible: bool, color: color,
+    camera-kind: string, camera-look-at: string, camera-look-at-point: point3d,
+    camera-up: vector3d,
+}
+
+export component CameraAimDemo inherits Window {
+    title: "XRack · Camera aiming";
+    width: 440px; height: 325px;
+    background: #172335;
+
+    in-out property <point3d> eye: Point3D.new(0, 2.5, 8);
+    in-out property <point3d> focus: Point3D.new(-1.5, 0.45, 0);
+    in-out property <point3d> target: Point3D.new(1.5, 0.5, -0.6);
+    in-out property <vector3d> up: Vector3D.new(0, 1, 0);
+    in-out property <bool> follow-node: false;
+    in-out property <bool> show-target: true;
+    in-out property <quaternion3d> authored-orientation;
+    property <point2d> viewport-size: Point2D.new(440px, 274px);
+    property <point3d> selected: root.follow-node && root.show-target ? root.target : root.focus;
+    property <point3d> marker: Point3D.new(-2.8, 0.65, -1.35);
+    out property <quaternion3d> marker-aim: Quaternion3D.look-at(
+        root.marker, root.selected, Vector3D.new(0, 1, 0));
+    out property <quaternion3d> view-aim: Quaternion3D.look-rotation(Vector3D.new(
+        root.selected.x - root.eye.x, root.selected.y - root.eye.y, root.selected.z - root.eye.z), root.up);
+
+    property <AimActor> base: AimActor {
+        id: "", parent: "", mesh: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        orientation: Quaternion3D.identity(), visible: true, color: #fff,
+        camera-kind: "", camera-look-at: "", camera-look-at-point: root.focus,
+        camera-up: root.up,
+    };
+    property <scenemodel3d> scene: Scene3D.prepare([
+        AimActor { id: "rig", x: 0.5, ..root.base },
+        AimActor { id: "eye", parent: "rig",
+            x: root.eye.x - 0.5, y: root.eye.y, z: root.eye.z, camera-kind: "perspective",
+            camera-look-at: root.follow-node ? "target" : "", orientation: root.authored-orientation,
+            ..root.base },
+        AimActor { id: "terrain", mesh: "primitive:box", y: -0.22,
+            scale-x: 10, scale-y: 0.32, scale-z: 9, color: #334e5b, ..root.base },
+        AimActor { id: "point", mesh: "primitive:box",
+            x: root.focus.x, y: root.focus.y, z: root.focus.z,
+            scale-x: 0.8, scale-y: 0.9, scale-z: 0.8, color: #f6aa54, ..root.base },
+        AimActor { id: "target", mesh: "primitive:sphere", visible: root.show-target,
+            x: root.target.x, y: root.target.y, z: root.target.z,
+            scale-x: 0.9, scale-y: 0.95, scale-z: 0.9, color: #72d7db, ..root.base },
+        AimActor { id: "marker", mesh: "primitive:box",
+            x: root.marker.x, y: root.marker.y, z: root.marker.z, orientation: root.marker-aim,
+            scale-x: 0.28, scale-y: 0.22, scale-z: 1.2, color: #b1a4ec, ..root.base },
+        AimActor { id: "tip", mesh: "primitive:sphere", parent: "marker", z: -0.59,
+            scale-x: 0.2, scale-y: 0.2, scale-z: 0.2, color: #f8dde9, ..root.base },
+    ]);
+    out property <projectedpoint3d> projected: Scene3D.project-camera(
+        root.scene, "eye", root.viewport-size, root.selected);
+    out property <hit3d> aimed-hit: Scene3D.hit-camera(
+        root.scene, "eye", root.viewport-size, root.projected.point);
+
+    SceneView3D {
+        width: root.viewport-size.x; height: root.viewport-size.y;
+        model: root.scene; camera: "eye"; scene-background: #233b52;
+    }
+    HorizontalLayout {
+        x: 12px; y: 282px; width: 416px; height: 31px; spacing: 8px;
+        point := Button {
+            text: "Point";
+            clicked => {
+                root.follow-node = false;
+                root.eye = Point3D.new(0, 2.5, 8);
+                root.up = Vector3D.new(0, 1, 0);
+            }
+        }
+        follow := Button {
+            text: "Follow";
+            clicked => {
+                root.follow-node = true;
+                root.eye = Point3D.new(0, 2.5, 8);
+                root.up = Vector3D.new(0, 1, 0);
+                root.target = Point3D.new(root.target.x > 1.0 ? 0.8 : 1.6, 0.5, -0.6);
+            }
+        }
+        roll := Button { text: "Roll"; clicked => { root.up = Vector3D.new(1, 0, 0); } }
+        top := Button {
+            text: "Top";
+            clicked => {
+                root.follow-node = false;
+                root.eye = Point3D.new(root.focus.x, 8, root.focus.z);
+                root.up = Vector3D.new(0, 0, -1);
+            }
+        }
+    }
+}

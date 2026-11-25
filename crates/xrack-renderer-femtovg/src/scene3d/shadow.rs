@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, ops::Range, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::Range,
+    sync::Arc,
+};
 
 use xrack_runtime::{
     Node, Value,
@@ -13,12 +17,12 @@ use crate::GpuPaintContext;
 use super::{
     DEPTH_FORMAT, MeshCache, append_floats, buffer,
     cascade::{CascadeRequest, CascadeSplits, MAX_CASCADES},
-    deform::{DeformationLayouts, GeometryBindings},
+    deform::{DeformationLayouts, GeometryBindings, bind_instance_streams},
     depth::{DepthPass, DepthPipelines},
     particles::ModelParticleBatch,
 };
 
-const MAX_SHADOW_MAPS: usize = 4;
+pub(super) const MAX_SHADOW_MAPS: usize = 4;
 const CUBE_FACES: usize = PointShadowProjection::FACE_COUNT;
 const MAX_SHADOW_VIEWS: usize = MAX_SHADOW_MAPS * CUBE_FACES;
 // Limit each cached Depth32Float atlas to 64 MiB.
@@ -41,6 +45,7 @@ struct CachedAtlas {
     layer_filter: Option<Arc<SceneVisibility>>,
     cascades: Option<CascadeRequest>,
     fog_receiver: Option<[[f32; 3]; 8]>,
+    item_revision: u64,
     gpu: Option<RenderedAtlas>,
 }
 
@@ -67,6 +72,7 @@ pub(super) struct Shadows {
     cache: VecDeque<CachedAtlas>,
     pub sampler: wgpu::Sampler,
     pub passes: u64,
+    fit_bounds: u64,
     particle_draws: u64,
 }
 
@@ -145,16 +151,6 @@ impl<'a> ShadowRequest<'a> {
 }
 
 impl Shadows {
-    pub fn invalidate_item_textures(&mut self) {
-        self.cache.retain(|atlas| {
-            atlas.objects.as_ref().is_none_or(|objects| {
-                !objects.iter().any(|object| {
-                    object.casts_shadow && super::mesh_samples_item_alpha(&object.mesh)
-                })
-            })
-        });
-    }
-
     pub fn discard_recorded_layers(&mut self) {
         self.cache.clear();
     }
@@ -179,6 +175,7 @@ impl Shadows {
                 ..Default::default()
             }),
             passes: 0,
+            fit_bounds: 0,
             particle_draws: 0,
         }
     }
@@ -190,7 +187,7 @@ impl Shadows {
         meshes: &mut MeshCache,
         geometry: GeometryBindings<'_>,
         request: Option<ShadowRequest<'_>>,
-    ) -> (&ShadowAtlas, u64) {
+    ) -> (&ShadowAtlas, u64, u64) {
         let Some(ShadowRequest {
             path,
             resolution,
@@ -203,11 +200,28 @@ impl Shadows {
             fog_receiver,
         }) = request
         else {
-            return (&self.empty, self.particle_draws);
+            return (&self.empty, self.particle_draws, self.fit_bounds);
         };
         let resolution = resolution.min(ctx.device.limits().max_texture_dimension_2d);
+        let mut item_revision = meshes.item_texture_revision;
+        if item_revision != 0
+            && !objects.is_some_and(|objects| {
+                objects.iter().enumerate().any(|(index, object)| {
+                    object.casts_shadow
+                        && layer_filter.is_none_or(|filter| filter.contains(index as u32))
+                        && super::mesh_samples_item_alpha(&object.mesh)
+                })
+            })
+            && !model_batches.iter().any(|batch| {
+                batch.shadow_bounds.is_some()
+                    && batch.meshes.iter().any(super::mesh_samples_item_alpha)
+            })
+        {
+            item_revision = 0;
+        }
         if let Some(index) = self.cache.iter().position(|cached| {
             cached.resolution == resolution
+                && cached.item_revision == item_revision
                 && cached.lights == lights
                 && cached.cascades == cascades
                 && cached.fog_receiver == fog_receiver
@@ -220,7 +234,7 @@ impl Shadows {
                 )
         }) {
             self.cache.rotate_left(index);
-            return (self.current_atlas(), self.particle_draws);
+            return (self.current_atlas(), self.particle_draws, self.fit_bounds);
         }
 
         // Cascade projections snap to texels, so choose their resolution
@@ -251,6 +265,7 @@ impl Shadows {
             fit_resolution,
             fog_receiver.as_ref(),
         );
+        self.fit_bounds = self.fit_bounds.saturating_add(plan.fit_bounds);
         let gpu = if plan.views.iter().any(ShadowView::has_draws) {
             let layers = plan.views.len();
             let size = budget_resolution(fit_resolution, layers);
@@ -262,6 +277,7 @@ impl Shadows {
             // keep their depth. Distinct viewports may retain distinct atlases.
             let retain = self.cache.iter().position(|cached| {
                 cached.path == path
+                    && cached.item_revision == item_revision
                     && same_objects(cached.objects.as_ref(), objects, None)
                     && cached.gpu.as_ref().is_some_and(fits)
             });
@@ -312,9 +328,10 @@ impl Shadows {
             layer_filter: layer_filter.cloned(),
             cascades,
             fog_receiver,
+            item_revision,
             gpu,
         });
-        (self.current_atlas(), self.particle_draws)
+        (self.current_atlas(), self.particle_draws, self.fit_bounds)
     }
 
     fn current_atlas(&self) -> &ShadowAtlas {
@@ -387,25 +404,34 @@ impl Shadows {
                 ..Default::default()
             });
             pass.set_bind_group(0, &globals, &[]);
-            pass.set_vertex_buffer(1, geometry.instances.slice(..));
+            let mut bound_instances = None;
             let mut active = None;
-            for (kind, range) in &shadow.draws {
-                let mesh = meshes.get(ctx.device, queue, kind);
-                pipelines.draw(
-                    ctx.device,
-                    &mut pass,
-                    &mut active,
-                    mesh,
-                    (
-                        range.clone(),
-                        geometry.deformation(range.start),
-                        DepthPass::Auxiliary(xrack_runtime::scene_effect::CaptureRenderables::All),
-                    ),
-                );
+            for (object, range) in &shadow.draws {
+                let mesh = meshes.get(ctx.device, queue, &object.mesh);
+                for range in geometry.runs(range.clone()) {
+                    geometry.bind_instance_range(&mut pass, &mut bound_instances, range.start);
+                    let deformation = geometry.deformation(range.start);
+                    pipelines.draw(
+                        ctx.device,
+                        &mut pass,
+                        &mut active,
+                        mesh,
+                        (
+                            range,
+                            deformation,
+                            object.is_reflected(),
+                            DepthPass::Auxiliary {
+                                renderables: xrack_runtime::scene_effect::CaptureRenderables::All,
+                                reverse_winding: false,
+                                reverse_depth: false,
+                            },
+                        ),
+                    );
+                }
             }
             for index in &shadow.particle_batches {
                 let batch = &particles[*index];
-                pass.set_vertex_buffer(1, batch.instances.slice(..));
+                bind_instance_streams(&mut pass, &batch.instances, geometry.zero_data);
                 for mesh in batch.meshes.iter().filter(|mesh| mesh.has_opaque_parts()) {
                     let mesh = meshes.get(ctx.device, queue, mesh);
                     self.particle_draws += pipelines.draw(
@@ -413,7 +439,7 @@ impl Shadows {
                         &mut pass,
                         &mut active,
                         mesh,
-                        (0..batch.count, None, DepthPass::Particles),
+                        (0..batch.count, None, false, DepthPass::Particles),
                     );
                 }
             }
@@ -427,7 +453,7 @@ impl Shadows {
     }
 }
 
-type Draw<'a> = (&'a Mesh3D, Range<u32>);
+type Draw<'a> = (&'a SceneObject, Range<u32>);
 
 struct ShadowView<'a> {
     slot: usize,
@@ -454,6 +480,74 @@ impl ShadowView<'_> {
 }
 
 type Bounds = [[f32; 3]; 2];
+type Corners = [[f32; 3]; 8];
+
+fn box_corners(bounds: Bounds) -> Corners {
+    std::array::from_fn(|corner| std::array::from_fn(|axis| bounds[(corner >> axis) & 1][axis]))
+}
+
+fn enclosing_box(corners: &Corners) -> Bounds {
+    corners.iter().fold(
+        [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]],
+        |[min, max], point| {
+            [
+                std::array::from_fn(|axis| min[axis].min(point[axis])),
+                std::array::from_fn(|axis| max[axis].max(point[axis])),
+            ]
+        },
+    )
+}
+
+struct ShadowCaster<'a> {
+    instance: (usize, &'a SceneObject),
+    fit: usize,
+}
+
+#[derive(Default)]
+struct ShadowFit<'a> {
+    points: Vec<[f32; 3]>,
+    casting: Vec<bool>,
+    casters: Vec<ShadowCaster<'a>>,
+}
+
+impl<'a> ShadowFit<'a> {
+    fn new(objects: impl Iterator<Item = (usize, &'a SceneObject)>) -> Self {
+        let mut fit = Self::default();
+        let mut shared = HashMap::new();
+        for (index, object) in objects {
+            let group = if let Some(bounds) = object.instance_shadow_bounds() {
+                *shared
+                    .entry(Arc::as_ptr(bounds))
+                    .or_insert_with(|| fit.add(box_corners(**bounds)))
+            } else {
+                fit.add(object.bounds_corners())
+            };
+            if object.casts_shadow && object.mesh.has_auxiliary_depth() {
+                fit.casting[group] = true;
+                fit.casters.push(ShadowCaster {
+                    instance: (index, object),
+                    fit: group,
+                });
+            }
+        }
+        fit
+    }
+
+    fn add(&mut self, corners: Corners) -> usize {
+        let index = self.casting.len();
+        self.points.extend(corners);
+        self.casting.push(false);
+        index
+    }
+
+    fn boxes(&self) -> impl Iterator<Item = (&Corners, bool)> {
+        self.points
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .zip(self.casting.iter().copied())
+    }
+}
 
 struct ParticleCaster {
     batch: usize,
@@ -467,6 +561,7 @@ struct ShadowPlan<'a> {
     slots: [u8; MAX_SCENE_LIGHTS],
     parameters: [[f32; 4]; MAX_SHADOW_MAPS],
     cascade_ends: [[f32; MAX_CASCADES]; MAX_SHADOW_MAPS],
+    fit_bounds: u64,
 }
 
 impl<'a> ShadowPlan<'a> {
@@ -483,17 +578,12 @@ impl<'a> ShadowPlan<'a> {
                 layer_filter.is_none_or(|filter| filter.contains(*index as u32))
             })
         };
-        let casters: Vec<_> = included()
-            .filter(|(_, object)| object.casts_shadow && object.mesh.has_auxiliary_depth())
-            .collect();
         let particles: Vec<_> = models
             .iter()
             .enumerate()
             .filter_map(|(batch, model)| {
                 let bounds = model.shadow_bounds?;
-                let corners = std::array::from_fn(|corner| {
-                    std::array::from_fn(|axis| bounds[(corner >> axis) & 1][axis])
-                });
+                let corners = box_corners(bounds);
                 Some(ParticleCaster {
                     batch,
                     bounds,
@@ -501,38 +591,48 @@ impl<'a> ShadowPlan<'a> {
                 })
             })
             .collect();
-        if casters.is_empty() && particles.is_empty() {
+        if particles.is_empty()
+            && !included()
+                .any(|(_, object)| object.casts_shadow && object.mesh.has_auxiliary_depth())
+        {
             return Self::default();
         }
-        let corners: Vec<_> = included()
-            .flat_map(|(_, object)| object.bounds_corners())
-            .chain(particles.iter().flat_map(|particle| particle.corners))
-            .chain(fog_receiver.into_iter().flatten().copied())
-            .collect();
-        let corners = corners.as_slice();
+        let mut fit = ShadowFit::new(included());
+        fit.points
+            .extend(particles.iter().flat_map(|particle| particle.corners));
+        fit.points
+            .extend(fog_receiver.into_iter().flatten().copied());
+        let corners = &fit.points;
         let has_point = lights
             .iter()
             .flatten()
             .any(|(_, light)| matches!(light, ShadowLight::Point { .. }));
+        let fit_boxes: Vec<_> = if has_point {
+            fit.boxes()
+                .map(|(corners, _)| enclosing_box(corners))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let caster_bounds: Vec<_> = if has_point {
-            casters
+            fit.casters
                 .iter()
-                .map(|(_, object)| {
-                    object.bounds_corners().iter().fold(
-                        [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]],
-                        |[min, max], p| {
-                            [
-                                std::array::from_fn(|axis| min[axis].min(p[axis])),
-                                std::array::from_fn(|axis| max[axis].max(p[axis])),
-                            ]
-                        },
-                    )
+                .map(|caster| {
+                    let object = caster.instance.1;
+                    if object.instance_shadow_bounds().is_some() {
+                        enclosing_box(&object.bounds_corners())
+                    } else {
+                        fit_boxes[caster.fit]
+                    }
                 })
                 .collect()
         } else {
             Vec::new()
         };
-        let mut plan = Self::default();
+        let mut plan = Self {
+            fit_bounds: fit.casting.len() as u64,
+            ..Self::default()
+        };
         let splits = cascades.and_then(|request| request.splits(corners));
         for (slot, (light, projection)) in lights.into_iter().flatten().enumerate() {
             let start = plan.views.len();
@@ -545,18 +645,21 @@ impl<'a> ShadowPlan<'a> {
                     position,
                     inverse_range_squared,
                     corners,
-                    caster_bounds
+                    fit_boxes
                         .iter()
                         .copied()
+                        .zip(&fit.casting)
+                        .filter_map(|(bounds, &casting)| casting.then_some(bounds))
                         .chain(particles.iter().map(|particle| particle.bounds)),
                 ) {
                     let [near, far] = cube.near_far();
                     plan.parameters[slot] = [near, far, 0.0, 0.0];
                     for face in 0..CUBE_FACES {
-                        let draws =
-                            batches(casters.iter().copied().zip(&caster_bounds).filter_map(
-                                |(caster, bounds)| cube.overlaps(face, *bounds).then_some(caster),
-                            ));
+                        let draws = batches(fit.casters.iter().zip(&caster_bounds).filter_map(
+                            |(caster, bounds)| {
+                                cube.overlaps(face, *bounds).then_some(caster.instance)
+                            },
+                        ));
                         let particle_batches = particles
                             .iter()
                             .filter_map(|particle| {
@@ -580,7 +683,7 @@ impl<'a> ShadowPlan<'a> {
                         (request, splits),
                         resolution,
                         axis,
-                        &casters,
+                        &fit,
                         &particles,
                     );
                 }
@@ -589,7 +692,7 @@ impl<'a> ShadowPlan<'a> {
                     slot,
                     face: 0,
                     rows,
-                    draws: batches(casters.iter().copied()),
+                    draws: batches(fit.casters.iter().map(|caster| caster.instance)),
                     particle_batches: particles.iter().map(|particle| particle.batch).collect(),
                 });
             }
@@ -607,13 +710,25 @@ impl<'a> ShadowPlan<'a> {
         (request, splits): (CascadeRequest, CascadeSplits),
         resolution: u32,
         axis: [f32; 3],
-        casters: &[(usize, &'a SceneObject)],
+        fit: &ShadowFit<'a>,
         particles: &[ParticleCaster],
     ) {
         let space = DirectionalShadowSpace::new(axis);
-        let projected: Vec<_> = casters
+        let projected_fit: Vec<_> = fit
+            .boxes()
+            .map(|(bounds, casting)| casting.then(|| space.bounds(bounds)).flatten())
+            .collect();
+        let projected: Vec<_> = fit
+            .casters
             .iter()
-            .map(|(_, object)| space.bounds(&object.bounds_corners()))
+            .map(|caster| {
+                let object = caster.instance.1;
+                if object.instance_shadow_bounds().is_some() {
+                    space.bounds(&object.bounds_corners())
+                } else {
+                    projected_fit[caster.fit]
+                }
+            })
             .collect();
         let particle_bounds: Vec<_> = particles
             .iter()
@@ -627,8 +742,15 @@ impl<'a> ShadowPlan<'a> {
                 .map_or_else(
                     || ([[0.0; 4]; 4], Vec::new(), Vec::new()),
                     |mut volume| {
-                        let draws = batches(casters.iter().copied().zip(&projected).filter_map(
-                            |(caster, bounds)| volume.include_caster((*bounds)?).then_some(caster),
+                        for bounds in projected_fit.iter().flatten() {
+                            volume.include_caster(*bounds);
+                        }
+                        let draws = batches(fit.casters.iter().zip(&projected).filter_map(
+                            |(caster, bounds)| {
+                                volume
+                                    .overlaps_caster((*bounds)?)
+                                    .then_some(caster.instance)
+                            },
                         ));
                         let particle_batches = particles
                             .iter()
@@ -672,12 +794,13 @@ fn batches<'a>(casters: impl Iterator<Item = (usize, &'a SceneObject)>) -> Vec<D
             Some((previous, range))
                 if object.mesh.influences().is_none()
                     && object.mesh.morph_geometry().is_none()
-                    && *previous == &object.mesh
+                    && previous.mesh == object.mesh
+                    && previous.is_reflected() == object.is_reflected()
                     && range.end == index =>
             {
                 range.end += 1;
             }
-            _ => draws.push((&object.mesh, index..index + 1)),
+            _ => draws.push((object, index..index + 1)),
         }
     }
     draws
@@ -717,11 +840,13 @@ fn same_geometry(a: &[SceneObject], b: &[SceneObject], layers: Option<&SceneVisi
                 }
             };
             same_mesh
+                && a.instance_shadow_bounds() == b.instance_shadow_bounds()
                 && a.mesh.shader_displacement() == b.mesh.shader_displacement()
                 && a.transform_rows() == b.transform_rows()
                 && a.skin_palette() == b.skin_palette()
                 && a.morph_weights() == b.morph_weights()
                 && a.casts_shadow == b.casts_shadow
+                && (!a.casts_shadow || a.same_vertex_program_instance(b))
                 && (!a.casts_shadow
                     || a.color.0 as u8 == b.color.0 as u8
                     || !a.mesh.materials().iter().any(|material| {

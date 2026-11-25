@@ -28,19 +28,31 @@ impl TimerCommand {
 
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TimerConfig {
-    interval: Duration,
-    repeat: bool,
-    triggered_on_start: bool,
+pub struct TimerConfig(TimerSchedule);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimerSchedule {
+    Interval {
+        period: Duration,
+        repeat: bool,
+        triggered_on_start: bool,
+    },
+    Frame,
 }
 
 impl TimerConfig {
     pub fn new(milliseconds: i64, repeat: bool, triggered_on_start: bool) -> Option<Self> {
-        (milliseconds > 0).then(|| Self {
-            interval: Duration::from_millis(milliseconds.min(i64::from(u32::MAX)) as u64),
-            repeat,
-            triggered_on_start,
+        (milliseconds > 0).then(|| {
+            Self(TimerSchedule::Interval {
+                period: Duration::from_millis(milliseconds.min(i64::from(u32::MAX)) as u64),
+                repeat,
+                triggered_on_start,
+            })
         })
+    }
+
+    pub fn frame() -> Self {
+        Self(TimerSchedule::Frame)
     }
 
     pub fn try_read<E>(
@@ -75,6 +87,7 @@ impl TimerConfig {
 pub struct TimerSlot {
     key: u64,
     revision: Property<u64>,
+    frame_clock: bool,
 }
 
 impl Default for TimerSlot {
@@ -92,25 +105,34 @@ impl Default for TimerSlot {
         Self {
             key,
             revision: Property::default(),
+            frame_clock: false,
         }
     }
 }
 
 impl TimerSlot {
+    pub fn frame() -> Self {
+        Self {
+            frame_clock: true,
+            ..Self::default()
+        }
+    }
+
     pub fn try_command<E>(
         &self,
         command: TimerCommand,
         running: impl FnOnce() -> Result<bool, E>,
         set_running: impl FnOnce(bool) -> Result<(), E>,
     ) -> Result<(), E> {
-        match command {
-            TimerCommand::Start if running()? => Ok(()),
-            TimerCommand::Start | TimerCommand::Restart => {
-                self.restart();
-                set_running(true)
-            }
-            TimerCommand::Stop => set_running(false),
+        let active = match command {
+            TimerCommand::Start => running()?,
+            TimerCommand::Restart => self.frame_clock && running()?,
+            TimerCommand::Stop => return set_running(false),
+        };
+        if command == TimerCommand::Restart || !active {
+            self.restart();
         }
+        if active { Ok(()) } else { set_running(true) }
     }
 
     pub fn command(
@@ -247,17 +269,28 @@ impl PartialEq for TimerRegistration {
     }
 }
 
+/// One sample from the host's frame clock. Times are in seconds.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct FrameTick {
+    pub frame_time: f64,
+    pub elapsed_time: f64,
+    pub current_frame: i64,
+}
+
 #[doc(hidden)]
 pub struct TimerTick {
     pub config: TimerConfig,
     pub revision: u64,
     pub completed: bool,
+    pub frame: Option<FrameTick>,
 }
 
 #[doc(hidden)]
 pub struct TimerDelivery {
     registration: TimerRegistration,
     completed: bool,
+    frame: Option<FrameTick>,
 }
 
 impl TimerDelivery {
@@ -266,6 +299,7 @@ impl TimerDelivery {
             config: self.registration.config,
             revision: self.registration.revision,
             completed: self.completed,
+            frame: self.frame,
         })
     }
 }
@@ -276,11 +310,43 @@ struct Entry {
     initial_trigger: bool,
 }
 
+#[derive(Default)]
+struct FrameClock {
+    last: Option<Instant>,
+    elapsed: Duration,
+    index: i64,
+}
+
+impl FrameClock {
+    fn sample(&mut self, now: Instant) -> Option<FrameTick> {
+        if self.last.is_some_and(|last| now <= last) {
+            return None;
+        }
+        let delta = self
+            .last
+            .replace(now)
+            .map_or(Duration::ZERO, |last| now.duration_since(last));
+        self.elapsed = self.elapsed.saturating_add(delta);
+        self.index = self.index.saturating_add(1);
+        Some(FrameTick {
+            frame_time: delta.as_secs_f64(),
+            elapsed_time: self.elapsed.as_secs_f64(),
+            current_frame: self.index,
+        })
+    }
+}
+
+struct FrameEntry {
+    registration: TimerRegistration,
+    clock: FrameClock,
+}
+
 /// A clock-driven queue. The host supplies time and synchronizes active registrations.
 #[doc(hidden)]
 #[derive(Default)]
 pub struct TimerQueue {
     entries: BTreeMap<u64, Entry>,
+    frames: BTreeMap<u64, FrameEntry>,
 }
 
 impl TimerQueue {
@@ -290,7 +356,27 @@ impl TimerQueue {
         registrations: impl IntoIterator<Item = &'a TimerRegistration>,
     ) {
         let mut previous = std::mem::take(&mut self.entries);
+        let mut previous_frames = std::mem::take(&mut self.frames);
         for registration in registrations {
+            let TimerSchedule::Interval {
+                period,
+                triggered_on_start,
+                ..
+            } = registration.config.0
+            else {
+                let clock = previous_frames
+                    .remove(&registration.key)
+                    .filter(|old| old.registration == *registration)
+                    .map_or_else(FrameClock::default, |old| old.clock);
+                self.frames.insert(
+                    registration.key,
+                    FrameEntry {
+                        registration: registration.clone(),
+                        clock,
+                    },
+                );
+                continue;
+            };
             let old = previous.remove(&registration.key);
             let entry =
                 if let Some(old) = old.as_ref().filter(|old| old.registration == *registration) {
@@ -300,12 +386,12 @@ impl TimerQueue {
                         initial_trigger: old.initial_trigger,
                     }
                 } else {
-                    let initial_trigger = registration.config.triggered_on_start
+                    let initial_trigger = triggered_on_start
                         && old.is_none_or(|old| old.registration.revision != registration.revision);
                     let deadline = if initial_trigger {
                         Some(now)
                     } else {
-                        now.checked_add(registration.config.interval)
+                        now.checked_add(period)
                     };
                     Entry {
                         registration: registration.clone(),
@@ -314,6 +400,38 @@ impl TimerQueue {
                     }
                 };
             self.entries.insert(registration.key, entry);
+        }
+    }
+
+    pub fn has_frame_animations(&self) -> bool {
+        !self.frames.is_empty()
+    }
+
+    /// Capture the frame's eligible registrations before invoking handlers.
+    pub fn frame_deliveries(&mut self, now: Instant) -> Vec<TimerDelivery> {
+        self.frames
+            .values_mut()
+            .filter_map(|entry| {
+                Some(TimerDelivery {
+                    registration: entry.registration.clone(),
+                    completed: false,
+                    frame: Some(entry.clock.sample(now)?),
+                })
+            })
+            .collect()
+    }
+
+    // A previous handler can stop, restart or remove another animation.
+    pub fn frame_delivery_is_current(&self, delivery: &TimerDelivery) -> bool {
+        self.frames
+            .get(&delivery.registration.key)
+            .is_some_and(|entry| entry.registration == delivery.registration)
+    }
+
+    /// Suspend frame timing while the host has no visible drawable.
+    pub fn reset_frame_baselines(&mut self) {
+        for entry in self.frames.values_mut() {
+            entry.clock.last = None;
         }
     }
 
@@ -331,20 +449,22 @@ impl TimerQueue {
             .filter(|entry| entry.deadline.is_some_and(|deadline| deadline <= now))
             .min_by_key(|entry| entry.deadline)?;
         let deadline = entry.deadline?;
-        let config = entry.registration.config;
-        let completed = !entry.initial_trigger && !config.repeat;
+        let TimerSchedule::Interval { period, repeat, .. } = entry.registration.config.0 else {
+            return None;
+        };
+        let completed = !entry.initial_trigger && !repeat;
         entry.initial_trigger = false;
         entry.deadline = if completed {
             None
         } else {
             // Missed periods coalesce. The next deadline stays on the original cadence.
-            let remainder =
-                (now.duration_since(deadline).as_nanos() % config.interval.as_nanos()) as u64;
-            now.checked_add(config.interval - Duration::from_nanos(remainder))
+            let remainder = (now.duration_since(deadline).as_nanos() % period.as_nanos()) as u64;
+            now.checked_add(period - Duration::from_nanos(remainder))
         };
         Some(TimerDelivery {
             registration: entry.registration.clone(),
             completed,
+            frame: None,
         })
     }
 }
@@ -353,6 +473,75 @@ impl TimerQueue {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn frame_delivery_uses_frame_time_and_keeps_interval_deadlines_separate() {
+        use std::cell::Cell;
+
+        let start = Instant::now();
+        let interval_slot = TimerSlot::default();
+        let frame_slot = TimerSlot::frame();
+        let timed = interval_slot.register(TimerConfig::new(20, true, false).unwrap(), |_| true);
+        let last = Rc::new(Cell::<Option<FrameTick>>::new(None));
+        let register = || {
+            let last = last.clone();
+            frame_slot.register(TimerConfig::frame(), move |tick| {
+                last.set(tick.frame);
+                true
+            })
+        };
+        let mut queue = TimerQueue::default();
+        let original = register();
+        queue.sync(start, [&timed, &original]);
+        assert_eq!(queue.deadline(), Some(start + Duration::from_millis(20)));
+        assert!(queue.next_due(start).is_none());
+        let mut batch = queue.frame_deliveries(start);
+        assert!(queue.frame_delivery_is_current(&batch[0]));
+        assert!(batch.pop().unwrap().fire());
+        assert!(queue.frame_deliveries(start).is_empty());
+        let first = last.get().unwrap();
+        assert_eq!(
+            (first.frame_time, first.elapsed_time, first.current_frame),
+            (0.0, 0.0, 1)
+        );
+
+        let later = start + Duration::from_millis(12);
+        queue.sync(later, [&timed, &register()]);
+        assert!(queue.frame_deliveries(later).pop().unwrap().fire());
+        let second = last.get().unwrap();
+        assert_eq!(
+            (second.frame_time, second.elapsed_time, second.current_frame),
+            (0.012, 0.012, 2)
+        );
+        queue.reset_frame_baselines();
+        let restored = start + Duration::from_secs(3);
+        assert!(queue.frame_deliveries(restored).pop().unwrap().fire());
+        let restored_sample = last.get().unwrap();
+        assert_eq!(
+            (
+                restored_sample.frame_time,
+                restored_sample.elapsed_time,
+                restored_sample.current_frame
+            ),
+            (0.0, 0.012, 3)
+        );
+
+        let due = queue
+            .frame_deliveries(restored + Duration::from_millis(16))
+            .pop()
+            .unwrap();
+        frame_slot.command(
+            TimerCommand::Restart,
+            || true,
+            |_| panic!("restart replaced running binding"),
+        );
+        queue.sync(restored, [&timed, &register()]);
+        assert!(!queue.frame_delivery_is_current(&due));
+        assert!(queue.frame_deliveries(restored).pop().unwrap().fire());
+        assert_eq!(last.get().unwrap().current_frame, 1);
+        queue.sync(restored, [&timed]);
+        assert!(!queue.has_frame_animations());
+    }
 
     #[test]
     fn late_periods_coalesce_without_moving_the_original_cadence() {

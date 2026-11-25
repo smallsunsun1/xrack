@@ -7,7 +7,7 @@ use crate::GpuPaintContext;
 
 use super::{
     COLOR_FORMAT, HDR_FORMAT, append_floats, attachment_view, buffer,
-    postprocess::RETAINED_VIEW_SIZES,
+    postprocess::RETAINED_VIEW_SIZES, screen_depth,
 };
 
 #[derive(Clone, Copy)]
@@ -54,10 +54,10 @@ struct Targets {
 
 pub(super) struct DepthOfField {
     shader: wgpu::ShaderModule,
-    reduce: [Option<Pass>; 4],
+    reduce: [[Option<Pass>; 4]; screen_depth::MODES],
     gather: Pass,
     sampler: wgpu::Sampler,
-    composite: [[Option<Pass>; 2]; 2],
+    composite: [[[Option<Pass>; 2]; 2]; screen_depth::MODES],
     targets: VecDeque<Targets>,
 }
 
@@ -65,7 +65,11 @@ impl DepthOfField {
     pub fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("XRack 3D depth of field"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("depth_of_field.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                [screen_depth::SHADER, include_str!("depth_of_field.wgsl")]
+                    .join("\n")
+                    .into(),
+            ),
         });
         Self {
             gather: Pass::new(
@@ -73,6 +77,7 @@ impl DepthOfField {
                 &shader,
                 "gather",
                 &[HDR_FORMAT, HDR_FORMAT, wgpu::TextureFormat::R32Float],
+                screen_depth::Mode::Flat,
             ),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("XRack 3D depth of field sampler"),
@@ -81,8 +86,8 @@ impl DepthOfField {
                 ..Default::default()
             }),
             shader,
-            reduce: [const { None }; 4],
-            composite: [const { [None, None] }; 2],
+            reduce: [const { [const { None }; 4] }; screen_depth::MODES],
+            composite: [const { [const { [None, None] }; 2] }; screen_depth::MODES],
             targets: VecDeque::new(),
         }
     }
@@ -136,30 +141,20 @@ impl DepthOfField {
         });
         let output = resolved.as_ref().unwrap_or(ctx.target);
 
-        let [near, far] = depth.camera.depth_limits();
-        let far = if far.is_finite() { far } else { 0.0 };
         let logical = [ctx.paint.bounds.width, ctx.paint.bounds.height];
         let [radius_x, radius_y]: [f32; 2] = std::array::from_fn(|axis| {
             let scale = size[axis] as f32 / logical[axis].max(1.0);
             (settings.radius * scale).clamp(0.0, 64.0)
         });
-        let mut bytes = Vec::with_capacity(32);
-        append_floats(
-            &mut bytes,
-            [
-                near,
-                far,
-                if depth.camera.is_orthographic() {
-                    1.0
-                } else {
-                    0.0
-                },
-                f32::from(u8::from(composite_alpha)),
-            ],
-        );
+        let mut bytes = Vec::with_capacity(screen_depth::UNIFORM_BYTES + 32);
+        screen_depth::write(&mut bytes, depth.camera);
         append_floats(
             &mut bytes,
             [settings.distance, settings.half_range, radius_x, radius_y],
+        );
+        append_floats(
+            &mut bytes,
+            [f32::from(u8::from(composite_alpha)), 0.0, 0.0, 0.0],
         );
         let uniform = buffer(
             device,
@@ -168,16 +163,19 @@ impl DepthOfField {
             wgpu::BufferUsages::UNIFORM,
         );
         let sample = usize::from(depth.multisampled);
+        let projection = screen_depth::mode(depth.camera);
+        let depth_mode = projection as usize;
         let depth_input = (2 + sample as u32, &depth.view);
 
         let reduced_targets = 1 + usize::from(composite_alpha);
         let reduce_slot = sample + 2 * usize::from(composite_alpha);
-        let reduce = self.reduce[reduce_slot].get_or_insert_with(|| {
+        let reduce = self.reduce[depth_mode][reduce_slot].get_or_insert_with(|| {
             Pass::new(
                 device,
                 &self.shader,
                 ["reduce", "reduce_msaa", "reduce_alpha", "reduce_alpha_msaa"][reduce_slot],
                 &[HDR_FORMAT, wgpu::TextureFormat::R16Float][..reduced_targets],
+                projection,
             )
         });
         let coverage = coverage.as_deref().unwrap_or(reduced);
@@ -197,7 +195,7 @@ impl DepthOfField {
             &[(4, reduced), (9, coverage)],
             Some(&self.sampler),
         );
-        let composite = self.composite[sample][format_index].get_or_insert_with(|| {
+        let composite = self.composite[depth_mode][sample][format_index].get_or_insert_with(|| {
             Pass::new(
                 device,
                 &self.shader,
@@ -207,6 +205,7 @@ impl DepthOfField {
                     "composite"
                 },
                 &[format],
+                projection,
             )
         });
         composite.draw(
@@ -253,6 +252,7 @@ impl Pass {
         shader: &wgpu::ShaderModule,
         entry: &str,
         formats: &[wgpu::TextureFormat],
+        projection: screen_depth::Mode,
     ) -> Self {
         let targets: Vec<_> = formats
             .iter()
@@ -276,7 +276,7 @@ impl Pass {
             fragment: Some(wgpu::FragmentState {
                 module: shader,
                 entry_point: Some(entry),
-                compilation_options: Default::default(),
+                compilation_options: screen_depth::compilation(projection),
                 targets: &targets,
             }),
             primitive: Default::default(),

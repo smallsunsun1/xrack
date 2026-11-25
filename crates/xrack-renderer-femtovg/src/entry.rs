@@ -1284,10 +1284,11 @@ pub(super) fn passive_origin(
     content: &str,
     paint: &Paint,
     direction: Option<LayoutDirection>,
-    measurement_scale: f32,
+    measurement_scale: impl FnOnce() -> f32,
 ) -> Point {
     let x = area.x
         + TextAlignment::editor(node, direction).passive_line_offset(area.width, content, || {
+            let measurement_scale = measurement_scale();
             let scaled = (measurement_scale != 1.0).then(|| {
                 paint
                     .clone()
@@ -1363,7 +1364,7 @@ pub(crate) fn draw(
             &content,
             &paint,
             text.direction,
-            1.0,
+            || 1.0,
         );
         canvas.intersect_scissor(area.x, area.y, area.width, area.height);
         text_system

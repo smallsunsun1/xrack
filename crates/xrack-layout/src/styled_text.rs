@@ -1094,8 +1094,8 @@ impl StyledTextLayout {
         self.fragments.capacity() * std::mem::size_of::<StyledFragment>()
             + self
                 .fragments
-                .iter()
-                .filter_map(StyledFragment::visual)
+                .placed()
+                .filter_map(|(fragment, _)| fragment.visual())
                 .filter(|line| counted.insert(Arc::as_ptr(line)))
                 .map(|line| line.allocated_bytes())
                 .sum::<usize>()
@@ -1173,7 +1173,7 @@ impl StyledTextLayout {
         let mut lines = HashMap::new();
         let mut counted = spans.is_some().then(HashSet::new);
         let mut bytes = 0;
-        for (index, fragment) in self.fragments[start..].iter_mut().enumerate() {
+        for (index, fragment) in self.fragments.iter_mut_from(start).enumerate() {
             if fragment.range.is_empty() {
                 continue;
             }
@@ -1532,14 +1532,11 @@ impl StyledTextLayout {
             max_width.max(tail.size.width),
             lines.len() as f32 * line_height,
         );
-        let mut fragments = Vec::with_capacity(prefix_fragments + tail.fragments.len());
-        fragments.extend_from_slice(&self.fragments[..prefix_fragments]);
-        fragments.append(&mut tail.fragments.into_vec());
+        let fragments = self
+            .fragments
+            .replace_tail(prefix_fragments, tail.fragments.into_vec());
         (
-            Self {
-                size,
-                fragments: fragments.into(),
-            },
+            Self { size, fragments },
             StyledTextLineIndex {
                 lines,
                 reusable_widths: None,

@@ -1,0 +1,154 @@
+struct InstanceBits { x: float, y: float, z: float, w: float }
+struct SampleRange {
+    enabled: bool, count: int, seed: int,
+    position-min: vector3d, position-max: vector3d, grid-spacing: vector3d,
+    rotation-min: vector3d, rotation-max: vector3d,
+    scale-min: vector3d, scale-max: vector3d, proportional-scale: bool,
+    color-min: color, color-max: color, data-min: InstanceBits, data-max: InstanceBits,
+    color-model: string, proportional-color: bool, hue-min: float, hue-max: float,
+}
+struct GardenCollider { shape: string, position: point3d, size: vector3d }
+
+struct GardenActor {
+    id: string, mesh: string, parent: string, instance-root: string,
+    random-instances: SampleRange, collision-shapes: [GardenCollider],
+    instance-table: instancetable3d, instance-count-override: int,
+    visible: bool, collidable: bool,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float,
+    lod-of: string, lod-max-size: length, instancing-lod-factor: float,
+}
+
+export component RandomInstancesDemo inherits Window {
+    title: "XRack · Seeded instance table";
+    width: 640px; height: 388px;
+    background: #172538;
+
+    in-out property <int> count: 6;
+    in-out property <int> seed: 7;
+    in-out property <bool> grid: true;
+    in-out property <bool> coarse: false;
+    in-out property <bool> imported: false;
+    in-out property <bool> shared-table: true;
+    in-out property <bool> reuse-table: false;
+    in-out property <string> color-model: "rgb";
+    in-out property <bool> proportional-color: false;
+    in-out property <int> draw-limit: -1;
+    property <instancetable3d> unloaded;
+    in-out property <float> offset: 0;
+    in-out property <point2d> pointer: root.first-screen.point;
+    property <point2d> viewport: Point2D.new(640px, 278px);
+
+    property <InstanceBits> zero: InstanceBits { x: 0, y: 0, z: 0, w: 0 };
+    property <SampleRange> no-spread: SampleRange {
+        enabled: false, count: 0, seed: 0,
+        position-min: Vector3D.new(0, 0, 0), position-max: Vector3D.new(0, 0, 0), grid-spacing: Vector3D.new(0, 0, 0),
+        rotation-min: Vector3D.new(0, 0, 0), rotation-max: Vector3D.new(0, 0, 0),
+        scale-min: Vector3D.new(1, 1, 1), scale-max: Vector3D.new(1, 1, 1), proportional-scale: false,
+        color-min: #fff, color-max: #fff, data-min: root.zero, data-max: root.zero,
+        color-model: "rgb", proportional-color: false, hue-min: 0, hue-max: 1,
+    };
+    property <GardenActor> base: GardenActor {
+        id: "", mesh: "", parent: "", instance-root: "", random-instances: root.no-spread, collision-shapes: [],
+        instance-table: root.unloaded, instance-count-override: -1, visible: true, collidable: true,
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #fff,
+        camera-kind: "", camera-height: 5,
+        lod-of: "", lod-max-size: 0px, instancing-lod-factor: 0,
+    };
+
+    property <SampleRange> settings: SampleRange {
+        enabled: true, count: root.count, seed: root.seed,
+        position-min: Vector3D.new(-3, -1, 0), position-max: Vector3D.new(3, 1, 0),
+        grid-spacing: root.grid ? Vector3D.new(2, 2, 0) : Vector3D.new(0, 0, 0),
+        rotation-min: Vector3D.new(0, 0, -30), rotation-max: Vector3D.new(0, 0, 30),
+        scale-min: Vector3D.new(0.32, 0.32, 0.32), scale-max: Vector3D.new(0.43, 0.43, 0.43), proportional-scale: true,
+        color-min: #327cbf, color-max: #ffa567,
+        color-model: root.color-model, proportional-color: root.proportional-color, hue-min: 0, hue-max: 1,
+        data-min: root.zero, data-max: InstanceBits { x: 1, y: 1, z: 1, w: 1 },
+    };
+
+    out property <instancetable3d> table: Scene3D.random-instance-table(root.settings);
+    out property <instance3d> source-first: Scene3D.table-instance(root.table, 0);
+
+    property <[GardenActor]> garden: [
+        GardenActor { id: "eye", z: 10, camera-kind: "orthographic", ..root.base },
+        GardenActor { id: "garden", mesh: root.imported ? @mesh-url("models/random-instance-parts.gltf") : "primitive:sphere", parent: "origin", instance-root: "origin",
+            instancing-lod-factor: root.coarse ? 1 : 0,
+            collision-shapes: [
+                GardenCollider { shape: "box", position: Point3D.new(0, 0, 0), size: Vector3D.new(1, 1, 1) },
+            ],
+            random-instances: root.shared-table ? root.no-spread : root.settings,
+            instance-table: root.shared-table ? root.table : root.unloaded,
+            instance-count-override: root.draw-limit,
+            ..root.base
+        },
+        GardenActor { id: "origin", x: root.offset, ..root.base },
+        GardenActor { mesh: root.imported ? "" : "primitive:box", lod-of: "garden", lod-max-size: 120px, ..root.base },
+        GardenActor { id: "echo", mesh: "primitive:box", parent: "origin", y: -1.2, z: -0.6,
+            instance-table: root.table, instance-count-override: 1,
+            visible: root.reuse-table, collidable: false, ..root.base },
+    ];
+
+    out property <scenemodel3d> snapshot: Scene3D.prepare(root.garden);
+    property <int> first-node: root.imported ? 0 : -1;
+    out property <instance3d> first: Scene3D.instance(root.snapshot, 1, root.first-node, 0);
+    property <projectedpoint3d> first-screen: Scene3D.project-camera(root.snapshot, "eye", root.viewport, root.first.origin);
+    out property <hit3d> exact: Scene3D.hit-instance-camera(root.snapshot, "eye", root.viewport,
+        root.first-screen.point, 1, root.first-node, 0);
+    out property <[hit3d]> overlap: Scene3D.sphere-overlap(root.snapshot, root.first.origin, 0.05);
+    out property <hit3d> picked: Scene3D.hit-camera(root.snapshot, "eye", root.viewport, root.pointer);
+    out property <instance3d> selection: Scene3D.instance(
+        root.snapshot, root.picked.row-index, root.picked.mesh-node-index, root.picked.instance-index);
+
+    SceneView3D {
+        width: root.viewport.x; height: root.viewport.y; camera: "eye"; model: root.snapshot;
+        scene-background: #23374c; scene-tone-map: none;
+    }
+    select-area := TouchArea {
+        width: root.viewport.x; height: root.viewport.y;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.inside {
+                root.pointer = Point2D.new(event.x, event.y);
+            }
+        }
+    }
+    selected-readout := Text {
+        x: 12px; y: 287px; color: #deedff;
+        text: root.selection.valid ? "Instance " + root.selection.instance-index : "Pick an instance";
+    }
+    table-readout := Text {
+        x: 218px; y: 287px; color: #deedff; text: "Table rows " + root.table.count;
+    }
+    source-switch := CheckBox {
+        x: 369px; y: 281px; width: 133px; height: 25px;
+        text: "Shared table"; checked <=> root.shared-table;
+    }
+    reuse-switch := CheckBox {
+        x: 508px; y: 281px; width: 129px; height: 25px;
+        text: "Reuse table"; checked <=> root.reuse-table;
+    }
+    count-switch := Button {
+        x: 12px; y: 312px; width: 128px; text: "Request " + root.count;
+        clicked => { root.count = root.count == 6 ? 12 : 6; }
+    }
+    seed-switch := Button {
+        x: 150px; y: 312px; width: 128px; text: "Seed " + root.seed;
+        clicked => { root.seed += 1; }
+    }
+    grid-switch := CheckBox { x: 300px; y: 312px; width: 96px; text: "Grid"; checked <=> root.grid; }
+    lod-switch := CheckBox { x: 396px; y: 312px; width: 126px; text: "Coarse mesh"; checked <=> root.coarse; enabled: !root.imported; }
+    mesh-switch := CheckBox { x: 529px; y: 312px; width: 106px; text: "glTF parts"; checked <=> root.imported; }
+    color-switch := Button {
+        x: 12px; y: 349px; width: 128px; height: 28px; text: "Color " + root.color-model;
+        clicked => {
+            root.color-model = root.color-model == "rgb" ? "hsv"
+                : (root.color-model == "hsv" ? "hsl" : "rgb");
+        }
+    }
+    proportional-switch := CheckBox {
+        x: 150px; y: 349px; width: 198px; height: 28px; text: "Proportional color";
+        checked <=> root.proportional-color;
+    }
+}

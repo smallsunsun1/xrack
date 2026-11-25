@@ -21,6 +21,8 @@ enum Emit {
     Package,
     /// Bake a SceneView3D lightmap atlas and an importable XRack module.
     Lightmaps,
+    /// Rebuild a lightmap atlas and module from a samples.xrlm file.
+    LightmapsFromSamples,
     /// Print the lowered MLIR before native verification and optimization.
     MlirRaw,
     /// Report source-linked paint, binding and row cache decisions as JSON.
@@ -42,8 +44,8 @@ enum Emit {
     about = "Compile XRack UI files with ANTLR4 and MLIR"
 )]
 struct Args {
-    /// Source .xr file.
-    #[arg(value_name = "INPUT.xr")]
+    /// Source .xr file or offline lightmap samples for replay.
+    #[arg(value_name = "INPUT")]
     input: String,
 
     /// Output format.
@@ -91,6 +93,24 @@ struct Args {
 }
 
 fn run(args: Args) -> Result<(), CompilerError> {
+    if matches!(args.emit, Emit::LightmapsFromSamples) {
+        if args.check
+            || args.restrict_assets
+            || args.restrict_sources
+            || !args.assets.is_empty()
+            || !args.sources.is_empty()
+        {
+            return Err(CompilerError::Resources(
+                "lightmap sample replay takes a sample file and postprocessing settings".into(),
+            ));
+        }
+        let output = args.output.as_deref().ok_or_else(|| {
+            CompilerError::Resources(
+                "--emit lightmaps-from-samples requires --output DIRECTORY".into(),
+            )
+        })?;
+        return bake_cli::replay(std::path::Path::new(&args.input), &args.bake, output);
+    }
     if matches!(args.emit, Emit::Preview | Emit::LiveModule) && !args.check {
         let input: serde_json::Value = serde_json::from_reader(io::stdin().lock())?;
         let text = input["text"].as_str().ok_or_else(|| CompilerError::Io {
@@ -206,7 +226,11 @@ fn run(args: Args) -> Result<(), CompilerError> {
             Some(output) => export_mlir_to(&doc, &args.input, assets, output)?,
             None => export_mlir(&doc, &args.input, assets)?,
         },
-        Emit::Preview | Emit::LiveModule | Emit::Package | Emit::Lightmaps => {
+        Emit::Preview
+        | Emit::LiveModule
+        | Emit::Package
+        | Emit::Lightmaps
+        | Emit::LightmapsFromSamples => {
             unreachable!("handled before emitting text")
         }
         Emit::Rust => {

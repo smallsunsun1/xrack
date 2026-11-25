@@ -27,6 +27,24 @@ exports_files(["reflection_probes.xr"] + REFLECTION_ASSETS, visibility = ["//tes
 
 exports_files(["live_reflections.xr"], visibility = ["//tests:__pkg__"])
 
+exports_files(["shadow_filters.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "shadow_filters_ui",
+    src = "shadow_filters.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_shadow_filters",
+    srcs = ["play_shadow_filters.rs"],
+    edition = "2024",
+    deps = [
+        ":shadow_filters_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
 xr_ui_library(
     name = "live_reflections_ui",
     src = "live_reflections.xr",
@@ -171,6 +189,7 @@ LOD_ASSETS = [
     "models/lod-deform.gltf",
     "models/lod-morph.gltf",
     "models/lod-surface-animated.gltf",
+    "models/lod-surface-instanced.gltf",
     "models/lod-surface.bin",
     "models/lod-surface.gltf",
     "models/octa-lod.gltf",
@@ -398,6 +417,278 @@ rust_binary(
     ],
 )
 
+exports_files(["rigid_bodies.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "rigid_bodies_ui",
+    src = "rigid_bodies.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_rigid_bodies",
+    srcs = ["play_rigid_bodies.rs"],
+    edition = "2024",
+    deps = [
+        ":rigid_bodies_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["physics_character.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "physics_character_ui",
+    src = "physics_character.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_physics_character",
+    srcs = ["play_physics_character.rs"],
+    edition = "2024",
+    deps = [
+        ":physics_character_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["physics_ray_cast.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "physics_ray_cast_ui",
+    src = "physics_ray_cast.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_physics_ray_cast",
+    srcs = ["play_physics_ray_cast.rs"],
+    edition = "2024",
+    deps = [
+        ":physics_ray_cast_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["kinematic_reports.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "kinematic_reports_ui",
+    src = "kinematic_reports.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_kinematic_reports",
+    srcs = ["play_kinematic_reports.rs"],
+    edition = "2024",
+    deps = [
+        ":kinematic_reports_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["physics_ccd.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "physics_ccd_ui",
+    src = "physics_ccd.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_physics_ccd",
+    srcs = ["play_physics_ccd.rs"],
+    edition = "2024",
+    deps = [
+        ":physics_ccd_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["physics_debug.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "physics_debug_ui",
+    src = "physics_debug.xr",
+    assets = ["models/cull-panels.gltf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_physics_debug",
+    srcs = ["play_physics_debug.rs"],
+    edition = "2024",
+    deps = [
+        ":physics_debug_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["physics_clock.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "physics_clock_ui",
+    src = "physics_clock.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_physics_clock",
+    srcs = ["play_physics_clock.rs"],
+    edition = "2024",
+    deps = [
+        ":physics_clock_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["physics_kinematic.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "physics_kinematic_ui",
+    src = "physics_kinematic.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_physics_kinematic",
+    srcs = ["play_physics_kinematic.rs"],
+    edition = "2024",
+    deps = [
+        ":physics_kinematic_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["physics_mass.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "physics_mass_ui",
+    src = "physics_mass.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_physics_mass",
+    srcs = ["play_physics_mass.rs"],
+    edition = "2024",
+    deps = [
+        ":physics_mass_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["physics_materials.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "physics_materials_ui",
+    src = "physics_materials.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_physics_materials",
+    srcs = ["play_physics_materials.rs"],
+    edition = "2024",
+    deps = [
+        ":physics_materials_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["body_dynamics.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "body_dynamics_ui",
+    src = "body_dynamics.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_body_dynamics",
+    srcs = ["play_body_dynamics.rs"],
+    edition = "2024",
+    deps = [
+        ":body_dynamics_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["body_contacts.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "body_contacts_ui",
+    src = "body_contacts.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_body_contacts",
+    srcs = ["play_body_contacts.rs"],
+    edition = "2024",
+    deps = [
+        ":body_contacts_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["compound_bodies.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "compound_bodies_ui",
+    src = "compound_bodies.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_compound_bodies",
+    srcs = ["play_compound_bodies.rs"],
+    edition = "2024",
+    deps = [
+        ":compound_bodies_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["mesh_colliders.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "mesh_colliders_ui",
+    src = "mesh_colliders.xr",
+    assets = HEIGHTFIELD_ASSETS + ["models/amber.glb", "models/cull-panels.gltf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_mesh_colliders",
+    srcs = ["play_mesh_colliders.rs"],
+    edition = "2024",
+    deps = [
+        ":mesh_colliders_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["physics_joints.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "physics_joints_ui",
+    src = "physics_joints.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_physics_joints",
+    srcs = ["play_physics_joints.rs"],
+    edition = "2024",
+    deps = [
+        ":physics_joints_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
 exports_files(["sphere_walk.xr"], visibility = ["//tests:__pkg__"])
 
 xr_ui_library(
@@ -597,6 +888,7 @@ BAKE_ROOM_ASSETS = [
     "models/ssgi-emitter.gltf",
     "models/lod-surface.gltf",
     "models/lod-surface.bin",
+    "models/studio.hdr",
 ]
 
 exports_files(
@@ -619,16 +911,18 @@ genrule(
             --asset "$(location models/ssgi-emitter.gltf)" \
             --asset "$(location models/lod-surface.gltf)" \
             --asset "$(location models/lod-surface.bin)" \
-            --bake-receiver plate --bake-receiver figure --bake-size 64 --bake-samples 48 \
+            --asset "$(location models/studio.hdr)" \
+            --bake-mode mixed --bake-size 64 --bake-samples 48 \
             -o "$$work/baked" "$(location lightmap_bake_scene.xr)"
         mkdir -p "$$work/models"
         cp "$(location models/lightmap-receiver.gltf)" "$(location models/ssgi-emitter.gltf)" "$(location models/lod-surface.gltf)" \
-            "$(location models/lod-surface.bin)" "$$work/models/"
+            "$(location models/lod-surface.bin)" "$(location models/studio.hdr)" "$$work/models/"
         cp "$(location lightmap_bake_scene.xr)" "$(location lightmap_baked_view.xr)" "$$work/"
         "$(location //crates/xrack-compiler:xrackc)" --emit rust --restrict-assets --restrict-sources \
             --source "$$work/lightmap_bake_scene.xr" --source "$$work/baked/lighting.xr" \
             --asset "$$work/models/lightmap-receiver.gltf" --asset "$$work/models/ssgi-emitter.gltf" \
             --asset "$$work/models/lod-surface.gltf" --asset "$$work/models/lod-surface.bin" \
+            --asset "$$work/models/studio.hdr" \
             --asset "$$work/baked/atlas.png" -o "$(location baked_room_ui.rs)" "$$work/lightmap_baked_view.xr"
         cp "$$work/baked/atlas.png" "$(location baked/atlas.png)"
         cp "$$work/baked/lighting.xr" "$(location baked/lighting.xr)"
@@ -859,6 +1153,78 @@ rust_binary(
 
 exports_files(["off_axis_camera.xr"], visibility = ["//tests:__pkg__"])
 
+exports_files(["camera_aim.xr"], visibility = ["//tests:__pkg__"])
+
+exports_files(["oblique_camera.xr"], visibility = ["//tests:__pkg__"])
+
+exports_files(["custom_camera.xr"], visibility = ["//tests:__pkg__"])
+
+exports_files(["reverse_depth.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "reverse_depth_ui",
+    src = "reverse_depth.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_reverse_depth",
+    srcs = ["play_reverse_depth.rs"],
+    edition = "2024",
+    deps = [
+        ":reverse_depth_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+xr_ui_library(
+    name = "custom_camera_ui",
+    src = "custom_camera.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_custom_camera",
+    srcs = ["play_custom_camera.rs"],
+    edition = "2024",
+    deps = [
+        ":custom_camera_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+xr_ui_library(
+    name = "oblique_camera_ui",
+    src = "oblique_camera.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_oblique_camera",
+    srcs = ["play_oblique_camera.rs"],
+    edition = "2024",
+    deps = [
+        ":oblique_camera_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+xr_ui_library(
+    name = "camera_aim_ui",
+    src = "camera_aim.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_camera_aim",
+    srcs = ["play_camera_aim.rs"],
+    edition = "2024",
+    deps = [
+        ":camera_aim_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
 xr_ui_library(
     name = "off_axis_camera_ui",
     src = "off_axis_camera.xr",
@@ -980,12 +1346,22 @@ rust_binary(
     ],
 )
 
-exports_files(["authored_material.xr", "authored_texture.xr"], visibility = ["//tests:__pkg__"])
+exports_files([
+    "authored_material.xr",
+    "authored_texture.xr",
+    "models/gloss-pattern.png",
+    "models/specular-gloss-panel.gltf",
+], visibility = ["//tests:__pkg__"])
 
 xr_ui_library(
     name = "authored_material_ui",
     src = "authored_material.xr",
-    assets = ["models/uv-atlas.gltf", "models/studio.hdr"],
+    assets = [
+        "models/gloss-pattern.png",
+        "models/specular-gloss-panel.gltf",
+        "models/studio.hdr",
+        "models/uv-atlas.gltf",
+    ],
     visibility = ["//tests:__pkg__"],
 )
 
@@ -1303,6 +1679,171 @@ rust_binary(
     edition = "2024",
     deps = [
         ":instance_table_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(
+    ["instance_data.xr", "effects/instance_data.wgsl"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "instance_data_ui",
+    src = "instance_data.xr",
+    assets = ["effects/instance_data.wgsl"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_instance_data",
+    srcs = ["play_instance_data.rs"],
+    edition = "2024",
+    deps = [
+        ":instance_data_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+GLTF_INSTANCE_DATA_ASSETS = ["effects/imported_instance_data.wgsl", "models/instance-channels.gltf"]
+
+exports_files(
+    ["gltf_instance_data.xr"] + GLTF_INSTANCE_DATA_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "gltf_instance_data_ui",
+    src = "gltf_instance_data.xr",
+    assets = GLTF_INSTANCE_DATA_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_gltf_instance_data",
+    srcs = ["play_gltf_instance_data.rs"],
+    edition = "2024",
+    deps = [
+        ":gltf_instance_data_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+FILE_INSTANCE_ASSETS = ["models/file-instances.xml", "models/file-instances.bin"]
+
+exports_files(
+    ["file_instances.xr"] + FILE_INSTANCE_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "file_instances_ui",
+    src = "file_instances.xr",
+    assets = FILE_INSTANCE_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_file_instances",
+    srcs = ["play_file_instances.rs"],
+    edition = "2024",
+    deps = [
+        ":file_instances_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["instance_transparency.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "instance_transparency_ui",
+    src = "instance_transparency.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_instance_transparency",
+    srcs = ["play_instance_transparency.rs"],
+    edition = "2024",
+    deps = [
+        ":instance_transparency_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["quaternion_scene.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "quaternion_scene_ui",
+    src = "quaternion_scene.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_quaternion_scene",
+    srcs = ["play_quaternion_scene.rs"],
+    edition = "2024",
+    deps = [
+        ":quaternion_scene_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["instance_shadow_bounds.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "instance_shadow_bounds_ui",
+    src = "instance_shadow_bounds.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_instance_shadow_bounds",
+    srcs = ["play_instance_shadow_bounds.rs"],
+    edition = "2024",
+    deps = [
+        ":instance_shadow_bounds_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["random_instances.xr", "models/random-instance-parts.gltf"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "random_instances_ui",
+    src = "random_instances.xr",
+    assets = ["models/random-instance-parts.gltf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_random_instances",
+    srcs = ["play_random_instances.rs"],
+    edition = "2024",
+    deps = [
+        ":random_instances_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["instance_root.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "instance_root_ui",
+    src = "instance_root.xr",
+    assets = [
+        "models/lod-surface-instanced.gltf",
+        "models/lod-surface.bin",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_instance_root",
+    srcs = ["play_instance_root.rs"],
+    edition = "2024",
+    deps = [
+        ":instance_root_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
     ],
 )
@@ -2035,6 +2576,7 @@ rust_binary(
 CAPTURE_COMPOSITE_ASSETS = [
     "effects/capture_composite_alias.wgsl",
     "effects/capture_composite_light.wgsl",
+    "effects/capture_material_data.wgsl",
 ]
 
 exports_files(
@@ -2058,6 +2600,24 @@ rust_binary(
     edition = "2024",
     deps = [
         ":capture_composite_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["authored_physics.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "authored_physics_ui",
+    src = "authored_physics.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_authored_physics",
+    srcs = ["play_authored_physics.rs"],
+    edition = "2024",
+    deps = [
+        ":authored_physics_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
     ],
 )

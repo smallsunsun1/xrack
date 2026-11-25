@@ -1026,6 +1026,8 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
         ExprKind::ShaderUrl(url.STRING().required("shader URL").get_text())
     } else if let Some(url) = ctx.materialShaderUrl() {
         ExprKind::MaterialShaderUrl(url.STRING().required("material shader URL").get_text())
+    } else if let Some(url) = ctx.instanceTableUrl() {
+        ExprKind::InstanceTableUrl(url.STRING().required("instance table URL").get_text())
     } else if let Some(markdown) = ctx.markdown() {
         ExprKind::Markdown(markdown.STRING().required("Markdown string").get_text())
     } else if let Some(translation) = ctx.translation() {

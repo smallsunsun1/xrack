@@ -1,8 +1,8 @@
 struct Settings {
-    // Near, far (zero for infinite perspective), orthographic flag, alpha flag.
-    projection: vec4<f32>,
+    depth_mapping: ClipDepthMapping,
     // Focus distance, half of the in-focus range, physical blur radii (x, y).
     focus: vec4<f32>,
+    options: vec4<f32>,
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -38,40 +38,27 @@ fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 
-fn linear_depth(clip: f32) -> f32 {
-    let near = settings.projection.x;
-    let far = settings.projection.y;
-    if settings.projection.z > 0.5 {
-        return mix(near, far, clip);
-    }
-    var ratio = 0.0;
-    if far > 0.0 {
-        ratio = near / far;
-    }
-    return near / max((1.0 - clip) + clip * ratio, 1e-12);
-}
-
 // Keep far-world values representable in the half-float intermediate.
 fn encode_depth(depth: f32) -> f32 {
-    let far = settings.projection.y;
+    let far = settings.depth_mapping.tilt_limits.w;
     if far > 0.0 {
         return depth / far;
     }
-    return log2(1.0 + depth / settings.projection.x);
+    return log2(1.0 + depth / settings.depth_mapping.tilt_limits.z);
 }
 
 fn decode_depth(encoded: f32) -> f32 {
-    let far = settings.projection.y;
+    let far = settings.depth_mapping.tilt_limits.w;
     if far > 0.0 {
         return encoded * far;
     }
-    return settings.projection.x * (exp2(encoded) - 1.0);
+    return settings.depth_mapping.tilt_limits.z * (exp2(encoded) - 1.0);
 }
 
 fn nearest_sample(pixel: vec2<i32>) -> f32 {
-    var clip = 1.0;
+    var clip = clear_clip_depth();
     for (var sample = 0u; sample < textureNumSamples(depth_msaa); sample += 1u) {
-        clip = min(clip, textureLoad(depth_msaa, pixel, sample));
+        clip = closest_clip_depth(clip, textureLoad(depth_msaa, pixel, sample));
     }
     return clip;
 }
@@ -93,11 +80,30 @@ struct ReducedLayers {
 }
 
 fn prefilter(pixels: array<vec2<i32>, 4>, clips: vec4<f32>) -> ReducedLayers {
-    let nearest = linear_depth(min(min(clips.x, clips.y), min(clips.z, clips.w)));
+    let mapping = settings.depth_mapping;
+    var depths = clips;
+    if OBLIQUE_CLIP_DEPTH || MATRIX_CLIP_PROJECTION {
+        let size = vec2<f32>(textureDimensions(source));
+        depths = vec4<f32>(
+            depth_at_pixel(mapping, pixels[0], size, clips[0]),
+            depth_at_pixel(mapping, pixels[1], size, clips[1]),
+            depth_at_pixel(mapping, pixels[2], size, clips[2]),
+            depth_at_pixel(mapping, pixels[3], size, clips[3]),
+        );
+    }
+    var nearest = min(min(depths.x, depths.y), min(depths.z, depths.w));
+    if !OBLIQUE_CLIP_DEPTH && !MATRIX_CLIP_PROJECTION {
+        let clip = closest_clip_depth(closest_clip_depth(clips.x, clips.y),
+            closest_clip_depth(clips.z, clips.w));
+        nearest = depth_from_clip(mapping, clip, 0.0);
+    }
     var sum = vec4<f32>(0.0);
     var weight = 0.0;
     for (var i = 0u; i < 4u; i += 1u) {
-        let depth = linear_depth(clips[i]);
+        var depth = depths[i];
+        if !OBLIQUE_CLIP_DEPTH && !MATRIX_CLIP_PROJECTION {
+            depth = depth_from_clip(mapping, depth, 0.0);
+        }
         let w = max(1.0 - (depth - nearest) / depth_tolerance(nearest), 0.0);
         sum += textureLoad(source, pixels[i], 0) * w;
         weight += w;
@@ -164,7 +170,7 @@ fn sample_color(at: vec2<f32>, limit: vec2<i32>, nearest: vec4<f32>) -> vec4<f32
     // Interpolate subpixel colors and coverage only within the same depth layer.
     let matches_depth = abs(decode_depth(filtered.a) - depth) < depth_tolerance(depth);
     var alpha = 1.0;
-    if settings.projection.w > 0.5 {
+    if settings.options.x > 0.5 {
         if matches_depth {
             alpha = textureSampleLevel(reduced_coverage, reduced_sampler, uv, 0.0).r;
         } else {
@@ -186,13 +192,14 @@ fn gather(@builtin(position) point: vec4<f32>) -> Components {
     let base_radius = abs(center_coc) * half_radius;
     let bias = depth_tolerance(center_depth);
     var alpha = 1.0;
-    if settings.projection.w > 0.5 {
+    if settings.options.x > 0.5 {
         alpha = textureLoad(reduced_coverage, pixel, 0).r;
     }
     var base = vec4<f32>(center.rgb, alpha);
     var base_count = 1.0;
     var near_color = vec4<f32>(0.0);
-    var nearest = linear_depth(1.0);
+    let range = settings.depth_mapping.tilt_limits.zw;
+    var nearest = select(range.x / 1e-12, range.y, range.y > 0.0);
     for (var i = 0u; i < SAMPLE_COUNT; i += 1u) {
         let direction = DISK[i];
         if max(base_radius.x, base_radius.y) >= 0.5 {
@@ -218,17 +225,18 @@ fn gather(@builtin(position) point: vec4<f32>) -> Components {
         }
     }
     let base_color = base / base_count;
-    return Components(vec4<f32>(base_color.rgb, select(center.a, base_color.a, settings.projection.w > 0.5)),
+    return Components(vec4<f32>(base_color.rgb, select(center.a, base_color.a, settings.options.x > 0.5)),
                       near_color / f32(SAMPLE_COUNT), nearest);
 }
 
 fn composite_pixel(pixel: vec2<i32>, clip: f32) -> vec4<f32> {
     let sharp = textureLoad(source, pixel, 0);
-    let composite_alpha = settings.projection.w > 0.5;
-    let linear = linear_depth(clip);
+    let composite_alpha = settings.options.x > 0.5;
+    let source_size = vec2<f32>(textureDimensions(source));
+    let linear = depth_at_pixel(settings.depth_mapping, pixel, source_size, clip);
     let coc = abs(circle_of_confusion(linear));
     let size = vec2<i32>(textureDimensions(blurred));
-    let at = (vec2<f32>(pixel) + 0.5) * vec2<f32>(size) / vec2<f32>(textureDimensions(source)) - 0.5;
+    let at = (vec2<f32>(pixel) + 0.5) * vec2<f32>(size) / source_size - 0.5;
     let tile = vec2<i32>(floor(at));
     let fraction = fract(at);
     let tolerance = depth_tolerance(linear);

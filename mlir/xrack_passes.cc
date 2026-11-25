@@ -33,6 +33,7 @@ void addScenePlanPasses(mlir::OpPassManager &passes);
 #define GEN_PASS_DEF_XRCOLLAPSEPRIVATEALIASES
 #define GEN_PASS_DEF_XRFOLDCONSTANTS
 #define GEN_PASS_DEF_XRFOLDRECORDPROJECTIONS
+#define GEN_PASS_DEF_XRSPECIALIZEROTATIONTRACKS
 #define GEN_PASS_DEF_XRSIMPLIFYEXPRESSIONS
 #define GEN_PASS_DEF_XRFUSESTRINGCONCATS
 #define GEN_PASS_DEF_XRSIMPLIFYVISUALS
@@ -431,6 +432,7 @@ struct FoldMathFunction : OpRewritePattern<MathFunctionOp> {
 
 using GeometryNumbers = llvm::SmallVector<double, 6>;
 constexpr double identity2D[] = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+constexpr double identityQuaternion[] = {0.0, 0.0, 0.0, 1.0};
 
 std::optional<GeometryNumbers> geometryNumbers(Value value) {
   while (auto local = value.getDefiningOp<LocalOp>())
@@ -509,8 +511,116 @@ struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
     auto inputs = op.getInputs();
     if (operation == "identity")
       return replaceGeometryLiteral(rewriter, op, identity2D);
+    if (operation == "quaternion-identity")
+      return replaceGeometryLiteral(rewriter, op, identityQuaternion);
     if (inputs.empty())
       return failure();
+    if (operation == "quaternion-look-rotation" || operation == "quaternion-look-at") {
+      bool endpoints = operation == "quaternion-look-at";
+      auto first = geometryNumbers(inputs.front());
+      auto target = endpoints ? geometryNumbers(inputs[1]) : std::nullopt;
+      if (!first || (endpoints && !target))
+        return failure();
+      auto upIndex = endpoints ? 2u : 1u;
+      bool worldUp = true;
+      if (inputs.size() > upIndex) {
+        auto up = geometryNumbers(inputs[upIndex]);
+        if (!up)
+          return failure();
+        worldUp = (*up)[0] == 0.0 && (*up)[1] >= 0.0 && (*up)[2] == 0.0;
+      }
+      bool zeroDirection = endpoints
+          ? *first == *target
+          : llvm::all_of(*first, [](double lane) { return lane == 0.0; });
+      bool negativeZ = endpoints
+          ? (*first)[0] == (*target)[0] && (*first)[1] == (*target)[1] && (*target)[2] < (*first)[2]
+          : (*first)[0] == 0.0 && (*first)[1] == 0.0 && (*first)[2] < 0.0;
+      if (zeroDirection || (worldUp && negativeZ))
+        return replaceGeometryLiteral(rewriter, op, identityQuaternion);
+      return failure();
+    }
+    if (operation == "quaternion-track") {
+      auto keys = inputs.front().getDefiningOp<RecordArrayOp>();
+      if (!keys || !keys.getItems().empty() || !inputs.front().hasOneUse())
+        return failure();
+      replaceLiteral(rewriter, op, "");
+      return success();
+    }
+    if (operation == "quaternion-track-keys") {
+      RotationTrackKeys packed;
+      packed.reserve(inputs.size() / 2 * 5);
+      for (Value input : inputs) {
+        auto numbers = geometryNumbers(input);
+        if (!numbers)
+          return failure();
+        llvm::append_range(packed, *numbers);
+      }
+      return replaceGeometryLiteral(rewriter, op, packed);
+    }
+    if (operation == "quaternion-sample") {
+      auto track = inputs.front().getDefiningOp<LiteralOp>();
+      auto time = geometryNumbers(inputs[1]);
+      if (!track || !time)
+        return failure();
+      auto keys = parseRotationTrackLiteral(track.getValue());
+      if (!keys)
+        return failure();
+      if (keys->empty())
+        return replaceGeometryLiteral(rewriter, op, identityQuaternion);
+      llvm::ArrayRef<double> packed(*keys);
+      if (time->front() <= packed.front() || packed.size() == 5)
+        return replaceGeometryLiteral(rewriter, op, packed.slice(1, 4));
+      if (time->front() >= packed[packed.size() - 5])
+        return replaceGeometryLiteral(rewriter, op, packed.take_back(4));
+      for (size_t key = 5; key < packed.size(); key += 5)
+        if (time->front() == packed[key])
+          return replaceGeometryLiteral(rewriter, op, packed.slice(key + 1, 4));
+      return failure();
+    }
+    if (operation == "quaternion-new") {
+      GeometryNumbers components;
+      for (Value input : inputs) {
+        auto value = geometryNumbers(input);
+        if (!value || value->size() != 1)
+          return failure();
+        components.push_back(value->front());
+      }
+      return replaceGeometryLiteral(rewriter, op, components);
+    }
+    if (operation == "quaternion-compose" || operation == "quaternion-inverse") {
+      for (auto [index, input] : llvm::enumerate(inputs)) {
+        auto value = geometryNumbers(input);
+        if (!value || llvm::ArrayRef<double>(*value) != llvm::ArrayRef<double>(identityQuaternion))
+          continue;
+        if (operation == "quaternion-inverse")
+          return replaceGeometryLiteral(rewriter, op, identityQuaternion);
+        rewriter.replaceOp(op, inputs[1 - index]);
+        return success();
+      }
+      return failure();
+    }
+    if (operation == "table-instance-3d") {
+      if (inputs.size() != 2 || !staticGeometryArgument(inputs[1]))
+        return failure();
+      if (inputs.front().getDefiningOp<LiteralOp>()) {
+        replaceLiteral(rewriter, op, "");
+        return success();
+      }
+      auto prepared = inputs.front().getDefiningOp<GeometryFunctionOp>();
+      if (!prepared || prepared.getValue() != "prepare-instance-table-3d" ||
+          prepared.getInputs().size() != 1)
+        return failure();
+      auto model = prepared.getInputs().front();
+      auto rows = model.getDefiningOp<RecordArrayOp>();
+      auto literal = inputs[1].getDefiningOp<LiteralOp>();
+      int64_t index;
+      if (!rows || !model.hasOneUse() || !staticGeometryArgument(model) ||
+          !literal || literal.getValue().getAsInteger(10, index) ||
+          (index >= 0 && uint64_t(index) < rows.getItems().size()))
+        return failure();
+      replaceLiteral(rewriter, op, "");
+      return success();
+    }
     if (operation == "hit-all-3d" || operation == "hit-all-camera-3d" ||
         operation == "ray-hit-all-3d" || operation == "sphere-overlap-3d") {
       auto model = inputs.front().getDefiningOp<RecordArrayOp>();
@@ -542,12 +652,13 @@ struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
         auto rows = inputs[selectorIndex].getDefiningOp<IntArrayOp>();
         empty = rows && rows.getItems().empty();
       } else {
-        empty = llvm::any_of(inputs.slice(selectorIndex, count), [](Value value) {
+        for (auto [offset, value] : llvm::enumerate(inputs.slice(selectorIndex, count))) {
           auto literal = value.getDefiningOp<LiteralOp>();
           int64_t index;
-          return literal && !literal.getValue().getAsInteger(10, index) &&
-                 (index < 0 || index > std::numeric_limits<uint32_t>::max());
-        });
+          int64_t minimum = count == 3 && offset == 1 ? -1 : 0;
+          empty |= literal && !literal.getValue().getAsInteger(10, index) &&
+                   (index < minimum || index > std::numeric_limits<uint32_t>::max());
+        }
       }
       if (inputs.size() == selectorIndex + count + 1)
         if (auto mask = inputs.back().getDefiningOp<LiteralOp>()) {
@@ -601,7 +712,55 @@ struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
       replaceLiteral(rewriter, op, "");
       return success();
     }
-    if ((operation == "sphere-slide-3d" || operation == "sphere-walk-3d") && inputs.size() >= 4) {
+    if ((operation == "capsule-trigger-crossings-3d" || operation == "capsule-walk-result-3d" ||
+         operation == "capsule-walk-with-contacts-3d") &&
+        inputs.size() >= 5 && llvm::all_of(inputs, staticGeometryArgument)) {
+      auto motion = geometryNumbers(inputs[2]);
+      if (!motion)
+        return failure();
+      auto hitList = Hit3DListType::get(op.getContext());
+      if (operation == "capsule-trigger-crossings-3d") {
+        auto from = geometryNumbers(inputs[1]);
+        if (from && *from == *motion) {
+          rewriter.replaceOpWithNewOp<Hit3DArrayOp>(op, hitList, ValueRange{}, "");
+          return success();
+        }
+      } else if (llvm::all_of(*motion, [](double value) { return value == 0.0; })) {
+        // An idle capsule can still be grounded. Fold only when its collision
+        // mask or its statically built scene excludes every surface.
+        auto model = inputs.front().getDefiningOp<RecordArrayOp>();
+        bool noSurfaces = model && model.getItems().empty();
+        if (inputs.size() == 9)
+          if (auto mask = inputs.back().getDefiningOp<LiteralOp>()) {
+            int64_t bits;
+            noSurfaces |= !mask.getValue().getAsInteger(10, bits) && bits == 0;
+          }
+        if (noSurfaces) {
+          auto empty = rewriter.create<Hit3DArrayOp>(op.getLoc(), hitList, ValueRange{}, "");
+          rewriter.replaceOpWithNewOp<WalkResult3DOp>(
+              op, op.getResult().getType(), inputs[1], empty.getResult(), "");
+          return success();
+        }
+      }
+    }
+    if (operation == "capsule-cast-3d" || operation == "capsule-overlap-3d" ||
+        operation == "capsule-slide-3d" || operation == "capsule-walk-3d") {
+      unsigned segmentIndex = operation == "capsule-cast-3d" ? 5 :
+                              operation == "capsule-overlap-3d" ? 3 : 4;
+      if (inputs.size() > segmentIndex) {
+        auto segment = geometryNumbers(inputs[segmentIndex]);
+        if (segment && segment->size() == 1 && segment->front() == 0.0) {
+          SmallVector<Value> sphereInputs(inputs.begin(), inputs.end());
+          sphereInputs.erase(sphereInputs.begin() + segmentIndex);
+          auto sphere = (llvm::Twine("sphere-") + operation.drop_front(8)).str();
+          rewriter.replaceOpWithNewOp<GeometryFunctionOp>(op, op.getResult().getType(),
+                                                         sphereInputs, sphere);
+          return success();
+        }
+      }
+    }
+    if ((operation == "sphere-slide-3d" || operation == "sphere-walk-3d" ||
+         operation == "capsule-slide-3d" || operation == "capsule-walk-3d") && inputs.size() >= 4) {
       auto displacement = geometryNumbers(inputs[2]);
       if (displacement && displacement->size() == 3 &&
           llvm::all_of(*displacement, [](double value) { return value == 0.0; })) {
@@ -609,6 +768,25 @@ struct FoldGeometryFunction : OpRewritePattern<GeometryFunctionOp> {
         return success();
       }
       return failure();
+    }
+    if (operation == "scene-instance-3d" || operation == "scene-instance-camera-3d" ||
+        operation == "scene-instance-orbit-3d") {
+      if (inputs.size() < 4 || !llvm::all_of(inputs, staticGeometryArgument))
+        return failure();
+      auto model = inputs.front().getDefiningOp<RecordArrayOp>();
+      bool missing = model && model.getItems().empty() && inputs.front().hasOneUse();
+      auto address = inputs.take_back(3);
+      for (auto [offset, value] : llvm::enumerate(address)) {
+        auto literal = value.getDefiningOp<LiteralOp>();
+        int64_t index;
+        missing |= literal && !literal.getValue().getAsInteger(10, index) &&
+                   (index < (offset == 0 ? 0 : -1) ||
+                    index > std::numeric_limits<uint32_t>::max());
+      }
+      if (!missing)
+        return failure();
+      replaceLiteral(rewriter, op, "");
+      return success();
     }
     if (operation == "map-position-3d" || operation == "map-direction-3d") {
       if (inputs.size() != 5 || !llvm::all_of(inputs, staticGeometryArgument))
@@ -711,6 +889,28 @@ struct FoldGeometryField : OpRewritePattern<Field> {
     if (auto coordinates = geometryNumbers(op.getInput()))
       return replaceFloatLiteral(rewriter, op, llvm::APFloat((*coordinates)[op.getValue() == "z" ? 2 : op.getValue() == "y" ? 1 : 0]));
     return failure();
+  }
+};
+
+struct FoldRotationTrackField : OpRewritePattern<RotationTrack3DFieldOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(RotationTrack3DFieldOp op,
+                               PatternRewriter &rewriter) const override {
+    auto literal = op.getInput().getDefiningOp<LiteralOp>();
+    if (!literal)
+      return failure();
+    auto keys = parseRotationTrackLiteral(literal.getValue());
+    if (!keys)
+      return failure();
+    if (op.getValue() == "count")
+      replaceLiteral(rewriter, op, std::to_string(keys->size() / 5));
+    else if (op.getValue() == "valid")
+      replaceLiteral(rewriter, op, keys->empty() ? "false" : "true");
+    else
+      return replaceFloatLiteral(rewriter, op,
+          llvm::APFloat(keys->empty() ? 0.0 : (*keys)[keys->size() - 5]));
+    return success();
   }
 };
 
@@ -827,6 +1027,63 @@ private:
   const PropertyAnalysis &properties;
 };
 
+struct FoldWalkResultField : OpRewritePattern<WalkResult3DFieldOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WalkResult3DFieldOp op,
+                                PatternRewriter &rewriter) const override {
+    bool position = op.getValue() == "position";
+    if (auto result = op.getInput().getDefiningOp<WalkResult3DOp>()) {
+      if (op.getValue() == "crossings") {
+        if (!staticGeometryArgument(result.getPosition()))
+          return failure();
+        rewriter.replaceOp(op, result.getCrossings());
+        return success();
+      }
+      auto crossings = result.getCrossings().getDefiningOp<Hit3DArrayOp>();
+      if (!crossings || !crossings.getItems().empty())
+        return failure();
+      if (position)
+        rewriter.replaceOp(op, result.getPosition());
+      else if (!staticGeometryArgument(result.getPosition()))
+        return failure();
+      else if (op.getValue() == "contacts")
+        rewriter.replaceOp(op, result.getCrossings());
+      else if (op.getValue() == "support")
+        replaceLiteral(rewriter, op, "");
+      else
+        replaceLiteral(rewriter, op, "false");
+      return success();
+    }
+    if (!position || !op.getInput().hasOneUse())
+      return failure();
+    auto local = op.getInput().getDefiningOp<LocalOp>();
+    Value input = local ? local.getInput() : op.getInput();
+    auto query = input.getDefiningOp<GeometryFunctionOp>();
+    if (!query ||
+        (query.getValue() != "capsule-walk-result-3d" &&
+         query.getValue() != "capsule-walk-with-contacts-3d") ||
+        !input.hasOneUse())
+      return failure();
+    // Keep the original model read placement and any explicit local evaluation.
+    OpBuilder::InsertionGuard guard(rewriter);
+    auto type = op.getResult().getType();
+    rewriter.setInsertionPoint(query);
+    Value endpoint = rewriter.create<GeometryFunctionOp>(
+        query.getLoc(), type, query.getInputs(), "capsule-walk-3d").getResult();
+    if (local) {
+      rewriter.setInsertionPoint(local);
+      endpoint = rewriter.create<LocalOp>(
+          local.getLoc(), type, endpoint, local.getNameAttr()).getResult();
+    }
+    rewriter.replaceOp(op, endpoint);
+    if (local)
+      rewriter.eraseOp(local);
+    rewriter.eraseOp(query);
+    return success();
+  }
+};
+
 LogicalResult rewriteExpressions(ModuleOp module, RewritePatternSet patterns) {
   GreedyRewriteConfig config;
   config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
@@ -838,6 +1095,8 @@ LogicalResult foldConstants(ModuleOp module, const PropertyAnalysis &properties)
   for (;;) {
     RewritePatternSet patterns(context);
     patterns.add<FoldUnary, FoldBinary, FoldCast, FoldMathFunction, FoldGeometryFunction,
+                 FoldRotationTrackField,
+                 FoldWalkResultField,
                  FoldGeometryField<Point2DFieldOp>, FoldGeometryField<Vector2DFieldOp>,
                  FoldGeometryField<Point3DFieldOp>, FoldGeometryField<Vector3DFieldOp>,
                  FoldRound, FoldToRatio, FoldStringify>(context);
@@ -989,6 +1248,58 @@ struct FoldRecordProjections
         return;
       }
     }
+  }
+};
+
+struct SpecializeRotationTracks
+    : impl::XrSpecializeRotationTracksBase<SpecializeRotationTracks> {
+  void runOnOperation() override {
+    auto module = getOperation();
+    llvm::SmallVector<GeometryFunctionOp> tracks;
+    module.walk([&](GeometryFunctionOp op) {
+      if (op.getValue() == "quaternion-track")
+        tracks.push_back(op);
+    });
+    if (tracks.empty())
+      return;
+    const auto &layouts = getAnalysis<RecordLayouts>();
+    IRRewriter rewriter(&getContext());
+    bool changed = false;
+    for (auto track : tracks) {
+      auto value = track.getInputs().front();
+      auto array = value.getDefiningOp<RecordArrayOp>();
+      if (!array || !value.hasOneUse() || array.getItems().empty())
+        continue;
+      ConstantRecordValues constants;
+      llvm::SmallVector<Value> inputs;
+      inputs.reserve(array.getItems().size() * 2);
+      double previous = -1.0;
+      for (Value row : array.getItems()) {
+        auto time = layouts.field(row, "time");
+        auto orientation = layouts.field(row, "orientation");
+        auto literal = time ? time.getDefiningOp<LiteralOp>() : LiteralOp();
+        auto seconds = literal ? parseFloatLiteral(literal.getValue()) : std::nullopt;
+        if (!seconds || *seconds < 0.0 || *seconds <= previous || !orientation)
+          break;
+        // The model and record shells can go away. Keep the rotation reads in
+        // row order and only discard auxiliary fields that are safe literals.
+        auto record = row.getDefiningOp<MakeRecordOp>();
+        if (llvm::any_of(record.getFields(), [&](Value field) {
+              return field != time && field != orientation && !constants.contains(field);
+            }))
+          break;
+        previous = *seconds;
+        inputs.append({time, orientation});
+      }
+      if (inputs.size() != array.getItems().size() * 2)
+        continue;
+      rewriter.setInsertionPoint(track);
+      rewriter.replaceOpWithNewOp<GeometryFunctionOp>(
+          track, track.getResult().getType(), inputs, "quaternion-track-keys");
+      changed = true;
+    }
+    if (changed && failed(foldConstants(module, getAnalysis<PropertyAnalysis>())))
+      signalPassFailure();
   }
 };
 
@@ -1477,6 +1788,7 @@ void buildPipeline(OpPassManager &passes) {
   passes.addPass(std::make_unique<FoldConstants>());
   passes.addPass(std::make_unique<SimplifyExpressions>());
   passes.addPass(std::make_unique<FoldRecordProjections>());
+  passes.addPass(std::make_unique<SpecializeRotationTracks>());
   passes.addPass(std::make_unique<SimplifyVisuals>());
   passes.addPass(createCanonicalizerPass());
   passes.addPass(createCSEPass());

@@ -22,6 +22,8 @@ struct View {
     clip_w: vec4<f32>,
     view_depth: vec4<f32>,
     lens: vec4<f32>,
+    lateral_x: vec4<f32>,
+    lateral_y: vec4<f32>,
     emitters: array<Emitter, 16>,
 }
 
@@ -322,6 +324,13 @@ fn base_alpha(emitter: Emitter, age: f32) -> f32 {
     return emitter.color.a * fade_in * fade_out;
 }
 
+fn billboard_offset(offset: vec2<f32>) -> vec4<f32> {
+    if view.lens.w > 0.5 {
+        return view.lateral_x * offset.x + view.lateral_y * offset.y;
+    }
+    return vec4<f32>(offset * view.lens.xy, 0.0, 0.0);
+}
+
 fn sprite_vertex(vertex: u32, source: ParticleCenter, visible: bool) -> SpriteVertex {
     let emitter = source.particle.emitter;
     let age = source.particle.seconds;
@@ -343,8 +352,8 @@ fn sprite_vertex(vertex: u32, source: ParticleCenter, visible: bool) -> SpriteVe
         aspect = emitter.sheet.w;
         frames = sequence_frames(emitter, age, seed);
     }
-    let offset = uv * vec2<f32>(aspect, 1.0) * radius * view.lens.xy;
-    let clip = vec4<f32>(xy + offset, dot(view.clip_z, world), dot(view.clip_w, world));
+    let offset = billboard_offset(uv * vec2<f32>(aspect, 1.0) * radius);
+    let clip = vec4<f32>(xy, dot(view.clip_z, world), dot(view.clip_w, world)) + offset;
     let alpha = select(0.0, base_alpha(emitter, age), visible);
     let sprite = Sprite(clip, uv, vec4<f32>(emitter.color.rgb * alpha, alpha),
         dot(view.view_depth, world), emitter.sheet, frames,
@@ -568,6 +577,9 @@ fn trail_clip(center: vec3<f32>) -> vec4<f32> {
 }
 
 fn projected_position(clip: vec4<f32>) -> vec2<f32> {
+    if view.lens.w > 0.5 {
+        return clip.xy / max(clip.w, 1e-5);
+    }
     // A tangent in units with the camera's aspect taken out keeps ribbon
     // width invariant as the viewport changes size.
     return clip.xy / (max(clip.w, 1e-5) * view.lens.xy);
@@ -588,6 +600,16 @@ fn trail_vertex(vertex: u32, sample: Displaced, interval: TrailInterval,
     if all(tangent == vec2<f32>(0.0)) {
         tangent = tailward - projected_position(clip);
     }
+    if view.lens.w > 0.5 {
+        let ndc = projected_position(clip);
+        let a = view.lateral_x.xy - ndc * view.lateral_x.w;
+        let b = view.lateral_y.xy - ndc * view.lateral_y.w;
+        let det = a.x * b.y - a.y * b.x;
+        if abs(det) > 1e-12 {
+            tangent = vec2<f32>(b.y * tangent.x - b.x * tangent.y,
+                a.x * tangent.y - a.y * tangent.x) / det;
+        }
+    }
     let magnitude = max(abs(tangent.x), abs(tangent.y));
     var edge = vec2<f32>(0.0);
     if magnitude > 1e-12 {
@@ -595,7 +617,7 @@ fn trail_vertex(vertex: u32, sample: Displaced, interval: TrailInterval,
         edge = vec2<f32>(-direction.y, direction.x);
     }
     let side = select(-1.0, 1.0, (vertex & 1u) != 0u);
-    let xy = clip.xy + edge * side * radius * view.lens.xy;
+    let offset_clip = clip + billboard_offset(edge * side * radius);
     var frames = vec3<f32>(0.0);
     if TEXTURED {
         frames = sequence_frames(emitter, interval.head, particle.seed);
@@ -603,7 +625,7 @@ fn trail_vertex(vertex: u32, sample: Displaced, interval: TrailInterval,
     let alpha = select(0.0, base_alpha(emitter, interval.age)
         * (1.0 - settings.z * interval.fraction) * interval.end_opacity, sample.visible);
     let world = vec4<f32>(sample.source.center, 1.0);
-    let sprite = Sprite(vec4<f32>(xy, clip.zw), vec2<f32>(side, 1.0 - 2.0 * interval.fraction),
+    let sprite = Sprite(offset_clip, vec2<f32>(side, 1.0 - 2.0 * interval.fraction),
         vec4<f32>(emitter.color.rgb * alpha, alpha), dot(view.view_depth, world), emitter.sheet, frames,
         // XRack wireframe corner
     );

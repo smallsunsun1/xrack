@@ -1,0 +1,15 @@
+// CHECK: "xr.geometry_function"{{.*}}value = "ray-hit-instance-3d"{{.*}} -> !xr.hit3d
+
+struct Scatter { count: int, seed: int }
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, random-instances: Scatter,
+}
+export component App inherits Window {
+    out property <hit3d> selected: Scene3D.ray-hit-instance([
+        Actor { id: "cube", mesh: "primitive:box", x: 0, y: 0, z: 0,
+                scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
+                random-instances: Scatter { count: 1, seed: 7 } }
+    ], Point3D.new(0, 0, 8), Vector3D.new(0, 0, -1), 64.0, 0, -1, 0);
+}

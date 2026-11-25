@@ -94,7 +94,7 @@ fn indirect_delta(position: vec2<f32>, sample: u32) -> vec3<f32> {
     if all(response == vec3<f32>(0.0)) && all(ambient == vec3<f32>(0.0)) {
         return vec3<f32>(0.0);
     }
-    let depth = view_depth(sample_depth(pixel, sample));
+    let depth = view_depth(pixel, sample_depth(pixel, sample));
     let site = position / settings.extents.xy * settings.indirect_buffer.xy - 0.5;
     let base = vec2<i32>(floor(site));
     let fraction = fract(site);

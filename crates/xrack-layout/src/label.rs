@@ -1,11 +1,14 @@
 use crate::{
     Point, Size, TextMeasurer, font_size,
-    text_area::{fitting_prefix, fitting_prefix_until, grapheme_boundaries, paragraphs},
+    text_area::{
+        fitting_prefix, fitting_prefix_from, fitting_prefix_until, grapheme_boundaries, paragraphs,
+    },
 };
 use std::{
     borrow::Cow,
-    cell::{Cell, RefCell},
-    collections::HashMap,
+    cell::{Cell, OnceCell, RefCell},
+    collections::{HashMap, hash_map::RandomState},
+    hash::BuildHasher,
     num::NonZeroU32,
     ops::Range,
 };
@@ -205,17 +208,21 @@ impl<'a> LabelLayout<'a> {
         available: Size,
         size: f32,
         style: LabelStyle,
-        mut advance: impl FnMut(&str) -> f32,
+        advance: impl FnMut(&str) -> f32,
     ) -> Self {
-        let plan = LabelPlan::plan(
-            text,
-            available,
-            size,
-            style,
-            |range, ellipsis| advance(&line_text(text, range, ellipsis)),
-            None,
-            None,
-        );
+        Self::with_measurements(text, available, size, style, None, advance)
+    }
+
+    #[doc(hidden)]
+    pub fn with_measurements(
+        text: &'a str,
+        available: Size,
+        size: f32,
+        style: LabelStyle,
+        measurements: Option<&LabelMeasurements>,
+        advance: impl FnMut(&str) -> f32,
+    ) -> Self {
+        let plan = LabelPlan::measured_text(text, available, size, style, measurements, advance);
         Self {
             size: plan.size,
             lines: plan
@@ -227,6 +234,163 @@ impl<'a> LabelLayout<'a> {
                 })
                 .collect(),
         }
+    }
+}
+
+impl LabelPlan {
+    #[doc(hidden)]
+    pub fn measured_text(
+        text: &str,
+        available: Size,
+        size: f32,
+        style: LabelStyle,
+        measurements: Option<&LabelMeasurements>,
+        mut advance: impl FnMut(&str) -> f32,
+    ) -> Self {
+        let measurements = measurements.filter(|measurements| measurements.matches(text, style));
+        let prepared = measurements.map(|measurements| &measurements.prepared);
+        if let Some(prepared) = prepared {
+            prepared.reusable_widths.set(None);
+        }
+        Self::plan(
+            text,
+            available,
+            size,
+            style,
+            |range, ellipsis| {
+                if !ellipsis
+                    && !range.is_empty()
+                    && let Some(measurements) = measurements
+                    && let Some(advances) = measurements.advances.get()
+                {
+                    return advances.measure(
+                        range.clone(),
+                        &measurements.prepared.font_generation,
+                        || advance(&text[range]),
+                    );
+                }
+                advance(&line_text(text, range, ellipsis))
+            },
+            None,
+            prepared,
+        )
+    }
+}
+
+/// Measurements retained by the plain-label renderer across width changes.
+#[doc(hidden)]
+pub struct LabelMeasurements {
+    source: Box<str>,
+    prepared: PreparedLabel,
+    advances: OnceCell<LabelRangeAdvances>,
+}
+
+impl LabelMeasurements {
+    /// Source budget for a retained label and its prepared reflow metadata.
+    #[doc(hidden)]
+    pub const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
+
+    pub fn new(text: &str, style: LabelStyle) -> Option<Self> {
+        if !style.reflows() || text.len() > Self::MAX_SOURCE_BYTES {
+            return None;
+        }
+        let mut prepared = PreparedLabel::new(text)?;
+        prepared.skip_stable_word_probes = true;
+        prepared.retain_plain_wraps = true;
+        let hasher = RandomState::new();
+        // Identical plain paragraphs share the complete width proof.
+        prepared.prepare_repeated(
+            |range| (!range.is_empty()).then(|| (0, 0, hasher.hash_one(&text[range.clone()]))),
+            |left, right, _| text[left.clone()] == text[right.clone()],
+        );
+        Some(Self {
+            source: text.into(),
+            prepared,
+            advances: OnceCell::new(),
+        })
+    }
+
+    pub fn matches(&self, text: &str, style: LabelStyle) -> bool {
+        style.reflows() && self.source.as_ref() == text
+    }
+
+    pub fn clear_widths(&self) {
+        self.prepared.invalidate_widths();
+        if let Some(advances) = self.advances.get() {
+            advances.clear();
+        }
+    }
+
+    /// Retain measured ranges after repeated reflows exceed the renderer's
+    /// general width cache.
+    #[doc(hidden)]
+    pub fn retain_range_advances(&self) {
+        self.advances
+            .get_or_init(|| LabelRangeAdvances::new(self.source.len()));
+    }
+
+    /// Widths producing identical lines and geometry at the measured height.
+    pub fn reusable_widths(&self) -> Option<Range<f32>> {
+        self.prepared
+            .reusable_widths
+            .get()
+            .map(|widths| widths.minimum..widths.maximum)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LabelRangeAdvance {
+    key: u64,
+    width: f32,
+}
+
+impl LabelRangeAdvance {
+    // No retained source reaches this offset.
+    const EMPTY: Self = Self {
+        key: u64::MAX,
+        width: 0.0,
+    };
+}
+
+struct LabelRangeAdvances {
+    entries: Box<[Cell<LabelRangeAdvance>]>,
+    shift: u32,
+}
+
+impl LabelRangeAdvances {
+    fn new(bytes: usize) -> Self {
+        let slots = bytes.next_power_of_two().clamp(4096, 65_536);
+        Self {
+            entries: vec![Cell::new(LabelRangeAdvance::EMPTY); slots].into_boxed_slice(),
+            shift: u64::BITS - slots.ilog2(),
+        }
+    }
+
+    fn clear(&self) {
+        for entry in &self.entries {
+            entry.set(LabelRangeAdvance::EMPTY);
+        }
+    }
+
+    fn measure(
+        &self,
+        range: Range<usize>,
+        font_generation: &Cell<u32>,
+        advance: impl FnOnce() -> f32,
+    ) -> f32 {
+        let key = ((range.start as u64) << 32) | range.end as u64;
+        let slot = (key.wrapping_mul(0x9e3779b97f4a7c15) >> self.shift) as usize;
+        let entry = &self.entries[slot];
+        let cached = entry.get();
+        if cached.key == key {
+            return cached.width;
+        }
+        let generation = font_generation.get();
+        let width = advance();
+        if generation == font_generation.get() {
+            entry.set(LabelRangeAdvance { key, width });
+        }
+        width
     }
 }
 
@@ -271,6 +435,10 @@ pub struct LabelStyle {
 }
 
 impl LabelStyle {
+    pub fn reflows(self) -> bool {
+        self.wrap != TextWrap::NoWrap
+    }
+
     pub fn for_node(node: &Node, direction: Option<LayoutDirection>) -> Self {
         let default = if matches!(node.kind, "Label" | "StyledText") {
             TextHorizontalAlignment::Start
@@ -319,11 +487,14 @@ pub struct LabelPlan {
 pub(crate) struct PreparedLabel {
     paragraphs: Vec<PreparedParagraph>,
     graphemes: Vec<usize>,
-    words: Vec<usize>,
+    // Nearest word ending at each grapheme, using paragraph-local indices.
+    // Zero means there is no usable word ending at this position.
+    word_ends: Vec<u32>,
     first_line_probes: Vec<Cell<FirstLineProbes>>,
     font_generation: Cell<u32>,
     pub(crate) reusable_widths: Cell<Option<WidthInterval>>,
     pub(crate) skip_stable_word_probes: bool,
+    retain_plain_wraps: bool,
     repeated: Option<RepeatedParagraphs>,
     pub(crate) replayed_widths: Cell<bool>,
     line_breaks: RefCell<RetainedLineBreaks>,
@@ -374,8 +545,9 @@ impl RetainedLineBreaks {
         }
     }
 
-    fn slot(&mut self, position: u32) -> &mut Option<LineBreak> {
-        let index = position.wrapping_mul(0x9e3779b1) >> (u32::BITS - Self::SLOTS.ilog2());
+    fn slot(&mut self, position: NonZeroU32) -> &mut Option<LineBreak> {
+        let index =
+            (position.get() - 1).wrapping_mul(0x9e3779b1) >> (u32::BITS - Self::SLOTS.ilog2());
         &mut self.entries[index as usize]
     }
 }
@@ -383,10 +555,12 @@ impl RetainedLineBreaks {
 #[derive(Clone, Copy)]
 struct LineBreak {
     // PreparedLabel bounds the number of grapheme and word offsets.
-    position: u32,
+    position: NonZeroU32,
     next: u32,
-    end: usize,
+    len: u32,
+    advance: f32,
     widths: WidthInterval,
+    prefix_end: u32,
 }
 
 struct RepeatedParagraphs {
@@ -404,6 +578,8 @@ struct RawLine {
     range: Range<usize>,
     rtl: bool,
     width_source: Option<NonZeroU32>,
+    retained_break: Option<NonZeroU32>,
+    advance: f32,
 }
 
 impl RawLine {
@@ -412,6 +588,8 @@ impl RawLine {
             range,
             rtl,
             width_source: None,
+            retained_break: None,
+            advance: f32::NAN,
         }
     }
 }
@@ -428,7 +606,6 @@ struct PreparedParagraph {
     trimmed_end: usize,
     rtl: bool,
     graphemes: Range<usize>,
-    words: Range<usize>,
     one_line: Cell<Option<OneLineFit>>,
 }
 
@@ -489,16 +666,18 @@ impl PreparedLabel {
         let mut result = Self {
             paragraphs: Vec::new(),
             graphemes: Vec::new(),
-            words: Vec::new(),
+            word_ends: Vec::new(),
             first_line_probes: Vec::new(),
             font_generation: Cell::new(0),
             reusable_widths: Cell::new(None),
             skip_stable_word_probes: false,
+            retain_plain_wraps: false,
             repeated: None,
             replayed_widths: Cell::new(false),
             line_breaks: RefCell::default(),
             replayed_breaks: Cell::new(false),
         };
+        let mut word_count = 0;
         for source in paragraphs(text) {
             let content = &text[source.clone()];
             if result.paragraphs.len() == MAX_PARAGRAPHS || content.len() > MAX_BOUNDARIES {
@@ -509,13 +688,21 @@ impl PreparedLabel {
                 .graphemes
                 .extend(content.grapheme_indices(true).map(|(byte, _)| byte));
             result.graphemes.push(content.len());
-            let word_start = result.words.len();
-            result.words.extend(
-                content
-                    .split_word_bound_indices()
-                    .map(|(byte, word)| byte + word.len()),
-            );
-            if result.graphemes.len() + result.words.len() > MAX_BOUNDARIES {
+            let mut words = content
+                .split_word_bound_indices()
+                .map(|(byte, word)| byte + word.len())
+                .peekable();
+            let mut end = 0;
+            for (index, &boundary) in result.graphemes[grapheme_start..].iter().enumerate() {
+                while let Some(word) = words.next_if(|&word| word <= boundary) {
+                    word_count += 1;
+                    // A word boundary can land inside a grapheme. The
+                    // existing wrap falls back to the grapheme in that case.
+                    end = if word == boundary { index as u32 } else { 0 };
+                }
+                result.word_ends.push(end);
+            }
+            if result.graphemes.len() + word_count > MAX_BOUNDARIES {
                 return None;
             }
             result.paragraphs.push(PreparedParagraph {
@@ -523,7 +710,6 @@ impl PreparedLabel {
                 source,
                 rtl: get_base_direction(content) == Direction::Rtl,
                 graphemes: grapheme_start..result.graphemes.len(),
-                words: word_start..result.words.len(),
                 one_line: Cell::new(None),
             });
         }
@@ -563,7 +749,8 @@ impl PreparedLabel {
                 if equivalent(&reference.source, &paragraph.source, heading)
                     && self.graphemes[reference.graphemes.clone()]
                         == self.graphemes[paragraph.graphemes.clone()]
-                    && self.words[reference.words.clone()] == self.words[paragraph.words.clone()]
+                    && self.word_ends[reference.graphemes.clone()]
+                        == self.word_ends[paragraph.graphemes.clone()]
                 {
                     let shape = ParagraphShape {
                         group: old,
@@ -585,7 +772,9 @@ impl PreparedLabel {
 
     pub(crate) fn invalidate_widths(&self) {
         self.reusable_widths.set(None);
-        if let Some(repeated) = &self.repeated {
+        if !self.retain_plain_wraps
+            && let Some(repeated) = &self.repeated
+        {
             repeated.valid.set(false);
         }
         let next = self.font_generation.get().wrapping_add(1);
@@ -729,12 +918,13 @@ impl LabelPlan {
             max_lines,
         } = style;
         let font_generation_at_start = prepared.map(|prepared| prepared.font_generation.get());
-        let mut reusable = (prepared.is_some()
-            && available.height == f32::INFINITY
-            && available.width.is_finite()
-            && !elide
-            && vertical == Vertical::Top
-            && max_lines == usize::MAX)
+        let mut reusable = (prepared.is_some_and(|prepared| {
+            prepared.retain_plain_wraps
+                || available.height == f32::INFINITY
+                    && vertical == Vertical::Top
+                    && max_lines == usize::MAX
+        }) && available.width.is_finite()
+            && !elide)
             .then_some(WidthInterval {
                 minimum: 0.0,
                 maximum: f32::INFINITY,
@@ -773,7 +963,9 @@ impl LabelPlan {
         let mut memo = HashMap::<usize, RepeatedWrap>::new();
         let mut line_breaks = prepared
             .filter(|prepared| {
-                prepared.paragraphs.len() >= 128 && reusable.is_some() && wrap == TextWrap::WordWrap
+                wrap == TextWrap::WordWrap
+                    && (prepared.retain_plain_wraps
+                        || prepared.paragraphs.len() >= 128 && reusable.is_some())
             })
             .map(|prepared| {
                 let mut breaks = prepared.line_breaks.borrow_mut();
@@ -866,6 +1058,8 @@ impl LabelPlan {
                             range: start..start + line.len(),
                             rtl,
                             width_source,
+                            retained_break: None,
+                            advance: f32::NAN,
                         });
                         if raw.len() > limit {
                             break 'paragraphs;
@@ -888,17 +1082,16 @@ impl LabelPlan {
                 generated_graphemes = grapheme_boundaries(content);
                 &generated_graphemes
             };
-            let generated_words;
-            let words: &[usize] = if wrap != TextWrap::WordWrap {
-                &[]
-            } else if let Some((prepared, paragraph)) = retained {
-                &prepared.words[paragraph.words.clone()]
-            } else {
-                generated_words = content
+            let indexed_ends = retained
+                .filter(|_| wrap == TextWrap::WordWrap)
+                .map(|(prepared, paragraph)| &prepared.word_ends[paragraph.graphemes.clone()]);
+            let words: Vec<_> = if wrap == TextWrap::WordWrap && indexed_ends.is_none() {
+                content
                     .split_word_bound_indices()
                     .map(|(start, word)| start + word.len())
-                    .collect::<Vec<_>>();
-                &generated_words
+                    .collect()
+            } else {
+                Vec::new()
             };
             let last = graphemes.len() - 1;
             let mut start = 0;
@@ -906,14 +1099,19 @@ impl LabelPlan {
                 let from = range.start + graphemes[start];
                 let break_slot = retained
                     .filter(|(prepared, _)| {
-                        group.is_none()
+                        (group.is_none() || prepared.retain_plain_wraps)
                             && Some(prepared.font_generation.get()) == font_generation_at_start
                     })
                     .and_then(|(prepared, paragraph)| {
-                        let position = (paragraph.graphemes.start + start) as u32;
+                        let position =
+                            NonZeroU32::new((paragraph.graphemes.start + start) as u32 + 1)?;
                         let slot = line_breaks.as_mut()?.slot(position);
                         Some((slot, position, prepared))
                     });
+                let retained_break = break_slot
+                    .as_ref()
+                    .filter(|(_, _, prepared)| prepared.retain_plain_wraps)
+                    .map(|(_, position, _)| *position);
                 if let Some((slot, position, prepared)) = &break_slot
                     && let Some(saved) = **slot
                     && saved.position == *position
@@ -922,8 +1120,17 @@ impl LabelPlan {
                     if let Some(interval) = &mut reusable {
                         interval.intersect(saved.widths);
                     }
+                    if group.is_some() {
+                        memo_proof.intersect(saved.widths);
+                    }
                     prepared.replayed_breaks.set(true);
-                    raw.push(RawLine::new(from..saved.end, rtl));
+                    raw.push(RawLine {
+                        range: from..from + saved.len as usize,
+                        rtl,
+                        width_source: None,
+                        retained_break,
+                        advance: saved.advance,
+                    });
                     if raw.len() > limit {
                         break 'paragraphs;
                     }
@@ -934,8 +1141,38 @@ impl LabelPlan {
                     minimum: 0.0,
                     maximum: f32::INFINITY,
                 });
+                let retain_prefix = start != 0
+                    && break_slot
+                        .as_ref()
+                        .is_some_and(|(_, _, prepared)| prepared.retain_plain_wraps);
+                let mut prefix_end = start as u32;
+                if retain_prefix
+                    && let Some((slot, position, _)) = &break_slot
+                    && let Some(saved) = slot.filter(|saved| saved.position == *position)
+                    && saved.prefix_end as usize > start
+                    && saved.widths.minimum <= available.width
+                {
+                    // The existing lower bound covers every skipped probe.
+                    // Carry it forward into the new width certificates.
+                    prefix_end = saved.prefix_end;
+                    if let Some(interval) = &mut observed {
+                        interval.include_probe(saved.widths.minimum, true);
+                    }
+                    if let Some(interval) = &mut reusable {
+                        interval.include_probe(saved.widths.minimum, true);
+                    }
+                    if group.is_some() {
+                        memo_proof.include_probe(saved.widths.minimum, true);
+                    }
+                }
                 let stop = |fit: usize, highest_fit: usize| {
-                    short_word_search && same_word_break(graphemes, words, start, fit, highest_fit)
+                    // Both ends of the remaining search choose the same
+                    // usable word boundary, even with nonmonotonic advances.
+                    short_word_search
+                        && indexed_ends.is_some_and(|ends| {
+                            let end = ends[fit.max(start + 1)];
+                            end as usize > start && ends[highest_fit] == end
+                        })
                 };
                 let mut fits = |index: usize, width: f32| {
                     let accepts_width = width <= available.width;
@@ -977,6 +1214,23 @@ impl LabelPlan {
                         cache.set(probes);
                     }
                     (fit, fit == last)
+                } else if retain_prefix {
+                    let fit = fitting_prefix_from(
+                        start,
+                        last,
+                        prefix_end as usize,
+                        |index, growing| {
+                            let to = range.start + graphemes[index];
+                            let width = advance(from..to, false);
+                            let accepted = fits(index, width);
+                            if growing && accepted {
+                                prefix_end = index as u32;
+                            }
+                            accepted
+                        },
+                        stop,
+                    );
+                    (fit, false)
                 } else {
                     let fit = fitting_prefix_until(
                         start,
@@ -991,12 +1245,15 @@ impl LabelPlan {
                     (fit, false)
                 };
                 let fit = fit.max(start + 1);
-                let word_end = words.partition_point(|&byte| byte <= graphemes[fit]);
-                let next = word_end
-                    .checked_sub(1)
-                    .and_then(|index| graphemes.binary_search(&words[index]).ok())
-                    .filter(|&index| index > start)
-                    .unwrap_or(fit);
+                let word_end = if let Some(ends) = indexed_ends {
+                    ends[fit] as usize
+                } else {
+                    let word = words.partition_point(|&byte| byte <= graphemes[fit]);
+                    word.checked_sub(1)
+                        .and_then(|index| graphemes.binary_search(&words[index]).ok())
+                        .unwrap_or(0)
+                };
+                let next = if word_end > start { word_end } else { fit };
                 if whole_paragraph_fits
                     && next == last
                     && let Some((prepared, paragraph)) = retained
@@ -1017,8 +1274,22 @@ impl LabelPlan {
                 }
                 let to = range.start + graphemes[next];
                 let line = trim_trailing_space(text, from..to);
-                let end = line.end;
-                raw.push(RawLine::new(line, rtl));
+                // Retained paragraphs bound each line to MAX_BOUNDARIES bytes.
+                let len = line.len() as u32;
+                let retained_advance = break_slot
+                    .as_ref()
+                    .and_then(|(slot, position, _)| {
+                        slot.filter(|saved| saved.position == *position && saved.len == len)
+                            .map(|saved| saved.advance)
+                    })
+                    .unwrap_or(f32::NAN);
+                raw.push(RawLine {
+                    range: line,
+                    rtl,
+                    width_source: None,
+                    retained_break,
+                    advance: retained_advance,
+                });
                 if raw.len() > limit {
                     break 'paragraphs;
                 }
@@ -1037,8 +1308,10 @@ impl LabelPlan {
                     *slot = Some(LineBreak {
                         position,
                         next: start as u32,
-                        end,
+                        len,
+                        advance: retained_advance,
                         widths,
+                        prefix_end,
                     });
                 }
             }
@@ -1085,6 +1358,8 @@ impl LabelPlan {
                         mut range,
                         rtl,
                         width_source,
+                        retained_break,
+                        advance: retained_advance,
                     },
                 )| {
                     let span_from_source = width_source.and_then(|source| {
@@ -1097,8 +1372,24 @@ impl LabelPlan {
                         }
                         None
                     });
-                    let mut span =
-                        span_from_source.unwrap_or_else(|| advance(range.clone(), false));
+                    let mut span = span_from_source.unwrap_or_else(|| {
+                        if !retained_advance.is_nan()
+                            && prepared.map(|p| p.font_generation.get()) == font_generation_at_start
+                        {
+                            return retained_advance;
+                        }
+                        let width = advance(range.clone(), false);
+                        if let Some(position) = retained_break
+                            && prepared.map(|p| p.font_generation.get()) == font_generation_at_start
+                            && let Some(breaks) = line_breaks.as_deref_mut()
+                            && let Some(entry) = breaks.slot(position).as_mut()
+                            && entry.position == position
+                            && entry.len as usize == range.len()
+                        {
+                            entry.advance = width;
+                        }
+                        width
+                    });
                     if has_width_sources {
                         measured_widths.push(span);
                     }
@@ -1124,11 +1415,13 @@ impl LabelPlan {
                 },
             )
             .collect();
-        if !truncated
-            && let Some(prepared) = prepared
+        if let Some(prepared) = prepared
             && Some(prepared.font_generation.get()) == font_generation_at_start
             && let Some(mut interval) = reusable
         {
+            // The cached settings include the height and line limit. A
+            // clipped, non-elided plan is reusable when its break decisions
+            // and geometry are stable, even if some source lines are hidden.
             // The maximum line width and the line index must also remain unclamped.
             interval.minimum = interval.minimum.max(width);
             if interval.contains(available.width) {
@@ -1140,27 +1433,6 @@ impl LabelPlan {
             lines,
         }
     }
-}
-
-fn same_word_break(
-    graphemes: &[usize],
-    words: &[usize],
-    start: usize,
-    fit: usize,
-    highest_fit: usize,
-) -> bool {
-    // Every remaining fit is in this interval, even when shaped advances
-    // are nonmonotonic. If both ends select the same valid word boundary,
-    // any further probe would leave the final line break unchanged.
-    let first = graphemes[fit.max(start + 1)];
-    let last = graphemes[highest_fit];
-    let next = words.partition_point(|&byte| byte <= first);
-    next.checked_sub(1).is_some_and(|index| {
-        let end = words[index];
-        end > graphemes[start]
-            && words.get(next).is_none_or(|&end| end > last)
-            && graphemes.binary_search(&end).is_ok()
-    })
 }
 
 fn trim_trailing_space(text: &str, range: Range<usize>) -> Range<usize> {
@@ -1356,6 +1628,18 @@ mod tests {
     }
 
     #[test]
+    fn prepared_word_ends_preserve_the_grapheme_fallback() {
+        let prepared = PreparedLabel::new("a\u{600}  \r\nhi there").unwrap();
+        let first = prepared.paragraphs[0].graphemes.clone();
+        // The word ending at byte 3 is inside the second grapheme, so a
+        // fit at byte 4 must fall back to the grapheme instead of snapping.
+        assert_eq!(&prepared.graphemes[first.clone()], &[0, 1, 4, 5]);
+        assert_eq!(&prepared.word_ends[first], &[0, 0, 0, 3]);
+        let second = prepared.paragraphs[1].graphemes.clone();
+        assert_eq!(&prepared.word_ends[second], &[0, 0, 2, 3, 3, 3, 3, 3, 8]);
+    }
+
+    #[test]
     fn ending_word_search_early_preserves_breaks_with_nonmonotonic_widths() {
         let text = "a longidentifier with 👩‍🚀 glyphs and another-word\nא 1234567890, שלום";
         let mut optimized = PreparedLabel::new(text).unwrap();
@@ -1394,6 +1678,324 @@ mod tests {
             }
         }
         assert!(optimized_calls < reference_calls);
+    }
+
+    #[test]
+    fn retained_plain_wraps_match_independent_layouts_at_new_widths() {
+        let text = "A long word-wrap line with 👩‍🚀 and joined-word clusters.\r\nא שלום\n".repeat(16);
+        let mut node = Node::new("Label", None);
+        node.properties.insert("wrap", TextWrap::WordWrap.into());
+        node.properties
+            .insert("overflow", TextOverflow::Elide.into());
+        node.properties
+            .insert("vertical-alignment", TextVerticalAlignment::Center.into());
+        let style = LabelStyle::for_node(&node, None);
+        let measurements = LabelMeasurements::new(&text, style).unwrap();
+        let cached_ranges = LabelMeasurements::new(&text, style).unwrap();
+        cached_ranges.retain_range_advances();
+        let mut reference_calls = 0;
+        let mut retained_calls = 0;
+        let mut cached_range_calls = 0;
+        for size in [10.0, 15.0] {
+            measurements.clear_widths();
+            cached_ranges.clear_widths();
+            for width in 72..92 {
+                let available = Size::new(width as f32, 116.0);
+                let advance = |part: &str| {
+                    // Shaping need not have monotonically increasing advances.
+                    ((part.len() * 59 + part.bytes().last().unwrap_or(0) as usize) % 89) as f32
+                        * size
+                        / 10.0
+                };
+                let expected = LabelLayout::with_style(&text, available, size, style, |part| {
+                    reference_calls += 1;
+                    advance(part)
+                });
+                for (measurements, calls) in [
+                    (&measurements, &mut retained_calls),
+                    (&cached_ranges, &mut cached_range_calls),
+                ] {
+                    let actual = LabelLayout::with_measurements(
+                        &text,
+                        available,
+                        size,
+                        style,
+                        Some(measurements),
+                        |part| {
+                            *calls += 1;
+                            advance(part)
+                        },
+                    );
+                    assert_eq!(actual.size, expected.size);
+                    assert_eq!(actual.lines.len(), expected.lines.len());
+                    for (actual, expected) in actual.lines.iter().zip(&expected.lines) {
+                        assert_eq!(actual.text, expected.text, "width {width}, size {size}");
+                        assert_eq!(actual.origin, expected.origin);
+                    }
+                }
+            }
+        }
+        assert!(retained_calls < reference_calls);
+        assert!(cached_range_calls < retained_calls);
+    }
+
+    #[test]
+    fn identical_plain_paragraphs_reuse_wraps_across_font_changes() {
+        let text = "release-ab12cd34 followed by 混排文档 and punctuation.\n".repeat(144);
+        let mut node = Node::new("Label", None);
+        node.properties.insert("wrap", TextWrap::WordWrap.into());
+        let style = LabelStyle::for_node(&node, None);
+        let measurements = LabelMeasurements::new(&text, style).unwrap();
+        measurements.retain_range_advances();
+
+        for size in [12.0, 17.0] {
+            measurements.clear_widths();
+            for width in [90.0, 99.0, 95.0, 123.0] {
+                let area = Size::new(width, 340.0);
+                let advance = |part: &str| {
+                    part.chars().count() as f32 * size * 0.5
+                        + (part.bytes().last().unwrap_or(0) % 3) as f32
+                };
+                measurements.prepared.replayed_widths.set(false);
+                let retained = LabelPlan::measured_text(
+                    &text,
+                    area,
+                    size,
+                    style,
+                    Some(&measurements),
+                    advance,
+                );
+                let fresh = LabelPlan::measured_text(&text, area, size, style, None, advance);
+                assert_eq!(retained.size, fresh.size);
+                assert_eq!(retained.lines, fresh.lines);
+                assert!(measurements.prepared.replayed_widths.get());
+            }
+        }
+    }
+
+    #[test]
+    fn resumed_prefix_preserves_search_with_nonmonotonic_advances() {
+        assert_eq!(size_of::<Option<LineBreak>>(), size_of::<LineBreak>());
+        let widths = [
+            0.0, 0.0, 0.0, 8.0, 18.0, 2.0, 9.0, 32.0, 12.0, 4.0, 28.0, 40.0,
+        ];
+        let start = 2;
+        let last = widths.len() - 1;
+        let stop = |fit: usize, highest: usize| fit / 3 == highest / 3;
+        let mut prefix_end = start;
+        let mut interval = WidthInterval {
+            minimum: 0.0,
+            maximum: f32::INFINITY,
+        };
+        fitting_prefix_from(
+            start,
+            last,
+            start,
+            |index, growing| {
+                let fits = widths[index] <= 20.0;
+                interval.include_probe(widths[index], fits);
+                if growing && fits {
+                    prefix_end = index;
+                }
+                fits
+            },
+            stop,
+        );
+        assert_eq!(prefix_end, 6);
+        assert_eq!(interval.minimum, 18.0);
+
+        for width in [7.0, 12.0, 18.0, 20.0, 25.0, 29.0, 40.0] {
+            let mut reference_calls = 0;
+            let expected = fitting_prefix_until(
+                start,
+                last,
+                |index| {
+                    reference_calls += 1;
+                    widths[index] <= width
+                },
+                stop,
+            );
+            let can_resume = interval.minimum <= width;
+            let seed = if can_resume { prefix_end } else { start };
+            let mut calls = 0;
+            let actual = fitting_prefix_from(
+                start,
+                last,
+                seed,
+                |index, _| {
+                    calls += 1;
+                    widths[index] <= width
+                },
+                stop,
+            );
+            assert_eq!(actual, expected, "width {width}");
+            assert_eq!(reference_calls - calls, if can_resume { 3 } else { 0 });
+        }
+    }
+
+    #[test]
+    fn retained_range_advances_distinguish_offsets_above_64_kib() {
+        let mut node = Node::new("Label", None);
+        node.properties.insert("wrap", TextWrap::WordWrap.into());
+        let style = LabelStyle::for_node(&node, None);
+        let text = "word and words\n".repeat(5_000);
+        let measurements = LabelMeasurements::new(&text, style).unwrap();
+        measurements.retain_range_advances();
+        let cache = measurements.advances.get().unwrap();
+        let generation = &measurements.prepared.font_generation;
+        let early = 7..11;
+        let late = (early.start + 65_536)..(early.end + 65_536);
+        for (range, width) in [(early, 7.0), (late, 12.0)] {
+            let mut calls = 0;
+            for _ in 0..2 {
+                assert_eq!(
+                    cache.measure(range.clone(), generation, || {
+                        calls += 1;
+                        width
+                    }),
+                    width
+                );
+            }
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn retained_breaks_reuse_line_advances_until_fonts_change() {
+        let text = "word and words ".repeat(12);
+        let mut node = Node::new("Label", None);
+        node.properties.insert("wrap", TextWrap::WordWrap.into());
+        let style = LabelStyle::for_node(&node, None);
+        let measurements = LabelMeasurements::new(&text, style).unwrap();
+        let advance = |text: &str| text.len() as f32;
+        let first = LabelLayout::with_measurements(
+            &text,
+            Size::new(20.0, 500.0),
+            12.0,
+            style,
+            Some(&measurements),
+            advance,
+        );
+        let width = 20.0f32.next_up();
+        assert!(measurements.reusable_widths().unwrap().contains(&width));
+        let available = Size::new(width, 500.0);
+        let replayed = LabelLayout::with_measurements(
+            &text,
+            available,
+            12.0,
+            style,
+            Some(&measurements),
+            |_| panic!("the retained breaks already contain their advances"),
+        );
+        assert_eq!(first.size, replayed.size);
+        assert_eq!(
+            first
+                .lines
+                .iter()
+                .map(|line| (&line.text, line.origin))
+                .collect::<Vec<_>>(),
+            replayed
+                .lines
+                .iter()
+                .map(|line| (&line.text, line.origin))
+                .collect::<Vec<_>>(),
+        );
+
+        measurements.clear_widths();
+        let wider_font = |text: &str| advance(text) * 1.3;
+        let updated = LabelLayout::with_measurements(
+            &text,
+            available,
+            12.0,
+            style,
+            Some(&measurements),
+            wider_font,
+        );
+        let expected = LabelLayout::with_style(&text, available, 12.0, style, wider_font);
+        assert_eq!(updated.size, expected.size);
+        assert_eq!(
+            updated
+                .lines
+                .iter()
+                .map(|line| (&line.text, line.origin))
+                .collect::<Vec<_>>(),
+            expected
+                .lines
+                .iter()
+                .map(|line| (&line.text, line.origin))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn plain_wrap_width_range_preserves_the_finite_height_layout() {
+        let text = "Keep each measured word.\nUse the same line positions across widths.";
+        let mut node = Node::new("Label", None);
+        node.properties.insert("wrap", TextWrap::WordWrap.into());
+        node.properties
+            .insert("vertical-alignment", TextVerticalAlignment::Bottom.into());
+        let style = LabelStyle::for_node(&node, None);
+        let measurements = LabelMeasurements::new(text, style).unwrap();
+        let advance = |text: &str| 5.0 * text.len() as f32;
+        for (height, limits) in [
+            (180.0, style),
+            (33.0, style),
+            (
+                180.0,
+                LabelStyle {
+                    max_lines: 2,
+                    ..style
+                },
+            ),
+        ] {
+            let measured = LabelLayout::with_measurements(
+                text,
+                Size::new(83.0, height),
+                12.0,
+                limits,
+                Some(&measurements),
+                advance,
+            );
+            let widths = measurements.reusable_widths().unwrap();
+            assert!(widths.contains(&83.0));
+            if height == 33.0 || limits.max_lines == 2 {
+                assert_eq!(measured.lines.len(), 2);
+            }
+            for width in [widths.start, widths.end.next_down()] {
+                let exact =
+                    LabelLayout::with_style(text, Size::new(width, height), 12.0, limits, advance);
+                assert_eq!(measured.size, exact.size);
+                assert_eq!(measured.lines.len(), exact.lines.len());
+                for (measured, exact) in measured.lines.iter().zip(&exact.lines) {
+                    assert_eq!(measured.text, exact.text);
+                    assert_eq!(measured.origin, exact.origin);
+                }
+            }
+        }
+
+        for width_sensitive in [
+            LabelStyle {
+                horizontal: TextAlignment {
+                    mode: TextHorizontalAlignment::Center,
+                    direction: None,
+                },
+                ..style
+            },
+            LabelStyle {
+                elide: true,
+                ..style
+            },
+        ] {
+            LabelLayout::with_measurements(
+                text,
+                Size::new(83.0, 180.0),
+                12.0,
+                width_sensitive,
+                Some(&measurements),
+                advance,
+            );
+            assert!(measurements.reusable_widths().is_none());
+        }
     }
 
     #[test]

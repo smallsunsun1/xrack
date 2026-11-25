@@ -4,19 +4,25 @@ use femtovg::{
 };
 use fontdb::{Database, Family, Query, Style, Weight};
 use std::{
-    borrow::Cow,
-    cell::RefCell,
+    cell::{Cell, OnceCell, RefCell},
     collections::{HashMap, VecDeque},
     hash::BuildHasher,
+    num::NonZeroUsize,
     ops::Range,
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::Arc,
 };
 use xrack_layout::{
-    LabelLayout, LabelLine, LabelStyle, Point, Rect, Size, StyledTextLayout, TextAlignment,
+    LabelMeasurements, LabelPlan, LabelStyle, Point, Rect, Size, StyledTextLayout, TextAlignment,
     TextAreaLayout, TextMeasurer, VisualTextLine, text_editor_viewport,
 };
-use xrack_runtime::{EmbeddedFonts, LayoutDirection, Node, TextStyle, TextWrap};
+use xrack_runtime::{
+    EmbeddedFonts, LayoutDirection, Node, SharedNodeIdentity, TextStyle, TextWrap,
+};
+
+pub(super) use cell_shaping::AsciiMetrics;
+use unicode_bidi::{BidiClass, bidi_class};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(target_os = "android")]
 use crate::{AndroidGlyphBitmap, android_emoji::Emoji};
@@ -115,7 +121,7 @@ struct StyledFace {
     italic: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct LabelFont {
     size: f32,
     face: Option<StyledFace>,
@@ -131,20 +137,111 @@ struct LabelSettings {
 }
 
 struct CachedLabel {
-    text: String,
     settings: LabelSettings,
     label: Rc<PreparedLabel>,
+    reusable_widths: Option<Range<f32>>,
     bytes: usize,
 }
 
+impl Drop for CachedLabel {
+    fn drop(&mut self) {
+        if let Some(source) = &self.label.source {
+            source.cached_plans.set(source.cached_plans.get() - 1);
+        }
+    }
+}
+
+struct LabelSource {
+    text: Box<str>,
+    fingerprint: u64,
+    cached_plans: Cell<usize>,
+}
+
+impl LabelSource {
+    fn bytes(&self) -> usize {
+        size_of::<Self>() + self.text.len()
+    }
+}
+
+struct ReusableLabel {
+    widths: Range<f32>,
+    settings: LabelSettings,
+    label: Weak<PreparedLabel>,
+}
+
+struct LabelSnapshot {
+    // An admitted plain label keeps its own color, if any. Resolve the theme
+    // and enabled state from the current frame.
+    plain_tint: Cell<Option<Option<xrack_runtime::Color>>>,
+    node: SharedNodeIdentity,
+    available: Size,
+    direction: Option<LayoutDirection>,
+    registered_fonts: [usize; 2],
+    label: Weak<PreparedLabel>,
+}
+
+#[derive(Default)]
+struct LabelSnapshotSlot {
+    seen: usize,
+    prepared: Option<LabelSnapshot>,
+}
+
+enum PreparedLineText {
+    Source(Range<u32>),
+    Owned(usize),
+}
+
+struct PreparedLabelLine {
+    origin: Point,
+    text: PreparedLineText,
+}
+
 pub(crate) struct PreparedLabel {
-    pub(crate) layout: LabelLayout<'static>,
+    size: Size,
+    lines: Vec<PreparedLabelLine>,
+    owned_lines: Vec<String>,
+    source: Option<Rc<LabelSource>>,
+    pub(super) font: LabelFont,
     paint: Paint,
     glyphs: RefCell<Option<(f32, crate::cell_glyphs::Run)>>,
 }
 
 impl PreparedLabel {
     const MAX_CACHED_TEXT_BYTES: usize = 64;
+
+    pub(super) fn source_text(&self) -> Option<&str> {
+        self.source.as_ref().map(|source| source.text.as_ref())
+    }
+
+    pub(super) fn shares_text_with(&self, other: &Self) -> bool {
+        self.source
+            .as_ref()
+            .zip(other.source.as_ref())
+            .is_some_and(|(this, other)| Rc::ptr_eq(this, other) || this.text == other.text)
+    }
+
+    fn line_text(&self, line: &PreparedLabelLine) -> &str {
+        match &line.text {
+            PreparedLineText::Source(range) => self
+                .source_text()
+                .and_then(|source| source.get(range.start as usize..range.end as usize))
+                .unwrap_or(""),
+            PreparedLineText::Owned(index) => &self.owned_lines[*index],
+        }
+    }
+
+    pub(super) fn lines(&self) -> impl ExactSizeIterator<Item = (Point, &str)> {
+        self.lines
+            .iter()
+            .map(|line| (line.origin, self.line_text(line)))
+    }
+
+    pub(super) fn only_line(&self) -> Option<(Point, &str)> {
+        let [line] = self.lines.as_slice() else {
+            return None;
+        };
+        Some((line.origin, self.line_text(line)))
+    }
 
     pub(crate) fn paint(&self, tint: Color) -> Paint {
         self.paint.clone().with_color(tint)
@@ -157,10 +254,7 @@ impl PreparedLabel {
         scale: f32,
         mut visit: impl FnMut(FontId, u16, f32, f32) -> bool,
     ) -> Option<bool> {
-        let [line] = self.layout.lines.as_slice() else {
-            return None;
-        };
-        let text = &line.text;
+        let (_, text) = self.only_line()?;
         if text.len() > Self::MAX_CACHED_TEXT_BYTES || !scale.is_finite() || scale <= 0.0 {
             return None;
         }
@@ -192,105 +286,825 @@ impl PreparedLabel {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct LabelAdvanceFont {
+    face: Option<StyledFace>,
+    size: u32,
+    registered_fonts: [usize; 2],
+}
+
+#[derive(Default)]
+struct LabelAdvances {
+    font: Option<LabelAdvanceFont>,
+    widths: HashMap<Box<str>, f32>,
+    token_widths: HashMap<Box<str>, f32>,
+    word_advances: Option<LabelWordAdvances>,
+    bytes: usize,
+    unretained: u16,
+}
+
+impl LabelAdvances {
+    const CACHE_PRESSURE: u16 = 1024;
+    const MAX_TOKEN_BYTES: usize = 48;
+
+    fn select(&mut self, font: LabelAdvanceFont) {
+        if self.font != Some(font) {
+            self.font = Some(font);
+            self.widths.clear();
+            self.token_widths.clear();
+            self.word_advances = None;
+            self.bytes = 0;
+            self.unretained = 0;
+        }
+    }
+
+    fn retain_word_advances(&mut self, source: &str) -> bool {
+        if self.unretained < Self::CACHE_PRESSURE {
+            return false;
+        }
+        if self
+            .word_advances
+            .as_ref()
+            .is_none_or(|index| index.source.as_ref() != source)
+        {
+            self.word_advances = Some(LabelWordAdvances::new(source));
+        }
+        true
+    }
+
+    fn measure(
+        &mut self,
+        text: &str,
+        source: Option<&str>,
+        context: &TextContext,
+        measure: impl Fn(&str) -> f32,
+    ) -> f32 {
+        let indexed = source
+            .filter(|_| text.len() >= 16)
+            .zip(self.word_advances.as_mut());
+        // Varied ASCII ranges rarely share a cache entry across paragraphs.
+        // Use their source offsets first. Keep whole-string hits first for
+        // other text, where the same phrases can recur many times.
+        let index_first = indexed.is_some() && text.is_ascii();
+        if !index_first && let Some(&width) = self.widths.get(text) {
+            return width;
+        }
+        if let Some((source, index)) = indexed
+            && let Some(width) = index.measure(source, text, |word| {
+                self.widths
+                    .get(word)
+                    .copied()
+                    .unwrap_or_else(|| Self::measure_token(&mut self.token_widths, word, &measure))
+            })
+        {
+            return if index_first {
+                width
+            } else {
+                self.remember(text, width, context)
+            };
+        }
+        if index_first && let Some(&width) = self.widths.get(text) {
+            return width;
+        }
+        let under_pressure = self.unretained >= Self::CACHE_PRESSURE;
+        if text.len() >= 16
+            && (under_pressure || cfg!(not(xrack_femtovg_glyph_samples)) || !text.is_ascii())
+        {
+            let width = if let Some(words) = ascii_word_bounds(text) {
+                self.measure_words(words, under_pressure, context, &measure)
+            } else if single_ltr_shaping_run(text) {
+                self.measure_words(text.split_word_bounds(), under_pressure, context, &measure)
+            } else {
+                None
+            };
+            if let Some(width) = width {
+                return self.remember(text, width, context);
+            }
+        }
+        if under_pressure && text.len() <= 16 {
+            return Self::measure_token(&mut self.token_widths, text, &measure);
+        }
+        self.remember(text, measure(text), context)
+    }
+
+    fn measure_words<'a>(
+        &mut self,
+        words: impl Iterator<Item = &'a str>,
+        under_pressure: bool,
+        context: &TextContext,
+        measure: &impl Fn(&str) -> f32,
+    ) -> Option<f32> {
+        let mut words = words.peekable();
+        let first = words.next()?;
+        words.peek()?;
+        // FemtoVG shapes words independently within a single LTR run.
+        // Preserve its original addition order.
+        Some(
+            std::iter::once(first)
+                .chain(words)
+                .fold(0.0, |width, word| {
+                    width
+                        + match self.widths.get(word) {
+                            Some(&advance) => advance,
+                            None if under_pressure => {
+                                Self::measure_token(&mut self.token_widths, word, measure)
+                            }
+                            None => self.remember(word, measure(word), context),
+                        }
+                }),
+        )
+    }
+
+    fn measure_token(
+        token_widths: &mut HashMap<Box<str>, f32>,
+        text: &str,
+        measure: &impl Fn(&str) -> f32,
+    ) -> f32 {
+        if let Some(&width) = token_widths.get(text) {
+            return width;
+        }
+        let width = measure(text);
+        // Whole probe strings can fill the general cache. Keep the words
+        // and short probes that still recur in otherwise new ranges.
+        if text.len() <= Self::MAX_TOKEN_BYTES && token_widths.len() < 16_384 {
+            token_widths.insert(text.into(), width);
+        }
+        width
+    }
+
+    fn remember(&mut self, text: &str, width: f32, context: &TextContext) -> f32 {
+        const MAX_ADVANCES: usize = 8192;
+        const MAX_TEXT_BYTES: usize = 512 * 1024;
+        if self.widths.len() < MAX_ADVANCES && text.len() <= MAX_TEXT_BYTES - self.bytes {
+            self.widths.insert(text.into(), width);
+            self.bytes += text.len();
+        } else {
+            self.unretained = self.unretained.saturating_add(1);
+            if self.unretained == Self::CACHE_PRESSURE {
+                // Reflow probes exceed the advance cache on long, varied text.
+                // Keep frequently shaped words available across those probes.
+                reserve_reflow_words(context);
+            }
+        }
+        width
+    }
+}
+
+pub(super) fn reserve_reflow_words(context: &TextContext) {
+    context.resize_shaped_words_cache(NonZeroUsize::new(32_768).unwrap_or(NonZeroUsize::MIN));
+}
+
+struct LabelWordAdvances {
+    source: Box<str>,
+    index: Rc<LabelWordIndex>,
+    widths: Vec<f32>,
+    probe_start: Option<usize>,
+    probe_prefixes: Vec<f32>,
+}
+
+impl LabelWordAdvances {
+    fn new(source: &str) -> Self {
+        let index = Rc::new(LabelWordIndex::new(source));
+        Self {
+            source: source.into(),
+            widths: vec![f32::NAN; index.len()],
+            index,
+            probe_start: None,
+            probe_prefixes: vec![0.0],
+        }
+    }
+
+    fn measure(
+        &mut self,
+        source: &str,
+        probe: &str,
+        mut advance: impl FnMut(&str) -> f32,
+    ) -> Option<f32> {
+        let span = self.index.span(source, probe)?;
+        if span.first == span.last {
+            return None;
+        }
+        let partial_end = self.index.words[span.last].end as usize != span.end;
+        let prefix_count = span.last - span.first + usize::from(!partial_end);
+        if self.probe_start != Some(span.start) {
+            self.probe_start = Some(span.start);
+            self.probe_prefixes.truncate(1);
+        }
+        // Line fitting probes several ends from the same start. Retain each
+        // prefix in the original f32 addition order, excluding the cut at the end.
+        let probe_range = span.start..span.end;
+        let first_start = self.index.word_start(span.first);
+        if self.probe_prefixes.len() == 1 && span.start != first_start {
+            let mut width = 0.0;
+            self.index.words[span.first].visit(
+                source,
+                span.first,
+                first_start,
+                &probe_range,
+                |word, _| {
+                    width += advance(word);
+                    Some(())
+                },
+            )?;
+            self.probe_prefixes.push(width);
+        }
+        for offset in self.probe_prefixes.len() - 1..prefix_count {
+            let index = span.first + offset;
+            let cached = &mut self.widths[index];
+            if cached.is_nan() {
+                let start = self.index.word_start(index);
+                let end = self.index.words[index].end as usize;
+                *cached = advance(&source[start..end]);
+            }
+            self.probe_prefixes
+                .push(self.probe_prefixes[offset] + *cached);
+        }
+        let mut width = self.probe_prefixes[prefix_count];
+        if partial_end {
+            self.index.words[span.last].visit(
+                source,
+                span.last,
+                self.index.word_start(span.last),
+                &probe_range,
+                |word, _| {
+                    width += advance(word);
+                    Some(())
+                },
+            )?;
+        }
+        Some(width)
+    }
+}
+
+pub(super) struct LabelWordIndex {
+    byte_to_word: Box<[u32]>,
+    words: Vec<IndexedLabelWord>,
+}
+
+struct IndexedLabelWord {
+    end: u32,
+    group: u32,
+    may_split: bool,
+}
+
+impl IndexedLabelWord {
+    fn visit(
+        &self,
+        source: &str,
+        index: usize,
+        word_start: usize,
+        probe: &Range<usize>,
+        mut visit: impl FnMut(&str, Option<usize>) -> Option<()>,
+    ) -> Option<()> {
+        let word_end = self.end as usize;
+        let from = word_start.max(probe.start);
+        let to = word_end.min(probe.end);
+        let fragment = &source[from..to];
+        if from == word_start && to == word_end {
+            visit(fragment, Some(index))
+        } else if self.may_split {
+            // A cut through contextual punctuation can split the word.
+            fragment
+                .split_word_bounds()
+                .try_for_each(|piece| visit(piece, None))
+        } else {
+            visit(fragment, None)
+        }
+    }
+}
+
+pub(super) struct IndexedWordSpan {
+    start: usize,
+    end: usize,
+    first: usize,
+    last: usize,
+}
+
+impl LabelWordIndex {
+    pub(super) fn new(source: &str) -> Self {
+        let mut byte_to_word = Vec::with_capacity(source.len());
+        let mut words = Vec::new();
+        let mut group = 0;
+        let mut chars = source.char_indices().peekable();
+        while let Some((start, first)) = chars.next() {
+            let supported = indexed_word_char(first);
+            while chars
+                .next_if(|&(_, ch)| indexed_word_char(ch) == supported)
+                .is_some()
+            {}
+            let end = chars.peek().map_or(source.len(), |&(offset, _)| offset);
+            if !supported {
+                byte_to_word.resize(end, words.len() as u32);
+                words.push(IndexedLabelWord {
+                    end: end as u32,
+                    group: 0,
+                    may_split: false,
+                });
+                continue;
+            }
+            // Each nonempty group is separated by an unsupported byte.
+            // Group and word IDs cannot exceed the retained source length.
+            group += 1;
+            let segment = &source[start..end];
+            let mut record = |word: &str| {
+                let end = byte_to_word.len() + word.len();
+                byte_to_word.resize(end, words.len() as u32);
+                words.push(IndexedLabelWord {
+                    end: end as u32,
+                    group,
+                    may_split: !word.bytes().all(simple_ascii),
+                });
+            };
+            if let Some(words) = ascii_word_bounds(segment) {
+                words.for_each(&mut record);
+            } else {
+                segment.split_word_bounds().for_each(record);
+            }
+        }
+        Self {
+            byte_to_word: byte_to_word.into_boxed_slice(),
+            words,
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.words.len()
+    }
+
+    fn word_start(&self, index: usize) -> usize {
+        index
+            .checked_sub(1)
+            .map_or(0, |i| self.words[i].end as usize)
+    }
+
+    pub(super) fn span(&self, source: &str, probe: &str) -> Option<IndexedWordSpan> {
+        // Borrowed probes and prepared lines are slices of the current
+        // source. Owned text, such as an ellipsized line, has no source range.
+        let start = probe.as_ptr().addr().checked_sub(source.as_ptr().addr())?;
+        let end = start.checked_add(probe.len())?;
+        if start == end {
+            return None;
+        }
+        let first = *self.byte_to_word.get(start)? as usize;
+        let last = *self.byte_to_word.get(end - 1)? as usize;
+        let group = self.words[first].group;
+        (group != 0 && self.words[last].group == group).then_some(IndexedWordSpan {
+            start,
+            end,
+            first,
+            last,
+        })
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    pub(super) fn full_words(&self, source: &str, value: &str) -> Option<Range<usize>> {
+        let span = self.span(source, value)?;
+        (span.start == self.word_start(span.first)
+            && span.end == self.words[span.last].end as usize)
+            .then_some(span.first..span.last + 1)
+    }
+
+    pub(super) fn visit(
+        &self,
+        source: &str,
+        span: IndexedWordSpan,
+        mut visit: impl FnMut(&str, Option<usize>) -> Option<()>,
+    ) -> Option<()> {
+        let IndexedWordSpan {
+            start,
+            end,
+            first,
+            last,
+        } = span;
+        let probe = start..end;
+        let mut word_start = self.word_start(first);
+        for (offset, word) in self.words[first..=last].iter().enumerate() {
+            word.visit(source, first + offset, word_start, &probe, &mut visit)?;
+            word_start = word.end as usize;
+        }
+        Some(())
+    }
+}
+
+fn indexed_word_char(ch: char) -> bool {
+    // These LTR characters have no extending marks, joiners, or regional
+    // indicators. Cutting a probe can split its edge words, while complete
+    // interior words retain their boundaries.
+    matches!(
+        ch,
+        ' '..='~' | '\u{3000}'..='\u{3002}' | '\u{3008}'..='\u{3011}'
+            | '\u{4e00}'..='\u{9fff}' | '\u{ff01}'..='\u{ff5e}'
+    )
+}
+
+fn simple_ascii(byte: u8) -> bool {
+    (b' '..=b'~').contains(&byte) && !matches!(byte, b'"' | b'\'' | b',' | b'.' | b':' | b';')
+}
+
+fn ascii_word_len(bytes: &[u8]) -> usize {
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    match bytes[0] {
+        b' ' => bytes.iter().take_while(|&&byte| byte == b' ').count(),
+        byte if word(byte) => bytes.iter().take_while(|&&byte| word(byte)).count(),
+        _ => 1,
+    }
+}
+
+pub(super) fn ascii_word_bounds(mut text: &str) -> Option<impl Iterator<Item = &str>> {
+    // The contextual punctuation categories in UAX #29 need the general
+    // iterator. The remaining printable ASCII forms words, space runs, or
+    // single-character punctuation.
+    if !text.bytes().all(simple_ascii) {
+        return None;
+    }
+    Some(std::iter::from_fn(move || {
+        if text.is_empty() {
+            return None;
+        }
+        let (part, rest) = text.split_at(ascii_word_len(text.as_bytes()));
+        text = rest;
+        Some(part)
+    }))
+}
+
+pub(super) fn single_ltr_shaping_run(text: &str) -> bool {
+    if text.is_ascii() {
+        return text.bytes().all(|byte| (b' '..=b'~').contains(&byte));
+    }
+    text.chars().all(|character| {
+        matches!(
+            bidi_class(character),
+            BidiClass::L
+                | BidiClass::EN
+                | BidiClass::ES
+                | BidiClass::ET
+                | BidiClass::CS
+                | BidiClass::ON
+                | BidiClass::WS
+                | BidiClass::NSM
+        )
+    })
+}
+
 #[derive(Default)]
 struct LabelCache {
+    advances: LabelAdvances,
+    recent_wrap: Option<u64>,
+    rejected_wrap: Option<u64>,
+    recent_source: Weak<LabelSource>,
+    measurements: Option<(LabelAdvanceFont, LabelMeasurements)>,
+    reusable: VecDeque<ReusableLabel>,
     entries: HashMap<u64, CachedLabel>,
+    snapshots: Vec<LabelSnapshotSlot>,
+    snapshot_probes: Cell<usize>,
+    snapshot_hits: Cell<usize>,
+    low_hit_frames: u8,
+    retry_snapshots_in: u8,
     order: VecDeque<u64>,
     bytes: usize,
 }
 
 impl LabelCache {
+    const SNAPSHOT_SLOTS: usize = 4096;
+    const RECENT_WIDTH_INTERVALS: usize = 16;
+
     fn clear(&mut self) {
+        self.advances = LabelAdvances::default();
+        self.recent_wrap = None;
+        self.rejected_wrap = None;
+        self.recent_source = Weak::new();
+        self.measurements = None;
+        self.reusable.clear();
         self.entries.clear();
+        self.snapshots.clear();
+        self.snapshot_probes.set(0);
+        self.snapshot_hits.set(0);
+        self.low_hit_frames = 0;
+        self.retry_snapshots_in = 0;
         self.order.clear();
         self.bytes = 0;
     }
 
-    fn get<'a>(
+    fn begin_snapshot_frame(&mut self) -> bool {
+        if self.retry_snapshots_in > 0 {
+            self.retry_snapshots_in -= 1;
+            return self.retry_snapshots_in == 0;
+        }
+        let probes = self.snapshot_probes.replace(0);
+        let hits = self.snapshot_hits.replace(0);
+        // Allow initial admission and warming. A workload that keeps
+        // rebuilding most labels should spend its time in the text cache.
+        if probes >= 64 && hits < probes.div_ceil(8) {
+            self.low_hit_frames += 1;
+        } else {
+            self.low_hit_frames = 0;
+        }
+        if self.low_hit_frames < 3 {
+            return true;
+        }
+        self.low_hit_frames = 0;
+        self.retry_snapshots_in = 64;
+        self.snapshots.clear();
+        false
+    }
+
+    fn snapshot_key(node: &Node) -> (usize, usize) {
+        let address = std::ptr::from_ref(&**node).addr();
+        let slot = ((address >> 4) ^ (address >> 16)) % Self::SNAPSHOT_SLOTS;
+        (address, slot)
+    }
+
+    fn snapshot(
+        &self,
+        node: &Node,
+        available: Size,
+        direction: Option<LayoutDirection>,
+        registered_fonts: impl FnOnce() -> [usize; 2],
+    ) -> Option<Rc<PreparedLabel>> {
+        self.snapshot_probes.set(self.snapshot_probes.get() + 1);
+        let (_, slot) = Self::snapshot_key(node);
+        let entry = self.snapshots.get(slot)?.prepared.as_ref()?;
+        if !entry.node.matches(node) || entry.available != available || entry.direction != direction
+        {
+            return None;
+        }
+        // The text/layout cache still owns the plan and its memory budget.
+        let label = entry.label.upgrade()?;
+        if entry.registered_fonts != registered_fonts() {
+            return None;
+        }
+        self.snapshot_hits.set(self.snapshot_hits.get() + 1);
+        Some(label)
+    }
+
+    fn remember_snapshot(
         &mut self,
-        text: &'a str,
+        node: &Node,
+        available: Size,
+        direction: Option<LayoutDirection>,
+        registered_fonts: [usize; 2],
+        label: &Rc<PreparedLabel>,
+    ) {
+        let (address, index) = Self::snapshot_key(node);
+        if self.snapshots.is_empty() {
+            self.snapshots
+                .resize_with(Self::SNAPSHOT_SLOTS, LabelSnapshotSlot::default);
+        }
+        let slot = &mut self.snapshots[index];
+        // A first sighting alone should not retain weak references to a
+        // freshly rebuilt node or its label plan.
+        if std::mem::replace(&mut slot.seen, address) != address {
+            return;
+        }
+        slot.prepared = Some(LabelSnapshot {
+            plain_tint: Cell::new(None),
+            node: node.snapshot_identity(),
+            available,
+            direction,
+            registered_fonts,
+            label: Rc::downgrade(label),
+        });
+    }
+
+    fn get(
+        &mut self,
+        text: &str,
         settings: LabelSettings,
-        build: impl FnOnce() -> (LabelLayout<'a>, Paint),
+        build: impl FnOnce(&mut LabelAdvances, Option<&LabelMeasurements>) -> (LabelPlan, Paint),
     ) -> Rc<PreparedLabel> {
         const MAX_ENTRIES: usize = 2048;
-        const MAX_BYTES: usize = 2 * 1024 * 1024;
+        const MAX_BYTES: usize = LabelMeasurements::MAX_SOURCE_BYTES;
 
-        let key = self.entries.hasher().hash_one((text, settings));
+        let shared_settings = LabelSettings {
+            available: [0, settings.available[1]],
+            ..settings
+        };
+        let width = f32::from_bits(settings.available[0]);
+        let reusable = self.reusable.iter().enumerate().find_map(|(index, entry)| {
+            if entry.settings != shared_settings || !entry.widths.contains(&width) {
+                return None;
+            }
+            let label = entry.label.upgrade()?;
+            (label.source_text() == Some(text)).then_some((index, label))
+        });
+        if let Some((index, label)) = reusable {
+            if index != 0
+                && let Some(entry) = self.reusable.remove(index)
+            {
+                self.reusable.push_front(entry);
+            }
+            return label;
+        }
+        let reflow_document = (1024..=MAX_BYTES).contains(&text.len()) && settings.style.reflows();
+        let shared_source = if reflow_document {
+            self.recent_source
+                .upgrade()
+                .filter(|source| source.text.as_ref() == text)
+        } else {
+            None
+        };
+        // Resize frames change the settings while retaining the same bytes.
+        // Once their source matches, use its existing fingerprint for both
+        // the layout cache key and the admission of retained measurements.
+        let fingerprint = reflow_document.then(|| {
+            shared_source.as_ref().map_or_else(
+                || self.entries.hasher().hash_one(text),
+                |source| source.fingerprint,
+            )
+        });
+        let key = match fingerprint {
+            Some(fingerprint) => self.entries.hasher().hash_one((fingerprint, settings)),
+            None => self.entries.hasher().hash_one((text, settings)),
+        };
         // Compare the full inputs on lookup, including collisions of the hash.
         if let Some(entry) = self.entries.get(&key)
-            && entry.text == text
             && entry.settings == settings
+            && (shared_source
+                .as_ref()
+                .zip(entry.label.source.as_ref())
+                .is_some_and(|(current, cached)| Rc::ptr_eq(current, cached))
+                || entry.label.source_text() == Some(text))
         {
-            return entry.label.clone();
-        }
-        let (plan, paint) = build();
-        let layout = LabelLayout {
-            size: plan.size,
-            lines: plan
-                .lines
-                .into_iter()
-                .map(|line| LabelLine {
-                    text: Cow::Owned(line.text.into_owned()),
-                    origin: line.origin,
-                })
-                .collect(),
-        };
-        let bytes = size_of::<CachedLabel>()
-            .saturating_add(size_of::<PreparedLabel>())
-            .saturating_add(text.len())
-            .saturating_add(layout.lines.capacity() * size_of::<LabelLine<'static>>())
-            .saturating_add(
-                layout
-                    .lines
-                    .iter()
-                    .map(|line| match &line.text {
-                        Cow::Owned(text) => text.capacity(),
-                        Cow::Borrowed(_) => 0,
-                    })
-                    .sum::<usize>(),
-            );
-        let glyph_bytes = match layout.lines.as_slice() {
-            // Reserve a bounded glyph allocation in the same cache budget.
-            [line] if line.text.len() <= PreparedLabel::MAX_CACHED_TEXT_BYTES => {
-                line.text.len() * size_of::<crate::cell_glyphs::Glyph>()
+            let label = entry.label.clone();
+            if let Some(widths) = entry.reusable_widths.clone() {
+                self.remember_reusable(widths, shared_settings, &label);
             }
-            _ => 0,
-        };
-        let bytes = bytes.saturating_add(glyph_bytes);
+            return label;
+        }
+        let mut measurements = None;
+        if let Some(source) = fingerprint {
+            let repeated = self.recent_wrap.replace(source) == Some(source);
+            let font = LabelAdvanceFont {
+                face: settings.face,
+                size: settings.font_size,
+                registered_fonts: settings.registered_fonts,
+            };
+            // Admit a document that reflows more than once. Consecutive edits
+            // to different documents keep the existing small layout path.
+            // Remember a document exceeding the preparation budget so the
+            // next width change does not repeat its boundary scan.
+            let mut matches = self
+                .measurements
+                .as_ref()
+                .is_some_and(|(_, cached)| cached.matches(text, settings.style));
+            if repeated && self.rejected_wrap != Some(source) && !matches {
+                self.measurements = LabelMeasurements::new(text, settings.style)
+                    .map(|measurements| (font, measurements));
+                matches = self.measurements.is_some();
+                if !matches {
+                    self.rejected_wrap = Some(source);
+                }
+                self.reusable.clear();
+            }
+            if matches && let Some((previous_font, cached)) = &mut self.measurements {
+                if *previous_font != font {
+                    cached.clear_widths();
+                    *previous_font = font;
+                    self.reusable.clear();
+                }
+                measurements = Some(&*cached);
+            }
+        }
+        let (plan, paint) = build(&mut self.advances, measurements);
+        let reusable_widths = measurements.and_then(LabelMeasurements::reusable_widths);
+        let source_cost = text.len().saturating_add(size_of::<LabelSource>());
+        let line_cost = plan
+            .lines
+            .len()
+            .saturating_mul(size_of::<PreparedLabelLine>());
+        let source = (source_cost.saturating_add(line_cost) <= MAX_BYTES).then(|| {
+            shared_source.unwrap_or_else(|| {
+                Rc::new(LabelSource {
+                    text: text.into(),
+                    fingerprint: fingerprint.unwrap_or_default(),
+                    cached_plans: Cell::new(0),
+                })
+            })
+        });
+        let mut owned_lines = Vec::new();
+        let lines: Vec<_> = plan
+            .lines
+            .into_iter()
+            .map(|line| {
+                let content = if source.is_some() && !line.ellipsis {
+                    PreparedLineText::Source(line.range.start as u32..line.range.end as u32)
+                } else {
+                    let index = owned_lines.len();
+                    owned_lines.push(line.text(text).into_owned());
+                    PreparedLineText::Owned(index)
+                };
+                PreparedLabelLine {
+                    origin: line.origin,
+                    text: content,
+                }
+            })
+            .collect();
         let label = Rc::new(PreparedLabel {
-            layout,
+            size: plan.size,
+            lines,
+            owned_lines,
+            source,
+            font: LabelFont {
+                size: f32::from_bits(settings.font_size),
+                face: settings.face,
+            },
             paint,
             glyphs: RefCell::new(None),
         });
-        if bytes > MAX_BYTES {
+        let Some(source) = &label.source else {
+            return label;
+        };
+        let glyph_bytes = label.only_line().map_or(0, |(_, text)| {
+            // Reserve the short line's glyph allocation in the cache budget.
+            if text.len() <= PreparedLabel::MAX_CACHED_TEXT_BYTES {
+                text.len() * size_of::<crate::cell_glyphs::Glyph>()
+            } else {
+                0
+            }
+        });
+        let bytes = size_of::<CachedLabel>()
+            .saturating_add(size_of::<PreparedLabel>())
+            .saturating_add(label.lines.capacity() * size_of::<PreparedLabelLine>())
+            .saturating_add(label.owned_lines.capacity() * size_of::<String>())
+            .saturating_add(
+                label
+                    .owned_lines
+                    .iter()
+                    .map(String::capacity)
+                    .sum::<usize>(),
+            )
+            .saturating_add(glyph_bytes);
+        if bytes.saturating_add(source.bytes()) > MAX_BYTES {
             return label;
         }
-        if let Some(entry) = self.entries.remove(&key) {
-            self.bytes -= entry.bytes;
+        if self.remove_entry(key) {
             self.order.retain(|old| *old != key);
         }
-        while self.entries.len() >= MAX_ENTRIES || self.bytes + bytes > MAX_BYTES {
-            let Some(old) = self
-                .order
-                .pop_front()
-                .and_then(|key| self.entries.remove(&key))
-            else {
+        let source_charge = || {
+            if source.cached_plans.get() == 0 {
+                source.bytes()
+            } else {
+                0
+            }
+        };
+        while self.entries.len() >= MAX_ENTRIES || self.bytes + bytes + source_charge() > MAX_BYTES
+        {
+            let Some(old) = self.order.pop_front() else {
                 return label;
             };
-            self.bytes -= old.bytes;
+            self.remove_entry(old);
+        }
+        self.bytes += bytes + source_charge();
+        source.cached_plans.set(source.cached_plans.get() + 1);
+        if reflow_document {
+            self.recent_source = Rc::downgrade(source);
         }
         self.entries.insert(
             key,
             CachedLabel {
-                text: text.to_owned(),
                 settings,
                 label: label.clone(),
+                reusable_widths: reusable_widths.clone(),
                 bytes,
             },
         );
         self.order.push_back(key);
-        self.bytes += bytes;
+        if let Some(widths) = reusable_widths {
+            self.remember_reusable(widths, shared_settings, &label);
+        }
         label
+    }
+
+    fn remember_reusable(
+        &mut self,
+        widths: Range<f32>,
+        settings: LabelSettings,
+        label: &Rc<PreparedLabel>,
+    ) {
+        // Width animations can return to an earlier set of line breaks. The
+        // normal layout cache still owns the plans and their memory budget.
+        let label = Rc::downgrade(label);
+        self.reusable
+            .retain(|entry| entry.label.strong_count() != 0 && !entry.label.ptr_eq(&label));
+        self.reusable.truncate(Self::RECENT_WIDTH_INTERVALS - 1);
+        self.reusable.push_front(ReusableLabel {
+            widths,
+            settings,
+            label,
+        });
+    }
+
+    fn remove_entry(&mut self, key: u64) -> bool {
+        let Some(entry) = self.entries.remove(&key) else {
+            return false;
+        };
+        self.bytes -= entry.bytes;
+        if let Some(source) = &entry.label.source
+            && source.cached_plans.get() == 1
+        {
+            self.bytes -= source.bytes();
+        }
+        true
     }
 }
 
@@ -745,6 +1559,8 @@ pub struct TextSystem {
     edit_layout: RefCell<Option<EditLayout>>,
     edit_line: RefCell<Option<EditLine>>,
     label_layouts: RefCell<LabelCache>,
+    pub(super) label_glyphs: RefCell<crate::label_glyphs::Cache>,
+    label_snapshots_enabled: bool,
     outline_glyphs: RefCell<HashMap<(FontId, u16), Option<OutlineGlyph>>>,
     cell_shapes: RefCell<cell_shaping::Cache>,
     pub(super) cell_glyphs: RefCell<crate::cell_glyphs::Cache>,
@@ -942,6 +1758,8 @@ impl TextSystem {
             edit_layout: RefCell::default(),
             edit_line: RefCell::default(),
             label_layouts: RefCell::default(),
+            label_glyphs: RefCell::default(),
+            label_snapshots_enabled: true,
             outline_glyphs: RefCell::default(),
             cell_shapes: RefCell::default(),
             cell_glyphs: RefCell::default(),
@@ -1042,6 +1860,8 @@ impl TextSystem {
         self.typography = Rc::new(());
         self.intrinsic_measurements = Default::default();
         self.label_layouts.get_mut().clear();
+        *self.label_glyphs.get_mut() = Default::default();
+        self.label_snapshots_enabled = true;
         self.outline_glyphs.get_mut().clear();
         self.cell_glyphs.get_mut().clear();
     }
@@ -1087,6 +1907,50 @@ impl TextSystem {
             return None;
         }
         self.cell_shapes.borrow_mut().shape(self, text, size, fonts)
+    }
+
+    pub(super) fn ascii_metrics_for_word<'a>(
+        &self,
+        font: LabelFont,
+        text: &str,
+        size: f32,
+        cached: &'a OnceCell<Option<AsciiMetrics>>,
+    ) -> Option<&'a AsciiMetrics> {
+        if text.is_empty() || text.len() > LabelAdvances::MAX_TOKEN_BYTES || !text.is_ascii() {
+            return None;
+        }
+        cached
+            .get_or_init(|| {
+                self.cell_shapes
+                    .borrow_mut()
+                    .ascii_metrics(self, size, font.face?.id?)
+            })
+            .as_ref()
+    }
+
+    pub(super) fn with_primary_label_word<T>(
+        &self,
+        font: LabelFont,
+        text: &str,
+        size: f32,
+        visit: impl FnOnce(&[crate::cell_glyphs::Glyph], f32) -> T,
+    ) -> Option<T> {
+        if cfg!(any(
+            xrack_femtovg_glyph_samples,
+            target_os = "android",
+            target_os = "ios"
+        )) || text.is_empty()
+            || text.len() > LabelAdvances::MAX_TOKEN_BYTES
+            || !text.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return None;
+        }
+        // These tokens are single LTR shaping runs. The paint puts this
+        // face first, and the word cache declines missing or variable glyphs.
+        let primary = font.face.and_then(|face| face.id)?;
+        let mut shapes = self.cell_shapes.borrow_mut();
+        let word = shapes.label_word(self, text, primary)?;
+        Some(visit(&word.glyphs, size / word.units_per_em))
     }
 
     pub(super) fn measure_cell(
@@ -1580,8 +2444,56 @@ impl TextSystem {
         available: Size,
         direction: Option<LayoutDirection>,
     ) -> Rc<PreparedLabel> {
+        if let Some(label) = self.cached_prepared_label(node, available, direction) {
+            return label;
+        }
         let font = self.label_font(self.font_attributes(Some(node)), self.font_size(node));
         self.prepared_label_with_font(node, available, direction, font)
+    }
+
+    pub(super) fn plain_label_tint(
+        &self,
+        node: &Node,
+        classify: impl FnOnce() -> bool,
+    ) -> Option<Option<xrack_runtime::Color>> {
+        if self.label_snapshots_enabled && node.has_shared_storage() {
+            let cache = self.label_layouts.borrow();
+            let (_, index) = LabelCache::snapshot_key(node);
+            if let Some(entry) = cache
+                .snapshots
+                .get(index)
+                .and_then(|slot| slot.prepared.as_ref())
+                && entry.node.matches(node)
+            {
+                if let Some(tint) = entry.plain_tint.get() {
+                    return Some(tint);
+                }
+                let tint = classify().then(|| node.color("color"))?;
+                entry.plain_tint.set(Some(tint));
+                return Some(tint);
+            }
+        }
+        classify().then(|| node.color("color"))
+    }
+
+    pub(super) fn cached_prepared_label(
+        &self,
+        node: &Node,
+        available: Size,
+        direction: Option<LayoutDirection>,
+    ) -> Option<Rc<PreparedLabel>> {
+        if !self.label_snapshots_enabled || !node.has_shared_storage() {
+            return None;
+        }
+        self.label_layouts
+            .borrow()
+            .snapshot(node, available, direction, || self.registered_font_counts())
+    }
+
+    pub(super) fn label_word_index(&self, source: &str) -> Option<Rc<LabelWordIndex>> {
+        let cache = self.label_layouts.borrow();
+        let retained = cache.advances.word_advances.as_ref()?;
+        (retained.source.as_ref() == source).then(|| retained.index.clone())
     }
 
     pub(super) fn label_font(&self, attributes: (&str, u16, bool), size: f32) -> LabelFont {
@@ -1607,13 +2519,85 @@ impl TextSystem {
             face,
             registered_fonts: self.registered_font_counts(),
         };
-        self.label_layouts.borrow_mut().get(text, settings, || {
+        let mut cache = self.label_layouts.borrow_mut();
+        let label = cache.get(text, settings, |advances, measurements| {
             let paint = self.paint_face(face, size, Color::white(), false);
-            let layout = LabelLayout::with_style(text, available, size, style, |value| {
-                self.advance_painted(value, &paint)
+            // Width changes can revisit the same word-wrap probes many times.
+            // Keep their advances across line plans for long labels.
+            let mut retained = (text.len() >= 1024).then(|| {
+                advances.select(LabelAdvanceFont {
+                    face,
+                    size: size.to_bits(),
+                    registered_fonts: self.registered_font_counts(),
+                });
+                advances
             });
+            let context = self.context();
+            let indexed_source = (measurements.is_some()
+                && retained
+                    .as_mut()
+                    .is_some_and(|advances| advances.retain_word_advances(text)))
+            .then_some(text);
+            let ascii_metrics = OnceCell::new();
+            let layout =
+                LabelPlan::measured_text(text, available, size, style, measurements, |value| {
+                    let measure = |word: &str| {
+                        if indexed_source.is_some()
+                            && let Some(width) = self
+                                .ascii_metrics_for_word(
+                                    LabelFont { size, face },
+                                    word,
+                                    size,
+                                    &ascii_metrics,
+                                )
+                                .and_then(|metrics| metrics.width(word))
+                        {
+                            return width;
+                        }
+                        if indexed_source.is_some()
+                            && let Some(width) = self.with_primary_label_word(
+                                LabelFont { size, face },
+                                word,
+                                size,
+                                |glyphs, scale| {
+                                    glyphs.iter().fold(0.0, |width, glyph| {
+                                        width + (glyph.advance[0] * scale + 0.0)
+                                    })
+                                },
+                            )
+                        {
+                            return width;
+                        }
+                        self.advance_painted(word, &paint)
+                    };
+                    if let Some(advances) = &mut retained {
+                        advances.measure(value, indexed_source, context, measure)
+                    } else {
+                        measure(value)
+                    }
+                });
+            if let Some(advances) = retained
+                && advances.unretained >= LabelAdvances::CACHE_PRESSURE
+                && let Some(measurements) = measurements
+            {
+                measurements.retain_range_advances();
+            }
             (layout, paint)
-        })
+        });
+        if self.label_snapshots_enabled && node.has_shared_storage() {
+            cache.remember_snapshot(
+                node,
+                available,
+                direction,
+                settings.registered_fonts,
+                &label,
+            );
+        }
+        label
+    }
+
+    pub(super) fn begin_label_frame(&mut self) {
+        self.label_snapshots_enabled = self.label_layouts.get_mut().begin_snapshot_frame();
     }
 
     fn measure_painted(&self, text: &str, paint: &Paint, font_size: f32, max_width: f32) -> Size {
@@ -1703,7 +2687,6 @@ impl TextMeasurer for TextSystem {
             .map_or_else(
                 || {
                     self.prepared_label(node, available, node.layout_direction())
-                        .layout
                         .size
                 },
                 |plan| plan.size,
@@ -1742,4 +2725,273 @@ fn weight(value: Option<i64>, fallback: u16) -> u16 {
     value
         .filter(|&weight| weight != 0)
         .map_or(fallback, |weight| weight.clamp(100, 900) as u16)
+}
+
+mod word_advances_tests {
+    #[test]
+    fn returning_to_an_earlier_width_interval_reuses_the_clipped_plan() {
+        use super::{Color, LabelCache, LabelPlan, LabelSettings, LabelStyle, Node, Paint, Size};
+        use std::rc::Rc;
+        use xrack_runtime::TextWrap;
+
+        let mut node = Node::new("Label", None);
+        node.properties.insert("wrap", TextWrap::WordWrap.into());
+        let style = LabelStyle::for_node(&node, None);
+        let source = "Keep each measured word in place.\n".repeat(128);
+        let mut cache = LabelCache::default();
+        let plan = |cache: &mut LabelCache, width: f32, height: f32| {
+            cache.get(
+                &source,
+                LabelSettings {
+                    available: [width.to_bits(), height.to_bits()],
+                    style,
+                    font_size: 12.0f32.to_bits(),
+                    face: None,
+                    registered_fonts: [0; 2],
+                },
+                |_, measurements| {
+                    let layout = LabelPlan::measured_text(
+                        &source,
+                        Size::new(width, height),
+                        12.0,
+                        style,
+                        measurements,
+                        |text| text.len() as f32 * 5.0,
+                    );
+                    (layout, Paint::color(Color::white()))
+                },
+            )
+        };
+
+        let _ = plan(&mut cache, 60.0, 33.0);
+        let narrow = plan(&mut cache, 83.0, 33.0);
+        assert_eq!(narrow.lines().len(), 2);
+        let interval = cache.reusable.front().unwrap().widths.clone();
+        let wide = plan(&mut cache, interval.end + 30.0, 33.0);
+        assert!(!Rc::ptr_eq(&wide, &narrow));
+        let new_width = if interval.start == 83.0 {
+            interval.start.next_up()
+        } else {
+            interval.start
+        };
+        assert!(interval.contains(&new_width));
+        assert!(Rc::ptr_eq(&plan(&mut cache, new_width, 33.0), &narrow));
+        assert!(!Rc::ptr_eq(&plan(&mut cache, new_width, 50.0), &narrow));
+    }
+
+    #[test]
+    fn indexed_glyph_words_assign_ids_to_complete_tokens() {
+        use super::LabelWordIndex;
+
+        let source = "汉a.b c.d尾";
+        let start = source.find(".b").unwrap();
+        let end = source.find(".d").unwrap() + 1;
+        let index = LabelWordIndex::new(source);
+        let span = index.span(source, &source[start..end]).unwrap();
+        let mut words = Vec::new();
+        index
+            .visit(source, span, |word, id| {
+                words.push((word.to_owned(), id.is_some()));
+                Some(())
+            })
+            .unwrap();
+        assert_eq!(
+            words
+                .iter()
+                .map(|(word, full)| (word.as_str(), *full))
+                .collect::<Vec<_>>(),
+            [
+                (".", false),
+                ("b", false),
+                (" ", true),
+                ("c", false),
+                (".", false)
+            ]
+        );
+    }
+
+    #[test]
+    fn indexed_widths_preserve_contextual_word_cuts() {
+        use super::{LabelWordAdvances, UnicodeSegmentation};
+
+        let advance = |word: &str| {
+            let hash = word
+                .bytes()
+                .fold(0_u32, |hash, byte| hash.rotate_left(5) ^ u32::from(byte));
+            (hash % 37) as f32 / 7.0
+        };
+        let source =
+            "文档：build.v1.2 ３，４％ Ａ．Ｂ ｐｋｇ＿２ can't a:b——发布。\n下一段 release-v2";
+        let mut index = LabelWordAdvances::new(source);
+        let boundaries: Vec<_> = source
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain(std::iter::once(source.len()))
+            .collect();
+        let mut indexed = 0;
+        for (position, &start) in boundaries.iter().enumerate() {
+            let ends = &boundaries[position + 1..];
+            // Alternate growing and shrinking prefixes as the line search does.
+            for i in 0..ends.len() {
+                let end = ends[if i.is_multiple_of(2) {
+                    i / 2
+                } else {
+                    ends.len() - 1 - i / 2
+                }];
+                let probe = &source[start..end];
+                if let Some(actual) = index.measure(source, probe, advance) {
+                    let expected = probe
+                        .split_word_bounds()
+                        .fold(0.0, |width, word| width + advance(word));
+                    assert_eq!(actual.to_bits(), expected.to_bits(), "{probe:?}");
+                    indexed += 1;
+                }
+            }
+        }
+        assert!(indexed > 500);
+    }
+
+    #[test]
+    fn indexed_words_keep_large_document_offsets_and_ids() {
+        use super::{LabelWordAdvances, UnicodeSegmentation};
+
+        let mut source = "#-".repeat(32_770);
+        let start = source.len();
+        source.push_str("汉a.b c.d尾\n下一段");
+        let mut advances = LabelWordAdvances::new(&source);
+        let probe = &source[start..start + "汉a.b c.".len()];
+        let span = advances.index.span(&source, probe).unwrap();
+        assert!(span.first > usize::from(u16::MAX));
+        let advance = |word: &str| word.len() as f32 / 7.0;
+        let expected = probe
+            .split_word_bounds()
+            .fold(0.0, |width, word| width + advance(word));
+        assert_eq!(
+            advances.measure(&source, probe, advance).map(f32::to_bits),
+            Some(expected.to_bits())
+        );
+        assert!(advances.index.span(&source, &source[start..]).is_none());
+    }
+
+    #[test]
+    fn indexed_widths_leave_joiners_and_bidi_to_shaping() {
+        use super::LabelWordAdvances;
+
+        let advance = |_: &str| 0.0;
+        for source in ["release 👩‍💻 文档", "a אבג release", "é Ａ．Ｂ"] {
+            let mut index = LabelWordAdvances::new(source);
+            assert_eq!(index.measure(source, source, advance), None);
+        }
+        let source = "中文：release-v2";
+        let mut index = LabelWordAdvances::new(source);
+        assert!(index.measure(source, source, advance).is_some());
+        assert_eq!(index.measure(source, &source.to_owned(), advance), None);
+    }
+}
+
+mod prepared_labels_tests {
+    #[test]
+    fn reflow_plans_share_a_source_and_charge_it_once() {
+        use super::{
+            LabelCache, LabelPlan, LabelSettings, LabelStyle, Node, Paint, Point, Rc, Size,
+            TextWrap,
+        };
+        use xrack_layout::PlannedLabelLine;
+
+        let text = "源".repeat(400);
+        let mut node = Node::new("Label", None);
+        node.properties.insert("wrap", TextWrap::WordWrap.into());
+        let mut settings = LabelSettings {
+            available: [320.0f32.to_bits(), 480.0f32.to_bits()],
+            style: LabelStyle::for_node(&node, None),
+            font_size: 14.0f32.to_bits(),
+            face: None,
+            registered_fonts: [0; 2],
+        };
+        let plan = |ellipsis| LabelPlan {
+            size: Size::new(50.0, 20.0),
+            lines: vec![PlannedLabelLine {
+                range: 0..6,
+                ellipsis,
+                origin: Point { x: 10.0, y: 5.0 },
+            }],
+        };
+        let mut cache = LabelCache::default();
+        let first = cache.get(&text, settings, |_, _| (plan(false), Paint::default()));
+        settings.available[0] = 360.0f32.to_bits();
+        let second = cache.get(&text, settings, |_, _| (plan(true), Paint::default()));
+        let source = first.source.as_ref().unwrap();
+        assert!(Rc::ptr_eq(source, second.source.as_ref().unwrap()));
+        assert_eq!(source.cached_plans.get(), 2);
+        let plan_bytes: usize = cache.entries.values().map(|entry| entry.bytes).sum();
+        assert_eq!(cache.bytes, plan_bytes + source.bytes());
+        assert_eq!(first.only_line(), Some((Point { x: 10.0, y: 5.0 }, "源源")));
+        assert_eq!(
+            second.only_line(),
+            Some((Point { x: 10.0, y: 5.0 }, "源源…"))
+        );
+
+        let oldest = cache.order.pop_front().unwrap();
+        assert!(cache.remove_entry(oldest));
+        assert_eq!(source.cached_plans.get(), 1);
+        assert_eq!(
+            cache.bytes,
+            cache.entries.values().next().unwrap().bytes + source.bytes()
+        );
+        let newest = cache.order.pop_front().unwrap();
+        assert!(cache.remove_entry(newest));
+        assert_eq!(source.cached_plans.get(), 0);
+        assert_eq!(cache.bytes, 0);
+        let reopened = cache.get(&text, settings, |_, _| (plan(true), Paint::default()));
+        assert!(Rc::ptr_eq(source, reopened.source.as_ref().unwrap()));
+        assert_eq!(source.cached_plans.get(), 1);
+        cache.clear();
+        assert_eq!(source.cached_plans.get(), 0);
+        assert_eq!(second.only_line().unwrap().1, "源源…");
+    }
+
+    #[test]
+    fn a_cache_hit_restores_the_width_interval_for_its_own_text() {
+        use super::{
+            LabelCache, LabelPlan, LabelSettings, LabelStyle, Node, Paint, Point, Rc, Size,
+        };
+        use xrack_layout::PlannedLabelLine;
+
+        let node = Node::new("Label", None);
+        let mut settings = LabelSettings {
+            available: [50.0f32.to_bits(), 40.0f32.to_bits()],
+            style: LabelStyle::for_node(&node, None),
+            font_size: 14.0f32.to_bits(),
+            face: None,
+            registered_fonts: [0; 2],
+        };
+        let build = || {
+            (
+                LabelPlan {
+                    size: Size::new(20.0, 18.0),
+                    lines: vec![PlannedLabelLine {
+                        range: 0..1,
+                        ellipsis: false,
+                        origin: Point::default(),
+                    }],
+                },
+                Paint::default(),
+            )
+        };
+        let mut cache = LabelCache::default();
+        let first = cache.get("a", settings, |_, _| build());
+        // Record the interval a retained measurement would have proved.
+        cache.entries.values_mut().next().unwrap().reusable_widths = Some(49.0..55.0);
+        let hit = cache.get("a", settings, |_, _| {
+            panic!("known width must use its plan")
+        });
+        assert!(Rc::ptr_eq(&first, &hit));
+        settings.available[0] = 53.0f32.to_bits();
+        let reused = cache.get("a", settings, |_, _| {
+            panic!("width is in the restored interval")
+        });
+        assert!(Rc::ptr_eq(&first, &reused));
+        let other = cache.get("b", settings, |_, _| build());
+        assert_eq!(other.only_line().unwrap().1, "b");
+    }
 }

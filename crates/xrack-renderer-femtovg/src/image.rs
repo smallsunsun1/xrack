@@ -16,11 +16,105 @@ use std::{
     rc::Rc,
 };
 use xrack_assets::{MAX_IMAGE_DIMENSION, Raster, decode_png, rasterize_svg_region};
-use xrack_layout::{ImagePresentation, ImageRegion, Point, Rect, Size, Transform2D};
+use xrack_layout::{ImagePresentation, ImageRegion, LayoutNode, Point, Rect, Size, Transform2D};
 use xrack_runtime::{
-    Color as UiColor, ImageAsset, ImageFit, ImageFormat, ImageIdentity, ImagePixels,
-    ImageRendering, MediaFrame,
+    Color as UiColor, ImageAsset, ImageFit, ImageFormat, ImageHorizontalAlignment, ImageIdentity,
+    ImagePixels, ImageRendering, ImageVerticalAlignment, MediaFrame, Node, Value,
 };
+
+pub(super) struct PlainImage<'a> {
+    source: Option<&'a Value>,
+    fit: Option<ImageFit>,
+    rendering: ImageRendering,
+    horizontal: Option<ImageHorizontalAlignment>,
+    vertical: Option<ImageVerticalAlignment>,
+}
+
+impl<'a> PlainImage<'a> {
+    pub(super) fn from_node(node: &'a Node, layout: &LayoutNode) -> Option<Self> {
+        if node.kind != "Image"
+            || node.opacity() != 1.0
+            || !node.children.is_empty()
+            || !layout.local_transform().is_identity()
+            || layout.table_pane_clip().is_some()
+            || layout.allows_overflow()
+        {
+            return None;
+        }
+        let mut image = Self {
+            source: None,
+            fit: None,
+            rendering: ImageRendering::Smooth,
+            horizontal: None,
+            vertical: None,
+        };
+        // Collect presentation while checking the properties that are safe
+        // in an ordinary quad. The full painter handles everything else.
+        for (&name, value) in &node.properties {
+            match (name, value) {
+                ("source", value) => image.source = Some(value),
+                ("image-fit", Value::ImageFit(fit)) => image.fit = Some(*fit),
+                ("image-rendering", Value::ImageRendering(rendering)) => {
+                    image.rendering = *rendering
+                }
+                ("horizontal-alignment", Value::ImageHorizontalAlignment(alignment)) => {
+                    image.horizontal = Some(*alignment);
+                }
+                ("vertical-alignment", Value::ImageVerticalAlignment(alignment)) => {
+                    image.vertical = Some(*alignment);
+                }
+                (
+                    "x"
+                    | "y"
+                    | "width"
+                    | "height"
+                    | "visible"
+                    | "enabled"
+                    | "z"
+                    | "opacity"
+                    | "image-fit"
+                    | "image-rendering"
+                    | "horizontal-alignment"
+                    | "vertical-alignment"
+                    | "preferred-width"
+                    | "preferred-height"
+                    | "min-width"
+                    | "min-height"
+                    | "max-width"
+                    | "max-height"
+                    | "horizontal-stretch"
+                    | "vertical-stretch",
+                    _,
+                ) => {}
+                _ => return None,
+            }
+        }
+        Some(image)
+    }
+
+    pub(super) fn asset(&self) -> Option<ImageAsset> {
+        match self.source? {
+            Value::Image(image) => Some(image.clone().into()),
+            Value::ImageAsset(asset) => Some(asset.clone()),
+            _ => None,
+        }
+    }
+
+    pub(super) fn presentation(&self, size: [u32; 2], in_layout: bool) -> ImagePresentation {
+        let default_fit = if in_layout {
+            ImageFit::Contain
+        } else {
+            ImageFit::Fill
+        };
+        ImagePresentation::whole_with_style(
+            size,
+            self.fit.unwrap_or(default_fit),
+            self.rendering,
+            self.horizontal,
+            self.vertical,
+        )
+    }
+}
 
 pub(super) fn supports_quad_transform(transform: CanvasTransform) -> bool {
     let Some([sx, sy]) = transform.axis_scales() else {
@@ -945,8 +1039,10 @@ impl Images {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Option<wgpu::CommandBuffer> {
-        let source = &self.batch_atlas.as_ref()?.texture;
-        self.coverage_atlas.as_mut()?.encode(device, queue, source)
+        let source = self.batch_atlas.as_ref()?;
+        self.coverage_atlas
+            .as_mut()?
+            .encode(device, queue, &source.texture, &source.key)
     }
 
     fn texture(

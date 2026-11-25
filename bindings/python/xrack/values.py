@@ -52,6 +52,13 @@ from ._native import (
     Point2D,
     Point3D,
     ProjectedPoint3D,
+    Instance3D,
+    InstanceTable3D,
+    WalkResult3D,
+    PhysicsWorld3D,
+    SceneModel3D,
+    PhysicsContact3D,
+    PhysicsHit3D,
     PointerButton,
     PointerButtons,
     PointerEvent,
@@ -80,6 +87,8 @@ from ._native import (
     Transform2D,
     Vector2D,
     Vector3D,
+    Quaternion3D,
+    RotationTrack3D,
     WheelEvent,
 )
 
@@ -133,6 +142,13 @@ __all__ = [
     "Point2D",
     "Point3D",
     "ProjectedPoint3D",
+    "Instance3D",
+    "InstanceTable3D",
+    "WalkResult3D",
+    "PhysicsWorld3D",
+    "SceneModel3D",
+    "PhysicsContact3D",
+    "PhysicsHit3D",
     "PointerButton",
     "PointerButtons",
     "PointerEvent",
@@ -161,6 +177,8 @@ __all__ = [
     "Transform2D",
     "Vector2D",
     "Vector3D",
+    "Quaternion3D",
+    "RotationTrack3D",
     "WheelEvent",
     "Value",
 ]
@@ -219,6 +237,15 @@ Value: TypeAlias = (
     | Point2D
     | Point3D
     | ProjectedPoint3D
+    | Instance3D
+    | InstanceTable3D
+    | WalkResult3D
+    | PhysicsWorld3D
+    | SceneModel3D
+    | PhysicsContact3D
+    | PhysicsHit3D
+    | list[PhysicsContact3D]
+    | list[PhysicsHit3D]
     | PointerButton
     | PointerButtons
     | PointerEvent
@@ -247,5 +274,7 @@ Value: TypeAlias = (
     | Transform2D
     | Vector2D
     | Vector3D
+    | Quaternion3D
+    | RotationTrack3D
     | WheelEvent
 )

@@ -657,17 +657,19 @@ impl Interaction {
                         continue;
                     };
                     let rect = if let Some((_, offset)) = text {
-                        let Some(fragment) = item.styled_text.as_ref().and_then(|text| {
-                            text.fragments
-                                .iter()
-                                .find(|fragment| fragment.contains_text_offset(offset))
-                        }) else {
+                        let Some((fragment, offset_y)) =
+                            item.styled_text.as_ref().and_then(|text| {
+                                text.fragments
+                                    .placed()
+                                    .find(|(fragment, _)| fragment.contains_text_offset(offset))
+                            })
+                        else {
                             continue;
                         };
                         let bounds = fragment.bounds;
                         Rect::new(
                             item.bounds.x + bounds.x,
-                            item.bounds.y + bounds.y,
+                            item.bounds.y + (bounds.y + offset_y),
                             bounds.width,
                             bounds.height,
                         )

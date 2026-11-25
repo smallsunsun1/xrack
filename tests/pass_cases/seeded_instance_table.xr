@@ -1,0 +1,13 @@
+// RAW: "xr.geometry_function"{{.*}}value = "random-instance-table-3d"{{.*}} -> !xr.instancetable3d
+// CHECK: "xr.geometry_function"{{.*}}value = "random-instance-table-3d"{{.*}} -> !xr.instancetable3d
+// CHECK: "xr.property"{{.*}}name = "table"
+// CHECK: "xr.geometry_function"{{.*}}value = "table-instance-3d"{{.*}} -> !xr.instance3d
+
+struct Settings { count: int, seed: int, color-model: string, hue-min: float, hue-max: float }
+
+export component App inherits Window {
+    in-out property <int> seed: 42;
+    out property <instancetable3d> table: Scene3D.random-instance-table(
+        Settings { count: 4, seed: root.seed, color-model: "hsv", hue-min: 0, hue-max: 1 });
+    out property <instance3d> sample: Scene3D.table-instance(root.table, 3);
+}

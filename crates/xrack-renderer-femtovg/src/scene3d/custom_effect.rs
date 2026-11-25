@@ -162,6 +162,7 @@ pub(super) struct EffectSurface {
 struct Pipeline {
     source: Box<str>,
     depth: DepthInput,
+    reverse_depth: bool,
     buffers: usize,
     nearest_buffers: u8,
     format: wgpu::TextureFormat,
@@ -213,8 +214,9 @@ impl Effects {
             camera,
             multisampled: false,
         };
-        let mut bytes = Vec::with_capacity(64);
+        let mut bytes = Vec::with_capacity(80);
         append_floats(&mut bytes, inverse.into_iter().flatten());
+        append_floats(&mut bytes, [camera.depth_clear(), 0.0, 0.0, 0.0]);
         let inverse = buffer(
             device,
             "XRack scene effect inverse clip",
@@ -396,6 +398,8 @@ impl Effects {
             Some(_) => DepthInput::Single,
             None => DepthInput::None,
         };
+        let reverse_depth = kind == DepthInput::Multisampled
+            && depth.is_some_and(|depth| depth.camera.reverse_depth());
         let count = inputs.buffers.len();
         let nearest_buffers = inputs
             .buffers
@@ -411,6 +415,7 @@ impl Effects {
             .position(|entry| {
                 entry.source.as_ref() == settings.source
                     && entry.depth == kind
+                    && entry.reverse_depth == reverse_depth
                     && entry.buffers == count
                     && entry.nearest_buffers == nearest_buffers
                     && entry.format == format
@@ -420,13 +425,14 @@ impl Effects {
         let entry = cached.unwrap_or_else(|| Pipeline {
             source: settings.source.into(),
             depth: kind,
+            reverse_depth,
             buffers: count,
             nearest_buffers,
             format,
             program: Program::new(
                 ctx.device,
                 settings.source,
-                kind,
+                (kind, reverse_depth),
                 count,
                 nearest_buffers,
                 format,
@@ -627,7 +633,7 @@ impl Program {
     fn new(
         device: &wgpu::Device,
         source: &str,
-        depth: DepthInput,
+        (depth, reverse_depth): (DepthInput, bool),
         buffers: usize,
         nearest_buffers: u8,
         format: wgpu::TextureFormat,
@@ -751,16 +757,19 @@ impl Program {
                 module: &wgsl,
                 entry_point: Some("xr_effect_fragment"),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[(
-                        "XR_EFFECT_DATA",
-                        f64::from(u8::from(matches!(
-                            format,
-                            wgpu::TextureFormat::R8Unorm
-                                | wgpu::TextureFormat::R16Float
-                                | wgpu::TextureFormat::Rg8Unorm
-                                | wgpu::TextureFormat::Rg16Float
-                        ))),
-                    )],
+                    constants: &[
+                        (
+                            "XR_EFFECT_DATA",
+                            f64::from(u8::from(matches!(
+                                format,
+                                wgpu::TextureFormat::R8Unorm
+                                    | wgpu::TextureFormat::R16Float
+                                    | wgpu::TextureFormat::Rg8Unorm
+                                    | wgpu::TextureFormat::Rg16Float
+                            ))),
+                        ),
+                        ("XR_EFFECT_REVERSE_DEPTH", f64::from(reverse_depth)),
+                    ],
                     ..Default::default()
                 },
                 targets: &[Some(wgpu::ColorTargetState {

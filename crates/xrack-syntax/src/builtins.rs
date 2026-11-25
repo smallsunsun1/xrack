@@ -151,6 +151,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "TimePicker",
         "TimePickerPopup",
         "Timer",
+        "FrameAnimation",
         "ToggleIndicator",
         "ToolBar",
         "ToolButton",
@@ -554,9 +555,11 @@ pub const NAMESPACES: &[&str] = &[
     "Point2D",
     "Point3D",
     "Vector3D",
+    "Quaternion3D",
     "Vector2D",
     "Transform2D",
     "Scene3D",
+    "Physics3D",
 ];
 pub const LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 
@@ -565,6 +568,7 @@ pub enum FunctionKind {
     Round,
     Math(MathFunction),
     Geometry(GeometryFunction),
+    Physics(PhysicsFunction),
     String(StringFunction),
     ModelCount,
     ModelIsEmpty,
@@ -631,12 +635,29 @@ operations!(GeometryFunction {
     Around => "around",
     MapPoint => "map-point",
     MapVector => "map-vector",
+    Prepare3D => "prepare-3d",
+    PrepareInstanceTable3D => "prepare-instance-table-3d",
+    RandomInstanceTable3D => "random-instance-table-3d",
+    TableInstance3D => "table-instance-3d",
     Pick3D => "pick-3d",
     PickCamera3D => "pick-camera-3d",
     PickInRect3D => "pick-in-rect-3d",
     PickInRectCamera3D => "pick-in-rect-camera-3d",
     Point3D => "point-3d",
     Vector3D => "vector-3d",
+    QuaternionIdentity => "quaternion-identity",
+    QuaternionNew => "quaternion-new",
+    QuaternionAxisAngle => "quaternion-axis-angle",
+    QuaternionEuler => "quaternion-euler",
+    QuaternionLookRotation => "quaternion-look-rotation",
+    QuaternionLookAt => "quaternion-look-at",
+    QuaternionCompose => "quaternion-compose",
+    QuaternionInverse => "quaternion-inverse",
+    QuaternionSlerp => "quaternion-slerp",
+    QuaternionRotate => "quaternion-rotate",
+    QuaternionTrack => "quaternion-track",
+    QuaternionTrackKeys => "quaternion-track-keys",
+    QuaternionSample => "quaternion-sample",
     Hit3D => "hit-3d",
     HitCamera3D => "hit-camera-3d",
     RayHit3D => "ray-hit-3d",
@@ -655,53 +676,39 @@ operations!(GeometryFunction {
     ClosestPoint3D => "closest-point-3d",
     ClosestPointOn3D => "closest-point-on-3d",
     SphereCast3D => "sphere-cast-3d",
+    CapsuleCast3D => "capsule-cast-3d",
     SphereOverlap3D => "sphere-overlap-3d",
+    CapsuleOverlap3D => "capsule-overlap-3d",
+    CapsuleTriggerOverlap3D => "capsule-trigger-overlap-3d",
+    CapsuleTriggerCrossings3D => "capsule-trigger-crossings-3d",
+    CapsuleWalkResult3D => "capsule-walk-result-3d",
+    CapsuleWalkWithContacts3D => "capsule-walk-with-contacts-3d",
     SphereSlide3D => "sphere-slide-3d",
+    CapsuleSlide3D => "capsule-slide-3d",
     SphereWalk3D => "sphere-walk-3d",
+    CapsuleWalk3D => "capsule-walk-3d",
     Project3D => "project-3d",
     ProjectCamera3D => "project-camera-3d",
     Unproject3D => "unproject-3d",
     UnprojectCamera3D => "unproject-camera-3d",
     MapPosition3D => "map-position-3d",
     MapDirection3D => "map-direction-3d",
+    SceneInstance3D => "scene-instance-3d",
+    SceneInstanceCamera3D => "scene-instance-camera-3d",
+    SceneInstanceOrbit3D => "scene-instance-orbit-3d",
 });
 
 impl GeometryFunction {
-    pub const fn supports_layer_mask(self) -> bool {
-        matches!(
-            self,
-            Self::Pick3D
-                | Self::PickCamera3D
-                | Self::PickInRect3D
-                | Self::PickInRectCamera3D
-                | Self::Hit3D
-                | Self::HitCamera3D
-                | Self::HitAll3D
-                | Self::HitAllCamera3D
-                | Self::RayHit3D
-                | Self::RayHitAll3D
-                | Self::HitRow3D
-                | Self::HitRowCamera3D
-                | Self::RayHitRow3D
-                | Self::HitInstance3D
-                | Self::HitInstanceCamera3D
-                | Self::RayHitInstance3D
-                | Self::HitSubset3D
-                | Self::HitSubsetCamera3D
-                | Self::RayHitSubset3D
-                | Self::ClosestPoint3D
-                | Self::ClosestPointOn3D
-                | Self::SphereCast3D
-                | Self::SphereOverlap3D
-                | Self::SphereSlide3D
-                | Self::SphereWalk3D
-        )
-    }
-
     pub const fn result(self) -> Type {
         match self {
             Self::Point | Self::MapPoint => Type::Point2D,
             Self::Vector | Self::MapVector => Type::Vector2D,
+            Self::Prepare3D => Type::SceneModel3D,
+            Self::PrepareInstanceTable3D | Self::RandomInstanceTable3D => Type::InstanceTable3D,
+            Self::TableInstance3D
+            | Self::SceneInstance3D
+            | Self::SceneInstanceCamera3D
+            | Self::SceneInstanceOrbit3D => Type::Instance3D,
             Self::Pick3D | Self::PickCamera3D => Type::String,
             Self::PickInRect3D | Self::PickInRectCamera3D => Type::IntList,
             Self::Point3D
@@ -709,9 +716,24 @@ impl GeometryFunction {
             | Self::UnprojectCamera3D
             | Self::MapPosition3D
             | Self::SphereSlide3D
-            | Self::SphereWalk3D => Type::Point3D,
+            | Self::SphereWalk3D
+            | Self::CapsuleSlide3D
+            | Self::CapsuleWalk3D => Type::Point3D,
             Self::Project3D | Self::ProjectCamera3D => Type::ProjectedPoint3D,
+            Self::CapsuleWalkResult3D | Self::CapsuleWalkWithContacts3D => Type::WalkResult3D,
             Self::Vector3D | Self::MapDirection3D => Type::Vector3D,
+            Self::QuaternionRotate => Type::Vector3D,
+            Self::QuaternionIdentity
+            | Self::QuaternionNew
+            | Self::QuaternionAxisAngle
+            | Self::QuaternionEuler
+            | Self::QuaternionLookRotation
+            | Self::QuaternionLookAt
+            | Self::QuaternionCompose
+            | Self::QuaternionInverse
+            | Self::QuaternionSlerp
+            | Self::QuaternionSample => Type::Quaternion3D,
+            Self::QuaternionTrack | Self::QuaternionTrackKeys => Type::RotationTrack3D,
             Self::Hit3D
             | Self::HitCamera3D
             | Self::RayHit3D
@@ -723,11 +745,15 @@ impl GeometryFunction {
             | Self::RayHitInstance3D
             | Self::ClosestPoint3D
             | Self::ClosestPointOn3D
-            | Self::SphereCast3D => Type::Hit3D,
+            | Self::SphereCast3D
+            | Self::CapsuleCast3D => Type::Hit3D,
             Self::HitAll3D
             | Self::HitAllCamera3D
             | Self::RayHitAll3D
             | Self::SphereOverlap3D
+            | Self::CapsuleOverlap3D
+            | Self::CapsuleTriggerOverlap3D
+            | Self::CapsuleTriggerCrossings3D
             | Self::HitSubset3D
             | Self::HitSubsetCamera3D
             | Self::RayHitSubset3D => Type::Hit3DList,
@@ -737,7 +763,8 @@ impl GeometryFunction {
     pub const fn uses_scene_model(self) -> bool {
         matches!(
             self,
-            Self::Pick3D
+            Self::Prepare3D
+                | Self::Pick3D
                 | Self::PickCamera3D
                 | Self::PickInRect3D
                 | Self::PickInRectCamera3D
@@ -745,6 +772,9 @@ impl GeometryFunction {
                 | Self::UnprojectCamera3D
                 | Self::MapPosition3D
                 | Self::MapDirection3D
+                | Self::SceneInstance3D
+                | Self::SceneInstanceCamera3D
+                | Self::SceneInstanceOrbit3D
                 | Self::Hit3D
                 | Self::HitCamera3D
                 | Self::RayHit3D
@@ -766,7 +796,355 @@ impl GeometryFunction {
                 | Self::SphereOverlap3D
                 | Self::SphereSlide3D
                 | Self::SphereWalk3D
+                | Self::CapsuleCast3D
+                | Self::CapsuleOverlap3D
+                | Self::CapsuleTriggerOverlap3D
+                | Self::CapsuleTriggerCrossings3D
+                | Self::CapsuleWalkResult3D
+                | Self::CapsuleWalkWithContacts3D
+                | Self::CapsuleSlide3D
+                | Self::CapsuleWalk3D
         )
+    }
+}
+
+operations!(PhysicsFunction {
+    New => "new",
+    AddBox => "add-box",
+    AddSphere => "add-sphere",
+    AddKinematicBox => "add-kinematic-box",
+    AddBoxTrigger => "add-box-trigger",
+    AddBody => "add-body",
+    AddKinematicBody => "add-kinematic-body",
+    AddTrigger => "add-trigger",
+    SyncBodies => "sync-bodies",
+    BodyById => "body-by-id",
+    SyncScene => "sync-scene",
+    JointById => "joint-by-id",
+    SetCollisionFilter => "set-collision-filter",
+    SetContactReports => "set-contact-reports",
+    SetKinematicContactReports => "set-kinematic-contact-reports",
+    ReportStaticKinematicCollisions => "report-static-kinematic-collisions",
+    ReportKinematicKinematicCollisions => "report-kinematic-kinematic-collisions",
+    Contacts => "contacts",
+    SetContactEvents => "set-contact-events",
+    ContactBodies => "contact-bodies",
+    ContactEntered => "contact-entered",
+    ContactExited => "contact-exited",
+    AddFixedJoint => "add-fixed-joint",
+    AddSphericalJoint => "add-spherical-joint",
+    AddRevoluteJoint => "add-revolute-joint",
+    AddPrismaticJoint => "add-prismatic-joint",
+    AddDistanceJoint => "add-distance-joint",
+    SetJointLimits => "set-joint-limits",
+    SetJointMotor => "set-joint-motor",
+    JointPosition => "joint-position",
+    RemoveJoint => "remove-joint",
+    TriggerCount => "trigger-count",
+    TriggerOverlaps => "trigger-overlaps",
+    TriggerEntered => "trigger-entered",
+    TriggerExited => "trigger-exited",
+    SetKinematicTarget => "set-kinematic-target",
+    SetKinematicTargetWithPivot => "set-kinematic-target-with-pivot",
+    SetKinematic => "set-kinematic",
+    IsKinematic => "is-kinematic",
+    Step => "step",
+    Advance => "advance",
+    AdvanceRealtime => "advance-realtime",
+    SetRunning => "set-running",
+    SetTimeScale => "set-time-scale",
+    SetPoseInterpolation => "set-pose-interpolation",
+    IsRunning => "is-running",
+    TimeScale => "time-scale",
+    SimulationTime => "simulation-time",
+    DroppedTime => "dropped-time",
+    InterpolationAlpha => "interpolation-alpha",
+    InterpolatedPosition => "interpolated-position",
+    InterpolatedRotation => "interpolated-rotation",
+    Position => "position",
+    Rotation => "rotation",
+    Velocity => "velocity",
+    ApplyImpulse => "apply-impulse",
+    ApplyForce => "apply-force",
+    ApplyForceAt => "apply-force-at",
+    ApplyTorque => "apply-torque",
+    SetContinuousLoad => "set-continuous-load",
+    ClearForces => "clear-forces",
+    ApplyImpulseAt => "apply-impulse-at",
+    ApplyTorqueImpulse => "apply-torque-impulse",
+    SetLinearVelocity => "set-linear-velocity",
+    SetAngularVelocity => "set-angular-velocity",
+    ResetBody => "reset-body",
+    SetGravityScale => "set-gravity-scale",
+    SetDamping => "set-damping",
+    SetMass => "set-mass",
+    SetDensity => "set-density",
+    UseDefaultDensity => "use-default-density",
+    SetDefaultDensity => "set-default-density",
+    SetMassProperties => "set-mass-properties",
+    SetInertiaMatrix => "set-inertia-matrix",
+    Mass => "mass",
+    DefaultDensity => "default-density",
+    CenterOfMass => "center-of-mass",
+    LocalCenterOfMass => "local-center-of-mass",
+    PrincipalInertia => "principal-inertia",
+    InertiaColumn => "inertia-column",
+    SetMaterial => "set-material",
+    StaticFriction => "static-friction",
+    DynamicFriction => "dynamic-friction",
+    Restitution => "restitution",
+    SetAxisLocks => "set-axis-locks",
+    SetCcdSubsteps => "set-ccd-substeps",
+    CcdSubsteps => "ccd-substeps",
+    SetBodyCcd => "set-body-ccd",
+    BodyCcd => "body-ccd",
+    SetSoftCcd => "set-soft-ccd",
+    SoftCcd => "soft-ccd",
+    SetLengthUnit => "set-length-unit",
+    LengthUnit => "length-unit",
+    SetGravity => "set-gravity",
+    Gravity => "gravity",
+    UseCharacterWorldGravity => "use-character-world-gravity",
+    CharacterGravity => "character-gravity",
+    AngularVelocity => "angular-velocity",
+    IsSleeping => "is-sleeping",
+    AddCharacter => "add-character",
+    SetCharacterMovement => "set-character-movement",
+    SetCharacterGravity => "set-character-gravity",
+    SetCharacterMidAirControl => "set-character-mid-air-control",
+    SetCharacterOptions => "set-character-options",
+    JumpCharacter => "jump-character",
+    TeleportCharacter => "teleport-character",
+    CharacterGrounded => "character-grounded",
+    CharacterHitWall => "character-hit-wall",
+    CharacterHitCeiling => "character-hit-ceiling",
+    CharacterCollisions => "character-collisions",
+    CharacterSupport => "character-support",
+    SetCharacterHitReports => "set-character-hit-reports",
+    CharacterHits => "character-hits",
+    RayCast => "ray-cast",
+    RayCastAll => "ray-cast-all",
+    ShapeCast => "shape-cast",
+    ShapeCastAll => "shape-cast-all",
+    ShapeOverlap => "shape-overlap",
+    Remove => "remove",
+    Clear => "clear",
+});
+
+impl PhysicsFunction {
+    pub const fn result(self) -> Type {
+        match self {
+            Self::New => Type::PhysicsWorld3D,
+            Self::AddBox
+            | Self::AddSphere
+            | Self::AddKinematicBox
+            | Self::AddBoxTrigger
+            | Self::AddBody
+            | Self::AddKinematicBody
+            | Self::AddTrigger
+            | Self::BodyById
+            | Self::JointById
+            | Self::AddFixedJoint
+            | Self::AddSphericalJoint
+            | Self::AddRevoluteJoint
+            | Self::AddPrismaticJoint
+            | Self::AddDistanceJoint
+            | Self::AddCharacter
+            | Self::CharacterCollisions
+            | Self::CharacterSupport
+            | Self::TriggerCount
+            | Self::Advance
+            | Self::AdvanceRealtime
+            | Self::CcdSubsteps => Type::Int,
+            Self::JointPosition
+            | Self::StaticFriction
+            | Self::DynamicFriction
+            | Self::Restitution
+            | Self::Mass
+            | Self::DefaultDensity
+            | Self::TimeScale
+            | Self::SimulationTime
+            | Self::DroppedTime
+            | Self::InterpolationAlpha
+            | Self::SoftCcd
+            | Self::LengthUnit => Type::Float,
+            Self::Contacts | Self::CharacterHits => Type::PhysicsContact3DList,
+            Self::RayCast | Self::ShapeCast => Type::PhysicsHit3D,
+            Self::RayCastAll | Self::ShapeCastAll => Type::PhysicsHit3DList,
+            Self::TriggerEntered
+            | Self::TriggerExited
+            | Self::ShapeOverlap
+            | Self::ContactBodies
+            | Self::ContactEntered
+            | Self::ContactExited => Type::IntList,
+            Self::Position
+            | Self::CenterOfMass
+            | Self::LocalCenterOfMass
+            | Self::InterpolatedPosition => Type::Point3D,
+            Self::Rotation
+            | Self::Velocity
+            | Self::AngularVelocity
+            | Self::PrincipalInertia
+            | Self::InertiaColumn
+            | Self::InterpolatedRotation
+            | Self::Gravity
+            | Self::CharacterGravity => Type::Vector3D,
+            Self::TriggerOverlaps
+            | Self::SyncBodies
+            | Self::SyncScene
+            | Self::SetCollisionFilter
+            | Self::SetContactReports
+            | Self::SetContactEvents
+            | Self::SetKinematicContactReports
+            | Self::ReportStaticKinematicCollisions
+            | Self::ReportKinematicKinematicCollisions
+            | Self::SetCharacterHitReports
+            | Self::SetJointLimits
+            | Self::SetJointMotor
+            | Self::RemoveJoint
+            | Self::SetKinematicTarget
+            | Self::SetKinematicTargetWithPivot
+            | Self::SetKinematic
+            | Self::IsKinematic
+            | Self::Step
+            | Self::SetRunning
+            | Self::SetTimeScale
+            | Self::SetPoseInterpolation
+            | Self::IsRunning
+            | Self::ApplyImpulse
+            | Self::ApplyForce
+            | Self::ApplyForceAt
+            | Self::ApplyTorque
+            | Self::SetContinuousLoad
+            | Self::ClearForces
+            | Self::ApplyImpulseAt
+            | Self::ApplyTorqueImpulse
+            | Self::SetLinearVelocity
+            | Self::SetAngularVelocity
+            | Self::ResetBody
+            | Self::SetGravityScale
+            | Self::SetDamping
+            | Self::SetMass
+            | Self::SetDensity
+            | Self::UseDefaultDensity
+            | Self::SetDefaultDensity
+            | Self::SetMassProperties
+            | Self::SetInertiaMatrix
+            | Self::SetMaterial
+            | Self::SetAxisLocks
+            | Self::SetCcdSubsteps
+            | Self::SetBodyCcd
+            | Self::SetSoftCcd
+            | Self::SetLengthUnit
+            | Self::SetGravity
+            | Self::UseCharacterWorldGravity
+            | Self::BodyCcd
+            | Self::IsSleeping
+            | Self::SetCharacterMovement
+            | Self::SetCharacterGravity
+            | Self::SetCharacterMidAirControl
+            | Self::SetCharacterOptions
+            | Self::JumpCharacter
+            | Self::TeleportCharacter
+            | Self::CharacterGrounded
+            | Self::CharacterHitWall
+            | Self::CharacterHitCeiling
+            | Self::Remove
+            | Self::Clear => Type::Bool,
+        }
+    }
+
+    pub const fn writes(self) -> bool {
+        matches!(
+            self,
+            Self::AddBox
+                | Self::AddSphere
+                | Self::AddKinematicBox
+                | Self::AddBoxTrigger
+                | Self::AddBody
+                | Self::AddKinematicBody
+                | Self::AddTrigger
+                | Self::SyncBodies
+                | Self::SyncScene
+                | Self::SetCollisionFilter
+                | Self::SetContactReports
+                | Self::SetContactEvents
+                | Self::SetKinematicContactReports
+                | Self::SetCharacterHitReports
+                | Self::AddFixedJoint
+                | Self::AddSphericalJoint
+                | Self::AddRevoluteJoint
+                | Self::AddPrismaticJoint
+                | Self::AddDistanceJoint
+                | Self::SetJointLimits
+                | Self::SetJointMotor
+                | Self::RemoveJoint
+                | Self::SetKinematicTarget
+                | Self::SetKinematicTargetWithPivot
+                | Self::SetKinematic
+                | Self::Step
+                | Self::Advance
+                | Self::AdvanceRealtime
+                | Self::SetRunning
+                | Self::SetTimeScale
+                | Self::SetPoseInterpolation
+                | Self::ApplyImpulse
+                | Self::AddCharacter
+                | Self::SetCharacterMovement
+                | Self::SetCharacterGravity
+                | Self::SetCharacterMidAirControl
+                | Self::SetCharacterOptions
+                | Self::JumpCharacter
+                | Self::TeleportCharacter
+                | Self::ApplyForce
+                | Self::ApplyForceAt
+                | Self::ApplyTorque
+                | Self::SetContinuousLoad
+                | Self::ClearForces
+                | Self::ApplyImpulseAt
+                | Self::ApplyTorqueImpulse
+                | Self::SetLinearVelocity
+                | Self::SetAngularVelocity
+                | Self::ResetBody
+                | Self::SetGravityScale
+                | Self::SetDamping
+                | Self::SetMass
+                | Self::SetDensity
+                | Self::UseDefaultDensity
+                | Self::SetDefaultDensity
+                | Self::SetMassProperties
+                | Self::SetInertiaMatrix
+                | Self::SetMaterial
+                | Self::SetAxisLocks
+                | Self::SetCcdSubsteps
+                | Self::SetBodyCcd
+                | Self::SetSoftCcd
+                | Self::SetLengthUnit
+                | Self::SetGravity
+                | Self::UseCharacterWorldGravity
+                | Self::Remove
+                | Self::Clear
+        )
+    }
+
+    pub const fn uses_shape_list(self) -> bool {
+        matches!(
+            self,
+            Self::AddBody
+                | Self::AddKinematicBody
+                | Self::AddTrigger
+                | Self::ShapeCast
+                | Self::ShapeCastAll
+                | Self::ShapeOverlap
+        )
+    }
+
+    pub const fn query_filter_offset(self) -> Option<usize> {
+        match self {
+            Self::RayCast | Self::RayCastAll | Self::ShapeOverlap => Some(4),
+            Self::ShapeCast | Self::ShapeCastAll => Some(6),
+            _ => None,
+        }
     }
 }
 
@@ -807,6 +1185,7 @@ impl StringFunction {
 pub struct Parameter {
     pub label: &'static str,
     pub expected: Option<&'static crate::ast::Type>,
+    optional: bool,
 }
 
 impl Parameter {
@@ -814,6 +1193,7 @@ impl Parameter {
         Self {
             label,
             expected: None,
+            optional: false,
         }
     }
 
@@ -821,6 +1201,14 @@ impl Parameter {
         Self {
             label,
             expected: Some(ty),
+            optional: false,
+        }
+    }
+
+    pub const fn optional(label: &'static str, ty: &'static crate::ast::Type) -> Self {
+        Self {
+            optional: true,
+            ..Self::with_type(label, ty)
         }
     }
 }
@@ -836,10 +1224,10 @@ pub struct Function {
 
 impl Function {
     pub fn minimum_arguments(&self) -> usize {
-        self.parameters.len()
-            - usize::from(
-                matches!(self.kind, FunctionKind::Geometry(kind) if kind.supports_layer_mask()),
-            )
+        self.parameters
+            .iter()
+            .take_while(|arg| !arg.optional)
+            .count()
     }
 
     pub fn signature(&self) -> String {
@@ -986,6 +1374,7 @@ pub const SCENE_MATERIAL_CHANNEL_FIELDS: &[(&str, bool)] = &[
     ("emissive-channel", true),
     ("metalness-channel", false),
     ("roughness-channel", false),
+    ("glossiness-channel", false),
     ("occlusion-channel", false),
     ("specular-channel", false),
     ("specular-color-channel", true),
@@ -1036,6 +1425,8 @@ pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
     ("shader-parameters", Type::Vector3D),
     ("shader-displacement", Type::Float),
     ("base-item", Type::String),
+    ("material-workflow", Type::String),
+    ("glossiness", Type::Float),
     ("normal-strength", Type::Float),
     ("clearcoat-normal-strength", Type::Float),
     ("enabled", Type::Bool),
@@ -1077,6 +1468,7 @@ pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
 pub const SCENE_MATERIAL_MAP_FIELDS: &[&str] = &[
     "base-color-map",
     "metallic-roughness-map",
+    "glossiness-map",
     "emissive-map",
     "occlusion-map",
     "normal-map",
@@ -1147,16 +1539,151 @@ pub const SCENE_CULL_MODES: &[(&str, &str)] = &[
     ("none", "Render and pick both sides"),
 ];
 
+pub const SCENE_MATERIAL_WORKFLOWS: &[(&str, &str)] = &[
+    (
+        "metallic-roughness",
+        "Principled metallic and roughness factors",
+    ),
+    (
+        "specular-glossiness",
+        "Independent diffuse albedo, specular color, and glossiness",
+    ),
+];
+
 pub const SCENE_ALPHA_MODES: &[(&str, &str)] = &[
     ("opaque", "Opaque surface with depth writes"),
     ("mask", "Cut out surfaces below alpha-cutoff"),
     ("blend", "Composite partially transparent surfaces"),
 ];
 
+pub const SCENE_PHYSICS_BODY_KINDS: &[(&str, &str)] = &[
+    ("fixed", "Stationary rigid body"),
+    ("dynamic", "Rigid body moved by the solver"),
+    ("kinematic", "Rigid body moved by authored targets"),
+    ("trigger", "Nonblocking overlap sensor"),
+];
+
+pub const SCENE_PHYSICS_BODY_FIELDS: &[(&str, Type)] = &[
+    ("id", Type::String),
+    ("body-kind", Type::String),
+    ("position", Type::Point3D),
+];
+
+pub const SCENE_PHYSICS_BODY_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("rotation", Type::Vector3D),
+    ("mass", Type::Float),
+    ("friction", Type::Float),
+    ("restitution", Type::Float),
+];
+
+pub const SCENE_PHYSICS_JOINT_KINDS: &[(&str, &str)] = &[
+    ("fixed", "Lock both local joint frames together"),
+    ("spherical", "Join anchors and allow free rotation"),
+    ("revolute", "Rotate around the local X axis"),
+    ("prismatic", "Slide along the local X axis"),
+    ("distance", "Constrain the distance between local anchors"),
+];
+
+pub const SCENE_PHYSICS_JOINT_FIELDS: &[(&str, Type)] = &[
+    ("id", Type::String),
+    ("joint-kind", Type::String),
+    ("first", Type::String),
+    ("second", Type::String),
+    ("first-anchor", Type::Point3D),
+    ("second-anchor", Type::Point3D),
+];
+
+pub const SCENE_PHYSICS_JOINT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("first-rotation", Type::Vector3D),
+    ("second-rotation", Type::Vector3D),
+    ("min", Type::Float),
+    ("max", Type::Float),
+];
+
+pub const SCENE_COLLISION_SHAPE_FIELDS: &[(&str, Type)] = &[
+    ("shape", Type::String),
+    ("mesh", Type::String),
+    ("position", Type::Point3D),
+    ("size", Type::Vector3D),
+    ("yaw", Type::Float),
+    ("pitch", Type::Float),
+    ("roll", Type::Float),
+];
+
+pub const SCENE_COLLISION_SHAPES: &[(&str, &str)] = &[
+    ("box", "Centered box collider"),
+    ("sphere", "Centered sphere collider"),
+    ("cylinder", "Capped cylinder collider centered along Y"),
+    (
+        "cone",
+        "Capped cone collider with its base at the local origin",
+    ),
+    ("capsule", "Centered capsule along the local Y axis"),
+    ("mesh", "Use the triangle surfaces of a mesh resource"),
+];
+
+pub const SCENE_INSTANCE_DATA_FIELDS: [&str; 4] = ["x", "y", "z", "w"];
+
+pub const INSTANCE_TABLE_ROW_FIELDS: &[(&str, Type)] = &[
+    ("position", Type::Point3D),
+    ("scale", Type::Vector3D),
+    ("rotation", Type::Vector3D),
+    ("orientation", Type::Quaternion3D),
+    ("color", Type::Color),
+    ("data-x", Type::Float),
+    ("data-y", Type::Float),
+    ("data-z", Type::Float),
+    ("data-w", Type::Float),
+];
+
+pub const SCENE_RANDOM_INSTANCE_FIELDS: &[(&str, Type)] = &[
+    ("count", Type::Int),
+    ("enabled", Type::Bool),
+    ("seed", Type::Int),
+    ("position-min", Type::Vector3D),
+    ("position-max", Type::Vector3D),
+    ("rotation-min", Type::Vector3D),
+    ("rotation-max", Type::Vector3D),
+    ("scale-min", Type::Vector3D),
+    ("scale-max", Type::Vector3D),
+    ("proportional-scale", Type::Bool),
+    ("color-min", Type::Color),
+    ("color-max", Type::Color),
+    ("color-model", Type::String),
+    ("proportional-color", Type::Bool),
+    ("hue-min", Type::Float),
+    ("hue-max", Type::Float),
+    ("grid-spacing", Type::Vector3D),
+];
+
+pub const SCENE_RANDOM_COLOR_MODELS: &[(&str, &str)] = &[
+    ("rgb", "Sample sRGB channels (default)"),
+    ("hsv", "Sample hue, saturation and value"),
+    ("hsl", "Sample hue, saturation and lightness"),
+];
+
+pub const ROTATION_KEY_FIELDS: &[(&str, Type)] =
+    &[("time", Type::Float), ("orientation", Type::Quaternion3D)];
+
 pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("orientation", Type::Quaternion3D),
+    ("depth-bias", Type::Float),
+    ("motion-vector-enabled", Type::Bool),
+    ("motion-vector-scale", Type::Float),
+    ("instancing-lod-min", Type::Float),
+    ("instancing-lod-max", Type::Float),
+    ("instancing-lod-factor", Type::Float),
+    ("physics-body", Type::String),
     ("mesh", Type::String),
     ("material-variant", Type::String),
     ("instance-of", Type::String),
+    ("instance-root", Type::String),
+    ("instance-table", Type::InstanceTable3D),
+    ("instance-count-override", Type::Int),
+    ("instance-has-transparency", Type::Bool),
+    ("instance-depth-sorting", Type::Bool),
+    ("instance-shadow-bounds-min", Type::Vector3D),
+    ("instance-shadow-bounds-max", Type::Vector3D),
     ("instance-template", Type::Bool),
     ("animation", Type::String),
     ("animation-time", Type::Float),
@@ -1173,13 +1700,20 @@ pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("camera-lod-bias", Type::Float),
     ("pickable", Type::Bool),
     ("collidable", Type::Bool),
+    ("trigger", Type::Bool),
     ("pivot-x", Type::Float),
     ("pivot-y", Type::Float),
     ("pivot-z", Type::Float),
     ("camera-kind", Type::String),
     ("camera-fov", Type::Float),
     ("camera-height", Type::Float),
+    ("camera-width", Type::Float),
     ("camera-look-at", Type::String),
+    ("camera-look-at-point", Type::Point3D),
+    ("camera-up", Type::Vector3D),
+    ("camera-clip-normal", Type::Vector3D),
+    ("camera-clip-space", Type::String),
+    ("camera-reverse-depth", Type::Bool),
     ("camera-near", Type::Float),
     ("camera-far", Type::Float),
     ("camera-left", Type::Float),
@@ -1193,6 +1727,9 @@ pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("layers", Type::Int),
     ("lightmap", Type::Image),
     ("lightmap-mode", Type::String),
+    ("bake-role", Type::String),
+    ("lightmap-size", Type::Int),
+    ("lightmap-texels-per-unit", Type::Float),
     ("lightmap-intensity", Type::Float),
     ("lightmap-u", Type::Float),
     ("lightmap-v", Type::Float),
@@ -1212,6 +1749,8 @@ pub const SCENE_CAPTURE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("camera", Type::String),
     ("color-source", Type::String),
     ("color-format", Type::String),
+    ("material-data-format", Type::String),
+    ("combine-attachments", Type::Bool),
     ("depth-source", Type::String),
     ("depth-clear", Type::Float),
     ("stencil-clear", Type::Int),
@@ -1403,6 +1942,10 @@ pub const SCENE_CAPTURE_ATTACHMENTS: &[(&str, &str)] = &[
     (
         "emissive-occlusion",
         "Linear HDR emission and material occlusion",
+    ),
+    (
+        "material-data",
+        "Linear data returned by scene_material_data",
     ),
 ];
 
@@ -1596,6 +2139,7 @@ pub const SCENE_REFLECTION_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("yaw", Type::Float),
     ("intensity", Type::Float),
     ("parallax-correction", Type::Bool),
+    ("debug-view", Type::Bool),
 ];
 
 pub const REFLECTION_REFRESH_MODES: &[(&str, &str)] = &[
@@ -1618,6 +2162,22 @@ pub const MESH_URL_OPTIONS: &[(&str, &str)] = &[
     ),
 ];
 
+pub const SCENE_BAKE_ROLES: &[(&str, &str)] = &[
+    (
+        "auto",
+        "Contribute and receive an atlas region when eligible (default)",
+    ),
+    (
+        "receiver",
+        "Require an atlas region and contribute to baking",
+    ),
+    (
+        "contributor",
+        "Contribute shadows and bounced light without an atlas region",
+    ),
+    ("excluded", "Keep the model outside the offline bake"),
+];
+
 pub const LIGHTMAP_MODES: &[(&str, &str)] = &[
     (
         "indirect",
@@ -1626,6 +2186,10 @@ pub const LIGHTMAP_MODES: &[(&str, &str)] = &[
     (
         "diffuse",
         "Replace all diffuse lighting and keep view-dependent specular",
+    ),
+    (
+        "mixed",
+        "Combine a mixed bake with the lights still evaluated in real time",
     ),
 ];
 
@@ -1719,6 +2283,7 @@ pub fn scene_primitive_slots(key: &str) -> Option<&'static [&'static str]> {
 }
 
 pub const SCENE_CAMERA_KINDS: &[(&str, &str)] = &[
+    ("custom", "Use the camera-projection matrix"),
     (
         "perspective",
         "Perspective camera with a vertical field of view",
@@ -1732,11 +2297,44 @@ pub const SCENE_CAMERA_KINDS: &[(&str, &str)] = &[
         "Perspective camera with explicit near-plane bounds",
     ),
 ];
+
+pub const SCENE_CAMERA_CLIP_SPACES: &[(&str, &str)] = &[
+    ("webgpu", "Clip depth from zero to one"),
+    ("opengl", "Clip depth from minus one to one"),
+];
 pub const SCENE_LIGHT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("layers", Type::Int),
     ("casts-shadow", Type::Bool),
+    ("shadow-filter", Type::String),
+    ("shadow-strength", Type::Float),
+    ("shadow-radius", Type::Float),
+    ("shadow-bias", Type::Float),
+    ("bake-mode", Type::String),
     ("parent", Type::String),
     ("visible", Type::Bool),
+];
+
+pub const SCENE_LIGHT_BAKE_MODES: &[(&str, &str)] = &[
+    (
+        "disabled",
+        "Keep the light entirely real-time in a mixed bake (default)",
+    ),
+    (
+        "indirect",
+        "Bake bounced light and keep the direct light real-time",
+    ),
+    ("all", "Bake direct diffuse light and bounces"),
+];
+
+pub const SCENE_SHADOW_FILTERS: &[(&str, &str)] = &[
+    ("hard", "Compare one shadow texel"),
+    (
+        "bilinear",
+        "Blend the four neighboring depth comparisons (default)",
+    ),
+    ("pcf4", "Soften the shadow with four filtered taps"),
+    ("pcf8", "Soften the shadow with eight filtered taps"),
+    ("pcf16", "Soften the shadow with sixteen filtered taps"),
 ];
 
 pub const SCENE_LIGHT_FIELDS: &[(&str, Type)] = &[
@@ -1759,9 +2357,33 @@ const fn geometry(
     documentation: &'static str,
 ) -> Function {
     let (namespace, member, result) = match kind {
+        GeometryFunction::Prepare3D => ("Scene3D", "prepare", "scenemodel3d"),
+        GeometryFunction::PrepareInstanceTable3D => {
+            ("Scene3D", "instance-table", "instancetable3d")
+        }
+        GeometryFunction::RandomInstanceTable3D => {
+            ("Scene3D", "random-instance-table", "instancetable3d")
+        }
+        GeometryFunction::TableInstance3D => ("Scene3D", "table-instance", "instance3d"),
         GeometryFunction::Point => ("Point2D", "new", "point2d"),
         GeometryFunction::Point3D => ("Point3D", "new", "point3d"),
         GeometryFunction::Vector3D => ("Vector3D", "new", "vector3d"),
+        GeometryFunction::QuaternionIdentity => ("Quaternion3D", "identity", "quaternion3d"),
+        GeometryFunction::QuaternionNew => ("Quaternion3D", "new", "quaternion3d"),
+        GeometryFunction::QuaternionAxisAngle => {
+            ("Quaternion3D", "from-axis-angle", "quaternion3d")
+        }
+        GeometryFunction::QuaternionEuler => ("Quaternion3D", "from-euler", "quaternion3d"),
+        GeometryFunction::QuaternionLookRotation => {
+            ("Quaternion3D", "look-rotation", "quaternion3d")
+        }
+        GeometryFunction::QuaternionLookAt => ("Quaternion3D", "look-at", "quaternion3d"),
+        GeometryFunction::QuaternionCompose => ("Quaternion3D", "compose", "quaternion3d"),
+        GeometryFunction::QuaternionInverse => ("Quaternion3D", "inverse", "quaternion3d"),
+        GeometryFunction::QuaternionSlerp => ("Quaternion3D", "slerp", "quaternion3d"),
+        GeometryFunction::QuaternionRotate => ("Quaternion3D", "rotate", "vector3d"),
+        GeometryFunction::QuaternionTrack => ("Quaternion3D", "track", "rotationtrack3d"),
+        GeometryFunction::QuaternionSample => ("Quaternion3D", "sample", "quaternion3d"),
         GeometryFunction::Hit3D => ("Scene3D", "hit", "hit3d"),
         GeometryFunction::HitCamera3D => ("Scene3D", "hit-camera", "hit3d"),
         GeometryFunction::RayHit3D => ("Scene3D", "ray-hit", "hit3d"),
@@ -1780,9 +2402,23 @@ const fn geometry(
         GeometryFunction::ClosestPoint3D => ("Scene3D", "closest-point", "hit3d"),
         GeometryFunction::ClosestPointOn3D => ("Scene3D", "closest-point-on", "hit3d"),
         GeometryFunction::SphereCast3D => ("Scene3D", "sphere-cast", "hit3d"),
+        GeometryFunction::CapsuleCast3D => ("Scene3D", "capsule-cast", "hit3d"),
         GeometryFunction::SphereOverlap3D => ("Scene3D", "sphere-overlap", "[hit3d]"),
+        GeometryFunction::CapsuleOverlap3D => ("Scene3D", "capsule-overlap", "[hit3d]"),
+        GeometryFunction::CapsuleTriggerOverlap3D => {
+            ("Scene3D", "capsule-trigger-overlap", "[hit3d]")
+        }
+        GeometryFunction::CapsuleTriggerCrossings3D => {
+            ("Scene3D", "capsule-trigger-crossings", "[hit3d]")
+        }
+        GeometryFunction::CapsuleWalkResult3D => ("Scene3D", "capsule-walk-result", "walkresult3d"),
+        GeometryFunction::CapsuleWalkWithContacts3D => {
+            ("Scene3D", "capsule-walk-with-contacts", "walkresult3d")
+        }
         GeometryFunction::SphereSlide3D => ("Scene3D", "sphere-slide", "point3d"),
+        GeometryFunction::CapsuleSlide3D => ("Scene3D", "capsule-slide", "point3d"),
         GeometryFunction::SphereWalk3D => ("Scene3D", "sphere-walk", "point3d"),
+        GeometryFunction::CapsuleWalk3D => ("Scene3D", "capsule-walk", "point3d"),
         GeometryFunction::Vector => ("Vector2D", "new", "vector2d"),
         GeometryFunction::MapPoint => ("Transform2D", kind.name(), "point2d"),
         GeometryFunction::MapVector => ("Transform2D", kind.name(), "vector2d"),
@@ -1796,6 +2432,9 @@ const fn geometry(
         GeometryFunction::UnprojectCamera3D => ("Scene3D", "unproject-camera", "point3d"),
         GeometryFunction::MapPosition3D => ("Scene3D", "map-position", "point3d"),
         GeometryFunction::MapDirection3D => ("Scene3D", "map-direction", "vector3d"),
+        GeometryFunction::SceneInstance3D => ("Scene3D", "instance", "instance3d"),
+        GeometryFunction::SceneInstanceCamera3D => ("Scene3D", "instance-camera", "instance3d"),
+        GeometryFunction::SceneInstanceOrbit3D => ("Scene3D", "instance-orbit", "instance3d"),
         _ => ("Transform2D", kind.name(), "transform2d"),
     };
     Function {
@@ -1808,12 +2447,156 @@ const fn geometry(
     }
 }
 
+const PHYSICS_WORLD: Parameter =
+    Parameter::with_type("world: physicsworld3d", &Type::PhysicsWorld3D);
+const PHYSICS_DIRECTION: Parameter = Parameter::with_type("direction: vector3d", &Type::Vector3D);
+const PHYSICS_REACH: Parameter = Parameter::with_type("max-distance: float", &Type::Float);
+const PHYSICS_QUERY_MASK: Parameter = Parameter::optional("group-mask?: int", &Type::Int);
+const PHYSICS_QUERY_IGNORE: Parameter = Parameter::optional("ignore-body?: int", &Type::Int);
+const PHYSICS_QUERY_SENSORS: Parameter = Parameter::optional("include-sensors?: bool", &Type::Bool);
+const PHYSICS_RAY: &[Parameter] = &[
+    PHYSICS_WORLD,
+    Parameter::with_type("origin: point3d", &Type::Point3D),
+    PHYSICS_DIRECTION,
+    PHYSICS_REACH,
+    PHYSICS_QUERY_MASK,
+    PHYSICS_QUERY_IGNORE,
+    PHYSICS_QUERY_SENSORS,
+];
+const PHYSICS_SHAPE_SWEEP: &[Parameter] = &[
+    PHYSICS_WORLD,
+    PHYSICS_CENTER,
+    PHYSICS_ROTATION,
+    PHYSICS_SHAPES,
+    PHYSICS_DIRECTION,
+    PHYSICS_REACH,
+    PHYSICS_QUERY_MASK,
+    PHYSICS_QUERY_IGNORE,
+    PHYSICS_QUERY_SENSORS,
+];
+const PHYSICS_SHAPE_OVERLAP: &[Parameter] = &[
+    PHYSICS_WORLD,
+    PHYSICS_CENTER,
+    PHYSICS_ROTATION,
+    PHYSICS_SHAPES,
+    PHYSICS_QUERY_MASK,
+    PHYSICS_QUERY_IGNORE,
+    PHYSICS_QUERY_SENSORS,
+];
+const PHYSICS_MAX_STEPS: Parameter = Parameter::with_type("max-steps: int", &Type::Int);
+const PHYSICS_BODY: Parameter = Parameter::with_type("body: int", &Type::Int);
+const PHYSICS_TRIGGER: Parameter = Parameter::with_type("trigger: int", &Type::Int);
+const PHYSICS_JOINT: Parameter = Parameter::with_type("joint: int", &Type::Int);
+const PHYSICS_FIRST: Parameter = Parameter::with_type("first: int", &Type::Int);
+const PHYSICS_SECOND: Parameter = Parameter::with_type("second: int", &Type::Int);
+const JOINT_ANCHOR: Parameter = Parameter::with_type("anchor: point3d", &Type::Point3D);
+const JOINT_MIN: Parameter = Parameter::with_type("min: float", &Type::Float);
+const JOINT_MAX: Parameter = Parameter::with_type("max: float", &Type::Float);
+const JOINT_ANCHORED: &[Parameter] = &[PHYSICS_WORLD, PHYSICS_FIRST, PHYSICS_SECOND, JOINT_ANCHOR];
+const JOINT_AXIAL: &[Parameter] = &[
+    PHYSICS_WORLD,
+    PHYSICS_FIRST,
+    PHYSICS_SECOND,
+    JOINT_ANCHOR,
+    Parameter::with_type("axis: vector3d", &Type::Vector3D),
+    JOINT_MIN,
+    JOINT_MAX,
+];
+const PHYSICS_CENTER: Parameter = Parameter::with_type("center: point3d", &Type::Point3D);
+const PHYSICS_MASS: Parameter = Parameter::with_type("mass: float", &Type::Float);
+const PHYSICS_DENSITY: Parameter = Parameter::with_type("density: float", &Type::Float);
+const PHYSICS_LOCAL_CENTER: Parameter =
+    Parameter::with_type("local-center: point3d", &Type::Point3D);
+const PHYSICS_SIZE: Parameter = Parameter::with_type("size: vector3d", &Type::Vector3D);
+const PHYSICS_ROTATION: Parameter = Parameter::with_type("rotation: vector3d", &Type::Vector3D);
+const PHYSICS_SHAPES: Parameter = Parameter::new("shapes: [record]");
+const PHYSICS_FORCE: Parameter = Parameter::with_type("force: vector3d", &Type::Vector3D);
+const PHYSICS_TORQUE: Parameter = Parameter::with_type("torque: vector3d", &Type::Vector3D);
+const PHYSICS_IMPULSE: Parameter = Parameter::with_type("impulse: vector3d", &Type::Vector3D);
+const PHYSICS_POINT: Parameter = Parameter::with_type("point: point3d", &Type::Point3D);
+const PHYSICS_VELOCITY: Parameter = Parameter::with_type("velocity: vector3d", &Type::Vector3D);
+const PHYSICS_FRICTION: Parameter = Parameter::with_type("friction: float", &Type::Float);
+const PHYSICS_RESTITUTION: Parameter = Parameter::with_type("restitution: float", &Type::Float);
+
+const fn physics(
+    kind: PhysicsFunction,
+    parameters: &'static [Parameter],
+    documentation: &'static str,
+) -> Function {
+    let result = match kind {
+        PhysicsFunction::New => "physicsworld3d",
+        PhysicsFunction::AddBox
+        | PhysicsFunction::AddSphere
+        | PhysicsFunction::AddKinematicBox
+        | PhysicsFunction::AddBoxTrigger
+        | PhysicsFunction::AddBody
+        | PhysicsFunction::AddKinematicBody
+        | PhysicsFunction::AddTrigger
+        | PhysicsFunction::BodyById
+        | PhysicsFunction::JointById
+        | PhysicsFunction::AddFixedJoint
+        | PhysicsFunction::AddSphericalJoint
+        | PhysicsFunction::AddRevoluteJoint
+        | PhysicsFunction::AddPrismaticJoint
+        | PhysicsFunction::AddDistanceJoint
+        | PhysicsFunction::AddCharacter
+        | PhysicsFunction::CharacterCollisions
+        | PhysicsFunction::CharacterSupport
+        | PhysicsFunction::TriggerCount
+        | PhysicsFunction::Advance
+        | PhysicsFunction::AdvanceRealtime
+        | PhysicsFunction::CcdSubsteps => "int",
+        PhysicsFunction::JointPosition
+        | PhysicsFunction::StaticFriction
+        | PhysicsFunction::DynamicFriction
+        | PhysicsFunction::Restitution
+        | PhysicsFunction::Mass
+        | PhysicsFunction::DefaultDensity
+        | PhysicsFunction::TimeScale
+        | PhysicsFunction::SimulationTime
+        | PhysicsFunction::DroppedTime
+        | PhysicsFunction::InterpolationAlpha
+        | PhysicsFunction::SoftCcd
+        | PhysicsFunction::LengthUnit => "float",
+        PhysicsFunction::Contacts | PhysicsFunction::CharacterHits => "[physicscontact3d]",
+        PhysicsFunction::RayCast | PhysicsFunction::ShapeCast => "physicshit3d",
+        PhysicsFunction::RayCastAll | PhysicsFunction::ShapeCastAll => "[physicshit3d]",
+        PhysicsFunction::TriggerEntered
+        | PhysicsFunction::TriggerExited
+        | PhysicsFunction::ShapeOverlap
+        | PhysicsFunction::ContactBodies
+        | PhysicsFunction::ContactEntered
+        | PhysicsFunction::ContactExited => "[int]",
+        PhysicsFunction::Position
+        | PhysicsFunction::CenterOfMass
+        | PhysicsFunction::LocalCenterOfMass
+        | PhysicsFunction::InterpolatedPosition => "point3d",
+        PhysicsFunction::Rotation
+        | PhysicsFunction::Velocity
+        | PhysicsFunction::AngularVelocity
+        | PhysicsFunction::PrincipalInertia
+        | PhysicsFunction::InertiaColumn
+        | PhysicsFunction::InterpolatedRotation
+        | PhysicsFunction::Gravity
+        | PhysicsFunction::CharacterGravity => "vector3d",
+        _ => "bool",
+    };
+    Function {
+        namespace: "Physics3D",
+        member: kind.name(),
+        kind: FunctionKind::Physics(kind),
+        parameters,
+        result: Some(result),
+        documentation,
+    }
+}
+
 const WORLD_POINT: Parameter = Parameter::with_type("world: point3d", &Type::Point3D);
 const POINTER: Parameter = Parameter::with_type("pointer: point2d", &Type::Point2D);
 const VIEWPORT: Parameter = Parameter::with_type("viewport: point2d", &Type::Point2D);
 const VIEW_DEPTH: Parameter = Parameter::with_type("depth: float", &Type::Float);
 const WORLD_FALLBACK: Parameter = Parameter::with_type("fallback: point3d", &Type::Point3D);
-const LAYER_MASK: Parameter = Parameter::with_type("layer-mask?: int", &Type::Int);
+const LAYER_MASK: Parameter = Parameter::optional("layer-mask?: int", &Type::Int);
 const ORBIT_VIEW: [Parameter; 4] = [
     Parameter::with_type("yaw: float", &Type::Float),
     Parameter::with_type("pitch: float", &Type::Float),
@@ -1821,7 +2604,7 @@ const ORBIT_VIEW: [Parameter; 4] = [
     VIEWPORT,
 ];
 const NAMED_VIEW: [Parameter; 3] = [
-    Parameter::new("objects: [record]"),
+    Parameter::new("objects: [record] | scenemodel3d"),
     Parameter::with_type("camera: string", &Type::String),
     VIEWPORT,
 ];
@@ -1884,6 +2667,49 @@ const WORLD_SPHERE_WALK: &[Parameter] = &[
     Parameter::with_type("max-slope: float", &Type::Float),
     LAYER_MASK,
 ];
+const WORLD_CAPSULE_CAST: &[Parameter] = &[
+    WORLD_RAY[0],
+    WORLD_RAY[1],
+    WORLD_RAY[2],
+    WORLD_RAY[3],
+    SPHERE_RADIUS,
+    Parameter::with_type("segment-height: float", &Type::Float),
+    LAYER_MASK,
+];
+const WORLD_CAPSULE_OVERLAP: &[Parameter] = &[
+    WORLD_RAY[0],
+    Parameter::with_type("center: point3d", &Type::Point3D),
+    SPHERE_RADIUS,
+    Parameter::with_type("segment-height: float", &Type::Float),
+    LAYER_MASK,
+];
+const WORLD_TRIGGER_PATH: &[Parameter] = &[
+    WORLD_RAY[0],
+    Parameter::with_type("from: point3d", &Type::Point3D),
+    Parameter::with_type("to: point3d", &Type::Point3D),
+    SPHERE_RADIUS,
+    Parameter::with_type("segment-height: float", &Type::Float),
+    LAYER_MASK,
+];
+const WORLD_CAPSULE_SLIDE: &[Parameter] = &[
+    WORLD_RAY[0],
+    WORLD_RAY[1],
+    Parameter::with_type("displacement: vector3d", &Type::Vector3D),
+    SPHERE_RADIUS,
+    Parameter::with_type("segment-height: float", &Type::Float),
+    LAYER_MASK,
+];
+const WORLD_CAPSULE_WALK: &[Parameter] = &[
+    WORLD_CAPSULE_SLIDE[0],
+    WORLD_CAPSULE_SLIDE[1],
+    WORLD_CAPSULE_SLIDE[2],
+    SPHERE_RADIUS,
+    Parameter::with_type("segment-height: float", &Type::Float),
+    Parameter::with_type("step-height: float", &Type::Float),
+    Parameter::with_type("snap-distance: float", &Type::Float),
+    Parameter::with_type("max-slope: float", &Type::Float),
+    LAYER_MASK,
+];
 const ORBIT_HIT: &[Parameter] = &[
     NAMED_VIEW[0],
     ORBIT_VIEW[0],
@@ -1900,6 +2726,30 @@ const HIT_INSTANCE: &[Parameter] = &[
     Parameter::with_type("row-index: int", &Type::Int),
     Parameter::with_type("mesh-node-index: int", &Type::Int),
     Parameter::with_type("instance-index: int", &Type::Int),
+];
+const INSTANCE_QUERY: [Parameter; 4] = [
+    NAMED_VIEW[0],
+    HIT_INSTANCE[0],
+    HIT_INSTANCE[1],
+    HIT_INSTANCE[2],
+];
+const INSTANCE_CAMERA_QUERY: [Parameter; 6] = [
+    NAMED_VIEW[0],
+    NAMED_VIEW[1],
+    VIEWPORT,
+    HIT_INSTANCE[0],
+    HIT_INSTANCE[1],
+    HIT_INSTANCE[2],
+];
+const INSTANCE_ORBIT_QUERY: [Parameter; 8] = [
+    NAMED_VIEW[0],
+    ORBIT_VIEW[0],
+    ORBIT_VIEW[1],
+    ORBIT_VIEW[2],
+    VIEWPORT,
+    HIT_INSTANCE[0],
+    HIT_INSTANCE[1],
+    HIT_INSTANCE[2],
 ];
 const fn restrict_pick<const N: usize>(
     parameters: &[Parameter],
@@ -1941,6 +2791,814 @@ const CAMERA_RECT: &[Parameter] = &[
 ];
 
 pub const FUNCTIONS: &[Function] = &[
+    physics(
+        PhysicsFunction::New,
+        &[
+            Parameter::with_type("gravity: vector3d", &Type::Vector3D),
+            Parameter::with_type("timestep: float", &Type::Float),
+        ],
+        "Create an independent physics world with a fixed timestep in seconds.",
+    ),
+    physics(
+        PhysicsFunction::AddBox,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_CENTER,
+            PHYSICS_SIZE,
+            PHYSICS_MASS,
+            PHYSICS_FRICTION,
+            PHYSICS_RESTITUTION,
+        ],
+        "Insert a box with full extents. A zero mass creates a fixed body, and 0 is an invalid handle.",
+    ),
+    physics(
+        PhysicsFunction::AddSphere,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_CENTER,
+            Parameter::with_type("radius: float", &Type::Float),
+            PHYSICS_MASS,
+            PHYSICS_FRICTION,
+            PHYSICS_RESTITUTION,
+        ],
+        "Insert a sphere. A zero mass creates a fixed body, and 0 is an invalid handle.",
+    ),
+    physics(
+        PhysicsFunction::AddKinematicBox,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_CENTER,
+            PHYSICS_SIZE,
+            PHYSICS_ROTATION,
+            PHYSICS_FRICTION,
+            PHYSICS_RESTITUTION,
+        ],
+        "Insert a script-driven box. Rotation contains yaw, pitch and roll in degrees.",
+    ),
+    physics(
+        PhysicsFunction::SetKinematic,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("enabled: bool", &Type::Bool),
+        ],
+        "Take over a dynamic body or release a kinematic body with its committed linear and angular velocities.",
+    ),
+    physics(
+        PhysicsFunction::IsKinematic,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Check whether the body's pose is driven kinematically.",
+    ),
+    physics(
+        PhysicsFunction::SetKinematicTargetWithPivot,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("position: point3d", &Type::Point3D),
+            PHYSICS_ROTATION,
+            Parameter::with_type("pivot: vector3d", &Type::Vector3D),
+        ],
+        "Queue a kinematic pose that rotates about a body-local pivot.",
+    ),
+    physics(
+        PhysicsFunction::SetKinematicTarget,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            PHYSICS_CENTER,
+            PHYSICS_ROTATION,
+        ],
+        "Queue the world pose for the next step. The last target wins if set more than once.",
+    ),
+    physics(
+        PhysicsFunction::AddBoxTrigger,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_CENTER,
+            PHYSICS_SIZE,
+            PHYSICS_ROTATION,
+        ],
+        "Insert a fixed box sensor with full extents. It reports overlap without applying contact forces.",
+    ),
+    physics(
+        PhysicsFunction::AddBody,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_CENTER,
+            PHYSICS_ROTATION,
+            PHYSICS_SHAPES,
+            PHYSICS_MASS,
+            PHYSICS_FRICTION,
+            PHYSICS_RESTITUTION,
+        ],
+        "Create a rigid body from local shape records. A mass of zero makes it fixed. A plane must be the only shape and use zero mass.",
+    ),
+    physics(
+        PhysicsFunction::AddKinematicBody,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_CENTER,
+            PHYSICS_ROTATION,
+            PHYSICS_SHAPES,
+            PHYSICS_FRICTION,
+            PHYSICS_RESTITUTION,
+        ],
+        "Create a kinematic body from local convex shapes. Move it with set-kinematic-target.",
+    ),
+    physics(
+        PhysicsFunction::AddTrigger,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_CENTER,
+            PHYSICS_ROTATION,
+            PHYSICS_SHAPES,
+        ],
+        "Create a nonblocking trigger from local convex shapes. Reports are shared by all of its parts.",
+    ),
+    physics(
+        PhysicsFunction::SyncBodies,
+        &[PHYSICS_WORLD, Parameter::new("bodies: [record]")],
+        "Synchronize fixed, dynamic, kinematic and trigger bodies by ID. Unchanged rows keep their simulation state.",
+    ),
+    physics(
+        PhysicsFunction::BodyById,
+        &[
+            PHYSICS_WORLD,
+            Parameter::with_type("id: string", &Type::String),
+        ],
+        "Return the handle of a declared body by ID, or zero if it is absent.",
+    ),
+    physics(
+        PhysicsFunction::SyncScene,
+        &[
+            PHYSICS_WORLD,
+            Parameter::new("bodies: [record]"),
+            Parameter::new("joints: [record]"),
+        ],
+        "Atomically synchronize named bodies and joints. Joint anchors and rotations are local to each endpoint. Unchanged constraints keep their handles and motors.",
+    ),
+    physics(
+        PhysicsFunction::JointById,
+        &[
+            PHYSICS_WORLD,
+            Parameter::with_type("id: string", &Type::String),
+        ],
+        "Return the handle of a declared joint by ID, or zero if it is absent.",
+    ),
+    physics(
+        PhysicsFunction::SetCollisionFilter,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("group: int", &Type::Int),
+            Parameter::with_type("ignore-groups: int", &Type::Int),
+        ],
+        "Set the body's group index (0–31) and the bitmask of groups it ignores on subsequent steps.",
+    ),
+    physics(
+        PhysicsFunction::SetKinematicContactReports,
+        &[
+            PHYSICS_WORLD,
+            Parameter::with_type("static-kinematic: bool", &Type::Bool),
+            Parameter::with_type("kinematic-kinematic: bool", &Type::Bool),
+        ],
+        "Select geometric contact reporting for static–kinematic and kinematic–kinematic pairs.",
+    ),
+    physics(
+        PhysicsFunction::ReportStaticKinematicCollisions,
+        &[PHYSICS_WORLD],
+        "Read whether the world reports static–kinematic contacts.",
+    ),
+    physics(
+        PhysicsFunction::ReportKinematicKinematicCollisions,
+        &[PHYSICS_WORLD],
+        "Read whether the world reports kinematic–kinematic contacts.",
+    ),
+    physics(
+        PhysicsFunction::SetContactReports,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("send: bool", &Type::Bool),
+            Parameter::with_type("receive: bool", &Type::Bool),
+        ],
+        "Enable sending or receiving solved contact points for this solid body on subsequent steps.",
+    ),
+    physics(
+        PhysicsFunction::Contacts,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the contact points and normal impulses received during the latest completed step.",
+    ),
+    physics(
+        PhysicsFunction::SetContactEvents,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("enabled: bool", &Type::Bool),
+        ],
+        "Track solid-body contact transitions at fixed step boundaries, independently of impulse reporting.",
+    ),
+    physics(
+        PhysicsFunction::ContactBodies,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the solid bodies touching this body after the last completed substep.",
+    ),
+    physics(
+        PhysicsFunction::ContactEntered,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the solid bodies that began touching this body during the latest completed step batch.",
+    ),
+    physics(
+        PhysicsFunction::ContactExited,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the solid bodies that separated from this body during the latest completed step batch.",
+    ),
+    physics(
+        PhysicsFunction::AddFixedJoint,
+        JOINT_ANCHORED,
+        "Join two bodies at a world-space anchor and keep their initial relative pose.",
+    ),
+    physics(
+        PhysicsFunction::AddSphericalJoint,
+        JOINT_ANCHORED,
+        "Keep the bodies joined at the world-space anchor and allow free rotation.",
+    ),
+    physics(
+        PhysicsFunction::AddRevoluteJoint,
+        JOINT_AXIAL,
+        "Create a hinge around the world-space axis. Limits are relative degrees from −180 to 180.",
+    ),
+    physics(
+        PhysicsFunction::AddPrismaticJoint,
+        JOINT_AXIAL,
+        "Allow translation along the world-space axis within the relative min and max travel.",
+    ),
+    physics(
+        PhysicsFunction::AddDistanceJoint,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_FIRST,
+            PHYSICS_SECOND,
+            Parameter::with_type("first-anchor: point3d", &Type::Point3D),
+            Parameter::with_type("second-anchor: point3d", &Type::Point3D),
+            JOINT_MIN,
+            JOINT_MAX,
+        ],
+        "Keep the distance between two world-space anchors in the specified nonnegative range.",
+    ),
+    physics(
+        PhysicsFunction::SetJointLimits,
+        &[PHYSICS_WORLD, PHYSICS_JOINT, JOINT_MIN, JOINT_MAX],
+        "Update the bounds of a revolute, prismatic, or distance joint on the next step.",
+    ),
+    physics(
+        PhysicsFunction::SetJointMotor,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_JOINT,
+            Parameter::with_type("velocity: float", &Type::Float),
+            Parameter::with_type("max-force: float", &Type::Float),
+        ],
+        "Drive a hinge in degrees per second or a slider in world units per second. Zero maximum force disables the drive.",
+    ),
+    physics(
+        PhysicsFunction::JointPosition,
+        &[PHYSICS_WORLD, PHYSICS_JOINT],
+        "Read the relative hinge angle in degrees, slider travel, or distance between anchors.",
+    ),
+    physics(
+        PhysicsFunction::RemoveJoint,
+        &[PHYSICS_WORLD, PHYSICS_JOINT],
+        "Remove a joint while keeping the connected bodies.",
+    ),
+    physics(
+        PhysicsFunction::TriggerCount,
+        &[PHYSICS_WORLD, PHYSICS_TRIGGER],
+        "Count the solid bodies currently overlapping a trigger.",
+    ),
+    physics(
+        PhysicsFunction::TriggerOverlaps,
+        &[PHYSICS_WORLD, PHYSICS_TRIGGER, PHYSICS_BODY],
+        "Test whether a particular solid body currently overlaps the trigger.",
+    ),
+    physics(
+        PhysicsFunction::TriggerEntered,
+        &[PHYSICS_WORLD, PHYSICS_TRIGGER],
+        "Return the handles of bodies that entered a trigger during the latest completed step.",
+    ),
+    physics(
+        PhysicsFunction::TriggerExited,
+        &[PHYSICS_WORLD, PHYSICS_TRIGGER],
+        "Return the handles of bodies that exited a trigger during the latest completed step.",
+    ),
+    physics(
+        PhysicsFunction::Advance,
+        &[
+            PHYSICS_WORLD,
+            Parameter::with_type("elapsed: float", &Type::Float),
+            PHYSICS_MAX_STEPS,
+        ],
+        "Consume elapsed seconds in fixed steps and return the number of steps executed.",
+    ),
+    physics(
+        PhysicsFunction::AdvanceRealtime,
+        &[PHYSICS_WORLD, PHYSICS_MAX_STEPS],
+        "Advance the world by monotonic time elapsed since the previous call.",
+    ),
+    physics(
+        PhysicsFunction::SetRunning,
+        &[
+            PHYSICS_WORLD,
+            Parameter::with_type("running: bool", &Type::Bool),
+        ],
+        "Pause or resume elapsed-time advancement of the world.",
+    ),
+    physics(
+        PhysicsFunction::SetTimeScale,
+        &[
+            PHYSICS_WORLD,
+            Parameter::with_type("scale: float", &Type::Float),
+        ],
+        "Multiply elapsed time by the given nonnegative scale before scheduling fixed steps.",
+    ),
+    physics(
+        PhysicsFunction::IsRunning,
+        &[PHYSICS_WORLD],
+        "Read whether elapsed time is advancing the world.",
+    ),
+    physics(
+        PhysicsFunction::TimeScale,
+        &[PHYSICS_WORLD],
+        "Read the clock's elapsed-time multiplier.",
+    ),
+    physics(
+        PhysicsFunction::SimulationTime,
+        &[PHYSICS_WORLD],
+        "Read the committed simulation time in seconds.",
+    ),
+    physics(
+        PhysicsFunction::DroppedTime,
+        &[PHYSICS_WORLD],
+        "Read the accumulated simulation time discarded by the fixed-step cap.",
+    ),
+    physics(
+        PhysicsFunction::InterpolationAlpha,
+        &[PHYSICS_WORLD],
+        "Read the fraction used to interpolate between the two most recent fixed-step poses.",
+    ),
+    physics(
+        PhysicsFunction::SetPoseInterpolation,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("enabled: bool", &Type::Bool),
+        ],
+        "Enable or disable retaining the previous step's pose for this body.",
+    ),
+    physics(
+        PhysicsFunction::InterpolatedPosition,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the render position of a body using its enabled pose interpolation.",
+    ),
+    physics(
+        PhysicsFunction::InterpolatedRotation,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the interpolated yaw, pitch and roll in degrees.",
+    ),
+    physics(
+        PhysicsFunction::Step,
+        &[PHYSICS_WORLD],
+        "Advance the world by its fixed timestep.",
+    ),
+    physics(
+        PhysicsFunction::Position,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read a body's world position and observe later simulation steps.",
+    ),
+    physics(
+        PhysicsFunction::Rotation,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read yaw, pitch and roll in degrees in SceneView3D field order.",
+    ),
+    physics(
+        PhysicsFunction::Velocity,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the body's linear velocity in world units per second.",
+    ),
+    physics(
+        PhysicsFunction::ApplyImpulse,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_IMPULSE],
+        "Apply an impulse at the center of mass of a dynamic body.",
+    ),
+    physics(
+        PhysicsFunction::ApplyForce,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_FORCE],
+        "Apply a force at a dynamic body's center of mass for the next step.",
+    ),
+    physics(
+        PhysicsFunction::ApplyForceAt,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_FORCE, PHYSICS_POINT],
+        "Apply a force at a world-space point for the next step, including torque about the center of mass.",
+    ),
+    physics(
+        PhysicsFunction::ApplyTorque,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_TORQUE],
+        "Apply a world-space torque for the next step.",
+    ),
+    physics(
+        PhysicsFunction::SetContinuousLoad,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_FORCE, PHYSICS_TORQUE],
+        "Replace the persistent world-space force and torque used in subsequent steps.",
+    ),
+    physics(
+        PhysicsFunction::ClearForces,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Clear both queued and continuous forces and torques.",
+    ),
+    physics(
+        PhysicsFunction::ApplyImpulseAt,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_IMPULSE, PHYSICS_POINT],
+        "Apply an immediate impulse at a world-space point.",
+    ),
+    physics(
+        PhysicsFunction::ApplyTorqueImpulse,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_IMPULSE],
+        "Apply an immediate angular impulse about the world XYZ axes.",
+    ),
+    physics(
+        PhysicsFunction::SetLinearVelocity,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_VELOCITY],
+        "Replace the linear velocity in world units per second.",
+    ),
+    physics(
+        PhysicsFunction::SetAngularVelocity,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_VELOCITY],
+        "Replace the angular velocity about the world XYZ axes in radians per second.",
+    ),
+    physics(
+        PhysicsFunction::AngularVelocity,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the world XYZ angular velocity in radians per second.",
+    ),
+    physics(
+        PhysicsFunction::ResetBody,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            PHYSICS_CENTER,
+            PHYSICS_ROTATION,
+        ],
+        "Move a dynamic body directly to a pose and clear its velocities, forces and torques.",
+    ),
+    physics(
+        PhysicsFunction::SetGravityScale,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("scale: float", &Type::Float),
+        ],
+        "Set a body's gravity multiplier. Zero disables gravity and negative values reverse it.",
+    ),
+    physics(
+        PhysicsFunction::SetMass,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_MASS],
+        "Assign a total mass and derive inertia from the shapes assuming uniform density.",
+    ),
+    physics(
+        PhysicsFunction::SetDensity,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_DENSITY],
+        "Derive mass and inertia at the given density, in mass per cubic world unit.",
+    ),
+    physics(
+        PhysicsFunction::UseDefaultDensity,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Use the world density and follow future changes to that density.",
+    ),
+    physics(
+        PhysicsFunction::SetDefaultDensity,
+        &[PHYSICS_WORLD, PHYSICS_DENSITY],
+        "Change the world density and recompute it for bodies that follow the default.",
+    ),
+    physics(
+        PhysicsFunction::SetMassProperties,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            PHYSICS_MASS,
+            PHYSICS_LOCAL_CENTER,
+            Parameter::with_type("principal-inertia: vector3d", &Type::Vector3D),
+            Parameter::with_type("principal-rotation: vector3d", &Type::Vector3D),
+        ],
+        "Set local center of mass, principal moments, and principal-axis yaw, pitch and roll in degrees.",
+    ),
+    physics(
+        PhysicsFunction::SetInertiaMatrix,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            PHYSICS_MASS,
+            PHYSICS_LOCAL_CENTER,
+            Parameter::with_type("column-x: vector3d", &Type::Vector3D),
+            Parameter::with_type("column-y: vector3d", &Type::Vector3D),
+            Parameter::with_type("column-z: vector3d", &Type::Vector3D),
+        ],
+        "Set the positive definite body-local inertia matrix about the center of mass.",
+    ),
+    physics(
+        PhysicsFunction::Mass,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the current total mass of a dynamic body.",
+    ),
+    physics(
+        PhysicsFunction::DefaultDensity,
+        &[PHYSICS_WORLD],
+        "Read the current default density of the world.",
+    ),
+    physics(
+        PhysicsFunction::CenterOfMass,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the current center of mass in world coordinates.",
+    ),
+    physics(
+        PhysicsFunction::LocalCenterOfMass,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the local center of mass of a dynamic body.",
+    ),
+    physics(
+        PhysicsFunction::PrincipalInertia,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the moments of inertia about the body's principal axes.",
+    ),
+    physics(
+        PhysicsFunction::InertiaColumn,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("column: int", &Type::Int),
+        ],
+        "Read a zero-based column of the body-local inertia matrix.",
+    ),
+    physics(
+        PhysicsFunction::SetMaterial,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("static-friction: float", &Type::Float),
+            Parameter::with_type("dynamic-friction: float", &Type::Float),
+            PHYSICS_RESTITUTION,
+        ],
+        "Set the static friction, dynamic friction, and restitution of a solid body's colliders.",
+    ),
+    physics(
+        PhysicsFunction::StaticFriction,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the friction coefficient when the contact is sticking.",
+    ),
+    physics(
+        PhysicsFunction::DynamicFriction,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the friction coefficient when the contact slides.",
+    ),
+    physics(
+        PhysicsFunction::Restitution,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the body's coefficient of restitution.",
+    ),
+    physics(
+        PhysicsFunction::SetDamping,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("linear: float", &Type::Float),
+            Parameter::with_type("angular: float", &Type::Float),
+        ],
+        "Set nonnegative linear and angular damping for this body.",
+    ),
+    physics(
+        PhysicsFunction::SetCcdSubsteps,
+        &[
+            PHYSICS_WORLD,
+            Parameter::with_type("maximum: int", &Type::Int),
+        ],
+        "Set the world CCD substep budget from zero to 64. Zero disables CCD sweeps.",
+    ),
+    physics(
+        PhysicsFunction::CcdSubsteps,
+        &[PHYSICS_WORLD],
+        "Read the world's CCD substep budget.",
+    ),
+    physics(
+        PhysicsFunction::SetBodyCcd,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("enabled: bool", &Type::Bool),
+        ],
+        "Select whether this solid body uses full CCD, including sweeps against dynamic targets.",
+    ),
+    physics(
+        PhysicsFunction::BodyCcd,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the body's configured full CCD mode.",
+    ),
+    physics(
+        PhysicsFunction::SetSoftCcd,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("distance: float", &Type::Float),
+        ],
+        "Set the speculative-contact prediction distance in world units.",
+    ),
+    physics(
+        PhysicsFunction::SoftCcd,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the speculative-contact prediction distance.",
+    ),
+    physics(
+        PhysicsFunction::SetLengthUnit,
+        &[
+            PHYSICS_WORLD,
+            Parameter::with_type("length: float", &Type::Float),
+        ],
+        "Set the scene length scale used by the solver's positional and velocity tolerances.",
+    ),
+    physics(
+        PhysicsFunction::LengthUnit,
+        &[PHYSICS_WORLD],
+        "Read the solver's scene length scale.",
+    ),
+    physics(
+        PhysicsFunction::SetGravity,
+        &[
+            PHYSICS_WORLD,
+            Parameter::with_type("gravity: vector3d", &Type::Vector3D),
+        ],
+        "Set world gravity and update characters that follow it.",
+    ),
+    physics(
+        PhysicsFunction::Gravity,
+        &[PHYSICS_WORLD],
+        "Read world gravity in world units per second squared.",
+    ),
+    physics(
+        PhysicsFunction::UseCharacterWorldGravity,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Make a character follow world gravity and its future updates.",
+    ),
+    physics(
+        PhysicsFunction::CharacterGravity,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the effective gravity of a character.",
+    ),
+    physics(
+        PhysicsFunction::SetAxisLocks,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("linear-mask: int", &Type::Int),
+            Parameter::with_type("angular-mask: int", &Type::Int),
+        ],
+        "Lock world translation and rotation axes. Each mask uses X=1, Y=2, Z=4.",
+    ),
+    physics(
+        PhysicsFunction::IsSleeping,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Test whether a dynamic body is sleeping.",
+    ),
+    physics(
+        PhysicsFunction::AddCharacter,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_CENTER,
+            Parameter::with_type("radius: float", &Type::Float),
+            Parameter::with_type("segment-height: float", &Type::Float),
+        ],
+        "Create a capsule character with the world's gravity. Segment height excludes the two hemispheres.",
+    ),
+    physics(
+        PhysicsFunction::SetCharacterMovement,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_VELOCITY],
+        "Set the persistent desired velocity of the character in world units per second.",
+    ),
+    physics(
+        PhysicsFunction::SetCharacterGravity,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("gravity: vector3d", &Type::Vector3D),
+        ],
+        "Replace the character's acceleration due to gravity. Zero also clears accumulated falling speed.",
+    ),
+    physics(
+        PhysicsFunction::SetCharacterMidAirControl,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("enabled: bool", &Type::Bool),
+        ],
+        "Choose whether to accept new movement input while airborne. This is enabled by default.",
+    ),
+    physics(
+        PhysicsFunction::SetCharacterOptions,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("step-height: float", &Type::Float),
+            Parameter::with_type("snap-distance: float", &Type::Float),
+            Parameter::with_type("max-slope: float", &Type::Float),
+            Parameter::with_type("push-mass: float", &Type::Float),
+        ],
+        "Set stair height, ground snap distance, maximum climb angle in degrees and effective pushing mass.",
+    ),
+    physics(
+        PhysicsFunction::JumpCharacter,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("speed: float", &Type::Float),
+        ],
+        "Start a jump along world Y when the character is grounded.",
+    ),
+    physics(
+        PhysicsFunction::TeleportCharacter,
+        &[PHYSICS_WORLD, PHYSICS_BODY, PHYSICS_CENTER],
+        "Move the character directly to a center and clear falling speed and contact state.",
+    ),
+    physics(
+        PhysicsFunction::CharacterGrounded,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Test whether the character found walkable support.",
+    ),
+    physics(
+        PhysicsFunction::CharacterHitWall,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Test whether the character's last movement hit a side obstacle.",
+    ),
+    physics(
+        PhysicsFunction::CharacterHitCeiling,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Test whether the character's last movement hit a surface overhead.",
+    ),
+    physics(
+        PhysicsFunction::CharacterCollisions,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the last move's collision flags. Side=1, above=2 and ground=4.",
+    ),
+    physics(
+        PhysicsFunction::CharacterSupport,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the body handle supporting the character, or zero when unsupported.",
+    ),
+    physics(
+        PhysicsFunction::SetCharacterHitReports,
+        &[
+            PHYSICS_WORLD,
+            PHYSICS_BODY,
+            Parameter::with_type("enabled: bool", &Type::Bool),
+        ],
+        "Enable shape-hit snapshots for a character. Reporting is disabled initially.",
+    ),
+    physics(
+        PhysicsFunction::RayCast,
+        PHYSICS_RAY,
+        "Find the nearest collider surface in world space. Body zero means no hit.",
+    ),
+    physics(
+        PhysicsFunction::RayCastAll,
+        PHYSICS_RAY,
+        "Find one collider surface per body in world space, sorted by distance and body handle.",
+    ),
+    physics(
+        PhysicsFunction::ShapeCast,
+        PHYSICS_SHAPE_SWEEP,
+        "Sweep a convex or compound shape at constant rotation and return its nearest contact.",
+    ),
+    physics(
+        PhysicsFunction::ShapeCastAll,
+        PHYSICS_SHAPE_SWEEP,
+        "Sweep a convex or compound shape and return one contact per body, ordered by travel distance.",
+    ),
+    physics(
+        PhysicsFunction::ShapeOverlap,
+        PHYSICS_SHAPE_OVERLAP,
+        "Return the sorted handles of bodies that intersect a convex or compound shape.",
+    ),
+    physics(
+        PhysicsFunction::CharacterHits,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Read the last move's world-space shape hits and net push impulses in sweep order.",
+    ),
+    physics(
+        PhysicsFunction::Remove,
+        &[PHYSICS_WORLD, PHYSICS_BODY],
+        "Remove a body and retire its handle.",
+    ),
+    physics(
+        PhysicsFunction::Clear,
+        &[PHYSICS_WORLD],
+        "Remove every body and keep the world's gravity and timestep.",
+    ),
     geometry(
         GeometryFunction::Point3D,
         XYZ,
@@ -1950,6 +3608,115 @@ pub const FUNCTIONS: &[Function] = &[
         GeometryFunction::Vector3D,
         XYZ,
         "Creates a displacement or direction in 3D scene coordinates.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionIdentity,
+        &[],
+        "Returns the identity 3D rotation.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionNew,
+        &[
+            Parameter::with_type("x: float", &Type::Float),
+            Parameter::with_type("y: float", &Type::Float),
+            Parameter::with_type("z: float", &Type::Float),
+            Parameter::with_type("w: float", &Type::Float),
+        ],
+        "Normalizes the (x, y, z, w) components. A zero or non-finite value returns identity.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionAxisAngle,
+        &[
+            Parameter::with_type("axis: vector3d", &Type::Vector3D),
+            Parameter::with_type("degrees: float", &Type::Float),
+        ],
+        "Creates a rotation about an axis by an angle in degrees.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionEuler,
+        &[Parameter::with_type("angles: vector3d", &Type::Vector3D)],
+        "Creates a unit rotation using the scene Euler convention in degrees.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionLookRotation,
+        &[
+            Parameter::with_type("forward: vector3d", &Type::Vector3D),
+            Parameter::optional("up?: vector3d", &Type::Vector3D),
+        ],
+        "Aim local -Z along forward and local +Y toward the projected up vector. Up defaults to +Y. A zero forward direction returns identity.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionLookAt,
+        &[
+            Parameter::with_type("from: point3d", &Type::Point3D),
+            Parameter::with_type("target: point3d", &Type::Point3D),
+            Parameter::optional("up?: vector3d", &Type::Vector3D),
+        ],
+        "Aim local -Z from a point toward a target. The points and up vector use the same coordinate space. Coincident points return identity.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionCompose,
+        &[
+            Parameter::with_type("first: quaternion3d", &Type::Quaternion3D),
+            Parameter::with_type("next: quaternion3d", &Type::Quaternion3D),
+        ],
+        "Applies the first rotation, then the next rotation.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionInverse,
+        &[Parameter::with_type(
+            "rotation: quaternion3d",
+            &Type::Quaternion3D,
+        )],
+        "Returns the inverse of a unit rotation.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionSlerp,
+        &[
+            Parameter::with_type("from: quaternion3d", &Type::Quaternion3D),
+            Parameter::with_type("to: quaternion3d", &Type::Quaternion3D),
+            Parameter::with_type("progress: float", &Type::Float),
+        ],
+        "Interpolates along the shortest rotational arc. Progress is clamped to [0, 1].",
+    ),
+    geometry(
+        GeometryFunction::QuaternionRotate,
+        &[
+            Parameter::with_type("rotation: quaternion3d", &Type::Quaternion3D),
+            Parameter::with_type("vector: vector3d", &Type::Vector3D),
+        ],
+        "Rotates a 3D vector using the unit quaternion.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionTrack,
+        &[Parameter::new("keys: [record]")],
+        "Prepares a rotation track from time (float seconds) and orientation (quaternion3d) fields. Times are finite, nonnegative and strictly increasing.",
+    ),
+    geometry(
+        GeometryFunction::QuaternionSample,
+        &[
+            Parameter::with_type("track: rotationtrack3d", &Type::RotationTrack3D),
+            Parameter::with_type("time: float", &Type::Float),
+        ],
+        "Samples the shortest arc between keys in seconds. Values outside the interval use the nearest key. An invalid track or NaN time returns identity.",
+    ),
+    geometry(
+        GeometryFunction::Prepare3D,
+        &[
+            Parameter::new("objects: [record]"),
+            Parameter::optional("world?: physicsworld3d", &Type::PhysicsWorld3D),
+        ],
+        "Prepares an immutable scene for views and spatial queries. An optional physics world resolves physics-body links at the current interpolated pose.",
+    ),
+    geometry(
+        GeometryFunction::PrepareInstanceTable3D,
+        &[Parameter::new("rows: [record]")],
+        "Creates an immutable instancetable3d from model rows. Fields are optional: position (point3d), scale and rotation (vector3d), color, and data-x through data-w (float). Bind the table to one or more scene model rows. Rotation uses degrees with X pitch, Y yaw and Z roll.",
+    ),
+    geometry(
+        GeometryFunction::RandomInstanceTable3D,
+        &[Parameter::new("settings: record")],
+        "Creates a seeded instancetable3d from the same settings as random-instances. Count must be an int. Bounds, grid spacing, tint and custom channels are sampled by index. A disabled generator returns an unloaded table.",
     ),
     geometry(
         GeometryFunction::Hit3D,
@@ -2067,6 +3834,46 @@ pub const FUNCTIONS: &[Function] = &[
         "Resolves a world-space sphere while walking. Limits uphill slopes in degrees, steps when grounded, and follows nearby walkable ground.",
     ),
     geometry(
+        GeometryFunction::CapsuleCast3D,
+        WORLD_CAPSULE_CAST,
+        "Sweeps a upright world-space capsule along a nonzero direction and returns the first contact. Distance is center travel; position is the contact on the collider.",
+    ),
+    geometry(
+        GeometryFunction::CapsuleOverlap3D,
+        WORLD_CAPSULE_OVERLAP,
+        "Returns one contact for each authored collider overlapping a upright world-space capsule, in model row order.",
+    ),
+    geometry(
+        GeometryFunction::CapsuleTriggerOverlap3D,
+        WORLD_CAPSULE_OVERLAP,
+        "Returns non-blocking trigger volumes overlapping a vertical capsule.",
+    ),
+    geometry(
+        GeometryFunction::CapsuleTriggerCrossings3D,
+        WORLD_TRIGGER_PATH,
+        "Reports both entries and exits along a straight capsule movement in travel order. Use each hit's entering field to distinguish the events.",
+    ),
+    geometry(
+        GeometryFunction::CapsuleWalkResult3D,
+        WORLD_CAPSULE_WALK,
+        "Resolves one capsule walk. Returns the final position, grounded state, wall and ceiling flags, and ordered trigger crossings.",
+    ),
+    geometry(
+        GeometryFunction::CapsuleWalkWithContacts3D,
+        WORLD_CAPSULE_WALK,
+        "Resolves one capsule walk with ordered blocking hits in contacts and the final ground contact in support. A stationary query can identify the supporting body.",
+    ),
+    geometry(
+        GeometryFunction::CapsuleSlide3D,
+        WORLD_CAPSULE_SLIDE,
+        "Moves a upright world-space capsule, clips remaining displacement against blocking contacts, and returns its new center.",
+    ),
+    geometry(
+        GeometryFunction::CapsuleWalk3D,
+        WORLD_CAPSULE_WALK,
+        "Resolves a upright world-space capsule while walking. Limits uphill slopes in degrees, steps when grounded, and follows nearby walkable ground.",
+    ),
+    geometry(
         GeometryFunction::Project3D,
         &[
             ORBIT_VIEW[0],
@@ -2128,6 +3935,29 @@ pub const FUNCTIONS: &[Function] = &[
             Parameter::with_type("fallback: vector3d", &Type::Vector3D),
         ],
         "Converts a direction between scene node IDs using inherited rotations and preserving length. An empty ID denotes world space. Invalid inputs return fallback.",
+    ),
+    geometry(
+        GeometryFunction::TableInstance3D,
+        &[
+            Parameter::with_type("table: instancetable3d", &Type::InstanceTable3D),
+            Parameter::with_type("index: int", &Type::Int),
+        ],
+        "Reads a zero-based source row in table coordinates. Returns origin, affine axes, color and data-x through data-w. An unloaded table or an index outside the table returns valid: false.",
+    ),
+    geometry(
+        GeometryFunction::SceneInstance3D,
+        &INSTANCE_QUERY,
+        "Reads the resolved primary instance by the three source indices from a hit. Use -1 for a missing mesh node or instance-table index. Returns an immutable instance3d with valid, color, origin, world axes and data-x through data-w.",
+    ),
+    geometry(
+        GeometryFunction::SceneInstanceCamera3D,
+        &INSTANCE_CAMERA_QUERY,
+        "Reads an instance using the LOD selected by a named camera, regardless of viewport culling. An invalid camera or address yields valid: false.",
+    ),
+    geometry(
+        GeometryFunction::SceneInstanceOrbit3D,
+        &INSTANCE_ORBIT_QUERY,
+        "Reads an instance using the LOD selected by the orbit camera and viewport size.",
     ),
     geometry(
         GeometryFunction::Pick3D,

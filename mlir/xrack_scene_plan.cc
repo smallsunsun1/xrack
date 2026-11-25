@@ -85,6 +85,8 @@ struct SceneAnalysis {
                       "selected-object", "environment", "reflection-probes", "environment-yaw", "environment-intensity",
                       "environment-skybox", "frustum-culling", "scene-exposure", "multisampling", "supersampling",
                       "progressive-aa", "temporal-aa", "temporal-aa-mode", "temporal-aa-strength",
+                      "reflection-faces-per-frame", "reflection-filter-passes-per-frame",
+                      "reflection-filter-texels-per-frame", "bake-denoise-passes", "bake-indirect-factor",
                       "screen-space-reflections", "ssr-strength", "ssr-distance", "ssr-thickness",
                       "ssr-steps", "ssr-roughness-cutoff", "ssr-scale",
                       "screen-space-global-illumination", "ssgi-strength", "ssgi-occlusion",

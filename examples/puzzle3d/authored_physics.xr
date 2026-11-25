@@ -1,0 +1,131 @@
+struct AuthoredCollider { shape: string, size: vector3d }
+struct AuthoredBody { id: string, body-kind: string, position: point3d, shapes: [AuthoredCollider] }
+
+struct AuthoredActor {
+    id: string, mesh: string, physics-body: string, parent: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component AuthoredPhysicsDemo inherits Window {
+    title: "XRack · 声明式刚体";
+    width: 736px; height: 462px; resizable: false; background: #172735;
+
+    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.04);
+    property <point3d> floor-center: Point3D.new(0, -0.16, 0);
+    property <vector3d> floor-size: Vector3D.new(7.2, 0.32, 4.0);
+    property <point3d> ball-start: Point3D.new(-1.5, 0.85, 0);
+    property <vector3d> ball-size: Vector3D.new(0.72, 0.72, 0.72);
+    property <vector3d> wall-size: Vector3D.new(0.36, 1.5, 2.1);
+    property <bool> reversed: false;
+    property <bool> shifted: false;
+    property <bool> frozen: false;
+    property <scenemodel3d> frozen-scene;
+
+    out property <bool> accepted: false;
+    out property <int> ball: Physics3D.body-by-id(root.world, "ball");
+    out property <int> wall: Physics3D.body-by-id(root.world, "wall");
+    out property <point3d> ball-position: root.ball == 0 ? root.ball-start : Physics3D.position(root.world, root.ball);
+    out property <vector3d> ball-velocity: Physics3D.velocity(root.world, root.ball);
+    out property <point3d> position-before-step;
+    out property <point3d> smoothed-position: Physics3D.interpolated-position(root.world, root.ball);
+
+    pure function body(id: string, kind: string, center: point3d, shape: string, size: vector3d) -> AuthoredBody {
+        AuthoredBody {
+            id: id, body-kind: kind, position: center,
+            shapes: [AuthoredCollider { shape: shape, size: size }],
+        }
+    }
+
+    callback commit(reverse: bool, shift: bool, duplicate: bool);
+    commit(reverse, shift, duplicate) => {
+        let floor = root.body("floor", "fixed", root.floor-center, "box", root.floor-size);
+        let ball = root.body("ball", "dynamic", root.ball-start, "sphere", root.ball-size);
+        let wall = root.body("wall", "fixed", Point3D.new(shift ? 2.8 : 1.85, 0.75, 0), "box", root.wall-size);
+        root.accepted = Physics3D.sync-bodies(root.world,
+            duplicate ? [wall, ball, ball] : (reverse ? [wall, floor, ball] : [floor, ball, wall]));
+        if root.accepted {
+            root.reversed = reverse;
+            root.shifted = shift;
+        }
+    }
+
+    callback launch();
+    launch() => {
+        if root.ball == 0 { root.commit(root.reversed, root.shifted, false); }
+        Physics3D.set-linear-velocity(root.world, root.ball, Vector3D.new(2.5, 0, 0));
+        root.advance();
+    }
+
+    callback advance();
+    advance() => {
+        let before = Scene3D.prepare(root.actors, root.world);
+        Physics3D.advance(root.world, 0.16, 4);
+        root.position-before-step = root.center(before);
+    }
+
+    callback freeze-view();
+    freeze-view() => {
+        if !root.frozen { root.frozen-scene = root.current-scene; }
+        root.frozen = !root.frozen;
+    }
+
+    callback set-smoothing(enabled: bool);
+    set-smoothing(enabled) => {
+        Physics3D.set-pose-interpolation(root.world, root.ball, enabled);
+    }
+
+    pure function actor(id: string, mesh: string, rigid-body: string, parent: string, center: point3d, size: vector3d, tint: color) -> AuthoredActor {
+        AuthoredActor {
+            id: id, mesh: mesh, physics-body: rigid-body, parent: parent,
+            x: center.x, y: center.y, z: center.z,
+            scale-x: size.x, scale-y: size.y, scale-z: size.z,
+            yaw: 0, pitch: 0, roll: 0, color: tint,
+        }
+    }
+
+    property <[AuthoredActor]> actors: [
+        root.actor("floor", "primitive:box", "floor", "", root.floor-center, root.floor-size, #456075),
+        root.actor("ball", "primitive:sphere", "ball", "", root.ball-start, root.ball-size, #f4ca73),
+        AuthoredActor {
+            yaw: 33,
+            ..root.actor("anchor", "", "", "", Point3D.new(0, 0, 0), Vector3D.new(1, 1, 1), #ffffff)
+        },
+        root.actor("wall", "primitive:box", "wall", "anchor", Point3D.new(1.85, 0.75, 0), root.wall-size, #6fcec9),
+        root.actor("marker", "primitive:box", "", "ball", Point3D.new(0, 0.57, 0), Vector3D.new(0.14, 0.24, 0.14), #e9f1fa),
+    ];
+    property <scenemodel3d> current-scene: Scene3D.prepare(root.actors, root.world);
+    out property <scenemodel3d> displayed-scene: root.frozen ? root.frozen-scene : root.current-scene;
+    out property <point3d> displayed-center: root.center(root.displayed-scene);
+    out property <hit3d> displayed-hit: Scene3D.ray-hit(root.displayed-scene,
+        Point3D.new(root.displayed-center.x, root.displayed-center.y, 4), Vector3D.new(0, 0, -1), 6);
+
+    pure function center(scene: scenemodel3d) -> point3d {
+        Scene3D.map-position(scene, "ball", "", Point3D.new(0, 0, 0), root.ball-start)
+    }
+
+    SceneView3D {
+        physics-world: root.world;
+        width: 736px; height: 378px; model: root.displayed-scene;
+        camera-yaw: 22; camera-pitch: 31; camera-distance: 8.8;
+        scene-background: #203949; ambient-intensity: 0.65; multisampling: true;
+    }
+    body-status := Text {
+        x: 18px; y: 14px; color: #edf1f7;
+        text: "球体 " + root.ball + "   ·   挡板 " + root.wall
+            + "   ·   " + (root.accepted ? "声明已同步" : "等待有效声明");
+    }
+    ray-status := Text {
+        x: 18px; y: 43px; color: #cfe2ec;
+        text: "场景射线 · " + root.displayed-hit.object-id;
+    }
+    HorizontalLayout {
+        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
+        launch := Button { text: "发射球体"; clicked => { root.launch(); } }
+        advance := Button { text: "推进模拟"; clicked => { root.advance(); } }
+        reorder := Button { text: "重排声明"; clicked => { root.commit(!root.reversed, root.shifted, false); } }
+        move-wall := Button { text: "移动挡板"; clicked => { root.commit(root.reversed, !root.shifted, false); } }
+        reject := Button { text: "提交重复 ID"; clicked => { root.commit(root.reversed, root.shifted, true); } }
+        freeze := Button { text: root.frozen ? "恢复视图" : "冻结视图"; clicked => { root.freeze-view(); } }
+    }
+}

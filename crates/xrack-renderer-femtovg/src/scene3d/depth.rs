@@ -8,13 +8,17 @@ use xrack_runtime::{
 use super::{
     DEPTH_FORMAT, MeshBuffer,
     deform::{Deformation, DeformationBinding, DeformationLayouts, SKIN_LAYOUT},
-    pipeline::{GEOMETRY_LAYOUTS, culled_face},
+    pipeline::{GEOMETRY_LAYOUTS, INSTANCE_DATA_LAYOUT, culled_face, orient_depth_compare},
     vertex_program::VertexPipelines,
 };
 
 #[derive(Clone, Copy)]
 pub(super) enum DepthPass {
-    Auxiliary(CaptureRenderables),
+    Auxiliary {
+        renderables: CaptureRenderables,
+        reverse_winding: bool,
+        reverse_depth: bool,
+    },
     Particles,
     Material {
         transmission: bool,
@@ -22,6 +26,7 @@ pub(super) enum DepthPass {
         renderables: CaptureRenderables,
         multisampling: bool,
         reverse_winding: bool,
+        reverse_depth: bool,
     },
 }
 
@@ -33,6 +38,7 @@ struct DepthVariant {
     particle: bool,
     multisampling: bool,
     reverse_winding: bool,
+    reverse_depth: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -102,7 +108,12 @@ impl DepthPipelines {
         pass: &mut wgpu::RenderPass<'_>,
         active: &mut Option<DepthPipelineKey>,
         mesh: &MeshBuffer,
-        (range, deformation, stage): (Range<u32>, Option<&DeformationBinding>, DepthPass),
+        (range, deformation, reflected, stage): (
+            Range<u32>,
+            Option<&DeformationBinding>,
+            bool,
+            DepthPass,
+        ),
     ) -> u64 {
         mesh.bind_geometry(pass);
         let mode = deformation.map_or(Deformation::Rigid, |binding| binding.mode);
@@ -110,7 +121,7 @@ impl DepthPipelines {
             mesh.bind_skin(pass);
         }
         let renderables = match stage {
-            DepthPass::Auxiliary(renderables) | DepthPass::Material { renderables, .. } => {
+            DepthPass::Auxiliary { renderables, .. } | DepthPass::Material { renderables, .. } => {
                 renderables
             }
             DepthPass::Particles => CaptureRenderables::All,
@@ -123,12 +134,13 @@ impl DepthPipelines {
             let Some(coverage) = part.depth_coverage else {
                 continue;
             };
-            let (multisampling, reverse_winding, cull) = match stage {
+            let (multisampling, reverse_winding, reverse_depth, cull) = match stage {
                 DepthPass::Material {
                     transmission,
                     cull_override,
                     multisampling,
                     reverse_winding,
+                    reverse_depth,
                     ..
                 } => {
                     if part.surface.depth_draw != MeshDepthDraw::OpaquePrepass
@@ -139,10 +151,16 @@ impl DepthPipelines {
                     (
                         multisampling,
                         reverse_winding,
+                        reverse_depth,
                         cull_override.unwrap_or(part.surface.cull),
                     )
                 }
-                _ => (false, false, part.surface.cull),
+                DepthPass::Auxiliary {
+                    reverse_winding,
+                    reverse_depth,
+                    ..
+                } => (false, reverse_winding, reverse_depth, part.surface.cull),
+                DepthPass::Particles => (false, false, false, part.surface.cull),
             };
             let variant = DepthVariant {
                 coverage,
@@ -150,7 +168,8 @@ impl DepthPipelines {
                 mode,
                 particle: matches!(stage, DepthPass::Particles),
                 multisampling,
-                reverse_winding,
+                reverse_winding: reverse_winding ^ reflected,
+                reverse_depth,
             };
             let program = part.material.vertex.as_ref();
             let key = DepthPipelineKey {
@@ -184,6 +203,7 @@ impl DepthPipelines {
             particle,
             multisampling,
             reverse_winding,
+            reverse_depth,
         } = variant;
         let mask = coverage.samples_alpha();
         self.pipelines.get(device, program, variant, |module| {
@@ -191,7 +211,8 @@ impl DepthPipelines {
                 GEOMETRY_LAYOUTS[0].clone(),
                 GEOMETRY_LAYOUTS[1].clone(),
                 None,
-                SKIN_LAYOUT,
+                SKIN_LAYOUT.filter(|_| mode.skin()),
+                INSTANCE_DATA_LAYOUT,
             ];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("XRack 3D depth-only mesh pipeline"),
@@ -211,11 +232,7 @@ impl DepthPipelines {
                         (true, Deformation::SkinMorph, false) => "vertex_skin_morph_mask",
                     }),
                     compilation_options: Default::default(),
-                    buffers: if mode.skin() {
-                        &skinned_buffers
-                    } else {
-                        &GEOMETRY_LAYOUTS
-                    },
+                    buffers: &skinned_buffers,
                 },
                 fragment: mask.then_some(wgpu::FragmentState {
                     module,
@@ -245,7 +262,10 @@ impl DepthPipelines {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_compare: Some(orient_depth_compare(
+                        wgpu::CompareFunction::Less,
+                        reverse_depth,
+                    )),
                     stencil: Default::default(),
                     bias: self.bias,
                 }),

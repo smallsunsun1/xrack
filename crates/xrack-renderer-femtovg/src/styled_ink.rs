@@ -12,7 +12,7 @@ use std::{
     ops::Range,
     rc::{Rc, Weak},
 };
-use xrack_layout::{LayoutNode, StyledFragment, StyledTextLayout, TextMeasurer};
+use xrack_layout::{LayoutNode, StyledFragment, StyledFragments, StyledTextLayout, TextMeasurer};
 use xrack_runtime::{Node, StyledText, TextStyle};
 
 const MAX_DOCUMENTS: usize = 8;
@@ -214,18 +214,19 @@ impl InkCache {
                 && entry.italic == italic
                 && entry.size_baseline == size_baseline
         };
-        let known =
-            self.entries.iter().rposition(|entry| {
-                entry.document == identity
-                    && same_font(entry)
-                    && (entry.plan.ptr_eq(&plan_key)
-                        || entry.plan.upgrade().is_some_and(|previous| {
-                            previous.fragments.len() == fragments.len()
-                                && previous.fragments.iter().zip(fragments).all(|(old, new)| {
-                                    Run::for_fragment(old) == Run::for_fragment(new)
-                                })
-                        }))
-            });
+        let known = self.entries.iter().rposition(|entry| {
+            entry.document == identity
+                && same_font(entry)
+                && (entry.plan.ptr_eq(&plan_key)
+                    || entry.plan.upgrade().is_some_and(|previous| {
+                        previous.fragments.len() == fragments.len()
+                            && previous
+                                .fragments
+                                .iter_range(0..fragments.len())
+                                .zip(fragments.iter_range(0..fragments.len()))
+                                .all(|(old, new)| Run::for_fragment(old) == Run::for_fragment(new))
+                    }))
+        });
         // Layout has already checked the source, typography and geometry of
         // this prefix. The previous ink and height are conservative bounds
         // even when part of the previous tail was replaced.
@@ -253,10 +254,11 @@ impl InkCache {
         } else {
             let (prefix, mut max_height) =
                 continued.map_or((0, 0.0), |(_, count, height)| (count, height));
-            let mut last_y = fragments[..prefix]
-                .last()
+            let mut last_y = fragments
+                .iter_range(prefix.saturating_sub(1)..prefix)
+                .next()
                 .map_or(f32::NEG_INFINITY, |fragment| fragment.bounds.y);
-            for fragment in &fragments[prefix..] {
+            for fragment in fragments.iter_range(prefix..fragments.len()) {
                 let bounds = fragment.bounds;
                 if bounds.y < last_y || !bounds.y.is_finite() {
                     return None;
@@ -307,8 +309,8 @@ impl InkCache {
                             }
                             let shared = previous
                                 .fragments
-                                .iter()
-                                .zip(fragments)
+                                .iter_range(0..previous.fragments.len())
+                                .zip(fragments.iter_range(0..fragments.len()))
                                 .take_while(|(old, new)| {
                                     let run = Run::for_fragment(old);
                                     run.source.0.as_ref().is_some_and(|range| range.end <= end)
@@ -323,7 +325,7 @@ impl InkCache {
                         system,
                         node,
                         document,
-                        &fragments[shared..],
+                        (fragments, shared..fragments.len()),
                         baseline,
                         spans.as_mut(),
                     )?;
@@ -338,7 +340,14 @@ impl InkCache {
                     if !self.prefix_disabled && spans.is_none() {
                         spans = Some(InkSpans::new(bytes));
                     }
-                    measure_ink(system, node, document, fragments, baseline, spans.as_mut())
+                    measure_ink(
+                        system,
+                        node,
+                        document,
+                        (fragments, 0..fragments.len()),
+                        baseline,
+                        spans.as_mut(),
+                    )
                 });
                 CachedInk {
                     source: document.clone(),
@@ -430,28 +439,24 @@ fn measure_ink(
     system: &TextSystem,
     node: &Node,
     document: &StyledText,
-    fragments: &[StyledFragment],
+    fragments: (&StyledFragments, Range<usize>),
     baseline: f32,
     spans: Option<&mut InkSpans>,
 ) -> Option<Ink> {
+    let (fragments, range) = fragments;
+    let count = range.len();
+    let fragments = fragments.iter_range(range);
     let Some(spans) = spans else {
-        return measure_ink_runs(system, node, document, fragments.iter(), baseline, None);
+        return measure_ink_runs(system, node, document, fragments, baseline, None);
     };
-    if fragments.len() < MIN_COVERAGE_FRAGMENTS {
-        return measure_ink_runs(
-            system,
-            node,
-            document,
-            fragments.iter(),
-            baseline,
-            Some(spans),
-        );
+    if count < MIN_COVERAGE_FRAGMENTS {
+        return measure_ink_runs(system, node, document, fragments, baseline, Some(spans));
     }
     if !spans.covered_runs.is_empty() {
         // Across widths of the same immutable document, an exact run keeps
         // its ink relative to the baseline. A wider envelope is safe to clip.
         let pending: Vec<_> = fragments
-            .iter()
+            .clone()
             .filter(|fragment| !spans.covered_runs.contains(&source_run_key(fragment)))
             .collect();
         if pending.is_empty() {
@@ -479,11 +484,11 @@ fn measure_ink(
         system,
         node,
         document,
-        fragments.iter(),
+        fragments.clone(),
         baseline,
         Some(spans),
     )?;
-    spans.cover(ink, fragments.iter());
+    spans.cover(ink, fragments);
     Some(ink)
 }
 

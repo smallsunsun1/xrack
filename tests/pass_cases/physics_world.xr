@@ -1,0 +1,262 @@
+// RAW: "xr.physics_function"{{.*}}value = "new"
+// RAW: "xr.physics_function"{{.*}}value = "step"
+// CHECK: [[FIRST:%[0-9]+]] = "xr.physics_function"{{.*}}value = "new"
+// CHECK: "xr.property"([[FIRST]]) <{name = "world"
+// CHECK: [[SECOND:%[0-9]+]] = "xr.physics_function"{{.*}}value = "new"
+// CHECK: "xr.property"([[SECOND]]) <{name = "other"
+// CHECK: "xr.callback"() <{name = "advance"
+// CHECK: "xr.physics_function"{{.*}}value = "position"
+// CHECK: [[TARGET:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-kinematic-target"
+// CHECK: "xr.evaluate"([[TARGET]])
+// CHECK: [[FILTER:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-collision-filter"
+// CHECK: "xr.evaluate"([[FILTER]])
+// CHECK: [[STEP:%[0-9]+]] = "xr.physics_function"{{.*}}value = "step"
+// CHECK: "xr.evaluate"([[STEP]])
+// CHECK: "xr.physics_function"{{.*}}value = "position"
+// CHECK: "xr.physics_function"{{.*}}value = "trigger-entered"
+// CHECK: "xr.callback"() <{name = "authored"
+// CHECK: "xr.physics_function"{{.*}}value = "body-by-id"{{.*}} -> !xr.int
+// CHECK: [[SYNC:%[0-9]+]] = "xr.physics_function"{{.*}}value = "sync-bodies"{{.*}} -> !xr.bool
+// CHECK: "xr.evaluate"([[SYNC]])
+// CHECK: "xr.physics_function"{{.*}}value = "body-by-id"{{.*}} -> !xr.int
+// CHECK: "xr.callback"() <{name = "clock"
+// CHECK: "xr.physics_function"{{.*}}value = "simulation-time"{{.*}} -> !xr.float
+// CHECK: [[BATCH:%[0-9]+]] = "xr.physics_function"{{.*}}value = "advance"{{.*}} -> !xr.int
+// CHECK: "xr.assign"([[BATCH]]) <{name = "clock-steps"
+// CHECK: "xr.physics_function"{{.*}}value = "simulation-time"{{.*}} -> !xr.float
+// CHECK: "xr.physics_function"{{.*}}value = "trigger-entered"{{.*}} -> !xr.intlist
+// CHECK: "xr.callback"() <{name = "collect"
+// CHECK: "xr.physics_function"{{.*}}value = "contacts"{{.*}} -> !xr.physicscontact3dlist
+// CHECK: [[REPORT:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-contact-reports"
+// CHECK: "xr.evaluate"([[REPORT]])
+// CHECK: "xr.physics_function"{{.*}}value = "step"
+// CHECK: "xr.physics_function"{{.*}}value = "contacts"{{.*}} -> !xr.physicscontact3dlist
+// CHECK: "xr.callback"() <{name = "control"
+// CHECK: "xr.physics_function"{{.*}}value = "character-support"
+// CHECK: [[HIT_REPORT:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-character-hit-reports"
+// CHECK: "xr.evaluate"([[HIT_REPORT]])
+// CHECK: [[WALK:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-character-movement"
+// CHECK: "xr.evaluate"([[WALK]])
+// CHECK: "xr.physics_function"{{.*}}value = "step"
+// CHECK: "xr.physics_function"{{.*}}value = "character-support"
+// CHECK: "xr.physics_function"{{.*}}value = "character-hits"{{.*}} -> !xr.physicscontact3dlist
+// CHECK: "xr.callback"() <{name = "drive"
+// CHECK: "xr.physics_function"{{.*}}value = "angular-velocity"
+// CHECK: [[LOAD:%[0-9]+]] = "xr.physics_function"{{.*}}value = "apply-force-at"
+// CHECK: "xr.evaluate"([[LOAD]])
+// CHECK: "xr.physics_function"{{.*}}value = "step"
+// CHECK: "xr.physics_function"{{.*}}value = "angular-velocity"
+// CHECK: "xr.callback"() <{name = "handoff"
+// CHECK: "xr.physics_function"{{.*}}value = "is-kinematic"{{.*}} -> !xr.bool
+// CHECK: [[TAKE:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-kinematic"
+// CHECK: "xr.evaluate"([[TAKE]])
+// CHECK: [[PIVOT:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-kinematic-target-with-pivot"
+// CHECK: "xr.evaluate"([[PIVOT]])
+// CHECK: "xr.physics_function"{{.*}}value = "step"
+// CHECK: [[RELEASE:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-kinematic"
+// CHECK: "xr.evaluate"([[RELEASE]])
+// CHECK: "xr.physics_function"{{.*}}value = "is-kinematic"{{.*}} -> !xr.bool
+// CHECK: "xr.callback"() <{name = "mass-setup"
+// CHECK: "xr.physics_function"{{.*}}value = "mass"{{.*}} -> !xr.float
+// CHECK: [[DENSITY:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-default-density"
+// CHECK: "xr.evaluate"([[DENSITY]])
+// CHECK: [[FOLLOW:%[0-9]+]] = "xr.physics_function"{{.*}}value = "use-default-density"
+// CHECK: "xr.evaluate"([[FOLLOW]])
+// CHECK: [[TENSOR:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-inertia-matrix"
+// CHECK: "xr.evaluate"([[TENSOR]])
+// CHECK: "xr.physics_function"{{.*}}value = "mass"{{.*}} -> !xr.float
+// CHECK: "xr.callback"() <{name = "pair-settings"
+// CHECK: "xr.physics_function"{{.*}}value = "report-static-kinematic-collisions"{{.*}} -> !xr.bool
+// CHECK: [[MODES:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-kinematic-contact-reports"
+// CHECK: "xr.evaluate"([[MODES]])
+// CHECK: "xr.physics_function"{{.*}}value = "report-static-kinematic-collisions"{{.*}} -> !xr.bool
+// CHECK: "xr.callback"() <{name = "probe"
+// CHECK: [[MASK:%[0-9]+]] = "xr.literal"() <{value = "4294967295"}> : () -> !xr.int
+// CHECK: [[NEAR:%[0-9]+]] = "xr.physics_function"({{.*}}[[MASK]]{{.*}}value = "ray-cast"{{.*}} -> !xr.physicshit3d
+// CHECK-NEXT: [[LOCAL:%[0-9]+]] = "xr.local"([[NEAR]])
+// CHECK-NEXT: "xr.physics_hit3d_field"([[LOCAL]]) <{value = "distance"
+// CHECK: [[MOVE:%[0-9]+]] = "xr.physics_function"{{.*}}value = "reset-body"
+// CHECK: "xr.evaluate"([[MOVE]])
+// CHECK: "xr.physics_function"{{.*}}value = "ray-cast-all"{{.*}} -> !xr.physicshit3dlist
+// CHECK: "xr.physics_function"{{.*}}value = "shape-cast"{{.*}} -> !xr.physicshit3d
+// CHECK: "xr.physics_function"{{.*}}value = "shape-cast-all"{{.*}} -> !xr.physicshit3dlist
+// CHECK: "xr.physics_function"{{.*}}value = "shape-overlap"{{.*}} -> !xr.intlist
+// CHECK: "xr.callback"() <{name = "settings"
+// CHECK: "xr.physics_function"{{.*}}value = "ccd-substeps"{{.*}} -> !xr.int
+// CHECK: [[CCD:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-ccd-substeps"
+// CHECK: "xr.evaluate"([[CCD]])
+// CHECK: [[LENGTH:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-length-unit"
+// CHECK: "xr.evaluate"([[LENGTH]])
+// CHECK: [[GRAVITY:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-gravity"
+// CHECK: "xr.evaluate"([[GRAVITY]])
+// CHECK: "xr.physics_function"{{.*}}value = "ccd-substeps"{{.*}} -> !xr.int
+// CHECK: "xr.callback"() <{name = "spawn"
+// CHECK: [[COMPOUND:%[0-9]+]] = "xr.physics_function"{{.*}}value = "add-body"
+// CHECK: "xr.evaluate"([[COMPOUND]])
+// CHECK: "xr.physics_function"{{.*}}value = "step"
+// CHECK: "xr.callback"() <{name = "surface"
+// CHECK: "xr.physics_function"{{.*}}value = "static-friction"{{.*}} -> !xr.float
+// CHECK: [[MATERIAL:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-material"
+// CHECK: "xr.evaluate"([[MATERIAL]])
+// CHECK: "xr.physics_function"{{.*}}value = "static-friction"{{.*}} -> !xr.float
+// CHECK: "xr.callback"() <{name = "turn"
+// CHECK: "xr.physics_function"{{.*}}value = "joint-position"
+// CHECK: [[MOTOR:%[0-9]+]] = "xr.physics_function"{{.*}}value = "set-joint-motor"
+// CHECK: "xr.evaluate"([[MOTOR]])
+// CHECK: "xr.physics_function"{{.*}}value = "step"
+// CHECK: "xr.physics_function"{{.*}}value = "joint-position"
+// CHECK: "xr.element"() <{{.*}}kind = "SceneView3D"
+// CHECK: "xr.bind"{{.*}}name = "physics-world"
+// CHECK: "xr.bind"{{.*}}name = "physics-debug"
+// CHECK: "xr.bind"{{.*}}name = "physics-debug-body"
+
+struct Collider { shape: string }
+struct Body { id: string, body-kind: string, position: point3d, shapes: [Collider] }
+
+export component App inherits Window {
+    in-out property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    in-out property <physicsworld3d> other: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    in-out property <int> body: 0;
+    out property <float> drop: 0;
+    out property <[int]> entered;
+    in-out property <int> joint: 0;
+    out property <float> rotation-delta: 0;
+    out property <int> contact-delta: 0;
+    out property <float> spin-delta: 0;
+    out property <int> support-delta: 0;
+    out property <int> hit-total: 0;
+    out property <float> old-hit-distance: 0;
+    out property <[physicshit3d]> ray-hits;
+    out property <physicshit3d> first-volume-hit;
+    out property <[physicshit3d]> volume-hits;
+    out property <[int]> overlapping;
+    out property <float> grip-delta: 0;
+    out property <float> mass-delta: 0;
+    out property <bool> mode-changed: false;
+    out property <float> clock-delta: 0;
+    out property <int> clock-steps: 0;
+    out property <int> ccd-change: 0;
+    out property <bool> report-change: false;
+    SceneView3D {
+        physics-world: root.world;
+        physics-debug: root.mode-changed;
+        physics-debug-body: root.body;
+    }
+    callback authored();
+    authored() => {
+        let prior = Physics3D.body-by-id(root.world, "platform");
+        Physics3D.sync-bodies(root.world, [
+            Body { id: "platform", body-kind: "fixed", position: Point3D.new(0, 0, 0),
+                   shapes: [Collider { shape: "box" }] },
+        ]);
+        root.body = Physics3D.body-by-id(root.world, "platform") - prior;
+    }
+    callback advance();
+    advance() => {
+        let before = Physics3D.position(root.world, root.body);
+        Physics3D.set-kinematic-target(root.world, root.body, Point3D.new(0, 1, 0), Vector3D.new(0, 0, 0));
+        Physics3D.set-collision-filter(root.world, root.body, 1, 0);
+        Physics3D.step(root.world);
+        let after = Physics3D.position(root.world, root.body);
+        root.drop = before.y - after.y;
+        root.entered = Physics3D.trigger-entered(root.world, root.body);
+    }
+    callback turn();
+    turn() => {
+        let old-angle = Physics3D.joint-position(root.world, root.joint);
+        Physics3D.set-joint-motor(root.world, root.joint, 90, 100);
+        Physics3D.step(root.world);
+        root.rotation-delta = Physics3D.joint-position(root.world, root.joint) - old-angle;
+    }
+    callback spawn();
+    spawn() => {
+        Physics3D.add-body(root.world, Point3D.new(0, 0, 0), Vector3D.new(0, 0, 0), [
+            Collider { shape: "box" }, Collider { shape: "sphere" },
+        ], 2, 0, 0);
+        Physics3D.step(root.world);
+    }
+    callback collect();
+    collect() => {
+        let before = Model.count(Physics3D.contacts(root.world, root.body));
+        Physics3D.set-contact-reports(root.world, root.body, true, true);
+        Physics3D.step(root.world);
+        root.contact-delta = Model.count(Physics3D.contacts(root.world, root.body)) - before;
+    }
+    callback drive();
+    drive() => {
+        let before = Physics3D.angular-velocity(root.world, root.body);
+        Physics3D.apply-force-at(root.world, root.body, Vector3D.new(6, 0, 0), Point3D.new(0, 1, 0));
+        Physics3D.step(root.world);
+        let after = Physics3D.angular-velocity(root.world, root.body);
+        root.spin-delta = after.z - before.z;
+    }
+    callback pair-settings();
+    pair-settings() => {
+        let previous = Physics3D.report-static-kinematic-collisions(root.world);
+        Physics3D.set-kinematic-contact-reports(root.world, true, false);
+        root.report-change = Physics3D.report-static-kinematic-collisions(root.world) != previous;
+    }
+    callback settings();
+    settings() => {
+        let previous = Physics3D.ccd-substeps(root.world);
+        Physics3D.set-ccd-substeps(root.world, 4);
+        Physics3D.set-length-unit(root.world, 100);
+        Physics3D.set-gravity(root.world, Vector3D.new(0, -981, 0));
+        root.ccd-change = Physics3D.ccd-substeps(root.world) - previous;
+    }
+    callback clock();
+    clock() => {
+        let old-time = Physics3D.simulation-time(root.world);
+        root.clock-steps = Physics3D.advance(root.world, 0.24, 8);
+        root.clock-delta = Physics3D.simulation-time(root.world) - old-time;
+        root.entered = Physics3D.trigger-entered(root.world, root.body);
+    }
+    callback handoff();
+    handoff() => {
+        let previous = Physics3D.is-kinematic(root.world, root.body);
+        Physics3D.set-kinematic(root.world, root.body, true);
+        Physics3D.set-kinematic-target-with-pivot(root.world, root.body,
+            Point3D.new(0, 1, 0), Vector3D.new(45, 0, 0), Vector3D.new(-0.5, 0, 0));
+        Physics3D.step(root.world);
+        Physics3D.set-kinematic(root.world, root.body, false);
+        root.mode-changed = previous != Physics3D.is-kinematic(root.world, root.body);
+    }
+    callback mass-setup();
+    mass-setup() => {
+        let before = Physics3D.mass(root.world, root.body);
+        Physics3D.set-default-density(root.world, 2);
+        Physics3D.use-default-density(root.world, root.body);
+        Physics3D.set-inertia-matrix(root.world, root.body, 3, Point3D.new(0, 0.5, 0),
+            Vector3D.new(2, 0.75, 0), Vector3D.new(0.75, 1.5, 0), Vector3D.new(0, 0, 1));
+        root.mass-delta = Physics3D.mass(root.world, root.body) - before;
+    }
+    callback probe();
+    probe() => {
+        let origin = Point3D.new(0, 1, 0);
+        let direction = Vector3D.new(1, 0, 0);
+        let before = Physics3D.ray-cast(root.world, origin, direction, 10);
+        root.old-hit-distance = before.distance;
+        Physics3D.reset-body(root.world, root.body, Point3D.new(5, 1, 0), Vector3D.new(0, 0, 0));
+        root.ray-hits = Physics3D.ray-cast-all(root.world, origin, direction, 10, 1, 0, true);
+        let shapes = [Collider { shape: "sphere" }];
+        let rotation = Vector3D.new(0, 0, 0);
+        root.first-volume-hit = Physics3D.shape-cast(root.world, origin, rotation, shapes, direction, 10);
+        root.volume-hits = Physics3D.shape-cast-all(root.world, origin, rotation, shapes, direction, 10, 1);
+        root.overlapping = Physics3D.shape-overlap(root.world, origin, rotation, shapes, 1, root.body, true);
+    }
+    callback surface();
+    surface() => {
+        let before = Physics3D.static-friction(root.world, root.body);
+        Physics3D.set-material(root.world, root.body, 0.9, 0.2, 0.5);
+        root.grip-delta = Physics3D.static-friction(root.world, root.body) - before;
+    }
+    callback control();
+    control() => {
+        let before = Physics3D.character-support(root.world, root.body);
+        Physics3D.set-character-hit-reports(root.world, root.body, true);
+        Physics3D.set-character-movement(root.world, root.body, Vector3D.new(1, 0, 0));
+        Physics3D.step(root.world);
+        root.support-delta = Physics3D.character-support(root.world, root.body) - before;
+        root.hit-total = Model.count(Physics3D.character-hits(root.world, root.body));
+    }
+}

@@ -1,0 +1,107 @@
+struct ReportsActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, visible: bool,
+}
+
+export component KinematicReportsDemo inherits Window {
+    title: "XRack · 运动学接触报告";
+    width: 736px; height: 462px; resizable: false; background: #172735;
+
+    property <vector3d> zero: Vector3D.new(0, 0, 0);
+    property <physicsworld3d> world: Physics3D.new(root.zero, 0.1);
+    property <point3d> blue-start: Point3D.new(-1.65, 0.58, 0.92);
+    property <point3d> teal-start: Point3D.new(-1.65, 0.58, -0.92);
+    property <point3d> fixed-wall: Point3D.new(0, 0.62, 0.92);
+    property <point3d> kinematic-wall: Point3D.new(0, 0.62, -0.92);
+    property <vector3d> mover-size: Vector3D.new(0.7, 0.54, 0.62);
+    property <vector3d> wall-size: Vector3D.new(0.24, 1.24, 1.13);
+    out property <int> blue: 0;
+    out property <int> teal: 0;
+    out property <int> fixed: 0;
+    out property <int> parked: 0;
+    out property <bool> report-fixed: Physics3D.report-static-kinematic-collisions(root.world);
+    out property <bool> report-pair: Physics3D.report-kinematic-kinematic-collisions(root.world);
+    out property <point3d> blue-position: root.blue == 0 ? root.blue-start : Physics3D.position(root.world, root.blue);
+    out property <point3d> teal-position: root.teal == 0 ? root.teal-start : Physics3D.position(root.world, root.teal);
+    out property <[physicscontact3d]> blue-contacts: Physics3D.contacts(root.world, root.blue);
+    out property <[physicscontact3d]> teal-contacts: Physics3D.contacts(root.world, root.teal);
+    property <physicscontact3d> missing;
+    out property <physicscontact3d> blue-contact: Model.at(root.blue-contacts, 0, root.missing);
+    out property <physicscontact3d> teal-contact: Model.at(root.teal-contacts, 0, root.missing);
+    out property <int> fixed-count: Model.count(root.blue-contacts);
+    out property <int> pair-count: Model.count(root.teal-contacts);
+
+    callback reset();
+    reset() => {
+        Physics3D.clear(root.world);
+        root.fixed = Physics3D.add-box(root.world, root.fixed-wall, root.wall-size, 0, 0.4, 0);
+        root.parked = Physics3D.add-kinematic-box(root.world, root.kinematic-wall, root.wall-size, root.zero, 0.4, 0);
+        root.blue = Physics3D.add-kinematic-box(root.world, root.blue-start, root.mover-size, root.zero, 0.35, 0);
+        root.teal = Physics3D.add-kinematic-box(root.world, root.teal-start, root.mover-size, root.zero, 0.35, 0);
+        Physics3D.set-contact-reports(root.world, root.fixed, true, false);
+        Physics3D.set-contact-reports(root.world, root.parked, true, false);
+        Physics3D.set-contact-reports(root.world, root.blue, false, true);
+        Physics3D.set-contact-reports(root.world, root.teal, false, true);
+    }
+    callback advance();
+    advance() => { Physics3D.step(root.world); }
+    callback configure(fixed-reports: bool, pair-reports: bool);
+    configure(fixed-reports, pair-reports) => {
+        Physics3D.set-kinematic-contact-reports(root.world, fixed-reports, pair-reports);
+    }
+    callback place(touching: bool);
+    place(touching) => {
+        if root.blue == 0 { root.reset(); }
+        Physics3D.set-kinematic-target(root.world, root.blue,
+            touching ? Point3D.new(-0.28, root.blue-start.y, root.blue-start.z) : root.blue-start, root.zero);
+        Physics3D.set-kinematic-target(root.world, root.teal,
+            touching ? Point3D.new(-0.28, root.teal-start.y, root.teal-start.z) : root.teal-start, root.zero);
+        root.advance();
+    }
+
+    pure function part(id: string, mesh: string, center: point3d, size: vector3d, tint: color, visible: bool) -> ReportsActor {
+        ReportsActor {
+            id: id, mesh: mesh, x: center.x, y: center.y, z: center.z,
+            scale-x: size.x, scale-y: size.y, scale-z: size.z, yaw: 0, pitch: 0, roll: 0,
+            color: tint, visible: visible,
+        }
+    }
+    property <[ReportsActor]> actors: [
+        root.part("floor", "primitive:box", Point3D.new(0, -0.10, 0), Vector3D.new(7.8, 0.20, 4.6), #304858, true),
+        root.part("fixed-wall", "primitive:box", root.fixed-wall, root.wall-size, #7297b8, true),
+        root.part("kinematic-wall", "primitive:box", root.kinematic-wall, root.wall-size, #508e8a, true),
+        root.part("blue-body", "primitive:box", root.blue-position, root.mover-size, #9fc9ed, true),
+        root.part("teal-body", "primitive:box", root.teal-position, root.mover-size, #7be0c7, true),
+        root.part("blue-contact", "primitive:sphere", root.blue-contact.position, Vector3D.new(0.22, 0.22, 0.22), #ffcf7a, root.fixed-count > 0),
+        root.part("teal-contact", "primitive:sphere", root.teal-contact.position, Vector3D.new(0.22, 0.22, 0.22), #ffcf7a, root.pair-count > 0),
+    ];
+    SceneView3D {
+        width: 736px; height: 378px; model: root.actors;
+        camera-yaw: 20; camera-pitch: 32; camera-distance: 9.9;
+        scene-background: #203949; ambient-intensity: 0.59; multisampling: true;
+    }
+    report-status := Text {
+        x: 18px; y: 14px; color: #edf1f7;
+        text: "接触点 · 固定 " + root.fixed-count + "   ·   运动学 " + root.pair-count;
+    }
+    report-detail := Text {
+        x: 18px; y: 42px; color: #c3d6e1;
+        text: "法向冲量 · 蓝 " + root.blue-contact.normal-impulse
+            + "   ·   青 " + root.teal-contact.normal-impulse;
+    }
+    HorizontalLayout {
+        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
+        forward := Button { text: "移向薄壁"; clicked => { root.place(true); } }
+        back := Button { text: "退回"; clicked => { root.place(false); } }
+        fixed-mode := Button {
+            text: root.report-fixed ? "固定报告开" : "固定报告关";
+            clicked => { root.configure(!root.report-fixed, root.report-pair); root.advance(); }
+        }
+        pair-mode := Button {
+            text: root.report-pair ? "运动学报告开" : "运动学报告关";
+            clicked => { root.configure(root.report-fixed, !root.report-pair); root.advance(); }
+        }
+        reset := Button { text: "重置"; clicked => { root.reset(); } }
+    }
+}

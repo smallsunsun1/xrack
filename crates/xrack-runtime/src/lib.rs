@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 37;
+pub const CODEGEN_ABI_VERSION: u32 = 68;
 
 mod animation;
 mod arithmetic;
@@ -40,6 +40,7 @@ mod scene_environment;
 mod scene_fog;
 mod scene_hierarchy;
 mod scene_indices;
+mod scene_instance_table;
 mod scene_lighting;
 mod scene_lightmap;
 mod scene_material;
@@ -52,6 +53,8 @@ mod scene_particles;
 mod scene_pick;
 mod scene_primitives;
 mod scene_projection;
+mod scene_random_instances;
+mod scene_rotation;
 mod scene_skin;
 mod scene_surface;
 mod scene_visibility;
@@ -84,6 +87,7 @@ mod localization;
 mod localized_number;
 mod model;
 mod native_dialog;
+mod physics3d;
 mod picker;
 mod pointer;
 mod property;
@@ -272,11 +276,16 @@ pub use native_dialog::{
     NativeDialogEvent, NativeDialogOptions, NativeDialogPresentation, NativeDialogQueue,
     NativeDialogRegistration, NativeDialogResult, NativeDialogSlot,
 };
+#[doc(hidden)]
+pub use physics3d::{
+    PhysicsBodySpec, PhysicsCollider3D, PhysicsContact3D, PhysicsDebugLines, PhysicsDebugVertex,
+    PhysicsHit3D, PhysicsJointSpec, PhysicsQueryFilter3D, PhysicsShape3D, PhysicsShapeSpec,
+    PhysicsWorld3D,
+};
 pub use pointer::{
     PointerButton, PointerButtons, PointerEvent, PointerEventKind, PointerHandle, TouchPoint,
     TouchPoints,
 };
-#[doc(hidden)]
 pub use property::ComponentLifetime;
 pub use property::{ChangeSignal, InputProperty, Property};
 pub use range::{
@@ -297,7 +306,10 @@ pub use scene_plan::{
     GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, LoadedVectorPath, ScenePlanSlice,
     StaticVectorPath, VectorSegment,
 };
-pub use scene3d::{Hit3D, Point3D, ProjectedPoint3D, Vector3D};
+pub use scene_rotation::{Quaternion3D, RotationTrack3D};
+pub use scene3d::{
+    Hit3D, Instance3D, InstanceTable3D, Point3D, ProjectedPoint3D, Vector3D, WalkResult3D,
+};
 #[doc(hidden)]
 pub use split::{
     SplitHandleInput, SplitResizeHandle, SplitState, decode_split_sizes, decode_split_state,
@@ -354,7 +366,8 @@ pub use time_picker::Time;
 pub use time_picker::{TimePickerOptions, TimePopupState};
 #[doc(hidden)]
 pub use timer::{
-    TimerCommand, TimerConfig, TimerDelivery, TimerQueue, TimerRegistration, TimerSlot, TimerTick,
+    FrameTick, TimerCommand, TimerConfig, TimerDelivery, TimerQueue, TimerRegistration, TimerSlot,
+    TimerTick,
 };
 pub use tree::{TreeAction, TreeCommand, TreeItem, TreeSelectionAction, TreeSnapshot, TreeState};
 #[doc(hidden)]
@@ -1096,6 +1109,34 @@ pub struct Percent(pub f64);
 pub struct Color(pub u32);
 
 impl Color {
+    pub(crate) fn normalized_rgba(self) -> [f64; 4] {
+        self.0.to_be_bytes().map(|byte| f64::from(byte) / 255.0)
+    }
+
+    /// Determine the hue sector of a chromatic RGB sample.
+    pub(crate) fn hue_sector([red, green, blue]: [f64; 3], high: f64, chroma: f64) -> f64 {
+        let sector = if high == red {
+            (green - blue) / chroma
+        } else if high == green {
+            (blue - red) / chroma + 2.0
+        } else {
+            (red - green) / chroma + 4.0
+        };
+        sector.rem_euclid(6.0)
+    }
+
+    pub(crate) fn chromatic_rgb(sector: f64, chroma: f64) -> [f64; 3] {
+        let middle = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
+        match sector as u8 {
+            0 => [chroma, middle, 0.0],
+            1 => [middle, chroma, 0.0],
+            2 => [0.0, chroma, middle],
+            3 => [0.0, middle, chroma],
+            4 => [middle, 0.0, chroma],
+            _ => [chroma, 0.0, middle],
+        }
+    }
+
     #[doc(hidden)]
     pub fn from_rgba(red: i64, green: i64, blue: i64, alpha: f64) -> Self {
         let channel = |value: i64| value.clamp(0, 255) as u32;
@@ -1691,6 +1732,8 @@ pub enum Value {
     SceneLights(Arc<scene3d::SceneLightModel>),
     SceneEnvironment(Option<Arc<scene3d::EnvironmentProbe>>),
     SceneReflections(Arc<[scene3d::ReflectionProbe]>),
+    #[doc(hidden)]
+    PhysicsDebugLines(PhysicsDebugLines),
     SceneFogVolumes(Arc<[scene3d::FogVolume3D]>),
     #[doc(hidden)]
     SceneEffects(Arc<scene_effect::Chain>),
@@ -1703,9 +1746,19 @@ pub enum Value {
     Point2D(Point2D),
     Point3D(Point3D),
     Vector3D(Vector3D),
+    Quaternion3D(Quaternion3D),
+    RotationTrack3D(RotationTrack3D),
     Hit3D(Hit3D),
     Hit3DList(VecModel<Hit3D>),
+    PhysicsContact3D(PhysicsContact3D),
+    PhysicsContact3DList(VecModel<PhysicsContact3D>),
+    PhysicsHit3D(PhysicsHit3D),
+    PhysicsHit3DList(VecModel<PhysicsHit3D>),
     ProjectedPoint3D(ProjectedPoint3D),
+    Instance3D(Instance3D),
+    InstanceTable3D(InstanceTable3D),
+    WalkResult3D(WalkResult3D),
+    PhysicsWorld3D(PhysicsWorld3D),
     Vector2D(Vector2D),
     Transform2D(Transform2D),
     Percent(Percent),
@@ -1829,9 +1882,20 @@ value_from!(Length, Length);
 value_from!(Point2D, Point2D);
 value_from!(Point3D, Point3D);
 value_from!(Vector3D, Vector3D);
+value_from!(Quaternion3D, Quaternion3D);
+value_from!(RotationTrack3D, RotationTrack3D);
 value_from!(Hit3D, Hit3D);
 value_from!(VecModel<Hit3D>, Hit3DList);
+value_from!(PhysicsContact3D, PhysicsContact3D);
+value_from!(VecModel<PhysicsContact3D>, PhysicsContact3DList);
+value_from!(PhysicsHit3D, PhysicsHit3D);
+value_from!(VecModel<PhysicsHit3D>, PhysicsHit3DList);
 value_from!(ProjectedPoint3D, ProjectedPoint3D);
+value_from!(Instance3D, Instance3D);
+value_from!(InstanceTable3D, InstanceTable3D);
+value_from!(WalkResult3D, WalkResult3D);
+value_from!(PhysicsWorld3D, PhysicsWorld3D);
+value_from!(Arc<scene3d::SceneModel>, SceneObjects);
 value_from!(Vector2D, Vector2D);
 value_from!(Transform2D, Transform2D);
 value_from!(Percent, Percent);
@@ -2567,6 +2631,11 @@ impl Node {
                 | "multisampling"
                 | "supersampling"
                 | "progressive-aa"
+                | "reflection-faces-per-frame"
+                | "reflection-filter-passes-per-frame"
+                | "reflection-filter-texels-per-frame"
+                | "bake-denoise-passes"
+                | "bake-indirect-factor"
                 | "temporal-aa"
                 | "temporal-aa-mode"
                 | "temporal-aa-strength"
@@ -2665,60 +2734,111 @@ impl Node {
     /// Compare frame inputs, allowing paint-only values to differ.
     #[doc(hidden)]
     pub fn same_frame_inputs(&self, other: &Self) -> bool {
-        self.same_layout_inputs(other, false)
+        self.same_layout_inputs(other, false, false)
     }
 
     /// Compare a subtree after its parent has resolved the root's position.
     /// Child positions and all layout-affecting inputs remain significant.
     #[doc(hidden)]
     pub fn same_local_layout_inputs(&self, other: &Self) -> bool {
-        self.same_layout_inputs(other, true)
+        self.same_layout_inputs(other, true, false)
     }
 
     #[doc(hidden)]
     pub fn same_measurement_inputs_at_node(&self, other: &Self) -> bool {
-        self.shares_storage_with(other) || self.same_own_layout_inputs(other, false, true)
+        self.shares_storage_with(other) || self.same_own_layout_inputs(other, false, true, false)
     }
 
-    fn same_layout_inputs(&self, other: &Self, local: bool) -> bool {
+    #[doc(hidden)]
+    pub fn same_measurement_inputs_as_child(&self, other: &Self, parent: &Self) -> bool {
+        self.shares_storage_with(other)
+            || self.same_own_layout_inputs(other, false, true, parent.fixed_text_children())
+    }
+
+    fn same_layout_inputs(&self, other: &Self, local: bool, fixed_text_child: bool) -> bool {
         if self.shares_storage_with(other) {
             return true;
         }
-        self.same_own_layout_inputs(other, local, false)
-            && self.children.len() == other.children.len()
-            && self
-                .children
-                .iter()
-                .zip(&other.children)
-                .all(|(child, other)| child.same_frame_inputs(other))
+        if !self.same_own_layout_inputs(other, local, false, fixed_text_child)
+            || self.children.len() != other.children.len()
+        {
+            return false;
+        }
+        if self.children.is_empty() {
+            return true;
+        }
+        let fixed_text_children = self.fixed_text_children();
+        self.children
+            .iter()
+            .zip(&other.children)
+            .all(|(child, other)| child.same_layout_inputs(other, false, fixed_text_children))
     }
 
-    fn same_own_layout_inputs(&self, other: &Self, local: bool, ignore_transform: bool) -> bool {
+    fn fixed_text_children(&self) -> bool {
+        // These parents measure children with the standard fixed-size rules.
+        // Keep specialized controls on their existing invalidation paths.
+        matches!(
+            self.kind,
+            "Window"
+                | "ApplicationWindow"
+                | "Rectangle"
+                | "Pane"
+                | "ControlFrame"
+                | "HorizontalLayout"
+                | "VerticalLayout"
+                | "HorizontalBox"
+                | "VerticalBox"
+                | "GridLayout"
+                | "FlexboxLayout"
+                | "FlowLayout"
+                | "Row"
+        )
+    }
+
+    fn same_own_layout_inputs(
+        &self,
+        other: &Self,
+        local: bool,
+        ignore_transform: bool,
+        fixed_text_child: bool,
+    ) -> bool {
         let paint_only = self.paint_only & other.paint_only;
         let ignore_frame = self.kind == "AnimatedImage" && other.kind == "AnimatedImage";
         let is_image = matches!(self.kind, "Image" | "AnimatedImage") && self.kind == other.kind;
         // The source contributes intrinsic dimensions. Explicit sizes
         // override both axes, and the remaining layout properties are still
         // compared below, including any source clip.
-        let fixed_image_box = |node: &Self| {
+        let fixed_box = |node: &Self| {
             node.relative_length("width", 0.0).is_some()
                 && node.relative_length("height", 0.0).is_some()
         };
         let ignore_image_source = is_image
-            && (fixed_image_box(self) && fixed_image_box(other)
+            && (fixed_box(self) && fixed_box(other)
                 || self.image_size("source") == other.image_size("source"));
-        let fixed_visual_box =
+        let absolute_box =
             |node: &Self| node.length("width").is_some() && node.length("height").is_some();
-        let relevant = |(name, _): &(&&str, &Value)| match **name {
+        let fixed_plain_text = |node: &Self| {
+            node.children.is_empty()
+                && matches!(node.properties.get("text"), None | Some(Value::String(_)))
+                && fixed_box(node)
+        };
+        let ignore_text = || {
+            (paint_only & self.paint_only_bit("text") != 0
+                && absolute_box(self)
+                && absolute_box(other))
+                || (fixed_text_child
+                    && matches!(self.kind, "Text" | "Label")
+                    && fixed_plain_text(self)
+                    && fixed_plain_text(other))
+        };
+        let relevant = |name: &str| match name {
             "x" | "y" if local => false,
             name if ignore_transform && (name == "transform" || name.starts_with("transform-")) => {
                 false
             }
             "source" if is_image => !ignore_image_source,
-            "text" if paint_only & self.paint_only_bit(name) != 0 => {
-                !fixed_visual_box(self) || !fixed_visual_box(other)
-            }
-            name if paint_only & self.paint_only_bit(name) != 0 => false,
+            "text" => !ignore_text(),
+            name if paint_only != 0 && paint_only & self.paint_only_bit(name) != 0 => false,
             "opacity" => false,
             "selection-color" | "selected-text-color" => false,
             "drop-shadow-blur"
@@ -2735,12 +2855,43 @@ impl Node {
             "colorize" => !is_image,
             _ => true,
         };
-        self.same_structure_and_state(other)
-            && self
-                .properties
-                .iter()
-                .filter(relevant)
-                .eq(other.properties.iter().filter(relevant))
+        if !self.same_structure_and_state(other) {
+            return false;
+        }
+        let mut previous = self.properties.iter();
+        let mut current = other.properties.iter();
+        loop {
+            match (previous.next(), current.next()) {
+                (Some((old_name, old_value)), Some((new_name, new_value)))
+                    if old_name == new_name =>
+                {
+                    let changed = match (old_value, new_value) {
+                        (Value::Length(Length(before)), Value::Length(Length(after)))
+                        | (Value::Percent(Percent(before)), Value::Percent(Percent(after))) => {
+                            // Move-only updates usually preserve the geometry of
+                            // the cached subtree. Check these scalars before
+                            // classifying their property names.
+                            before != after && relevant(old_name)
+                        }
+                        _ => relevant(old_name) && old_value != new_value,
+                    };
+                    if changed {
+                        return false;
+                    }
+                }
+                (None, None) => return true,
+                (old, new) => {
+                    // The compared prefix is already equivalent. Properties
+                    // can be absent on one side if layout ignores them.
+                    let keep = |(name, _): &(&&str, &Value)| relevant(name);
+                    return old
+                        .into_iter()
+                        .chain(previous)
+                        .filter(keep)
+                        .eq(new.into_iter().chain(current).filter(keep));
+                }
+            }
+        }
     }
 
     /// Compare this node's paint inputs. Descendants are tracked separately.
@@ -3572,6 +3723,72 @@ impl Node {
 #[cfg(test)]
 mod node_storage_tests {
     use super::*;
+
+    #[test]
+    fn layout_property_comparison_handles_different_ignored_keys() {
+        let mut original = Node::new("Rectangle", None);
+        original.properties.insert("width", Length(80.0).into());
+        original.properties.insert("height", Length(32.0).into());
+        original.properties.insert("opacity", 0.75.into());
+        let mut changed = original.clone();
+        changed.properties.remove("opacity");
+        changed
+            .properties
+            .insert("drop-shadow-blur", Length(3.0).into());
+        assert!(original.same_frame_inputs(&changed));
+
+        changed.properties.insert("x", Length(12.0).into());
+        assert!(original.same_local_layout_inputs(&changed));
+        assert!(!original.same_frame_inputs(&changed));
+
+        changed.properties.remove("width");
+        assert!(!original.same_local_layout_inputs(&changed));
+        changed.properties.insert("width", Length(80.0).into());
+        changed.properties.insert("height", Length(40.0).into());
+        assert!(!original.same_local_layout_inputs(&changed));
+    }
+
+    #[test]
+    fn fixed_plain_text_uses_parent_layout_rules_for_invalidation() {
+        for kind in ["Text", "Label"] {
+            let mut parent = Node::new("Rectangle", None);
+            let mut text = Node::new(kind, None);
+            text.properties.insert("text", "Old".to_owned().into());
+            text.properties.insert("width", Percent(0.5).into());
+            text.properties.insert("height", Length(24.0).into());
+            parent.children.push(text);
+
+            let mut changed = parent.clone();
+            changed.children[0]
+                .properties
+                .insert("text", "New text needs more room".to_owned().into());
+            assert!(parent.same_frame_inputs(&changed));
+            assert!(!parent.children[0].same_own_paint_inputs(&changed.children[0]));
+            assert!(!parent.children[0].same_frame_inputs(&changed.children[0]));
+            let mut index = SceneIndex::default();
+            index.synchronize(&parent, 0);
+            let changes = index.synchronize(&changed, 0);
+            assert_eq!(changes.measure, 0);
+            assert_eq!(changes.paint, 1);
+
+            let mut resized = changed.clone();
+            resized.children[0]
+                .properties
+                .insert("width", Length(48.0).into());
+            assert!(!changed.same_frame_inputs(&resized));
+
+            for scene in [&mut parent, &mut changed] {
+                scene.kind = "TabWidget";
+            }
+            assert!(!parent.same_frame_inputs(&changed));
+
+            for scene in [&mut parent, &mut changed] {
+                scene.kind = "Rectangle";
+                scene.children[0].properties.remove("height");
+            }
+            assert!(!parent.same_frame_inputs(&changed));
+        }
+    }
 
     #[test]
     fn image_source_updates_use_sizes_for_layout_and_pixels_for_paint() {

@@ -37,6 +37,24 @@ impl BuiltinField {
 }
 
 macro_rules! read_member {
+    (RotationTrack3D, $input:ident, $member:ident) => {
+        $input.$member()
+    };
+    (Quaternion3D, $input:ident, $member:ident) => {
+        $input.$member()
+    };
+    (WalkResult3D, $input:ident, contacts) => {
+        $input.contacts()
+    };
+    (InstanceTable3D, $input:ident, count) => {
+        $input.count()
+    };
+    (InstanceTable3D, $input:ident, loaded) => {
+        $input.is_loaded()
+    };
+    (Instance3D, $input:ident, object_id) => {
+        $input.object_id.clone()
+    };
     (Hit3D, $input:ident, object_id) => {
         $input.object_id.clone()
     };

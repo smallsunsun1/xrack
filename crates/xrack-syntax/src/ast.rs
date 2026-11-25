@@ -252,9 +252,20 @@ pub enum Type {
     Point2D,
     Point3D,
     Vector3D,
+    Quaternion3D,
+    RotationTrack3D,
     Hit3D,
     Hit3DList,
+    PhysicsContact3D,
+    PhysicsHit3D,
+    PhysicsContact3DList,
+    PhysicsHit3DList,
     ProjectedPoint3D,
+    Instance3D,
+    InstanceTable3D,
+    WalkResult3D,
+    PhysicsWorld3D,
+    SceneModel3D,
     Vector2D,
     Transform2D,
     Percent,
@@ -336,8 +347,15 @@ impl Type {
             | Self::Point2D
             | Self::Point3D
             | Self::Vector3D
+            | Self::Quaternion3D
+            | Self::RotationTrack3D
             | Self::Hit3D
+            | Self::PhysicsContact3D
+            | Self::PhysicsHit3D
             | Self::ProjectedPoint3D
+            | Self::Instance3D
+            | Self::InstanceTable3D
+            | Self::WalkResult3D
             | Self::Vector2D
             | Self::TouchPoint => self.builtin_field(field).map(|(_, ty)| ty),
             _ => None,
@@ -370,9 +388,20 @@ impl Type {
             Self::Point2D => "point2d",
             Self::Point3D => "point3d",
             Self::Vector3D => "vector3d",
+            Self::Quaternion3D => "quaternion3d",
+            Self::RotationTrack3D => "rotationtrack3d",
             Self::Hit3D => "hit3d",
             Self::Hit3DList => "hit3dlist",
+            Self::PhysicsContact3D => "physicscontact3d",
+            Self::PhysicsHit3D => "physicshit3d",
+            Self::PhysicsContact3DList => "physicscontact3dlist",
+            Self::PhysicsHit3DList => "physicshit3dlist",
             Self::ProjectedPoint3D => "projectedpoint3d",
+            Self::Instance3D => "instance3d",
+            Self::InstanceTable3D => "instancetable3d",
+            Self::WalkResult3D => "walkresult3d",
+            Self::PhysicsWorld3D => "physicsworld3d",
+            Self::SceneModel3D => "scenemodel3d",
             Self::Vector2D => "vector2d",
             Self::Transform2D => "transform2d",
             Self::Percent => "percent",
@@ -456,9 +485,22 @@ impl Type {
             "point2d" | "Point2D" => Self::Point2D,
             "point3d" | "Point3D" => Self::Point3D,
             "vector3d" | "Vector3D" => Self::Vector3D,
+            "quaternion3d" | "Quaternion3D" => Self::Quaternion3D,
+            "rotationtrack3d" | "RotationTrack3D" => Self::RotationTrack3D,
             "hit3d" | "Hit3D" => Self::Hit3D,
             "hit3dlist" | "[hit3d]" | "[Hit3D]" => Self::Hit3DList,
+            "physicscontact3d" | "PhysicsContact3D" => Self::PhysicsContact3D,
+            "physicscontact3dlist" | "[physicscontact3d]" | "[PhysicsContact3D]" => {
+                Self::PhysicsContact3DList
+            }
+            "physicshit3d" | "PhysicsHit3D" => Self::PhysicsHit3D,
+            "physicshit3dlist" | "[physicshit3d]" | "[PhysicsHit3D]" => Self::PhysicsHit3DList,
             "projectedpoint3d" | "ProjectedPoint3D" => Self::ProjectedPoint3D,
+            "instance3d" | "Instance3D" => Self::Instance3D,
+            "instancetable3d" | "InstanceTable3D" => Self::InstanceTable3D,
+            "walkresult3d" | "WalkResult3D" => Self::WalkResult3D,
+            "physicsworld3d" | "PhysicsWorld3D" => Self::PhysicsWorld3D,
+            "scenemodel3d" | "SceneModel3D" => Self::SceneModel3D,
             "vector2d" | "Vector2D" => Self::Vector2D,
             "transform2d" | "Transform2D" => Self::Transform2D,
             "percent" => Self::Percent,
@@ -548,6 +590,8 @@ impl Type {
             Self::IntList => Some(Self::Int),
             Self::DateList => Some(Self::Date),
             Self::Hit3DList => Some(Self::Hit3D),
+            Self::PhysicsContact3DList => Some(Self::PhysicsContact3D),
+            Self::PhysicsHit3DList => Some(Self::PhysicsHit3D),
             Self::RecordList(name) => Some(Self::Record(name.clone())),
             Self::TouchPoints => Some(Self::TouchPoint),
             _ => None,
@@ -704,6 +748,8 @@ impl Serialize for Type {
             Self::IntList => serializer.serialize_str("[int]"),
             Self::DateList => serializer.serialize_str("[Date]"),
             Self::Hit3DList => serializer.serialize_str("[hit3d]"),
+            Self::PhysicsContact3DList => serializer.serialize_str("[physicscontact3d]"),
+            Self::PhysicsHit3DList => serializer.serialize_str("[physicshit3d]"),
             Self::LogLevel => serializer.serialize_str("LogLevel"),
             Self::ImageFit => serializer.serialize_str("ImageFit"),
             Self::ImageTileMode => serializer.serialize_str("ImageTileMode"),
@@ -947,6 +993,7 @@ pub enum ExprKind {
     TextureUrl(String),
     ShaderUrl(String),
     MaterialShaderUrl(String),
+    InstanceTableUrl(String),
     SlicedImageUrl {
         path: String,
         slice: String,

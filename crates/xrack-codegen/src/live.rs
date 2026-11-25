@@ -127,9 +127,20 @@ fn value_variant(ty: &Type) -> Result<Ident, String> {
         Type::Point2D => "Point2D",
         Type::Point3D => "Point3D",
         Type::Vector3D => "Vector3D",
+        Type::Quaternion3D => "Quaternion3D",
+        Type::RotationTrack3D => "RotationTrack3D",
         Type::Hit3D => "Hit3D",
         Type::Hit3DList => "Hit3DList",
+        Type::PhysicsContact3D => "PhysicsContact3D",
+        Type::PhysicsHit3D => "PhysicsHit3D",
+        Type::PhysicsContact3DList => "PhysicsContact3DList",
+        Type::PhysicsHit3DList => "PhysicsHit3DList",
         Type::ProjectedPoint3D => "ProjectedPoint3D",
+        Type::Instance3D => "Instance3D",
+        Type::InstanceTable3D => "InstanceTable3D",
+        Type::WalkResult3D => "WalkResult3D",
+        Type::PhysicsWorld3D => "PhysicsWorld3D",
+        Type::SceneModel3D => "SceneObjects",
         Type::Vector2D => "Vector2D",
         Type::Transform2D => "Transform2D",
         Type::Color => "Color",
@@ -144,7 +155,10 @@ fn value_variant(ty: &Type) -> Result<Ident, String> {
 }
 
 fn pack_value(ty: &Type, variant: &Ident, source: TokenStream) -> TokenStream {
-    let source = if *ty == Type::Hit3DList {
+    let source = if matches!(
+        ty,
+        Type::Hit3DList | Type::PhysicsContact3DList | Type::PhysicsHit3DList
+    ) {
         quote!(::xrack_runtime::VecModel::from(#source))
     } else {
         source
@@ -153,7 +167,10 @@ fn pack_value(ty: &Type, variant: &Ident, source: TokenStream) -> TokenStream {
 }
 
 fn unpack_value(ty: &Type, source: TokenStream) -> TokenStream {
-    if *ty == Type::Hit3DList {
+    if matches!(
+        ty,
+        Type::Hit3DList | Type::PhysicsContact3DList | Type::PhysicsHit3DList
+    ) {
         quote!((#source).into_snapshot())
     } else {
         source
@@ -199,7 +216,12 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
     }
     if matches!(
         ty,
-        Type::StringList | Type::IntList | Type::DateList | Type::Hit3DList
+        Type::StringList
+            | Type::IntList
+            | Type::DateList
+            | Type::Hit3DList
+            | Type::PhysicsContact3DList
+            | Type::PhysicsHit3DList
     ) {
         let model = format_ident!("model_{name_rust}");
         let (item, access, value) = if ty == Type::IntList {
@@ -219,6 +241,18 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
                 quote!(::xrack_runtime::Hit3D),
                 quote!(hit3d_model),
                 quote!(::xrack_runtime::Value::Hit3DList(model)),
+            )
+        } else if ty == Type::PhysicsContact3DList {
+            (
+                quote!(::xrack_runtime::PhysicsContact3D),
+                quote!(physics_contact3d_model),
+                quote!(::xrack_runtime::Value::PhysicsContact3DList(model)),
+            )
+        } else if ty == Type::PhysicsHit3DList {
+            (
+                quote!(::xrack_runtime::PhysicsHit3D),
+                quote!(physics_hit3d_model),
+                quote!(::xrack_runtime::Value::PhysicsHit3DList(model)),
             )
         } else {
             (

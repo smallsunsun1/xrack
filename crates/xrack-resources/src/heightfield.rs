@@ -128,7 +128,8 @@ fn decode(bytes: &[u8]) -> Result<Mesh3D, String> {
                 roughness: 1.0,
                 emissive: [0.0; 3],
                 occlusion_strength: 1.0,
-                metallic_roughness_texture: None,
+                surface_texture: None,
+                workflow: Default::default(),
                 emissive_texture: None,
                 occlusion_texture: None,
                 normal_map: None,
@@ -138,7 +139,9 @@ fn decode(bytes: &[u8]) -> Result<Mesh3D, String> {
             }),
         }],
     )
-    .map_err(str::to_owned)
+    .map_err(str::to_owned)?
+    .with_heightfield([width, height], samples)
+    .ok_or_else(|| "could not store heightfield samples".into())
 }
 
 pub(super) fn generate_lightmap_uv(mesh: MeshAsset) -> Result<MeshAsset, String> {
@@ -198,9 +201,22 @@ mod tests {
                 .y
                 > 0.0
         );
+        let source = mesh.clone();
         let MeshAsset::Static(chart) = generate_lightmap_uv(MeshAsset::Static(mesh))? else {
             return Err("heightfield charts should keep a static mesh".into());
         };
+        let terrain = chart
+            .heightfield()
+            .ok_or("chart lost the terrain samples")?;
+        assert_eq!(terrain.dimensions(), [2, 2]);
+        assert_eq!(
+            terrain.samples(),
+            &[16384.0 / 65535.0, 16385.0 / 65535.0, 32768.0 / 65535.0, 1.0]
+        );
+        assert_eq!(
+            source.heightfield().map(|field| field.samples()),
+            Some(terrain.samples())
+        );
         assert_eq!(
             chart.lightmap_uvs(),
             &[

@@ -63,6 +63,7 @@ macro_rules! builtin_value_fields {
             }
             Hit3D, "hit3d_field" {
                 "valid" => valid: Bool,
+                "entering" => entering: Bool,
                 "object-id" => object_id: String,
                 "row-index" => row_index: Int,
                 "mesh-node-index" => mesh_node_index: Int,
@@ -74,6 +75,60 @@ macro_rules! builtin_value_fields {
                 "local-normal" => local_normal: Vector3D,
                 "u" => u: Float,
                 "v" => v: Float,
+            }
+            PhysicsContact3D, "physics_contact3d_field" {
+                "body" => body: Int,
+                "position" => position: Point3D,
+                "normal" => normal: Vector3D,
+                "impulse" => impulse: Vector3D,
+                "normal-impulse" => normal_impulse: Float,
+            }
+            PhysicsHit3D, "physics_hit3d_field" {
+                "body" => body: Int,
+                "distance" => distance: Float,
+                "position" => position: Point3D,
+                "normal" => normal: Vector3D,
+                "sensor" => sensor: Bool,
+            }
+            WalkResult3D, "walk_result3d_field" {
+                "position" => position: Point3D,
+                "crossings" => crossings: Hit3DList,
+                "contacts" => contacts: Hit3DList,
+                "support" => support: Hit3D,
+                "grounded" => grounded: Bool,
+                "hit-wall" => hit_wall: Bool,
+                "hit-ceiling" => hit_ceiling: Bool,
+            }
+            InstanceTable3D, "instance_table3d_field" {
+                "count" => count: Int,
+                "loaded" => loaded: Bool,
+            }
+            RotationTrack3D, "rotation_track3d_field" {
+                "valid" => valid: Bool,
+                "count" => count: Int,
+                "duration" => duration: Float,
+            }
+            Quaternion3D, "quaternion3d_field" {
+                "x" => x: Float,
+                "y" => y: Float,
+                "z" => z: Float,
+                "w" => w: Float,
+            }
+            Instance3D, "instance3d_field" {
+                "valid" => valid: Bool,
+                "object-id" => object_id: String,
+                "row-index" => row_index: Int,
+                "mesh-node-index" => mesh_node_index: Int,
+                "instance-index" => instance_index: Int,
+                "color" => color: Color,
+                "origin" => origin: Point3D,
+                "axis-x" => axis_x: Vector3D,
+                "axis-y" => axis_y: Vector3D,
+                "axis-z" => axis_z: Vector3D,
+                "data-x" => data_x: Float,
+                "data-y" => data_y: Float,
+                "data-z" => data_z: Float,
+                "data-w" => data_w: Float,
             }
             ProjectedPoint3D, "projected_point3d_field" {
                 "point" => point: Point2D,

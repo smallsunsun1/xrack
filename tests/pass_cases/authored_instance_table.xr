@@ -1,0 +1,23 @@
+// RAW: "xr.geometry_function"{{.*}}value = "prepare-instance-table-3d"{{.*}} -> !xr.instancetable3d
+// CHECK: "xr.callback"() <{name = "sample"
+// CHECK: [[BEFORE:%[0-9]+]] = "xr.geometry_function"{{.*}}value = "prepare-instance-table-3d"{{.*}} -> !xr.instancetable3d
+// CHECK: [[FROZEN:%[0-9]+]] = "xr.local"([[BEFORE]])
+// CHECK: "xr.model_edit"
+// CHECK: "xr.instance_table3d_field"([[FROZEN]])
+// CHECK: "xr.geometry_function"{{.*}}value = "prepare-instance-table-3d"{{.*}} -> !xr.instancetable3d
+
+struct Placement { position: point3d }
+
+export component InstanceTableTest inherits Window {
+    property <[Placement]> rows: [Placement { position: Point3D.new(1, 0, 0) }];
+    out property <int> old-count: 0;
+    out property <int> new-count: 0;
+    callback sample();
+    sample => {
+        let frozen = Scene3D.instance-table(root.rows);
+        Model.clear(root.rows);
+        root.old-count = frozen.count;
+        let current = Scene3D.instance-table(root.rows);
+        root.new-count = current.count;
+    }
+}

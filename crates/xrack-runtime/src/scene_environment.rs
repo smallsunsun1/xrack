@@ -2,7 +2,7 @@
 use std::{io::Read, sync::Arc};
 
 use crate::{
-    RecordList, Value, VecModel,
+    Node, RecordList, Value, VecModel,
     scene3d::{Point3D, Vector3D},
 };
 
@@ -62,6 +62,43 @@ impl std::fmt::Debug for EnvironmentProbe {
 impl PartialEq for EnvironmentProbe {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(self, other)
+    }
+}
+
+/// The environment selected by a SceneView3D, shared by rendering and baking.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct ViewportEnvironment<'a> {
+    pub probe: &'a Arc<EnvironmentProbe>,
+    pub intensity: f32,
+    pub yaw: f32,
+    pub skybox: bool,
+}
+
+impl<'a> ViewportEnvironment<'a> {
+    pub fn from_node(node: &'a Node) -> Option<Self> {
+        let Some(Value::SceneEnvironment(Some(probe))) = node.properties.get("environment") else {
+            return None;
+        };
+        Some(Self {
+            probe,
+            intensity: node
+                .number("environment-intensity")
+                .filter(|value| !value.is_nan())
+                .unwrap_or(1.0)
+                .clamp(0.0, 100.0) as f32,
+            yaw: node
+                .number("environment-yaw")
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0)
+                .rem_euclid(360.0)
+                .to_radians() as f32,
+            skybox: node.boolean("environment-skybox", false),
+        })
+    }
+
+    pub fn contributes_light(&self) -> bool {
+        self.intensity > 0.0
     }
 }
 
@@ -139,6 +176,7 @@ pub struct ReflectionProbe {
     pub yaw: f32,
     pub intensity: f32,
     pub parallax: bool,
+    pub debug_view: bool,
     pub layers: u64,
 }
 
@@ -177,6 +215,7 @@ impl ReflectionProbe {
             yaw: yaw.rem_euclid(360.0).to_radians() as f32,
             intensity: intensity.clamp(0.0, 100.0) as f32,
             parallax,
+            debug_view: false,
             layers: crate::scene3d::MAIN_LAYER,
         })
     }
@@ -185,6 +224,22 @@ impl ReflectionProbe {
     pub fn with_layers(mut self, layers: u64) -> Self {
         self.layers = layers;
         self
+    }
+
+    #[doc(hidden)]
+    pub fn with_debug_view(mut self, debug_view: bool) -> Self {
+        self.debug_view = debug_view;
+        self
+    }
+
+    /// Debug presentation is independent of probe assignment and sampling.
+    #[doc(hidden)]
+    pub fn same_lighting(&self, other: &Self) -> bool {
+        if self.debug_view == other.debug_view {
+            self == other
+        } else {
+            self.clone().with_debug_view(other.debug_view) == *other
+        }
     }
 
     /// Selection uses the model origin, so LOD geometry can share the same probe.
@@ -269,6 +324,7 @@ pub fn record_reflections(
             number("intensity", 1.0),
             row.field("parallax-correction") == Some(&Value::Bool(true)),
         )
+        .map(|probe| probe.with_debug_view(row.field("debug-view") == Some(&Value::Bool(true))))
         .map(|probe| match row.field("layers") {
             Some(Value::Int(layers)) => probe.with_layers(*layers as u64),
             _ => probe,

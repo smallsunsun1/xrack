@@ -4,7 +4,7 @@ use xrack_runtime::{
     scene3d::{Mesh3D, MeshDepthDraw, SceneCamera},
 };
 
-use super::{Attachment, COLOR_FORMAT, HDR_FORMAT, append_floats, buffer};
+use super::{Attachment, COLOR_FORMAT, HDR_FORMAT, append_floats, buffer, screen_depth};
 
 #[derive(Clone, Copy)]
 pub(super) struct ReflectionSettings {
@@ -46,7 +46,7 @@ impl ReflectionSettings {
                         && material.pbr.as_ref().is_some_and(|pbr| {
                             material.transmission_blur().is_none()
                                 && (pbr.roughness < self.roughness
-                                    || pbr.metallic_roughness_texture.is_some()
+                                    || pbr.surface_texture.is_some()
                                     || material.vertex_masks.masks_roughness()
                                     || pbr.clearcoat.as_ref().is_some_and(|coat| {
                                         coat.amount > 0.0
@@ -119,10 +119,10 @@ pub(super) struct ScreenLighting {
     indirect: [Option<Attachment>; 2],
     filtered: Option<Attachment>,
     shaders: [Option<wgpu::ShaderModule>; 4],
-    trace: [Option<PassPipeline>; 4],
-    indirect_trace: [Option<PassPipeline>; 2],
+    trace: [[Option<PassPipeline>; 4]; screen_depth::MODES],
+    indirect_trace: [[Option<PassPipeline>; 2]; screen_depth::MODES],
     denoise: Option<PassPipeline>,
-    composite: [Option<PassPipeline>; 6],
+    composite: [[Option<PassPipeline>; 6]; screen_depth::MODES],
 }
 
 pub(super) struct OpaqueSurfaces {
@@ -217,24 +217,22 @@ impl ScreenLighting {
         size: [u32; 2],
         (camera, settings): (SceneCamera, ScreenSettings),
     ) -> [u64; 2] {
-        let [sx, sy, dx, dy] = camera.clip_lens();
-        let [near, far] = camera.depth_limits();
         let extent = |scale: f32| size.map(|n| ((n as f32 * scale).ceil() as u32).max(1));
         let reflection_size = settings.reflection.map(|settings| extent(settings.scale));
         let indirect_size = settings.indirect.map(|settings| extent(settings.scale));
         let [rw, rh] = reflection_size.unwrap_or([0; 2]).map(|axis| axis as f32);
         let [iw, ih] = indirect_size.unwrap_or([0; 2]).map(|axis| axis as f32);
-        let mut bytes = Vec::with_capacity(96);
-        append_floats(&mut bytes, [sx, sy, dx, dy]);
+        let mut bytes = Vec::with_capacity(screen_depth::UNIFORM_BYTES + 80);
+        screen_depth::write(&mut bytes, camera);
         append_floats(
             &mut bytes,
             [
-                near,
-                if far.is_finite() { far } else { 0.0 },
-                if camera.is_orthographic() { 1.0 } else { 0.0 },
                 settings
                     .reflection
                     .map_or(0.0, |settings| settings.strength),
+                0.0,
+                0.0,
+                0.0,
             ],
         );
         append_floats(
@@ -272,6 +270,8 @@ impl ScreenLighting {
             &bytes,
             wgpu::BufferUsages::UNIFORM,
         );
+        let projection = screen_depth::mode(camera);
+        let depth_mode = projection as usize;
         let multisampled = matches!(target, ScreenTarget::Multisampled { .. });
         let packed = indirect_size.is_some();
         let shader_index = 2 * usize::from(packed) + usize::from(multisampled);
@@ -299,8 +299,8 @@ impl ScreenLighting {
         }
         let reflected = reflection_size.map(|size| {
             let views = trace_targets(&mut self.reflection, device, size);
-            let trace = self.trace[shader_index].get_or_insert_with(|| {
-                PassPipeline::new(device, shader, "trace", HDR_FORMAT, false)
+            let trace = self.trace[depth_mode][shader_index].get_or_insert_with(|| {
+                PassPipeline::new(device, shader, "trace", HDR_FORMAT, false, projection)
             });
             trace.draw(device, encoder, &ray_inputs, &effect_attachments(views));
             views
@@ -308,13 +308,28 @@ impl ScreenLighting {
         let indirect = indirect_size.map(|size| {
             let views = trace_targets(&mut self.indirect, device, size);
             ray_inputs.push(texture(4, &surfaces.data[1]));
-            let trace = self.indirect_trace[usize::from(multisampled)].get_or_insert_with(|| {
-                PassPipeline::new(device, shader, "trace_indirect", HDR_FORMAT, false)
-            });
+            let trace = self.indirect_trace[depth_mode][usize::from(multisampled)]
+                .get_or_insert_with(|| {
+                    PassPipeline::new(
+                        device,
+                        shader,
+                        "trace_indirect",
+                        HDR_FORMAT,
+                        false,
+                        projection,
+                    )
+                });
             trace.draw(device, encoder, &ray_inputs, &effect_attachments(views));
             let filtered = Attachment::get(&mut self.filtered, device, size, HDR_FORMAT, 1, true);
             let filter = self.denoise.get_or_insert_with(|| {
-                PassPipeline::new(device, shader, "denoise_indirect", HDR_FORMAT, false)
+                PassPipeline::new(
+                    device,
+                    shader,
+                    "denoise_indirect",
+                    HDR_FORMAT,
+                    false,
+                    screen_depth::Mode::Flat,
+                )
             });
             filter.draw(
                 device,
@@ -373,9 +388,10 @@ impl ScreenLighting {
                 },
             ),
         };
-        let composite = self.composite[3 * usize::from(packed) + mode].get_or_insert_with(|| {
-            PassPipeline::new(device, shader, fragment, format, multisampled)
-        });
+        let composite = self.composite[depth_mode][3 * usize::from(packed) + mode]
+            .get_or_insert_with(|| {
+                PassPipeline::new(device, shader, fragment, format, multisampled, projection)
+            });
         composite.draw(device, encoder, &composite_inputs, &[Some(attachment)]);
         [reflection_size, indirect_size]
             .map(|size| size.map_or(0, |size| size.into_iter().map(u64::from).product()))
@@ -400,6 +416,7 @@ fn make_shader(device: &wgpu::Device, multisampled: bool, packed: bool) -> wgpu:
         (include_str!("screen_data_float.wgsl"), "")
     };
     let source = [
+        screen_depth::SHADER,
         include_str!("screen_packing.wgsl"),
         depth,
         &data.replace("XRACK_SCREEN_TEXTURE", texture),
@@ -479,6 +496,7 @@ impl PassPipeline {
         fragment: &str,
         format: wgpu::TextureFormat,
         apply_to_samples: bool,
+        projection: screen_depth::Mode,
     ) -> Self {
         let add = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
@@ -516,7 +534,7 @@ impl PassPipeline {
             fragment: Some(wgpu::FragmentState {
                 module: shader,
                 entry_point: Some(fragment),
-                compilation_options: Default::default(),
+                compilation_options: screen_depth::compilation(projection),
                 targets: &targets[..if fragment.starts_with("trace") { 2 } else { 1 }],
             }),
             primitive: Default::default(),

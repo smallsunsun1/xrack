@@ -6,12 +6,17 @@ use std::{
 };
 
 use xrack_runtime::{
-    Node, Value,
+    Node, RowKey, Value,
     scene_effect::CaptureRead,
     scene3d::{ReflectionCapture, ReflectionProbe, ReflectionRefresh, ReflectionSlicing},
 };
 
-use super::{HDR_FORMAT, buffer};
+use super::{
+    HDR_FORMAT, buffer,
+    color_capture::{CaptureViews, FrozenCaptureViews},
+    effect_history::Owner,
+    item_textures::{FrozenItemTextures, ItemTextureViews},
+};
 
 const MAX_PROBES: usize = 8;
 pub(super) const FACES: u32 = 6;
@@ -100,28 +105,93 @@ fn face_view(texture: &wgpu::Texture, face: u32, level: u32) -> wgpu::TextureVie
     })
 }
 
-struct Entry {
+struct ViewportKey {
     path: Vec<usize>,
-    slot: usize,
     generation: u64,
+    scope: [Option<RowKey>; 2],
+    id: Option<String>,
+}
+
+impl ViewportKey {
+    fn new(owner: Owner<'_>) -> Self {
+        Self {
+            path: owner.path.to_vec(),
+            generation: owner.generation,
+            scope: owner.scope,
+            id: owner.id.map(str::to_owned),
+        }
+    }
+
+    fn matches(&self, owner: Owner<'_>) -> bool {
+        self.path == owner.path
+            && self.generation == owner.generation
+            && self.scope == owner.scope
+            && self.id.as_deref() == owner.id
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ProbeBudget {
+    faces: u32,
+    filters: u32,
+    filter_texels: u32,
+}
+
+impl ProbeBudget {
+    pub fn from_node(node: &Node) -> Self {
+        let limit = |name| {
+            node.int(name)
+                .filter(|value| *value > 0)
+                .map_or(u32::MAX, |value| u32::try_from(value).unwrap_or(u32::MAX))
+        };
+        Self {
+            faces: limit("reflection-faces-per-frame"),
+            filters: limit("reflection-filter-passes-per-frame"),
+            filter_texels: limit("reflection-filter-texels-per-frame"),
+        }
+    }
+
+    fn limited(self) -> bool {
+        self.faces != u32::MAX || self.filters != u32::MAX || self.filter_texels != u32::MAX
+    }
+}
+
+struct FrameBudget {
+    viewport: ViewportKey,
+    remaining: ProbeBudget,
+}
+
+struct Entry {
+    viewport: ViewportKey,
+    slot: usize,
     layers: u64,
     published: Option<CaptureImage>,
     pending: Option<CaptureJob>,
     spare: Option<CapturedCube>,
     frame: u64,
+    last_work_frame: Option<u64>,
+}
+
+impl Entry {
+    fn owns_probe(&self, key: (Owner<'_>, usize, u64)) -> bool {
+        let (owner, slot, layers) = key;
+        self.slot == slot && self.layers == layers && self.viewport.matches(owner)
+    }
 }
 
 struct CaptureImage {
     capture: ReflectionCapture,
     scene: Node,
     feeds: Vec<(CaptureRead, u64)>,
+    items: Vec<(String, u64)>,
     cube: CapturedCube,
 }
 
 pub(super) struct ProbeInputs<'a> {
     pub scene: &'a Node,
-    pub feeds: &'a [(CaptureRead, u64)],
-    pub live_items: bool,
+    pub feeds: &'a CaptureViews,
+    pub items: &'a ItemTextureViews,
+    pub item_revision: u64,
 }
 
 impl CaptureImage {
@@ -134,26 +204,54 @@ impl CaptureImage {
         self.capture == settings
             && self.cube.position == position
             && (settings.refresh == ReflectionRefresh::FirstFrame
-                || (self.feeds == sources.feeds && same_inputs(&self.scene, sources.scene)))
+                || (self
+                    .feeds
+                    .iter()
+                    .map(|(name, revision)| (name, *revision))
+                    .eq(sources
+                        .feeds
+                        .iter()
+                        .map(|(name, image)| (name, image.revision)))
+                    && self
+                        .items
+                        .iter()
+                        .map(|(name, revision)| (name, *revision))
+                        .eq(sources
+                            .items
+                            .iter()
+                            .map(|(name, image)| (name, image.revision)))
+                    && same_inputs(&self.scene, sources.scene)))
     }
 }
 
 struct CaptureJob {
     image: CaptureImage,
     slicing: ReflectionSlicing,
-    step: u32,
+    captured_faces: u32,
+    filtered: u32,
+    filter_offset: u32,
     recorded_frame: Option<u64>,
     complete: bool,
+    frozen_inputs: Option<Arc<FrozenProbeInputs>>,
+}
+
+pub(super) struct FrozenProbeInputs {
+    pub feeds: FrozenCaptureViews,
+    pub items: FrozenItemTextures,
 }
 
 pub(super) struct CaptureStep {
     pub cube: CapturedCube,
     pub scene: Node,
     pub faces: Range<u32>,
-    pub levels: Range<u32>,
-    pub filter_faces: Range<u32>,
+    filters: Range<u32>,
+    filter_by_face: bool,
+    first_filter_texel: u32,
+    last_filter_end: Option<u32>,
+    pub filter_texels: u64,
     pub complete: bool,
     pub use_feeds: bool,
+    pub frozen_inputs: Option<Arc<FrozenProbeInputs>>,
 }
 
 #[derive(Default)]
@@ -164,37 +262,85 @@ pub(super) struct ProbeFrame {
 }
 
 impl CaptureJob {
-    fn next(&mut self, frame: u64) -> CaptureStep {
+    fn next(&mut self, frame: u64, budget: &mut ProbeBudget) -> Option<CaptureStep> {
+        if self.recorded_frame == Some(frame) || self.complete {
+            return None;
+        }
         let last_mip = self.image.cube.last_mip;
-        let (faces, levels, filter_faces, complete) = match self.slicing {
-            ReflectionSlicing::None => (0..FACES, 1..last_mip + 1, 0..FACES, true),
-            ReflectionSlicing::IndividualFaces if self.step < FACES => {
-                (self.step..self.step + 1, 0..0, 0..0, false)
-            }
-            ReflectionSlicing::IndividualFaces => {
-                let face = self.step - FACES;
-                (0..0, 1..last_mip + 1, face..face + 1, face + 1 == FACES)
-            }
-            ReflectionSlicing::AllFacesAtOnce if self.step == 0 => (0..FACES, 0..0, 0..0, false),
-            ReflectionSlicing::AllFacesAtOnce => (
-                0..0,
-                self.step..self.step + 1,
-                0..FACES,
-                self.step == last_mip,
-            ),
+        let face_limit = if self.slicing == ReflectionSlicing::IndividualFaces {
+            1
+        } else {
+            FACES
         };
+        let faces = self.captured_faces
+            ..self.captured_faces
+                + (FACES - self.captured_faces)
+                    .min(face_limit)
+                    .min(budget.faces);
+        let total_filters = last_mip * FACES;
+        let filter_limit = if faces.end == FACES
+            && self.filtered < total_filters
+            && (faces.is_empty() || self.slicing == ReflectionSlicing::None)
+        {
+            match self.slicing {
+                ReflectionSlicing::None => total_filters - self.filtered,
+                ReflectionSlicing::IndividualFaces => last_mip - self.filtered % last_mip,
+                ReflectionSlicing::AllFacesAtOnce => FACES - self.filtered % FACES,
+            }
+        } else {
+            0
+        };
+        let filter_by_face = self.slicing == ReflectionSlicing::IndividualFaces;
+        let first_filter = self.filtered;
+        let first_filter_texel = self.filter_offset;
+        let before = budget.filter_texels;
+        let mut passes = 0;
+        for _ in 0..filter_limit.min(budget.filters) {
+            if budget.filter_texels == 0 {
+                break;
+            }
+            let (level, _) = filter_face(self.filtered, last_mip, filter_by_face);
+            let size = (self.image.cube.size() >> level).max(1);
+            let face_texels = size * size;
+            let texels = (face_texels - self.filter_offset).min(budget.filter_texels);
+            budget.filter_texels -= texels;
+            passes += 1;
+            self.filter_offset += texels;
+            if self.filter_offset == face_texels {
+                self.filtered += 1;
+                self.filter_offset = 0;
+            }
+        }
+        let filters = first_filter..first_filter + passes;
+        if faces.is_empty() && filters.is_empty() {
+            return None;
+        }
+        budget.faces -= faces.end - faces.start;
+        budget.filters -= passes;
         self.recorded_frame = Some(frame);
-        self.step += 1;
-        self.complete = complete;
-        CaptureStep {
+        self.captured_faces = faces.end;
+        self.complete = self.captured_faces == FACES && self.filtered == total_filters;
+        Some(CaptureStep {
             cube: self.image.cube.clone(),
             scene: self.image.scene.clone(),
             faces,
-            levels,
-            filter_faces,
-            complete,
+            filters,
+            filter_by_face,
+            first_filter_texel,
+            last_filter_end: (self.filter_offset != 0).then_some(self.filter_offset),
+            filter_texels: u64::from(before - budget.filter_texels),
+            complete: self.complete,
             use_feeds: !self.image.feeds.is_empty(),
-        }
+            frozen_inputs: self.frozen_inputs.clone(),
+        })
+    }
+}
+
+fn filter_face(unit: u32, last_mip: u32, by_face: bool) -> (u32, u32) {
+    if by_face {
+        (1 + unit % last_mip, unit / last_mip)
+    } else {
+        (1 + unit / FACES, unit % FACES)
     }
 }
 
@@ -204,9 +350,46 @@ pub(super) struct Reflections {
     filter: Option<Filter>,
     frame: u64,
     revision: u64,
+    budgets: Vec<FrameBudget>,
 }
 
 impl Reflections {
+    pub fn frame_budget(
+        &mut self,
+        owner: Owner<'_>,
+        limits: ProbeBudget,
+    ) -> (Option<usize>, ProbeBudget) {
+        if let Some(index) = self
+            .budgets
+            .iter()
+            .position(|entry| entry.viewport.matches(owner))
+        {
+            return (Some(index), self.budgets[index].remaining);
+        }
+        if !limits.limited() {
+            return (None, limits);
+        }
+        let index = self.budgets.len();
+        self.budgets.push(FrameBudget {
+            viewport: ViewportKey::new(owner),
+            remaining: limits,
+        });
+        (Some(index), limits)
+    }
+
+    pub fn store_budget(&mut self, slot: Option<usize>, remaining: ProbeBudget) {
+        if let Some(entry) = slot.and_then(|index| self.budgets.get_mut(index)) {
+            entry.remaining = remaining;
+        }
+    }
+
+    pub fn last_work(&self, key: (Owner<'_>, usize, u64)) -> Option<u64> {
+        self.entries
+            .iter()
+            .find(|entry| entry.owns_probe(key))?
+            .last_work_frame
+    }
+
     pub fn contains_view(&self, view: &wgpu::TextureView) -> bool {
         self.entries.iter().any(|entry| {
             entry
@@ -219,13 +402,14 @@ impl Reflections {
 
     pub fn begin_frame(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+        self.budgets.clear();
         self.entries
             .retain(|entry| self.frame.wrapping_sub(entry.frame) <= 120);
     }
 
     pub fn finish_frame(&mut self, submitted: bool) {
         for entry in &mut self.entries {
-            let Some(job) = entry.pending.as_ref() else {
+            let Some(job) = entry.pending.as_mut() else {
                 continue;
             };
             if job.recorded_frame != Some(self.frame) {
@@ -235,28 +419,26 @@ impl Reflections {
                 // Incomplete passes may have reached a nested encoder. Start from
                 // a fresh set of base faces before letting the cube be sampled.
                 entry.spare = entry.pending.take().map(|job| job.image.cube);
-            } else if job.complete
-                && let Some(job) = entry.pending.take()
-            {
-                let previous = entry.published.replace(job.image);
-                entry.spare = previous.map(|image| image.cube);
+            } else if job.complete {
+                if let Some(job) = entry.pending.take() {
+                    let previous = entry.published.replace(job.image);
+                    entry.spare = previous.map(|image| image.cube);
+                }
+            } else if job.captured_faces == FACES {
+                job.frozen_inputs = None;
             }
         }
     }
 
     pub fn first_frame_ready(
         &self,
-        (path, slot, generation): (&[usize], usize, u64),
+        key: (Owner<'_>, usize, u64),
         probe: &ReflectionProbe,
         capture: ReflectionCapture,
-        layers: u64,
     ) -> bool {
         capture.refresh == ReflectionRefresh::FirstFrame
             && self.entries.iter().any(|entry| {
-                entry.path == path
-                    && entry.slot == slot
-                    && entry.generation == generation
-                    && entry.layers == layers
+                entry.owns_probe(key)
                     && entry.pending.is_none()
                     && entry.published.as_ref().is_some_and(|image| {
                         image.capture == capture && image.cube.position == probe.position
@@ -268,14 +450,16 @@ impl Reflections {
         &mut self,
         device: &wgpu::Device,
         sources: ProbeInputs<'_>,
-        (path, slot, generation): (&[usize], usize, u64),
+        key: (Owner<'_>, usize, u64),
         probe: &ReflectionProbe,
         capture: ReflectionCapture,
-        layers: u64,
+        budget: &mut ProbeBudget,
     ) -> ProbeFrame {
-        let same_scope = |entry: &Entry| entry.generation == generation && entry.layers == layers;
-        let same_slot =
-            |entry: &Entry| same_scope(entry) && entry.path == path && entry.slot == slot;
+        let (viewport, slot, layers) = key;
+        let same_scope = |entry: &Entry| {
+            entry.viewport.generation == viewport.generation && entry.layers == layers
+        };
+        let same_slot = |entry: &Entry| entry.owns_probe(key);
         let owner = self.entries.iter().position(same_slot);
         let working = owner.is_some_and(|index| self.entries[index].pending.is_some());
         if !working && capture.refresh != ReflectionRefresh::EveryFrame {
@@ -297,6 +481,18 @@ impl Reflections {
                 };
             }
         }
+        if !working && budget.faces == 0 {
+            let output = owner.and_then(|index| {
+                let entry = self.entries.get_mut(index)?;
+                entry.frame = self.frame;
+                entry.published.as_ref().map(|image| image.cube.clone())
+            });
+            return ProbeFrame {
+                output,
+                needs_redraw: true,
+                ..ProbeFrame::default()
+            };
+        }
         let mut entry = if let Some(entry) = owner.and_then(|index| self.entries.remove(index)) {
             entry
         } else {
@@ -311,14 +507,14 @@ impl Reflections {
                 self.entries.remove(index);
             }
             Entry {
-                path: path.to_vec(),
+                viewport: ViewportKey::new(viewport),
                 slot,
-                generation,
                 layers,
                 published: None,
                 pending: None,
                 spare: None,
                 frame: self.frame,
+                last_work_frame: None,
             }
         };
         entry.frame = self.frame;
@@ -331,30 +527,45 @@ impl Reflections {
             self.revision = self.revision.wrapping_add(1);
             cube.revision = self.revision;
             cube.position = probe.position;
+            let slicing = capture.slicing;
             CaptureJob {
                 image: CaptureImage {
                     capture,
                     scene: sources.scene.clone(),
-                    feeds: sources.feeds.to_vec(),
+                    feeds: sources
+                        .feeds
+                        .iter()
+                        .map(|(name, image)| (name.clone(), image.revision))
+                        .collect(),
+                    items: sources
+                        .items
+                        .iter()
+                        .map(|(name, image)| (name.clone(), image.revision))
+                        .collect(),
                     cube,
                 },
-                // Sample a coherent source frame for all six directions.
-                slicing: match capture.slicing {
-                    ReflectionSlicing::IndividualFaces
-                        if sources.live_items || !sources.feeds.is_empty() =>
-                    {
-                        ReflectionSlicing::AllFacesAtOnce
-                    }
-                    slicing => slicing,
-                },
-                step: 0,
+                slicing,
+                captured_faces: 0,
+                filtered: 0,
+                filter_offset: 0,
                 recorded_frame: None,
                 complete: false,
+                frozen_inputs: (slicing == ReflectionSlicing::IndividualFaces
+                    || budget.faces < FACES)
+                    .then(|| {
+                        Arc::new(FrozenProbeInputs {
+                            feeds: FrozenCaptureViews::new(sources.feeds),
+                            items: FrozenItemTextures::new(sources.items, sources.item_revision),
+                        })
+                    }),
             }
         });
         let mut output = entry.published.as_ref().map(|image| image.cube.clone());
-        let step = (job.recorded_frame != Some(self.frame)).then(|| job.next(self.frame));
-        if step.is_some() && job.complete {
+        let step = job.next(self.frame, budget);
+        if step.is_some() {
+            entry.last_work_frame = Some(self.frame);
+        }
+        if job.complete {
             output = Some(job.image.cube.clone());
         }
         let needs_redraw =
@@ -373,34 +584,67 @@ impl Reflections {
         encoder: &mut wgpu::CommandEncoder,
         step: &CaptureStep,
     ) -> u64 {
-        if step.levels.is_empty() || step.filter_faces.is_empty() {
+        if step.filters.is_empty() {
             return 0;
         }
         let filter = self.filter.get_or_insert_with(|| Filter::new(device));
-        for level in step.levels.clone() {
-            for face in step.filter_faces.clone() {
-                let index = ((level - 1) * FACES + face) as usize;
-                let mip = step.cube.gpu.filtered[index]
-                    .get_or_init(|| filter.mip_face(device, &step.cube, level, face));
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("XRack reflection prefilter roughness mip"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &mip.target,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
+        for unit in step.filters.clone() {
+            let (level, face) = filter_face(unit, step.cube.last_mip, step.filter_by_face);
+            let size = (step.cube.size() >> level).max(1);
+            let first = if unit == step.filters.start {
+                step.first_filter_texel
+            } else {
+                0
+            };
+            let end = if unit + 1 == step.filters.end {
+                step.last_filter_end.unwrap_or(size * size)
+            } else {
+                size * size
+            };
+            let full_face = first == 0 && end == size * size;
+            let index = ((level - 1) * FACES + face) as usize;
+            let mip = step.cube.gpu.filtered[index]
+                .get_or_init(|| filter.mip_face(device, &step.cube, level, face));
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("XRack reflection prefilter roughness mip"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &mip.target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: if full_face {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        } else {
+                            wgpu::LoadOp::Load
                         },
-                    })],
-                    ..Default::default()
-                });
-                pass.set_pipeline(&filter.pipeline);
-                pass.set_bind_group(0, &mip.input, &[]);
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&filter.pipeline);
+            pass.set_bind_group(0, &mip.input, &[]);
+            if full_face {
                 pass.draw(0..3, 0..1);
+            } else {
+                // Draw whole rows together and clip the two partial rows
+                // independently. Fragment coordinates remain face-relative.
+                let mut pixel = first;
+                while pixel < end {
+                    let (x, y) = (pixel % size, pixel / size);
+                    let remaining = end - pixel;
+                    let (width, height) = if x == 0 && remaining >= size {
+                        (size, remaining / size)
+                    } else {
+                        ((size - x).min(remaining), 1)
+                    };
+                    pass.set_scissor_rect(x, y, width, height);
+                    pass.draw(0..3, 0..1);
+                    pixel += width * height;
+                }
             }
         }
-        (step.levels.len() * step.filter_faces.len()) as u64
+        step.filters.len() as u64
     }
 }
 

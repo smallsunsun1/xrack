@@ -1259,6 +1259,82 @@ fn lightmap_modes_complete_in_model_records() {
         }"#;
     let items = complete_at(source);
     assert!(items.iter().any(|item| item["label"] == "indirect"));
+    let mixed = complete_at(&source.replace("ind|", "mix|"));
+    assert!(mixed.iter().any(|item| item["label"] == "mixed"));
+}
+
+#[test]
+fn light_bake_modes_complete_in_light_records() {
+    let source = r#"
+        struct Lamp { bake-mode: string }
+        component App inherits Window {
+            SceneView3D { lights: [Lamp { bake-mode: "|" }]; }
+        }
+    "#;
+    let items = complete_at(source);
+    for mode in ["all", "indirect", "disabled"] {
+        assert!(items.iter().any(|item| item["label"] == mode), "{items:?}");
+    }
+    assert!(
+        complete_at(&source.replace("bake-mode: \"|\"", "bake-m|"))
+            .iter()
+            .any(|item| item["label"] == "bake-mode" && item["detail"] == "string")
+    );
+}
+
+#[test]
+fn lightmap_roles_complete_in_model_records() {
+    let source = r#"
+        struct Object { bake-role: string }
+        component App inherits Window {
+            SceneView3D { model: [Object { bake-role: "|" }]; }
+        }
+    "#;
+    let items = complete_at(source);
+    for role in ["auto", "receiver", "contributor", "excluded"] {
+        assert!(items.iter().any(|item| item["label"] == role), "{items:?}");
+    }
+    assert!(
+        complete_at(&source.replace("bake-role: \"|\"", "bake-r|"))
+            .iter()
+            .any(|item| item["label"] == "bake-role" && item["detail"] == "string")
+    );
+}
+
+#[test]
+fn lightmap_resolution_fields_complete_with_their_numeric_types() {
+    let items = complete_at(
+        r#"
+        struct Actor { lightmap-size: int, lightmap-texels-per-unit: float }
+        component App inherits Window {
+            SceneView3D { model: [Actor { lightmap-| }]; }
+        }
+        "#,
+    );
+    for (name, ty) in [
+        ("lightmap-size", "int"),
+        ("lightmap-texels-per-unit", "float"),
+    ] {
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == name && item["detail"] == ty),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn bake_quality_properties_complete_in_scene_viewports() {
+    let items = complete_at("component App inherits Window { SceneView3D { bake-| } }");
+    let outside = complete_at("component App inherits Window { Rectangle { bake-| } }");
+    for property in ["bake-denoise-passes", "bake-indirect-factor"] {
+        assert!(
+            items.iter().any(|item| item["label"] == property),
+            "{items:?}"
+        );
+        assert!(!outside.iter().any(|item| item["label"] == property));
+    }
 }
 
 #[test]
@@ -1307,6 +1383,27 @@ fn reflection_probe_time_slicing_completes_inside_probe_records() {
         complete_at(&source.replace("indiv|", "all-f|"))
             .iter()
             .any(|item| item["label"] == "all-faces-at-once")
+    );
+}
+
+#[test]
+fn shadow_filter_completes_in_scene_light_records() {
+    let source = r#"
+        struct Lamp { shadow-filter: string, shadow-radius: float, shadow-strength: float }
+        component App inherits Window {
+            SceneView3D { lights: [Lamp { shadow-filter: "pcf|" }]; }
+        }
+    "#;
+    let items = complete_at(source);
+    for name in ["pcf4", "pcf8", "pcf16"] {
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    let fields = complete_at(&source.replace("shadow-filter: \"pcf|\"", "shadow-r|"));
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "shadow-radius" && item["detail"] == "float"),
+        "{fields:?}"
     );
 }
 
@@ -2529,6 +2626,18 @@ fn scene3d_completes_viewport_properties_and_geometry() {
             "reflection-probes",
         ),
         (
+            "component App inherits Window { SceneView3D { reflection-fa| } }",
+            "reflection-faces-per-frame",
+        ),
+        (
+            "component App inherits Window { SceneView3D { reflection-fil| } }",
+            "reflection-filter-passes-per-frame",
+        ),
+        (
+            "component App inherits Window { SceneView3D { reflection-filter-te| } }",
+            "reflection-filter-texels-per-frame",
+        ),
+        (
             "component App inherits Window { SceneView3D { fru| } }",
             "frustum-culling",
         ),
@@ -2624,13 +2733,13 @@ fn scene3d_completes_viewport_properties_and_geometry() {
     let hint = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         hint["signatures"][0]["label"],
-        "Scene3D.pick(objects: [record], yaw: float, pitch: float, distance: float, viewport: point2d, pointer: point2d, layer-mask?: int) -> string"
+        "Scene3D.pick(objects: [record] | scenemodel3d, yaw: float, pitch: float, distance: float, viewport: point2d, pointer: point2d, layer-mask?: int) -> string"
     );
     let source = "component App inherits Window { property <string> item: Scene3D.pick-camera(";
     let hint = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         hint["signatures"][0]["label"],
-        "Scene3D.pick-camera(objects: [record], camera: string, viewport: point2d, pointer: point2d, layer-mask?: int) -> string"
+        "Scene3D.pick-camera(objects: [record] | scenemodel3d, camera: string, viewport: point2d, pointer: point2d, layer-mask?: int) -> string"
     );
 }
 
@@ -2683,7 +2792,199 @@ fn scene_projection_types_fields_and_functions_complete_in_incomplete_source() {
     let hint = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         hint["signatures"][0]["label"],
-        "Scene3D.unproject-camera(objects: [record], camera: string, viewport: point2d, pointer: point2d, depth: float, fallback: point3d) -> point3d"
+        "Scene3D.unproject-camera(objects: [record] | scenemodel3d, camera: string, viewport: point2d, pointer: point2d, depth: float, fallback: point3d) -> point3d"
+    );
+}
+
+#[test]
+fn quaternion_types_members_and_signatures_complete() {
+    let types = complete_at("component App inherits Window { property <quater| ");
+    assert!(types.iter().any(|item| item["label"] == "quaternion3d"));
+    let functions = complete_at(
+        "component App inherits Window { property <quaternion3d> rotation: Quaternion3D.from-a|",
+    );
+    assert!(
+        functions
+            .iter()
+            .any(|item| item["label"] == "from-axis-angle")
+    );
+    let fields = complete_at(
+        "component App inherits Window { property <quaternion3d> rotation; property <float> scalar: root.rotation.w| }",
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "w" && item["detail"] == "float")
+    );
+    let text = "component App inherits Window { property <quaternion3d> q: Quaternion3D.slerp(";
+    let help = completion::signature_help(text, (0, text.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Quaternion3D.slerp(from: quaternion3d, to: quaternion3d, progress: float) -> quaternion3d"
+    );
+}
+
+#[test]
+fn custom_camera_completes_projection_modes_and_validates_the_matrix_schema() {
+    for (source, label) in [
+        (
+            r#"struct Lens { camera-kind: string }
+           component App inherits Window { property <Lens> lens: Lens { camera-kind: "cus|" }; }"#,
+            "custom",
+        ),
+        (
+            r#"struct Lens { camera-clip-space: string }
+           component App inherits Window { property <Lens> lens: Lens { camera-clip-space: "op|" }; }"#,
+            "opengl",
+        ),
+        (
+            "struct Matrix { m11: float } struct Lens { camera-projection: Matrix }
+           component App inherits Window { property <Lens> lens: Lens { camera-pro| }; }",
+            "camera-projection",
+        ),
+    ] {
+        assert!(
+            complete_at(source)
+                .iter()
+                .any(|item| item["label"] == label),
+            "{label}"
+        );
+    }
+    let source = r#"
+        struct Matrix { m11: float }
+        struct Actor {
+            id: string, mesh: string, x: float, y: float, z: float,
+            scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+            color: color, camera-kind: string, camera-projection: Matrix,
+        }
+        export component App inherits Window {
+            property <[Actor]> actors;
+            out property <scenemodel3d> scene: Scene3D.prepare(root.actors);
+        }
+    "#;
+    let analysis = analysis::analyze(URI, source, None);
+    assert!(analysis.diagnostics.values().flatten().any(|issue| {
+        issue["message"].as_str().is_some_and(|text| {
+            text.contains("camera-projection requires a float field named `m12`")
+        })
+    }));
+}
+
+#[test]
+fn aim_functions_complete_and_check_camera_up_type() {
+    let items = complete_at(
+        "component App inherits Window { property <quaternion3d> pose: Quaternion3D.look-|",
+    );
+    for member in ["look-at", "look-rotation"] {
+        assert!(items.iter().any(|item| item["label"] == member));
+    }
+    let text =
+        "component App inherits Window { property <quaternion3d> pose: Quaternion3D.look-at(";
+    let signature = completion::signature_help(text, (0, text.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "Quaternion3D.look-at(from: point3d, target: point3d, up?: vector3d) -> quaternion3d"
+    );
+    let bad = r#"
+        struct Actor {
+            id: string, x: float, y: float, z: float,
+            scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+            color: color, camera-up: point3d,
+        }
+        export component App inherits Window {
+            property <[Actor]> actors;
+            out property <scenemodel3d> scene: Scene3D.prepare(root.actors);
+        }
+    "#;
+    let analysis = analysis::analyze(URI, bad, None);
+    assert!(analysis.diagnostics.values().flatten().any(|issue| {
+        issue["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("requires a vector3d field named `camera-up`"))
+    }));
+}
+
+#[test]
+fn rotation_tracks_complete_and_report_bad_key_types() {
+    for (source, label) in [
+        (
+            "component App inherits Window { property <rotationtr|",
+            "rotationtrack3d",
+        ),
+        (
+            "component App inherits Window { property <rotationtrack3d> track: Quaternion3D.tr|",
+            "track",
+        ),
+        (
+            "component App inherits Window { property <rotationtrack3d> track; property <float> secs: root.track.du| }",
+            "duration",
+        ),
+    ] {
+        assert!(
+            complete_at(source)
+                .iter()
+                .any(|item| item["label"] == label)
+        );
+    }
+    let text = "component App inherits Window { property <quaternion3d> pose: Quaternion3D.sample(";
+    let help = completion::signature_help(text, (0, text.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Quaternion3D.sample(track: rotationtrack3d, time: float) -> quaternion3d"
+    );
+    let invalid = r#"
+        struct BadKey { time: float, orientation: vector3d }
+        export component App inherits Window {
+            property <[BadKey]> keys;
+            out property <rotationtrack3d> track: Quaternion3D.track(root.keys);
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(result.diagnostics.values().flatten().any(|issue| {
+        issue["message"].as_str().is_some_and(|message| {
+            message.contains("requires a quaternion3d field named `orientation`")
+        })
+    }));
+}
+
+#[test]
+fn scene_instance_completions_include_the_address_and_affine_fields() {
+    for (source, label, detail) in [
+        (
+            "component App inherits Window { property <instance3d> selection: Scene3D.instance-c|",
+            "instance-camera",
+            "instance3d",
+        ),
+        (
+            "component App inherits Window { property <instance3d> selection; property <point3d> p: root.selection.o|",
+            "origin",
+            "point3d",
+        ),
+        (
+            "component App inherits Window { property <instance3d> selection; property <vector3d> p: root.selection.axis-|",
+            "axis-x",
+            "vector3d",
+        ),
+        (
+            "component App inherits Window { property <instance3d> selection; property <float> w: root.selection.data-|",
+            "data-w",
+            "float",
+        ),
+    ] {
+        let items = complete_at(source);
+        assert!(
+            items.iter().any(|item| item["label"] == label
+                && item["detail"]
+                    .as_str()
+                    .is_some_and(|value| value.contains(detail))),
+            "{items:?}"
+        );
+    }
+    let call = "component App inherits Window { property <instance3d> i: Scene3D.instance(";
+    let hints = completion::signature_help(call, (0, call.len()), None);
+    assert_eq!(
+        hints["signatures"][0]["label"],
+        "Scene3D.instance(objects: [record] | scenemodel3d, row-index: int, mesh-node-index: int, instance-index: int) -> instance3d"
     );
 }
 
@@ -2730,7 +3031,7 @@ fn hit3d_completion_exposes_world_local_and_nested_fields() {
     let hint = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         hint["signatures"][0]["label"],
-        "Scene3D.ray-hit(objects: [record], origin: point3d, direction: vector3d, max-distance: float, layer-mask?: int) -> hit3d"
+        "Scene3D.ray-hit(objects: [record] | scenemodel3d, origin: point3d, direction: vector3d, max-distance: float, layer-mask?: int) -> hit3d"
     );
 }
 
@@ -2759,6 +3060,16 @@ fn hit_list_completion_and_signature_help_are_typed() {
             "int",
         ),
         (
+            "VerticalLayout { for contact in root.hits: Text { text: contact.ent|",
+            "entering",
+            "bool",
+        ),
+        (
+            "out property <walkresult3d> movement: Scene3D.capsule-walk-r|",
+            "capsule-walk-result",
+            "walkresult3d",
+        ),
+        (
             "VerticalLayout { for contact in root.hits: Text { text: contact.normal.|",
             "z",
             "float",
@@ -2777,7 +3088,7 @@ fn hit_list_completion_and_signature_help_are_typed() {
     let hint = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         hint["signatures"][0]["label"],
-        "Scene3D.ray-hit-all(objects: [record], origin: point3d, direction: vector3d, max-distance: float, layer-mask?: int) -> [hit3d]"
+        "Scene3D.ray-hit-all(objects: [record] | scenemodel3d, origin: point3d, direction: vector3d, max-distance: float, layer-mask?: int) -> [hit3d]"
     );
 }
 
@@ -2788,6 +3099,11 @@ fn scene_hierarchy_record_fields_complete_with_their_types() {
         ("vis", "visible", "bool"),
         ("pivot-", "pivot-x", "float"),
         ("camera-look-", "camera-look-at", "string"),
+        ("camera-look-at-p", "camera-look-at-point", "point3d"),
+        ("camera-u", "camera-up", "vector3d"),
+        ("camera-clip-n", "camera-clip-normal", "vector3d"),
+        ("camera-rev", "camera-reverse-depth", "bool"),
+        ("camera-w", "camera-width", "float"),
         ("camera-le", "camera-left", "float"),
         ("camera-ri", "camera-right", "float"),
         ("camera-bo", "camera-bottom", "float"),
@@ -2804,7 +3120,7 @@ fn scene_hierarchy_record_fields_complete_with_their_types() {
         ("camera-lod-", "camera-lod-bias", "float"),
         ("morph-w", "morph-weights", "PanelWeights"),
     ] {
-        let source = format!("struct PanelWeights {{ extend: float }} struct Actor {{ parent: string, visible: bool, pivot-x: float, camera-look-at: string, camera-left: float, camera-right: float, camera-bottom: float, camera-top: float, animation: string, animation-time: float, animation-loop: bool, animation-to: string, animation-to-time: float, animation-to-loop: bool, animation-blend: float, lod-of: string, lod-max-size: length, camera-lod-bias: float, morph-weights: PanelWeights }} component App inherits Window {{
+        let source = format!("struct PanelWeights {{ extend: float }} struct Actor {{ parent: string, visible: bool, pivot-x: float, camera-look-at: string, camera-look-at-point: point3d, camera-up: vector3d, camera-clip-normal: vector3d, camera-reverse-depth: bool, camera-width: float, camera-left: float, camera-right: float, camera-bottom: float, camera-top: float, animation: string, animation-time: float, animation-loop: bool, animation-to: string, animation-to-time: float, animation-to-loop: bool, animation-blend: float, lod-of: string, lod-max-size: length, camera-lod-bias: float, morph-weights: PanelWeights }} component App inherits Window {{
             property <Actor> node: Actor {{ {prefix}| }}
         }}");
         let items = complete_at(&source);
@@ -3049,7 +3365,7 @@ fn filtered_picking_completes_row_and_subset_signatures() {
     let signature = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         signature["signatures"][0]["label"],
-        "Scene3D.ray-hit-subset(objects: [record], origin: point3d, direction: vector3d, max-distance: float, rows: [int], layer-mask?: int) -> [hit3d]"
+        "Scene3D.ray-hit-subset(objects: [record] | scenemodel3d, origin: point3d, direction: vector3d, max-distance: float, rows: [int], layer-mask?: int) -> [hit3d]"
     );
 }
 
@@ -3065,7 +3381,7 @@ fn rectangle_picking_completes_both_camera_variants() {
     let help = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         help["signatures"][0]["label"],
-        "Scene3D.pick-in-rect-camera(objects: [record], camera: string, viewport: point2d, start: point2d, end: point2d, layer-mask?: int) -> [int]"
+        "Scene3D.pick-in-rect-camera(objects: [record] | scenemodel3d, camera: string, viewport: point2d, start: point2d, end: point2d, layer-mask?: int) -> [int]"
     );
 }
 
@@ -3084,7 +3400,7 @@ fn closest_point_queries_offer_signatures_with_target_and_radius() {
         assert_eq!(
             signature["signatures"][0]["label"],
             format!(
-                "Scene3D.{member}(objects: [record], {target}origin: point3d, radius: float, layer-mask?: int) -> hit3d"
+                "Scene3D.{member}(objects: [record] | scenemodel3d, {target}origin: point3d, radius: float, layer-mask?: int) -> hit3d"
             )
         );
     }
@@ -3101,7 +3417,7 @@ fn sphere_queries_complete_and_show_radius_and_layer_signatures() {
     let signature = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         signature["signatures"][0]["label"],
-        "Scene3D.sphere-cast(objects: [record], origin: point3d, direction: vector3d, max-distance: float, radius: float, layer-mask?: int) -> hit3d"
+        "Scene3D.sphere-cast(objects: [record] | scenemodel3d, origin: point3d, direction: vector3d, max-distance: float, radius: float, layer-mask?: int) -> hit3d"
     );
 }
 
@@ -3115,7 +3431,7 @@ fn sphere_slide_completion_describes_displacement_and_returned_center() {
     let signature = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         signature["signatures"][0]["label"],
-        "Scene3D.sphere-slide(objects: [record], origin: point3d, displacement: vector3d, radius: float, layer-mask?: int) -> point3d"
+        "Scene3D.sphere-slide(objects: [record] | scenemodel3d, origin: point3d, displacement: vector3d, radius: float, layer-mask?: int) -> point3d"
     );
 }
 
@@ -3129,7 +3445,122 @@ fn sphere_walk_completion_describes_step_snap_and_slope() {
     let signature = completion::signature_help(source, (0, source.len()), None);
     assert_eq!(
         signature["signatures"][0]["label"],
-        "Scene3D.sphere-walk(objects: [record], origin: point3d, displacement: vector3d, radius: float, step-height: float, snap-distance: float, max-slope: float, layer-mask?: int) -> point3d"
+        "Scene3D.sphere-walk(objects: [record] | scenemodel3d, origin: point3d, displacement: vector3d, radius: float, step-height: float, snap-distance: float, max-slope: float, layer-mask?: int) -> point3d"
+    );
+}
+
+#[test]
+fn capsule_completion_offers_queries_and_segment_height() {
+    let items = complete_at(
+        "component App inherits Window { property <point3d> moved: Scene3D.capsule-|; }",
+    );
+    for name in [
+        "capsule-cast",
+        "capsule-overlap",
+        "capsule-slide",
+        "capsule-walk",
+    ] {
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    let source = "component App inherits Window { property <point3d> moved: Scene3D.capsule-walk(";
+    let signature = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "Scene3D.capsule-walk(objects: [record] | scenemodel3d, origin: point3d, displacement: vector3d, radius: float, segment-height: float, step-height: float, snap-distance: float, max-slope: float, layer-mask?: int) -> point3d"
+    );
+}
+
+#[test]
+fn walk_result_completion_exposes_position_crossings_and_contacts() {
+    for (source, name, detail) in [
+        (
+            "component App inherits Window { property <walkres|",
+            "walkresult3d",
+            "",
+        ),
+        (
+            "component App inherits Window { property <walkresult3d> movement; property <float> z: root.movement.position.|",
+            "z",
+            "float",
+        ),
+        (
+            "component App inherits Window { property <walkresult3d> movement; property <[hit3d]> events: root.movement.cr|",
+            "crossings",
+            "[hit3d]",
+        ),
+        (
+            "component App inherits Window { property <walkresult3d> movement; property <bool> on-floor: root.movement.gro|",
+            "grounded",
+            "bool",
+        ),
+        (
+            "component App inherits Window { property <walkresult3d> movement; property <bool> wall: root.movement.hit-w|",
+            "hit-wall",
+            "bool",
+        ),
+        (
+            "component App inherits Window { property <walkresult3d> movement; property <bool> ceiling: root.movement.hit-c|",
+            "hit-ceiling",
+            "bool",
+        ),
+        (
+            "component App inherits Window { property <walkresult3d> movement; property <[hit3d]> hits: root.movement.cont|",
+            "contacts",
+            "[hit3d]",
+        ),
+        (
+            "component App inherits Window { property <walkresult3d> movement; property <hit3d> ground: root.movement.sup|",
+            "support",
+            "hit3d",
+        ),
+        (
+            "component App inherits Window { property <walkresult3d> movement; property <vector3d> up: root.movement.support.no|",
+            "normal",
+            "vector3d",
+        ),
+        (
+            "component App inherits Window { property <walkresult3d> movement: Scene3D.capsule-walk-w|",
+            "capsule-walk-with-contacts",
+            "walkresult3d",
+        ),
+    ] {
+        let items = complete_at(source);
+        assert!(
+            items.iter().any(|item| item["label"] == name
+                && (detail.is_empty()
+                    || item["detail"]
+                        .as_str()
+                        .is_some_and(|ty| ty.contains(detail)))),
+            "{items:?}"
+        );
+    }
+    for name in ["capsule-walk-result", "capsule-walk-with-contacts"] {
+        let source = format!(
+            "component App inherits Window {{ property <walkresult3d> movement: Scene3D.{name}("
+        );
+        let signature = completion::signature_help(&source, (0, source.len()), None);
+        assert_eq!(
+            signature["signatures"][0]["label"],
+            format!(
+                "Scene3D.{name}(objects: [record] | scenemodel3d, origin: point3d, displacement: vector3d, radius: float, segment-height: float, step-height: float, snap-distance: float, max-slope: float, layer-mask?: int) -> walkresult3d"
+            )
+        );
+    }
+}
+
+#[test]
+fn capsule_trigger_completion_describes_a_continuous_segment() {
+    let items = complete_at(
+        "component App inherits Window { property <[hit3d]> hits: Scene3D.capsule-trigger-|; }",
+    );
+    for name in ["capsule-trigger-overlap", "capsule-trigger-crossings"] {
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    let source = "component App inherits Window { property <[hit3d]> hits: Scene3D.capsule-trigger-crossings(";
+    let signature = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "Scene3D.capsule-trigger-crossings(objects: [record] | scenemodel3d, from: point3d, to: point3d, radius: float, segment-height: float, layer-mask?: int) -> [hit3d]"
     );
 }
 
@@ -6513,8 +6944,8 @@ fn mesh_asset_hover_reports_gpu_instance_groups_and_accessors() {
     std::fs::write(
         directory.join("forest.gltf"),
         r#"{"asset":{"version":"2.0"},"nodes":[{},{
-        "name":"Forest","extensions":{"EXT_mesh_gpu_instancing":{"attributes":{"TRANSLATION":0,"ROTATION":1}}}
-        }],"accessors":[{"count":128},{"count":128}]}"#,
+        "name":"Forest","extensions":{"EXT_mesh_gpu_instancing":{"attributes":{"TRANSLATION":0,"ROTATION":1,"_COLOR_0":2,"_INSTANCE_DATA":3}}}
+        }],"accessors":[{"count":128},{"count":128},{"count":128},{"count":128}]}"#,
     )
     .unwrap();
     let uri = workspace_file_uri(&directory.join("main.xr"));
@@ -6532,6 +6963,8 @@ fn mesh_asset_hover_reports_gpu_instance_groups_and_accessors() {
     let details = hover["contents"]["value"].as_str().unwrap();
     assert!(details.contains("EXT_mesh_gpu_instancing"));
     assert!(details.contains("Node #1  Forest  128 instances"));
+    assert!(details.contains("_COLOR_0 → instance tint"));
+    assert!(details.contains("_INSTANCE_DATA → WGSL input.instance_data"));
 }
 
 #[test]
@@ -6566,6 +6999,33 @@ fn authored_instance_prototypes_complete_from_the_same_table() {
 }
 
 #[test]
+fn instance_root_completes_unique_coordinate_nodes_in_its_table() {
+    let source = r#"struct Actor {
+        id: string, parent: string, mesh: string,
+        instance-root: string, instance-of: string, lod-of: string,
+    }
+    component App inherits Window {
+        property <[Actor]> outside: [Actor { id: "stage-outside", mesh: "" }];
+        property <[Actor]> world: [
+            Actor { id: "stage-reference", mesh: "" },
+            Actor { id: "stage-duplicate", mesh: "" },
+            Actor { id: "stage-duplicate", mesh: "" },
+            Actor { id: "stage-alternative", lod-of: "stage-reference", mesh: "primitive:box" },
+            Actor { id: "stage-prototype", mesh: "primitive:sphere" },
+            Actor { id: "stage-self", instance-of: "stage-prototype", instance-root: "stage-|" },
+        ];
+    }"#;
+    let items = complete_at(source);
+    let labels = items
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(labels, ["stage-prototype", "stage-reference"]);
+    assert_eq!(items[1]["detail"], "Scene instance coordinate root");
+    assert_eq!(items[1]["textEdit"]["newText"], "stage-reference");
+}
+
+#[test]
 fn instance_picking_completion_and_signature_expose_the_full_address() {
     let partial =
         "component App inherits Window { property <hit3d> result: Scene3D.hit-instance-c|";
@@ -6581,7 +7041,7 @@ fn instance_picking_completion_and_signature_expose_the_full_address() {
     let help = completion::signature_help(call, (0, call.len()), None);
     assert_eq!(
         help["signatures"][0]["label"],
-        "Scene3D.ray-hit-instance(objects: [record], origin: point3d, direction: vector3d, max-distance: float, row-index: int, mesh-node-index: int, instance-index: int, layer-mask?: int) -> hit3d"
+        "Scene3D.ray-hit-instance(objects: [record] | scenemodel3d, origin: point3d, direction: vector3d, max-distance: float, row-index: int, mesh-node-index: int, instance-index: int, layer-mask?: int) -> hit3d"
     );
 }
 
@@ -6784,6 +7244,1246 @@ export component Demo inherits Window {
 }
 
 #[test]
+fn physics_world_completion_and_mutation_diagnostics() {
+    let source =
+        "export component Demo inherits Window { property <physicsworld3d> world: Physics3D.ne|; }";
+    let items = complete_at(source);
+    assert!(items.iter().any(|item| item["label"] == "new"), "{items:?}");
+    let source = "component Demo inherits Window { property <physicsworld3d> world; callback run(); run() => { Physics3D.add-b|";
+    let items = complete_at(source);
+    assert!(
+        items.iter().any(|item| item["label"] == "add-box"),
+        "{items:?}"
+    );
+    let source = "component Demo inherits Window { property <physicsworld3d> world; callback run(); run() => { Physics3D.add-sphere(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.add-sphere(world: physicsworld3d, center: point3d, radius: float, mass: float, friction: float, restitution: float) -> int"
+    );
+
+    let source = "component Demo inherits Window { property <physicsworld3d> world; callback run(); run() => { Physics3D.set-kin|";
+    let items = complete_at(source);
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "set-kinematic-target"),
+        "{items:?}"
+    );
+    let source = "component Demo inherits Window { property <physicsworld3d> world; callback run(); run() => { Physics3D.set-kinematic-target(root.world, 1, ";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.set-kinematic-target(world: physicsworld3d, body: int, center: point3d, rotation: vector3d) -> bool"
+    );
+    assert_eq!(help["activeParameter"], 2);
+
+    let source = "component Demo inherits Window { property <physicsworld3d> world; property <[int]> entered: Physics3D.trigger-en|";
+    let items = complete_at(source);
+    assert!(
+        items.iter().any(|item| item["label"] == "trigger-entered"),
+        "{items:?}"
+    );
+    let source = "component Demo inherits Window { property <physicsworld3d> world; property <[int]> entered: Physics3D.trigger-entered(root.world, ";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.trigger-entered(world: physicsworld3d, trigger: int) -> [int]"
+    );
+    let source = "component Demo inherits Window { property <physicsworld3d> world; callback run(); run() => { Physics3D.set-coll|";
+    let items = complete_at(source);
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "set-collision-filter"),
+        "{items:?}"
+    );
+    let source = "component Demo inherits Window { property <physicsworld3d> world; callback run(); run() => { Physics3D.set-collision-filter(root.world, 1, 2, ";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.set-collision-filter(world: physicsworld3d, body: int, group: int, ignore-groups: int) -> bool"
+    );
+    assert_eq!(help["activeParameter"], 3);
+
+    let source = "component Demo inherits Window { property <physicsworld3d> world; callback run(); run() => { Physics3D.add-revo|";
+    let items = complete_at(source);
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "add-revolute-joint"),
+        "{items:?}"
+    );
+    let source = "component Demo inherits Window { property <physicsworld3d> world; property <float> angle: Physics3D.joint-position(root.world, ";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.joint-position(world: physicsworld3d, joint: int) -> float"
+    );
+    assert_eq!(help["activeParameter"], 1);
+
+    let rejected = "export component Demo inherits Window { property <physicsworld3d> world; property <bool> invalid: Physics3D.set-collision-filter(root.world, 1, 2, 0); }";
+    let diagnostics = analysis::analyze(URI, rejected, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("impure callback"))
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn physics_character_options_complete_and_report_parameter_types() {
+    let items = complete_at(
+        "component Demo inherits Window { callback run(); run() => { Physics3D.set-character-o|",
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "set-character-options"),
+        "{items:?}"
+    );
+    let source = "component Demo inherits Window { callback run(); run() => { Physics3D.set-character-options(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.set-character-options(world: physicsworld3d, body: int, step-height: float, snap-distance: float, max-slope: float, push-mass: float) -> bool"
+    );
+}
+
+#[test]
+fn kinematic_contact_modes_have_typed_completions_and_require_callbacks() {
+    let items = complete_at(
+        "component Demo inherits Window { callback edit(); edit() => { Physics3D.set-kinematic-contact-|",
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "set-kinematic-contact-reports"),
+        "{items:?}"
+    );
+    let source = "component Demo inherits Window { callback edit(); edit() => { Physics3D.set-kinematic-contact-reports(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.set-kinematic-contact-reports(world: physicsworld3d, static-kinematic: bool, kinematic-kinematic: bool) -> bool"
+    );
+    let invalid = r#"
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            out property <bool> edited: Physics3D.set-kinematic-contact-reports(root.world, true, false);
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|item| item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("requires an impure callback"))),
+        "{:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn physics_body_declarations_offer_completions_and_check_record_shapes() {
+    let items = complete_at(
+        "component Demo inherits Window { callback edit(); edit() => { Physics3D.sync-|",
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "sync-bodies"),
+        "{items:?}"
+    );
+    let source =
+        "component Demo inherits Window { callback edit(); edit() => { Physics3D.sync-bodies(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.sync-bodies(world: physicsworld3d, bodies: [record]) -> bool"
+    );
+    let kinds = complete_at(
+        r#"struct Body { body-kind: string } component Demo inherits Window { property <Body> body: Body { body-kind: "kin|" } }"#,
+    );
+    assert!(
+        kinds.iter().any(|item| item["label"] == "kinematic"),
+        "{kinds:?}"
+    );
+    let invalid = r#"
+        struct Shape { shape: bool }
+        struct Body { id: string, body-kind: string, position: point3d, shapes: [Shape] }
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            property <[Body]> bodies;
+            callback sync();
+            sync() => { Physics3D.sync-bodies(root.world, root.bodies); }
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|item| item["message"]
+                .as_str()
+                .is_some_and(|message| message
+                    .contains("collision-shapes field `shape` requires type string"))),
+        "{:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn physics_world_settings_have_typed_completions_and_runtime_effects() {
+    let items = complete_at(
+        "component Demo inherits Window { callback edit(); edit() => { Physics3D.set-ccd|",
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "set-ccd-substeps"),
+        "{items:?}"
+    );
+    let source =
+        "component Demo inherits Window { callback edit(); edit() => { Physics3D.set-soft-ccd(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.set-soft-ccd(world: physicsworld3d, body: int, distance: float) -> bool"
+    );
+    let invalid = r#"
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            out property <bool> edited: Physics3D.set-gravity(root.world, Vector3D.new(0, -10, 0));
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|item| item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("requires an impure callback"))),
+        "{:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn scene_physics_debug_properties_complete_and_type_check() {
+    let items = complete_at("component Demo inherits Window { SceneView3D { physics-|");
+    for label in ["physics-world", "physics-debug", "physics-debug-body"] {
+        assert!(items.iter().any(|item| item["label"] == label), "{items:?}");
+    }
+    let valid = r#"
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            SceneView3D { physics-world: root.world; physics-debug: true; physics-debug-body: 3; }
+        }
+    "#;
+    let result = analysis::analyze(URI, valid, None);
+    assert!(
+        result.diagnostics.values().flatten().next().is_none(),
+        "{:?}",
+        result.diagnostics
+    );
+    let invalid = valid.replace(
+        "physics-world: root.world",
+        "physics-world: \"not a world\"",
+    );
+    let result = analysis::analyze(URI, &invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|item| item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("physicsworld3d"))),
+        "{:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn scene_random_instances_check_count_and_complete_settings() {
+    let source = r#"
+        struct Scatter { count: int, position-min: vector3d }
+        struct Actor {
+            id: string, mesh: string, x: float, y: float, z: float,
+            scale-x: float, scale-y: float, scale-z: float,
+            yaw: float, pitch: float, roll: float, color: color, random-instances: Scatter,
+        }
+        export component App inherits Window {
+            SceneView3D {
+                model: [Actor {
+                    id: "cube", mesh: "primitive:box", x: 0, y: 0, z: 0,
+                    scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
+                    random-instances: Scatter { count: 4, position-min: Vector3D.new(0, 0, 0) },
+                }];
+            }
+        }
+    "#;
+    let items = complete_at(&source.replace(
+        "random-instances: Scatter { count: 4, position-min: Vector3D.new(0, 0, 0) }",
+        "random-inst|",
+    ));
+    let completes = items.iter().any(|item| item["label"] == "random-instances");
+    assert!(completes, "{items:?}");
+    let valid = analysis::analyze(URI, source, None);
+    assert!(
+        valid.diagnostics.values().flatten().next().is_none(),
+        "{:?}",
+        valid.diagnostics
+    );
+    let bad = source
+        .replace("count: int", "count: bool")
+        .replace("count: 4", "count: true");
+    let invalid = analysis::analyze(URI, &bad, None);
+    let rejects = invalid.diagnostics.values().flatten().any(|item| {
+        item["message"].as_str().is_some_and(|message| {
+            message.contains("random-instances")
+                && message.contains("`count`")
+                && message.contains("int")
+        })
+    });
+    assert!(rejects, "{:?}", invalid.diagnostics);
+    let modes = complete_at(
+        r#"
+        struct Scatter { count: int, color-model: string }
+        component App inherits Window {
+            property <instancetable3d> table: Scene3D.random-instance-table(
+                Scatter { count: 16, color-model: "h|" });
+        }
+    "#,
+    );
+    assert!(modes.iter().any(|item| item["label"] == "hsv"));
+    assert!(modes.iter().any(|item| item["label"] == "hsl"));
+
+    let prefix = "component App inherits Window { property <instancetable3d> table: Scene3D.";
+    let items = complete_at(&(prefix.to_owned() + "random-instance-t|"));
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "random-instance-table")
+    );
+    let call = prefix.to_owned() + "random-instance-table(";
+    let help = completion::signature_help(&call, (0, call.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Scene3D.random-instance-table(settings: record) -> instancetable3d"
+    );
+    let invalid = analysis::analyze(
+        URI,
+        r#"
+        struct Scatter { count: bool }
+        export component App inherits Window {
+            out property <instancetable3d> table: Scene3D.random-instance-table(Scatter { count: true });
+        }
+    "#,
+        None,
+    );
+    assert!(invalid.diagnostics.values().flatten().any(|issue| {
+        issue["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("`count` requires type int"))
+    }));
+}
+
+#[test]
+fn scene_instance_data_completes_and_checks_vector_fields() {
+    let source = r#"
+        struct Channels { x: float, y: float, z: float, w: float }
+        struct Actor {
+            id: string, mesh: string, x: float, y: float, z: float,
+            scale-x: float, scale-y: float, scale-z: float,
+            yaw: float, pitch: float, roll: float, color: color, instance-data: Channels,
+        }
+        export component App inherits Window {
+            SceneView3D {
+                model: [Actor {
+                    id: "panel", mesh: "primitive:box", x: 0, y: 0, z: 0,
+                    scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+                    color: #ffffff, instance-data: Channels { x: 1, y: 0, z: 0, w: 0.2 },
+                }];
+            }
+        }
+    "#;
+    let items = complete_at(&source.replace(
+        "instance-data: Channels { x: 1, y: 0, z: 0, w: 0.2 }",
+        "instance-da|",
+    ));
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "instance-data"
+                && item["detail"] == r#"record<"Channels">"#),
+        "{items:?}"
+    );
+    let valid = analysis::analyze(URI, source, None);
+    assert!(
+        valid.diagnostics.values().flatten().next().is_none(),
+        "{:?}",
+        valid.diagnostics
+    );
+
+    let invalid = source
+        .replace("z: float, w: float }", "z: float, w: bool }")
+        .replace("w: 0.2", "w: true");
+    let result = analysis::analyze(URI, &invalid, None);
+    let rejects_type = result.diagnostics.values().flatten().any(|item| {
+        item["message"].as_str().is_some_and(|message| {
+            message.contains("instance-data")
+                && message.contains("`w`")
+                && message.contains("float")
+        })
+    });
+    assert!(rejects_type, "{:?}", result.diagnostics);
+}
+
+#[test]
+fn scene_model_render_fields_complete_and_type_check() {
+    let source = r#"
+        struct Actor {
+            id: string, mesh: string, x: float, y: float, z: float, instance-root: string,
+            scale-x: float, scale-y: float, scale-z: float,
+            yaw: float, pitch: float, roll: float, color: color, depth-bias: float,
+            motion-vector-enabled: bool, motion-vector-scale: float, instance-has-transparency: bool,
+            instance-depth-sorting: bool,
+            instance-shadow-bounds-min: vector3d, instance-shadow-bounds-max: vector3d,
+            instancing-lod-min: float, instancing-lod-max: float, instancing-lod-factor: float,
+        }
+        export component App inherits Window {
+            SceneView3D {
+                model: [Actor {
+                    id: "panel", mesh: "primitive:box", x: 0, y: 0, z: 0,
+                    scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+                    color: #ffffff, depth-bias: -0.5, instance-root: "base",
+                    motion-vector-enabled: false, motion-vector-scale: 0.5, instance-has-transparency: true,
+                    instance-depth-sorting: false,
+                    instance-shadow-bounds-min: Vector3D.new(-1, -1, -1),
+                    instance-shadow-bounds-max: Vector3D.new(1, 1, 1),
+                    instancing-lod-min: 2, instancing-lod-max: 24, instancing-lod-factor: 0.8,
+                }];
+            }
+        }
+    "#;
+    let fields = [
+        (
+            "instance-shadow-bounds-min",
+            "Vector3D.new(-1, -1, -1)",
+            "vector3d",
+            "instance-shadow-bounds-mi|",
+            "bool",
+            "true",
+        ),
+        (
+            "instance-shadow-bounds-max",
+            "Vector3D.new(1, 1, 1)",
+            "vector3d",
+            "instance-shadow-bounds-ma|",
+            "bool",
+            "true",
+        ),
+        (
+            "instance-depth-sorting",
+            "false",
+            "bool",
+            "instance-depth-s|",
+            "float",
+            "1.0",
+        ),
+        (
+            "instance-has-transparency",
+            "true",
+            "bool",
+            "instance-has-t|",
+            "float",
+            "1.0",
+        ),
+        ("depth-bias", "-0.5", "float", "depth-b|", "bool", "true"),
+        (
+            "motion-vector-enabled",
+            "false",
+            "bool",
+            "motion-vector-e|",
+            "float",
+            "0.3",
+        ),
+        (
+            "motion-vector-scale",
+            "0.5",
+            "float",
+            "motion-vector-s|",
+            "bool",
+            "true",
+        ),
+        (
+            "instancing-lod-min",
+            "2",
+            "float",
+            "instancing-lod-mi|",
+            "bool",
+            "false",
+        ),
+        (
+            "instancing-lod-max",
+            "24",
+            "float",
+            "instancing-lod-ma|",
+            "bool",
+            "true",
+        ),
+        (
+            "instancing-lod-factor",
+            "0.8",
+            "float",
+            "instancing-lod-fa|",
+            "bool",
+            "true",
+        ),
+        (
+            "instance-root",
+            r#""base""#,
+            "string",
+            "instance-ro|",
+            "bool",
+            "true",
+        ),
+    ];
+    let valid = analysis::analyze(URI, source, None);
+    assert!(
+        valid.diagnostics.values().flatten().next().is_none(),
+        "{:?}",
+        valid.diagnostics
+    );
+    for (field, value, ty, prefix, wrong_type, wrong_value) in fields {
+        let items = complete_at(&source.replace(&format!("{field}: {value}"), prefix));
+        let completes = items
+            .iter()
+            .any(|item| item["label"] == field && item["detail"] == ty);
+        assert!(completes, "{field} {items:?}");
+
+        let invalid = source
+            .replace(&format!("{field}: {ty}"), &format!("{field}: {wrong_type}"))
+            .replace(
+                &format!("{field}: {value}"),
+                &format!("{field}: {wrong_value}"),
+            );
+        let result = analysis::analyze(URI, &invalid, None);
+        let rejects_type = result.diagnostics.values().flatten().any(|item| {
+            item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(field) && message.contains(ty))
+        });
+        assert!(rejects_type, "{:?}", result.diagnostics);
+    }
+}
+
+#[test]
+fn material_workflow_and_glossiness_channel_complete_and_type_check() {
+    let items = complete_at(
+        r#"struct Finish { material-workflow: string } component App inherits Window {
+            property <Finish> finish: Finish { material-workflow: "spec|" }
+        }"#,
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "specular-glossiness"),
+        "{items:?}"
+    );
+    let items = complete_at(
+        r#"struct Finish { glossiness-channel: string } component App inherits Window {
+            property <Finish> finish: Finish { glossiness-channel: "|" }
+        }"#,
+    );
+    assert!(items.iter().any(|item| item["label"] == "a"));
+    assert!(!items.iter().any(|item| item["label"] == "rgb"));
+    let source = r#"
+        struct Finish { glossiness: string }
+        struct Actor {
+            id: string, mesh: string, x: float, y: float, z: float,
+            scale-x: float, scale-y: float, scale-z: float,
+            yaw: float, pitch: float, roll: float, color: color, material: Finish,
+        }
+        export component App inherits Window {
+            property <[Actor]> actors;
+            SceneView3D { model: root.actors; }
+        }
+    "#;
+    let result = analysis::analyze(URI, source, None);
+    let invalid_glossiness = result.diagnostics.values().flatten().any(|item| {
+        item["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("glossiness") && message.contains("float"))
+    });
+    assert!(invalid_glossiness, "{:?}", result.diagnostics);
+}
+
+#[test]
+fn authored_physics_scene_completes_local_joint_declarations() {
+    let source =
+        "component App inherits Window { callback install(); install() => { Physics3D.sync-scene(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.sync-scene(world: physicsworld3d, bodies: [record], joints: [record]) -> bool"
+    );
+    let kinds = complete_at(
+        r#"struct Joint { joint-kind: string } component App inherits Window { property <Joint> hinge: Joint { joint-kind: "revo|" } }"#,
+    );
+    assert!(
+        kinds.iter().any(|item| item["label"] == "revolute"),
+        "{kinds:?}"
+    );
+    let invalid = r#"
+        struct Shape { shape: string }
+        struct Body { id: string, body-kind: string, position: point3d, shapes: [Shape] }
+        struct Joint {
+            id: string, joint-kind: string, first: string, second: string,
+            first-anchor: float, second-anchor: point3d,
+        }
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            property <[Body]> bodies;
+            property <[Joint]> joints;
+            callback install();
+            install() => { Physics3D.sync-scene(root.world, root.bodies, root.joints); }
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|issue| issue["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("point3d field named `first-anchor`"))),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn solid_contact_event_commands_expose_typed_list_reads() {
+    let items =
+        complete_at("component App inherits Window { property <[int]> hits: Physics3D.contact-en|");
+    assert!(
+        items.iter().any(|item| item["label"] == "contact-entered"),
+        "{items:?}"
+    );
+    let call = "component App inherits Window { property <[int]> hits: Physics3D.contact-entered(";
+    let help = completion::signature_help(call, (0, call.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.contact-entered(world: physicsworld3d, body: int) -> [int]"
+    );
+    let impure = r#"
+        export component App inherits Window {
+            property <physicsworld3d> world;
+            property <bool> track: Physics3D.set-contact-events(root.world, 1, true);
+        }
+    "#;
+    let result = analysis::analyze(URI, impure, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|issue| issue["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("requires an impure callback"))),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn prepared_scene_uses_a_builtin_type_and_typed_prepare_signature() {
+    let items = complete_at("component Demo inherits Window { property <scenem|");
+    assert!(
+        items.iter().any(|item| item["label"] == "scenemodel3d"),
+        "{items:?}"
+    );
+    let items = complete_at(
+        "component Demo inherits Window { property <scenemodel3d> scene: Scene3D.prep|",
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "prepare"),
+        "{items:?}"
+    );
+    let source = "component Demo inherits Window { property <scenemodel3d> scene: Scene3D.prepare(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Scene3D.prepare(objects: [record], world?: physicsworld3d) -> scenemodel3d"
+    );
+    let invalid = r#"
+        export component Demo inherits Window {
+            property <scenemodel3d> scene;
+            property <scenemodel3d> nested: Scene3D.prepare(root.scene);
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|issue| issue["message"]
+                .as_str()
+                .is_some_and(|message| message
+                    .contains("Scene3D.prepare requires a scene object record list"))),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn authored_instance_table_signature_and_schema_diagnostics() {
+    let prefix = "component App inherits Window { property <instancetable3d> table: Scene3D.";
+    let items = complete_at(&(prefix.to_owned() + "instance-ta|"));
+    assert!(items.iter().any(|item| item["label"] == "instance-table"));
+    let call = prefix.to_owned() + "instance-table(";
+    let help = completion::signature_help(&call, (0, call.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Scene3D.instance-table(rows: [record]) -> instancetable3d"
+    );
+    let prefix = "component App inherits Window { property <instance3d> item: Scene3D.";
+    let items = complete_at(&(prefix.to_owned() + "table-i|"));
+    assert!(items.iter().any(|item| item["label"] == "table-instance"));
+    let call = prefix.to_owned() + "table-instance(";
+    let help = completion::signature_help(&call, (0, call.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Scene3D.table-instance(table: instancetable3d, index: int) -> instance3d"
+    );
+    let items = complete_at(
+        "component App inherits Window { property <instancetable3d> table; property <instance3d> item: Scene3D.table-instance(root.table, 0); property <vector3d> axis: root.item.axis-| }",
+    );
+    assert!(items.iter().any(|item| item["label"] == "axis-x"));
+    let invalid = r#"
+        struct Placement { scale: float }
+        export component App inherits Window {
+            property <[Placement]> rows;
+            property <instancetable3d> table: Scene3D.instance-table(root.rows);
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(result.diagnostics.values().flatten().any(|issue| {
+        issue["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("requires a vector3d field named `scale`"))
+    }));
+}
+
+#[test]
+fn scene_model_body_attachment_completes_and_checks_its_type() {
+    let source = r#"
+        struct BodyVisual {
+            id: string, mesh: string, x: float, y: float, z: float, scale-x: float, scale-y: float,
+            scale-z: float, yaw: float, pitch: float, roll: float, color: color,
+            physics-body: string,
+        }
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            SceneView3D {
+                physics-world: root.world;
+                model: [BodyVisual {
+                    id: "visual", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+                    yaw: 0, pitch: 0, roll: 0, color: #ffffff, physics-body: "mover",
+                }];
+            }
+        }
+    "#;
+    let items = complete_at(&source.replace("physics-body: \"mover\"", "physics-b|"));
+    assert!(
+        items.iter().any(|item| item["label"] == "physics-body"),
+        "{items:?}"
+    );
+    let valid = analysis::analyze(URI, source, None);
+    assert!(
+        valid.diagnostics.values().flatten().next().is_none(),
+        "{:?}",
+        valid.diagnostics
+    );
+    let invalid = source
+        .replace("physics-body: string", "physics-body: int")
+        .replace("physics-body: \"mover\"", "physics-body: 3");
+    let result = analysis::analyze(URI, &invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|issue| issue["message"].as_str().is_some_and(
+                |message| message.contains("requires a string field named `physics-body`")
+            )),
+        "{:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn frame_animation_completes_its_type_handler_and_commands() {
+    let items = complete_at("component App inherits Window { driver := FrameAnim|");
+    assert!(
+        items.iter().any(|item| item["label"] == "FrameAnimation"),
+        "{items:?}"
+    );
+    let items = complete_at("component App inherits Window { driver := FrameAnimation { trig|");
+    assert!(
+        items.iter().any(|item| item["label"] == "triggered"
+            && item["detail"]
+                == "triggered(frame-time: float, elapsed-time: float, current-frame: int)"),
+        "{items:?}"
+    );
+    let items = complete_at(
+        "component App inherits Window { driver := FrameAnimation {} Button { clicked => { driver.re|",
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "restart"),
+        "{items:?}"
+    );
+    let source = "component App inherits Window { driver := FrameAnimation {} Button { clicked => { driver.restart(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(help["signatures"][0]["label"], "restart()");
+    let source = r#"
+        export component App inherits Window {
+            out property <float> last;
+            driver := FrameAnimation {
+                running: true;
+                triggered(delta, elapsed, index) => { root.last = delta; }
+            }
+        }
+    "#;
+    let valid = analysis::analyze(URI, source, None);
+    assert!(
+        valid.diagnostics.values().flatten().next().is_none(),
+        "{:?}",
+        valid.diagnostics
+    );
+    let invalid = analysis::analyze(URI, &source.replace("delta, elapsed, index", "delta"), None);
+    assert!(
+        invalid
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|issue| issue["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("frame-time: float"))),
+        "{:?}",
+        invalid.diagnostics
+    );
+}
+
+#[test]
+fn physics_clock_exposes_typed_commands_and_interpolated_reads() {
+    let items = complete_at(
+        "component Demo inherits Window { callback tick(); tick() => { Physics3D.advan|",
+    );
+    for label in ["advance", "advance-realtime"] {
+        assert!(items.iter().any(|item| item["label"] == label), "{items:?}");
+    }
+    let source = "component Demo inherits Window { callback seek(); seek() => { Physics3D.advance(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.advance(world: physicsworld3d, elapsed: float, max-steps: int) -> int"
+    );
+    let valid = r#"
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            out property <point3d> drawn: Physics3D.interpolated-position(root.world, 1);
+        }
+    "#;
+    let result = analysis::analyze(URI, valid, None);
+    assert!(
+        result.diagnostics.values().flatten().next().is_none(),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn physics_kinematic_handoff_and_pivot_target_have_typed_signatures() {
+    let items = complete_at(
+        "component Demo inherits Window { callback change(); change() => { Physics3D.set-kinematic|",
+    );
+    for label in [
+        "set-kinematic",
+        "set-kinematic-target",
+        "set-kinematic-target-with-pivot",
+    ] {
+        assert!(items.iter().any(|item| item["label"] == label), "{items:?}");
+    }
+    let source = "component Demo inherits Window { callback edit(); edit() => { Physics3D.set-kinematic-target-with-pivot(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.set-kinematic-target-with-pivot(world: physicsworld3d, body: int, position: point3d, rotation: vector3d, pivot: vector3d) -> bool"
+    );
+    let invalid = r#"
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            out property <bool> changed: Physics3D.set-kinematic(root.world, 1, true);
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|item| item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("requires an impure callback"))),
+        "{:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn physics_mass_properties_share_completion_signatures_and_effects() {
+    let items = complete_at(
+        "component Demo inherits Window { callback change(); change() => { Physics3D.set-mass|",
+    );
+    for label in ["set-mass", "set-mass-properties"] {
+        assert!(items.iter().any(|item| item["label"] == label), "{items:?}");
+    }
+    let source = "component Demo inherits Window { callback edit(); edit() => { Physics3D.set-inertia-matrix(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.set-inertia-matrix(world: physicsworld3d, body: int, mass: float, local-center: point3d, column-x: vector3d, column-y: vector3d, column-z: vector3d) -> bool"
+    );
+    let invalid = r#"
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            out property <bool> edited: Physics3D.set-default-density(root.world, 2);
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|item| item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("requires an impure callback"))),
+        "{:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn physics_materials_expose_signatures_and_require_mutable_callbacks() {
+    let items = complete_at(
+        "component Demo inherits Window { callback change(); change() => { Physics3D.set-mat|",
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "set-material"),
+        "{items:?}"
+    );
+    let source =
+        "component Demo inherits Window { callback edit(); edit() => { Physics3D.set-material(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.set-material(world: physicsworld3d, body: int, static-friction: float, dynamic-friction: float, restitution: float) -> bool"
+    );
+    let invalid = r#"
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            out property <bool> edited: Physics3D.set-material(root.world, 1, 0.9, 0.3, 0);
+        }
+    "#;
+    let result = analysis::analyze(URI, invalid, None);
+    assert!(
+        result
+            .diagnostics
+            .values()
+            .flatten()
+            .any(|item| item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("requires an impure callback"))),
+        "{:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn physics_shape_queries_complete_and_share_collider_record_types() {
+    let items = complete_at(
+        "component Demo inherits Window { out property <physicshit3d> hit: Physics3D.shape-|",
+    );
+    for label in ["shape-cast", "shape-cast-all", "shape-overlap"] {
+        assert!(items.iter().any(|item| item["label"] == label), "{items:?}");
+    }
+    let source =
+        "component Demo inherits Window { out property <[int]> bodies: Physics3D.shape-overlap(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.shape-overlap(world: physicsworld3d, center: point3d, rotation: vector3d, shapes: [record], group-mask?: int, ignore-body?: int, include-sensors?: bool) -> [int]"
+    );
+    let source = r#"
+        struct BadShape { shape: float }
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            property <[BadShape]> shapes;
+            property <[int]> inside:
+                Physics3D.shape-overlap(root.world, Point3D.new(0, 0, 0), Vector3D.new(0, 0, 0), root.shapes);
+        }
+    "#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("shape") && message.contains("string"))
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn physics_ray_queries_complete_with_filters_and_hit_fields() {
+    let items = complete_at(
+        "component Demo inherits Window { out property <physicshit3d> hit: Physics3D.ray-c|",
+    );
+    for label in ["ray-cast", "ray-cast-all"] {
+        assert!(items.iter().any(|item| item["label"] == label), "{items:?}");
+    }
+    let source = "component Demo inherits Window { out property <[physicshit3d]> hits: Physics3D.ray-cast-all(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.ray-cast-all(world: physicsworld3d, origin: point3d, direction: vector3d, max-distance: float, group-mask?: int, ignore-body?: int, include-sensors?: bool) -> [physicshit3d]"
+    );
+    let items = complete_at(
+        "component Demo inherits Window { property <physicshit3d> result; out property <float> distance: root.result.dis|",
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "distance"),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn physics_character_hit_reports_complete_and_return_typed_contacts() {
+    let items = complete_at(
+        "component Demo inherits Window { callback run(); run() => { Physics3D.set-character-hit-r|",
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "set-character-hit-reports"),
+        "{items:?}"
+    );
+    let source = "component Demo inherits Window { property <[physicscontact3d]> hits: Physics3D.character-hits(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.character-hits(world: physicsworld3d, body: int) -> [physicscontact3d]"
+    );
+}
+
+#[test]
+fn physics_body_control_completion_shows_world_space_point() {
+    let items = complete_at(
+        "component Demo inherits Window { callback run(); run() => { Physics3D.apply-force-a|",
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "apply-force-at"),
+        "{items:?}"
+    );
+    let source =
+        "component Demo inherits Window { callback run(); run() => { Physics3D.apply-force-at(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.apply-force-at(world: physicsworld3d, body: int, force: vector3d, point: point3d) -> bool"
+    );
+    let rejected = r#"
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            property <bool> invalid: Physics3D.set-gravity-scale(root.world, 1, 0);
+        }
+    "#;
+    let diagnostics = analysis::analyze(URI, rejected, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("requires an impure callback"))
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn physics_contact_type_completion_exposes_report_fields() {
+    let items = complete_at(
+        "component Demo inherits Window { callback run(); run() => { Physics3D.set-contact-r|",
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "set-contact-reports"),
+        "{items:?}"
+    );
+    let source = r#"
+        export component Demo inherits Window {
+            property <physicscontact3d> latest;
+            property <float> strength: root.latest.normal-i|;
+        }
+    "#;
+    let items = complete_at(source);
+    assert!(
+        items.iter().any(|item| item["label"] == "normal-impulse"),
+        "{items:?}"
+    );
+    let source = "export component Demo inherits Window { property <[physicscontact3d]> recent: Physics3D.contacts(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.contacts(world: physicsworld3d, body: int) -> [physicscontact3d]"
+    );
+}
+
+#[test]
+fn physics_shape_records_complete_and_validate() {
+    let source =
+        "component Demo inherits Window { callback run(); run() => { Physics3D.add-kinematic-b|";
+    let items = complete_at(source);
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "add-kinematic-body"),
+        "{items:?}"
+    );
+    let source =
+        "component Demo inherits Window { callback run(); run() => { Physics3D.add-trigger(";
+    let help = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Physics3D.add-trigger(world: physicsworld3d, center: point3d, rotation: vector3d, shapes: [record]) -> int"
+    );
+    let inline = r#"
+        struct Collider { shape: string }
+        component Demo inherits Window {
+            property <physicsworld3d> world;
+            callback run();
+            run() => {
+                Physics3D.add-body(root.world, Point3D.new(0, 0, 0), Vector3D.new(0, 0, 0),
+                    [Collider { shape: "|" }], 0, 0, 0);
+            }
+        }
+    "#;
+    let items = complete_at(inline);
+    assert!(
+        items.iter().any(|item| item["label"] == "plane"),
+        "{items:?}"
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "capsule"),
+        "{items:?}"
+    );
+    for name in ["mesh", "convex-mesh", "heightfield"] {
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    let trigger = inline
+        .replace("Physics3D.add-body", "Physics3D.add-trigger")
+        .replace("}], 0, 0, 0);", "}]);");
+    let items = complete_at(&trigger);
+    assert!(
+        items.iter().any(|item| item["label"] == "convex-mesh"),
+        "{items:?}"
+    );
+    for name in ["mesh", "heightfield", "plane"] {
+        assert!(!items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    let source = r#"
+        struct Collider { shape: string, size: float }
+        export component Demo inherits Window {
+            property <physicsworld3d> world;
+            callback run();
+            run() => {
+                Physics3D.add-trigger(root.world, Point3D.new(0, 0, 0), Vector3D.new(0, 0, 0),
+                    [Collider { shape: "box", size: 1 }]);
+            }
+        }
+    "#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            item["message"].as_str().is_some_and(|message| {
+                message.contains("collision-shapes field `size` requires type vector3d")
+            })
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn compound_collision_shapes_complete_and_validate_without_a_visual_mesh() {
+    let template = r##"
+struct Shape { shape: string, position: point3d, size: vector3d }
+struct Actor {
+    id: string, x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+    scale-x: float, scale-y: float, scale-z: float, color: color, collision-shapes: [Shape],
+}
+export component Demo inherits Window {
+    SceneView3D {
+        model: [Actor { id: "body", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
+            collision-shapes: [Shape { shape: KIND, position: Point3D.new(1, 0, 0), size: Vector3D.new(1, 2, 3) }],
+        }];
+    }
+}
+"##;
+    let items = complete_at(&template.replace("KIND", r#""cy|""#));
+    assert!(
+        items.iter().any(|item| item["label"] == "cylinder"),
+        "{items:?}"
+    );
+    for (prefix, name) in [("ca", "capsule"), ("me", "mesh")] {
+        let items = complete_at(&template.replace("KIND", &format!(r#""{prefix}|""#)));
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    let options = complete_at(&template.replace("KIND", r#""|""#));
+    assert!(
+        !options.iter().any(|item| item["label"] == "torus"),
+        "{options:?}"
+    );
+    let good = template.replace("KIND", r#""box""#);
+    assert!(analysis::analyze(URI, &good, None).diagnostics.is_empty());
+    let bad = good
+        .replace("size: vector3d", "size: float")
+        .replace("size: Vector3D.new(1, 2, 3)", "size: 2");
+    let diagnostics = analysis::analyze(URI, &bad, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            let message = item["message"].as_str().unwrap_or_default();
+            message.contains("collision-shapes")
+                && message.contains("size")
+                && message.contains("vector3d")
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn triangle_mesh_records_complete_nested_fields_and_validate_vertex_types() {
     let source = r##"
 struct Vertex { position: point3d, normal: vector3d, u: float, v: float }
@@ -6896,7 +8596,7 @@ fn scene_node_coordinate_mapping_has_typed_completion_and_signature_help() {
         assert_eq!(
             help["signatures"][0]["label"],
             format!(
-                "Scene3D.{member}(objects: [record], from: string, to: string, {input}: {kind}, fallback: {kind}) -> {kind}"
+                "Scene3D.{member}(objects: [record] | scenemodel3d, from: string, to: string, {input}: {kind}, fallback: {kind}) -> {kind}"
             )
         );
     }
@@ -7058,6 +8758,49 @@ fn material_shader_inputs_complete_panel_names_and_sampling() {
 }
 
 #[test]
+fn instance_table_assets_complete_paths_and_typed_metadata() {
+    let root = workspace_fixture("instance-table-path");
+    std::fs::write(root.join("rows.xml"), "<InstanceTable/>").unwrap();
+    std::fs::write(root.join("rows.bin"), "").unwrap();
+    std::fs::write(root.join("rows.png"), "").unwrap();
+    let uri = workspace_file_uri(&root.join("app.xr"));
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let opening =
+        "component App inherits Window { property <instancetable3d> table: @instance-table-url(";
+    let hints = completion::signature_help(opening, (0, opening.len()), Some(&workspace));
+    assert_eq!(
+        hints["signatures"][0]["label"],
+        "@instance-table-url(path: string literal) -> instancetable3d"
+    );
+    assert!(
+        hints["signatures"][0]["documentation"]["value"]
+            .as_str()
+            .is_some_and(|help| help.contains("Negative scale can mirror an instance"))
+    );
+    let prefix = opening.to_owned() + r#""rows."#;
+    let results = completion::complete(&prefix, 0, prefix.len(), Some(&workspace));
+    let names = results
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["rows.bin", "rows.xml"]);
+    let items = complete_at(
+        "component App inherits Window { property <instancetable3d> table; property <int> n: root.table.co|",
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "count" && item["detail"] == "int")
+    );
+    let completed = prefix + "xml\"); }";
+    let links = completion::document_links(&completed, &workspace);
+    assert_eq!(
+        links[0]["target"],
+        workspace.uri(&root.join("rows.xml")).unwrap()
+    );
+}
+
+#[test]
 fn material_shader_files_have_signature_path_completion_and_links() {
     let root = workspace_fixture("material-shader-path");
     std::fs::write(root.join("surface.wgsl"), "").unwrap();
@@ -7080,6 +8823,9 @@ fn material_shader_files_have_signature_path_completion_and_links() {
         "{help}"
     );
     assert!(help.contains("material_texture_world_position"), "{help}");
+    for field in ["instance_index", "instance_color", "instance_transform"] {
+        assert!(help.contains(field), "{help}");
+    }
     let prefix = opening.to_owned() + "\"sur";
     let completions = completion::complete(&prefix, 0, prefix.len(), Some(&workspace));
     assert_eq!(completions.len(), 1, "{completions:?}");
@@ -7399,4 +9145,68 @@ fn capture_color_format_completes_linear_attachment_formats() {
         assert!(labels.contains(&format), "{labels:?}");
     }
     assert!(!labels.contains(&"r16f"), "{labels:?}");
+}
+
+#[test]
+fn typed_capture_record_completes_attachment_merge_flag() {
+    let items = complete_at(
+        r#"
+        struct Feed { name: string, color-format: string, combine-attachments: bool }
+        component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "surface", combine-| }]; }
+        }
+        "#,
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| { item["label"] == "combine-attachments" && item["detail"] == "bool" }),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn reflection_probe_completes_its_debug_view_field() {
+    let items = complete_at(
+        r#"
+        struct Probe { position: point3d, box-size: vector3d, debug-view: bool }
+        component App inherits Window {
+            SceneView3D { reflection-probes: [Probe { debug-| }]; }
+        }
+        "#,
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "debug-view" && item["detail"] == "bool"),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn capture_material_data_completes_attachment_and_format() {
+    let attachment = complete_at(
+        r#"
+        component App inherits Window {
+            SceneView3D { scene-effects: [Pass {
+                shader: "", buffers: [Input { capture: "surface", attachment: "material-|" }],
+            }]; }
+        }
+        "#,
+    );
+    assert!(
+        attachment
+            .iter()
+            .any(|item| item["label"] == "material-data"),
+        "{attachment:?}"
+    );
+    let formats = complete_at(
+        r#"
+        component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "surface", material-data-format: "rg16|" }]; }
+        }
+        "#,
+    );
+    assert_eq!(formats.len(), 1, "{formats:?}");
+    assert_eq!(formats[0]["label"], "rg16f");
 }

@@ -117,31 +117,56 @@ impl ImagePresentation {
     /// Prepare an image whose caller has established that it has no source crop or tiling.
     #[doc(hidden)]
     pub fn for_whole_node(node: &Node, size: [u32; 2], in_layout: bool) -> Self {
-        let x = match node.properties.get("horizontal-alignment") {
-            Some(Value::ImageHorizontalAlignment(Horizontal::Left)) => 0.0,
-            Some(Value::ImageHorizontalAlignment(Horizontal::Right)) => 1.0,
-            _ => 0.5,
+        let horizontal = match node.properties.get("horizontal-alignment") {
+            Some(Value::ImageHorizontalAlignment(value)) => Some(*value),
+            _ => None,
         };
-        let y = match node.properties.get("vertical-alignment") {
-            Some(Value::ImageVerticalAlignment(Vertical::Top)) => 0.0,
-            Some(Value::ImageVerticalAlignment(Vertical::Bottom)) => 1.0,
-            _ => 0.5,
+        let vertical = match node.properties.get("vertical-alignment") {
+            Some(Value::ImageVerticalAlignment(value)) => Some(*value),
+            _ => None,
         };
         let rendering = match node.properties.get("image-rendering") {
             Some(Value::ImageRendering(rendering)) => *rendering,
             _ => ImageRendering::Smooth,
         };
+        Self::whole_with_style(
+            size,
+            node.image_fit("image-fit")
+                .unwrap_or(if in_layout || node.kind == "MediaPlayer" {
+                    ImageFit::Contain
+                } else {
+                    ImageFit::Fill
+                }),
+            rendering,
+            horizontal,
+            vertical,
+        )
+    }
+
+    /// Assemble whole-image presentation from properties already read by a caller.
+    #[doc(hidden)]
+    pub fn whole_with_style(
+        size: [u32; 2],
+        fit: ImageFit,
+        rendering: ImageRendering,
+        horizontal: Option<Horizontal>,
+        vertical: Option<Vertical>,
+    ) -> Self {
+        let x = match horizontal {
+            Some(Horizontal::Left) => 0.0,
+            Some(Horizontal::Right) => 1.0,
+            _ => 0.5,
+        };
+        let y = match vertical {
+            Some(Vertical::Top) => 0.0,
+            Some(Vertical::Bottom) => 1.0,
+            _ => 0.5,
+        };
         Self {
             region: ImageRegion::full(size),
             modes: [ImageTileMode::Stretch; 2],
             rendering,
-            fit: node.image_fit("image-fit").unwrap_or(
-                if in_layout || node.kind == "MediaPlayer" {
-                    ImageFit::Contain
-                } else {
-                    ImageFit::Fill
-                },
-            ),
+            fit,
             alignment: [x, y],
         }
     }

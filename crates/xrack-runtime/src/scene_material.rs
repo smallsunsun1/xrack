@@ -423,6 +423,7 @@ pub struct SceneMaterialMaps {
     // None inherits. Some(None) clears the inherited map.
     pub base_color_map: Option<Option<MeshTexture>>,
     pub metallic_roughness_map: Option<Option<MeshTexture>>,
+    pub glossiness_map: Option<Option<MeshTexture>>,
     pub emissive_map: Option<Option<MeshTexture>>,
     pub occlusion_map: Option<Option<MeshTexture>>,
     pub normal_map: Option<Option<MeshTexture>>,
@@ -449,6 +450,7 @@ impl SceneMaterialMaps {
         let maps = Self {
             base_color_map: map("base-color-map"),
             metallic_roughness_map: map("metallic-roughness-map"),
+            glossiness_map: map("glossiness-map"),
             emissive_map: map("emissive-map"),
             occlusion_map: map("occlusion-map"),
             normal_map: map("normal-map"),
@@ -672,9 +674,10 @@ pub enum MaterialChannel {
     Thickness,
     Clearcoat,
     ClearcoatRoughness,
+    Glossiness,
 }
 
-const CHANNEL_FIELDS: [(&str, TextureChannel); 11] = [
+const CHANNEL_FIELDS: [(&str, TextureChannel); 12] = [
     ("base-color-channel", TextureChannel::Rgb),
     ("emissive-channel", TextureChannel::Rgb),
     ("metalness-channel", TextureChannel::Blue),
@@ -686,6 +689,7 @@ const CHANNEL_FIELDS: [(&str, TextureChannel); 11] = [
     ("thickness-channel", TextureChannel::Green),
     ("clearcoat-channel", TextureChannel::Red),
     ("clearcoat-roughness-channel", TextureChannel::Green),
+    ("glossiness-channel", TextureChannel::Alpha),
 ];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -826,7 +830,15 @@ impl VertexColorMasks {
     }
 
     pub(crate) fn metalness(&self, color: [f32; 4]) -> f32 {
-        match self.field(0) {
+        self.multiplier(0, color)
+    }
+
+    pub(crate) fn specular(&self, color: [f32; 4]) -> f32 {
+        self.multiplier(3, color)
+    }
+
+    fn multiplier(&self, role: usize, color: [f32; 4]) -> f32 {
+        match self.field(role) {
             channel @ 2..=5 => color[(channel - 2) as usize].clamp(0.0, 1.0),
             _ => 1.0,
         }
@@ -998,8 +1010,26 @@ impl MeshFresnel {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MeshWorkflow {
+    #[default]
+    MetallicRoughness,
+    SpecularGlossiness,
+}
+
+impl MeshWorkflow {
+    pub fn named(name: &str) -> Option<Self> {
+        match name {
+            "metallic-roughness" => Some(Self::MetallicRoughness),
+            "specular-glossiness" => Some(Self::SpecularGlossiness),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MeshPbr {
+    pub workflow: MeshWorkflow,
     pub anisotropy: Option<Box<MeshAnisotropy>>,
     pub fresnel: MeshFresnel,
     pub metallic: f32,
@@ -1007,7 +1037,8 @@ pub struct MeshPbr {
     /// Linear emission with the glTF emissive strength already applied.
     pub emissive: [f32; 3],
     pub occlusion_strength: f32,
-    pub metallic_roughness_texture: Option<MeshTexture>,
+    /// Linear G/B roughness and metallic, or the selected glossiness channel.
+    pub surface_texture: Option<MeshTexture>,
     pub emissive_texture: Option<MeshTexture>,
     pub occlusion_texture: Option<MeshTexture>,
     pub normal_map: Option<MeshNormalMap>,
@@ -1061,7 +1092,7 @@ impl MeshVolume {
 
 #[derive(Clone, Debug)]
 pub struct MeshDielectric {
-    /// 0 is the glTF specular-glossiness conversion mode (infinite IOR).
+    /// glTF uses zero to represent an infinite index of refraction.
     pub ior: f32,
     pub specular: f32,
     pub color: [f32; 3],
@@ -1131,7 +1162,7 @@ impl Default for RefractionChannels {
 impl RefractionChannels {
     fn new(ior: f32, dispersion: f32) -> Self {
         if ior == 0.0 {
-            // The specular-glossiness conversion mode uses an infinite IOR.
+            // glTF uses zero to represent an infinite index of refraction.
             return Self {
                 inverse_ior: [0.0; 3],
                 blur_scale: [1.0; 3],
@@ -1192,7 +1223,7 @@ impl MeshPbr {
                 .all(|value| (0.0..=1.0).contains(&value))
             && self.emissive.into_iter().all(|v| v.is_finite() && v >= 0.0)
             && [
-                &self.metallic_roughness_texture,
+                &self.surface_texture,
                 &self.emissive_texture,
                 &self.occlusion_texture,
             ]
@@ -1237,6 +1268,21 @@ pub enum MeshAlphaMode {
     Opaque,
     Mask(f32),
     Blend,
+    #[doc(hidden)]
+    InstanceBlend {
+        cutoff: Option<f32>,
+        builtin: bool,
+    },
+}
+
+impl MeshAlphaMode {
+    pub fn cutoff(self) -> Option<f32> {
+        match self {
+            Self::Mask(cutoff) => Some(cutoff),
+            Self::InstanceBlend { cutoff, .. } => cutoff,
+            _ => None,
+        }
+    }
 }
 
 /// Original material identity from a source asset, independent of draw order.
@@ -1354,6 +1400,8 @@ pub struct SceneMaterial {
     pub normal_strength: Option<f64>,
     pub clearcoat_normal_strength: Option<f64>,
     pub base_color: Option<Color>,
+    pub workflow: Option<MeshWorkflow>,
+    pub glossiness: Option<f64>,
     pub metalness: Option<f64>,
     pub anisotropy_strength: Option<f64>,
     pub anisotropy_rotation: Option<f64>,
@@ -1459,6 +1507,11 @@ impl SceneMaterial {
             normal_strength: number("normal-strength"),
             clearcoat_normal_strength: number("clearcoat-normal-strength"),
             base_color: color("base-color"),
+            workflow: match record.field("material-workflow") {
+                Some(Value::String(name)) => MeshWorkflow::named(name),
+                _ => None,
+            },
+            glossiness: number("glossiness"),
             metalness: number("metalness"),
             anisotropy_strength: number("anisotropy-strength"),
             anisotropy_rotation: number("anisotropy-rotation"),
@@ -1518,6 +1571,7 @@ impl SceneMaterial {
             .filter(|rotation| rotation.is_finite())
             .map(|rotation| rotation.rem_euclid(360.0));
         self.roughness = clamp(self.roughness, 0.0, 1.0);
+        self.glossiness = clamp(self.glossiness, 0.0, 1.0);
         self.clearcoat = clamp(self.clearcoat, 0.0, 1.0);
         self.clearcoat_roughness = clamp(self.clearcoat_roughness, 0.0, 1.0);
         self.transmission = clamp(self.transmission, 0.0, 1.0);
@@ -1567,6 +1621,8 @@ impl SceneMaterial {
         overlay_factors!(
             vertex_colors,
             base_color,
+            workflow,
+            glossiness,
             metalness,
             anisotropy_strength,
             anisotropy_rotation,
@@ -1617,6 +1673,7 @@ impl SceneMaterial {
             overlay_maps!(
                 base_color_map,
                 metallic_roughness_map,
+                glossiness_map,
                 emissive_map,
                 occlusion_map,
                 normal_map,
@@ -1696,7 +1753,7 @@ impl SceneMaterial {
         }
         if self.unlit == Some(true) {
             result.pbr = None;
-        } else if self.unlit == Some(false) && result.pbr.is_none() {
+        } else if (self.unlit == Some(false) || self.workflow.is_some()) && result.pbr.is_none() {
             result.pbr = Some(MeshPbr::principled());
         }
         if let Some(pbr) = &mut result.pbr {
@@ -1706,18 +1763,34 @@ impl SceneMaterial {
                 self.fresnel_bias,
                 self.fresnel_scale_bias_enabled,
             );
-            pbr.metallic = factor(self.metalness, pbr.metallic, 0.0, 1.0);
-            pbr.roughness = factor(self.roughness, pbr.roughness, 0.0, 1.0);
+            let previous = pbr.workflow;
+            pbr.workflow = self.workflow.unwrap_or(previous);
+            if pbr.workflow != previous {
+                pbr.surface_texture = None;
+            }
+            match pbr.workflow {
+                MeshWorkflow::MetallicRoughness => {
+                    pbr.metallic = factor(self.metalness, pbr.metallic, 0.0, 1.0);
+                    pbr.roughness = factor(self.roughness, pbr.roughness, 0.0, 1.0);
+                    replace_map(&mut pbr.surface_texture, &maps.metallic_roughness_map);
+                }
+                MeshWorkflow::SpecularGlossiness => {
+                    let inherited = if previous == pbr.workflow {
+                        1.0 - pbr.roughness
+                    } else {
+                        1.0
+                    };
+                    pbr.metallic = 0.0;
+                    pbr.roughness = 1.0 - factor(self.glossiness, inherited, 0.0, 1.0);
+                    replace_map(&mut pbr.surface_texture, &maps.glossiness_map);
+                }
+            }
             pbr.occlusion_strength =
                 factor(self.occlusion_amount, pbr.occlusion_strength, 0.0, 1.0);
             let strength = factor(self.emissive_strength, 1.0, 0.0, 64.0);
             if let Some(color) = self.emissive_color {
                 pbr.emissive = linear_color(color);
             }
-            replace_map(
-                &mut pbr.metallic_roughness_texture,
-                &maps.metallic_roughness_map,
-            );
             replace_map(&mut pbr.emissive_texture, &maps.emissive_map);
             replace_map(&mut pbr.occlusion_texture, &maps.occlusion_map);
             replace_normal(&mut pbr.normal_map, &maps.normal_map, self.normal_strength);
@@ -1892,13 +1965,14 @@ fn factor(value: Option<f64>, default: f32, min: f64, max: f64) -> f32 {
 impl MeshPbr {
     pub(crate) fn principled() -> Self {
         Self {
+            workflow: MeshWorkflow::MetallicRoughness,
             anisotropy: None,
             fresnel: MeshFresnel::default(),
             metallic: 0.0,
             roughness: 0.5,
             emissive: [0.0; 3],
             occlusion_strength: 1.0,
-            metallic_roughness_texture: None,
+            surface_texture: None,
             emissive_texture: None,
             occlusion_texture: None,
             normal_map: None,
@@ -1922,7 +1996,10 @@ impl MeshMaterial {
     }
 
     pub fn is_blended(&self) -> bool {
-        self.alpha_mode == MeshAlphaMode::Blend || self.blend_mode != MeshBlendMode::SourceOver
+        matches!(
+            self.alpha_mode,
+            MeshAlphaMode::Blend | MeshAlphaMode::InstanceBlend { .. }
+        ) || self.blend_mode != MeshBlendMode::SourceOver
     }
 
     #[doc(hidden)]
@@ -1930,12 +2007,18 @@ impl MeshMaterial {
         let pbr = self.pbr.as_ref()?;
         pbr.transmission.as_ref().filter(|term| term.factor > 0.0)?;
         if pbr.metallic >= 1.0
-            && pbr.metallic_roughness_texture.is_none()
+            && pbr.surface_texture.is_none()
             && !self.vertex_masks.masks_metalness()
         {
             return None;
         }
-        Some(pbr.roughness * pbr.refraction_channels().blur_scale[2])
+        let roughness =
+            if pbr.workflow == MeshWorkflow::SpecularGlossiness && pbr.surface_texture.is_some() {
+                1.0
+            } else {
+                pbr.roughness
+            };
+        Some(roughness * pbr.refraction_channels().blur_scale[2])
     }
 
     #[doc(hidden)]
@@ -1949,10 +2032,14 @@ impl MeshMaterial {
         Some(match self.alpha_mode {
             MeshAlphaMode::Opaque => MeshDepthCoverage::Opaque,
             MeshAlphaMode::Mask(_) => MeshDepthCoverage::Mask,
-            MeshAlphaMode::Blend if self.depth_draw_mode == MeshDepthDraw::OpaquePrepass => {
+            MeshAlphaMode::Blend | MeshAlphaMode::InstanceBlend { .. }
+                if self.depth_draw_mode == MeshDepthDraw::OpaquePrepass =>
+            {
                 MeshDepthCoverage::OpaqueAlpha
             }
-            MeshAlphaMode::Blend => MeshDepthCoverage::NonzeroAlpha,
+            MeshAlphaMode::Blend | MeshAlphaMode::InstanceBlend { .. } => {
+                MeshDepthCoverage::NonzeroAlpha
+            }
         })
     }
 
@@ -2035,6 +2122,11 @@ impl MeshMaterial {
                 self.effective_alpha(uv, vertex_alpha, tint_alpha) >= cutoff
             }
             MeshAlphaMode::Blend => self.effective_alpha(uv, vertex_alpha, tint_alpha) > 0.0,
+            MeshAlphaMode::InstanceBlend { cutoff, .. } => {
+                tint_alpha > 0.0
+                    && cutoff
+                        .is_none_or(|cutoff| self.effective_alpha(uv, vertex_alpha, 1.0) >= cutoff)
+            }
         }
     }
 
@@ -2043,7 +2135,11 @@ impl MeshMaterial {
             None => false,
             Some(MeshDepthCoverage::Opaque) => true,
             Some(MeshDepthCoverage::OpaqueAlpha) => {
-                self.effective_alpha(uv, vertex_alpha, tint_alpha) >= 1.0
+                if matches!(self.alpha_mode, MeshAlphaMode::InstanceBlend { .. }) {
+                    tint_alpha >= 1.0 && self.covers(uv, vertex_alpha, tint_alpha)
+                } else {
+                    self.effective_alpha(uv, vertex_alpha, tint_alpha) >= 1.0
+                }
             }
             Some(MeshDepthCoverage::Mask | MeshDepthCoverage::NonzeroAlpha) => {
                 self.covers(uv, vertex_alpha, tint_alpha)

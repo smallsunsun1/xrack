@@ -380,6 +380,31 @@ impl SceneVisibility {
         }
     }
 
+    /// The indices are distinct and in the same instance order as the geometry.
+    pub(crate) fn excluding(count: usize, indices: impl Iterator<Item = usize>) -> Self {
+        let mut indices = indices.peekable();
+        if indices.peek().is_none() {
+            return Self::all(count);
+        }
+        let mut words = vec![u64::MAX; count.div_ceil(64)];
+        if let Some(last) = words.last_mut() {
+            *last >>= (64 - count % 64) % 64;
+        }
+        let mut visible = count;
+        for index in indices {
+            words[index / 64] &= !(1 << (index % 64));
+            visible -= 1;
+        }
+        if visible == 0 {
+            Self::none()
+        } else {
+            Self {
+                visible,
+                mask: Mask::Mixed(words.into()),
+            }
+        }
+    }
+
     #[doc(hidden)]
     pub fn intersect(a: &std::sync::Arc<Self>, b: &std::sync::Arc<Self>) -> std::sync::Arc<Self> {
         match (&a.mask, &b.mask) {
@@ -489,7 +514,6 @@ mod selection_tests {
             &CameraNode {
                 eye: Vector3::new(0.0, 0.0, 8.0),
                 rotation: UnitQuaternion::identity(),
-                target: None,
                 settings,
                 lod_bias: 1.0,
                 layers: 1,

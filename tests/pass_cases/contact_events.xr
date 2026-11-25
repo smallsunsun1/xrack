@@ -1,0 +1,25 @@
+// RAW: "xr.physics_function"{{.*}}value = "set-contact-events"{{.*}} -> !xr.bool
+// CHECK: "xr.callback"() <{name = "sample"
+// CHECK: "xr.physics_function"{{.*}}value = "contact-bodies"{{.*}} -> !xr.intlist
+// CHECK: "xr.physics_function"{{.*}}value = "set-contact-events"{{.*}} -> !xr.bool
+// CHECK: "xr.physics_function"{{.*}}value = "step"{{.*}} -> !xr.bool
+// CHECK: "xr.physics_function"{{.*}}value = "contact-bodies"{{.*}} -> !xr.intlist
+// CHECK: "xr.physics_function"{{.*}}value = "contact-entered"{{.*}} -> !xr.intlist
+// CHECK: "xr.physics_function"{{.*}}value = "contact-exited"{{.*}} -> !xr.intlist
+export component App inherits Window {
+    in-out property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, 0, 0), 0.016);
+    in-out property <int> body: 0;
+    out property <[int]> previous;
+    out property <[int]> touched;
+    out property <[int]> entered;
+    out property <[int]> exited;
+    callback sample();
+    sample() => {
+        root.previous = Physics3D.contact-bodies(root.world, root.body);
+        Physics3D.set-contact-events(root.world, root.body, true);
+        Physics3D.step(root.world);
+        root.touched = Physics3D.contact-bodies(root.world, root.body);
+        root.entered = Physics3D.contact-entered(root.world, root.body);
+        root.exited = Physics3D.contact-exited(root.world, root.body);
+    }
+}

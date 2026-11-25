@@ -166,6 +166,7 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
                             | "SceneView3D"
                     )
                     && matches!(actual, Type::RecordList(_))
+                || kind == "SceneView3D" && name == "model" && actual == Type::SceneModel3D
                 || kind == "SceneView3D"
                     && matches!(
                         name,
@@ -838,6 +839,7 @@ pub fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef
                         | "ActionGroup"
                         | "ButtonGroup"
                         | "Timer"
+                        | "FrameAnimation"
                         | "SoundEffect"
                         | "SecondaryWindow"
                         | "DayCell"

@@ -1,0 +1,125 @@
+struct CcdActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component PhysicsCcdDemo inherits Window {
+    title: "XRack · 连续碰撞对照";
+    width: 736px; height: 462px; resizable: false; background: #172735;
+
+    property <vector3d> zero: Vector3D.new(0, 0, 0);
+    property <physicsworld3d> discrete: Physics3D.new(root.zero, 0.1);
+    property <physicsworld3d> swept: Physics3D.new(root.zero, 0.1);
+    property <point3d> blue-start: Point3D.new(-1.8, 0.64, 0.91);
+    property <point3d> gold-start: Point3D.new(-1.8, 0.64, -0.91);
+    property <point3d> blue-wall: Point3D.new(0, 0.64, 0.91);
+    property <point3d> gold-wall: Point3D.new(0, 0.64, -0.91);
+    property <vector3d> wall-size: Vector3D.new(0.08, 1.28, 1.0);
+    out property <int> blue: 0;
+    out property <int> gold: 0;
+    in-out property <bool> speculative: false;
+    in-out property <bool> dynamic-wall: false;
+    in-out property <float> units: 1;
+    out property <float> solver-length: Physics3D.length-unit(root.swept);
+    out property <int> budget: Physics3D.ccd-substeps(root.swept);
+    out property <float> horizon: Physics3D.soft-ccd(root.swept, root.gold) / root.units;
+    out property <bool> gold-full: Physics3D.body-ccd(root.swept, root.gold);
+    out property <point3d> blue-position: root.blue == 0 ? root.blue-start
+        : root.to-view(Physics3D.position(root.discrete, root.blue));
+    out property <point3d> gold-position: root.gold == 0 ? root.gold-start
+        : root.to-view(Physics3D.position(root.swept, root.gold));
+
+    pure function to-solver(point: point3d) -> point3d {
+        Point3D.new(point.x * root.units, point.y * root.units, point.z * root.units)
+    }
+    pure function to-view(point: point3d) -> point3d {
+        Point3D.new(point.x / root.units, point.y / root.units, point.z / root.units)
+    }
+    pure function rounded(value: float) -> float { Math.round(value * 100) / 100.0 }
+
+    callback setup();
+    setup() => {
+        Physics3D.clear(root.discrete);
+        Physics3D.clear(root.swept);
+        Physics3D.set-gravity(root.discrete, root.zero);
+        Physics3D.set-gravity(root.swept, root.zero);
+        Physics3D.set-length-unit(root.discrete, root.units);
+        Physics3D.set-length-unit(root.swept, root.units);
+        Physics3D.set-ccd-substeps(root.discrete, root.dynamic-wall ? 4 : 0);
+        Physics3D.set-ccd-substeps(root.swept, root.speculative ? 0 : 4);
+        let span = Vector3D.new(root.wall-size.x * root.units, root.wall-size.y * root.units, root.wall-size.z * root.units);
+        let mass = root.dynamic-wall ? 1 : 0;
+        let blue-wall = Physics3D.add-box(root.discrete, root.to-solver(root.blue-wall), span, mass, 0, 0);
+        let gold-wall = Physics3D.add-box(root.swept, root.to-solver(root.gold-wall), span, mass, 0, 0);
+        if root.dynamic-wall {
+            Physics3D.set-axis-locks(root.discrete, blue-wall, 7, 7);
+            Physics3D.set-axis-locks(root.swept, gold-wall, 7, 7);
+            Physics3D.set-body-ccd(root.discrete, blue-wall, false);
+            Physics3D.set-body-ccd(root.swept, gold-wall, false);
+        }
+        root.blue = Physics3D.add-sphere(root.discrete, root.to-solver(root.blue-start), 0.12 * root.units, 1, 0, 0);
+        root.gold = Physics3D.add-sphere(root.swept, root.to-solver(root.gold-start), 0.12 * root.units, 1, 0, 0);
+        Physics3D.set-body-ccd(root.discrete, root.blue, false);
+        Physics3D.set-body-ccd(root.swept, root.gold, !root.speculative);
+        Physics3D.set-soft-ccd(root.swept, root.gold, root.speculative ? 4 * root.units : 0);
+    }
+    callback shoot();
+    shoot() => {
+        root.setup();
+        let velocity = Vector3D.new(40 * root.units, 0, 0);
+        Physics3D.set-linear-velocity(root.discrete, root.blue, velocity);
+        Physics3D.set-linear-velocity(root.swept, root.gold, velocity);
+        Physics3D.step(root.discrete);
+        Physics3D.step(root.swept);
+    }
+
+    pure function part(id: string, mesh: string, center: point3d, size: vector3d, tint: color) -> CcdActor {
+        CcdActor {
+            id: id, mesh: mesh, x: center.x, y: center.y, z: center.z,
+            scale-x: size.x, scale-y: size.y, scale-z: size.z, yaw: 0, pitch: 0, roll: 0,
+            color: tint,
+        }
+    }
+    property <[CcdActor]> actors: [
+        root.part("floor", "primitive:box", Point3D.new(0, -0.10, 0), Vector3D.new(8.35, 0.20, 4.8), #304858),
+        root.part("blue-lane", "primitive:box", Point3D.new(0, 0.003, 0.91), Vector3D.new(7.9, 0.012, 1.45), #364f76),
+        root.part("gold-lane", "primitive:box", Point3D.new(0, 0.003, -0.91), Vector3D.new(7.9, 0.012, 1.45), #64513f),
+        root.part("blue-wall", "primitive:box", root.blue-wall, root.wall-size, #85b7eb),
+        root.part("gold-wall", "primitive:box", root.gold-wall, root.wall-size, #bf9d73),
+        root.part("blue-ball", "primitive:sphere", root.blue-position, Vector3D.new(0.24, 0.24, 0.24), #88c9ff),
+        root.part("gold-ball", "primitive:sphere", root.gold-position, Vector3D.new(0.24, 0.24, 0.24), #ffd488),
+    ];
+    SceneView3D {
+        width: 736px; height: 378px; model: root.actors;
+        camera-yaw: 23; camera-pitch: 33; camera-distance: 10.2;
+        scene-background: #203949; ambient-intensity: 0.59; multisampling: true;
+    }
+    hit-status := Text {
+        x: 18px; y: 14px; color: #edf1f7;
+        text: "测试球 X · 蓝 " + root.rounded(root.blue-position.x)
+            + "   ·   金 " + root.rounded(root.gold-position.x);
+    }
+    ccd-status := Text {
+        x: 18px; y: 42px; color: #c3d6e1;
+        text: "金色通道 · 子步 " + root.budget + "   ·   预测 " + root.rounded(root.horizon)
+            + "   ·   长度单位 " + root.solver-length;
+    }
+    HorizontalLayout {
+        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
+        launch := Button { text: "推进测试球"; clicked => { root.shoot(); } }
+        mode := Button {
+            text: root.speculative ? "预测 CCD" : "完整 CCD";
+            clicked => { root.speculative = !root.speculative; root.setup(); }
+        }
+        target := Button {
+            text: root.dynamic-wall ? "动态薄壁" : "固定薄壁";
+            clicked => { root.dynamic-wall = !root.dynamic-wall; root.setup(); }
+        }
+        units := Button {
+            text: root.units == 1 ? "米尺度" : "厘米尺度";
+            clicked => { root.units = root.units == 1 ? 100 : 1; root.setup(); }
+        }
+        reset := Button { text: "重置"; clicked => { root.setup(); } }
+    }
+}

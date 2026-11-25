@@ -38,7 +38,7 @@ impl SceneMeshInputs {
         self.reads.borrow().values().all(|read| read())
     }
 
-    fn remember<T: 'static>(&self, model: &VecModel<T>) -> Stamp {
+    pub(crate) fn remember<T: 'static>(&self, model: &VecModel<T>) -> Stamp {
         let stamp = model.contents_stamp();
         self.reads
             .borrow_mut()

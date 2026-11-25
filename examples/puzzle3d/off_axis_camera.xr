@@ -9,7 +9,7 @@ struct FrustumActor {
 }
 
 export component OffAxisCameraDemo inherits Window {
-    title: "XRack · 非对称视锥";
+    title: "XRack · 偏轴相机";
     width: 360px;
     height: 296px;
     resizable: false;
@@ -18,10 +18,13 @@ export component OffAxisCameraDemo inherits Window {
     in-out property <float> horizontal: 0.25;
     in-out property <float> vertical: 0.125;
     in-out property <float> half-width: 0.75;
+    in-out property <float> half-height: 0.5;
+    in-out property <bool> parallel: false;
     in-out property <bool> culling: true;
     in-out property <bool> effects: true;
     in-out property <point2d> cursor: Point2D.new(120px, 150px);
     property <point2d> viewport-size: Point2D.new(360px, 240px);
+    property <float> lens-scale: root.parallel ? 8.0 : 1.0;
     property <FrustumActor> defaults: FrustumActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
@@ -30,10 +33,12 @@ export component OffAxisCameraDemo inherits Window {
     };
     property <[FrustumActor]> scene: [
         FrustumActor {
-            id: "lens", mesh: "", z: 8, camera-kind: "frustum",
-            camera-left: root.horizontal - root.half-width,
-            camera-right: root.horizontal + root.half-width,
-            camera-bottom: root.vertical - 0.5, camera-top: root.vertical + 0.5,
+            id: "lens", mesh: "", z: 8,
+            camera-kind: root.parallel ? "orthographic" : "frustum",
+            camera-left: (root.horizontal - root.half-width) * root.lens-scale,
+            camera-right: (root.horizontal + root.half-width) * root.lens-scale,
+            camera-bottom: (root.vertical - root.half-height) * root.lens-scale,
+            camera-top: (root.vertical + root.half-height) * root.lens-scale,
             ..root.defaults
         },
         FrustumActor {
@@ -94,6 +99,11 @@ export component OffAxisCameraDemo inherits Window {
             clicked => { root.horizontal = 0; root.vertical = 0; }
         }
         right := Button { width: 54px; text: "右"; clicked => { root.horizontal = 0.25; } }
-        shift := Slider { width: 152px; minimum: -0.4; maximum: 0.4; value <=> root.horizontal; }
+        change-projection := Button {
+            width: 64px;
+            text: root.parallel ? "正交" : "透视";
+            clicked => { root.parallel = !root.parallel; }
+        }
+        shift := Slider { width: 80px; minimum: -0.4; maximum: 0.4; value <=> root.horizontal; }
     }
 }

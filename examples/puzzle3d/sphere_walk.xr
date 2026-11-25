@@ -1,7 +1,11 @@
+struct WalkShape { shape: string, radius: float, height: float }
+
 struct WalkActor {
     id: string, mesh: string, x: float, y: float, z: float,
+    geometry: WalkShape,
     scale-x: float, scale-y: float, scale-z: float,
     yaw: float, pitch: float, roll: float, color: color, collidable: bool, visible: bool,
+    trigger: bool, layers: int,
 }
 
 export component SphereWalkDemo inherits Window {
@@ -9,37 +13,172 @@ export component SphereWalkDemo inherits Window {
     width: 620px; height: 438px;
     resizable: false;
     background: #172638;
-    property <point3d> spawn: Point3D.new(-2.4, 0.4, 0);
+    property <point3d> spawn: Point3D.new(-2.4, root.radius + root.segment-height * 0.5, 0);
     in-out property <point3d> center: Point3D.new(-2.4, 0.4, 0);
     in-out property <float> drive: 1.8;
     in-out property <float> vertical: 0;
     in-out property <bool> steps: true;
     in-out property <bool> snapping: true;
     in-out property <bool> ceiling: false;
+    in-out property <bool> upright: false;
     in-out property <float> ramp-angle: 30;
     property <float> radius: 0.4;
+    property <float> segment-height: root.upright ? 0.9 : 0;
+    in-out property <int> entries: 0;
+    in-out property <int> exits: 0;
+    property <point3d> platform-home: Point3D.new(-0.55, 0.12, 0);
+    in-out property <point3d> platform-position: root.platform-home;
+    out property <bool> platform-blocked: false;
+    property <walkresult3d> last-motion: Scene3D.capsule-walk-with-contacts(
+        root.terrain, root.center, Vector3D.new(0, 0, 0), root.radius, root.segment-height, 0, 0, 45);
+    out property <bool> grounded: root.last-motion.grounded;
+    out property <hit3d> ground-contact: root.last-motion.support;
+    out property <bool> hit-wall: root.last-motion.hit-wall;
+    out property <bool> hit-ceiling: root.last-motion.hit-ceiling;
+    out property <hit3d> last-shape-hit;
+    property <hit3d> no-shape-hit;
+    callback shape-hit(hit3d);
+    shape-hit(hit) => { root.last-shape-hit = hit; }
+    out property <bool> jumping: false;
+    out property <bool> jump-bumped: false;
+    property <float> jump-speed: 0;
+    property <int> jump-interval: 16;
 
-    out property <point3d> endpoint: Scene3D.sphere-walk(
-        root.terrain, root.center, Vector3D.new(root.drive, root.vertical, 0), root.radius,
-        root.steps ? 0.3 : 0, root.snapping ? 0.36 : 0, 45);
-    callback walk-command(float, float);
-    walk-command(dx, dz) => {
-        root.center = Scene3D.sphere-walk(
-            root.terrain, root.center, Vector3D.new(dx, 0, dz), root.radius,
-            root.steps ? 0.3 : 0, root.snapping ? 0.36 : 0, 45);
+    out property <int> active-triggers: Model.count(
+        Scene3D.capsule-trigger-overlap(root.terrain, root.center, root.radius, root.segment-height));
+    callback trigger-entered(hit3d);
+    callback trigger-exited(hit3d);
+    trigger-entered(contact) => { root.entries += 1; }
+    trigger-exited(contact) => { root.exits += 1; }
+    callback dispatch-crossings([hit3d]);
+    dispatch-crossings(events) => {
+        for contact in events {
+            if contact.entering {
+                root.trigger-entered(contact);
+            } else {
+                root.trigger-exited(contact);
+            }
+        }
+    }
+    callback commit-move(point3d);
+    commit-move(next) => {
+        let contacts = Scene3D.capsule-trigger-crossings(
+            root.terrain, root.center, next, root.radius, root.segment-height);
+        root.center = next;
+        root.dispatch-crossings(contacts);
+    }
+    callback commit-walk(vector3d);
+    commit-walk(displacement) => {
+        let step-height = root.steps ? 0.3 : 0;
+        let snap-distance = root.snapping ? 0.36 : 0;
+        let movement = Scene3D.capsule-walk-with-contacts(
+            root.terrain, root.center, displacement, root.radius, root.segment-height,
+            step-height, snap-distance, 45);
+        root.center = movement.position;
+        root.last-motion = movement;
+        for hit in movement.contacts {
+            root.shape-hit(hit);
+        }
+        root.dispatch-crossings(movement.crossings);
     }
 
+    callback move-platform(vector3d);
+    move-platform(delta) => {
+        root.commit-walk(Vector3D.new(0, 0, 0));
+        root.platform-blocked = false;
+        if root.ground-contact.valid && root.ground-contact.object-id == "step" && !root.jumping {
+            // The carrier is on layer 1 only. Layer 2 sweeps the passenger
+            // against the surrounding scene before either position is changed.
+            let moved = Scene3D.capsule-walk-result(
+                root.terrain, root.center, delta, root.radius, root.segment-height, 0, 0, 45, 2);
+            let end = Point3D.new(root.center.x + delta.x, root.center.y + delta.y, root.center.z + delta.z);
+            if Math.abs(moved.position.x - end.x) < 0.00000001 &&
+                Math.abs(moved.position.y - end.y) < 0.00000001 &&
+                Math.abs(moved.position.z - end.z) < 0.00000001 {
+                root.platform-position = Point3D.new(root.platform-position.x + delta.x,
+                    root.platform-position.y + delta.y, root.platform-position.z + delta.z);
+                root.center = moved.position;
+                root.commit-walk(Vector3D.new(0, 0, 0));
+                root.dispatch-crossings(moved.crossings);
+            } else {
+                root.platform-blocked = true;
+            }
+        }
+    }
+
+    callback jump();
+    jump() => {
+        if !root.jumping {
+            root.commit-walk(Vector3D.new(0, 0, 0));
+            if root.grounded {
+                root.jump-speed = 4.2;
+                root.jump-bumped = false;
+                root.jumping = true;
+            }
+        }
+    }
+    callback tick-jump();
+    tick-jump() => {
+        if root.jumping {
+            let elapsed = root.jump-interval / 1000.0;
+            root.jump-speed -= 9.8 * elapsed;
+            root.commit-walk(Vector3D.new(0, root.jump-speed * elapsed, 0));
+            if root.hit-ceiling && root.jump-speed > 0 {
+                root.jump-speed = 0;
+                root.jump-bumped = true;
+            }
+            if root.grounded && root.jump-speed <= 0 {
+                root.jump-speed = 0;
+                root.jumping = false;
+            }
+            if root.center.y < -6 { root.reset-walk(); }
+        }
+    }
+    callback reset-walk();
+    reset-walk() => {
+        root.jumping = false;
+        root.jump-speed = 0;
+        root.jump-bumped = false;
+        root.platform-position = root.platform-home;
+        root.platform-blocked = false;
+        root.center = root.spawn;
+        root.entries = 0;
+        root.exits = 0;
+        root.last-shape-hit = root.no-shape-hit;
+        root.commit-walk(Vector3D.new(0, 0, 0));
+    }
+    jump-clock := Timer {
+        interval: root.jump-interval;
+        repeat: true;
+        running: root.jumping;
+        triggered => { root.tick-jump(); }
+    }
+
+    out property <point3d> endpoint: Scene3D.capsule-walk(
+        root.terrain, root.center, Vector3D.new(root.drive, root.vertical, 0),
+        root.radius, root.segment-height,
+        root.steps ? 0.3 : 0, root.snapping ? 0.36 : 0, 45);
+
+    out property <hit3d> first-contact: Scene3D.capsule-cast(
+        root.terrain, root.center, Vector3D.new(1, 0, 0), 4, root.radius, root.segment-height);
+    out property <[hit3d]> contacts: Scene3D.capsule-overlap(
+        root.terrain, root.center, root.radius, root.segment-height);
+    out property <point3d> slide-target: Scene3D.capsule-slide(
+        root.terrain, root.center, Vector3D.new(root.drive, root.vertical, 0),
+        root.radius, root.segment-height);
     property <WalkActor> base: WalkActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        geometry: WalkShape { shape: "", radius: 0.5, height: 1.0 },
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
-        color: #7189a3, collidable: true, visible: true,
+        color: #7189a3, collidable: true, visible: true, trigger: false, layers: 3,
     };
     property <WalkActor> floor: WalkActor {
         id: "floor", y: -0.13, scale-x: 9, scale-y: 0.26, scale-z: 7.4,
         color: #395850, ..root.base
     };
     property <WalkActor> platform: WalkActor {
-        id: "step", x: -0.55, y: 0.12, scale-x: 0.8, scale-y: 0.24, scale-z: 1.85,
+        id: "step", x: root.platform-position.x, y: root.platform-position.y, z: root.platform-position.z,
+        scale-x: 0.8, scale-y: 0.24, scale-z: 1.85, layers: 1,
         color: #6391ab, ..root.base
     };
     property <float> ramp-radians: root.ramp-angle * 0.0174532925199433;
@@ -49,27 +188,54 @@ export component SphereWalkDemo inherits Window {
         color: #b98a6c, ..root.base
     };
     property <WalkActor> low-ceiling: WalkActor {
-        id: "ceiling", x: -1.3, y: 0.98, scale-x: 4.0, scale-y: 0.22, scale-z: 1.8,
-        color: #795d83, collidable: root.ceiling, visible: root.ceiling, ..root.base
+        id: "ceiling", x: -1.3, y: root.spawn.y * 2 + 0.18,
+        scale-x: 4.0, scale-y: 0.22, scale-z: 1.8,
+        color: #795d8366, collidable: root.ceiling, visible: root.ceiling, ..root.base
     };
-    property <[WalkActor]> terrain: [root.floor, root.platform, root.ramp, root.low-ceiling];
+    property <WalkActor> beam: WalkActor {
+        id: "beam", x: -0.40, y: 1.39, scale-x: 0.26, scale-y: 0.18, scale-z: 2.0,
+        color: #b37f61, ..root.base
+    };
+    property <WalkActor> checkpoint: WalkActor {
+        id: "checkpoint", x: -1.8, y: 0.56, scale-x: 0.2, scale-y: 1.12, scale-z: 1.3,
+        color: #7b579e65, trigger: true, ..root.base
+    };
+    property <[WalkActor]> terrain: [
+        root.floor, root.platform, root.ramp, root.low-ceiling, root.beam, root.checkpoint
+    ];
     property <WalkActor> marker: WalkActor {
-        mesh: "primitive:sphere", scale-x: root.radius, scale-y: root.radius, scale-z: root.radius,
+        mesh: "",
+        geometry: WalkShape {
+            shape: root.upright ? "capsule" : "sphere", radius: root.radius,
+            height: 2 * root.radius + root.segment-height,
+        },
         collidable: false, ..root.base
     };
     property <[WalkActor]> display: [
-        root.floor, root.platform, root.ramp, root.low-ceiling,
+        root.floor, root.platform, root.ramp, root.low-ceiling, root.beam,
+        WalkActor { color: root.active-triggers > 0 ? #b66cd68c : #7b579e65, ..root.checkpoint },
         WalkActor { x: root.center.x, y: root.center.y, z: root.center.z, color: #76d6ca, ..root.marker },
         WalkActor { x: root.endpoint.x, y: root.endpoint.y, z: root.endpoint.z, color: #ffbb68, ..root.marker },
+        WalkActor {
+            id: "impact", color: #ffd679, visible: root.last-shape-hit.valid, collidable: false,
+            mesh: "primitive:sphere", scale-x: 0.12, scale-y: 0.12, scale-z: 0.12,
+            x: root.last-shape-hit.position.x,
+            y: root.last-shape-hit.position.y,
+            z: root.last-shape-hit.position.z, ..root.base
+        },
     ];
     keys := FocusScope {
         width: 620px; height: 438px;
         initial-focus: advance;
+        capture-key-pressed(event) => {
+            if event.key == " " && !event.repeat { root.jump(); }
+            event.key == " " ? accept : reject
+        }
         key-pressed(event) => {
-            if event.key == "ArrowUp" || event.key == "w" { root.walk-command(0, -0.35); }
-            if event.key == "ArrowDown" || event.key == "s" { root.walk-command(0, 0.35); }
-            if event.key == "ArrowLeft" || event.key == "a" { root.walk-command(-0.35, 0); }
-            if event.key == "ArrowRight" || event.key == "d" { root.walk-command(0.35, 0); }
+            if event.key == "ArrowUp" || event.key == "w" { root.commit-walk(Vector3D.new(0, 0, -0.35)); }
+            if event.key == "ArrowDown" || event.key == "s" { root.commit-walk(Vector3D.new(0, 0, 0.35)); }
+            if event.key == "ArrowLeft" || event.key == "a" { root.commit-walk(Vector3D.new(-0.35, 0, 0)); }
+            if event.key == "ArrowRight" || event.key == "d" { root.commit-walk(Vector3D.new(0.35, 0, 0)); }
             event.key == "ArrowUp" || event.key == "ArrowDown" ||
             event.key == "ArrowLeft" || event.key == "ArrowRight" ||
             event.key == "w" || event.key == "a" || event.key == "s" || event.key == "d" ? accept : reject
@@ -79,13 +245,70 @@ export component SphereWalkDemo inherits Window {
             camera-yaw: -17; camera-pitch: 52; camera-distance: 10.5;
             scene-background: #263d54; ambient-intensity: 0.4; multisampling: true;
         }
+        Text {
+            x: 14px; y: 12px; color: #edf1fa;
+            text: "触发区  进入 " + root.entries + "   离开 " + root.exits + "   区内 " + root.active-triggers;
+        }
+        Text {
+            x: 14px; y: 40px; color: #edf1fa;
+            text: (root.grounded ? "接地" : "腾空") +
+                (root.hit-wall ? "   撞墙" : "") + (root.jump-bumped || root.hit-ceiling ? "   撞顶" : "");
+        }
+        Text {
+            x: 14px; y: 68px; color: #ffd679; visible: root.last-shape-hit.valid;
+            text: "碰到 " + root.last-shape-hit.object-id;
+        }
+        low-roof-toggle := CheckBox {
+            x: 414px; y: 13px; width: 96px; height: 36px;
+            text: "低顶棚"; checked <=> root.ceiling;
+        }
+        jump-button := Button {
+            x: 523px; y: 13px; width: 82px; height: 36px;
+            text: "跳跃"; clicked => { root.jump(); }
+        }
+        Text {
+            x: 14px; y: 96px; color: #edf1fa;
+            visible: root.ground-contact.valid;
+            text: "支撑 " + root.ground-contact.object-id + (root.platform-blocked ? "   平台受阻" : "");
+        }
+        lift-platform := Button {
+            x: 404px; y: 56px; width: 96px; height: 35px;
+            text: "升降平台";
+            enabled: root.ground-contact.object-id == "step" && !root.jumping;
+            clicked => { root.move-platform(Vector3D.new(0, root.platform-position.y > 0.2 ? -0.14 : 0.14, 0)); }
+        }
+        slide-platform := Button {
+            x: 509px; y: 56px; width: 96px; height: 35px;
+            text: "横移平台";
+            enabled: root.ground-contact.object-id == "step" && !root.jumping;
+            clicked => { root.move-platform(Vector3D.new(0, 0, root.platform-position.z > 0.2 ? -0.45 : 0.45)); }
+        }
         HorizontalLayout {
             x: 15px; y: 377px; width: 590px; height: 44px; spacing: 10px;
-            advance := Button { width: 89px; text: "走一步"; clicked => { root.center = root.endpoint; } }
-            reset := Button { width: 67px; text: "复位"; clicked => { root.center = root.spawn; } }
+            advance := Button {
+                width: 89px; text: "走一步";
+                clicked => { root.commit-walk(Vector3D.new(root.drive, root.vertical, 0)); }
+            }
+            reset := Button {
+                width: 67px; text: "复位";
+                clicked => { root.reset-walk(); }
+            }
             step-toggle := CheckBox { width: 100px; text: "上台阶"; checked <=> root.steps; }
             snap-toggle := CheckBox { width: 96px; text: "贴地"; checked <=> root.snapping; }
-            travel := Slider { width: 170px; minimum: -3; maximum: 3; value <=> root.drive; }
+            shape-toggle := Button {
+                width: 84px; text: root.upright ? "胶囊体" : "球体";
+                clicked => {
+                    root.upright = !root.upright;
+                    root.platform-blocked = false;
+                    root.jumping = false;
+                    root.jump-speed = 0;
+                    root.jump-bumped = false;
+                    root.last-shape-hit = root.no-shape-hit;
+                    root.center = root.spawn;
+                    root.commit-walk(Vector3D.new(0, 0, 0));
+                }
+            }
+            travel := Slider { width: 100px; minimum: -3; maximum: 3; value <=> root.drive; }
         }
     }
 }

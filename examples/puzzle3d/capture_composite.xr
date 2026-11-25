@@ -26,7 +26,7 @@ struct CompositeEmitter {
 struct CompositeFeed {
     name: string, camera: string, layers: int, color-source: string, depth-source: string, renderables: string,
     override-material: CaptureOverride, pipeline-state: CaptureState, depth-clear: float,
-    stencil-source: string, stencil-clear: int, scale: float, color-format: string,
+    stencil-source: string, stencil-clear: int, scale: float, color-format: string, combine-attachments: bool, material-data-format: string,
 }
 struct CompositeEffect { shader: string, buffers: [CompositeInput], strength: float, parameters: vector3d }
 
@@ -56,6 +56,20 @@ export component CaptureCompositeDemo inherits Window {
     in-out property <string> capture-color-format: "rgba16f";
     in-out property <string> capture-alias-color-format: "";
     in-out property <bool> capture-refractive: false;
+    in-out property <bool> paired-capture: false;
+    in-out property <bool> combine-capture-attachments: false;
+    in-out property <bool> paired-all-attachments: false;
+    in-out property <string> paired-capture-format: "rgba16f";
+    in-out property <bool> paired-material-data: false;
+    in-out property <bool> paired-material-consumer: false;
+    in-out property <string> paired-data-format: "rgba16f";
+    in-out property <float> data-gain: 0.25;
+    in-out property <bool> data-sample-input: false;
+    in-out property <string> data-input-capture: "accent";
+    in-out property <string> paired-background-capture: "";
+    in-out property <bool> paired-stencil: false;
+    property <bool> light-reads-material-data: root.paired-material-consumer || root.paired-background-capture == "lighting";
+    property <bool> show-paired-capture: root.paired-capture && root.offscreen-composition;
     in-out property <bool> share-depth: true;
     in-out property <bool> use-color: true;
     in-out property <bool> offscreen-composition: false;
@@ -135,10 +149,12 @@ export component CaptureCompositeDemo inherits Window {
         enabled: false, ..root.capture-pipeline
     };
     property <CaptureState> surface-pipeline: CaptureState {
-        enabled: root.map-surface || root.inspect-clear, depth-test: true, depth-write: true,
+        enabled: root.map-surface || root.inspect-clear || root.paired-stencil, depth-test: true, depth-write: true,
         depth-compare: root.inspect-clear ? "always" : "material",
         cull-mode: "material", blend-mode: "material", viewport: root.inset,
-        scissor: CaptureBounds { enabled: false, ..root.clip }, stencil: root.no-stencil, color-write: true, polygon-mode: "fill",
+        scissor: CaptureBounds { enabled: false, ..root.clip },
+        stencil: root.paired-stencil ? root.portal-pipeline.stencil : root.no-stencil,
+        color-write: true, polygon-mode: "fill",
         target-blend: root.material-target,
     };
     property <CaptureBounds> disabled-bounds: CaptureBounds {
@@ -185,9 +201,16 @@ export component CaptureCompositeDemo inherits Window {
         transmission: root.capture-refractive ? 0.76 : 0, ..root.standard
     };
     property <CompositeMaterial> light: CompositeMaterial {
-        unlit: true, material-shader: @material-shader-url("effects/capture_composite_light.wgsl"),
-        shader-parameters: Vector3D.new(root.light-x, 1.1, root.inspect-clear ? -2 : root.probe-position ? -1 : 3.7),
-        shader-textures: [
+        unlit: true,
+        material-shader: root.light-reads-material-data
+            ? @material-shader-url("effects/capture_material_display.wgsl")
+            : @material-shader-url("effects/capture_composite_light.wgsl"),
+        shader-parameters: root.light-reads-material-data
+            ? Vector3D.new(1, 0, 0)
+            : Vector3D.new(root.light-x, 1.1, root.inspect-clear ? -2 : root.probe-position ? -1 : 3.7),
+        shader-textures: root.light-reads-material-data
+            ? [CompositeInput { capture: "surface", attachment: "material-data" }]
+            : [
             CompositeInput { capture: "surface", attachment: "depth" },
             CompositeInput { capture: "surface", attachment: "normal-roughness" },
             CompositeInput { capture: "surface", attachment: "base-color-metalness" },
@@ -236,10 +259,34 @@ export component CaptureCompositeDemo inherits Window {
                 lifetime: 2, burst-count: root.particle-fixture ? 1 : 0, layers: 1,
                 particle-model: "", particle-blend-mode: "source-over" },
         ];
-        scene-color-capture: root.offscreen-composition
+        scene-color-capture: root.show-paired-capture
+            ? (root.paired-material-consumer ? "lighting" : "surface") : root.offscreen-composition
             ? (root.stencil-demo ? "portal" : "forward") : (root.use-color ? "lighting" : "");
         scene-depth-capture: root.offscreen-composition ? "" : root.depth-feed;
         scene-effects: [
+            CompositeEffect {
+                strength: root.show-paired-capture && root.paired-material-data && !root.paired-material-consumer ? 1.0 : 0.0,
+                parameters: Vector3D.new(0, 0, 2),
+                shader: @shader-url("effects/capture_composite_alias.wgsl"),
+                buffers: [
+                    CompositeInput { capture: "surface", attachment: "material-data" },
+                    CompositeInput { capture: "surface", attachment: "depth" },
+                ],
+            },
+            CompositeEffect {
+                strength: root.show-paired-capture && !root.paired-material-data && !root.paired-material-consumer ? 1.0 : 0.0,
+                parameters: Vector3D.new(0, 0, 1),
+                shader: @shader-url("effects/capture_composite_alias.wgsl"),
+                buffers: root.paired-all-attachments ? [
+                    CompositeInput { capture: "surface", attachment: "normal-roughness" },
+                    CompositeInput { capture: "surface", attachment: "depth" },
+                    CompositeInput { capture: "surface", attachment: "base-color-metalness" },
+                    CompositeInput { capture: "surface", attachment: "emissive-occlusion" },
+                ] : [
+                    CompositeInput { capture: "surface", attachment: "normal-roughness" },
+                    CompositeInput { capture: "surface", attachment: "depth" },
+                ],
+            },
             CompositeEffect {
                 strength: root.inspect-blend-alpha ? 1.0 : 0.0,
                 parameters: Vector3D.new(0, 1, 0),
@@ -265,7 +312,18 @@ export component CaptureCompositeDemo inherits Window {
         model: [
             CompositeActor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.actor },
             CompositeActor { id: "side-eye", mesh: "", x: 0.5, z: 7, camera-kind: "orthographic", ..root.actor },
-            CompositeActor { id: "opaque", z: 1, scale-x: 4.05, scale-y: 2.55, layers: 2, ..root.actor },
+            CompositeActor {
+                id: "opaque", z: 1, scale-x: 4.05, scale-y: 2.55, layers: 2,
+                material: CompositeMaterial {
+                    material-shader: @material-shader-url("effects/capture_material_data.wgsl"),
+                    shader-parameters: Vector3D.new(root.data-gain, 0, 0),
+                    shader-textures: root.data-sample-input
+                        ? [CompositeInput { capture: root.data-input-capture, attachment: "color" }]
+                        : root.standard.shader-textures,
+                    ..root.standard
+                },
+                ..root.actor
+            },
             CompositeActor {
                 id: "light-screen", layers: 4, scale-x: 7, scale-y: 4.2, material: root.light, ..root.actor
             },
@@ -298,48 +356,69 @@ export component CaptureCompositeDemo inherits Window {
                 material: CompositeMaterial { base-color: #42e46d, unlit: true, ..root.standard }, ..root.actor
             },
             CompositeActor {
-                id: "stencil-mask", mesh: root.stencil-demo ? "primitive:rectangle" : "",
+                id: "stencil-mask", mesh: root.stencil-demo || root.paired-stencil ? "primitive:rectangle" : "",
                 x: -0.65, z: 2, scale-x: 2.1, scale-y: 2.0, layers: 16, ..root.actor
             },
         ];
         scene-captures: [
             CompositeFeed {
-                name: "forward", color-format: root.capture-color-format, camera: "eye", layers: 1,
+                name: "forward", material-data-format: "rgba16f", combine-attachments: false, color-format: root.capture-color-format, camera: "eye", layers: 1,
                 color-source: root.use-color ? root.lighting-source : "", depth-source: root.depth-feed,
                 renderables: root.capture-renderables, override-material: root.capture-style, pipeline-state: root.capture-pipeline, depth-clear: root.capture-depth-clear, stencil-clear: 0, stencil-source: "", scale: 1,
             },
             CompositeFeed {
-                name: "forward-alias", color-format: root.capture-alias-color-format == "" ? root.capture-color-format : root.capture-alias-color-format,
+                name: "forward-alias", material-data-format: "rgba16f", combine-attachments: false, color-format: root.capture-alias-color-format == "" ? root.capture-color-format : root.capture-alias-color-format,
                 camera: "eye", layers: 1,
                 color-source: root.use-color ? root.lighting-source : "", depth-source: root.depth-feed,
                 renderables: root.capture-renderables, override-material: root.capture-style, pipeline-state: root.capture-pipeline, depth-clear: root.capture-depth-clear, stencil-clear: 0, stencil-source: "", scale: 1,
             },
-            CompositeFeed { name: "surface", color-format: "rgba16f", camera: "eye", layers: 2, color-source: "", depth-source: "", renderables: "all", override-material: root.original-material, pipeline-state: root.surface-pipeline, depth-clear: root.surface-depth-clear, stencil-clear: 0, stencil-source: "", scale: 1 },
-            CompositeFeed { name: "lighting", color-format: "rgba16f", camera: "eye", layers: 4, color-source: "", depth-source: "", renderables: "all", override-material: root.original-material, pipeline-state: root.default-pipeline, depth-clear: 1, stencil-clear: 0, stencil-source: "", scale: 1 },
-            CompositeFeed { name: "other-depth", color-format: "rgba16f", camera: "side-eye", layers: 2, color-source: "", depth-source: "", renderables: "all", override-material: root.original-material, pipeline-state: root.default-pipeline, depth-clear: 1, stencil-clear: 0, stencil-source: "", scale: 1 },
-            CompositeFeed { name: "relay", color-format: "rgba16f", camera: "eye", layers: 0, color-source: "forward", depth-source: "", renderables: "none", override-material: root.original-material, pipeline-state: root.default-pipeline, depth-clear: 1, stencil-clear: 0, stencil-source: "", scale: 1 },
             CompositeFeed {
-                name: "seed", color-format: "rgba16f", camera: "eye", layers: 0, color-source: "", depth-source: "",
+                name: "surface", camera: "eye", layers: 2, color-source: root.paired-background-capture, depth-source: "",
+                renderables: root.show-paired-capture ? "opaque" : "all",
+                pipeline-state: root.surface-pipeline, override-material: root.original-material,
+                combine-attachments: root.combine-capture-attachments, color-format: root.paired-capture-format,
+                material-data-format: root.paired-data-format, depth-clear: root.surface-depth-clear, stencil-clear: 0,
+                stencil-source: root.paired-stencil ? "mask" : "", scale: 1,
+            },
+            CompositeFeed { name: "lighting", material-data-format: "rgba16f", combine-attachments: false, color-format: "rgba16f", camera: "eye", layers: 4, color-source: "", depth-source: "", renderables: "all", override-material: root.original-material, pipeline-state: root.default-pipeline, depth-clear: 1, stencil-clear: 0, stencil-source: "", scale: 1 },
+            CompositeFeed { name: "other-depth", material-data-format: "rgba16f", combine-attachments: false, color-format: "rgba16f", camera: "side-eye", layers: 2, color-source: "", depth-source: "", renderables: "all", override-material: root.original-material, pipeline-state: root.default-pipeline, depth-clear: 1, stencil-clear: 0, stencil-source: "", scale: 1 },
+            CompositeFeed { name: "relay", material-data-format: "rgba16f", combine-attachments: false, color-format: "rgba16f", camera: "eye", layers: 0, color-source: "forward", depth-source: "", renderables: "none", override-material: root.original-material, pipeline-state: root.default-pipeline, depth-clear: 1, stencil-clear: 0, stencil-source: "", scale: 1 },
+            CompositeFeed {
+                name: "seed", material-data-format: "rgba16f", combine-attachments: false, color-format: "rgba16f", camera: "eye", layers: 0, color-source: "", depth-source: "",
                 renderables: "none", override-material: root.original-material, pipeline-state: root.default-pipeline,
                 depth-clear: root.seed-depth-clear, stencil-clear: 0, stencil-source: "", scale: 1,
             },
             CompositeFeed {
-                name: "mask", color-format: "rgba16f", camera: "eye", layers: 16, color-source: "", depth-source: "",
+                name: "mask", material-data-format: "rgba16f", combine-attachments: false, color-format: "rgba16f", camera: "eye", layers: 16, color-source: "", depth-source: "",
                 renderables: "opaque", override-material: root.original-material, pipeline-state: root.mask-pipeline,
                 depth-clear: 1, stencil-clear: 0, stencil-source: "", scale: root.stencil-mask-scale,
             },
             CompositeFeed {
-                name: "portal", color-format: root.capture-color-format, camera: "side-eye", layers: 1, color-source: "lighting", depth-source: "",
+                name: "portal", material-data-format: "rgba16f", combine-attachments: false, color-format: root.capture-color-format, camera: "side-eye", layers: 1, color-source: "lighting", depth-source: "",
                 renderables: "transparent", override-material: root.original-material, pipeline-state: root.portal-pipeline,
                 depth-clear: 1, stencil-clear: 0, stencil-source: "mask", scale: 1,
             },
-            CompositeFeed { name: "accent", color-format: "rgba16f", camera: "eye", layers: 8, color-source: "", depth-source: "", renderables: "opaque", override-material: root.original-material, pipeline-state: root.default-pipeline, depth-clear: 1, stencil-clear: 0, stencil-source: "", scale: 1 },
+            CompositeFeed { name: "accent", material-data-format: "rgba16f", combine-attachments: false, color-format: "rgba16f", camera: "eye", layers: 8, color-source: "", depth-source: "", renderables: "opaque", override-material: root.original-material, pipeline-state: root.default-pipeline, depth-clear: 1, stencil-clear: 0, stencil-source: "", scale: 1 },
         ];
     }
     if root.offscreen-composition && !root.pipeline-enabled && !root.stencil-demo : format-demo := Button {
-        x: 12px; y: 12px; width: 102px; height: 30px;
-        text: root.capture-color-format == "r8" ? "Capture HDR" : "Capture R8";
-        clicked => { root.capture-color-format = root.capture-color-format == "r8" ? "rgba16f" : "r8"; }
+        x: 12px; y: 12px; width: 140px; height: 34px;
+        text: (root.show-paired-capture ? root.paired-capture-format : root.capture-color-format) == "r8" ? "Capture HDR" : "Capture R8";
+        clicked => {
+            if root.show-paired-capture {
+                root.paired-capture-format = root.paired-capture-format == "r8" ? "rgba16f" : "r8";
+            } else {
+                root.capture-color-format = root.capture-color-format == "r8" ? "rgba16f" : "r8";
+            }
+        }
+    }
+    if root.offscreen-composition && !root.pipeline-enabled && !root.stencil-demo : paired-demo := Button {
+        x: 156px; y: 12px; width: 60px; height: 34px;
+        text: root.show-paired-capture && root.combine-capture-attachments ? "Split" : "MRT";
+        clicked => {
+            root.paired-capture = true;
+            root.combine-capture-attachments = !root.combine-capture-attachments;
+        }
     }
     if root.offscreen-composition && root.pipeline-enabled && !root.stencil-demo : CheckBox {
         x: 12px; y: 12px; width: 102px; height: 30px;
@@ -371,14 +450,14 @@ export component CaptureCompositeDemo inherits Window {
     }
     if root.offscreen-composition : blend-demo := Button {
         x: 241px; y: 251px; width: 108px; height: 34px;
-        text: root.custom-blend ? "Material" : "Custom blend";
+        text: root.custom-blend ? "Material" : "Blend";
         clicked => {
             root.pipeline-enabled = true;
             root.custom-blend = !root.custom-blend;
         }
     }
     if root.offscreen-composition && !root.stencil-demo : clear-demo := Button {
-        x: 351px; y: 252px; width: 115px; height: 30px;
+        x: 351px; y: 251px; width: 115px; height: 34px;
         text: root.capture-depth-clear == 1 ? "Clear near" : "Clear far";
         clicked => {
             root.pipeline-enabled = true;
@@ -393,11 +472,24 @@ export component CaptureCompositeDemo inherits Window {
         text: root.glass-depth < 1 ? "Front" : "Back";
         clicked => { root.glass-depth = root.glass-depth < 1 ? 2 : 0; }
     }
+    if root.show-paired-capture : data-demo := Button {
+        x: 130px; y: 305px; width: 105px; height: 34px;
+        text: root.paired-material-data ? "Normals" : "Data";
+        clicked => { root.paired-material-data = !root.paired-material-data; }
+    }
     CheckBox {
         x: 130px; y: 305px; width: 105px; height: 34px;
-        text: "Depth"; checked <=> root.share-depth; visible: !root.offscreen-composition || !root.stencil-demo;
+        text: "Depth"; checked <=> root.share-depth; visible: !root.show-paired-capture && (!root.offscreen-composition || !root.stencil-demo);
     }
-    if root.offscreen-composition && !root.stencil-demo : filter-button := Button {
+    if root.show-paired-capture : paired-source-demo := Button {
+        x: 241px; y: 305px; width: 108px; height: 34px;
+        text: root.paired-background-capture == "" ? "Source" : "Clear";
+        clicked => {
+            root.data-sample-input = root.paired-background-capture == "";
+            root.paired-background-capture = root.data-sample-input ? "accent" : "";
+        }
+    }
+    if root.offscreen-composition && !root.stencil-demo && !root.show-paired-capture : filter-button := Button {
         x: 241px; y: 305px; width: 108px; height: 34px;
         text: root.capture-renderables == "all" ? "All"
             : root.capture-renderables == "opaque" ? "Opaque"

@@ -7,6 +7,9 @@ impl Instance {
     }
 
     fn timer_config(&self, timer: &Element) -> Result<Option<TimerConfig>> {
+        if matches!(timer.visual, Visual::Builtin("FrameAnimation")) {
+            return Ok(self.timer_running(timer)?.then(TimerConfig::frame));
+        }
         TimerConfig::try_read(
             || self.timer_running(timer),
             || {
@@ -62,7 +65,22 @@ impl Instance {
                 self.set_control_value(timer, "running", false.into())
                     .map(|_| ())
             },
-            || self.handler(timer, "triggered", &[]).map(|_| ()),
+            || {
+                if let Some(frame) = tick.frame {
+                    self.handler(
+                        timer,
+                        "triggered",
+                        &[
+                            frame.frame_time.into(),
+                            frame.elapsed_time.into(),
+                            frame.current_frame.into(),
+                        ],
+                    )
+                    .map(|_| ())
+                } else {
+                    self.handler(timer, "triggered", &[]).map(|_| ())
+                }
+            },
         )
     }
 }

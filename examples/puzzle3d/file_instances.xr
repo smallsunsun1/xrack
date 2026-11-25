@@ -1,0 +1,112 @@
+struct FileActor {
+    id: string, mesh: string, parent: string,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float,
+    instance-table: instancetable3d, instance-count-override: int,
+}
+
+struct InstanceRow {
+    position: point3d, scale: vector3d, rotation: vector3d, color: color, data-w: float,
+}
+
+export component FileInstancesDemo inherits Window {
+    title: "XRack · File instance table";
+    width: 580px; height: 354px;
+    background: #172538;
+    in-out property <bool> binary: false;
+    in-out property <bool> authored: false;
+    in-out property <int> limit: -1;
+    in-out property <int> inspect-index: 2;
+    in-out property <float> offset: 0;
+    property <point2d> viewport: Point2D.new(580px, 282px);
+    property <instancetable3d> unbound;
+    property <InstanceRow> placement: InstanceRow {
+        position: Point3D.new(0, 0, 0), scale: Vector3D.new(0.42, 0.42, 0.42),
+        rotation: Vector3D.new(0, 0, 0), color: #ff0000, data-w: 0.5,
+    };
+    property <[InstanceRow]> data-rows: [
+        InstanceRow { position: Point3D.new(-2, 0, 0), ..root.placement },
+        InstanceRow { scale: Vector3D.new(0.4, 0.6, 0.4), rotation: Vector3D.new(0, 0, 180),
+            color: #00ff00, ..root.placement },
+        InstanceRow { position: Point3D.new(2, 0, 0), scale: Vector3D.new(-0.45, 0.45, 0.45),
+            color: #0000ff, data-w: 0, ..root.placement },
+    ];
+    out property <instancetable3d> authored-table: Scene3D.instance-table(root.data-rows);
+    out property <instancetable3d> table: root.authored ? root.authored-table
+        : (root.binary ? @instance-table-url("models/file-instances.bin")
+            : @instance-table-url("models/file-instances.xml"));
+    out property <instance3d> source-instance: Scene3D.table-instance(root.table, root.inspect-index);
+    callback move-third(y: float, scale-x: float);
+    move-third(y, scale-x) => {
+        Model.set(root.data-rows, 2, InstanceRow {
+            position: Point3D.new(2, y, 0), scale: Vector3D.new(scale-x, 0.45, 0.45),
+            color: #0000ff, data-w: y, ..root.placement
+        });
+    }
+    callback clear-rows();
+    clear-rows => { Model.clear(root.data-rows); }
+
+    property <FileActor> base: FileActor {
+        id: "", mesh: "", parent: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
+        camera-kind: "", camera-height: 5,
+        instance-table: root.unbound, instance-count-override: -1,
+    };
+    property <[FileActor]> world: [
+        FileActor { id: "eye", z: 10, camera-kind: "orthographic", ..root.base },
+        FileActor { id: "spheres", parent: "origin", mesh: "primitive:sphere", y: 1,
+            instance-table: root.table, instance-count-override: root.limit, ..root.base },
+        FileActor { id: "boxes", parent: "origin", mesh: "primitive:box", y: -1,
+            instance-table: root.table, instance-count-override: root.limit, ..root.base },
+        FileActor { id: "origin", x: root.offset, ..root.base },
+    ];
+    out property <scenemodel3d> snapshot: Scene3D.prepare(root.world);
+    out property <instance3d> first: Scene3D.instance(root.snapshot, 1, -1, 0);
+    property <projectedpoint3d> first-screen: Scene3D.project-camera(root.snapshot, "eye", root.viewport, root.first.origin);
+    out property <hit3d> exact: Scene3D.hit-instance-camera(root.snapshot, "eye", root.viewport, root.first-screen.point, 1, -1, 0);
+    property <instance3d> mirrored: Scene3D.instance(root.snapshot, 2, -1, 2);
+    property <projectedpoint3d> mirror-screen: Scene3D.project-camera(root.snapshot, "eye", root.viewport, root.mirrored.origin);
+    out property <hit3d> mirror-hit: Scene3D.hit-instance-camera(root.snapshot, "eye", root.viewport, root.mirror-screen.point, 2, -1, 2);
+
+    SceneView3D {
+        width: root.viewport.x; height: root.viewport.y; model: root.snapshot; camera: "eye";
+        scene-background: #25394e; scene-tone-map: none;
+    }
+    rows-label := Text {
+        x: 12px; y: 288px; color: #e4edfa;
+        text: root.table.loaded
+            ? (root.authored ? "Data rows " : "File rows ") + root.table.count
+            : "No instance table";
+    }
+    data-switch := CheckBox {
+        x: 171px; y: 282px; width: 135px; height: 24px;
+        text: "Data table"; checked <=> root.authored;
+    }
+    move-row := Button {
+        x: 310px; y: 282px; width: 133px; height: 24px; enabled: root.authored;
+        text: "Move blue row";
+        clicked => {
+            let row = Model.at(root.data-rows, 2, root.placement);
+            root.move-third(row.position.y == 0 ? 0.45 : 0, -0.45);
+        }
+    }
+    inspect-row := Button {
+        x: 450px; y: 282px; width: 119px; height: 24px; enabled: root.table.count > 0;
+        text: root.source-instance.valid
+            ? "Row " + root.source-instance.instance-index + " · X " + root.source-instance.origin.x
+            : "No row";
+        clicked => {
+            root.inspect-index = root.inspect-index + 1 < root.table.count
+                ? root.inspect-index + 1 : 0;
+        }
+    }
+    file-switch := CheckBox {
+        x: 12px; y: 312px; width: 136px; text: "QtIR file"; checked <=> root.binary;
+    }
+    count-switch := Button {
+        x: 161px; y: 308px; width: 133px; text: root.limit < 0 ? "All rows" : "Limit " + root.limit;
+        clicked => { root.limit = root.limit < 0 ? 1 : (root.limit == 1 ? 0 : -1); }
+    }
+    Slider { x: 308px; y: 310px; width: 258px; minimum: -1; maximum: 1; value <=> root.offset; }
+}

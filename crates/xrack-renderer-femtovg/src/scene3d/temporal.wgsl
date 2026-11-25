@@ -31,7 +31,11 @@ struct PreviousInstance {
     x: vec4<f32>,
     y: vec4<f32>,
     z: vec4<f32>,
-    identity: vec4<u32>,
+    previous_id: u32,
+    index_and_enabled: u32,
+    scale: f32,
+    tint: u32,
+    instance_data: vec4<f32>,
 }
 
 @group(0) @binding(2) var vectors: texture_2d<f32>;
@@ -51,7 +55,7 @@ fn reproject(@builtin(position) position: vec4<f32>) -> HistoryAndColor {
     if current.a < 1.0 || id == 0u || vector.z < -32.0 {
         return HistoryAndColor(current_sample, current);
     }
-    let expected_id = previous_instances[id - 1u].identity.x;
+    let expected_id = previous_instances[id - 1u].previous_id;
     if expected_id == 0u {
         return HistoryAndColor(current_sample, current);
     }

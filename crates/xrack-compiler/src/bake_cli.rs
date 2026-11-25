@@ -1,12 +1,20 @@
 use clap::{Args, ValueEnum};
-use std::{collections::BTreeSet, fmt::Write as _, fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fmt::Write as _,
+    fs,
+    io::{BufReader, BufWriter, Write as _},
+    path::Path,
+};
 
 use xrack_compiler::CompilerError;
 use xrack_interpreter::Program;
-use xrack_resources::lightmap_bake::{BakeOptions, BakedAtlas, bake_lightmaps};
+use xrack_resources::lightmap_bake::{
+    BakeLightInputs, BakeOptions, BakedAtlas, bake_lightmaps_recording, replay_lightmap_samples,
+};
 use xrack_runtime::{
     Node, Value,
-    scene3d::{LightmapMode, MAIN_LAYER, viewport_lighting},
+    scene3d::{LightmapMode, MAIN_LAYER, ViewportEnvironment, viewport_lighting},
 };
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -16,6 +24,8 @@ enum Mode {
     /// Bake direct and indirect diffuse lighting.
     #[default]
     Diffuse,
+    /// Bake lighting according to each light record's bake-mode.
+    Mixed,
 }
 
 #[derive(Debug, Args)]
@@ -32,25 +42,41 @@ pub struct Arguments {
     #[arg(long = "bake-receiver", value_name = "ID")]
     bake_receivers: Vec<String>,
 
-    /// Interior texture resolution per receiver.
-    #[arg(long, default_value_t = 64)]
-    bake_size: u32,
+    /// Fallback interior texture resolution per receiver (default 64).
+    #[arg(long)]
+    bake_size: Option<u32>,
 
-    /// Hemisphere paths per texel.
-    #[arg(long, default_value_t = 32)]
-    bake_samples: u32,
+    /// Estimate the resolution from world area using this many texels per world unit.
+    #[arg(long)]
+    bake_texels_per_unit: Option<f64>,
 
-    /// Maximum diffuse bounces per path.
-    #[arg(long, default_value_t = 1)]
-    bake_bounces: u8,
+    /// Hemisphere paths per texel (default 32).
+    #[arg(long)]
+    bake_samples: Option<u32>,
 
-    /// Ray origin offset in world units.
-    #[arg(long, default_value_t = 0.002)]
-    bake_bias: f32,
+    /// Maximum diffuse bounces per path (default 1).
+    #[arg(long)]
+    bake_bounces: Option<u8>,
 
-    /// Lighting terms stored by the bake.
-    #[arg(long, value_enum, default_value_t)]
-    bake_mode: Mode,
+    /// Ray origin offset in world units (default 0.002).
+    #[arg(long)]
+    bake_bias: Option<f32>,
+
+    /// Geometry-guided indirect denoise passes, from 0 to 4.
+    #[arg(long)]
+    bake_denoise_passes: Option<u8>,
+
+    /// Indirect irradiance multiplier. Use 0 to bake only direct lighting.
+    #[arg(long)]
+    bake_indirect_factor: Option<f32>,
+
+    /// Lighting terms stored by the bake (default diffuse).
+    #[arg(long, value_enum)]
+    bake_mode: Option<Mode>,
+
+    /// Save unfiltered irradiance and geometric guides alongside the atlas.
+    #[arg(long)]
+    bake_save_samples: bool,
 }
 
 pub fn run(program: &Program, arguments: &Arguments, output: &Path) -> Result<(), CompilerError> {
@@ -95,25 +121,90 @@ pub fn run(program: &Program, arguments: &Arguments, output: &Path) -> Result<()
     }
     let (lights, fallback, ambient) = viewport_lighting(viewport, Some(model), layers);
     let lights = lights.as_deref().unwrap_or(std::slice::from_ref(&fallback));
-    let atlas = bake_lightmaps(
-        model.objects(),
-        lights,
-        ambient,
-        layers,
-        &arguments.bake_receivers,
-        BakeOptions {
-            size: arguments.bake_size,
-            samples: arguments.bake_samples,
-            bounces: arguments.bake_bounces,
-            bias: arguments.bake_bias,
-            mode: match arguments.bake_mode {
-                Mode::Indirect => LightmapMode::Indirect,
-                Mode::Diffuse => LightmapMode::Diffuse,
-            },
+    let defaults = BakeOptions::default();
+    let passes = arguments
+        .bake_denoise_passes
+        .map(i64::from)
+        .or_else(|| viewport.int("bake-denoise-passes"))
+        .unwrap_or(i64::from(defaults.denoise_passes));
+    let options = BakeOptions {
+        size: arguments.bake_size.unwrap_or(defaults.size),
+        texels_per_unit: arguments
+            .bake_texels_per_unit
+            .unwrap_or(defaults.texels_per_unit),
+        samples: arguments.bake_samples.unwrap_or(defaults.samples),
+        bounces: arguments.bake_bounces.unwrap_or(defaults.bounces),
+        bias: arguments.bake_bias.unwrap_or(defaults.bias),
+        denoise_passes: u8::try_from(passes)
+            .map_err(|_| fail("bake-denoise-passes must be between 0 and 4"))?,
+        indirect_factor: arguments
+            .bake_indirect_factor
+            .or_else(|| viewport.float("bake-indirect-factor"))
+            .unwrap_or(defaults.indirect_factor),
+        mode: match arguments.bake_mode.unwrap_or_default() {
+            Mode::Indirect => LightmapMode::Indirect,
+            Mode::Diffuse => LightmapMode::Diffuse,
+            Mode::Mixed => LightmapMode::Mixed,
         },
+    };
+    publish(output, || {
+        let samples_path = output.join("samples.xrlm");
+        let mut samples = arguments
+            .bake_save_samples
+            .then(|| {
+                fs::File::create_new(&samples_path)
+                    .map(BufWriter::new)
+                    .map_err(|source| io_error(&samples_path, source))
+            })
+            .transpose()?;
+        let atlas = bake_lightmaps_recording(
+            model.objects(),
+            BakeLightInputs {
+                lights,
+                ambient,
+                environment: ViewportEnvironment::from_node(viewport),
+            },
+            layers,
+            &arguments.bake_receivers,
+            options,
+            samples
+                .as_mut()
+                .map(|writer| writer as &mut dyn std::io::Write),
+        )
+        .map_err(|error| CompilerError::Resources(error.to_string()))?;
+        if let Some(writer) = &mut samples {
+            writer
+                .flush()
+                .map_err(|source| io_error(&samples_path, source))?;
+        }
+        write_atlas(output, atlas, options)
+    })
+}
+
+pub fn replay(input: &Path, arguments: &Arguments, output: &Path) -> Result<(), CompilerError> {
+    if arguments.bake_component.is_some()
+        || arguments.bake_viewport.is_some()
+        || !arguments.bake_receivers.is_empty()
+        || arguments.bake_size.is_some()
+        || arguments.bake_texels_per_unit.is_some()
+        || arguments.bake_samples.is_some()
+        || arguments.bake_bounces.is_some()
+        || arguments.bake_bias.is_some()
+        || arguments.bake_mode.is_some()
+        || arguments.bake_save_samples
+    {
+        return Err(CompilerError::Resources(
+            "sample replay accepts only --bake-denoise-passes and --bake-indirect-factor".into(),
+        ));
+    }
+    let file = fs::File::open(input).map_err(|source| io_error(input, source))?;
+    let (atlas, options) = replay_lightmap_samples(
+        &mut BufReader::new(file),
+        arguments.bake_denoise_passes,
+        arguments.bake_indirect_factor,
     )
-    .map_err(|error| CompilerError::Resources(error.to_string()))?;
-    write_atlas(output, atlas)
+    .map_err(|error| CompilerError::Resources(format!("{}: {error}", input.display())))?;
+    publish(output, || write_atlas(output, atlas, options))
 }
 
 fn find_scenes<'a>(node: &'a Node, id: Option<&str>, result: &mut Vec<&'a Node>) {
@@ -128,7 +219,11 @@ fn find_scenes<'a>(node: &'a Node, id: Option<&str>, result: &mut Vec<&'a Node>)
     }
 }
 
-fn write_atlas(output: &Path, atlas: BakedAtlas) -> Result<(), CompilerError> {
+fn write_atlas(
+    output: &Path,
+    atlas: BakedAtlas,
+    options: BakeOptions,
+) -> Result<(), CompilerError> {
     let mut xr = String::from(
         "export struct BakedLightmapRegion { u: float, v: float, width: float, height: float }\n\n\
          export global BakedLightmaps {\n    out property <image> atlas: @image-url(\"atlas.png\");\n",
@@ -136,6 +231,7 @@ fn write_atlas(output: &Path, atlas: BakedAtlas) -> Result<(), CompilerError> {
     let mode = match atlas.mode {
         LightmapMode::Indirect => "indirect",
         LightmapMode::Diffuse => "diffuse",
+        LightmapMode::Mixed => "mixed",
     };
     let _ = writeln!(
         xr,
@@ -163,23 +259,16 @@ fn write_atlas(output: &Path, atlas: BakedAtlas) -> Result<(), CompilerError> {
             xr,
             "    out property <BakedLightmapRegion> {name}: BakedLightmapRegion {{ u: {u:.10}, v: {v:.10}, width: {width:.10}, height: {height:.10} }};"
         );
-        serde_json::json!({"id": region.id, "property": name, "region": region.atlas})
+        serde_json::json!({"id": region.id, "property": name, "region": region.atlas, "resolution": region.resolution})
     }).collect();
     xr.push_str("}\n");
     let manifest = serde_json::to_vec_pretty(&serde_json::json!({
-        "version": 1, "atlas": "atlas.png", "module": "lighting.xr",
+        "version": 1, "atlas": "atlas.png", "atlas_size": atlas.size, "module": "lighting.xr",
         "mode": mode, "intensity": atlas.intensity, "regions": regions,
+        "sampling": {"samples": options.samples, "bounces": options.bounces, "bias": options.bias,
+            "denoise_passes": options.denoise_passes, "indirect_factor": options.indirect_factor},
     }))?;
 
-    let io = |path: &Path, source| CompilerError::Io {
-        path: path.into(),
-        source,
-    };
-    if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
-        fs::create_dir_all(parent).map_err(|error| io(parent, error))?;
-    }
-    // Claim the directory before writing generated assets, as for --emit package.
-    fs::create_dir(output).map_err(|error| io(output, error))?;
     let files = [
         ("atlas.png", atlas.png),
         ("lighting.xr", xr.into_bytes()),
@@ -187,10 +276,30 @@ fn write_atlas(output: &Path, atlas: BakedAtlas) -> Result<(), CompilerError> {
     ];
     for (name, data) in files {
         let path = output.join(name);
-        if let Err(error) = fs::write(&path, data) {
-            let _ = fs::remove_dir_all(output);
-            return Err(io(&path, error));
-        }
+        fs::write(&path, data).map_err(|source| io_error(&path, source))?;
     }
     Ok(())
+}
+
+fn publish(
+    output: &Path,
+    produce: impl FnOnce() -> Result<(), CompilerError>,
+) -> Result<(), CompilerError> {
+    if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
+    }
+    // Claim the directory before writing any generated assets.
+    fs::create_dir(output).map_err(|source| io_error(output, source))?;
+    let result = produce();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(output);
+    }
+    result
+}
+
+fn io_error(path: &Path, source: std::io::Error) -> CompilerError {
+    CompilerError::Io {
+        path: path.into(),
+        source,
+    }
 }

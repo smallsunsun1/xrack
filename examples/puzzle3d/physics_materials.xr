@@ -1,0 +1,132 @@
+struct MaterialActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component PhysicsMaterialsDemo inherits Window {
+    title: "XRack · 物理材质";
+    width: 736px; height: 462px; resizable: false; background: #172735;
+
+    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -10, 0), 0.016);
+    property <vector3d> zero: Vector3D.new(0, 0, 0);
+    property <vector3d> box-size: Vector3D.new(0.9, 0.54, 0.8);
+    property <vector3d> ball-size: Vector3D.new(0.64, 0.64, 0.64);
+    property <point3d> rest-amber: Point3D.new(-2.0, root.mode == 0 ? 0.27 : 2.4, -0.85);
+    property <point3d> rest-teal: Point3D.new(-2.0, root.mode == 0 ? 0.27 : 2.4, 0.85);
+    out property <int> mode: 0;
+    out property <int> amber: 0;
+    out property <int> teal: 0;
+    out property <int> ticks: 0;
+    in-out property <bool> running: false;
+    out property <bool> low-grip: false;
+    out property <float> grip: Physics3D.static-friction(root.world, root.amber);
+    out property <float> slide: Physics3D.dynamic-friction(root.world, root.amber);
+    out property <float> elasticity: Physics3D.restitution(root.world, root.amber);
+    out property <point3d> amber-position: root.amber == 0 ? root.rest-amber : Physics3D.position(root.world, root.amber);
+    out property <point3d> teal-position: root.teal == 0 ? root.rest-teal : Physics3D.position(root.world, root.teal);
+    out property <vector3d> amber-speed: Physics3D.velocity(root.world, root.amber);
+    out property <float> peak: 0;
+
+    callback reset(mode: int);
+    reset(mode) => {
+        Physics3D.clear(root.world);
+        root.mode = mode;
+        root.running = false;
+        root.ticks = 0;
+        root.low-grip = false;
+        root.peak = 0;
+        Physics3D.add-box(root.world, Point3D.new(0, -0.11, 0), Vector3D.new(8.5, 0.22, 4.6), 0, 0, 0);
+        if mode == 0 {
+            root.amber = Physics3D.add-box(root.world, root.rest-amber, root.box-size, 1, 0.12, 0);
+            root.teal = Physics3D.add-box(root.world, root.rest-teal, root.box-size, 1, 0.12, 0);
+            Physics3D.set-material(root.world, root.amber, 1.2, 0.12, 0);
+            Physics3D.set-axis-locks(root.world, root.amber, 0, 7);
+            Physics3D.set-axis-locks(root.world, root.teal, 0, 7);
+        } else {
+            root.amber = Physics3D.add-sphere(root.world, root.rest-amber, 0.32, 1, 0, 0);
+            root.teal = Physics3D.add-sphere(root.world, root.rest-teal, 0.32, 1, 0, 0);
+            Physics3D.set-material(root.world, root.amber, 0, 0, 1);
+        }
+    }
+
+    callback push(force: float);
+    push(force) => {
+        if root.amber == 0 || root.mode != 0 { root.reset(0); }
+        Physics3D.set-continuous-load(root.world, root.amber, Vector3D.new(force, 0, 0), root.zero);
+        Physics3D.set-continuous-load(root.world, root.teal, Vector3D.new(force, 0, 0), root.zero);
+        root.ticks = 0;
+    }
+    callback change-grip();
+    change-grip() => {
+        if root.amber == 0 || root.mode != 0 { root.reset(0); }
+        root.low-grip = !root.low-grip;
+        Physics3D.set-material(root.world, root.amber, root.low-grip ? 0.12 : 1.2, 0.12, 0);
+    }
+    callback advance();
+    advance() => {
+        if Physics3D.step(root.world) {
+            root.ticks += 1;
+            if root.mode == 1 && root.amber-speed.y > 0 {
+                root.peak = Math.max(root.peak, root.amber-position.y - 0.32);
+            }
+            if root.ticks >= (root.mode == 0 ? 47 : 85) { root.running = false; }
+        }
+    }
+    clock := Timer { interval: 16; repeat: true; running: root.running; triggered => { root.advance(); } }
+
+    pure function part(id: string, mesh: string, position: point3d, size: vector3d, tint: color) -> MaterialActor {
+        MaterialActor {
+            id: id, mesh: mesh, x: position.x, y: position.y, z: position.z,
+            scale-x: size.x, scale-y: size.y, scale-z: size.z, yaw: 0, pitch: 0, roll: 0, color: tint,
+        }
+    }
+    property <string> moving-mesh: root.mode == 0 ? "primitive:box" : "primitive:sphere";
+    property <vector3d> moving-size: root.mode == 0 ? root.box-size : root.ball-size;
+    property <[MaterialActor]> actors: [
+        root.part("ground", "primitive:box", Point3D.new(0, -0.11, 0), Vector3D.new(8.5, 0.22, 4.6), #304958),
+        root.part("amber-lane", "primitive:box", Point3D.new(0, 0.005, -0.85), Vector3D.new(8.1, 0.012, 1.25), #655343),
+        root.part("teal-lane", "primitive:box", Point3D.new(0, 0.005, 0.85), Vector3D.new(8.1, 0.012, 1.25), #275b61),
+        root.part("amber", root.moving-mesh, root.amber-position, root.moving-size, #ffc478),
+        root.part("teal", root.moving-mesh, root.teal-position, root.moving-size, #6fe0cc),
+    ];
+    SceneView3D {
+        width: 736px; height: 378px; model: root.actors;
+        camera-yaw: -14; camera-pitch: 31; camera-distance: 10;
+        scene-background: #203a4a; ambient-intensity: 0.55; multisampling: true;
+    }
+    material-status := Text {
+        x: 18px; y: 15px; color: #f1ebdd;
+        text: root.mode == 0
+            ? "橙色 · 静摩擦 " + Math.round(root.grip * 100) / 100.0
+                + "   ·   动摩擦 " + Math.round(root.slide * 100) / 100.0
+            : "橙色 · 弹性 " + root.elasticity
+                + "   ·   回弹高度 " + Math.round(root.peak * 100) / 100.0;
+    }
+    travel-status := Text {
+        x: 18px; y: 44px; color: #cfeced;
+        text: root.mode == 0
+            ? "位移 · 橙 " + Math.round((root.amber-position.x + 2) * 100) / 100.0
+                + "   ·   青 " + Math.round((root.teal-position.x + 2) * 100) / 100.0
+                + "   ·   步数 " + root.ticks
+            : "高度 · 橙 " + Math.round(root.amber-position.y * 100) / 100.0
+                + "   ·   青 " + Math.round(root.teal-position.y * 100) / 100.0
+                + "   ·   步数 " + root.ticks;
+    }
+    HorizontalLayout {
+        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
+        weak-push := Button {
+            text: "轻推两块"; clicked => { root.reset(0); root.push(3); root.running = true; }
+        }
+        strong-push := Button {
+            text: "用力推"; clicked => { root.reset(0); root.push(14); root.running = true; }
+        }
+        grip-switch := Button {
+            text: root.low-grip ? "恢复抓地" : "降低抓地"; clicked => { root.change-grip(); }
+        }
+        bounce := Button {
+            text: "落球对比"; clicked => { root.reset(1); root.running = true; }
+        }
+        reset := Button { text: "重置"; clicked => { root.reset(0); } }
+    }
+}

@@ -43,9 +43,11 @@ void XrackDialect::initialize() {
 bool isExpression(Operation &op) {
   return isa<LiteralOp, ReadOp, DynamicActionOp, DynamicReadOp, LoaderMountedOp, LoaderExternalStatusOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, TreeSelectionKeysOp, ListSelectionKeysOp, ViewIndexOp, ViewCountOp, ListSelectionReadOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, TextAcceptsOp, TextValidityOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, TextSelectionReadOp, TextCommandAvailableOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ButtonPressedOp, ButtonCheckedOp, RadioCheckedOp, NavigationActiveOp, NavigationIndexOp, NavigationCountOp, ToggleStateReadOp, NumericValueReadOp, ComboStateReadOp, ComboPopupReadOp, RangePositionReadOp, ParamOp, UnaryOp, CastOp,
              ListRowSelectedOp, StringifyOp, BinaryOp, ConcatOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
-             RoundOp, MathFunctionOp, GeometryFunctionOp, Point2DFieldOp, Point3DFieldOp,
-             ProjectedPoint3DFieldOp, Hit3DFieldOp, Vector3DFieldOp, Vector2DFieldOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, MeshUrlOp, MeshLodUrlOp, MeshLightmapUrlOp, MeshLodLightmapUrlOp, TextureUrlOp, ShaderUrlOp, MaterialShaderUrlOp, InstanceTableUrlOp, EnvironmentUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, Hit3DArrayOp, PointerButtonsOp, CallOp,
+             RoundOp, MathFunctionOp, GeometryFunctionOp, PhysicsFunctionOp, Point2DFieldOp, Point3DFieldOp,
+             ProjectedPoint3DFieldOp, WalkResult3DOp, WalkResult3DFieldOp, Hit3DFieldOp, Instance3DFieldOp, InstanceTable3DFieldOp,
+             PhysicsContact3DFieldOp, PhysicsContact3DArrayOp, PhysicsHit3DFieldOp, PhysicsHit3DArrayOp,
+             Vector3DFieldOp, Vector2DFieldOp, Quaternion3DFieldOp, RotationTrack3DFieldOp,
              StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, UpdateRecordOp, DefaultRecordOp, RecordArrayOp,
              GetFieldOp, LoopParamOp, MatchEnumOp, EnumConstructOp, EnumMatchOp, EnumParameterOp, ModelFilterOp, ModelLookupOp, ModelSortByOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp,
              DateIsValidOp, DateAddDaysOp, DateAddMonthsOp, DateWeekdayOp, DateMonthsOp, DateMonthIndexOp, DateParseIsoOp, DateIsSelectableOp,
@@ -85,6 +87,12 @@ LogicalResult TextureUrlOp::verify() {
 LogicalResult ShaderUrlOp::verify() {
   if (getValue().empty())
     return emitOpError("requires a nonempty shader path");
+  return success();
+}
+
+LogicalResult InstanceTableUrlOp::verify() {
+  if (getValue().empty())
+    return emitOpError("requires a nonempty instance table path");
   return success();
 }
 
@@ -478,7 +486,7 @@ static ReadOp writableNavigationModelRead(ElementOp target) {
     if (!llvm::hasSingleElement(repeats))
       continue;
     auto source = (*repeats.begin()).getInput();
-    if (isa<IntListType, DateListType, StringListType, RecordListType, Hit3DListType>(source.getType()))
+    if (isa<IntListType, DateListType, StringListType, RecordListType, Hit3DListType, PhysicsContact3DListType, PhysicsHit3DListType>(source.getType()))
       return source.getDefiningOp<ReadOp>();
   }
   return {};
@@ -672,7 +680,7 @@ static bool validCompositionBinding(llvm::StringRef kind, llvm::StringRef name,
   return (name == "cache-rendering-hint" ? isa<BoolType>(type)
                                          : isa<FloatType>(type)) &&
       !llvm::StringSwitch<bool>(kind)
-          .Cases({"Action", "ActionGroup", "ButtonGroup", "Timer", "SoundEffect",
+          .Cases({"Action", "ActionGroup", "ButtonGroup", "Timer", "FrameAnimation", "SoundEffect",
                   "FileDialog", "MessageDialog",
                   "SecondaryWindow", "SystemTrayIcon", "Shortcut", "MenuItem",
                   "MenuSeparator", "TableColumn"}, true)
@@ -684,7 +692,7 @@ static bool validTransformBinding(llvm::StringRef kind, llvm::StringRef name,
   if (name != "transform" && !name.starts_with("transform-"))
     return true;
   if (llvm::StringSwitch<bool>(kind)
-          .Cases({"Action", "Timer", "FileDialog", "MessageDialog", "Shortcut",
+          .Cases({"Action", "Timer", "FrameAnimation", "FileDialog", "MessageDialog", "Shortcut",
                   "Window", "ApplicationWindow", "Dialog", "Drawer", "PopupWindow", "SecondaryWindow",
                   "TimePickerPopup", "DatePickerPopup", "ColorPickerPopup", "FontPickerPopup",
                   "Menu", "MenuItem", "MenuSeparator", "Tooltip", "Tab", "TabButton",
@@ -1058,29 +1066,32 @@ LogicalResult ElementOp::verify() {
     }
     return success();
   }
-  if (kind == "Timer") {
+  if (kind == "Timer" || kind == "FrameAnimation") {
     if (!parent || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
-      return emitOpError("Timer requires a named static declaration at the component root");
+      return emitOpError() << kind << " requires a named static declaration at the component root";
     llvm::StringSet<> properties;
     bool handled = false;
     for (Operation &child : body) {
       if (auto bind = dyn_cast<BindOp>(child)) {
         auto name = bind.getName();
         auto type = bind.getInput().getType();
-        if (!((name == "interval" && isa<IntType>(type)) ||
-              ((name == "running" || name == "repeat" || name == "triggered-on-start") && isa<BoolType>(type))))
-          return child.emitOpError("incorrect Timer property type or name");
+        const bool common = name == "running" && isa<BoolType>(type);
+        const bool timed = kind == "Timer" &&
+            ((name == "interval" && isa<IntType>(type)) ||
+             ((name == "repeat" || name == "triggered-on-start") && isa<BoolType>(type)));
+        if (!common && !timed)
+          return child.emitOpError("incorrect property type or name for ") << kind;
         if (!properties.insert(name).second)
-          return child.emitOpError("duplicate Timer property");
+          return child.emitOpError("duplicate property for ") << kind;
       } else if (auto link = dyn_cast<ControlLinkOp>(child)) {
         if (link.getName() != "running" || !properties.insert("running").second)
-          return child.emitOpError("Timer requires a single running binding");
+          return child.emitOpError() << kind << " requires a single running binding";
       } else if (auto handler = dyn_cast<HandlerOp>(child)) {
         if (handler.getName() != "triggered" || handled)
-          return child.emitOpError("Timer accepts one triggered() handler");
+          return child.emitOpError() << kind << " accepts one triggered handler";
         handled = true;
       } else if (!isa<EndOp>(child) && !isExpression(child)) {
-        return child.emitOpError("Timer only accepts property bindings and triggered()");
+        return child.emitOpError() << kind << " only accepts property bindings and triggered handlers";
       }
     }
     return success();
@@ -1325,7 +1336,7 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError("CheckBox accepts checked or check-state/tristate");
       }
     if (auto element = dyn_cast<ElementOp>(child);
-        element && (element.getKind() == "Action" || element.getKind() == "ActionGroup" || element.getKind() == "ButtonGroup" || element.getKind() == "Timer" || element.getKind() == "SoundEffect" ||
+        element && (element.getKind() == "Action" || element.getKind() == "ActionGroup" || element.getKind() == "ButtonGroup" || element.getKind() == "Timer" || element.getKind() == "FrameAnimation" || element.getKind() == "SoundEffect" ||
                     isNativeDialog(element.getKind())))
       continue;
     if (linkedAction &&
@@ -1495,7 +1506,8 @@ LogicalResult ElementOp::verify() {
            (name == "revision" && !isa<IntType>(type))))
         return child.emitOpError("CustomRender requires string renderer and data and integer revision");
       if (kind == "SceneView3D" &&
-          (((name == "model" || name == "lights" || name == "reflection-probes" || name == "fog-volumes" || name == "particle-emitters" || name == "particle-affectors" || name == "scene-effects" || name == "scene-captures") && !isa<RecordListType>(type)) ||
+          ((name == "model" && !isa<RecordListType, SceneModel3DType>(type)) ||
+           ((name == "lights" || name == "reflection-probes" || name == "fog-volumes" || name == "particle-emitters" || name == "particle-affectors" || name == "scene-effects" || name == "scene-captures") && !isa<RecordListType>(type)) ||
            ((name == "selected-object" || name == "environment" || name == "camera" || name == "temporal-aa-mode" || name == "scene-effect" ||
              name == "scene-color-capture" || name == "scene-depth-capture") && !isa<StringType>(type)) ||
            ((name == "shadows" || name == "imported-lights" || name == "environment-skybox" || name == "frustum-culling" ||
@@ -1506,7 +1518,12 @@ LogicalResult ElementOp::verify() {
            ((name == "shadow-map-size" || name == "shadow-cascades" || name == "bloom-levels" ||
              name == "scene-lut-size" || name == "texture-width" || name == "texture-height" || name == "progressive-aa" || name == "ssr-steps" || name == "ssgi-rays" || name == "ssgi-steps" ||
              name == "fog-volume-samples" || name == "fog-volume-density-samples" || name == "layer-mask" ||
-             name == "scene-effect-history-revision") && !isa<IntType>(type)) ||
+             name == "scene-effect-history-revision" || name == "reflection-faces-per-frame" ||
+             name == "reflection-filter-passes-per-frame" || name == "reflection-filter-texels-per-frame" ||
+             name == "bake-denoise-passes") && !isa<IntType>(type)) ||
+           (name == "physics-world" && !isa<PhysicsWorld3DType>(type)) ||
+           (name == "physics-debug" && !isa<BoolType>(type)) ||
+           (name == "physics-debug-body" && !isa<IntType>(type)) ||
            (name == "scene-lut" && !isa<ImageType>(type)) ||
            (name == "dof-blur-radius" && !isa<LengthType>(type)) ||
            (name == "scene-tone-map" && !isa<SceneToneMapType>(type)) ||
@@ -1515,6 +1532,7 @@ LogicalResult ElementOp::verify() {
              name == "ambient-intensity" || name == "shadow-bias" || name == "shadow-distance" ||
              name == "shadow-cascade-blend" || name == "shadow-split-balance" ||
              name == "environment-yaw" || name == "environment-intensity" || name == "scene-exposure" ||
+             name == "bake-indirect-factor" ||
              name == "supersampling" || name == "temporal-aa-strength" || name == "render-scale" ||
              name == "ssr-strength" || name == "ssr-distance" || name == "ssr-thickness" ||
              name == "ssr-roughness-cutoff" || name == "ssr-scale" ||
@@ -2649,6 +2667,8 @@ LogicalResult ClipboardPasteOp::verify() {
       const bool itemType = (isa<StringListType>(model) && isa<StringType>(type)) ||
                             (isa<IntListType>(model) && isa<IntType>(type)) ||
                             (isa<Hit3DListType>(model) && isa<Hit3DType>(type)) ||
+                            (isa<PhysicsContact3DListType>(model) && isa<PhysicsContact3DType>(type)) ||
+                            (isa<PhysicsHit3DListType>(model) && isa<PhysicsHit3DType>(type)) ||
                             (isa<DateListType>(model) && isa<DateType>(type)) ||
           (list && record && list.getName() == record.getName());
       if (name.empty() || (name == text && !isa<StringType>(type)) ||
@@ -2906,7 +2926,7 @@ LogicalResult ControlLinkOp::verify() {
   const bool color = kind == "ColorPickerPopup" && getName() == "color" && isa<ColorType>(type);
   const bool font = kind == "FontPickerPopup" && getName() == "font" && isa<FontType>(type);
   const bool swipeSide = kind == "SwipeDelegate" && getName() == "open-side" && isa<SwipeSideType>(type);
-  const bool running = kind == "Timer" && getName() == "running" && isa<BoolType>(type);
+  const bool running = (kind == "Timer" || kind == "FrameAnimation") && getName() == "running" && isa<BoolType>(type);
   const bool visible = kind == "SecondaryWindow" && getName() == "visible" && isa<BoolType>(type);
   const bool viewport = isViewportOffset(kind, getName()) && isa<LengthType>(type) &&
                         isStaticViewport(element);
@@ -3636,15 +3656,15 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
           ? "only close-requested may return a value on Window"
           : "this event cannot return a value");
     }
+    auto argIs = [&](size_t index, llvm::StringRef type) {
+      if (index >= args->size()) return false;
+      auto *arg = (*args)[index].getAsObject();
+      return arg && arg->getString("name") && arg->getString("ty") == type;
+    };
     if (llvm::StringSwitch<bool>(handler.getName())
             .Cases({"focus-gained", "focus-lost", "focus-changed-event", "focus-within-changed"}, true)
             .Default(false)) {
       bool within = handler.getName() == "focus-within-changed";
-      auto argIs = [&](size_t index, llvm::StringRef type) {
-        if (index >= args->size()) return false;
-        auto *arg = (*args)[index].getAsObject();
-        return arg && arg->getString("name") && arg->getString("ty") == type;
-      };
       if (kind != "FocusScope" || args->size() != (within ? 2u : 1u) ||
           !argIs(within ? 1 : 0, "FocusReason") || (within && !argIs(0, "bool")))
         return handler.emitOpError("incorrect FocusScope focus event signature");
@@ -3659,6 +3679,10 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
       return handler.emitOpError("AnimatedImage requires finished() without parameters");
     if (kind == "Timer" && (handler.getName() != "triggered" || !args->empty()))
       return handler.emitOpError("Timer requires triggered() without parameters");
+    if (kind == "FrameAnimation" &&
+        (handler.getName() != "triggered" || args->size() != 3 ||
+         !argIs(0, "float") || !argIs(1, "float") || !argIs(2, "int")))
+      return handler.emitOpError("FrameAnimation requires triggered(float, float, int)");
     if (kind == "SplitView" &&
         (!args->empty() || handler.getName() != "resized"))
       return handler.emitOpError(
@@ -3951,9 +3975,244 @@ void GeometryFunctionOp::getEffects(
   // Scene queries read mutable models, including nested vertex and index
   // tables. An unchanged SSA model handle does not imply unchanged geometry.
   if (llvm::any_of(getInputs(), [](Value input) {
-        return isa<RecordListType, IntListType>(input.getType());
+        return isa<RecordListType, IntListType, PhysicsWorld3DType>(input.getType());
       }))
     effects.emplace_back(MemoryEffects::Read::get());
+}
+
+static bool physicsUsesShapeList(llvm::StringRef operation) {
+  return operation == "add-body" || operation == "add-kinematic-body" ||
+         operation == "add-trigger" || operation == "shape-cast" ||
+         operation == "shape-cast-all" || operation == "shape-overlap";
+}
+
+static bool writesPhysics(llvm::StringRef operation) {
+  return llvm::StringSwitch<bool>(operation)
+             .Cases({"add-box", "add-sphere", "add-kinematic-box", "add-box-trigger",
+                     "add-body", "add-kinematic-body", "add-trigger", "sync-bodies", "sync-scene",
+                     "set-kinematic-target", "set-kinematic-target-with-pivot", "set-kinematic",
+                     "set-collision-filter", "set-contact-reports", "set-contact-events", "set-kinematic-contact-reports",
+                     "add-fixed-joint", "add-spherical-joint", "add-revolute-joint",
+                     "add-prismatic-joint", "add-distance-joint", "set-joint-limits",
+                     "set-joint-motor", "remove-joint", "step", "apply-impulse", "remove", "clear",
+                     "advance", "advance-realtime", "set-running", "set-time-scale", "set-pose-interpolation",
+                     "set-ccd-substeps", "set-body-ccd", "set-soft-ccd", "set-length-unit",
+                     "set-gravity", "use-character-world-gravity",
+                     "apply-force", "apply-force-at", "apply-torque", "set-continuous-load",
+                     "clear-forces", "apply-impulse-at", "apply-torque-impulse",
+                     "set-linear-velocity", "set-angular-velocity", "reset-body",
+                     "set-gravity-scale", "set-damping", "set-axis-locks", "set-material",
+                     "set-mass", "set-density", "use-default-density", "set-default-density",
+                     "set-mass-properties", "set-inertia-matrix",
+                     "add-character", "set-character-movement", "set-character-gravity",
+                     "set-character-mid-air-control", "set-character-options",
+                     "jump-character", "teleport-character", "set-character-hit-reports"}, true)
+             .Default(false);
+}
+
+void PhysicsFunctionOp::getEffects(
+    llvm::SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  if (getValue() == "new")
+    effects.emplace_back(MemoryEffects::Allocate::get(), cast<OpResult>(getResult()));
+  else if (writesPhysics(getValue())) {
+    if (physicsUsesShapeList(getValue()) || getValue() == "sync-bodies" || getValue() == "sync-scene")
+      effects.emplace_back(MemoryEffects::Read::get());
+    effects.emplace_back(MemoryEffects::Write::get());
+  } else
+    effects.emplace_back(MemoryEffects::Read::get());
+}
+
+LogicalResult PhysicsFunctionOp::verify() {
+  auto operation = getValue();
+  Type world = PhysicsWorld3DType::get(getContext());
+  Type point = Point3DType::get(getContext());
+  Type vector = Vector3DType::get(getContext());
+  Type number = FloatType::get(getContext());
+  Type integer = IntType::get(getContext());
+  Type result = BoolType::get(getContext());
+  SmallVector<Type> expected;
+  if (operation == "new") {
+    expected = {vector, number};
+    result = world;
+  } else if (operation == "add-box" || operation == "add-sphere") {
+    expected = {world, point, operation == "add-box" ? vector : number, number, number, number};
+    result = integer;
+  } else if (operation == "add-kinematic-box") {
+    expected = {world, point, vector, vector, number, number};
+    result = integer;
+  } else if (operation == "add-box-trigger") {
+    expected = {world, point, vector, vector};
+    result = integer;
+  } else if (operation == "add-character") {
+    expected = {world, point, number, number};
+    result = integer;
+  } else if (operation == "body-by-id" || operation == "joint-by-id") {
+    expected = {world, StringType::get(getContext())};
+    result = integer;
+  } else if (operation == "sync-bodies") {
+    if (getInputs().size() != 2 || !isa<RecordListType>(getInputs()[1].getType()))
+      return emitOpError("expected a body declaration record list");
+    expected = {world, getInputs()[1].getType()};
+  } else if (operation == "sync-scene") {
+    if (getInputs().size() != 3 || !isa<RecordListType>(getInputs()[1].getType()) ||
+        !isa<RecordListType>(getInputs()[2].getType()))
+      return emitOpError("expected body and joint declaration record lists");
+    expected = {world, getInputs()[1].getType(), getInputs()[2].getType()};
+  } else if (physicsUsesShapeList(operation)) {
+    if (getInputs().size() < 4 || !isa<RecordListType>(getInputs()[3].getType()))
+      return emitOpError("expected a collision shape record list");
+    expected = {world, point, vector, getInputs()[3].getType()};
+    if (operation == "shape-cast" || operation == "shape-cast-all") {
+      expected.append({vector, number, integer, integer, result});
+      result = operation == "shape-cast"
+                   ? Type(PhysicsHit3DType::get(getContext()))
+                   : Type(PhysicsHit3DListType::get(getContext()));
+    } else if (operation == "shape-overlap") {
+      expected.append({integer, integer, result});
+      result = IntListType::get(getContext());
+    } else {
+      if (operation == "add-body")
+        expected.push_back(number);
+      if (operation != "add-trigger")
+        expected.append({number, number});
+      result = integer;
+    }
+  } else if (operation == "trigger-overlaps") {
+    expected = {world, integer, integer};
+  } else if (operation == "set-collision-filter" || operation == "set-axis-locks") {
+    expected = {world, integer, integer, integer};
+  } else if (operation == "set-contact-reports") {
+    expected = {world, integer, result, result};
+  } else if (operation == "set-kinematic-contact-reports") {
+    expected = {world, result, result};
+  } else if (operation == "set-character-mid-air-control" || operation == "set-character-hit-reports" ||
+             operation == "set-contact-events" || operation == "set-kinematic" || operation == "set-pose-interpolation" ||
+             operation == "set-body-ccd") {
+    expected = {world, integer, result};
+  } else if (operation == "set-character-options") {
+    expected = {world, integer, number, number, number, number};
+  } else if (operation == "ray-cast" || operation == "ray-cast-all") {
+    expected = {world, point, vector, number, integer, integer, result};
+    if (operation == "ray-cast")
+      result = PhysicsHit3DType::get(getContext());
+    else
+      result = PhysicsHit3DListType::get(getContext());
+  } else if (operation == "contacts" || operation == "character-hits") {
+    expected = {world, integer};
+    result = PhysicsContact3DListType::get(getContext());
+  } else if (operation == "add-fixed-joint" || operation == "add-spherical-joint") {
+    expected = {world, integer, integer, point};
+    result = integer;
+  } else if (operation == "add-revolute-joint" || operation == "add-prismatic-joint") {
+    expected = {world, integer, integer, point, vector, number, number};
+    result = integer;
+  } else if (operation == "add-distance-joint") {
+    expected = {world, integer, integer, point, point, number, number};
+    result = integer;
+  } else if (operation == "set-joint-limits" || operation == "set-joint-motor" || operation == "set-damping") {
+    expected = {world, integer, number, number};
+  } else if (operation == "set-material") {
+    expected = {world, integer, number, number, number};
+  } else if (operation == "set-ccd-substeps") {
+    expected = {world, integer};
+  } else if (operation == "ccd-substeps") {
+    expected = {world};
+    result = integer;
+  } else if (operation == "set-gravity") {
+    expected = {world, vector};
+  } else if (operation == "gravity") {
+    expected = {world};
+    result = vector;
+  } else if (operation == "set-default-density" || operation == "set-time-scale" ||
+             operation == "set-length-unit") {
+    expected = {world, number};
+  } else if (operation == "set-running") {
+    expected = {world, result};
+  } else if (operation == "default-density" || operation == "time-scale" ||
+             operation == "simulation-time" || operation == "dropped-time" ||
+             operation == "interpolation-alpha" || operation == "length-unit") {
+    expected = {world};
+    result = number;
+  } else if (operation == "set-mass-properties" || operation == "set-inertia-matrix") {
+    expected = {world, integer, number, point, vector, vector};
+    if (operation == "set-inertia-matrix")
+      expected.push_back(vector);
+  } else if (operation == "inertia-column") {
+    expected = {world, integer, integer};
+    result = vector;
+  } else if (operation == "joint-position" || operation == "static-friction" ||
+             operation == "dynamic-friction" || operation == "restitution" ||
+             operation == "mass" || operation == "soft-ccd") {
+    expected = {world, integer};
+    result = number;
+  } else if (operation == "remove-joint" || operation == "use-default-density" ||
+             operation == "use-character-world-gravity" || operation == "body-ccd") {
+    expected = {world, integer};
+  } else if (operation == "trigger-count" || operation == "trigger-entered" ||
+             operation == "trigger-exited" || operation == "contact-bodies" ||
+             operation == "contact-entered" || operation == "contact-exited") {
+    expected = {world, integer};
+    result = operation == "trigger-count" ? integer : Type(IntListType::get(getContext()));
+  } else if (operation == "set-kinematic-target" || operation == "reset-body") {
+    expected = {world, integer, point, vector};
+  } else if (operation == "set-kinematic-target-with-pivot") {
+    expected = {world, integer, point, vector, vector};
+  } else if (operation == "advance") {
+    expected = {world, number, integer};
+    result = integer;
+  } else if (operation == "advance-realtime") {
+    expected = {world, integer};
+    result = integer;
+  } else if (operation == "step" || operation == "clear" || operation == "is-running" ||
+             operation == "report-static-kinematic-collisions" ||
+             operation == "report-kinematic-kinematic-collisions") {
+    expected = {world};
+  } else if (operation == "apply-impulse" || operation == "apply-force" ||
+             operation == "apply-torque" || operation == "apply-torque-impulse" ||
+             operation == "set-linear-velocity" || operation == "set-angular-velocity" ||
+             operation == "set-character-movement" || operation == "set-character-gravity") {
+    expected = {world, integer, vector};
+  } else if (operation == "apply-force-at" || operation == "apply-impulse-at") {
+    expected = {world, integer, vector, point};
+  } else if (operation == "set-continuous-load") {
+    expected = {world, integer, vector, vector};
+  } else if (operation == "set-gravity-scale" || operation == "jump-character" ||
+             operation == "set-mass" || operation == "set-density" || operation == "set-soft-ccd") {
+    expected = {world, integer, number};
+  } else if (operation == "teleport-character") {
+    expected = {world, integer, point};
+  } else if (operation == "position" || operation == "interpolated-position" ||
+             operation == "interpolated-rotation" || operation == "center-of-mass" ||
+             operation == "local-center-of-mass" || operation == "principal-inertia" ||
+             operation == "character-gravity" ||
+             operation == "rotation" || operation == "velocity" ||
+             operation == "angular-velocity" || operation == "remove" ||
+             operation == "clear-forces" || operation == "is-sleeping" || operation == "is-kinematic" ||
+             operation == "character-grounded" || operation == "character-hit-wall" ||
+             operation == "character-hit-ceiling" || operation == "character-collisions" ||
+             operation == "character-support") {
+    expected = {world, integer};
+    if (operation == "position" || operation == "interpolated-position" ||
+        operation == "center-of-mass" || operation == "local-center-of-mass")
+      result = point;
+    else if (operation == "rotation" || operation == "velocity" ||
+             operation == "angular-velocity" || operation == "principal-inertia" ||
+             operation == "interpolated-rotation" || operation == "character-gravity")
+      result = vector;
+    else if (operation == "character-collisions" || operation == "character-support")
+      result = integer;
+  } else {
+    return emitOpError("unknown physics function");
+  }
+  if (writesPhysics(operation)) {
+    auto callback = (*this)->getParentOfType<CallbackOp>();
+    if ((callback && callback.getPure().value_or("false") == "true") ||
+        (!callback && !(*this)->getParentOfType<HandlerOp>()))
+      return emitOpError("physics mutation requires an impure callback");
+  }
+  if (!llvm::equal(getInputs().getTypes(), expected) || getResult().getType() != result)
+    return emitOpError("invalid physics function signature");
+  return success();
 }
 
 LogicalResult GeometryFunctionOp::verify() {
@@ -3998,6 +4257,76 @@ LogicalResult GeometryFunctionOp::verify() {
   } else if (operation == "unproject-3d") {
     inputs = {number, number, number, point, point, number, worldPoint};
     output = worldPoint;
+  } else if (operation.starts_with("quaternion-")) {
+    Type rotation = Quaternion3DType::get(getContext());
+    output = rotation;
+    if (operation == "quaternion-new")
+      inputs = {number, number, number, number};
+    else if (operation == "quaternion-axis-angle")
+      inputs = {worldVector, number};
+    else if (operation == "quaternion-euler")
+      inputs = {worldVector};
+    else if (operation == "quaternion-look-rotation" || operation == "quaternion-look-at") {
+      if (operation == "quaternion-look-rotation")
+        inputs = {worldVector};
+      else
+        inputs = {worldPoint, worldPoint};
+      if (getInputs().size() == inputs.size() + 1)
+        inputs.push_back(worldVector);
+    } else if (operation == "quaternion-compose")
+      inputs = {rotation, rotation};
+    else if (operation == "quaternion-inverse")
+      inputs = {rotation};
+    else if (operation == "quaternion-slerp")
+      inputs = {rotation, rotation, number};
+    else if (operation == "quaternion-track") {
+      if (getInputs().size() != 1 || !isa<RecordListType>(getInputs().front().getType()))
+        return emitOpError("rotation track requires a key record list");
+      inputs = {getInputs().front().getType()};
+      output = RotationTrack3DType::get(getContext());
+    } else if (operation == "quaternion-track-keys") {
+      auto keys = getInputs();
+      if (keys.empty() || keys.size() % 2 != 0)
+        return emitOpError("requires time/rotation key pairs");
+      double previous = -1.0;
+      for (unsigned i = 0; i < keys.size(); i += 2) {
+        auto time = keys[i].getDefiningOp<LiteralOp>();
+        auto seconds = time ? parseFloatLiteral(time.getValue()) : std::nullopt;
+        if (!isa<FloatType>(keys[i].getType()) || !isa<Quaternion3DType>(keys[i + 1].getType()) ||
+            !seconds || *seconds < 0.0 || *seconds <= previous)
+          return emitOpError("requires finite, increasing float times and quaternion3d rotations");
+        previous = *seconds;
+        inputs.append({number, rotation});
+      }
+      output = RotationTrack3DType::get(getContext());
+    } else if (operation == "quaternion-sample") {
+      inputs = {RotationTrack3DType::get(getContext()), number};
+    } else if (operation == "quaternion-rotate") {
+      inputs = {rotation, worldVector};
+      output = worldVector;
+    } else if (operation != "quaternion-identity") {
+      return emitOpError("unknown quaternion function");
+    }
+  } else if (operation == "prepare-3d") {
+    if (getInputs().empty() || !isa<RecordListType>(getInputs().front().getType()))
+      return emitOpError("scene preparation requires a scene object record list");
+    inputs = {getInputs().front().getType()};
+    if (getInputs().size() == 2)
+      inputs.push_back(PhysicsWorld3DType::get(getContext()));
+    output = SceneModel3DType::get(getContext());
+  } else if (operation == "prepare-instance-table-3d") {
+    if (getInputs().size() != 1 || !isa<RecordListType>(getInputs().front().getType()))
+      return emitOpError("instance table preparation requires a record list");
+    inputs = {getInputs().front().getType()};
+    output = InstanceTable3DType::get(getContext());
+  } else if (operation == "table-instance-3d") {
+    inputs = {InstanceTable3DType::get(getContext()), IntType::get(getContext())};
+    output = Instance3DType::get(getContext());
+  } else if (operation == "random-instance-table-3d") {
+    if (getInputs().size() != 1 || !isa<RecordType>(getInputs().front().getType()))
+      return emitOpError("random instance table preparation requires a settings record");
+    inputs = {getInputs().front().getType()};
+    output = InstanceTable3DType::get(getContext());
   } else if (operation == "pick-3d" || operation == "pick-camera-3d" ||
              operation == "pick-in-rect-3d" || operation == "pick-in-rect-camera-3d" ||
              operation == "hit-row-3d" || operation == "hit-row-camera-3d" || operation == "ray-hit-row-3d" ||
@@ -4006,12 +4335,18 @@ LogicalResult GeometryFunctionOp::verify() {
              operation == "hit-subset-3d" || operation == "hit-subset-camera-3d" || operation == "ray-hit-subset-3d" ||
              operation == "project-camera-3d" || operation == "unproject-camera-3d" ||
              operation == "map-position-3d" || operation == "map-direction-3d" ||
+             operation == "scene-instance-3d" || operation == "scene-instance-camera-3d" ||
+             operation == "scene-instance-orbit-3d" ||
              operation == "hit-3d" || operation == "hit-camera-3d" || operation == "ray-hit-3d" ||
              operation == "hit-all-3d" || operation == "hit-all-camera-3d" || operation == "ray-hit-all-3d" ||
              operation == "closest-point-3d" || operation == "closest-point-on-3d" ||
-             operation == "sphere-cast-3d" || operation == "sphere-overlap-3d" || operation == "sphere-slide-3d" || operation == "sphere-walk-3d") {
-    if (getInputs().empty() || !isa<RecordListType>(getInputs().front().getType()))
-      return emitOpError("3D query requires a scene object record model");
+             operation == "sphere-cast-3d" || operation == "sphere-overlap-3d" || operation == "sphere-slide-3d" || operation == "sphere-walk-3d" ||
+             operation == "capsule-cast-3d" || operation == "capsule-overlap-3d" ||
+             operation == "capsule-slide-3d" || operation == "capsule-walk-3d" ||
+             operation == "capsule-trigger-overlap-3d" || operation == "capsule-trigger-crossings-3d" ||
+             operation == "capsule-walk-result-3d" || operation == "capsule-walk-with-contacts-3d") {
+    if (getInputs().empty() || !isa<RecordListType, SceneModel3DType>(getInputs().front().getType()))
+      return emitOpError("3D query requires scene object records or a prepared scene model");
     auto model = getInputs().front().getType();
     auto string = StringType::get(getContext());
     if (operation == "hit-3d" || operation == "hit-all-3d") {
@@ -4051,18 +4386,34 @@ LogicalResult GeometryFunctionOp::verify() {
     } else if (operation == "closest-point-on-3d") {
       inputs = {model, string, worldPoint, number};
       output = hit;
-    } else if (operation == "sphere-cast-3d") {
+    } else if (operation == "sphere-cast-3d" || operation == "capsule-cast-3d") {
       inputs = {model, worldPoint, worldVector, number, number};
       output = hit;
-    } else if (operation == "sphere-overlap-3d") {
+    } else if (operation == "sphere-overlap-3d" || operation == "capsule-overlap-3d" ||
+               operation == "capsule-trigger-overlap-3d") {
       inputs = {model, worldPoint, number};
       output = hitList;
-    } else if (operation == "sphere-slide-3d") {
+    } else if (operation == "capsule-trigger-crossings-3d") {
+      inputs = {model, worldPoint, worldPoint, number};
+      output = hitList;
+    } else if (operation == "sphere-slide-3d" || operation == "capsule-slide-3d") {
       inputs = {model, worldPoint, worldVector, number};
       output = worldPoint;
-    } else if (operation == "sphere-walk-3d") {
+    } else if (operation == "sphere-walk-3d" || operation == "capsule-walk-3d" ||
+               operation == "capsule-walk-result-3d" || operation == "capsule-walk-with-contacts-3d") {
       inputs = {model, worldPoint, worldVector, number, number, number, number};
-      output = worldPoint;
+      output = operation == "capsule-walk-result-3d" || operation == "capsule-walk-with-contacts-3d"
+                   ? Type(WalkResult3DType::get(getContext()))
+                   : worldPoint;
+    } else if (operation == "scene-instance-3d" || operation == "scene-instance-camera-3d" ||
+               operation == "scene-instance-orbit-3d") {
+      inputs = {model};
+      if (operation == "scene-instance-camera-3d")
+        inputs = {model, string, point};
+      else if (operation == "scene-instance-orbit-3d")
+        inputs = {model, number, number, number, point};
+      inputs.append(3, IntType::get(getContext()));
+      output = Instance3DType::get(getContext());
     } else if (operation == "map-position-3d" || operation == "map-direction-3d") {
       output = operation == "map-position-3d" ? worldPoint : worldVector;
       inputs = {model, string, string, output, output};
@@ -4079,6 +4430,8 @@ LogicalResult GeometryFunctionOp::verify() {
       else
         inputs = {model, number, number, number, point, point};
     }
+    if (operation.starts_with("capsule-"))
+      inputs.push_back(number);
   } else if (operation != "identity") {
     return emitOpError("unknown geometry function");
   }
@@ -4090,7 +4443,10 @@ LogicalResult GeometryFunctionOp::verify() {
                   "hit-row-3d", "hit-row-camera-3d", "ray-hit-row-3d",
                   "hit-instance-3d", "hit-instance-camera-3d", "ray-hit-instance-3d",
                   "hit-subset-3d", "hit-subset-camera-3d", "ray-hit-subset-3d",
-                  "closest-point-3d", "closest-point-on-3d", "sphere-cast-3d", "sphere-overlap-3d", "sphere-slide-3d", "sphere-walk-3d"}, true)
+                  "closest-point-3d", "closest-point-on-3d", "sphere-cast-3d", "sphere-overlap-3d", "sphere-slide-3d", "sphere-walk-3d",
+                  "capsule-cast-3d", "capsule-overlap-3d", "capsule-slide-3d", "capsule-walk-3d",
+                  "capsule-trigger-overlap-3d", "capsule-trigger-crossings-3d", "capsule-walk-result-3d",
+                  "capsule-walk-with-contacts-3d"}, true)
           .Default(false))
     inputs.push_back(IntType::get(getContext()));
   if (!llvm::equal(getInputs().getTypes(), inputs) || getResult().getType() != output)
@@ -4116,10 +4472,50 @@ LogicalResult Vector3DFieldOp::verify() {
   return success();
 }
 
-LogicalResult Hit3DFieldOp::verify() {
+LogicalResult Quaternion3DFieldOp::verify() {
+  auto field = getValue();
+  if (field != "x" && field != "y" && field != "z" && field != "w")
+    return emitOpError("expected a quaternion component x, y, z or w");
+  return success();
+}
+
+LogicalResult RotationTrack3DFieldOp::verify() {
+  auto type = getResult().getType();
+  auto field = getValue();
+  if ((field == "count" && isa<IntType>(type)) ||
+      (field == "valid" && isa<BoolType>(type)) ||
+      (field == "duration" && isa<FloatType>(type)))
+    return success();
+  return emitOpError("invalid rotation track field or result type");
+}
+
+LogicalResult InstanceTable3DFieldOp::verify() {
+  auto type = getResult().getType();
+  auto field = getValue();
+  if ((field == "count" && isa<IntType>(type)) ||
+      (field == "loaded" && isa<BoolType>(type)))
+    return success();
+  return emitOpError("invalid instance table field or result type");
+}
+
+LogicalResult Instance3DFieldOp::verify() {
   auto type = getResult().getType();
   auto field = getValue();
   if ((field == "valid" && isa<BoolType>(type)) ||
+      (field == "object-id" && isa<StringType>(type)) ||
+      ((field == "row-index" || field == "mesh-node-index" || field == "instance-index") && isa<IntType>(type)) ||
+      (field == "color" && isa<ColorType>(type)) ||
+      (field == "origin" && isa<Point3DType>(type)) ||
+      ((field == "axis-x" || field == "axis-y" || field == "axis-z") && isa<Vector3DType>(type)) ||
+      ((field == "data-x" || field == "data-y" || field == "data-z" || field == "data-w") && isa<FloatType>(type)))
+    return success();
+  return emitOpError("invalid 3D instance field or result type");
+}
+
+LogicalResult Hit3DFieldOp::verify() {
+  auto type = getResult().getType();
+  auto field = getValue();
+  if (((field == "valid" || field == "entering") && isa<BoolType>(type)) ||
       (field == "object-id" && isa<StringType>(type)) ||
       ((field == "row-index" || field == "mesh-node-index" || field == "instance-index") &&
        isa<IntType>(type)) ||
@@ -4128,6 +4524,40 @@ LogicalResult Hit3DFieldOp::verify() {
       ((field == "normal" || field == "local-normal") && isa<Vector3DType>(type)))
     return success();
   return emitOpError("invalid hit field or result type");
+}
+
+LogicalResult PhysicsContact3DFieldOp::verify() {
+  auto type = getResult().getType();
+  auto field = getValue();
+  if ((field == "body" && isa<IntType>(type)) ||
+      (field == "position" && isa<Point3DType>(type)) ||
+      ((field == "normal" || field == "impulse") && isa<Vector3DType>(type)) ||
+      (field == "normal-impulse" && isa<FloatType>(type)))
+    return success();
+  return emitOpError("invalid physics contact field or result type");
+}
+
+LogicalResult PhysicsHit3DFieldOp::verify() {
+  auto type = getResult().getType();
+  auto field = getValue();
+  if ((field == "body" && isa<IntType>(type)) ||
+      (field == "position" && isa<Point3DType>(type)) ||
+      (field == "normal" && isa<Vector3DType>(type)) ||
+      (field == "distance" && isa<FloatType>(type)) ||
+      (field == "sensor" && isa<BoolType>(type)))
+    return success();
+  return emitOpError("invalid physics hit field or result type");
+}
+
+LogicalResult WalkResult3DFieldOp::verify() {
+  auto type = getResult().getType();
+  if ((getValue() == "position" && isa<Point3DType>(type)) ||
+      ((getValue() == "crossings" || getValue() == "contacts") && isa<Hit3DListType>(type)) ||
+      (getValue() == "support" && isa<Hit3DType>(type)) ||
+      ((getValue() == "grounded" || getValue() == "hit-wall" || getValue() == "hit-ceiling") &&
+       isa<BoolType>(type)))
+    return success();
+  return emitOpError("invalid walk result field or result type");
 }
 
 LogicalResult ProjectedPoint3DFieldOp::verify() {
@@ -4221,6 +4651,7 @@ std::optional<double> parseFloatLiteral(llvm::StringRef spelling) {
 std::optional<llvm::SmallVector<double, 6>>
 parseGeometryLiteral(Type type, llvm::StringRef spelling) {
   unsigned size = isa<Transform2DType>(type) ? 6
+                  : isa<Quaternion3DType>(type) ? 4
                   : isa<Point3DType, Vector3DType>(type) ? 3
                   : isa<Point2DType, Vector2DType>(type) ? 2
                                                        : 0;
@@ -4240,6 +4671,28 @@ parseGeometryLiteral(Type type, llvm::StringRef spelling) {
   return values;
 }
 
+std::optional<RotationTrackKeys> parseRotationTrackLiteral(llvm::StringRef spelling) {
+  llvm::SmallVector<llvm::StringRef, 10> parts;
+  spelling.split(parts, ' ', -1, false);
+  if (parts.size() % 5 != 0)
+    return std::nullopt;
+  RotationTrackKeys keys;
+  keys.reserve(parts.size());
+  double previous = -1.0;
+  for (auto [index, part] : llvm::enumerate(parts)) {
+    auto value = parseFloatLiteral(part);
+    if (!value)
+      return std::nullopt;
+    if (index % 5 == 0) {
+      if (*value < 0.0 || *value <= previous)
+        return std::nullopt;
+      previous = *value;
+    }
+    keys.push_back(*value);
+  }
+  return keys;
+}
+
 LogicalResult LiteralOp::verify() {
   auto type = getResult().getType();
   auto spelling = getValue();
@@ -4249,9 +4702,11 @@ LogicalResult LiteralOp::verify() {
     valid = !spelling.getAsInteger(10, value);
   } else if (isa<FloatType, LengthType, PercentType>(type)) {
     valid = parseFloatLiteral(spelling).has_value();
-  } else if (isa<Point2DType, Vector2DType, Transform2DType, Point3DType, Vector3DType>(type)) {
+  } else if (isa<Point2DType, Vector2DType, Transform2DType, Point3DType, Vector3DType, Quaternion3DType>(type)) {
     valid = parseGeometryLiteral(type, spelling).has_value();
-  } else if (isa<ProjectedPoint3DType, Hit3DType>(type)) {
+  } else if (isa<RotationTrack3DType>(type)) {
+    valid = parseRotationTrackLiteral(spelling).has_value();
+  } else if (isa<ProjectedPoint3DType, Hit3DType, Instance3DType, InstanceTable3DType, WalkResult3DType, PhysicsWorld3DType, SceneModel3DType, PhysicsContact3DType, PhysicsHit3DType>(type)) {
     valid = spelling.empty();
   } else if (isa<BoolType>(type)) {
     valid = spelling == "true" || spelling == "false";
@@ -4728,6 +5183,10 @@ static bool matchesDeclaredType(Type type, llvm::StringRef declared) {
     declared = "datelist";
   else if (declared == "[hit3d]" || declared == "[Hit3D]")
     declared = "hit3dlist";
+  else if (declared == "[physicscontact3d]" || declared == "[PhysicsContact3D]")
+    declared = "physicscontact3dlist";
+  else if (declared == "[physicshit3d]" || declared == "[PhysicsHit3D]")
+    declared = "physicshit3dlist";
   else if (declared == "styled-text")
     declared = "styledtext";
   return spelling.consume_front("!xr.") && spelling == declared.lower();
@@ -4745,6 +5204,10 @@ static Type repeatedItemType(Type model) {
     return DateType::get(context);
   if (isa<Hit3DListType>(model))
     return Hit3DType::get(context);
+  if (isa<PhysicsContact3DListType>(model))
+    return PhysicsContact3DType::get(context);
+  if (isa<PhysicsHit3DListType>(model))
+    return PhysicsHit3DType::get(context);
   if (isa<TouchPointsType>(model))
     return TouchPointType::get(context);
   return model;
@@ -5250,7 +5713,7 @@ static LogicalResult verifyReferences(ComponentOp component,
           element = *roots.begin();
       }
       if (!element || !staticPropertyOwner(owner) ||
-          element.getKind() == "Action" || element.getKind() == "ActionGroup" || element.getKind() == "ButtonGroup" || element.getKind() == "Timer" || element.getKind() == "SoundEffect" ||
+          element.getKind() == "Action" || element.getKind() == "ActionGroup" || element.getKind() == "ButtonGroup" || element.getKind() == "Timer" || element.getKind() == "FrameAnimation" || element.getKind() == "SoundEffect" ||
           element.getKind() == "SecondaryWindow" || element.getKind() == "SystemTrayIcon" || element.getKind() == "TableColumn" ||
           element.getKind() == "ComboPopup" || isNativeDialog(element.getKind()))
         result = op->emitOpError("layout geometry requires a statically addressed visual target");
@@ -5743,8 +6206,8 @@ static LogicalResult verifyReferences(ComponentOp component,
         result = op->emitOpError("requires a media owner supporting this command");
     } else if (auto command = dyn_cast<TimerCommandOp>(op)) {
       auto timer = dyn_cast_or_null<ElementOp>(owners.lookup(command.getOwner()));
-      if (!timer || timer.getKind() != "Timer")
-        result = op->emitOpError("requires a Timer owner in the same component");
+      if (!timer || (timer.getKind() != "Timer" && timer.getKind() != "FrameAnimation"))
+        result = op->emitOpError("requires a Timer or FrameAnimation owner in the same component");
     } else if (auto command = dyn_cast<PopupCommandOp>(op)) {
       auto popup = dyn_cast_or_null<ElementOp>(owners.lookup(command.getOwner()));
       if (!popup || popup.getKind() != "PopupWindow")
@@ -5939,8 +6402,10 @@ static bool recordScalarType(llvm::StringRef type) {
   return llvm::StringSwitch<bool>(type)
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
               "point2d", "vector2d", "transform2d", "Point2D", "Vector2D", "Transform2D",
-              "point3d", "Point3D", "vector3d", "Vector3D", "hit3d", "Hit3D",
-              "projectedpoint3d", "ProjectedPoint3D",
+              "point3d", "Point3D", "vector3d", "Vector3D", "quaternion3d", "Quaternion3D", "rotationtrack3d", "RotationTrack3D", "hit3d", "Hit3D",
+              "projectedpoint3d", "ProjectedPoint3D", "instance3d", "Instance3D", "instancetable3d", "InstanceTable3D", "walkresult3d", "WalkResult3D",
+              "physicsworld3d", "PhysicsWorld3D", "scenemodel3d", "SceneModel3D", "physicscontact3d", "PhysicsContact3D",
+              "physicshit3d", "PhysicsHit3D",
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
               "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "LayoutDirection", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap", "MouseSelectionMode", "InputValidity",
@@ -6416,7 +6881,8 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
         std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
           {"enabled", "bool"}, {"vertex-colors", "bool"}, {"base-color", "color"}, {"base-item", "string"}, {"metalness", "float"},
           {"material-shader", "string"}, {"shader-parameters", "vector3d"}, {"shader-displacement", "float"},
-          {"roughness", "float"}, {"emissive-color", "color"}, {"emissive-strength", "float"},
+          {"roughness", "float"}, {"glossiness", "float"}, {"material-workflow", "string"},
+          {"emissive-color", "color"}, {"emissive-strength", "float"},
           {"alpha-mode", "string"}, {"blend-mode", "string"}, {"depth-draw-mode", "string"}, {"cull-mode", "string"}, {"alpha-cutoff", "float"},
           {"unlit", "bool"}, {"clearcoat", "float"}, {"clearcoat-roughness", "float"},
           {"transmission", "float"}, {"index-of-refraction", "float"},
@@ -6447,7 +6913,7 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
       if (auto enabled = recordFieldType(records, enums, *element, "enabled"); enabled && *enabled != "bool")
         return op->emitOpError("3D material shader texture requires a bool field named enabled");
     }
-    for (llvm::StringRef name : {"base-color-channel", "emissive-channel", "metalness-channel", "roughness-channel", "occlusion-channel", "specular-channel", "specular-color-channel", "transmission-channel", "thickness-channel", "clearcoat-channel", "clearcoat-roughness-channel"}) {
+    for (llvm::StringRef name : {"base-color-channel", "emissive-channel", "metalness-channel", "roughness-channel", "glossiness-channel", "occlusion-channel", "specular-channel", "specular-color-channel", "transmission-channel", "thickness-channel", "clearcoat-channel", "clearcoat-roughness-channel"}) {
       if (auto field = recordFieldType(records, enums, material, name);
           field && *field != "string")
         return op->emitOpError("invalid 3D material channel ") << name << ", expected string";
@@ -6462,7 +6928,7 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
           field && *field != "string")
         return op->emitOpError("invalid 3D vertex mask channel ") << name << ", expected string";
     }
-    for (llvm::StringRef name : {"base-color-map", "metallic-roughness-map",
+    for (llvm::StringRef name : {"base-color-map", "metallic-roughness-map", "glossiness-map",
                                "emissive-map", "occlusion-map", "normal-map",
                                "clearcoat-map", "clearcoat-roughness-map",
                                "clearcoat-normal-map", "transmission-map",
@@ -6487,6 +6953,74 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
   return success();
 }
 
+static LogicalResult verifyCollisionShapes(Operation *op, llvm::StringRef shape,
+                                           const Records &records, const EnumLayouts &enums) {
+  if (!records.contains(shape) || enums.contains(shape))
+    return op->emitOpError("3D collision-shapes requires a list of shape records");
+  for (const auto &[name, expected] :
+       std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+           {"shape", "string"}, {"mesh", "string"}, {"position", "point3d"}, {"size", "vector3d"},
+           {"yaw", "float"}, {"pitch", "float"}, {"roll", "float"}}) {
+    auto field = recordFieldType(records, enums, shape, name);
+    if ((name == "shape" || field) && (!field || *field != expected))
+      return op->emitOpError("invalid 3D collision-shapes field ") << name << ", expected " << expected;
+  }
+  return success();
+}
+
+static LogicalResult verifyPhysicsBodies(Operation *op, Type type, const Records &records,
+                                         const EnumLayouts &enums) {
+  if (failed(verifySceneRecords(
+          op, type, records, enums, "3D body declarations",
+          {{"id", "string"}, {"body-kind", "string"}, {"position", "point3d"}},
+          {{"rotation", "vector3d"}, {"mass", "float"}, {"friction", "float"},
+           {"restitution", "float"}})))
+    return failure();
+  auto bodies = dyn_cast<RecordListType>(type);
+  if (!bodies)
+    return op->emitOpError("expected a body declaration record list");
+  auto shapes = recordFieldType(records, enums, bodies.getName(), "shapes");
+  if (!shapes || !shapes->starts_with("[") || !shapes->ends_with("]"))
+    return op->emitOpError("3D body declarations require a list of shapes");
+  return verifyCollisionShapes(op, shapes->drop_front().drop_back(), records, enums);
+}
+
+static LogicalResult verifyInstanceData(Operation *op, llvm::StringRef schema, llvm::StringRef field,
+                                        const Records &records, const EnumLayouts &enums) {
+  if (!records.contains(schema) || enums.contains(schema))
+    return op->emitOpError("3D ") << field << " requires a record";
+  for (llvm::StringRef channel : {"x", "y", "z", "w"}) {
+    auto type = recordFieldType(records, enums, schema, channel);
+    if (!type || *type != "float")
+      return op->emitOpError("invalid 3D ") << field << " field " << channel << ", expected float";
+  }
+  return success();
+}
+
+static LogicalResult verifyRandomInstanceSettings(Operation *op, llvm::StringRef schema,
+                                                   const Records &records, const EnumLayouts &enums) {
+  if (!records.contains(schema) || enums.contains(schema))
+    return op->emitOpError("3D random-instances requires a record");
+  for (const auto &[field, expected] :
+       std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+           {"count", "int"}, {"enabled", "bool"}, {"seed", "int"}, {"position-min", "vector3d"},
+           {"position-max", "vector3d"}, {"rotation-min", "vector3d"},
+           {"rotation-max", "vector3d"}, {"scale-min", "vector3d"}, {"scale-max", "vector3d"},
+           {"proportional-scale", "bool"}, {"color-min", "color"}, {"color-max", "color"},
+           {"color-model", "string"}, {"proportional-color", "bool"},
+           {"hue-min", "float"}, {"hue-max", "float"},
+           {"grid-spacing", "vector3d"}}) {
+    auto type = recordFieldType(records, enums, schema, field);
+    if ((field == "count" || type) && (!type || *type != expected))
+      return op->emitOpError("invalid 3D random-instances field ") << field << ", expected " << expected;
+  }
+  for (llvm::StringRef field : {"data-min", "data-max"})
+    if (auto data = recordFieldType(records, enums, schema, field))
+      if (failed(verifyInstanceData(op, *data, field, records, enums)))
+        return failure();
+  return success();
+}
+
 static LogicalResult verifySceneModel(Operation *op, Type type, const Records &records,
                                       const EnumLayouts &enums) {
   if (failed(verifySceneRecords(
@@ -6496,16 +7030,29 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
        {"pitch", "float"}, {"roll", "float"}, {"color", "color"}},
       {{"mesh", "string"}, {"casts-shadow", "bool"}, {"receives-shadow", "bool"}, {"receives-reflections", "bool"},
        {"casts-reflections", "bool"}, {"parent", "string"}, {"layers", "int"},
-       {"visible", "bool"}, {"lod-of", "string"}, {"lod-max-size", "length"}, {"lod-bias", "float"},
-       {"camera-lod-bias", "float"}, {"pickable", "bool"}, {"collidable", "bool"}, {"pivot-x", "float"}, {"pivot-y", "float"}, {"pivot-z", "float"},
-       {"camera-kind", "string"}, {"camera-fov", "float"}, {"camera-height", "float"},
+       {"physics-body", "string"}, {"visible", "bool"}, {"depth-bias", "float"},
+       {"motion-vector-enabled", "bool"}, {"motion-vector-scale", "float"},
+       {"instancing-lod-min", "float"}, {"instancing-lod-max", "float"},
+       {"instancing-lod-factor", "float"},
+       {"lod-of", "string"}, {"lod-max-size", "length"}, {"lod-bias", "float"},
+       {"camera-lod-bias", "float"}, {"pickable", "bool"}, {"collidable", "bool"}, {"trigger", "bool"}, {"pivot-x", "float"}, {"pivot-y", "float"}, {"pivot-z", "float"},
+       {"camera-kind", "string"}, {"camera-fov", "float"}, {"camera-height", "float"}, {"camera-width", "float"},
        {"camera-near", "float"}, {"camera-far", "float"}, {"camera-look-at", "string"},
+       {"camera-look-at-point", "point3d"}, {"camera-up", "vector3d"},
+       {"camera-clip-normal", "vector3d"}, {"camera-clip-space", "string"},
+       {"camera-reverse-depth", "bool"},
        {"camera-left", "float"}, {"camera-right", "float"},
        {"camera-bottom", "float"}, {"camera-top", "float"},
        {"material-variant", "string"}, {"instance-of", "string"}, {"instance-template", "bool"},
+       {"instance-root", "string"}, {"instance-table", "instancetable3d"}, {"instance-count-override", "int"},
+       {"instance-has-transparency", "bool"},
+       {"instance-depth-sorting", "bool"},
+       {"instance-shadow-bounds-min", "vector3d"}, {"instance-shadow-bounds-max", "vector3d"},
+       {"orientation", "quaternion3d"},
        {"animation", "string"}, {"animation-time", "float"}, {"animation-loop", "bool"},
        {"animation-to", "string"}, {"animation-to-time", "float"},
        {"animation-to-loop", "bool"}, {"animation-blend", "float"},
+       {"bake-role", "string"}, {"lightmap-size", "int"}, {"lightmap-texels-per-unit", "float"},
        {"lightmap", "image"}, {"lightmap-mode", "string"}, {"lightmap-intensity", "float"},
        {"lightmap-u", "float"}, {"lightmap-v", "float"}, {"lightmap-width", "float"},
        {"lightmap-height", "float"}})))
@@ -6518,6 +7065,32 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
         return op->emitOpError("3D model requires a morph-weights record with float fields");
     }
   if (auto model = dyn_cast<RecordListType>(type)) {
+    if (auto projection = recordFieldType(records, enums, model.getName(), "camera-projection")) {
+      if (!records.contains(*projection) || enums.contains(*projection))
+        return op->emitOpError("3D camera-projection requires a matrix record");
+      char name[] = "m11";
+      for (char row = '1'; row <= '4'; ++row)
+        for (char column = '1'; column <= '4'; ++column) {
+          name[1] = row;
+          name[2] = column;
+          if (recordFieldType(records, enums, *projection, name) != "float")
+            return op->emitOpError("3D camera-projection requires a float field named ") << name;
+        }
+    }
+    if (auto data = recordFieldType(records, enums, model.getName(), "instance-data"))
+      if (failed(verifyInstanceData(op, *data, "instance-data", records, enums)))
+        return failure();
+    if (auto random = recordFieldType(records, enums, model.getName(), "random-instances"))
+      if (failed(verifyRandomInstanceSettings(op, *random, records, enums)))
+        return failure();
+    auto collisionShapes = recordFieldType(records, enums, model.getName(), "collision-shapes");
+    if (collisionShapes) {
+      auto shape = recordListElement(*collisionShapes);
+      if (!shape)
+        return op->emitOpError("3D collision-shapes requires a list of shape records");
+      if (failed(verifyCollisionShapes(op, *shape, records, enums)))
+        return failure();
+    }
     if (auto geometry = recordFieldType(records, enums, model.getName(), "geometry")) {
       if (!records.contains(*geometry) || enums.contains(*geometry))
         return op->emitOpError("3D model requires geometry to be a record");
@@ -6563,8 +7136,8 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
             return op->emitOpError("invalid 3D geometry field ") << name << ", expected " << expected;
         }
       }
-    } else if (!recordFieldType(records, enums, model.getName(), "mesh")) {
-      return op->emitOpError("3D model requires a string mesh field or a geometry record");
+    } else if (!recordFieldType(records, enums, model.getName(), "mesh") && !collisionShapes) {
+      return op->emitOpError("3D model requires a string mesh field, a geometry record, or a collision-shapes list");
     }
     if (auto material = recordFieldType(records, enums, model.getName(), "material"))
       if (failed(verifySceneMaterial(op, *material, records, enums)))
@@ -6591,7 +7164,9 @@ static LogicalResult verifySceneLights(BindOp lights, const Records &records,
       {{"kind", "string"}, {"x", "float"}, {"y", "float"}, {"z", "float"}, {"yaw", "float"},
        {"elevation", "float"}, {"intensity", "float"}, {"color", "color"}, {"range", "float"},
        {"inner-angle", "float"}, {"outer-angle", "float"}},
-      {{"casts-shadow", "bool"}, {"parent", "string"}, {"visible", "bool"}, {"layers", "int"}});
+      {{"casts-shadow", "bool"}, {"parent", "string"}, {"visible", "bool"}, {"layers", "int"},
+       {"shadow-filter", "string"}, {"shadow-strength", "float"}, {"shadow-radius", "float"},
+       {"shadow-bias", "float"}, {"bake-mode", "string"}});
 }
 
 static LogicalResult verifyParticleEmitters(BindOp emitters, const Records &records,
@@ -6651,7 +7226,8 @@ static LogicalResult verifySceneReflections(BindOp probes, const Records &record
       {{"source", "string"}, {"capture-size", "int"}, {"capture-revision", "int"}, {"refresh-mode", "string"},
        {"time-slicing", "string"},
        {"box-offset", "vector3d"}, {"visible", "bool"}, {"yaw", "float"},
-       {"intensity", "float"}, {"parallax-correction", "bool"}, {"layers", "int"}});
+       {"intensity", "float"}, {"parallax-correction", "bool"}, {"layers", "int"},
+       {"debug-view", "bool"}});
 }
 
 static LogicalResult verifySceneCaptures(BindOp captures, const Records &records,
@@ -6661,7 +7237,8 @@ static LogicalResult verifySceneCaptures(BindOp captures, const Records &records
           captures, type, records, enums, "3D scene captures", {{"name", "string"}},
           {{"camera", "string"}, {"layers", "int"}, {"scale", "float"},
            {"background", "color"}, {"enabled", "bool"}, {"color-source", "string"},
-           {"color-format", "string"},
+           {"color-format", "string"}, {"material-data-format", "string"},
+           {"combine-attachments", "bool"},
            {"depth-source", "string"}, {"depth-clear", "float"}, {"stencil-source", "string"},
            {"stencil-clear", "int"}, {"renderables", "string"}})))
     return failure();
@@ -6759,11 +7336,70 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
   auto verified = module.walk([&](Operation *op) -> WalkResult {
     if (failed(verifyEnumOperations(op, enums)))
       return WalkResult::interrupt();
+    if (auto physics = dyn_cast<PhysicsFunctionOp>(op)) {
+      auto inputs = physics.getInputs();
+      if (physicsUsesShapeList(physics.getValue()) && inputs.size() >= 4) {
+        auto shapes = dyn_cast<RecordListType>(inputs[3].getType());
+        if (shapes && failed(verifyCollisionShapes(op, shapes.getName(), records, enums)))
+          return WalkResult::interrupt();
+      }
+      auto kind = physics.getValue();
+      if ((kind == "sync-bodies" || kind == "sync-scene") && inputs.size() >= 2 &&
+          failed(verifyPhysicsBodies(op, inputs[1].getType(), records, enums)))
+        return WalkResult::interrupt();
+      if (kind == "sync-scene" && inputs.size() == 3 &&
+          failed(verifySceneRecords(op, inputs[2].getType(), records, enums,
+              "3D joint declarations",
+              {{"id", "string"}, {"joint-kind", "string"}, {"first", "string"},
+               {"second", "string"}, {"first-anchor", "point3d"}, {"second-anchor", "point3d"}},
+              {{"first-rotation", "vector3d"}, {"second-rotation", "vector3d"},
+               {"min", "float"}, {"max", "float"}})))
+        return WalkResult::interrupt();
+    }
+    if (auto track = dyn_cast<GeometryFunctionOp>(op);
+        track && track.getValue() == "quaternion-track") {
+      if (track.getInputs().size() != 1)
+        return WalkResult::interrupt();
+      auto keys = dyn_cast<RecordListType>(track.getInputs().front().getType());
+      if (!keys || enums.contains(keys.getName())) {
+        op->emitOpError("rotation track requires a list of struct records");
+        return WalkResult::interrupt();
+      }
+      if (failed(verifySceneRecords(op, keys, records, enums, "rotation track",
+          {{"time", "float"}, {"orientation", "quaternion3d"}}, {})))
+        return WalkResult::interrupt();
+    }
+    if (auto table = dyn_cast<GeometryFunctionOp>(op);
+        table && table.getValue() == "prepare-instance-table-3d") {
+      if (table.getInputs().size() != 1)
+        return WalkResult::interrupt();
+      auto rows = dyn_cast<RecordListType>(table.getInputs().front().getType());
+      if (!rows || enums.contains(rows.getName())) {
+        op->emitOpError("3D instance table requires a list of struct records");
+        return WalkResult::interrupt();
+      }
+      if (failed(verifySceneRecords(op, rows, records, enums, "3D instance table", {},
+          {{"position", "point3d"}, {"scale", "vector3d"},
+           {"rotation", "vector3d"}, {"orientation", "quaternion3d"}, {"color", "color"},
+           {"data-x", "float"}, {"data-y", "float"},
+           {"data-z", "float"}, {"data-w", "float"}})))
+        return WalkResult::interrupt();
+    }
+    if (auto table = dyn_cast<GeometryFunctionOp>(op);
+        table && table.getValue() == "random-instance-table-3d") {
+      if (table.getInputs().size() != 1)
+        return WalkResult::interrupt();
+      auto settings = dyn_cast<RecordType>(table.getInputs().front().getType());
+      if (!settings || failed(verifyRandomInstanceSettings(op, settings.getName(), records, enums)))
+        return WalkResult::interrupt();
+    }
     if (auto picking = dyn_cast<GeometryFunctionOp>(op);
-        picking && (picking.getValue() == "pick-3d" || picking.getValue() == "pick-camera-3d" ||
+        picking && (picking.getValue() == "prepare-3d" || picking.getValue() == "pick-3d" || picking.getValue() == "pick-camera-3d" ||
                     picking.getValue() == "project-camera-3d" ||
                     picking.getValue() == "unproject-camera-3d" ||
                     picking.getValue() == "map-position-3d" || picking.getValue() == "map-direction-3d" ||
+                    picking.getValue() == "scene-instance-3d" || picking.getValue() == "scene-instance-camera-3d" ||
+                    picking.getValue() == "scene-instance-orbit-3d" ||
                     picking.getValue() == "hit-3d" || picking.getValue() == "hit-camera-3d" ||
                     picking.getValue() == "ray-hit-3d" ||
                     picking.getValue() == "hit-instance-3d" || picking.getValue() == "hit-instance-camera-3d" ||
@@ -6775,6 +7411,12 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
                     picking.getValue() == "closest-point-3d" || picking.getValue() == "closest-point-on-3d" ||
                     picking.getValue() == "sphere-cast-3d" || picking.getValue() == "sphere-overlap-3d" ||
                     picking.getValue() == "sphere-slide-3d" || picking.getValue() == "sphere-walk-3d" ||
+                    picking.getValue() == "capsule-cast-3d" || picking.getValue() == "capsule-overlap-3d" ||
+                    picking.getValue() == "capsule-slide-3d" || picking.getValue() == "capsule-walk-3d" ||
+                    picking.getValue() == "capsule-trigger-overlap-3d" ||
+                    picking.getValue() == "capsule-trigger-crossings-3d" ||
+                    picking.getValue() == "capsule-walk-result-3d" ||
+                    picking.getValue() == "capsule-walk-with-contacts-3d" ||
                     picking.getValue() == "hit-all-3d" ||
                     picking.getValue() == "hit-all-camera-3d" ||
                     picking.getValue() == "ray-hit-all-3d") &&
@@ -6897,6 +7539,8 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
           auto name = *type;
           if (recordScalarType(name) || name == "[int]" || name == "[string]" ||
               name == "[Date]" || name == "[hit3d]" || name == "[Hit3D]" ||
+              name == "[physicscontact3d]" || name == "[PhysicsContact3D]" ||
+              name == "[physicshit3d]" || name == "[PhysicsHit3D]" ||
               name == "TouchPoints" || name == "percent")
             continue;
           const bool wellFormed =

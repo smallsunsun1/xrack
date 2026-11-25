@@ -555,6 +555,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => media_object_read_type(kind, name),
         };
     }
+    if kind == "FrameAnimation" {
+        return (name == "running").then_some(Type::Bool);
+    }
     if kind == "Timer" {
         return match name {
             "interval" => Some(Type::Int),
@@ -1408,6 +1411,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "texture-source" if kind == "Rectangle" => Type::String,
         "texture-only" | "texture-mipmaps" if kind == "Rectangle" => Type::Bool,
         "model" if kind == "SceneView3D" => Type::RecordList("SceneObject3D".into()),
+        "physics-world" if kind == "SceneView3D" => Type::PhysicsWorld3D,
+        "physics-debug" if kind == "SceneView3D" => Type::Bool,
+        "physics-debug-body" if kind == "SceneView3D" => Type::Int,
         "lights" if kind == "SceneView3D" => Type::RecordList("SceneLight3D".into()),
         "scene-effects" if kind == "SceneView3D" => Type::RecordList("SceneEffect3D".into()),
         "scene-captures" if kind == "SceneView3D" => Type::RecordList("SceneCapture3D".into()),
@@ -1463,6 +1469,10 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "texture-width"
         | "texture-height"
         | "progressive-aa"
+        | "reflection-faces-per-frame"
+        | "reflection-filter-passes-per-frame"
+        | "reflection-filter-texels-per-frame"
+        | "bake-denoise-passes"
         | "ssr-steps"
         | "ssgi-rays"
         | "ssgi-steps"
@@ -1491,6 +1501,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "environment-intensity"
         | "environment-yaw"
         | "scene-exposure"
+        | "bake-indirect-factor"
         | "scene-effect-strength"
         | "scene-white-point"
         | "scene-brightness"
@@ -1994,7 +2005,7 @@ fn control_event(kind: &str, event: &str) -> bool {
         || kind == "DynamicContainer" && event == "mounted"
         || kind == "StyledText" && event == "link-activated"
         || kind == "AnimatedImage" && event == "finished"
-        || kind == "Timer" && event == "triggered"
+        || matches!(kind, "Timer" | "FrameAnimation") && event == "triggered"
         || kind == "FileDialog" && matches!(event, "accepted" | "canceled" | "failed")
         || kind == "MessageDialog"
             && matches!(event, "accepted" | "rejected" | "finished" | "failed")
@@ -2072,6 +2083,7 @@ pub fn event_parameters<'a>(
         "StackPage" if event == "leave-requested" => &[Type::String, Type::Bool],
         "SwipeDelegate" if event == "changed" => &[Type::SwipeSide],
         "StyledText" => &[Type::String],
+        "FrameAnimation" => &[Type::Float, Type::Float, Type::Int],
         "DragArea" if event == "drag-finished" => &[Type::DragAction],
         "DropArea" if matches!(event, "entered" | "dropped") => &[Type::String, Type::DragAction],
         "DropArea" if event == "position-changed" => &[Type::Length, Type::Length],
@@ -2453,6 +2465,8 @@ fn validate_record_fields(record_fields: &[ast::RecordField]) -> Result<()> {
             Type::StringList
                 | Type::DateList
                 | Type::Hit3DList
+                | Type::PhysicsContact3DList
+                | Type::PhysicsHit3DList
                 | Type::TouchPoints
                 | Type::GradientStop
                 | Type::Percent
@@ -2486,7 +2500,75 @@ fn record_field_type(
     None
 }
 
+fn validate_collision_shapes(ty: &Type, span: Span, scope: &Scope<'_>) -> Result<()> {
+    let schema = match ty {
+        Type::RecordList(name) => scope
+            .records
+            .get(name.as_ref())
+            .filter(|schema| schema.variants.is_empty()),
+        _ => None,
+    };
+    let Some(schema) = schema else {
+        return fail(span, "3D collision-shapes requires a list of shape records");
+    };
+    for (name, expected) in builtins::SCENE_COLLISION_SHAPE_FIELDS {
+        let field = schema.fields.iter().find(|field| field.name == *name);
+        if (*name == "shape" || field.is_some()) && field.map(|field| &field.ty) != Some(expected) {
+            return fail(
+                span,
+                format!(
+                    "3D collision-shapes field `{name}` requires type {}",
+                    expected.name()
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_instance_channels(ty: Type, scope: &Scope<'_>, span: Span, field: &str) -> Result<()> {
+    let Type::Record(data) = ty else {
+        return fail(span, format!("3D {field} requires a record"));
+    };
+    for name in builtins::SCENE_INSTANCE_DATA_FIELDS {
+        if record_field_type(&scope.records, &data, name) != Some(Type::Float) {
+            return fail(
+                span,
+                format!("3D {field} field `{name}` requires type float"),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_random_instance_settings(ty: Type, span: Span, scope: &Scope<'_>) -> Result<()> {
+    let Type::Record(random) = ty else {
+        return fail(span, "3D random-instances requires a record");
+    };
+    for (field, expected) in builtins::SCENE_RANDOM_INSTANCE_FIELDS {
+        let actual = record_field_type(&scope.records, &random, field);
+        if (*field == "count" || actual.is_some()) && actual.as_ref() != Some(expected) {
+            return fail(
+                span,
+                format!(
+                    "3D random-instances field `{field}` requires type {}",
+                    expected.name()
+                ),
+            );
+        }
+    }
+    for field in ["data-min", "data-max"] {
+        if let Some(ty) = record_field_type(&scope.records, &random, field) {
+            validate_instance_channels(ty, scope, span, field)?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
+    if value.ty == Type::SceneModel3D {
+        return Ok(());
+    }
     validate_scene_records(
         value,
         scope,
@@ -2497,6 +2579,32 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
     let Type::RecordList(record) = &value.ty else {
         return Ok(());
     };
+    if let Some(ty) = record_field_type(&scope.records, record, "camera-projection") {
+        let Type::Record(matrix) = ty else {
+            return fail(value.span, "3D camera-projection requires a matrix record");
+        };
+        for row in 1..=4 {
+            for column in 1..=4 {
+                let name = format!("m{row}{column}");
+                if record_field_type(&scope.records, &matrix, &name) != Some(Type::Float) {
+                    return fail(
+                        value.span,
+                        format!("3D camera-projection requires a float field named `{name}`"),
+                    );
+                }
+            }
+        }
+    }
+    if let Some(ty) = record_field_type(&scope.records, record, "instance-data") {
+        validate_instance_channels(ty, scope, value.span, "instance-data")?;
+    }
+    if let Some(ty) = record_field_type(&scope.records, record, "random-instances") {
+        validate_random_instance_settings(ty, value.span, scope)?;
+    }
+    let collision_shapes = record_field_type(&scope.records, record, "collision-shapes");
+    if let Some(ty) = &collision_shapes {
+        validate_collision_shapes(ty, value.span, scope)?;
+    }
     if let Some(ty) = record_field_type(&scope.records, record, "geometry") {
         let schema = match ty {
             Type::Record(ref geometry) => scope
@@ -2603,11 +2711,13 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
                 }
             }
         }
-    } else if record_field_type(&scope.records, record, "mesh").is_none() {
+    } else if record_field_type(&scope.records, record, "mesh").is_none()
+        && collision_shapes.is_none()
+    {
         return fail(
             value.span,
             format!(
-                "3D model record `{record}` requires a string field named `mesh` or a geometry record",
+                "3D model record `{record}` requires a string field named `mesh`, a geometry record, or a collision-shapes list",
             ),
         );
     }
@@ -3432,7 +3542,13 @@ fn swipe_slot(kind: &str) -> bool {
 pub fn nonvisual_element(kind: &str) -> bool {
     matches!(
         kind,
-        "Action" | "ActionGroup" | "ButtonGroup" | "Timer" | "SoundEffect" | "SecondaryWindow"
+        "Action"
+            | "ActionGroup"
+            | "ButtonGroup"
+            | "Timer"
+            | "FrameAnimation"
+            | "SoundEffect"
+            | "SecondaryWindow"
     ) || native_dialog(kind)
 }
 
@@ -4739,6 +4855,8 @@ impl<'a> Scope<'a> {
                 | Type::DateList
                 | Type::StringList
                 | Type::Hit3DList
+                | Type::PhysicsContact3DList
+                | Type::PhysicsHit3DList
                 | Type::RecordList(_)
         ) {
             return fail(
@@ -5678,6 +5796,9 @@ impl<'a> Scope<'a> {
         if let Some(function) = self.builtin_call(call)? {
             return match function.kind {
                 FunctionKind::ModelEdit(edit) => self.model_edit(call, current, function, edit),
+                FunctionKind::Physics(kind) if kind.writes() => Ok(ir::Statement::Evaluate {
+                    evaluate: physics_call(call, self, current, function, kind)?,
+                }),
                 _ => self.log_call(call, current, function.kind),
             };
         }
@@ -6527,7 +6648,7 @@ impl<'a> Scope<'a> {
             if self
                 .owners
                 .get(owner)
-                .is_some_and(|target| target.kind == "Timer")
+                .is_some_and(|target| matches!(target.kind.as_str(), "Timer" | "FrameAnimation"))
                 && matches!(method, "start" | "stop" | "restart")
             {
                 if !self.effects_allowed {
@@ -7067,7 +7188,12 @@ fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredM
     }
     if matches!(
         c.base.as_str(),
-        "Timer" | "SoundEffect" | "ActionGroup" | "ButtonGroup" | "SecondaryWindow"
+        "Timer"
+            | "FrameAnimation"
+            | "SoundEffect"
+            | "ActionGroup"
+            | "ButtonGroup"
+            | "SecondaryWindow"
     ) || native_dialog(&c.base)
     {
         return fail(
@@ -7655,10 +7781,12 @@ fn element<'a>(
                 "SoundEffect only accepts one-way property bindings",
             );
         }
-        if kind == "Timer" && !matches!(m, Member::Binding(_) | Member::Handler(_)) {
+        if matches!(kind, "Timer" | "FrameAnimation")
+            && !matches!(m, Member::Binding(_) | Member::Handler(_))
+        {
             return fail(
                 m.span(),
-                "Timer only accepts property bindings and triggered()",
+                format!("{kind} only accepts bindings and triggered handlers"),
             );
         }
         if native_dialog(kind) && !matches!(m, Member::Binding(_) | Member::Handler(_)) {
@@ -8247,7 +8375,7 @@ fn element<'a>(
                             Type::Int
                         }
                         ("SwipeDelegate", "open-side") => Type::SwipeSide,
-                        ("Timer", "running") => Type::Bool,
+                        ("Timer" | "FrameAnimation", "running") => Type::Bool,
                         ("SecondaryWindow", "visible") => Type::Bool,
                         ("PageIndicator" | "Tumbler" | "PathView", "current-index") => Type::Int,
                         ("Calendar" | "MonthGrid", "date" | "display-month")
@@ -8816,6 +8944,8 @@ fn element<'a>(
                 if h.parameters.len() != parameter_types.len() {
                     let message = if parameter_types.is_empty() {
                         format!("event {} takes no parameters", h.name)
+                    } else if kind == "FrameAnimation" {
+                        "event triggered expects frame-time: float, elapsed-time: float and current-frame: int".into()
                     } else if kind == "RangeSlider" {
                         format!("event {} expects two float parameters", h.name)
                     } else if matches!(
@@ -10127,6 +10257,8 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::IntList => Some("int_array"),
         Type::DateList => Some("date_array"),
         Type::Hit3DList => Some("hit3d_array"),
+        Type::PhysicsContact3DList => Some("physics_contact3d_array"),
+        Type::PhysicsHit3DList => Some("physics_hit3d_array"),
         _ => None,
     } {
         return ir::Expr::operation(op, ty, vec![], span);
@@ -10155,9 +10287,17 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         );
     }
     let value = match &ty {
+        Type::Instance3D | Type::InstanceTable3D | Type::RotationTrack3D => "",
         Type::Point2D | Type::Vector2D => "0 0",
         Type::Point3D | Type::Vector3D => "0 0 0",
-        Type::ProjectedPoint3D | Type::Hit3D => "",
+        Type::Quaternion3D => "0 0 0 1",
+        Type::ProjectedPoint3D
+        | Type::Hit3D
+        | Type::WalkResult3D
+        | Type::PhysicsWorld3D
+        | Type::SceneModel3D
+        | Type::PhysicsContact3D
+        | Type::PhysicsHit3D => "",
         Type::Transform2D => "1 0 0 1 0 0",
         Type::String => "\"\"",
         Type::Bool => "false",
@@ -10237,6 +10377,8 @@ fn expression_as(
                 | Type::IntList
                 | Type::DateList
                 | Type::Hit3DList
+                | Type::PhysicsContact3DList
+                | Type::PhysicsHit3DList
         ) || !expected.enum_variants().is_empty())
     {
         let condition = expression_as(condition, scope, owner, Type::Bool)?;
@@ -10266,6 +10408,8 @@ fn expression_as(
             Type::IntList => Some(("int_array", Type::Int)),
             Type::DateList => Some(("date_array", Type::Date)),
             Type::Hit3DList => Some(("hit3d_array", Type::Hit3D)),
+            Type::PhysicsContact3DList => Some(("physics_contact3d_array", Type::PhysicsContact3D)),
+            Type::PhysicsHit3DList => Some(("physics_hit3d_array", Type::PhysicsHit3D)),
             _ => None,
         }
     {
@@ -10676,6 +10820,19 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 ..ir::Expr::operation("markdown", Type::StyledText, vec![], span)
             }
         }
+        ExprKind::InstanceTableUrl(path) => {
+            let value = serde_json::from_str::<String>(path).map_err(|error| Diagnostic {
+                span,
+                message: format!("invalid instance-table path: {error}"),
+            })?;
+            if value.is_empty() {
+                return fail(span, "instance-table URL requires a nonempty path");
+            }
+            ir::Expr {
+                value,
+                ..ir::Expr::operation("instance_table_url", Type::InstanceTable3D, vec![], span)
+            }
+        }
         ExprKind::ShaderUrl(path) | ExprKind::MaterialShaderUrl(path) => {
             let value = serde_json::from_str::<String>(path).map_err(|error| Diagnostic {
                 span,
@@ -10814,6 +10971,16 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 Some(Type::Int) => ("int_array", Type::IntList, Type::Int),
                 Some(Type::Date) => ("date_array", Type::DateList, Type::Date),
                 Some(Type::Hit3D) => ("hit3d_array", Type::Hit3DList, Type::Hit3D),
+                Some(Type::PhysicsContact3D) => (
+                    "physics_contact3d_array",
+                    Type::PhysicsContact3DList,
+                    Type::PhysicsContact3D,
+                ),
+                Some(Type::PhysicsHit3D) => (
+                    "physics_hit3d_array",
+                    Type::PhysicsHit3DList,
+                    Type::PhysicsHit3D,
+                ),
                 _ => ("array", Type::StringList, Type::String),
             };
             let items = items
@@ -10985,9 +11152,59 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     FunctionKind::Math(kind) => math_call(call, scope, owner, function, kind),
                     FunctionKind::Geometry(kind) => {
                         let args = builtin_arguments(call, scope, owner, function)?;
+                        if kind == builtins::GeometryFunction::QuaternionTrack
+                            && let Some(keys) = args.first()
+                        {
+                            validate_scene_records(
+                                keys,
+                                scope,
+                                "Quaternion3D.track",
+                                builtins::ROTATION_KEY_FIELDS,
+                                &[],
+                            )?;
+                        }
+                        if kind == builtins::GeometryFunction::PrepareInstanceTable3D
+                            && let Some(rows) = args.first()
+                        {
+                            if let Type::RecordList(name) = &rows.ty
+                                && scope
+                                    .records
+                                    .get(name.as_ref())
+                                    .is_some_and(|schema| !schema.variants.is_empty())
+                            {
+                                return fail(
+                                    rows.span,
+                                    "Scene3D.instance-table requires a list of struct records",
+                                );
+                            }
+                            validate_scene_records(
+                                rows,
+                                scope,
+                                "Scene3D.instance-table",
+                                &[],
+                                builtins::INSTANCE_TABLE_ROW_FIELDS,
+                            )?;
+                        }
+                        if kind == builtins::GeometryFunction::RandomInstanceTable3D
+                            && let Some(settings) = args.first()
+                        {
+                            validate_random_instance_settings(
+                                settings.ty.clone(),
+                                settings.span,
+                                scope,
+                            )?;
+                        }
                         if kind.uses_scene_model()
                             && let Some(model) = args.first()
                         {
+                            if kind == builtins::GeometryFunction::Prepare3D
+                                && !matches!(model.ty, Type::RecordList(_))
+                            {
+                                return fail(
+                                    model.span,
+                                    "Scene3D.prepare requires a scene object record list",
+                                );
+                            }
                             validate_scene_model(model, scope)?;
                         }
                         Ok(ir::Expr {
@@ -10995,6 +11212,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                             ..ir::Expr::operation("geometry_function", kind.result(), args, span)
                         })
                     }
+                    FunctionKind::Physics(kind) => physics_call(call, scope, owner, function, kind),
                     FunctionKind::String(kind) => {
                         let args = builtin_arguments(call, scope, owner, function)?;
                         Ok(ir::Expr {
@@ -11244,8 +11462,15 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                                 | Type::Point2D
                                 | Type::Point3D
                                 | Type::Vector3D
+                                | Type::Quaternion3D
+                                | Type::RotationTrack3D
                                 | Type::Hit3D
+                                | Type::PhysicsContact3D
+                                | Type::PhysicsHit3D
                                 | Type::ProjectedPoint3D
+                                | Type::Instance3D
+                                | Type::InstanceTable3D
+                                | Type::WalkResult3D
                                 | Type::Vector2D
                         ) =>
                     {
@@ -11499,6 +11724,73 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
     })
 }
 
+fn physics_call(
+    call: &ast::Call,
+    scope: &Scope<'_>,
+    owner: &str,
+    function: &builtins::Function,
+    kind: builtins::PhysicsFunction,
+) -> Result<ir::Expr> {
+    if kind.writes() && !scope.effects_allowed {
+        return fail(
+            call.span,
+            format!("{} requires an impure callback", call.callee),
+        );
+    }
+    let mut args = builtin_arguments(call, scope, owner, function)?;
+    if let Some(offset) = kind.query_filter_offset() {
+        let defaults = [
+            (Type::Int, "4294967295"),
+            (Type::Int, "0"),
+            (Type::Bool, "false"),
+        ];
+        let supplied = args.len() - offset;
+        args.extend(
+            defaults
+                .into_iter()
+                .skip(supplied)
+                .map(|(ty, value)| ir::Expr::literal(ty, value, call.span)),
+        );
+    }
+    if kind.uses_shape_list() {
+        let shapes = &args[3];
+        validate_collision_shapes(&shapes.ty, shapes.span, scope)?;
+    }
+    if matches!(
+        kind,
+        builtins::PhysicsFunction::SyncBodies | builtins::PhysicsFunction::SyncScene
+    ) {
+        let bodies = &args[1];
+        validate_scene_records(
+            bodies,
+            scope,
+            "3D body declarations",
+            builtins::SCENE_PHYSICS_BODY_FIELDS,
+            builtins::SCENE_PHYSICS_BODY_OPTIONAL_FIELDS,
+        )?;
+        let Type::RecordList(record) = &bodies.ty else {
+            return fail(bodies.span, "3D body declarations require a record list");
+        };
+        let Some(shapes) = record_field_type(&scope.records, record, "shapes") else {
+            return fail(bodies.span, "3D body declarations require a shapes field");
+        };
+        validate_collision_shapes(&shapes, bodies.span, scope)?;
+    }
+    if kind == builtins::PhysicsFunction::SyncScene {
+        validate_scene_records(
+            &args[2],
+            scope,
+            "3D joint declarations",
+            builtins::SCENE_PHYSICS_JOINT_FIELDS,
+            builtins::SCENE_PHYSICS_JOINT_OPTIONAL_FIELDS,
+        )?;
+    }
+    Ok(ir::Expr {
+        value: kind.name().into(),
+        ..ir::Expr::operation("physics_function", kind.result(), args, call.span)
+    })
+}
+
 fn builtin_arguments(
     call: &ast::Call,
     scope: &Scope<'_>,
@@ -11510,8 +11802,10 @@ fn builtin_arguments(
     if !(min..=max).contains(&call.arguments.len()) {
         let count = if min == max {
             max.to_string()
-        } else {
+        } else if max == min + 1 {
             format!("{min} or {max}")
+        } else {
+            format!("{min} to {max}")
         };
         return fail(
             call.span,

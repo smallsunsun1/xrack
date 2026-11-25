@@ -25,17 +25,17 @@ pub(crate) const ELEMENTS: &str = "DynamicContainer Action ActionGroup AnimatedI
     HoverHandler ItemDelegate ListView Loader Menu MenuBar MenuItem MenuSeparator MessageDialog MonthGrid Page PageFooter PageHeader PageIndicator Path PathView PathViewOption PopupWindow ProgressFill ProgressIndicator ProgressTrack RadioButton RadioDelegate
     RadioGroup RangeSlider Rectangle RoundButton Row ScaleRotateGestureHandler ScrollBar ScrollIndicator ScrollTrack ScrollThumb ScrollView SearchField SecondaryWindow SectionHeader SelectionStartHandle SelectionEndHandle Shortcut Slider SpinBox Spinner SplitView StackItem StackLayout StackPage StackView
     StyledText StandardButton StandardListView StandardTableView SwipeContent SwipeDelegate SwipeGestureHandler SwipeLeft SwipePage SwipeRight SwipeView Switch SwitchDelegate Tab TabBar TabButton TabWidget TableCell TableColumn TableRow TableView Text TextArea
-    SystemTrayIcon TextEdit TextInput TimePicker TimePickerPopup Timer ToolBar ToolButton ToolSeparator Tooltip TouchArea TreeCell TreeDisclosure TreeRow TreeView VerticalBox
+    SystemTrayIcon TextEdit TextInput TimePicker TimePickerPopup Timer FrameAnimation ToolBar ToolButton ToolSeparator Tooltip TouchArea TreeCell TreeDisclosure TreeRow TreeView VerticalBox
     Tumbler TumblerOption VerticalLayout WeekNumberColumn WheelHandler Window WindowMoveArea";
 
 pub(crate) const PROPERTIES: &str = "asynchronous autoplay duration volume ready ended error muted playback-rate network-bandwidth audio-track subtitle-track subtitle-tracks subtitle-file status seekable seek-start seek-end at-live-edge has-audio has-video audio-tracks media-title subtitle audio-error subtitle-error buffer-progress bitrate accent-color accept-files accept-text acceptable-input accepted-buttons accessible-description accessible-heading-level accessible-live accessible-name action alignment anchor-gap animated allow-copy allow-link allow-move auto-complete auto-repeat auto-repeat-delay auto-repeat-interval auto-sort cancel-text blocking cursor-shape section-field section-height sticky-section-headers
-    handle-swipe-left handle-swipe-right handle-swipe-up handle-swipe-down
+    handle-swipe-left handle-swipe-right handle-swipe-up handle-swipe-down bake-denoise-passes bake-indirect-factor
     background bounds-behavior bounds-movement border-bottom-left-radius border-bottom-right-radius border-color border-radius buttons cache-rendering-hint
     border-top-left-radius border-top-right-radius border-width can-go-back cell-height cell-width check-state colorize-icon checkable checked clip
     close-on-escape close-on-outside col color color-scheme colorize colspan commands content-height content-padding content-width content-x content-y copyable count
     cross-axis-alignment cross-axis-line-alignment cross-axis-self-alignment current-color current-index current-key
     edit-on-click edit-on-selected-click edit-on-double-click edit-on-key edit-on-tab edit-on-typing
-    current-frame current-page current-row current-text current-value date decimal-separator decimals delay depth dim directory camera camera-yaw camera-pitch camera-distance light-yaw light-elevation lights imported-lights ambient-color ambient-intensity ambient-occlusion ao-strength ao-distance ao-bias scene-background texture-source texture-only texture-mipmaps texture-input multisampling supersampling progressive-aa temporal-aa temporal-aa-mode temporal-aa-strength screen-space-reflections ssr-strength ssr-distance ssr-thickness ssr-steps ssr-roughness-cutoff ssr-scale screen-space-global-illumination ssgi-strength ssgi-occlusion ssgi-radius ssgi-thickness ssgi-scale ssgi-rays ssgi-steps texture-width texture-height render-scale specular-aa order-independent-transparency fog-color fog-near fog-far fog-density particle-emitters particle-affectors particle-time fog-volumes fog-volume-scattering fog-volume-anisotropy fog-volume-samples fog-volume-density-samples fog-depth-enabled fog-height-enabled fog-transmit-enabled fog-depth-curve fog-height-start fog-height-end fog-height-curve fog-transmit-curve frustum-culling shadows shadow-map-size shadow-bias shadow-cascades shadow-distance shadow-cascade-blend shadow-split-balance environment environment-intensity environment-yaw environment-skybox reflection-probes layer-mask cache-rendering scene-exposure scene-tone-map scene-white-point scene-brightness scene-contrast scene-saturation scene-effect scene-effects scene-captures scene-color-capture scene-depth-capture scene-effect-strength scene-effect-depth scene-effect-history-revision scene-effect-animate scene-lut scene-lut-size scene-lut-strength scene-hdr bloom bloom-strength bloom-threshold bloom-levels depth-of-field dof-blur-radius dof-focus-distance dof-focus-range selected-object display-month dot-size data renderer revision drag-auto-scroll drag-key drag-margin touch-drag-delay drag-select selection-gesture selection-hold-interval selection-active selection-dragging drop-action drop-shadow-blur drop-shadow-color drop-shadow-offset-x drop-shadow-offset-y drop-shadow-spread edge edit-text editable
+    current-frame current-page current-row current-text current-value date decimal-separator decimals delay depth dim directory camera camera-yaw camera-pitch camera-distance light-yaw light-elevation lights imported-lights ambient-color ambient-intensity ambient-occlusion ao-strength ao-distance ao-bias scene-background texture-source texture-only texture-mipmaps texture-input multisampling supersampling progressive-aa temporal-aa temporal-aa-mode temporal-aa-strength screen-space-reflections ssr-strength ssr-distance ssr-thickness ssr-steps ssr-roughness-cutoff ssr-scale screen-space-global-illumination ssgi-strength ssgi-occlusion ssgi-radius ssgi-thickness ssgi-scale ssgi-rays ssgi-steps texture-width texture-height render-scale specular-aa order-independent-transparency fog-color fog-near fog-far fog-density particle-emitters particle-affectors particle-time fog-volumes fog-volume-scattering fog-volume-anisotropy fog-volume-samples fog-volume-density-samples fog-depth-enabled fog-height-enabled fog-transmit-enabled fog-depth-curve fog-height-start fog-height-end fog-height-curve fog-transmit-curve frustum-culling shadows shadow-map-size shadow-bias shadow-cascades shadow-distance shadow-cascade-blend shadow-split-balance environment environment-intensity environment-yaw environment-skybox reflection-probes reflection-faces-per-frame reflection-filter-passes-per-frame reflection-filter-texels-per-frame layer-mask cache-rendering scene-exposure scene-tone-map scene-white-point scene-brightness scene-contrast scene-saturation scene-effect scene-effects scene-captures scene-color-capture scene-depth-capture scene-effect-strength scene-effect-depth scene-effect-history-revision scene-effect-animate scene-lut scene-lut-size scene-lut-strength scene-hdr bloom bloom-strength bloom-threshold bloom-levels depth-of-field dof-blur-radius dof-focus-distance dof-focus-range selected-object physics-world physics-debug physics-debug-body display-month dot-size data renderer revision drag-auto-scroll drag-key drag-margin touch-drag-delay drag-select selection-gesture selection-hold-interval selection-active selection-dragging drop-action drop-shadow-blur drop-shadow-color drop-shadow-offset-x drop-shadow-offset-y drop-shadow-spread edge edit-text editable
     default-font default-font-family default-font-italic default-font-size default-font-weight display enabled end-angle exclusive field flick-deceleration flick-direction dragging flicking moving rebounding horizontal-overshoot vertical-overshoot file-extensions file-name fill filter-field filter-text fit flat flex-direction flex-wrap frame-count frozen-columns focus focus-on-click focus-on-tab-navigation focus-within follow-current font preview-text group has-focus font-family font-italic font-size font-weight handle-color handle-hit-size handle-size header-height height
     highlighted highlighted-index horizontal-alignment horizontal-scroll-bar-policy horizontal-spacing horizontal-stretch horizontal-tile-mode icon icon-only icon-size icon-template tooltip
     image-fit image-rendering indentation indeterminate informative-text inner-shadow-blur inner-shadow-color inner-shadow-offset-x inner-shadow-offset-y inner-shadow-spread initial-focus initial-page input-mode input-mask input-pattern input-purpose input-type return-key keyboard-navigation keyboard-capitalization auto-correct spell-check interactive interval key keys kind layout-height layout-direction layout-order layout-ready layout-width layout-x layout-y level link-color live loops loops-remaining mouse-selection-mode input-validity overwrite-mode persistent-selection selectable selection-color selected-text-color
@@ -51,7 +51,7 @@ pub(crate) const EVENTS: &str = "mounted loaded accepted activated activated-amb
     column-moved current-cell-changed current-row-changed discarded drag-finished drag-started dropped edited editing-finished entered exited expanded failed files-dropped files-entered files-failed finished focus-changed-event focus-gained focus-lost focus-within-changed help-requested key-pressed key-released leave-requested link-activated month-changed opened position-changed pressed rejected released refresh-requested removed reset resized row-moved search-triggered selected selection-changed
     double-clicked ended flicked moved press-and-hold scroll-event scrolled sort-ascending sort-descending started swiped tab-close-requested tab-moved page-moved toggled triggered updated value-selected expanded-changed";
 
-pub(crate) const TYPES: &str = "int float bool string styled-text length point2d point3d vector2d vector3d hit3d [hit3d] projectedpoint3d transform2d percent color brush image [string] WheelEvent CursorShape PointerEvent PointerEventKind PointerButton PointerButtons TouchPoint TouchPoints [TouchPoint]
+pub(crate) const TYPES: &str = "int float bool string styled-text length point2d point3d vector2d vector3d quaternion3d rotationtrack3d hit3d [hit3d] instance3d instancetable3d projectedpoint3d walkresult3d physicsworld3d scenemodel3d physicscontact3d [physicscontact3d] physicshit3d [physicshit3d] transform2d percent color brush image [string] WheelEvent CursorShape PointerEvent PointerEventKind PointerButton PointerButtons TouchPoint TouchPoints [TouchPoint]
     ImageFit ImageTileMode ImageHorizontalAlignment ImageVerticalAlignment ImageRendering ButtonDisplay LayoutAlignment CrossAxisAlignment Orientation FlickDirection FlickBoundsBehavior FlickBoundsMovement LayoutDirection FlexboxLayoutDirection FlexboxLayoutWrap DialInputMode ScrollBarPolicy ScrollSnapMode ScrollAlignment TextWrap MouseSelectionMode InputValidity TextHorizontalAlignment TextVerticalAlignment TextOverflow InputType InputPurpose KeyboardCapitalization ReturnKey AccessibleLive
     CheckState ColorScheme SceneToneMap Date DialogRole DragAction DrawerEdge EventResult FocusReason Font KeyEvent KeyModifiers FileDialogMode LogLevel MessageButtons MessageLevel PopupPlacement SelectionTarget SelectionGesture StandardButtonKind SwipeSide Time";
 
@@ -98,7 +98,13 @@ pub(crate) const FUNCTIONS: &[BuiltinFunction] = &[
         name: "@material-shader-url",
         parameters: &["path: string literal"],
         result: Some("string"),
-        documentation: "Validates a WGSL material shader relative to the source file. Use the returned key in a model material or a scene-captures override-material. Optional hooks are scene_material(input: XrMaterialInput, surface: XrMaterialSurface) -> XrMaterialSurface, scene_vertex(input: XrVertexInput) -> vec3<f32>, scene_light(input: XrLightInput, response: XrLightResponse) -> XrLightResponse and scene_ambient(input: XrAmbientInput, diffuse: vec3<f32>) -> vec3<f32>. Lighting hooks apply to lit materials. A vertex program uses a positive shader-displacement bound. In a fragment hook, material_texture_world_position(index, uv) reconstructs position from a named depth attachment.",
+        documentation: "Validates a WGSL material shader relative to the source file. Use the returned key in a model material or a scene-captures override-material. Optional hooks are scene_material(input: XrMaterialInput, surface: XrMaterialSurface) -> XrMaterialSurface, scene_vertex(input: XrVertexInput) -> vec3<f32>, scene_light(input: XrLightInput, response: XrLightResponse) -> XrLightResponse and scene_ambient(input: XrAmbientInput, diffuse: vec3<f32>) -> vec3<f32>. Lighting hooks apply to lit materials. A vertex program uses a positive shader-displacement bound. Both inputs expose instance_data, instance_index and instance_color. XrVertexInput.instance_transform is the instance world matrix. In a fragment hook, material_texture_world_position(index, uv) reconstructs position from a named depth attachment.",
+    },
+    BuiltinFunction {
+        name: "@instance-table-url",
+        parameters: &["path: string literal"],
+        result: Some("instancetable3d"),
+        documentation: "Loads a Qt Quick 3D XML InstanceTable or QtIR .bin file relative to the source. Negative scale can mirror an instance. Bind the result to a model row's instance-table field. The value exposes loaded and count, and the row may limit rendering with instance-count-override.",
     },
     BuiltinFunction {
         name: "@environment-url",
@@ -268,6 +274,32 @@ pub(crate) fn focus_methods(kind: &str) -> &'static [BuiltinFunction] {
     } else {
         &METHODS[..2]
     }
+}
+
+pub(crate) fn timer_methods(kind: &str) -> &'static [BuiltinFunction] {
+    if !matches!(kind, "Timer" | "FrameAnimation") {
+        return &[];
+    }
+    &[
+        BuiltinFunction {
+            name: "start",
+            parameters: &[],
+            result: None,
+            documentation: "Starts the clock if it is stopped.",
+        },
+        BuiltinFunction {
+            name: "stop",
+            parameters: &[],
+            result: None,
+            documentation: "Stops the clock.",
+        },
+        BuiltinFunction {
+            name: "restart",
+            parameters: &[],
+            result: None,
+            documentation: "Restarts the clock from its initial state.",
+        },
+    ]
 }
 
 pub(crate) fn button_methods(kind: &str) -> &'static [BuiltinFunction] {

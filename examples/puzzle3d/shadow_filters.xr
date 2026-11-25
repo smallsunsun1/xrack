@@ -1,0 +1,92 @@
+struct ShadowObject {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    casts-shadow: bool, receives-shadow: bool,
+}
+
+struct ShadowLamp {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
+    shadow-filter: string, shadow-radius: float, shadow-strength: float, shadow-bias: float,
+}
+
+export component ShadowFiltersDemo inherits Window {
+    width: 512px; height: 402px;
+    title: "XRack · 阴影过滤";
+    background: #141d29; resizable: false;
+
+    in-out property <string> light-kind: "directional";
+    in-out property <string> filter-mode: "pcf16";
+    in-out property <float> radius: 10.0;
+    in-out property <float> strength: 1.0;
+    in-out property <float> bias: 0.001;
+    in-out property <bool> enabled: true;
+    in-out property <int> cascades: 1;
+    in-out property <bool> fill-light: false;
+
+    property <ShadowObject> wall: ShadowObject {
+        id: "wall", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 8.0, scale-y: 4.6, scale-z: 0.1,
+        yaw: 0, pitch: 0, roll: 0, color: #a5b8ca,
+        casts-shadow: false, receives-shadow: true,
+    };
+    property <[ShadowObject]> objects: [
+        root.wall,
+        ShadowObject {
+            id: "occluder", x: -1, z: 1,
+            scale-x: 0.7, scale-y: 1.2, scale-z: 0.2,
+            color: #df9356, casts-shadow: true, receives-shadow: false, ..root.wall
+        },
+    ];
+    property <ShadowLamp> key-light: ShadowLamp {
+        kind: root.light-kind, x: -3, y: 0, z: 3, yaw: -45, elevation: 0,
+        intensity: root.light-kind == "directional" ? 2.6 : 60,
+        color: root.fill-light ? #ff0000 : #fffafa, range: 10, inner-angle: 18, outer-angle: 35,
+        shadow-filter: root.filter-mode, shadow-radius: root.radius,
+        shadow-strength: root.strength, shadow-bias: root.bias,
+    };
+    property <[ShadowLamp]> lamps: [
+        root.key-light,
+        ShadowLamp {
+            kind: "directional", color: #00ff00, intensity: root.fill-light ? 2.6 : 0,
+            shadow-filter: "hard", shadow-strength: 1.0, shadow-bias: 0.001, ..root.key-light
+        },
+    ];
+
+    SceneView3D {
+        width: 512px; height: 304px; model: root.objects;
+        lights: root.lamps; camera-yaw: 0; camera-pitch: 0; camera-distance: 8;
+        scene-background: #23334a; ambient-intensity: 0.15;
+        shadows: root.enabled; shadow-map-size: 128;
+        shadow-cascades: root.cascades; shadow-distance: 20;
+        cache-rendering: true;
+    }
+    HorizontalLayout {
+        x: 12px; y: 313px; width: 488px; height: 37px; spacing: 10px;
+        lamp-mode := Button {
+            width: 104px;
+            text: root.light-kind == "directional" ? "方向光" : root.light-kind == "spot" ? "聚光灯" : "点光源";
+            clicked => {
+                root.light-kind = root.light-kind == "directional" ? "spot"
+                    : root.light-kind == "spot" ? "point" : "directional";
+            }
+        }
+        filter-button := Button {
+            width: 104px; text: root.filter-mode;
+            clicked => {
+                root.filter-mode = root.filter-mode == "hard" ? "bilinear"
+                    : root.filter-mode == "bilinear" ? "pcf4"
+                    : root.filter-mode == "pcf4" ? "pcf8"
+                    : root.filter-mode == "pcf8" ? "pcf16" : "hard";
+            }
+        }
+        Text { text: "半径"; color: #e2eaf4; }
+        Slider { minimum: 0; maximum: 16; value <=> root.radius; }
+    }
+    HorizontalLayout {
+        x: 12px; y: 355px; width: 488px; height: 35px; spacing: 10px;
+        Text { text: "阴影强度"; color: #e2eaf4; }
+        Slider { minimum: 0; maximum: 1; value <=> root.strength; }
+    }
+}

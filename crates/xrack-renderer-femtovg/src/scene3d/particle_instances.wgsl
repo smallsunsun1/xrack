@@ -9,7 +9,7 @@ struct ParticleModels {
     settings: array<ModelSettings, 16>,
 }
 
-@group(0) @binding(8) var<storage, read_write> instances: array<f32>;
+@group(0) @binding(8) var<storage, read_write> instances: array<u32>;
 @group(0) @binding(9) var<uniform> models: ParticleModels;
 
 fn model_tint(source: ParticleCenter) -> vec4<f32> {
@@ -46,23 +46,23 @@ fn write_model(index: u32, source: ParticleCenter, visible: bool, tint: vec4<f32
     let color = instance_srgb(emitter.color.rgb * tint.rgb);
     // Match the 68-byte scene geometry instance stream exactly.
     let address = index * 17u;
-    instances[address] = row_x.x;
-    instances[address + 1u] = row_x.y;
-    instances[address + 2u] = row_x.z;
-    instances[address + 3u] = source.center.x;
-    instances[address + 4u] = row_y.x;
-    instances[address + 5u] = row_y.y;
-    instances[address + 6u] = row_y.z;
-    instances[address + 7u] = source.center.y;
-    instances[address + 8u] = row_z.x;
-    instances[address + 9u] = row_z.y;
-    instances[address + 10u] = row_z.z;
-    instances[address + 11u] = source.center.z;
-    instances[address + 12u] = color.x;
-    instances[address + 13u] = color.y;
-    instances[address + 14u] = color.z;
-    instances[address + 15u] = alpha;
-    instances[address + 16u] = settings.spin.w;
+    instances[address] = bitcast<u32>(row_x.x);
+    instances[address + 1u] = bitcast<u32>(row_x.y);
+    instances[address + 2u] = bitcast<u32>(row_x.z);
+    instances[address + 3u] = bitcast<u32>(source.center.x);
+    instances[address + 4u] = bitcast<u32>(row_y.x);
+    instances[address + 5u] = bitcast<u32>(row_y.y);
+    instances[address + 6u] = bitcast<u32>(row_y.z);
+    instances[address + 7u] = bitcast<u32>(source.center.y);
+    instances[address + 8u] = bitcast<u32>(row_z.x);
+    instances[address + 9u] = bitcast<u32>(row_z.y);
+    instances[address + 10u] = bitcast<u32>(row_z.z);
+    instances[address + 11u] = bitcast<u32>(source.center.z);
+    instances[address + 12u] = bitcast<u32>(color.x);
+    instances[address + 13u] = bitcast<u32>(color.y);
+    instances[address + 14u] = bitcast<u32>(color.z);
+    instances[address + 15u] = bitcast<u32>(alpha);
+    instances[address + 16u] = (index << 3u) | u32(settings.spin.w);
 }
 
 @compute @workgroup_size(64)

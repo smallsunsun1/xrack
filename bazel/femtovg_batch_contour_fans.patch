@@ -1,0 +1,47 @@
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -2386,7 +2386,13 @@
+     images: &mut ImageStore<Image>,
+     fill_params: &Params,
+ ) {
+-    if command.drawables.iter().any(|drawable| drawable.fill_verts.is_some()) {
++    let index_count: u32 = command
++        .drawables
++        .iter()
++        .filter_map(|drawable| drawable.fill_verts)
++        .map(|(_, count)| FanIndices::count(count))
++        .sum();
++    if index_count != 0 {
+         pipeline_and_bindgroup_mapper.update_renderpass(
+             render_pass_builder,
+             None,
+@@ -2427,12 +2433,9 @@
+             GlyphTexture::None,
+         );
+ 
+-        let mut first = fans;
+-        for drawable in &command.drawables {
+-            if let Some((_, count)) = drawable.fill_verts {
+-                render_pass_builder.draw_fan(&mut first, count);
+-            }
+-        }
++        // FanIndices packs every contour of this command into one triangle
++        // list. All of them use the same winding stencil state.
++        render_pass_builder.draw_indexed(fans..fans + index_count);
+     }
+ 
+     let blend_state = blend_state(command);
+@@ -3817,8 +3820,12 @@
+     /// the frame's fan indices, and moves `first` past them.
+     fn draw_fan(&mut self, first: &mut u32, count: usize) {
+         let end = *first + FanIndices::count(count);
+-        self.rpass.as_mut().unwrap().draw_indexed(*first..end, 0, 0..1);
++        self.draw_indexed(*first..end);
+         *first = end;
++    }
++
++    fn draw_indexed(&mut self, indices: std::ops::Range<u32>) {
++        self.rpass.as_mut().unwrap().draw_indexed(indices, 0, 0..1);
+     }
+ 
+     /// Limits the open pass to `crop` - x, y, width and height in the

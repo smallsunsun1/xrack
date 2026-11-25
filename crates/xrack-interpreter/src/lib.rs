@@ -310,9 +310,20 @@ pub enum ValueType {
     Point2D,
     Point3D,
     Vector3D,
+    Quaternion3D,
+    RotationTrack3D,
     Hit3D,
     Hit3DList,
+    PhysicsContact3D,
+    PhysicsHit3D,
+    PhysicsContact3DList,
+    PhysicsHit3DList,
     ProjectedPoint3D,
+    Instance3D,
+    InstanceTable3D,
+    WalkResult3D,
+    PhysicsWorld3D,
+    SceneModel3D,
     Vector2D,
     Transform2D,
     Percent,
@@ -428,6 +439,7 @@ enum Expression {
     Round(Expr),
     MathFunction(xrack_syntax::builtins::MathFunction, Vec<Expr>),
     GeometryFunction(xrack_syntax::builtins::GeometryFunction, Vec<Expr>),
+    PhysicsFunction(xrack_syntax::builtins::PhysicsFunction, Vec<Expr>),
     StringFunction(xrack_syntax::builtins::StringFunction, Vec<Expr>),
     ModelProjection {
         model: Expr,
@@ -513,6 +525,8 @@ enum Expression {
     IntArray(Vec<Expr>),
     DateArray(Vec<Expr>),
     Hit3DArray(Vec<Expr>),
+    PhysicsContact3DArray(Vec<Expr>),
+    PhysicsHit3DArray(Vec<Expr>),
     Record {
         name: Rc<str>,
         fields: Vec<(String, Expr)>,
@@ -521,6 +535,7 @@ enum Expression {
     RecordArray(Rc<str>, Vec<Expr>),
     RecordField(Expr, String),
     BuiltinField(Expr, BuiltinField),
+    MakeWalkResult3D([Expr; 2]),
     MakeDate([Expr; 3]),
     DateIsValid(Expr),
     DateWeekday(Expr),
@@ -676,7 +691,7 @@ struct Definition {
     button_animation_targets: BTreeSet<String>,
     text_selection_targets: BTreeSet<String>,
     text_command_targets: BTreeSet<String>,
-    timer_order: Vec<String>,
+    timer_order: Vec<(String, bool)>,
     action_keys: BTreeSet<String>,
     native_dialog_keys: BTreeSet<String>,
     button_groups: BTreeMap<String, group::Members>,
@@ -929,6 +944,35 @@ impl Instance {
             Value::Hit3DList(model) => Ok(model),
             _ => Err(Error::Evaluation(format!(
                 "property {name} is not a hit list"
+            ))),
+        }
+    }
+
+    /// Get the shared physics contact model without replacing its row identities.
+    pub fn physics_contact3d_model(
+        &self,
+        name: &str,
+    ) -> Result<xrack_runtime::VecModel<xrack_runtime::PhysicsContact3D>> {
+        let member = Member::root(name);
+        self.require_public(&member, false)?;
+        match self.read(&member)? {
+            Value::PhysicsContact3DList(model) => Ok(model),
+            _ => Err(Error::Evaluation(format!(
+                "property {name} is not a physics contact list"
+            ))),
+        }
+    }
+
+    pub fn physics_hit3d_model(
+        &self,
+        name: &str,
+    ) -> Result<xrack_runtime::VecModel<xrack_runtime::PhysicsHit3D>> {
+        let member = Member::root(name);
+        self.require_public(&member, false)?;
+        match self.read(&member)? {
+            Value::PhysicsHit3DList(model) => Ok(model),
+            _ => Err(Error::Evaluation(format!(
+                "property {name} is not a physics hit list"
             ))),
         }
     }

@@ -20,11 +20,11 @@ use std::{
 use xrack_runtime::scene3d::{
     MeshAlphaMode, MeshAnisotropy, MeshClearcoat, MeshCullMode, MeshDielectric, MeshImage,
     MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPbr, MeshTexture, MeshTransmission,
-    MeshVolume, TextureColorSpace, TextureFilter, TextureTransform, TextureWrap,
+    MeshVolume, MeshWorkflow, TextureColorSpace, TextureFilter, TextureTransform, TextureWrap,
 };
 use xrack_syntax::gltf_metadata::{
     ANISOTROPY, CLEARCOAT, DISPERSION, EMISSIVE_STRENGTH, EXTENDED_MATERIALS, GltfMetadata, IOR,
-    SPECULAR, TEXTURE_TRANSFORM, TRANSMISSION, VOLUME,
+    SPECULAR, SPECULAR_GLOSSINESS, TEXTURE_TRANSFORM, TRANSMISSION, VOLUME,
 };
 
 const MAX_DECODED_TEXTURE_BYTES: usize = 64 * 1024 * 1024;
@@ -123,18 +123,38 @@ impl<'a> Materials<'a> {
             AlphaMode::Blend => MeshAlphaMode::Blend,
         };
         let pbr = material.pbr_metallic_roughness();
+        let mut glossy = extension::<SpecularGlossiness>(&material, SPECULAR_GLOSSINESS)?;
         let mut uv_sets = [None, None];
-        let base_texture = pbr
-            .base_color_texture()
-            .map(|info| {
-                self.texture(
-                    info.texture(),
-                    (info.tex_coord(), info.extension_value(TEXTURE_TRANSFORM)),
-                    &mut uv_sets,
-                    TextureColorSpace::Srgb,
-                )
-            })
-            .transpose()?;
+        let (base_color, base_texture) = if let Some(glossy) = &mut glossy {
+            if !glossy
+                .diffuse_factor
+                .into_iter()
+                .chain(glossy.specular_factor)
+                .chain([glossy.glossiness_factor])
+                .all(|value| (0.0..=1.0).contains(&value))
+            {
+                return Err("glTF specular-glossiness factors must be in 0..=1".into());
+            }
+            let texture = glossy
+                .diffuse_texture
+                .take()
+                .map(|info| self.texture_info(info, &mut uv_sets, TextureColorSpace::Srgb))
+                .transpose()?;
+            (glossy.diffuse_factor, texture)
+        } else {
+            let texture = pbr
+                .base_color_texture()
+                .map(|info| {
+                    self.texture(
+                        info.texture(),
+                        (info.tex_coord(), info.extension_value(TEXTURE_TRANSFORM)),
+                        &mut uv_sets,
+                        TextureColorSpace::Srgb,
+                    )
+                })
+                .transpose()?;
+            (pbr.base_color_factor(), texture)
+        };
         let mut authored_normal_uv = None;
         let shading = if material.unlit() {
             if EXTENDED_MATERIALS
@@ -145,17 +165,46 @@ impl<'a> Materials<'a> {
             }
             None
         } else {
-            let metallic_roughness_texture = pbr
-                .metallic_roughness_texture()
-                .map(|info| {
-                    self.texture(
-                        info.texture(),
-                        (info.tex_coord(), info.extension_value(TEXTURE_TRANSFORM)),
-                        &mut uv_sets,
-                        TextureColorSpace::Linear,
+            let (workflow, metallic, roughness, surface_texture, legacy_dielectric) =
+                if let Some(glossy) = glossy {
+                    let packed = glossy
+                        .specular_glossiness_texture
+                        .map(|info| self.texture_info(info, &mut uv_sets, TextureColorSpace::Srgb))
+                        .transpose()?;
+                    let dielectric = MeshDielectric {
+                        ior: MeshDielectric::DEFAULT_IOR,
+                        specular: 1.0,
+                        color: glossy.specular_factor,
+                        specular_texture: None,
+                        color_texture: packed.clone(),
+                    };
+                    (
+                        MeshWorkflow::SpecularGlossiness,
+                        0.0,
+                        1.0 - glossy.glossiness_factor,
+                        packed,
+                        Some(dielectric),
                     )
-                })
-                .transpose()?;
+                } else {
+                    let texture = pbr
+                        .metallic_roughness_texture()
+                        .map(|info| {
+                            self.texture(
+                                info.texture(),
+                                (info.tex_coord(), info.extension_value(TEXTURE_TRANSFORM)),
+                                &mut uv_sets,
+                                TextureColorSpace::Linear,
+                            )
+                        })
+                        .transpose()?;
+                    (
+                        MeshWorkflow::MetallicRoughness,
+                        pbr.metallic_factor(),
+                        pbr.roughness_factor(),
+                        texture,
+                        None,
+                    )
+                };
             let emissive_texture = material
                 .emissive_texture()
                 .map(|info| {
@@ -201,16 +250,19 @@ impl<'a> Materials<'a> {
             Some(MeshPbr {
                 anisotropy: self.anisotropy(&material, &mut uv_sets)?.map(Box::new),
                 fresnel: Default::default(),
-                metallic: pbr.metallic_factor(),
-                roughness: pbr.roughness_factor(),
+                workflow,
+                metallic,
+                roughness,
                 emissive: emission(&material)?,
                 occlusion_strength: occlusion.map_or(1.0, |info| info.strength()),
-                metallic_roughness_texture,
+                surface_texture,
                 emissive_texture,
                 occlusion_texture,
                 normal_map,
                 clearcoat,
-                dielectric: self.dielectric(&material, &mut uv_sets)?.map(Box::new),
+                dielectric: legacy_dielectric
+                    .or(self.dielectric(&material, &mut uv_sets)?)
+                    .map(Box::new),
                 transmission: self.transmission(&material, &mut uv_sets)?.map(Box::new),
             })
         };
@@ -241,7 +293,7 @@ impl<'a> Materials<'a> {
             cull_mode,
             depth_draw_mode: Default::default(),
             blend_mode: Default::default(),
-            base_color: pbr.base_color_factor(),
+            base_color,
             base_texture,
             base_item: None,
             alpha_mode,
@@ -330,10 +382,7 @@ impl<'a> Materials<'a> {
         {
             return Err("glTF anisotropy requires strength in 0..=1 and finite rotation".into());
         }
-        if material
-            .extension_value("KHR_materials_pbrSpecularGlossiness")
-            .is_some()
-        {
+        if material.extension_value(SPECULAR_GLOSSINESS).is_some() {
             return Err("glTF anisotropy requires a metallic-roughness material".into());
         }
         let texture = term
@@ -357,10 +406,7 @@ impl<'a> Materials<'a> {
         if ior.is_none() && specular.is_none() {
             return Ok(None);
         }
-        if material
-            .extension_value("KHR_materials_pbrSpecularGlossiness")
-            .is_some()
-        {
+        if material.extension_value(SPECULAR_GLOSSINESS).is_some() {
             return Err(
                 "glTF IOR and specular extensions require a metallic-roughness material".into(),
             );
@@ -439,10 +485,7 @@ impl<'a> Materials<'a> {
                 "glTF KHR_materials_transmission requires a transmissionFactor in 0..=1".into(),
             );
         }
-        if material
-            .extension_value("KHR_materials_pbrSpecularGlossiness")
-            .is_some()
-        {
+        if material.extension_value(SPECULAR_GLOSSINESS).is_some() {
             return Err("glTF transmission requires a metallic-roughness material".into());
         }
         if transmission.transmission_factor == 0.0 {
@@ -703,6 +746,28 @@ impl Default for IndexOfRefraction {
     fn default() -> Self {
         Self {
             ior: MeshDielectric::DEFAULT_IOR,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct SpecularGlossiness {
+    diffuse_factor: [f32; 4],
+    diffuse_texture: Option<TextureInfo>,
+    specular_factor: [f32; 3],
+    glossiness_factor: f32,
+    specular_glossiness_texture: Option<TextureInfo>,
+}
+
+impl Default for SpecularGlossiness {
+    fn default() -> Self {
+        Self {
+            diffuse_factor: [1.0; 4],
+            diffuse_texture: None,
+            specular_factor: [1.0; 3],
+            glossiness_factor: 1.0,
+            specular_glossiness_texture: None,
         }
     }
 }

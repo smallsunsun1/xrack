@@ -92,13 +92,83 @@ pub(super) fn shader_source(source: &str) -> wgpu::ShaderSource<'static> {
 #[derive(Clone, Copy)]
 pub(super) struct GeometryBindings<'a> {
     pub instances: &'a wgpu::Buffer,
+    pub instance_data: Option<&'a wgpu::Buffer>,
+    pub offsets: &'a [u32],
+    pub zero_data: &'a wgpu::Buffer,
     pub deformations: &'a [Option<DeformationBinding>],
 }
 
 impl GeometryBindings<'_> {
+    pub fn offset(&self, instance: u32) -> u32 {
+        self.offsets
+            .get(instance as usize)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn bind_instances(&self, pass: &mut wgpu::RenderPass<'_>, offset: u32) {
+        pass.set_vertex_buffer(
+            1,
+            self.instances
+                .slice(u64::from(offset) * super::INSTANCE_STRIDE..),
+        );
+        pass.set_vertex_buffer(
+            4,
+            self.instance_data.map_or_else(
+                || self.zero_data.slice(..),
+                |data| data.slice(u64::from(offset) * super::instances::INSTANCE_DATA_STRIDE..),
+            ),
+        );
+    }
+
+    pub fn bind_instance_range(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        active: &mut Option<u32>,
+        first: u32,
+    ) {
+        let offset = self.offset(first);
+        if *active != Some(offset) {
+            self.bind_instances(pass, offset);
+            *active = Some(offset);
+        }
+    }
+
+    pub fn runs(
+        &self,
+        mut range: std::ops::Range<u32>,
+    ) -> impl Iterator<Item = std::ops::Range<u32>> + '_ {
+        std::iter::from_fn(move || {
+            if range.is_empty() {
+                return None;
+            }
+            let start = range.start;
+            let end = if self.offsets.is_empty() {
+                range.end
+            } else {
+                let offset = self.offsets[start as usize];
+                start
+                    + self.offsets[start as usize..range.end as usize]
+                        .partition_point(|&candidate| candidate == offset)
+                        as u32
+            };
+            range.start = end;
+            Some(start..end)
+        })
+    }
+
     pub fn deformation(&self, instance: u32) -> Option<&DeformationBinding> {
         self.deformations.get(instance as usize)?.as_ref()
     }
+}
+
+pub(super) fn bind_instance_streams(
+    pass: &mut wgpu::RenderPass<'_>,
+    instances: &wgpu::Buffer,
+    data: &wgpu::Buffer,
+) {
+    pass.set_vertex_buffer(1, instances.slice(..));
+    pass.set_vertex_buffer(4, data.slice(..));
 }
 
 #[derive(Clone)]

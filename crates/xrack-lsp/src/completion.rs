@@ -619,6 +619,27 @@ impl<'a> Index<'a> {
                     .flatten()
                     .map(|ty| (vec![ty], None))
             });
+            let signature = signature.or_else(|| {
+                if name != "triggered"
+                    || !matches!(
+                        self.scopes[scope.parent].role,
+                        Role::Element {
+                            kind: "FrameAnimation",
+                            ..
+                        }
+                    )
+                {
+                    return None;
+                }
+                let types = xrack_ir::semantic::event_parameters(
+                    "FrameAnimation",
+                    name,
+                    None,
+                    Default::default(),
+                )
+                .ok()?;
+                Some((types.to_vec(), None))
+            });
             if let Some((types, file)) = signature {
                 for (parameter, ty) in self.scopes[i].members.iter_mut().zip(types) {
                     parameter.ty = Some(ty);
@@ -1272,8 +1293,8 @@ pub(crate) fn complete_with_imports(
     if let Some(items) = imports::scene_item_texture_values(&source, &tokens, cursor, text.len()) {
         return items;
     }
-    if let Some(prototypes) = imports::scene_prototype_values(&source, &tokens, cursor) {
-        return prototypes;
+    if let Some(references) = imports::scene_instance_reference_values(&source, &tokens, cursor) {
+        return references;
     }
     if let Some(paths) = workspace
         .and_then(|workspace| imports::scene_asset_paths(&source, &tokens, cursor, workspace))
@@ -1995,9 +2016,14 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         if matches!(kind, "SoundEffect" | "ComboPopup") {
             return;
         }
-        if kind == "Timer" {
+        if matches!(kind, "Timer" | "FrameAnimation") {
             if !animation {
-                items.add("triggered", FUNCTION, "event handler");
+                let signature = if kind == "FrameAnimation" {
+                    "triggered(frame-time: float, elapsed-time: float, current-frame: int)"
+                } else {
+                    "event handler"
+                };
+                items.add("triggered", FUNCTION, signature);
             }
             return;
         }
@@ -2466,6 +2492,7 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 .iter()
                 .chain(catalog::text_editor_methods(kind))
                 .chain(index.button_methods(owner, kind))
+                .chain(catalog::timer_methods(kind))
                 .chain(catalog::scroll_bar_methods(kind))
             {
                 items.add(method.name, FUNCTION, &method.signature());
@@ -2874,7 +2901,12 @@ fn complete_builtin_fields<'a>(
     }
     for &field in ty.builtin_fields() {
         if let Some((_, result)) = ty.builtin_field(field) {
-            items.add(field, FIELD, &result.name());
+            let detail = if result == Type::Hit3DList {
+                "[hit3d]".into()
+            } else {
+                result.name()
+            };
+            items.add(field, FIELD, &detail);
         }
     }
 }

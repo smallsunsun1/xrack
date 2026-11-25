@@ -2700,6 +2700,10 @@ impl PreviewScene {
             .chain(self.image_playback.deadline())
             .chain(self.media.deadline(now))
             .chain(self.timers.deadline())
+            .chain(
+                (self.window_status.minimized != Some(true) && self.timers.has_frame_animations())
+                    .then(|| self.clock + self.sampled_at + Duration::from_millis(16)),
+            )
             .chain(self.button_animations.deadline())
             .chain(self.input.tooltip_deadline())
             .chain(self.input.button_hold_deadline())
@@ -2775,9 +2779,17 @@ impl PreviewScene {
         let size = Size::new(width as f32, height as f32);
         self.frame_cache
             .update_typography(renderer.text.typography_revision());
-        let (scene, layout) = self.frame_cache.prepare(scene, size, &self.input, |base| {
-            renderer.prepare_scene(&self.component, base, size, &self.input)
-        });
+        let (scene, layout) =
+            self.frame_cache
+                .prepare_reusing(scene, size, &self.input, |base, previous| {
+                    renderer.prepare_scene_recycling(
+                        &self.component,
+                        base,
+                        size,
+                        &self.input,
+                        previous,
+                    )
+                });
         (scene, layout, width, height)
     }
 
@@ -2954,6 +2966,15 @@ impl PreviewScene {
                 if delivery.fire() {
                     // Reconcile visibility and registrations before delivering another due timer.
                     (scene, layout, width, height) = self.settle_frame(renderer, animated);
+                }
+            }
+            if self.window_closed || self.window_status.minimized == Some(true) {
+                self.timers.reset_frame_baselines();
+            } else if self.timers.has_frame_animations() {
+                for delivery in self.timers.frame_deliveries(now) {
+                    if self.timers.frame_delivery_is_current(&delivery) && delivery.fire() {
+                        (scene, layout, width, height) = self.settle_frame(renderer, animated);
+                    }
                 }
             }
         }

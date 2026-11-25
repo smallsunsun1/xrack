@@ -1,10 +1,13 @@
 use std::{collections::VecDeque, sync::Arc};
 use xrack_runtime::{
     Node,
-    scene3d::{MAX_SCENE_LIGHTS, SceneLight, SceneLightSource, SceneModel, viewport_lighting},
+    scene3d::{
+        LightBakeMode, MAX_SCENE_LIGHTS, SceneLight, SceneLightSource, SceneModel,
+        viewport_lighting,
+    },
 };
 
-use super::{append_floats, buffer};
+use super::{append_floats, buffer, shadow::MAX_SHADOW_MAPS};
 
 const MAX_CACHED_LIGHT_SETS: usize = 8;
 
@@ -28,7 +31,11 @@ impl LightSet {
             lights,
             shadow_slots: [0; MAX_SCENE_LIGHTS],
             fallback: [fallback],
-            shadow_bias: node.float("shadow-bias").unwrap_or(0.001).clamp(0.0, 0.05),
+            shadow_bias: node
+                .float("shadow-bias")
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.001)
+                .clamp(0.0, 0.05),
             ambient,
         }
     }
@@ -40,8 +47,10 @@ impl LightSet {
 
     fn encode(&self) -> Vec<u8> {
         let lights = self.lights();
-        // Two vec4 header rows, then four vec4 rows per light.
-        let mut bytes = Vec::with_capacity(32 + MAX_SCENE_LIGHTS * 64);
+        // Two vec4 header rows, four per light, then one per shadow slot.
+        let lights_end = 32 + MAX_SCENE_LIGHTS * 64;
+        let mut bytes = Vec::with_capacity(lights_end + MAX_SHADOW_MAPS * 16);
+        let mut sampling = [[0.0; 4]; MAX_SHADOW_MAPS];
         let [r, g, b] = self.ambient;
         append_floats(&mut bytes, [r, g, b, 0.0]);
         append_floats(
@@ -49,14 +58,23 @@ impl LightSet {
             [
                 lights.len() as f32,
                 if self.lights.is_some() { 1.0 } else { 0.0 },
-                self.shadow_bias,
+                0.0,
                 0.0,
             ],
         );
         for (light, slot) in lights.iter().zip(self.shadow_slots) {
+            if slot != 0 {
+                let shadow = light.shadow;
+                sampling[usize::from(slot - 1)] = [
+                    shadow.strength,
+                    shadow.radius,
+                    shadow.filter.taps() as f32,
+                    shadow.bias.unwrap_or(self.shadow_bias),
+                ];
+            }
             let slot = f32::from(slot);
             let [r, g, b] = light.radiance;
-            let rows = match light.source {
+            let mut rows = match light.source {
                 SceneLightSource::Directional {
                     toward_light: [x, y, z],
                 } => [[0.0; 4], [x, y, z, 0.0], [r, g, b, slot], [0.0; 4]],
@@ -83,9 +101,11 @@ impl LightSet {
                     [cone_scale, cone_offset, 0.0, 0.0],
                 ],
             };
+            rows[3][2] = f32::from(u8::from(light.bake_mode == LightBakeMode::All));
             append_floats(&mut bytes, rows.into_iter().flatten());
         }
-        bytes.resize(32 + MAX_SCENE_LIGHTS * 64, 0);
+        bytes.resize(lights_end, 0);
+        append_floats(&mut bytes, sampling.into_iter().flatten());
         bytes
     }
 }

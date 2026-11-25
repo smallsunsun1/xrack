@@ -1,7 +1,7 @@
 use crate::StyledFragment;
 use std::{
     fmt,
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut, Range},
     slice,
     sync::{Arc, OnceLock},
 };
@@ -16,7 +16,28 @@ pub struct StyledFragments(Storage);
 #[derive(Clone)]
 enum Storage {
     Flat(Vec<StyledFragment>),
+    Chunked(Arc<FragmentChunks>),
     Paragraphs(Arc<Paragraphs>),
+}
+
+const FRAGMENTS_PER_CHUNK: usize = 256;
+
+struct FragmentChunks {
+    // Every chunk except the last is full. Indexed access can skip to the
+    // chunk containing a fragment without scanning the preceding chunks.
+    chunks: Vec<Arc<Vec<StyledFragment>>>,
+    len: usize,
+    flat: OnceLock<Vec<StyledFragment>>,
+}
+
+impl Clone for FragmentChunks {
+    fn clone(&self) -> Self {
+        Self {
+            chunks: self.chunks.clone(),
+            len: self.len,
+            flat: OnceLock::new(),
+        }
+    }
 }
 
 struct Paragraphs {
@@ -107,6 +128,7 @@ impl StyledFragments {
     pub fn len(&self) -> usize {
         match &self.0 {
             Storage::Flat(fragments) => fragments.len(),
+            Storage::Chunked(chunks) => chunks.len,
             Storage::Paragraphs(paragraphs) => *paragraphs.len.get_or_init(|| {
                 paragraphs
                     .blocks
@@ -124,8 +146,118 @@ impl StyledFragments {
     pub fn capacity(&self) -> usize {
         match &self.0 {
             Storage::Flat(fragments) => fragments.capacity(),
+            Storage::Chunked(chunks) => chunks.len + chunks.flat.get().map_or(0, Vec::capacity),
             Storage::Paragraphs(_) => self.len(),
         }
+    }
+
+    pub(crate) fn replace_tail(&self, prefix: usize, tail: Vec<StyledFragment>) -> Self {
+        if prefix < FRAGMENTS_PER_CHUNK {
+            let mut fragments = Vec::with_capacity(prefix + tail.len());
+            fragments.extend(self.iter_range(0..prefix).cloned());
+            fragments.extend(tail);
+            return fragments.into();
+        }
+
+        let len = prefix + tail.len();
+        let retained = prefix / FRAGMENTS_PER_CHUNK;
+        let boundary = retained * FRAGMENTS_PER_CHUNK;
+        let mut chunks = match &self.0 {
+            Storage::Chunked(old) => old.chunks[..retained].to_vec(),
+            _ => self.as_slice()[..boundary]
+                .chunks_exact(FRAGMENTS_PER_CHUNK)
+                .map(|chunk| Arc::new(chunk.to_vec()))
+                .collect(),
+        };
+        // Copy only the prefix that shares a chunk with the replacement.
+        // Published layouts can still use the old tail and its selection data.
+        let mut replacement = self.iter_range(boundary..prefix).cloned().chain(tail);
+        loop {
+            let chunk: Vec<_> = replacement.by_ref().take(FRAGMENTS_PER_CHUNK).collect();
+            if chunk.is_empty() {
+                break;
+            }
+            chunks.push(Arc::new(chunk));
+        }
+        Self(Storage::Chunked(Arc::new(FragmentChunks {
+            chunks,
+            len,
+            flat: OnceLock::new(),
+        })))
+    }
+
+    /// Iterates a range in document coordinates without flattening an indexed layout.
+    #[doc(hidden)]
+    pub fn iter_range(
+        &self,
+        range: Range<usize>,
+    ) -> impl DoubleEndedIterator<Item = &StyledFragment> + Clone {
+        let (flat, chunks, start, end) = match &self.0 {
+            Storage::Chunked(storage) => {
+                assert!(range.start <= range.end && range.end <= storage.len);
+                let first = range.start / FRAGMENTS_PER_CHUNK;
+                let end_chunk = range.end.div_ceil(FRAGMENTS_PER_CHUNK);
+                let origin = first * FRAGMENTS_PER_CHUNK;
+                (
+                    &[][..],
+                    &storage.chunks[first..end_chunk],
+                    range.start - origin,
+                    range.end - origin,
+                )
+            }
+            _ => (&self.as_slice()[range], &[][..], 0, 0),
+        };
+        flat.iter()
+            .chain(chunks.iter().enumerate().flat_map(move |(index, chunk)| {
+                let origin = index * FRAGMENTS_PER_CHUNK;
+                let first = start.saturating_sub(origin);
+                let last = end.saturating_sub(origin).min(chunk.len());
+                chunk[first..last].iter()
+            }))
+    }
+
+    pub(crate) fn iter_mut_from(
+        &mut self,
+        start: usize,
+    ) -> impl Iterator<Item = &mut StyledFragment> {
+        if matches!(self.0, Storage::Paragraphs(_)) {
+            self.0 = Storage::Flat(self.as_slice().to_vec());
+        }
+        let (flat, chunks, skip) = match &mut self.0 {
+            Storage::Flat(fragments) => (&mut fragments[start..], &mut [][..], 0),
+            Storage::Chunked(storage) => {
+                assert!(start <= storage.len);
+                let storage = Arc::make_mut(storage);
+                storage.flat.take();
+                let first = start / FRAGMENTS_PER_CHUNK;
+                (
+                    &mut [][..],
+                    &mut storage.chunks[first..],
+                    start % FRAGMENTS_PER_CHUNK,
+                )
+            }
+            Storage::Paragraphs(_) => unreachable!(),
+        };
+        flat.iter_mut().chain(
+            chunks
+                .iter_mut()
+                .flat_map(|chunk| Arc::make_mut(chunk).iter_mut())
+                .skip(skip),
+        )
+    }
+
+    /// Finds the first fragment for which a monotone predicate is false.
+    #[doc(hidden)]
+    pub fn partition_point(&self, mut predicate: impl FnMut(&StyledFragment) -> bool) -> usize {
+        let Storage::Chunked(storage) = &self.0 else {
+            return self.as_slice().partition_point(predicate);
+        };
+        let index = storage
+            .chunks
+            .partition_point(|chunk| chunk.last().is_some_and(&mut predicate));
+        storage.chunks.get(index).map_or(storage.len, |chunk| {
+            index * FRAGMENTS_PER_CHUNK + chunk.partition_point(predicate)
+        })
     }
 
     /// Reports whether the first fragment carries positioned glyph geometry.
@@ -134,6 +266,11 @@ impl StyledFragments {
         match &self.0 {
             Storage::Flat(fragments) => fragments
                 .first()
+                .is_some_and(|fragment| fragment.shaped_run().is_some()),
+            Storage::Chunked(chunks) => chunks
+                .chunks
+                .first()
+                .and_then(|chunk| chunk.first())
                 .is_some_and(|fragment| fragment.shaped_run().is_some()),
             Storage::Paragraphs(paragraphs) => {
                 match paragraphs.blocks.first().map(|block| &block.content) {
@@ -159,16 +296,20 @@ impl StyledFragments {
         &self,
         clip: Option<(f32, f32)>,
     ) -> impl DoubleEndedIterator<Item = (&StyledFragment, f32)> {
-        let (flat, blocks) = match &self.0 {
-            Storage::Flat(fragments) => (fragments.as_slice(), &[][..]),
-            Storage::Paragraphs(paragraphs) => (&[][..], paragraphs.blocks.as_slice()),
+        let (flat, chunks, blocks) = match &self.0 {
+            Storage::Flat(fragments) => (fragments.as_slice(), &[][..], &[][..]),
+            Storage::Chunked(storage) => (&[][..], storage.chunks.as_slice(), &[][..]),
+            Storage::Paragraphs(paragraphs) => (&[][..], &[][..], paragraphs.blocks.as_slice()),
         };
-        flat.iter().map(|fragment| (fragment, 0.0)).chain(
-            blocks
-                .iter()
-                .filter(move |block| block.intersect_y(clip))
-                .flat_map(|block| block.fragments().iter().map(|fragment| (fragment, block.y))),
-        )
+        flat.iter()
+            .chain(chunks.iter().flat_map(|chunk| chunk.iter()))
+            .map(|fragment| (fragment, 0.0))
+            .chain(
+                blocks
+                    .iter()
+                    .filter(move |block| block.intersect_y(clip))
+                    .flat_map(|block| block.fragments().iter().map(|fragment| (fragment, block.y))),
+            )
     }
 
     pub fn as_slice(&self) -> &[StyledFragment] {
@@ -178,6 +319,16 @@ impl StyledFragments {
     fn as_vec(&self) -> &Vec<StyledFragment> {
         match &self.0 {
             Storage::Flat(fragments) => fragments,
+            Storage::Chunked(storage) => storage.flat.get_or_init(|| {
+                let mut flat = Vec::with_capacity(storage.len);
+                flat.extend(
+                    storage
+                        .chunks
+                        .iter()
+                        .flat_map(|chunk| chunk.iter().cloned()),
+                );
+                flat
+            }),
             Storage::Paragraphs(paragraphs) => paragraphs.flat.get_or_init(|| {
                 let mut flat = Vec::with_capacity(self.len());
                 flat.extend(self.placed().map(|(fragment, y)| {
@@ -193,7 +344,7 @@ impl StyledFragments {
     pub(crate) fn into_vec(self) -> Vec<StyledFragment> {
         match self.0 {
             Storage::Flat(fragments) => fragments,
-            Storage::Paragraphs(_) => self.as_slice().to_vec(),
+            Storage::Chunked(_) | Storage::Paragraphs(_) => self.as_slice().to_vec(),
         }
     }
 }
@@ -220,12 +371,12 @@ impl Deref for StyledFragments {
 
 impl DerefMut for StyledFragments {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        if matches!(self.0, Storage::Paragraphs(_)) {
+        if !matches!(self.0, Storage::Flat(_)) {
             self.0 = Storage::Flat(self.as_slice().to_vec());
         }
         match &mut self.0 {
             Storage::Flat(fragments) => fragments,
-            Storage::Paragraphs(_) => unreachable!(),
+            Storage::Chunked(_) | Storage::Paragraphs(_) => unreachable!(),
         }
     }
 }
@@ -291,6 +442,53 @@ mod tests {
     use crate::{Size, StyledTextLayout};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use xrack_runtime::{Node, StyledText};
+
+    #[test]
+    fn appended_fragments_share_complete_chunks_and_keep_old_layouts() {
+        let mut node = Node::new("StyledText", None);
+        let document = StyledText::from_plain_text("text");
+        node.properties.insert("text", document.clone().into());
+        let plan =
+            StyledTextLayout::new(&node, &document, Size::new(80.0, 40.0), 12.0, |_, _| 24.0);
+        let template = &plan.fragments[0];
+        let at = |y| {
+            let mut fragment = template.clone();
+            fragment.bounds.y = y as f32;
+            fragment
+        };
+        let count = 2 * FRAGMENTS_PER_CHUNK;
+        let flat: StyledFragments = (0..count).map(at).collect::<Vec<_>>().into();
+        let previous = flat.replace_tail(count, (count..count + 3).map(at).collect());
+        let mut next = previous.replace_tail(count + 1, vec![at(count + 4)]);
+
+        assert!(std::ptr::eq(
+            previous.iter_range(0..1).next().unwrap(),
+            next.iter_range(0..1).next().unwrap(),
+        ));
+        assert_eq!(
+            next.partition_point(|fragment| fragment.bounds.y < count as f32),
+            count
+        );
+        assert_eq!(
+            next.iter_range(count - 1..count + 2)
+                .rev()
+                .map(|f| f.bounds.y as usize)
+                .collect::<Vec<_>>(),
+            [count + 4, count, count - 1]
+        );
+        assert_eq!(next.iter_range(next.len()..next.len()).count(), 0);
+
+        // Keep a previously flattened snapshot around while updating the
+        // selection geometry of only the new tail.
+        let snapshot = next.clone();
+        assert_eq!(snapshot[count + 1].bounds.y, (count + 4) as f32);
+        for fragment in next.iter_mut_from(count + 1) {
+            fragment.bounds.y += 2.0;
+        }
+        assert_eq!(next[count + 1].bounds.y, (count + 6) as f32);
+        assert_eq!(snapshot[count + 1].bounds.y, (count + 4) as f32);
+        assert_eq!(previous[count + 1].bounds.y, (count + 1) as f32);
+    }
 
     #[test]
     fn paragraph_placement_and_slice_edits_keep_earlier_snapshots_independent() {

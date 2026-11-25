@@ -19,8 +19,8 @@ use xrack_mlir::{Module, OperationRef};
 use xrack_runtime::{
     Image, ImageAsset,
     scene3d::{
-        EnvironmentProbe, MeshAsset, MeshImage, MeshImportOptions, environment_resource_key,
-        mesh_resource_key, texture_resource_key,
+        EnvironmentProbe, InstanceTable3D, MeshAsset, MeshImage, MeshImportOptions,
+        environment_resource_key, mesh_resource_key, texture_resource_key,
     },
 };
 
@@ -36,6 +36,7 @@ pub struct ResolvedAssets {
 #[derive(Default)]
 pub struct SceneAssets {
     pub meshes: BTreeMap<String, MeshAsset>,
+    pub instance_tables: BTreeMap<String, InstanceTable3D>,
     pub environments: BTreeMap<String, Arc<EnvironmentProbe>>,
     pub textures: BTreeMap<String, Arc<MeshImage>>,
     pub material_shaders: BTreeMap<String, Arc<str>>,
@@ -69,6 +70,7 @@ pub fn resolve_assets(
     let mut chart_sources = BTreeMap::<(PathBuf, MeshSource), MeshAsset>::new();
     let mut lod_sources = BTreeMap::<((PathBuf, MeshSource), bool), MeshAsset>::new();
     let mut lut_images = Vec::new();
+    let mut table_files = BTreeMap::<PathBuf, InstanceTable3D>::new();
     let mut texture_files = BTreeMap::<PathBuf, Arc<MeshImage>>::new();
     let mut visit = |op: OperationRef<'_>| {
         if op.name() == "xr.image_url" {
@@ -138,6 +140,45 @@ pub fn resolve_assets(
                     mesh
                 };
                 entry.insert(mesh);
+            }
+        } else if op.name() == "xr.instance_table_url" {
+            let url = op.attr("value")?;
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                assets.scene.instance_tables.entry(url.to_owned())
+            {
+                let mut resolve = || {
+                    let path = asset_path(
+                        base,
+                        local_path(url)?,
+                        declared.as_ref(),
+                        "3D instance table",
+                    )?;
+                    let table = match table_files.entry(path.clone()) {
+                        std::collections::btree_map::Entry::Occupied(table) => table.get().clone(),
+                        std::collections::btree_map::Entry::Vacant(table) => {
+                            let binary = match path.extension().and_then(|name| name.to_str()) {
+                                Some(ext) if ext.eq_ignore_ascii_case("bin") => true,
+                                Some(ext) if ext.eq_ignore_ascii_case("xml") => false,
+                                _ => return Err("expected an XML or QtIR .bin table".into()),
+                            };
+                            let bytes = read_asset(&path, "3D instance table")?;
+                            table
+                                .insert(crate::instance_table::decode(&bytes, binary)?)
+                                .clone()
+                        }
+                    };
+                    Ok::<_, String>((path, table))
+                };
+                let (path, table) = resolve().map_err(|error| {
+                    let span = op.span();
+                    let source = op.source_file().unwrap_or(&filename);
+                    format!(
+                        "{source}:{}:{}: instance table {url:?}: {error}",
+                        span.line, span.column
+                    )
+                })?;
+                assets.inputs.insert(path);
+                entry.insert(table);
             }
         } else if op.name() == "xr.texture_url" {
             let url = op.attr("value")?;
@@ -327,6 +368,11 @@ pub fn require_scene_assets(module: &Module, scene: &SceneAssets) -> Result<(), 
                 let url = op.attr("value")?;
                 if !scene.textures.contains_key(&texture_resource_key(url)) {
                     return Err(format!("unresolved texture {url:?}"));
+                }
+            } else if op.name() == "xr.instance_table_url" {
+                let url = op.attr("value")?;
+                if !scene.instance_tables.contains_key(url) {
+                    return Err(format!("unresolved instance table {url:?}"));
                 }
             } else if op.name() == "xr.material_shader_url" {
                 let url = op.attr("value")?;

@@ -16,7 +16,7 @@ fn nearest_sample(pixel: vec2<i32>) -> u32 {
     var depth = sample_depth(pixel, 0u);
     for (var sample = 1u; sample < textureNumSamples(depth_buffer); sample += 1u) {
         let z = sample_depth(pixel, sample);
-        if z < depth {
+        if nearer_clip_depth(z, depth) {
             nearest = sample;
             depth = z;
         }

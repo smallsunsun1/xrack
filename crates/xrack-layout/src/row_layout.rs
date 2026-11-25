@@ -95,6 +95,159 @@ struct LocalLayout {
     last_frame: u64,
 }
 
+const MAX_INDEXED_CHILDREN: usize = 4096;
+
+// Direct children use their placement slot. Nested paths and sparse
+// high-numbered slots use the existing keyed cache.
+#[derive(Default)]
+struct LocalLayouts {
+    direct: Vec<Option<Box<LocalLayout>>>,
+    nested: BTreeMap<Vec<usize>, LocalLayout>,
+    indexed_entries: usize,
+}
+
+impl LocalLayouts {
+    fn slot(path: &[usize]) -> Option<usize> {
+        match path {
+            [index] if *index < MAX_INDEXED_CHILDREN => Some(*index),
+            _ => None,
+        }
+    }
+
+    fn get(&self, path: &[usize]) -> Option<&LocalLayout> {
+        if let Some(index) = Self::slot(path) {
+            self.direct.get(index)?.as_deref()
+        } else {
+            self.nested.get(path)
+        }
+    }
+
+    fn get_mut(&mut self, path: &[usize]) -> Option<&mut LocalLayout> {
+        if let Some(index) = Self::slot(path) {
+            self.direct.get_mut(index)?.as_deref_mut()
+        } else {
+            self.nested.get_mut(path)
+        }
+    }
+
+    fn insert(&mut self, path: &[usize], layout: LocalLayout) -> Option<LocalLayout> {
+        let Some(index) = Self::slot(path) else {
+            return self.nested.insert(path.to_vec(), layout);
+        };
+        if self.direct.len() <= index {
+            self.direct.resize_with(index + 1, || None);
+        }
+        let slot = &mut self.direct[index];
+        if let Some(old) = slot.as_deref_mut() {
+            Some(std::mem::replace(old, layout))
+        } else {
+            *slot = Some(Box::new(layout));
+            self.indexed_entries += 1;
+            None
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.indexed_entries + self.nested.len()
+    }
+
+    fn retain_frame(&mut self, frame: u64) -> usize {
+        let mut retained_nodes = 0;
+        let mut indexed_entries = 0;
+        let mut len = 0;
+        for (index, slot) in self.direct.iter_mut().enumerate() {
+            if let Some(entry) = slot {
+                if entry.last_frame == frame {
+                    indexed_entries += 1;
+                    retained_nodes += entry.nodes;
+                    len = index + 1;
+                } else {
+                    *slot = None;
+                }
+            }
+        }
+        self.indexed_entries = indexed_entries;
+        self.direct.truncate(len);
+        self.nested.retain(|_, entry| {
+            if entry.last_frame == frame {
+                retained_nodes += entry.nodes;
+                true
+            } else {
+                false
+            }
+        });
+        retained_nodes
+    }
+}
+
+#[cfg(test)]
+mod local_layout_tests {
+    use super::*;
+
+    fn entry(frame: u64, nodes: usize) -> LocalLayout {
+        let node = Node::new("Rectangle", None);
+        let rect = Rect::new(0.0, 0.0, 16.0, 16.0);
+        let layout = LayoutNode::leaf(&node, rect, rect, true, true, None, 12.0);
+        LocalLayout {
+            node,
+            inputs: RowInputs {
+                size: Size::new(16.0, 16.0),
+                visible: true,
+                enabled: true,
+                layout_direction: None,
+            },
+            layout,
+            nodes,
+            last_frame: frame,
+        }
+    }
+
+    #[test]
+    fn reused_projection_refreshes_descendants_and_keeps_matching_buffers() {
+        let mut template = entry(1, 4).layout;
+        let mut group = entry(1, 2).layout;
+        group.children.push(entry(1, 1).layout);
+        template.children.extend([group, entry(1, 1).layout]);
+
+        let mut previous = template.children.clone();
+        previous[0].children[0].enabled = false;
+        previous[0].children[0].visible = false;
+        previous[0].children[0].bounds.x = 100.0;
+        let reused_buffer = previous[0].children.as_ptr();
+        previous[1].children.push(entry(0, 1).layout);
+
+        let bounds = Rect::new(30.25, 20.5, 16.0, 16.0);
+        let clip = Rect::new(32.0, 21.0, 10.0, 11.0);
+        let expected = clone_in_view(&template, bounds, clip, None);
+        let reused = clone_in_view_reusing(&template, bounds, clip, None, Some(previous));
+        assert_eq!(reused, expected);
+        assert_eq!(reused.children[0].children.as_ptr(), reused_buffer);
+    }
+
+    #[test]
+    fn direct_and_nested_paths_keep_separate_cache_entries() {
+        let mut layouts = LocalLayouts::default();
+        assert!(layouts.insert(&[2], entry(1, 4)).is_none());
+        assert!(layouts.insert(&[9], entry(1, 6)).is_none());
+        assert!(layouts.insert(&[2, 0], entry(2, 5)).is_none());
+        assert!(
+            layouts
+                .insert(&[MAX_INDEXED_CHILDREN], entry(2, 8))
+                .is_none()
+        );
+        assert_eq!(layouts.insert(&[2], entry(2, 3)).unwrap().nodes, 4);
+        assert_eq!(layouts.len(), 4);
+
+        assert_eq!(layouts.retain_frame(2), 16);
+        assert_eq!(layouts.len(), 3);
+        assert_eq!(layouts.direct.len(), 3);
+        assert_eq!(layouts.get(&[2]).unwrap().nodes, 3);
+        assert!(layouts.get(&[9]).is_none());
+        assert_eq!(layouts.get(&[2, 0]).unwrap().nodes, 5);
+        assert_eq!(layouts.get(&[MAX_INDEXED_CHILDREN]).unwrap().nodes, 8);
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(super) struct AbsoluteLeafInputs {
     pub content: Rect,
@@ -189,15 +342,21 @@ pub struct RowLayoutCache {
     stats: RowLayoutStats,
     scroll_views: BTreeMap<Vec<usize>, ScrollViewEntry>,
     table_sizes: BTreeMap<Vec<usize>, crate::table::ColumnSizing>,
-    local_subtrees: BTreeMap<Vec<usize>, LocalLayout>,
+    local_subtrees: LocalLayouts,
     local_nodes: usize,
     local_frame: u64,
     local_visited: usize,
     absolute_leaves: Vec<AbsoluteLeaf>,
     next_absolute_leaf: usize,
+    recycled_layout: Option<LayoutNode>,
 }
 
 impl RowLayoutCache {
+    #[doc(hidden)]
+    pub fn use_recycled_layout(&mut self, layout: Option<LayoutNode>) {
+        self.recycled_layout = layout;
+    }
+
     pub fn stats(&self) -> RowLayoutStats {
         self.stats
     }
@@ -209,7 +368,7 @@ impl RowLayoutCache {
         let typography = typography.as_ref().map_or_else(Weak::new, Rc::downgrade);
         if !self.typography.ptr_eq(&typography) {
             self.typography = typography;
-            self.local_subtrees.clear();
+            self.local_subtrees = LocalLayouts::default();
             self.local_nodes = 0;
             self.absolute_leaves.clear();
             self.views.clear();
@@ -295,7 +454,7 @@ impl RowLayoutCache {
         node: &Node,
         inputs: RowInputs,
         kind: LocalSubtree,
-    ) -> Option<&LayoutNode> {
+    ) -> Option<(&LayoutNode, Option<Vec<LayoutNode>>)> {
         let row = self.local_subtrees.get_mut(path)?;
         if row.inputs != inputs || !kind.matches(&row.node, node) {
             return None;
@@ -303,7 +462,18 @@ impl RowLayoutCache {
         self.local_visited += usize::from(row.last_frame != self.local_frame);
         row.last_frame = self.local_frame;
         self.stats.subtree_reuses += 1;
-        Some(&row.layout)
+        // Each field is refreshed from the cached template. The old
+        // slot provides the child storage when the shape fits.
+        let old_children = if let [index] = path {
+            self.recycled_layout.as_mut().and_then(|recycled| {
+                let slot = recycled.children.get_mut(*index)?;
+                (slot.children.capacity() == row.layout.children.len())
+                    .then(|| std::mem::take(&mut slot.children))
+            })
+        } else {
+            None
+        };
+        Some((&row.layout, old_children))
     }
 
     pub(super) fn table_sizing(
@@ -388,7 +558,7 @@ impl RowLayoutCache {
             return;
         }
         let previous = self.local_subtrees.insert(
-            path.to_vec(),
+            path,
             LocalLayout {
                 node: node.clone(),
                 inputs,
@@ -517,16 +687,7 @@ impl RowLayoutCache {
         // No pruning is needed when every entry was visited or replaced.
         // This is common in frames that only reposition cached subtrees.
         if self.scene_changed && self.local_visited != self.local_subtrees.len() {
-            let mut retained_nodes = 0;
-            self.local_subtrees.retain(|_, entry| {
-                if entry.last_frame == self.local_frame {
-                    retained_nodes += entry.nodes;
-                    true
-                } else {
-                    false
-                }
-            });
-            self.local_nodes = retained_nodes;
+            self.local_nodes = self.local_subtrees.retain_frame(self.local_frame);
         }
         for sizing in self.table_sizes.values_mut() {
             sizing.finish_frame();
@@ -615,12 +776,23 @@ pub(super) fn clone_in_view(
     clip: Rect,
     ancestors: Option<&Rc<ClipChain>>,
 ) -> LayoutNode {
+    clone_in_view_reusing(layout, bounds, clip, ancestors, None)
+}
+
+pub(super) fn clone_in_view_reusing(
+    layout: &LayoutNode,
+    bounds: Rect,
+    clip: Rect,
+    ancestors: Option<&Rc<ClipChain>>,
+    reuse: Option<Vec<LayoutNode>>,
+) -> LayoutNode {
     fn translate_children(
         layout: &LayoutNode,
         x: f32,
         y: f32,
         clip: Rect,
         ancestors: Option<&Rc<ClipChain>>,
+        reuse: Option<Vec<LayoutNode>>,
     ) -> Vec<LayoutNode> {
         let Some(first) = layout.children.first() else {
             return Vec::new();
@@ -630,29 +802,50 @@ pub(super) fn clone_in_view(
         // Project it once for adjacent siblings at this placement.
         let mut local_clip = first.clip;
         let mut projected_clip = translate(local_clip).intersect(clip);
-        layout
-            .children
-            .iter()
-            .map(|child| {
-                if child.clip != local_clip {
-                    local_clip = child.clip;
-                    projected_clip = translate(local_clip).intersect(clip);
+        let placements = layout.children.iter().map(|child| {
+            if child.clip != local_clip {
+                local_clip = child.clip;
+                projected_clip = translate(local_clip).intersect(clip);
+            }
+            (child, translate(child.bounds), projected_clip)
+        });
+        let translate_child = |(child, bounds, child_clip): (&LayoutNode, Rect, Rect)| {
+            child.clone_with_placement(
+                bounds,
+                child_clip,
+                ancestors,
+                translate_children(child, x, y, clip, ancestors, None),
+            )
+        };
+        match reuse {
+            Some(mut children) if children.len() == layout.children.len() => {
+                for (target, (template, bounds, clip_at_child)) in
+                    children.iter_mut().zip(placements)
+                {
+                    target.clone_placement_from(template, bounds, clip_at_child, ancestors);
+                    if !target.children.is_empty() || !template.children.is_empty() {
+                        let reuse = (target.children.capacity() == template.children.len())
+                            .then(|| std::mem::take(&mut target.children));
+                        target.children =
+                            translate_children(template, x, y, clip, ancestors, reuse);
+                    }
                 }
-                child.clone_with_placement(
-                    translate(child.bounds),
-                    projected_clip,
-                    ancestors,
-                    translate_children(child, x, y, clip, ancestors),
-                )
-            })
-            .collect()
+                children
+            }
+            Some(mut children) => {
+                children.clear();
+                children.extend(placements.map(translate_child));
+                children
+            }
+            None => placements.map(translate_child).collect(),
+        }
     }
 
     layout.clone_with_placement(
         bounds,
         clip,
         ancestors,
-        translate_children(layout, bounds.x, bounds.y, clip, ancestors),
+        translate_children(layout, bounds.x, bounds.y, clip, ancestors, reuse),
     )
 }
 

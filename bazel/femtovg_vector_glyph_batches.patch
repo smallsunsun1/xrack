@@ -1,0 +1,239 @@
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -458,53 +458,46 @@
+     line_width: f32,
+ }
+ 
++const MASK_SAMPLES: [(f32, f32); 8] = [
++    (-7.0 / 16.0, -1.0 / 16.0),
++    (-1.0 / 16.0, -5.0 / 16.0),
++    (3.0 / 16.0, -7.0 / 16.0),
++    (5.0 / 16.0, -3.0 / 16.0),
++    (7.0 / 16.0, 1.0 / 16.0),
++    (1.0 / 16.0, 5.0 / 16.0),
++    (-3.0 / 16.0, 7.0 / 16.0),
++    (-5.0 / 16.0, 3.0 / 16.0),
++];
++const COMMANDS_PER_MASK: usize = 1 + MASK_SAMPLES.len();
++
+ impl PendingMask<'_> {
+     // Clears the glyph's atlas cell and draws the path into it with 8x supersampling.
+     // Must be called inside an offscreen_pass() with the atlas texture as the render target,
+     // because it changes the current state.
+-    fn draw<T: Renderer>(&self, canvas: &mut Canvas<T>, mode: RenderMode) {
++    fn draw<T: Renderer>(&self, canvas: &mut Canvas<T>, mode: RenderMode) -> usize {
+         // clear_rect() records the current composite operation, which the previous mask left
+         // additive. Reset the state so the clear is queued with the default one.
+         canvas.enter_offscreen_state(self.origin);
+         let (x, y, width, height) = self.cell;
+         canvas.clear_rect(x, y, width, height, Color::black());
++        let first_vertex = canvas.verts.len();
+         canvas.global_composite_blend_func(crate::BlendFactor::SrcAlpha, crate::BlendFactor::One);
+ 
+-        let factor = 1.0 / 8.0;
++        let factor = 1.0 / MASK_SAMPLES.len() as f32;
+ 
+         let mask_color = Color::rgbf(factor, factor, factor);
+-
+-        // 4x
+-        // let points = [
+-        //     (-3.0/8.0, 1.0/8.0),
+-        //     (1.0/8.0, 3.0/8.0),
+-        //     (3.0/8.0, -1.0/8.0),
+-        //     (-1.0/8.0, -3.0/8.0),
+-        // ];
+-
+-        // 8x
+-        let points = [
+-            (-7.0 / 16.0, -1.0 / 16.0),
+-            (-1.0 / 16.0, -5.0 / 16.0),
+-            (3.0 / 16.0, -7.0 / 16.0),
+-            (5.0 / 16.0, -3.0 / 16.0),
+-            (7.0 / 16.0, 1.0 / 16.0),
+-            (1.0 / 16.0, 5.0 / 16.0),
+-            (-3.0 / 16.0, 7.0 / 16.0),
+-            (-5.0 / 16.0, 3.0 / 16.0),
+-        ];
+ 
+         if mode == RenderMode::Fill {
+             canvas.fill_glyph_samples(
+                 &self.path,
+                 self.origin,
+                 self.scale,
+-                &points,
++                &MASK_SAMPLES,
+                 &PaintFlavor::Color(mask_color),
+             );
+-            return;
+-        }
+-        for point in &points {
++            return first_vertex;
++        }
++        for point in MASK_SAMPLES {
+             canvas.state_mut().transform = self.origin;
+             canvas.translate(point.0, point.1);
+             canvas.scale(self.scale, self.scale);
+@@ -518,6 +511,126 @@
+                     ..Default::default()
+                 },
+             );
++        }
++        first_vertex
++    }
++}
++
++#[derive(Default)]
++struct GlyphMaskBatches {
++    current: std::ops::Range<usize>,
++    completed: Vec<std::ops::Range<usize>>,
++}
++
++impl GlyphMaskBatches {
++    fn record<T: Renderer>(
++        &mut self,
++        canvas: &Canvas<T>,
++        start: usize,
++        first_vertex: usize,
++        cell: (u32, u32, u32, u32),
++    ) {
++        use crate::renderer::CommandType;
++
++        let end = canvas.commands.len();
++        let commands = &canvas.commands[start..end];
++        let (x, y, width, height) = cell;
++        // The atlas packer gives each mask a disjoint cell. Also verify the
++        // actual tessellated vertices, including the sample offsets and cover
++        // quads. An outline that exceeds its font's metrics keeps its draw order.
++        let isolated = commands.len() == COMMANDS_PER_MASK
++            && matches!(commands[0].cmd_type, CommandType::ClearRect { keep_clip: false, .. })
++            && commands[1..].iter().all(|command| {
++                matches!(command.cmd_type, CommandType::ConcaveFill { .. })
++                    && !command.clip_active
++                    && command.triangles_verts.is_some_and(|(_, count)| count == 4)
++                    && command.drawables.iter().all(|drawable| drawable.stroke_verts.is_none())
++            })
++            && canvas.verts[first_vertex..].iter().all(|vertex| {
++                (x as f32) < vertex.x
++                    && vertex.x < (x + width) as f32
++                    && (y as f32) < vertex.y
++                    && vertex.y < (y + height) as f32
++            });
++        // A render-target change inserts a command between the masks.
++        if !isolated || self.current.end != start {
++            self.close_current();
++            self.current = start..start;
++        }
++        if isolated {
++            self.current.end = end;
++        }
++    }
++
++    fn close_current(&mut self) {
++        if self.current.len() > COMMANDS_PER_MASK {
++            self.completed.push(std::mem::take(&mut self.current));
++        }
++    }
++
++    fn finish<T: Renderer>(mut self, canvas: &mut Canvas<T>) {
++        self.close_current();
++        let Some(mut cursor) = self.completed.first().map(|range| range.start) else {
++            return;
++        };
++        // Move each command at most once even when target switches or
++        // unbatchable outlines split a glyph run into several batches.
++        let mut original = canvas.commands.split_off(cursor).into_iter();
++        for range in self.completed {
++            canvas.commands.extend(original.by_ref().take(range.start - cursor));
++            Self::merge(
++                canvas,
++                original.by_ref().take(range.len()),
++                range.len() / COMMANDS_PER_MASK,
++            );
++            cursor = range.end;
++        }
++        canvas.commands.extend(original);
++    }
++
++    fn merge<T: Renderer>(
++        canvas: &mut Canvas<T>,
++        masks: impl Iterator<Item = crate::renderer::Command>,
++        glyphs: usize,
++    ) {
++        use crate::renderer::Command;
++
++        let mut samples: [Option<(Command, Vec<usize>)>; MASK_SAMPLES.len()] = Default::default();
++
++        // Clear every cell, then process the same sample across all cells.
++        // Each sample uses the same solid paint and additive blend state.
++        for (index, mut command) in masks.enumerate() {
++            let sample = index % COMMANDS_PER_MASK;
++            if sample == 0 {
++                canvas.commands.push(command);
++            } else if let Some((cover, _)) = command.triangles_verts {
++                match &mut samples[sample - 1] {
++                    Some((first, covers)) => {
++                        first.drawables.append(&mut command.drawables);
++                        covers.push(cover);
++                    }
++                    slot => {
++                        let mut covers = Vec::with_capacity(glyphs);
++                        covers.push(cover);
++                        *slot = Some((command, covers));
++                    }
++                }
++            }
++        }
++        for (mut command, covers) in samples.into_iter().flatten() {
++            let start = canvas.verts.len();
++            for cover in covers {
++                if canvas.verts.len() != start {
++                    // Degenerate connector triangles preserve the cover quads'
++                    // winding and leave the pixels between cells untouched.
++                    let last = canvas.verts[canvas.verts.len() - 1];
++                    let next = canvas.verts[cover];
++                    canvas.verts.extend([last, next]);
++                }
++                canvas.verts.extend_from_within(cover..cover + 4);
++            }
++            command.triangles_verts = Some((start, canvas.verts.len() - start));
++            canvas.commands.push(command);
+         }
+     }
+ }
+@@ -572,7 +685,10 @@
+             0.0
+         };
+ 
+-        let mut add_glyph = |canvas: &mut Canvas<T>, glyph: PositionedGlyph| -> Result<(), ErrorKind> {
++        let mut add_glyph = |canvas: &mut Canvas<T>,
++                             glyph: PositionedGlyph,
++                             batches: &mut GlyphMaskBatches|
++         -> Result<(), ErrorKind> {
+             // The fraction of x in tenths of a pixel, -10 to 10, with the sign of x. It is the
+             // offset of the glyph from `glyph.x.trunc()`, where the quad is placed below.
+             // `quantize` rounds to the nearest step only for a non-negative value, so it is given
+@@ -615,7 +731,11 @@
+                     if let Some((_, Some(mask))) = &placed {
+                         // The masks of one run can be in different atlas textures.
+                         canvas.set_render_target(RenderTarget::Image(mask.image_id));
+-                        mask.draw(canvas, mode);
++                        let first_command = canvas.commands.len();
++                        let first_vertex = mask.draw(canvas, mode);
++                        if mode == RenderMode::Fill {
++                            batches.record(canvas, first_command, first_vertex, mask.cell);
++                        }
+                     }
+                     glyph_cache_entry.insert_entry(placed.map(|(rendered, _)| rendered))
+                 }
+@@ -668,7 +788,10 @@
+         // own render target, so no target switch is queued unless a mask is drawn.
+         let target = canvas.current_render_target;
+         canvas.offscreen_pass(target, Transform2D::identity(), |canvas| {
+-            glyphs.try_for_each(|glyph| add_glyph(canvas, glyph))
++            let mut batches = GlyphMaskBatches::default();
++            let result = glyphs.try_for_each(|glyph| add_glyph(canvas, glyph, &mut batches));
++            batches.finish(canvas);
++            result
+         })?;
+ 
+         Ok(GlyphDrawCommands {

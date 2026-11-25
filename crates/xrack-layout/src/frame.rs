@@ -32,6 +32,7 @@ pub struct FrameCache {
     typography: Option<Weak<()>>,
     revision: u64,
     layout: Weak<LayoutNode>,
+    recyclable: Option<Rc<LayoutNode>>,
 }
 
 impl FrameCache {
@@ -70,6 +71,28 @@ impl FrameCache {
         viewport: Size,
         input: &Interaction,
         resolve: impl FnOnce(Rc<Node>) -> (Rc<Node>, LayoutNode),
+    ) -> (Rc<Node>, Rc<LayoutNode>) {
+        self.prepare_impl(scene, viewport, input, false, |scene, _| resolve(scene))
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_reusing(
+        &mut self,
+        scene: Rc<Node>,
+        viewport: Size,
+        input: &Interaction,
+        resolve: impl FnOnce(Rc<Node>, Option<LayoutNode>) -> (Rc<Node>, LayoutNode),
+    ) -> (Rc<Node>, Rc<LayoutNode>) {
+        self.prepare_impl(scene, viewport, input, true, resolve)
+    }
+
+    fn prepare_impl(
+        &mut self,
+        scene: Rc<Node>,
+        viewport: Size,
+        input: &Interaction,
+        recycle: bool,
+        resolve: impl FnOnce(Rc<Node>, Option<LayoutNode>) -> (Rc<Node>, LayoutNode),
     ) -> (Rc<Node>, Rc<LayoutNode>) {
         let changed_scene = self
             .input
@@ -155,6 +178,16 @@ impl FrameCache {
             });
             self.input_changed.notify();
         }
+        let recyclable = if recycle && self.prepared.is_dirty() && projection.is_none() {
+            // The host can still hold the current layout for reconciliation.
+            // Give it a frame to release that snapshot before taking ownership.
+            let previous = self.recyclable.take().and_then(Rc::into_inner);
+            self.recyclable = self.layout.upgrade();
+            previous
+        } else {
+            self.recyclable = None;
+            None
+        };
         let mut reused = true;
         let projected = projection.is_some();
         let (prepared, layout) = self.prepared.get(|| {
@@ -163,7 +196,7 @@ impl FrameCache {
             if let Some(layout) = projection {
                 return (None, Rc::new(layout));
             }
-            let (prepared, layout) = resolve(scene.clone());
+            let (prepared, layout) = resolve(scene.clone(), recyclable);
             self.uses_base_scene = Rc::ptr_eq(&scene, &prepared);
             ((!self.uses_base_scene).then_some(prepared), Rc::new(layout))
         });
@@ -174,5 +207,58 @@ impl FrameCache {
             self.revision = NEXT_FRAME.fetch_add(1, Ordering::Relaxed);
         }
         (prepared.unwrap_or(scene), layout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{TextMeasurer, layout_with_input};
+    use xrack_runtime::Length;
+
+    struct Metrics;
+
+    impl TextMeasurer for Metrics {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+
+    #[test]
+    fn recycling_keeps_shared_snapshots_and_returns_an_exclusive_older_layout() {
+        let mut child = Node::new("Rectangle", None);
+        child.properties.insert("width", Length(16.0).into());
+        child.properties.insert("height", Length(16.0).into());
+        let mut window = Node::new("Window", None);
+        window.children.push(child);
+        let mut scene = Rc::new(window);
+        let mut cache = FrameCache::default();
+        let viewport = Size::new(128.0, 96.0);
+        let input = Interaction::default();
+
+        let (_, held) =
+            cache.prepare_reusing(scene.clone(), viewport, &input, |scene, previous| {
+                assert!(previous.is_none());
+                let fresh = layout_with_input(&scene, viewport, &mut Metrics, &input);
+                (scene, fresh)
+            });
+        let saved = held.as_ref().clone();
+
+        for step in 1..=4 {
+            Rc::make_mut(&mut scene).children[0]
+                .properties
+                .insert("x", Length(f64::from(step)).into());
+            let (_, current) =
+                cache.prepare_reusing(scene.clone(), viewport, &input, |scene, previous| {
+                    assert_eq!(
+                        previous.as_ref().map(|layout| layout.children[0].bounds.x),
+                        (step >= 3).then_some((step - 2) as f32),
+                    );
+                    let fresh = layout_with_input(&scene, viewport, &mut Metrics, &input);
+                    (scene, fresh)
+                });
+            assert_eq!(current.children[0].bounds.x, step as f32);
+        }
+        assert_eq!(*held, saved);
     }
 }

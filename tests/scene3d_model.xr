@@ -65,6 +65,28 @@ export component ProjectionReuseScene inherits Window {
     }
 }
 
+struct OrthoExtentActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-width: float, camera-height: float,
+}
+
+export component OrthoExtentProbe inherits Window {
+    in-out property <float> span: 8;
+    property <[OrthoExtentActor]> cameras: [
+        OrthoExtentActor {
+            id: "map", mesh: "", x: 0, y: 0, z: 8,
+            scale-x: 1, scale-y: 1, scale-z: 1,
+            yaw: 0, pitch: 0, roll: 0, color: #fff,
+            camera-kind: "orthographic", camera-width: root.span, camera-height: 4,
+        },
+    ];
+    out property <projectedpoint3d> projected: Scene3D.project-camera(
+        root.cameras, "map", Point2D.new(200px, 160px), Point3D.new(2, 1, 0));
+}
+
 export component MaterialScene inherits Window {
     width: 200px;
     height: 200px;

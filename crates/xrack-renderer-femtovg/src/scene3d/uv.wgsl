@@ -25,7 +25,13 @@ fn base_texture_uses_alpha(channels: vec4<u32>) -> bool {
     return (channels.x & 15u) == 4u;
 }
 
-fn coverage_vertex_alpha(channels: vec4<u32>, alpha: vec2<f32>) -> f32 {
-    // X includes the interpolated vertex alpha. Y carries only the instance alpha.
-    return select(alpha.x, alpha.y, (channels.z & 0x80000000u) != 0u);
+fn coverage_vertex_alpha(channels: vec4<u32>, vertex_alpha: f32) -> f32 {
+    return select(vertex_alpha, 1.0, (channels.z & 0x80000000u) != 0u);
+}
+
+// Blend mode 2 takes opacity from the instance and tests the underlying
+// material's mask separately. The other modes use the combined coverage.
+fn material_coverage(mode: f32, surface_alpha: f32, tint_alpha: f32) -> vec2<f32> {
+    let coverage = surface_alpha * tint_alpha;
+    return select(vec2(coverage), vec2(tint_alpha, surface_alpha), mode > 1.5);
 }

@@ -2,16 +2,18 @@ struct TransparentActor {
     id: string, mesh: string,
     x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
     yaw: float, pitch: float, roll: float, color: color, visible: bool,
-    camera-kind: string, camera-height: float,
+    camera-kind: string, camera-height: float, depth-bias: float,
 }
 
 export component TransparencyDemo inherits Window {
     title: "XRack · 相交透明面";
     width: 480px;
-    height: 300px;
+    height: 344px;
     background: #141d29;
 
     in-out property <bool> weighted: false;
+    in-out property <float> red-depth-bias: 0;
+    in-out property <bool> cache: false;
     in-out property <bool> reversed: false;
     in-out property <bool> smooth: false;
     in-out property <bool> hdr: false;
@@ -21,11 +23,11 @@ export component TransparencyDemo inherits Window {
 
     property <TransparentActor> defaults: TransparentActor {
         id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
-        yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true, camera-kind: "", camera-height: 6,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true, camera-kind: "", camera-height: 6, depth-bias: 0,
     };
     property <string> sheet: @mesh-url("models/oit-sheet.gltf");
     property <TransparentActor> red: TransparentActor {
-        id: "red", mesh: root.sheet, x: root.shift, yaw: 40, color: #ff3838, ..root.defaults
+        id: "red", mesh: root.sheet, x: root.shift, yaw: 40, color: #ff3838, depth-bias: root.red-depth-bias, ..root.defaults
     };
     property <TransparentActor> blue: TransparentActor {
         id: "blue", mesh: root.sheet, x: root.shift, yaw: -40, color: #3864ff,
@@ -62,6 +64,7 @@ export component TransparencyDemo inherits Window {
         camera: "eye";
         model: root.models;
         order-independent-transparency: root.weighted;
+        cache-rendering: root.cache;
         multisampling: root.smooth;
         environment: root.hdr ? @environment-url("models/studio.hdr") : "";
         scene-background: #172333;
@@ -77,5 +80,15 @@ export component TransparencyDemo inherits Window {
         reversed-toggle := CheckBox { text: "反转行序"; checked <=> root.reversed; }
         smooth-toggle := CheckBox { text: "4× MSAA"; checked <=> root.smooth; }
         hdr-toggle := CheckBox { text: "HDR"; checked <=> root.hdr; }
+    }
+    bias-toggle := Button {
+        x: 12px; y: 302px; width: 156px; height: 32px;
+        enabled: !root.weighted;
+        text: root.red-depth-bias == 0 ? "默认排序"
+            : root.red-depth-bias > 0 ? "红片先画" : "红片后画";
+        clicked => {
+            root.red-depth-bias = root.red-depth-bias == 0 ? 0.8
+                : root.red-depth-bias > 0 ? -0.8 : 0;
+        }
     }
 }

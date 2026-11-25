@@ -29,6 +29,14 @@ pub(super) struct DisplayList<'a> {
     rest: Vec<Primitive<'a>>,
 }
 
+#[derive(Clone, Copy)]
+struct LabelBatchContext<'a> {
+    label: &'a Rc<crate::text::PreparedLabel>,
+    placement: crate::label_glyphs::Placement,
+    retain_positions: bool,
+    reuse_unicode: bool,
+}
+
 struct WindowImages {
     atlas: Option<ImageId>,
     quads: Vec<Quad>,
@@ -81,7 +89,7 @@ impl WindowImages {
                 return Ok(false);
             }
             let Some((image, quad)) =
-                renderer.prepare_image_quad_for_transform(&item, self.clip, self.transform)?
+                renderer.prepare_image_quad(&item, self.clip, self.transform)?
             else {
                 return Ok(false);
             };
@@ -1109,7 +1117,9 @@ impl<'a> DisplayList<'a> {
                         renderer.draw_primitive(item)?;
                         continue;
                     }
-                    let Some(first) = renderer.prepare_image_quad(&item, self.clip)? else {
+                    let Some(first) =
+                        renderer.prepare_image_quad(&item, self.clip, self.transform)?
+                    else {
                         renderer.draw_primitive(item)?;
                         continue;
                     };
@@ -1118,7 +1128,9 @@ impl<'a> DisplayList<'a> {
                         if batch_order(next) != order {
                             break;
                         }
-                        let Some(quad) = renderer.prepare_image_quad(next, self.clip)? else {
+                        let Some(quad) =
+                            renderer.prepare_image_quad(next, self.clip, self.transform)?
+                        else {
                             break;
                         };
                         if first.0 != quad.0 {
@@ -1190,16 +1202,8 @@ impl<'a> DisplayList<'a> {
                         lines.push((*origin, *text));
                         items.next();
                     }
-                    if !renderer.draw_glyph_batch(&lines, paint)? {
-                        for (origin, text) in lines {
-                            renderer.draw_primitive(Primitive::Text {
-                                origin,
-                                text,
-                                paint,
-                                cell_clip: None,
-                                cell_fonts: None,
-                            })?;
-                        }
+                    if !renderer.draw_glyph_batch(&lines, paint, None)? {
+                        renderer.draw_text_lines(lines, paint)?;
                     }
                 }
                 item => renderer.draw_primitive(item)?,
@@ -1409,6 +1413,42 @@ struct ClippedGlyphBand {
     runs: u64,
 }
 
+impl ClippedGlyphBand {
+    fn mask_edges(&self, scale: f32) -> Option<[f32; 4]> {
+        let clip = self.clip.scaled(scale);
+        let mut edges = [
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::INFINITY,
+        ];
+        let axis = match self.axis {
+            Orientation::Horizontal => {
+                edges[0] = clip.x;
+                edges[2] = (self.clip.x + self.clip.width) * scale;
+                0
+            }
+            Orientation::Vertical => {
+                edges[1] = clip.y;
+                edges[3] = (self.clip.y + self.clip.height) * scale;
+                1
+            }
+        };
+        // The other axis already contains the glyph samples. On this
+        // axis a scissor ramps over 1/scale device pixels. Rounding the
+        // edge is exact when every pixel center is outside that ramp.
+        let full_coverage = 0.5 - 0.5 / scale;
+        for edge in [axis, axis + 2] {
+            let pixel_edge = edges[edge].round();
+            if !((edges[edge] - pixel_edge).abs() <= full_coverage) {
+                return None;
+            }
+            edges[edge] = pixel_edge;
+        }
+        Some(edges)
+    }
+}
+
 impl GlyphBatch {
     fn clip_band(&mut self, clip: Rect, axis: Orientation, start: usize) {
         let matching = self.scissors.iter().position(|band| {
@@ -1456,6 +1496,119 @@ struct CachedGlyphExtents {
     font: FontId,
     glyph: u16,
     extents: Option<crate::text::GlyphExtents>,
+}
+
+struct LineGlyphBatch {
+    font: Option<FontId>,
+    positions: Vec<PositionedGlyph>,
+    offscreen: Option<OffscreenGlyphs>,
+    bottom: f32,
+}
+
+impl LineGlyphBatch {
+    fn push(&mut self, text: &crate::TextSystem, font: FontId, glyph: PositionedGlyph) -> bool {
+        if self.font.is_some_and(|previous| previous != font) {
+            return false;
+        }
+        self.font = Some(font);
+        if !self.offscreen.as_mut().is_some_and(|offscreen| {
+            offscreen.classify(text, font, &glyph) == GlyphVisibility::RepeatedOffscreen
+        }) {
+            self.positions.push(glyph);
+        }
+        true
+    }
+
+    fn accept_line(&mut self, top: f32, height: f32, scale: f32) -> bool {
+        // The atlas may submit color and alpha glyphs separately.
+        if top < self.bottom {
+            return false;
+        }
+        self.bottom = top + height + 1.0 / scale;
+        true
+    }
+}
+
+struct OffscreenGlyphs {
+    scale: f32,
+    translation_y: f32,
+    height: f32,
+    size_range: [f32; 2],
+    entries: [Option<OffscreenGlyph>; 128],
+}
+
+#[derive(Clone, Copy)]
+struct OffscreenGlyph {
+    font: FontId,
+    id: u16,
+    vertical_edges: Option<[f32; 2]>,
+    empty: bool,
+    emitted_phases: u32,
+}
+
+#[derive(PartialEq, Eq)]
+enum GlyphVisibility {
+    PossiblyVisible,
+    FirstOffscreen,
+    RepeatedOffscreen,
+}
+
+impl OffscreenGlyphs {
+    fn classify(
+        &mut self,
+        text: &crate::TextSystem,
+        font: FontId,
+        glyph: &PositionedGlyph,
+    ) -> GlyphVisibility {
+        // A quick rejection avoids looking up outlines for visible lines.
+        // Actual culling always checks the padded atlas bounds.
+        let y = (glyph.y * self.scale).round();
+        let target_y = y + self.translation_y;
+        // Leave very large coordinates to the atlas, where separate additions
+        // can round by more than our one-pixel safety margin.
+        if (0.0..=self.height).contains(&target_y)
+            || !target_y.is_finite()
+            || y.abs().max(self.translation_y.abs()) > 1_048_576.0
+        {
+            return GlyphVisibility::PossiblyVisible;
+        }
+        let slot = &mut self.entries[usize::from(glyph.glyph_id) % self.entries.len()];
+        if slot.is_none_or(|entry| entry.font != font || entry.id != glyph.glyph_id) {
+            let outline = text.outline_glyph(font, glyph.glyph_id);
+            *slot = Some(OffscreenGlyph {
+                font,
+                id: glyph.glyph_id,
+                vertical_edges: outline
+                    .and_then(|outline| outline.atlas_extents(self.size_range))
+                    .map(|extents| {
+                        let [_, top, _, bottom] = extents.padded_edges();
+                        [top, bottom]
+                    }),
+                empty: outline.is_some_and(|outline| outline.bounds.is_none()),
+                emitted_phases: 0,
+            });
+        }
+        let Some(entry) = slot.as_mut() else {
+            return GlyphVisibility::PossiblyVisible;
+        };
+        if !entry.empty
+            && !entry.vertical_edges.is_some_and(|[top, bottom]| {
+                y + bottom + self.translation_y < -1.0
+                    || y + top + self.translation_y > self.height + 1.0
+            })
+        {
+            return GlyphVisibility::PossiblyVisible;
+        }
+        // Retain the first offscreen occurrence of an unseen atlas key. Its
+        // tile allocation can affect the sampling of visible glyphs.
+        let phase = crate::glyph_masks::subpixel_phase((glyph.x * self.scale).fract());
+        let mask = 1 << (phase + 10);
+        if entry.emitted_phases & mask != 0 {
+            return GlyphVisibility::RepeatedOffscreen;
+        }
+        entry.emitted_phases |= mask;
+        GlyphVisibility::FirstOffscreen
+    }
 }
 
 struct ClippedGlyphLine<'a> {
@@ -1567,6 +1720,14 @@ impl Renderer {
         };
         let style = self.text.font_attributes(Some(node));
         let font = self.text.label_font(style, size);
+        let cached = |node: &Node, layout: &LayoutNode| {
+            let bounds = layout.bounds;
+            self.text.cached_prepared_label(
+                node,
+                Size::new(bounds.width, bounds.height),
+                layout.layout_direction_override(),
+            )
+        };
         let prepare = |node: &Node, layout: &LayoutNode| {
             let bounds = layout.bounds;
             self.text.prepared_label_with_font(
@@ -1576,7 +1737,9 @@ impl Renderer {
                 font,
             )
         };
-        let first_label = prepare(node, layout);
+        let first_label = cached(node, layout)
+            .filter(|label| label.font == font)
+            .unwrap_or_else(|| prepare(node, layout));
         let paint = first_label.paint(color(*tint));
         let append = |label: &crate::text::PreparedLabel,
                       bounds: Rect,
@@ -1585,16 +1748,16 @@ impl Renderer {
                       batch: &mut GlyphBatch| {
             // Glyphs from different lines can overlap, while an atlas batch
             // groups drawing by texture.
-            let [line] = label.layout.lines.as_slice() else {
+            let Some((origin, text)) = label.only_line() else {
                 return false;
             };
             self.append_clipped_glyphs(
                 ClippedGlyphLine {
                     origin: Point {
-                        x: bounds.x + line.origin.x,
-                        y: bounds.y + line.origin.y,
+                        x: bounds.x + origin.x,
+                        y: bounds.y + origin.y,
                     },
-                    text: &line.text,
+                    text,
                     clip,
                     cell: None,
                     label: Some(label),
@@ -1628,13 +1791,23 @@ impl Renderer {
                 break;
             };
             let bounds = (!deferred.is_empty()).then(|| sampled_bounds(clip.pixels, fringe));
+            let cached_label = if *next_tint == *tint {
+                cached(node, layout)
+            } else {
+                None
+            };
             let same_style = *next_tint == *tint
-                && self.text.font_attributes(Some(node)) == style
-                && self.text.font_size(node) == size;
+                && cached_label.as_ref().map_or_else(
+                    || {
+                        self.text.font_attributes(Some(node)) == style
+                            && self.text.font_size(node) == size
+                    },
+                    |label| label.font == font,
+                );
             if same_style
                 && !bounds.is_some_and(|bounds| deferred_clips.overlaps(bounds))
                 && append(
-                    &prepare(node, layout),
+                    &cached_label.unwrap_or_else(|| prepare(node, layout)),
                     layout.bounds,
                     clip,
                     *scale,
@@ -1932,11 +2105,12 @@ impl Renderer {
             return Ok(());
         };
         let clipped_runs = batch.scissors.iter().map(|band| band.runs).sum::<u64>();
-        self.draw_glyph_positions(font, batch.positions, paint, runs - clipped_runs)?;
-        if let Some(scale) = viewport_scale
-            && matches!(scale, 1.0 | 2.0 | 4.0)
-            && crate::has_device_scale(canvas_transform(&self.canvas), scale)
-        {
+        self.draw_glyph_positions(font, batch.positions, paint, runs - clipped_runs, false)?;
+        let mask_scale = viewport_scale.filter(|&scale| {
+            matches!(scale, 1.0 | 2.0 | 4.0)
+                && crate::has_device_scale(canvas_transform(&self.canvas), scale)
+        });
+        if let Some(scale) = mask_scale {
             self.draw_pixel_clipped_label_bands(font, &mut batch.scissors, paint, scale)?;
         }
         // Accepted cells occupy disjoint pixel regions. Only the axis on
@@ -1946,7 +2120,12 @@ impl Renderer {
             self.canvas.save();
             self.canvas
                 .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
-            let result = self.draw_glyph_positions(font, band.positions, paint, band.runs);
+            // A fallback draw warms the stock atlas. The next frame can
+            // batch its masks even when this band contains few glyphs.
+            let cache_short_run = !cfg!(xrack_femtovg_glyph_samples)
+                && mask_scale.is_some_and(|scale| band.mask_edges(scale).is_some());
+            let result =
+                self.draw_glyph_positions(font, band.positions, paint, band.runs, cache_short_run);
             self.canvas.restore();
             result?;
             if band.runs > 1 {
@@ -1971,36 +2150,9 @@ impl Renderer {
         };
         let mut runs = 0;
         bands.retain(|band| {
-            let clip = band.clip.scaled(scale);
-            let mut edges = [
-                f32::NEG_INFINITY,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
-                f32::INFINITY,
-            ];
-            let axis = match band.axis {
-                Orientation::Horizontal => {
-                    edges[0] = clip.x;
-                    edges[2] = (band.clip.x + band.clip.width) * scale;
-                    0
-                }
-                Orientation::Vertical => {
-                    edges[1] = clip.y;
-                    edges[3] = (band.clip.y + band.clip.height) * scale;
-                    1
-                }
+            let Some(edges) = band.mask_edges(scale) else {
+                return true;
             };
-            // The other axis already contains the glyph samples. On this
-            // axis a scissor ramps over 1/scale device pixels. Rounding the
-            // edge is exact when every pixel center is outside that ramp.
-            let full_coverage = 0.5 - 0.5 / scale;
-            for edge in [axis, axis + 2] {
-                let pixel_edge = edges[edge].round();
-                if !((edges[edge] - pixel_edge).abs() <= full_coverage) {
-                    return true;
-                }
-                edges[edge] = pixel_edge;
-            }
             let start = masks.quads.len();
             if !band.positions.iter().all(|glyph| {
                 masks.append(font, glyph.glyph_id, [glyph.x, glyph.y], edges, &self.text)
@@ -2037,6 +2189,7 @@ impl Renderer {
         positions: Vec<PositionedGlyph>,
         paint: &Paint,
         runs: u64,
+        cache_short_run: bool,
     ) -> Result<(), String> {
         if positions.is_empty() {
             return Ok(());
@@ -2053,9 +2206,10 @@ impl Renderer {
                 &self.text,
                 crate::glyph_masks::MaskRun {
                     font,
-                    positions: &positions,
+                    positions: crate::glyph_masks::MaskPositions::Transient(&positions),
                     paint,
                     scale,
+                    cache_short_run,
                 },
             )
         } else {
@@ -2240,26 +2394,41 @@ impl Renderer {
         theme: Palette,
         scale: f32,
     ) -> Option<Primitive<'a>> {
-        if !xrack_layout::uses_label_layout(node) || !Self::is_plain_label(node, layout) {
+        if !xrack_layout::uses_label_layout(node) || !Self::plain_label_layout(layout) {
             return None;
         }
+        let tint = self
+            .text
+            .plain_label_tint(node, || Self::plain_label_node(node))?;
+        let tint = if layout.enabled {
+            tint.unwrap_or(theme.text)
+        } else {
+            theme.disabled_text
+        };
         Some(Primitive::Label {
             node,
             layout,
             clip: layout.clip.intersect(layout.bounds),
-            tint: label_tint(node, layout, theme),
+            tint,
             scale,
         })
     }
 
     pub(super) fn is_plain_label(node: &Node, layout: &LayoutNode) -> bool {
+        Self::plain_label_layout(layout) && Self::plain_label_node(node)
+    }
+
+    fn plain_label_layout(layout: &LayoutNode) -> bool {
+        layout.local_transform().is_identity()
+            && layout.table_pane_clip().is_none()
+            && !layout.allows_overflow()
+    }
+
+    fn plain_label_node(node: &Node) -> bool {
         matches!(node.kind, "Label" | "Text")
             && node.opacity() == 1.0
             && node.children.is_empty()
             && node.list.is_none()
-            && layout.local_transform().is_identity()
-            && layout.table_pane_clip().is_none()
-            && !layout.allows_overflow()
             && node.properties.keys().all(|name| {
                 matches!(
                     *name,
@@ -2308,22 +2477,120 @@ impl Renderer {
             layout.layout_direction_override(),
         );
         let paint = label.paint(color(tint));
-        let mut display = DisplayList::new(self, layout.clip.intersect(bounds), scale);
-        for line in &label.layout.lines {
-            if !line.text.is_empty() {
-                display.push(Primitive::Text {
-                    origin: Point {
-                        x: bounds.x + line.origin.x,
-                        y: bounds.y + line.origin.y,
-                    },
-                    text: &line.text,
-                    paint: &paint,
-                    cell_clip: None,
-                    cell_fonts: None,
-                });
+        let position = (label.lines().len() >= 16
+            && !cfg!(any(target_os = "android", target_os = "ios"))
+            && matches!(scale, 1.0 | 2.0 | 4.0)
+            && self.display_batching
+            && !self.using_capture_canvas()
+            && !self.glyph_masks.defer_preparation
+            && !self.retained_layers.vectors.opacity_passthrough
+            && crate::has_device_scale(canvas_transform(&self.canvas), scale))
+        .then(|| crate::label_glyphs::Placement {
+            origin: [bounds.x.to_bits(), bounds.y.to_bits()],
+            scale: scale.to_bits(),
+            target_height: self.canvas.height(),
+            registered_fonts: self.text.registered_font_counts(),
+        });
+        let label_batch = position.map(|placement| {
+            let reuse = self
+                .text
+                .label_glyphs
+                .borrow_mut()
+                .observe_position(&label, placement);
+            LabelBatchContext {
+                label: &label,
+                placement,
+                retain_positions: reuse.positioned,
+                reuse_unicode: reuse.unicode,
+            }
+        });
+        if let Some(position) = position {
+            let drawn = {
+                let mut cache = self.text.label_glyphs.borrow_mut();
+                if let Some(batch) = cache.positioned(&label, position) {
+                    let masked = if self.can_cache_on_main_canvas()
+                        && let [run] = batch.runs.as_slice()
+                        && run.glyphs == (0..batch.glyphs.len())
+                    {
+                        self.glyph_masks.draw(
+                            &mut self.canvas,
+                            &self.text,
+                            crate::glyph_masks::MaskRun {
+                                font: run.font,
+                                positions: crate::glyph_masks::MaskPositions::Retained(
+                                    &batch.glyphs,
+                                ),
+                                paint: &paint,
+                                scale,
+                                cache_short_run: false,
+                            },
+                        )
+                    } else {
+                        false
+                    };
+                    if !masked {
+                        Self::submit_label_runs(
+                            &mut self.canvas,
+                            &batch.runs,
+                            &batch.glyphs,
+                            &paint,
+                        )?;
+                    }
+                    Some(batch.lines)
+                } else {
+                    None
+                }
+            };
+            if let Some(lines) = drawn {
+                self.record_label_batch(lines);
+                return Ok(());
             }
         }
-        display.submit(self)
+        let mut lines = label
+            .lines()
+            .filter(|(_, text)| !text.is_empty())
+            .map(|(origin, text)| {
+                (
+                    Point {
+                        x: bounds.x + origin.x,
+                        y: bounds.y + origin.y,
+                    },
+                    text,
+                )
+            })
+            .peekable();
+        let Some(first) = lines.next() else {
+            return Ok(());
+        };
+        let batch = self.display_batching
+            && !self.retained_layers.vectors.opacity_passthrough
+            && lines.peek().is_some();
+        let lines = std::iter::once(first).chain(lines);
+        if batch {
+            let lines: Vec<_> = lines.collect();
+            if self.draw_glyph_batch(&lines, &paint, label_batch)? {
+                return Ok(());
+            }
+            return self.draw_text_lines(lines, &paint);
+        }
+        self.draw_text_lines(lines, &paint)
+    }
+
+    fn draw_text_lines<'a>(
+        &mut self,
+        lines: impl IntoIterator<Item = (Point, &'a str)>,
+        paint: &Paint,
+    ) -> Result<(), String> {
+        for (origin, text) in lines {
+            self.draw_primitive(Primitive::Text {
+                origin,
+                text,
+                paint,
+                cell_clip: None,
+                cell_fonts: None,
+            })?;
+        }
+        Ok(())
     }
 
     pub(super) fn collect_group_primitives<'a>(
@@ -2351,24 +2618,23 @@ impl Renderer {
                 if !item.visible || child.scene_texture_only() {
                     return true;
                 }
-                if square_batch
-                    && let Some(rect) =
-                        crate::rectangle::Solid::from_node(child, item, display.scale)
-                    && rect.collect_square(display.clip, display.scale)
-                {
-                    if rect.visible() {
-                        display.push(Primitive::Rectangle(rect));
+                let primitive = match child.kind {
+                    "Rectangle" if square_batch => {
+                        let rect = crate::rectangle::Solid::from_node(child, item, display.scale)
+                            .filter(|rect| rect.collect_square(display.clip, display.scale));
+                        if rect.is_some_and(|rect| !rect.visible()) {
+                            return true;
+                        }
+                        rect.map(Primitive::Rectangle)
                     }
-                    return true;
-                }
-                if let Some(image) =
-                    self.display_image(child, item, in_layout, display.scale, display.transform)
-                {
-                    display.push(image);
-                    return true;
-                }
-                if let Some(label) = self.display_label(child, item, theme, display.scale) {
-                    display.push(label);
+                    "Image" => {
+                        self.display_image(child, item, in_layout, display.scale, display.transform)
+                    }
+                    "Text" | "Label" => self.display_label(child, item, theme, display.scale),
+                    _ => None,
+                };
+                if let Some(primitive) = primitive {
+                    display.push(primitive);
                     return true;
                 }
                 self.collect_group_primitives(child, item, display, square_batch, theme, depth - 1)
@@ -2439,14 +2705,6 @@ impl Renderer {
         &mut self,
         item: &Primitive<'_>,
         clip: Rect,
-    ) -> Result<Option<(ImageId, Quad)>, String> {
-        self.prepare_image_quad_for_transform(item, clip, canvas_transform(&self.canvas))
-    }
-
-    fn prepare_image_quad_for_transform(
-        &mut self,
-        item: &Primitive<'_>,
-        clip: Rect,
         transform: CanvasTransform,
     ) -> Result<Option<(ImageId, Quad)>, String> {
         use xrack_layout::ImagePresentation;
@@ -2502,10 +2760,16 @@ impl Renderer {
         );
     }
 
-    fn draw_glyph_batch(&mut self, lines: &[(Point, &str)], paint: &Paint) -> Result<bool, String> {
+    fn draw_glyph_batch(
+        &mut self,
+        lines: &[(Point, &str)],
+        paint: &Paint,
+        label: Option<LabelBatchContext<'_>>,
+    ) -> Result<bool, String> {
         // Native mobile font fallbacks and decorators are emitted by the full
         // text painter. Only combine lines whose glyphs can use the same font.
-        let Some([scale, scale_y]) = canvas_transform(&self.canvas).axis_scales() else {
+        let transform = canvas_transform(&self.canvas);
+        let Some([scale, scale_y]) = transform.axis_scales() else {
             return Ok(false);
         };
         if lines.len() < 2
@@ -2515,41 +2779,104 @@ impl Renderer {
             || scale <= 0.0
             || scale_y != scale
             || paint.font_size() * scale > 90.0
-            || lines.iter().any(|(_, text)| !text.is_ascii())
         {
             return Ok(false);
         }
-        let mut previous_bottom = f32::NEG_INFINITY;
-        let mut font = None;
-        let mut positions = Vec::new();
-        for (origin, text) in lines {
-            let metrics = self
-                .canvas
-                .measure_text(origin.x, origin.y, text, paint)
-                .map_err(|error| format!("text shaping failed: {error}"))?;
-            // Preserve overlap order even in fonts with colored ASCII glyphs.
-            // The glyph atlas may emit color glyphs after alpha glyphs.
-            if metrics.y < previous_bottom {
-                return Ok(false);
-            }
-            previous_bottom = metrics.y + metrics.height() + 1.0 / scale;
-            for glyph in metrics
-                .glyphs
-                .into_iter()
-                .filter(|glyph| !glyph.c.is_control())
-            {
-                if font.is_some_and(|font| font != glyph.font_id) {
-                    return Ok(false);
+        let clipped = lines.len() >= 16
+            && matches!(scale, 1.0 | 2.0 | 4.0)
+            && !self.using_capture_canvas()
+            && !self.glyph_masks.defer_preparation;
+        if lines.iter().any(|(_, text)| !text.is_ascii()) {
+            return match label {
+                Some(label)
+                    if clipped
+                        && label.reuse_unicode
+                        && paint.text_align() == femtovg::Align::Left
+                        && paint.letter_spacing() == 0.0 =>
+                {
+                    self.draw_unicode_label_batch(lines, paint, label, scale)
                 }
-                font = Some(glyph.font_id);
-                positions.push(PositionedGlyph {
-                    x: glyph.x,
-                    y: glyph.y,
-                    glyph_id: glyph.glyph_id,
-                });
+                _ => Ok(false),
+            };
+        }
+        let new_batch = || LineGlyphBatch {
+            font: None,
+            positions: Vec::new(),
+            bottom: f32::NEG_INFINITY,
+            offscreen: clipped.then(|| OffscreenGlyphs {
+                scale,
+                translation_y: transform.translation()[1],
+                height: self.canvas.height() as f32,
+                size_range: crate::text::atlas_size_range(paint.font_size(), scale),
+                entries: [None; 128],
+            }),
+        };
+        let mut batch = new_batch();
+        let mut reused = false;
+        if let Some(label) = label
+            && clipped
+            && paint.text_align() == femtovg::Align::Left
+            && paint.text_baseline() == femtovg::Baseline::Top
+            && paint.letter_spacing() == 0.0
+            && lines
+                .iter()
+                .all(|(_, text)| text.bytes().all(|byte| (b' '..=b'~').contains(&byte)))
+        {
+            let measurement_scale = crate::cell_glyphs::measurement_scale(scale);
+            let mut cache = self.text.label_glyphs.borrow_mut();
+            cache.select(
+                label.label.font,
+                measurement_scale,
+                label.placement.registered_fonts,
+            );
+            let word_paint = paint
+                .clone()
+                .with_font_size(paint.font_size() * measurement_scale);
+            reused = lines.iter().all(|(origin, text)| {
+                cache
+                    .place(
+                        self.text.context(),
+                        &word_paint,
+                        text,
+                        *origin,
+                        measurement_scale,
+                        |font, glyph| batch.push(&self.text, font, glyph),
+                    )
+                    .is_some_and(|[top, height]| batch.accept_line(top, height, scale))
+            });
+            if !reused {
+                batch = new_batch();
             }
         }
-        let Some(font) = font else {
+        if !reused {
+            for (origin, text) in lines {
+                let metrics = self
+                    .canvas
+                    .measure_text(origin.x, origin.y, text, paint)
+                    .map_err(|error| format!("text shaping failed: {error}"))?;
+                if !batch.accept_line(metrics.y, metrics.height(), scale) {
+                    return Ok(false);
+                }
+                for glyph in metrics
+                    .glyphs
+                    .into_iter()
+                    .filter(|glyph| !glyph.c.is_control())
+                {
+                    if !batch.push(
+                        &self.text,
+                        glyph.font_id,
+                        PositionedGlyph {
+                            x: glyph.x,
+                            y: glyph.y,
+                            glyph_id: glyph.glyph_id,
+                        },
+                    ) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        let Some(font) = batch.font else {
             return Ok(false);
         };
         if self
@@ -2559,13 +2886,312 @@ impl Renderer {
         {
             return Ok(false);
         }
-        self.canvas
-            .fill_glyph_run(font, &[], positions, paint)
-            .map_err(|error| format!("text drawing failed: {error}"))?;
+        let line_count = lines.len() as u64;
+        if let Some(label) = label
+            && reused
+            && label.retain_positions
+            && batch.positions.capacity() <= crate::label_glyphs::Cache::MAX_POSITIONED_GLYPHS
+        {
+            self.canvas
+                .fill_glyph_run(font, &[], batch.positions.iter().cloned(), paint)
+                .map_err(|error| format!("text drawing failed: {error}"))?;
+            self.text.label_glyphs.borrow_mut().remember_positioned(
+                label.label,
+                label.placement,
+                vec![crate::label_glyphs::FontRun {
+                    font,
+                    glyphs: 0..batch.positions.len(),
+                }],
+                batch.positions,
+                line_count,
+            );
+        } else {
+            self.canvas
+                .fill_glyph_run(font, &[], batch.positions, paint)
+                .map_err(|error| format!("text drawing failed: {error}"))?;
+        }
+        self.record_label_batch(line_count);
+        Ok(true)
+    }
+
+    fn draw_unicode_label_batch(
+        &mut self,
+        lines: &[(Point, &str)],
+        paint: &Paint,
+        label: LabelBatchContext<'_>,
+        scale: f32,
+    ) -> Result<bool, String> {
+        use crate::glyph_masks::{OutlineBatch, OutlineRuns};
+        use crate::label_glyphs::{BatchScratch, FontRun, UnicodeLabel, UnicodePaint};
+
+        let mut offscreen = OffscreenGlyphs {
+            scale,
+            translation_y: 0.0,
+            height: self.canvas.height() as f32,
+            size_range: crate::text::atlas_size_range(paint.font_size(), scale),
+            entries: [None; 128],
+        };
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        let mut atlas_phases = crate::label_glyphs::KnownAtlasPhases::<128>::default();
+        let BatchScratch {
+            mut runs,
+            mut visible_runs,
+            mut positions,
+        } = std::mem::take(&mut self.label_batch_scratch);
+        let (mut batch, priming) = {
+            let mut cache = self.text.label_glyphs.borrow_mut();
+            let mut shaping =
+                UnicodePaint::new(&self.text, paint, scale, offscreen.height, label.label);
+            cache.select(
+                label.label.font,
+                shaping.measurement_scale,
+                label.placement.registered_fonts,
+            );
+            let indexed_words = shaping.select_word_index(&mut cache, label.label);
+            let mut batch = if let Some(batch) =
+                cache.take_unicode(label.label, label.placement, indexed_words)
+            {
+                batch
+            } else {
+                let Some(batch) = UnicodeLabel::measure(
+                    &mut cache,
+                    label.label,
+                    label.placement,
+                    lines,
+                    &shaping,
+                )?
+                else {
+                    return Ok(false);
+                };
+                batch
+            };
+            let mut priming = false;
+            for (slot, (origin, value)) in batch.lines.iter_mut().zip(lines) {
+                #[cfg(not(xrack_femtovg_glyph_samples))]
+                if let Some(seeds) = slot.take_offscreen_seeds(&shaping, origin.y) {
+                    // Submit missing atlas glyphs in source order. Their ink
+                    // remains outside the target at this exact placement.
+                    let mut font = None;
+                    let mut start = positions.len();
+                    for (next_font, glyph) in seeds.positions(origin.y, shaping.measurement_scale) {
+                        if offscreen.classify(&self.text, next_font, &glyph)
+                            == GlyphVisibility::RepeatedOffscreen
+                        {
+                            continue;
+                        }
+                        if font != Some(next_font) {
+                            if let Some(font) = font {
+                                runs.push(FontRun {
+                                    font,
+                                    glyphs: start..positions.len(),
+                                });
+                            }
+                            font = Some(next_font);
+                            start = positions.len();
+                        }
+                        positions.push(glyph);
+                    }
+                    if let Some(font) = font {
+                        runs.push(FontRun {
+                            font,
+                            glyphs: start..positions.len(),
+                        });
+                        priming = true;
+                    }
+                    if positions.capacity() > crate::label_glyphs::Cache::MAX_POSITIONED_GLYPHS
+                        || runs.capacity() > crate::label_glyphs::Cache::MAX_POSITIONED_RUNS
+                    {
+                        return Ok(false);
+                    }
+                    continue;
+                }
+                if slot.still_offscreen(&shaping, origin.y) {
+                    continue;
+                }
+                let Some(line) = slot.shape(&mut cache, &shaping, value)? else {
+                    return Ok(false);
+                };
+                let prime_line = !line.atlas_ready_at(origin.x);
+                priming |= prime_line;
+                let outside = line.offscreen(origin.y, scale, offscreen.height);
+                if !prime_line && outside {
+                    continue;
+                }
+                let mut glyphs = line
+                    .place(*origin, shaping.measurement_scale, |font, glyph, x| {
+                        #[cfg(not(xrack_femtovg_glyph_samples))]
+                        {
+                            // Outside lines only need positions for phases that
+                            // still have to seed the stock FemtoVG atlas.
+                            !outside
+                                || !atlas_phases.contains(font, glyph, x, scale, || {
+                                    cache.known_atlas_phases(font, glyph)
+                                })
+                        }
+                        #[cfg(xrack_femtovg_glyph_samples)]
+                        {
+                            let _ = (font, glyph, x);
+                            true
+                        }
+                    })
+                    .peekable();
+                // Keep FemtoVG's visual glyph order and per-line font boundaries.
+                while let Some(first) = glyphs.next() {
+                    let font = first.font;
+                    let start = positions.len();
+                    let mut visible = false;
+                    let mut append = |position: PositionedGlyph| {
+                        match offscreen.classify(&self.text, font, &position) {
+                            GlyphVisibility::PossiblyVisible => visible = true,
+                            GlyphVisibility::FirstOffscreen if prime_line => {}
+                            _ => return,
+                        }
+                        positions.push(position);
+                    };
+                    append(first.position);
+                    while let Some(next) = glyphs.next_if(|next| {
+                        #[cfg(not(xrack_femtovg_glyph_samples))]
+                        {
+                            !next.starts_run
+                        }
+                        #[cfg(xrack_femtovg_glyph_samples)]
+                        {
+                            next.font == font
+                        }
+                    }) {
+                        append(next.position);
+                    }
+                    if start < positions.len() {
+                        let glyphs = start..positions.len();
+                        if visible && label.retain_positions {
+                            visible_runs.push(FontRun {
+                                font,
+                                glyphs: glyphs.clone(),
+                            });
+                        }
+                        runs.push(FontRun { font, glyphs });
+                    }
+                    if positions.capacity() > crate::label_glyphs::Cache::MAX_POSITIONED_GLYPHS
+                        || runs.capacity() > crate::label_glyphs::Cache::MAX_POSITIONED_RUNS
+                    {
+                        return Ok(false);
+                    }
+                }
+            }
+            (batch, priming)
+        };
+        // The first draw seeds the atlas in the original order. The retained
+        // replay can omit whole runs beyond the render target.
+        let moved_vertically = batch.update_placement(label.placement);
+        let masked = if !cfg!(xrack_femtovg_glyph_samples)
+            && moved_vertically
+            && batch.allow_outline_masks
+            && !priming
+            && self.can_cache_on_main_canvas()
+        {
+            match self.glyph_masks.draw_outline_runs(
+                &mut self.canvas,
+                &self.text,
+                OutlineBatch {
+                    runs: &runs,
+                    glyphs: &positions,
+                    paint,
+                    scale,
+                    allow_partial: batch.drew_outline_masks,
+                },
+            )? {
+                OutlineRuns::Drawn => {
+                    batch.drew_outline_masks = true;
+                    true
+                }
+                OutlineRuns::Fallback => false,
+                OutlineRuns::Unsupported => {
+                    batch.allow_outline_masks = false;
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if !masked {
+            Self::submit_label_runs(&mut self.canvas, &runs, &positions, paint)?;
+        }
+        let line_count = lines.len() as u64;
+        let mut cache = self.text.label_glyphs.borrow_mut();
+        if priming {
+            cache.remember_atlas_glyphs(&runs, &positions, scale);
+        }
+        if priming {
+            for (line, (origin, _)) in batch.lines.iter().zip(lines) {
+                line.remember_atlas_origin(origin.x);
+            }
+        }
+        cache.remember_unicode(batch);
+        if label.retain_positions {
+            cache.remember_positioned(
+                label.label,
+                label.placement,
+                if priming {
+                    std::mem::take(&mut visible_runs)
+                } else {
+                    std::mem::take(&mut runs)
+                },
+                std::mem::take(&mut positions),
+                line_count,
+            );
+        }
+        drop(cache);
+        // Retained batches own the vectors they keep. Recycle the other
+        // allocations after recording, including after a native atlas fallback.
+        runs.clear();
+        visible_runs.clear();
+        positions.clear();
+        self.label_batch_scratch = BatchScratch {
+            runs,
+            visible_runs,
+            positions,
+        };
+        self.record_label_batch(line_count);
+        Ok(true)
+    }
+
+    fn submit_label_runs(
+        canvas: &mut crate::Canvas<crate::WGPURenderer>,
+        runs: &[crate::label_glyphs::FontRun],
+        glyphs: &[PositionedGlyph],
+        paint: &Paint,
+    ) -> Result<(), String> {
+        // New line boundaries can still refer entirely to existing atlas tiles.
+        // On a miss, the atlas records nothing and the normal draws seed it.
+        #[cfg(xrack_femtovg_glyph_samples)]
+        if canvas.fill_cached_glyph_runs(
+            runs.iter()
+                .map(|run| (run.font, &glyphs[run.glyphs.clone()])),
+            paint,
+        ) {
+            return Ok(());
+        }
+        for run in runs {
+            canvas
+                .fill_glyph_run(
+                    run.font,
+                    &[],
+                    glyphs[run.glyphs.clone()].iter().cloned(),
+                    paint,
+                )
+                .map_err(|error| format!("text drawing failed: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn record_label_batch(&mut self, lines: u64) {
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        if lines >= 16 {
+            self.glyph_masks.request_atlas_pipeline_warmup();
+        }
         xrack_runtime::update_profile::glyph_batch();
         self.display_batch_stats.glyph_batches += 1;
-        self.display_batch_stats.text_runs += lines.len() as u64;
-        Ok(true)
+        self.display_batch_stats.text_runs += lines;
     }
 }
 

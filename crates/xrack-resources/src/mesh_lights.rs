@@ -118,6 +118,8 @@ impl Light {
             source,
             radiance: self.color.map(|channel| channel * self.intensity),
             casts_shadow: true,
+            shadow: Default::default(),
+            bake_mode: Default::default(),
             layers: xrack_runtime::scene3d::MAIN_LAYER,
         })
     }

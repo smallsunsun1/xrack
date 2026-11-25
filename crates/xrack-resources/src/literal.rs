@@ -10,6 +10,8 @@ pub enum Literal {
     Point2D(runtime::Point2D),
     Point3D(runtime::Point3D),
     Vector3D(runtime::Vector3D),
+    Quaternion3D([f64; 4]),
+    RotationTrack3D(Vec<[f64; 5]>),
     Vector2D(runtime::Vector2D),
     Transform2D(runtime::Transform2D),
     Percent(Percent),
@@ -32,6 +34,14 @@ impl Literal {
             Self::Point2D(value) => Value::Point2D(value),
             Self::Point3D(value) => Value::Point3D(value),
             Self::Vector3D(value) => Value::Vector3D(value),
+            Self::Quaternion3D([x, y, z, w]) => {
+                Value::Quaternion3D(runtime::Quaternion3D::new(x, y, z, w))
+            }
+            Self::RotationTrack3D(keys) => Value::RotationTrack3D(runtime::RotationTrack3D::new(
+                keys.into_iter()
+                    .map(|[time, x, y, z, w]| (time, runtime::Quaternion3D::new(x, y, z, w)))
+                    .collect(),
+            )),
             Self::Vector2D(value) => Value::Vector2D(value),
             Self::Transform2D(value) => Value::Transform2D(value),
             Self::Percent(value) => Value::Percent(value),
@@ -42,14 +52,38 @@ impl Literal {
     }
 }
 
-fn coordinates<const N: usize>(spelling: &str) -> Result<[f64; N], String> {
-    let invalid = || format!("invalid geometry literal `{spelling}`");
-    let values = spelling
+fn numbers(spelling: &str, invalid: impl Fn() -> String) -> Result<Vec<f64>, String> {
+    spelling
         .split(' ')
         .filter(|part| !part.is_empty())
-        .map(|part| xrack_mlir::parse_float_literal(part).ok_or_else(invalid))
-        .collect::<Result<Vec<_>, _>>()?;
-    values.try_into().map_err(|_| invalid())
+        .map(|part| xrack_mlir::parse_float_literal(part).ok_or_else(&invalid))
+        .collect()
+}
+
+fn coordinates<const N: usize>(spelling: &str) -> Result<[f64; N], String> {
+    let invalid = || format!("invalid geometry literal `{spelling}`");
+    numbers(spelling, invalid)?
+        .try_into()
+        .map_err(|_| invalid())
+}
+
+fn rotation_track(spelling: &str) -> Result<Literal, String> {
+    let invalid = || String::from("invalid rotation track literal");
+    let components = numbers(spelling, invalid)?;
+    let (keys, remainder) = components.as_chunks::<5>();
+    if !remainder.is_empty()
+        || keys.first().is_some_and(|first| first[0] < 0.0)
+        || keys.windows(2).any(|pair| pair[0][0] >= pair[1][0])
+    {
+        return Err(invalid());
+    }
+    if keys.is_empty() {
+        Ok(Literal::Default(Value::RotationTrack3D(
+            runtime::RotationTrack3D::default(),
+        )))
+    } else {
+        Ok(Literal::RotationTrack3D(keys.to_vec()))
+    }
 }
 
 pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
@@ -91,11 +125,58 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
             let [x, y, z] = coordinates(spelling)?;
             Literal::Vector3D(runtime::Vector3D::new(x, y, z))
         }
+        Type::Quaternion3D => {
+            let [x, y, z, w] = coordinates(spelling)?;
+            Literal::Quaternion3D([x, y, z, w])
+        }
+        Type::PhysicsContact3D => {
+            if !spelling.is_empty() {
+                return Err("physics contact literals only support the default value".into());
+            }
+            Default(Value::PhysicsContact3D(runtime::PhysicsContact3D::default()))
+        }
+        Type::PhysicsHit3D => {
+            if !spelling.is_empty() {
+                return Err("physics hit literals only support the default value".into());
+            }
+            Default(Value::PhysicsHit3D(runtime::PhysicsHit3D::default()))
+        }
         Type::Hit3D => {
             if !spelling.is_empty() {
                 return Err("invalid scene hit literal".into());
             }
             Default(Value::Hit3D(runtime::Hit3D::default()))
+        }
+        Type::SceneModel3D => {
+            if !spelling.is_empty() {
+                return Err("invalid scene model literal".into());
+            }
+            Default(Value::SceneObjects(std::sync::Arc::default()))
+        }
+        Type::PhysicsWorld3D => {
+            if !spelling.is_empty() {
+                return Err("invalid physics world literal".into());
+            }
+            Default(Value::PhysicsWorld3D(runtime::PhysicsWorld3D::default()))
+        }
+        Type::WalkResult3D => {
+            if !spelling.is_empty() {
+                return Err("invalid walk result literal".into());
+            }
+            Default(Value::WalkResult3D(runtime::WalkResult3D::default()))
+        }
+        Type::RotationTrack3D => rotation_track(spelling)?,
+        Type::InstanceTable3D => {
+            if !spelling.is_empty() {
+                return Err("invalid instance table literal".into());
+            }
+            Default(Value::InstanceTable3D(runtime::InstanceTable3D::default()))
+        }
+        Type::Instance3D => {
+            if !spelling.is_empty() {
+                return Err("invalid 3D instance literal".into());
+            }
+            Default(Value::Instance3D(runtime::Instance3D::default()))
         }
         Type::ProjectedPoint3D => {
             if !spelling.is_empty() {
@@ -298,6 +379,8 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
         | Type::IntList
         | Type::DateList
         | Type::Hit3DList
+        | Type::PhysicsContact3DList
+        | Type::PhysicsHit3DList
         | Type::PointerButtons
         | Type::StyledText
         | Type::Record(_)

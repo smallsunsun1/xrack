@@ -1,12 +1,12 @@
 use crate::{
     CanvasTransform, Renderer,
-    image::{ImageQuad, QuadBounds},
+    image::{ImageQuad, PlainImage, QuadBounds},
     layer_compositor::{MAX_IMAGE_INSTANCES, MIN_IMAGE_INSTANCES},
     window_damage::DamageRect,
 };
 use femtovg::{ImageId, Quad};
 use std::rc::Rc;
-use xrack_layout::{ImagePresentation, LayoutNode, Rect};
+use xrack_layout::{LayoutNode, Rect};
 use xrack_runtime::{Node, SharedNodeIdentity};
 
 const MAX_PLACEMENT_DEPTH: usize = 8;
@@ -294,16 +294,18 @@ impl Capture {
         transform: CanvasTransform,
         clip: Rect,
     ) -> Result<bool, String> {
-        if !Renderer::is_plain_image(node, layout)
-            || !fills_visible_part(layout, clip)
+        let Some(options) = PlainImage::from_node(node, layout) else {
+            return Ok(false);
+        };
+        if !fills_visible_part(layout, clip)
             || !crate::image::quad_edges_are_pixel_aligned(layout.bounds, transform)
         {
             return Ok(false);
         }
-        let Some(asset) = node.image_asset("source") else {
+        let Some(asset) = options.asset() else {
             return Ok(false);
         };
-        let presentation = ImagePresentation::for_whole_node(node, asset.size(), in_layout);
+        let presentation = options.presentation(asset.size(), in_layout);
         let Some((image, quad)) = renderer.images.batch_quad(
             &renderer.device,
             &mut renderer.canvas,

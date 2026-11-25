@@ -1,0 +1,25 @@
+// RAW: "xr.physics_function"{{.*}}value = "sync-scene"{{.*}} -> !xr.bool
+// CHECK: "xr.callback"() <{name = "install"
+// CHECK: "xr.physics_function"{{.*}}value = "joint-by-id"{{.*}} -> !xr.int
+// CHECK: "xr.physics_function"{{.*}}value = "sync-scene"{{.*}} -> !xr.bool
+// CHECK: "xr.physics_function"{{.*}}value = "joint-by-id"{{.*}} -> !xr.int
+struct Shape { shape: string }
+struct Body { id: string, body-kind: string, position: point3d, shapes: [Shape] }
+struct Joint {
+    id: string, joint-kind: string, first: string, second: string,
+    first-anchor: point3d, second-anchor: point3d,
+}
+export component App inherits Window {
+    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, 0, 0), 0.02);
+    property <[Body]> bodies;
+    property <[Joint]> joints;
+    out property <int> before: 0;
+    out property <int> after: 0;
+    out property <bool> accepted: false;
+    callback install();
+    install() => {
+        root.before = Physics3D.joint-by-id(root.world, "hinge");
+        root.accepted = Physics3D.sync-scene(root.world, root.bodies, root.joints);
+        root.after = Physics3D.joint-by-id(root.world, "hinge");
+    }
+}

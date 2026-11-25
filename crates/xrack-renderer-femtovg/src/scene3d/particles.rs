@@ -20,7 +20,7 @@ use super::{
     pipeline::ColorOutput,
 };
 
-const VIEW_BYTES: usize = 96;
+const VIEW_BYTES: usize = 128;
 // Every emitter occupies ten aligned vec4 slots in the shader.
 const EMITTER_BYTES: usize = 160;
 const MOTION_BYTES: usize = 160;
@@ -548,7 +548,7 @@ pub(super) struct ParticlePipelines {
     shaders: [Option<wgpu::ShaderModule>; 2],
     variants: HashMap<
         (
-            [bool; 9],
+            [bool; 10],
             Composite,
             CapturePipelineState,
             super::wireframe::RasterMode,
@@ -576,7 +576,22 @@ impl ParticlePipelines {
         append_floats(&mut header, camera.clip_rows().into_iter().flatten());
         append_floats(&mut header, camera.depth_row());
         let [sx, sy, _, _] = camera.clip_lens();
-        append_floats(&mut header, [sx, sy, weight_scale, 0.0]);
+        append_floats(
+            &mut header,
+            [
+                sx,
+                sy,
+                weight_scale,
+                f32::from(u8::from(camera.has_custom_projection())),
+            ],
+        );
+        let lateral = camera.custom_view_clip_rows().map(|rows| {
+            [0, 1].map(|axis| [rows[0][axis], rows[1][axis], rows[2][axis], rows[3][axis]])
+        });
+        append_floats(
+            &mut header,
+            lateral.unwrap_or([[0.0; 4]; 2]).into_iter().flatten(),
+        );
         let mut direct: Vec<Batch> = Vec::new();
         let mut oit: Vec<Batch> = Vec::new();
         let mut models: Vec<Batch> = Vec::new();
@@ -804,6 +819,7 @@ impl ParticlePipelines {
                     output.multisampling,
                     output.hdr && !weighted,
                     output.stenciled,
+                    output.reverse_depth,
                 ],
                 composite,
                 super::pipeline::fixed_state(output.pipeline_state),
@@ -868,6 +884,7 @@ impl ParticlePipelines {
                         depth_compare: Some(super::pipeline::depth_compare(
                             output.pipeline_state,
                             wgpu::CompareFunction::Less,
+                            output.reverse_depth,
                         )),
                         stencil: super::pipeline::stencil_state(output.pipeline_state),
                         bias: Default::default(),

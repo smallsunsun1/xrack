@@ -11747,6 +11747,278 @@ fn outline_labels_batch_around_clipped_labels_with_matching_pixels() {
 }
 
 #[test]
+fn long_wrapped_label_measurements_follow_font_changes() {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Length, Node, TextWrap};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut warm = Renderer::with_device(gpu.clone()).unwrap();
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene.fonts = BundledFontsDemo::new().render().fonts;
+    scene
+        .properties
+        .insert("default-font-family", "XRack Demo".to_owned().into());
+    let mut label = Node::new("Label", None);
+    label.properties.insert("height", Length(1200.0).into());
+    label.properties.insert("wrap", TextWrap::WordWrap.into());
+    label.properties.insert(
+        "text",
+        "Resize this wrapped label. Equal text has a different advance at a different size. "
+            .repeat(24)
+            .into(),
+    );
+    scene.children.push(label.into_shared());
+
+    let mut initial = None;
+    for (index, (width, font_size)) in [(108.0, 10.0), (136.0, 10.0), (108.0, 14.0), (108.0, 10.0)]
+        .into_iter()
+        .enumerate()
+    {
+        let properties = &mut scene.children[0].properties;
+        properties.insert("width", Length(width).into());
+        properties.insert("font-size", Length(font_size).into());
+        let actual = warm.snapshot(&scene, 360, 200, 2.0, &input).unwrap();
+        let mut fresh = Renderer::with_device(gpu.clone()).unwrap();
+        let expected = fresh.snapshot(&scene, 360, 200, 2.0, &input).unwrap();
+        assert_same_pixels(&actual, &expected);
+        match index {
+            0 => initial = Some(actual),
+            2 => assert_ne!(actual.rgba, initial.as_ref().unwrap().rgba),
+            3 => assert_same_pixels(&actual, initial.as_ref().unwrap()),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn multiline_label_keeps_visible_glyphs_when_culling_outside_the_target() {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, TextVerticalAlignment, TextWrap};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut batch = Renderer::with_device(gpu.clone()).unwrap();
+    let mut direct = Renderer::with_device(gpu).unwrap();
+    direct.set_display_batching_enabled(false);
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene.fonts = BundledFontsDemo::new().render().fonts;
+    scene
+        .properties
+        .insert("default-font-family", "XRack Demo".to_owned().into());
+    let mut label = Node::new("Label", None);
+    label.properties.insert("height", Length(900.0).into());
+    label.properties.insert("font-size", Length(12.0).into());
+    label.properties.insert("wrap", TextWrap::WordWrap.into());
+    label
+        .properties
+        .insert("vertical-alignment", TextVerticalAlignment::Top.into());
+    label.properties.insert(
+        "text",
+        // The bundled test face provides the W glyph on every host.
+        "WWWWWWWWWWWWWWWWWWWWWWWWW\n".repeat(48).into(),
+    );
+    scene.children.push(label);
+
+    for (scale, y, width, target_height, tint) in [
+        (1.0, 0.25, 208.0, 130, 0x1020_60ff),
+        (1.0, 0.25, 208.0, 130, 0x1020_90ff),
+        (1.0, 0.25, 208.0, 130, 0x6020_10e0),
+        (1.0, 0.25, 208.0, 130, 0x1020_6080),
+        (1.0, 0.25, 208.0, 130, 0x1020_90ff),
+        (1.0, 0.25, 208.0, 210, 0x1020_90ff),
+        (2.0, -212.75, 147.0, 130, 0x1020_60ff),
+        (2.0, -91.25, 184.0, 130, 0x1020_60ff),
+    ] {
+        let properties = &mut scene.children[0].properties;
+        properties.insert("x", Length(-0.25).into());
+        properties.insert("y", Length(y).into());
+        properties.insert("width", Length(width).into());
+        properties.insert("color", Color(tint).into());
+        let before = batch.display_batch_stats();
+        let actual = batch
+            .snapshot(&scene, 250, target_height, scale, &input)
+            .unwrap();
+        let expected = direct
+            .snapshot(&scene, 250, target_height, scale, &input)
+            .unwrap();
+        assert!(
+            batch.display_batch_stats().glyph_batches > before.glyph_batches,
+            "scale {scale}, label offset {y}"
+        );
+        assert_same_pixels(&actual, &expected);
+    }
+}
+
+#[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn positioned_unicode_labels_preserve_bidi_and_fallback_font_order() {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node, TextHorizontalAlignment, TextWrap};
+
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut cached = Renderer::with_device(device.clone()).unwrap();
+    let mut direct = Renderer::with_device(device).unwrap();
+    direct.set_display_batching_enabled(false);
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    let mut label = Node::new("Label", None);
+    label.properties.insert("height", Length(2400.0).into());
+    label.properties.insert("width", Length(222.0).into());
+    label.properties.insert("font-size", Length(13.0).into());
+    label.properties.insert("wrap", TextWrap::WordWrap.into());
+    label.properties.insert(
+        "horizontal-alignment",
+        TextHorizontalAlignment::Center.into(),
+    );
+    label.properties.insert(
+        "text",
+        concat!(
+            "第 12 段，中文与 English éclair。\n",
+            "文档排版：（Office 123）中文、汉字とカナ，混排继续换行。\n",
+            "release-004a9fcd-identifier pkg_v2  42% /var/cache\n",
+            "مرحبا، 123 \u{2066}XRack\u{2069} 文档\n",
+        )
+        .repeat(48)
+        .into(),
+    );
+    scene.children.push(label);
+
+    let bundled_fonts = BundledFontsDemo::new().render().fonts;
+    for scale in [1.0, 2.0] {
+        for (bundled, width, y, tint) in [
+            (false, 222.0, -45.25, 0x1020_60ff),
+            (false, 222.0, -90.75, 0x1020_90ff),
+            (false, 222.0, -90.75, 0x6020_10e0),
+            (false, 238.5, -1300.125, 0x1020_6080),
+            (true, 211.75, -18.375, 0x1020_60ff),
+            (true, 222.0, -45.25, 0x1020_90ff),
+            (true, 209.25, -730.625, 0x6020_10ff),
+        ] {
+            if bundled {
+                scene.fonts = bundled_fonts.clone();
+                scene
+                    .properties
+                    .insert("default-font-family", "XRack Demo".to_owned().into());
+            } else {
+                scene.fonts = Default::default();
+                scene.properties.remove("default-font-family");
+            }
+            let properties = &mut scene.children[0].properties;
+            properties.insert("width", Length(width).into());
+            properties.insert("y", Length(y).into());
+            properties.insert("color", Color(tint).into());
+            let actual = cached.snapshot(&scene, 520, 300, scale, &input).unwrap();
+            let expected = direct.snapshot(&scene, 520, 300, scale, &input).unwrap();
+            assert_same_pixels(&actual, &expected);
+        }
+    }
+
+    // Keep the byte ranges stable while replacing their glyphs between reflows.
+    let first_text = scene.children[0].text("text").unwrap().to_owned();
+    let second_text = first_text
+        .replace("release", "version")
+        .replace("文档", "报告");
+    assert_eq!(first_text.len(), second_text.len());
+    for (frame, text) in [
+        &first_text,
+        &second_text,
+        &second_text,
+        &first_text,
+        &first_text,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let properties = &mut scene.children[0].properties;
+        properties.insert("text", text.as_str().to_owned().into());
+        properties.insert("width", Length(212.0 + (frame % 3) as f64 * 9.25).into());
+        properties.insert("y", Length(-40.375 - frame as f64 * 131.5).into());
+        let actual = cached.snapshot(&scene, 520, 300, 2.0, &input).unwrap();
+        let expected = direct.snapshot(&scene, 520, 300, 2.0, &input).unwrap();
+        assert_same_pixels(&actual, &expected);
+    }
+}
+
+#[test]
+fn shared_label_reuses_layout_until_its_window_font_changes() {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut renderer = Renderer::with_device(gpu.clone()).unwrap();
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene.fonts = BundledFontsDemo::new().render().fonts;
+    scene
+        .properties
+        .insert("default-font-family", "XRack Demo".to_owned().into());
+    scene
+        .properties
+        .insert("default-font-size", Length(8.0).into());
+    let mut label = Node::new("Label", None);
+    label.properties.insert("width", Length(54.0).into());
+    label.properties.insert("height", Length(28.0).into());
+    label.properties.insert("text", "WWWW".to_owned().into());
+    scene.children.push(label.into_shared());
+
+    let initial = renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    let warm = renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    assert_same_pixels(&initial, &warm);
+    scene
+        .properties
+        .insert("default-font-size", Length(12.0).into());
+    let updated = renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    let mut fresh = Renderer::with_device(gpu).unwrap();
+    let expected = fresh.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    assert_ne!(warm.rgba, updated.rgba);
+    assert_same_pixels(&updated, &expected);
+
+    // Warm the new font and admit the updated label before editing its paint.
+    for _ in 0..2 {
+        renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    }
+    scene.children[0]
+        .properties
+        .insert("color", Color(0xb90c_29ff).into());
+    let tinted = renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    assert_ne!(updated.rgba, tinted.rgba);
+    assert_same_pixels(
+        &tinted,
+        &fresh.snapshot(&scene, 160, 100, 2.0, &input).unwrap(),
+    );
+
+    for _ in 0..2 {
+        renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    }
+    scene.children[0].properties.insert("opacity", 0.45.into());
+    let faded = renderer.snapshot(&scene, 160, 100, 2.0, &input).unwrap();
+    assert_ne!(tinted.rgba, faded.rgba);
+    assert_same_pixels(
+        &faded,
+        &fresh.snapshot(&scene, 160, 100, 2.0, &input).unwrap(),
+    );
+}
+
+#[test]
 fn retained_label_layout_matches_fresh_rendering_after_text_style_and_size_changes() {
     use xrack_renderer_femtovg::RenderDevice;
     use xrack_runtime::{Color, LayoutDirection, Length, Node, TextOverflow, TextWrap};
@@ -11845,7 +12117,8 @@ fn retained_label_layout_matches_fresh_rendering_after_text_style_and_size_chang
 #[test]
 fn distinct_pngs_share_an_image_batch_without_changing_pixels() {
     use xrack_runtime::{
-        Color, Image, ImageFit, ImageFormat, ImageRendering, Length, LoadedImage, Node, Orientation,
+        Color, Image, ImageFit, ImageFormat, ImageHorizontalAlignment, ImageRendering,
+        ImageVerticalAlignment, Length, LoadedImage, Node, Orientation,
     };
 
     // Two 3×5 PNGs with distinct colors and alternating alpha levels.
@@ -11916,6 +12189,29 @@ fn distinct_pngs_share_an_image_batch_without_changing_pixels() {
     let mut sparse = scene.clone();
     sparse.children.insert(1, Node::hidden());
     compare(&mut renderer, &sparse, &input, [56, 40], 2);
+
+    let mut aligned = scene.clone();
+    aligned.children[0]
+        .properties
+        .insert("width", Length(12.0).into());
+    aligned.children[0].properties.insert(
+        "horizontal-alignment",
+        ImageHorizontalAlignment::Right.into(),
+    );
+    aligned.children[1]
+        .properties
+        .insert("height", Length(18.0).into());
+    aligned.children[1]
+        .properties
+        .insert("vertical-alignment", ImageVerticalAlignment::Bottom.into());
+    for image in &mut aligned.children[..2] {
+        image
+            .properties
+            .insert("image-fit", ImageFit::Contain.into());
+    }
+    let original = compare(&mut renderer, &scene, &input, [56, 40], 2);
+    let fitted = compare(&mut renderer, &aligned, &input, [56, 40], 2);
+    assert_ne!(original.rgba, fitted.rgba);
 
     let mut grouped = scene.clone();
     for child in &mut grouped.children {
@@ -12000,11 +12296,9 @@ fn distinct_pngs_share_an_image_batch_without_changing_pixels() {
     // At 2×, quarter-pixel edges miss the AA fringe.
     compare(&mut renderer, &fractional, &input, [108, 80], 4);
 
-    let mut coverage = pollster::block_on(Renderer::new(
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
-        None,
-    ))
-    .unwrap();
+    let mut coverage = Renderer::with_device(gpu.clone()).unwrap();
+    let mut coverage_direct = Renderer::with_device(gpu.clone()).unwrap();
+    coverage_direct.set_display_batching_enabled(false);
     for (phase, (scale, [shift_x, shift_y])) in [
         (2.0, [0.25, 0.25]),
         (2.0, [0.268, 0.234]),
@@ -12028,7 +12322,6 @@ fn distinct_pngs_share_an_image_batch_without_changing_pixels() {
         }
         let width = (54.0 * scale) as u32;
         let height = (42.0 * scale) as u32;
-        coverage.set_display_batching_enabled(true);
         let before = coverage.display_batch_stats();
         let actual = coverage
             .snapshot(&fractional, width, height, scale, &input)
@@ -12042,8 +12335,7 @@ fn distinct_pngs_share_an_image_batch_without_changing_pixels() {
             );
             assert_eq!(after.images - before.images, 4, "phase {phase}");
         }
-        coverage.set_display_batching_enabled(false);
-        let expected = coverage
+        let expected = coverage_direct
             .snapshot(&fractional, width, height, scale, &input)
             .unwrap();
         assert_eq!(expected.layout, actual.layout);
@@ -12055,6 +12347,31 @@ fn distinct_pngs_share_an_image_batch_without_changing_pixels() {
                 index / 4 / width as usize,
                 index % 4
             );
+        }
+        let repeated = coverage
+            .snapshot(&fractional, width, height, scale, &input)
+            .unwrap();
+        assert_same_pixels(&actual, &repeated);
+        if phase == 1 {
+            let mut changed = fractional.clone();
+            let image = Image::Loaded(LoadedImage::new(ImageFormat::Png, RED.to_vec(), [3, 5]));
+            changed.children[1].children[1]
+                .properties
+                .insert("source", image.into());
+            let revised = coverage
+                .snapshot(&changed, width, height, scale, &input)
+                .unwrap();
+            assert_ne!(revised.rgba, actual.rgba);
+            let expected = coverage_direct
+                .snapshot(&changed, width, height, scale, &input)
+                .unwrap();
+            for (actual, expected) in revised.rgba.iter().zip(&expected.rgba) {
+                assert!(actual.abs_diff(*expected) <= 1);
+            }
+            let restored = coverage
+                .snapshot(&fractional, width, height, scale, &input)
+                .unwrap();
+            assert_same_pixels(&actual, &restored);
         }
     }
     labeled.children.truncate(2);
@@ -12561,6 +12878,11 @@ fn distinct_pngs_share_an_image_batch_without_changing_pixels() {
 
 #[test]
 fn full_image_atlas_recycles_retired_tiles_without_overwriting_current_draws() {
+    check_image_atlas_recycling([0.0, 0.0]);
+    check_image_atlas_recycling([0.768, 0.734]);
+}
+
+fn check_image_atlas_recycling([x_offset, y_offset]: [f64; 2]) {
     use xrack_runtime::{Color, Image, ImageFormat, Length, LoadedImage, Node};
 
     // Solid 64×64 grayscale PNGs. The atlas fits 15×15 tiles including gutters.
@@ -12597,9 +12919,9 @@ fn full_image_atlas_recycles_retired_tiles_without_overwriting_current_draws() {
     for index in 0..TILES {
         let mut tile = Node::new("Image", None);
         tile.properties
-            .insert("x", Length((index % SIDE * 6) as f64).into());
+            .insert("x", Length((index % SIDE * 6) as f64 + x_offset).into());
         tile.properties
-            .insert("y", Length((index / SIDE * 6) as f64).into());
+            .insert("y", Length((index / SIDE * 6) as f64 + y_offset).into());
         tile.properties.insert("width", Length(4.0).into());
         tile.properties.insert("height", Length(4.0).into());
         tile.properties.insert("source", asset(DARK).into());
@@ -12626,7 +12948,13 @@ fn full_image_atlas_recycles_retired_tiles_without_overwriting_current_draws() {
         );
         assert_eq!(after.images - before.images, TILES as u64, "frame {frame}");
         let expected = direct.snapshot(&scene, 180, 180, 2.0, &input).unwrap();
-        assert_same_pixels(&actual, &expected);
+        if x_offset == 0.0 {
+            assert_same_pixels(&actual, &expected);
+        } else {
+            for (actual, expected) in actual.rgba.iter().zip(&expected.rgba) {
+                assert!(actual.abs_diff(*expected) <= 1, "frame {frame}");
+            }
+        }
     }
 }
 

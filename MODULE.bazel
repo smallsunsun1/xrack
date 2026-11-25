@@ -212,7 +212,7 @@ crate.annotation(
     patches = ["//bazel:accesskit_macos_mixed_state.patch"],
 )
 
-# Reuse parsed font faces and compiled OpenType plans across shaped words.
+# Reuse text shaping work and process glyph atlas writes together.
 crate.annotation(
     repositories = ["crates"],
     crate = "femtovg",
@@ -220,11 +220,15 @@ crate.annotation(
     deps = ["@crates__self_cell-1.3.0//:self_cell"],
     patch_args = ["-p1"],
     patches = [
+        "//bazel:femtovg_batch_contour_fans.patch",
         "//bazel:femtovg_cache_shaping_face.patch",
         "//bazel:femtovg_cache_shaping_plans.patch",
         "//bazel:femtovg_glyph_sampling.patch",
+        "//bazel:femtovg_vector_glyph_batches.patch",
         "//bazel:femtovg_word_units.patch",
         "//bazel:femtovg_word_units_run_metrics.patch",
+        "//bazel:femtovg_write_glyph_atlas_first.patch",
+        "//bazel:femtovg_xrack_outline_runs.patch",
     ],
 )
 

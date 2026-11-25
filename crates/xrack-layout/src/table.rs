@@ -482,10 +482,9 @@ impl TableGeometry {
             frozen_end = visual + 1;
         }
         let mut x = body.x;
-        let mut columns = vec![Rect::default(); widths.len()];
         let mut viewport_columns = Vec::new();
         let mut hidden_positions = Vec::new();
-        for (visual, index) in order.iter(widths.len()).enumerate() {
+        let mut place_column = |visual, index| {
             if visual == frozen_end {
                 x -= horizontal.offset;
             }
@@ -501,10 +500,22 @@ impl TableGeometry {
             if width > 0.0 && column.x <= body.x + body.width && column.x + width >= body.x {
                 viewport_columns.push(index);
             }
-            columns[index] = column;
             x += width;
-        }
-        viewport_columns.sort_unstable();
+            column
+        };
+        let columns = if let Some(permutation) = order.as_slice(widths.len()) {
+            let mut columns = vec![Rect::default(); widths.len()];
+            for (visual, &index) in permutation.iter().enumerate() {
+                columns[index] = place_column(visual, index);
+            }
+            viewport_columns.sort_unstable();
+            columns
+        } else {
+            // Declaration order needs no placeholder rectangles or sort.
+            (0..widths.len())
+                .map(|index| place_column(index, index))
+                .collect()
+        };
         let layout = Self {
             header: header_bounds,
             body,

@@ -1,15 +1,24 @@
-use crate::{Canvas, Paint, TextSystem, WGPURenderer};
+use crate::{Canvas, Paint, TextSystem, WGPURenderer, label_glyphs::FontRun};
 use femtovg::{
     Atlas, Color, DrawCommand, FontId, GlyphDrawCommands, ImageFlags, ImageId, PixelFormat,
     PositionedGlyph, Quad, TextMetrics, renderer::RenderTarget,
 };
-use std::{cell::Cell, collections::HashMap};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    rc::{Rc, Weak},
+};
 
 const SIDE: usize = 1024;
 const REGION_SIDE: usize = SIDE / 2;
 const REGION_COUNT: usize = 4;
 const DENSE_GLYPH_IDS: u16 = 512;
-const SUBPIXEL_PHASES: usize = 11;
+// The Bazel vector rasterizer shares its coverage across pen phases.
+const SUBPIXEL_PHASES: usize = if cfg!(xrack_femtovg_glyph_samples) {
+    1
+} else {
+    11
+};
 const MAX_FONT_PAGES: usize = 8;
 const DENSE_SLOTS: usize = DENSE_GLYPH_IDS as usize * SUBPIXEL_PHASES;
 const POSITIVE_SLOTS: usize = (u16::MAX as usize + 1) * SUBPIXEL_PHASES;
@@ -25,6 +34,28 @@ pub(super) struct GlyphMasks {
     remaining: usize,
     pub(super) defer_preparation: bool,
     fallback_runs: usize,
+    retained: Option<RetainedQuads>,
+    #[cfg(not(xrack_femtovg_glyph_samples))]
+    pipeline_warmup: AtlasPipelineWarmup,
+}
+
+#[cfg(not(xrack_femtovg_glyph_samples))]
+#[derive(Default, PartialEq, Eq)]
+enum AtlasPipelineWarmup {
+    #[default]
+    Unrequested,
+    Pending,
+    Finished,
+}
+
+struct RetainedQuads {
+    positions: Weak<Vec<PositionedGlyph>>,
+    image: ImageId,
+    font: FontId,
+    size: f32,
+    scale: f32,
+    regions: u8,
+    quads: Vec<Quad>,
 }
 
 struct MaskTexture {
@@ -44,9 +75,34 @@ struct MaskRegion {
 
 pub(super) struct MaskRun<'a> {
     pub(super) font: FontId,
-    pub(super) positions: &'a [PositionedGlyph],
+    pub(super) positions: MaskPositions<'a>,
     pub(super) paint: &'a Paint,
     pub(super) scale: f32,
+    pub(super) cache_short_run: bool,
+}
+
+pub(super) enum MaskPositions<'a> {
+    Transient(&'a [PositionedGlyph]),
+    Retained(&'a Rc<Vec<PositionedGlyph>>),
+}
+
+pub(super) enum OutlineRuns {
+    Drawn,
+    Fallback,
+    Unsupported,
+}
+
+pub(super) struct OutlineBatch<'a> {
+    pub(super) runs: &'a [FontRun],
+    pub(super) glyphs: &'a [PositionedGlyph],
+    pub(super) paint: &'a Paint,
+    pub(super) scale: f32,
+    pub(super) allow_partial: bool,
+}
+
+enum OutlineSpan {
+    Mask(usize),
+    Native(usize),
 }
 
 struct Page {
@@ -75,10 +131,16 @@ fn placed_edges([left, top, right, bottom]: [f32; 4], x: f32, y: f32) -> [f32; 4
     [x + left, y + top, x + right, y + bottom]
 }
 
-fn subpixel_phase(fract: f32) -> i8 {
+pub(super) fn subpixel_phase(fract: f32) -> i8 {
     ((fract.abs() / 0.1 + 0.5).trunc() * 0.1 * 10.0).copysign(fract) as i8
 }
 
+#[cfg(xrack_femtovg_glyph_samples)]
+fn mask_phase(_: usize) -> i8 {
+    0
+}
+
+#[cfg(not(xrack_femtovg_glyph_samples))]
 fn mask_phase(index: usize) -> i8 {
     let phase = (index % SUBPIXEL_PHASES) as i8;
     if index < POSITIVE_SLOTS {
@@ -93,7 +155,11 @@ fn mask_slot(glyph: u16, x: f32, y: f32) -> Option<usize> {
     if !(x.abs() <= MAX_COORDINATE && y.abs() <= MAX_COORDINATE) {
         return None;
     }
-    let phase = subpixel_phase(x.fract());
+    let phase = if SUBPIXEL_PHASES == 1 {
+        0
+    } else {
+        subpixel_phase(x.fract())
+    };
     let base = if phase < 0 { POSITIVE_SLOTS } else { 0 };
     Some(base + usize::from(glyph) * SUBPIXEL_PHASES + phase.unsigned_abs() as usize)
 }
@@ -132,10 +198,53 @@ pub(super) fn draw_mask_quads(
 }
 
 impl GlyphMasks {
+    #[cfg(not(xrack_femtovg_glyph_samples))]
+    pub(super) fn request_atlas_pipeline_warmup(&mut self) {
+        if self.pipeline_warmup == AtlasPipelineWarmup::Unrequested {
+            self.pipeline_warmup = AtlasPipelineWarmup::Pending;
+        }
+    }
+
+    #[cfg(not(xrack_femtovg_glyph_samples))]
+    pub(super) fn atlas_pipeline_warmup_pending(&self) -> bool {
+        self.pipeline_warmup == AtlasPipelineWarmup::Pending
+    }
+
+    #[cfg(not(xrack_femtovg_glyph_samples))]
+    pub(super) fn warm_atlas_pipelines(&mut self, canvas: &mut Canvas<WGPURenderer>) {
+        use femtovg::{BlendFactor, CompositeOperation, Path};
+
+        self.pipeline_warmup = AtlasPipelineWarmup::Finished;
+        // The native atlas normally uses stencil while seeding complex
+        // outlines. A later page with only convex outlines uses these two
+        // variants without stencil. Prepare them in the same canvas cache.
+        let Ok(image) = canvas.create_image_empty(8, 8, PixelFormat::Rgba8, ImageFlags::NEAREST)
+        else {
+            return;
+        };
+        canvas.save();
+        canvas.with_render_target(RenderTarget::Image(image), |canvas| {
+            canvas.reset_transform();
+            canvas.reset_scissor();
+            canvas.set_global_alpha(1.0);
+            canvas.set_shadow_color(Color::rgba(0, 0, 0, 0));
+            canvas.global_composite_operation(CompositeOperation::SourceOver);
+            canvas.clear_rect(1, 1, 2, 2, Color::black());
+            canvas.global_composite_blend_func(BlendFactor::SrcAlpha, BlendFactor::One);
+            let mut path = Path::new();
+            path.rect(2.0, 2.0, 2.0, 2.0);
+            let mask = Paint::color(Color::rgbf(0.125, 0.125, 0.125)).with_anti_alias(false);
+            canvas.fill_path(&path, &mask);
+        });
+        canvas.restore();
+        canvas.delete_image(image);
+    }
+
     pub(super) fn begin_frame(&mut self) {
         self.fallback_runs = MAX_FALLBACK_RUNS_PER_FRAME;
         self.remaining = MAX_MASKS_PER_FRAME;
         if let Some(slots) = self.texture.as_mut().and_then(MaskTexture::begin_frame) {
+            self.retained = None;
             for (page, slot) in slots.drain(..) {
                 self.pages[page].remove(slot);
             }
@@ -183,6 +292,7 @@ impl GlyphMasks {
         }
         self.pages.clear();
         self.pending = 0;
+        self.retained = None;
     }
 
     pub(super) fn draw(
@@ -196,10 +306,27 @@ impl GlyphMasks {
             positions,
             paint,
             scale,
+            cache_short_run,
         } = run;
         let size = paint.font_size();
-        if positions.len() < 12 || !(size > 0.0 && size * scale <= 40.0) {
+        let (positions, source) = match positions {
+            MaskPositions::Transient(positions) => (positions, None),
+            MaskPositions::Retained(positions) => (positions.as_slice(), Some(positions)),
+        };
+        if (!cache_short_run && positions.len() < 12) || !(size > 0.0 && size * scale <= 40.0) {
             return false;
+        }
+        if let (Some(source), Some(retained), Some(texture)) =
+            (source, &self.retained, &self.texture)
+            && std::ptr::eq(retained.positions.as_ptr(), Rc::as_ptr(source))
+            && retained.image == texture.image
+            && retained.font == font
+            && retained.size == size
+            && retained.scale == scale
+        {
+            texture.touch(retained.regions);
+            draw_mask_quads(canvas, texture.image, retained.quads.clone(), paint);
+            return true;
         }
         let Some(page) = page(&mut self.pages, font, size, scale, || true) else {
             return false;
@@ -215,6 +342,7 @@ impl GlyphMasks {
         };
         let mut ready = true;
         let mut used = 0;
+        let mut empty_glyph = None;
         let mut quads = Vec::with_capacity(positions.len());
         let inverse = 1.0 / scale;
         for glyph in positions {
@@ -231,6 +359,15 @@ impl GlyphMasks {
                 used |= 1 << tile.region;
                 quads.push(quad(placed_edges(tile.extent, x, y), tile.uv, inverse));
             } else {
+                if source.is_some()
+                    && (empty_glyph == Some(glyph.glyph_id)
+                        || text
+                            .outline_glyph(font, glyph.glyph_id)
+                            .is_some_and(|outline| outline.bounds.is_none()))
+                {
+                    empty_glyph = Some(glyph.glyph_id);
+                    continue;
+                }
                 ready = false;
                 if self.remaining != 0
                     && page.schedule(text, texture, index, glyph.glyph_id, mask_phase(index))
@@ -242,9 +379,92 @@ impl GlyphMasks {
         }
         if ready {
             texture.touch(used);
+            if let Some(source) = source {
+                self.retained = Some(RetainedQuads {
+                    positions: Rc::downgrade(source),
+                    image: texture.image,
+                    font,
+                    size,
+                    scale,
+                    regions: used,
+                    quads: quads.clone(),
+                });
+            }
             draw_mask_quads(canvas, texture.image, quads, paint);
         }
         ready
+    }
+
+    pub(super) fn draw_outline_runs(
+        &mut self,
+        canvas: &mut Canvas<WGPURenderer>,
+        text: &TextSystem,
+        batch: OutlineBatch<'_>,
+    ) -> Result<OutlineRuns, String> {
+        let OutlineBatch {
+            runs,
+            glyphs,
+            paint,
+            scale,
+            ..
+        } = batch;
+        let size = paint.font_size();
+        if runs.len() < 4 || !(size > 0.0 && size * scale <= 40.0) {
+            return Ok(OutlineRuns::Fallback);
+        }
+        let positions = runs.iter().flat_map(|run| {
+            glyphs[run.glyphs.clone()]
+                .iter()
+                .map(|glyph| (run.font, glyph.glyph_id, glyph.x, glyph.y, true))
+        });
+        let masked = self
+            .clipped_batch(paint, scale, false)
+            .and_then(|mut masks| {
+                let spans = masks.outline_spans(&batch, text)?;
+                Some((masks.finish(), spans))
+            });
+        if let Some(((image, quads), spans)) = masked {
+            if spans.is_empty() {
+                if !quads.is_empty() {
+                    draw_mask_quads(canvas, image, quads, paint);
+                }
+            } else {
+                let mut quads = quads.into_iter();
+                for span in spans {
+                    match span {
+                        OutlineSpan::Mask(count) => draw_mask_quads(
+                            canvas,
+                            image,
+                            quads.by_ref().take(count).collect(),
+                            paint,
+                        ),
+                        OutlineSpan::Native(index) => {
+                            let run = &runs[index];
+                            canvas
+                                .fill_glyph_run(
+                                    run.font,
+                                    &[],
+                                    glyphs[run.glyphs.clone()].iter().cloned(),
+                                    paint,
+                                )
+                                .map_err(|error| format!("text drawing failed: {error}"))?;
+                        }
+                    }
+                }
+                self.prime_positioned(canvas, text, positions, paint, scale);
+            }
+            return Ok(OutlineRuns::Drawn);
+        }
+        // Reject bitmap, color and variable glyphs before spending the
+        // preparation budget on a batch that cannot be replayed together.
+        if positions
+            .clone()
+            .any(|(font, glyph, _, _, _)| text.outline_glyph(font, glyph).is_none())
+        {
+            return Ok(OutlineRuns::Unsupported);
+        }
+        self.prime_positioned(canvas, text, positions, paint, scale);
+        Ok(OutlineRuns::Fallback)
     }
 }
 
@@ -660,6 +880,50 @@ impl GlyphMasks {
 }
 
 impl MaskBatch<'_> {
+    fn outline_spans(
+        &mut self,
+        batch: &OutlineBatch<'_>,
+        text: &TextSystem,
+    ) -> Option<Vec<OutlineSpan>> {
+        // The label's scissor clips the draw. Keep native runs intact and
+        // combine only adjacent completed mask runs to preserve paint order.
+        let edges = [
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::INFINITY,
+        ];
+        let mut spans = Vec::new();
+        let mut covered = 0;
+        for (index, run) in batch.runs.iter().enumerate() {
+            let start = self.quads.len();
+            if batch.glyphs[run.glyphs.clone()]
+                .iter()
+                .all(|glyph| self.append(run.font, glyph.glyph_id, [glyph.x, glyph.y], edges, text))
+            {
+                continue;
+            }
+            if !batch.allow_partial {
+                return None;
+            }
+            self.quads.truncate(start);
+            if start > covered {
+                spans.push(OutlineSpan::Mask(start - covered));
+                covered = start;
+            }
+            spans.push(OutlineSpan::Native(index));
+        }
+        if !spans.is_empty() {
+            if self.quads.is_empty() {
+                return None;
+            }
+            if self.quads.len() > covered {
+                spans.push(OutlineSpan::Mask(self.quads.len() - covered));
+            }
+        }
+        Some(spans)
+    }
+
     pub(super) fn append(
         &mut self,
         font: FontId,

@@ -1,0 +1,142 @@
+struct ClockActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component PhysicsClockDemo inherits Window {
+    title: "XRack · 物理时钟与插值";
+    width: 736px; height: 462px; resizable: false; background: #172735;
+
+    property <vector3d> zero: Vector3D.new(0, 0, 0);
+    // A deliberately low physics frequency makes the two poses easy to compare.
+    property <physicsworld3d> world: Physics3D.new(root.zero, 0.12);
+    property <point3d> origin: Point3D.new(-2.0, 0.62, 0);
+    property <vector3d> size: Vector3D.new(0.6, 0.55, 0.6);
+    property <bool> realtime: false;
+    out property <int> body: 0;
+    out property <int> sensor: 0;
+    out property <int> steps: 0;
+    out property <int> rendered-frames: 0;
+    out property <float> frame-delta: 0;
+    out property <float> frame-elapsed: 0;
+    out property <int> entered: 0;
+    out property <int> exited: 0;
+    out property <bool> interpolate: true;
+    out property <bool> world-running: Physics3D.is-running(root.world);
+    out property <float> scale: Physics3D.time-scale(root.world);
+    out property <float> simulated: Physics3D.simulation-time(root.world);
+    out property <float> dropped: Physics3D.dropped-time(root.world);
+    out property <float> alpha: Physics3D.interpolation-alpha(root.world);
+    out property <point3d> actual: root.body == 0 ? root.origin : Physics3D.position(root.world, root.body);
+    out property <point3d> drawn: root.body == 0 ? root.origin : Physics3D.interpolated-position(root.world, root.body);
+    out property <vector3d> yaw-pitch-roll: Physics3D.interpolated-rotation(root.world, root.body);
+    out property <vector3d> actual-yaw: Physics3D.rotation(root.world, root.body);
+
+    callback reset();
+    reset() => {
+        root.realtime = false;
+        Physics3D.clear(root.world);
+        Physics3D.set-running(root.world, true);
+        Physics3D.set-time-scale(root.world, 1);
+        root.body = Physics3D.add-box(root.world, root.origin, root.size, 1, 0, 0);
+        root.sensor = Physics3D.add-box-trigger(root.world, Point3D.new(-0.45, 0.62, 0),
+            Vector3D.new(0.75, 1, 1.7), root.zero);
+        Physics3D.set-linear-velocity(root.world, root.body, Vector3D.new(3.2, 0, 0));
+        Physics3D.set-angular-velocity(root.world, root.body, Vector3D.new(0, 1.5, 0));
+        Physics3D.set-pose-interpolation(root.world, root.body, root.interpolate);
+        root.steps = 0;
+        root.rendered-frames = 0;
+        root.frame-delta = 0;
+        root.frame-elapsed = 0;
+        root.entered = 0;
+        root.exited = 0;
+    }
+    callback consume(count: int);
+    consume(count) => {
+        root.steps = count;
+        if count > 0 {
+            root.entered += Model.count(Physics3D.trigger-entered(root.world, root.sensor));
+            root.exited += Model.count(Physics3D.trigger-exited(root.world, root.sensor));
+            if root.actual.x > 3.15 { root.realtime = false; }
+        }
+    }
+    callback frame(elapsed: float, max-steps: int);
+    frame(elapsed, max-steps) => {
+        if root.body == 0 { root.reset(); }
+        root.consume(Physics3D.advance(root.world, elapsed, max-steps));
+    }
+    callback manual();
+    manual() => {
+        if root.body == 0 { root.reset(); }
+        root.realtime = false;
+        if Physics3D.step(root.world) { root.consume(1); }
+    }
+    callback pause(running: bool);
+    pause(running) => { Physics3D.set-running(root.world, running); }
+    callback slow(factor: float);
+    slow(factor) => { Physics3D.set-time-scale(root.world, factor); }
+    callback toggle-interpolation();
+    toggle-interpolation() => {
+        root.interpolate = !root.interpolate;
+        if root.body > 0 { Physics3D.set-pose-interpolation(root.world, root.body, root.interpolate); }
+    }
+    callback start-realtime();
+    start-realtime() => {
+        root.reset();
+        root.realtime = true;
+        driver.restart();
+    }
+    driver := FrameAnimation {
+        running: root.realtime && root.world-running;
+        triggered(delta, elapsed, frame) => {
+            root.frame-delta = delta;
+            root.frame-elapsed = elapsed;
+            root.rendered-frames = frame;
+            root.consume(Physics3D.advance(root.world, delta, 8));
+        }
+    }
+
+    pure function rounded(value: float) -> float { Math.round(value * 100) / 100.0 }
+    pure function part(id: string, mesh: string, point: point3d, size: vector3d, rotation: vector3d, tint: color) -> ClockActor {
+        ClockActor {
+            id: id, mesh: mesh, x: point.x, y: point.y, z: point.z,
+            scale-x: size.x, scale-y: size.y, scale-z: size.z,
+            yaw: rotation.x, pitch: rotation.y, roll: rotation.z, color: tint,
+        }
+    }
+    property <[ClockActor]> actors: [
+        root.part("stage", "primitive:box", Point3D.new(0, -0.09, 0), Vector3D.new(8.5, 0.18, 4.1), root.zero, #304858),
+        root.part("sensor", "primitive:box", Point3D.new(-0.45, 0.006, 0), Vector3D.new(0.75, 0.016, 1.7), root.zero, #57638a),
+        root.part("raw-pose", "primitive:sphere", Point3D.new(root.actual.x, 0.27, 0.58),
+            Vector3D.new(0.25, 0.25, 0.25), root.zero, #84ace9),
+        root.part("render-pose", "primitive:box", root.drawn, root.size, root.yaw-pitch-roll, #ffcf7a),
+    ];
+    SceneView3D {
+        width: 736px; height: 378px; model: root.actors;
+        camera-yaw: -15; camera-pitch: 34; camera-distance: 10;
+        scene-background: #203949; ambient-intensity: 0.57; multisampling: true;
+    }
+    clock-status := Text {
+        x: 18px; y: 14px; color: #f1ebdd;
+        text: "子步 " + root.steps + "   ·   模拟 " + root.rounded(root.simulated)
+            + " s   ·   丢弃 " + root.rounded(root.dropped) + " s   ·   插值 " + root.rounded(root.alpha);
+    }
+    pose-status := Text {
+        x: 18px; y: 42px; color: #cfeced;
+        text: "X 蓝 " + root.rounded(root.actual.x) + "   ·   黄 " + root.rounded(root.drawn.x)
+            + "   ·   进入 " + root.entered + "   ·   离开 " + root.exited;
+    }
+    HorizontalLayout {
+        x: 16px; y: 397px; width: 704px; height: 44px; spacing: 9px;
+        play := Button { text: "实时播放"; clicked => { root.start-realtime(); } }
+        pause := Button { text: root.world-running ? "暂停" : "继续"; clicked => { root.pause(!root.world-running); } }
+        burst := Button { text: "卡顿帧"; clicked => { root.reset(); root.frame(1.37, 8); } }
+        step := Button { text: "单步"; clicked => { root.manual(); } }
+        smooth := Button {
+            text: root.interpolate ? "插值开启" : "插值关闭";
+            clicked => { root.toggle-interpolation(); }
+        }
+        scale-button := Button { text: root.scale == 1 ? "正常速度" : "半速"; clicked => { root.slow(root.scale == 1 ? 0.5 : 1); } }
+    }
+}

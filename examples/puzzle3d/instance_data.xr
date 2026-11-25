@@ -1,0 +1,63 @@
+struct InstanceChannels { x: float, y: float, z: float, w: float }
+struct InstanceStyle { material-shader: string, shader-displacement: float, unlit: bool }
+struct DataActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, instance-of: string, instance-template: bool, instance-data: InstanceChannels,
+    visible: bool, material: InstanceStyle, casts-shadow: bool,
+    camera-kind: string, camera-height: float,
+}
+
+export component InstanceDataDemo inherits Window {
+    title: "XRack · Instance data";
+    width: 600px; height: 356px;
+    background: #172538;
+    in-out property <float> phase: 0;
+    in-out property <bool> shadow: false;
+    in-out property <bool> temporal: false;
+
+    property <DataActor> base: DataActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, instance-of: "", instance-template: false,
+        instance-data: InstanceChannels { x: 0, y: 0, z: 0, w: 0 },
+        visible: true, material: InstanceStyle { material-shader: "", shader-displacement: 0, unlit: false },
+        casts-shadow: true, camera-kind: "", camera-height: 6,
+    };
+    property <[DataActor]> world: [
+        DataActor { id: "eye", z: 10, camera-kind: "orthographic", ..root.base },
+        DataActor {
+            id: "tile", mesh: "primitive:box", instance-template: true,
+            material: InstanceStyle {
+                material-shader: @material-shader-url("effects/instance_data.wgsl"),
+                shader-displacement: 1.5, unlit: true,
+            },
+            ..root.base
+        },
+        DataActor { id: "red", instance-of: "tile", x: -3,
+            instance-data: InstanceChannels { x: 1, y: 0, z: 0, w: 0 }, ..root.base },
+        DataActor { id: "outside", instance-of: "tile", x: 80,
+            instance-data: InstanceChannels { x: 1, y: 0, z: 1, w: 0 }, ..root.base },
+        DataActor { id: "moving", instance-of: "tile",
+            instance-data: InstanceChannels { x: root.phase, y: 1, z: 0, w: root.phase }, ..root.base },
+        DataActor { id: "blue", instance-of: "tile", x: 3,
+            instance-data: InstanceChannels { x: 0, y: 0, z: 1, w: 0 }, ..root.base },
+        DataActor { id: "receiver", mesh: "primitive:box", z: -2,
+            scale-x: 20, scale-y: 10, scale-z: 0.1, color: #aab9ce,
+            casts-shadow: false, visible: root.shadow, ..root.base },
+    ];
+    SceneView3D {
+        width: 600px; height: 300px; camera: "eye"; model: root.world;
+        scene-background: #263b54; scene-tone-map: none;
+        shadows: root.shadow; shadow-map-size: 256;
+        light-yaw: -26; light-elevation: 48; ambient-intensity: 0.26;
+        ambient-occlusion: root.shadow;
+        temporal-aa: root.temporal; temporal-aa-mode: "motion-vectors";
+    }
+    HorizontalLayout {
+        x: 12px; y: 311px; width: 576px; height: 34px; spacing: 12px;
+        phase-slider := Slider { width: 295px; minimum: 0; maximum: 1; value <=> root.phase; }
+        shadow-switch := CheckBox { width: 130px; text: "Shadows"; checked <=> root.shadow; }
+        taa-switch := CheckBox { width: 110px; text: "TAA"; checked <=> root.temporal; }
+    }
+}

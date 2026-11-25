@@ -153,6 +153,12 @@ fn host_callback_arguments(args: &[Value]) -> Vec<Value> {
             Value::IntModel(model) => Value::IntList(model.snapshot_untracked()),
             Value::DateModel(model) => Value::DateList(model.snapshot_untracked()),
             Value::Hit3DList(model) => Value::Hit3DList(model.snapshot_untracked().into()),
+            Value::PhysicsContact3DList(model) => {
+                Value::PhysicsContact3DList(model.snapshot_untracked().into())
+            }
+            Value::PhysicsHit3DList(model) => {
+                Value::PhysicsHit3DList(model.snapshot_untracked().into())
+            }
             value => value.clone(),
         })
         .collect()
@@ -283,9 +289,15 @@ impl Program {
                 timers: definition
                     .timer_order
                     .iter()
-                    .filter(|key| keys.contains(key.as_str()))
-                    .cloned()
-                    .map(|key| (key, Default::default()))
+                    .filter(|(key, _)| keys.contains(key.as_str()))
+                    .map(|(key, frame_clock)| {
+                        let slot = if *frame_clock {
+                            xrack_runtime::TimerSlot::frame()
+                        } else {
+                            Default::default()
+                        };
+                        (key.clone(), slot)
+                    })
                     .collect(),
                 range_positions: definition
                     .range_position_targets
@@ -2016,6 +2028,15 @@ impl Instance {
             Value::Hit3DList(items) => {
                 Box::new(items.into_snapshot().into_iter().map(Value::Hit3D))
             }
+            Value::PhysicsContact3DList(items) => Box::new(
+                items
+                    .into_snapshot()
+                    .into_iter()
+                    .map(Value::PhysicsContact3D),
+            ),
+            Value::PhysicsHit3DList(items) => {
+                Box::new(items.into_snapshot().into_iter().map(Value::PhysicsHit3D))
+            }
             Value::RecordList(items) => {
                 Box::new(items.into_snapshot().1.into_iter().map(Value::Record))
             }
@@ -2344,6 +2365,9 @@ impl Instance {
                 _ => Err(evaluation("invalid cast operand")),
             },
             MathFunction(kind, inputs) => math_function(*kind, &self.arguments(inputs, args)?),
+            PhysicsFunction(kind, inputs) => {
+                physics_function(*kind, &self.arguments(inputs, args)?, self.program())
+            }
             GeometryFunction(kind, inputs) => {
                 geometry_function(*kind, &self.arguments(inputs, args)?, self.program())
             }
@@ -2443,6 +2467,8 @@ impl Instance {
                     Value::IntList(rows) => rows.len(),
                     Value::IntModel(rows) => rows.len(),
                     Value::Hit3DList(rows) => rows.len(),
+                    Value::PhysicsContact3DList(rows) => rows.len(),
+                    Value::PhysicsHit3DList(rows) => rows.len(),
                     Value::DateList(rows) => rows.len(),
                     Value::DateModel(rows) => rows.len(),
                     Value::RecordList(rows) => rows.model().len(),
@@ -2479,6 +2505,10 @@ impl Instance {
                         .map(Value::Date),
                     Value::DateModel(rows) => rows.row_at(index).map(Value::Date),
                     Value::Hit3DList(rows) => rows.row_at(index).map(Value::Hit3D),
+                    Value::PhysicsContact3DList(rows) => {
+                        rows.row_at(index).map(Value::PhysicsContact3D)
+                    }
+                    Value::PhysicsHit3DList(rows) => rows.row_at(index).map(Value::PhysicsHit3D),
                     Value::RecordList(rows) => {
                         self.program().record_at(&rows, index)?.map(Value::Record)
                     }
@@ -2779,6 +2809,25 @@ impl Instance {
             BuiltinField(input, field) => field
                 .read(self.evaluate(input, args)?)
                 .ok_or_else(|| evaluation("invalid built-in field operand")),
+            MakeWalkResult3D([position, crossings]) => {
+                let position = self.evaluate(position, args)?;
+                let crossings = self.evaluate(crossings, args)?;
+                match (position, crossings) {
+                    (Value::Point3D(position), Value::Hit3DList(crossings)) => {
+                        Ok(xrack_runtime::WalkResult3D {
+                            position,
+                            crossings,
+                            collision_contacts: None,
+                            support: xrack_runtime::Hit3D::default(),
+                            grounded: false,
+                            hit_wall: false,
+                            hit_ceiling: false,
+                        }
+                        .into())
+                    }
+                    _ => Err(evaluation("invalid walk result operands")),
+                }
+            }
             MakeDate([year, month, day]) => Ok(Value::Date(xrack_runtime::Date {
                 year: self.int_argument(year, args)?,
                 month: self.int_argument(month, args)?,
@@ -2909,6 +2958,28 @@ impl Instance {
                     .map(|item| match self.evaluate(item, args)? {
                         Value::Hit3D(hit) => Ok(hit),
                         _ => Err(evaluation("hit list item requires hit3d")),
+                    })
+                    .collect::<Result<Vec<_>>>()?
+                    .into(),
+            )),
+            PhysicsContact3DArray(items) => Ok(Value::PhysicsContact3DList(
+                items
+                    .iter()
+                    .map(|item| match self.evaluate(item, args)? {
+                        Value::PhysicsContact3D(contact) => Ok(contact),
+                        _ => Err(evaluation(
+                            "physics contact list item requires physicscontact3d",
+                        )),
+                    })
+                    .collect::<Result<Vec<_>>>()?
+                    .into(),
+            )),
+            PhysicsHit3DArray(items) => Ok(Value::PhysicsHit3DList(
+                items
+                    .iter()
+                    .map(|item| match self.evaluate(item, args)? {
+                        Value::PhysicsHit3D(contact) => Ok(contact),
+                        _ => Err(evaluation("physics hit list item requires physicshit3d")),
                     })
                     .collect::<Result<Vec<_>>>()?
                     .into(),
@@ -3455,6 +3526,7 @@ impl Instance {
             .as_deref()
             .map(|action| self.present_action(action, &mut node))
             .transpose()?;
+        let mut follow_authored_model = false;
         for binding in &element.bindings {
             let name = binding.name;
             if xrack_syntax::builtins::text_submission_rule(node.kind, name)
@@ -3479,13 +3551,19 @@ impl Instance {
                 };
                 node.set_string_combo_model(model);
             } else if node.kind == "SceneView3D" && name == "model" {
-                let Value::RecordList(model) = value else {
-                    return Err(evaluation("expected a scene object record list"));
+                let model = match value {
+                    Value::RecordList(model) => {
+                        follow_authored_model = true;
+                        self.program().prepare_scene(&model, true)
+                    }
+                    Value::SceneObjects(scene) => scene,
+                    _ => {
+                        return Err(evaluation(
+                            "expected scene object records or a prepared scene model",
+                        ));
+                    }
                 };
-                node.properties.insert(
-                    name,
-                    Value::SceneObjects(self.program().prepare_scene(&model, true)),
-                );
+                node.properties.insert(name, Value::SceneObjects(model));
             } else if node.kind == "SceneView3D" && name == "lights" {
                 let Value::RecordList(model) = value else {
                     return Err(evaluation("expected a scene light record list"));
@@ -3589,6 +3667,9 @@ impl Instance {
             if let Some(path) = &binding.vector_path {
                 node.set_loaded_vector_path(path.clone());
             }
+        }
+        if node.kind == "SceneView3D" {
+            node.prepare_scene_physics(follow_authored_model);
         }
         for (&name, field) in &element.row_links {
             let value = self
@@ -6503,9 +6584,20 @@ impl ValueType {
                 | (Self::Point2D, Value::Point2D(_))
                 | (Self::Point3D, Value::Point3D(_))
                 | (Self::Vector3D, Value::Vector3D(_))
+                | (Self::Quaternion3D, Value::Quaternion3D(_))
+                | (Self::RotationTrack3D, Value::RotationTrack3D(_))
                 | (Self::Hit3D, Value::Hit3D(_))
                 | (Self::Hit3DList, Value::Hit3DList(_))
+                | (Self::PhysicsContact3D, Value::PhysicsContact3D(_))
+                | (Self::PhysicsHit3D, Value::PhysicsHit3D(_))
+                | (Self::PhysicsContact3DList, Value::PhysicsContact3DList(_))
+                | (Self::PhysicsHit3DList, Value::PhysicsHit3DList(_))
                 | (Self::ProjectedPoint3D, Value::ProjectedPoint3D(_))
+                | (Self::Instance3D, Value::Instance3D(_))
+                | (Self::InstanceTable3D, Value::InstanceTable3D(_))
+                | (Self::WalkResult3D, Value::WalkResult3D(_))
+                | (Self::PhysicsWorld3D, Value::PhysicsWorld3D(_))
+                | (Self::SceneModel3D, Value::SceneObjects(_))
                 | (Self::Vector2D, Value::Vector2D(_))
                 | (Self::Transform2D, Value::Transform2D(_))
                 | (Self::LayoutAlignment, Value::LayoutAlignment(_))
@@ -6588,6 +6680,10 @@ pub(super) fn callback_value(value: Value) -> Value {
         Value::IntModel(model) => Value::IntModel(model.into_snapshot().into()),
         Value::DateModel(model) => Value::DateModel(model.into_snapshot().into()),
         Value::Hit3DList(model) => Value::Hit3DList(model.into_snapshot().into()),
+        Value::PhysicsContact3DList(model) => {
+            Value::PhysicsContact3DList(model.into_snapshot().into())
+        }
+        Value::PhysicsHit3DList(model) => Value::PhysicsHit3DList(model.into_snapshot().into()),
         Value::RecordList(list) => {
             let (name, rows) = list.into_snapshot();
             Value::RecordList(RecordList::new(name, rows))
@@ -6605,6 +6701,12 @@ fn callback_parameter(value: &Value) -> Value {
         Value::IntModel(model) => Value::IntModel(model.snapshot_untracked().into()),
         Value::DateModel(model) => Value::DateModel(model.snapshot_untracked().into()),
         Value::Hit3DList(model) => Value::Hit3DList(model.snapshot_untracked().into()),
+        Value::PhysicsContact3DList(model) => {
+            Value::PhysicsContact3DList(model.snapshot_untracked().into())
+        }
+        Value::PhysicsHit3DList(model) => {
+            Value::PhysicsHit3DList(model.snapshot_untracked().into())
+        }
         Value::RecordList(list) => Value::RecordList(RecordList::new(
             list.name(),
             list.model().snapshot_untracked(),
@@ -6620,6 +6722,10 @@ pub(crate) fn host_value(value: Value) -> Value {
         Value::IntModel(model) => Value::IntList(model.into_snapshot()),
         Value::DateModel(model) => Value::DateList(model.into_snapshot()),
         Value::Hit3DList(model) => Value::Hit3DList(model.into_snapshot().into()),
+        Value::PhysicsContact3DList(model) => {
+            Value::PhysicsContact3DList(model.into_snapshot().into())
+        }
+        Value::PhysicsHit3DList(model) => Value::PhysicsHit3DList(model.into_snapshot().into()),
         value => value,
     }
 }
@@ -6640,6 +6746,8 @@ fn binary(program: &Program, operator: BinaryOperator, lhs: Value, rhs: Value) -
             (IntModel(a), IntModel(b)) => a.values_eq_owned(b),
             (DateModel(a), DateModel(b)) => a.values_eq_owned(b),
             (Hit3DList(a), Hit3DList(b)) => a.values_eq_owned(b),
+            (PhysicsContact3DList(a), PhysicsContact3DList(b)) => a.values_eq_owned(b),
+            (PhysicsHit3DList(a), PhysicsHit3DList(b)) => a.values_eq_owned(b),
             (DateModel(model), DateList(items)) | (DateList(items), DateModel(model)) => {
                 model.into_snapshot() == items
             }
@@ -6718,13 +6826,708 @@ fn binary(program: &Program, operator: BinaryOperator, lhs: Value, rhs: Value) -
     }
 }
 
+fn physics_function(
+    kind: xrack_syntax::builtins::PhysicsFunction,
+    inputs: &[Value],
+    program: &Program,
+) -> Result<Value> {
+    use xrack_syntax::builtins::PhysicsFunction::*;
+    let value = match (kind, inputs) {
+        (SyncBodies, [Value::PhysicsWorld3D(world), Value::RecordList(bodies)]) => world
+            .sync_body_records(bodies, |key| program.scene_assets.meshes.get(key).cloned())
+            .into(),
+        (
+            SyncScene,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::RecordList(bodies),
+                Value::RecordList(joints),
+            ],
+        ) => world
+            .sync_scene_records(bodies, joints, |key| {
+                program.scene_assets.meshes.get(key).cloned()
+            })
+            .into(),
+        (JointById, [Value::PhysicsWorld3D(world), Value::String(id)]) => {
+            world.joint_by_id(id).into()
+        }
+        (BodyById, [Value::PhysicsWorld3D(world), Value::String(id)]) => {
+            world.body_by_id(id).into()
+        }
+        (
+            kind @ (AddBody | AddKinematicBody | AddTrigger | ShapeCast | ShapeCastAll
+            | ShapeOverlap),
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Point3D(center),
+                Value::Vector3D(rotation),
+                Value::RecordList(shapes),
+                tail @ ..,
+            ],
+        ) => {
+            let shapes =
+                xrack_runtime::PhysicsCollider3D::from_records_with_meshes(shapes, |key| {
+                    program.scene_assets.meshes.get(key).cloned()
+                });
+            match (kind, tail) {
+                (
+                    AddBody,
+                    [
+                        Value::Float(mass),
+                        Value::Float(friction),
+                        Value::Float(restitution),
+                    ],
+                ) => world
+                    .add_body(*center, *rotation, shapes, *mass, *friction, *restitution)
+                    .into(),
+                (AddKinematicBody, [Value::Float(friction), Value::Float(restitution)]) => world
+                    .add_kinematic_body(*center, *rotation, shapes, *friction, *restitution)
+                    .into(),
+                (AddTrigger, []) => world.add_trigger(*center, *rotation, shapes).into(),
+                (
+                    ShapeCast | ShapeCastAll,
+                    [
+                        Value::Vector3D(direction),
+                        Value::Float(distance),
+                        Value::Int(mask),
+                        Value::Int(ignore),
+                        Value::Bool(sensors),
+                    ],
+                ) => {
+                    let filter = xrack_runtime::PhysicsQueryFilter3D::new(*mask, *ignore, *sensors);
+                    if kind == ShapeCast {
+                        world
+                            .shape_cast(*center, *rotation, shapes, *direction, *distance, filter)
+                            .into()
+                    } else {
+                        Value::PhysicsHit3DList(
+                            world
+                                .shape_cast_all(
+                                    *center, *rotation, shapes, *direction, *distance, filter,
+                                )
+                                .into(),
+                        )
+                    }
+                }
+                (ShapeOverlap, [Value::Int(mask), Value::Int(ignore), Value::Bool(sensors)]) => {
+                    let filter = xrack_runtime::PhysicsQueryFilter3D::new(*mask, *ignore, *sensors);
+                    Value::IntModel(
+                        world
+                            .shape_overlap(*center, *rotation, shapes, filter)
+                            .into(),
+                    )
+                }
+                _ => return Err(evaluation("invalid compound physics argument count")),
+            }
+        }
+        (New, [Value::Vector3D(gravity), Value::Float(timestep)]) => {
+            xrack_runtime::PhysicsWorld3D::new(*gravity, *timestep).into()
+        }
+        (
+            AddBox,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Point3D(center),
+                Value::Vector3D(size),
+                Value::Float(mass),
+                Value::Float(friction),
+                Value::Float(restitution),
+            ],
+        ) => world
+            .add_box(*center, *size, *mass, *friction, *restitution)
+            .into(),
+        (
+            AddSphere,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Point3D(center),
+                Value::Float(radius),
+                Value::Float(mass),
+                Value::Float(friction),
+                Value::Float(restitution),
+            ],
+        ) => world
+            .add_sphere(*center, *radius, *mass, *friction, *restitution)
+            .into(),
+        (
+            AddKinematicBox,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Point3D(center),
+                Value::Vector3D(size),
+                Value::Vector3D(rotation),
+                Value::Float(friction),
+                Value::Float(restitution),
+            ],
+        ) => world
+            .add_kinematic_box(*center, *size, *rotation, *friction, *restitution)
+            .into(),
+        (
+            AddBoxTrigger,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Point3D(center),
+                Value::Vector3D(size),
+                Value::Vector3D(rotation),
+            ],
+        ) => world.add_box_trigger(*center, *size, *rotation).into(),
+        (
+            SetCollisionFilter,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Int(group),
+                Value::Int(ignore_groups),
+            ],
+        ) => world
+            .set_collision_filter(*body, *group, *ignore_groups)
+            .into(),
+        (
+            kind @ (AddFixedJoint | AddSphericalJoint),
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(first),
+                Value::Int(second),
+                Value::Point3D(anchor),
+            ],
+        ) => if kind == AddFixedJoint {
+            world.add_fixed_joint(*first, *second, *anchor)
+        } else {
+            world.add_spherical_joint(*first, *second, *anchor)
+        }
+        .into(),
+        (
+            kind @ (AddRevoluteJoint | AddPrismaticJoint),
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(first),
+                Value::Int(second),
+                Value::Point3D(anchor),
+                Value::Vector3D(axis),
+                Value::Float(min),
+                Value::Float(max),
+            ],
+        ) => if kind == AddRevoluteJoint {
+            world.add_revolute_joint(*first, *second, *anchor, *axis, *min, *max)
+        } else {
+            world.add_prismatic_joint(*first, *second, *anchor, *axis, *min, *max)
+        }
+        .into(),
+        (
+            AddDistanceJoint,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(first),
+                Value::Int(second),
+                Value::Point3D(first_anchor),
+                Value::Point3D(second_anchor),
+                Value::Float(min),
+                Value::Float(max),
+            ],
+        ) => world
+            .add_distance_joint(*first, *second, *first_anchor, *second_anchor, *min, *max)
+            .into(),
+        (
+            kind @ (SetJointLimits | SetJointMotor),
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(joint),
+                Value::Float(first),
+                Value::Float(second),
+            ],
+        ) => if kind == SetJointLimits {
+            world.set_joint_limits(*joint, *first, *second)
+        } else {
+            world.set_joint_motor(*joint, *first, *second)
+        }
+        .into(),
+        (JointPosition, [Value::PhysicsWorld3D(world), Value::Int(joint)]) => {
+            world.joint_position(*joint).into()
+        }
+        (RemoveJoint, [Value::PhysicsWorld3D(world), Value::Int(joint)]) => {
+            world.remove_joint(*joint).into()
+        }
+        (TriggerCount, [Value::PhysicsWorld3D(world), Value::Int(trigger)]) => {
+            world.trigger_count(*trigger).into()
+        }
+        (
+            TriggerOverlaps,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(trigger),
+                Value::Int(body),
+            ],
+        ) => world.trigger_overlaps(*trigger, *body).into(),
+        (TriggerEntered, [Value::PhysicsWorld3D(world), Value::Int(trigger)]) => {
+            Value::IntList(world.trigger_entered(*trigger))
+        }
+        (TriggerExited, [Value::PhysicsWorld3D(world), Value::Int(trigger)]) => {
+            Value::IntList(world.trigger_exited(*trigger))
+        }
+        (IsKinematic, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.is_kinematic(*body).into()
+        }
+        (
+            SetKinematic,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Bool(enabled),
+            ],
+        ) => world.set_kinematic(*body, *enabled).into(),
+        (
+            SetKinematicTargetWithPivot,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Point3D(position),
+                Value::Vector3D(rotation),
+                Value::Vector3D(pivot),
+            ],
+        ) => world
+            .set_kinematic_target_with_pivot(*body, *position, *rotation, *pivot)
+            .into(),
+        (
+            SetKinematicTarget,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Point3D(center),
+                Value::Vector3D(rotation),
+            ],
+        ) => world.set_kinematic_target(*body, *center, *rotation).into(),
+        (
+            SetKinematicContactReports,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Bool(fixed),
+                Value::Bool(kinematic),
+            ],
+        ) => world
+            .set_kinematic_contact_reports(*fixed, *kinematic)
+            .into(),
+        (ReportStaticKinematicCollisions, [Value::PhysicsWorld3D(world)]) => {
+            world.report_static_kinematic_collisions().into()
+        }
+        (ReportKinematicKinematicCollisions, [Value::PhysicsWorld3D(world)]) => {
+            world.report_kinematic_kinematic_collisions().into()
+        }
+        (
+            SetContactReports,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Bool(send),
+                Value::Bool(receive),
+            ],
+        ) => world.set_contact_reports(*body, *send, *receive).into(),
+        (
+            SetContactEvents,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Bool(enabled),
+            ],
+        ) => world.set_contact_events(*body, *enabled).into(),
+        (
+            kind @ (ContactBodies | ContactEntered | ContactExited),
+            [Value::PhysicsWorld3D(world), Value::Int(body)],
+        ) => {
+            let result = match kind {
+                ContactBodies => world.contact_bodies(*body),
+                ContactEntered => world.contact_entered(*body),
+                _ => world.contact_exited(*body),
+            };
+            Value::IntModel(result.into())
+        }
+        (Contacts, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            Value::PhysicsContact3DList(world.contacts(*body).into())
+        }
+        (Step, [Value::PhysicsWorld3D(world)]) => world.step().into(),
+        (
+            Advance,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Float(elapsed),
+                Value::Int(max_steps),
+            ],
+        ) => world.advance(*elapsed, *max_steps).into(),
+        (AdvanceRealtime, [Value::PhysicsWorld3D(world), Value::Int(max_steps)]) => {
+            world.advance_realtime(*max_steps).into()
+        }
+        (SetRunning, [Value::PhysicsWorld3D(world), Value::Bool(running)]) => {
+            world.set_running(*running).into()
+        }
+        (SetTimeScale, [Value::PhysicsWorld3D(world), Value::Float(scale)]) => {
+            world.set_time_scale(*scale).into()
+        }
+        (
+            SetPoseInterpolation,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Bool(enabled),
+            ],
+        ) => world.set_pose_interpolation(*body, *enabled).into(),
+        (IsRunning, [Value::PhysicsWorld3D(world)]) => world.is_running().into(),
+        (TimeScale, [Value::PhysicsWorld3D(world)]) => world.time_scale().into(),
+        (SimulationTime, [Value::PhysicsWorld3D(world)]) => world.simulation_time().into(),
+        (DroppedTime, [Value::PhysicsWorld3D(world)]) => world.dropped_time().into(),
+        (InterpolationAlpha, [Value::PhysicsWorld3D(world)]) => world.interpolation_alpha().into(),
+        (InterpolatedPosition, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.interpolated_position(*body).into()
+        }
+        (InterpolatedRotation, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.interpolated_rotation(*body).into()
+        }
+        (Clear, [Value::PhysicsWorld3D(world)]) => world.clear().into(),
+        (Position, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.position(*body).into()
+        }
+        (Rotation, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.rotation(*body).into()
+        }
+        (Velocity, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.velocity(*body).into()
+        }
+        (Remove, [Value::PhysicsWorld3D(world), Value::Int(body)]) => world.remove(*body).into(),
+        (
+            kind @ (ApplyImpulse | ApplyForce | ApplyTorque | ApplyTorqueImpulse
+            | SetLinearVelocity | SetAngularVelocity),
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Vector3D(value),
+            ],
+        ) => match kind {
+            ApplyImpulse => world.apply_impulse(*body, *value),
+            ApplyForce => world.apply_force(*body, *value),
+            ApplyTorque => world.apply_torque(*body, *value),
+            ApplyTorqueImpulse => world.apply_torque_impulse(*body, *value),
+            SetLinearVelocity => world.set_linear_velocity(*body, *value),
+            SetAngularVelocity => world.set_angular_velocity(*body, *value),
+            _ => return Err(evaluation("invalid rigid body vector operation")),
+        }
+        .into(),
+        (
+            kind @ (ApplyForceAt | ApplyImpulseAt),
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Vector3D(value),
+                Value::Point3D(point),
+            ],
+        ) => if kind == ApplyForceAt {
+            world.apply_force_at(*body, *value, *point)
+        } else {
+            world.apply_impulse_at(*body, *value, *point)
+        }
+        .into(),
+        (
+            SetContinuousLoad,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Vector3D(force),
+                Value::Vector3D(torque),
+            ],
+        ) => world.set_continuous_load(*body, *force, *torque).into(),
+        (
+            ResetBody,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Point3D(center),
+                Value::Vector3D(rotation),
+            ],
+        ) => world.reset_body(*body, *center, *rotation).into(),
+        (
+            SetMass,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(mass),
+            ],
+        ) => world.set_mass(*body, *mass).into(),
+        (
+            SetDensity,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(density),
+            ],
+        ) => world.set_density(*body, *density).into(),
+        (SetDefaultDensity, [Value::PhysicsWorld3D(world), Value::Float(density)]) => {
+            world.set_default_density(*density).into()
+        }
+        (DefaultDensity, [Value::PhysicsWorld3D(world)]) => world.default_density().into(),
+        (UseDefaultDensity, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.use_default_density(*body).into()
+        }
+        (
+            SetMassProperties,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(mass),
+                Value::Point3D(center),
+                Value::Vector3D(inertia),
+                Value::Vector3D(rotation),
+            ],
+        ) => world
+            .set_mass_properties(*body, *mass, *center, *inertia, *rotation)
+            .into(),
+        (
+            SetInertiaMatrix,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(mass),
+                Value::Point3D(center),
+                Value::Vector3D(x),
+                Value::Vector3D(y),
+                Value::Vector3D(z),
+            ],
+        ) => world
+            .set_inertia_matrix(*body, *mass, *center, *x, *y, *z)
+            .into(),
+        (Mass, [Value::PhysicsWorld3D(world), Value::Int(body)]) => world.mass(*body).into(),
+        (CenterOfMass, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.center_of_mass(*body).into()
+        }
+        (LocalCenterOfMass, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.local_center_of_mass(*body).into()
+        }
+        (PrincipalInertia, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.principal_inertia(*body).into()
+        }
+        (
+            InertiaColumn,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Int(column),
+            ],
+        ) => world.inertia_column(*body, *column).into(),
+        (
+            SetMaterial,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(stick),
+                Value::Float(slide),
+                Value::Float(bounce),
+            ],
+        ) => world.set_material(*body, *stick, *slide, *bounce).into(),
+        (StaticFriction, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.static_friction(*body).into()
+        }
+        (DynamicFriction, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.dynamic_friction(*body).into()
+        }
+        (Restitution, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.restitution(*body).into()
+        }
+        (
+            SetDamping,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(linear),
+                Value::Float(angular),
+            ],
+        ) => world.set_damping(*body, *linear, *angular).into(),
+        (
+            SetGravityScale,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(scale),
+            ],
+        ) => world.set_gravity_scale(*body, *scale).into(),
+        (SetCcdSubsteps, [Value::PhysicsWorld3D(world), Value::Int(maximum)]) => {
+            world.set_ccd_substeps(*maximum).into()
+        }
+        (CcdSubsteps, [Value::PhysicsWorld3D(world)]) => world.ccd_substeps().into(),
+        (
+            SetBodyCcd,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Bool(enabled),
+            ],
+        ) => world.set_body_ccd(*body, *enabled).into(),
+        (BodyCcd, [Value::PhysicsWorld3D(world), Value::Int(body)]) => world.body_ccd(*body).into(),
+        (
+            SetSoftCcd,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(distance),
+            ],
+        ) => world.set_soft_ccd(*body, *distance).into(),
+        (SoftCcd, [Value::PhysicsWorld3D(world), Value::Int(body)]) => world.soft_ccd(*body).into(),
+        (SetLengthUnit, [Value::PhysicsWorld3D(world), Value::Float(length)]) => {
+            world.set_length_unit(*length).into()
+        }
+        (LengthUnit, [Value::PhysicsWorld3D(world)]) => world.length_unit().into(),
+        (SetGravity, [Value::PhysicsWorld3D(world), Value::Vector3D(gravity)]) => {
+            world.set_gravity(*gravity).into()
+        }
+        (Gravity, [Value::PhysicsWorld3D(world)]) => world.gravity().into(),
+        (UseCharacterWorldGravity, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.use_character_world_gravity(*body).into()
+        }
+        (CharacterGravity, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.character_gravity(*body).into()
+        }
+        (
+            SetAxisLocks,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Int(linear),
+                Value::Int(angular),
+            ],
+        ) => world.set_axis_locks(*body, *linear, *angular).into(),
+        (ClearForces, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.clear_forces(*body).into()
+        }
+        (AngularVelocity, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.angular_velocity(*body).into()
+        }
+        (IsSleeping, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.is_sleeping(*body).into()
+        }
+        (
+            AddCharacter,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Point3D(center),
+                Value::Float(radius),
+                Value::Float(segment),
+            ],
+        ) => world.add_character(*center, *radius, *segment).into(),
+        (
+            SetCharacterMovement,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Vector3D(velocity),
+            ],
+        ) => world.set_character_movement(*body, *velocity).into(),
+        (
+            SetCharacterGravity,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Vector3D(gravity),
+            ],
+        ) => world.set_character_gravity(*body, *gravity).into(),
+        (
+            SetCharacterMidAirControl,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Bool(enabled),
+            ],
+        ) => world.set_character_mid_air_control(*body, *enabled).into(),
+        (
+            SetCharacterOptions,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(step_height),
+                Value::Float(snap_distance),
+                Value::Float(max_slope),
+                Value::Float(push_mass),
+            ],
+        ) => world
+            .set_character_options(*body, *step_height, *snap_distance, *max_slope, *push_mass)
+            .into(),
+        (
+            JumpCharacter,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Float(speed),
+            ],
+        ) => world.jump_character(*body, *speed).into(),
+        (
+            TeleportCharacter,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Point3D(center),
+            ],
+        ) => world.teleport_character(*body, *center).into(),
+        (CharacterGrounded, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.character_grounded(*body).into()
+        }
+        (CharacterHitWall, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.character_hit_wall(*body).into()
+        }
+        (CharacterHitCeiling, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.character_hit_ceiling(*body).into()
+        }
+        (CharacterCollisions, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.character_collisions(*body).into()
+        }
+        (CharacterSupport, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            world.character_support(*body).into()
+        }
+        (
+            SetCharacterHitReports,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Int(body),
+                Value::Bool(enabled),
+            ],
+        ) => world.set_character_hit_reports(*body, *enabled).into(),
+        (
+            RayCast | RayCastAll,
+            [
+                Value::PhysicsWorld3D(world),
+                Value::Point3D(origin),
+                Value::Vector3D(direction),
+                Value::Float(distance),
+                Value::Int(mask),
+                Value::Int(ignore),
+                Value::Bool(sensors),
+            ],
+        ) => {
+            if kind == RayCast {
+                world
+                    .ray_cast(*origin, *direction, *distance, *mask, *ignore, *sensors)
+                    .into()
+            } else {
+                Value::PhysicsHit3DList(
+                    world
+                        .ray_cast_all(*origin, *direction, *distance, *mask, *ignore, *sensors)
+                        .into(),
+                )
+            }
+        }
+        (CharacterHits, [Value::PhysicsWorld3D(world), Value::Int(body)]) => {
+            Value::PhysicsContact3DList(world.character_hits(*body).into())
+        }
+        _ => return Err(evaluation("invalid physics function arguments")),
+    };
+    Ok(value)
+}
+
 fn geometry_function(
     kind: xrack_syntax::builtins::GeometryFunction,
     inputs: &[Value],
     program: &Program,
 ) -> Result<Value> {
-    use xrack_runtime::{Point2D, Transform2D, Vector2D, scene3d};
+    use xrack_runtime::{Point2D, Quaternion3D, Transform2D, Vector2D, scene3d};
     use xrack_syntax::builtins::GeometryFunction::*;
+    let look_up = |tail: &[Value]| match tail {
+        [] => Ok(xrack_runtime::Vector3D::new(0.0, 1.0, 0.0)),
+        [Value::Vector3D(up)] => Ok(*up),
+        _ => Err(evaluation("invalid up vector for target orientation")),
+    };
     let optional_layers = |tail: &[Value]| match tail {
         [] => Ok(None),
         [Value::Int(mask)] => Ok(Some(*mask)),
@@ -6741,7 +7544,89 @@ fn geometry_function(
         Value::Int(row) => Ok(*row),
         _ => Err(evaluation("invalid scene row index")),
     };
+    let query_model = |value: &Value, renderables| match value {
+        Value::RecordList(records) => Ok(program.prepare_scene(records, renderables)),
+        Value::SceneObjects(scene) => Ok(scene.clone()),
+        _ => Err(evaluation(
+            "expected scene object records or a prepared scene model",
+        )),
+    };
     Ok(match (kind, inputs) {
+        (QuaternionIdentity, []) => Quaternion3D::IDENTITY.into(),
+        (
+            QuaternionNew,
+            [
+                Value::Float(x),
+                Value::Float(y),
+                Value::Float(z),
+                Value::Float(w),
+            ],
+        ) => Quaternion3D::new(*x, *y, *z, *w).into(),
+        (QuaternionAxisAngle, [Value::Vector3D(axis), Value::Float(degrees)]) => {
+            Quaternion3D::from_axis_angle(*axis, *degrees).into()
+        }
+        (QuaternionEuler, [Value::Vector3D(angles)]) => Quaternion3D::from_euler(*angles).into(),
+        (QuaternionLookRotation, [Value::Vector3D(forward), up @ ..]) => {
+            Quaternion3D::look_rotation(*forward, look_up(up)?).into()
+        }
+        (QuaternionLookAt, [Value::Point3D(from), Value::Point3D(target), up @ ..]) => {
+            Quaternion3D::look_at(*from, *target, look_up(up)?).into()
+        }
+        (QuaternionCompose, [Value::Quaternion3D(first), Value::Quaternion3D(next)]) => {
+            first.then(*next).into()
+        }
+        (QuaternionInverse, [Value::Quaternion3D(rotation)]) => rotation.inverse().into(),
+        (
+            QuaternionSlerp,
+            [
+                Value::Quaternion3D(from),
+                Value::Quaternion3D(to),
+                Value::Float(progress),
+            ],
+        ) => from.slerp(*to, *progress).into(),
+        (QuaternionRotate, [Value::Quaternion3D(rotation), Value::Vector3D(vector)]) => {
+            rotation.rotate(*vector).into()
+        }
+        (Prepare3D, [Value::RecordList(records)]) => {
+            Value::SceneObjects(program.prepare_scene(records, true))
+        }
+        (Prepare3D, [Value::RecordList(records), Value::PhysicsWorld3D(world)]) => {
+            Value::SceneObjects(program.prepare_scene(records, true).resolve_physics(world))
+        }
+        (QuaternionTrack, [Value::RecordList(keys)]) => {
+            program.scene_projections.record_rotation_track(keys).into()
+        }
+        (QuaternionTrackKeys, keys) => {
+            let (pairs, remainder) = keys.as_chunks::<2>();
+            if pairs.is_empty() || !remainder.is_empty() {
+                return Err(evaluation("invalid rotation track key pairs"));
+            }
+            let keys = pairs
+                .iter()
+                .map(|pair| match pair {
+                    [Value::Float(time), Value::Quaternion3D(orientation)] => {
+                        Ok((*time, *orientation))
+                    }
+                    _ => Err(evaluation("invalid rotation track key")),
+                })
+                .collect::<Result<_>>()?;
+            xrack_runtime::RotationTrack3D::new(keys).into()
+        }
+        (QuaternionSample, [Value::RotationTrack3D(track), Value::Float(time)]) => {
+            track.sample(*time).into()
+        }
+        (PrepareInstanceTable3D, [Value::RecordList(rows)]) => {
+            program.scene_projections.record_instance_table(rows).into()
+        }
+        (TableInstance3D, [Value::InstanceTable3D(table), Value::Int(index)]) => {
+            table.instance(*index).into()
+        }
+        (RandomInstanceTable3D, [Value::Record(settings)]) => {
+            xrack_runtime::InstanceTable3D::from_random(scene3d::SceneRandomInstances::from_record(
+                settings,
+            ))
+            .into()
+        }
         (Point, [Value::Length(x), Value::Length(y)]) => Point2D::new(*x, *y).into(),
         (Vector, [Value::Length(x), Value::Length(y)]) => Vector2D::new(*x, *y).into(),
         (Identity, []) => Transform2D::IDENTITY.into(),
@@ -6769,7 +7654,7 @@ fn geometry_function(
         (
             Hit3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Float(yaw),
                 Value::Float(pitch),
                 Value::Float(distance),
@@ -6778,7 +7663,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::hit_model(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *yaw,
             *pitch,
             *distance,
@@ -6790,14 +7675,14 @@ fn geometry_function(
         (
             HitCamera3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(camera),
                 Value::Point2D(viewport),
                 Value::Point2D(pointer),
                 layers @ ..,
             ],
         ) => scene3d::hit_camera(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             camera,
             *viewport,
             *pointer,
@@ -6807,14 +7692,14 @@ fn geometry_function(
         (
             RayHit3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Point3D(origin),
                 Value::Vector3D(direction),
                 Value::Float(distance),
                 layers @ ..,
             ],
         ) => scene3d::ray_hit_model(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *origin,
             *direction,
             *distance,
@@ -6824,7 +7709,7 @@ fn geometry_function(
         (
             HitAll3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Float(yaw),
                 Value::Float(pitch),
                 Value::Float(distance),
@@ -6833,7 +7718,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::hit_all_objects(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *yaw,
             *pitch,
             *distance,
@@ -6845,14 +7730,14 @@ fn geometry_function(
         (
             HitAllCamera3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(camera),
                 Value::Point2D(viewport),
                 Value::Point2D(pointer),
                 layers @ ..,
             ],
         ) => scene3d::hit_all_camera(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             camera,
             *viewport,
             *pointer,
@@ -6862,7 +7747,7 @@ fn geometry_function(
         (
             HitInstance3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Float(yaw),
                 Value::Float(pitch),
                 Value::Float(distance),
@@ -6874,7 +7759,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::hit_instance(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             [*yaw, *pitch, *distance],
             *viewport,
             *pointer,
@@ -6885,7 +7770,7 @@ fn geometry_function(
         (
             HitInstanceCamera3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(camera),
                 Value::Point2D(viewport),
                 Value::Point2D(pointer),
@@ -6895,7 +7780,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::hit_instance_camera(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             camera,
             *viewport,
             *pointer,
@@ -6906,7 +7791,7 @@ fn geometry_function(
         (
             RayHitInstance3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Point3D(origin),
                 Value::Vector3D(direction),
                 Value::Float(distance),
@@ -6916,7 +7801,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::ray_hit_instance(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *origin,
             *direction,
             *distance,
@@ -6927,7 +7812,7 @@ fn geometry_function(
         (
             HitRow3D | HitSubset3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Float(yaw),
                 Value::Float(pitch),
                 Value::Float(distance),
@@ -6937,7 +7822,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => {
-            let scene = program.prepare_scene(model, true);
+            let scene = query_model(model, true)?;
             let orbit = [*yaw, *pitch, *distance];
             let layers = optional_layers(layers)?;
             if kind == HitRow3D {
@@ -6958,7 +7843,7 @@ fn geometry_function(
         (
             HitRowCamera3D | HitSubsetCamera3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(camera),
                 Value::Point2D(viewport),
                 Value::Point2D(pointer),
@@ -6966,7 +7851,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => {
-            let scene = program.prepare_scene(model, true);
+            let scene = query_model(model, true)?;
             let layers = optional_layers(layers)?;
             if kind == HitRowCamera3D {
                 scene3d::hit_row_camera(
@@ -6993,7 +7878,7 @@ fn geometry_function(
         (
             RayHitRow3D | RayHitSubset3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Point3D(origin),
                 Value::Vector3D(direction),
                 Value::Float(distance),
@@ -7001,7 +7886,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => {
-            let scene = program.prepare_scene(model, true);
+            let scene = query_model(model, true)?;
             let layers = optional_layers(layers)?;
             if kind == RayHitRow3D {
                 scene3d::ray_hit_row(
@@ -7028,7 +7913,7 @@ fn geometry_function(
         (
             PickInRect3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Float(yaw),
                 Value::Float(pitch),
                 Value::Float(distance),
@@ -7038,7 +7923,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::pick_in_rect(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *yaw,
             *pitch,
             *distance,
@@ -7050,7 +7935,7 @@ fn geometry_function(
         (
             PickInRectCamera3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(camera),
                 Value::Point2D(viewport),
                 Value::Point2D(start),
@@ -7058,7 +7943,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::pick_in_rect_camera(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             camera,
             *viewport,
             [*start, *end],
@@ -7068,13 +7953,13 @@ fn geometry_function(
         (
             ClosestPoint3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Point3D(origin),
                 Value::Float(radius),
                 layers @ ..,
             ],
         ) => scene3d::closest_point(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *origin,
             *radius,
             optional_layers(layers)?,
@@ -7083,14 +7968,14 @@ fn geometry_function(
         (
             ClosestPointOn3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(object_id),
                 Value::Point3D(origin),
                 Value::Float(radius),
                 layers @ ..,
             ],
         ) => scene3d::closest_point_on(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             object_id,
             *origin,
             *radius,
@@ -7100,7 +7985,7 @@ fn geometry_function(
         (
             SphereCast3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Point3D(origin),
                 Value::Vector3D(direction),
                 Value::Float(distance),
@@ -7108,7 +7993,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::sphere_cast(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *origin,
             *direction,
             *distance,
@@ -7119,13 +8004,13 @@ fn geometry_function(
         (
             SphereOverlap3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Point3D(center),
                 Value::Float(radius),
                 layers @ ..,
             ],
         ) => scene3d::sphere_overlap(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *center,
             *radius,
             optional_layers(layers)?,
@@ -7134,14 +8019,14 @@ fn geometry_function(
         (
             SphereSlide3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Point3D(origin),
                 Value::Vector3D(displacement),
                 Value::Float(radius),
                 layers @ ..,
             ],
         ) => scene3d::sphere_slide(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *origin,
             *displacement,
             *radius,
@@ -7151,7 +8036,7 @@ fn geometry_function(
         (
             SphereWalk3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Point3D(origin),
                 Value::Vector3D(displacement),
                 Value::Float(radius),
@@ -7161,7 +8046,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::sphere_walk(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *origin,
             *displacement,
             scene3d::WalkOptions {
@@ -7174,16 +8059,143 @@ fn geometry_function(
         )
         .into(),
         (
+            CapsuleCast3D,
+            [
+                model,
+                Value::Point3D(origin),
+                Value::Vector3D(direction),
+                Value::Float(distance),
+                Value::Float(radius),
+                Value::Float(height),
+                layers @ ..,
+            ],
+        ) => scene3d::capsule_cast(
+            query_model(model, true)?.as_ref(),
+            *origin,
+            *direction,
+            *distance,
+            *radius,
+            *height,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            CapsuleOverlap3D,
+            [
+                model,
+                Value::Point3D(center),
+                Value::Float(radius),
+                Value::Float(height),
+                layers @ ..,
+            ],
+        ) => scene3d::capsule_overlap(
+            query_model(model, true)?.as_ref(),
+            *center,
+            *radius,
+            *height,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            CapsuleTriggerOverlap3D,
+            [
+                model,
+                Value::Point3D(center),
+                Value::Float(radius),
+                Value::Float(height),
+                layers @ ..,
+            ],
+        ) => scene3d::capsule_trigger_overlap(
+            query_model(model, true)?.as_ref(),
+            *center,
+            *radius,
+            *height,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            CapsuleTriggerCrossings3D,
+            [
+                model,
+                Value::Point3D(from),
+                Value::Point3D(to),
+                Value::Float(radius),
+                Value::Float(height),
+                layers @ ..,
+            ],
+        ) => scene3d::capsule_trigger_crossings(
+            query_model(model, true)?.as_ref(),
+            *from,
+            *to,
+            *radius,
+            *height,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            CapsuleSlide3D,
+            [
+                model,
+                Value::Point3D(origin),
+                Value::Vector3D(displacement),
+                Value::Float(radius),
+                Value::Float(height),
+                layers @ ..,
+            ],
+        ) => scene3d::capsule_slide(
+            query_model(model, true)?.as_ref(),
+            *origin,
+            *displacement,
+            *radius,
+            *height,
+            optional_layers(layers)?,
+        )
+        .into(),
+        (
+            kind @ (CapsuleWalk3D | CapsuleWalkResult3D | CapsuleWalkWithContacts3D),
+            [
+                model,
+                Value::Point3D(origin),
+                Value::Vector3D(displacement),
+                Value::Float(radius),
+                Value::Float(height),
+                Value::Float(step),
+                Value::Float(snap),
+                Value::Float(slope),
+                layers @ ..,
+            ],
+        ) => {
+            let objects = query_model(model, true)?;
+            let layers = optional_layers(layers)?;
+            let options = scene3d::WalkOptions {
+                radius: *radius,
+                step_height: *step,
+                snap_distance: *snap,
+                max_slope: *slope,
+            };
+            if kind == CapsuleWalk3D {
+                scene3d::capsule_walk(&objects, *origin, *displacement, *height, options, layers)
+                    .into()
+            } else {
+                let walk = if kind == CapsuleWalkWithContacts3D {
+                    scene3d::capsule_walk_with_contacts
+                } else {
+                    scene3d::capsule_walk_result
+                };
+                walk(&objects, *origin, *displacement, *height, options, layers).into()
+            }
+        }
+        (
             RayHitAll3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Point3D(origin),
                 Value::Vector3D(direction),
                 Value::Float(distance),
                 layers @ ..,
             ],
         ) => scene3d::ray_hit_all(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *origin,
             *direction,
             *distance,
@@ -7218,17 +8230,17 @@ fn geometry_function(
         (
             ProjectCamera3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(id),
                 Value::Point2D(viewport),
                 Value::Point3D(point),
             ],
-        ) => scene3d::project_camera(&program.prepare_scene(model, false), id, *viewport, *point)
+        ) => scene3d::project_camera(query_model(model, false)?.as_ref(), id, *viewport, *point)
             .into(),
         (
             UnprojectCamera3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(id),
                 Value::Point2D(viewport),
                 Value::Point2D(point),
@@ -7236,7 +8248,7 @@ fn geometry_function(
                 Value::Point3D(fallback),
             ],
         ) => scene3d::unproject_camera(
-            &program.prepare_scene(model, false),
+            query_model(model, false)?.as_ref(),
             id,
             *viewport,
             *point,
@@ -7245,44 +8257,85 @@ fn geometry_function(
         )
         .into(),
         (
+            SceneInstance3D,
+            [
+                model,
+                Value::Int(row),
+                Value::Int(node),
+                Value::Int(instance),
+            ],
+        ) => query_model(model, true)?
+            .instance([*row, *node, *instance])
+            .into(),
+        (
+            SceneInstanceCamera3D,
+            [
+                model,
+                Value::String(camera),
+                Value::Point2D(viewport),
+                Value::Int(row),
+                Value::Int(node),
+                Value::Int(instance),
+            ],
+        ) => query_model(model, true)?
+            .instance_camera(camera, *viewport, [*row, *node, *instance])
+            .into(),
+        (
+            SceneInstanceOrbit3D,
+            [
+                model,
+                Value::Float(yaw),
+                Value::Float(pitch),
+                Value::Float(distance),
+                Value::Point2D(viewport),
+                Value::Int(row),
+                Value::Int(node),
+                Value::Int(instance),
+            ],
+        ) => query_model(model, true)?
+            .instance_orbit(
+                [*yaw, *pitch, *distance],
+                *viewport,
+                [*row, *node, *instance],
+            )
+            .into(),
+        (
             MapPosition3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(from),
                 Value::String(to),
                 Value::Point3D(position),
                 Value::Point3D(fallback),
             ],
-        ) => program
-            .prepare_scene(model, false)
+        ) => query_model(model, false)?
             .map_position(from, to, *position)
             .unwrap_or(*fallback)
             .into(),
         (
             MapDirection3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(from),
                 Value::String(to),
                 Value::Vector3D(direction),
                 Value::Vector3D(fallback),
             ],
-        ) => program
-            .prepare_scene(model, false)
+        ) => query_model(model, false)?
             .map_direction(from, to, *direction)
             .unwrap_or(*fallback)
             .into(),
         (
             PickCamera3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::String(camera),
                 Value::Point2D(viewport),
                 Value::Point2D(pointer),
                 layers @ ..,
             ],
         ) => scene3d::pick_camera(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             camera,
             *viewport,
             *pointer,
@@ -7292,7 +8345,7 @@ fn geometry_function(
         (
             Pick3D,
             [
-                Value::RecordList(model),
+                model,
                 Value::Float(yaw),
                 Value::Float(pitch),
                 Value::Float(distance),
@@ -7301,7 +8354,7 @@ fn geometry_function(
                 layers @ ..,
             ],
         ) => scene3d::pick_model(
-            &program.prepare_scene(model, true),
+            query_model(model, true)?.as_ref(),
             *yaw,
             *pitch,
             *distance,

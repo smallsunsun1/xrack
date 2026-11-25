@@ -11,7 +11,7 @@ use xrack_runtime::{
 
 use super::{
     DEPTH_FORMAT, append_floats, attachment_view, buffer, deform::DeformationBinding,
-    depth::DepthPipelines, instances::InstanceSet,
+    depth::DepthPipelines, instances::InstanceSet, screen_depth,
 };
 
 const AO_HEADER_BYTES: u64 = 16;
@@ -43,7 +43,7 @@ impl OcclusionSettings {
 
 pub(super) struct AmbientOcclusion {
     entries: VecDeque<Entry>,
-    evaluator: Option<Evaluator>,
+    evaluators: [Option<Evaluator>; screen_depth::MODES],
     pub depth_pipeline: Option<DepthPipelines>,
     pub fallback: wgpu::Buffer,
 }
@@ -61,6 +61,7 @@ pub(super) struct OcclusionSource<'a> {
     pub visibility: Option<&'a Arc<SceneVisibility>>,
     pub objects: &'a Arc<[SceneObject]>,
     pub deformation: &'a [Option<DeformationBinding>],
+    pub item_revision: u64,
 }
 
 impl OcclusionSource<'_> {
@@ -101,6 +102,7 @@ fn same_depth_inputs(
                     && before.mesh.has_opaque_parts() == after.mesh.has_opaque_parts()
                     && before.mesh.same_shadow_mesh(&after.mesh)
                     && before.transform_rows() == after.transform_rows()
+                    && before.same_vertex_program_instance(after)
                     && before.color.0 as u8 == after.color.0 as u8
             })
 }
@@ -110,6 +112,7 @@ struct Entry {
     objects: Arc<[SceneObject]>,
     visibility: Option<Arc<SceneVisibility>>,
     pose_groups: Vec<(u32, wgpu::BindGroup)>,
+    item_revision: u64,
     camera: SceneCamera,
     parameters: [f32; 2],
     size: [u32; 2],
@@ -118,15 +121,6 @@ struct Entry {
 }
 
 impl AmbientOcclusion {
-    pub fn invalidate_item_textures(&mut self) {
-        self.entries.retain(|entry| {
-            !entry
-                .objects
-                .iter()
-                .any(|object| super::mesh_samples_item_alpha(&object.mesh))
-        });
-    }
-
     pub fn discard_recorded_maps(&mut self) {
         self.entries.clear();
     }
@@ -134,7 +128,7 @@ impl AmbientOcclusion {
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
             entries: VecDeque::new(),
-            evaluator: None,
+            evaluators: [const { None }; screen_depth::MODES],
             depth_pipeline: None,
             fallback: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("XRack disabled ambient occlusion"),
@@ -165,8 +159,20 @@ impl AmbientOcclusion {
         }
         let map_bytes = bytes(size);
         let parameters = [settings.radius, settings.bias];
+        let item_revision = if source.item_revision != 0
+            && source.objects.iter().enumerate().any(|(index, object)| {
+                source
+                    .visibility
+                    .is_none_or(|visible| visible.contains(index as u32))
+                    && super::mesh_samples_item_alpha(&object.mesh)
+            }) {
+            source.item_revision
+        } else {
+            0
+        };
         let hit = self.entries.iter().position(|entry| {
             entry.size == size
+                && entry.item_revision == item_revision
                 && entry.camera.same_frustum(&camera)
                 && entry.visibility.as_deref() == source.visibility.map(Arc::as_ref)
                 && (entry.source.as_ptr() == Arc::as_ptr(source.instances)
@@ -216,6 +222,7 @@ impl AmbientOcclusion {
                     .pose_groups()
                     .map(|(slot, group)| (slot, group.clone()))
                     .collect(),
+                item_revision,
                 camera,
                 parameters,
                 size,
@@ -246,22 +253,12 @@ impl AmbientOcclusion {
         camera: SceneCamera,
         settings: OcclusionSettings,
     ) {
-        let evaluator = self.evaluator.get_or_insert_with(|| Evaluator::new(device));
-        let [sx, sy, dx, dy] = camera.clip_lens();
-        let mut bytes = Vec::with_capacity(48);
-        let [near, far] = camera.depth_limits();
-        let far = if far.is_finite() { far } else { 0.0 };
-        append_floats(&mut bytes, [sx, sy, near, far]);
-        append_floats(
-            &mut bytes,
-            [
-                settings.radius,
-                settings.bias,
-                if camera.is_orthographic() { 1.0 } else { 0.0 },
-                0.0,
-            ],
-        );
-        append_floats(&mut bytes, [dx, dy, 0.0, 0.0]);
+        let mode = screen_depth::mode(camera);
+        let evaluator =
+            self.evaluators[mode as usize].get_or_insert_with(|| Evaluator::new(device, mode));
+        let mut bytes = Vec::with_capacity(screen_depth::UNIFORM_BYTES + 16);
+        screen_depth::write(&mut bytes, camera);
+        append_floats(&mut bytes, [settings.radius, settings.bias, 0.0, 0.0]);
         let uniform = buffer(
             device,
             "XRack ambient occlusion settings",
@@ -302,17 +299,21 @@ struct Evaluator {
 }
 
 impl Evaluator {
-    fn new(device: &wgpu::Device) -> Self {
+    fn new(device: &wgpu::Device, mode: screen_depth::Mode) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("XRack screen-space ambient occlusion"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("occlusion.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                [screen_depth::SHADER, include_str!("occlusion.wgsl")]
+                    .join("\n")
+                    .into(),
+            ),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("XRack screen-space ambient occlusion"),
             layout: None,
             module: &shader,
             entry_point: Some("compute"),
-            compilation_options: Default::default(),
+            compilation_options: screen_depth::compilation(mode),
             cache: None,
         });
         let layout = pipeline.get_bind_group_layout(0);

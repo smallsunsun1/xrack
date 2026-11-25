@@ -1,5 +1,62 @@
 //! Per-instance static irradiance and its atlas region.
 use crate::{Image, ImageAsset, ImageFormat, ImageIdentity, Value};
+use nalgebra::Vector3;
+
+/// Offline participation of a scene object in a generated lightmap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BakeRole {
+    #[default]
+    Auto,
+    Receiver,
+    Contributor,
+    Excluded,
+}
+
+impl BakeRole {
+    pub(crate) fn from_name(name: &str) -> Self {
+        match name {
+            "receiver" => Self::Receiver,
+            "contributor" => Self::Contributor,
+            "excluded" => Self::Excluded,
+            _ => Self::Auto,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Receiver => "receiver",
+            Self::Contributor => "contributor",
+            Self::Excluded => "excluded",
+        }
+    }
+
+    pub const fn receives_atlas(self) -> bool {
+        matches!(self, Self::Auto | Self::Receiver)
+    }
+}
+
+/// Resolution requested for a receiver when generating an atlas.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum LightmapResolution {
+    #[default]
+    Inherit,
+    Size(i64),
+    TexelsPerUnit(f64),
+}
+
+impl LightmapResolution {
+    #[doc(hidden)]
+    pub fn from_settings(size: i64, texels_per_unit: f64) -> Self {
+        if size != 0 {
+            Self::Size(size)
+        } else if texels_per_unit != 0.0 {
+            Self::TexelsPerUnit(texels_per_unit)
+        } else {
+            Self::Inherit
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LightmapMode {
@@ -7,6 +64,8 @@ pub enum LightmapMode {
     Indirect,
     /// Replace ambient and direct diffuse lighting. Keep live specular.
     Diffuse,
+    /// Replace ambient and the full contribution of lights baked with mode All.
+    Mixed,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -41,6 +100,7 @@ impl BakedLightmap {
         let mode = match mode {
             "" | "indirect" => LightmapMode::Indirect,
             "diffuse" => LightmapMode::Diffuse,
+            "mixed" => LightmapMode::Mixed,
             _ => return None,
         };
         Some(Self {
@@ -73,8 +133,12 @@ impl BakedLightmap {
     #[doc(hidden)]
     pub fn instance_words(&self) -> [f32; 8] {
         let [x, y, w, h] = self.atlas;
-        let full_diffuse = f32::from(u8::from(self.mode == LightmapMode::Diffuse));
-        [x, y, w, h, self.intensity, full_diffuse, 0.0, 0.0]
+        let mode = match self.mode {
+            LightmapMode::Indirect => 0.0,
+            LightmapMode::Diffuse => 1.0,
+            LightmapMode::Mixed => 2.0,
+        };
+        [x, y, w, h, self.intensity, mode, 0.0, 0.0]
     }
 }
 
@@ -87,16 +151,25 @@ pub struct LightmapTrace<'a> {
 }
 
 impl<'a> LightmapTrace<'a> {
-    pub fn new(objects: &'a [crate::scene3d::SceneObject]) -> Self {
+    pub fn new(objects: &'a [crate::scene3d::SceneObject], layers: u64) -> Self {
         let candidates = objects
             .iter()
             .enumerate()
+            .filter(|(_, object)| {
+                object.bake_role != BakeRole::Excluded && object.layers & layers != 0
+            })
             .map(|(index, object)| (object.world_bounds(), index))
             .collect();
         Self {
             objects,
             tree: crate::scene_bounds::BoundsTree::new(candidates, 4),
         }
+    }
+
+    pub fn max_distance(&self) -> Option<f32> {
+        let bounds = self.tree.nodes.first()?.bounds;
+        let distance = (Vector3::from(bounds.max) - Vector3::from(bounds.min)).norm() * 1.01;
+        (distance > 0.0 && distance.is_finite()).then_some(distance)
     }
 
     pub fn occluded(&self, ray: crate::scene3d::Ray3D, distance: f32, layers: u64) -> bool {

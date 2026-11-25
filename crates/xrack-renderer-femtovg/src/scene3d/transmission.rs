@@ -115,7 +115,7 @@ impl Capture {
 pub(super) struct OpaqueDepth {
     buffer: Option<(u64, wgpu::Buffer)>,
     shader: Option<wgpu::ShaderModule>,
-    pipelines: [Option<wgpu::ComputePipeline>; 2],
+    pipelines: [Option<wgpu::ComputePipeline>; 3],
 }
 
 impl OpaqueDepth {
@@ -147,7 +147,7 @@ impl OpaqueDepth {
         encoder: &mut wgpu::CommandEncoder,
         (depth, output): (&wgpu::TextureView, &wgpu::Buffer),
         [width, height]: [u32; 2],
-        multisampled: bool,
+        (multisampled, reverse_depth): (bool, bool),
     ) {
         let shader = self.shader.get_or_insert_with(|| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -155,7 +155,8 @@ impl OpaqueDepth {
                 source: wgpu::ShaderSource::Wgsl(include_str!("transmission_depth.wgsl").into()),
             })
         });
-        let pipeline = self.pipelines[usize::from(multisampled)].get_or_insert_with(|| {
+        let slot = usize::from(multisampled) + usize::from(multisampled && reverse_depth);
+        let pipeline = self.pipelines[slot].get_or_insert_with(|| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("XRack 3D opaque depth capture"),
                 layout: None,
@@ -165,7 +166,13 @@ impl OpaqueDepth {
                 } else {
                     "single"
                 }),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[(
+                        "REVERSE_DEVICE_DEPTH",
+                        f64::from(multisampled && reverse_depth),
+                    )],
+                    ..Default::default()
+                },
                 cache: None,
             })
         });

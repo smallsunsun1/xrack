@@ -475,7 +475,10 @@ impl LayoutCache {
             let plan = Rc::make_mut(&mut cached.plan);
             // Resolve all used faces before sharing a shaped span. Shaping
             // the same text with the same style then uses a stable font set.
-            for fragment in &plan.fragments[cached.shaped_fragments..] {
+            for fragment in plan
+                .fragments
+                .iter_range(cached.shaped_fragments..plan.fragments.len())
+            {
                 let style = fragment.style();
                 paints[shaping_style_index(style)]
                     .get_or_insert_with(|| shaping_paint(system, node, style));
@@ -880,9 +883,7 @@ fn layout(
                     context.resize_shaping_run_cache(
                         NonZeroUsize::new(8_192).unwrap_or(NonZeroUsize::MIN),
                     );
-                    context.resize_shaped_words_cache(
-                        NonZeroUsize::new(32_768).unwrap_or(NonZeroUsize::MIN),
-                    );
+                    crate::text::reserve_reflow_words(context);
                 }
             }
             width
@@ -992,7 +993,7 @@ pub(crate) fn draw(
     } else {
         None
     };
-    let flat = visible.map(|range| &plan.fragments[range]);
+    let flat = visible.map(|range| plan.fragments.iter_range(range));
     let placed = flat
         .is_none()
         .then(|| plan.fragments.placed_in_y_range(prepared_clip));

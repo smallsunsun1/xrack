@@ -1,0 +1,91 @@
+struct ImportedStyle { material-shader: string, shader-displacement: float, shader-parameters: vector3d }
+struct ImportedChannels { x: float, y: float, z: float, w: float }
+
+struct AssetRow {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: ImportedStyle, camera-kind: string, camera-height: float,
+}
+
+struct OverrideRow {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: ImportedStyle, camera-kind: string, camera-height: float,
+    instance-data: ImportedChannels,
+}
+
+export component GltfInstanceDataDemo inherits Window {
+    title: "XRack · glTF instance attributes";
+    width: 720px; height: 352px;
+    background: #172538;
+    in-out property <float> shift: 0;
+    in-out property <bool> tinted: false;
+    in-out property <bool> indexed: false;
+    in-out property <point2d> pointer: Point2D.new(174px, 130px);
+
+    property <string> mesh: @mesh-url("models/instance-channels.gltf");
+    property <color> tint: root.tinted ? #80ffff : #ffffff;
+    property <ImportedStyle> style: ImportedStyle {
+        material-shader: @material-shader-url("effects/imported_instance_data.wgsl"),
+        shader-displacement: root.indexed ? 3 : 1,
+        shader-parameters: Vector3D.new(0, 0, root.indexed ? 1 : 0),
+    };
+    property <AssetRow> asset-base: AssetRow {
+        id: "tiles", mesh: root.mesh, x: root.shift, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: root.tint, material: root.style, camera-kind: "", camera-height: 6.5,
+    };
+    property <OverrideRow> override-base: OverrideRow {
+        id: "tiles", mesh: root.mesh, x: root.shift, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: root.tint, material: root.style, camera-kind: "", camera-height: 6.5,
+        instance-data: ImportedChannels { x: 0, y: 0, z: 0, w: 0 },
+    };
+    property <[AssetRow]> asset: [
+        AssetRow { id: "eye", mesh: "", x: 0, z: 10, camera-kind: "orthographic", ..root.asset-base },
+        root.asset-base,
+    ];
+
+    out property <scenemodel3d> snapshot: Scene3D.prepare(root.asset);
+    out property <hit3d> result: Scene3D.hit-camera(
+        root.snapshot, "eye", Point2D.new(348px, 260px), root.pointer);
+    out property <instance3d> selected: Scene3D.instance-camera(
+        root.snapshot, "eye", Point2D.new(348px, 260px),
+        root.result.row-index, root.result.mesh-node-index, root.result.instance-index);
+    out property <instance3d> primary-placement: Scene3D.instance(
+        root.snapshot, root.result.row-index, root.result.mesh-node-index, root.result.instance-index);
+    out property <instance3d> orbit-placement: Scene3D.instance-orbit(
+        root.snapshot, 0, 0, 10, Point2D.new(348px, 260px),
+        root.result.row-index, root.result.mesh-node-index, root.result.instance-index);
+
+    pick-info := Text {
+        x: 12px; y: 10px; color: #dceafb;
+        text: root.selected.valid
+            ? root.selected.object-id + " · Instance " + root.selected.instance-index + " · data.w " + root.selected.data-w
+            : "Pick a tile on the right";
+    }
+    Text { x: 360px; y: 10px; text: "Zero data override · click to inspect"; color: #dceafb; }
+    asset-view := SceneView3D {
+        x: 12px; y: 36px; width: 348px; height: 260px; camera: "eye";
+        model: root.snapshot; scene-background: #263b54; scene-tone-map: none;
+    }
+    override-view := SceneView3D {
+        x: 360px; y: 36px; width: 348px; height: 260px; camera: "eye";
+        model: [
+            OverrideRow { id: "eye", mesh: "", x: 0, z: 10, camera-kind: "orthographic", ..root.override-base },
+            root.override-base,
+        ];
+        scene-background: #263b54; scene-tone-map: none;
+    }
+    pick-area := TouchArea {
+        x: 360px; y: 36px; width: 348px; height: 260px;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.inside {
+                root.pointer = Point2D.new(event.x, event.y);
+            }
+        }
+    }
+    tint-switch := CheckBox { x: 12px; y: 309px; width: 140px; text: "Multiply tint"; checked <=> root.tinted; }
+    index-switch := CheckBox { x: 166px; y: 309px; width: 146px; text: "Instance index"; checked <=> root.indexed; }
+    shift-slider := Slider { x: 326px; y: 309px; width: 382px; minimum: -1; maximum: 1; value <=> root.shift; }
+}

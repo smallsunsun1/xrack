@@ -95,7 +95,10 @@ impl<'m> VisualBindings<'m> {
             return;
         }
         // Action and timer definitions are outside the ordinary scene slots.
-        if matches!(element.attribute("kind"), Some("Action" | "Timer")) {
+        if matches!(
+            element.attribute("kind"),
+            Some("Action" | "Timer" | "FrameAnimation")
+        ) {
             self.index_scene(element, None);
         }
         for child in element.children() {

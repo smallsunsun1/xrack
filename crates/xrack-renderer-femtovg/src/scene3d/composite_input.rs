@@ -6,7 +6,11 @@ use xrack_runtime::{
     scene3d::SceneCamera,
 };
 
-use super::{buffer, color_capture::CaptureViews, pipeline::ColorOutput};
+use super::{
+    buffer,
+    color_capture::CaptureViews,
+    pipeline::{ColorOutput, GeometryOutput, orient_depth_compare},
+};
 
 pub(super) fn capture_reads(node: &Node) -> CaptureInputs {
     CaptureInputs::new(
@@ -61,6 +65,8 @@ struct PipelineKey {
     msaa: bool,
     surfaces: bool,
     indirect: bool,
+    geometry: Option<GeometryOutput>,
+    reverse_depth: bool,
 }
 
 #[derive(Default)]
@@ -94,6 +100,10 @@ impl CompositeInputs {
             msaa: output.multisampling,
             surfaces: output.screen_reflections || output.screen_indirect_light,
             indirect: output.screen_indirect_light,
+            geometry: output
+                .capture_geometry
+                .filter(|geometry| geometry.combined()),
+            reverse_depth: output.reverse_depth,
         };
         let Some(fallback) = source.color.or(source.depth) else {
             return;
@@ -151,7 +161,7 @@ impl CompositeInputs {
                 immediate_size: 0,
             });
             let mut targets = super::screen_lighting::surface_targets(key.msaa, key.indirect);
-            targets[0] = Some(wgpu::ColorTargetState {
+            let color = wgpu::ColorTargetState {
                 format: key.format,
                 blend: key
                     .color
@@ -161,7 +171,11 @@ impl CompositeInputs {
                 } else {
                     wgpu::ColorWrites::empty()
                 },
+            };
+            let combined_targets = key.geometry.and_then(|geometry| {
+                geometry.combined_targets(color.clone(), wgpu::ColorWrites::empty())
             });
+            targets[0] = Some(color);
             for target in targets[1..].iter_mut().flatten() {
                 target.write_mask = wgpu::ColorWrites::empty();
             }
@@ -176,15 +190,22 @@ impl CompositeInputs {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shader,
-                    entry_point: Some("composite"),
+                    entry_point: Some(if key.geometry.is_some() {
+                        "composite_named_color"
+                    } else {
+                        "composite"
+                    }),
                     compilation_options: wgpu::PipelineCompilationOptions {
                         constants: &[
                             ("HAS_COLOR", f64::from(key.color)),
                             ("HAS_DEPTH", f64::from(key.depth)),
+                            ("REVERSE_DEVICE_DEPTH", f64::from(key.reverse_depth)),
                         ],
                         ..Default::default()
                     },
-                    targets: if key.surfaces {
+                    targets: if let Some((targets, len)) = &combined_targets {
+                        &targets[..*len]
+                    } else if key.surfaces {
                         &targets
                     } else {
                         &targets[..1]
@@ -195,7 +216,7 @@ impl CompositeInputs {
                     format: output.depth_format(),
                     depth_write_enabled: Some(key.depth),
                     depth_compare: Some(if key.depth {
-                        wgpu::CompareFunction::LessEqual
+                        orient_depth_compare(wgpu::CompareFunction::LessEqual, key.reverse_depth)
                     } else {
                         wgpu::CompareFunction::Always
                     }),

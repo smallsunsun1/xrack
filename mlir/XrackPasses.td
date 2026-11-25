@@ -12,6 +12,10 @@ def XrFoldRecordProjections : Pass<"xr-fold-record-projections", "::mlir::Module
   let summary = "Replace reads of fields in constant XR records with literals";
 }
 
+def XrSpecializeRotationTracks : Pass<"xr-specialize-rotation-tracks", "::mlir::ModuleOp"> {
+  let summary = "Build rotation tracks directly from fixed keyframe expressions";
+}
+
 def XrSimplifyExpressions : Pass<"xr-simplify-expressions", "::mlir::ModuleOp"> {
   let summary = "Eliminate identities that preserve XR operand evaluation";
 }

@@ -1,0 +1,94 @@
+struct RotationActor {
+    id: string, mesh: string, parent: string,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, orientation: quaternion3d,
+    camera-kind: string, camera-height: float, instance-table: instancetable3d,
+}
+
+struct RotationRow {
+    position: point3d, scale: vector3d, rotation: vector3d, orientation: quaternion3d, color: color,
+}
+
+struct RotationKey { time: float, orientation: quaternion3d }
+
+export component QuaternionSceneDemo inherits Window {
+    title: "XRack · Quaternion rotations";
+    width: 400px; height: 318px; background: #182638;
+    in-out property <float> progress: 0.5;
+    in-out property <quaternion3d> target: Quaternion3D.from-axis-angle(Vector3D.new(0, 0, 1), 180);
+    property <quaternion3d> identity: Quaternion3D.identity();
+    out property <rotationtrack3d> track: Quaternion3D.track([
+        RotationKey { time: 0, orientation: root.identity },
+        RotationKey { time: 1, orientation: root.target },
+        RotationKey { time: 2, orientation: root.identity },
+    ]);
+    out property <rotationtrack3d> camera-track: Quaternion3D.track([
+        RotationKey { time: 0, orientation: Quaternion3D.identity() },
+        RotationKey { time: 2, orientation: Quaternion3D.new(0, 0, 1, 2) },
+    ]);
+    out property <quaternion3d> rotation: Quaternion3D.sample(root.track, root.progress);
+    out property <vector3d> direction: Quaternion3D.rotate(root.rotation, Vector3D.new(1, 0, 0));
+    in-out property <bool> playing: false;
+    clock := FrameAnimation {
+        running <=> root.playing;
+        triggered(delta, elapsed, frame) => {
+            root.progress = Math.min(elapsed, root.track.duration);
+            if elapsed >= root.track.duration {
+                root.playing = false;
+            }
+        }
+    }
+    property <instancetable3d> unbound;
+    property <instancetable3d> table: Scene3D.instance-table([
+        RotationRow {
+            position: Point3D.new(-1.5, 0.8, 0), scale: Vector3D.new(-1, 1, 1),
+            rotation: Vector3D.new(20, 30, 40), orientation: root.rotation, color: #80c7ff,
+        },
+    ]);
+    out property <instance3d> source-first: Scene3D.table-instance(root.table, 0);
+    property <RotationActor> base: RotationActor {
+        id: "", mesh: "", parent: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 47, pitch: 0, roll: 23,
+        orientation: root.identity, color: #fff, camera-kind: "", camera-height: 5,
+        instance-table: root.unbound,
+    };
+    property <scenemodel3d> model: Scene3D.prepare([
+        RotationActor { id: "eye", z: 8, camera-kind: "orthographic",
+            orientation: Quaternion3D.sample(root.camera-track, root.progress), ..root.base },
+        RotationActor { id: "pivot", x: 0.75, orientation: root.rotation, ..root.base },
+        RotationActor { id: "arm", mesh: "primitive:box", parent: "pivot",
+            x: 1, scale-x: 1.35, scale-y: 0.28, scale-z: 0.25, color: #ffb660, ..root.base },
+        RotationActor { id: "mirror", mesh: "primitive:box", instance-table: root.table,
+            scale-x: 0.3, scale-y: 1.1, scale-z: 0.28, ..root.base },
+    ]);
+    property <point3d> zero: Point3D.new(0, 0, 0);
+    out property <point3d> center: Scene3D.map-position(root.model, "arm", "", root.zero, root.zero);
+    property <point2d> viewport: Point2D.new(400px, 270px);
+    property <projectedpoint3d> screen: Scene3D.project-camera(root.model, "eye", root.viewport, root.center);
+    out property <hit3d> hit: Scene3D.hit-camera(root.model, "eye", root.viewport, root.screen.point);
+
+    SceneView3D {
+        width: root.viewport.x; height: root.viewport.y;
+        model: root.model; camera: "eye"; scene-background: #24384d; scene-tone-map: none;
+    }
+    rotate-switch := Button {
+        x: 12px; y: 278px; width: 125px; height: 31px; text: "Rotate";
+        clicked => {
+            root.playing = false;
+            root.progress = root.progress == 0 ? 0.5 : (root.progress == 0.5 ? 1 : 0);
+        }
+    }
+    play := Button {
+        x: 145px; y: 278px; width: 81px; height: 31px; text: "Play";
+        clicked => {
+            root.progress = 0;
+            root.playing = true;
+            clock.restart();
+        }
+    }
+    Slider {
+        x: 236px; y: 280px; width: 152px;
+        minimum: 0; maximum: root.track.duration; value <=> root.progress;
+        enabled: !root.playing;
+    }
+}

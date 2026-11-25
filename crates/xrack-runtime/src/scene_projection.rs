@@ -2,12 +2,14 @@
 use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 use crate::{
-    RecordList, VecModel,
+    Quaternion3D, RecordList, RotationTrack3D, Value, VecModel,
     scene_animation::MeshAsset,
     scene_authored_mesh::SceneMeshInputs,
+    scene_camera::{CameraMatrixCache, SceneCameraSettings},
     scene_hierarchy::{
         SceneModel, SceneNode, model_cameras, model_nodes, prepare_record_scene, rest_mesh_objects,
     },
+    scene_instance_table::{InstanceTable3D, InstanceTableRow},
     scene_particle_mesh::{ParticleMeshSurface, ParticleSurfaceCache},
     scene3d::{MAX_IMPORTED_VERTICES, Mesh3D, MeshImage},
 };
@@ -31,8 +33,56 @@ struct Projection {
 #[derive(Default)]
 pub struct SceneProjectionCache {
     projections: RefCell<VecDeque<Projection>>,
+    camera_matrices: CameraMatrixCache,
+    instance_tables: ModelProjectionCache<InstanceTable3D>,
+    rotation_tracks: ModelProjectionCache<RotationTrack3D>,
     particle_surfaces: ParticleSurfaceCache,
     particle_models: RefCell<VecDeque<CachedParticleModel>>,
+}
+
+#[derive(Default)]
+struct ModelProjectionCache<V>(RefCell<VecDeque<CachedModelProjection<V>>>);
+
+struct CachedModelProjection<V> {
+    source: (u64, Option<u64>),
+    revision: u64,
+    value: V,
+}
+
+impl<V: Clone> ModelProjectionCache<V> {
+    const fn new() -> Self {
+        Self(RefCell::new(VecDeque::new()))
+    }
+
+    fn get<T>(&self, model: &VecModel<T>, project: impl FnOnce() -> V) -> V {
+        if !model.is_shared() {
+            return project();
+        }
+        let (_, revision) = model.contents_stamp();
+        let source = model.row_cache_identity();
+        {
+            let mut cache = self.0.borrow_mut();
+            if let Some(index) = cache
+                .iter()
+                .position(|entry| entry.source == source && entry.revision == revision)
+                && let Some(entry) = cache.remove(index)
+            {
+                let value = entry.value.clone();
+                cache.push_front(entry);
+                return value;
+            }
+        }
+        let value = project();
+        let mut cache = self.0.borrow_mut();
+        cache.retain(|entry| entry.source != source);
+        cache.truncate(CAPACITY - 1);
+        cache.push_front(CachedModelProjection {
+            source,
+            revision,
+            value: value.clone(),
+        });
+        value
+    }
 }
 
 struct CachedParticleModel {
@@ -44,9 +94,53 @@ impl SceneProjectionCache {
     pub const fn new() -> Self {
         Self {
             projections: RefCell::new(VecDeque::new()),
+            camera_matrices: CameraMatrixCache::new(),
+            instance_tables: ModelProjectionCache::new(),
+            rotation_tracks: ModelProjectionCache::new(),
             particle_surfaces: ParticleSurfaceCache::new(),
             particle_models: RefCell::new(VecDeque::new()),
         }
+    }
+
+    pub fn custom_camera(
+        &self,
+        rows: [[f64; 4]; 4],
+        clip_space: &str,
+    ) -> Option<SceneCameraSettings> {
+        self.camera_matrices.get(rows, clip_space)
+    }
+
+    pub fn instance_table<T>(
+        &self,
+        model: &VecModel<T>,
+        project: impl FnMut(&T) -> InstanceTableRow,
+    ) -> InstanceTable3D {
+        self.instance_tables
+            .get(model, || InstanceTable3D::from_model(model, project))
+    }
+
+    pub fn record_instance_table(&self, model: &RecordList) -> InstanceTable3D {
+        self.instance_table(model.model(), InstanceTableRow::from_record)
+    }
+
+    pub fn rotation_track<T>(
+        &self,
+        model: &VecModel<T>,
+        project: impl FnMut(&T) -> Option<(f64, Quaternion3D)>,
+    ) -> RotationTrack3D {
+        self.rotation_tracks
+            .get(model, || RotationTrack3D::from_model(model, project))
+    }
+
+    pub fn record_rotation_track(&self, model: &RecordList) -> RotationTrack3D {
+        self.rotation_track(model.model(), |row| {
+            let (Value::Float(time), Value::Quaternion3D(orientation)) =
+                (row.field("time")?, row.field("orientation")?)
+            else {
+                return None;
+            };
+            Some((*time, *orientation))
+        })
     }
 
     pub fn particle_surface(
@@ -132,7 +226,14 @@ impl SceneProjectionCache {
         shaders: impl Fn(&str) -> Option<Arc<str>>,
     ) -> Arc<SceneModel> {
         self.get(model.model(), model.name(), true, |inputs| {
-            prepare_record_scene(model, imported, (textures, shaders), true, inputs)
+            prepare_record_scene(
+                model,
+                imported,
+                (textures, shaders),
+                true,
+                inputs,
+                &self.camera_matrices,
+            )
         })
     }
 
@@ -142,7 +243,14 @@ impl SceneProjectionCache {
         imported: impl Fn(&str) -> Option<MeshAsset>,
     ) -> Arc<SceneModel> {
         self.get(model.model(), model.name(), false, |inputs| {
-            prepare_record_scene(model, imported, (|_| None, |_| None), false, inputs)
+            prepare_record_scene(
+                model,
+                imported,
+                (|_| None, |_| None),
+                false,
+                inputs,
+                &self.camera_matrices,
+            )
         })
     }
 

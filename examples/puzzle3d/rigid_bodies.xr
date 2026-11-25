@@ -1,0 +1,173 @@
+struct RigidMaterial { alpha-mode: string }
+
+struct RigidActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, material: RigidMaterial,
+}
+
+export component RigidBodiesDemo inherits Window {
+    title: "XRack · 动态刚体";
+    width: 640px; height: 470px;
+    resizable: false;
+    background: #182637;
+
+    in-out property <bool> running: false;
+    in-out property <bool> lift-raised: false;
+    in-out property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    out property <int> first: 0;
+    out property <int> second: 0;
+    out property <int> crate-body: 0;
+    out property <int> lift-body: 0;
+    out property <int> lift-trigger: 0;
+    out property <int> ticks: 0;
+    out property <int> sensor-entries: 0;
+    out property <int> sensor-exits: 0;
+    out property <bool> sensor-enabled: true;
+    property <float> radius: 0.5;
+    property <vector3d> crate-size: Vector3D.new(0.8, 0.9, 0.8);
+    property <point3d> first-start: Point3D.new(-2.4, 0.5, 0);
+    property <point3d> second-start: Point3D.new(-0.4, 0.5, 0);
+    property <point3d> crate-start: Point3D.new(1.4, 1.45, -0.9);
+    property <point3d> lift-start: Point3D.new(root.crate-start.x, 0.15, root.crate-start.z);
+    property <vector3d> lift-size: Vector3D.new(1.7, 0.3, 1.45);
+    property <vector3d> lift-rotation: Vector3D.new(15, 0, 0);
+    property <point3d> sensor-center: Point3D.new(root.lift-start.x, 2.27, root.lift-start.z);
+    property <vector3d> sensor-size: Vector3D.new(1.25, 0.3, 1.1);
+    out property <point3d> first-position: root.first == 0 ? root.first-start : Physics3D.position(root.world, root.first);
+    out property <point3d> second-position: root.second == 0 ? root.second-start : Physics3D.position(root.world, root.second);
+    out property <point3d> crate-position: root.crate-body == 0 ? root.crate-start : Physics3D.position(root.world, root.crate-body);
+    out property <point3d> lift-position: root.lift-body == 0 ? root.lift-start : Physics3D.position(root.world, root.lift-body);
+    out property <vector3d> first-velocity: Physics3D.velocity(root.world, root.first);
+    out property <vector3d> crate-rotation: Physics3D.rotation(root.world, root.crate-body);
+    out property <bool> sensor-active: Physics3D.trigger-overlaps(root.world, root.lift-trigger, root.crate-body);
+    out property <int> sensor-count: Physics3D.trigger-count(root.world, root.lift-trigger);
+
+    callback reset();
+    reset() => {
+        Physics3D.clear(root.world);
+        Physics3D.add-box(root.world, Point3D.new(0, -0.1, 0), Vector3D.new(10, 0.2, 6), 0, 0.25, 0.05);
+        root.first = Physics3D.add-sphere(root.world, root.first-start, root.radius, 1, 0.2, 0.45);
+        root.second = Physics3D.add-sphere(root.world, root.second-start, root.radius, 1, 0.2, 0.45);
+        root.lift-body = Physics3D.add-kinematic-box(root.world, root.lift-start, root.lift-size, root.lift-rotation, 0.6, 0);
+        root.crate-body = Physics3D.add-box(root.world, root.crate-start, root.crate-size, 1.2, 0.4, 0.2);
+        root.lift-trigger = Physics3D.add-box-trigger(root.world, root.sensor-center, root.sensor-size, root.lift-rotation);
+        Physics3D.set-collision-filter(root.world, root.crate-body, 1, 0);
+        root.enable-sensor(true);
+        root.ticks = 0;
+        root.sensor-entries = 0;
+        root.sensor-exits = 0;
+        root.lift-raised = false;
+    }
+    callback enable-sensor(enabled: bool);
+    enable-sensor(enabled) => {
+        // Ignore group 0 (the floor, lift and balls), and optionally group 1 (the crate).
+        Physics3D.set-collision-filter(root.world, root.lift-trigger, 2, enabled ? 1 : 3);
+        root.sensor-enabled = enabled;
+    }
+    callback advance();
+    advance() => {
+        if root.first == 0 { root.reset(); }
+        let wanted-y = root.lift-raised ? 1.35 : root.lift-start.y;
+        let height = root.lift-position.y;
+        let next = height + Math.clamp(wanted-y - height, -0.025, 0.025);
+        if Math.abs(next - height) > 0.0001 {
+            Physics3D.set-kinematic-target(root.world, root.lift-body, Point3D.new(root.lift-start.x, next, root.lift-start.z), root.lift-rotation);
+        }
+        if Physics3D.step(root.world) {
+            root.ticks += 1;
+            for body in Physics3D.trigger-entered(root.world, root.lift-trigger) {
+                if body == root.crate-body { root.sensor-entries += 1; }
+            }
+            for body in Physics3D.trigger-exited(root.world, root.lift-trigger) {
+                if body == root.crate-body { root.sensor-exits += 1; }
+            }
+        }
+    }
+    callback launch();
+    launch() => {
+        if root.first == 0 { root.reset(); }
+        Physics3D.apply-impulse(root.world, root.first, Vector3D.new(6, 0, 0));
+    }
+    clock := Timer {
+        interval: 16; repeat: true; running: root.running;
+        triggered => { root.advance(); }
+    }
+
+    property <RigidActor> base: RigidActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #7d91ac,
+        material: RigidMaterial { alpha-mode: "opaque" },
+    };
+    property <RigidActor> ball: RigidActor {
+        mesh: "primitive:sphere",
+        scale-x: root.radius, scale-y: root.radius, scale-z: root.radius,
+        ..root.base
+    };
+    property <[RigidActor]> bodies: [
+        RigidActor {
+            id: "ground", y: -0.1, scale-x: 10, scale-y: 0.2, scale-z: 6, color: #365357, ..root.base
+        },
+        RigidActor {
+            id: "first", x: root.first-position.x, y: root.first-position.y, z: root.first-position.z,
+            color: #fcac55, ..root.ball
+        },
+        RigidActor {
+            id: "second", x: root.second-position.x, y: root.second-position.y, z: root.second-position.z,
+            color: #73d0cf, ..root.ball
+        },
+        RigidActor {
+            id: "lift", x: root.lift-position.x, y: root.lift-position.y, z: root.lift-position.z,
+            scale-x: root.lift-size.x, scale-y: root.lift-size.y, scale-z: root.lift-size.z,
+            yaw: root.lift-rotation.x, color: #5579a1, ..root.base
+        },
+        RigidActor {
+            id: "crate", x: root.crate-position.x, y: root.crate-position.y, z: root.crate-position.z,
+            scale-x: root.crate-size.x, scale-y: root.crate-size.y, scale-z: root.crate-size.z,
+            yaw: root.crate-rotation.x, pitch: root.crate-rotation.y, roll: root.crate-rotation.z,
+            color: #ab8bc5, ..root.base
+        },
+        RigidActor {
+            id: "sensor", x: root.sensor-center.x, y: root.sensor-center.y, z: root.sensor-center.z,
+            scale-x: root.sensor-size.x, scale-y: root.sensor-size.y, scale-z: root.sensor-size.z,
+            yaw: root.lift-rotation.x, color: root.sensor-active ? #5af1b78c : #9aacf933,
+            material: RigidMaterial { alpha-mode: "blend" }, ..root.base
+        },
+    ];
+    SceneView3D {
+        width: 640px; height: 400px;
+        model: root.bodies; camera-yaw: -20; camera-pitch: 38; camera-distance: 10.5;
+        scene-background: #253d53; ambient-intensity: 0.4; multisampling: true;
+    }
+    Text { x: 16px; y: 14px; color: #eef3f9; text: "模拟步数 " + root.ticks; }
+    sensor-status := Text {
+        x: 16px; y: 41px;
+        color: root.sensor-active ? #82eac9 : #c3d1e5;
+        text: "感应区 " + root.sensor-count + " · 进入 " + root.sensor-entries + " · 离开 " + root.sensor-exits;
+    }
+    sensor-toggle := CheckBox {
+        x: 508px; y: 12px; width: 116px; height: 33px;
+        text: "感应启用"; checked: root.sensor-enabled;
+        toggled => {
+            if root.first == 0 { root.reset(); }
+            root.enable-sensor(!root.sensor-enabled);
+        }
+    }
+    HorizontalLayout {
+        x: 14px; y: 412px; width: 612px; height: 44px; spacing: 10px;
+        run-button := Button {
+            width: 105px; text: root.running ? "暂停" : "运行";
+            clicked => { root.running = !root.running; }
+        }
+        step-button := Button { width: 105px; text: "单步"; clicked => { root.advance(); } }
+        launch-button := Button { width: 105px; text: "施加冲量"; clicked => { root.launch(); } }
+        reset-button := Button { width: 105px; text: "重置"; clicked => { root.reset(); } }
+        lift-button := Button {
+            width: 105px; text: root.lift-raised ? "降下平台" : "升起平台";
+            clicked => {
+                if root.first == 0 { root.reset(); }
+                root.lift-raised = !root.lift-raised;
+            }
+        }
+    }
+}

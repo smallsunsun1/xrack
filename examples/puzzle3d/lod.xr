@@ -8,12 +8,13 @@ struct LodActor {
     camera-kind: string, camera-height: float, camera-lod-bias: float,
     lod-of: string, lod-max-size: length, lod-bias: float,
     animation: string, animation-time: float,
+    instance-of: string, instance-template: bool, instancing-lod-factor: float,
 }
 
 export component LodDemo inherits Window {
     title: "XRack · 网格细节";
     width: 480px;
-    height: 280px;
+    height: 330px;
     resizable: false;
     background: #141d29;
 
@@ -21,6 +22,8 @@ export component LodDemo inherits Window {
     in-out property <bool> orthographic: false;
     in-out property <bool> full-detail: false;
     in-out property <float> object-bias: 1;
+    in-out property <float> lod-factor: -1;
+    in-out property <bool> instanced: false;
     in-out property <bool> animated: false;
     in-out property <bool> automatic: false;
     in-out property <bool> deformation: false;
@@ -38,25 +41,31 @@ export component LodDemo inherits Window {
         camera-kind: "", camera-height: 8, camera-lod-bias: 1,
         lod-of: "", lod-max-size: 0px, lod-bias: 1,
         animation: "", animation-time: 0,
+        instance-of: "", instance-template: false, instancing-lod-factor: -1,
     };
+    property <string> target-mesh: root.automatic
+        ? (root.deformation
+            ? (root.morph-only ? @mesh-url("models/lod-morph.gltf", auto-lod)
+                : @mesh-url("models/lod-deform.gltf", auto-lod))
+            : (root.animated ? @mesh-url("models/lod-surface-animated.gltf", auto-lod)
+                : (root.instanced ? @mesh-url("models/lod-surface-instanced.gltf", auto-lod)
+                    : @mesh-url("models/lod-surface.gltf", auto-lod))))
+        : "primitive:sphere";
+    property <string> lod-owner: root.instanced ? "template" : "target";
     property <[LodActor]> scene: [
-        LodActor { mesh: "primitive:box", lod-of: "target", lod-max-size: 60px, visible: !root.automatic, ..root.defaults },
+        LodActor { mesh: "primitive:box", lod-of: root.lod-owner, lod-max-size: 60px, visible: !root.automatic, ..root.defaults },
         LodActor {
             id: "target", color: #52b7fa,
-            mesh: root.automatic
-                ? (root.deformation
-                    ? (root.morph-only ? @mesh-url("models/lod-morph.gltf", auto-lod)
-                        : @mesh-url("models/lod-deform.gltf", auto-lod))
-                    : (root.animated ? @mesh-url("models/lod-surface-animated.gltf", auto-lod)
-                        : @mesh-url("models/lod-surface.gltf", auto-lod)))
-                : "primitive:sphere",
+            mesh: root.instanced ? "" : root.target-mesh,
+            instance-of: root.instanced ? "template" : "",
+            instancing-lod-factor: root.lod-factor,
             lod-bias: root.object-bias,
             animation: root.deformation ? "Deform" : "Slide", animation-time: root.time,
             ..root.defaults
         },
         LodActor {
             mesh: root.animated ? @mesh-url("models/animated-panel.glb") : @mesh-url("models/octa-lod.gltf"),
-            lod-of: "target", lod-max-size: 140px, visible: !root.automatic,
+            lod-of: root.lod-owner, lod-max-size: 140px, visible: !root.automatic,
             x: 25, pickable: false, color: #ff4030,
             ..root.defaults
         },
@@ -70,6 +79,12 @@ export component LodDemo inherits Window {
             id: "floor", mesh: "primitive:box", y: -1.3,
             scale-x: 9, scale-y: 0.18, scale-z: 9,
             color: #3a4962, visible: root.shadows, pickable: false, casts-shadow: false,
+            ..root.defaults
+        },
+        LodActor {
+            id: "template", instance-template: true, visible: root.instanced,
+            mesh: root.instanced ? root.target-mesh : "",
+            animation: root.deformation ? "Deform" : "Slide", animation-time: root.time,
             ..root.defaults
         },
     ];
@@ -96,7 +111,7 @@ export component LodDemo inherits Window {
         }
         VerticalLayout {
             width: 150px;
-            spacing: 10px;
+            spacing: 6px;
             Text { text: "相机距离"; color: #edf4ff; }
             distance-slider := Slider {
                 width: 142px;
@@ -109,6 +124,12 @@ export component LodDemo inherits Window {
             ortho-toggle := CheckBox { text: "正交相机"; checked <=> root.orthographic; }
             detail-toggle := CheckBox { text: "始终用主网格"; checked <=> root.full-detail; }
             auto-toggle := CheckBox { text: "自动减面"; checked <=> root.automatic; }
+            instance-toggle := CheckBox { text: "从原型实例化"; checked <=> root.instanced; }
+            Text { text: "细节因子（−1 自动）"; color: #edf4ff; }
+            factor-slider := Slider {
+                width: 142px; height: 28px; minimum: -1; maximum: 1; step: 0.1;
+                value <=> root.lod-factor;
+            }
             if root.automatic: deform-toggle := CheckBox {
                 text: "蒙皮与形变";
                 checked <=> root.deformation;

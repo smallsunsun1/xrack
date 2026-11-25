@@ -36,7 +36,8 @@ use xrack_runtime::{is_multiline_text_input, is_toggle};
 use xrack_syntax::{
     ast::{Parameter, Type},
     builtins::{
-        ColorFunction, GeometryFunction, MathFunction, StringFunction, text_submission_rule,
+        ColorFunction, GeometryFunction, MathFunction, PhysicsFunction, StringFunction,
+        text_submission_rule,
     },
 };
 
@@ -155,7 +156,12 @@ fn project_scene_material(
         .filter(|name| {
             !matches!(
                 *name,
-                "enabled" | "alpha-mode" | "blend-mode" | "depth-draw-mode" | "cull-mode"
+                "enabled"
+                    | "alpha-mode"
+                    | "blend-mode"
+                    | "depth-draw-mode"
+                    | "cull-mode"
+                    | "material-workflow"
             ) && has(name)
         })
         .map(|name| {
@@ -168,6 +174,10 @@ fn project_scene_material(
                 quote!(#field: ::core::option::Option::Some(__style.#field))
             }
         });
+    let workflow = has("material-workflow").then(|| {
+        let field = ident("material-workflow");
+        quote!(workflow: ::xrack_runtime::scene3d::MeshWorkflow::named(&__style.#field),)
+    });
     let shader_textures = fields
         .iter()
         .find(|field| field.name == "shader-textures")
@@ -218,6 +228,7 @@ fn project_scene_material(
             #blend_mode
             #depth_draw_mode
             #cull_mode
+            #workflow
             #shader_textures
             maps: #maps,
             vertex_masks: ::xrack_runtime::scene3d::VertexColorMasks::from_fields([#(#vertex_masks),*]),
@@ -329,6 +340,68 @@ fn project_scene_geometry(
     )))
 }
 
+fn project_random_instances(
+    settings: TokenStream,
+    fields: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    let read = |name, default| scene_field(fields, name, "random", default);
+    let option = |name: &str| {
+        if fields.iter().any(|field| field.name == name) {
+            let member = ident(name);
+            quote!(::core::option::Option::Some(random.#member))
+        } else {
+            quote!(::core::option::Option::None)
+        }
+    };
+    let count = read("count", quote!(0));
+    let seed = read("seed", quote!(0));
+    let enabled = option("enabled");
+    let proportional = read("proportional-scale", quote!(false));
+    let grid = read("grid-spacing", quote!(::xrack_runtime::Vector3D::default()));
+    let position = ["position-min", "position-max"].map(option);
+    let rotation = ["rotation-min", "rotation-max"].map(option);
+    let scale = ["scale-min", "scale-max"].map(option);
+    let color = ["color-min", "color-max"].map(option);
+    let hue = ["hue-min", "hue-max"].map(option);
+    let proportional_color = read("proportional-color", quote!(false));
+    let color_model = if fields.iter().any(|field| field.name == "color-model") {
+        quote!(::xrack_runtime::scene3d::InstanceColorModel::from_name(
+            random.color_model.as_str()
+        ))
+    } else {
+        quote!(::xrack_runtime::scene3d::InstanceColorModel::default())
+    };
+    let data = ["data-min", "data-max"].map(|name| {
+        if scene_schema(fields, records, name).is_some() {
+            let member = ident(name);
+            quote!(::core::option::Option::Some([
+                random.#member.x, random.#member.y, random.#member.z, random.#member.w
+            ]))
+        } else {
+            quote!(::core::option::Option::None)
+        }
+    });
+    quote!({
+        let random = &(#settings);
+        ::xrack_runtime::scene3d::SceneRandomInstances {
+            count: #count,
+            seed: #seed,
+            enabled: #enabled,
+            position: [#(#position),*],
+            rotation: [#(#rotation),*],
+            scale: [#(#scale),*],
+            proportional_scale: #proportional,
+            color: [#(#color),*],
+            color_model: #color_model,
+            proportional_color: #proportional_color,
+            hue: [#(#hue),*],
+            data: [#(#data),*],
+            grid_spacing: #grid,
+        }
+    })
+}
+
 fn project_scene_objects(
     model: &TokenStream,
     ty: &Type,
@@ -338,10 +411,70 @@ fn project_scene_objects(
 ) -> TokenStream {
     let field = |name, default| scene_field(fields, name, "object", default);
     let parent = field("parent", quote!(::std::string::String::new()));
+    let physics_body = field("physics-body", quote!(::std::string::String::new()));
     let look_at = field("camera-look-at", quote!(::std::string::String::new()));
+    let optional_field = |name| {
+        if fields.iter().any(|field| field.name == name) {
+            let member = ident(name);
+            quote!(::core::option::Option::Some(object.#member))
+        } else {
+            quote!(::core::option::Option::None)
+        }
+    };
+    let look_at_point = optional_field("camera-look-at-point");
+    let camera_up = optional_field("camera-up");
     let mesh = field("mesh", quote!(::std::string::String::new()));
     let renderables = !cameras_only;
     let instance_of = field("instance-of", quote!(::std::string::String::new()));
+    let instance_root = field("instance-root", quote!(::std::string::String::new()));
+    let instance_table = if renderables {
+        field(
+            "instance-table",
+            quote!(::xrack_runtime::InstanceTable3D::default()),
+        )
+    } else {
+        quote!(::xrack_runtime::InstanceTable3D::default())
+    };
+    let instance_count_override = field("instance-count-override", quote!(-1));
+    let instance_has_transparency = field("instance-has-transparency", quote!(false));
+    let instance_depth_sorting = field("instance-depth-sorting", quote!(false));
+    let orientation = if fields.iter().any(|field| field.name == "orientation") {
+        quote!(::core::option::Option::Some(object.orientation))
+    } else {
+        quote!(::core::option::Option::None)
+    };
+    let instance_shadow_bounds = if ["instance-shadow-bounds-min", "instance-shadow-bounds-max"]
+        .into_iter()
+        .all(|name| fields.iter().any(|field| field.name == name))
+    {
+        quote!(::core::option::Option::Some([
+            object.instance_shadow_bounds_min,
+            object.instance_shadow_bounds_max
+        ]))
+    } else {
+        quote!(::core::option::Option::None)
+    };
+    let random_instances = scene_schema(fields, records, "random-instances")
+        .filter(|_| renderables)
+        .map_or_else(
+            || quote!(::core::option::Option::None),
+            |schema| {
+                let random =
+                    project_random_instances(quote!(object.random_instances), schema, records);
+                quote!(::core::option::Option::Some(#random))
+            },
+        );
+    let instance_data = if !cameras_only && scene_schema(fields, records, "instance-data").is_some()
+    {
+        quote!(::core::option::Option::Some([
+            object.instance_data.x,
+            object.instance_data.y,
+            object.instance_data.z,
+            object.instance_data.w
+        ]))
+    } else {
+        quote!(::core::option::Option::None)
+    };
     let geometry = scene_schema(fields, records, "geometry").map_or_else(
         || quote!(::core::option::Option::None),
         |schema| {
@@ -349,6 +482,25 @@ fn project_scene_objects(
             quote!(if (#instance_of).is_empty() { #geometry } else { ::core::option::Option::None })
         },
     );
+    let collision_shapes = fields.iter().find_map(|field| {
+        if cameras_only || field.name != "collision-shapes" {
+            return None;
+        }
+        let Type::RecordList(name) = &field.ty else {
+            return None;
+        };
+        records.get(name.as_ref())
+    }).map_or_else(|| quote!(::core::option::Option::None), |schema| {
+        let position = scene_field(schema, "position", "shape", quote!(::xrack_runtime::Point3D::default()));
+        let size = scene_field(schema, "size", "shape", quote!(::xrack_runtime::Vector3D::new(1.0, 1.0, 1.0)));
+        let angles = ["yaw", "pitch", "roll"].map(|name| scene_field(schema, name, "shape", quote!(0.0)));
+        let mesh = scene_field(schema, "mesh", "shape", quote!(::std::string::String::new()));
+        quote!(::xrack_runtime::scene3d::prepare_collision_shapes(mesh_inputs, &object.collision_shapes, |shape| {
+            ::xrack_runtime::scene3d::SceneCollisionShape::new(
+                &shape.shape, #position, #size, [#(#angles),*], &#mesh, __xr_scene_mesh,
+            )
+        }))
+    });
     let material_variant = field("material-variant", quote!(::std::string::String::new()));
     let instance_template = field("instance-template", quote!(false));
     let playback = |clip, time, looping| {
@@ -398,17 +550,35 @@ fn project_scene_objects(
         let height = field("camera-height", quote!(10.0));
         let near = field("camera-near", quote!(0.1));
         let far = field("camera-far", quote!(100.0));
-        let bounds = ["camera-left", "camera-right", "camera-bottom", "camera-top"].map(|name| {
-            if fields.iter().any(|param| param.name == name) {
-                let member = ident(name);
-                quote!(::core::option::Option::Some(object.#member))
+        let width = optional_field("camera-width");
+        let clip_normal = optional_field("camera-clip-normal");
+        let bounds =
+            ["camera-left", "camera-right", "camera-bottom", "camera-top"].map(optional_field);
+        let standard = quote!(::xrack_runtime::scene3d::SceneCameraSettings::from_record(
+            &object.camera_kind, #fov, #height, #near, #far, [#(#bounds),*], #width
+        ).and_then(|settings| settings.with_clip_normal(#clip_normal)));
+        let settings = if scene_schema(fields, records, "camera-projection").is_some() {
+            let clip_space = field("camera-clip-space", quote!(::std::string::String::new()));
+            let rows = xrack_runtime::scene3d::CAMERA_MATRIX_FIELDS.map(|row| {
+                let names = row.map(ident);
+                quote!([#(object.camera_projection.#names),*])
+            });
+            quote!(if object.camera_kind == "custom" {
+                cache.custom_camera([#(#rows),*], &#clip_space)
             } else {
-                quote!(::core::option::Option::None)
-            }
-        });
-        quote!(::xrack_runtime::scene3d::SceneCameraSettings::from_record(
-            &object.camera_kind, #fov, #height, #near, #far, [#(#bounds),*]
-        ))
+                #standard
+            })
+        } else {
+            standard
+        };
+        if fields
+            .iter()
+            .any(|field| field.name == "camera-reverse-depth")
+        {
+            quote!((#settings).map(|settings| settings.with_reverse_depth(object.camera_reverse_depth)))
+        } else {
+            settings
+        }
     } else {
         quote!(::core::option::Option::None)
     };
@@ -422,10 +592,20 @@ fn project_scene_objects(
     );
     let pickable = field("pickable", quote!(true));
     let collidable = field("collidable", quote!(true));
+    let trigger = field("trigger", quote!(false));
     let lod_of = field("lod-of", quote!(::std::string::String::new()));
     let lod_size = field("lod-max-size", quote!(::xrack_runtime::Length(0.0)));
     let lod_bias = field("lod-bias", quote!(1.0));
+    let depth_bias = field("depth-bias", quote!(0.0));
+    let motion_vector_enabled = field("motion-vector-enabled", quote!(true));
+    let motion_vector_scale = field("motion-vector-scale", quote!(1.0));
+    let lod_min = field("instancing-lod-min", quote!(0.0));
+    let lod_max = field("instancing-lod-max", quote!(-1.0));
+    let lod_factor = field("instancing-lod-factor", quote!(-1.0));
     let camera_lod_bias = field("camera-lod-bias", quote!(1.0));
+    let bake_role = field("bake-role", quote!("auto"));
+    let lightmap_size = field("lightmap-size", quote!(0));
+    let lightmap_density = field("lightmap-texels-per-unit", quote!(0.0));
     let lightmap = if !cameras_only && fields.iter().any(|field| field.name == "lightmap") {
         let mode = field("lightmap-mode", quote!(::std::string::String::new()));
         let strength = field("lightmap-intensity", quote!(1.0));
@@ -454,23 +634,45 @@ fn project_scene_objects(
                 id: object.id,
                 mesh: &(#mesh),
                 geometry: #geometry,
+                collision_shapes: #collision_shapes,
                 material_variant: &(#material_variant),
                 instance_of: #instance_of,
+                instance_root: #instance_root,
+                instance_data: #instance_data,
+                random_instances: #random_instances,
+                instance_table: #instance_table,
+                instance_count_override: #instance_count_override,
+                instance_has_transparency: #instance_has_transparency,
+                instance_depth_sorting: #instance_depth_sorting,
+                instance_shadow_bounds: #instance_shadow_bounds,
                 instance_template: #instance_template,
                 animation: ::xrack_runtime::scene3d::MeshAnimationBlend { from: #from, to: #to, weight: #weight },
                 morph_weights: &[#(#weight_fields),*],
                 parent: #parent,
+                physics_body: &(#physics_body),
                 visible: #visible,
                 camera: #camera,
                 look_at: #look_at,
+                look_at_point: #look_at_point,
+                camera_up: #camera_up,
                 position: [object.x, object.y, object.z],
                 scale: [object.scale_x, object.scale_y, object.scale_z],
                 angles: [object.yaw, object.pitch, object.roll],
+                orientation: #orientation,
                 pivot: [#pivot_x, #pivot_y, #pivot_z],
                 color: object.color,
+                depth_bias: #depth_bias,
+                motion_vector_enabled: #motion_vector_enabled,
+                motion_vector_scale: #motion_vector_scale,
+                instancing_lod_range: [#lod_min, #lod_max],
+                instancing_lod_factor: #lod_factor,
                 material: #material,
                 material_slots: #material_slots,
                 lightmap: #lightmap,
+                bake_role: &(#bake_role),
+                lightmap_resolution: ::xrack_runtime::scene3d::LightmapResolution::from_settings(
+                    #lightmap_size, #lightmap_density,
+                ),
                 casts_shadow: #casts,
                 receives_shadow: #receives,
                 receives_reflections: #reflects,
@@ -478,6 +680,7 @@ fn project_scene_objects(
                 layers: (#layers) as u64,
                 pickable: #pickable,
                 collidable: #collidable,
+                trigger: #trigger,
                 lod_of: #lod_of,
                 lod_max_size: (#lod_size).0,
                 lod_bias: #lod_bias,
@@ -494,6 +697,30 @@ fn scene_field(fields: &[Parameter], field: &str, row: &str, default: TokenStrea
     let row = ident(row);
     let field = ident(field);
     quote!(#row.#field)
+}
+
+fn physics_shape_fields(schema: &[Parameter]) -> [TokenStream; 4] {
+    let position = scene_field(
+        schema,
+        "position",
+        "shape",
+        quote!(::xrack_runtime::Point3D::default()),
+    );
+    let size = scene_field(
+        schema,
+        "size",
+        "shape",
+        quote!(::xrack_runtime::Vector3D::new(1.0, 1.0, 1.0)),
+    );
+    let angles =
+        ["yaw", "pitch", "roll"].map(|name| scene_field(schema, name, "shape", quote!(0.0)));
+    let mesh = scene_field(
+        schema,
+        "mesh",
+        "shape",
+        quote!(::std::string::String::new()),
+    );
+    [position, size, quote!([#(#angles),*]), mesh]
 }
 
 fn project_particles(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
@@ -667,6 +894,8 @@ fn project_scene_captures(
     let scale = field("scale", quote!(1.0));
     let background = field("background", quote!(::xrack_runtime::Color(0)));
     let color_format = field("color-format", quote!("rgba16f"));
+    let material_data_format = field("material-data-format", quote!("rgba16f"));
+    let combine_attachments = field("combine-attachments", quote!(false));
     let depth_clear = field("depth-clear", quote!(1.0));
     let enabled = field("enabled", quote!(true));
     let layers = if fields.iter().any(|param| param.name == "layers") {
@@ -681,6 +910,8 @@ fn project_scene_captures(
                 name: &capture.name, camera: &(#camera), layers: #layers,
                 scale: #scale, background: #background, enabled: #enabled, depth_clear: #depth_clear,
                 color_format: ::xrack_runtime::scene_effect::OutputFormat::parse(&(#color_format)),
+                material_data_format: ::xrack_runtime::scene_effect::OutputFormat::parse(&(#material_data_format)),
+                combine_attachments: #combine_attachments,
                 color_source: &(#color_source), depth_source: &(#depth_source),
                 stencil_source: &(#stencil_source), stencil_clear: #stencil_clear,
                 renderables: &(#renderables),
@@ -861,6 +1092,7 @@ fn project_reflections(model: &TokenStream, fields: &[Parameter]) -> TokenStream
     let yaw = field("yaw", quote!(0.0));
     let intensity = field("intensity", quote!(1.0));
     let parallax = field("parallax-correction", quote!(false));
+    let debug_view = field("debug-view", quote!(false));
     let layers = field(
         "layers",
         quote!(::xrack_runtime::scene3d::MAIN_LAYER as i64),
@@ -876,13 +1108,32 @@ fn project_reflections(model: &TokenStream, fields: &[Parameter]) -> TokenStream
             let source = ::xrack_runtime::scene3d::ReflectionSource::resolve(&(#source), #size, &(#refresh), #revision, &(#slicing), __xr_environment)?;
             ::xrack_runtime::scene3d::ReflectionProbe::prepare(source,
                 probe.position, probe.box_size, #offset, #yaw, #intensity, #parallax)
-                .map(|reflection| reflection.with_layers((#layers) as u64))
+                .map(|reflection| reflection.with_layers((#layers) as u64).with_debug_view(#debug_view))
         })
     }
 }
 
 fn project_scene_lights(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
     let casts = scene_field(fields, "casts-shadow", "light", quote!(true));
+    let filter = scene_field(fields, "shadow-filter", "light", quote!("bilinear"));
+    let bake_mode = scene_field(fields, "bake-mode", "light", quote!("disabled"));
+    let strength = scene_field(
+        fields,
+        "shadow-strength",
+        "light",
+        quote!(::xrack_runtime::scene3d::ShadowSampling::DEFAULT_STRENGTH),
+    );
+    let radius = scene_field(
+        fields,
+        "shadow-radius",
+        "light",
+        quote!(::xrack_runtime::scene3d::ShadowSampling::DEFAULT_RADIUS),
+    );
+    let bias = if fields.iter().any(|param| param.name == "shadow-bias") {
+        quote!(::core::option::Option::Some(light.shadow_bias))
+    } else {
+        quote!(::core::option::Option::None)
+    };
     let parent = scene_field(
         fields,
         "parent",
@@ -912,6 +1163,11 @@ fn project_scene_lights(model: &TokenStream, fields: &[Parameter]) -> TokenStrea
                 inner_angle: light.inner_angle,
                 outer_angle: light.outer_angle,
                 casts_shadow: #casts,
+                shadow_filter: &(#filter),
+                shadow_strength: #strength,
+                shadow_radius: #radius,
+                shadow_bias: #bias,
+                bake_mode: &(#bake_mode),
                 layers: (#layers) as u64,
             }.prepare().map(|source| (source, #parent))
         })
@@ -940,9 +1196,24 @@ fn ty(t: &Type) -> TokenStream {
         Type::Point2D => quote!(::xrack_runtime::Point2D),
         Type::Point3D => quote!(::xrack_runtime::Point3D),
         Type::Vector3D => quote!(::xrack_runtime::Vector3D),
+        Type::Quaternion3D => quote!(::xrack_runtime::Quaternion3D),
+        Type::RotationTrack3D => quote!(::xrack_runtime::RotationTrack3D),
         Type::Hit3D => quote!(::xrack_runtime::Hit3D),
         Type::Hit3DList => quote!(::xrack_runtime::VecModel<::xrack_runtime::Hit3D>),
+        Type::PhysicsContact3D => quote!(::xrack_runtime::PhysicsContact3D),
+        Type::PhysicsHit3D => quote!(::xrack_runtime::PhysicsHit3D),
+        Type::PhysicsContact3DList => {
+            quote!(::xrack_runtime::VecModel<::xrack_runtime::PhysicsContact3D>)
+        }
+        Type::PhysicsHit3DList => {
+            quote!(::xrack_runtime::VecModel<::xrack_runtime::PhysicsHit3D>)
+        }
         Type::ProjectedPoint3D => quote!(::xrack_runtime::ProjectedPoint3D),
+        Type::Instance3D => quote!(::xrack_runtime::Instance3D),
+        Type::InstanceTable3D => quote!(::xrack_runtime::InstanceTable3D),
+        Type::WalkResult3D => quote!(::xrack_runtime::WalkResult3D),
+        Type::PhysicsWorld3D => quote!(::xrack_runtime::PhysicsWorld3D),
+        Type::SceneModel3D => quote!(::std::sync::Arc<::xrack_runtime::scene3d::SceneModel>),
         Type::Vector2D => quote!(::xrack_runtime::Vector2D),
         Type::Transform2D => quote!(::xrack_runtime::Transform2D),
         Type::Percent => quote!(::xrack_runtime::Percent),
@@ -1136,6 +1407,23 @@ fn literal(spelling: &str, ty: Type) -> Result<TokenStream, String> {
         XrLiteral::Vector3D(value) => {
             let [x, y, z] = [value.x, value.y, value.z].map(Literal::f64_suffixed);
             quote!(::xrack_runtime::Vector3D::new(#x, #y, #z))
+        }
+        XrLiteral::Quaternion3D(value) => {
+            let [x, y, z, w] = value.map(Literal::f64_suffixed);
+            quote!(::xrack_runtime::Quaternion3D::new(#x, #y, #z, #w))
+        }
+        XrLiteral::RotationTrack3D(keys) => {
+            let keys = keys.into_iter().map(|key| {
+                let [time, x, y, z, w] = key.map(Literal::f64_suffixed);
+                quote!((#time, ::xrack_runtime::Quaternion3D::new(#x, #y, #z, #w)))
+            });
+            quote!({
+                static __XR_TRACK: ::std::sync::LazyLock<::xrack_runtime::RotationTrack3D> =
+                    ::std::sync::LazyLock::new(|| {
+                        ::xrack_runtime::RotationTrack3D::new(::std::vec![#(#keys),*])
+                    });
+                ::core::clone::Clone::clone(&*__XR_TRACK)
+            })
         }
         XrLiteral::Vector2D(value) => {
             let [x, y] = [value.x.0, value.y.0].map(Literal::f64_suffixed);
@@ -2330,7 +2618,7 @@ impl<'a> Generator<'a> {
                 if matches!(op.attribute("kind"), Some("MediaPlayer" | "SoundEffect")) {
                     self.media_players.push(op);
                 }
-                if op.attr("kind") == Ok("Timer") {
+                if matches!(op.attr("kind"), Ok("Timer" | "FrameAnimation")) {
                     self.timers.push(op);
                 }
                 if native_dialog(op) {
@@ -2964,8 +3252,13 @@ impl<'a> Generator<'a> {
                     &[#((#names, ::xrack_runtime::TranslationValue::from(#values))),*],
                 )))
             }
-            "xr.array" | "xr.int_array" | "xr.date_array" | "xr.record_array"
-            | "xr.hit3d_array" => {
+            "xr.array"
+            | "xr.int_array"
+            | "xr.date_array"
+            | "xr.record_array"
+            | "xr.hit3d_array"
+            | "xr.physics_contact3d_array"
+            | "xr.physics_hit3d_array" => {
                 let items = (0..op.operand_count())
                     .map(arg)
                     .collect::<Result<Vec<_>, _>>()?;
@@ -3122,8 +3415,15 @@ impl<'a> Generator<'a> {
             | "xr.point2d_field"
             | "xr.point3d_field"
             | "xr.vector3d_field"
+            | "xr.quaternion3d_field"
+            | "xr.rotation_track3d_field"
             | "xr.hit3d_field"
+            | "xr.physics_contact3d_field"
+            | "xr.physics_hit3d_field"
             | "xr.projected_point3d_field"
+            | "xr.instance3d_field"
+            | "xr.instance_table3d_field"
+            | "xr.walk_result3d_field"
             | "xr.vector2d_field"
             | "xr.key_field"
             | "xr.wheel_field"
@@ -3132,11 +3432,39 @@ impl<'a> Generator<'a> {
                 let record = arg(0)?;
                 let field =
                     ident(xrack_resources::field::BuiltinField::from_operation(op)?.member());
-                if op.name() == "xr.hit3d_field" && value == "object-id" {
+                if matches!(op.name(), "xr.hit3d_field" | "xr.instance3d_field")
+                    && value == "object-id"
+                {
                     quote!((#record).#field.clone())
+                } else if op.name() == "xr.instance_table3d_field" {
+                    if value == "loaded" {
+                        quote!((#record).is_loaded())
+                    } else {
+                        quote!((#record).count())
+                    }
+                } else if op.name() == "xr.walk_result3d_field" && value == "contacts" {
+                    quote!((#record).contacts())
+                } else if matches!(
+                    op.name(),
+                    "xr.quaternion3d_field" | "xr.rotation_track3d_field"
+                ) {
+                    quote!((#record).#field())
                 } else {
                     quote!((#record).#field)
                 }
+            }
+            "xr.walk_result3d" => {
+                let position = arg(0)?;
+                let crossings = arg(1)?;
+                quote!(::xrack_runtime::WalkResult3D {
+                    position: #position,
+                    crossings: #crossings,
+                    collision_contacts: ::core::option::Option::None,
+                    support: ::xrack_runtime::Hit3D::default(),
+                    grounded: false,
+                    hit_wall: false,
+                    hit_ceiling: false,
+                })
             }
             "xr.markdown" => {
                 let name = self
@@ -3145,6 +3473,7 @@ impl<'a> Generator<'a> {
                     .ok_or_else(|| "missing compiled Markdown literal".to_string())?;
                 quote!(#name.clone())
             }
+            "xr.instance_table_url" => quote!(__xr_instance_table(#value)),
             "xr.material_shader_url" => {
                 let key = xrack_runtime::material_shader::resource_key(value);
                 quote!(::std::string::String::from(#key))
@@ -3620,6 +3949,125 @@ impl<'a> Generator<'a> {
                 let arg = arg(0)?;
                 quote!((#arg as ::core::primitive::f64))
             }
+            "xr.physics_function" => {
+                let kind = PhysicsFunction::parse(value).ok_or("unknown physics function")?;
+                let mut args = (0..op.operand_count())
+                    .map(arg)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if matches!(
+                    kind,
+                    PhysicsFunction::SyncBodies | PhysicsFunction::SyncScene
+                ) {
+                    let ty = value_type(self.operand(op, 1)?)?;
+                    let fields = self.scene_record_fields(&ty);
+                    let shapes = fields
+                        .iter()
+                        .find(|field| field.name == "shapes")
+                        .ok_or("missing body collision shapes")?;
+                    let [position, size, angles, mesh] =
+                        physics_shape_fields(self.scene_record_fields(&shapes.ty));
+                    let body_kind = ident("body-kind");
+                    let rotation = scene_field(
+                        fields,
+                        "rotation",
+                        "row",
+                        quote!(::xrack_runtime::Vector3D::default()),
+                    );
+                    let mass = scene_field(fields, "mass", "row", quote!(1.0));
+                    let friction = scene_field(fields, "friction", "row", quote!(0.5));
+                    let restitution = scene_field(fields, "restitution", "row", quote!(0.0));
+                    let model = args.get(1).ok_or("missing body declarations")?;
+                    args[1] = quote!((#model).inspect_rows(0, ::core::primitive::usize::MAX, |row| {
+                        ::xrack_runtime::PhysicsBodySpec {
+                            id: row.id.clone(),
+                            kind: row.#body_kind.clone(),
+                            position: row.position,
+                            rotation: #rotation,
+                            shapes: row.shapes.inspect_rows(0, ::core::primitive::usize::MAX, |shape| {
+                                ::xrack_runtime::PhysicsShapeSpec {
+                                    shape: shape.shape.clone(),
+                                    position: #position,
+                                    size: #size,
+                                    angles: #angles,
+                                    mesh: (#mesh).to_owned(),
+                                }
+                            }).1,
+                            mass: #mass,
+                            friction: #friction,
+                            restitution: #restitution,
+                        }
+                    }).1);
+                    if kind == PhysicsFunction::SyncScene {
+                        let ty = value_type(self.operand(op, 2)?)?;
+                        let fields = self.scene_record_fields(&ty);
+                        let joint_kind = ident("joint-kind");
+                        let first_anchor = ident("first-anchor");
+                        let second_anchor = ident("second-anchor");
+                        let rotation = |name| {
+                            scene_field(
+                                fields,
+                                name,
+                                "row",
+                                quote!(::xrack_runtime::Vector3D::default()),
+                            )
+                        };
+                        let bound = |name| {
+                            if fields.iter().any(|field| field.name == name) {
+                                let field = ident(name);
+                                quote!(::core::option::Option::Some(row.#field))
+                            } else {
+                                quote!(::core::option::Option::None)
+                            }
+                        };
+                        let first_rotation = rotation("first-rotation");
+                        let second_rotation = rotation("second-rotation");
+                        let min = bound("min");
+                        let max = bound("max");
+                        let model = args.get(2).ok_or("missing joint declarations")?;
+                        args[2] = quote!((#model).inspect_rows(0, ::core::primitive::usize::MAX, |row| {
+                            ::xrack_runtime::PhysicsJointSpec {
+                                id: row.id.clone(), kind: row.#joint_kind.clone(),
+                                first: row.first.clone(), second: row.second.clone(),
+                                first_anchor: row.#first_anchor, second_anchor: row.#second_anchor,
+                                first_rotation: #first_rotation, second_rotation: #second_rotation,
+                                min: #min, max: #max,
+                            }
+                        }).1);
+                    }
+                    args.push(quote!(__xr_scene_mesh));
+                } else if matches!(kind, PhysicsFunction::BodyById | PhysicsFunction::JointById) {
+                    let id = args.get(1).ok_or("missing physics declaration id")?;
+                    args[1] = quote!(&(#id));
+                } else if kind.uses_shape_list() {
+                    let ty = value_type(self.operand(op, 3)?)?;
+                    let schema = self.scene_record_fields(&ty);
+                    let model = args.get(3).ok_or("missing collision shapes")?;
+                    let [position, size, angles, mesh] = physics_shape_fields(schema);
+                    args[3] = quote!(::xrack_runtime::PhysicsCollider3D::prepare(&(#model), |shape| {
+                        ::xrack_runtime::PhysicsShape3D::new_with_mesh(
+                            &shape.shape, #position, #size, #angles, &#mesh, __xr_scene_mesh,
+                        )
+                    }));
+                    if let Some(filter_offset) = kind.query_filter_offset() {
+                        let filter_args = args.split_off(filter_offset);
+                        args.push(
+                            quote!(::xrack_runtime::PhysicsQueryFilter3D::new(#(#filter_args),*)),
+                        );
+                    }
+                }
+                if kind == PhysicsFunction::New {
+                    quote!(::xrack_runtime::PhysicsWorld3D::new(#(#args),*))
+                } else {
+                    let (world, inputs) = args.split_first().ok_or("missing physics world")?;
+                    let method = ident(&kind.name().replace('-', "_"));
+                    let call = quote!((#world).#method(#(#inputs),*));
+                    if kind.result().list_item().is_some() {
+                        quote!(::xrack_runtime::VecModel::from(#call))
+                    } else {
+                        call
+                    }
+                }
+            }
             "xr.geometry_function" => {
                 let kind = GeometryFunction::parse(value).ok_or("unknown geometry function")?;
                 let args = (0..op.operand_count())
@@ -3632,17 +4080,114 @@ impl<'a> Generator<'a> {
                         |mask| quote!(::core::option::Option::Some(#mask)),
                     )
                 };
-                let query_model = |model: &TokenStream| {
+                let query_model = |model: &TokenStream, cameras_only| {
                     let ty = value_type(self.operand(op, 0)?)?;
-                    Ok::<TokenStream, String>(project_scene_objects(
+                    if ty == Type::SceneModel3D {
+                        return Ok::<TokenStream, String>(quote!((#model)));
+                    }
+                    Ok(project_scene_objects(
                         model,
                         &ty,
                         self.scene_record_fields(&ty),
                         self.records,
-                        false,
+                        cameras_only,
                     ))
                 };
                 match (kind, args.as_slice()) {
+                    (QuaternionIdentity, []) => quote!(::xrack_runtime::Quaternion3D::IDENTITY),
+                    (QuaternionNew, [x, y, z, w]) => {
+                        quote!(::xrack_runtime::Quaternion3D::new(#x, #y, #z, #w))
+                    }
+                    (QuaternionAxisAngle, [axis, degrees]) => {
+                        quote!(::xrack_runtime::Quaternion3D::from_axis_angle(#axis, #degrees))
+                    }
+                    (QuaternionEuler, [angles]) => {
+                        quote!(::xrack_runtime::Quaternion3D::from_euler(#angles))
+                    }
+                    (QuaternionLookRotation, [forward, up @ ..]) => {
+                        let up = up.first().cloned().unwrap_or_else(|| {
+                            quote!(::xrack_runtime::Vector3D::new(0.0, 1.0, 0.0))
+                        });
+                        quote!(::xrack_runtime::Quaternion3D::look_rotation(#forward, #up))
+                    }
+                    (QuaternionLookAt, [from, target, up @ ..]) => {
+                        let up = up.first().cloned().unwrap_or_else(|| {
+                            quote!(::xrack_runtime::Vector3D::new(0.0, 1.0, 0.0))
+                        });
+                        quote!(::xrack_runtime::Quaternion3D::look_at(#from, #target, #up))
+                    }
+                    (QuaternionCompose, [first, next]) => quote!((#first).then(#next)),
+                    (QuaternionInverse, [rotation]) => quote!((#rotation).inverse()),
+                    (QuaternionSlerp, [from, to, progress]) => {
+                        quote!((#from).slerp(#to, #progress))
+                    }
+                    (QuaternionRotate, [rotation, vector]) => quote!((#rotation).rotate(#vector)),
+                    (QuaternionTrack, [keys]) => quote! {
+                        __XR_SCENE_PROJECTIONS.with(|cache| cache.rotation_track(&(#keys), |key| {
+                            ::core::option::Option::Some((key.time, key.orientation))
+                        }))
+                    },
+                    (QuaternionTrackKeys, keys) => {
+                        let (pairs, remainder) = keys.as_chunks::<2>();
+                        if pairs.is_empty() || !remainder.is_empty() {
+                            return Err("invalid rotation track key pairs".into());
+                        }
+                        let pairs = pairs
+                            .iter()
+                            .map(|[time, orientation]| quote!((#time, #orientation)));
+                        quote!(::xrack_runtime::RotationTrack3D::new(
+                            ::std::vec![#(#pairs),*]
+                        ))
+                    }
+                    (QuaternionSample, [track, time]) => quote!((#track).sample(#time)),
+                    (Prepare3D, [model]) => query_model(model, false)?,
+                    (Prepare3D, [model, world]) => {
+                        let scene = query_model(model, false)?;
+                        quote!((#scene).resolve_physics(&(#world)))
+                    }
+                    (TableInstance3D, [table, index]) => quote!((#table).instance(#index)),
+                    (RandomInstanceTable3D, [settings]) => {
+                        let Type::Record(name) = value_type(self.operand(op, 0)?)? else {
+                            return Err("expected random instance settings".into());
+                        };
+                        let fields = self
+                            .records
+                            .get(name.as_ref())
+                            .ok_or("missing random instance settings")?;
+                        let random =
+                            project_random_instances(settings.clone(), fields, self.records);
+                        quote!(::xrack_runtime::InstanceTable3D::from_random(#random))
+                    }
+                    (PrepareInstanceTable3D, [model]) => {
+                        let ty = value_type(self.operand(op, 0)?)?;
+                        let fields = self.scene_record_fields(&ty);
+                        let field = |name, default| scene_field(fields, name, "row", default);
+                        let position = field("position", quote!(defaults.position));
+                        let scale = field("scale", quote!(defaults.scale));
+                        let rotation = field("rotation", quote!(defaults.rotation));
+                        let orientation = if fields.iter().any(|field| field.name == "orientation")
+                        {
+                            quote!(::core::option::Option::Some(row.orientation))
+                        } else {
+                            quote!(::core::option::Option::None)
+                        };
+                        let color = field("color", quote!(defaults.color));
+                        let data = ["data-x", "data-y", "data-z", "data-w"]
+                            .map(|name| field(name, quote!(0.0)));
+                        quote! {
+                            __XR_SCENE_PROJECTIONS.with(|cache| cache.instance_table(&(#model), |row| {
+                                let defaults = ::xrack_runtime::scene3d::InstanceTableRow::default();
+                                ::xrack_runtime::scene3d::InstanceTableRow {
+                                    position: #position,
+                                    scale: #scale,
+                                    rotation: #rotation,
+                                    orientation: #orientation,
+                                    color: #color,
+                                    data: [#(#data),*],
+                                }
+                            }))
+                        }
+                    }
                     (Point, [x, y]) => quote!(::xrack_runtime::Point2D::new(#x, #y)),
                     (Point3D, [x, y, z]) => quote!(::xrack_runtime::Point3D::new(#x, #y, #z)),
                     (Vector3D, [x, y, z]) => quote!(::xrack_runtime::Vector3D::new(#x, #y, #z)),
@@ -3652,14 +4197,7 @@ impl<'a> Generator<'a> {
                         } else {
                             quote!(ray_hit_model)
                         };
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::#query(&#objects, #origin, #direction, #distance, #layers))
                     }
@@ -3678,7 +4216,7 @@ impl<'a> Generator<'a> {
                             layers @ ..,
                         ],
                     ) => {
-                        let objects = query_model(model)?;
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::hit_instance(&#objects, [#yaw, #pitch, #distance],
                             #viewport, #pointer, [#row, #node, #instance], #layers))
@@ -3696,7 +4234,7 @@ impl<'a> Generator<'a> {
                             layers @ ..,
                         ],
                     ) => {
-                        let objects = query_model(model)?;
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::hit_instance_camera(&#objects, &#camera,
                             #viewport, #pointer, [#row, #node, #instance], #layers))
@@ -3714,7 +4252,7 @@ impl<'a> Generator<'a> {
                             layers @ ..,
                         ],
                     ) => {
-                        let objects = query_model(model)?;
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::ray_hit_instance(&#objects, #origin,
                             #direction, #distance, [#row, #node, #instance], #layers))
@@ -3732,7 +4270,7 @@ impl<'a> Generator<'a> {
                             layers @ ..,
                         ],
                     ) => {
-                        let objects = query_model(model)?;
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         let (function, selector) = if kind == HitRow3D {
                             (quote!(hit_row), quote!(#selector))
@@ -3746,7 +4284,7 @@ impl<'a> Generator<'a> {
                         HitRowCamera3D | HitSubsetCamera3D,
                         [model, camera, viewport, pointer, selector, layers @ ..],
                     ) => {
-                        let objects = query_model(model)?;
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         let (function, selector) = if kind == HitRowCamera3D {
                             (quote!(hit_row_camera), quote!(#selector))
@@ -3760,7 +4298,7 @@ impl<'a> Generator<'a> {
                         RayHitRow3D | RayHitSubset3D,
                         [model, origin, direction, distance, selector, layers @ ..],
                     ) => {
-                        let objects = query_model(model)?;
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         let (function, selector) = if kind == RayHitRow3D {
                             (quote!(ray_hit_row), quote!(#selector))
@@ -3783,41 +4321,20 @@ impl<'a> Generator<'a> {
                             layers @ ..,
                         ],
                     ) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::pick_in_rect(&#objects, #yaw, #pitch,
                             #distance, #viewport, [#start, #end], #layers))
                     }
                     (PickInRectCamera3D, [model, camera, viewport, start, end, layers @ ..]) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::pick_in_rect_camera(&#objects, &#camera,
                             #viewport, [#start, #end], #layers))
                     }
                     (ClosestPoint3D, [model, origin, radius, layers @ ..])
                     | (ClosestPointOn3D, [model, _, origin, radius, layers @ ..]) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         if kind == ClosestPointOn3D {
                             let object_id = &args[1];
@@ -3827,38 +4344,17 @@ impl<'a> Generator<'a> {
                         }
                     }
                     (SphereCast3D, [model, origin, direction, distance, radius, layers @ ..]) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::sphere_cast(&#objects, #origin, #direction, #distance, #radius, #layers))
                     }
                     (SphereOverlap3D, [model, center, radius, layers @ ..]) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::sphere_overlap(&#objects, #center, #radius, #layers))
                     }
                     (SphereSlide3D, [model, origin, displacement, radius, layers @ ..]) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::sphere_slide(&#objects, #origin, #displacement, #radius, #layers))
                     }
@@ -3875,17 +4371,77 @@ impl<'a> Generator<'a> {
                             layers @ ..,
                         ],
                     ) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::sphere_walk(
                             &#objects, #origin, #displacement,
+                            ::xrack_runtime::scene3d::WalkOptions {
+                                radius: #radius, step_height: #step, snap_distance: #snap, max_slope: #slope,
+                            }, #layers,
+                        ))
+                    }
+                    (
+                        CapsuleCast3D,
+                        [
+                            model,
+                            origin,
+                            direction,
+                            distance,
+                            radius,
+                            height,
+                            layers @ ..,
+                        ],
+                    ) => {
+                        let objects = query_model(model, false)?;
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::capsule_cast(&#objects, #origin, #direction, #distance, #radius, #height, #layers))
+                    }
+                    (CapsuleOverlap3D, [model, center, radius, height, layers @ ..]) => {
+                        let objects = query_model(model, false)?;
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::capsule_overlap(&#objects, #center, #radius, #height, #layers))
+                    }
+                    (CapsuleTriggerOverlap3D, [model, center, radius, height, layers @ ..]) => {
+                        let objects = query_model(model, false)?;
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::capsule_trigger_overlap(&#objects, #center, #radius, #height, #layers))
+                    }
+                    (CapsuleTriggerCrossings3D, [model, from, to, radius, height, layers @ ..]) => {
+                        let objects = query_model(model, false)?;
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::capsule_trigger_crossings(&#objects, #from, #to, #radius, #height, #layers))
+                    }
+                    (
+                        CapsuleSlide3D,
+                        [model, origin, displacement, radius, height, layers @ ..],
+                    ) => {
+                        let objects = query_model(model, false)?;
+                        let layers = optional_layers(layers);
+                        quote!(::xrack_runtime::scene3d::capsule_slide(&#objects, #origin, #displacement, #radius, #height, #layers))
+                    }
+                    (
+                        kind @ (CapsuleWalk3D | CapsuleWalkResult3D | CapsuleWalkWithContacts3D),
+                        [
+                            model,
+                            origin,
+                            displacement,
+                            radius,
+                            height,
+                            step,
+                            snap,
+                            slope,
+                            layers @ ..,
+                        ],
+                    ) => {
+                        let objects = query_model(model, false)?;
+                        let layers = optional_layers(layers);
+                        let walk = match kind {
+                            CapsuleWalk3D => quote!(capsule_walk),
+                            CapsuleWalkWithContacts3D => quote!(capsule_walk_with_contacts),
+                            _ => quote!(capsule_walk_result),
+                        };
+                        quote!(::xrack_runtime::scene3d::#walk(
+                            &#objects, #origin, #displacement, #height,
                             ::xrack_runtime::scene3d::WalkOptions {
                                 radius: #radius, step_height: #step, snap_distance: #snap, max_slope: #slope,
                             }, #layers,
@@ -3898,45 +4454,39 @@ impl<'a> Generator<'a> {
                         quote!(::xrack_runtime::scene3d::unproject(#yaw, #pitch, #distance, #viewport, #point, #depth, #fallback))
                     }
                     (ProjectCamera3D, [model, camera, viewport, point]) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            true,
-                        );
+                        let objects = query_model(model, true)?;
                         quote!(::xrack_runtime::scene3d::project_camera(&#objects, &(#camera), #viewport, #point))
                     }
                     (UnprojectCamera3D, [model, camera, viewport, point, depth, fallback]) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            true,
-                        );
+                        let objects = query_model(model, true)?;
                         quote!(::xrack_runtime::scene3d::unproject_camera(&#objects, &(#camera), #viewport, #point, #depth, #fallback))
                     }
                     (
                         kind @ (MapPosition3D | MapDirection3D),
                         [model, from, to, value, fallback],
                     ) => {
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            true,
-                        );
+                        let objects = query_model(model, true)?;
                         let method = if kind == MapPosition3D {
                             quote!(map_position)
                         } else {
                             quote!(map_direction)
                         };
                         quote!((#objects).#method(&(#from), &(#to), #value).unwrap_or(#fallback))
+                    }
+                    (SceneInstance3D, [model, row, node, instance]) => {
+                        let objects = query_model(model, false)?;
+                        quote!((#objects).instance([#row, #node, #instance]))
+                    }
+                    (SceneInstanceCamera3D, [model, camera, viewport, row, node, instance]) => {
+                        let objects = query_model(model, false)?;
+                        quote!((#objects).instance_camera(&(#camera), #viewport, [#row, #node, #instance]))
+                    }
+                    (
+                        SceneInstanceOrbit3D,
+                        [model, yaw, pitch, distance, viewport, row, node, instance],
+                    ) => {
+                        let objects = query_model(model, false)?;
+                        quote!((#objects).instance_orbit([#yaw, #pitch, #distance], #viewport, [#row, #node, #instance]))
                     }
                     (Vector, [x, y]) => quote!(::xrack_runtime::Vector2D::new(#x, #y)),
                     (Identity, []) => quote!(::xrack_runtime::Transform2D::IDENTITY),
@@ -3960,14 +4510,7 @@ impl<'a> Generator<'a> {
                             HitCamera3D => quote!(hit_camera),
                             _ => quote!(pick_camera),
                         };
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::#query(&#objects, &(#camera), #viewport, #pointer, #layers))
                     }
@@ -3980,14 +4523,7 @@ impl<'a> Generator<'a> {
                             Hit3D => quote!(hit_model),
                             _ => quote!(pick_model),
                         };
-                        let model_type = value_type(self.operand(op, 0)?)?;
-                        let objects = project_scene_objects(
-                            model,
-                            &model_type,
-                            self.scene_record_fields(&model_type),
-                            self.records,
-                            false,
-                        );
+                        let objects = query_model(model, false)?;
                         let layers = optional_layers(layers);
                         quote!(::xrack_runtime::scene3d::#query(&#objects, #yaw, #pitch, #distance, #viewport, #pointer, #layers))
                     }
@@ -9520,14 +10056,18 @@ impl<'a> Generator<'a> {
             let value = match (element.attr("kind"), key) {
                 (Ok("SceneView3D"), "model") => {
                     let ty = operand_type(binding).ok_or("missing 3D model type")?;
-                    let objects = project_scene_objects(
-                        &value,
-                        &ty,
-                        self.scene_record_fields(&ty),
-                        self.records,
-                        false,
-                    );
-                    quote!(::xrack_runtime::Value::SceneObjects(#objects))
+                    if ty == Type::SceneModel3D {
+                        quote!(::xrack_runtime::Value::SceneObjects(#value))
+                    } else {
+                        let objects = project_scene_objects(
+                            &value,
+                            &ty,
+                            self.scene_record_fields(&ty),
+                            self.records,
+                            false,
+                        );
+                        quote!(::xrack_runtime::Value::SceneObjects(#objects))
+                    }
                 }
                 (Ok("SceneView3D"), "environment") => {
                     quote!(::xrack_runtime::Value::SceneEnvironment(__xr_environment(&(#value))))
@@ -9593,6 +10133,16 @@ impl<'a> Generator<'a> {
                     out.extend(quote!(#name.set_precompiled_path(&#path);));
                 }
             }
+        }
+        if element.attr("kind") == Ok("SceneView3D")
+            && children(element, "xr.bind")
+                .any(|binding| binding.attribute("name") == Some("physics-world"))
+        {
+            let follow_authored_model = children(element, "xr.bind")
+                .find(|binding| binding.attribute("name") == Some("model"))
+                .and_then(operand_type)
+                .is_some_and(|ty| matches!(ty, Type::RecordList(_)));
+            out.extend(quote!(#name.prepare_scene_physics(#follow_authored_model);));
         }
         if let Some(link) = children(element, "xr.row_link").next() {
             let property = link.attr("name")?;
@@ -9669,7 +10219,9 @@ impl<'a> Generator<'a> {
         let kind = element.attribute("kind");
         let source_scroll = self.source_scroll_targets.contains(key);
         let mut effects = TokenStream::new();
-        for timer in element_children(element).filter(|child| child.attr("kind") == Ok("Timer")) {
+        for timer in element_children(element)
+            .filter(|child| matches!(child.attr("kind"), Ok("Timer" | "FrameAnimation")))
+        {
             let register = timer_member(element_key(timer)?, "register");
             effects.extend(quote! { #name.timers.extend(self.#register()); });
         }
@@ -14130,15 +14682,40 @@ impl<'a> Generator<'a> {
             let running = self.control_value(timer, "running", Type::Bool)?;
             let set_running = self.set_control(timer, &quote!(__xr_running))?;
             let stop = self.set_control(timer, &quote!(false))?;
-            let interval = self.binding_value_or(timer, "interval", quote!(1000_i64))?;
-            let repeat = self.binding_value_or(timer, "repeat", quote!(false))?;
-            let immediate = self.binding_value_or(timer, "triggered-on-start", quote!(false))?;
-            let triggered = self.typed_event_values(timer, "triggered", &[])?;
+            let frame_clock = timer.attr("kind") == Ok("FrameAnimation");
+            let (config, triggered) = if frame_clock {
+                let trigger = self.typed_event_values(
+                    timer,
+                    "triggered",
+                    &[
+                        quote!(__xr_frame.frame_time),
+                        quote!(__xr_frame.elapsed_time),
+                        quote!(__xr_frame.current_frame),
+                    ],
+                )?;
+                (
+                    quote!((#running).then(::xrack_runtime::TimerConfig::frame)),
+                    quote!(if let Some(__xr_frame) = tick.frame { #trigger }),
+                )
+            } else {
+                let interval = self.binding_value_or(timer, "interval", quote!(1000_i64))?;
+                let repeat = self.binding_value_or(timer, "repeat", quote!(false))?;
+                let immediate =
+                    self.binding_value_or(timer, "triggered-on-start", quote!(false))?;
+                (
+                    quote!(::xrack_runtime::TimerConfig::read(|| #running, || #interval, || #repeat, || #immediate)),
+                    self.typed_event_values(timer, "triggered", &[])?,
+                )
+            };
             fields.extend(quote!(#slot: ::xrack_runtime::TimerSlot,));
-            defaults.extend(quote!(#slot: ::core::default::Default::default(),));
+            if frame_clock {
+                defaults.extend(quote!(#slot: ::xrack_runtime::TimerSlot::frame(),));
+            } else {
+                defaults.extend(quote!(#slot: ::core::default::Default::default(),));
+            }
             methods.extend(quote! {
                 fn #configure(&self) -> ::core::option::Option<::xrack_runtime::TimerConfig> {
-                    ::xrack_runtime::TimerConfig::read(|| #running, || #interval, || #repeat, || #immediate)
+                    #config
                 }
                 fn #register(&self) -> ::core::option::Option<::xrack_runtime::TimerRegistration> {
                     let config = self.#configure()?;
@@ -16044,7 +16621,25 @@ fn uses_scene_meshes(op: OperationRef<'_>) -> bool {
             && op
                 .attribute("value")
                 .and_then(xrack_syntax::builtins::GeometryFunction::parse)
-                .is_some_and(xrack_syntax::builtins::GeometryFunction::uses_scene_model)
+                .is_some_and(|kind| {
+                    kind.uses_scene_model()
+                        || matches!(
+                            kind,
+                            GeometryFunction::PrepareInstanceTable3D
+                                | GeometryFunction::QuaternionTrack
+                        )
+                })
+        || op.name() == "xr.physics_function"
+            && op
+                .attribute("value")
+                .and_then(PhysicsFunction::parse)
+                .is_some_and(|kind| {
+                    kind.uses_shape_list()
+                        || matches!(
+                            kind,
+                            PhysicsFunction::SyncBodies | PhysicsFunction::SyncScene
+                        )
+                })
         || op.children().any(uses_scene_meshes)
 }
 
@@ -16415,12 +17010,21 @@ fn embed_mesh_geometry(
                 MeshAlphaMode::Blend => {
                     quote!(::xrack_runtime::scene3d::MeshAlphaMode::Blend)
                 }
+                MeshAlphaMode::InstanceBlend { cutoff, builtin } => {
+                    let cutoff = cutoff.map_or_else(
+                        || quote!(::core::option::Option::None),
+                        |cutoff| quote!(::core::option::Option::Some(#cutoff)),
+                    );
+                    quote!(::xrack_runtime::scene3d::MeshAlphaMode::InstanceBlend {
+                        cutoff: #cutoff, builtin: #builtin,
+                    })
+                }
             };
             let base_texture =
                 embed_optional_mesh_texture(&material.base_texture, images, declarations)?;
             let pbr = if let Some(pbr) = &material.pbr {
                 let [mr, emissive_texture, occlusion] = [
-                    &pbr.metallic_roughness_texture,
+                    &pbr.surface_texture,
                     &pbr.emissive_texture,
                     &pbr.occlusion_texture,
                 ]
@@ -16514,12 +17118,17 @@ fn embed_mesh_geometry(
                 } else {
                     quote!(::core::option::Option::None)
                 };
+                let workflow = match pbr.workflow {
+                    xrack_runtime::scene3d::MeshWorkflow::MetallicRoughness => quote!(MetallicRoughness),
+                    xrack_runtime::scene3d::MeshWorkflow::SpecularGlossiness => quote!(SpecularGlossiness),
+                };
                 quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshPbr {
+                    workflow: ::xrack_runtime::scene3d::MeshWorkflow::#workflow,
                     fresnel: #fresnel,
                     anisotropy: #anisotropy,
                     metallic: #metallic, roughness: #roughness, emissive: [#r, #g, #b],
                     occlusion_strength: #occlusion_strength,
-                    metallic_roughness_texture: #mr,
+                    surface_texture: #mr,
                     emissive_texture: #emissive_texture,
                     occlusion_texture: #occlusion,
                     normal_map: #normal_map,
@@ -16598,6 +17207,19 @@ fn embed_mesh_geometry(
         let bytes = Literal::byte_string(&bytes);
         let min_size = mesh.lightmap_min_size();
         quote!((#prepared).and_then(|mesh| mesh.with_packed_lightmap_uv(#bytes, #min_size)))
+    };
+    let prepared = if let Some(heightfield) = mesh.heightfield() {
+        let [width, height] = heightfield.dimensions();
+        let samples = heightfield
+            .samples()
+            .iter()
+            .copied()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let samples = Literal::byte_string(&samples);
+        quote!((#prepared).and_then(|mesh| mesh.with_packed_heightfield([#width, #height], #samples)))
+    } else {
+        prepared
     };
     let prepared = if let Some(weights) = mesh.influences() {
         let packed: Vec<u8> = weights
@@ -16707,6 +17329,8 @@ fn embed_mesh_light(mount: &xrack_runtime::scene3d::MeshLight) -> TokenStream {
         node: #node,
         light: ::xrack_runtime::scene3d::SceneLight {
             source: #source, radiance: [#r, #g, #b], casts_shadow: #casts_shadow, layers: #layers,
+            shadow: ::core::default::Default::default(),
+            bake_mode: ::core::default::Default::default(),
         },
     })
 }
@@ -16744,7 +17368,13 @@ fn embed_animation_node(node: &xrack_runtime::scene3d::MeshAnimationNode) -> Tok
         |instances| {
             let packed: Vec<_> = instances.packed_words().flat_map(f32::to_le_bytes).collect();
             let packed = Literal::byte_string(&packed);
-            quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshInstances::from_packed(#packed)?))
+            let serialize = |values: &[[f32; 4]]| {
+                let bytes: Vec<_> = values.iter().flatten().copied().flat_map(f32::to_le_bytes).collect();
+                Literal::byte_string(&bytes)
+            };
+            let colors = serialize(instances.colors());
+            let data = serialize(instances.data());
+            quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshInstances::from_packed(#packed, #colors, #data)?))
         },
     );
     quote!(::xrack_runtime::scene3d::MeshAnimationNode {
@@ -16954,10 +17584,37 @@ fn generate_with_resources(
     let with_locale = translations.is_some() || module.operations().any(uses_locale);
     let mut out = quote! {
         const _: () = assert!(
-            ::xrack_runtime::CODEGEN_ABI_VERSION == 37,
+            ::xrack_runtime::CODEGEN_ABI_VERSION == 68,
             "xrackc and xrack-runtime have incompatible code generation interfaces"
         );
     };
+    if !scene_assets.instance_tables.is_empty() {
+        let mut declarations = TokenStream::new();
+        let mut embedded = BTreeMap::<Vec<u8>, Ident>::new();
+        let tables: Vec<_> = scene_assets.instance_tables.iter().enumerate().map(|(index, (key, table))| {
+            let bytes: Vec<_> = table.packed_words().flat_map(f32::to_le_bytes).collect();
+            let name = match embedded.entry(bytes) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let name = format_ident!("__XR_INSTANCE_TABLE_{index}");
+                    let bytes = Literal::byte_string(entry.key());
+                    declarations.extend(quote! {
+                        static #name: ::std::sync::LazyLock<::xrack_runtime::InstanceTable3D> =
+                            ::std::sync::LazyLock::new(|| ::xrack_runtime::InstanceTable3D::from_packed(#bytes).unwrap_or_default());
+                    });
+                    entry.insert(name)
+                }
+            };
+            let name = &*name;
+            quote!(#key => (*#name).clone(),)
+        }).collect();
+        out.extend(declarations);
+        out.extend(quote! {
+            fn __xr_instance_table(key: &::core::primitive::str) -> ::xrack_runtime::InstanceTable3D {
+                match key { #(#tables)* _ => ::xrack_runtime::InstanceTable3D::default() }
+            }
+        });
+    }
     let uses_scene = module.operations().any(uses_scene_meshes);
     if !scene_assets.meshes.is_empty() || uses_scene {
         out.extend(embed_scene_meshes(&scene_assets.meshes)?);

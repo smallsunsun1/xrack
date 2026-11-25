@@ -1132,7 +1132,7 @@ function registerPreview(context) {
             uri.toString() === document.uri.toString()
             || (dependencies ? dependencies.has(canonical(uri.fsPath)) : path.extname(uri.fsPath) === '.xr')
         );
-        const watcher = vscode.workspace.createFileSystemWatcher('**/*.{xr,png,jpg,jpeg,svg,gif,ttf,otf,ttc,otc,toml,ftl,gltf,glb,bin,hdr,wgsl}');
+        const watcher = vscode.workspace.createFileSystemWatcher('**/*.{xr,png,jpg,jpeg,svg,gif,ttf,otf,ttc,otc,toml,ftl,gltf,glb,bin,xml,hdr,wgsl}');
         const onDiskChange = uri => {
             if (affected(uri)) queue.refresh();
         };

@@ -8,6 +8,10 @@ pub const INTERFACE: &str = r#"
 struct XrVertexInput {
     position: vec3<f32>,
     parameters: vec3<f32>,
+    instance_data: vec4<f32>,
+    instance_index: u32,
+    instance_color: vec4<f32>,
+    instance_transform: mat4x4<f32>,
 }
 
 struct XrMaterialInput {
@@ -18,6 +22,9 @@ struct XrMaterialInput {
     vertex_color: vec4<f32>,
     parameters: vec3<f32>,
     front_facing: bool,
+    instance_data: vec4<f32>,
+    instance_index: u32,
+    instance_color: vec4<f32>,
 }
 
 struct XrMaterialSurface {
@@ -79,6 +86,7 @@ pub struct MaterialHooks {
     pub light: bool,
     pub ambient: bool,
     pub capture_position: bool,
+    pub data: bool,
 }
 
 impl MaterialHooks {
@@ -96,11 +104,16 @@ impl MaterialHooks {
             light: mask & 4 != 0,
             ambient: mask & 8 != 0,
             capture_position: mask & 16 != 0,
+            data: mask & 32 != 0,
         }
     }
 
     pub fn fragment(self) -> bool {
-        self.surface || self.light || self.ambient
+        self.uses_fragment(true)
+    }
+
+    pub fn uses_fragment(self, data: bool) -> bool {
+        self.surface || self.light || self.ambient || (data && self.data)
     }
 
     pub fn prepare(self, source: &str) -> String {
@@ -108,7 +121,8 @@ impl MaterialHooks {
             | (u8::from(self.surface) << 1)
             | (u8::from(self.light) << 2)
             | (u8::from(self.ambient) << 3)
-            | (u8::from(self.capture_position) << 4);
+            | (u8::from(self.capture_position) << 4)
+            | (u8::from(self.data) << 5);
         let mut prepared = format!(
             "{}{mask:x}\n{source}\nconst XRACK_VERTEX_PROGRAM: bool = {};\nconst XRACK_DIRECT_LIGHT_PROGRAM: bool = {};\nconst XRACK_AMBIENT_PROGRAM: bool = {};\n",
             Self::HEADER,
@@ -121,6 +135,7 @@ impl MaterialHooks {
             (self.surface, IDENTITY_SURFACE),
             (self.light, IDENTITY_LIGHT),
             (self.ambient, IDENTITY_AMBIENT),
+            (self.data, IDENTITY_DATA),
         ] {
             if !present {
                 prepared.push_str(identity);
@@ -154,12 +169,20 @@ fn scene_vertex(input: XrVertexInput) -> vec3<f32> {
 }
 "#;
 
+const IDENTITY_DATA: &str = r#"
+fn scene_material_data(input: XrMaterialInput, surface: XrMaterialSurface) -> vec4<f32> {
+    return vec4(0.0);
+}
+"#;
+
 pub const VERTEX_APPLICATION: &str = r#"
-fn xr_displaced_vertex(position: vec3<f32>, parameters: vec4<f32>) -> vec3<f32> {
+fn xr_displaced_vertex(position: vec3<f32>, parameters: vec4<f32>, data: vec4<f32>,
+                       index: u32, tint: vec4<f32>, rows: mat3x4<f32>) -> vec3<f32> {
     if !XRACK_VERTEX_PROGRAM || parameters.w <= 0.0 {
         return position;
     }
-    let offset: vec3<f32> = scene_vertex(XrVertexInput(position, parameters.xyz));
+    let transform = transpose(mat4x4(rows[0], rows[1], rows[2], vec4(0.0, 0.0, 0.0, 1.0)));
+    let offset: vec3<f32> = scene_vertex(XrVertexInput(position, parameters.xyz, data, index, tint, transform));
     let bound = vec3(parameters.w);
     // Non-finite displacements must not enter clip position.
     let finite_offset = select(vec3(0.0), offset, abs(offset) <= vec3(3.402823e38));
@@ -170,22 +193,24 @@ fn xr_displaced_vertex(position: vec3<f32>, parameters: vec4<f32>) -> vec3<f32> 
 pub const VALIDATION_VERTEX_ENTRY: &str = r#"
 @vertex fn xr_vertex_check(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     let position = vec3(f32(index), 0.0, 0.0);
-    return vec4(xr_displaced_vertex(position, vec4(1.0)), 1.0);
+    let rows = mat3x4<f32>(vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0));
+    return vec4(xr_displaced_vertex(position, vec4(1.0), vec4(0.0), index, vec4(1.0), rows), 1.0);
 }
 "#;
 
 pub const VALIDATION_ENTRY: &str = r#"
 @fragment fn xr_material_check(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
     let input = XrMaterialInput(at.xy, at.xy, at.xyz, vec3(0.0, 0.0, 1.0),
-        vec4(1.0), vec3(0.0), true);
+        vec4(1.0), vec3(0.0), true, vec4(0.0), 0u, vec4(1.0));
     let surface = XrMaterialSurface(vec3(1.0), vec3(0.0), vec3(0.0, 0.0, 1.0), 0.5, 0.0);
     let result: XrMaterialSurface = scene_material(input, surface);
+    let data: vec4<f32> = scene_material_data(input, result);
     let shading = XrLightingInput(input, result, vec3(0.04));
     let light = XrLightInput(shading, XR_DIRECTIONAL_LIGHT, 0u, vec3(0.0, 0.0, 1.0),
         vec3(1.0), 1.0, 1.0, vec3(0.04));
     let response: XrLightResponse = scene_light(light, XrLightResponse(vec3(1.0), vec3(0.0)));
     let ambient: vec3<f32> = scene_ambient(XrAmbientInput(shading, vec3(0.5), 1.0), vec3(0.25));
     return vec4(result.base_color + result.emissive + result.normal + response.diffuse
-        + response.specular + ambient, result.roughness + result.metallic);
+        + response.specular + ambient, result.roughness + result.metallic) + data;
 }
 "#;

@@ -19,20 +19,13 @@ struct Hsv {
 
 impl Hsv {
     fn from_color(color: Color, previous: Option<Self>) -> Self {
-        let [red, green, blue, _] = color.0.to_be_bytes().map(|value| f64::from(value) / 255.0);
+        let [red, green, blue, _] = color.normalized_rgba();
         let value = red.max(green).max(blue);
         let chroma = value - red.min(green).min(blue);
         let hue = if chroma == 0.0 {
             previous.map_or(0.0, |hsv| hsv.hue)
         } else {
-            let sector = if value == red {
-                (green - blue) / chroma
-            } else if value == green {
-                (blue - red) / chroma + 2.0
-            } else {
-                (red - green) / chroma + 4.0
-            };
-            sector.rem_euclid(6.0) * 60.0
+            Color::hue_sector([red, green, blue], value, chroma) * 60.0
         };
         let saturation = if value > 0.0 {
             chroma / value
@@ -49,16 +42,8 @@ impl Hsv {
     fn to_color(self, alpha: u8) -> Color {
         let sector = self.hue.rem_euclid(360.0) / 60.0;
         let chroma = self.saturation * self.value;
-        let second = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
-        let [red, green, blue] = match sector as u8 {
-            0 => [chroma, second, 0.0],
-            1 => [second, chroma, 0.0],
-            2 => [0.0, chroma, second],
-            3 => [0.0, second, chroma],
-            4 => [second, 0.0, chroma],
-            _ => [chroma, 0.0, second],
-        }
-        .map(|channel| ((channel + self.value - chroma) * 255.0).round() as u8);
+        let [red, green, blue] = Color::chromatic_rgb(sector, chroma)
+            .map(|channel| ((channel + self.value - chroma) * 255.0).round() as u8);
         Color(u32::from_be_bytes([red, green, blue, alpha]))
     }
 }

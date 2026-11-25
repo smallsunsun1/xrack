@@ -63,8 +63,14 @@ fn moving_small_subtrees_share_the_local_layout_node_budget() {
         if narrow_first {
             length(&mut scene.children[0], "width", 10.0);
         }
+        let caption = format!("Status for frame {frame}");
+        for tile in &mut scene.children {
+            tile.children[2]
+                .properties
+                .insert("text", caption.clone().into());
+        }
         let before = cache.stats().subtree_reuses;
-        let (_, cached) = prepare_scene_with_row_cache(
+        let (prepared, cached) = prepare_scene_with_row_cache(
             &View,
             window.clone(),
             viewport,
@@ -74,6 +80,10 @@ fn moving_small_subtrees_share_the_local_layout_node_budget() {
         );
         let (_, fresh) =
             prepare_scene_with_input(&View, window.clone(), viewport, &mut text, &input);
+        assert_eq!(
+            prepared.children[0].children[2].text("text"),
+            Some(caption.as_str())
+        );
         assert_eq!(cached, fresh, "frame {frame}");
         assert_eq!(
             cache.stats().subtree_reuses - before,

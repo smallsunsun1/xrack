@@ -415,6 +415,21 @@ pub(crate) fn model_page(
             let (count, items) = model.inspect_rows(query.offset, query.limit, describe_hit);
             ("Hit3DList", count, items, Some(model.edit_stamp()))
         }
+        Value::PhysicsContact3DList(model) => {
+            let (count, items) =
+                model.inspect_rows(query.offset, query.limit, describe_physics_contact);
+            (
+                "PhysicsContact3DList",
+                count,
+                items,
+                Some(model.edit_stamp()),
+            )
+        }
+        Value::PhysicsHit3DList(model) => {
+            let (count, items) =
+                model.inspect_rows(query.offset, query.limit, describe_physics_hit);
+            ("PhysicsHit3DList", count, items, Some(model.edit_stamp()))
+        }
         Value::RecordList(list) => {
             let model = list.model();
             let (count, items) = model.inspect_rows(query.offset, query.limit, |record| {
@@ -515,10 +530,29 @@ fn public_properties(instance: &Instance, limit: usize) -> Vec<Json> {
         .collect()
 }
 
+fn describe_physics_contact(contact: &xrack_runtime::PhysicsContact3D) -> Json {
+    json!({
+        "body": contact.body,
+        "position": [contact.position.x, contact.position.y, contact.position.z],
+        "normal": [contact.normal.x, contact.normal.y, contact.normal.z],
+        "impulse": [contact.impulse.x, contact.impulse.y, contact.impulse.z],
+        "normal-impulse": contact.normal_impulse,
+    })
+}
+
+fn describe_physics_hit(hit: &xrack_runtime::PhysicsHit3D) -> Json {
+    json!({
+        "body": hit.body, "distance": hit.distance, "sensor": hit.sensor,
+        "position": [hit.position.x, hit.position.y, hit.position.z],
+        "normal": [hit.normal.x, hit.normal.y, hit.normal.z],
+    })
+}
+
 fn describe_hit(value: &xrack_runtime::Hit3D) -> Json {
     json!({
         "valid": value.valid, "object-id": shortened(&value.object_id), "row-index": value.row_index, "distance": value.distance,
         "mesh-node-index": value.mesh_node_index, "instance-index": value.instance_index,
+        "entering": value.entering,
         "position": {"x": value.position.x, "y": value.position.y, "z": value.position.z},
         "normal": {"x": value.normal.x, "y": value.normal.y, "z": value.normal.z},
         "local-position": {"x": value.local_position.x, "y": value.local_position.y, "z": value.local_position.z},
@@ -542,8 +576,59 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
             "Vector3D",
             json!({"x": value.x, "y": value.y, "z": value.z}),
         ),
+        Value::Quaternion3D(value) => (
+            "Quaternion3D",
+            json!({"x": value.x(), "y": value.y(), "z": value.z(), "w": value.w()}),
+        ),
         Value::Hit3D(value) => ("Hit3D", describe_hit(value)),
         Value::Point3D(value) => ("Point3D", json!({"x": value.x, "y": value.y, "z": value.z})),
+        Value::SceneObjects(model) => ("SceneModel3D", json!({ "renderables": model.len() })),
+        Value::PhysicsWorld3D(_) => ("PhysicsWorld3D", json!("simulation handle")),
+        Value::WalkResult3D(value) => {
+            let limit = if depth > 0 { MAX_ROWS } else { 0 };
+            let (count, items) = value.crossings.inspect_rows(0, limit, describe_hit);
+            let (contact_count, contacts) = value
+                .collision_contacts
+                .as_ref()
+                .map_or_else(Default::default, |model| {
+                    model.inspect_rows(0, limit, describe_hit)
+                });
+            (
+                "WalkResult3D",
+                json!({
+                    "position": {"x": value.position.x, "y": value.position.y, "z": value.position.z},
+                    "crossings": {"count": count, "items": items},
+                    "contacts": {"count": contact_count, "items": contacts},
+                    "support": describe_hit(&value.support),
+                    "grounded": value.grounded,
+                    "hit-wall": value.hit_wall,
+                    "hit-ceiling": value.hit_ceiling,
+                }),
+            )
+        }
+        Value::RotationTrack3D(track) => (
+            "RotationTrack3D",
+            json!({"valid": track.valid(), "count": track.count(), "duration": track.duration()}),
+        ),
+        Value::InstanceTable3D(value) => (
+            "InstanceTable3D",
+            json!({"loaded": value.is_loaded(), "count": value.len()}),
+        ),
+        Value::Instance3D(value) => (
+            "Instance3D",
+            json!({
+                "valid": value.valid, "object-id": value.object_id,
+                "row-index": value.row_index, "mesh-node-index": value.mesh_node_index,
+                "instance-index": value.instance_index,
+                "color": format!("#{:08x}", value.color.0),
+                "origin": {"x": value.origin.x, "y": value.origin.y, "z": value.origin.z},
+                "axis-x": {"x": value.axis_x.x, "y": value.axis_x.y, "z": value.axis_x.z},
+                "axis-y": {"x": value.axis_y.x, "y": value.axis_y.y, "z": value.axis_y.z},
+                "axis-z": {"x": value.axis_z.x, "y": value.axis_z.y, "z": value.axis_z.z},
+                "data-x": value.data_x, "data-y": value.data_y,
+                "data-z": value.data_z, "data-w": value.data_w,
+            }),
+        ),
         Value::ProjectedPoint3D(value) => (
             "ProjectedPoint3D",
             json!({
@@ -559,6 +644,18 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
         Value::Hit3DList(model) if depth > 0 => {
             let (count, items) = model.inspect_rows(0, MAX_ROWS, describe_hit);
             set_items(property, "Hit3DList", count, items);
+            return;
+        }
+        Value::PhysicsContact3D(contact) => ("PhysicsContact3D", describe_physics_contact(contact)),
+        Value::PhysicsHit3D(contact) => ("PhysicsHit3D", describe_physics_hit(contact)),
+        Value::PhysicsContact3DList(model) if depth > 0 => {
+            let (count, items) = model.inspect_rows(0, MAX_ROWS, describe_physics_contact);
+            set_items(property, "PhysicsContact3DList", count, items);
+            return;
+        }
+        Value::PhysicsHit3DList(model) if depth > 0 => {
+            let (count, items) = model.inspect_rows(0, MAX_ROWS, describe_physics_hit);
+            set_items(property, "PhysicsHit3DList", count, items);
             return;
         }
         Value::IntList(items) if depth > 0 => {
@@ -619,6 +716,13 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
         }
         Value::StringList(items) => ("StringList", json!(format!("{} rows", items.len()))),
         Value::Hit3DList(rows) => ("Hit3DList", json!(format!("{} rows", rows.len()))),
+        Value::PhysicsContact3DList(rows) => (
+            "PhysicsContact3DList",
+            json!(format!("{} rows", rows.len())),
+        ),
+        Value::PhysicsHit3DList(rows) => {
+            ("PhysicsHit3DList", json!(format!("{} rows", rows.len())))
+        }
         Value::IntList(items) => ("IntList", json!(format!("{} rows", items.len()))),
         Value::DateList(items) => ("DateList", json!(format!("{} rows", items.len()))),
         Value::DateModel(model) => (

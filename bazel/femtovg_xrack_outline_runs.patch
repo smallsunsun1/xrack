@@ -1,0 +1,616 @@
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2424,29 +2424,37 @@
+             return Err(ErrorKind::NoFontFound);
+         };
+ 
+-        let font_face = font.face_ref_with_normalized_coords(normalized_coords);
+-
+-        // TODO: create on demand
+-
++        let parsed_face = std::cell::OnceCell::new();
++        let font_face = || parsed_face.get_or_init(|| font.face_ref_with_normalized_coords(normalized_coords));
++
++        let shadow_enabled = self.shadow_enabled();
++        let mut inline = Some(glyphs.into_iter());
+         let mut color_glyphs = Vec::new();
+-
+-        let glyphs_it = glyphs.into_iter();
+-        let non_color_glyphs = glyphs_it
+-            .filter(|glyph| {
+-                if font.is_bitmap_glyph(&font_face, glyph.glyph_id, normalized_coords) {
+-                    color_glyphs.push(glyph.clone());
+-
+-                    false
+-                } else {
+-                    true
+-                }
+-            })
+-            .collect::<Vec<_>>();
++        // Outline-only runs can go straight to the atlas. Its cache can
++        // supply every quad without opening the face or inspecting a glyph.
++        // Bitmap ordering and shadow bounds still need the partition.
++        let non_color_glyphs = if font.may_have_bitmap_glyphs() || shadow_enabled {
++            inline
++                .take()
++                .into_iter()
++                .flatten()
++                .filter(|glyph| {
++                    if font.is_bitmap_glyph(font_face(), glyph.glyph_id, normalized_coords) {
++                        color_glyphs.push(glyph.clone());
++                        false
++                    } else {
++                        true
++                    }
++                })
++                .collect::<Vec<_>>()
++        } else {
++            Vec::new()
++        };
+ 
+         // Cast one shadow for the whole run, as draw_text() does. Its bounds are the union of the
+         // glyphs' boxes in user space, for atlas and outline glyphs alike. render_shadow() turns
+         // shadows off while it draws the run again into the shadow's coverage image.
+-        if self.shadow_enabled() {
++        if shadow_enabled {
+             let scale = font.scale(paint.text.font_size);
+             // The same slack for antialiased edges as draw_text(), and half the stroke width.
+             let mut margin = paint.text.font_size * 0.2;
+@@ -2459,7 +2467,7 @@
+                     .iter()
+                     .chain(&color_glyphs)
+                     .filter_map(|glyph| {
+-                        let glyph_data = font.glyph(&font_face, glyph.glyph_id, normalized_coords)?;
++                        let glyph_data = font.glyph(font_face(), glyph.glyph_id, normalized_coords)?;
+                         let metrics = &glyph_data.metrics;
+                         let x0 = glyph.x + metrics.bearing_x * scale - margin;
+                         let y0 = glyph.y - metrics.bearing_y * scale - margin;
+@@ -2483,11 +2491,13 @@
+         // When baking scale into the rasterization, pre-multiply glyph positions
+         // by `effective_scale` so that under a translation-only canvas transform
+         // they still land at the original screen position.
+-        let scaled = |g: &PositionedGlyph| PositionedGlyph {
++        let scaled = |g: PositionedGlyph| PositionedGlyph {
+             x: g.x * effective_scale,
+             y: g.y * effective_scale,
+             glyph_id: g.glyph_id,
+         };
++
++        let non_color_glyphs = inline.into_iter().flatten().chain(non_color_glyphs);
+ 
+         let mut draw_commands = if need_direct_rendering {
+             // render_direct() draws each glyph with fill_path_internal() or stroke_path_internal(),
+@@ -2498,7 +2508,7 @@
+             let result = text::render_direct(
+                 self,
+                 font,
+-                non_color_glyphs.into_iter(),
++                non_color_glyphs,
+                 &paint.flavor,
+                 paint.shape_anti_alias,
+                 &stroke,
+@@ -2515,7 +2525,7 @@
+                 font_id,
+                 font,
+                 &font_face,
+-                non_color_glyphs.iter().map(scaled),
++                non_color_glyphs.map(scaled),
+                 effective_font_size,
+                 stroke.line_width,
+                 render_mode,
+@@ -2559,7 +2569,7 @@
+                         font_id,
+                         font,
+                         &font_face,
+-                        color_glyphs.iter().map(scaled).map(whole_pixel),
++                        color_glyphs.into_iter().map(scaled).map(whole_pixel),
+                         effective_font_size,
+                         stroke.line_width,
+                         render_mode,
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -752,12 +752,12 @@
+ 
+ impl GlyphAtlas {
+     #[allow(clippy::too_many_arguments)]
+-    pub(crate) fn render_atlas<T: Renderer>(
++    pub(crate) fn render_atlas<'a, T: Renderer>(
+         &self,
+         canvas: &mut Canvas<T>,
+         font_id: FontId,
+         font: &Font,
+-        font_face: &font::FontFaceRef<'_>,
++        font_face: impl Fn() -> &'a font::FontFaceRef<'a>,
+         mut glyphs: impl Iterator<Item = PositionedGlyph>,
+         font_size: f32,
+         line_width: f32,
+@@ -812,7 +812,7 @@
+                         line_width,
+                         mode,
+                         font,
+-                        font_face,
++                        font_face(),
+                         glyph.glyph_id,
+                         f32::from(subpixel_location) / 10.0,
+                         normalized_coords,
+diff --git a/src/text/font.rs b/src/text/font.rs
+--- a/src/text/font.rs
++++ b/src/text/font.rs
+@@ -1037,6 +1037,20 @@
+         Ref::filter_map(self.glyphs.borrow(), |glyphs| glyphs.get(&cache_key)).ok()
+     }
+ 
++    pub(crate) fn may_have_bitmap_glyphs(&self) -> bool {
++        #[cfg(feature = "textlayout")]
++        {
++            self.data.with_dependent(|_, parsed| {
++                let tables = parsed.default.tables();
++                tables.sbix.is_some() || tables.bdat.is_some() || tables.ebdt.is_some() || tables.cbdt.is_some()
++            })
++        }
++        #[cfg(not(feature = "textlayout"))]
++        {
++            cfg!(feature = "swash")
++        }
++    }
++
+     /// Returns true if the glyph has no path, so that the atlas draws it as an image (e.g., a PNG color emoji).
+     pub(crate) fn is_bitmap_glyph(&self, face: &FontFaceRef<'_>, codepoint: u16, normalized_coords: &[i16]) -> bool {
+         self.glyph(face, codepoint, normalized_coords)
+diff --git a/src/text/glyph_atlas_tests.rs b/src/text/glyph_atlas_tests.rs
+--- a/src/text/glyph_atlas_tests.rs
++++ b/src/text/glyph_atlas_tests.rs
+@@ -553,7 +553,7 @@
+                 &mut canvas,
+                 font_id,
+                 font,
+-                &font_face,
++                || &font_face,
+                 [glyph].into_iter(),
+                 FONT_SIZE,
+                 0.0,
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2058,6 +2058,39 @@
+         paint: &Paint,
+     ) -> Result<(), ErrorKind> {
+         self.draw_glyph_run(glyphs, paint, font_id, normalized_coords, RenderMode::Fill)
++    }
++
++    /// Replay already-rasterized outline glyph runs in their supplied order.
++    ///
++    /// Adjacent runs using the same atlas image share a draw. A cache miss
++    /// or unsupported run returns false before recording any drawing.
++    pub fn fill_cached_glyph_runs<'a>(
++        &mut self,
++        runs: impl IntoIterator<Item = (FontId, &'a [PositionedGlyph])>,
++        paint: &Paint,
++    ) -> bool {
++        let transform = self.state().transform;
++        let scale = transform.0[0];
++        let size = paint.text.font_size * scale;
++        if cfg!(feature = "swash")
++            || !matches!(scale, 1.0 | 2.0 | 4.0)
++            || transform.0 != [scale, 0.0, 0.0, scale, 0.0, 0.0]
++            || !(size > 0.0 && size <= 92.0)
++            || self.shadow_enabled()
++            || !matches!(paint.flavor, PaintFlavor::Color(_))
++        {
++            return false;
++        }
++
++        let commands = {
++            let context = self.text_context.borrow();
++            self.glyph_atlas.cached_outline_runs(runs, size, paint.stroke.line_width * scale, scale, &context)
++        };
++        let Some(commands) = commands else { return false };
++        self.state_mut().transform = Transform2D::identity();
++        self.draw_glyph_commands(commands, paint);
++        self.state_mut().transform = transform;
++        true
+     }
+ 
+     /// Strokes the provided glyphs with the specified Paint.
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -151,6 +151,26 @@
+ pub struct FontTexture {
+     pub atlas: Atlas,
+     pub(crate) image_id: ImageId,
++}
++
++impl RenderedGlyph {
++    fn atlas_quad(&self, x: f32, y: f32, size: (usize, usize), line_width_offset: f32) -> Quad {
++        let itw = 1.0 / size.0 as f32;
++        let ith = 1.0 / size.1 as f32;
++        let [texel_width, texel_height] = self.texel_size;
++        let x0 = x.trunc() + self.bearing_x - (line_width_offset + GLYPH_PADDING as f32) * texel_width;
++        let y0 = y.round() - self.bearing_y - (line_width_offset + GLYPH_PADDING as f32) * texel_height;
++        Quad {
++            x0,
++            y0,
++            x1: x0 + self.width as f32 * texel_width,
++            y1: y0 + self.height as f32 * texel_height,
++            s0: self.atlas_x as f32 * itw,
++            t0: self.atlas_y as f32 * ith,
++            s1: (self.atlas_x + self.width) as f32 * itw,
++            t1: (self.atlas_y + self.height) as f32 * ith,
++        }
++    }
+ }
+ 
+ /// `TextContext` provides functionality for text processing in femtovg.
+@@ -751,6 +771,47 @@
+ }
+ 
+ impl GlyphAtlas {
++    // The ordinary path can reorder quads by page within a run. Leave any
++    // multi-page run there and retain the order of all other runs.
++    pub(crate) fn cached_outline_runs<'a>(
++        &self,
++        runs: impl IntoIterator<Item = (FontId, &'a [PositionedGlyph])>,
++        font_size: f32,
++        line_width: f32,
++        scale: f32,
++        context: &TextContextImpl,
++    ) -> Option<GlyphDrawCommands> {
++        let rendered = self.rendered_glyphs.borrow();
++        let textures = self.glyph_textures.borrow();
++        let mut commands = GlyphDrawCommands::default();
++        for (font_id, glyphs) in runs {
++            if context.font(font_id)?.may_have_bitmap_glyphs() {
++                return None;
++            }
++            let mut page = None;
++            for glyph in glyphs {
++                let key = RenderedGlyphId::new(glyph.glyph_id, font_id, font_size, line_width, RenderMode::Fill, 0, &[]);
++                let Some(tile) = rendered.get(&key)? else { continue };
++                if tile.color_glyph || page.is_some_and(|page| page != tile.texture_index) {
++                    return None;
++                }
++                page = Some(tile.texture_index);
++                let texture = textures.get(tile.texture_index)?;
++                let by_image = &mut commands.alpha_glyphs;
++                if by_image.last().is_none_or(|cmd| cmd.image_id != texture.image_id) {
++                    by_image.push(DrawCommand { image_id: texture.image_id, quads: Vec::new() });
++                }
++                by_image.last_mut()?.quads.push(tile.atlas_quad(
++                    glyph.x * scale,
++                    glyph.y * scale,
++                    texture.atlas.size(),
++                    0.0,
++                ));
++            }
++        }
++        Some(commands)
++    }
++
+     #[allow(clippy::too_many_arguments)]
+     pub(crate) fn render_atlas<'a, T: Renderer>(
+         &self,
+@@ -842,8 +903,6 @@
+             if let Some(texture) = self.glyph_textures.borrow().get(rendered.texture_index) {
+                 let image_id = texture.image_id;
+                 let size = texture.atlas.size();
+-                let itw = 1.0 / size.0 as f32;
+-                let ith = 1.0 / size.1 as f32;
+ 
+                 let cmd_map = if rendered.color_glyph {
+                     &mut color_cmd_map
+@@ -856,22 +915,8 @@
+                     quads: Vec::new(),
+                 });
+ 
+-                let mut q = Quad::default();
+-
+                 let line_width_offset = if rendered.color_glyph { 0. } else { line_width_offset };
+-
+-                let [texel_width, texel_height] = rendered.texel_size;
+-                q.x0 = glyph.x.trunc() + rendered.bearing_x - (line_width_offset + GLYPH_PADDING as f32) * texel_width;
+-                q.y0 = glyph.y.round() - rendered.bearing_y - (line_width_offset + GLYPH_PADDING as f32) * texel_height;
+-                q.x1 = q.x0 + rendered.width as f32 * texel_width;
+-                q.y1 = q.y0 + rendered.height as f32 * texel_height;
+-
+-                q.s0 = rendered.atlas_x as f32 * itw;
+-                q.t0 = rendered.atlas_y as f32 * ith;
+-                q.s1 = (rendered.atlas_x + rendered.width) as f32 * itw;
+-                q.t1 = (rendered.atlas_y + rendered.height) as f32 * ith;
+-
+-                cmd.quads.push(q);
++                cmd.quads.push(rendered.atlas_quad(glyph.x, glyph.y, size, line_width_offset));
+             }
+ 
+             Ok(())
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -746,8 +746,55 @@
+ pub struct GlyphAtlas {
+     pub rendered_glyphs: RefCell<FnvHashMap<RenderedGlyphId, Option<RenderedGlyph>>>,
+     pub glyph_textures: RefCell<Vec<FontTexture>>,
++    outline_replay: RefCell<OutlineReplay>,
+     #[cfg(feature = "swash")]
+     swash_scale_context: Rc<RefCell<swash::scale::ScaleContext>>,
++}
++
++#[derive(Default)]
++struct OutlineReplay {
++    settings: Option<(u32, u32)>,
++    slots: Vec<Option<OutlineEntry>>,
++}
++
++#[derive(Clone, Copy)]
++struct OutlineEntry {
++    font: FontId,
++    glyph: u16,
++    tile: Option<OutlineTile>,
++}
++
++#[derive(Clone, Copy)]
++struct OutlineTile {
++    page: usize,
++    image: ImageId,
++    bearing: [f32; 2],
++    padding: [f32; 2],
++    size: [f32; 2],
++    uv: [f32; 4],
++}
++
++impl OutlineTile {
++    fn resolve(rendered: &RenderedGlyph, texture: &FontTexture) -> Self {
++        let q = rendered.atlas_quad(0.0, 0.0, texture.atlas.size(), 0.0);
++        let [texel_width, texel_height] = rendered.texel_size;
++        Self {
++            page: rendered.texture_index,
++            image: texture.image_id,
++            bearing: [rendered.bearing_x, rendered.bearing_y],
++            padding: [GLYPH_PADDING as f32 * texel_width, GLYPH_PADDING as f32 * texel_height],
++            size: [rendered.width as f32 * texel_width, rendered.height as f32 * texel_height],
++            uv: [q.s0, q.t0, q.s1, q.t1],
++        }
++    }
++
++    fn quad(&self, x: f32, y: f32) -> Quad {
++        // Keep the same rounding and arithmetic order as atlas_quad.
++        let x0 = x.trunc() + self.bearing[0] - self.padding[0];
++        let y0 = y.round() - self.bearing[1] - self.padding[1];
++        let [s0, t0, s1, t1] = self.uv;
++        Quad { x0, y0, x1: x0 + self.size[0], y1: y0 + self.size[1], s0, t0, s1, t1 }
++    }
+ }
+ 
+ impl GlyphAtlas {
+@@ -755,6 +802,7 @@
+         Self {
+             rendered_glyphs: RefCell::default(),
+             glyph_textures: RefCell::default(),
++            outline_replay: RefCell::default(),
+             #[cfg(feature = "swash")]
+             swash_scale_context: (**_text_context).borrow().swash_scale_context(),
+         }
+@@ -781,8 +829,16 @@
+         scale: f32,
+         context: &TextContextImpl,
+     ) -> Option<GlyphDrawCommands> {
++        const REPLAY_SLOTS: usize = 2048;
+         let rendered = self.rendered_glyphs.borrow();
+         let textures = self.glyph_textures.borrow();
++        let mut replay = self.outline_replay.borrow_mut();
++        let settings = (font_size.to_bits(), line_width.to_bits());
++        if replay.settings != Some(settings) {
++            replay.slots.resize(REPLAY_SLOTS, None);
++            replay.slots.fill(None);
++            replay.settings = Some(settings);
++        }
+         let mut commands = GlyphDrawCommands::default();
+         for (font_id, glyphs) in runs {
+             if context.font(font_id)?.may_have_bitmap_glyphs() {
+@@ -790,23 +846,31 @@
+             }
+             let mut page = None;
+             for glyph in glyphs {
+-                let key = RenderedGlyphId::new(glyph.glyph_id, font_id, font_size, line_width, RenderMode::Fill, 0, &[]);
+-                let Some(tile) = rendered.get(&key)? else { continue };
+-                if tile.color_glyph || page.is_some_and(|page| page != tile.texture_index) {
++                let entry = &mut replay.slots[usize::from(glyph.glyph_id) % REPLAY_SLOTS];
++                if entry.is_none_or(|entry| entry.font != font_id || entry.glyph != glyph.glyph_id) {
++                    let key = RenderedGlyphId::new(
++                        glyph.glyph_id, font_id, font_size, line_width, RenderMode::Fill, 0, &[],
++                    );
++                    let tile = if let Some(tile) = rendered.get(&key)? {
++                        if tile.color_glyph {
++                            return None;
++                        }
++                        Some(OutlineTile::resolve(tile, textures.get(tile.texture_index)?))
++                    } else {
++                        None
++                    };
++                    *entry = Some(OutlineEntry { font: font_id, glyph: glyph.glyph_id, tile });
++                }
++                let Some(tile) = entry.as_ref()?.tile else { continue };
++                if page.is_some_and(|page| page != tile.page) {
+                     return None;
+                 }
+-                page = Some(tile.texture_index);
+-                let texture = textures.get(tile.texture_index)?;
++                page = Some(tile.page);
+                 let by_image = &mut commands.alpha_glyphs;
+-                if by_image.last().is_none_or(|cmd| cmd.image_id != texture.image_id) {
+-                    by_image.push(DrawCommand { image_id: texture.image_id, quads: Vec::new() });
++                if by_image.last().is_none_or(|cmd| cmd.image_id != tile.image) {
++                    by_image.push(DrawCommand { image_id: tile.image, quads: Vec::new() });
+                 }
+-                by_image.last_mut()?.quads.push(tile.atlas_quad(
+-                    glyph.x * scale,
+-                    glyph.y * scale,
+-                    texture.atlas.size(),
+-                    0.0,
+-                ));
++                by_image.last_mut()?.quads.push(tile.quad(glyph.x * scale, glyph.y * scale));
+             }
+         }
+         Some(commands)
+@@ -1339,6 +1403,7 @@
+     }
+ 
+     pub(crate) fn clear<T: Renderer>(&self, canvas: &mut Canvas<T>) {
++        *self.outline_replay.borrow_mut() = OutlineReplay::default();
+         let image_ids = std::mem::take(&mut *self.glyph_textures.borrow_mut())
+             .into_iter()
+             .map(|font_texture| font_texture.image_id);
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2116,49 +2116,53 @@
+     /// using a custom font rasterizer/layout.
+     pub fn draw_glyph_commands(&mut self, draw_commands: GlyphDrawCommands, paint: &Paint) {
+         let transform = self.state().transform;
+-        let create_vertices = |quads: &Vec<text::Quad>| {
+-            let mut verts = Vec::with_capacity(quads.len() * 6);
+-
+-            for quad in quads {
+-                let left = quad.x0;
+-                let right = quad.x1;
+-                let top = quad.y0;
+-                let bottom = quad.y1;
+-
+-                let (p0, p1) = transform.transform_point(left, top);
+-                let (p2, p3) = transform.transform_point(right, top);
+-                let (p4, p5) = transform.transform_point(right, bottom);
+-                let (p6, p7) = transform.transform_point(left, bottom);
+-
+-                verts.push(Vertex::new(p0, p1, quad.s0, quad.t0));
+-                verts.push(Vertex::new(p4, p5, quad.s1, quad.t1));
+-                verts.push(Vertex::new(p2, p3, quad.s1, quad.t0));
+-                verts.push(Vertex::new(p0, p1, quad.s0, quad.t0));
+-                verts.push(Vertex::new(p6, p7, quad.s0, quad.t1));
+-                verts.push(Vertex::new(p4, p5, quad.s1, quad.t1));
+-            }
+-            verts
+-        };
+ 
+         // Apply global alpha
+         let mut paint_flavor = paint.flavor.clone();
+         paint_flavor.mul_alpha(self.state().alpha);
+ 
+-        for cmd in draw_commands.alpha_glyphs {
+-            let verts = create_vertices(&cmd.quads);
+-
+-            self.render_triangles(&verts, &transform, &paint_flavor, GlyphTexture::AlphaMask(cmd.image_id));
+-        }
+-
+-        for cmd in draw_commands.color_glyphs {
+-            let verts = create_vertices(&cmd.quads);
+-
+-            self.render_triangles(
+-                &verts,
++        let draws = draw_commands
++            .alpha_glyphs
++            .into_iter()
++            .map(|cmd| (GlyphTexture::AlphaMask(cmd.image_id), cmd.quads))
++            .chain(
++                draw_commands
++                    .color_glyphs
++                    .into_iter()
++                    .map(|cmd| (GlyphTexture::ColorTexture(cmd.image_id), cmd.quads)),
++            );
++        for (texture, quads) in draws {
++            let corners = |quad: &text::Quad| {
++                [
++                    transform.transform_point(quad.x0, quad.y0),
++                    transform.transform_point(quad.x1, quad.y0),
++                    transform.transform_point(quad.x1, quad.y1),
++                    transform.transform_point(quad.x0, quad.y1),
++                ]
++            };
++            // Stream straight into the frame vertices after clip setup.
++            self.record_triangle_command(
++                quads.len() * 6,
++                || Self::triangle_bounds(quads.iter().flat_map(|quad| {
++                    let [a, b, c, d] = corners(quad);
++                    [a, c, b, a, d, c]
++                })),
+                 &transform,
+                 &paint_flavor,
+-                GlyphTexture::ColorTexture(cmd.image_id),
++                texture,
+             );
++            self.verts.reserve(quads.len() * 6);
++            for quad in &quads {
++                let [(x0, y0), (x1, y1), (x2, y2), (x3, y3)] = corners(quad);
++                self.verts.extend_from_slice(&[
++                    Vertex::new(x0, y0, quad.s0, quad.t0),
++                    Vertex::new(x2, y2, quad.s1, quad.t1),
++                    Vertex::new(x1, y1, quad.s1, quad.t0),
++                    Vertex::new(x0, y0, quad.s0, quad.t0),
++                    Vertex::new(x3, y3, quad.s0, quad.t1),
++                    Vertex::new(x2, y2, quad.s1, quad.t1),
++                ]);
++            }
+         }
+     }
+ 
+@@ -2652,19 +2656,35 @@
+         paint_flavor: &PaintFlavor,
+         glyph_texture: GlyphTexture,
+     ) {
++        self.record_triangle_command(
++            verts.len(),
++            || Self::triangle_bounds(verts.iter().map(|vertex| (vertex.x, vertex.y))),
++            transform,
++            paint_flavor,
++            glyph_texture,
++        );
++        self.verts.extend_from_slice(verts);
++    }
++
++    fn triangle_bounds(points: impl Iterator<Item = (f32, f32)>) -> Bounds {
++        points.fold(Bounds::default(), |bounds, (x, y)| Bounds {
++            minx: bounds.minx.min(x),
++            miny: bounds.miny.min(y),
++            maxx: bounds.maxx.max(x),
++            maxy: bounds.maxy.max(y),
++        })
++    }
++
++    fn record_triangle_command(
++        &mut self,
++        vertex_count: usize,
++        bounds: impl FnOnce() -> Bounds,
++        transform: &Transform2D,
++        paint_flavor: &PaintFlavor,
++        glyph_texture: GlyphTexture,
++    ) {
+         self.reconcile_current_clip_plane();
+-        let clip = self.draw_clip(
+-            || {
+-                verts.iter().fold(Bounds::default(), |bounds, vertex| Bounds {
+-                    minx: bounds.minx.min(vertex.x),
+-                    miny: bounds.miny.min(vertex.y),
+-                    maxx: bounds.maxx.max(vertex.x),
+-                    maxy: bounds.maxy.max(vertex.y),
+-                })
+-            },
+-            None,
+-        );
+-
++        let clip = self.draw_clip(bounds, None);
+         let params = Params::new(
+             &self.images,
+             transform,
+@@ -2690,10 +2710,8 @@
+                 .ok();
+         }
+ 
+-        cmd.triangles_verts = Some((self.verts.len(), verts.len()));
++        cmd.triangles_verts = Some((self.verts.len(), vertex_count));
+         self.append_cmd(cmd);
+-
+-        self.verts.extend_from_slice(verts);
+     }
+ 
+     fn font_scale(&self) -> f32 {

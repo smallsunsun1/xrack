@@ -1,7 +1,8 @@
-struct FeedInput { capture: string, filter: string }
+struct FeedInput { capture: string, attachment: string, filter: string, item: string }
 
 struct SignalMaterial {
     enabled: bool, unlit: bool, material-shader: string, shader-textures: [FeedInput],
+    base-item: string, alpha-mode: string,
 }
 
 struct SignalActor {
@@ -12,10 +13,14 @@ struct SignalActor {
     casts-reflections: bool, receives-reflections: bool, material: SignalMaterial,
 }
 
-struct SignalFeed { name: string, camera: string, layers: int, scale: float }
+struct SignalFeed {
+    name: string, camera: string, layers: int, scale: float,
+    combine-attachments: bool, renderables: string,
+}
 struct SignalProbe {
     position: point3d, box-size: vector3d, parallax-correction: bool, intensity: float,
     capture-size: int, refresh-mode: string, capture-revision: int, time-slicing: string,
+    debug-view: bool,
 }
 struct SignalEffect { shader: string, strength: float, buffers: [FeedInput] }
 
@@ -28,15 +33,34 @@ export component ProbeCaptureFeedDemo inherits Window {
     in-out property <string> refresh: "on-change";
     in-out property <string> slicing: "none";
     in-out property <bool> inset: false;
+    in-out property <bool> inset-depth: false;
+    in-out property <bool> reflected-inset: false;
+    in-out property <bool> combine-feed: false;
     in-out property <int> revision: 0;
+    in-out property <bool> item-source: false;
+    in-out property <bool> item-base: false;
+    in-out property <bool> item-mipmaps: false;
+    in-out property <bool> badge-lit: false;
+    in-out property <int> face-budget: 0;
+    in-out property <int> filter-budget: 0;
+    in-out property <int> texel-budget: 0;
+    in-out property <int> probe-size: 32;
+    in-out property <bool> two-probes: false;
+    in-out property <bool> debug-view: false;
+    property <string> signal-item: root.item-source ? "live-signal" : "";
+    property <string> signal-capture: root.item-source ? "" : "signal";
+    property <string> inset-source: root.reflected-inset ? "probe-view" : "signal";
 
     property <SignalMaterial> builtin: SignalMaterial {
-        enabled: false, unlit: false, material-shader: "", shader-textures: [],
+        enabled: false, unlit: false, material-shader: "", shader-textures: [], base-item: "", alpha-mode: "opaque",
     };
     property <SignalMaterial> card: SignalMaterial {
         enabled: true, unlit: true,
-        material-shader: @material-shader-url("effects/capture_material_display.wgsl"),
-        shader-textures: [FeedInput { capture: "signal", filter: "nearest" }],
+        material-shader: root.item-source && root.item-base ? "" : @material-shader-url("effects/capture_material_display.wgsl"),
+        shader-textures: [FeedInput { capture: root.signal-capture, attachment: "color", filter: "nearest",
+            item: root.item-base ? "" : root.signal-item }],
+        base-item: root.item-base ? root.signal-item : "",
+        alpha-mode: root.item-source && root.item-base ? "mask" : "opaque",
     };
     property <SignalActor> defaults: SignalActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0, color: #fff,
@@ -45,19 +69,42 @@ export component ProbeCaptureFeedDemo inherits Window {
         casts-reflections: true, receives-reflections: true, material: root.builtin,
     };
 
+    property <SignalProbe> primary-probe: SignalProbe {
+        position: Point3D.new(root.two-probes ? -2.1 : 0, 0, 0),
+        box-size: Vector3D.new(root.two-probes ? 3.8 : 8, 8, 24),
+        parallax-correction: true, capture-size: root.probe-size, refresh-mode: root.refresh,
+        capture-revision: root.revision, time-slicing: root.slicing, intensity: 1.65,
+        debug-view: root.debug-view,
+    };
     SceneView3D {
-        width: 532px; height: 270px; camera-distance: 8;
+        width: 532px; height: 270px;
+        reflection-faces-per-frame: root.face-budget;
+        reflection-filter-passes-per-frame: root.filter-budget;
+        reflection-filter-texels-per-frame: root.texel-budget;
+        camera-distance: 8;
         camera-yaw: 0; camera-pitch: 0; layer-mask: 1;
         scene-background: #24354d; scene-hdr: true; scene-tone-map: none;
         light-yaw: -30; light-elevation: 58; cache-rendering: true;
+        shadows: root.item-source && root.item-base;
+        ambient-occlusion: root.item-source && root.item-base;
         model: [
             SignalActor {
-                id: "mirror", mesh: @mesh-url("models/probe-sphere.gltf"),
+                id: "mirror", mesh: @mesh-url("models/probe-sphere.gltf"), x: root.two-probes ? -2.1 : 0,
+                scale-x: 1.55, scale-y: 1.55, scale-z: 1.55, casts-reflections: false, ..root.defaults
+            },
+            SignalActor {
+                id: "right-mirror", mesh: root.two-probes ? @mesh-url("models/probe-sphere.gltf") : "", x: 2.1,
                 scale-x: 1.55, scale-y: 1.55, scale-z: 1.55, casts-reflections: false, ..root.defaults
             },
             SignalActor {
                 id: "reflection-card", z: 10, scale-x: 11, scale-y: 9, scale-z: 0.3,
                 material: root.card, receives-reflections: false, ..root.defaults
+            },
+            SignalActor {
+                id: "badge", mesh: root.item-source ? "primitive:rectangle" : "",
+                x: -2.5, y: -0.5, scale-x: 0.8, scale-y: 0.5, casts-reflections: false, receives-reflections: false,
+                material: SignalMaterial { enabled: true, unlit: true, base-item: "live-badge", ..root.builtin },
+                ..root.defaults
             },
             SignalActor {
                 id: "color-camera", mesh: "", z: 8, camera-kind: "orthographic", camera-height: 2.6, ..root.defaults
@@ -72,39 +119,99 @@ export component ProbeCaptureFeedDemo inherits Window {
             },
         ];
         scene-captures: [
-            SignalFeed { name: "signal", camera: "color-camera", layers: root.source-layer, scale: 0.5 }
+            SignalFeed {
+                name: "signal", camera: "color-camera", layers: root.source-layer, scale: 0.5,
+                combine-attachments: root.combine-feed, renderables: "opaque",
+            },
+            SignalFeed {
+                name: "probe-view", camera: "", layers: 1, scale: 0.5,
+                combine-attachments: root.combine-feed, renderables: "opaque",
+            },
         ];
-        reflection-probes: [
-            SignalProbe {
-                position: Point3D.new(0, 0, 0), box-size: Vector3D.new(8, 8, 24),
-                parallax-correction: true, capture-size: 32, refresh-mode: root.refresh,
-                capture-revision: root.revision, time-slicing: root.slicing, intensity: 1.65,
-            }
-        ];
+        reflection-probes: root.two-probes ? [
+            root.primary-probe,
+            SignalProbe { position: Point3D.new(2.1, 0, 0), ..root.primary-probe },
+        ] : [root.primary-probe];
         scene-effects: [
             SignalEffect {
                 shader: @shader-url("effects/probe_capture_inset.wgsl"),
                 strength: root.inset ? 1 : 0,
-                buffers: [FeedInput { capture: "signal", filter: "linear" }],
+                buffers: root.item-source ? [
+                    FeedInput { capture: "", attachment: "color", filter: "linear", item: root.signal-item },
+                ] : root.inset-depth ? [
+                    FeedInput { capture: root.inset-source, attachment: "color", filter: "linear", item: "" },
+                    FeedInput { capture: root.inset-source, attachment: "depth", filter: "nearest", item: "" },
+                ] : [
+                    FeedInput { capture: root.inset-source, attachment: "color", filter: "linear", item: "" },
+                ],
             }
         ];
     }
 
+    Rectangle {
+        width: 80px; height: 48px;
+        texture-source: "live-signal"; texture-only: true; visible: root.item-source;
+        texture-mipmaps: root.item-mipmaps;
+        background: root.source-layer == 2 ? #df6843 : #478ed8;
+    }
+    Rectangle {
+        width: 64px; height: 40px;
+        texture-source: "live-badge"; texture-only: true; visible: root.item-source;
+        background: root.badge-lit ? #eab452 : #53878d;
+    }
+
     change-source := Button {
-        x: 14px; y: 291px; width: 112px; height: 33px;
+        x: 14px; y: 283px; width: 112px; height: 38px;
         text: "切换画面"; clicked => { root.source-layer = root.source-layer == 2 ? 4 : 2; }
     }
     refresh-policy := Button {
-        x: 133px; y: 291px; width: 115px; height: 33px;
+        x: 133px; y: 283px; width: 115px; height: 38px;
         text: root.refresh == "first-frame" ? "固定首帧" : "按变化刷新";
         clicked => { root.refresh = root.refresh == "first-frame" ? "on-change" : "first-frame"; }
     }
     refresh-cube := Button {
-        x: 257px; y: 291px; width: 109px; height: 33px;
+        x: 257px; y: 283px; width: 109px; height: 38px;
         text: "刷新探针"; clicked => { root.revision += 1; }
     }
     CheckBox {
-        x: 385px; y: 291px; width: 132px; height: 33px;
+        x: 385px; y: 283px; width: 132px; height: 38px;
         text: "显示源小窗"; checked <=> root.inset;
+    }
+    slicing-policy := Button {
+        x: 14px; y: 324px; width: 112px; height: 38px;
+        text: root.slicing == "individual-faces" ? "整组捕获" : "逐面捕获";
+        clicked => { root.slicing = root.slicing == "individual-faces" ? "none" : "individual-faces"; }
+    }
+    merge-feed := Button {
+        x: 133px; y: 324px; width: 115px; height: 38px;
+        text: root.combine-feed ? "拆分附件" : "合并附件";
+        clicked => {
+            root.inset = true;
+            root.inset-depth = true;
+            root.combine-feed = !root.combine-feed;
+        }
+    }
+    item-mode := Button {
+        x: 257px; y: 324px; width: 109px; height: 38px;
+        text: root.item-source ? "命名捕获" : "控件贴图";
+        clicked => {
+            root.item-source = !root.item-source;
+            root.inset = true;
+        }
+    }
+    mip-mode := Button {
+        x: 385px; y: 324px; width: 132px; height: 38px; visible: root.item-source;
+        text: root.item-mipmaps ? "关闭 Mip" : "开启 Mip";
+        clicked => { root.item-mipmaps = !root.item-mipmaps; }
+    }
+    probe-budget := Button {
+        x: 385px; y: 324px; width: 132px; height: 38px; visible: !root.item-source;
+        text: root.two-probes ? "解除帧预算" : "限制帧预算";
+        clicked => {
+            root.two-probes = !root.two-probes;
+            root.face-budget = root.two-probes ? 1 : 0;
+            root.filter-budget = root.two-probes ? 2 : 0;
+            root.texel-budget = root.two-probes ? 128 : 0;
+        }
     }
 }

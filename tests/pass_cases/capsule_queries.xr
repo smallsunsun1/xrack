@@ -1,0 +1,72 @@
+// RAW: "xr.geometry_function"{{.*}}value = "capsule-cast-3d"
+// RAW: "xr.geometry_function"{{.*}}value = "capsule-slide-3d"
+// RAW: "xr.geometry_function"{{.*}}value = "capsule-trigger-crossings-3d"
+// RAW: "xr.geometry_function"{{.*}}value = "capsule-walk-result-3d"
+// RAW: "xr.geometry_function"{{.*}}value = "capsule-walk-with-contacts-3d"
+// RAW: "xr.walk_result3d_field"{{.*}}value = "contacts"
+// CHECK: "xr.geometry_function"{{.*}}value = "sphere-cast-3d"{{.*}}!xr.int) -> !xr.hit3d
+// CHECK: "xr.geometry_function"{{.*}}value = "capsule-cast-3d"{{.*}}!xr.hit3d
+// CHECK-NOT: value = "capsule-slide-3d"
+// CHECK: name = "still", visibility = "out"
+// CHECK-NOT: value = "capsule-trigger-crossings-3d"
+// CHECK: [[EMPTY:%[0-9]+]] = "xr.hit3d_array"
+// CHECK: "xr.property"([[EMPTY]]) <{name = "stationary", visibility = "out"
+// CHECK: "xr.geometry_function"{{.*}}value = "capsule-trigger-crossings-3d"
+// CHECK: name = "reactive-stationary", visibility = "out"
+// CHECK: "xr.geometry_function"{{.*}}value = "capsule-walk-result-3d"
+// CHECK-NOT: value = "capsule-walk-result-3d"
+// CHECK: [[WALK:%[0-9]+]] = "xr.walk_result3d"({{.*}}, [[EMPTY]])
+// CHECK: "xr.property"([[WALK]]) <{name = "stationary-walk", visibility = "out"
+// CHECK: [[STANDING:%[0-9]+]] = "xr.geometry_function"{{.*}}value = "capsule-walk-result-3d"
+// CHECK: "xr.property"([[STANDING]]) <{name = "standing", visibility = "out"
+// CHECK: "xr.walk_result3d_field"{{.*}}value = "grounded"
+// CHECK: "xr.geometry_function"{{.*}}value = "capsule-walk-with-contacts-3d"
+// CHECK: "xr.walk_result3d_field"{{.*}}value = "contacts"
+// CHECK: "xr.walk_result3d_field"{{.*}}value = "support"{{.*}} -> !xr.hit3d
+// CHECK: "xr.callback"() <{name = "endpoint-only"
+// CHECK-NOT: value = "capsule-walk-with-contacts-3d"
+// CHECK: [[POS:%[0-9]+]] = "xr.geometry_function"{{.*}}value = "capsule-walk-3d"
+// CHECK: [[LOCAL:%[0-9]+]] = "xr.local"([[POS]])
+// CHECK-NOT: "xr.walk_result3d_field"
+// CHECK: "xr.return"([[LOCAL]])
+
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component App inherits Window {
+    in property <[Actor]> objects: [];
+    in property <point3d> origin: Point3D.new(0, 1, 0);
+    in property <float> capsule-segment: 1;
+    out property <hit3d> low: Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, 0, 1);
+    out property <hit3d> high: Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, root.capsule-segment);
+    out property <point3d> still: Scene3D.capsule-slide(root.objects, root.origin, Vector3D.new(0, 0, 0), 0.4, root.capsule-segment);
+    out property <[hit3d]> stationary: Scene3D.capsule-trigger-crossings(
+        [Actor { id: "zone", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #ffffff }],
+        Point3D.new(1, 0, 0), Point3D.new(1, 0, 0), 0.4, 1);
+    out property <[hit3d]> reactive-stationary: Scene3D.capsule-trigger-crossings(
+        root.objects, Point3D.new(1, 0, 0), Point3D.new(1, 0, 0), 0.4, root.capsule-segment);
+    out property <walkresult3d> movement: Scene3D.capsule-walk-result(
+        root.objects, root.origin, Vector3D.new(3, 0, 0), 0.4, root.capsule-segment, 0.3, 0.3, 45, 1);
+    out property <walkresult3d> stationary-walk: Scene3D.capsule-walk-result(
+        [Actor { id: "zone", mesh: "primitive:box", x: 0, y: 0, z: 0,
+            scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #ffffff }],
+        Point3D.new(1, 0, 0), Vector3D.new(0, 0, 0), 0.4, 1, 0.3, 0.3, 45, 0);
+    out property <walkresult3d> standing: Scene3D.capsule-walk-result(
+        [Actor { id: "floor", mesh: "primitive:box", x: 0, y: -0.5, z: 0,
+            scale-x: 4, scale-y: 1, scale-z: 4, yaw: 0, pitch: 0, roll: 0, color: #ffffff }],
+        Point3D.new(0, 0.4, 0), Vector3D.new(0, 0, 0), 0.4, 0, 0, 0, 45);
+    out property <bool> supported: root.standing.grounded;
+    out property <walkresult3d> reported: Scene3D.capsule-walk-with-contacts(
+        root.objects, root.origin, Vector3D.new(5, 0, 0), 0.4, root.capsule-segment, 0.3, 0.3, 45, 1);
+    out property <[hit3d]> reported-hits: root.reported.contacts;
+    out property <hit3d> reported-support: root.reported.support;
+    pure function endpoint-only() -> point3d {
+        let motion = Scene3D.capsule-walk-with-contacts(
+            root.objects, root.origin, Vector3D.new(4, 0, 0), 0.4, root.capsule-segment, 0.3, 0.3, 45);
+        motion.position
+    }
+}

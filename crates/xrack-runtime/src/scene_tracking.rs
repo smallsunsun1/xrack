@@ -133,7 +133,7 @@ impl SceneIndex {
     fn visit(
         &mut self,
         node: &Node,
-        parent: Option<SceneNodeId>,
+        parent: Option<(SceneNodeId, bool)>,
         slot: Slot,
         path: &mut Vec<usize>,
         previous: &mut BTreeMap<(Option<SceneNodeId>, Slot), Entry>,
@@ -142,12 +142,14 @@ impl SceneIndex {
         if node.kind == "Empty" {
             return;
         }
+        let fixed_text_child = parent.is_some_and(|(_, fixed_text)| fixed_text);
+        let parent = parent.map(|(id, _)| id);
         let ordinal = path.last().copied().unwrap_or_default();
         let id = match previous.remove(&(parent, slot.clone())) {
             Some(old) if same_slot(&old.scene, node) => {
                 changes.moved += usize::from(ordinal != old.ordinal);
                 changes.reused_rows += usize::from(old.pooled && matches!(slot, Slot::Row(..)));
-                compare(&old.scene, node, changes);
+                compare(&old.scene, node, fixed_text_child, changes);
                 old.id
             }
             old => {
@@ -171,6 +173,7 @@ impl SceneIndex {
         }
         let mut occurrences = BTreeMap::new();
         let mut names = BTreeMap::new();
+        let parent = Some((id, node.fixed_text_children()));
         for (index, child) in node.materialized_children() {
             let slot = if let Some(mount) = &child.loader_mount {
                 Slot::Mount(mount.key)
@@ -188,7 +191,7 @@ impl SceneIndex {
                 Slot::Child(index)
             };
             path.push(index);
-            self.visit(child, Some(id), slot, path, previous, changes);
+            self.visit(child, parent, slot, path, previous, changes);
             path.pop();
         }
     }
@@ -201,12 +204,12 @@ fn same_slot(old: &Node, new: &Node) -> bool {
         && old.loader_mount == new.loader_mount
 }
 
-fn compare(old: &Node, new: &Node, changes: &mut SceneChanges) {
+fn compare(old: &Node, new: &Node, fixed_text_child: bool, changes: &mut SceneChanges) {
     if old.shares_storage_with(new) {
         return;
     }
     let changed = |name| old.properties.get(name) != new.properties.get(name);
-    changes.measure += usize::from(!old.same_own_layout_inputs(new, true, true));
+    changes.measure += usize::from(!old.same_own_layout_inputs(new, true, true, fixed_text_child));
     changes.transform += usize::from(
         [
             "x",

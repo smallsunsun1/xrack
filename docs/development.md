@@ -110,7 +110,7 @@ xr_ui_library(
 
 该宏创建代码生成 action 和正常的 `rust_library`。Rust 应用依赖 `:counter_ui`，使用 `counter_ui::Counter`；不需要 `build.rs` 或手动管理生成路径。生成代码只依赖 `xrack-runtime`。
 
-生成的 Rust 源码带有 `CODEGEN_ABI_VERSION` 断言，编译器和运行时需要来自兼容的构建。索引模型投影、融合字符串拼接和 3D 球体查询使用对应的运行时入口，场景材质、贴图和槽位覆盖使用配套的运行时类型，生成代码 ABI 为 37。Bazel 会重新生成受影响的 UI；复用外部 AOT 源码的项目需要同步更新运行时，并使用配套 `xrackc` 重新生成源码。
+生成的 Rust 源码带有 `CODEGEN_ABI_VERSION` 断言，编译器和运行时需要来自兼容的构建。索引模型投影、融合字符串拼接和 3D 球体查询使用对应的运行时入口，场景材质、贴图和槽位覆盖使用配套的运行时类型，生成代码 ABI 为 68。Bazel 会重新生成受影响的 UI；复用外部 AOT 源码的项目需要同步更新运行时，并使用配套 `xrackc` 重新生成源码。
 
 带图片的目标在 `xr_ui_library` 里用 `assets = ["assets/icon.svg"]` 声明每个资源。Bazel 会在资源内容变化时重新运行代码生成。编译后的程序可以脱离源目录运行。
 
@@ -129,3 +129,7 @@ xr_ui_library(
 `bazel test //tests:mlir_pass_test` 对同一原生模块断言优化前后的 SSA 和操作结构。用例覆盖常量折叠、CSE、动态分支及跨赋值的读取顺序。
 
 `bazel test //tests:ui_interaction_test` 用控件 ID 驱动点击、键盘导航和文本输入，在确定性的布局下验证计数器、模态对话框与选择控件。该目标可在无 GPU 的 CI 中运行。`bazel test //tests:gpu_test` 额外使用原生图形适配器验证离屏像素和绘制路径。
+
+`bazel test //tests:ui_text_benchmark --nocache_test_results` 测中英混排长文档在 73 个不同宽度下的重排，以及固定宽度中文文档的纵向滚动。两个用例都在 2× 离屏纹理上逐帧等待 GPU 完成，之后报告第 17 帧起的 P50、P95 和 P99。比较时保持设备、GPU 后端和系统字体一致。
+
+在 `bazel-testlogs/tests/ui_text_benchmark/test.outputs/` 查看 `wrapped-document-benchmark.json` 和 `wrapped-document-scroll-benchmark.json`。报告分别记录 73 帧重排和 112 帧滚动的输入位置、场景准备、绘制和提交、GPU 等待及整帧时间。单测滚动时可以加 `--test_arg=wrapped_document_scrolls_at_fixed_width`。

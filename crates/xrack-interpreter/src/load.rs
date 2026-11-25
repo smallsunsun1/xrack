@@ -16,7 +16,10 @@ use xrack_resources::visual::{
 use xrack_runtime::{self as runtime, Percent};
 use xrack_syntax::{
     ast::{Parameter, Type},
-    builtins::{ColorFunction, GeometryFunction, MathFunction, StringFunction, builtin_element},
+    builtins::{
+        ColorFunction, GeometryFunction, MathFunction, PhysicsFunction, StringFunction,
+        builtin_element,
+    },
 };
 
 /// Load XR dialect text without consulting the filesystem.
@@ -79,6 +82,7 @@ pub(crate) fn program(
     let assets = Rc::new(AssetValues {
         images,
         effects: scene_assets.effects.clone(),
+        instance_tables: scene_assets.instance_tables.clone(),
         entry_file: entry_file.to_owned(),
         markdown: xrack_resources::collect_markdown(module).map_err(Error::Invalid)?,
         paths: paths
@@ -192,9 +196,20 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::Point2D => ValueType::Point2D,
         Type::Point3D => ValueType::Point3D,
         Type::Vector3D => ValueType::Vector3D,
+        Type::Quaternion3D => ValueType::Quaternion3D,
+        Type::RotationTrack3D => ValueType::RotationTrack3D,
         Type::Hit3D => ValueType::Hit3D,
         Type::Hit3DList => ValueType::Hit3DList,
+        Type::PhysicsContact3D => ValueType::PhysicsContact3D,
+        Type::PhysicsHit3D => ValueType::PhysicsHit3D,
+        Type::PhysicsContact3DList => ValueType::PhysicsContact3DList,
+        Type::PhysicsHit3DList => ValueType::PhysicsHit3DList,
         Type::ProjectedPoint3D => ValueType::ProjectedPoint3D,
+        Type::Instance3D => ValueType::Instance3D,
+        Type::InstanceTable3D => ValueType::InstanceTable3D,
+        Type::WalkResult3D => ValueType::WalkResult3D,
+        Type::PhysicsWorld3D => ValueType::PhysicsWorld3D,
+        Type::SceneModel3D => ValueType::SceneModel3D,
         Type::Vector2D => ValueType::Vector2D,
         Type::Transform2D => ValueType::Transform2D,
         Type::Percent => ValueType::Percent,
@@ -289,6 +304,7 @@ fn reference(op: Op<'_>, value: ValueRef<'_>) -> Result<Member> {
 #[derive(Default)]
 struct AssetValues<'m> {
     effects: BTreeMap<String, std::sync::Arc<str>>,
+    instance_tables: BTreeMap<String, runtime::InstanceTable3D>,
     images: BTreeMap<String, ImageAsset>,
     entry_file: String,
     markdown: BTreeMap<&'m str, runtime::StyledText>,
@@ -334,7 +350,7 @@ struct Loader<'m> {
     in_day_cell: bool,
     in_section_header: bool,
     in_combo_option: bool,
-    timer_order: Vec<String>,
+    timer_order: Vec<(String, bool)>,
     action_keys: BTreeSet<String>,
     native_dialog_keys: BTreeSet<String>,
     records: Rc<RecordSchemas>,
@@ -814,6 +830,8 @@ impl<'m> Loader<'m> {
                         | ValueType::IntList
                         | ValueType::DateList
                         | ValueType::Hit3DList
+                        | ValueType::PhysicsContact3DList
+                        | ValueType::PhysicsHit3DList
                         | ValueType::RecordList(_)
                         | ValueType::TouchPoints
                 ) {
@@ -850,7 +868,10 @@ impl<'m> Loader<'m> {
         let previous_scope = self.visual_scope;
         if nested {
             self.visual_scope = Some(repeat_scope(op));
-        } else if matches!(op.attribute("kind"), Some("Action" | "Timer")) {
+        } else if matches!(
+            op.attribute("kind"),
+            Some("Action" | "Timer" | "FrameAnimation")
+        ) {
             self.visual_scope = None;
         }
         let in_split_handle = self.in_split_handle;
@@ -888,7 +909,10 @@ impl<'m> Loader<'m> {
             .unwrap_or(if id.is_empty() { "root" } else { id });
         let is_instance = op.name() == "xr.instance";
         match op.attribute("kind") {
-            Some("Timer") => self.timer_order.push(key.into()),
+            Some(kind @ ("Timer" | "FrameAnimation")) => {
+                self.timer_order
+                    .push((key.into(), kind == "FrameAnimation"));
+            }
             Some("Action") => {
                 self.action_keys.insert(key.into());
             }
@@ -1144,7 +1168,9 @@ impl<'m> Loader<'m> {
                 {
                     combo_option = Some(Box::new(self.element(child)?));
                 }
-                "xr.element" if child.attribute("kind") == Some("Timer") => {
+                "xr.element"
+                    if matches!(child.attribute("kind"), Some("Timer" | "FrameAnimation")) =>
+                {
                     timers.push(self.element(child)?)
                 }
                 "xr.element" if child.attribute("kind") == Some("SoundEffect") => {
@@ -1821,6 +1847,13 @@ impl<'m> Loader<'m> {
                 }
                 Expression::ScrollControlRead(member)
             }
+            "xr.instance_table_url" => Expression::Literal(Value::InstanceTable3D(
+                self.assets
+                    .instance_tables
+                    .get(spelling()?)
+                    .cloned()
+                    .ok_or_else(|| invalid(op, "unresolved instance table"))?,
+            )),
             "xr.material_shader_url" => Expression::Literal(Value::String(
                 runtime::material_shader::resource_key(spelling()?),
             )),
@@ -2050,6 +2083,11 @@ impl<'m> Loader<'m> {
                     .ok_or_else(|| invalid(op, "unknown math function"))?;
                 Expression::MathFunction(kind, arguments(self)?)
             }
+            "xr.physics_function" => {
+                let kind = PhysicsFunction::parse(spelling()?)
+                    .ok_or_else(|| invalid(op, "unknown physics function"))?;
+                Expression::PhysicsFunction(kind, arguments(self)?)
+            }
             "xr.geometry_function" => {
                 let kind = GeometryFunction::parse(spelling()?)
                     .ok_or_else(|| invalid(op, "unknown geometry function"))?;
@@ -2206,8 +2244,15 @@ impl<'m> Loader<'m> {
             | "xr.point2d_field"
             | "xr.point3d_field"
             | "xr.vector3d_field"
+            | "xr.quaternion3d_field"
+            | "xr.rotation_track3d_field"
             | "xr.hit3d_field"
+            | "xr.physics_contact3d_field"
+            | "xr.physics_hit3d_field"
             | "xr.projected_point3d_field"
+            | "xr.instance3d_field"
+            | "xr.instance_table3d_field"
+            | "xr.walk_result3d_field"
             | "xr.vector2d_field"
             | "xr.key_field"
             | "xr.wheel_field"
@@ -2216,6 +2261,9 @@ impl<'m> Loader<'m> {
                 argument(self, 0)?,
                 BuiltinField::from_operation(op).map_err(|error| invalid(op, error))?,
             ),
+            "xr.walk_result3d" => {
+                Expression::MakeWalkResult3D([argument(self, 0)?, argument(self, 1)?])
+            }
             "xr.make_date" => {
                 Expression::MakeDate([argument(self, 0)?, argument(self, 1)?, argument(self, 2)?])
             }
@@ -2259,6 +2307,8 @@ impl<'m> Loader<'m> {
             "xr.int_array" => Expression::IntArray(arguments(self)?),
             "xr.date_array" => Expression::DateArray(arguments(self)?),
             "xr.hit3d_array" => Expression::Hit3DArray(arguments(self)?),
+            "xr.physics_contact3d_array" => Expression::PhysicsContact3DArray(arguments(self)?),
+            "xr.physics_hit3d_array" => Expression::PhysicsHit3DArray(arguments(self)?),
             "xr.call" => Expression::Call(
                 member(op, "value")?,
                 arguments(self)?,
@@ -2332,6 +2382,7 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
             match kind {
                 $(ValueType::$variant => Value::$variant(Default::default()),)*
                 ValueType::Image => Value::ImageAsset(ImageAsset::default()),
+                ValueType::SceneModel3D => Value::SceneObjects(Default::default()),
                 ValueType::Percent => Value::Percent(Percent(0.0)),
                 ValueType::Record(_) | ValueType::RecordList(_) | ValueType::StringList | ValueType::IntList | ValueType::DateList => return None,
             }
@@ -2341,9 +2392,19 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         Point2D,
         Point3D,
         Vector3D,
+        Quaternion3D,
+        RotationTrack3D,
         Hit3D,
         Hit3DList,
+        PhysicsContact3D,
+        PhysicsHit3D,
+        PhysicsContact3DList,
+        PhysicsHit3DList,
         ProjectedPoint3D,
+        Instance3D,
+        InstanceTable3D,
+        WalkResult3D,
+        PhysicsWorld3D,
         Vector2D,
         Transform2D,
         EventResult,
@@ -2721,6 +2782,14 @@ const PROPERTIES: &[&str] = &[
     "light-elevation",
     "lights",
     "reflection-probes",
+    "physics-world",
+    "physics-debug",
+    "physics-debug-body",
+    "reflection-faces-per-frame",
+    "reflection-filter-passes-per-frame",
+    "reflection-filter-texels-per-frame",
+    "bake-denoise-passes",
+    "bake-indirect-factor",
     "particle-emitters",
     "particle-affectors",
     "particle-time",

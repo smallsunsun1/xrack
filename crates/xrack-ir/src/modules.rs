@@ -690,6 +690,7 @@ fn rewrite_expr(
         | TextureUrl(spelling)
         | ShaderUrl(spelling)
         | MaterialShaderUrl(spelling)
+        | InstanceTableUrl(spelling)
         | SlicedImageUrl { path: spelling, .. } => rebase_asset(spelling, prefix),
         Unary { value, .. } => rewrite_expr(value, prefix, names, source),
         Binary { left, right, .. } => {

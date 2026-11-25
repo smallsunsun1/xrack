@@ -402,6 +402,8 @@ fn interpolate_rotation(a: [f32; 4], b: [f32; 4], t: f32) -> Option<[f32; 4]> {
 #[derive(Clone, Debug)]
 pub struct MeshInstances {
     transforms: Arc<[Matrix4<f32>]>,
+    colors: Option<Arc<[[f32; 4]]>>,
+    data: Option<Arc<[[f32; 4]]>>,
 }
 
 impl MeshInstances {
@@ -418,7 +420,44 @@ impl MeshInstances {
                 })
                 .collect::<Option<Vec<_>>>()?
                 .into(),
+            colors: None,
+            data: None,
         })
+    }
+
+    /// Attach validated, optional channels indexed in transform order.
+    pub fn with_attributes(
+        mut self,
+        colors: Option<Vec<[f32; 4]>>,
+        data: Option<Vec<[f32; 4]>>,
+    ) -> Option<Self> {
+        let matches_count = |rows: &[[f32; 4]]| rows.len() == self.transforms.len();
+        let colors_valid = colors.as_deref().is_none_or(|rows| {
+            matches_count(rows)
+                && rows
+                    .iter()
+                    .flatten()
+                    .all(|value| (0.0..=1.0).contains(value))
+        });
+        let data_valid = data.as_deref().is_none_or(|rows| {
+            matches_count(rows) && rows.iter().flatten().all(|value| value.is_finite())
+        });
+        if !colors_valid || !data_valid {
+            return None;
+        }
+        self.colors = colors.map(Arc::from);
+        self.data = data.map(Arc::from);
+        Some(self)
+    }
+
+    /// Optional linear RGBA tint values.
+    pub fn colors(&self) -> &[[f32; 4]] {
+        self.colors.as_deref().unwrap_or_default()
+    }
+
+    /// Optional four-channel material input values.
+    pub fn data(&self) -> &[[f32; 4]] {
+        self.data.as_deref().unwrap_or_default()
     }
 
     pub fn packed_words(&self) -> impl Iterator<Item = f32> + '_ {
@@ -430,7 +469,7 @@ impl MeshInstances {
         })
     }
 
-    pub fn from_packed(bytes: &[u8]) -> Option<Self> {
+    pub fn from_packed(bytes: &[u8], colors: &[u8], data: &[u8]) -> Option<Self> {
         let (instances, remainder) = bytes.as_chunks::<48>();
         if !remainder.is_empty() || !(1..=MAX_MESH_INSTANCES).contains(&instances.len()) {
             return None;
@@ -448,9 +487,26 @@ impl MeshInstances {
                 })
             })
         });
-        Some(Self {
+        let decode = |bytes: &[u8]| {
+            let (rows, remainder) = bytes.as_chunks::<16>();
+            if !remainder.is_empty() {
+                return None;
+            }
+            Some((!rows.is_empty()).then(|| {
+                rows.iter()
+                    .map(|row| {
+                        let (channels, _) = row.as_chunks::<4>();
+                        std::array::from_fn(|index| f32::from_le_bytes(channels[index]))
+                    })
+                    .collect()
+            }))
+        };
+        Self {
             transforms: transforms.collect::<Option<Vec<_>>>()?.into(),
-        })
+            colors: None,
+            data: None,
+        }
+        .with_attributes(decode(colors)?, decode(data)?)
     }
 }
 
@@ -846,11 +902,19 @@ pub(crate) struct CameraPlacement {
     pub pose: CameraNode,
 }
 
+/// Converts an instance table's declared frame to and from glTF scene space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MeshInstanceSpace {
+    pub to_model: Matrix4<f32>,
+    pub to_root: Matrix4<f32>,
+}
+
 pub(crate) struct MeshSampleOptions<'a> {
     pub renderables: bool,
     pub overrides: &'a [Option<MorphOverrides>],
     pub lights: Option<&'a mut Vec<SceneLight>>,
     pub cameras: Option<&'a mut Vec<CameraPlacement>>,
+    pub instance_space: Option<&'a MeshInstanceSpace>,
 }
 
 #[derive(Debug)]
@@ -911,13 +975,16 @@ pub struct AnimatedMesh {
     cameras: Arc<[MeshCamera]>,
     camera_settings: Arc<[SceneCameraSettings]>,
     attachment_frames: Option<Arc<AttachmentFrames>>,
-    mirrored: Vec<OnceLock<Option<Mesh3D>>>,
 }
 
+#[derive(Debug)]
 pub(crate) struct MeshPlacement {
     pub mesh: usize,
     pub source: (u32, Option<u32>),
     pub transform: Matrix4<f32>,
+    pub instance_anchor: Option<Vector3<f32>>,
+    pub tint: Option<[f32; 4]>,
+    pub instance_data: Option<[f32; 4]>,
     pub skin: Option<JointPalette>,
     pub morph: Option<MorphWeights>,
 }
@@ -1015,7 +1082,6 @@ impl AnimatedMesh {
             clip.morph_tracks.sort_unstable_by_key(|track| track.node);
         }
         let clip_durations = clips.iter().map(MeshAnimationClip::duration).collect();
-        let mirrored = (0..meshes.len()).map(|_| OnceLock::new()).collect();
         let camera_settings = cameras
             .iter()
             .map(|camera| camera.lens.settings())
@@ -1033,13 +1099,11 @@ impl AnimatedMesh {
             cameras: cameras.into(),
             camera_settings: camera_settings.into(),
             attachment_frames,
-            mirrored,
         })
     }
 
     #[doc(hidden)]
     pub fn with_meshes(&self, meshes: Vec<Mesh3D>) -> Self {
-        let mirrored = (0..meshes.len()).map(|_| OnceLock::new()).collect();
         Self {
             meshes,
             placements: self.placements,
@@ -1051,7 +1115,6 @@ impl AnimatedMesh {
             cameras: self.cameras.clone(),
             camera_settings: self.camera_settings.clone(),
             attachment_frames: self.attachment_frames.clone(),
-            mirrored,
         }
     }
 
@@ -1097,6 +1160,7 @@ impl AnimatedMesh {
             overrides: &[],
             lights: None,
             cameras: None,
+            instance_space: None,
         };
         let mut motion = MeshAnimationBlend::default();
         record(self.sample(&motion, motion_options()));
@@ -1171,16 +1235,6 @@ impl AnimatedMesh {
         (from, blend)
     }
 
-    pub(crate) fn geometry(&self, mesh: usize, mirrored: bool) -> Option<Mesh3D> {
-        if mirrored {
-            self.mirrored[mesh]
-                .get_or_init(|| self.meshes[mesh].mirrored_x())
-                .clone()
-        } else {
-            Some(self.meshes[mesh].clone())
-        }
-    }
-
     pub(crate) fn morph_overrides(&self, fields: &[(&str, f64)]) -> Vec<Option<MorphOverrides>> {
         if fields.is_empty() {
             return Vec::new();
@@ -1204,6 +1258,7 @@ impl AnimatedMesh {
             overrides: morph_overrides,
             lights,
             cameras,
+            instance_space,
         } = options;
         let mut transforms: Vec<_> = self.nodes.iter().map(|node| node.transform).collect();
         let (from, blend) = self.motion_samples(motion);
@@ -1307,7 +1362,6 @@ impl AnimatedMesh {
                     pose: CameraNode {
                         eye: matrix.fixed_view::<3, 1>(0, 3).into_owned(),
                         rotation,
-                        target: None,
                         settings,
                         lod_bias: 1.0,
                         layers: crate::scene3d::MAIN_LAYER,
@@ -1370,10 +1424,18 @@ impl AnimatedMesh {
                 }
             };
             let push = |placements: &mut Vec<MeshPlacement>, instance, transform, skin| {
+                let attributes = node.instances.as_ref().zip(instance);
                 placements.push(MeshPlacement {
                     mesh,
                     source: (node.source_node, instance),
                     transform,
+                    instance_anchor: instance
+                        .and(matrix.as_ref())
+                        .map(|matrix| matrix.fixed_view::<3, 1>(0, 3).into_owned()),
+                    tint: attributes
+                        .and_then(|(group, index)| group.colors().get(index as usize).copied()),
+                    instance_data: attributes
+                        .and_then(|(group, index)| group.data().get(index as usize).copied()),
                     skin,
                     morph: morph.clone(),
                 });
@@ -1390,7 +1452,22 @@ impl AnimatedMesh {
                 let Some(matrix) = matrix else {
                     continue;
                 };
-                if let Some(palette) = palette {
+                if let Some(space) = instance_space {
+                    // Skinned vertices use the joint palette in scene space.
+                    let local = if palette.is_some() {
+                        space.to_root
+                    } else {
+                        space.to_root * matrix
+                    };
+                    for (index, instance) in instances.transforms.iter().enumerate() {
+                        push(
+                            &mut placements,
+                            Some(index as u32),
+                            space.to_model * instance * local,
+                            palette.cloned(),
+                        );
+                    }
+                } else if let Some(palette) = palette {
                     // The joint palette is in glTF scene space. Convert the instance
                     // transform into that space before applying it to skinned vertices.
                     let Some(inverse) = matrix.try_inverse() else {

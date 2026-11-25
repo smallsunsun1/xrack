@@ -1,8 +1,8 @@
 mod gpu_readback;
 
 use std::rc::Rc;
-use window_damage_ui::{DamageDemo, MixedDamageDemo};
-use xrack_layout::{Interaction, Point, Size, StackTransitions, TextAreaMotion};
+use window_damage_ui::{DamageDemo, FixedCaptionDemo, MixedDamageDemo};
+use xrack_layout::{FrameCache, Interaction, Point, Size, StackTransitions, TextAreaMotion};
 use xrack_renderer_femtovg::{RenderDevice, Renderer, WindowDamage};
 use xrack_runtime::{Component, Length, Node};
 
@@ -197,6 +197,89 @@ fn background_updates_reuse_geometry_and_remain_dirty_across_a_rebuild() -> Test
         WindowDamage::Partial { .. } | WindowDamage::PartialRegions(_)
     ));
     assert_eq!(harness.sample.window_geometry_builds, 1);
+    Ok(())
+}
+
+#[test]
+fn caption_changes_reuse_fixed_geometry_through_aot_and_interpreter() -> TestResult {
+    let compiled = xrack_compiler::compile(include_str!("window_damage.xr"), "window_damage.xr")?;
+    let dynamic = xrack_interpreter::load_mlir(&compiled.mlir)?.create("FixedCaptionDemo")?;
+    let mut aot = FixedCaptionDemo::new();
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let viewport = Size::new(320.0, 200.0);
+    let input = Interaction::default();
+
+    for interpreted in [false, true] {
+        let mut harness = Harness {
+            incremental: Renderer::with_device(gpu.clone())?,
+            reference: Renderer::with_device(gpu.clone())?,
+            scale: 2.0,
+            width: 640,
+            height: 400,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            sample: Default::default(),
+        };
+        harness.incremental.set_window_damage_forced(true);
+        let mut frame = FrameCache::default();
+        let scene = if interpreted {
+            dynamic.render_shared()
+        } else {
+            aot.render_shared()
+        };
+        let (before, layout) = frame.prepare(scene, viewport, &input, |scene| {
+            if interpreted {
+                harness
+                    .incremental
+                    .prepare_scene(&dynamic, scene, viewport, &input)
+            } else {
+                harness
+                    .incremental
+                    .prepare_scene(&aot, scene, viewport, &input)
+            }
+        });
+        let (_, first) = harness.compare_prepared(&before, &layout, &input, true)?;
+
+        let message = "Queue 41, pending";
+        let scene = if interpreted {
+            dynamic.set("caption", message.to_owned().into())?;
+            dynamic.render_shared()
+        } else {
+            aot.set_caption(message.into());
+            aot.render_shared()
+        };
+        assert!(!before.children[0].same_frame_inputs(&scene.children[0]));
+        let (changed, reused) = frame.prepare(scene, viewport, &input, |_| {
+            panic!("text in a fixed child box should keep the layout")
+        });
+        assert!(Rc::ptr_eq(&layout, &reused));
+        assert_eq!(changed.children[0].text("text"), Some(message));
+        let (work, updated) = harness.compare_prepared(&changed, &reused, &input, true)?;
+        assert_small(work, [640, 400]);
+        assert_ne!(first, updated);
+
+        let scene = if interpreted {
+            dynamic.set("caption-width", Length(68.0).into())?;
+            dynamic.render_shared()
+        } else {
+            aot.set_caption_width(Length(68.0));
+            aot.render_shared()
+        };
+        let (_, resized) = frame.prepare(scene, viewport, &input, |scene| {
+            if interpreted {
+                harness
+                    .incremental
+                    .prepare_scene(&dynamic, scene, viewport, &input)
+            } else {
+                harness
+                    .incremental
+                    .prepare_scene(&aot, scene, viewport, &input)
+            }
+        });
+        assert_eq!(resized.children[0].bounds.width, 68.0);
+    }
     Ok(())
 }
 

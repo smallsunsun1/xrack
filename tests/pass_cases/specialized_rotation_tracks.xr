@@ -1,0 +1,39 @@
+// RAW: "xr.geometry_function"{{.*}}value = "quaternion-track"
+// CHECK: %[[PACKED:[0-9]+]] = "xr.literal"() <{value = "0 0 0 0 1 2 0 0 1 2"}> : () -> !xr.rotationtrack3d
+// CHECK: "xr.property"(%[[PACKED]]) <{name = "packed", visibility = "out"}>
+// CHECK: %[[POSE:[0-9]+]] = "xr.literal"() <{value = "0 0 1 2"}> : () -> !xr.quaternion3d
+// CHECK: "xr.property"(%[[POSE]]) <{name = "end-pose", visibility = "out"}>
+// CHECK: %[[DIRECT:[0-9]+]] = "xr.geometry_function"{{.*}}value = "quaternion-track-keys"
+// CHECK: "xr.property"(%[[DIRECT]]) <{name = "direct", visibility = "out"}>
+// CHECK: "xr.geometry_function"{{.*}}value = "quaternion-track"}> : (!xr.recordlist<"Key">)
+// CHECK: "xr.property"{{.*}}name = "from-model"
+// CHECK: "xr.call"{{.*}}value = "read-tag"
+// CHECK: "xr.geometry_function"{{.*}}value = "quaternion-track"}> : (!xr.recordlist<"TaggedKey">)
+// CHECK: "xr.property"{{.*}}name = "observed"
+
+struct Key { orientation: quaternion3d, time: float }
+struct TaggedKey { orientation: quaternion3d, time: float, tag: int }
+
+export component App inherits Window {
+    in-out property <quaternion3d> target;
+    in-out property <[Key]> keys;
+    pure callback read-tag() -> int;
+    read-tag => { 1 }
+
+    out property <rotationtrack3d> packed: Quaternion3D.track([
+        Key { time: 0, orientation: Quaternion3D.identity() },
+        Key { time: 2, orientation: Quaternion3D.new(0, 0, 1, 2) },
+    ]);
+    out property <quaternion3d> end-pose: Quaternion3D.sample(Quaternion3D.track([
+        Key { time: 0, orientation: Quaternion3D.identity() },
+        Key { time: 2, orientation: Quaternion3D.new(0, 0, 1, 2) },
+    ]), 3);
+    out property <rotationtrack3d> direct: Quaternion3D.track([
+        Key { time: 0, orientation: root.target },
+        Key { time: 2, orientation: Quaternion3D.identity() },
+    ]);
+    out property <rotationtrack3d> from-model: Quaternion3D.track(root.keys);
+    out property <rotationtrack3d> observed: Quaternion3D.track([
+        TaggedKey { time: 0, orientation: root.target, tag: root.read-tag() },
+    ]);
+}

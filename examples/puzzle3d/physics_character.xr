@@ -1,0 +1,180 @@
+struct CharacterActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color, visible: bool,
+}
+
+export component PhysicsCharacterDemo inherits Window {
+    title: "XRack · 刚体世界角色控制";
+    width: 724px; height: 474px;
+    resizable: false; background: #192a3b;
+
+    property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    property <vector3d> zero: Vector3D.new(0, 0, 0);
+    property <point3d> stair-center: Point3D.new(0.6, 0.11, -1.2);
+    property <point3d> wall-center: Point3D.new(2.1, 1, -1.2);
+    property <point3d> platform-start: Point3D.new(-1.65, 0.15, 1.55);
+    property <point3d> crate-start: Point3D.new(-0.05, 0.26, 0.2);
+    property <point3d> sensor-center: Point3D.new(1.05, 0.9, 0.2);
+    property <vector3d> stair-size: Vector3D.new(1.2, 0.22, 1.35);
+    property <vector3d> wall-size: Vector3D.new(0.2, 2, 1.45);
+    property <vector3d> platform-size: Vector3D.new(2.2, 0.3, 1.5);
+    property <vector3d> crate-size: Vector3D.new(0.5, 0.52, 0.6);
+    property <float> radius: 0.28;
+    property <float> segment: 0.84;
+    out property <int> player: 0;
+    out property <int> floor: 0;
+    out property <int> stair: 0;
+    out property <int> wall: 0;
+    out property <int> platform: 0;
+    out property <int> crate-body: 0;
+    out property <int> sensor: 0;
+    out property <int> mode: 0;
+    out property <int> ticks: 0;
+    out property <int> entries: 0;
+    out property <bool> reporting: true;
+    out property <int> hit-count: 0;
+    property <physicscontact3d> no-hit;
+    out property <physicscontact3d> impact;
+    out property <float> peak: root.impact.normal-impulse;
+    out property <[physicscontact3d]> step-hits: Physics3D.character-hits(root.world, root.player);
+    in-out property <bool> running: false;
+    out property <bool> grounded: Physics3D.character-grounded(root.world, root.player);
+    out property <bool> wall-hit: Physics3D.character-hit-wall(root.world, root.player);
+    out property <int> support: Physics3D.character-support(root.world, root.player);
+    property <point3d> start: root.mode == 1
+        ? Point3D.new(root.platform-start.x, 1.006, root.platform-start.z)
+        : Point3D.new(-1.4, 0.706, root.mode == 0 ? -1.2 : 0.2);
+    out property <point3d> position: root.player == 0 ? root.start : Physics3D.position(root.world, root.player);
+    out property <point3d> platform-position: root.platform == 0 ? root.platform-start : Physics3D.position(root.world, root.platform);
+    out property <point3d> crate-position: root.crate-body == 0 ? root.crate-start : Physics3D.position(root.world, root.crate-body);
+    out property <vector3d> crate-rotation: Physics3D.rotation(root.world, root.crate-body);
+
+    callback setup(mode: int);
+    setup(mode) => {
+        Physics3D.clear(root.world);
+        root.mode = mode;
+        root.floor = Physics3D.add-box(root.world, Point3D.new(0, -0.1, 0), Vector3D.new(11, 0.2, 6), 0, 0, 0);
+        root.stair = Physics3D.add-box(root.world, root.stair-center, root.stair-size, 0, 0, 0);
+        root.wall = Physics3D.add-box(root.world, root.wall-center, root.wall-size, 0, 0, 0);
+        root.platform = Physics3D.add-kinematic-box(root.world, root.platform-start, root.platform-size, root.zero, 0.6, 0);
+        root.crate-body = Physics3D.add-box(root.world, root.crate-start, root.crate-size, 0.45, 0, 0);
+        root.sensor = Physics3D.add-box-trigger(root.world, root.sensor-center, Vector3D.new(0.8, 1.4, 1), root.zero);
+        root.player = Physics3D.add-character(root.world, root.start, root.radius, root.segment);
+        Physics3D.set-character-hit-reports(root.world, root.player, root.reporting);
+        Physics3D.set-character-options(root.world, root.player, 0.32, 0.24, 45, 4);
+        Physics3D.set-character-movement(root.world, root.player, Vector3D.new(mode == 0 ? 1.6 : mode == 2 ? 2.0 : 0, 0, 0));
+        root.running = false;
+        root.ticks = 0;
+        root.entries = 0;
+        root.hit-count = 0;
+        root.impact = root.no-hit;
+    }
+    callback enable-hit-reports(enabled: bool);
+    enable-hit-reports(enabled) => {
+        root.reporting = enabled;
+        if root.player > 0 { Physics3D.set-character-hit-reports(root.world, root.player, enabled); }
+        if !enabled {
+            root.hit-count = 0;
+            root.impact = root.no-hit;
+        }
+    }
+    callback jump();
+    jump() => {
+        if root.player == 0 { root.setup(0); }
+        if Physics3D.jump-character(root.world, root.player, 3.2) { root.running = true; }
+    }
+    callback advance();
+    advance() => {
+        if root.player == 0 { root.setup(0); }
+        if root.mode == 1 && root.ticks > 0 && root.ticks <= 40 {
+            Physics3D.set-kinematic-target(root.world, root.platform,
+                Point3D.new(root.platform-start.x + root.ticks * 0.025,
+                    root.platform-start.y + root.ticks * 0.012, root.platform-start.z), root.zero);
+        }
+        if Physics3D.step(root.world) {
+            root.ticks += 1;
+            for body in Physics3D.trigger-entered(root.world, root.sensor) {
+                if body == root.player { root.entries += 1; }
+            }
+            for hit in root.step-hits {
+                if hit.body == root.wall || hit.body == root.crate-body {
+                    root.hit-count += 1;
+                    if hit.normal-impulse >= root.peak { root.impact = hit; }
+                }
+            }
+            if (root.mode == 1 && root.ticks >= 55) || root.ticks >= 175 || root.position.x > 3.5 {
+                root.running = false;
+            }
+        }
+    }
+    clock := Timer { interval: 16; repeat: true; running: root.running; triggered => { root.advance(); } }
+
+    pure function part(id: string, mesh: string, center: point3d, size: vector3d, rotation: vector3d, tint: color) -> CharacterActor {
+        CharacterActor {
+            id: id, mesh: mesh, x: center.x, y: center.y, z: center.z,
+            scale-x: size.x, scale-y: size.y, scale-z: size.z,
+            yaw: rotation.x, pitch: rotation.y, roll: rotation.z, color: tint, visible: true,
+        }
+    }
+    pure function cap(id: string, offset: float) -> CharacterActor {
+        root.part(id, "primitive:sphere", Point3D.new(root.position.x, root.position.y + offset, root.position.z),
+            Vector3D.new(root.radius, root.radius, root.radius), root.zero, #69dfc3)
+    }
+    property <[CharacterActor]> actors: [
+        root.part("floor", "primitive:box", Point3D.new(0, -0.1, 0), Vector3D.new(10, 0.2, 5.4), root.zero, #345862),
+        root.part("stair", "primitive:box", root.stair-center, root.stair-size, root.zero, #98bce5),
+        root.part("wall", "primitive:box", root.wall-center, root.wall-size, root.zero, #6b8db2),
+        root.part("platform", "primitive:box", root.platform-position, root.platform-size, root.zero, #a59ad9),
+        root.part("crate", "primitive:box", root.crate-position, root.crate-size, root.crate-rotation, #eea25f),
+        root.part("trigger", "primitive:box", Point3D.new(root.sensor-center.x, 0.015, root.sensor-center.z),
+            Vector3D.new(0.8, 0.03, 1), root.zero, root.entries > 0 ? #6fec9e : #537d72),
+        root.part("capsule-middle", "primitive:cylinder", root.position,
+            Vector3D.new(2 * root.radius, root.segment, 2 * root.radius), root.zero, #69dfc3),
+        root.cap("capsule-top", root.segment / 2),
+        root.cap("capsule-bottom", -root.segment / 2),
+        CharacterActor {
+            visible: root.impact.body > 0,
+            ..root.part("hit-point", "primitive:sphere", root.impact.position,
+                Vector3D.new(0.1, 0.1, 0.1), root.zero, #ffd062)
+        },
+        CharacterActor {
+            visible: root.impact.body > 0,
+            ..root.part("hit-normal", "primitive:sphere",
+                Point3D.new(root.impact.position.x + root.impact.normal.x * 0.32,
+                    root.impact.position.y + root.impact.normal.y * 0.32,
+                    root.impact.position.z + root.impact.normal.z * 0.32),
+                Vector3D.new(0.065, 0.065, 0.065), root.zero, #dc7f39)
+        },
+    ];
+    SceneView3D {
+        width: 724px; height: 400px; model: root.actors;
+        camera-yaw: -19; camera-pitch: 34; camera-distance: 11;
+        scene-background: #213c51; ambient-intensity: 0.46; multisampling: true;
+    }
+    character-status := Text {
+        x: 18px; y: 16px; color: #e5eef6;
+        text: (root.mode == 0 ? "台阶" : root.mode == 1 ? "平台" : "推箱")
+            + "   ·   接地 " + (root.grounded ? 1 : 0) + "   撞墙 " + (root.wall-hit ? 1 : 0)
+            + "   ·   触发 " + root.entries + "   ·   高度 " + Math.round(root.position.y * 100) / 100.0
+            + "   ·   步数 " + root.ticks;
+    }
+    hit-status := Text {
+        x: 18px; y: 43px; color: root.hit-count > 0 ? #ffd062 : #b8cbdb;
+        text: "撞击 " + root.hit-count + "   ·   最大法向冲量 " + Math.round(root.peak * 1000) / 1000.0;
+    }
+    report-toggle := Button {
+        x: 541px; y: 34px; width: 152px; height: 34px;
+        text: root.reporting ? "撞击明细 开" : "撞击明细 关";
+        clicked => { root.enable-hit-reports(!root.reporting); }
+    }
+    HorizontalLayout {
+        x: 14px; y: 412px; width: 696px; height: 44px; spacing: 10px;
+        walk-button := Button { width: 110px; text: "走台阶"; clicked => { root.setup(0); root.running = true; } }
+        ride-button := Button { width: 110px; text: "乘平台"; clicked => { root.setup(1); root.running = true; } }
+        push-button := Button { width: 110px; text: "推方箱"; clicked => { root.setup(2); root.running = true; } }
+        jump-button := Button { width: 90px; text: "跳跃"; clicked => { root.jump(); } }
+        step-button := Button { width: 90px; text: "单步"; clicked => { root.advance(); } }
+        reset-button := Button { width: 100px; text: "重置"; clicked => { root.setup(0); } }
+    }
+}

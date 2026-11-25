@@ -12023,6 +12023,10 @@ fn material_shader_files_are_embedded_and_reject_fragment_discard() {
     std::fs::write(&asset, light_only).unwrap();
     let result = compile(source, filename.to_str().unwrap()).unwrap();
     assert!(result.rust.to_string().contains(light_only));
+    let data_only = "fn scene_material_data(input: XrMaterialInput, surface: XrMaterialSurface) -> vec4<f32> { return vec4(surface.base_color, surface.metallic); }";
+    std::fs::write(&asset, data_only).unwrap();
+    let result = compile(source, filename.to_str().unwrap()).unwrap();
+    assert!(result.rust.to_string().contains(data_only));
     for (program, message) in [
         (
             "fn scene_vertex(input: XrVertexInput) -> f32 { return 0.0; }",
@@ -12039,6 +12043,10 @@ fn material_shader_files_are_embedded_and_reject_fragment_discard() {
         (
             "fn scene_ambient(input: XrAmbientInput, diffuse: vec3<f32>) -> f32 { return diffuse.x; }",
             "scene_ambient",
+        ),
+        (
+            "fn scene_material_data(input: XrMaterialInput, surface: XrMaterialSurface) -> vec3<f32> { return surface.base_color; }",
+            "scene_material_data",
         ),
         (
             "fn scene_vertex(input: XrVertexInput) -> vec3<f32> { return material_texture_world_position(0u, input.position.xy).position; }",
@@ -12411,12 +12419,168 @@ fn capture_color_format_requires_a_string_in_source_and_mlir() {
             SceneView3D { scene-captures: [Feed { name: "data", marker: 1 }]; }
         }
     "#;
-    let invalid = source.replace("marker", "color-format");
-    let diagnostic = compile(&invalid, "capture-format.xr")
+    let raw = lower(source, "capture-format.xr");
+    for field in ["color-format", "material-data-format"] {
+        let invalid = source.replace("marker", field);
+        let diagnostic = compile(&invalid, "capture-format.xr")
+            .err()
+            .expect("invalid capture attachment format type");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+        let mlir = raw.replace("marker", field);
+        let diagnostic = mlir::process(&mlir).expect_err("verify capture format type");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+    }
+}
+
+#[test]
+fn combined_capture_requires_a_boolean_in_source_and_mlir() {
+    let source = r#"
+        struct Feed { name: string, marker: string }
+        export component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "surface", marker: "true" }]; }
+        }
+    "#;
+    let invalid = source.replace("marker", "combine-attachments");
+    let diagnostic = compile(&invalid, "capture-mrt.xr")
         .err()
-        .expect("invalid capture color format type");
-    assert!(diagnostic.contains("color-format"), "{diagnostic}");
-    let raw = lower(source, "capture-format.xr").replace("marker", "color-format");
-    let diagnostic = mlir::process(&raw).expect_err("verify capture format type");
-    assert!(diagnostic.contains("color-format"), "{diagnostic}");
+        .expect("invalid combined capture flag");
+    assert!(diagnostic.contains("combine-attachments"), "{diagnostic}");
+    let raw = lower(source, "capture-mrt.xr").replace("marker", "combine-attachments");
+    let diagnostic = mlir::process(&raw).expect_err("verify combined capture flag type");
+    assert!(diagnostic.contains("combine-attachments"), "{diagnostic}");
+}
+
+#[test]
+fn reflection_work_budgets_require_integers_in_source_and_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            SceneView3D { scene-exposure: 1.25; }
+        }
+    "#;
+    let raw = lower(source, "reflection-budget.xr");
+    for property in [
+        "reflection-faces-per-frame",
+        "reflection-filter-passes-per-frame",
+        "reflection-filter-texels-per-frame",
+    ] {
+        let invalid = source.replace("scene-exposure", property);
+        let diagnostic = compile(&invalid, "reflection-budget.xr")
+            .err()
+            .expect("reflection budget type");
+        assert!(
+            diagnostic.contains("expected int, found float"),
+            "{diagnostic}"
+        );
+        let mlir = raw.replace("scene-exposure", property);
+        assert!(mlir::process(&mlir).is_err());
+    }
+}
+
+#[test]
+fn reflection_probe_debug_view_requires_a_boolean_in_source_and_mlir() {
+    let source = r#"
+        struct Probe { position: point3d, box-size: vector3d, marker: string }
+        export component App inherits Window {
+            SceneView3D {
+                reflection-probes: [Probe {
+                    position: Point3D.new(0, 0, 0), box-size: Vector3D.new(4, 4, 4), marker: "on",
+                }];
+            }
+        }
+    "#;
+    let invalid = source.replace("marker", "debug-view");
+    let diagnostic = compile(&invalid, "probe-debug.xr")
+        .err()
+        .expect("debug view type");
+    assert!(diagnostic.contains("debug-view"), "{diagnostic}");
+    let raw = lower(source, "probe-debug.xr").replace("marker", "debug-view");
+    let diagnostic = mlir::process(&raw).expect_err("debug view MLIR type");
+    assert!(diagnostic.contains("debug-view"), "{diagnostic}");
+}
+
+#[test]
+fn light_sampling_and_bake_fields_are_typed_in_source_and_mlir() {
+    let source = r#"
+        struct Lamp {
+            kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+            intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
+            marker: bool,
+        }
+        export component App inherits Window {
+            SceneView3D {
+                lights: [Lamp {
+                    kind: "spot", x: 0, y: 1, z: 2, yaw: 0, elevation: 0, intensity: 1,
+                    color: #ffffff, range: 4, inner-angle: 15, outer-angle: 30, marker: true,
+                }];
+            }
+        }
+    "#;
+    let raw = lower(source, "shadow-options.xr");
+    for field in [
+        "shadow-filter",
+        "shadow-strength",
+        "shadow-radius",
+        "shadow-bias",
+        "bake-mode",
+    ] {
+        let invalid = source.replace("marker", field);
+        let diagnostic = compile(&invalid, "shadow-options.xr")
+            .err()
+            .expect("light shadow field type");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+        let diagnostic =
+            mlir::process(&raw.replace("marker", field)).expect_err("light shadow MLIR field type");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+    }
+}
+
+#[test]
+fn model_bake_fields_are_typed_in_source_and_mlir() {
+    let source = r#"
+        struct Actor {
+            id: string, mesh: string, x: float, y: float, z: float, scale-x: float, scale-y: float,
+            scale-z: float, yaw: float, pitch: float, roll: float, color: color, marker: bool,
+        }
+        export component App inherits Window {
+            SceneView3D {
+                model: [Actor {
+                    id: "actor", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+                    yaw: 0, pitch: 0, roll: 0, color: #ffffff, marker: true,
+                }];
+            }
+        }
+    "#;
+    let raw = lower(source, "bake-model.xr");
+    for field in ["bake-role", "lightmap-size", "lightmap-texels-per-unit"] {
+        let diagnostic = compile(&source.replace("marker", field), "bake-model.xr")
+            .err()
+            .expect("model bake field type");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+        let diagnostic =
+            mlir::process(&raw.replace("marker", field)).expect_err("model bake field MLIR type");
+        assert!(diagnostic.contains(field), "{diagnostic}");
+    }
+}
+
+#[test]
+fn viewport_bake_quality_is_typed_in_source_and_mlir() {
+    let raw = lower(
+        "export component App inherits Window { SceneView3D { shadows: true; } }",
+        "bake-quality.xr",
+    );
+    for property in ["bake-denoise-passes", "bake-indirect-factor"] {
+        let invalid = format!(
+            "export component App inherits Window {{ SceneView3D {{ {property}: true; }} }}"
+        );
+        assert!(
+            compile(&invalid, "bake-quality.xr").is_err(),
+            "{property} accepts only its numeric type"
+        );
+        let diagnostic =
+            mlir::process(&raw.replace("shadows", property)).expect_err("bake quality MLIR type");
+        assert!(
+            diagnostic.contains("SceneView3D property type"),
+            "{diagnostic}"
+        );
+    }
 }

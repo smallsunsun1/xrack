@@ -10,6 +10,7 @@ struct PositionActor {
     scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
     color: color, layers: int,
     camera-kind: string, camera-height: float, camera-near: float, camera-far: float,
+    camera-reverse-depth: bool,
     camera-left: float, camera-right: float, camera-bottom: float, camera-top: float,
     material: PositionMaterial,
 }
@@ -24,6 +25,7 @@ export component CapturePositionsDemo inherits Window {
     in-out property <float> west-shift: 0;
     in-out property <float> west-z: 2;
     in-out property <bool> asymmetric: false;
+    in-out property <bool> device-reversed: false;
 
     property <[PositionInput]> samples: [
         PositionInput { capture: "west", attachment: "depth", filter: "nearest" },
@@ -38,11 +40,14 @@ export component CapturePositionsDemo inherits Window {
         unlit: true, material-shader: @material-shader-url("effects/capture_position_material.wgsl"),
         shader-parameters: Vector3D.new(0, 0, 0), shader-textures: root.samples,
     };
+    property <float> parallel-half-width: 2.0 * 540.0 / 280.0;
     property <PositionActor> base: PositionActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
         color: #fff, layers: 1, camera-kind: "", camera-height: 4, camera-near: 1, camera-far: 9,
-        camera-left: -0.25, camera-right: 0.55, camera-top: 0.33, camera-bottom: -0.33,
+        camera-reverse-depth: root.device-reversed,
+        camera-left: -root.parallel-half-width, camera-right: root.parallel-half-width,
+        camera-top: 2, camera-bottom: -2,
         material: root.stock,
     };
 
@@ -57,7 +62,12 @@ export component CapturePositionsDemo inherits Window {
             },
             PositionActor {
                 id: "east-camera", mesh: "", x: 1.5, z: 7,
-                camera-kind: root.asymmetric ? "frustum" : "orthographic", ..root.base
+                camera-kind: root.asymmetric ? "frustum" : "orthographic",
+                camera-left: root.asymmetric ? -0.25 : root.base.camera-left,
+                camera-right: root.asymmetric ? 0.55 : root.base.camera-right,
+                camera-top: root.asymmetric ? 0.33 : root.base.camera-top,
+                camera-bottom: root.asymmetric ? -0.33 : root.base.camera-bottom,
+                ..root.base
             },
             PositionActor {
                 id: "west-panel", x: -1.4, scale-x: 2.45, scale-y: 1.96, material: root.display, ..root.base

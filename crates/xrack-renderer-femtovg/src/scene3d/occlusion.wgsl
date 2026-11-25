@@ -1,9 +1,7 @@
 struct Settings {
-    // Horizontal and vertical clip scale, near and far distance.
-    projection: vec4<f32>,
-    // Sampling radius, self-shadow bias, orthographic flag.
+    depth_mapping: ClipDepthMapping,
+    // Sampling radius and self-shadow bias.
     options: vec4<f32>,
-    shift: vec4<f32>,
 }
 
 @group(0) @binding(0) var depth_buffer: texture_depth_2d;
@@ -18,23 +16,12 @@ struct OcclusionSamples {
 @group(0) @binding(2) var<storage, read_write> output_samples: OcclusionSamples;
 
 fn orthographic() -> bool {
-    return settings.options.z > 0.5;
+    return settings.depth_mapping.distances.z > 0.5;
 }
 
 fn view_point(pixel: vec2<i32>, size: vec2<i32>, depth: f32) -> vec3<f32> {
-    let near = settings.projection.z;
-    let far = settings.projection.w;
-    let ndc = (vec2<f32>(pixel) + 0.5) / vec2<f32>(size) * 2.0 - 1.0;
-    let plane = (ndc * vec2<f32>(1.0, -1.0) - settings.shift.xy) / settings.projection.xy;
-    if orthographic() {
-        return vec3<f32>(plane, mix(near, far, depth));
-    }
-    var ratio = 0.0;
-    if far > 0.0 {
-        ratio = near / far;
-    }
-    let z = near / max((1.0 - depth) + depth * ratio, 0.000000000001);
-    return vec3<f32>(plane * z, z);
+    let uv = (vec2<f32>(pixel) + 0.5) / vec2<f32>(size);
+    return view_point_from_clip(settings.depth_mapping, uv, depth);
 }
 
 fn delta(pixel: vec2<i32>, size: vec2<i32>, center: vec3<f32>) -> vec3<f32> {
@@ -45,7 +32,7 @@ fn delta(pixel: vec2<i32>, size: vec2<i32>, center: vec3<f32>) -> vec3<f32> {
 
 fn evaluate(pixel: vec2<i32>, size: vec2<i32>) -> vec2<f32> {
     let depth = textureLoad(depth_buffer, pixel, 0);
-    if depth >= 1.0 {
+    if is_clear_clip_depth(depth) {
         return vec2<f32>(0.0);
     }
     let center = view_point(pixel, size, depth);
@@ -62,8 +49,16 @@ fn evaluate(pixel: vec2<i32>, size: vec2<i32>) -> vec2<f32> {
     }
     let n = normalize(facing);
     let radius = settings.options.x;
-    let pixel_radius = radius * settings.projection.xy * vec2<f32>(size) * 0.5
+    var pixel_radius = radius * settings.depth_mapping.lens.xy * vec2<f32>(size) * 0.5
         / select(max(center.z, 1e-6), 1.0, orthographic());
+    if MATRIX_CLIP_PROJECTION {
+        let mapping = settings.depth_mapping;
+        let clip = matrix_clip_from_view(mapping, center);
+        let ndc = clip.xy / clip.w;
+        let dx = mapping.view_to_clip[0].xyz - ndc.x * mapping.view_to_clip[3].xyz;
+        let dy = mapping.view_to_clip[1].xyz - ndc.y * mapping.view_to_clip[3].xyz;
+        pixel_radius = radius * vec2<f32>(length(dx), length(dy)) * vec2<f32>(size) * (0.5 / clip.w);
+    }
     let extent = clamp(pixel_radius, vec2<f32>(1.0), vec2<f32>(64.0));
     // A small deterministic spiral covers the disk with a fixed sample cost.
     let angle = f32((u32(pixel.x) * 13u + u32(pixel.y) * 7u) & 7u) * 0.7853982;
@@ -77,7 +72,7 @@ fn evaluate(pixel: vec2<i32>, size: vec2<i32>) -> vec2<f32> {
             continue;
         }
         let z = textureLoad(depth_buffer, at, 0);
-        if z >= 1.0 {
+        if is_clear_clip_depth(z) {
             continue;
         }
         let difference = (view_point(at, size, z) - center) / radius;

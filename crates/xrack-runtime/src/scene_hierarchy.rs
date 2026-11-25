@@ -5,33 +5,41 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use nalgebra::{Matrix3, Matrix4, Rotation3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Matrix4, Quaternion, Rotation3, UnitQuaternion, Vector3};
+use rapier3d::prelude::Pose as RigidPose;
 
 use crate::{
-    Color, Point3D, RecordList, Value, VecModel, Vector3D,
+    Color, Instance3D, Node, PhysicsWorld3D, Point2D, Point3D, Quaternion3D, RecordList,
+    RecordValue, Value, VecModel, Vector3D,
     scene_animation::{
-        AnimatedMesh, MeshAnimationBlend, MeshPlacement, MeshPlayback, MeshSampleOptions,
+        AnimatedMesh, MeshAnimationBlend, MeshInstanceSpace, MeshPlacement, MeshPlayback,
+        MeshSampleOptions,
     },
     scene_authored_mesh::{SceneMeshIndices, SceneMeshInputs, SceneMeshSubset, SceneMeshVertex},
     scene_bounds::Bounds3D,
-    scene_camera::{CameraNode, SceneCamera, SceneCameraSettings},
+    scene_camera::{CameraMatrixCache, CameraNode, SceneCamera, SceneCameraSettings},
     scene_effect::CaptureRenderables,
+    scene_instance_table::{InstancePlacements, InstanceTable3D},
     scene_lighting::{MAX_SCENE_LIGHTS, SceneLight},
-    scene_lightmap::BakedLightmap,
+    scene_lightmap::{BakeRole, BakedLightmap, LightmapResolution},
     scene_pick::BoundsSegment,
+    scene_random_instances::{InstancePlacement, SceneRandomInstances},
     scene_visibility::{Frustum, INDEX_THRESHOLD, SceneVisibility, VisibilityIndex},
     scene3d::{
-        CaptureMaterial, MAIN_LAYER, Mesh3D, MeshAsset, SceneObject, SceneParametricGeometry,
+        CaptureMaterial, InstanceOrder, InstancingLodRange, MAIN_LAYER, Mesh3D, MeshAsset,
+        SceneObject, SceneParametricGeometry,
     },
 };
 
 const MAX_NODES: usize = 4096;
+pub(crate) const NO_MESH_NODE: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SceneTransform {
     pub linear: Matrix3<f32>,
     pub origin: Vector3<f32>,
     pub inverse: Matrix3<f32>,
+    pub reflected: bool,
 }
 
 impl SceneTransform {
@@ -41,23 +49,35 @@ impl SceneTransform {
         angles: [f32; 3],
         pivot: [f32; 3],
     ) -> Option<(Self, Rotation3<f32>)> {
+        if !angles.into_iter().all(f32::is_finite) {
+            return None;
+        }
+        Self::local_with_rotation(position, scale, pivot, euler_rotation(angles))
+    }
+
+    pub(crate) fn local_with_rotation(
+        position: [f32; 3],
+        scale: [f32; 3],
+        pivot: [f32; 3],
+        rotation: Rotation3<f32>,
+    ) -> Option<(Self, Rotation3<f32>)> {
         if !position
             .into_iter()
             .chain(pivot)
             .all(|value| value.is_finite() && value.abs() <= 200.0)
             || !scale
                 .into_iter()
-                .all(|value| (0.0001..=200.0).contains(&value))
-            || !angles.into_iter().all(f32::is_finite)
+                .all(|value| (0.0001..=200.0).contains(&value.abs()))
         {
             return None;
         }
-        let rotation = euler_rotation(angles);
         let mut linear = *rotation.matrix();
         let mut inverse = linear.transpose();
+        let mut reflected = false;
         for (axis, scale) in scale.into_iter().enumerate() {
             linear.column_mut(axis).scale_mut(scale);
             inverse.row_mut(axis).unscale_mut(scale);
+            reflected ^= scale < 0.0;
         }
         // The model-space pivot maps to the authored position.
         let origin = Vector3::from(position) - linear * Vector3::from(pivot);
@@ -66,51 +86,72 @@ impl SceneTransform {
                 linear,
                 origin,
                 inverse,
+                reflected,
             },
             rotation,
         ))
     }
 
-    fn child(self, local: Self) -> Option<Self> {
-        let transform = Self {
+    pub(crate) fn child(self, local: Self) -> Option<Self> {
+        Self {
             linear: self.linear * local.linear,
             origin: self.linear * local.origin + self.origin,
             inverse: local.inverse * self.inverse,
-        };
-        // A strongly ill-conditioned transform has no reliable f32 inverse
-        // for either rasterization or picking.
-        transform
-            .linear
-            .iter()
-            .chain(transform.origin.iter())
-            .chain(transform.inverse.iter())
-            .all(|value| value.is_finite() && value.abs() <= 1_000_000.0)
-            .then_some(transform)
+            reflected: self.reflected ^ local.reflected,
+        }
+        .checked()
     }
 
-    fn mesh_node(self, node: &Matrix4<f32>) -> Option<(Self, bool)> {
-        let mut linear = self.linear * node.fixed_view::<3, 3>(0, 0);
-        let origin = self.origin + self.linear * node.fixed_view::<3, 1>(0, 3);
-        let mirrored = linear.determinant() < 0.0;
-        if mirrored {
-            // Use a resident reflected geometry variant instead of changing
-            // the front-face winding of the whole viewport.
-            linear.column_mut(0).scale_mut(-1.0);
+    pub(crate) fn relative_to(self, root: Self) -> Option<Self> {
+        Self {
+            linear: root.inverse * self.linear,
+            origin: root.inverse * (self.origin - root.origin),
+            inverse: self.inverse * root.linear,
+            reflected: self.reflected ^ root.reflected,
         }
+        .checked()
+    }
+
+    pub(crate) fn from_instance_rows(rows: [[f32; 4]; 3]) -> Option<Self> {
+        let linear = Matrix3::from_fn(|row, column| rows[row][column]);
         let inverse = linear.try_inverse()?;
-        linear
+        Self {
+            linear,
+            inverse,
+            origin: Vector3::new(rows[0][3], rows[1][3], rows[2][3]),
+            reflected: linear.determinant() < 0.0,
+        }
+        .checked()
+    }
+
+    fn matrix(self) -> Matrix4<f32> {
+        let mut matrix = Matrix4::identity();
+        matrix.fixed_view_mut::<3, 3>(0, 0).copy_from(&self.linear);
+        matrix.fixed_view_mut::<3, 1>(0, 3).copy_from(&self.origin);
+        matrix
+    }
+
+    fn checked(self) -> Option<Self> {
+        // A strongly ill-conditioned transform has no reliable f32 inverse
+        // for either rasterization or picking.
+        self.linear
             .iter()
-            .chain(origin.iter())
-            .chain(inverse.iter())
+            .chain(self.origin.iter())
+            .chain(self.inverse.iter())
             .all(|value| value.is_finite() && value.abs() <= 1_000_000.0)
-            .then_some((
-                Self {
-                    linear,
-                    origin: origin.into_owned(),
-                    inverse,
-                },
-                mirrored,
-            ))
+            .then_some(self)
+    }
+
+    fn mesh_node(self, node: &Matrix4<f32>) -> Option<Self> {
+        let linear = self.linear * node.fixed_view::<3, 3>(0, 0);
+        let inverse = linear.try_inverse()?;
+        Self {
+            linear,
+            origin: self.origin + self.linear * node.fixed_view::<3, 1>(0, 3),
+            inverse,
+            reflected: linear.determinant() < 0.0,
+        }
+        .checked()
     }
 
     pub(crate) fn rows(self) -> [[f32; 4]; 3] {
@@ -142,29 +183,170 @@ pub enum SceneGeometryInput<'a> {
     Triangles(Option<Mesh3D>),
 }
 
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneCollisionShape {
+    asset: MeshAsset,
+    local: SceneTransform,
+}
+
+impl SceneCollisionShape {
+    pub fn new(
+        shape: &str,
+        position: Point3D,
+        size: Vector3D,
+        angles: [f64; 3],
+        mesh: &str,
+        imported: impl FnOnce(&str) -> Option<MeshAsset>,
+    ) -> Option<Self> {
+        let extent = [size.x, size.y, size.z];
+        let (asset, scale) = match shape {
+            "box" => (MeshAsset::Static(Mesh3D::Box), extent),
+            "sphere" => (
+                MeshAsset::Static(Mesh3D::Sphere),
+                extent.map(|value| value * 0.5),
+            ),
+            "cylinder" => (
+                MeshAsset::Static(Mesh3D::builtin("primitive:cylinder")?),
+                extent,
+            ),
+            "cone" => (
+                MeshAsset::Static(Mesh3D::builtin("primitive:cone")?),
+                extent,
+            ),
+            "capsule" => (
+                MeshAsset::Static(
+                    SceneParametricGeometry {
+                        shape: "capsule",
+                        radius: Some(size.x * 0.5),
+                        height: Some(size.y),
+                        ..SceneParametricGeometry::default()
+                    }
+                    .mesh()?,
+                ),
+                [1.0, 1.0, size.z / size.x],
+            ),
+            "mesh" if !mesh.is_empty() => (MeshAsset::resolve(mesh, imported)?, extent),
+            _ => return None,
+        };
+        let (local, _) = SceneTransform::local(
+            [position.x, position.y, position.z].map(|value| value as f32),
+            scale.map(|value| value as f32),
+            angles.map(|value| value as f32),
+            [0.0; 3],
+        )?;
+        Some(Self { asset, local })
+    }
+
+    fn from_record(
+        row: &RecordValue,
+        imported: impl FnOnce(&str) -> Option<MeshAsset>,
+    ) -> Option<Self> {
+        let spec = CollisionShapeSpec::from_record(row)?;
+        Self::new(
+            spec.shape,
+            spec.position,
+            spec.size,
+            spec.angles,
+            spec.mesh,
+            imported,
+        )
+    }
+}
+
+pub(crate) struct CollisionShapeSpec<'a> {
+    pub shape: &'a str,
+    pub position: Point3D,
+    pub size: Vector3D,
+    pub angles: [f64; 3],
+    pub mesh: &'a str,
+}
+
+impl<'a> CollisionShapeSpec<'a> {
+    pub(crate) fn from_record(row: &'a RecordValue) -> Option<Self> {
+        let Value::String(shape) = row.field("shape")? else {
+            return None;
+        };
+        let position = match row.field("position") {
+            Some(Value::Point3D(position)) => *position,
+            _ => Point3D::default(),
+        };
+        let size = match row.field("size") {
+            Some(Value::Vector3D(size)) => *size,
+            _ => Vector3D::new(1.0, 1.0, 1.0),
+        };
+        let angles = ["yaw", "pitch", "roll"].map(|name| match row.field(name) {
+            Some(Value::Float(value)) => *value,
+            _ => 0.0,
+        });
+        let mesh = match row.field("mesh") {
+            Some(Value::String(mesh)) => mesh.as_str(),
+            _ => "",
+        };
+        Some(Self {
+            shape: shape.as_str(),
+            position,
+            size,
+            angles,
+            mesh,
+        })
+    }
+}
+
+#[doc(hidden)]
+pub fn prepare_collision_shapes<T: 'static>(
+    inputs: &SceneMeshInputs,
+    model: &VecModel<T>,
+    prepare: impl FnMut(&T) -> Option<SceneCollisionShape>,
+) -> Option<Arc<[SceneCollisionShape]>> {
+    inputs.remember(model);
+    let (count, shapes) = model.inspect_rows(0, MAX_NODES, prepare);
+    (count > 0).then(|| shapes.into_iter().flatten().collect::<Vec<_>>().into())
+}
+
 /// An authored row's local transform and renderable payload.
 #[doc(hidden)]
 pub struct SceneNodeDefinition<'a> {
     pub id: String,
     pub parent: String,
+    pub physics_body: &'a str,
     pub mesh: &'a str,
     pub geometry: Option<SceneGeometryInput<'a>>,
+    pub collision_shapes: Option<Arc<[SceneCollisionShape]>>,
     pub material_variant: &'a str,
     pub instance_of: String,
+    pub instance_root: String,
+    pub instance_data: Option<[f64; 4]>,
     pub instance_template: bool,
+    pub random_instances: Option<SceneRandomInstances>,
+    pub instance_table: InstanceTable3D,
+    pub instance_count_override: i64,
+    pub instance_has_transparency: bool,
+    pub instance_depth_sorting: bool,
+    pub instance_shadow_bounds: Option<[Vector3D; 2]>,
     pub animation: MeshAnimationBlend,
     pub morph_weights: &'a [(&'a str, f64)],
     pub position: [f64; 3],
     pub scale: [f64; 3],
     pub angles: [f64; 3],
     pub pivot: [f64; 3],
+    pub orientation: Option<Quaternion3D>,
     pub visible: bool,
     pub camera: Option<SceneCameraSettings>,
     pub look_at: String,
+    pub look_at_point: Option<Point3D>,
+    pub camera_up: Option<Vector3D>,
     pub color: Color,
+    pub depth_bias: f64,
+    pub motion_vector_enabled: bool,
+    pub motion_vector_scale: f64,
+    pub instancing_lod_range: [f64; 2],
+    pub instancing_lod_factor: f64,
     pub material: Option<crate::scene3d::SceneMaterial>,
     pub material_slots: Vec<crate::scene3d::SceneMaterialBinding>,
     pub lightmap: Option<BakedLightmap>,
+    pub bake_role: &'a str,
+    pub lightmap_resolution: LightmapResolution,
     pub casts_shadow: bool,
     pub receives_shadow: bool,
     pub receives_reflections: bool,
@@ -172,6 +354,7 @@ pub struct SceneNodeDefinition<'a> {
     pub layers: u64,
     pub pickable: bool,
     pub collidable: bool,
+    pub trigger: bool,
     pub lod_of: String,
     pub lod_max_size: f64,
     pub lod_bias: f64,
@@ -185,18 +368,36 @@ pub struct SceneNode {
     parent: String,
     local: SceneTransform,
     rotation: Rotation3<f32>,
+    physics: Option<Arc<BodyAttachment>>,
+    world_locked: bool,
     camera: Option<SceneCameraSettings>,
     look_at: String,
+    look_at_point: Option<Point3D>,
+    camera_up: Option<Vector3D>,
     visible: bool,
     mesh: Option<MeshAsset>,
+    collision_shapes: Option<Arc<[SceneCollisionShape]>>,
     animation: MeshAnimationBlend,
     morph_weights: Arc<[(String, f64)]>,
     instance_of: String,
+    instance_root: String,
+    instance_data: Option<[f32; 4]>,
     instance_template: bool,
+    placements: Option<InstancePlacements>,
+    instance_has_transparency: bool,
+    instance_depth_sorting: bool,
+    instance_shadow_bounds: Option<Bounds3D>,
     prototype_row: Option<u32>,
     color: Color,
+    depth_bias: f64,
+    motion_vector_enabled: bool,
+    motion_vector_scale: f64,
+    instancing_lod: InstancingLodRange,
+    instancing_lod_factor: Option<f64>,
     appearance: Option<Arc<crate::scene_material::SceneAppearance>>,
     lightmap: Option<BakedLightmap>,
+    bake_role: BakeRole,
+    lightmap_resolution: LightmapResolution,
     casts_shadow: bool,
     receives_shadow: bool,
     receives_reflections: bool,
@@ -204,11 +405,18 @@ pub struct SceneNode {
     layers: u64,
     pickable: bool,
     collidable: bool,
+    trigger: bool,
     row: u32,
     lod_of: String,
     lod_max_size: f64,
     lod_bias: f64,
     camera_lod_bias: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BodyAttachment {
+    id: String,
+    offset: SceneTransform,
 }
 
 impl SceneNodeDefinition<'_> {
@@ -219,12 +427,21 @@ impl SceneNodeDefinition<'_> {
     ) -> Option<SceneNode> {
         let narrow = |values: [f64; 3]| values.map(|value| value as f32);
         let (local, rotation) = if self.lod_of.is_empty() {
-            SceneTransform::local(
-                narrow(self.position),
-                narrow(self.scale),
-                narrow(self.angles),
-                narrow(self.pivot),
-            )?
+            if let Some(orientation) = self.orientation {
+                SceneTransform::local_with_rotation(
+                    narrow(self.position),
+                    narrow(self.scale),
+                    narrow(self.pivot),
+                    orientation.rotation_f32(),
+                )?
+            } else {
+                SceneTransform::local(
+                    narrow(self.position),
+                    narrow(self.scale),
+                    narrow(self.angles),
+                    narrow(self.pivot),
+                )?
+            }
         } else {
             // A replacement inherits the primary row's transform and appearance.
             (
@@ -232,6 +449,7 @@ impl SceneNodeDefinition<'_> {
                     linear: Matrix3::identity(),
                     origin: Vector3::zeros(),
                     inverse: Matrix3::identity(),
+                    reflected: false,
                 },
                 Rotation3::identity(),
             )
@@ -274,23 +492,71 @@ impl SceneNodeDefinition<'_> {
         } else {
             Arc::from([])
         };
+        let physics = if renderables && !self.physics_body.is_empty() && self.lod_of.is_empty() {
+            let (offset, _) =
+                SceneTransform::local([0.0; 3], narrow(self.scale), [0.0; 3], narrow(self.pivot))?;
+            Some(Arc::new(BodyAttachment {
+                id: self.physics_body.into(),
+                offset,
+            }))
+        } else {
+            None
+        };
         Some(SceneNode {
             id: self.id,
             parent: self.parent,
             mesh,
+            collision_shapes: self.collision_shapes,
             instance_of: self.instance_of,
+            instance_root: self.instance_root,
+            instance_data: self.instance_data.map(|data| {
+                data.map(|value| {
+                    let value = value as f32;
+                    if value.is_finite() { value } else { 0.0 }
+                })
+            }),
             instance_template: self.instance_template,
+            placements: InstancePlacements::new(
+                self.instance_table,
+                self.random_instances,
+                self.instance_count_override,
+                MAX_NODES,
+            ),
+            instance_has_transparency: self.instance_has_transparency,
+            instance_depth_sorting: self.instance_depth_sorting,
+            instance_shadow_bounds: self.instance_shadow_bounds.and_then(|bounds| {
+                let [min, max] = bounds.map(|v| narrow([v.x, v.y, v.z]));
+                let bounds = Bounds3D { min, max };
+                (bounds.is_finite() && (0..3).all(|axis| min[axis] < max[axis])).then_some(bounds)
+            }),
             prototype_row: None,
             animation: self.animation,
             morph_weights,
             visible: self.visible,
             local,
             rotation,
+            physics,
+            world_locked: false,
             camera: self.camera,
             look_at: self.look_at,
+            look_at_point: self.look_at_point,
+            camera_up: self.camera_up,
             color: self.color,
+            depth_bias: if self.depth_bias.is_finite() {
+                self.depth_bias
+            } else {
+                0.0
+            },
+            motion_vector_enabled: self.motion_vector_enabled,
+            motion_vector_scale: self.motion_vector_scale,
+            instancing_lod: InstancingLodRange::from_limits(self.instancing_lod_range),
+            instancing_lod_factor: (self.instancing_lod_factor.is_finite()
+                && self.instancing_lod_factor >= 0.0)
+                .then(|| self.instancing_lod_factor.min(1.0)),
             appearance,
             lightmap: self.lightmap,
+            bake_role: BakeRole::from_name(self.bake_role),
+            lightmap_resolution: self.lightmap_resolution,
             casts_shadow: self.casts_shadow,
             receives_shadow: self.receives_shadow,
             receives_reflections: self.receives_reflections,
@@ -298,6 +564,7 @@ impl SceneNodeDefinition<'_> {
             layers: self.layers,
             pickable: self.pickable,
             collidable: self.collidable,
+            trigger: self.trigger,
             row: 0,
             lod_of: self.lod_of,
             lod_max_size: self.lod_max_size,
@@ -315,32 +582,56 @@ fn lod_bias(value: f64) -> f64 {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct SceneMeshCache {
-    styles: HashMap<(usize, usize), Mesh3D>,
+    styles: HashMap<(usize, usize, bool), Mesh3D>,
     poses: HashMap<(u32, usize), Vec<MeshPlacement>>,
 }
 
 fn styled_mesh(
-    styles: &mut HashMap<(usize, usize), Mesh3D>,
+    styles: &mut HashMap<(usize, usize, bool), Mesh3D>,
     mesh: Mesh3D,
     appearance: Option<&Arc<crate::scene_material::SceneAppearance>>,
+    instance_blending: bool,
 ) -> Mesh3D {
-    let Some(appearance) = appearance else {
+    if appearance.is_none() && !instance_blending {
         return mesh;
-    };
+    }
     let source = match &mesh {
         Mesh3D::Box => 0,
         Mesh3D::Sphere => 1,
         Mesh3D::Imported(mesh) => Arc::as_ptr(mesh) as usize,
     };
+    let style = appearance.map_or(0, |appearance| Arc::as_ptr(appearance) as usize);
     styles
-        .entry((source, Arc::as_ptr(appearance) as usize))
-        .or_insert_with(|| mesh.styled(Some(appearance)))
+        .entry((source, style, instance_blending))
+        .or_insert_with(|| {
+            let mesh = mesh.styled(appearance);
+            if instance_blending {
+                mesh.with_instance_blending()
+            } else {
+                mesh
+            }
+        })
         .clone()
 }
 
 impl SceneNode {
+    fn shadow_bounds_in(&self, mount: MeshMount) -> Option<Arc<[[f32; 3]; 2]>> {
+        let root = mount.root.unwrap_or(mount.world);
+        let bounds = self.instance_shadow_bounds?.transform(root.rows());
+        bounds
+            .is_finite()
+            .then(|| Arc::new([bounds.min, bounds.max]))
+    }
+    fn transform_parent(&self) -> &str {
+        if self.parent.is_empty() && !self.instance_of.is_empty() {
+            &self.instance_root
+        } else {
+            &self.parent
+        }
+    }
+
     fn mounts_asset_attachments(&self) -> bool {
         !self.instance_template && self.instance_of.is_empty()
     }
@@ -360,9 +651,27 @@ impl SceneNode {
         }
     }
 
+    fn collision_row(&mut self, mount: MeshMount) -> Option<CollisionRow> {
+        if self.instance_template {
+            return None;
+        }
+        let shapes = self.collision_shapes.take()?;
+        Some(CollisionRow {
+            row: self.row,
+            id: self.id.clone(),
+            world: mount.world,
+            root: mount.root,
+            placements: self.placements.clone(),
+            shapes,
+            layers: self.layers,
+            collidable: self.collidable,
+            trigger: self.trigger,
+        })
+    }
+
     fn append_scene(
         mut self,
-        world: WorldPose,
+        (world, mount): (WorldPose, Option<MeshMount>),
         objects: Option<&mut Vec<SceneObject>>,
         lights: Option<&mut Option<Vec<SceneLight>>>,
         cameras: Option<&mut ImportedCameras>,
@@ -384,14 +693,92 @@ impl SceneNode {
                     mounts_attachments && asset.has_cameras() && world.rotation.is_some()
                 }),
             };
-            self.append_mesh(asset, world.transform, objects, attachments, cache);
+            let objects = objects.filter(|_| mount.is_some());
+            let mount = mount.unwrap_or_else(|| MeshMount::at(world.transform));
+            self.append_mesh(asset, mount, objects, attachments, cache);
         }
     }
 
     fn append_mesh(
         self,
         asset: MeshAsset,
-        world: SceneTransform,
+        mount: MeshMount,
+        objects: Option<&mut Vec<SceneObject>>,
+        attachments: ImportAttachments<'_>,
+        cache: &mut SceneMeshCache,
+    ) {
+        let Some(table) = self.placements.clone() else {
+            return self.append_mesh_base(asset, mount, objects, attachments, cache);
+        };
+        let row = self.row;
+        let depth_sorting = self.instance_depth_sorting;
+        let shadow_bounds = self.shadow_bounds_in(mount);
+        let mut template = Vec::new();
+        let sample = table.len() != 0
+            && objects
+                .as_ref()
+                .is_some_and(|objects| objects.len() < MAX_NODES);
+        self.append_mesh_base(
+            asset,
+            mount,
+            sample.then_some(&mut template),
+            attachments,
+            cache,
+        );
+        let root = mount.root.unwrap_or(mount.world);
+        let Some(objects) = objects.filter(|_| !template.is_empty()) else {
+            return;
+        };
+        let parts: Vec<_> = template
+            .into_iter()
+            .filter_map(|object| object.relative_to(root))
+            .collect();
+        if parts.is_empty() {
+            return;
+        }
+        let count = table.len().min((MAX_NODES - objects.len()) / parts.len());
+        let samples = (0..count).filter_map(|index| {
+            let mut sample = table.sample(index)?;
+            sample.transform = root.child(sample.transform)?;
+            Some((index as u32, sample))
+        });
+        let place = |part: &SceneObject, (index, sample): (u32, InstancePlacement)| {
+            let mut object = part.clone().with_parent_transform(sample.transform)?;
+            let (node, inner) = part.imported_placement().unwrap_or((NO_MESH_NODE, None));
+            let ordinal = inner.map_or(index, |inner| index * MAX_NODES as u32 + inner);
+            object.imported_placement = Some((node, Some(ordinal)));
+            object.instance_order = Some(InstanceOrder {
+                group: [row, NO_MESH_NODE],
+                ordinal: index,
+                group_origin: mount.world.origin.into(),
+                origin: sample.transform.origin.into(),
+                depth_sorting,
+            });
+            object.instance_shadow_bounds.clone_from(&shadow_bounds);
+            object.color = sample.tint.apply(object.color);
+            object.instance_data = sample.data.or(object.instance_data);
+            Some(object)
+        };
+        if let [part] = parts.as_slice() {
+            objects.extend(samples.filter_map(|sample| place(part, sample)));
+        } else {
+            // Keep each part's copies contiguous so the GPU can draw them together.
+            let samples: Vec<_> = samples.collect();
+            for part in &parts {
+                objects.extend(
+                    samples
+                        .iter()
+                        .copied()
+                        .filter_map(|sample| place(part, sample)),
+                );
+            }
+        }
+    }
+
+    fn append_mesh_base(
+        self,
+        asset: MeshAsset,
+        mount: MeshMount,
         objects: Option<&mut Vec<SceneObject>>,
         attachments: ImportAttachments<'_>,
         cache: &mut SceneMeshCache,
@@ -402,6 +789,8 @@ impl SceneNode {
         if !renderables && attachments.lights.is_none() && attachments.cameras.is_none() {
             return;
         }
+        let world = mount.world;
+        let blend_table = self.instance_has_transparency && self.placements.is_some();
         let object = |id, mesh: crate::scene3d::Mesh3D, transform| {
             let lightmap = self.lightmap.as_ref().filter(|_| {
                 !mesh.lightmap_uvs().is_empty()
@@ -409,23 +798,30 @@ impl SceneNode {
                     && mesh.morph_geometry().is_none()
             });
             let mut object = SceneObject::from_transform(id, mesh, transform, self.color)
+                .with_depth_bias(self.depth_bias)
+                .with_motion_vectors(self.motion_vector_enabled, self.motion_vector_scale)
                 .with_shadows(self.casts_shadow, self.receives_shadow)
                 .with_pickable(self.pickable)
                 .with_collidable(self.collidable)
+                .with_trigger(self.trigger)
                 .with_source_row(self.row);
             object.receives_reflections = self.receives_reflections;
             object.casts_reflections = self.casts_reflections;
             object.layers = self.layers;
+            object.instance_data = self.instance_data;
+            object.instancing_lod = self.instancing_lod;
             object.lightmap = lightmap.cloned();
+            object.bake_role = self.bake_role;
+            object.lightmap_resolution = self.lightmap_resolution;
             object
         };
         match asset {
             MeshAsset::Lods(lods) => {
-                self.append_mesh(lods.primary().clone(), world, objects, attachments, cache)
+                self.append_mesh_base(lods.primary().clone(), mount, objects, attachments, cache)
             }
-            MeshAsset::Variants(variants) => self.append_mesh(
+            MeshAsset::Variants(variants) => self.append_mesh_base(
                 variants.primary().clone(),
-                world,
+                mount,
                 objects,
                 attachments,
                 cache,
@@ -434,12 +830,22 @@ impl SceneNode {
                 if let Some(objects) = objects.filter(|_| renderables) {
                     objects.push(object(
                         self.id,
-                        styled_mesh(&mut cache.styles, mesh, self.appearance.as_ref()),
+                        styled_mesh(
+                            &mut cache.styles,
+                            mesh,
+                            self.appearance.as_ref(),
+                            blend_table,
+                        ),
                         world,
                     ));
                 }
             }
             MeshAsset::Animated(rig) => {
+                let shadow_bounds = if self.placements.is_none() {
+                    self.shadow_bounds_in(mount)
+                } else {
+                    None
+                };
                 let sample = |lights, cameras| {
                     let weights: Vec<_> = self
                         .morph_weights
@@ -455,6 +861,7 @@ impl SceneNode {
                             overrides: &overrides,
                             lights,
                             cameras,
+                            instance_space: mount.instance_space.as_ref(),
                         },
                     )
                 };
@@ -521,10 +928,31 @@ impl SceneNode {
                     if objects.len() == MAX_NODES {
                         break;
                     }
-                    if let Some(placed) = placed_mesh(&rig, placement, world, |mesh, transform| {
-                        let mesh = styled_mesh(&mut cache.styles, mesh, self.appearance.as_ref());
-                        object(self.id.clone(), mesh, transform)
-                    }) {
+                    if let Some(mut placed) =
+                        placed_mesh(&rig, placement, world, |mesh, transform| {
+                            let blend = blend_table
+                                || self.instance_has_transparency && placement.source.1.is_some();
+                            let mesh = styled_mesh(
+                                &mut cache.styles,
+                                mesh,
+                                self.appearance.as_ref(),
+                                blend,
+                            );
+                            object(self.id.clone(), mesh, transform)
+                        })
+                    {
+                        if let ((node, Some(ordinal)), Some(anchor)) =
+                            (placement.source, placement.instance_anchor)
+                        {
+                            placed.instance_order = Some(InstanceOrder {
+                                group: [self.row, node],
+                                ordinal,
+                                group_origin: (world.origin + world.linear * anchor).into(),
+                                origin: placed.transform_rows().map(|row| row[3]),
+                                depth_sorting: self.instance_depth_sorting,
+                            });
+                            placed.instance_shadow_bounds.clone_from(&shadow_bounds);
+                        }
                         objects.push(placed);
                     }
                     if objects.len() == MAX_NODES {
@@ -542,10 +970,14 @@ fn placed_mesh(
     world: SceneTransform,
     make_object: impl FnOnce(Mesh3D, SceneTransform) -> SceneObject,
 ) -> Option<SceneObject> {
-    let (transform, mirrored) = world.mesh_node(&placement.transform)?;
-    let mesh = rig.geometry(placement.mesh, mirrored)?;
+    let transform = world.mesh_node(&placement.transform)?;
+    let mesh = rig.meshes().get(placement.mesh)?.clone();
     let mut object = make_object(mesh, transform);
     object.imported_placement = Some(placement.source);
+    if let Some(tint) = placement.tint {
+        object.color = multiply_instance_tint(object.color, tint);
+    }
+    object.instance_data = object.instance_data.or(placement.instance_data);
     if let Some(weights) = &placement.morph {
         object = object.with_morph(weights.clone())?;
     }
@@ -555,6 +987,25 @@ fn placed_mesh(
     Some(object)
 }
 
+pub(crate) fn multiply_instance_tint(color: Color, tint: [f32; 4]) -> Color {
+    if tint == [1.0; 4] {
+        return color;
+    }
+    let linear = crate::scene_lighting::linear_color(color);
+    let mut rgba = color.0.to_be_bytes();
+    for channel in 0..3 {
+        let value = linear[channel] * tint[channel];
+        let encoded = if value <= 0.0031308 {
+            value * 12.92
+        } else {
+            1.055 * value.powf(1.0 / 2.4) - 0.055
+        };
+        rgba[channel] = (encoded * 255.0).round() as u8;
+    }
+    rgba[3] = (f32::from(rgba[3]) * tint[3]).round() as u8;
+    Color(u32::from_be_bytes(rgba))
+}
+
 /// Primary geometry in the authored glTF rest pose, using the same node and
 /// deformation transforms as a model drawn without an animation clip.
 pub(crate) fn rest_mesh_objects(asset: &MeshAsset) -> Vec<SceneObject> {
@@ -562,6 +1013,7 @@ pub(crate) fn rest_mesh_objects(asset: &MeshAsset) -> Vec<SceneObject> {
         linear: Matrix3::identity(),
         origin: Vector3::zeros(),
         inverse: Matrix3::identity(),
+        reflected: false,
     };
     let object = |mesh, transform| {
         SceneObject::from_transform(String::new(), mesh, transform, Color(0xffffffff))
@@ -578,6 +1030,7 @@ pub(crate) fn rest_mesh_objects(asset: &MeshAsset) -> Vec<SceneObject> {
                     overrides: &[],
                     lights: None,
                     cameras: None,
+                    instance_space: None,
                 },
             )
             .into_iter()
@@ -601,8 +1054,11 @@ struct ImportAttachments<'a> {
 pub struct SceneGeometry {
     objects: Arc<[SceneObject]>,
     visibility: OnceLock<Option<VisibilityIndex>>,
-    instance_addresses: OnceLock<HashMap<[u32; 3], usize>>,
+    instance_addresses: OnceLock<HashMap<[i64; 3], usize>>,
     shared_layers: u64,
+    trigger_layers: OnceLock<u64>,
+    distance_lods: Vec<usize>,
+    distance_selections: Mutex<DistanceSelections>,
     layer_selections: Mutex<VecDeque<(u64, Arc<SceneVisibility>)>>,
     reflection_casters: OnceLock<Option<Arc<SceneVisibility>>>,
     capture_materials: Mutex<VecDeque<CaptureGeometry>>,
@@ -617,16 +1073,26 @@ struct CaptureGeometry {
     geometry: Arc<SceneGeometry>,
 }
 
+type DistanceSelections = VecDeque<([f32; 3], Arc<SceneVisibility>)>;
+
 impl SceneGeometry {
     fn new(objects: Vec<SceneObject>, lod_objects: usize) -> Arc<Self> {
-        let shared_layers = objects
-            .iter()
-            .fold(u64::MAX, |shared, object| shared & object.layers);
+        let mut shared_layers = u64::MAX;
+        let mut distance_lods = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            shared_layers &= object.layers;
+            if object.has_instancing_lod_range() {
+                distance_lods.push(index);
+            }
+        }
         Arc::new(Self {
             objects: objects.into(),
             visibility: OnceLock::new(),
             instance_addresses: OnceLock::new(),
             shared_layers,
+            trigger_layers: OnceLock::new(),
+            distance_lods,
+            distance_selections: Mutex::default(),
             layer_selections: Mutex::default(),
             reflection_casters: OnceLock::new(),
             capture_materials: Mutex::default(),
@@ -677,7 +1143,7 @@ impl SceneGeometry {
         &self.objects
     }
 
-    pub(crate) fn instance_index(&self, address: [u32; 3]) -> Option<usize> {
+    pub(crate) fn instance_index(&self, address: [i64; 3]) -> Option<usize> {
         self.instance_addresses
             .get_or_init(|| {
                 self.objects
@@ -688,6 +1154,13 @@ impl SceneGeometry {
             })
             .get(&address)
             .copied()
+    }
+
+    pub(crate) fn instance(&self, address: [i64; 3]) -> Instance3D {
+        self.instance_index(address)
+            .map_or_else(Instance3D::default, |index| {
+                Instance3D::from_object(&self.objects[index], address)
+            })
     }
 
     pub fn visibility(&self, camera: &SceneCamera) -> SceneVisibility {
@@ -730,6 +1203,38 @@ impl SceneGeometry {
                 }
             }
         }
+    }
+
+    /// Restrict eligible instances without reallocating the shared instance set.
+    #[doc(hidden)]
+    pub fn distance_visibility(&self, eye: [f32; 3]) -> Option<Arc<SceneVisibility>> {
+        if self.distance_lods.is_empty() {
+            return None;
+        }
+        let mut entries = self
+            .distance_selections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = entries.iter().position(|(previous, _)| *previous == eye);
+        let entry = index
+            .and_then(|index| entries.remove(index))
+            .unwrap_or_else(|| {
+                let excluded = self
+                    .distance_lods
+                    .iter()
+                    .copied()
+                    .filter(|&index| !self.objects[index].visible_at_distance(eye));
+                let selection = SceneVisibility::excluding(self.len(), excluded);
+                let selection = entries
+                    .iter()
+                    .find(|(_, saved)| **saved == selection)
+                    .map_or_else(|| Arc::new(selection), |(_, saved)| saved.clone());
+                (eye, selection)
+            });
+        let visible = (entry.1.visible_count() != self.len()).then(|| entry.1.clone());
+        entries.truncate(3);
+        entries.push_front(entry);
+        visible
     }
 
     /// A viewport layer filter shares the original instance indices and payloads.
@@ -794,8 +1299,9 @@ impl PartialEq for LodLevel {
 struct LodGroup {
     range: Range<usize>,
     source: SceneNode,
-    world: SceneTransform,
+    mount: MeshMount,
     levels: Vec<LodLevel>,
+    fixed_level: Option<usize>,
     morph_error_scale: f64,
     // Derived bounds of the primary posed renderables, independent of the replacement.
     bounds: Bounds3D,
@@ -803,6 +1309,9 @@ struct LodGroup {
 
 impl LodGroup {
     fn select(&self, camera: &SceneCamera) -> usize {
+        if let Some(level) = self.fixed_level {
+            return level;
+        }
         let bias = self.source.lod_bias * camera.lod_bias;
         if bias <= 0.0 {
             return 0;
@@ -823,7 +1332,7 @@ impl LodGroup {
             let mut objects = Vec::new();
             self.source.clone().append_mesh(
                 level.mesh.clone(),
-                self.world,
+                self.mount,
                 Some(&mut objects),
                 ImportAttachments::default(),
                 &mut SceneMeshCache::default(),
@@ -836,24 +1345,163 @@ impl LodGroup {
 
 type ViewSelections = VecDeque<(Vec<usize>, Arc<SceneGeometry>)>;
 
+#[derive(Debug)]
+enum SceneLodSelection {
+    Primary,
+    Fixed(OnceLock<Arc<SceneGeometry>>),
+    Adaptive(Mutex<ViewSelections>),
+}
+
+impl SceneLodSelection {
+    fn for_groups(groups: &[LodGroup]) -> Self {
+        if groups.iter().any(|group| group.fixed_level.is_none()) {
+            Self::Adaptive(Mutex::default())
+        } else if groups.iter().any(|group| group.fixed_level != Some(0)) {
+            Self::Fixed(OnceLock::new())
+        } else {
+            Self::Primary
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct CollisionRow {
+    row: u32,
+    id: String,
+    world: SceneTransform,
+    root: Option<SceneTransform>,
+    placements: Option<InstancePlacements>,
+    shapes: Arc<[SceneCollisionShape]>,
+    layers: u64,
+    collidable: bool,
+    trigger: bool,
+}
+
+impl CollisionRow {
+    fn append(&self, colliders: &mut Vec<SceneObject>) {
+        if !self.collidable && !self.trigger {
+            return;
+        }
+        let Some(table) = &self.placements else {
+            return self.append_shapes(self.world, None, colliders);
+        };
+        let root = self.root.unwrap_or(self.world);
+        let Some(relative) = self.world.relative_to(root) else {
+            return;
+        };
+        for index in 0..table.len() {
+            if colliders.len() >= MAX_NODES {
+                break;
+            }
+            if let Some(world) = table
+                .transform(index)
+                .and_then(|placement| root.child(placement))
+                .and_then(|placement| placement.child(relative))
+            {
+                self.append_shapes(world, Some(index as u32), colliders);
+            }
+        }
+    }
+
+    fn append_shapes(
+        &self,
+        mounted: SceneTransform,
+        index: Option<u32>,
+        colliders: &mut Vec<SceneObject>,
+    ) {
+        for shape in self.shapes.iter() {
+            if colliders.len() >= MAX_NODES {
+                break;
+            }
+            let Some(world) = mounted.child(shape.local) else {
+                continue;
+            };
+            if let MeshAsset::Static(mesh) = &shape.asset {
+                colliders.extend(self.collision_object(
+                    SceneObject::from_transform(
+                        String::new(),
+                        mesh.clone(),
+                        world,
+                        Color(0xffffffff),
+                    ),
+                    index,
+                ));
+            } else {
+                let remaining = MAX_NODES - colliders.len();
+                colliders.extend(
+                    rest_mesh_objects(&shape.asset)
+                        .into_iter()
+                        .filter_map(|mesh| {
+                            self.collision_object(mesh.with_parent_transform(world)?, index)
+                        })
+                        .take(remaining),
+                );
+            }
+        }
+    }
+
+    fn collision_object(&self, object: SceneObject, index: Option<u32>) -> Option<SceneObject> {
+        let mut object = object
+            .with_pickable(false)
+            .with_collidable(self.collidable)
+            .with_trigger(self.trigger)
+            .with_source_row(self.row);
+        // Open triangle surfaces cannot describe the interior of a trigger.
+        if self.trigger && !object.is_trigger() {
+            return None;
+        }
+        object.id.clone_from(&self.id);
+        object.layers = self.layers;
+        if let Some(index) = index {
+            object.imported_placement = Some((NO_MESH_NODE, Some(index)));
+        }
+        Some(object)
+    }
+}
+
 /// Renderables and named camera poses resolved from the same authored rows.
 #[derive(Debug)]
 pub struct SceneModel {
     geometry: Arc<SceneGeometry>,
+    collision_rows: Vec<CollisionRow>,
+    collision_geometry: OnceLock<Arc<SceneGeometry>>,
     cameras: BTreeMap<String, CameraNode>,
     imported_lights: Option<Arc<[SceneLight]>>,
     frames: HashMap<String, NodeFrame>,
     lod_groups: Vec<LodGroup>,
-    selections: Mutex<ViewSelections>,
+    lod_selection: SceneLodSelection,
+    physics: Option<Box<PhysicsScene>>,
+}
+
+#[derive(Debug)]
+struct PhysicsScene {
+    nodes: Vec<SceneNode>,
+    bindings: Vec<usize>,
+    cache: Mutex<PhysicsSceneCache>,
+}
+
+#[derive(Debug, Default)]
+struct PhysicsSceneCache {
+    projection: Option<PhysicsProjection>,
+    meshes: SceneMeshCache,
+}
+
+#[derive(Debug)]
+struct PhysicsProjection {
+    poses: Vec<Option<RigidPose>>,
+    model: Arc<SceneModel>,
 }
 
 impl PartialEq for SceneModel {
     fn eq(&self, other: &Self) -> bool {
         self.objects() == other.objects()
+            && self.collision_rows == other.collision_rows
             && self.cameras == other.cameras
             && self.imported_lights == other.imported_lights
             && self.frames == other.frames
             && self.lod_groups == other.lod_groups
+            && self.physics.as_ref().map(|scene| &scene.nodes)
+                == other.physics.as_ref().map(|scene| &scene.nodes)
     }
 }
 
@@ -863,27 +1511,143 @@ pub(crate) struct NodeFrame {
     pub linear: Matrix3<f32>,
     inverse: Matrix3<f32>,
     rotation: Rotation3<f32>,
-    parent: String,
+    rotation_parent: String,
     visible: bool,
 }
 
+impl Default for SceneModel {
+    fn default() -> Self {
+        prepare_nodes(Vec::new(), true, &mut SceneMeshCache::default())
+    }
+}
+
 impl SceneModel {
+    /// Resolve current poses into a scene snapshot without changing the authored source.
+    pub fn resolve_physics(self: &Arc<Self>, world: &PhysicsWorld3D) -> Arc<Self> {
+        self.with_physics(world).unwrap_or_else(|| self.clone())
+    }
+
+    fn with_physics(&self, world: &PhysicsWorld3D) -> Option<Arc<Self>> {
+        let source = self.physics.as_ref()?;
+        let ids = source.bindings.iter().map(|&index| {
+            source.nodes[index]
+                .physics
+                .as_ref()
+                .map_or("", |link| link.id.as_str())
+        });
+        let poses = world.scene_poses(ids)?;
+        let mut cache = source
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(previous) = cache
+            .projection
+            .as_ref()
+            .filter(|previous| previous.poses == poses)
+        {
+            return Some(previous.model.clone());
+        }
+
+        let mut nodes = source.nodes.clone();
+        for (&index, pose) in source.bindings.iter().zip(&poses) {
+            let node = &mut nodes[index];
+            let Some((link, pose)) = node.physics.take().zip(*pose) else {
+                continue;
+            };
+            let q = pose.rotation;
+            let rotation = UnitQuaternion::from_quaternion(Quaternion::new(q.w, q.x, q.y, q.z))
+                .to_rotation_matrix();
+            let linear = *rotation.matrix();
+            let rigid = SceneTransform {
+                linear,
+                origin: Vector3::from(pose.translation.to_array()),
+                inverse: linear.transpose(),
+                reflected: false,
+            };
+            if let Some(transform) = rigid.child(link.offset) {
+                node.local = transform;
+                node.rotation = rotation;
+                node.world_locked = true;
+            }
+        }
+        let model = Arc::new(prepare_nodes(nodes, true, &mut cache.meshes));
+        cache.projection = Some(PhysicsProjection {
+            poses,
+            model: model.clone(),
+        });
+        Some(model)
+    }
+
+    pub(crate) fn collision_geometry(&self) -> &SceneGeometry {
+        if self.collision_rows.is_empty() {
+            return &self.geometry;
+        }
+        self.collision_geometry.get_or_init(|| {
+            // Replace every rendered part of a row with its authored shapes.
+            // Preserve row order for equal-distance hits and model indices.
+            let mut renderables = self.objects().iter().peekable();
+            let mut colliders = Vec::new();
+            for row in &self.collision_rows {
+                while colliders.len() < MAX_NODES
+                    && renderables
+                        .peek()
+                        .is_some_and(|object| object.scene_row() < Some(row.row))
+                {
+                    colliders.extend(renderables.next().cloned());
+                }
+                while renderables
+                    .peek()
+                    .is_some_and(|object| object.scene_row() == Some(row.row))
+                {
+                    renderables.next();
+                }
+                row.append(&mut colliders);
+                if colliders.len() >= MAX_NODES {
+                    break;
+                }
+            }
+            colliders.extend(
+                renderables
+                    .cloned()
+                    .take(MAX_NODES.saturating_sub(colliders.len())),
+            );
+            SceneGeometry::new(colliders, 0)
+        })
+    }
+
+    pub(crate) fn has_collision_shapes(&self) -> bool {
+        !self.collision_rows.is_empty()
+    }
+
+    pub(crate) fn has_triggers(&self, layers: u64) -> bool {
+        layers != 0
+            && layers
+                & self.collision_geometry().trigger_layers.get_or_init(|| {
+                    self.collision_geometry()
+                        .objects()
+                        .iter()
+                        .filter(|object| object.is_trigger())
+                        .fold(0, |mask, object| mask | object.layers)
+                })
+                != 0
+    }
+
     pub(crate) fn visit_sweep(
         &self,
         mut span: BoundsSegment,
         mut visit: impl FnMut(usize, f64) -> f64,
     ) {
-        if self.is_empty() {
+        let geometry = self.collision_geometry();
+        if geometry.is_empty() {
             return;
         }
-        if let Some(bounds) = self
-            .geometry
+        if let Some(bounds) = geometry
             .visibility
-            .get_or_init(|| VisibilityIndex::new(&self.geometry.objects))
+            .get_or_init(|| VisibilityIndex::new(&geometry.objects))
         {
             bounds.visit_sweep(span, visit);
         } else {
-            for index in 0..self.len() {
+            for index in 0..geometry.len() {
                 span.max = visit(index, span.max);
             }
         }
@@ -929,9 +1693,29 @@ impl SceneModel {
 
     #[doc(hidden)]
     pub fn geometry(&self, camera: &SceneCamera) -> Arc<SceneGeometry> {
-        if self.lod_groups.is_empty() || camera.lod_bias == 0.0 {
+        if camera.lod_bias == 0.0 {
             return self.geometry.clone();
         }
+        match &self.lod_selection {
+            SceneLodSelection::Primary => self.geometry.clone(),
+            SceneLodSelection::Fixed(geometry) => geometry
+                .get_or_init(|| {
+                    self.geometry_with_lods(
+                        self.lod_groups
+                            .iter()
+                            .map(|group| group.fixed_level.unwrap_or(0)),
+                    )
+                })
+                .clone(),
+            SceneLodSelection::Adaptive(selections) => self.adaptive_geometry(camera, selections),
+        }
+    }
+
+    fn adaptive_geometry(
+        &self,
+        camera: &SceneCamera,
+        selections: &Mutex<ViewSelections>,
+    ) -> Arc<SceneGeometry> {
         let key: Vec<_> = self
             .lod_groups
             .iter()
@@ -940,8 +1724,7 @@ impl SceneModel {
         if key.iter().all(|&level| level == 0) {
             return self.geometry.clone();
         }
-        let mut selections = self
-            .selections
+        let mut selections = selections
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(index) = selections.iter().position(|(old, _)| *old == key)
@@ -952,6 +1735,13 @@ impl SceneModel {
             return result;
         }
 
+        let result = self.geometry_with_lods(key.iter().copied());
+        selections.truncate(3);
+        selections.push_front((key, result.clone()));
+        result
+    }
+
+    fn geometry_with_lods(&self, levels: impl Iterator<Item = usize>) -> Arc<SceneGeometry> {
         let mut objects = Vec::with_capacity(self.len());
         let mut lod_objects = 0;
         let mut cursor = 0;
@@ -959,7 +1749,7 @@ impl SceneModel {
             let count = slice.len().min(MAX_NODES - objects.len());
             objects.extend_from_slice(&slice[..count]);
         };
-        for (group, &level) in self.lod_groups.iter().zip(&key) {
+        for (group, level) in self.lod_groups.iter().zip(levels) {
             append(&self[cursor..group.range.start]);
             if let Some(replacement) = group.replacement(level) {
                 lod_objects += 1;
@@ -970,10 +1760,38 @@ impl SceneModel {
             cursor = group.range.end;
         }
         append(&self[cursor..]);
-        let result = SceneGeometry::new(objects, lod_objects);
-        selections.truncate(3);
-        selections.push_front((key, result.clone()));
-        result
+        SceneGeometry::new(objects, lod_objects)
+    }
+
+    /// Read a primary instance by its source row, mesh node, and table index.
+    pub fn instance(&self, address: [i64; 3]) -> Instance3D {
+        self.geometry.instance(address)
+    }
+
+    /// Read the placement selected for a named camera.
+    pub fn instance_camera(
+        &self,
+        camera: &str,
+        viewport: Point2D,
+        address: [i64; 3],
+    ) -> Instance3D {
+        self.camera(camera, [viewport.x.0, viewport.y.0])
+            .map_or_else(Instance3D::default, |camera| {
+                self.geometry(&camera).instance(address)
+            })
+    }
+
+    /// Read the placement selected for an orbit camera.
+    pub fn instance_orbit(
+        &self,
+        [yaw, pitch, distance]: [f64; 3],
+        viewport: Point2D,
+        address: [i64; 3],
+    ) -> Instance3D {
+        SceneCamera::new(yaw, pitch, distance, [viewport.x.0, viewport.y.0])
+            .map_or_else(Instance3D::default, |camera| {
+                self.geometry(&camera).instance(address)
+            })
     }
 
     /// Convert a point between authored nodes. An empty endpoint means world space.
@@ -1028,7 +1846,7 @@ impl SceneModel {
         loop {
             rotation =
                 UnitQuaternion::from_rotation_matrix(&frame.rotation.cast::<f64>()) * rotation;
-            let Some(parent) = self.frames.get(&frame.parent) else {
+            let Some(parent) = self.frames.get(&frame.rotation_parent) else {
                 break;
             };
             frame = parent;
@@ -1048,7 +1866,7 @@ impl SceneModel {
     ) -> Vector3<f32> {
         loop {
             direction = frame.rotation * direction;
-            let Some(parent) = self.frames.get(&frame.parent) else {
+            let Some(parent) = self.frames.get(&frame.rotation_parent) else {
                 break;
             };
             frame = parent;
@@ -1087,6 +1905,11 @@ impl WorldPose {
     }
 
     fn child(self, node: &SceneNode, camera_ancestor: bool) -> Option<Self> {
+        if node.world_locked {
+            let mut pose = Self::root(node, camera_ancestor);
+            pose.visible &= self.visible;
+            return Some(pose);
+        }
         let transform = self.transform.child(node.local)?;
         let rotation = self
             .rotation
@@ -1115,6 +1938,69 @@ enum Pose {
     Ready(WorldPose),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MeshMount {
+    world: SceneTransform,
+    root: Option<SceneTransform>,
+    instance_space: Option<MeshInstanceSpace>,
+}
+
+impl MeshMount {
+    fn at(world: SceneTransform) -> Self {
+        Self {
+            world,
+            root: None,
+            instance_space: None,
+        }
+    }
+
+    fn resolve(
+        world: SceneTransform,
+        root: Parent,
+        prototype: Option<usize>,
+        poses: &[Pose],
+    ) -> Option<Self> {
+        let root = match root {
+            Parent::Root => return Some(Self::at(world)),
+            Parent::Invalid => return None,
+            Parent::Node(index) => match poses[index] {
+                Pose::Ready(root) if root.visible => root.transform,
+                _ => return None,
+            },
+        };
+        if let Some(index) = prototype {
+            let Pose::Ready(prototype) = poses[index] else {
+                return None;
+            };
+            let model = prototype.transform.relative_to(root)?;
+            Some(Self {
+                root: Some(root),
+                ..Self::at(world.child(model)?)
+            })
+        } else {
+            Some(Self {
+                world,
+                root: Some(root),
+                instance_space: Some(MeshInstanceSpace {
+                    to_model: root.relative_to(world)?.matrix(),
+                    to_root: world.relative_to(root)?.matrix(),
+                }),
+            })
+        }
+    }
+}
+
+fn scene_reference(name: &str, ids: &HashMap<&str, Option<usize>>) -> Parent {
+    if name.is_empty() {
+        Parent::Root
+    } else {
+        ids.get(name)
+            .copied()
+            .flatten()
+            .map_or(Parent::Invalid, Parent::Node)
+    }
+}
+
 fn node_indices(nodes: &[SceneNode]) -> HashMap<&str, Option<usize>> {
     let mut ids = HashMap::new();
     for (index, node) in nodes
@@ -1129,7 +2015,7 @@ fn node_indices(nodes: &[SceneNode]) -> HashMap<&str, Option<usize>> {
     ids
 }
 
-fn resolve_prototypes(nodes: &mut [SceneNode]) -> Vec<Option<usize>> {
+fn resolve_prototypes(nodes: &mut [SceneNode], renderables: bool) -> Vec<Option<usize>> {
     if !nodes.iter().any(|node| !node.instance_of.is_empty()) {
         return Vec::new();
     }
@@ -1142,7 +2028,9 @@ fn resolve_prototypes(nodes: &mut [SceneNode]) -> Vec<Option<usize>> {
             }
             let index = ids.get(node.instance_of.as_str()).copied().flatten()?;
             let source = &nodes[index];
-            (source.instance_of.is_empty() && source.mesh.is_some()).then_some(index)
+            (source.instance_of.is_empty()
+                && (!renderables || source.mesh.is_some() || source.collision_shapes.is_some()))
+            .then_some(index)
         })
         .collect();
     for (index, &source) in sources.iter().enumerate() {
@@ -1150,7 +2038,16 @@ fn resolve_prototypes(nodes: &mut [SceneNode]) -> Vec<Option<usize>> {
         let Ok([instance, prototype]) = nodes.get_disjoint_mut([index, source]) else {
             continue;
         };
+        if instance.instance_root.is_empty() {
+            instance.instance_root.clone_from(&prototype.instance_root);
+        }
+        if !renderables {
+            continue;
+        }
         instance.mesh = prototype.mesh.clone();
+        if instance.collision_shapes.is_none() {
+            instance.collision_shapes = prototype.collision_shapes.clone();
+        }
         instance.appearance = prototype.appearance.clone();
         instance.animation = prototype.animation.clone();
         instance.morph_weights = prototype.morph_weights.clone();
@@ -1187,16 +2084,7 @@ fn world_poses(
 ) -> Vec<Pose> {
     let parents: Vec<_> = nodes
         .iter()
-        .map(|node| {
-            if node.parent.is_empty() {
-                Parent::Root
-            } else {
-                ids.get(node.parent.as_str())
-                    .copied()
-                    .flatten()
-                    .map_or(Parent::Invalid, Parent::Node)
-            }
-        })
+        .map(|node| scene_reference(node.transform_parent(), ids))
         .collect();
     let rotation_nodes = if track_rotation {
         rotation_ancestry(nodes, &parents, renderables)
@@ -1267,13 +2155,39 @@ fn prepare_model<T: Clone>(
 ) -> Arc<SceneModel> {
     // Observe rows as well as list structure so both render paths update when
     // a parent moves, disappears, or changes visibility.
-    let mut nodes: Vec<_> = (0..model.len().min(MAX_NODES))
+    let nodes: Vec<_> = (0..model.len().min(MAX_NODES))
         .filter_map(|index| {
             let mut node = project(model.row(index)?)?;
             node.row = index as u32;
             Some(node)
         })
         .collect();
+    let bindings: Vec<_> = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| node.physics.as_ref().map(|_| index))
+        .collect();
+    let original = (!bindings.is_empty()).then(|| nodes.clone());
+    let mut meshes = SceneMeshCache::default();
+    let mut scene = prepare_nodes(nodes, renderables, &mut meshes);
+    if let Some(nodes) = original {
+        scene.physics = Some(Box::new(PhysicsScene {
+            nodes,
+            bindings,
+            cache: Mutex::new(PhysicsSceneCache {
+                meshes,
+                projection: None,
+            }),
+        }));
+    }
+    Arc::new(scene)
+}
+
+fn prepare_nodes(
+    mut nodes: Vec<SceneNode>,
+    renderables: bool,
+    cache: &mut SceneMeshCache,
+) -> SceneModel {
     let mut alternatives: HashMap<String, Vec<LodLevel>> = HashMap::new();
     nodes.retain_mut(|node| {
         if node.lod_of.is_empty() {
@@ -1296,12 +2210,12 @@ fn prepare_model<T: Clone>(
         }
         false
     });
-    let prototypes = if renderables {
-        resolve_prototypes(&mut nodes)
+    let has_instance_roots = nodes.iter().any(|node| !node.instance_root.is_empty());
+    let prototypes = if renderables || has_instance_roots {
+        resolve_prototypes(&mut nodes, renderables)
     } else {
         Vec::new()
     };
-    let mut cache = SceneMeshCache::default();
     let track_cameras = nodes
         .iter()
         .any(|node| node.camera.is_some() && !node.id.is_empty());
@@ -1316,30 +2230,38 @@ fn prepare_model<T: Clone>(
     });
     let mut imported_cameras = ImportedCameras::new();
     let mut imported_lights = None;
+    let mut collision_rows = Vec::new();
     if nodes.iter().all(|row| {
-        row.id.is_empty() && row.parent.is_empty() && !matches!(row.mesh, Some(MeshAsset::Lods(_)))
+        row.id.is_empty()
+            && row.parent.is_empty()
+            && row.instance_root.is_empty()
+            && !matches!(row.mesh, Some(MeshAsset::Lods(_)))
     }) {
         let mut objects = Vec::new();
         if renderables {
-            for node in nodes.into_iter().filter(|node| node.visible) {
+            for mut node in nodes.into_iter().filter(|node| node.visible) {
                 let world = WorldPose::root(&node, track_imported);
+                collision_rows.extend(node.collision_row(MeshMount::at(world.transform)));
                 node.append_scene(
-                    world,
+                    (world, Some(MeshMount::at(world.transform))),
                     Some(&mut objects),
                     Some(&mut imported_lights),
                     None,
-                    &mut cache,
+                    cache,
                 );
             }
         }
-        return Arc::new(SceneModel {
+        return SceneModel {
             geometry: SceneGeometry::new(objects, 0),
+            collision_rows,
+            collision_geometry: OnceLock::new(),
             cameras: BTreeMap::new(),
             imported_lights: imported_lights.map(Arc::from),
             frames: HashMap::new(),
             lod_groups: Vec::new(),
-            selections: Mutex::default(),
-        });
+            lod_selection: SceneLodSelection::Primary,
+            physics: None,
+        };
     }
     let ids = node_indices(&nodes);
     let poses = world_poses(
@@ -1376,7 +2298,11 @@ fn prepare_model<T: Clone>(
                     linear: world.transform.linear,
                     inverse: world.transform.inverse,
                     rotation: node.rotation,
-                    parent: node.parent.clone(),
+                    rotation_parent: if node.world_locked {
+                        String::new()
+                    } else {
+                        node.transform_parent().to_owned()
+                    },
                     visible: world.visible,
                 },
             ))
@@ -1397,20 +2323,25 @@ fn prepare_model<T: Clone>(
                 let settings = node.camera?;
                 let mut rotation = world.rotation?;
                 rotation.renormalize();
-                Some((
-                    node.id.clone(),
-                    CameraNode {
-                        eye: world.transform.origin,
-                        rotation,
-                        target: frames
-                            .get(&node.look_at)
-                            .filter(|frame| frame.visible)
-                            .map(|frame| frame.origin),
-                        settings,
-                        lod_bias: node.camera_lod_bias,
-                        layers: node.layers,
-                    },
-                ))
+                let mut camera = CameraNode {
+                    eye: world.transform.origin,
+                    rotation,
+                    settings,
+                    lod_bias: node.camera_lod_bias,
+                    layers: node.layers,
+                };
+                let target = frames
+                    .get(&node.look_at)
+                    .filter(|frame| frame.visible)
+                    .map(|frame| {
+                        let [x, y, z] = <[f32; 3]>::from(frame.origin).map(f64::from);
+                        Point3D::new(x, y, z)
+                    })
+                    .or(node.look_at_point);
+                if let Some(target) = target {
+                    camera.aim_at(target, node.camera_up);
+                }
+                Some((node.id.clone(), camera))
             })
             .collect()
     } else {
@@ -1420,16 +2351,27 @@ fn prepare_model<T: Clone>(
         .into_iter()
         .filter_map(|(id, levels)| Some((ids.get(&*id).copied().flatten()?, levels)))
         .collect();
+    let instance_roots: Vec<_> = if has_instance_roots && renderables {
+        nodes
+            .iter()
+            .map(|node| scene_reference(&node.instance_root, &ids))
+            .collect()
+    } else {
+        Vec::new()
+    };
     // Preserve primary row order, including each replacement's position in it.
     let mut objects = Vec::new();
     let mut lod_groups = Vec::new();
     if renderables || track_imported_cameras {
-        for (index, (node, pose)) in nodes.into_iter().zip(poses).enumerate() {
+        for (index, (mut node, pose)) in nodes.into_iter().zip(poses.iter().copied()).enumerate() {
             if let Pose::Ready(world) = pose
                 && world.visible
             {
-                let (levels, automatic) = if renderables {
-                    let primary = prototypes.get(index).copied().flatten().unwrap_or(index);
+                let prototype = prototypes.get(index).copied().flatten();
+                let root = instance_roots.get(index).copied().unwrap_or(Parent::Root);
+                let mount = MeshMount::resolve(world.transform, root, prototype, &poses);
+                let (levels, automatic) = if renderables && mount.is_some() {
+                    let primary = prototype.unwrap_or(index);
                     by_index.get(&primary).map_or_else(
                         || (node.automatic_levels(), true),
                         |levels| {
@@ -1447,18 +2389,23 @@ fn prepare_model<T: Clone>(
                 } else {
                     (Vec::new(), false)
                 };
-                let candidate = (!levels.is_empty()).then(|| (node.clone(), levels, automatic));
+                if renderables && let Some(mount) = mount {
+                    collision_rows.extend(node.collision_row(mount));
+                }
+                let candidate = mount
+                    .filter(|_| !levels.is_empty())
+                    .map(|mount| (node.clone(), mount, levels, automatic));
                 let start = objects.len();
                 let owns_cameras = camera_owners.get(index).copied().unwrap_or(false);
                 node.append_scene(
-                    world,
+                    (world, mount),
                     renderables.then_some(&mut objects),
                     renderables.then_some(&mut imported_lights),
                     owns_cameras.then_some(&mut imported_cameras),
-                    &mut cache,
+                    cache,
                 );
                 let end = objects.len();
-                if let Some((source, mut levels, automatic)) = candidate
+                if let Some((mut source, mount, mut levels, automatic)) = candidate
                     && let Some(bounds) = objects[start..end]
                         .iter()
                         .map(SceneObject::world_bounds)
@@ -1466,7 +2413,23 @@ fn prepare_model<T: Clone>(
                 {
                     levels.sort_by(|a, b| a.max_size.total_cmp(&b.max_size));
                     levels.dedup_by(|a, b| a.max_size == b.max_size);
-                    let morph_error_scale = if automatic {
+                    // Keep only the selected level in the render key. Equivalent factors
+                    // leave the posed geometry and cached viewport eligible for reuse.
+                    let factor = source.instancing_lod_factor.take();
+                    let fixed_level = if source.lod_bias == 0.0 {
+                        Some(0)
+                    } else {
+                        factor.map(|factor| {
+                            let step = (factor * levels.len() as f64).round() as usize;
+                            // Levels are stored from coarsest to finest, preceded by the primary.
+                            if step == 0 {
+                                0
+                            } else {
+                                levels.len() + 1 - step
+                            }
+                        })
+                    };
+                    let morph_error_scale = if automatic && fixed_level.is_none() {
                         objects[start..end]
                             .iter()
                             .filter_map(SceneObject::morph_weights)
@@ -1479,8 +2442,9 @@ fn prepare_model<T: Clone>(
                     lod_groups.push(LodGroup {
                         range: start..end,
                         source,
-                        world: world.transform,
+                        mount,
                         levels,
+                        fixed_level,
                         morph_error_scale,
                         bounds,
                     });
@@ -1493,14 +2457,34 @@ fn prepare_model<T: Clone>(
             cameras.entry(id).or_insert(camera);
         }
     }
-    Arc::new(SceneModel {
+    SceneModel {
         geometry: SceneGeometry::new(objects, 0),
+        collision_rows,
+        collision_geometry: OnceLock::new(),
         cameras,
         imported_lights: imported_lights.map(Arc::from),
         frames,
+        lod_selection: SceneLodSelection::for_groups(&lod_groups),
         lod_groups,
-        selections: Mutex::default(),
-    })
+        physics: None,
+    }
+}
+
+impl Node {
+    /// Resolve rigid-body poses while collecting the view's reactive dependencies.
+    #[doc(hidden)]
+    pub fn prepare_scene_physics(&mut self, follow_authored_model: bool) {
+        if follow_authored_model
+            && let (Some(Value::SceneObjects(model)), Some(Value::PhysicsWorld3D(world))) = (
+                self.properties.get("model"),
+                self.properties.get("physics-world"),
+            )
+            && let Some(model) = model.with_physics(world)
+        {
+            self.properties.insert("model", Value::SceneObjects(model));
+        }
+        self.prepare_physics_debug();
+    }
 }
 
 #[doc(hidden)]
@@ -1515,6 +2499,7 @@ pub fn record_objects(
         (textures, |_| None),
         true,
         &SceneMeshInputs::default(),
+        &CameraMatrixCache::new(),
     )
 }
 
@@ -1529,6 +2514,7 @@ pub fn record_cameras(
         (|_| None, |_| None),
         false,
         &SceneMeshInputs::default(),
+        &CameraMatrixCache::new(),
     )
 }
 
@@ -1541,6 +2527,7 @@ pub(crate) fn prepare_record_scene(
     ),
     renderables: bool,
     mesh_inputs: &SceneMeshInputs,
+    camera_matrices: &CameraMatrixCache,
 ) -> Arc<SceneModel> {
     prepare_model(
         list.model(),
@@ -1602,11 +2589,55 @@ pub(crate) fn prepare_record_scene(
             SceneNodeDefinition {
                 id: string("id")?.to_owned(),
                 parent: string("parent").unwrap_or_default().to_owned(),
+                physics_body: string("physics-body").unwrap_or_default(),
                 mesh: string("mesh").unwrap_or_default(),
                 geometry,
+                collision_shapes: match (renderables, row.field("collision-shapes")) {
+                    (true, Some(Value::RecordList(shapes))) => {
+                        prepare_collision_shapes(mesh_inputs, shapes.model(), |shape| {
+                            SceneCollisionShape::from_record(shape, &imported)
+                        })
+                    }
+                    _ => None,
+                },
                 material_variant: string("material-variant").unwrap_or_default(),
                 instance_of: instance_of.to_owned(),
+                instance_root: string("instance-root").unwrap_or_default().to_owned(),
+                instance_data: match row.field("instance-data") {
+                    Some(Value::Record(data)) => {
+                        Some(["x", "y", "z", "w"].map(|name| match data.field(name) {
+                            Some(Value::Float(value)) => *value,
+                            _ => 0.0,
+                        }))
+                    }
+                    _ => None,
+                },
                 instance_template: row.field("instance-template") == Some(&Value::Bool(true)),
+                instance_table: match row.field("instance-table") {
+                    Some(Value::InstanceTable3D(table)) if renderables => table.clone(),
+                    _ => InstanceTable3D::default(),
+                },
+                instance_count_override: match row.field("instance-count-override") {
+                    Some(Value::Int(count)) => *count,
+                    _ => -1,
+                },
+                instance_has_transparency: row.field("instance-has-transparency")
+                    == Some(&Value::Bool(true)),
+                instance_depth_sorting: row.field("instance-depth-sorting")
+                    == Some(&Value::Bool(true)),
+                instance_shadow_bounds: match (
+                    row.field("instance-shadow-bounds-min"),
+                    row.field("instance-shadow-bounds-max"),
+                ) {
+                    (Some(Value::Vector3D(min)), Some(Value::Vector3D(max))) => Some([*min, *max]),
+                    _ => None,
+                },
+                random_instances: match (renderables, row.field("random-instances")) {
+                    (true, Some(Value::Record(settings))) => {
+                        Some(SceneRandomInstances::from_record(settings))
+                    }
+                    _ => None,
+                },
                 animation: MeshAnimationBlend {
                     from: MeshPlayback {
                         clip: string("animation").unwrap_or_default().to_owned(),
@@ -1624,12 +2655,34 @@ pub(crate) fn prepare_record_scene(
                 position: [number("x")?, number("y")?, number("z")?],
                 scale: [number("scale-x")?, number("scale-y")?, number("scale-z")?],
                 angles: [number("yaw")?, number("pitch")?, number("roll")?],
+                orientation: match row.field("orientation") {
+                    Some(Value::Quaternion3D(value)) => Some(*value),
+                    _ => None,
+                },
                 pivot: ["pivot-x", "pivot-y", "pivot-z"].map(|name| number(name).unwrap_or(0.0)),
                 visible: enabled("visible"),
                 look_at: string("camera-look-at").unwrap_or_default().to_owned(),
+                look_at_point: match row.field("camera-look-at-point") {
+                    Some(Value::Point3D(point)) => Some(*point),
+                    _ => None,
+                },
+                camera_up: match row.field("camera-up") {
+                    Some(Value::Vector3D(up)) => Some(*up),
+                    _ => None,
+                },
                 camera: string("camera-kind")
                     .filter(|kind| !kind.is_empty())
                     .and_then(|kind| {
+                        if kind == "custom" {
+                            let Value::Record(matrix) = row.field("camera-projection")? else {
+                                return None;
+                            };
+                            return SceneCameraSettings::custom_from_record(
+                                matrix,
+                                string("camera-clip-space").unwrap_or_default(),
+                                camera_matrices,
+                            );
+                        }
                         SceneCameraSettings::from_record(
                             kind,
                             number("camera-fov").unwrap_or(45.0),
@@ -1638,9 +2691,30 @@ pub(crate) fn prepare_record_scene(
                             number("camera-far").unwrap_or(100.0),
                             ["camera-left", "camera-right", "camera-bottom", "camera-top"]
                                 .map(number),
+                            number("camera-width"),
+                        )
+                        .and_then(|settings| {
+                            let normal = match row.field("camera-clip-normal") {
+                                Some(Value::Vector3D(normal)) => Some(*normal),
+                                _ => None,
+                            };
+                            settings.with_clip_normal(normal)
+                        })
+                    })
+                    .map(|settings| {
+                        settings.with_reverse_depth(
+                            row.field("camera-reverse-depth") == Some(&Value::Bool(true)),
                         )
                     }),
                 color: *color,
+                depth_bias: number("depth-bias").unwrap_or_default(),
+                motion_vector_enabled: enabled("motion-vector-enabled"),
+                motion_vector_scale: number("motion-vector-scale").unwrap_or(1.0),
+                instancing_lod_range: [
+                    number("instancing-lod-min").unwrap_or(0.0),
+                    number("instancing-lod-max").unwrap_or(-1.0),
+                ],
+                instancing_lod_factor: number("instancing-lod-factor").unwrap_or(-1.0),
                 material: match (renderables, row.field("material")) {
                     (true, Some(Value::Record(style))) => {
                         crate::scene3d::SceneMaterial::from_record(style, &textures, &shaders)
@@ -1679,6 +2753,14 @@ pub(crate) fn prepare_record_scene(
                         ],
                     )
                 }),
+                bake_role: string("bake-role").unwrap_or_default(),
+                lightmap_resolution: LightmapResolution::from_settings(
+                    match row.field("lightmap-size") {
+                        Some(Value::Int(size)) => *size,
+                        _ => 0,
+                    },
+                    number("lightmap-texels-per-unit").unwrap_or(0.0),
+                ),
                 casts_shadow: enabled("casts-shadow"),
                 receives_shadow: enabled("receives-shadow"),
                 receives_reflections: enabled("receives-reflections"),
@@ -1689,6 +2771,7 @@ pub(crate) fn prepare_record_scene(
                 },
                 pickable: enabled("pickable"),
                 collidable: enabled("collidable"),
+                trigger: row.field("trigger") == Some(&Value::Bool(true)),
                 lod_of: string("lod-of").unwrap_or_default().to_owned(),
                 lod_max_size: match row.field("lod-max-size") {
                     Some(Value::Length(length)) => length.0,
@@ -1708,6 +2791,32 @@ mod indexed_ray_tests {
     use super::*;
     use crate::scene3d::{Ray3D, RayRows, SceneRay, raycast};
     use std::{hint::black_box, time::Instant};
+
+    #[test]
+    fn distance_masks_keep_instance_order_at_the_interval_boundary() {
+        let box_at_origin =
+            SceneObject::cuboid("box", [0.0; 3], [1.0; 3], [0.0; 3], Color(0xffffffff))
+                .expect("test box");
+        let mut objects = vec![box_at_origin.clone(); 65];
+        objects[0] = box_at_origin.clone().with_instancing_lod_range([0.0, 10.0]);
+        objects[64] = box_at_origin.with_instancing_lod_range([10.0, -1.0]);
+        let geometry = SceneGeometry::new(objects, 0);
+        let near = geometry
+            .distance_visibility([0.0, 0.0, 9.0])
+            .expect("near mask");
+        let far = geometry
+            .distance_visibility([0.0, 0.0, 10.0])
+            .expect("far mask");
+        let farther = geometry
+            .distance_visibility([0.0, 0.0, 11.0])
+            .expect("reused mask");
+        assert_eq!(near.runs(0..65).collect::<Vec<_>>(), [0..64]);
+        assert_eq!(far.runs(0..65).collect::<Vec<_>>(), [1..65]);
+        assert!(Arc::ptr_eq(&far, &farther));
+        let shared = SceneVisibility::intersect(&near, &far);
+        assert_eq!(shared.visible_count(), 63);
+        assert_eq!(shared.runs(0..65).collect::<Vec<_>>(), [1..64]);
+    }
 
     #[test]
     fn repeated_scene_rays_prune_large_scenes_and_keep_coplanar_order() {

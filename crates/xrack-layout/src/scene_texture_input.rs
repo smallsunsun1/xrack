@@ -141,9 +141,11 @@ pub fn scene_texture_source_active(
         {
             let geometry = model.geometry(&camera);
             let visibility = geometry.visibility(&camera);
+            let eye = camera.eye_position();
             if geometry.iter().enumerate().any(|(index, object)| {
                 object.is_pickable()
                     && object.layers & camera.layer_mask() != 0
+                    && object.visible_at_distance(eye)
                     && visibility.contains(index as u32)
                     && object.mesh.uses_base_items()
                     && object

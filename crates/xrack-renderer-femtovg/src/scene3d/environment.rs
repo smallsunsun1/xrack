@@ -3,44 +3,12 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use xrack_runtime::{
-    Node, Value,
-    scene3d::{EnvironmentProbe, ReflectionProbe, ReflectionSource, SceneObject, SceneVisibility},
+pub(super) use xrack_runtime::scene3d::ViewportEnvironment as EnvironmentInput;
+use xrack_runtime::scene3d::{
+    EnvironmentProbe, ReflectionProbe, ReflectionSource, SceneObject, SceneVisibility,
 };
 
 use super::{append_floats, buffer, reflection_capture::CapturedCube};
-
-pub(super) struct EnvironmentInput<'a> {
-    probe: &'a Arc<EnvironmentProbe>,
-    intensity: f32,
-    yaw: f32,
-    pub skybox: bool,
-}
-
-impl<'a> EnvironmentInput<'a> {
-    pub fn contributes_light(&self) -> bool {
-        self.intensity > 0.0
-    }
-
-    pub fn from_node(node: &'a Node) -> Option<Self> {
-        let Some(Value::SceneEnvironment(Some(probe))) = node.properties.get("environment") else {
-            return None;
-        };
-        Some(Self {
-            probe,
-            intensity: node
-                .float("environment-intensity")
-                .unwrap_or(1.0)
-                .clamp(0.0, 100.0),
-            yaw: node
-                .number("environment-yaw")
-                .unwrap_or(0.0)
-                .rem_euclid(360.0)
-                .to_radians() as f32,
-            skybox: node.boolean("environment-skybox", false),
-        })
-    }
-}
 
 struct ResidentProbe {
     identity: Weak<EnvironmentProbe>,
@@ -157,7 +125,12 @@ impl EnvironmentGpu {
         }
         let hit = self.assignments.iter().position(|entry| {
             std::ptr::addr_eq(entry.objects.as_ptr(), Arc::as_ptr(objects))
-                && entry.probes == *probes
+                && entry.probes.len() == probes.len()
+                && entry
+                    .probes
+                    .iter()
+                    .zip(probes.iter())
+                    .all(|(old, new)| old.same_lighting(new))
                 && entry.layers == layers
         });
         let entry = hit
@@ -222,7 +195,7 @@ impl EnvironmentGpu {
                 let view = capture.map(|cube| &cube.view);
                 let sample_origin = capture.map_or(probe.position, |cube| cube.position);
                 let index = self.local_bindings.iter().position(|entry| {
-                    entry.probe == *probe
+                    entry.probe.same_lighting(probe)
                         && entry.ambient == ambient_key
                         && entry.captured.as_ref() == view
                         && entry.sample_origin == sample_origin

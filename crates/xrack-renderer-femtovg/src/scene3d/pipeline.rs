@@ -160,8 +160,30 @@ pub(super) fn fixed_state(mut state: CapturePipelineState) -> CapturePipelineSta
 pub(super) fn depth_compare(
     state: CapturePipelineState,
     default: wgpu::CompareFunction,
+    reverse_depth: bool,
 ) -> wgpu::CompareFunction {
-    state.depth_compare.map_or(default, compare_function)
+    orient_depth_compare(
+        state.depth_compare.map_or(default, compare_function),
+        reverse_depth,
+    )
+}
+
+pub(super) fn orient_depth_compare(
+    compare: wgpu::CompareFunction,
+    reverse_depth: bool,
+) -> wgpu::CompareFunction {
+    use wgpu::CompareFunction::*;
+    if reverse_depth {
+        match compare {
+            Less => Greater,
+            LessEqual => GreaterEqual,
+            Greater => Less,
+            GreaterEqual => LessEqual,
+            _ => compare,
+        }
+    } else {
+        compare
+    }
 }
 
 fn compare_function(value: CaptureDepthCompare) -> wgpu::CompareFunction {
@@ -225,6 +247,8 @@ pub(super) enum ColorPass {
 pub(super) enum GeometryOutput {
     Surface,
     Named(u8),
+    Data(wgpu::TextureFormat),
+    Combined(u8, Option<wgpu::TextureFormat>),
 }
 
 pub(super) const NAMED_GEOMETRY_ATTACHMENTS: [CaptureAttachment; 4] = [
@@ -236,7 +260,44 @@ pub(super) const NAMED_GEOMETRY_ATTACHMENTS: [CaptureAttachment; 4] = [
 
 impl GeometryOutput {
     fn has_attachment(self, attachment: CaptureAttachment) -> bool {
-        matches!(self, Self::Named(mask) if mask & (1 << attachment.index()) != 0)
+        match self {
+            Self::Named(mask) | Self::Combined(mask, _) => mask & (1 << attachment.index()) != 0,
+            Self::Data(_) => attachment == CaptureAttachment::MaterialData,
+            Self::Surface => false,
+        }
+    }
+
+    pub(super) fn combined(self) -> bool {
+        matches!(self, Self::Combined(..))
+    }
+
+    fn geometry_targets(self, writes: wgpu::ColorWrites) -> [Option<wgpu::ColorTargetState>; 4] {
+        NAMED_GEOMETRY_ATTACHMENTS.map(|attachment| {
+            self.has_attachment(attachment)
+                .then(|| wgpu::ColorTargetState {
+                    format: attachment_format(attachment),
+                    blend: None,
+                    write_mask: writes,
+                })
+        })
+    }
+
+    pub(super) fn combined_targets(
+        self,
+        color: wgpu::ColorTargetState,
+        writes: wgpu::ColorWrites,
+    ) -> Option<([Option<wgpu::ColorTargetState>; 6], usize)> {
+        let Self::Combined(_, data_format) = self else {
+            return None;
+        };
+        let [normal, base, emissive, depth] = self.geometry_targets(writes);
+        let data = data_format.map(|format| wgpu::ColorTargetState {
+            format,
+            blend: None,
+            write_mask: writes,
+        });
+        let len = NAMED_GEOMETRY_ATTACHMENTS.len() + 1 + usize::from(data.is_some());
+        Some(([normal, base, emissive, depth, Some(color), data], len))
     }
 }
 
@@ -251,6 +312,7 @@ pub(super) struct ColorOutput {
     pub stenciled: bool,
     pub raster: RasterMode,
     pub reverse_winding: bool,
+    pub reverse_depth: bool,
     pub screen_reflections: bool,
     pub screen_indirect_light: bool,
     pub capture_geometry: Option<GeometryOutput>,
@@ -261,6 +323,11 @@ pub(super) struct ColorOutput {
 }
 
 impl ColorOutput {
+    pub(super) fn writes_material_data(self) -> bool {
+        self.capture_geometry
+            .is_some_and(|geometry| geometry.has_attachment(CaptureAttachment::MaterialData))
+    }
+
     pub(super) fn draws_geometry(self) -> bool {
         self.renderables.includes(self.transparent())
     }
@@ -287,11 +354,11 @@ impl ColorOutput {
 
     pub(super) fn format(self) -> wgpu::TextureFormat {
         match self.capture_geometry {
-            Some(_) => HDR_FORMAT,
-            None => {
-                self.format_override
-                    .unwrap_or(if self.hdr { HDR_FORMAT } else { COLOR_FORMAT })
-            }
+            Some(GeometryOutput::Surface | GeometryOutput::Named(_)) => HDR_FORMAT,
+            Some(GeometryOutput::Data(format)) => format,
+            _ => self
+                .format_override
+                .unwrap_or(if self.hdr { HDR_FORMAT } else { COLOR_FORMAT }),
         }
     }
 
@@ -316,9 +383,17 @@ pub(super) const GEOMETRY_LAYOUTS: [Option<wgpu::VertexBufferLayout<'static>>; 2
     Some(wgpu::VertexBufferLayout {
         array_stride: INSTANCE_STRIDE,
         step_mode: wgpu::VertexStepMode::Instance,
-        attributes: &wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32],
+        attributes: &wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Uint32],
     }),
 ];
+
+// Skin and lightmap streams are mutually exclusive and reuse location 11.
+pub(super) const INSTANCE_DATA_LAYOUT: Option<wgpu::VertexBufferLayout<'static>> =
+    Some(wgpu::VertexBufferLayout {
+        array_stride: 16,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &wgpu::vertex_attr_array![15 => Float32x4],
+    });
 
 pub(super) struct Pipelines {
     pub globals: wgpu::BindGroupLayout,
@@ -361,6 +436,7 @@ type VariantKey = (
         bool,
         RasterMode,
         Option<wgpu::TextureFormat>,
+        bool,
     ),
 );
 
@@ -755,6 +831,7 @@ impl Pipelines {
         let hooks = custom.map_or_else(MaterialHooks::default, |(source, _)| {
             MaterialHooks::from_source(source)
         });
+        let writes_material_data = output.writes_material_data();
 
         let wireframe = output.raster == RasterMode::ShaderLine;
         let shader = if wireframe {
@@ -765,7 +842,7 @@ impl Pipelines {
             &self.shader
         };
         let create = |custom: Option<&wgpu::ShaderModule>| {
-            let custom_fragment = custom.filter(|_| hooks.fragment());
+            let custom_fragment = custom.filter(|_| hooks.uses_fragment(writes_material_data));
             let layout = self.shader_materials[coated][usize::from(hooks.capture_position)]
                 .as_ref()
                 .filter(|_| custom_slots > 0)
@@ -791,7 +868,8 @@ impl Pipelines {
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![10 => Snorm16x4],
                 }),
-                SKIN_LAYOUT,
+                SKIN_LAYOUT.filter(|_| deformation.skin()),
+                INSTANCE_DATA_LAYOUT,
             ];
             if !surface.vertex_tangents {
                 buffers[2] = None;
@@ -800,27 +878,27 @@ impl Pipelines {
                 buffers[3] = Some(wgpu::VertexBufferLayout {
                     array_stride: 8,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![15 => Float32x2],
+                    attributes: &wgpu::vertex_attr_array![11 => Float32x2],
                 });
             }
             let state = output.pipeline_state;
             let material_prepass = !output.stenciled && uses_material_prepass(state);
             let default_blend = surface.blend.then(|| blend_state(surface.blend_mode));
-            let ordinary = [Some(wgpu::ColorTargetState {
+            let color = wgpu::ColorTargetState {
                 format: output.format(),
                 blend: state.blend.map_or(default_blend, override_blend),
                 write_mask: color_writes(state),
-            })];
-            let geometry_targets = NAMED_GEOMETRY_ATTACHMENTS.map(|attachment| {
-                output
-                    .capture_geometry
-                    .is_some_and(|geometry| geometry.has_attachment(attachment))
-                    .then(|| wgpu::ColorTargetState {
-                        format: attachment_format(attachment),
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })
+            };
+            let geometry_targets = output
+                .capture_geometry
+                .map(|geometry| geometry.geometry_targets(wgpu::ColorWrites::ALL));
+            let combined = output
+                .capture_geometry
+                .is_some_and(GeometryOutput::combined);
+            let combined_targets = output.capture_geometry.and_then(|geometry| {
+                geometry.combined_targets(color.clone(), wgpu::ColorWrites::ALL)
             });
+            let ordinary = [Some(color)];
             let reflection_targets =
                 surface_targets(output.multisampling, output.screen_indirect_light);
             let volume = f64::from(u8::from(surface.volume != VolumeMode::Off));
@@ -862,11 +940,7 @@ impl Pipelines {
                         ],
                         ..Default::default()
                     },
-                    buffers: &buffers[..if deformation.skin() || output.lightmapped {
-                        4
-                    } else {
-                        2 + usize::from(surface.vertex_tangents)
-                    }],
+                    buffers: &buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: custom_fragment.unwrap_or(shader),
@@ -877,6 +951,15 @@ impl Pipelines {
                             "fragment_capture_depth"
                         }
                         Some(GeometryOutput::Named(_)) => "fragment_capture_geometry",
+                        Some(GeometryOutput::Data(_)) => "fragment_capture_data",
+                        Some(GeometryOutput::Combined(..)) => {
+                            match (writes_material_data, surface.clearcoat) {
+                                (false, false) => "fragment_capture_lit",
+                                (false, true) => "fragment_capture_lit_coat",
+                                (true, false) => "fragment_capture_lit_data",
+                                (true, true) => "fragment_capture_lit_data_coat",
+                            }
+                        }
                         Some(GeometryOutput::Surface) => "fragment_main",
                         None => match (
                             output.screen_indirect_light,
@@ -900,7 +983,14 @@ impl Pipelines {
                             ("DISPERSION_MATERIAL", dispersion),
                             (
                                 "CAPTURE_EFFECT_SURFACE",
-                                f64::from(u8::from(output.capture_geometry.is_some())),
+                                f64::from(output.capture_geometry.is_some() && !combined),
+                            ),
+                            ("CAPTURE_LIT_SURFACE", f64::from(combined)),
+                            (
+                                "CAPTURE_MATERIAL_DATA",
+                                f64::from(
+                                    writes_material_data && hooks.data && custom_fragment.is_some(),
+                                ),
                             ),
                             (
                                 "CAPTURE_MATERIAL_OCCLUSION",
@@ -986,8 +1076,12 @@ impl Pipelines {
                         ],
                         ..Default::default()
                     },
-                    targets: if matches!(output.capture_geometry, Some(GeometryOutput::Named(_))) {
-                        &geometry_targets
+                    targets: if let Some((targets, len)) = &combined_targets {
+                        &targets[..*len]
+                    } else if let Some(targets) = &geometry_targets
+                        && matches!(output.capture_geometry, Some(GeometryOutput::Named(_)))
+                    {
+                        targets
                     } else if output.screen_data() {
                         &reflection_targets
                     } else if output.weighted() {
@@ -1028,6 +1122,7 @@ impl Pipelines {
                         } else {
                             wgpu::CompareFunction::Less
                         },
+                        output.reverse_depth,
                     )),
                     stencil: stencil_state(state),
                     bias: Default::default(),
@@ -1066,6 +1161,7 @@ impl Pipelines {
                 output.stenciled,
                 output.raster,
                 format,
+                output.reverse_depth,
             ),
         );
         if let Some(source) = custom
@@ -1076,6 +1172,7 @@ impl Pipelines {
             return pipeline;
         }
         if output.stenciled
+            || output.reverse_depth
             || format.is_some()
             || output.pipeline_state != CapturePipelineState::default()
             || output.screen_data()
@@ -1122,7 +1219,8 @@ impl Pipelines {
             + usize::from(output.multisampling)
             + 6 * FogMode::COUNT * usize::from(output.hdr)
             + 12 * FogMode::COUNT * usize::from(ignore_depth)
-            + 24 * FogMode::COUNT * usize::from(output.stenciled);
+            + 24 * FogMode::COUNT * usize::from(output.stenciled)
+            + 48 * FogMode::COUNT * usize::from(output.reverse_depth);
         let create = || {
             let targets = surface_targets(output.multisampling, output.screen_indirect_light);
             let ordinary = [Some(wgpu::ColorTargetState {
@@ -1141,7 +1239,10 @@ impl Pipelines {
                 vertex: wgpu::VertexState {
                     module: &self.shader,
                     entry_point: Some("sky_vertex"),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[("REVERSE_DEVICE_DEPTH", f64::from(output.reverse_depth))],
+                        ..Default::default()
+                    },
                     buffers: &[],
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -1191,7 +1292,10 @@ impl Pipelines {
                 cache: None,
             })
         };
-        if let Some(format) = output.format_override {
+        if let Some(format) = output
+            .format_override
+            .or_else(|| output.reverse_depth.then(|| output.format()))
+        {
             self.skybox_formats
                 .entry((index, format))
                 .or_insert_with(create)

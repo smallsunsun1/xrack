@@ -6,40 +6,48 @@ pub use crate::scene_animation::{
     MeshNodeTransform, MeshPlayback, MorphAnimationTrack,
 };
 pub use crate::scene_camera::{
-    Point3D, ProjectedPoint3D, SceneCamera, SceneCameraSettings, hit_all_camera, hit_all_objects,
-    hit_camera, hit_instance, hit_instance_camera, hit_model, hit_objects, hit_row, hit_row_camera,
-    hit_subset, hit_subset_camera, pick_camera, pick_in_rect, pick_in_rect_camera, pick_model,
-    pick_objects, project, project_camera, unproject, unproject_camera,
+    CAMERA_MATRIX_FIELDS, Point3D, ProjectedPoint3D, SceneCamera, SceneCameraSettings,
+    hit_all_camera, hit_all_objects, hit_camera, hit_instance, hit_instance_camera, hit_model,
+    hit_objects, hit_row, hit_row_camera, hit_subset, hit_subset_camera, pick_camera, pick_in_rect,
+    pick_in_rect_camera, pick_model, pick_objects, project, project_camera, unproject,
+    unproject_camera,
 };
-use crate::scene_cast::{MeshContact, SphereSweep, TriangleContact, cast_triangle};
-pub use crate::scene_cast::{WalkOptions, sphere_cast, sphere_overlap, sphere_slide, sphere_walk};
+use crate::scene_cast::{MeshContact, ShapeSweep, TriangleContact, cast_shape_triangle};
+pub use crate::scene_cast::{
+    WalkOptions, WalkResult3D, capsule_cast, capsule_overlap, capsule_slide,
+    capsule_trigger_crossings, capsule_trigger_overlap, capsule_walk, capsule_walk_result,
+    capsule_walk_with_contacts, sphere_cast, sphere_overlap, sphere_slide, sphere_walk,
+};
 pub use crate::scene_environment::{
     EnvironmentProbe, ReflectionCapture, ReflectionProbe, ReflectionRefresh, ReflectionSlicing,
-    ReflectionSource, environment_resource_key, model_reflections, record_reflections,
+    ReflectionSource, ViewportEnvironment, environment_resource_key, model_reflections,
+    record_reflections,
 };
 pub use crate::scene_fog::{
     FogNoise, FogVolume3D, FogVolumeDefinition, MAX_FOG_VOLUMES, model_fog_volumes,
     record_fog_volumes, visible_fog_volumes,
 };
-use crate::scene_hierarchy::SceneTransform;
+use crate::scene_hierarchy::{NO_MESH_NODE, SceneTransform};
 pub use crate::scene_hierarchy::{
-    SceneGeometry, SceneGeometryInput, SceneModel, SceneNodeDefinition, model_cameras, model_nodes,
-    record_cameras, record_objects,
+    SceneCollisionShape, SceneGeometry, SceneGeometryInput, SceneModel, SceneNodeDefinition,
+    model_cameras, model_nodes, prepare_collision_shapes, record_cameras, record_objects,
 };
 use crate::scene_indices::MIN_INDEXED_VERTICES;
 pub use crate::scene_indices::{MeshDrawIndices, MeshIndexElements};
+pub use crate::scene_instance_table::{InstanceTable3D, InstanceTableRow};
 pub use crate::scene_lighting::{
-    DirectionalShadowSpace, MAX_SCENE_LIGHTS, PointShadowProjection, SceneLight,
-    SceneLightDefinition, SceneLightModel, SceneLightSource, ShadowLight, linear_color,
-    model_lights, record_lights,
+    DirectionalShadowSpace, LightBakeMode, MAX_SCENE_LIGHTS, PointShadowProjection, SceneLight,
+    SceneLightDefinition, SceneLightModel, SceneLightSource, ShadowFilter, ShadowLight,
+    ShadowSampling, linear_color, model_lights, record_lights,
 };
 pub use crate::scene_material::{
     MAX_MESH_TEXTURE_DIMENSION, MaterialChannel, MaterialChannels, MeshAlphaMode, MeshAnisotropy,
     MeshBlendMode, MeshClearcoat, MeshCullMode, MeshDepthCoverage, MeshDepthDraw, MeshDielectric,
     MeshFresnel, MeshImage, MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPart, MeshPbr,
-    MeshShader, MeshTexture, MeshTransmission, MeshVolume, RefractionChannels, SceneMaterial,
-    SceneMaterialBinding, SceneMaterialMaps, SceneTexture, TextureChannel, TextureColorSpace,
-    TextureFilter, TextureTransform, TextureWrap, VertexColorMasks, texture_resource_key,
+    MeshShader, MeshTexture, MeshTransmission, MeshVolume, MeshWorkflow, RefractionChannels,
+    SceneMaterial, SceneMaterialBinding, SceneMaterialMaps, SceneTexture, TextureChannel,
+    TextureColorSpace, TextureFilter, TextureTransform, TextureWrap, VertexColorMasks,
+    texture_resource_key,
 };
 use crate::scene_morph::MorphPose;
 pub use crate::scene_morph::{
@@ -58,6 +66,7 @@ pub use crate::scene_particles::{
 };
 use crate::scene_pick::{BoundsSegment, MIN_BVH_TRIANGLES, PickTree};
 pub use crate::scene_projection::SceneProjectionCache;
+pub use crate::scene_random_instances::{InstanceColorModel, SceneRandomInstances};
 pub use crate::scene_skin::{
     JointPalette, JointRows, MAX_SKIN_JOINTS, MeshInfluence, MeshSkin, MeshSkinJoint,
     SKIN_INFLUENCES,
@@ -71,7 +80,9 @@ use crate::{scene_effect::CaptureRenderables, scene_material::SceneAppearance};
 
 /// The default content layer for an authored model, light or camera.
 pub use crate::scene_lighting::viewport_lighting;
-pub use crate::scene_lightmap::{BakedLightmap, LightmapMode, LightmapTrace};
+pub use crate::scene_lightmap::{
+    BakeRole, BakedLightmap, LightmapMode, LightmapResolution, LightmapTrace,
+};
 
 pub const MAIN_LAYER: u64 = 1;
 use crate::{Color, VecModel, scene_bounds::Bounds3D};
@@ -101,9 +112,14 @@ impl PartialEq for Mesh3D {
             (Self::Box, Self::Box) | (Self::Sphere, Self::Sphere) => true,
             (Self::Imported(left), Self::Imported(right)) => {
                 Arc::ptr_eq(left, right)
-                    || left.authored.is_some()
+                    || Arc::ptr_eq(&left.geometry, &right.geometry)
+                        && left.instance_blended == right.instance_blended
                         && left.authored == right.authored
-                        && Arc::ptr_eq(&left.geometry, &right.geometry)
+                        && left
+                            .source_materials
+                            .as_ref()
+                            .zip(right.source_materials.as_ref())
+                            .is_some_and(|(left, right)| Arc::ptr_eq(left, right))
             }
             _ => false,
         }
@@ -140,6 +156,7 @@ enum Primitive {
     Rectangle,
     Cylinder,
     Cone,
+    Capsule,
 }
 
 #[doc(hidden)]
@@ -170,8 +187,27 @@ pub struct MeshGeometry {
     max: [f32; 3],
     skin: Option<Arc<SkinGeometry>>,
     morph: Option<Arc<MorphGeometry>>,
+    heightfield: Option<Arc<MeshHeightField>>,
     pick_tree: OnceLock<Arc<PickTree>>,
     primitive: Option<Primitive>,
+}
+
+/// The normalized terrain samples in the original PNG's row order.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct MeshHeightField {
+    dimensions: [usize; 2],
+    samples: Box<[f32]>,
+}
+
+impl MeshHeightField {
+    pub fn dimensions(&self) -> [usize; 2] {
+        self.dimensions
+    }
+
+    pub fn samples(&self) -> &[f32] {
+        &self.samples
+    }
 }
 
 impl MeshGeometry {
@@ -194,14 +230,16 @@ pub struct MeshData {
     geometry: Arc<MeshGeometry>,
     material_slots: Arc<[MeshMaterialSlot]>,
     materials: Arc<[MeshMaterial]>,
+    source_materials: Option<Arc<[MeshMaterial]>>,
     uses_base_items: bool,
-    uses_shader_items: bool,
+    item_sources: Box<[String]>,
     capture_sources: Box<[crate::scene_effect::CaptureRead]>,
     capture_positions: bool,
     shader_displacement: f32,
     blended_parts: Vec<(usize, [f32; 3])>,
     transmission_blur: Option<f32>,
     has_opaque_parts: bool,
+    instance_blended: bool,
     has_auxiliary_depth: bool,
     has_face_culling: bool,
     depth_prepasses: [bool; 2],
@@ -233,13 +271,32 @@ impl MeshData {
     }
 
     #[doc(hidden)]
+    pub fn instance_blend_primitive(&self) -> Option<Mesh3D> {
+        if !matches!(&*self.materials,
+            [material] if matches!(material.alpha_mode, MeshAlphaMode::InstanceBlend { builtin: true, .. })
+        ) {
+            return None;
+        }
+        match self.geometry.primitive? {
+            Primitive::Box => Some(Mesh3D::Box),
+            Primitive::Sphere => Some(Mesh3D::Sphere),
+            _ => None,
+        }
+    }
+
+    #[doc(hidden)]
     pub fn uses_base_items(&self) -> bool {
         self.uses_base_items
     }
 
     #[doc(hidden)]
     pub fn uses_item_textures(&self) -> bool {
-        self.uses_base_items || self.uses_shader_items
+        !self.item_sources.is_empty()
+    }
+
+    #[doc(hidden)]
+    pub fn item_sources(&self) -> &[String] {
+        &self.item_sources
     }
 
     #[doc(hidden)]
@@ -294,12 +351,19 @@ impl MeshData {
             uses_base_items: materials
                 .iter()
                 .any(|material| material.base_item.is_some()),
-            uses_shader_items: materials.iter().any(|material| {
-                material
-                    .shader
-                    .as_ref()
-                    .is_some_and(|shader| shader.item_sources().next().is_some())
-            }),
+            item_sources: materials
+                .iter()
+                .flat_map(|material| {
+                    material
+                        .base_item
+                        .as_deref()
+                        .into_iter()
+                        .chain(material.shader.iter().flat_map(MeshShader::item_sources))
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
             capture_positions: materials
                 .iter()
                 .filter_map(|material| material.shader.as_ref())
@@ -324,7 +388,11 @@ impl MeshData {
                 .iter()
                 .map(|material| material.vertex_parameters()[3])
                 .fold(0.0, f32::max),
+            instance_blended: materials
+                .iter()
+                .any(|material| matches!(material.alpha_mode, MeshAlphaMode::InstanceBlend { .. })),
             materials,
+            source_materials: None,
             blended_parts,
             transmission_blur,
             has_opaque_parts,
@@ -513,6 +581,10 @@ impl Mesh3D {
         Self::prepare_parts(Some(kind), parts)
     }
 
+    pub(crate) fn prepare_capsule(parts: crate::scene_primitives::PrimitiveParts) -> Option<Self> {
+        Self::prepare_primitive(Primitive::Capsule, parts)
+    }
+
     pub(crate) fn prepare_procedural(
         parts: crate::scene_primitives::PrimitiveParts,
     ) -> Option<Self> {
@@ -666,8 +738,14 @@ impl Mesh3D {
                 .base_color
                 .iter()
                 .all(|channel| (0.0..=1.0).contains(channel))
-                || matches!(material.alpha_mode, MeshAlphaMode::Mask(alpha) if !alpha.is_finite() || alpha < 0.0)
-                || material.base_texture.as_ref().is_some_and(|texture| texture.uv_slot != 0 || !texture.transform.is_valid())
+                || material
+                    .alpha_mode
+                    .cutoff()
+                    .is_some_and(|alpha| !alpha.is_finite() || alpha < 0.0)
+                || material
+                    .base_texture
+                    .as_ref()
+                    .is_some_and(|texture| texture.uv_slot != 0 || !texture.transform.is_valid())
                 || material.pbr.as_ref().is_some_and(|pbr| !pbr.is_valid())
         }) {
             return Err("mesh contains an invalid material factor");
@@ -729,6 +807,7 @@ impl Mesh3D {
             max,
             skin: None,
             morph: None,
+            heightfield: None,
             pick_tree: OnceLock::new(),
             primitive: None,
         });
@@ -806,9 +885,61 @@ impl Mesh3D {
         }
         let mut result =
             MeshData::with_materials(source.geometry.clone(), materials, Some(style.clone()));
+        result.source_materials = Some(source.materials.clone());
         result.derivative_normals = derivative_normals;
         result.material_slots = source.material_slots.clone();
         Self::Imported(Arc::new(result))
+    }
+
+    pub(crate) fn with_instance_blending(self) -> Self {
+        let builtin = matches!(self, Self::Box | Self::Sphere);
+        let Some(source) = self.material_source() else {
+            return self;
+        };
+        if source.materials.iter().all(|material| {
+            matches!(
+                material.alpha_mode,
+                MeshAlphaMode::Blend | MeshAlphaMode::InstanceBlend { .. }
+            )
+        }) {
+            return self;
+        }
+        let materials = source
+            .materials
+            .iter()
+            .cloned()
+            .map(|mut material| {
+                material.alpha_mode = match material.alpha_mode {
+                    MeshAlphaMode::Opaque => MeshAlphaMode::InstanceBlend {
+                        cutoff: None,
+                        builtin,
+                    },
+                    MeshAlphaMode::Mask(cutoff) => MeshAlphaMode::InstanceBlend {
+                        cutoff: Some(cutoff),
+                        builtin,
+                    },
+                    mode => mode,
+                };
+                if builtin {
+                    material.pbr = None;
+                    material.cull_mode = MeshCullMode::None;
+                }
+                material
+            })
+            .collect();
+        let mut mesh =
+            MeshData::with_materials(source.geometry.clone(), materials, source.authored.clone());
+        mesh.derivative_normals
+            .clone_from(&source.derivative_normals);
+        mesh.material_slots = source.material_slots.clone();
+        mesh.source_materials = Some(
+            source
+                .source_materials
+                .as_ref()
+                .unwrap_or(&source.materials)
+                .clone(),
+        );
+        Self::Imported(Arc::new(mesh))
     }
 
     #[doc(hidden)]
@@ -943,6 +1074,50 @@ impl Mesh3D {
     }
 
     #[doc(hidden)]
+    pub fn heightfield(&self) -> Option<&MeshHeightField> {
+        let Self::Imported(data) = self else {
+            return None;
+        };
+        data.heightfield.as_deref()
+    }
+
+    #[doc(hidden)]
+    pub fn with_heightfield(self, dimensions: [usize; 2], samples: Vec<f32>) -> Option<Self> {
+        let [width, height] = dimensions;
+        if width < 2
+            || height < 2
+            || width.checked_mul(height)? != samples.len()
+            || samples.iter().any(|height| !(0.0..=1.0).contains(height))
+        {
+            return None;
+        }
+        self.attach_heightfield(Arc::new(MeshHeightField {
+            dimensions,
+            samples: samples.into_boxed_slice(),
+        }))
+    }
+
+    #[doc(hidden)]
+    pub fn with_packed_heightfield(self, dimensions: [usize; 2], bytes: &[u8]) -> Option<Self> {
+        let (words, remainder) = bytes.as_chunks::<4>();
+        if !remainder.is_empty() {
+            return None;
+        }
+        self.with_heightfield(
+            dimensions,
+            words.iter().copied().map(f32::from_le_bytes).collect(),
+        )
+    }
+
+    fn attach_heightfield(mut self, heightfield: Arc<MeshHeightField>) -> Option<Self> {
+        let Self::Imported(data) = &mut self else {
+            return None;
+        };
+        Arc::make_mut(&mut Arc::make_mut(data).geometry).heightfield = Some(heightfield);
+        Some(self)
+    }
+
+    #[doc(hidden)]
     pub fn with_generated_lightmap_uv(mut self, uv: Vec<[f32; 2]>, min_size: u32) -> Option<Self> {
         let Self::Imported(source) = &mut self else {
             return None;
@@ -953,7 +1128,7 @@ impl Mesh3D {
         if Arc::get_mut(source).is_some() {
             return self.attach_lightmap_uv(uv, min_size);
         }
-        let mesh = Self::imported_shared(
+        let mut mesh = Self::imported_shared(
             source.vertices.clone(),
             source.tangents.clone(),
             source.parts.clone(),
@@ -961,6 +1136,9 @@ impl Mesh3D {
         )
         .ok()?
         .with_material_slots(source.material_slots.clone())?;
+        if let Some(heightfield) = &source.heightfield {
+            mesh = mesh.attach_heightfield(heightfield.clone())?;
+        }
         mesh.attach_lightmap_uv(uv, min_size)
     }
 
@@ -1123,54 +1301,6 @@ impl Mesh3D {
         match self {
             Self::Imported(mesh) => mesh.morph.as_deref(),
             _ => None,
-        }
-    }
-
-    pub(crate) fn mirrored_x(&self) -> Option<Self> {
-        let Self::Imported(mesh) = self else {
-            return None;
-        };
-        let mut vertices = mesh.vertices.clone();
-        for triangle in vertices.chunks_exact_mut(3) {
-            for vertex in &mut *triangle {
-                vertex.position[0] = -vertex.position[0];
-                vertex.normal[0] = -vertex.normal[0];
-            }
-            triangle.swap(1, 2);
-        }
-        let mut tangents = mesh.tangents.clone();
-        for triangle in tangents.chunks_exact_mut(3) {
-            for tangent in &mut *triangle {
-                tangent[0] = tangent[0].saturating_neg();
-                tangent[3] = tangent[3].saturating_neg();
-            }
-            triangle.swap(1, 2);
-        }
-        let mut mirrored = Self::imported_shared(
-            vertices,
-            tangents,
-            mesh.parts.clone(),
-            mesh.materials.clone(),
-        )
-        .ok()?
-        .with_material_slots(mesh.material_slots.clone())?;
-        if !mesh.lightmap_uv.is_empty() {
-            let mut uv = mesh.lightmap_uv.clone();
-            for triangle in uv.chunks_exact_mut(3) {
-                triangle.swap(1, 2);
-            }
-            mirrored = mirrored.attach_lightmap_uv(uv, mesh.lightmap_min_size)?;
-        }
-        if let Some(morph) = &mesh.morph {
-            let (offsets, deltas) = morph.mirrored_x();
-            mirrored.with_morph(
-                morph.target_count(),
-                morph.target_names().clone(),
-                offsets,
-                deltas,
-            )
-        } else {
-            Some(mirrored)
         }
     }
 
@@ -1402,31 +1532,83 @@ impl Mesh3D {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InstancingLodRange([f64; 2]);
+
+impl InstancingLodRange {
+    const ALL: Self = Self([0.0, f64::INFINITY]);
+
+    pub(crate) fn from_limits([near, far]: [f64; 2]) -> Self {
+        let near = if near.is_finite() { near.max(0.0) } else { 0.0 };
+        let far = if far.is_finite() && far >= 0.0 {
+            far
+        } else {
+            f64::INFINITY
+        };
+        Self([near * near, far * far])
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneObject {
     pub id: String,
     pub mesh: Mesh3D,
     pub color: Color,
+    /// World-unit offset used only by depth-sorted transparency.
+    depth_bias: f64,
+    motion_vector_enabled: bool,
+    motion_vector_scale: f32,
+    pub(crate) instancing_lod: InstancingLodRange,
+    pub(crate) instance_data: Option<[f32; 4]>,
     pub casts_shadow: bool,
     pub receives_shadow: bool,
     pub receives_reflections: bool,
     pub casts_reflections: bool,
     pub layers: u64,
     pub lightmap: Option<BakedLightmap>,
+    pub bake_role: BakeRole,
+    pub lightmap_resolution: LightmapResolution,
     source_row: Option<NonZeroU32>,
     pub(crate) imported_placement: Option<(u32, Option<u32>)>,
+    pub(crate) instance_order: Option<InstanceOrder>,
+    pub(crate) instance_shadow_bounds: Option<Arc<[[f32; 3]; 2]>>,
     pickable: bool,
     collidable: bool,
+    trigger: bool,
     transform: SceneTransform,
     skin: Option<Arc<SkinPose>>,
     morph: Option<Arc<MorphPose>>,
     styled_blend_centers: Option<Arc<[(usize, [f32; 3])]>>,
 }
 
+/// Transparent ordering information for a row of an instancing table.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InstanceOrder {
+    pub group: [u32; 2],
+    pub ordinal: u32,
+    pub group_origin: [f32; 3],
+    pub origin: [f32; 3],
+    pub depth_sorting: bool,
+}
+
 impl SceneObject {
-    pub(crate) fn instance_address(&self) -> Option<[u32; 3]> {
-        let (node, instance) = self.imported_placement()?;
-        Some([self.scene_row()?, node, instance?])
+    #[doc(hidden)]
+    pub fn instance_order(&self) -> Option<InstanceOrder> {
+        self.instance_order
+    }
+
+    /// The shared world-space envelope for fitting a table's shadow projections.
+    #[doc(hidden)]
+    pub fn instance_shadow_bounds(&self) -> Option<&Arc<[[f32; 3]; 2]>> {
+        self.instance_shadow_bounds.as_ref()
+    }
+    pub(crate) fn instance_address(&self) -> Option<[i64; 3]> {
+        let row = i64::from(self.scene_row()?);
+        let Some((node, instance)) = self.imported_placement() else {
+            return Some([row, -1, -1]);
+        };
+        Some([row, mesh_node_index(node), instance.map_or(-1, i64::from)])
     }
 
     #[doc(hidden)]
@@ -1505,21 +1687,83 @@ impl SceneObject {
             id,
             mesh,
             color,
+            depth_bias: 0.0,
+            motion_vector_enabled: true,
+            motion_vector_scale: 1.0,
+            instancing_lod: InstancingLodRange::ALL,
+            instance_data: None,
             casts_shadow: true,
             receives_shadow: true,
             receives_reflections: true,
             casts_reflections: true,
             layers: MAIN_LAYER,
             lightmap: None,
+            bake_role: BakeRole::Auto,
+            lightmap_resolution: LightmapResolution::Inherit,
             source_row: None,
             imported_placement: None,
+            instance_order: None,
+            instance_shadow_bounds: None,
             pickable: true,
             collidable: true,
+            trigger: false,
             transform,
             skin: None,
             morph: None,
             styled_blend_centers: None,
         }
+    }
+
+    /// Set the depth-sort offset. Positive values move the sort key farther away.
+    pub fn with_depth_bias(mut self, bias: f64) -> Self {
+        self.depth_bias = if bias.is_finite() { bias } else { 0.0 };
+        self
+    }
+
+    pub fn depth_bias(&self) -> f64 {
+        self.depth_bias
+    }
+
+    /// Configure this surface's participation and displacement in temporal reprojection.
+    pub fn with_motion_vectors(mut self, enabled: bool, scale: f64) -> Self {
+        self.motion_vector_enabled = enabled;
+        let scale = scale as f32;
+        self.motion_vector_scale = if scale.is_finite() { scale } else { 1.0 };
+        self
+    }
+
+    pub fn motion_vector_enabled(&self) -> bool {
+        self.motion_vector_enabled
+    }
+
+    pub fn motion_vector_scale(&self) -> f32 {
+        self.motion_vector_scale
+    }
+
+    /// Four per-instance channels shared by programmable vertex and fragment stages.
+    pub fn instance_data(&self) -> [f32; 4] {
+        self.instance_data.unwrap_or([0.0; 4])
+    }
+
+    /// Choose the camera distances, in world units, at which this instance is visible.
+    pub fn with_instancing_lod_range(mut self, range: [f64; 2]) -> Self {
+        self.instancing_lod = InstancingLodRange::from_limits(range);
+        self
+    }
+
+    pub(crate) fn has_instancing_lod_range(&self) -> bool {
+        self.instancing_lod != InstancingLodRange::ALL
+    }
+
+    #[doc(hidden)]
+    pub fn visible_at_distance(&self, eye: [f32; 3]) -> bool {
+        if !self.has_instancing_lod_range() {
+            return true;
+        }
+        let distance =
+            (self.transform.origin.cast::<f64>() - Vector3::from(eye).cast::<f64>()).norm_squared();
+        let InstancingLodRange([near, far]) = self.instancing_lod;
+        near <= distance && distance < far
     }
 
     #[doc(hidden)]
@@ -1544,12 +1788,72 @@ impl SceneObject {
         self
     }
 
+    /// Source index for a material program, independent of GPU culling and draw order.
+    pub fn shader_instance_index(&self) -> u32 {
+        self.imported_placement
+            .and_then(|(_, instance)| instance)
+            .or_else(|| self.scene_row())
+            .unwrap_or(0)
+    }
+
+    #[doc(hidden)]
+    pub fn same_vertex_program_instance(&self, other: &Self) -> bool {
+        self.mesh.shader_displacement() == 0.0
+            || self.color == other.color
+                && self.instance_data() == other.instance_data()
+                && self.shader_instance_index() == other.shader_instance_index()
+    }
+
     pub(crate) fn scene_row(&self) -> Option<u32> {
         self.source_row.map(|row| row.get() - 1)
     }
 
-    pub(crate) fn sphere_contact(&self, sweep: SphereSweep, max: f64) -> Option<MeshContact> {
-        if !self.collidable || sweep.span(max).entry(self.world_bounds()).is_none() {
+    #[doc(hidden)]
+    pub fn with_trigger(mut self, enabled: bool) -> Self {
+        self.trigger = enabled
+            && matches!(
+                self.mesh.primitive(),
+                Some(
+                    Primitive::Box
+                        | Primitive::Sphere
+                        | Primitive::Cylinder
+                        | Primitive::Cone
+                        | Primitive::Capsule
+                )
+            );
+        self
+    }
+
+    pub(crate) fn is_trigger(&self) -> bool {
+        self.trigger
+    }
+
+    pub(crate) fn relative_to(mut self, root: SceneTransform) -> Option<Self> {
+        self.transform = self.transform.relative_to(root)?;
+        Some(self)
+    }
+
+    pub(crate) fn with_parent_transform(mut self, parent: SceneTransform) -> Option<Self> {
+        self.transform = parent.child(self.transform)?;
+        Some(self)
+    }
+
+    pub(crate) fn sweep_contact(&self, sweep: ShapeSweep, max: f64) -> Option<MeshContact> {
+        if !self.collidable || self.trigger {
+            return None;
+        }
+        self.shape_contact(sweep, max)
+    }
+
+    pub(crate) fn trigger_contact(&self, sweep: ShapeSweep, max: f64) -> Option<MeshContact> {
+        if !self.trigger {
+            return None;
+        }
+        self.shape_contact(sweep, max)
+    }
+
+    fn shape_contact(&self, sweep: ShapeSweep, max: f64) -> Option<MeshContact> {
+        if sweep.span(max).entry(self.world_bounds()).is_none() {
             return None;
         }
         let linear = self.transform.linear.cast::<f64>();
@@ -1561,7 +1865,8 @@ impl SceneObject {
             triangles.iter().all(|triangle| {
                 let [a, b, c] =
                     triangle.map(|vertex| Vector3::from(vertex.position.map(f64::from)));
-                (b - a).cross(&(c - a)).dot(&(point - a)) < 0.0
+                let normal = (b - a).cross(&(c - a));
+                normal == Vector3::zeros() || normal.dot(&(point - a)) < 0.0
             })
         };
         // Generated primitives are convex solids. Imported geometry contributes
@@ -1589,26 +1894,35 @@ impl SceneObject {
             {
                 inside_faces(point)
             }
+            Some(Primitive::Capsule) => {
+                let (min, max) = self.mesh.bounds();
+                (0..3).all(|axis| {
+                    point[axis] > f64::from(min[axis]) && point[axis] < f64::from(max[axis])
+                }) && inside_faces(point)
+            }
             _ => false,
         });
         let pose = self.pick_pose();
-        let mut best: Option<(usize, TriangleContact, [MeshVertex; 3])> = None;
+        let mut best: Option<(usize, TriangleContact, [MeshVertex; 3], bool)> = None;
         let mut inspect = |vertex: usize, closest: f64| {
             let triangle = pose.deform::<false>(vertex, triangles[vertex / 3]);
             let world =
                 triangle.map(|p| linear * Vector3::from(p.position.map(f64::from)) + origin);
-            if let Some(contact) = cast_triangle(sweep, world, inside, closest)
-                && best.as_ref().is_none_or(|(previous_vertex, previous, _)| {
-                    contact
-                        .distance
-                        .total_cmp(&previous.distance)
-                        .then(contact.initial_gap.total_cmp(&previous.initial_gap))
-                        .then(vertex.cmp(previous_vertex))
-                        .is_lt()
-                })
+            if let Some((contact, intersected)) = cast_shape_triangle(sweep, world, inside, closest)
+                && best
+                    .as_ref()
+                    .is_none_or(|(previous_vertex, previous, _, previous_inside)| {
+                        contact
+                            .distance
+                            .total_cmp(&previous.distance)
+                            .then_with(|| previous_inside.cmp(&intersected))
+                            .then(contact.initial_gap.total_cmp(&previous.initial_gap))
+                            .then(vertex.cmp(previous_vertex))
+                            .is_lt()
+                    })
             {
                 let distance = contact.distance;
-                best = Some((vertex, contact, triangle));
+                best = Some((vertex, contact, triangle, intersected));
                 distance
             } else {
                 closest
@@ -1625,7 +1939,10 @@ impl SceneObject {
                 direction: inverse * sweep.direction,
                 min: 0.0,
                 max,
-                expansion: Vector3::from_fn(|axis, _| inverse.row(axis).norm() * sweep.radius),
+                expansion: Vector3::from_fn(|axis, _| {
+                    inverse.row(axis).norm() * sweep.radius
+                        + inverse[(axis, 1)].abs() * sweep.half_segment
+                }),
             };
             tree.visit_expanded(span, |triangle, closest| {
                 inspect(triangle.vertex as usize, closest)
@@ -1636,7 +1953,7 @@ impl SceneObject {
                 closest = inspect(vertex, closest);
             }
         }
-        let (_, contact, triangle) = best?;
+        let (_, contact, triangle, inside) = best?;
         let local_position = triangle
             .iter()
             .zip(contact.weights)
@@ -1823,6 +2140,11 @@ impl SceneObject {
         self.transform.rows()
     }
 
+    /// Whether this object's model-to-world transform reverses orientation.
+    pub fn is_reflected(&self) -> bool {
+        self.transform.reflected
+    }
+
     pub(crate) fn posed_triangles(&self) -> impl Iterator<Item = [[f32; 3]; 3]> + '_ {
         let deformation = self.pick_pose();
         self.mesh
@@ -1832,13 +2154,17 @@ impl SceneObject {
             .iter()
             .enumerate()
             .map(move |(index, triangle)| {
-                deformation
+                let mut points = deformation
                     .deform::<false>(index * 3, *triangle)
                     .map(|vertex| {
                         (self.transform.origin
                             + self.transform.linear * Vector3::from(vertex.position))
                         .into()
-                    })
+                    });
+                if self.is_reflected() {
+                    points.swap(1, 2);
+                }
+                points
             })
     }
 
@@ -1865,7 +2191,7 @@ impl SceneObject {
                 vertex
             }));
         }
-        let tangents = mesh
+        let mut tangents: Vec<_> = mesh
             .tangents
             .iter()
             .enumerate()
@@ -1890,6 +2216,17 @@ impl SceneObject {
                 })
             })
             .collect();
+        if self.is_reflected() {
+            for triangle in vertices.chunks_exact_mut(3) {
+                triangle.swap(1, 2);
+            }
+            for triangle in tangents.chunks_exact_mut(3) {
+                triangle.swap(1, 2);
+                for tangent in triangle {
+                    tangent[3] = tangent[3].saturating_neg();
+                }
+            }
+        }
         let mut parts = mesh.parts.clone();
         for part in &mut parts {
             let material = &mesh.materials[part.material];
@@ -1937,7 +2274,10 @@ impl SceneObject {
         region: &Frustum,
         planes: u8,
     ) -> bool {
-        if !self.pickable {
+        if !self.pickable
+            || self.color.0 as u8 == 0
+                && matches!(&self.mesh, Mesh3D::Imported(mesh) if mesh.instance_blended)
+        {
             return false;
         }
         let test_faces = matches!(&self.mesh, Mesh3D::Imported(mesh) if mesh.has_face_culling);
@@ -1955,7 +2295,7 @@ impl SceneObject {
             if cull != MeshCullMode::None {
                 let [a, b, c] = points;
                 let facing = (b - a).cross(&(c - a)).dot(&camera.toward_viewer(a));
-                if facing == 0.0 || !cull.accepts(facing > 0.0) {
+                if facing == 0.0 || !cull.accepts((facing > 0.0) ^ self.is_reflected()) {
                     return false;
                 }
             }
@@ -2209,15 +2549,39 @@ impl SceneObject {
                 ));
             }
             if let Some(pbr) = &material.pbr {
-                let metallic = pbr.metallic
-                    * material.vertex_masks.metalness(rgba)
-                    * pbr.metallic_roughness_texture.as_ref().map_or(1.0, |map| {
-                        map.scalar_at(
-                            interpolate_uv(map.uv_slot),
-                            material.channels.channel(MaterialChannel::Metalness),
-                        )
-                    });
-                diffuse *= 1.0 - metallic.clamp(0.0, 1.0);
+                if pbr.workflow == MeshWorkflow::SpecularGlossiness {
+                    let mut specular = [1.0; 3];
+                    let mut weight = material.vertex_masks.specular(rgba);
+                    if let Some(dielectric) = &pbr.dielectric {
+                        specular = dielectric.color;
+                        weight *= dielectric.specular;
+                        if let Some(map) = &dielectric.color_texture {
+                            let tint = map.channel_color(
+                                interpolate_uv(map.uv_slot),
+                                material.channels.channel(MaterialChannel::SpecularColor),
+                            );
+                            specular = std::array::from_fn(|index| specular[index] * tint[index]);
+                        }
+                        if let Some(map) = &dielectric.specular_texture {
+                            weight *= map.scalar_at(
+                                interpolate_uv(map.uv_slot),
+                                material.channels.channel(MaterialChannel::Specular),
+                            );
+                        }
+                    }
+                    diffuse *=
+                        1.0 - specular.into_iter().fold(0.0, f32::max).clamp(0.0, 1.0) * weight;
+                } else {
+                    let metallic = pbr.metallic
+                        * material.vertex_masks.metalness(rgba)
+                        * pbr.surface_texture.as_ref().map_or(1.0, |map| {
+                            map.scalar_at(
+                                interpolate_uv(map.uv_slot),
+                                material.channels.channel(MaterialChannel::Metalness),
+                            )
+                        });
+                    diffuse *= 1.0 - metallic.clamp(0.0, 1.0);
+                }
                 emission = Vector3::from(pbr.emissive);
                 if let Some(map) = &pbr.emissive_texture {
                     emission.component_mul_assign(&Vector3::from(map.channel_color(
@@ -2412,6 +2776,100 @@ impl Vector3D {
     }
 }
 
+/// A frozen description of one instance's resolved placement and material inputs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Instance3D(Option<Arc<Instance3DData>>);
+
+impl Instance3D {
+    pub(crate) fn from_object(object: &SceneObject, address: [i64; 3]) -> Self {
+        Self::from_placement(
+            object.id.clone(),
+            address,
+            object.color,
+            object.transform,
+            object.instance_data(),
+        )
+    }
+
+    pub(crate) fn from_placement(
+        object_id: String,
+        [row_index, mesh_node_index, instance_index]: [i64; 3],
+        color: Color,
+        transform: SceneTransform,
+        data: [f32; 4],
+    ) -> Self {
+        let [x, y, z] = transform.origin.map(f64::from).into();
+        let axis = |column: usize| {
+            let column = transform.linear.column(column);
+            Vector3D::new(
+                f64::from(column.x),
+                f64::from(column.y),
+                f64::from(column.z),
+            )
+        };
+        let [data_x, data_y, data_z, data_w] = data.map(f64::from);
+        Self(Some(Arc::new(Instance3DData {
+            valid: true,
+            object_id,
+            row_index,
+            mesh_node_index,
+            instance_index,
+            color,
+            origin: Point3D::new(x, y, z),
+            axis_x: axis(0),
+            axis_y: axis(1),
+            axis_z: axis(2),
+            data_x,
+            data_y,
+            data_z,
+            data_w,
+        })))
+    }
+}
+
+impl std::ops::Deref for Instance3D {
+    type Target = Instance3DData;
+
+    fn deref(&self) -> &Self::Target {
+        static MISSING: Instance3DData = Instance3DData {
+            valid: false,
+            object_id: String::new(),
+            row_index: -1,
+            mesh_node_index: -1,
+            instance_index: -1,
+            color: Color(0),
+            origin: Point3D::new(0.0, 0.0, 0.0),
+            axis_x: Vector3D::new(0.0, 0.0, 0.0),
+            axis_y: Vector3D::new(0.0, 0.0, 0.0),
+            axis_z: Vector3D::new(0.0, 0.0, 0.0),
+            data_x: 0.0,
+            data_y: 0.0,
+            data_z: 0.0,
+            data_w: 0.0,
+        };
+        self.0.as_deref().unwrap_or(&MISSING)
+    }
+}
+
+#[doc(hidden)]
+#[derive(Debug, PartialEq)]
+pub struct Instance3DData {
+    pub valid: bool,
+    pub object_id: String,
+    pub row_index: i64,
+    pub mesh_node_index: i64,
+    pub instance_index: i64,
+    pub color: Color,
+    pub origin: Point3D,
+    pub axis_x: Vector3D,
+    pub axis_y: Vector3D,
+    pub axis_z: Vector3D,
+    pub data_x: f64,
+    pub data_y: f64,
+    pub data_z: f64,
+    pub data_w: f64,
+}
+
 /// The result of a scene surface query. A miss has zero coordinates.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Hit3D(Option<Arc<Hit3DData>>);
@@ -2429,6 +2887,7 @@ impl std::ops::Deref for Hit3D {
     fn deref(&self) -> &Self::Target {
         static MISS: Hit3DData = Hit3DData {
             valid: false,
+            entering: false,
             object_id: String::new(),
             row_index: -1,
             mesh_node_index: -1,
@@ -2449,6 +2908,7 @@ impl std::ops::Deref for Hit3D {
 #[derive(Debug, PartialEq)]
 pub struct Hit3DData {
     pub valid: bool,
+    pub entering: bool,
     pub object_id: String,
     pub row_index: i64,
     pub mesh_node_index: i64,
@@ -2462,6 +2922,14 @@ pub struct Hit3DData {
     pub v: f64,
 }
 
+fn mesh_node_index(node: u32) -> i64 {
+    if node == NO_MESH_NODE {
+        -1
+    } else {
+        i64::from(node)
+    }
+}
+
 impl From<RayHit<'_>> for Hit3D {
     fn from(hit: RayHit<'_>) -> Self {
         let [x, y, z] = hit.position.map(f64::from);
@@ -2470,11 +2938,12 @@ impl From<RayHit<'_>> for Hit3D {
         let [lnx, lny, lnz] = hit.local_normal.map(f64::from);
         Self::from_data(Hit3DData {
             valid: true,
+            entering: false,
             object_id: hit.object_id.to_owned(),
             row_index: hit.row_index.map_or(-1, i64::from),
             mesh_node_index: hit
                 .imported_placement
-                .map_or(-1, |(node, _)| i64::from(node)),
+                .map_or(-1, |(node, _)| mesh_node_index(node)),
             instance_index: hit
                 .imported_placement
                 .and_then(|(_, instance)| instance)
@@ -2498,16 +2967,8 @@ pub fn ray_hit(
     max_distance: f64,
     layers: Option<i64>,
 ) -> Hit3D {
-    world_ray(origin, direction, max_distance)
-        .and_then(|(ray, max)| {
-            trace_surfaces(
-                objects,
-                ray,
-                0.0,
-                max,
-                layers.map_or(MAIN_LAYER, |mask| mask as u64),
-            )
-        })
+    world_query(origin, direction, max_distance, layers)
+        .and_then(|query| trace_surfaces(objects, query))
         .map_or_else(Hit3D::default, Hit3D::from)
 }
 
@@ -2772,7 +3233,7 @@ pub fn raycast(objects: &[SceneObject], ray: Ray3D, max_distance: f32) -> Option
     if !max_distance.is_finite() || max_distance < 0.0 {
         return None;
     }
-    trace_surfaces(objects, ray, 0.0, max_distance, u64::MAX)
+    trace_surfaces(objects, SceneRay::new(ray, 0.0, max_distance, u64::MAX))
 }
 
 /// Return the nearest surface of each intersected object, sorted from the ray origin.
@@ -2792,13 +3253,14 @@ pub(crate) struct SceneRay {
     min: f32,
     max: f32,
     layers: u64,
+    eye: Option<[f32; 3]>,
 }
 
 pub(crate) enum RayRows {
     All,
     Row(i64),
     Subset(Vec<u32>),
-    Instance([u32; 3]),
+    Instance([i64; 3]),
 }
 
 impl RayRows {
@@ -2814,11 +3276,12 @@ impl RayRows {
     }
 
     pub(crate) fn instance([row, node, index]: [i64; 3]) -> Option<Self> {
-        Some(Self::Instance([
-            u32::try_from(row).ok()?,
-            u32::try_from(node).ok()?,
-            u32::try_from(index).ok()?,
-        ]))
+        u32::try_from(row).ok()?;
+        if node != -1 {
+            u32::try_from(node).ok()?;
+        }
+        u32::try_from(index).ok()?;
+        Some(Self::Instance([row, node, index]))
     }
 
     fn is_empty(&self) -> bool {
@@ -2858,7 +3321,18 @@ impl SceneRay {
             min,
             max,
             layers,
+            eye: None,
         }
+    }
+
+    pub(crate) fn with_camera(mut self, eye: [f32; 3]) -> Self {
+        self.eye = Some(eye);
+        self
+    }
+
+    fn includes(self, object: &SceneObject) -> bool {
+        object.layers & self.layers != 0
+            && self.eye.is_none_or(|eye| object.visible_at_distance(eye))
     }
 
     fn visit(
@@ -2880,7 +3354,7 @@ impl SceneRay {
         };
         geometry.visit_ray(span, |index, limit| {
             let object = &geometry[index];
-            if object.layers & self.layers != 0
+            if self.includes(object)
                 && rows.contains(object)
                 && let Some(hit) = intersect(object, limit as f32)
             {
@@ -2898,7 +3372,8 @@ impl SceneRay {
             }
             let index = geometry.instance_index(*address)?;
             let object = &geometry[index];
-            return (object.layers & self.layers != 0)
+            return self
+                .includes(object)
                 .then(|| object.hit(self.ray, self.min, self.max))
                 .flatten()
                 .map(|hit| (index, hit));
@@ -3041,39 +3516,21 @@ fn sorted_surfaces(objects: &[SceneObject], ray: Ray3D, max: f32) -> Vec<(usize,
     hits
 }
 
-pub(crate) fn trace_surfaces(
-    objects: &[SceneObject],
-    ray: Ray3D,
-    min: f32,
-    max: f32,
-    layers: u64,
-) -> Option<RayHit<'_>> {
-    let (object, surface) = nearest_surface(objects, ray, min, max, layers)?;
-    Some(object.describe_hit(ray, surface))
+pub(crate) fn trace_surfaces(objects: &[SceneObject], query: SceneRay) -> Option<RayHit<'_>> {
+    let (object, surface) = nearest_surface(objects, query)?;
+    Some(object.describe_hit(query.ray, surface))
 }
 
-pub(crate) fn trace_id(
-    objects: &[SceneObject],
-    ray: Ray3D,
-    min: f32,
-    max: f32,
-    layers: u64,
-) -> Option<&str> {
-    nearest_surface(objects, ray, min, max, layers).map(|(object, _)| object.id.as_str())
+pub(crate) fn trace_id(objects: &[SceneObject], query: SceneRay) -> Option<&str> {
+    nearest_surface(objects, query).map(|(object, _)| object.id.as_str())
 }
 
-fn nearest_surface(
-    objects: &[SceneObject],
-    ray: Ray3D,
-    min: f32,
-    max: f32,
-    layers: u64,
-) -> Option<(&SceneObject, SurfaceHit)> {
+fn nearest_surface(objects: &[SceneObject], query: SceneRay) -> Option<(&SceneObject, SurfaceHit)> {
     let mut best: Option<(&SceneObject, SurfaceHit)> = None;
-    let mut closest = max;
+    let mut closest = query.max;
     for item in objects {
-        if item.layers & layers != 0
-            && let Some(hit) = item.hit(ray, min, closest)
+        if query.includes(item)
+            && let Some(hit) = item.hit(query.ray, query.min, closest)
             && hit.precedes(best.map(|(_, surface)| surface))
         {
             closest = hit.distance;

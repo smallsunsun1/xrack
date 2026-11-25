@@ -217,7 +217,7 @@ pub fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, T
         Some(("expanded", Type::Bool))
     } else if element.attr("kind") == Ok("TimePicker") {
         Some(("time", Type::Time))
-    } else if element.attr("kind") == Ok("Timer") {
+    } else if matches!(element.attr("kind"), Ok("Timer" | "FrameAnimation")) {
         Some(("running", Type::Bool))
     } else if matches!(
         element.attr("kind"),

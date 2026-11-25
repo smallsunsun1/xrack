@@ -37,6 +37,16 @@ public interface XrackListener extends ParseTreeListener {
 	 */
 	void exitFontImport(XrackParser.FontImportContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link XrackParser#translationsDecl}.
+	 * @param ctx the parse tree
+	 */
+	void enterTranslationsDecl(XrackParser.TranslationsDeclContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#translationsDecl}.
+	 * @param ctx the parse tree
+	 */
+	void exitTranslationsDecl(XrackParser.TranslationsDeclContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link XrackParser#importName}.
 	 * @param ctx the parse tree
 	 */
@@ -67,6 +77,36 @@ public interface XrackListener extends ParseTreeListener {
 	 */
 	void exitRecordField(XrackParser.RecordFieldContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link XrackParser#enumDecl}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnumDecl(XrackParser.EnumDeclContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#enumDecl}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnumDecl(XrackParser.EnumDeclContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#enumVariant}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnumVariant(XrackParser.EnumVariantContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#enumVariant}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnumVariant(XrackParser.EnumVariantContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#enumFieldTypes}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnumFieldTypes(XrackParser.EnumFieldTypesContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#enumFieldTypes}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnumFieldTypes(XrackParser.EnumFieldTypesContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link XrackParser#component}.
 	 * @param ctx the parse tree
 	 */
@@ -86,6 +126,66 @@ public interface XrackListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitMember(XrackParser.MemberContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#viewMatch}.
+	 * @param ctx the parse tree
+	 */
+	void enterViewMatch(XrackParser.ViewMatchContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#viewMatch}.
+	 * @param ctx the parse tree
+	 */
+	void exitViewMatch(XrackParser.ViewMatchContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#viewArm}.
+	 * @param ctx the parse tree
+	 */
+	void enterViewArm(XrackParser.ViewArmContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#viewArm}.
+	 * @param ctx the parse tree
+	 */
+	void exitViewArm(XrackParser.ViewArmContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#functionDecl}.
+	 * @param ctx the parse tree
+	 */
+	void enterFunctionDecl(XrackParser.FunctionDeclContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#functionDecl}.
+	 * @param ctx the parse tree
+	 */
+	void exitFunctionDecl(XrackParser.FunctionDeclContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#namedParameter}.
+	 * @param ctx the parse tree
+	 */
+	void enterNamedParameter(XrackParser.NamedParameterContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#namedParameter}.
+	 * @param ctx the parse tree
+	 */
+	void exitNamedParameter(XrackParser.NamedParameterContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#slotMarker}.
+	 * @param ctx the parse tree
+	 */
+	void enterSlotMarker(XrackParser.SlotMarkerContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#slotMarker}.
+	 * @param ctx the parse tree
+	 */
+	void exitSlotMarker(XrackParser.SlotMarkerContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#slotFill}.
+	 * @param ctx the parse tree
+	 */
+	void enterSlotFill(XrackParser.SlotFillContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#slotFill}.
+	 * @param ctx the parse tree
+	 */
+	void exitSlotFill(XrackParser.SlotFillContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link XrackParser#animation}.
 	 * @param ctx the parse tree
@@ -247,6 +347,46 @@ public interface XrackListener extends ParseTreeListener {
 	 */
 	void exitStatement(XrackParser.StatementContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link XrackParser#letStatement}.
+	 * @param ctx the parse tree
+	 */
+	void enterLetStatement(XrackParser.LetStatementContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#letStatement}.
+	 * @param ctx the parse tree
+	 */
+	void exitLetStatement(XrackParser.LetStatementContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#statementBlock}.
+	 * @param ctx the parse tree
+	 */
+	void enterStatementBlock(XrackParser.StatementBlockContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#statementBlock}.
+	 * @param ctx the parse tree
+	 */
+	void exitStatementBlock(XrackParser.StatementBlockContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#ifStatement}.
+	 * @param ctx the parse tree
+	 */
+	void enterIfStatement(XrackParser.IfStatementContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#ifStatement}.
+	 * @param ctx the parse tree
+	 */
+	void exitIfStatement(XrackParser.IfStatementContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#forStatement}.
+	 * @param ctx the parse tree
+	 */
+	void enterForStatement(XrackParser.ForStatementContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#forStatement}.
+	 * @param ctx the parse tree
+	 */
+	void exitForStatement(XrackParser.ForStatementContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link XrackParser#assignmentOp}.
 	 * @param ctx the parse tree
 	 */
@@ -286,6 +426,16 @@ public interface XrackListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitRepeatClause(XrackParser.RepeatClauseContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#iteration}.
+	 * @param ctx the parse tree
+	 */
+	void enterIteration(XrackParser.IterationContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#iteration}.
+	 * @param ctx the parse tree
+	 */
+	void exitIteration(XrackParser.IterationContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link XrackParser#expression}.
 	 * @param ctx the parse tree
@@ -387,6 +537,76 @@ public interface XrackListener extends ParseTreeListener {
 	 */
 	void exitPrimary(XrackParser.PrimaryContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link XrackParser#enumValue}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnumValue(XrackParser.EnumValueContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#enumValue}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnumValue(XrackParser.EnumValueContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#enumArguments}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnumArguments(XrackParser.EnumArgumentsContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#enumArguments}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnumArguments(XrackParser.EnumArgumentsContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#matchExpression}.
+	 * @param ctx the parse tree
+	 */
+	void enterMatchExpression(XrackParser.MatchExpressionContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#matchExpression}.
+	 * @param ctx the parse tree
+	 */
+	void exitMatchExpression(XrackParser.MatchExpressionContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#matchArm}.
+	 * @param ctx the parse tree
+	 */
+	void enterMatchArm(XrackParser.MatchArmContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#matchArm}.
+	 * @param ctx the parse tree
+	 */
+	void exitMatchArm(XrackParser.MatchArmContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#enumPattern}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnumPattern(XrackParser.EnumPatternContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#enumPattern}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnumPattern(XrackParser.EnumPatternContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#enumPatternFields}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnumPatternFields(XrackParser.EnumPatternFieldsContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#enumPatternFields}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnumPatternFields(XrackParser.EnumPatternFieldsContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#namedPatternField}.
+	 * @param ctx the parse tree
+	 */
+	void enterNamedPatternField(XrackParser.NamedPatternFieldContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#namedPatternField}.
+	 * @param ctx the parse tree
+	 */
+	void exitNamedPatternField(XrackParser.NamedPatternFieldContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link XrackParser#call}.
 	 * @param ctx the parse tree
 	 */
@@ -417,6 +637,16 @@ public interface XrackListener extends ParseTreeListener {
 	 */
 	void exitRecordLiteral(XrackParser.RecordLiteralContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link XrackParser#recordBase}.
+	 * @param ctx the parse tree
+	 */
+	void enterRecordBase(XrackParser.RecordBaseContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#recordBase}.
+	 * @param ctx the parse tree
+	 */
+	void exitRecordBase(XrackParser.RecordBaseContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link XrackParser#recordValue}.
 	 * @param ctx the parse tree
 	 */
@@ -436,6 +666,56 @@ public interface XrackListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitImageUrl(XrackParser.ImageUrlContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#meshUrl}.
+	 * @param ctx the parse tree
+	 */
+	void enterMeshUrl(XrackParser.MeshUrlContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#meshUrl}.
+	 * @param ctx the parse tree
+	 */
+	void exitMeshUrl(XrackParser.MeshUrlContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#environmentUrl}.
+	 * @param ctx the parse tree
+	 */
+	void enterEnvironmentUrl(XrackParser.EnvironmentUrlContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#environmentUrl}.
+	 * @param ctx the parse tree
+	 */
+	void exitEnvironmentUrl(XrackParser.EnvironmentUrlContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#textureUrl}.
+	 * @param ctx the parse tree
+	 */
+	void enterTextureUrl(XrackParser.TextureUrlContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#textureUrl}.
+	 * @param ctx the parse tree
+	 */
+	void exitTextureUrl(XrackParser.TextureUrlContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#shaderUrl}.
+	 * @param ctx the parse tree
+	 */
+	void enterShaderUrl(XrackParser.ShaderUrlContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#shaderUrl}.
+	 * @param ctx the parse tree
+	 */
+	void exitShaderUrl(XrackParser.ShaderUrlContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#materialShaderUrl}.
+	 * @param ctx the parse tree
+	 */
+	void enterMaterialShaderUrl(XrackParser.MaterialShaderUrlContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#materialShaderUrl}.
+	 * @param ctx the parse tree
+	 */
+	void exitMaterialShaderUrl(XrackParser.MaterialShaderUrlContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link XrackParser#imageSlice}.
 	 * @param ctx the parse tree
@@ -466,6 +746,16 @@ public interface XrackListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitMarkdown(XrackParser.MarkdownContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#translation}.
+	 * @param ctx the parse tree
+	 */
+	void enterTranslation(XrackParser.TranslationContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#translation}.
+	 * @param ctx the parse tree
+	 */
+	void exitTranslation(XrackParser.TranslationContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link XrackParser#gradient}.
 	 * @param ctx the parse tree

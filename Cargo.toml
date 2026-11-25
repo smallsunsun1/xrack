@@ -43,6 +43,7 @@ wgpu = { version = "=30.0.0", default-features = false, features = ["std", "wgsl
 winit = "=0.30.13"
 fontdb = "0.23"
 nalgebra = { version = "=0.35.0", default-features = false, features = ["std"] }
+rapier3d = { version = "=0.36.1", features = ["debug-render", "enhanced-determinism"] }
 ttf-parser = "0.25"
 pollster = "1.0"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }

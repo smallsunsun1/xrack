@@ -682,12 +682,6 @@ impl Renderer {
             }
             let (highlighted, resizing, selected) = highlights(index);
             let sort = header.sort.filter(|sort| sort.column == index);
-            let passive = !highlighted && !resizing && !selected && sort.is_none();
-            if batch_captions && !passive {
-                // Preserve paint order at the active column while keeping the
-                // captions on either side eligible to batch.
-                captions.submit(self)?;
-            }
             let canvas = &mut self.canvas;
             let text = &self.text;
             if selected {
@@ -716,7 +710,10 @@ impl Renderer {
             let caption = column.text("title").unwrap_or("");
             let y = bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5;
             if title.width > 0.0 && title.height > 0.0 && !caption.is_empty() {
-                if batch_captions && passive {
+                if batch_captions {
+                    // Highlights are confined to their column. Titles stay
+                    // inset from the sort indicator and resize separator,
+                    // so they can share one batch across the whole header.
                     captions.push(Primitive::Text {
                         origin: Point { x: origin, y },
                         text: caption,

@@ -1,5 +1,8 @@
 //! Offscreen captures of window-local 2D sources used by materials and effects.
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Weak},
+};
 
 use xrack_layout::{Interaction, LayoutNode, Target};
 use xrack_runtime::{Node, SceneFeature, Value};
@@ -10,20 +13,65 @@ const MAX_SOURCES: usize = 8;
 const MAX_EDGE: f32 = 2048.0;
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 
-#[derive(Clone, PartialEq)]
+pub(super) type ItemTextureViews = BTreeMap<String, ItemTextureView>;
+
+#[derive(Clone)]
 pub(super) struct ItemTextureView {
     pub view: wgpu::TextureView,
     pub linear_premultiplied: bool,
+    pub allocation: u64,
+    pub revision: u64,
+    readers: Weak<()>,
+}
+
+pub(super) struct FrozenItemTextures {
+    pub views: Arc<ItemTextureViews>,
+    pub revision: u64,
+    _readers: Vec<Arc<()>>,
+}
+
+impl FrozenItemTextures {
+    pub fn new(views: &ItemTextureViews, revision: u64) -> Self {
+        Self {
+            views: Arc::new(views.clone()),
+            revision,
+            _readers: views
+                .values()
+                .filter_map(|view| view.readers.upgrade())
+                .collect(),
+        }
+    }
+}
+
+struct ItemImage {
+    view: wgpu::TextureView,
+    allocation: u64,
+    readers: Arc<()>,
+}
+
+impl ItemImage {
+    fn new(texture: &wgpu::Texture, next_allocation: &mut u64) -> Self {
+        *next_allocation = next_allocation.wrapping_add(1).max(1);
+        Self {
+            view: texture.create_view(&Default::default()),
+            allocation: *next_allocation,
+            readers: Arc::new(()),
+        }
+    }
+
+    fn is_pinned(&self) -> bool {
+        Arc::strong_count(&self.readers) > 1
+    }
 }
 
 struct MipChain {
     size: [u32; 2],
     levels: Vec<wgpu::TextureView>,
-    view: ItemTextureView,
+    image: ItemImage,
 }
 
 impl MipChain {
-    fn new(device: &wgpu::Device, size: [u32; 2]) -> Self {
+    fn new(device: &wgpu::Device, size: [u32; 2], next_allocation: &mut u64) -> Self {
         let mip_level_count = mip_count(size);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("XRack 3D material item mipmaps"),
@@ -48,11 +96,11 @@ impl MipChain {
                 })
             })
             .collect();
-        let view = ItemTextureView {
-            view: texture.create_view(&Default::default()),
-            linear_premultiplied: true,
-        };
-        Self { size, levels, view }
+        Self {
+            size,
+            levels,
+            image: ItemImage::new(&texture, next_allocation),
+        }
     }
 
     fn refresh(&self, renderer: &mut Renderer, source: &wgpu::TextureView) {
@@ -102,6 +150,7 @@ pub(crate) struct ItemTextures {
     current: BTreeMap<String, Capture>,
     reset: bool,
     revision: u64,
+    next_allocation: u64,
 }
 
 struct Capture {
@@ -111,19 +160,24 @@ struct Capture {
     palette: Palette,
     feedback: Feedback,
     texture: wgpu::Texture,
-    view: wgpu::TextureView,
+    image: ItemImage,
     mipmaps: Option<MipChain>,
+    revision: u64,
 }
 
 impl Capture {
     fn material_view(&self) -> ItemTextureView {
-        self.mipmaps.as_ref().map_or_else(
-            || ItemTextureView {
-                view: self.view.clone(),
-                linear_premultiplied: false,
-            },
-            |mipmaps| mipmaps.view.clone(),
-        )
+        let image = self
+            .mipmaps
+            .as_ref()
+            .map_or(&self.image, |mipmaps| &mipmaps.image);
+        ItemTextureView {
+            view: image.view.clone(),
+            linear_premultiplied: self.mipmaps.is_some(),
+            allocation: image.allocation,
+            revision: self.revision,
+            readers: Arc::downgrade(&image.readers),
+        }
     }
 }
 
@@ -361,7 +415,9 @@ impl Renderer {
                     let Some(texture) = self.capture_scene_item(
                         layout.bounds,
                         frame.scale,
-                        old.as_ref().map(|capture| &capture.texture),
+                        old.as_ref()
+                            .filter(|capture| !capture.image.is_pinned())
+                            .map(|capture| &capture.texture),
                         |renderer| {
                             renderer.paint_subtree(node, layout, &mut path, source_frame, false)
                         },
@@ -371,26 +427,25 @@ impl Renderer {
                         continue;
                     };
                     changed = true;
-                    let view = old
-                        .as_ref()
-                        .filter(|entry| entry.texture == texture)
-                        .map_or_else(
-                            || {
-                                self.scene3d.stats.item_texture_allocations += 1;
-                                texture.create_view(&Default::default())
-                            },
-                            |entry| entry.view.clone(),
-                        );
+                    let (image, old_mipmaps) = old.map_or((None, None), |entry| {
+                        (
+                            (entry.texture == texture).then_some(entry.image),
+                            entry.mipmaps,
+                        )
+                    });
+                    let image = image.unwrap_or_else(|| {
+                        self.scene3d.stats.item_texture_allocations += 1;
+                        ItemImage::new(&texture, &mut cache.next_allocation)
+                    });
                     let mipmaps = wants_mips.then(|| {
                         let size = [texture.width(), texture.height()];
-                        let chain = old
-                            .and_then(|old| old.mipmaps)
-                            .filter(|chain| chain.size == size)
+                        let chain = old_mipmaps
+                            .filter(|chain| chain.size == size && !chain.image.is_pinned())
                             .unwrap_or_else(|| {
                                 self.scene3d.stats.item_texture_mip_allocations += 1;
-                                MipChain::new(&self.device, size)
+                                MipChain::new(&self.device, size, &mut cache.next_allocation)
                             });
-                        chain.refresh(self, &view);
+                        chain.refresh(self, &image.view);
                         chain
                     });
                     self.scene3d.stats.item_texture_captures += 1;
@@ -401,8 +456,9 @@ impl Renderer {
                         palette: frame.theme,
                         feedback,
                         texture,
-                        view,
+                        image,
                         mipmaps,
+                        revision: cache.revision.wrapping_add(1).max(1),
                     }
                 }
             };

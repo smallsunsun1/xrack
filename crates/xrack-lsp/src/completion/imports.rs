@@ -13,7 +13,10 @@ use std::{
 };
 
 pub(super) use xrack_ir::modules::normalize_source_path as normalize;
-use xrack_parser::builtins::{HEIGHTFIELD_EXTENSION, MESH_SOURCE_EXTENSIONS};
+use xrack_parser::builtins::{HEIGHTFIELD_EXTENSION, MESH_SOURCE_EXTENSIONS, PhysicsFunction};
+use xrack_parser::gltf_metadata::{
+    INSTANCE_COLOR_ALIAS, INSTANCE_COLOR_ATTRIBUTE, INSTANCE_DATA_ATTRIBUTE,
+};
 
 pub(crate) struct Workspace<'a> {
     pub(crate) entry: PathBuf,
@@ -531,6 +534,7 @@ fn scene_asset_extensions(tokens: &[Token<'_>], index: usize) -> Option<&'static
     match tokens.get(index)?.text {
         "@mesh-url" => Some(MESH_SOURCE_EXTENSIONS),
         "@environment-url" => Some(&["hdr"]),
+        "@instance-table-url" => Some(&["xml", "bin"]),
         "@shader-url" | "@material-shader-url" => Some(&["wgsl"]),
         "@texture-url" => Some(&["png", "jpg", "jpeg"]),
         "@image-url"
@@ -680,7 +684,7 @@ fn scene_row_mesh(tokens: &[Token<'_>], open: usize) -> Option<RowMesh> {
     None
 }
 
-pub(super) fn scene_prototype_values(
+pub(super) fn scene_instance_reference_values(
     source: &Source<'_>,
     tokens: &[Token<'_>],
     cursor: usize,
@@ -689,12 +693,13 @@ pub(super) fn scene_prototype_values(
         let [field, colon, literal] = window else {
             return None;
         };
-        (field.text == "instance-of"
+        (matches!(field.text, "instance-of" | "instance-root")
             && colon.text == ":"
             && literal.text.starts_with('"')
             && literal.blocks_completion(cursor))
         .then_some((index, literal))
     })?;
+    let root = tokens[field].text == "instance-root";
     let row = enclosing_block(tokens, field)?;
     let record = tokens.get(row.checked_sub(1)?)?.text;
     if !name(record) {
@@ -718,11 +723,19 @@ pub(super) fn scene_prototype_values(
                     && let Some(label) = scene_row_string(tokens, index, "id")
                     && !label.is_empty()
                 {
-                    let eligible = index != row
-                        && scene_row_field(tokens, index, "mesh")
-                            .is_some_and(|mesh| mesh.text != r#""""#)
-                        && scene_row_field(tokens, index, "instance-of")
-                            .is_none_or(|target| target.text == r#""""#);
+                    let links = scene_row_field(tokens, index, "instance-of")
+                        .is_some_and(|target| target.text != r#""""#);
+                    let alternative = scene_row_field(tokens, index, "lod-of")
+                        .is_some_and(|target| target.text != r#""""#);
+                    let eligible = !alternative
+                        && if root {
+                            index != row || !links
+                        } else {
+                            index != row
+                                && !links
+                                && scene_row_field(tokens, index, "mesh")
+                                    .is_some_and(|mesh| mesh.text != r#""""#)
+                        };
                     candidates
                         .entry(label)
                         .and_modify(|valid| *valid = false)
@@ -736,6 +749,11 @@ pub(super) fn scene_prototype_values(
             _ => {}
         }
     }
+    let detail = if root {
+        "Scene instance coordinate root"
+    } else {
+        "Scene model prototype"
+    };
     let prefix = &literal.text[1..cursor - literal.range.start];
     let range = source.range(
         literal.range.start + 1,
@@ -748,7 +766,7 @@ pub(super) fn scene_prototype_values(
             .map(|(label, _)| {
                 let replacement = json!(label).to_string();
                 json!({
-                    "label": label, "kind": 12, "detail": "Scene model prototype",
+                    "label": label, "kind": 12, "detail": detail,
                     "textEdit": {"range": range, "newText": &replacement[1..replacement.len() - 1]},
                 })
             })
@@ -1393,6 +1411,37 @@ fn in_capture_record(tokens: &[Token<'_>], position: usize, name: &str) -> bool 
         .any(|field| field[0].text == name && field[1].text == ":" && field[2].text == record.text)
 }
 
+fn in_collision_shapes(tokens: &[Token<'_>], position: usize) -> bool {
+    let Some(record) =
+        enclosing_block(tokens, position).and_then(|open| tokens.get(open.checked_sub(1)?))
+    else {
+        return false;
+    };
+    tokens.windows(4).any(|field| {
+        field[0].text == "collision-shapes"
+            && field[1].text == ":"
+            && field[2].text == "["
+            && field[3].text == record.text
+    })
+}
+
+fn physics_shape_argument(tokens: &[Token<'_>], position: usize) -> Option<PhysicsFunction> {
+    use xrack_parser::builtins::{self, FunctionKind};
+    let list = enclosing_array(tokens, enclosing_block(tokens, position)?)?;
+    super::symbols::active_calls(tokens[..list].iter()).find_map(|(callee, argument)| {
+        let [receiver, dot, name] = tokens.get(callee.checked_sub(2)?..=callee)? else {
+            return None;
+        };
+        if argument != 3 || receiver.text != "Physics3D" || dot.text != "." {
+            return None;
+        }
+        let FunctionKind::Physics(kind) = builtins::function(receiver.text, name.text)?.kind else {
+            return None;
+        };
+        kind.uses_shape_list().then_some(kind)
+    })
+}
+
 pub(super) fn scene_string_options(
     source: &Source<'_>,
     tokens: &[Token<'_>],
@@ -1403,13 +1452,26 @@ pub(super) fn scene_string_options(
     let [field, colon, literal] = tokens.get(end.checked_sub(3)?..end)? else {
         return None;
     };
+    let physics = if field.text == "shape" {
+        physics_shape_argument(tokens, end - 3)
+    } else {
+        None
+    };
     let options = match field.text {
         "mesh" | "emitter-mesh" | "particle-model" => {
             xrack_parser::builtins::SCENE_PRIMITIVE_MESHES
         }
+        "shape" if physics.is_some() || in_collision_shapes(tokens, end - 3) => {
+            xrack_parser::builtins::SCENE_COLLISION_SHAPES
+        }
         "shape" => xrack_parser::builtins::SCENE_PARAMETRIC_SHAPES,
+        "body-kind" => xrack_parser::builtins::SCENE_PHYSICS_BODY_KINDS,
+        "joint-kind" => xrack_parser::builtins::SCENE_PHYSICS_JOINT_KINDS,
         "camera-kind" => xrack_parser::builtins::SCENE_CAMERA_KINDS,
+        "camera-clip-space" => xrack_parser::builtins::SCENE_CAMERA_CLIP_SPACES,
+        "material-workflow" => xrack_parser::builtins::SCENE_MATERIAL_WORKFLOWS,
         "alpha-mode" => xrack_parser::builtins::SCENE_ALPHA_MODES,
+        "color-model" => xrack_parser::builtins::SCENE_RANDOM_COLOR_MODELS,
         "blend-mode" if in_capture_record(tokens, end - 3, "pipeline-state") => {
             xrack_parser::builtins::SCENE_CAPTURE_BLENDS
         }
@@ -1455,11 +1517,16 @@ pub(super) fn scene_string_options(
         {
             xrack_parser::builtins::SCENE_CAPTURE_RENDERABLES
         }
-        "output-format" | "color-format" => xrack_parser::builtins::SCENE_EFFECT_FORMATS,
+        "output-format" | "color-format" | "material-data-format" => {
+            xrack_parser::builtins::SCENE_EFFECT_FORMATS
+        }
         "mip-filter" => xrack_parser::builtins::SCENE_TEXTURE_MIPS,
         "refresh-mode" => xrack_parser::builtins::REFLECTION_REFRESH_MODES,
         "time-slicing" => xrack_parser::builtins::REFLECTION_TIME_SLICING,
+        "shadow-filter" => xrack_parser::builtins::SCENE_SHADOW_FILTERS,
+        "bake-mode" => xrack_parser::builtins::SCENE_LIGHT_BAKE_MODES,
         "lightmap-mode" => xrack_parser::builtins::LIGHTMAP_MODES,
+        "bake-role" => xrack_parser::builtins::SCENE_BAKE_ROLES,
         "fog-shape" => xrack_parser::builtins::FOG_VOLUME_SHAPES,
         "sprite-playback" => xrack_parser::builtins::PARTICLE_SPRITE_PLAYBACK,
         "particle-blend-mode" => xrack_parser::builtins::PARTICLE_BLEND_MODES,
@@ -1508,6 +1575,25 @@ pub(super) fn scene_string_options(
     Some(
         options
             .iter()
+            .copied()
+            .filter(|(kind, _)| physics != Some(PhysicsFunction::AddTrigger) || *kind != "mesh")
+            .chain(
+                physics
+                    .is_some()
+                    .then_some(("convex-mesh", "Convex hull of the mesh resource")),
+            )
+            .chain(
+                physics
+                    .is_some_and(|kind| kind != PhysicsFunction::AddTrigger)
+                    .then_some((
+                        "heightfield",
+                        "Grid of heights from a heightfield PNG for a fixed or kinematic body",
+                    )),
+            )
+            .chain(
+                (physics == Some(PhysicsFunction::AddBody))
+                    .then_some(("plane", "Fixed plane, the only shape of a zero-mass body")),
+            )
             .filter(|(kind, _)| kind.starts_with(prefix))
             .map(|(kind, detail)| {
                 json!({
@@ -1611,7 +1697,7 @@ pub(super) fn mesh_asset_hover(
     let mut groups = metadata.gpu_instance_groups().peekable();
     if groups.peek().is_some() {
         message.push_str("glTF GPU instancing (EXT_mesh_gpu_instancing)");
-        for (index, name, count) in groups.by_ref().take(8) {
+        for (index, name, count, attributes) in groups.by_ref().take(8) {
             let _ = write!(message, "\nNode #{index}");
             if let Some(name) =
                 name.filter(|name| name.len() <= 80 && !name.chars().any(char::is_control))
@@ -1620,6 +1706,18 @@ pub(super) fn mesh_asset_hover(
             }
             if let Some(count) = count {
                 let _ = write!(message, "  {count} instances");
+            }
+            let color = [INSTANCE_COLOR_ATTRIBUTE, INSTANCE_COLOR_ALIAS]
+                .into_iter()
+                .find(|name| attributes.contains_key(*name));
+            if let Some(color) = color {
+                let _ = write!(message, "\n  {color} → instance tint");
+            }
+            if attributes.contains_key(INSTANCE_DATA_ATTRIBUTE) {
+                let _ = write!(
+                    message,
+                    "\n  {INSTANCE_DATA_ATTRIBUTE} → WGSL input.instance_data"
+                );
             }
         }
         if groups.peek().is_some() {

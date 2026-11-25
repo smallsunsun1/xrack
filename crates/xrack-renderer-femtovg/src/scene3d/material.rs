@@ -1,20 +1,21 @@
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     rc::Rc,
     sync::{Arc, Weak},
 };
 use xrack_runtime::material_shader::{MAX_TEXTURES, MaterialHooks};
 use xrack_runtime::scene_effect::{BufferSampling, CaptureAttachment, ExternalTexture};
 use xrack_runtime::scene3d::{
-    MeshAlphaMode, MeshDielectric, MeshFresnel, MeshImage, MeshMaterial, MeshShader, MeshTexture,
-    TextureColorSpace, TextureFilter, TextureTransform, TextureWrap,
+    MaterialChannel, MeshAlphaMode, MeshDielectric, MeshFresnel, MeshImage, MeshMaterial,
+    MeshShader, MeshTexture, MeshWorkflow, TextureChannel, TextureColorSpace, TextureFilter,
+    TextureTransform, TextureWrap,
 };
 
 use super::{
     buffer,
     color_capture::{CaptureViews, SharedProjectionBuffers},
-    item_textures::ItemTextureView,
+    item_textures::ItemTextureViews,
 };
 
 pub(super) const MATERIAL_TEXTURES: u32 = 10;
@@ -54,13 +55,24 @@ fn shader_texture_flags(sampling: BufferSampling, encoding: u32) -> u32 {
 pub(super) struct MaterialBindings {
     pub base: wgpu::BindGroup,
     color: Option<wgpu::BindGroup>,
+    unprogrammed_coat: Option<wgpu::BindGroup>,
     pub coated: bool,
-    pub shader: Option<(Arc<str>, usize)>,
+    shader: Option<(Arc<str>, usize)>,
+    hooks: MaterialHooks,
     pub vertex: Option<Arc<str>>,
 }
 
 impl MaterialBindings {
-    pub fn color(&self) -> &wgpu::BindGroup {
+    pub fn program(&self, capture_data: bool) -> Option<(&Arc<str>, usize)> {
+        let (source, slots) = self.shader.as_ref()?;
+        let fragment = self.hooks.uses_fragment(capture_data);
+        (self.hooks.vertex || fragment).then_some((source, if fragment { *slots } else { 0 }))
+    }
+
+    pub fn color(&self, slots: usize) -> &wgpu::BindGroup {
+        if slots == 0 && self.shader.as_ref().is_some_and(|(_, slots)| *slots > 0) {
+            return self.unprogrammed_coat.as_ref().unwrap_or(&self.base);
+        }
         self.color.as_ref().unwrap_or(&self.base)
     }
 }
@@ -221,7 +233,7 @@ pub(super) struct Materials {
     white: ImageViews,
     images: SharedImages,
     samplers: HashMap<SamplerKey, wgpu::Sampler>,
-    pub(super) items: BTreeMap<String, ItemTextureView>,
+    pub(super) items: Arc<ItemTextureViews>,
     pub(super) captures: CaptureViews,
     projections: SharedProjectionBuffers,
     item_sampler: Option<wgpu::Sampler>,
@@ -241,7 +253,7 @@ impl Materials {
             white: upload(device, queue, [1, 1], &[255; 4], std::iter::empty()).full,
             images,
             samplers: HashMap::new(),
-            items: BTreeMap::new(),
+            items: Arc::default(),
             captures: CaptureViews::new(),
             projections,
             item_sampler: None,
@@ -261,7 +273,8 @@ impl Materials {
             .cloned();
         let base_texture = material.and_then(|material| material.base_texture.as_ref());
         let pbr = material.and_then(|material| material.pbr.as_ref());
-        let mr = pbr.and_then(|pbr| pbr.metallic_roughness_texture.as_ref());
+        let mr = pbr.and_then(|pbr| pbr.surface_texture.as_ref());
+        let glossy = pbr.is_some_and(|pbr| pbr.workflow == MeshWorkflow::SpecularGlossiness);
         let emissive_texture = pbr.and_then(|pbr| pbr.emissive_texture.as_ref());
         let occlusion = pbr.and_then(|pbr| pbr.occlusion_texture.as_ref());
         let normal = pbr.and_then(|pbr| pbr.normal_map.as_ref());
@@ -279,9 +292,17 @@ impl Materials {
             .and_then(|pbr| pbr.anisotropy.as_deref())
             .filter(|term| term.strength > 0.0);
         let anisotropy_map = anisotropy.and_then(|term| term.texture.as_ref());
+        let shared_gloss_alpha = glossy
+            && material.is_some_and(|material| {
+                material.channels.channel(MaterialChannel::Glossiness) == TextureChannel::Alpha
+            })
+            && mr
+                .zip(specular_color)
+                .is_some_and(|(a, b)| Arc::ptr_eq(&a.image, &b.image));
         let mut bindings = [
             (base_texture.filter(|_| item.is_none()), true),
-            (mr, false),
+            // glTF's packed specular/glossiness map shares its sRGB image views.
+            (mr, shared_gloss_alpha),
             (emissive_texture, true),
             (occlusion, false),
             (normal_texture, false),
@@ -310,19 +331,28 @@ impl Materials {
 
         let rgba = material.map_or([1.0; 4], |material| material.base_color);
         let mode = material.map_or(MeshAlphaMode::Opaque, |material| material.alpha_mode);
-        let cutoff = match mode {
-            MeshAlphaMode::Mask(cutoff) => cutoff,
-            _ => -1.0,
-        };
+        let cutoff = mode.cutoff().unwrap_or(-1.0);
         let flag = |value| if value { 1.0 } else { 0.0 };
         let flags = [
             cutoff,
-            flag(material.is_some()),
+            flag(
+                material.is_some()
+                    && !matches!(mode, MeshAlphaMode::InstanceBlend { builtin: true, .. }),
+            ),
             item_kind.unwrap_or_else(|| flag(base_texture.is_some())),
-            flag(mode == MeshAlphaMode::Blend),
+            match mode {
+                MeshAlphaMode::InstanceBlend { .. } => 2.0,
+                MeshAlphaMode::Blend => 1.0,
+                _ => 0.0,
+            },
         ];
         let factors = pbr.map_or([0.0; 4], |pbr| {
-            [pbr.metallic, pbr.roughness, pbr.occlusion_strength, 1.0]
+            [
+                pbr.metallic,
+                pbr.roughness,
+                pbr.occlusion_strength,
+                if glossy { 2.0 } else { 1.0 },
+            ]
         });
         let [r, g, b] = pbr.map_or([0.0; 3], |pbr| pbr.emissive);
         let normal_scale = normal.map_or(1.0, |normal| normal.scale);
@@ -330,10 +360,14 @@ impl Materials {
             |texture: Option<&MeshTexture>| texture.map_or(-1.0, |tex| f32::from(tex.uv_slot));
         let [sr, sg, sb] = dielectric.map_or([1.0; 3], |material| material.color);
         let specular = dielectric.map_or(1.0, |material| material.specular);
-        let f0 = dielectric.map_or(
-            MeshDielectric::DEFAULT_F0,
-            MeshDielectric::normal_reflectance,
-        );
+        let f0 = if glossy {
+            1.0
+        } else {
+            dielectric.map_or(
+                MeshDielectric::DEFAULT_F0,
+                MeshDielectric::normal_reflectance,
+            )
+        };
         let refraction = pbr.map(|pbr| pbr.refraction_channels()).unwrap_or_default();
         let [inv_r, inv_g, inv_b] = refraction.inverse_ior;
         let [lod_r, lod_g, lod_b] = refraction.blur_scale;
@@ -350,19 +384,18 @@ impl Materials {
             channels[2] = material.vertex_masks.gpu_word(material.vertex_colors);
         }
         let shader = material.and_then(|material| material.shader.as_ref());
+        let hooks = shader.map_or_else(MaterialHooks::default, |shader| {
+            MaterialHooks::from_source(&shader.source)
+        });
         let coat = pbr
             .and_then(|pbr| pbr.clearcoat.as_ref())
             .filter(|coat| coat.amount > 0.0);
         let slots = shader
-            .filter(|shader| {
-                !shader.textures.is_empty() && MaterialHooks::from_source(&shader.source).fragment()
-            })
+            .filter(|shader| !shader.textures.is_empty() && hooks.fragment())
             .map_or(0, |_| shader_texture_slots(device, coat.is_some()));
         let (texture_flags, shader_views) = self.shader_textures(device, queue, shader, slots);
         let projections = shader
-            .filter(|shader| {
-                slots != 0 && MaterialHooks::from_source(&shader.source).capture_position
-            })
+            .filter(|_| slots != 0 && hooks.capture_position)
             .map(|shader| {
                 self.projections.borrow_mut().get(
                     device,
@@ -451,6 +484,7 @@ impl Materials {
             layout: &self.layouts[0],
             entries: &entries,
         });
+        let mut unprogrammed_coat = None;
         let color = if let Some(coat) = coat {
             let normal = coat.normal_map.as_ref();
             let textures = [
@@ -485,6 +519,10 @@ impl Materials {
                 binding: CLEARCOAT_SETTINGS_BINDING,
                 resource: uniform.as_entire_binding(),
             });
+            if slots > 0 && !hooks.uses_fragment(false) {
+                unprogrammed_coat =
+                    Some(self.color_binding(device, true, entries.clone(), &[], None));
+            }
             Some(self.color_binding(device, true, entries, &shader_views, projections.as_ref()))
         } else if slots > 0 {
             Some(self.color_binding(device, false, entries, &shader_views, projections.as_ref()))
@@ -494,8 +532,10 @@ impl Materials {
         MaterialBindings {
             base,
             color,
+            unprogrammed_coat,
             coated: coat.is_some(),
             shader: shader.map(|shader| (shader.source.clone(), slots)),
+            hooks,
             vertex: shader.and_then(MeshShader::vertex_program).cloned(),
         }
     }

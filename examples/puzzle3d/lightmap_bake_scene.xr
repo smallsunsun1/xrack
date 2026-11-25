@@ -4,6 +4,8 @@ export struct BakeActor {
     scale-x: float, scale-y: float, scale-z: float,
     yaw: float, pitch: float, roll: float, color: color,
     casts-shadow: bool,
+    bake-role: string,
+    lightmap-size: int, lightmap-texels-per-unit: float,
     lightmap: image, lightmap-mode: string, lightmap-intensity: float,
     lightmap-u: float, lightmap-v: float, lightmap-width: float, lightmap-height: float,
 }
@@ -12,44 +14,64 @@ export struct BakeLamp {
     kind: string, x: float, y: float, z: float,
     yaw: float, elevation: float, intensity: float, color: color,
     range: float, inner-angle: float, outer-angle: float,
+    bake-mode: string,
 }
 
 export global BakeRoom {
+    out property <int> denoise-passes: 2;
+    out property <float> indirect-factor: 1.0;
+    out property <string> probe: @environment-url("models/studio.hdr");
+    out property <float> probe-yaw: 25.0;
+    out property <float> probe-intensity: 0.35;
+
     property <image> empty;
     property <BakeActor> defaults: BakeActor {
         id: "", mesh: "primitive:box",
         x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, casts-shadow: true,
+        bake-role: "auto",
+        lightmap-size: 0, lightmap-texels-per-unit: 0,
         lightmap: root.empty, lightmap-mode: "diffuse", lightmap-intensity: 1,
         lightmap-u: 0, lightmap-v: 0, lightmap-width: 1, lightmap-height: 1,
     };
     out property <BakeActor> plate: BakeActor {
         id: "plate", mesh: @mesh-url("models/lightmap-receiver.gltf"),
         scale-x: 3.4, scale-y: 2.7,
+        bake-role: "receiver",
+        lightmap-size: 96,
         ..root.defaults
     };
     out property <BakeActor> figure: BakeActor {
         id: "figure", mesh: @mesh-url("models/lod-surface.gltf", lightmap-uv, auto-lod),
         x: 2.24, y: -0.1, z: -0.08, scale-x: 0.57, scale-y: 0.77, scale-z: 0.57,
         yaw: 30, color: #dde8fb,
+        bake-role: "receiver",
+        lightmap-texels-per-unit: 12,
         ..root.defaults
     };
     out property <BakeActor> sphere: BakeActor {
         id: "sphere", mesh: "primitive:sphere", x: -0.28, y: 0.19, z: 0.76,
         scale-x: 0.76, scale-y: 0.76, scale-z: 0.76, color: #f5d0a8,
+        bake-role: "excluded",
         ..root.defaults
     };
     out property <BakeActor> luminous: BakeActor {
         id: "red", mesh: @mesh-url("models/ssgi-emitter.gltf"),
         x: -1.7, y: 0.02, z: 0.5, yaw: 90,
         scale-x: 1.0, scale-y: 2.2, color: #ff4c28, casts-shadow: false,
+        bake-role: "contributor",
         ..root.defaults
     };
-    out property <[BakeLamp]> lights: [
-        BakeLamp { kind: "point", x: -0.62, y: 0.92, z: 1.6,
-            yaw: 0, elevation: 0, intensity: 9.4, color: #ffe2bd,
-            range: 9, inner-angle: 0, outer-angle: 45 },
-    ];
+    out property <BakeLamp> key: BakeLamp {
+        kind: "point", x: -0.62, y: 0.92, z: 1.6,
+        yaw: 0, elevation: 0, intensity: 9.4, color: #ffe2bd,
+        range: 9, inner-angle: 0, outer-angle: 45, bake-mode: "all",
+    };
+    out property <BakeLamp> fill: BakeLamp {
+        kind: "point", x: 1.23, y: -0.58, z: 1.9,
+        intensity: 6.5, color: #76a8ff, bake-mode: "indirect", ..root.key
+    };
+    out property <[BakeLamp]> lights: [root.key, root.fill];
 }
 
 export component LightmapBakeSource inherits Window {
@@ -60,6 +82,11 @@ export component LightmapBakeSource inherits Window {
         camera-yaw: 20; camera-pitch: 12; camera-distance: 8.4;
         scene-background: #172638;
         ambient-intensity: 0.17; shadows: true;
+        environment: BakeRoom.probe;
+        environment-yaw: BakeRoom.probe-yaw;
+        environment-intensity: BakeRoom.probe-intensity;
+        bake-denoise-passes: BakeRoom.denoise-passes;
+        bake-indirect-factor: BakeRoom.indirect-factor;
         model: [BakeRoom.plate, BakeRoom.sphere, BakeRoom.luminous, BakeRoom.figure];
         lights: BakeRoom.lights;
     }

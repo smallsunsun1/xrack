@@ -30,8 +30,19 @@ def XR_Length : XR_Type<"Length", "length">;
 def XR_Point2D : XR_Type<"Point2D", "point2d">;
 def XR_Point3D : XR_Type<"Point3D", "point3d">;
 def XR_Vector3D : XR_Type<"Vector3D", "vector3d">;
+def XR_Quaternion3D : XR_Type<"Quaternion3D", "quaternion3d">;
+def XR_RotationTrack3D : XR_Type<"RotationTrack3D", "rotationtrack3d">;
 def XR_Hit3D : XR_Type<"Hit3D", "hit3d">;
+def XR_Instance3D : XR_Type<"Instance3D", "instance3d">;
+def XR_InstanceTable3D : XR_Type<"InstanceTable3D", "instancetable3d">;
 def XR_Hit3DList : XR_Type<"Hit3DList", "hit3dlist">;
+def XR_PhysicsContact3D : XR_Type<"PhysicsContact3D", "physicscontact3d">;
+def XR_PhysicsHit3D : XR_Type<"PhysicsHit3D", "physicshit3d">;
+def XR_PhysicsContact3DList : XR_Type<"PhysicsContact3DList", "physicscontact3dlist">;
+def XR_PhysicsHit3DList : XR_Type<"PhysicsHit3DList", "physicshit3dlist">;
+def XR_PhysicsWorld3D : XR_Type<"PhysicsWorld3D", "physicsworld3d">;
+def XR_SceneModel3D : XR_Type<"SceneModel3D", "scenemodel3d">;
+def XR_WalkResult3D : XR_Type<"WalkResult3D", "walkresult3d">;
 def XR_ProjectedPoint3D : XR_Type<"ProjectedPoint3D", "projectedpoint3d">;
 def XR_Vector2D : XR_Type<"Vector2D", "vector2d">;
 def XR_Transform2D : XR_Type<"Transform2D", "transform2d">;
@@ -101,7 +112,7 @@ def XR_DateList : XR_Type<"DateList", "datelist">;
 def XR_Time : XR_Type<"Time", "time">;
 def XR_Font : XR_Type<"Font", "font">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
-def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Point3D, XR_Vector3D, XR_Hit3D, XR_Hit3DList, XR_ProjectedPoint3D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
+def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_InstanceTable3D, XR_Hit3DList, XR_PhysicsContact3D, XR_PhysicsHit3D, XR_PhysicsContact3DList, XR_PhysicsHit3DList, XR_ProjectedPoint3D, XR_WalkResult3D, XR_PhysicsWorld3D, XR_SceneModel3D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers, XR_WheelEvent,
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
@@ -159,7 +170,7 @@ def XR_IfOp : XR_Op<"if", [SingleBlockImplicitTerminator<"EndOp">, NoRegionArgum
 }
 def XR_ForOp : XR_ScopeOp<"for", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_DateList, XR_StringList,
-                                 XR_RecordList, XR_Hit3DList, XR_TouchPoints]>:$model,
+                                 XR_RecordList, XR_Hit3DList, XR_PhysicsContact3DList, XR_PhysicsHit3DList, XR_TouchPoints]>:$model,
                        StrAttr:$item, StrAttr:$index);
   let hasVerifier = 1;
 }
@@ -228,7 +239,7 @@ def XR_StateTimingOp : XR_Op<"state_timing", [ParentOneOf<["ElementOp", "Instanc
   let hasVerifier = 1;
 }
 def XR_RepeatOp : XR_Op<"repeat", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
-  let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_DateList, XR_StringList, XR_RecordList, XR_Hit3DList, XR_TouchPoints]>:$input, StrAttr:$name,
+  let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_DateList, XR_StringList, XR_RecordList, XR_Hit3DList, XR_PhysicsContact3DList, XR_PhysicsHit3DList, XR_TouchPoints]>:$input, StrAttr:$name,
                        StrAttr:$item, StrAttr:$index);
 }
 def XR_ControlLinkOp : XR_Op<"control_link", [HasParent<"ElementOp">]> {
@@ -417,6 +428,9 @@ def XR_TextureUrlOp : XR_ExpressionOp<"texture_url", (ins), XR_String, [Pure]> {
 def XR_ShaderUrlOp : XR_ExpressionOp<"shader_url", (ins), XR_String, [Pure]> {
   let hasVerifier = 1;
 }
+def XR_InstanceTableUrlOp : XR_ExpressionOp<"instance_table_url", (ins), XR_InstanceTable3D, [Pure]> {
+  let hasVerifier = 1;
+}
 def XR_MaterialShaderUrlOp : XR_ExpressionOp<"material_shader_url", (ins), XR_String, [Pure]> {
   let hasVerifier = 1;
 }
@@ -443,6 +457,10 @@ def XR_ParseNumberOp : XR_ExpressionOp<"parse_number",
 def XR_ConcatOp : XR_ExpressionOp<"concat", (ins Variadic<XR_String>:$parts), XR_String, [Pure]>;
 def XR_ArrayOp : XR_ExpressionOp<"array", (ins Variadic<XR_String>:$items), XR_StringList, [Pure]>;
 def XR_Hit3DArrayOp : XR_ExpressionOp<"hit3d_array", (ins Variadic<XR_Hit3D>:$items), XR_Hit3DList, [Pure]>;
+def XR_PhysicsContact3DArrayOp : XR_ExpressionOp<"physics_contact3d_array",
+    (ins Variadic<XR_PhysicsContact3D>:$items), XR_PhysicsContact3DList, [Pure]>;
+def XR_PhysicsHit3DArrayOp : XR_ExpressionOp<"physics_hit3d_array",
+    (ins Variadic<XR_PhysicsHit3D>:$items), XR_PhysicsHit3DList, [Pure]>;
 def XR_IntArrayOp : XR_ExpressionOp<"int_array", (ins Variadic<XR_Int>:$items), XR_IntList, [Pure]>;
 def XR_DateArrayOp : XR_ExpressionOp<"date_array", (ins Variadic<XR_Date>:$items), XR_DateList, [Pure]>;
 def XR_PointerButtonsOp : XR_ExpressionOp<"pointer_buttons", (ins Variadic<XR_PointerButton>:$items), XR_PointerButtons, [Pure]>;
@@ -591,11 +609,19 @@ def XR_CastOp : XR_ExpressionOp<"cast", (ins XR_Int:$input), XR_Float>;
 def XR_MathOperand : AnyTypeOf<[XR_Int, XR_Float, XR_Length, XR_Percent]>;
 def XR_MathFunctionOp : XR_ExpressionOp<"math_function", (ins Variadic<XR_MathOperand>:$inputs),
     AnyTypeOf<[XR_MathOperand, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
-def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Point3D, XR_Vector3D, XR_Hit3D, XR_Hit3DList, XR_ProjectedPoint3D]>;
+def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_Hit3DList, XR_ProjectedPoint3D, XR_WalkResult3D]>;
 def XR_GeometryFunctionOp : XR_ExpressionOp<"geometry_function",
-    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_RecordList, XR_String, XR_Int, XR_IntList]>>:$inputs),
-    AnyTypeOf<[XR_GeometryValue, XR_String, XR_IntList]>,
+    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_Record, XR_RecordList, XR_SceneModel3D, XR_InstanceTable3D, XR_PhysicsWorld3D, XR_String, XR_Int, XR_IntList]>>:$inputs),
+    AnyTypeOf<[XR_GeometryValue, XR_SceneModel3D, XR_InstanceTable3D, XR_String, XR_IntList]>,
     [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> { let hasVerifier = 1; }
+def XR_PhysicsFunctionOp : XR_ExpressionOp<"physics_function",
+    (ins Variadic<AnyTypeOf<[XR_PhysicsWorld3D, XR_Point3D, XR_Vector3D, XR_Int, XR_Float, XR_Bool, XR_String, XR_RecordList]>>:$inputs),
+    AnyTypeOf<[XR_PhysicsWorld3D, XR_Point3D, XR_Vector3D, XR_Int, XR_Float, XR_Bool, XR_IntList, XR_PhysicsContact3DList, XR_PhysicsHit3D, XR_PhysicsHit3DList]>,
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> { let hasVerifier = 1; }
+def XR_PhysicsContact3DFieldOp : XR_ExpressionOp<"physics_contact3d_field", (ins XR_PhysicsContact3D:$input),
+    AnyTypeOf<[XR_Int, XR_Float, XR_Point3D, XR_Vector3D]>, [Pure]> { let hasVerifier = 1; }
+def XR_PhysicsHit3DFieldOp : XR_ExpressionOp<"physics_hit3d_field", (ins XR_PhysicsHit3D:$input),
+    AnyTypeOf<[XR_Int, XR_Float, XR_Point3D, XR_Vector3D, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
 def XR_Point2DFieldOp : XR_ExpressionOp<"point2d_field", (ins XR_Point2D:$input), XR_Length, [Pure]> {
   let hasVerifier = 1;
 }
@@ -605,8 +631,25 @@ def XR_Point3DFieldOp : XR_ExpressionOp<"point3d_field", (ins XR_Point3D:$input)
 def XR_Vector3DFieldOp : XR_ExpressionOp<"vector3d_field", (ins XR_Vector3D:$input), XR_Float, [Pure]> {
   let hasVerifier = 1;
 }
+def XR_Quaternion3DFieldOp : XR_ExpressionOp<"quaternion3d_field", (ins XR_Quaternion3D:$input), XR_Float, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_RotationTrack3DFieldOp : XR_ExpressionOp<"rotation_track3d_field", (ins XR_RotationTrack3D:$input),
+    AnyTypeOf<[XR_Int, XR_Bool, XR_Float]>, [Pure]> { let hasVerifier = 1; }
+def XR_InstanceTable3DFieldOp : XR_ExpressionOp<"instance_table3d_field", (ins XR_InstanceTable3D:$input),
+    AnyTypeOf<[XR_Int, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
+def XR_Instance3DFieldOp : XR_ExpressionOp<"instance3d_field", (ins XR_Instance3D:$input),
+    AnyTypeOf<[XR_Point3D, XR_Vector3D, XR_Color, XR_Int, XR_Float, XR_Bool, XR_String]>, [Pure]> {
+  let hasVerifier = 1;
+}
 def XR_Hit3DFieldOp : XR_ExpressionOp<"hit3d_field", (ins XR_Hit3D:$input),
     AnyTypeOf<[XR_Point3D, XR_Vector3D, XR_Int, XR_Float, XR_Bool, XR_String]>, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_WalkResult3DOp : XR_ExpressionOp<"walk_result3d",
+    (ins XR_Point3D:$position, XR_Hit3DList:$crossings), XR_WalkResult3D, [Pure]>;
+def XR_WalkResult3DFieldOp : XR_ExpressionOp<"walk_result3d_field",
+    (ins XR_WalkResult3D:$input), AnyTypeOf<[XR_Point3D, XR_Hit3DList, XR_Hit3D, XR_Bool]>, [Pure]> {
   let hasVerifier = 1;
 }
 def XR_ProjectedPoint3DFieldOp : XR_ExpressionOp<"projected_point3d_field",
@@ -628,7 +671,7 @@ def XR_ModelLookupOp : XR_ExpressionOp<"model_lookup", (ins XR_RecordList:$model
     XR_RecordList, [Pure, AllTypesMatch<["model", "result"]>]>;
 def XR_ModelSortByOp : XR_ExpressionOp<"model_sort_by", (ins XR_RecordList:$model, XR_Bool:$descending),
     XR_RecordList, [Pure, AllTypesMatch<["model", "result"]>]>;
-def XR_Model : AnyTypeOf<[XR_IntList, XR_DateList, XR_StringList, XR_RecordList, XR_Hit3DList]>;
+def XR_Model : AnyTypeOf<[XR_IntList, XR_DateList, XR_StringList, XR_RecordList, XR_Hit3DList, XR_PhysicsContact3DList, XR_PhysicsHit3DList]>;
 def XR_ModelEditOp : XR_Op<"model_edit", [ParentOneOf<["CallbackOp", "HandlerOp", "IfOp", "ForOp"]>]> {
   let arguments = (ins XR_Model:$model, Variadic<XR_Value>:$args, StrAttr:$method);
   let hasVerifier = 1;
@@ -636,8 +679,8 @@ def XR_ModelEditOp : XR_Op<"model_edit", [ParentOneOf<["CallbackOp", "HandlerOp"
 def XR_ModelCountOp : XR_ExpressionOp<"model_count", (ins XR_Model:$input), XR_Int, [MemoryEffects<[MemRead]>]>;
 def XR_ModelIsEmptyOp : XR_ExpressionOp<"model_is_empty", (ins XR_Model:$input), XR_Bool, [MemoryEffects<[MemRead]>]>;
 def XR_ModelAtOp : XR_ExpressionOp<"model_at",
-    (ins XR_Model:$model, XR_Int:$index, AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record, XR_Hit3D]>:$fallback),
-    AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record, XR_Hit3D]>, [MemoryEffects<[MemRead]>, AllTypesMatch<["fallback", "result"]>]> {
+    (ins XR_Model:$model, XR_Int:$index, AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record, XR_Hit3D, XR_PhysicsContact3D, XR_PhysicsHit3D]>:$fallback),
+    AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record, XR_Hit3D, XR_PhysicsContact3D, XR_PhysicsHit3D]>, [MemoryEffects<[MemRead]>, AllTypesMatch<["fallback", "result"]>]> {
   let hasVerifier = 1;
 }
 def XR_FormatFixedOp : XR_ExpressionOp<"format_fixed",

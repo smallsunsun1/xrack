@@ -47,7 +47,7 @@ pub(super) fn apply(
 /// Reuse measured bounds for transform updates in trees without
 /// viewport-driven layout or placement-dependent controls.
 pub(super) fn reproject(old: &Node, node: &Node, layout: &LayoutNode) -> Option<LayoutNode> {
-    if node.kind != "Window" || !can_reproject(old, node, layout) {
+    if node.kind != "Window" || !can_reproject(old, node, layout, None) {
         return None;
     }
     let mut projected = layout.clone();
@@ -56,7 +56,7 @@ pub(super) fn reproject(old: &Node, node: &Node, layout: &LayoutNode) -> Option<
     Some(projected)
 }
 
-fn can_reproject(old: &Node, node: &Node, layout: &LayoutNode) -> bool {
+fn can_reproject(old: &Node, node: &Node, layout: &LayoutNode, parent: Option<&Node>) -> bool {
     matches!(
         node.kind,
         "Window"
@@ -72,13 +72,16 @@ fn can_reproject(old: &Node, node: &Node, layout: &LayoutNode) -> bool {
         && layout.overlay_index().is_none()
         && layout.children.len() == node.children.len()
         && old.children.len() == node.children.len()
-        && old.same_measurement_inputs_at_node(node)
+        && parent.map_or_else(
+            || old.same_measurement_inputs_at_node(node),
+            |parent| old.same_measurement_inputs_as_child(node, parent),
+        )
         && old
             .children
             .iter()
             .zip(&node.children)
             .zip(&layout.children)
-            .all(|((before, after), child)| can_reproject(before, after, child))
+            .all(|((before, after), child)| can_reproject(before, after, child, Some(node)))
 }
 
 fn project(
@@ -136,6 +139,43 @@ mod tests {
         fn measure(&mut self, text: &str, size: f32, _: f32) -> Size {
             Size::new(text.len() as f32 * size * 0.5, size)
         }
+    }
+
+    #[test]
+    fn transform_and_fixed_caption_updates_reuse_the_measured_layout() {
+        let mut window = Node::new("Window", None);
+        let mut group = Node::new("Rectangle", None);
+        let mut caption = Node::new("Label", None);
+        caption.properties.insert("width", Length(60.0).into());
+        caption.properties.insert("height", Length(18.0).into());
+        caption.properties.insert("text", "Ready".to_owned().into());
+        group.children.push(caption);
+        window.children.push(group);
+        let mut scene = Rc::new(window);
+        let input = Interaction::default();
+        let size = Size::new(120.0, 96.0);
+        let mut cache = FrameCache::default();
+        cache.prepare(scene.clone(), size, &input, |scene| {
+            let layout = layout_with_input(&scene, size, &mut Metrics, &input);
+            (scene, layout)
+        });
+
+        let group = &mut Rc::make_mut(&mut scene).children[0];
+        group.properties.insert("transform-rotation", 18.0.into());
+        group.children[0]
+            .properties
+            .insert("text", "A new status".to_owned().into());
+        let (prepared, reused) = cache.prepare(scene.clone(), size, &input, |_| {
+            panic!("a transform and fixed caption change should only project the layout")
+        });
+        assert_eq!(
+            prepared.children[0].children[0].text("text"),
+            Some("A new status")
+        );
+        assert_eq!(
+            *reused,
+            layout_with_input(&scene, size, &mut Metrics, &input)
+        );
     }
 
     #[test]

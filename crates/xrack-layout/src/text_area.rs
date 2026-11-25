@@ -104,17 +104,26 @@ pub(crate) fn fitting_prefix_until(
     start: usize,
     last: usize,
     mut fits: impl FnMut(usize) -> bool,
+    final_fit: impl FnMut(usize, usize) -> bool,
+) -> usize {
+    fitting_prefix_from(start, last, start, |index, _| fits(index), final_fit)
+}
+
+pub(crate) fn fitting_prefix_from(
+    start: usize,
+    last: usize,
+    mut fit: usize,
+    mut fits: impl FnMut(usize, bool) -> bool,
     mut final_fit: impl FnMut(usize, usize) -> bool,
 ) -> usize {
-    let mut fit = start;
-    let mut probe = (start + 1).min(last);
-    while probe > fit && fits(probe) {
+    let mut probe = (start + (fit - start).saturating_mul(2).max(1)).min(last);
+    while probe > fit && fits(probe, true) {
         fit = probe;
         probe = (start + (fit - start).saturating_mul(2)).min(last);
     }
     while probe > fit + 1 && !final_fit(fit, probe - 1) {
         let middle = fit + (probe - fit) / 2;
-        if fits(middle) {
+        if fits(middle, false) {
             fit = middle;
         } else {
             probe = middle;

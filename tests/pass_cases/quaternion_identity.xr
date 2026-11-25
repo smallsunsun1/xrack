@@ -1,0 +1,14 @@
+// RAW: "xr.geometry_function"{{.*}}value = "quaternion-identity"
+// RAW: "xr.geometry_function"{{.*}}value = "quaternion-compose"
+// CHECK: "xr.literal"() <{value = "0 0 0 1"}> : () -> !xr.quaternion3d
+// CHECK: "xr.property"{{.*}}name = "identity"
+// CHECK-NOT: "xr.geometry_function"{{.*}}value = "quaternion-compose"
+// CHECK: "xr.property"{{.*}}name = "unchanged"
+// CHECK: "xr.quaternion3d_field"{{.*}}value = "w"
+
+export component App inherits Window {
+    in-out property <quaternion3d> input;
+    out property <quaternion3d> identity: Quaternion3D.identity();
+    out property <quaternion3d> unchanged: Quaternion3D.compose(root.input, Quaternion3D.identity());
+    out property <float> scalar: root.input.w;
+}

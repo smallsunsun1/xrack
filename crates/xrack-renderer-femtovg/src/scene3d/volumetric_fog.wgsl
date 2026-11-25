@@ -154,14 +154,32 @@ fn integrate_fog_segment(
     (*state).medium.transmission = outgoing;
 }
 
+fn clip_fog_interval(plane: vec4<f32>, ray: FogRay, interval: vec2<f32>) -> vec2<f32> {
+    let value = dot(plane, vec4<f32>(ray.origin, 1.0));
+    let rate = dot(plane.xyz, ray.direction);
+    if rate > 0.0 {
+        return vec2<f32>(max(interval.x, -value / rate), interval.y);
+    }
+    if rate < 0.0 {
+        return vec2<f32>(interval.x, min(interval.y, -value / rate));
+    }
+    return select(vec2<f32>(0.0), interval, value >= 0.0);
+}
+
 fn fog_to_distance(ray: FogRay, limit: f32) -> FogMedium {
     let count = u32(globals.volume_clip_count.z);
     if count == 0u {
         return FogMedium(vec3<f32>(0.0), 1.0);
     }
-    let forward = dot(ray.direction, globals.view_depth.xyz);
-    let interval = vec2<f32>(globals.volume_clip_count.x / forward,
-        min(limit, globals.volume_clip_count.y / forward));
+    var interval: vec2<f32>;
+    if globals.oblique_depth > 0.5 {
+        interval = clip_fog_interval(globals.clip2, ray, vec2<f32>(0.0, limit));
+        interval = clip_fog_interval(globals.clip3 - globals.clip2, ray, interval);
+    } else {
+        let forward = dot(ray.direction, globals.view_depth.xyz);
+        interval = vec2<f32>(globals.volume_clip_count.x / forward,
+            min(limit, globals.volume_clip_count.y / forward));
+    }
     if interval.y <= interval.x {
         return FogMedium(vec3<f32>(0.0), 1.0);
     }
@@ -244,6 +262,12 @@ fn fog_to_distance(ray: FogRay, limit: f32) -> FogMedium {
 }
 
 fn fog_to_surface(world: vec3<f32>) -> FogMedium {
+    if globals.oblique_depth > 1.5 {
+        let depth = dot(globals.view_depth, vec4<f32>(world, 1.0));
+        let forward = custom_forward(world);
+        let distance = depth / max(dot(forward, globals.view_depth.xyz), 1e-8);
+        return fog_to_distance(FogRay(world - distance * forward, forward), distance);
+    }
     if globals.eye.w > 0.5 {
         let depth = dot(globals.view_depth, vec4<f32>(world, 1.0));
         let forward = globals.view_depth.xyz;

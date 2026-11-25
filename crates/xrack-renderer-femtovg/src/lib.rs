@@ -13,6 +13,7 @@ mod image_colorize;
 mod image_coverage;
 #[cfg(target_os = "ios")]
 mod ios_font;
+mod label_glyphs;
 mod layer_compositor;
 mod nine_slice;
 pub mod preview;
@@ -295,6 +296,7 @@ pub struct Renderer {
     rectangle_batches: rectangle::RectangleBatches,
     geometry_cache: retained_geometry::GeometryCache,
     glyph_masks: glyph_masks::GlyphMasks,
+    label_batch_scratch: label_glyphs::BatchScratch,
     render_scene: xrack_runtime::SceneIndex,
     scene_generation: u64,
     inspect_scene: bool,
@@ -471,6 +473,7 @@ impl Renderer {
             canvas,
             canvas_font_context: text.context_key().clone(),
             glyph_masks: Default::default(),
+            label_batch_scratch: Default::default(),
             images: image::Images::default(),
             scroll_images: Default::default(),
             retained_layers: Default::default(),
@@ -565,6 +568,21 @@ impl Renderer {
             input,
             &mut self.row_layouts,
         )
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_scene_recycling(
+        &mut self,
+        component: &impl Component,
+        scene: Rc<Node>,
+        viewport: Size,
+        input: &Interaction,
+        previous: Option<LayoutNode>,
+    ) -> (Rc<Node>, LayoutNode) {
+        self.row_layouts.use_recycled_layout(previous);
+        let output = self.prepare_scene(component, scene, viewport, input);
+        self.row_layouts.use_recycled_layout(None);
+        output
     }
 
     /// An animated element was visible in the last frame.
@@ -953,6 +971,7 @@ impl Renderer {
         frame: PaintFrame<'_>,
         transfer: Option<wgpu::CommandBuffer>,
     ) -> Result<(), String> {
+        self.text.begin_label_frame();
         self.inline_target = (frame.damage.is_none()
             && scene.kind == "Window"
             && scene.opacity() == 1.0
@@ -985,6 +1004,11 @@ impl Renderer {
         frame: PaintFrame<'_>,
         transfer: Option<wgpu::CommandBuffer>,
     ) -> Result<(), String> {
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        let warmup_start = self
+            .glyph_masks
+            .atlas_pipeline_warmup_pending()
+            .then(Instant::now);
         self.submit_opacity_atlas();
         let inspection_outline = self.inspection_outline.take();
         let PaintFrame {
@@ -1002,6 +1026,7 @@ impl Renderer {
             )
             .map_err(|error| error.to_string())?;
             self.canvas_font_context = self.text.context_key().clone();
+            self.text.label_glyphs.get_mut().reset_canvas();
             self.glyph_masks = Default::default();
             self.images = image::Images::default();
             self.scroll_images = Default::default();
@@ -1086,11 +1111,6 @@ impl Renderer {
             false
         };
         let mut canvas_started = false;
-        if self.display_batching && self.glyph_masks.has_pending() {
-            self.start_frame_canvas(size, scale, &mut canvas_started);
-            // Record the atlas writes before the draws that sample them.
-            self.glyph_masks.prepare(&mut self.canvas);
-        }
         if !composed {
             let cleared_background = self
                 .display_batching
@@ -1235,6 +1255,15 @@ impl Renderer {
         }
         self.rectangle_batches.warm_capsules(&self.queue);
         self.rectangle_batches.upload(&mut self.canvas)?;
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        if !canvas_changed
+            && warmup_start
+                .is_some_and(|started| started.elapsed() <= std::time::Duration::from_millis(1))
+        {
+            // Spend the one-time setup cost in a later short frame, with no
+            // extra submission or change to the presented image.
+            self.glyph_masks.warm_atlas_pipelines(&mut self.canvas);
+        }
         self.submit_canvas_with_transfer(target, transfer);
         #[cfg(any(target_os = "android", target_os = "ios"))]
         self.text.end_color_glyph_frame(&mut self.canvas);
@@ -1249,6 +1278,11 @@ impl Renderer {
             self.canvas.set_size(size.width, size.height, scale);
             self.canvas.reset();
             self.canvas.scale(scale, scale);
+            // Populate the atlas before the first live paint. A frame drawn
+            // entirely by the compositor can leave the work queued.
+            if self.display_batching && self.glyph_masks.has_pending() {
+                self.glyph_masks.prepare(&mut self.canvas);
+            }
             *started = true;
         }
     }
@@ -3001,18 +3035,21 @@ impl Renderer {
             let tint = color(frame.theme.editor_foreground(node, false, layout.enabled));
             self.text.cell_paint(node, size, tint)
         });
-        // Power-of-two scaling preserves the advances and their sum exactly.
-        // Measure at the glyph batch's size so both can use the same run.
-        let measurement_scale = if cfg!(xrack_femtovg_glyph_samples)
-            && !cfg!(any(target_os = "android", target_os = "ios"))
-            && text.len() <= 128
-            && matches!(frame.scale, 2.0 | 4.0)
-            && (1.0..=90.0).contains(&(paint.font_size() * frame.scale))
-            && paint.letter_spacing() == 0.0
-        {
-            cell_glyphs::measurement_scale(frame.scale)
-        } else {
-            1.0
+        let measurement_scale = || {
+            // Power-of-two scaling preserves the advances and their sum.
+            // Match the glyph batch's size so measurement and drawing can
+            // share the shaped run in either FemtoVG build.
+            if !cfg!(any(target_os = "android", target_os = "ios"))
+                && text.len() <= 128
+                && matches!(frame.scale, 2.0 | 4.0)
+                && (1.0..=90.0).contains(&(paint.font_size() * frame.scale))
+                && paint.letter_spacing() == 0.0
+                && crate::has_device_scale(canvas_transform(&self.canvas), frame.scale)
+            {
+                cell_glyphs::measurement_scale(frame.scale)
+            } else {
+                1.0
+            }
         };
         display.push(Primitive::Text {
             origin: entry::passive_origin(
@@ -3040,17 +3077,15 @@ impl Renderer {
         scale: f32,
         transform: CanvasTransform,
     ) -> Option<Primitive<'a>> {
-        if !Self::is_plain_image(node, layout) {
-            return None;
-        }
+        let image = image::PlainImage::from_node(node, layout)?;
         let bounds = layout.bounds;
         let visible = bounds.intersect(layout.clip);
         if visible.width <= 0.0 || visible.height <= 0.0 {
             return None;
         }
-        let asset = node.image_asset("source")?;
+        let asset = image.asset()?;
         let aligned = image::quad_edges_are_pixel_aligned(bounds, transform);
-        let presentation = ImagePresentation::for_whole_node(node, asset.size(), in_layout);
+        let presentation = image.presentation(asset.size(), in_layout);
         let clip = (!aligned || visible != bounds).then_some(visible);
         let quad = if aligned
             && (visible == bounds || image::quad_edges_are_pixel_aligned(visible, transform))
@@ -3081,37 +3116,7 @@ impl Renderer {
     }
 
     fn is_plain_image(node: &Node, layout: &LayoutNode) -> bool {
-        node.kind == "Image"
-            && node.opacity() == 1.0
-            && node.children.is_empty()
-            && layout.local_transform().is_identity()
-            && layout.table_pane_clip().is_none()
-            && !layout.allows_overflow()
-            && node.properties.keys().all(|name| {
-                matches!(
-                    *name,
-                    "x" | "y"
-                        | "width"
-                        | "height"
-                        | "source"
-                        | "image-fit"
-                        | "image-rendering"
-                        | "visible"
-                        | "enabled"
-                        | "z"
-                        | "opacity"
-                        | "horizontal-alignment"
-                        | "vertical-alignment"
-                        | "preferred-width"
-                        | "preferred-height"
-                        | "min-width"
-                        | "min-height"
-                        | "max-width"
-                        | "max-height"
-                        | "horizontal-stretch"
-                        | "vertical-stretch"
-                )
-            })
+        image::PlainImage::from_node(node, layout).is_some()
     }
 
     fn draw_rectangle_batch(
@@ -3341,10 +3346,12 @@ impl Renderer {
             )
             .intersect(layout.clip);
             if seam.width > 0.0 && seam.height > 0.0 {
-                let mut path = Path::new();
-                path.rect(seam.x, seam.y, seam.width, seam.height);
-                self.canvas
-                    .fill_path(&path, &Paint::color(color(theme.role(Role::Divider))));
+                rectangle::fill_surface(
+                    &mut self.canvas,
+                    seam,
+                    [0.0; 4],
+                    Paint::color(color(theme.role(Role::Divider))),
+                );
             }
         }
         if let Some(rect) = input.table_row_move_marker(path, node, layout) {

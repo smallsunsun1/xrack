@@ -333,6 +333,8 @@ pub(crate) fn query(
                 Type::StringList => "[string]".into(),
                 Type::IntList => "[int]".into(),
                 Type::Hit3DList => "[hit3d]".into(),
+                Type::PhysicsContact3DList => "[physicscontact3d]".into(),
+                Type::PhysicsHit3DList => "[physicshit3d]".into(),
                 Type::DateList => "[Date]".into(),
                 _ => ty.name().into_owned(),
             });
@@ -918,6 +920,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
                 .chain(catalog::focus_methods(kind))
                 .chain(catalog::text_editor_methods(kind))
                 .chain(self.index.button_methods(owner, kind))
+                .chain(catalog::timer_methods(kind))
                 .any(|method| method.name == name)
         {
             return Some(Symbol::builtin(Kind::Function, None));
@@ -1070,6 +1073,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
                     .chain(catalog::focus_methods(kind))
                     .chain(catalog::text_editor_methods(kind))
                     .chain(self.index.button_methods(owner, kind))
+                    .chain(catalog::timer_methods(kind))
                     .find(|method| method.name == self.text(i))
                 {
                     return Some((

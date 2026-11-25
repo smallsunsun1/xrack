@@ -27,6 +27,9 @@ bool isExpression(::mlir::Operation &op);
 std::optional<double> parseFloatLiteral(llvm::StringRef spelling);
 std::optional<llvm::SmallVector<double, 6>>
 parseGeometryLiteral(mlir::Type type, llvm::StringRef spelling);
+using RotationTrackKeys = llvm::SmallVector<double, 10>;
+/// Flattened keys in (seconds, x, y, z, w) order.
+std::optional<RotationTrackKeys> parseRotationTrackLiteral(llvm::StringRef spelling);
 
 /// Check the XR compiler's top-level contract, beyond the per-operation ODS
 /// checks.

@@ -43,6 +43,92 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 
 运行 `bazel run //examples/puzzle3d:play_quality` 或在 VS Code 中预览 [quality.xr](quality.xr)。切换「MSAA」或「SSAA」观察盒体斜边。启用 SSAA 时，视口以 1.5 倍长宽渲染再缩小。开启「距离雾」对照两个盒子的不同深度。再开启「HDR」和「玻璃」，可以对照色调映射和透明混合参与时的效果。
 
+## 阴影过滤
+
+运行 `bazel run //examples/puzzle3d:play_shadow_filters`，或在 VS Code 中预览 [shadow_filters.xr](shadow_filters.xr)。两个按钮切换灯光类型和过滤模式，滑块改变采样半径和阴影强度。切到点光源可看到软阴影跨过立方体面接缝。
+
+## 混合光照
+
+运行 `bazel run //examples/puzzle3d:play_baked_room`。Bazel 按 [烘焙源场景](lightmap_bake_scene.xr) 中的模型角色生成图集。墙面和右侧模型生成贴图，红色面板只贡献反弹光，球体退出烘焙。保持「使用离线烘焙光照」勾选，开启「实时阴影」，再拖动「球体位置」。冷色补光的阴影会随球体移动，暖色烘焙光继续使用同一张图集。
+
+墙面指定 96 像素，右侧模型按世界空间密度分配贴图。烘焙和运行时共用 `models/studio.hdr` 及其旋转、强度设置。构建产物 `baked/lightmaps.json` 记录打包后的图集尺寸和实际分配给每个模型的分辨率。
+
+## 球体与胶囊体行走
+
+运行 `bazel run //examples/puzzle3d:play_sphere_walk`，或在 VS Code 中预览 [sphere_walk.xr](sphere_walk.xr)。琥珀色形状显示移动终点。点击「球体」切换到直立胶囊体，比较两种形状经过横梁时的结果。方向键和 WASD 可以逐步移动，界面还可切换上台阶及贴地。
+
+紫色检查区可以穿过。用「走一步」跨过整块区域时，进入和离开各计一次。用方向键分步走进检查区，停留时「区内」显示当前重叠数。示例调用 `Scene3D.capsule-walk-with-contacts`，一次求出终点、碰撞明细和触发事件，提交位置后依次分发。关闭「上台阶」再点「走一步」，可以看到台阶侧面的接触标记和物体 ID。
+
+点「跳跃」或按空格键测试起跳与落地。示例用 16 ms 的定时步积分重力，并根据 `grounded` 结束跳跃。启用「低顶棚」后起跳，`hit-ceiling` 会清零向上的速度，「撞顶」会保留到下次起跳或复位。
+
+站上台阶后，点「升降平台」或「横移平台」可带着角色移动。示例从 `support.object-id` 确认脚下的物体，通过碰撞层掩码用周围场景扫掠角色，再一起提交角色与台阶的位置。角色路径受阻时保留两者位置。
+
+## 动态刚体
+
+运行 `bazel run //examples/puzzle3d:play_rigid_bodies`，或在 VS Code 中预览 [rigid_bodies.xr](rigid_bodies.xr)。点「单步」观察木块落到平台，点「施加冲量」后运行，观察橙球推动青球。升降平台时，木块会进出半透明的感应区。木块在区内时切换「感应启用」，再点「单步」即可看到过滤引起的离开或进入。运行和单步都使用同一固定时间步，重置保留世界的重力和步长。
+
+## 声明式刚体
+
+运行 `bazel run //examples/puzzle3d:play_authored_physics`，或预览 [authored_physics.xr](authored_physics.xr)。点「发射球体」创建场景并赋予球体速度。点「重排声明」会保留球体和挡板的句柄，点「移动挡板」会更新挡板句柄，球体可从当前位置继续模拟。点「提交重复 ID」会拒绝本次同步，可以看见场景保持提交前的状态。三行模型通过 `physics-body` 关联到刚体，球体的小标记通过父子变换跟随。 射线读取视图正在使用的场景快照。点「冻结视图」后继续推进模拟，可查看冻结时的画面与查询结果。
+
+## 运动学接触报告
+
+运行 `bazel run //examples/puzzle3d:play_kinematic_reports`，或预览 [kinematic_reports.xr](kinematic_reports.xr)。「移向薄壁」让两个运动学刚体分别接触固定薄壁和运动学薄壁。分别打开两项报告后，可看到对应接触点和零法向冲量。
+
+## 连续碰撞与世界单位
+
+运行 `bazel run //examples/puzzle3d:play_physics_ccd`，或预览 [physics_ccd.xr](physics_ccd.xr)。两个通道以相同速度推进测试球。金色通道可选择完整 CCD 或预测接触。可以换成锁住位姿的动态薄壁，也可以将尺寸、速度及求解器容差整体改为厘米尺度，观察两边的结果。
+
+## 碰撞体调试
+
+运行 `bazel run //examples/puzzle3d:play_physics_debug`，或预览 [physics_debug.xr](physics_debug.xr)。点击「加载碰撞体」可看到固定地面、复合刚体、运动学平台、感应区和导入三角网格的线框。可以只看复合体，或隐藏视觉模型后移动碰撞体，以观察求解器中的实际形状。
+
+## 物理时钟与插值
+
+运行 `bazel run //examples/puzzle3d:play_physics_clock`，或预览 [physics_clock.xr](physics_clock.xr)。示例刻意使用较低的物理更新频率。黄色方块显示插值位姿，蓝点标记已提交位置。「卡顿帧」一次输入 1.37 秒并限制为 8 个子步，顶部会同时显示感应区的进入和离开事件。「实时播放」通过 `FrameAnimation` 获取真实帧间隔，也可以暂停后逐步查看。
+
+## 刚体接管与释放
+
+运行 `bazel run //examples/puzzle3d:play_physics_kinematic`，或预览 [physics_kinematic.xr](physics_kinematic.xr)。点击「接管」和「绕枢轴转动」，刚体绕黄色枢轴运动。点击「释放」后可查看继承的速度，再点「继续模拟」观察同一个刚体继续运动。顶部显示句柄、质量和感应区进入次数。
+
+## 刚体质量属性
+
+运行 `bazel run //examples/puzzle3d:play_physics_mass`，或预览 [physics_mass.xr](physics_mass.xr)。切换世界密度后，橙色方块的质量随世界变化。青色方块使用指定密度。偏心质心模式用黄色球标记质心，冲量施加在两个方块的几何中心。惯量矩阵模式给两个方块施加同一个扭转冲量，可以观察橙色方块在另一轴上的角速度响应。
+
+## 物理材质
+
+运行 `bazel run //examples/puzzle3d:play_physics_materials`，或预览 [physics_materials.xr](physics_materials.xr)。轻推时橙色方块靠较高的静摩擦留在原位，青色方块滑动。加大推力后橙色方块也会滑动。可在运行中降低或恢复橙色方块的静摩擦，并用「落球对比」观察不同弹性的碰撞。
+
+## 物理空间查询
+
+运行 `bazel run //examples/puzzle3d:play_physics_ray_cast`，或预览 [physics_ray_cast.xr](physics_ray_cast.xr)。点击「重置场景」后，浅蓝色线显示世界射线，黄色点标出最近的物理交点。顶部列表按距离显示命中的刚体和感应区。可以移开前箱、跳过它的句柄、按分组查询或启用感应区。点击模式按钮可在射线、球体扫掠、复合体扫掠和重叠查询间切换。球体和复合体会碰到射线上方的高台，重叠模式只检查指定位置里的刚体。
+
+## 物理角色控制
+
+运行 `bazel run //examples/puzzle3d:play_physics_character`，或在 VS Code 中预览 [physics_character.xr](physics_character.xr)。三个入口分别演示胶囊角色上台阶和撞墙、乘坐运动学平台，以及推动动态方箱并穿过感应区。顶部状态行显示接地、碰撞和触发次数。开启「撞击明细」后，场景标出接触点和法线方向，状态行显示撞击次数与最大法向冲量。
+
+## 动态刚体控制
+
+运行 `bazel run //examples/puzzle3d:play_body_dynamics`，或在 VS Code 中预览 [body_dynamics.xr](body_dynamics.xr)。点「施加一步力」后单步，线速度只增加一次。启用「持续推力」后，每一步都会继续加速。「偏心冲量」同时产生平移和旋转，可打开「锁定旋转」观察对照。
+
+## 刚体接触报告
+
+运行 `bazel run //examples/puzzle3d:play_body_contacts`，或在 VS Code 中预览 [body_contacts.xr](body_contacts.xr)。发射小球后会标出冲量最大的接触点和法线。「接触报告」开关控制是否记录冲量，关闭后小球仍会撞墙反弹。 「接触事件」独立记录实体接触与分离，「批量步进」在一次调用里推进 40 个子步，可同时看到接触和分离。
+
+## 复合碰撞形状
+
+运行 `bazel run //examples/puzzle3d:play_compound_bodies`，或在 VS Code 中预览 [compound_bodies.xr](compound_bodies.xr)。门框的两个立柱和横梁共用一个运动学刚体。点「穿过通道」会穿过门框并记录一次进入和一次离开。点「撞向立柱」会在感应区之前停住。「抬起门框」一起移动门框的三个碰撞部件。
+
+## 模型与地形碰撞
+
+运行 `bazel run //examples/puzzle3d:play_mesh_colliders`，或在 VS Code 中预览 [mesh_colliders.xr](mesh_colliders.xr)。球可以落在 PNG 高度场上。琥珀色凸包被发射后，可以穿过两个 glTF 面板的间隙，或者被镜像节点对应的三角网格拦截。
+
+## 刚体关节
+
+运行 `bazel run //examples/puzzle3d:play_physics_joints`，或在 VS Code 中预览 [physics_joints.xr](physics_joints.xr)。运行时观察门轴和滑块到达限位。门把手由固定关节连接到门板。点「推动吊挂」可以比较球形关节和距离关节的运动。途中反向或收紧限位，顶部会显示新的角度、行程和锚点距离。
+
+场景通过 `Physics3D.sync-scene` 一起提交五类关节及其刚体。「替换门柱」会更新门轴句柄，运行中的滑轨与其它约束继续使用原句柄。
+
 ## 多视口内容层
 
 运行 `bazel run //examples/puzzle3d:play_content_layers`，或在 VS Code 预览 [content_layers.xr](content_layers.xr)。两个视口使用同一场景。左侧可切换主层、目标层、全部层或清空，右侧通过具名相机查看第二层。点击左侧模型可观察拾取结果。
@@ -69,7 +155,7 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 bazel run //examples/puzzle3d:play_authored_material
 ```
 
-左侧球体直接使用 `.xr` 的材质记录。改变粗糙度、金属度和清漆，或切换裁切、半透明与透射。右侧 glTF 保留源贴图，可以切换材质因子覆盖。VS Code 可直接预览 `authored_material.xr`。
+左侧球体直接使用 `.xr` 的材质记录。改变粗糙度、金属度和清漆，或切换裁切、半透明与透射。右侧 glTF 保留源贴图，可以切换材质因子覆盖。 开启「镜面光泽工作流」后，左侧球体可调光泽和光泽通道，右侧显示 glTF 导入的镜面光泽面板。VS Code 可直接预览 `authored_material.xr`。
 
 ## 可编程材质
 
@@ -163,7 +249,7 @@ bazel run //examples/puzzle3d:play_authored_texture
 
 ## 相交透明面
 
-运行 `bazel run //examples/puzzle3d:play_transparency` 或在 VS Code 中预览 [transparency.xr](transparency.xr)。默认的子网格排序下，反转模型行会改变两张相交面片的混合结果。开启「加权透明」后可以比较相交处两侧的颜色，前方不透明盒体仍遮挡两张面片。HDR 和 4× MSAA 可独立切换。
+运行 `bazel run //examples/puzzle3d:play_transparency` 或在 VS Code 中预览 [transparency.xr](transparency.xr)。默认的子网格排序下，反转模型行会改变两张相交面片的混合结果。 可用「默认排序」按钮给红片加上正或负的深度偏移，再反转行序验证显式排序。开启「加权透明」后可以比较相交处两侧的颜色，前方不透明盒体仍遮挡两张面片。HDR 和 4× MSAA 可独立切换。
 
 ## 屏幕空间环境遮蔽
 
@@ -291,7 +377,7 @@ bazel run //examples/puzzle3d:play_closest_surface
 bazel run //examples/puzzle3d:play_sphere_cast
 ```
 
-改变球体半径和请求移动距离，观察球体在墙边停住。关闭「墙体阻挡」后球体可以通过，墙体仍可拾取。示例同时查询高度图接触点与重叠记录。VS Code 可直接预览 `sphere_cast.xr`。
+改变球体半径和请求移动距离，观察球体在墙边停住。开启「独立碰撞形状」后，球体会提前接触由两个盒体组成的碰撞体。再开启「胶囊碰撞形状」可切换到两个胶囊，橙点标出真实接触点。地形扫掠使用独立的高度图碰撞行。关闭「墙体阻挡」后球体可以通过，墙体仍可拾取。示例同时查询高度图接触点与重叠记录。VS Code 可直接预览 `sphere_cast.xr`。
 
 ## 沿墙滑移
 

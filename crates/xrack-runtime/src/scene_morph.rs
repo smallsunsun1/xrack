@@ -171,23 +171,6 @@ impl MorphGeometry {
             .chain(deltas.flatten().flat_map(MorphDelta::words))
     }
 
-    pub(crate) fn mirrored_x(&self) -> (Vec<u32>, Vec<MorphDelta>) {
-        let mut offsets = vec![0];
-        let mut deltas = Vec::with_capacity(self.deltas.len());
-        for start in (0..self.offsets.len() - 1).step_by(3) {
-            for vertex in [start, start + 2, start + 1] {
-                deltas.extend(self.vertex(vertex).iter().copied().map(|mut delta| {
-                    delta.position[0] = -delta.position[0];
-                    delta.normal[0] = -delta.normal[0];
-                    delta.tangent[0] = -delta.tangent[0];
-                    delta
-                }));
-                offsets.push(deltas.len() as u32);
-            }
-        }
-        (offsets, deltas)
-    }
-
     #[doc(hidden)]
     pub fn vertex_deltas(&self, vertex: usize) -> Option<&[MorphDelta]> {
         let offsets = self.offsets.get(vertex..vertex.checked_add(2)?)?;

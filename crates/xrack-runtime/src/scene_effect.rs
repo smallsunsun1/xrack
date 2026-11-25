@@ -49,8 +49,6 @@ fn xr_capture_depth_value(raw: f32) -> f32 {
 
 pub fn encode_capture_depth_clear(depth: f32) -> f64 {
     match depth {
-        // The default depth and its existing invalid-position sentinel are identical.
-        1.0 => 1.0,
         0.0 => -2.0,
         _ => -f64::from(depth),
     }
@@ -69,7 +67,7 @@ fn xr_invalid_capture_position() -> XrCapturePosition {
 
 fn xr_capture_unproject(pixel: vec2<i32>, size: vec2<u32>, depth: f32,
                         inverse_clip_rows: mat4x4<f32>) -> XrCapturePosition {
-    if !(depth >= 0.0 && depth < 1.0) {
+    if !(depth >= 0.0 && depth <= 1.0) {
         return xr_invalid_capture_position();
     }
     let center = (vec2<f32>(pixel) + 0.5) / vec2<f32>(size);
@@ -95,6 +93,8 @@ pub struct Capture {
     pub scale: f64,
     pub background: Color,
     pub color_format: OutputFormat,
+    pub material_data_format: OutputFormat,
+    pub combine_attachments: bool,
     pub depth_clear: f32,
     pub stencil_clear: u8,
     pub inputs: CaptureInputs,
@@ -111,6 +111,8 @@ pub struct CaptureDefinition<'a> {
     pub scale: f64,
     pub background: Color,
     pub color_format: OutputFormat,
+    pub material_data_format: OutputFormat,
+    pub combine_attachments: bool,
     pub depth_clear: f64,
     pub stencil_clear: i64,
     pub enabled: bool,
@@ -134,6 +136,8 @@ impl CaptureDefinition<'_> {
                     scale: effect_scale(self.scale),
                     background: self.background,
                     color_format: self.color_format,
+                    material_data_format: self.material_data_format,
+                    combine_attachments: self.combine_attachments,
                     depth_clear: if self.depth_clear.is_finite() {
                         self.depth_clear.clamp(0.0, 1.0) as f32
                     } else {
@@ -166,16 +170,18 @@ pub enum CaptureAttachment {
     BaseColorMetalness,
     EmissiveOcclusion,
     Stencil,
+    MaterialData,
 }
 
 impl CaptureAttachment {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Color,
         Self::Depth,
         Self::NormalRoughness,
         Self::BaseColorMetalness,
         Self::EmissiveOcclusion,
         Self::Stencil,
+        Self::MaterialData,
     ];
 
     pub fn parse(name: &str) -> Self {
@@ -184,6 +190,7 @@ impl CaptureAttachment {
             "normal-roughness" => Self::NormalRoughness,
             "base-color-metalness" => Self::BaseColorMetalness,
             "emissive-occlusion" => Self::EmissiveOcclusion,
+            "material-data" => Self::MaterialData,
             _ => Self::Color,
         }
     }
@@ -738,6 +745,8 @@ pub fn record_captures(
                 _ => Color(0),
             },
             color_format: OutputFormat::parse(text("color-format")),
+            material_data_format: OutputFormat::parse(text("material-data-format")),
+            combine_attachments: row.field("combine-attachments") == Some(&Value::Bool(true)),
             depth_clear: match row.field("depth-clear") {
                 Some(Value::Float(value)) => *value,
                 _ => 1.0,
@@ -1244,9 +1253,10 @@ fn scene_depth(uv: vec2<f32>) -> f32 {
 @group(0) @binding(3) var xr_effect_depth: texture_depth_multisampled_2d;
 fn scene_depth(uv: vec2<f32>) -> f32 {
     let pixel = xr_effect_pixel(uv, textureDimensions(xr_effect_depth));
-    var nearest = 1.0;
+    var nearest = select(1.0, 0.0, XR_EFFECT_REVERSE_DEPTH);
     for (var i = 0u; i < textureNumSamples(xr_effect_depth); i++) {
-        nearest = min(nearest, textureLoad(xr_effect_depth, pixel, i32(i)));
+        let value = textureLoad(xr_effect_depth, pixel, i32(i));
+        nearest = select(min(nearest, value), max(nearest, value), XR_EFFECT_REVERSE_DEPTH);
     }
     return nearest;
 }
@@ -1267,7 +1277,7 @@ fn scene_depth(uv: vec2<f32>) -> f32 {
     if surface {
         let _ = writeln!(
             shader,
-            "@group(0) @binding({SURFACE_BINDING}) var xr_effect_surface: texture_2d<f32>;\n@group(0) @binding({SURFACE_CAMERA_BINDING}) var<uniform> xr_effect_inverse_clip: mat4x4<f32>;"
+            "struct XrEffectProjection {{ inverse_clip: mat4x4<f32>, depth_clear: vec4<f32>, }}\n@group(0) @binding({SURFACE_BINDING}) var xr_effect_surface: texture_2d<f32>;\n@group(0) @binding({SURFACE_CAMERA_BINDING}) var<uniform> xr_effect_projection: XrEffectProjection;"
         );
         shader.push_str(SURFACE_INTERFACE);
     } else {
@@ -1379,7 +1389,10 @@ fn scene_surface(uv: vec2<f32>) -> XrEffectSurface {
     let dimensions = textureDimensions(xr_effect_surface);
     let pixel = xr_effect_pixel(uv, dimensions);
     let depth = textureLoad(xr_effect_depth, pixel, 0);
-    let point = xr_capture_unproject(pixel, dimensions, depth, xr_effect_inverse_clip);
+    if depth == xr_effect_projection.depth_clear.x {
+        return XrEffectSurface(vec3(0.0), vec3(0.0), 1.0, depth, false);
+    }
+    let point = xr_capture_unproject(pixel, dimensions, depth, xr_effect_projection.inverse_clip);
     if !point.valid {
         return XrEffectSurface(vec3(0.0), vec3(0.0), 1.0, depth, false);
     }
@@ -1390,6 +1403,7 @@ fn scene_surface(uv: vec2<f32>) -> XrEffectSurface {
 
 const INTERFACE: &str = r#"
 override XR_EFFECT_DATA: bool = false;
+override XR_EFFECT_REVERSE_DEPTH: bool = false;
 
 struct XrEffectUniform {
     size: vec2<f32>,

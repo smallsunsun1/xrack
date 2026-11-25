@@ -106,7 +106,12 @@ impl<'a> SceneParametricGeometry<'a> {
         if let Some(mesh) = cache.lock().ok().and_then(|mut cache| cache.get(recipe)) {
             return Some(mesh);
         }
-        let mesh = Mesh3D::prepare_procedural(recipe.vertices())?;
+        let parts = recipe.vertices();
+        let mesh = if matches!(recipe.shape, Shape::Capsule { .. }) {
+            Mesh3D::prepare_capsule(parts)
+        } else {
+            Mesh3D::prepare_procedural(parts)
+        }?;
         if let Ok(mut cache) = cache.lock() {
             // Two windows may prepare the same geometry at the same time.
             if let Some(existing) = cache.get(recipe) {

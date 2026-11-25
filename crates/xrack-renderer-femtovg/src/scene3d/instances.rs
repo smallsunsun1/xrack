@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     ops::Range,
     sync::{Arc, OnceLock, Weak},
 };
@@ -8,8 +8,9 @@ use xrack_runtime::{
     Color, ImageIdentity,
     scene_effect::CaptureRenderables,
     scene3d::{
-        Mesh3D, MeshBlendMode, MeshData, MeshDepthDraw, MeshVertexStreams, SceneCamera,
-        SceneGeometry, SceneObject, SceneVisibility, VisibilityIndex,
+        MAX_MESH_INSTANCES, MAX_PARTICLES, Mesh3D, MeshBlendMode, MeshData, MeshDepthDraw,
+        MeshVertexStreams, SceneCamera, SceneGeometry, SceneObject, SceneVisibility,
+        VisibilityIndex,
     },
 };
 
@@ -17,6 +18,24 @@ use super::{INSTANCE_STRIDE, append_floats, buffer};
 
 const MAX_RETAINED_SETS: usize = 4;
 const MAX_PATCH_RANGES: usize = 8;
+pub(super) const INSTANCE_DATA_STRIDE: u64 = size_of::<[f32; 4]>() as u64;
+
+trait InstanceStreamRow: Copy + PartialEq {
+    const STRIDE: u64;
+    fn pack(self, bytes: &mut Vec<u8>);
+}
+
+impl InstanceStreamRow for [f32; 4] {
+    const STRIDE: u64 = INSTANCE_DATA_STRIDE;
+    fn pack(self, bytes: &mut Vec<u8>) {
+        append_floats(bytes, self);
+    }
+}
+
+pub(super) struct InstanceData {
+    pub buffer: wgpu::Buffer,
+    rows: Vec<[f32; 4]>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Upload {
@@ -38,7 +57,7 @@ impl VertexTransfers {
         self.protected.insert(buffer.clone());
     }
 
-    fn upload<I, J>(
+    fn upload<T, I, J>(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -47,8 +66,9 @@ impl VertexTransfers {
         previous: Option<(&wgpu::Buffer, J)>,
     ) -> (wgpu::Buffer, Upload)
     where
-        I: ExactSizeIterator<Item = InstanceVertex> + Clone,
-        J: ExactSizeIterator<Item = InstanceVertex>,
+        T: InstanceStreamRow,
+        I: ExactSizeIterator<Item = T> + Clone,
+        J: ExactSizeIterator<Item = T>,
     {
         if let Some((previous, old_rows)) = previous
             && let Some(ranges) = changed_rows(old_rows, rows.clone())
@@ -63,14 +83,14 @@ impl VertexTransfers {
                     for vertex in rows.clone().skip(range.start).take(range.len()) {
                         vertex.pack(&mut bytes);
                     }
-                    queue.write_buffer(previous, range.start as u64 * INSTANCE_STRIDE, &bytes);
+                    queue.write_buffer(previous, range.start as u64 * T::STRIDE, &bytes);
                     self.bytes = self.bytes.saturating_add(bytes.len() as u64);
                 }
                 self.patches = self.patches.saturating_add(1);
                 return (previous.clone(), Upload::Patched);
             }
         }
-        let mut bytes = Vec::with_capacity(rows.len() * INSTANCE_STRIDE as usize);
+        let mut bytes = Vec::with_capacity(rows.len() * T::STRIDE as usize);
         for row in rows {
             row.pack(&mut bytes);
         }
@@ -86,11 +106,25 @@ impl VertexTransfers {
             Upload::New,
         )
     }
+    fn upload_data<'a>(
+        &mut self,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        label: &'static str,
+        rows: Vec<[f32; 4]>,
+        candidates: impl Iterator<Item = &'a InstanceData>,
+    ) -> (InstanceData, Upload) {
+        let previous = candidates
+            .filter(|data| data.rows.len() == rows.len())
+            .find(|data| data.rows == rows || !self.protected.contains(&data.buffer))
+            .map(|data| (&data.buffer, data.rows.iter().copied()));
+        let (buffer, update) = self.upload(device, queue, label, rows.iter().copied(), previous);
+        (InstanceData { buffer, rows }, update)
+    }
 }
 
-fn changed_rows(
-    old: impl ExactSizeIterator<Item = InstanceVertex>,
-    new: impl ExactSizeIterator<Item = InstanceVertex>,
+fn changed_rows<T: PartialEq>(
+    old: impl ExactSizeIterator<Item = T>,
+    new: impl ExactSizeIterator<Item = T>,
 ) -> Option<Vec<Range<usize>>> {
     if old.len() != new.len() {
         return None;
@@ -127,6 +161,7 @@ pub(super) struct InstanceBuffers {
     transfers: VertexTransfers,
     pub color_uploads: u64,
     pub empty: wgpu::Buffer,
+    pub zero_data: wgpu::Buffer,
     pub uploads: u64,
 }
 
@@ -144,6 +179,12 @@ impl InstanceBuffers {
                 &[0; INSTANCE_STRIDE as usize],
                 wgpu::BufferUsages::VERTEX,
             ),
+            zero_data: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("XRack shared zero instance data"),
+                size: MAX_MESH_INSTANCES.max(MAX_PARTICLES as usize) as u64 * INSTANCE_DATA_STRIDE,
+                usage: wgpu::BufferUsages::VERTEX,
+                mapped_at_creation: false,
+            }),
             uploads: 0,
         }
     }
@@ -248,7 +289,7 @@ impl InstanceBuffers {
                     objects,
                     include_blended,
                     (probes, lightmaps),
-                    |rows| {
+                    |rows, data_rows| {
                         let previous = self
                             .color_plans
                             .iter()
@@ -267,16 +308,40 @@ impl InstanceBuffers {
                             self.color_plans
                                 .retain(|plan| plan.compact.as_ref() != Some(&buffer));
                         }
-                        self.color_uploads = self
-                            .color_uploads
-                            .saturating_add(u64::from(update != Upload::Unchanged));
-                        buffer
+                        let custom = data_rows.iter().any(|row| *row != [0.0; 4]).then(|| {
+                            let (data, update) = self.transfers.upload_data(
+                                gpu,
+                                "XRack visible 3D instance data",
+                                data_rows,
+                                self.color_plans
+                                    .iter()
+                                    .filter_map(|plan| plan.compact_data.as_ref()),
+                            );
+                            if update == Upload::Patched {
+                                self.color_plans.retain(|plan| {
+                                    plan.compact_data
+                                        .as_ref()
+                                        .is_none_or(|old| old.buffer != data.buffer)
+                                });
+                            }
+                            (data, update)
+                        });
+                        self.color_uploads = self.color_uploads.saturating_add(u64::from(
+                            update != Upload::Unchanged
+                                || custom
+                                    .as_ref()
+                                    .is_some_and(|(_, update)| *update != Upload::Unchanged),
+                        ));
+                        (buffer, custom.map(|(data, _)| data))
                     },
                 );
                 Arc::new(plan)
             });
         if let Some(buffer) = &plan.compact {
             self.transfers.use_buffer(buffer);
+        }
+        if let Some(data) = &plan.compact_data {
+            self.transfers.use_buffer(&data.buffer);
         }
         self.color_plans.truncate(MAX_RETAINED_SETS - 1);
         self.color_plans.push_front(plan.clone());
@@ -296,23 +361,69 @@ impl InstanceBuffers {
             .position(|set| set.matches(objects, selected));
         let set = index
             .and_then(|index| self.sets.remove(index))
+            .or_else(|| {
+                self.sets
+                    .iter()
+                    .filter_map(|set| set.view.as_ref())
+                    .find(|view| view.resident.matches(objects, selected))
+                    .map(|view| view.resident.clone())
+            })
             .unwrap_or_else(|| {
+                if let Some(view) = self.retained_rows(objects, selected) {
+                    let vertex_buffer = view.resident.buffer.clone();
+                    let data = view.resident.data.as_ref().map(|resident| InstanceData {
+                        buffer: resident.buffer.clone(),
+                        rows: objects.iter().map(SceneObject::instance_data).collect(),
+                    });
+                    return Arc::new(InstanceSet::new(
+                        device,
+                        objects,
+                        selected,
+                        None,
+                        data,
+                        Some(view),
+                        |_| vertex_buffer,
+                    ));
+                }
                 let geometry_only = self
                     .sets
                     .iter()
-                    .find(|set| set.matches_vertex_data(objects, selected))
+                    .find(|set| set.view.is_none() && set.matches_vertex_data(objects, selected))
                     .cloned();
-                Arc::new(InstanceSet::new(
+                let mut patched_data = None;
+                let data = objects
+                    .iter()
+                    .any(|object| object.instance_data() != [0.0; 4])
+                    .then(|| {
+                        let (data, update) = self.transfers.upload_data(
+                            (device, queue),
+                            "XRack 3D instance data",
+                            objects.iter().map(SceneObject::instance_data).collect(),
+                            self.sets
+                                .iter()
+                                .filter(|set| set.view.is_none())
+                                .filter_map(|set| set.data.as_ref()),
+                        );
+                        if update == Upload::Patched {
+                            patched_data = Some(data.buffer.clone());
+                        }
+                        data
+                    });
+                let mut patched_vertices = None;
+                let set = InstanceSet::new(
                     device,
                     objects,
                     selected,
                     geometry_only.as_deref(),
+                    data,
+                    None,
                     |keys| {
                         let previous = self
                             .sets
                             .iter()
                             .find(|set| {
-                                set.keys.len() == keys.len()
+                                set.view.is_none()
+                                    && set.keys.len() == keys.len()
                                     && !self.transfers.protected.contains(&set.buffer)
                             })
                             .map(|set| (&set.buffer, set.keys.iter().map(|key| key.vertex)));
@@ -324,21 +435,73 @@ impl InstanceBuffers {
                             previous,
                         );
                         if update == Upload::Patched {
-                            // Several material snapshots may share these vertex bytes.
-                            // Evict every alias before associating the buffer with its new data.
-                            self.sets.retain(|set| set.buffer != buffer);
+                            patched_vertices = Some(buffer.clone());
                         }
                         self.uploads = self
                             .uploads
                             .saturating_add(u64::from(update != Upload::Unchanged));
                         buffer
                     },
-                ))
+                );
+                // Both streams need the previous rows. Evict aliases after
+                // both updates so patching one stream keeps the other's candidate.
+                if patched_data.is_some() || patched_vertices.is_some() {
+                    self.sets.retain(|old| {
+                        patched_vertices.as_ref() != Some(&old.buffer)
+                            && old
+                                .data
+                                .as_ref()
+                                .is_none_or(|data| patched_data.as_ref() != Some(&data.buffer))
+                    });
+                }
+                Arc::new(set)
             });
         self.transfers.use_buffer(&set.buffer);
+        if let Some(data) = &set.data {
+            self.transfers.use_buffer(&data.buffer);
+        }
         self.sets.truncate(MAX_RETAINED_SETS - 1);
         self.sets.push_front(set.clone());
         set
+    }
+
+    fn retained_rows(&self, objects: &[SceneObject], selected: &str) -> Option<InstanceView> {
+        let mut residents = self
+            .sets
+            .iter()
+            .map(|set| set.view.as_ref().map_or(set, |view| &view.resident))
+            .filter(|resident| resident.keys.len() > objects.len())
+            .peekable();
+        if residents.peek().is_none()
+            || !objects.iter().any(|object| {
+                object
+                    .imported_placement()
+                    .is_some_and(|(_, index)| index.is_some())
+            })
+        {
+            return None;
+        }
+        residents.find_map(|resident| {
+            let mut available = resident.keys.iter().enumerate();
+            let mut offsets = Vec::with_capacity(objects.len());
+            for (index, object) in objects.iter().enumerate() {
+                let vertex = InstanceVertex::from_object(object, selected);
+                let data = object.instance_data();
+                let (slot, _) = available.find(|&(slot, key)| {
+                    key.vertex == vertex
+                        && resident
+                            .data
+                            .as_ref()
+                            .map_or([0.0; 4], |data| data.rows[slot])
+                            == data
+                })?;
+                offsets.push((slot - index) as u32);
+            }
+            Some(InstanceView {
+                resident: resident.clone(),
+                offsets,
+            })
+        })
     }
 }
 
@@ -358,6 +521,7 @@ pub(super) struct ColorPlan {
     lightmaps: bool,
     pub compact_lightmaps: Option<wgpu::Buffer>,
     pub compact: Option<wgpu::Buffer>,
+    pub compact_data: Option<InstanceData>,
     compact_rows: Vec<InstanceVertex>,
     pub draws: Vec<ColorDraw>,
 }
@@ -377,9 +541,10 @@ impl ColorPlan {
         objects: &[SceneObject],
         include_blended: bool,
         (probes, lightmaps): (Option<Arc<[u8]>>, bool),
-        upload: impl FnOnce(&[InstanceVertex]) -> wgpu::Buffer,
+        upload: impl FnOnce(&[InstanceVertex], Vec<[f32; 4]>) -> (wgpu::Buffer, Option<InstanceData>),
     ) -> Self {
         let mut compact_rows = Vec::new();
+        let mut data_rows = Vec::new();
         let mut packed_lightmaps = Vec::new();
         let lightmap_keys = set.lightmaps.as_deref().filter(|_| lightmaps);
         let mut draws = Vec::new();
@@ -413,6 +578,9 @@ impl ColorPlan {
             let start = compact_rows.len() as u32;
             for index in [first, second].into_iter().chain(ranges).flatten() {
                 compact_rows.push(set.keys[index as usize].vertex);
+                if let Some(data) = &set.data {
+                    data_rows.push(data.rows[index as usize]);
+                }
                 if let Some(lightmaps) = lightmap_keys {
                     append_floats(
                         &mut packed_lightmaps,
@@ -427,7 +595,12 @@ impl ColorPlan {
                 compacted: true,
             });
         }
-        let compact = (!compact_rows.is_empty()).then(|| upload(&compact_rows));
+        let (compact, compact_data) = if compact_rows.is_empty() {
+            (None, None)
+        } else {
+            let (buffer, data) = upload(&compact_rows, data_rows);
+            (Some(buffer), data)
+        };
         Self {
             source: Arc::downgrade(set),
             visibility: visibility.clone(),
@@ -443,6 +616,7 @@ impl ColorPlan {
                 )
             }),
             compact,
+            compact_data,
             compact_rows,
             draws,
         }
@@ -492,17 +666,26 @@ pub(super) struct InstanceSet {
     source: Weak<[SceneObject]>,
     selected: String,
     keys: Vec<InstanceKey>,
+    view: Option<InstanceView>,
     rigid: bool,
     rigid_visibility: OnceLock<Option<VisibilityIndex>>,
     pub buffer: wgpu::Buffer,
+    pub data: Option<InstanceData>,
     lightmaps: Option<Box<[Option<InstanceLightmap>]>>,
     pub lightmap_parameters: Option<wgpu::Buffer>,
     pub draws: Vec<Range<u32>>,
     transparent: Vec<TransparentPart>,
+    transparent_tables: Vec<Vec<TransparentPart>>,
     sorted_blends: Vec<u32>,
     prepasses: [Vec<u32>; 2],
     blended_depth: Vec<u32>,
     transmissive: Vec<(u32, f32, bool, bool)>,
+}
+
+struct InstanceView {
+    resident: Arc<InstanceSet>,
+    // Adding this offset to a logical instance index locates its resident GPU row.
+    offsets: Vec<u32>,
 }
 
 pub(super) struct TransparentPart {
@@ -568,13 +751,14 @@ impl InstanceLightmap {
 struct InstanceKey {
     mesh: MeshKey,
     vertex: InstanceVertex,
+    order: Option<([u32; 2], u32)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 struct InstanceVertex {
     transform: [[f32; 4]; 3],
     color: Color,
-    flags: u8,
+    metadata: u32,
 }
 
 fn lightmap_words(lightmap: Option<InstanceLightmap>) -> [f32; 8] {
@@ -586,20 +770,26 @@ impl InstanceVertex {
         Self {
             transform: object.transform_rows(),
             color: object.color,
-            flags: flags(object, selected),
+            metadata: (object.shader_instance_index() << 3) | flags(object, selected),
         }
-    }
-
-    fn pack(&self, bytes: &mut Vec<u8>) {
-        let [r, g, b, a] = self.color.0.to_be_bytes().map(|c| f32::from(c) / 255.0);
-        append_floats(bytes, self.transform.into_iter().flatten());
-        append_floats(bytes, [r, g, b, a, f32::from(self.flags)]);
     }
 }
 
-fn flags(object: &SceneObject, selected: &str) -> u8 {
-    u8::from(!selected.is_empty() && selected == object.id)
-        | (u8::from(object.receives_shadow) << 1)
+impl InstanceStreamRow for InstanceVertex {
+    const STRIDE: u64 = INSTANCE_STRIDE;
+
+    fn pack(self, bytes: &mut Vec<u8>) {
+        let [r, g, b, a] = self.color.0.to_be_bytes().map(|c| f32::from(c) / 255.0);
+        append_floats(bytes, self.transform.into_iter().flatten());
+        append_floats(bytes, [r, g, b, a]);
+        bytes.extend_from_slice(&self.metadata.to_ne_bytes());
+    }
+}
+
+fn flags(object: &SceneObject, selected: &str) -> u32 {
+    u32::from(!selected.is_empty() && selected == object.id)
+        | (u32::from(object.receives_shadow) << 1)
+        | (u32::from(object.is_reflected()) << 2)
 }
 
 pub(super) fn mesh_material_prepass(
@@ -649,9 +839,16 @@ pub(super) fn mesh_transmission(
 }
 
 impl InstanceSet {
+    pub fn buffer_offsets(&self) -> &[u32] {
+        self.view
+            .as_ref()
+            .map_or(&[], |view| view.offsets.as_slice())
+    }
+
     pub fn has_visible_transparency(&self, visibility: &SceneVisibility) -> bool {
         self.transparent
             .iter()
+            .chain(self.transparent_tables.iter().flatten())
             .any(|part| visibility.contains(part.instance))
     }
 
@@ -737,11 +934,17 @@ impl InstanceSet {
         self.selected == selected
             && (std::ptr::addr_eq(self.source.as_ptr(), Arc::as_ptr(objects))
                 || self.matches_vertex_data(objects, selected)
-                    && self
-                        .keys
-                        .iter()
-                        .zip(objects.iter())
-                        .all(|(key, object)| key.mesh.matches(&object.mesh)))
+                    && self.keys.iter().zip(objects.iter()).enumerate().all(
+                        |(index, (key, object))| {
+                            key.mesh.matches(&object.mesh)
+                                && key.order
+                                    == object
+                                        .instance_order()
+                                        .map(|order| (order.group, order.ordinal))
+                                && self.data.as_ref().map_or([0.0; 4], |data| data.rows[index])
+                                    == object.instance_data()
+                        },
+                    ))
     }
 
     fn new(
@@ -749,12 +952,16 @@ impl InstanceSet {
         objects: &Arc<[SceneObject]>,
         selected: &str,
         retained: Option<&Self>,
+        data: Option<InstanceData>,
+        view: Option<InstanceView>,
         upload: impl FnOnce(&[InstanceKey]) -> wgpu::Buffer,
     ) -> Self {
         let mut draws: Vec<Range<u32>> = Vec::new();
         let mut keys = Vec::with_capacity(objects.len());
         let mut lightmaps: Option<Vec<Option<InstanceLightmap>>> = None;
         let mut transparent = Vec::new();
+        let mut table_indices = HashMap::new();
+        let mut transparent_tables: Vec<Vec<TransparentPart>> = Vec::new();
         let mut sorted_blends = Vec::new();
         let mut prepasses: [Vec<u32>; 2] = Default::default();
         let mut blended_depth = Vec::new();
@@ -766,6 +973,9 @@ impl InstanceSet {
             let key = InstanceKey {
                 mesh: MeshKey::from_mesh(&object.mesh),
                 vertex,
+                order: object
+                    .instance_order()
+                    .map(|order| (order.group, order.ordinal)),
             };
             let lightmap = InstanceLightmap::for_object(object);
             if lightmap.is_some() || lightmaps.is_some() {
@@ -796,7 +1006,16 @@ impl InstanceSet {
                     object.mesh.has_volume(),
                 ));
             }
-            if object.color.0 as u8 != 0 {
+            if object.color.0 as u8 != 0 && !object.mesh.blended_parts().is_empty() {
+                let draws = if let Some(order) = object.instance_order() {
+                    let table = *table_indices.entry(order.group).or_insert_with(|| {
+                        transparent_tables.push(Vec::new());
+                        transparent_tables.len() - 1
+                    });
+                    &mut transparent_tables[table]
+                } else {
+                    &mut transparent
+                };
                 for (blend_slot, &(part, [x, y, z])) in
                     object.mesh.blended_parts().iter().enumerate()
                 {
@@ -807,7 +1026,7 @@ impl InstanceSet {
                     if ordered && sorted_blends.last() != Some(&instance) {
                         sorted_blends.push(instance);
                     }
-                    transparent.push(TransparentPart {
+                    draws.push(TransparentPart {
                         instance,
                         part,
                         blend_slot,
@@ -818,15 +1037,29 @@ impl InstanceSet {
             let instance_rigid =
                 object.mesh.influences().is_none() && object.mesh.morph_geometry().is_none();
             rigid &= instance_rigid;
-            // Preserve scene order at equal depth, batching adjacent meshes.
+            // Preserve equal-depth scene order. Front-face winding is fixed per draw.
             match draws.last_mut() {
                 Some(range)
-                    if instance_rigid && objects[range.start as usize].mesh == object.mesh =>
+                    if instance_rigid
+                        && objects[range.start as usize].mesh == object.mesh
+                        && objects[range.start as usize].is_reflected()
+                            == object.is_reflected()
+                        && view.as_ref().is_none_or(|view| {
+                            view.offsets[range.start as usize] == view.offsets[index]
+                        }) =>
                 {
-                    range.end += 1
+                    range.end += 1;
                 }
                 _ => draws.push(instance..instance + 1),
             }
+        }
+        for table in &mut transparent_tables {
+            table.sort_unstable_by_key(|part| {
+                let ordinal = keys[part.instance as usize]
+                    .order
+                    .map_or(0, |(_, ordinal)| ordinal);
+                (ordinal, part.instance, part.part)
+            });
         }
         let vertex_buffer = retained.map_or_else(|| upload(&keys), |set| set.buffer.clone());
         let lightmap_parameters = if let Some(set) = retained {
@@ -851,13 +1084,16 @@ impl InstanceSet {
             source: Arc::downgrade(objects),
             selected: selected.to_owned(),
             keys,
+            view,
             rigid,
             rigid_visibility: OnceLock::new(),
             buffer: vertex_buffer,
+            data,
             lightmaps: lightmaps.map(Vec::into_boxed_slice),
             lightmap_parameters,
             draws,
             transparent,
+            transparent_tables,
             sorted_blends,
             prepasses,
             blended_depth,
@@ -865,13 +1101,13 @@ impl InstanceSet {
         }
     }
 
-    pub fn transparent_draws(
-        &self,
-        camera: &SceneCamera,
-        objects: &[SceneObject],
-        visibility: &SceneVisibility,
-    ) -> impl Iterator<Item = &TransparentPart> {
-        let mut draws: Vec<_> = self
+    pub fn transparent_draws<'a>(
+        &'a self,
+        camera: &'a SceneCamera,
+        objects: &'a [SceneObject],
+        visibility: &'a SceneVisibility,
+    ) -> impl Iterator<Item = &'a TransparentPart> + 'a {
+        let mut groups: Vec<_> = self
             .transparent
             .iter()
             .filter(|part| visibility.contains(part.instance))
@@ -886,16 +1122,69 @@ impl InstanceSet {
                 } else {
                     part.center
                 };
-                let depth = camera.view_depth(center);
-                depth.is_finite().then_some((depth, part))
+                let depth = f64::from(camera.view_depth(center));
+                let bias = object.depth_bias();
+                // Read the live row setting rather than keying instance uploads on it.
+                let depth = if bias == 0.0 { depth } else { depth + bias };
+                depth.is_finite().then_some((
+                    depth,
+                    part.instance,
+                    part.part,
+                    std::slice::from_ref(part),
+                ))
             })
             .collect();
-        draws.sort_unstable_by(|(a_depth, a), (b_depth, b)| {
-            b_depth
-                .total_cmp(a_depth)
-                .then_with(|| a.instance.cmp(&b.instance))
-                .then_with(|| a.part.cmp(&b.part))
-        });
-        draws.into_iter().map(|(_, part)| part)
+        for table in &self.transparent_tables {
+            let Some(first) = table.iter().find(|part| visibility.contains(part.instance)) else {
+                continue;
+            };
+            let object = &objects[first.instance as usize];
+            let Some(order) = object.instance_order() else {
+                continue;
+            };
+            let depth = f64::from(camera.view_depth(order.group_origin)) + object.depth_bias();
+            if depth.is_finite() {
+                groups.push((depth, first.instance, first.part, table));
+            }
+        }
+        groups.sort_unstable_by(
+            |(a_depth, a_instance, a_part, _), (b_depth, b_instance, b_part, _)| {
+                b_depth
+                    .total_cmp(a_depth)
+                    .then_with(|| a_instance.cmp(b_instance))
+                    .then_with(|| a_part.cmp(b_part))
+            },
+        );
+        groups
+            .into_iter()
+            .flat_map(move |(_, first, _, mut parts)| {
+                let mut sorted = Vec::new();
+                if objects[first as usize]
+                    .instance_order()
+                    .is_some_and(|order| order.depth_sorting)
+                {
+                    sorted.extend(
+                        parts
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, part)| visibility.contains(part.instance))
+                            .filter_map(|(index, part)| {
+                                let order = objects[part.instance as usize].instance_order()?;
+                                let depth = camera.view_depth(order.origin);
+                                depth.is_finite().then_some((depth, index, part))
+                            }),
+                    );
+                    parts = &[];
+                    sorted.sort_unstable_by(|(a_depth, a_index, _), (b_depth, b_index, _)| {
+                        b_depth
+                            .total_cmp(a_depth)
+                            .then_with(|| a_index.cmp(b_index))
+                    });
+                }
+                parts
+                    .iter()
+                    .filter(move |part| visibility.contains(part.instance))
+                    .chain(sorted.into_iter().map(|(_, _, part)| part))
+            })
     }
 }
