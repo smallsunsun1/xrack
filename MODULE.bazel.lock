@@ -568,7 +568,7 @@
     "//bindings/python:ruff_repositories.bzl%python_tools": {
       "general": {
         "bzlTransitiveDigest": "vvD/nlsExwWwYO6JUJbf4ZYR878Z/gnxfOu8vus7KVc=",
-        "usagesDigest": "c7SzCW+WycMYZ5KlHGqJuSGjGTSD2uLC7nqEejrYvsw=",
+        "usagesDigest": "JWetdj0cdKf+UhCTijHQAwYal13rWilplWE0ET3icek=",
         "recordedInputs": [
           "REPO_MAPPING:,rules_multitool rules_multitool+",
           "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",
@@ -904,7 +904,7 @@
     "@@rules_android_ndk+//:extension.bzl%android_ndk_repository_extension": {
       "general": {
         "bzlTransitiveDigest": "j+NMXk5/a1vnDypModKL+ToEo/4o7DJeXSFhTfbJ7rI=",
-        "usagesDigest": "Qrx02Un1i2w1vB0j4wnHqpfNjh9baPHU8sFwbzNsWrM=",
+        "usagesDigest": "UhYNOeBJ++lO0MvNx4hzcP8hN2tEqrffLFjz95w8y8w=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
           "androidndk": {
@@ -1811,7 +1811,7 @@
     "@@rules_rust+//crate_universe:extensions.bzl%crate": {
       "general": {
         "bzlTransitiveDigest": "AaagWiuUk+zP287wJsGtR4vKMGbtxCDAjTjzAQ/OhBA=",
-        "usagesDigest": "bMg9QaiaBGiSq8i0awjZ0i9+GgydfCvxmQ2eMvHyZpM=",
+        "usagesDigest": "zNxok0BqEmpUFgBlX9cWJgKJXwwn+nV0Re8F8+rxO3k=",
         "recordedInputs": [
           "ENV:CARGO_BAZEL_DEBUG \\0",
           "ENV:CARGO_BAZEL_GENERATOR_SHA256 \\0",
@@ -1838,8 +1838,8 @@
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
           "REPO_MAPPING:rules_rust+,rules_rust rules_rust+",
-          "FILE:@@//Cargo.lock 258f362d1c0954d696498da3e18c6715b93af9541ea24709d3fb28c47ee0395c",
-          "FILE:@@//Cargo.toml b0ae4ceac2e1a3e4549bbd0cf9e00a0f8403c7e426ef86fd2d14fc01fbf2cf5c",
+          "FILE:@@//Cargo.lock aa6753a5c47d868b14c2d7777cd2aa559f7cd4324cae85a27fe0c81cd7e448fb",
+          "FILE:@@//Cargo.toml c576794bb37511e9880823cce0918ce57c1e515acb8e4bb053d7d3c2d69fb097",
           "FILE:@@//crates/xrack/Cargo.toml e2ac3d132b70efb386711c39bcbf08042c90cb8547901dbd28d7446132dd30ea",
           "FILE:@@//crates/xrack-assets/Cargo.toml 821c3df83ae69ed5678bc9f8ef67b2a6c225fd352fb85a8d30dc96e9337f7f7b",
           "FILE:@@//crates/xrack-runtime/Cargo.toml ded05b6920dec99203dc8c96819c6c27a9fad8f94ba70190756bc169297762b1",
@@ -1847,25 +1847,25 @@
           "FILE:@@//crates/xrack-ir/Cargo.toml 4f0728ebf248f04a04a1185e3b24c99f56dd6960cb673b811bd85e249aaa92a0",
           "FILE:@@//crates/xrack-parser/Cargo.toml d23d0d5e354417af1dfc7ed5f0e43f2b881022f61ec44710c77951ba6d3bef3d",
           "FILE:@@//crates/xrack-syntax/Cargo.toml 92dd570bd7ab3264008ef4e7e3a1653037476e639a214de18ddbbdf0c14b2228",
-          "FILE:@@//crates/xrack-mlir/Cargo.toml 9ba863bb8858bcde37d39fe90701343e079d80b70466c1404e497063b5bc9f1f",
+          "FILE:@@//crates/xrack-mlir/Cargo.toml cfd90ecfa895388bb18384e3673f8895703067a2a3191486f93a63a626614a9d",
           "FILE:@@//bundles/mlir/aarch64-unknown-linux-gnu/Cargo.toml 60d998d29b1989ca11265212d225a27c0626201d5bd6fff93334e59ee1177246",
           "FILE:@@//bundles/mlir/x86_64-unknown-linux-gnu/Cargo.toml a450d8b2ed252094d8001bd84ee610f16d0ce8951fe68292b9c2529a53f85a66",
           "FILE:@@//bundles/mlir/aarch64-apple-darwin/Cargo.toml 7885e08f5fa5980986d7538984f751cc584ebf789fceff6dcf1e9549c2b9ba83",
-          "FILE:@@//bundles/mlir/aarch64-pc-windows-msvc/Cargo.toml 5b53b250fba4b4c828991e617b283bfbdc96efc21be37bc28fcaa7b6e4b6ebeb",
+          "FILE:@@//bundles/mlir/aarch64-pc-windows-msvc/Cargo.toml e01b05b40696c36d8ab82ccc0e86070a34655cbf0b8a59b0730a126429342d2e",
           "FILE:@@//bundles/compiler/aarch64-pc-windows-msvc/Cargo.toml 70bbf1c15ee85b538a68168239ead31229af54d0e81483d5eb99510e991beba7",
-          "FILE:@@//bundles/mlir/x86_64-pc-windows-msvc/Cargo.toml 78dbcdf3bf83fd56ba77eb57f786d84d97a55327b29daadf2dadbc0576775ae1",
+          "FILE:@@//bundles/mlir/x86_64-pc-windows-msvc/Cargo.toml 13d6746c24a9d2d3ed37d0cda4cd8e317d4be75edd936a0a864c5363fd3d64de",
           "FILE:@@//bundles/compiler/x86_64-pc-windows-msvc/Cargo.toml 380d6eb1309f0da052fd417892e0099cd1de1abf7fb9ec8d57002f10ec514d91",
           "FILE:@@//crates/xrack-resources/Cargo.toml 7bf830690e0a756516e1808c61d07071c071e53bf975c058abdc24d92da91d24",
           "FILE:@@//crates/xrack-layout/Cargo.toml d8cbee56861aa9d8462af625f800829e8bb4699b2453960a9f9435fe84a66a84",
-          "FILE:@@//crates/xrack-platform-winit/Cargo.toml 1911050853bdfad07dbefde9dcc959cb4f87a1efab42780621e8777f09642027",
-          "FILE:@@//crates/xrack-media/Cargo.toml ec876d469747293061637894fad254d956017eeb1fe8fdd6ad51f94bf41cbac3",
+          "FILE:@@//crates/xrack-platform-winit/Cargo.toml 7cd47a522d0bc3d36dd3079f2deba32658bc8ad5431603d996420c4fa384241f",
+          "FILE:@@//crates/xrack-media/Cargo.toml 72dc2a3a88ed084eead5ce75b1b9dc438615bef033c7b82ceca014d95126b63c",
           "FILE:@@//bundles/media/aarch64-unknown-linux-gnu/Cargo.toml 50ca77b0e144489b873e09f8f008cd2f0fc968d98094d79da273e8057925e010",
           "FILE:@@//bundles/media/x86_64-unknown-linux-gnu/Cargo.toml e0b379e75227402a6b474abb1ecd0007da20232fdaa5d63190961f9e53ae350d",
           "FILE:@@//bundles/media/aarch64-apple-darwin/Cargo.toml 4d55783d69a10beb3212adc75b3cdb1364490e5b04f941a3f0476dd7dfaa8c63",
           "FILE:@@//bundles/media/aarch64-pc-windows-msvc/Cargo.toml 77a2aeac13344d8aa685be5a35ede680b819330f1e838743225ada69dd216ce2",
           "FILE:@@//bundles/media/x86_64-pc-windows-msvc/Cargo.toml 1e57ebb87cb3ae8de78e42ece79dd1d545b312e8c9601aff1117ea5205e513d7",
           "FILE:@@//crates/xrack-renderer-femtovg/Cargo.toml eeea15e1e39645141af11a69eae21c7296dffedbc4c6a00a89ba1275a2965026",
-          "FILE:@@//crates/xrack-build/Cargo.toml 0b580028757c9b10d3010ca95027ec8af04a60721a31aa2559b465d83c7247b3",
+          "FILE:@@//crates/xrack-build/Cargo.toml 9224b6c01d5b047409a3152afc3959177dcfcee1a97c41b866b11de3c96acf49",
           "FILE:@@//bundles/compiler/aarch64-unknown-linux-gnu/Cargo.toml 61fdd89bbb2a7db35ef7102af3bd9a38dd18170a95c68ceff908a8df5d63dd65",
           "FILE:@@//bundles/compiler/x86_64-unknown-linux-gnu/Cargo.toml e8bbba1ef32eb67001e81df05ea4c49877f55d6a467146e867b1fc5298cfd60f",
           "FILE:@@//bundles/compiler/aarch64-apple-darwin/Cargo.toml 7a98afa1fec1d6261d1e259d69aa81a083608fae9100d8be7c2bb5cbaa520540",
