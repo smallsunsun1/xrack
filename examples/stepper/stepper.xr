@@ -1,5 +1,5 @@
 export component StepperDemo inherits Window {
-    in-out property <int> step = 1;
+    in-out property <int> step: 1;
     out property <int> left-count: left.value;
     out property <int> right-count: right.value;
 
@@ -29,8 +29,8 @@ export component StepperDemo inherits Window {
 }
 
 component Stepper inherits VerticalBox {
-    in property <int> step = 1;
-    in-out property <int> count = 0;
+    in property <int> step: 1;
+    in-out property <int> count: 0;
     out property <int> value: count;
 
     spacing: 8px;
@@ -40,7 +40,7 @@ component Stepper inherits VerticalBox {
         font-size: 22px;
     }
     add := Button {
-        property <int> presses = 0;
+        property <int> presses: 0;
         text: "加 " + root.step + "（点击 " + self.presses + " 次）";
         clicked() => {
             self.presses += 1;
@@ -59,16 +59,16 @@ export component LinkedControlsDemo inherits Window {
     width: 560px;
     height: 340px;
     background: #18202b;
-    in-out property <string> shared = "共享草稿";
-    in-out property <[LinkedTask]> tasks = [
+    in-out property <string> shared: "共享草稿";
+    in-out property <[LinkedTask]> tasks: [
         LinkedTask { name: "检查模型", done: true },
         LinkedTask { name: "编辑第二行", done: false },
         LinkedTask { name: "排序后继续编辑", done: false },
     ];
-    in-out property <[string]> tags = ["界面", "编译器", "虚拟列表"];
+    in-out property <[string]> tags: ["界面", "编译器", "虚拟列表"];
     out property <string> read-back: second.draft;
-    out property <string> last-submitted = "按 Enter 提交";
-    out property <int> submitted-index = -1;
+    out property <string> last-submitted: "按 Enter 提交";
+    out property <int> submitted-index: -1;
     callback reset-through-second;
     reset-through-second => { second.draft = "由兄弟组件写回"; }
     callback sort-tasks;
@@ -109,18 +109,18 @@ export component LinkedControlsDemo inherits Window {
 }
 
 component LinkedEditorWrapper inherits HorizontalLayout {
-    property <string> storage = "包装控件默认值";
+    property <string> storage: "包装控件默认值";
     in-out property <string> draft <=> editor.alternate;
     callback submitted <=> editor.submitted;
     editor := LinkedEditor { draft <=> root.storage; caption: "共享"; }
 }
 
 component LinkedEditor inherits HorizontalLayout {
-    property <string> text-storage = "编辑器默认值";
+    property <string> text-storage: "编辑器默认值";
     in-out property <string> draft <=> root.text-storage;
     in-out property <string> alternate <=> root.text-storage;
     callback submitted <=> entry.accepted;
-    in property <string> caption = "同步";
+    in property <string> caption: "同步";
     spacing: 8px;
     Text { text: root.caption; width: 52px; color: #ffffff; }
     entry := LineEdit {
@@ -132,20 +132,20 @@ component LinkedEditor inherits HorizontalLayout {
 
 component LinkedEditorWithDefault inherits HorizontalLayout {
     in-out property <string> draft <=> editor.alternate;
-    property <string> text-storage = "内部默认值";
+    property <string> text-storage: "内部默认值";
     editor := LinkedEditor { draft <=> root.text-storage; caption: "同步"; }
 }
 
 export component AliasDefaultsDemo inherits Window {
     in-out property <string> document <=> editor.draft;
-    out property <int> confirmations = 0;
+    out property <int> confirmations: 0;
     callback confirmed <=> editor.submitted;
     confirmed => { root.confirmations += 1; }
     editor := LinkedEditor {}
 }
 
 export component CallbackProbe inherits Window {
-    in-out property <int> bias = 2;
+    in-out property <int> bias: 2;
     out property <int> answer: root.calculation(4);
     pure callback calculation <=> tool.score;
     tool := ScoreWrapper {

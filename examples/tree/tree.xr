@@ -30,18 +30,18 @@ export component VisibilityTreeDemo inherits Window {
     title: "XRack · 按记录隐藏树分支";
     width: 540px; height: 312px;
     background: #182331;
-    in-out property <[VisibilityBranch]> records = [
+    in-out property <[VisibilityBranch]> records: [
         VisibilityBranch { key: 1, parent: -1, label: "工作区", visibility: BranchVisibility { shown: true } },
         VisibilityBranch { key: 2, parent: 1, label: "内部资料", visibility: BranchVisibility { shown: true } },
         VisibilityBranch { key: 3, parent: 2, label: "计划文档", visibility: BranchVisibility { shown: true } },
         VisibilityBranch { key: 4, parent: 1, label: "发布说明", visibility: BranchVisibility { shown: true } },
         VisibilityBranch { key: 5, parent: -1, label: "归档", visibility: BranchVisibility { shown: true } },
     ];
-    in-out property <string> query = "";
-    in-out property <int> current = -1;
-    in property <int> branch-root = -1;
-    in property <int> inspected-source = 2;
-    in property <int> inspected-view = 1;
+    in-out property <string> query: "";
+    in-out property <int> current: -1;
+    in property <int> branch-root: -1;
+    in property <int> inspected-source: 2;
+    in property <int> inspected-view: 1;
     out property <int> visible-index: branches.view-index-for-source(root.inspected-source);
     out property <int> source-index: branches.source-index-for-view(root.inspected-view);
     callback select-source(int);
@@ -78,11 +78,11 @@ export component VisibilityTreeDemo inherits Window {
 
 export component DelegateTreeDemo inherits Window {
     width: 360px; height: 250px;
-    in-out property <[SizedBranch]> records = [
+    in-out property <[SizedBranch]> records: [
         SizedBranch { key: 2, parent: 1, label: "子记录", height: 38px },
         SizedBranch { key: 1, parent: -1, label: "目录", height: 38px },
     ];
-    out property <int> committed-index = -1;
+    out property <int> committed-index: -1;
     branches := TreeView {
         row-height: 38px;
         for branch[index] in root.records : TreeRow {
@@ -107,7 +107,7 @@ component BranchEditor inherits HorizontalLayout {
 export component SizedTreeDemo inherits Window {
     title: "XRack · 不同行高的树";
     width: 320px; height: 240px;
-    in-out property <[SizedBranch]> records = [
+    in-out property <[SizedBranch]> records: [
         SizedBranch { key: 1, parent: -1, label: "目录", height: 32px },
         SizedBranch { key: 2, parent: 1, label: "详情", height: 76px },
         SizedBranch { key: 3, parent: -1, label: "下一条", height: 44px },
@@ -128,7 +128,7 @@ export component TreeDemo inherits Window {
     height: 370px;
     background: #182331;
 
-    in-out property <[TreeRecord]> records = [
+    in-out property <[TreeRecord]> records: [
         TreeRecord { id: 1, parent-id: -1, label: "项目", detail: "目录", active: true, quota: 10, load: 0.5 },
         TreeRecord { id: 2, parent-id: 1, label: "源码", detail: "目录", active: true, quota: 8, load: 0.7 },
         TreeRecord { id: 3, parent-id: 2, label: "main.rs", detail: "Rust", active: true, quota: 4, load: 0.4 },
@@ -136,12 +136,12 @@ export component TreeDemo inherits Window {
         TreeRecord { id: 5, parent-id: -1, label: "归档", detail: "目录", active: false, quota: 5, load: 0.1 },
         TreeRecord { id: 6, parent-id: 5, label: "笔记.txt", detail: "文本", active: false, quota: 2, load: 0.15 },
     ];
-    in-out property <int> current = -1;
-    in-out property <bool> multiple = true;
-    in property <bool> preserve-viewport = false;
-    out property <int> expansions = 0;
-    out property <int> collapses = 0;
-    out property <int> selected-count = 0;
+    in-out property <int> current: -1;
+    in-out property <bool> multiple: true;
+    in property <bool> preserve-viewport: false;
+    out property <int> expansions: 0;
+    out property <int> collapses: 0;
+    out property <int> selected-count: 0;
     callback sort-requested();
 
     VerticalLayout {
@@ -184,9 +184,9 @@ export component DirectionalTreeDemo inherits Window {
     title: "XRack · اتجاه الشجرة";
     width: 380px; height: 220px;
     background: #182331;
-    in-out property <bool> rtl = true;
-    in-out property <int> current = -1;
-    in-out property <[SizedBranch]> branches = [
+    in-out property <bool> rtl: true;
+    in-out property <int> current: -1;
+    in-out property <[SizedBranch]> branches: [
         SizedBranch { key: 1, parent: -1, label: "المشروع", height: 30px },
         SizedBranch { key: 2, parent: 1, label: "المصدر", height: 30px },
         SizedBranch { key: 3, parent: 2, label: "main.rs", height: 30px },
@@ -227,10 +227,10 @@ export component TreeDisclosureDemo inherits Window {
     title: "XRack · 自定义树形展开指示器";
     width: 360px; height: 214px;
     background: #182331;
-    in-out property <bool> rtl = true;
-    in-out property <string> query = "";
-    in-out property <int> current = -1;
-    in-out property <[SizedBranch]> branches = [
+    in-out property <bool> rtl: true;
+    in-out property <string> query: "";
+    in-out property <int> current: -1;
+    in-out property <[SizedBranch]> branches: [
         SizedBranch { key: 1, parent: -1, label: "项目", height: 30px },
         SizedBranch { key: 2, parent: 1, label: "源码", height: 30px },
         SizedBranch { key: 3, parent: 2, label: "main.rs", height: 30px },
@@ -283,7 +283,7 @@ export component TreeCommandsDemo inherits Window {
     title: "XRack · 树目录导航";
     width: 610px; height: 440px;
     background: #162034;
-    in-out property <[SizedBranch]> records = [
+    in-out property <[SizedBranch]> records: [
         SizedBranch { key: 1, parent: -1, label: "项目", height: 34px },
         SizedBranch { key: 10, parent: 1, label: "src", height: 34px },
         SizedBranch { key: 100, parent: 10, label: "platform", height: 34px },
@@ -293,17 +293,17 @@ export component TreeCommandsDemo inherits Window {
         SizedBranch { key: 2, parent: -1, label: "文档", height: 34px },
         SizedBranch { key: 20, parent: 2, label: "构建指南", height: 34px },
     ];
-    in-out property <int> current = -1;
-    in-out property <int> target = 103;
-    in-out property <string> query = "";
-    in property <bool> multiple = true;
-    out property <int> expansions = 0;
-    out property <int> collapses = 0;
-    out property <int> last-event-key = -1;
+    in-out property <int> current: -1;
+    in-out property <int> target: 103;
+    in-out property <string> query: "";
+    in property <bool> multiple: true;
+    out property <int> expansions: 0;
+    out property <int> collapses: 0;
+    out property <int> last-event-key: -1;
     out property <int> selected-count: directory.selection-count;
     out property <bool> has-selection: directory.has-selection;
     out property <bool> target-selected: directory.is-key-selected(root.target);
-    out property <int> selection-events = 0;
+    out property <int> selection-events: 0;
     callback reveal(int);
     reveal(key) => {
         directory.expand-to(key);
@@ -380,22 +380,22 @@ export component TreeBatchSelectionDemo inherits Window {
     title: "XRack · 保存和恢复树选区";
     width: 640px; height: 420px;
     background: #162034;
-    in-out property <[SizedBranch]> records = [
+    in-out property <[SizedBranch]> records: [
         SizedBranch { key: 1, parent: -1, label: "项目", height: 34px },
         SizedBranch { key: 2, parent: 1, label: "src", height: 34px },
         SizedBranch { key: 3, parent: 2, label: "window.rs", height: 34px },
         SizedBranch { key: 8, parent: -1, label: "文档", height: 34px },
         SizedBranch { key: 9, parent: 8, label: "构建指南", height: 34px },
     ];
-    in-out property <int> current = -1;
-    in-out property <bool> multiple = true;
-    in-out property <string> query = "";
-    in-out property <int> branch = -1;
-    in-out property <[int]> saved-keys = [];
+    in-out property <int> current: -1;
+    in-out property <bool> multiple: true;
+    in-out property <string> query: "";
+    in-out property <int> branch: -1;
+    in-out property <[int]> saved-keys: [];
     out property <[int]> selected-keys: directory.selected-keys;
     out property <int> first-key: Model.at(root.selected-keys, 0, -1);
-    out property <int> changes = 0;
-    out property <int> last-replacement-count = 0;
+    out property <int> changes: 0;
+    out property <int> last-replacement-count: 0;
     out property <bool> same-selection: root.saved-keys == root.selected-keys;
     pure callback echo-keys([int]) -> [int];
     echo-keys(keys) => { keys }
@@ -455,7 +455,7 @@ export component TreeBranchesDemo inherits Window {
     title: "XRack · 分支浏览";
     width: 760px; height: 430px;
     background: #162034;
-    in-out property <[SizedBranch]> records = [
+    in-out property <[SizedBranch]> records: [
         SizedBranch { key: 1, parent: -1, label: "项目", height: 34px },
         SizedBranch { key: 10, parent: 1, label: "src", height: 34px },
         SizedBranch { key: 100, parent: 10, label: "platform", height: 34px },
@@ -465,9 +465,9 @@ export component TreeBranchesDemo inherits Window {
         SizedBranch { key: 2, parent: -1, label: "文档", height: 34px },
         SizedBranch { key: 20, parent: 2, label: "构建指南", height: 34px },
     ];
-    in-out property <int> folder = 1;
-    in-out property <string> query = "";
-    in-out property <int> current = -1;
+    in-out property <int> folder: 1;
+    in-out property <string> query: "";
+    in-out property <int> current: -1;
     callback initialize();
     initialize => { overview.expand-recursively(); }
 

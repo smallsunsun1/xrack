@@ -1,7 +1,7 @@
 import { Palette, CenteredWorkbenchIcon } from "theme.xr";
 
 export component ExternalOpenButton inherits Button {
-    in property <bool> available = true;
+    in property <bool> available: true;
     in property <string> label;
     callback activate();
     text: @tr("open-with");
@@ -94,10 +94,10 @@ export component ExternalOpenContent inherits VerticalLayout {
 }
 
 export component WorkspaceFileEditor inherits Rectangle {
-    in-out property <string> draft = "";
-    in property <bool> saving = false;
-    in property <bool> grab-focus = false;
-    in property <bool> can-attach = false;
+    in-out property <string> draft: "";
+    in property <bool> saving: false;
+    in property <bool> grab-focus: false;
+    in property <bool> can-attach: false;
     callback edited(text: string);
     callback focus-complete();
     callback attach-selection(start: int, end: int, text: string);

@@ -10,11 +10,11 @@ export component SphereSlideDemo inherits Window {
     resizable: false;
     background: #172638;
     property <point3d> spawn: Point3D.new(-2, 0.55, -1.4);
-    in-out property <point3d> center = Point3D.new(-2, 0.55, -1.4);
-    in-out property <float> drive-x = 4.4;
-    in-out property <float> drive-z = 3.1;
-    in-out property <bool> corner = true;
-    in-out property <int> mask = 1;
+    in-out property <point3d> center: once Point3D.new(-2, 0.55, -1.4);
+    in-out property <float> drive-x: 4.4;
+    in-out property <float> drive-z: 3.1;
+    in-out property <bool> corner: true;
+    in-out property <int> mask: 1;
     property <float> radius: 0.38;
     property <vector3d> displacement: Vector3D.new(root.drive-x, 0, root.drive-z);
     out property <point3d> endpoint: Scene3D.sphere-slide(

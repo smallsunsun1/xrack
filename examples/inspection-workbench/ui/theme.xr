@@ -35,8 +35,8 @@ export component AppMark inherits Rectangle {
 export component ScopeLabel inherits Rectangle {
     in property <string> caption;
     in property <int> count;
-    in property <color> dot = #a5b5d3;
-    in property <bool> active = false;
+    in property <color> dot: #a5b5d3;
+    in property <bool> active: false;
 
     HorizontalLayout {
         padding-left: 11px;

@@ -9,8 +9,8 @@ struct PanelActor {
 export component WavefrontDemo inherits Window {
     title: "XRack · OBJ 导入";
     width: 440px; height: 285px; background: #192638;
-    in-out property <bool> painted = false;
-    in-out property <float> ray-x = 0;
+    in-out property <bool> painted: false;
+    in-out property <float> ray-x: 0;
     property <PanelActor> defaults: PanelActor {
         id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #fff, camera-kind: "", camera-height: 2.8,

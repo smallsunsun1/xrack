@@ -1,11 +1,11 @@
 export component SelectionDemo inherits Window {
-    in-out property <int> quantity = 12;
-    in-out property <int> choice = 1;
-    in-out property <[string]> workspaces = ["首页", "项目", "任务", "设计", "终端", "构建", "测试", "文档", "反馈", "设置", "关于", "帮助"];
-    in-out property <bool> locked = false;
-    out property <string> selected-label = "";
-    out property <int> edit-count = 0;
-    out property <int> underlay-clicks = 0;
+    in-out property <int> quantity: 12;
+    in-out property <int> choice: 1;
+    in-out property <[string]> workspaces: ["首页", "项目", "任务", "设计", "终端", "构建", "测试", "文档", "反馈", "设置", "关于", "帮助"];
+    in-out property <bool> locked: false;
+    out property <string> selected-label: "";
+    out property <int> edit-count: 0;
+    out property <int> underlay-clicks: 0;
 
     title: "XRack 数字输入与选择";
     width: 560px;
@@ -88,7 +88,7 @@ export component RecordComboDemo inherits Window {
     width: 472px; height: 296px;
     color-scheme: system;
 
-    in-out property <[WorkspaceOption]> options = [
+    in-out property <[WorkspaceOption]> options: [
         WorkspaceOption { code: 200, title: "共享工作区", notes: "团队 B", access: WorkspaceAccess { available: true } },
         WorkspaceOption { code: 100, title: "共享工作区", notes: "团队 A", access: WorkspaceAccess { available: true } },
         WorkspaceOption { code: 300, title: "归档", notes: "只读归档", access: WorkspaceAccess { available: true } },
@@ -96,16 +96,16 @@ export component RecordComboDemo inherits Window {
         WorkspaceOption { code: 500, title: "Build", notes: "在线", access: WorkspaceAccess { available: true } },
         WorkspaceOption { code: 600, title: "Board", notes: "在线", access: WorkspaceAccess { available: true } },
     ];
-    in-out property <int> code = 200;
-    in-out property <bool> editable = false;
-    in property <color> option-fill = #20314a;
+    in-out property <int> code: 200;
+    in-out property <bool> editable: false;
+    in property <color> option-fill: #20314a;
     out property <int> option-count: choice.count;
     out property <int> visible-index: choice.current-index;
     out property <int> actual-code: choice.current-value;
     out property <string> actual-label: choice.current-text;
-    out property <int> selected-code = -1;
-    out property <string> selected-label = "";
-    out property <string> accepted-text = "";
+    out property <int> selected-code: -1;
+    out property <string> selected-label: "";
+    out property <string> accepted-text: "";
     callback reorder;
     callback toggle-archive;
 
@@ -177,9 +177,9 @@ export component RecordComboDemo inherits Window {
 export component ComboPopupStyleDemo inherits Window {
     title: "XRack · 下拉弹层";
     width: 420px; height: 304px;
-    in-out property <bool> rtl = false;
-    in-out property <bool> near-edge = false;
-    out property <int> selection = 0;
+    in-out property <bool> rtl: false;
+    in-out property <bool> near-edge: false;
+    out property <int> selection: 0;
 
     flip-popup := Button {
         x: 24px; y: 14px; width: 164px; height: 32px;
@@ -211,8 +211,8 @@ export component ComboPopupStyleDemo inherits Window {
 export component ComboPopupControlDemo inherits Window {
     title: "XRack · 程序控制下拉弹层";
     width: 440px; height: 282px;
-    in-out property <bool> available = true;
-    in-out property <bool> auto-dismiss = false;
+    in-out property <bool> available: true;
+    in-out property <bool> auto-dismiss: false;
     out property <bool> expanded: choice.popup-open;
     out property <int> highlight: choice.highlighted-index;
 
@@ -257,14 +257,14 @@ export component GroupedRadiosDemo inherits Window {
     title: "XRack · 分布式单选组";
     width: 540px; height: 280px;
     background: #162338;
-    in-out property <string> mode = "balanced";
-    in-out property <string> balanced-label = "均衡";
-    in-out property <bool> show-audit = true;
-    in-out property <bool> can-audit = true;
-    in-out property <bool> mode-enabled = true;
-    in-out property <int> quality = 1;
-    in-out property <bool> show-high = true;
-    out property <string> last-mode = "";
+    in-out property <string> mode: "balanced";
+    in-out property <string> balanced-label: "均衡";
+    in-out property <bool> show-audit: true;
+    in-out property <bool> can-audit: true;
+    in-out property <bool> mode-enabled: true;
+    in-out property <int> quality: 1;
+    in-out property <bool> show-high: true;
+    out property <string> last-mode: "";
 
     modes := ButtonGroup {
         accessible-name: "构建模式";
@@ -301,8 +301,8 @@ export component GroupedRadiosDemo inherits Window {
 }
 
 component QualityPicker inherits HorizontalLayout {
-    in-out property <int> choice = 1;
-    in property <bool> show-high = true;
+    in-out property <int> choice: 1;
+    in property <bool> show-high: true;
     quality-options := ButtonGroup { accessible-name: "输出质量"; current-index <=> root.choice; }
     Label { text: "输出质量"; }
     low-quality := RadioButton { group: quality-options; text: "标准"; }
@@ -319,15 +319,15 @@ export struct TargetPreset {
 export component MixedRadioOptionsDemo inherits Window {
     title: "XRack · 动态单选组";
     width: 425px; height: 435px;
-    in-out property <string> target = "desktop";
-    in-out property <bool> show-custom = true;
-    in property <[string]> platforms = ["desktop", "mobile"];
-    in property <[TargetPreset]> presets = [
+    in-out property <string> target: "desktop";
+    in-out property <bool> show-custom: true;
+    in property <[string]> platforms: ["desktop", "mobile"];
+    in property <[TargetPreset]> presets: [
         TargetPreset { code: "studio", label: "工作室", available: true },
         TargetPreset { code: "remote", label: "远程", available: false },
     ];
-    out property <int> selections = 0;
-    out property <string> last-selection = "";
+    out property <int> selections: 0;
+    out property <string> last-selection: "";
     out property <bool> group-focused: targets.has-focus;
 
     VerticalLayout {
@@ -362,18 +362,18 @@ export component MixedRadioOptionsDemo inherits Window {
 }
 
 export component EditableChoiceDemo inherits Window {
-    in-out property <[string]> workspaces = ["总部", "设计", "研发", "研发预览"];
-    in-out property <int> active = 0;
-    in-out property <string> active-value = "总部";
-    in-out property <string> draft = "总部";
+    in-out property <[string]> workspaces: ["总部", "设计", "研发", "研发预览"];
+    in-out property <int> active: 0;
+    in-out property <string> active-value: "总部";
+    in-out property <string> draft: "总部";
     out property <string> actual-label: linked.current-text;
     out property <string> actual-value: linked.current-value;
     out property <string> actual-draft: linked.edit-text;
     out property <string> automatic-draft: automatic.edit-text;
-    out property <string> last-accepted = "";
-    out property <int> edits = 0;
-    out property <int> accepts = 0;
-    out property <int> selections = 0;
+    out property <string> last-accepted: "";
+    out property <int> edits: 0;
+    out property <int> accepts: 0;
+    out property <int> selections: 0;
 
     title: "XRack · 可编辑下拉框";
     width: 470px;
@@ -416,13 +416,13 @@ export component EditableChoiceDemo inherits Window {
 export component ComboValidationDemo inherits Window {
     title: "XRack · 下拉框输入校验";
     width: 432px; height: 252px;
-    in-out property <string> draft = "12,50";
-    in-out property <int> selection = 0;
-    in-out property <bool> editing = true;
-    in-out property <bool> allow-submit = true;
+    in-out property <string> draft: "12,50";
+    in-out property <int> selection: 0;
+    in-out property <bool> editing: true;
+    in-out property <bool> allow-submit: true;
     out property <bool> valid: amount.acceptable-input;
-    out property <int> accept-count = 0;
-    out property <string> last-accepted = "";
+    out property <int> accept-count: 0;
+    out property <string> last-accepted: "";
 
     Label { x: 20px; y: 16px; text: "输入 10 到 25 之间的金额"; font-size: 22px; }
     amount := ComboBox {
@@ -460,14 +460,14 @@ export component ComboLifecycleDemo inherits Window {
     title: "XRack · 可编辑下拉框";
     width: 470px; height: 288px;
 
-    in-out property <string> draft = "";
-    in-out property <string> pattern = "AA-999";
-    in-out property <int> selection = 11;
-    in-out property <bool> editing = true;
-    out property <string> trace = "";
-    out property <string> last-draft = "";
-    out property <bool> last-acceptable = false;
-    out property <int> finishes = 0;
+    in-out property <string> draft: "";
+    in-out property <string> pattern: "AA-999";
+    in-out property <int> selection: 11;
+    in-out property <bool> editing: true;
+    out property <string> trace: "";
+    out property <string> last-draft: "";
+    out property <bool> last-acceptable: false;
+    out property <int> finishes: 0;
     out property <bool> valid: device.acceptable-input;
 
     instruction := Label {
@@ -524,25 +524,25 @@ export component ComboAppendDemo inherits Window {
     title: "XRack · 新选项";
     width: 490px; height: 334px;
 
-    in-out property <[string]> labels = ["普通", "优先"];
-    in-out property <string> label-draft = "";
-    in-out property <int> label-index = 0;
-    in-out property <bool> pin-choice = false;
-    in-out property <bool> rewrite-draft = false;
-    in-out property <bool> replace-model = false;
-    in-out property <bool> enable-new-record = true;
+    in-out property <[string]> labels: ["普通", "优先"];
+    in-out property <string> label-draft: "";
+    in-out property <int> label-index: 0;
+    in-out property <bool> pin-choice: false;
+    in-out property <bool> rewrite-draft: false;
+    in-out property <bool> replace-model: false;
+    in-out property <bool> enable-new-record: true;
 
-    in-out property <[CatalogEntry]> entries = [
+    in-out property <[CatalogEntry]> entries: [
         CatalogEntry { name: "设备 A", key: 1, available: true },
         CatalogEntry { name: "设备 B", key: 2, available: true },
     ];
-    in-out property <string> entry-draft = "";
-    in-out property <int> entry-key = 1;
-    out property <int> label-before = -9;
-    out property <int> label-after = -9;
-    out property <int> entry-before = -9;
-    out property <int> entry-after = -9;
-    out property <int> typed-selections = 0;
+    in-out property <string> entry-draft: "";
+    in-out property <int> entry-key: 1;
+    out property <int> label-before: -9;
+    out property <int> label-after: -9;
+    out property <int> entry-before: -9;
+    out property <int> entry-after: -9;
+    out property <int> typed-selections: 0;
 
     Label { x: 20px; y: 20px; text: "输入一个新标签，然后按 Enter"; }
     labels-box := ComboBox {
@@ -600,11 +600,11 @@ export component DirectionalChoiceDemo inherits Window {
     width: 464px; height: 284px;
     background: #162034;
 
-    in-out property <bool> rtl = true;
-    in-out property <string> draft = "Al";
-    in-out property <int> mode = 0;
-    in-out property <string> query = "rep";
-    out property <string> submitted = "";
+    in-out property <bool> rtl: true;
+    in-out property <string> draft: "Al";
+    in-out property <int> mode: 0;
+    in-out property <string> query: "rep";
+    out property <string> submitted: "";
 
     flip := Button {
         x: 20px; y: 18px; width: 165px; height: 32px;

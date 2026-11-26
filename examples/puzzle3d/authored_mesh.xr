@@ -12,24 +12,24 @@ export component AuthoredMeshDemo inherits Window {
     title: "XRack · Editable triangle mesh";
     width: 600px; height: 372px; background: #192330;
 
-    in-out property <float> offset = 0.0;
-    in-out property <color> tint = #fff;
-    in-out property <bool> duplicate = false;
-    property <bool> notched = false;
-    property <bool> index-removed = false;
+    in-out property <float> offset: 0.0;
+    in-out property <color> tint: #fff;
+    in-out property <bool> duplicate: false;
+    property <bool> notched: false;
+    property <bool> index-removed: false;
     property <PanelVertex> vertex: PanelVertex {
         position: Point3D.new(0, 0, 0), normal: Vector3D.new(0, 0, 0),
         u: 0, v: 0, color: #ed9951,
     };
-    in-out property <[PanelVertex]> points = [
+    in-out property <[PanelVertex]> points: once [
         PanelVertex { position: Point3D.new(-1, -1, 0), u: 0, v: 1, ..root.vertex },
         PanelVertex { position: Point3D.new(1, -1, 0), u: 1, v: 1, ..root.vertex },
         PanelVertex { position: Point3D.new(1, 1, 0), u: 1, v: 0, ..root.vertex },
         PanelVertex { position: Point3D.new(-1, 1, 0), u: 0, v: 0, ..root.vertex },
     ];
-    in-out property <[int]> topology = [0, 1, 2, 0, 2, 3];
-    out property <string> before-edit = "";
-    out property <string> after-edit = "";
+    in-out property <[int]> topology: [0, 1, 2, 0, 2, 3];
+    out property <string> before-edit: "";
+    out property <string> after-edit: "";
     callback move-corner();
     move-corner => {
         let scene = root.world;

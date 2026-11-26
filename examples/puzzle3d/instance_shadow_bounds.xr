@@ -21,12 +21,12 @@ struct GridLight {
 export component InstanceShadowBoundsDemo inherits Window {
     title: "XRack · Instance shadow bounds";
     width: 400px; height: 286px; background: #172538;
-    in-out property <bool> bounded = true;
-    in-out property <bool> shadows = true;
-    in-out property <int> cascades = 1;
-    in-out property <string> light-kind = "directional";
-    in-out property <float> envelope = 5.0;
-    in-out property <float> shift = 0;
+    in-out property <bool> bounded: true;
+    in-out property <bool> shadows: true;
+    in-out property <int> cascades: 1;
+    in-out property <string> light-kind: "directional";
+    in-out property <float> envelope: 5.0;
+    in-out property <float> shift: 0;
 
     property <vector3d> zero: Vector3D.new(0, 0, 0);
     property <ShadowGrid> inactive: ShadowGrid {

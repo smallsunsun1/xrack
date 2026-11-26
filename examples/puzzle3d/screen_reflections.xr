@@ -12,17 +12,17 @@ export component ScreenReflectionsDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <bool> reflect-screen = true;
-    in-out property <bool> show-source = true;
-    in-out property <bool> studio = false;
-    in-out property <bool> msaa = false;
-    in-out property <int> glass-mode = 0;
-    in-out property <bool> weighted = false;
-    in-out property <float> offset = -1.5;
-    in-out property <float> cutoff = 0.65;
-    in-out property <float> trace-scale = 0.5;
-    in-out property <float> aa-scale = 1.0;
-    in-out property <int> steps = 128;
+    in-out property <bool> reflect-screen: true;
+    in-out property <bool> show-source: true;
+    in-out property <bool> studio: false;
+    in-out property <bool> msaa: false;
+    in-out property <int> glass-mode: 0;
+    in-out property <bool> weighted: false;
+    in-out property <float> offset: -1.5;
+    in-out property <float> cutoff: 0.65;
+    in-out property <float> trace-scale: 0.5;
+    in-out property <float> aa-scale: 1.0;
+    in-out property <int> steps: 128;
 
     property <ReflectionActor> defaults: ReflectionActor {
         id: "", mesh: "primitive:box",

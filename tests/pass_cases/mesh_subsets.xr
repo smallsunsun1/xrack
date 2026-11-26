@@ -10,9 +10,9 @@ struct Actor {
     color: color, geometry: Geometry,
 }
 export component MeshSubsetPlan inherits Window {
-    in property <[Vertex]> points = [];
-    in property <[int]> faces = [];
-    in property <[Subset]> slices = [];
+    in property <[Vertex]> points: [];
+    in property <[int]> faces: [];
+    in property <[Subset]> slices: [];
     SceneView3D {
         width: 80px; height: 80px;
         model: [Actor {

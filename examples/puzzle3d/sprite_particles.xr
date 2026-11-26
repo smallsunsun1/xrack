@@ -15,14 +15,14 @@ export component SpriteParticlesDemo inherits Window {
     height: 416px;
     background: #182333;
 
-    in-out property <float> time = 0.10;
-    in-out property <float> epoch = 0.0;
-    in-out property <string> playback = "loop";
-    in-out property <bool> interpolate-frames = false;
-    in-out property <bool> random-start = true;
-    in-out property <bool> weighted = true;
-    in-out property <bool> animating = false;
-    in-out property <int> cells = 4;
+    in-out property <float> time: 0.10;
+    in-out property <float> epoch: 0.0;
+    in-out property <string> playback: "loop";
+    in-out property <bool> interpolate-frames: false;
+    in-out property <bool> random-start: true;
+    in-out property <bool> weighted: true;
+    in-out property <bool> animating: false;
+    in-out property <int> cells: 4;
 
     clock := Timer {
         interval: 16;
@@ -104,17 +104,17 @@ export component ParticleBirthVariationsDemo inherits Window {
     title: "XRack · 粒子出生变体";
     width: 624px; height: 414px; background: #182333;
 
-    in-out property <float> time = 0.65;
-    in-out property <int> seed = 5;
-    in-out property <int> population = 24;
-    in-out property <float> lifetime-spread = 0.75;
-    in-out property <float> size-spread = 0.36;
-    in-out property <float> end-spread = 0.33;
-    in-out property <float> spin-spread = 115;
-    in-out property <bool> variant = true;
-    in-out property <bool> trail = false;
-    in-out property <bool> textured = true;
-    in-out property <bool> model-particles = false;
+    in-out property <float> time: 0.65;
+    in-out property <int> seed: 5;
+    in-out property <int> population: 24;
+    in-out property <float> lifetime-spread: 0.75;
+    in-out property <float> size-spread: 0.36;
+    in-out property <float> end-spread: 0.33;
+    in-out property <float> spin-spread: 115;
+    in-out property <bool> variant: true;
+    in-out property <bool> trail: false;
+    in-out property <bool> textured: true;
+    in-out property <bool> model-particles: false;
     property <image> empty-image;
     property <BirthEmitter> baseline: BirthEmitter {
         position: Point3D.new(-1.5, 0, 0.4), color: root.textured ? #ffffff : #ff46d9,

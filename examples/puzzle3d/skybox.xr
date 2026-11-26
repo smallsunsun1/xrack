@@ -9,15 +9,15 @@ struct Actor {
 export component SkyboxDemo inherits Window {
     title: "XRack · 独立天空盒";
     width: 420px; height: 256px; resizable: false; background: #172436;
-    in-out property <bool> cube = true;
-    in-out property <bool> painted = false;
-    in-out property <bool> lighting = true;
-    in-out property <bool> show-sky = true;
-    in-out property <float> turn = 0;
-    in-out property <float> tilt = 0;
-    in-out property <float> roll = 0;
-    in-out property <float> gain = 1;
-    in-out property <float> blur = 0;
+    in-out property <bool> cube: true;
+    in-out property <bool> painted: false;
+    in-out property <bool> lighting: true;
+    in-out property <bool> show-sky: true;
+    in-out property <float> turn: 0;
+    in-out property <float> tilt: 0;
+    in-out property <float> roll: 0;
+    in-out property <float> gain: 1;
+    in-out property <float> blur: 0;
 
     property <Actor> unit: Actor {
         id: "", mesh: "primitive:sphere", x: 0, y: -0.19, z: 0,

@@ -5518,7 +5518,7 @@ fn standalone_mlir_rejects_duplicate_visual_bindings_and_handlers() {
     let source = r#"
         export component App inherits Window {
             out property <int> edits;
-            in-out property <string> draft = "";
+            in-out property <string> draft: once "";
             width: 200px;
             height: 100px;
             field := LineEdit {
@@ -5566,8 +5566,8 @@ fn standalone_mlir_validates_declaration_names_before_either_backend() {
     let source = r#"
         export struct DataPoint { weight: int }
         export component Name_Probe inherits Window {
-            in-out property <int> first-value = 2;
-            in-out property <int> other-value = 7;
+            in-out property <int> first-value: once 2;
+            in-out property <int> other-value: once 7;
             pure callback convert(int) -> int;
             pure callback reset-counter();
             convert(value) => { value + root.first-value }
@@ -5692,7 +5692,7 @@ fn standalone_mlir_checks_visual_property_names_and_types() {
 
     let source = r#"
         export component App inherits Window {
-            in-out property <bool> narrow = false;
+            in-out property <bool> narrow: once false;
             button := Button { text: "Go"; }
             panel := Rectangle {
                 width: 50%;
@@ -5761,7 +5761,7 @@ fn standalone_mlir_rejects_conflicting_controls_and_animation_targets() {
 
     let source = r#"
         export component App inherits Window {
-            in-out property <int> selected = 0;
+            in-out property <int> selected: once 0;
             choice := ComboBox {
                 model: ["one", "two"];
                 edit-text: "draft";
@@ -6652,7 +6652,7 @@ fn standalone_mlir_state_selector_can_supply_a_binding_value() {
 fn standalone_mlir_rejects_state_overrides_of_control_storage() {
     let source = r#"
         export component App inherits Window {
-            in property <bool> active = false;
+            in property <bool> active: once false;
             spin := SpinBox {
                 value: 2;
                 states [ marked when root.active: { font-weight: 600; } ]
@@ -12969,13 +12969,13 @@ fn instance_state_targets_validate_aliases_the_same_in_both_backends() {
         format!(
             r#"
             component StateTarget inherits Rectangle {{
-                in-out property <float> level = 2;
+                in-out property <float> level: once 2;
                 in-out property <float> first <=> root.level;
                 in-out property <float> second <=> root.level;
             }}
             export component StateAliasProbe inherits Window {{
-                in-out property <bool> active = true;
-                in-out property <float> external = 1;
+                in-out property <bool> active: once true;
+                in-out property <float> external: once 1;
                 out property <float> observed: child.level;
                 child := StateTarget {{ {binding} }}
                 states [ override when root.active: {{ {overrides} }} ]
@@ -13038,14 +13038,14 @@ fn standalone_mlir_rejects_a_forwarded_two_way_input_with_an_inner_state() {
         }
         component Frame inherits Rectangle {
             in-out property <string> alias <=> badge.caption;
-            in property <bool> active = false;
+            in property <bool> active: once false;
             badge := Leaf {
                 states [ warning when root.active: { caption: "Warning"; } ]
             }
         }
         export component App inherits Window {
-            in-out property <string> caption = "Normal";
-            in-out property <bool> active = false;
+            in-out property <string> caption: once "Normal";
+            in-out property <bool> active: once false;
             frame := Frame { alias: root.caption; active: root.active; }
         }
     "#;
@@ -13219,7 +13219,7 @@ fn standalone_mlir_detects_cycles_through_equivalent_control_aliases() {
             field := AliasEditor {}
         }
         export component AliasCycleProbe inherits Window {
-            in-out property <string> input = "Initial";
+            in-out property <string> input: once "Initial";
             editor := AliasWrapper { primary: root.input; }
         }
     "#;

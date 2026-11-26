@@ -11,14 +11,14 @@ export component InstanceRootDemo inherits Window {
     title: "XRack · Instance coordinate root";
     width: 600px; height: 376px;
     background: #1a2638;
-    in-out property <float> shift = 0;
-    in-out property <bool> turn = false;
-    in-out property <bool> anchored = true;
-    in-out property <bool> anchor-visible = true;
-    in-out property <string> root-name = "anchor";
-    in-out property <string> copy-root = "";
-    in-out property <point2d> box-pointer = Point2D.new(260px, 160px);
-    in-out property <point2d> mesh-pointer = Point2D.new(460px, 240px);
+    in-out property <float> shift: 0;
+    in-out property <bool> turn: false;
+    in-out property <bool> anchored: true;
+    in-out property <bool> anchor-visible: true;
+    in-out property <string> root-name: "anchor";
+    in-out property <string> copy-root: "";
+    in-out property <point2d> box-pointer: once Point2D.new(260px, 160px);
+    in-out property <point2d> mesh-pointer: once Point2D.new(460px, 240px);
     property <string> link: root.anchored ? root.root-name : "";
     property <point2d> view-size: Point2D.new(600px, 320px);
 

@@ -10,15 +10,15 @@ export component ClosestSurfaceDemo inherits Window {
     resizable: false;
     background: #182535;
 
-    in-out property <float> probe-x = 0.25;
-    in-out property <float> reach = 2.2;
-    in-out property <float> time = 0.5;
-    in-out property <float> wall-yaw = 23;
-    in-out property <int> layers = 1;
-    in-out property <string> target = "";
-    in-out property <bool> skin = false;
-    in-out property <bool> visible-wall = true;
-    in-out property <bool> pickable-wall = true;
+    in-out property <float> probe-x: 0.25;
+    in-out property <float> reach: 2.2;
+    in-out property <float> time: 0.5;
+    in-out property <float> wall-yaw: 23;
+    in-out property <int> layers: 1;
+    in-out property <string> target: "";
+    in-out property <bool> skin: false;
+    in-out property <bool> visible-wall: true;
+    in-out property <bool> pickable-wall: true;
 
     property <SurfaceActor> base: SurfaceActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,

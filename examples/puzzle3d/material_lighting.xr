@@ -20,12 +20,12 @@ export component MaterialLightingDemo inherits Window {
     title: "XRack · 材质光照函数";
     width: 520px; height: 362px; resizable: false;
     background: #172437;
-    in-out property <int> light-kind = 0;
-    in-out property <float> amount = 1.0;
-    in-out property <float> specular-gain = 0.0;
-    in-out property <bool> shadows = false;
-    in-out property <float> point-range = 8.0;
-    in-out property <bool> programmable = true;
+    in-out property <int> light-kind: 0;
+    in-out property <float> amount: 1.0;
+    in-out property <float> specular-gain: 0.0;
+    in-out property <bool> shadows: false;
+    in-out property <float> point-range: 8.0;
+    in-out property <bool> programmable: true;
     property <LightStyle> stock: LightStyle {
         material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
         unlit: false, roughness: 0.62, metalness: 0,

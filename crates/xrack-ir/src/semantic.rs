@@ -6999,7 +6999,7 @@ fn property(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Result<ir::Pro
         return fail(
             p.span,
             format!(
-                "in-out property `{}` has a read-only formula; use `out ... : expression` for a formula or `in-out ... = expression` for writable storage",
+                "in-out property `{}` has a read-only formula; use `out ... : expression` for a formula or `in-out ... : once expression` for writable storage",
                 p.name
             ),
         );

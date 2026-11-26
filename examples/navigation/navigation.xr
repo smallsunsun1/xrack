@@ -1,5 +1,5 @@
 component CounterPanel inherits Rectangle {
-    in-out property <int> count = 0;
+    in-out property <int> count: 0;
 
     Text {
         x: 16px; y: 18px;
@@ -16,19 +16,19 @@ component CounterPanel inherits Rectangle {
 }
 
 export component NavigationDemo inherits Window {
-    in-out property <int> page = 0;
-    in-out property <int> profile = 0;
-    in-out property <[string]> profiles = ["均衡", "高性能", "节能"];
-    in-out property <bool> vertical-tabs = false;
-    in-out property <int> swipe-page = 0;
-    in-out property <bool> vertical-swipes = false;
-    in-out property <bool> swipe-interactive = true;
-    in-out property <int> indicator-count = 3;
-    in-out property <bool> show-middle = true;
-    out property <int> changes = 0;
-    out property <int> swipe-changes = 0;
-    out property <int> indicator-changes = 0;
-    out property <string> profile-label = "均衡";
+    in-out property <int> page: 0;
+    in-out property <int> profile: 0;
+    in-out property <[string]> profiles: ["均衡", "高性能", "节能"];
+    in-out property <bool> vertical-tabs: false;
+    in-out property <int> swipe-page: 0;
+    in-out property <bool> vertical-swipes: false;
+    in-out property <bool> swipe-interactive: true;
+    in-out property <int> indicator-count: 3;
+    in-out property <bool> show-middle: true;
+    out property <int> changes: 0;
+    out property <int> swipe-changes: 0;
+    out property <int> indicator-changes: 0;
+    out property <string> profile-label: "均衡";
     out property <bool> settings-active: settings.active;
     out property <bool> first-swipe-active: swipe-first.active;
     out property <bool> middle-swipe-active: swipe-middle.active;
@@ -138,9 +138,9 @@ export component NavigationDemo inherits Window {
 }
 
 export component StackDemo inherits Window {
-    in-out property <string> start-route = "overview";
-    in-out property <[string]> preview-path = ["overview", "details", "review"];
-    out property <int> navigations = 0;
+    in-out property <string> start-route: "overview";
+    in-out property <[string]> preview-path: ["overview", "details", "review"];
+    out property <int> navigations: 0;
     pure callback visit-route(string) -> string;
     visit-route(route) => { "当前页面 · " + route }
 
@@ -239,15 +239,15 @@ export component StackGuardDemo inherits Window {
     width: 560px; height: 360px;
     background: #101725;
 
-    in-out property <string> saved = "界面设计";
-    in-out property <string> draft = root.saved;
+    in-out property <string> saved: "界面设计";
+    in-out property <string> draft: once root.saved;
     out property <bool> editor-active: editor.active;
     out property <int> editor-index: editor.stack-index;
-    out property <string> last-destination = "";
-    out property <bool> last-removing = false;
-    out property <string> lifecycle = "";
-    out property <int> changes = 0;
-    private property <bool> confirm-open = false;
+    out property <string> last-destination: "";
+    out property <bool> last-removing: false;
+    out property <string> lifecycle: "";
+    out property <int> changes: 0;
+    private property <bool> confirm-open: false;
     callback can-leave-preview <=> preview.leave-requested;
 
     Text { x: 20px; y: 18px; text: "项目笔记"; font-size: 26px; }
@@ -348,10 +348,10 @@ export component StackGuardDemo inherits Window {
 }
 
 export component TabBarDemo inherits Window {
-    in-out property <int> page = 0;
-    in-out property <int> filter = 0;
-    in-out property <[string]> filters = ["全部", "最近更新", "收藏"];
-    out property <int> changes = 0;
+    in-out property <int> page: 0;
+    in-out property <int> filter: 0;
+    in-out property <[string]> filters: ["全部", "最近更新", "收藏"];
+    out property <int> changes: 0;
     out property <bool> overview-selected: overview-tab.checked;
 
     title: "XRack · 独立标签栏";
@@ -398,17 +398,17 @@ export component ApplicationWindowDemo inherits ApplicationWindow {
     padding: 12px; padding-left: 20px;
     spacing: 6px;
 
-    in property <bool> show-menu = true;
-    in property <bool> show-header = true;
-    in property <bool> show-footer = true;
-    in property <bool> allow-close = true;
-    in-out property <bool> dialog-open = false;
+    in property <bool> show-menu: true;
+    in property <bool> show-header: true;
+    in property <bool> show-footer: true;
+    in property <bool> allow-close: true;
+    in-out property <bool> dialog-open: false;
     out property <length> body-width: root.available-width;
     out property <length> body-height: root.available-height;
-    out property <int> menu-actions = 0;
-    out property <int> body-actions = 0;
-    out property <int> footer-actions = 0;
-    out property <int> close-attempts = 0;
+    out property <int> menu-actions: 0;
+    out property <int> body-actions: 0;
+    out property <int> footer-actions: 0;
+    out property <int> close-attempts: 0;
 
     close-requested() => { root.close-attempts += 1; root.allow-close }
 
@@ -472,8 +472,8 @@ export component ApplicationWindowDemo inherits ApplicationWindow {
 export component PageDemo inherits Window {
     width: 360px; height: 240px;
     title: "页面布局";
-    in-out property <bool> show-header = true;
-    out property <int> saves = 0;
+    in-out property <bool> show-header: true;
+    out property <int> saves: 0;
 
     settings := Page {
         title: "工作区设置";
@@ -526,10 +526,10 @@ export component DirectionalTabsDemo inherits Window {
     background: #141e2f;
     layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
 
-    in-out property <bool> rtl = true;
-    in-out property <bool> vertical = false;
-    in-out property <int> page = 0;
-    in-out property <int> detail = 0;
+    in-out property <bool> rtl: true;
+    in-out property <bool> vertical: false;
+    in-out property <int> page: 0;
+    in-out property <int> detail: 0;
 
     flip := Button {
         x: 20px; y: 20px; width: 152px; height: 32px;
@@ -587,7 +587,7 @@ export component PathViewDemo inherits Window {
     height: 336px;
     background: #111c2a;
 
-    in-out property <[GalleryEntry]> entries = [
+    in-out property <[GalleryEntry]> entries: [
         GalleryEntry { title: "概览", id: 10, tint: #5a7bd9 },
         GalleryEntry { title: "采集", id: 20, tint: #308c91 },
         GalleryEntry { title: "地图", id: 30, tint: #7d62ba },
@@ -596,14 +596,14 @@ export component PathViewDemo inherits Window {
         GalleryEntry { title: "收藏", id: 60, tint: #936840 },
         GalleryEntry { title: "设置", id: 70, tint: #476d85 },
     ];
-    in-out property <int> selected = 30;
-    in-out property <bool> curved = true;
-    in-out property <bool> mirrored = false;
-    in-out property <bool> gallery-enabled = true;
+    in-out property <int> selected: 30;
+    in-out property <bool> curved: true;
+    in-out property <bool> mirrored: false;
+    in-out property <bool> gallery-enabled: true;
     out property <int> selected-index: gallery.current-index;
     out property <bool> moving: gallery.moving;
-    out property <int> changes = 0;
-    out property <int> last-value = 0;
+    out property <int> changes: 0;
+    out property <int> last-value: 0;
 
     gallery := PathView {
         x: 26px; y: 32px; width: 588px; height: 214px;
@@ -662,21 +662,21 @@ export component ValueTabsDemo inherits Window {
     width: 620px; height: 320px;
     background: #192639;
 
-    in-out property <[WorkspaceTab]> documents = [
+    in-out property <[WorkspaceTab]> documents: [
         WorkspaceTab { title: "概览", id: "home" },
         WorkspaceTab { title: "草稿", id: "draft" },
     ];
-    in-out property <string> selected = "draft";
-    in-out property <bool> draft-open = true;
-    in-out property <bool> notes-open = false;
+    in-out property <string> selected: "draft";
+    in-out property <bool> draft-open: true;
+    in-out property <bool> notes-open: false;
     out property <int> bar-index: bar.current-index;
     out property <int> page-index: pages.current-index;
     out property <int> static-index: summary.current-index;
     out property <bool> draft-active: draft-page.active;
-    out property <int> page-edits = 0;
-    out property <int> tab-choices = 0;
-    out property <string> last-choice = "";
-    out property <int> last-tab-index = -1;
+    out property <int> page-edits: 0;
+    out property <int> tab-choices: 0;
+    out property <string> last-choice: "";
+    out property <int> last-tab-index: -1;
 
     bar := TabBar {
         x: 18px; y: 16px; width: 584px; height: 46px;
@@ -767,8 +767,8 @@ export component ValueTabsDemo inherits Window {
 
 component WorkspaceEditor inherits Rectangle {
     in property <string> title;
-    in property <bool> show-details = false;
-    private property <int> edits = 0;
+    in property <bool> show-details: false;
+    private property <int> edits: 0;
     background: #24364d;
 
     editor-title := Text {
@@ -790,21 +790,21 @@ export component ModelSwipeDemo inherits Window {
     width: 520px; height: 286px;
     background: #192639;
 
-    in-out property <[WorkspaceTab]> documents = [
+    in-out property <[WorkspaceTab]> documents: [
         WorkspaceTab { title: "概览", id: "home" },
         WorkspaceTab { title: "草稿", id: "draft" },
         WorkspaceTab { title: "笔记", id: "notes" },
     ];
-    in-out property <string> selected = "draft";
-    in-out property <int> page-transition = 180;
+    in-out property <string> selected: "draft";
+    in-out property <int> page-transition: 180;
     out property <int> page-index: pages.current-index;
     out property <int> bar-index: bar.current-index;
-    out property <int> page-changes = 0;
-    out property <int> tab-moves = 0;
-    out property <int> page-moves = 0;
-    out property <int> move-from = -1;
-    out property <int> move-to = -1;
-    out property <int> index-after-move = -1;
+    out property <int> page-changes: 0;
+    out property <int> tab-moves: 0;
+    out property <int> page-moves: 0;
+    out property <int> move-from: -1;
+    out property <int> move-to: -1;
+    out property <int> index-after-move: -1;
     callback move-tab(int, int);
     callback move-page(int, int);
     move-tab(from, to) => { bar.move-item(from, to); }
@@ -871,25 +871,25 @@ export component ModelTabsDemo inherits Window {
     width: 560px; height: 334px;
     background: #192639;
 
-    in-out property <[WorkspaceTab]> documents = [
+    in-out property <[WorkspaceTab]> documents: [
         WorkspaceTab { title: "概览", id: "home" },
         WorkspaceTab { title: "草稿", id: "draft" },
         WorkspaceTab { title: "笔记", id: "notes" },
     ];
-    in-out property <string> selected = "draft";
-    in-out property <bool> side = false;
-    in-out property <bool> compact = false;
-    in-out property <bool> mirrored = false;
-    in-out property <bool> notes-enabled = true;
-    in-out property <bool> notes-visible = true;
+    in-out property <string> selected: "draft";
+    in-out property <bool> side: false;
+    in-out property <bool> compact: false;
+    in-out property <bool> mirrored: false;
+    in-out property <bool> notes-enabled: true;
+    in-out property <bool> notes-visible: true;
     out property <int> page-index: tabs.current-index;
     out property <int> page-count: tabs.count;
-    out property <int> choices = 0;
-    out property <int> tab-moves = 0;
-    out property <string> last-close = "";
-    in-out property <bool> allow-close = true;
-    property <int> serial = 1;
-    property <int> fallback-index = -1;
+    out property <int> choices: 0;
+    out property <int> tab-moves: 0;
+    out property <string> last-close: "";
+    in-out property <bool> allow-close: true;
+    property <int> serial: 1;
+    property <int> fallback-index: -1;
     property <WorkspaceTab> fallback-document: Model.at(
         root.documents, root.fallback-index, WorkspaceTab { title: "", id: "" }
     );
@@ -968,10 +968,10 @@ export component ModelTabsDemo inherits Window {
 }
 
 export component IndexTabCommandsDemo inherits Window {
-    in-out property <[string]> labels = ["A", "B", "C"];
-    in-out property <int> selected = 1;
-    out property <int> index-after-move = -1;
-    out property <int> moves = 0;
+    in-out property <[string]> labels: ["A", "B", "C"];
+    in-out property <int> selected: 1;
+    out property <int> index-after-move: -1;
+    out property <int> moves: 0;
     callback move-tab(int, int);
     move-tab(from, to) => { tabs.move-item(from, to); }
     tabs := TabWidget {
@@ -990,8 +990,8 @@ export component IndexTabCommandsDemo inherits Window {
 }
 
 export component ModelEditFixture inherits Window {
-    in-out property <[string]> labels = ["first", "second"];
-    in-out property <[int]> codes = [1, 2, 3];
+    in-out property <[string]> labels: ["first", "second"];
+    in-out property <[int]> codes: [1, 2, 3];
     out property <int> label-count: Model.count(root.labels);
     out property <int> code-count: Model.count(root.codes);
     out property <string> first-label: Model.at(root.labels, 0, "");
@@ -1019,9 +1019,9 @@ export component ModelEditFixture inherits Window {
 
 export component StaticTabCloseFixture inherits Window {
     width: 360px; height: 90px;
-    in-out property <bool> close-enabled = true;
-    out property <int> requested = -1;
-    out property <string> requested-value = "";
+    in-out property <bool> close-enabled: true;
+    out property <int> requested: -1;
+    out property <string> requested-value: "";
     bar := TabBar {
         width: 352px; height: 44px;
         tabs-closable: root.close-enabled;
@@ -1041,7 +1041,7 @@ export component StackLayoutDemo inherits Window {
     height: 244px;
     background: #192639;
 
-    in-out property <int> page = 0;
+    in-out property <int> page: 0;
     out property <int> active-index: layers.active-index;
     out property <int> page-count: layers.count;
     out property <bool> advanced-active: advanced.active;
@@ -1080,12 +1080,12 @@ export component ModelStackLayoutDemo inherits Window {
     height: 282px;
     background: #192639;
 
-    in-out property <[WorkspaceTab]> documents = [
+    in-out property <[WorkspaceTab]> documents: [
         WorkspaceTab { title: "概览", id: "home" },
         WorkspaceTab { title: "草稿", id: "draft" },
         WorkspaceTab { title: "笔记", id: "notes" },
     ];
-    in-out property <string> selected = "draft";
+    in-out property <string> selected: "draft";
     out property <int> active-index: layers.active-index;
     out property <int> page-count: layers.count;
 

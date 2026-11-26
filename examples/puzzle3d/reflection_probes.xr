@@ -20,12 +20,12 @@ export component ReflectionProbesDemo inherits Window {
     height: 310px;
     resizable: false;
     background: #141d29;
-    in-out property <bool> enabled = true;
-    in-out property <bool> parallax = true;
-    in-out property <bool> receive-right = false;
-    in-out property <bool> culling = true;
-    in-out property <float> warm-x = 1.7;
-    in-out property <float> orbit = 0;
+    in-out property <bool> enabled: true;
+    in-out property <bool> parallax: true;
+    in-out property <bool> receive-right: false;
+    in-out property <bool> culling: true;
+    in-out property <float> warm-x: 1.7;
+    in-out property <float> orbit: 0;
 
     property <Reflector> sphere: Reflector {
         id: "", mesh: @mesh-url("models/probe-sphere.gltf"), x: 0, y: 0, z: 0,

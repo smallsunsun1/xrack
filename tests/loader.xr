@@ -1,6 +1,6 @@
 export component Details inherits VerticalLayout {
-    in property <string> caption = "";
-    in-out property <int> count = 0;
+    in property <string> caption: "";
+    in-out property <int> count: 0;
     callback incremented(int);
     caption-label := Text { text: root.caption; }
     search := SearchField { }
@@ -19,12 +19,12 @@ component Summary inherits VerticalLayout {
 }
 
 export component LoaderDemo inherits Window {
-    in-out property <bool> open = false;
-    in-out property <string> page = "details";
-    in-out property <string> caption = "First";
-    out property <int> clicks = 0;
-    out property <int> loads = 0;
-    out property <int> count = -1;
+    in-out property <bool> open: false;
+    in-out property <string> page: "details";
+    in-out property <string> caption: "First";
+    out property <int> clicks: 0;
+    out property <int> loads: 0;
+    out property <int> count: -1;
     out property <string> load-state: area.status;
     pure callback source-for(string) -> string;
 
@@ -95,11 +95,11 @@ component HeavyPage inherits VerticalLayout {
 }
 
 export component DeferredLoaderDemo inherits Window {
-    in-out property <bool> enabled = false;
-    in-out property <bool> defer-load = true;
-    in-out property <string> page = "details";
+    in-out property <bool> enabled: false;
+    in-out property <bool> defer-load: true;
+    in-out property <string> page: "details";
     out property <string> load-state: area.status;
-    out property <int> loads = 0;
+    out property <int> loads: 0;
     state-label := Text { text: root.load-state; }
 
     area := Loader {
@@ -117,9 +117,9 @@ export component DeferredLoaderDemo inherits Window {
 }
 
 export component ExternalLoaderDemo inherits Window {
-    in-out property <string> address = "";
+    in-out property <string> address: "";
     out property <string> load-state: external.status;
-    out property <int> loads = 0;
+    out property <int> loads: 0;
     external := Loader {
         source-url: root.address;
         loaded => { root.loads += 1; }

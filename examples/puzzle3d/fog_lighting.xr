@@ -20,15 +20,15 @@ export component FogLightingDemo inherits Window {
     width: 600px; height: 422px;
     resizable: false;
     background: #121d2f;
-    in-out property <bool> scattering = true;
-    in-out property <bool> shadow = true;
-    in-out property <bool> barrier = true;
-    in-out property <float> density = 0.4;
-    in-out property <float> lamp-y = 0;
-    in-out property <float> lamp-yaw = -90;
-    in-out property <string> light-kind = "spot";
-    in-out property <float> asymmetry = 0;
-    in-out property <int> samples = 12;
+    in-out property <bool> scattering: true;
+    in-out property <bool> shadow: true;
+    in-out property <bool> barrier: true;
+    in-out property <float> density: 0.4;
+    in-out property <float> lamp-y: 0;
+    in-out property <float> lamp-yaw: -90;
+    in-out property <string> light-kind: "spot";
+    in-out property <float> asymmetry: 0;
+    in-out property <int> samples: 12;
 
     property <[LitMist]> air: [
         LitMist {

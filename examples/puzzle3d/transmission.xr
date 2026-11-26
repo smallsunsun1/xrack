@@ -20,14 +20,14 @@ export component TransmissionDemo inherits Window {
     height: 294px;
     background: #141d29;
 
-    in-out property <bool> clear-glass = true;
-    in-out property <bool> frost = true;
-    in-out property <bool> overlay = false;
-    in-out property <bool> optical-overlay = false;
-    in-out property <bool> weighted = true;
-    in-out property <bool> hdr = false;
-    in-out property <bool> msaa = false;
-    in-out property <float> aa-scale = 1;
+    in-out property <bool> clear-glass: true;
+    in-out property <bool> frost: true;
+    in-out property <bool> overlay: false;
+    in-out property <bool> optical-overlay: false;
+    in-out property <bool> weighted: true;
+    in-out property <bool> hdr: false;
+    in-out property <bool> msaa: false;
+    in-out property <float> aa-scale: 1;
     property <TransmissionObject> defaults: TransmissionObject {
         id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true,

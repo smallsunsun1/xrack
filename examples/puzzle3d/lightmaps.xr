@@ -19,14 +19,14 @@ export component LightmapsDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <bool> baked = true;
-    in-out property <bool> full-diffuse = true;
-    in-out property <float> live-light = 0;
-    in-out property <float> gain = 2.6;
-    in-out property <bool> chart = true;
-    in-out property <bool> swap-tiles = false;
-    in-out property <bool> msaa = false;
-    in-out property <bool> ssgi = false;
+    in-out property <bool> baked: true;
+    in-out property <bool> full-diffuse: true;
+    in-out property <float> live-light: 0;
+    in-out property <float> gain: 2.6;
+    in-out property <bool> chart: true;
+    in-out property <bool> swap-tiles: false;
+    in-out property <bool> msaa: false;
+    in-out property <bool> ssgi: false;
     property <image> atlas: @image-url("models/lightmap-atlas.png");
     property <image> empty;
     property <LightmappedActor> receiver: LightmappedActor {

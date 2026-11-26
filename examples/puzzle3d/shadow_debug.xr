@@ -14,12 +14,12 @@ struct Lamp {
 export component ShadowDebugDemo inherits Window {
     title: "XRack · 阴影调试"; width: 448px; height: 334px;
     background: #172437; resizable: false;
-    in-out property <int> guides = 0;
-    in-out property <bool> frozen = false;
-    in-out property <bool> side = false;
-    in-out property <bool> distant = false;
-    in-out property <bool> receives = true;
-    in-out property <string> lamp-kind = "directional";
+    in-out property <int> guides: 0;
+    in-out property <bool> frozen: false;
+    in-out property <bool> side: false;
+    in-out property <bool> distant: false;
+    in-out property <bool> receives: true;
+    in-out property <string> lamp-kind: "directional";
     property <[string]> names: ["隐藏辅助线", "级联切分", "灯光投影", "投影物体", "受光物体", "级联相交", "全部辅助线"];
 
     property <Actor> wall: Actor {

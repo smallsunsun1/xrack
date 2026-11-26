@@ -4,7 +4,7 @@
 
 ```text
 export component Counter inherits Window {
-    in-out property <int> count = 0;
+    in-out property <int> count: 0;
     out property <int> doubled: count * 2;
     callback increment(step: int);
     increment(step) => { root.count += step; }
@@ -92,10 +92,13 @@ DSL 调用与 Rust 的 `invoke_*()` 共用同一处理逻辑。注册了 Rust `o
 
 | 声明 | 行为 |
 | --- | --- |
-| `property <T> name: expression;` | 持续从表达式取值。读取时求值，依赖变化后重新求值。公式属性只读。 |
-| `property <T> name = expression;` | 在实例及其输入连接完成后计算一次，把结果存入可写属性。读写权限仍由 `in`、`out` 等可见性限定。 |
+| `property <T> name: constant;` | 用常量初始化可写存储，例如 `count: 3;` 或 `count: 1 + 2;`。 |
+| `property <T> name: expression;` | 持续从非常量表达式取值。读取时求值，依赖变化后重新求值。公式属性只读。 |
+| `property <T> name: once expression;` | 在实例及其输入连接完成后计算一次，把结果存入可写属性。读写权限仍由 `in`、`out` 等可见性限定。 |
 | `property <T> name;` | 分配可写存储，初始值为该类型的默认值。 |
 | `property <T> name <=> target;` | 别名沿着连接读写目标，目标必须是可写存储。 |
+
+常量初值按源码判定，包括字面量、由常量组成的列表、结构体和枚举，以及由它们组成的基础运算和条件表达式。属性读取、函数调用、除法和取余等表达式可以写成绑定。需要在构造时取一次值时，加 `once`。实例体里给控件或子组件传值的 `name: expression;` 始终是单向接线。
 
 例如，编辑器同时保留上游文档名和自己的草稿。
 
@@ -105,9 +108,9 @@ enum TitleMode { Follow, Custom(string) }
 component DocumentEditor inherits Rectangle {
     in property <string> document-title;
     out property <string> live-title: root.document-title;
-    private property <string> draft = root.document-title;
+    private property <string> draft: once root.document-title;
 
-    private property <TitleMode> title-mode = TitleMode::Follow;
+    private property <TitleMode> title-mode: TitleMode::Follow;
     out property <string> display-title: match root.title-mode {
         Follow => root.document-title,
         Custom(text) => text,
@@ -122,7 +125,7 @@ component DocumentEditor inherits Rectangle {
 }
 
 export component App inherits Window {
-    in-out property <string> title-source = "A";
+    in-out property <string> title-source: "A";
     DocumentEditor { document-title: root.title-source; }
 }
 ```
@@ -131,9 +134,9 @@ export component App inherits Window {
 
 实例上的 `document-title: root.title-source` 由提供输入的组件拥有。即使接收端声明为 `in-out`，从接收端写入也无法替换这条绑定。双方需要共享可写存储时，使用 `<=>`。给实例接上单向绑定后，经由同一存储的其他别名写入也会报错。如果显式调用的 DSL 回调会写入这个输入，编译器会指出调用、写入和绑定的位置。条件未知时，可能执行的写入也会导致编译错误。明确不可达的写入分支（例如 `if false`）不影响回调能否调用。
 
-`in-out` 属性需有可写存储或可写别名。用 `out property <T> value: expression;` 公开计算结果，用 `in-out property <T> value = expression;` 声明可写的初值。
+`in-out` 属性需有可写存储或可写别名。用 `out property <T> value: expression;` 公开计算结果，用 `in-out property <T> value: once expression;` 声明可写的初值。
 
-`TextEdit { text: root.title-source; }` 持续显示上游值，`edited(value)` 仍会报告输入，应用可以在事件处理器里更新上游。需要独立草稿时，可以把文本双向绑定到 `=` 初始化的属性。类似地，`ScrollView` 的单向 `content-y:` 保留计算绑定，`content-y <=>` 会把滚动偏移写回可写属性。
+`TextEdit { text: root.title-source; }` 持续显示上游值，`edited(value)` 仍会报告输入，应用可以在事件处理器里更新上游。需要独立草稿时，可以把文本双向绑定到 一次性初始化的属性。类似地，`ScrollView` 的单向 `content-y:` 保留计算绑定，`content-y <=>` 会把滚动偏移写回可写属性。
 
 ## 局部变量、纯函数和枚举
 
@@ -147,7 +150,7 @@ export enum RequestState {
 }
 
 component StatusLine inherits VerticalLayout {
-    in property <RequestState> state = RequestState::Idle;
+    in property <RequestState> state: RequestState::Idle;
     pure function status-text(value: RequestState) -> string {
         let caption = match value {
             Idle => "等待",
@@ -186,7 +189,7 @@ component Panel inherits VerticalLayout {
 }
 
 export global Session {
-    in-out property <string> user-name = "Guest";
+    in-out property <string> user-name: "Guest";
 }
 
 export component App inherits Window {
@@ -251,7 +254,7 @@ export component ResultsDemo inherits Window {
 
 ```xr
 export component TransformExample inherits Window {
-    in-out property <float> angle = 30;
+    in-out property <float> angle: 30;
     property <transform2d> tilt: Transform2D.around(
         Transform2D.rotation(root.angle),
         Point2D.new(40px, 20px),
@@ -302,7 +305,7 @@ Rectangle {
 `Times.parse-iso(text, fallback)` 和 `Times.is-valid-iso(text)` 接受 ASCII `HH:mm` 或 `HH:mm:ss`，省略秒时解析为零。解析失败时才求值 `fallback`。`Times.format-iso(time, show-seconds)` 返回补零后的 24 小时制文本。`Times.in-range(time, minimum, maximum)` 检查闭区间，起点晚于终点时没有可选时间。
 
 ```xr
-in property <Date> selected = Date { year: 2024, month: 1, day: 31 };
+in property <Date> selected: Date { year: 2024, month: 1, day: 31 };
 out property <Date> next-month: Dates.add-months(root.selected, 1, root.selected);
 out property <int> weekday: Dates.weekday(root.next-month);
 ```
@@ -343,7 +346,7 @@ clicked => {
 translations "i18n/catalog.toml";
 
 export component Counter inherits Window {
-    in-out property <int> count = 0;
+    in-out property <int> count: 0;
     Text { text: @tr("counter-count", count: root.count); }
 }
 ```

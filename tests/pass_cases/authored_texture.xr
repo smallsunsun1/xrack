@@ -11,7 +11,7 @@ struct Actor {
     color: color, material: Surface,
 }
 export component TexturePlan inherits Window {
-    in property <float> angle = 0;
+    in property <float> angle: 0;
     SceneView3D {
         width: 80px; height: 80px;
         model: [Actor {

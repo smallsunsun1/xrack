@@ -114,29 +114,29 @@ struct Collider { shape: string }
 struct Body { id: string, body-kind: string, position: point3d, shapes: [Collider] }
 
 export component App inherits Window {
-    in-out property <physicsworld3d> world = Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
-    in-out property <physicsworld3d> other = Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
-    in-out property <int> body = 0;
-    out property <float> drop = 0;
+    in-out property <physicsworld3d> world: once Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    in-out property <physicsworld3d> other: once Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
+    in-out property <int> body: 0;
+    out property <float> drop: 0;
     out property <[int]> entered;
-    in-out property <int> joint = 0;
-    out property <float> rotation-delta = 0;
-    out property <int> contact-delta = 0;
-    out property <float> spin-delta = 0;
-    out property <int> support-delta = 0;
-    out property <int> hit-total = 0;
-    out property <float> old-hit-distance = 0;
+    in-out property <int> joint: 0;
+    out property <float> rotation-delta: 0;
+    out property <int> contact-delta: 0;
+    out property <float> spin-delta: 0;
+    out property <int> support-delta: 0;
+    out property <int> hit-total: 0;
+    out property <float> old-hit-distance: 0;
     out property <[physicshit3d]> ray-hits;
     out property <physicshit3d> first-volume-hit;
     out property <[physicshit3d]> volume-hits;
     out property <[int]> overlapping;
-    out property <float> grip-delta = 0;
-    out property <float> mass-delta = 0;
-    out property <bool> mode-changed = false;
-    out property <float> clock-delta = 0;
-    out property <int> clock-steps = 0;
-    out property <int> ccd-change = 0;
-    out property <bool> report-change = false;
+    out property <float> grip-delta: 0;
+    out property <float> mass-delta: 0;
+    out property <bool> mode-changed: false;
+    out property <float> clock-delta: 0;
+    out property <int> clock-steps: 0;
+    out property <int> ccd-change: 0;
+    out property <bool> report-change: false;
     SceneView3D {
         physics-world: root.world;
         physics-debug: root.mode-changed;

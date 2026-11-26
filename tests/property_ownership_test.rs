@@ -21,6 +21,12 @@ fn strict_properties_keep_their_sources_in_both_backends() {
         .create("PropertyOwnership")
         .unwrap();
     let mut generated = PropertyOwnership::new();
+    assert_eq!(actual.get("count"), Ok(3_i64.into()));
+    assert_eq!(generated.get_count(), 3);
+    actual.set("count", 7_i64.into()).unwrap();
+    generated.set_count(7);
+    assert_eq!(actual.get("count"), Ok(7_i64.into()));
+    assert_eq!(generated.get_count(), 7);
     let titles = |actual: &Instance, generated: &PropertyOwnership, live, draft, display| {
         assert_eq!(generated.get_live_title(), live);
         assert_eq!(generated.get_draft_title(), draft);

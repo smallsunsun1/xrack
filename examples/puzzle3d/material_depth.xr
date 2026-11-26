@@ -16,14 +16,14 @@ export component MaterialDepthDemo inherits Window {
     width: 600px; height: 372px;
     background: #192330;
 
-    in-out property <string> mode = "opaque-only";
-    in-out property <bool> blended = true;
-    in-out property <bool> masked = false;
-    in-out property <bool> smooth = false;
-    in-out property <bool> weighted = false;
-    in-out property <bool> shadows = false;
-    in-out property <bool> glass = false;
-    in-out property <bool> prepass = false;
+    in-out property <string> mode: "opaque-only";
+    in-out property <bool> blended: true;
+    in-out property <bool> masked: false;
+    in-out property <bool> smooth: false;
+    in-out property <bool> weighted: false;
+    in-out property <bool> shadows: false;
+    in-out property <bool> glass: false;
+    in-out property <bool> prepass: false;
 
     property <DepthMap> no-map: DepthMap {
         source: "", wrap-u: "clamp", wrap-v: "clamp", min-filter: "nearest",

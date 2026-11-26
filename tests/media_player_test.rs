@@ -257,7 +257,7 @@ fn standalone_mlir_resolves_media_sources_and_subtitles_without_locations() {
         )))
     });
     let source = r#"export component App inherits Window {
-        in property <string> source = "assets/clip.mp4";
+        in property <string> source: once "assets/clip.mp4";
         out property <string> opened-source: player.media-title;
         out property <string> opened-subtitle: player.subtitle;
         player := MediaPlayer {

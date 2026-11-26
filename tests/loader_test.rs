@@ -369,7 +369,7 @@ fn loader_rejects_invalid_candidate_declarations() {
     ] {
         let source = format!(
             "component Child inherits VerticalLayout {{}} component ChildWindow inherits Window {{}} \
-             export component App inherits Window {{ in-out property <bool> open = false; area := Loader {{ {members} }} }}",
+             export component App inherits Window {{ in-out property <bool> open: once false; area := Loader {{ {members} }} }}",
         );
         let document = xrack_compiler::parse(&source).unwrap();
         let error = xrack_compiler::lower(&document, "loader-invalid.xr").unwrap_err();
@@ -379,7 +379,7 @@ fn loader_rejects_invalid_candidate_declarations() {
 
 const EXTERNAL_PANEL: &str = r#"
 export component RemotePanel inherits VerticalLayout {
-    in-out property <int> count = 0;
+    in-out property <int> count: once 0;
     remote-button := Button {
         text: "Clicks " + root.count;
         clicked => { root.count += 1; }

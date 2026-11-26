@@ -24,13 +24,13 @@ export component ParticleLightingDemo inherits Window {
     width: 600px; height: 430px;
     background: #182333;
 
-    in-out property <bool> cast-shadow = true;
-    in-out property <bool> cast-reflection = true;
-    in-out property <bool> receive-shadow = true;
-    in-out property <float> time = 0.65;
-    in-out property <float> light-angle = -25;
-    in-out property <string> slicing = "none";
-    in-out property <int> population = 1;
+    in-out property <bool> cast-shadow: true;
+    in-out property <bool> cast-reflection: true;
+    in-out property <bool> receive-shadow: true;
+    in-out property <float> time: 0.65;
+    in-out property <float> light-angle: -25;
+    in-out property <string> slicing: "none";
+    in-out property <int> population: 1;
 
     property <ParticleLightObject> defaults: ParticleLightObject {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,

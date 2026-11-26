@@ -204,8 +204,8 @@ fn standalone_mlir_rejects_global_property_and_callback_cycles() {
 
     let source = r#"
         export global Left {
-            in-out property <int> initial = 4;
-            in-out property <int> seed = 4;
+            in-out property <int> initial: once 4;
+            in-out property <int> seed: once 4;
             out property <int> value: Right.value;
             pure callback read() -> int;
             read => { Right.read() }
@@ -280,12 +280,12 @@ fn standalone_mlir_rejects_component_property_and_callback_cycles() {
 
     let source = r#"
         component Worker inherits Rectangle {
-            in-out property <int> seed = 2;
+            in-out property <int> seed: once 2;
             pure callback value() -> int;
             value => { root.seed }
         }
         export component App inherits Window {
-            in-out property <int> initial = 4;
+            in-out property <int> initial: once 4;
             out property <int> derived: root.initial;
             out property <int> result: worker.value();
             pure callback read() -> int;

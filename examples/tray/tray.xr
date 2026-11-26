@@ -5,7 +5,7 @@ export component TrayDemo inherits SystemTrayIcon {
     tooltip: root.paused ? @tr("tray-tooltip-paused") : @tr("tray-tooltip-running");
     icon: @image-url("assets/status.svg");
     icon-template: true;
-    in-out property <bool> paused = false;
+    in-out property <bool> paused: false;
     callback open-window();
     callback remove-tray();
     callback change-language(string);
@@ -35,7 +35,7 @@ export component TrayDemo inherits SystemTrayIcon {
 }
 
 export component TrayWindow inherits Window {
-    in-out property <int> count = 0;
+    in-out property <int> count: 0;
     out property <string> locale: I18n.locale();
     out property <string> formatted-number: I18n.format-number(1234.5, 2);
     title: @tr("window-title");

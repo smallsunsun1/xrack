@@ -18,12 +18,12 @@ export component PhysicsJointsDemo inherits Window {
     resizable: false;
     background: #15212d;
 
-    in-out property <bool> running = false;
-    in-out property <physicsworld3d> world = Physics3D.new(Vector3D.new(0, 0, 0), 0.016);
-    out property <bool> forward = true;
-    out property <int> ticks = 0;
-    out property <bool> accepted = true;
-    out property <bool> wide-post = false;
+    in-out property <bool> running: false;
+    in-out property <physicsworld3d> world: once Physics3D.new(Vector3D.new(0, 0, 0), 0.016);
+    out property <bool> forward: true;
+    out property <int> ticks: 0;
+    out property <bool> accepted: true;
+    out property <bool> wide-post: false;
     out property <int> post: Physics3D.body-by-id(root.world, "post");
     out property <int> door: Physics3D.body-by-id(root.world, "door");
     out property <int> knob: Physics3D.body-by-id(root.world, "knob");

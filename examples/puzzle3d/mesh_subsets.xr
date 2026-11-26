@@ -18,10 +18,10 @@ export component MeshSubsetsDemo inherits Window {
     title: "XRack · Mesh material subsets";
     width: 600px; height: 372px; background: #192330;
 
-    in-out property <bool> hidden-badge = false;
-    in-out property <bool> secondary-uv = true;
-    in-out property <bool> duplicate = false;
-    property <bool> moved = false;
+    in-out property <bool> hidden-badge: false;
+    in-out property <bool> secondary-uv: true;
+    in-out property <bool> duplicate: false;
+    property <bool> moved: false;
 
     pure function vertex(x: float, y: float) -> SegmentVertex {
         SegmentVertex {
@@ -37,7 +37,7 @@ export component MeshSubsetsDemo inherits Window {
         root.vertex(2.35, 0.85), root.vertex(1.05, 0.85),
     ];
     property <[int]> faces: [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11];
-    in-out property <[Segment]> segments = [
+    in-out property <[Segment]> segments: [
         Segment { offset: 12, count: 6, name: "decor" },
         Segment { offset: 0, count: 6, name: "badge" },
     ];

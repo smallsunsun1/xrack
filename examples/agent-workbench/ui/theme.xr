@@ -1,6 +1,6 @@
 export global Palette {
-    in-out property <ColorScheme> mode = ColorScheme.system;
-    in-out property <ColorScheme> system-scheme = ColorScheme.light;
+    in-out property <ColorScheme> mode: once ColorScheme.system;
+    in-out property <ColorScheme> system-scheme: once ColorScheme.light;
     out property <bool> dark: root.mode == ColorScheme.dark
         || (root.mode == ColorScheme.system && root.system-scheme == ColorScheme.dark);
 
@@ -33,7 +33,7 @@ export global Palette {
 
 export component WorkbenchIcon inherits Rectangle {
     in property <string> shape;
-    in property <color> tint = Palette.muted;
+    in property <color> tint: once Palette.muted;
     width: 17px;
     height: 17px;
     Path {
@@ -50,7 +50,7 @@ export component WorkbenchIcon inherits Rectangle {
 
 export component CenteredWorkbenchIcon inherits HorizontalLayout {
     in property <string> shape;
-    in property <color> tint = Palette.muted;
+    in property <color> tint: once Palette.muted;
     width: 100%;
     height: 100%;
     alignment: center;
@@ -61,8 +61,8 @@ export component CenteredWorkbenchIcon inherits HorizontalLayout {
 export component ConversationMenuAction inherits Button {
     in property <string> label;
     in property <string> glyph;
-    in property <bool> available = true;
-    in property <bool> destructive = false;
+    in property <bool> available: true;
+    in property <bool> destructive: false;
     callback action();
     text: root.label;
     enabled: root.available;

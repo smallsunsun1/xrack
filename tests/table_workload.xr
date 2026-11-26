@@ -1,9 +1,9 @@
 export component TableWorkload inherits Window {
     width: 640px;
     height: 360px;
-    in-out property <[string]> records = [];
-    out property <int> ticks = 0;
-    out property <int> heartbeats = 0;
+    in-out property <[string]> records: [];
+    out property <int> ticks: 0;
+    out property <int> heartbeats: 0;
 
     refresh := Timer {
         interval: 50;

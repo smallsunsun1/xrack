@@ -20,13 +20,13 @@ export component VolumeDemo inherits Window {
     height: 282px;
     background: #141d29;
 
-    in-out property <float> depth-scale = 1;
-    in-out property <float> yaw = 22;
-    in-out property <bool> patterned = true;
-    in-out property <bool> volume = true;
-    in-out property <bool> occlude = false;
-    in-out property <bool> refraction-blocker = false;
-    in-out property <bool> msaa = false;
+    in-out property <float> depth-scale: 1;
+    in-out property <float> yaw: 22;
+    in-out property <bool> patterned: true;
+    in-out property <bool> volume: true;
+    in-out property <bool> occlude: false;
+    in-out property <bool> refraction-blocker: false;
+    in-out property <bool> msaa: false;
     property <VolumeObject> defaults: VolumeObject {
         id: "", mesh: "", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1,

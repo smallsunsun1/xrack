@@ -14,15 +14,15 @@ export component InstanceTableDemo inherits Window {
     width: 640px; height: 424px;
     background: #1a2638;
 
-    in-out property <float> shift = 0;
-    in-out property <bool> distance-lod = false;
-    in-out property <float> eye-distance = 8;
-    in-out property <bool> culling = true;
-    in-out property <bool> far = false;
-    in-out property <bool> imported = false;
-    in-out property <float> phase = 0;
-    in-out property <color> left-color = #ed9768;
-    in-out property <bool> left-pickable = true;
+    in-out property <float> shift: 0;
+    in-out property <bool> distance-lod: false;
+    in-out property <float> eye-distance: 8;
+    in-out property <bool> culling: true;
+    in-out property <bool> far: false;
+    in-out property <bool> imported: false;
+    in-out property <float> phase: 0;
+    in-out property <color> left-color: #ed9768;
+    in-out property <bool> left-pickable: true;
     property <InstanceActor> base: InstanceActor {
         id: "", mesh: "", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,

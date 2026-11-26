@@ -16,14 +16,14 @@ export component PhysicsDebugDemo inherits Window {
     property <point3d> origin: Point3D.new(0, 0, 0);
     property <physicsworld3d> world: Physics3D.new(root.zero, 0.1);
     property <string> panels: @mesh-url("models/cull-panels.gltf");
-    out property <int> compound = 0;
-    out property <int> platform = 0;
-    out property <int> surface = 0;
-    out property <int> trigger = 0;
-    out property <int> frame = 0;
-    in-out property <bool> debug = true;
-    in-out property <bool> focus = false;
-    in-out property <bool> show-model = true;
+    out property <int> compound: 0;
+    out property <int> platform: 0;
+    out property <int> surface: 0;
+    out property <int> trigger: 0;
+    out property <int> frame: 0;
+    in-out property <bool> debug: true;
+    in-out property <bool> focus: false;
+    in-out property <bool> show-model: true;
 
     callback reset();
     reset() => {

@@ -22,19 +22,19 @@ export component MaterialOpticsDemo inherits Window {
     title: "XRack · Optical materials";
     width: 600px; height: 372px; background: #192330;
 
-    in-out property <string> look = "glass";
-    in-out property <float> thickness = 0.0;
-    in-out property <float> attenuation = 1.0;
-    in-out property <float> dispersion = 0.0;
-    in-out property <float> specular = 1.0;
-    in-out property <color> specular-tint = #fff;
-    in-out property <float> occlusion = 1.0;
-    in-out property <string> channel = "r";
-    in-out property <bool> mapped = false;
-    in-out property <bool> patterned = false;
-    in-out property <bool> imported = false;
-    in-out property <bool> inherit = false;
-    in-out property <float> depth-scale = 1.0;
+    in-out property <string> look: "glass";
+    in-out property <float> thickness: 0.0;
+    in-out property <float> attenuation: 1.0;
+    in-out property <float> dispersion: 0.0;
+    in-out property <float> specular: 1.0;
+    in-out property <color> specular-tint: #fff;
+    in-out property <float> occlusion: 1.0;
+    in-out property <string> channel: "r";
+    in-out property <bool> mapped: false;
+    in-out property <bool> patterned: false;
+    in-out property <bool> imported: false;
+    in-out property <bool> inherit: false;
+    in-out property <float> depth-scale: 1.0;
 
     property <string> swatch: @texture-url("models/channel-swatch.png");
     property <OpticsSampler> no-map: OpticsSampler {

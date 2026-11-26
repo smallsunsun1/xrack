@@ -19,13 +19,13 @@ export component ParticleEmittersDemo inherits Window {
     width: 670px; height: 466px;
     background: #182333;
 
-    in-out property <string> shape = "box";
-    in-out property <string> direction = "cone";
-    in-out property <bool> filled = true;
-    in-out property <float> angle = 28;
-    in-out property <float> turn = 0;
-    in-out property <float> time = 0.62;
-    in-out property <int> population = 520;
+    in-out property <string> shape: "box";
+    in-out property <string> direction: "cone";
+    in-out property <bool> filled: true;
+    in-out property <float> angle: 28;
+    in-out property <float> turn: 0;
+    in-out property <float> time: 0.62;
+    in-out property <int> population: 520;
 
     property <SpatialEmitter> defaults: SpatialEmitter {
         position: Point3D.new(-2.45, 0, 0), color: #50dbffff, size: 0.069, lifetime: 4,

@@ -15,15 +15,15 @@ export component SphereCastDemo inherits Window {
     resizable: false;
     background: #172638;
 
-    in-out property <float> lane = 0.9;
-    in-out property <float> radius = 0.5;
-    in-out property <float> requested = 6.5;
-    in-out property <bool> blocking = true;
-    in-out property <int> mask = 1;
-    in-out property <bool> proxy = false;
-    in-out property <bool> capsule-proxy = false;
+    in-out property <float> lane: 0.9;
+    in-out property <float> radius: 0.5;
+    in-out property <float> requested: 6.5;
+    in-out property <bool> blocking: true;
+    in-out property <int> mask: 1;
+    in-out property <bool> proxy: false;
+    in-out property <bool> capsule-proxy: false;
     property <[SweepCollider]> no-shapes: [];
-    in-out property <[SweepCollider]> wall-shapes = [
+    in-out property <[SweepCollider]> wall-shapes: once [
         SweepCollider { shape: "box", position: Point3D.new(-1.25, 0, 0.6), size: Vector3D.new(1, 1, 1), mesh: "" },
         SweepCollider { shape: "box", position: Point3D.new(-1.25, 0, -0.6), size: Vector3D.new(1, 1, 1), mesh: "" },
     ];

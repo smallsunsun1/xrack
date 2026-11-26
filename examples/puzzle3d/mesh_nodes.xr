@@ -7,9 +7,9 @@ struct NodeMarkerActor {
 export component MeshNodeDemo inherits Window {
     title: "XRack · glTF 节点查询";
     width: 565px; height: 345px; background: #182638;
-    in-out property <string> path = "models/node-query.gltf";
-    in-out property <string> selector = "/Workshop/Door~1Leaf/Pivot";
-    in-out property <string> kind = "all";
+    in-out property <string> path: "models/node-query.gltf";
+    in-out property <string> selector: "/Workshop/Door~1Leaf/Pivot";
+    in-out property <string> kind: "all";
     out property <string> status: importer.status;
     out property <meshnode3d> selected: Scene3D.mesh-node(importer.asset, root.selector);
     out property <meshnode3d> compiled: Scene3D.mesh-node(@mesh-url("models/node-query.gltf"), root.selector);

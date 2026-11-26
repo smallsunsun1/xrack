@@ -1,5 +1,7 @@
 #include "mlir/xrack_analysis.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 namespace xrack::dialect {
 
 using namespace mlir;
@@ -51,9 +53,24 @@ PropertyOp PropertyAnalysis::resolve(ReadOp read) const {
   return resolve(read, read.getOwner().value_or("root"), read.getValue());
 }
 
+// A private, unwritten initializer can be folded away once its value
+// consists only of literals and total value constructors.
+static bool isTrivialInitialValue(Value value) {
+  Operation *op = value.getDefiningOp();
+  if (!op)
+    return false;
+  if (isa<LiteralOp>(op))
+    return true;
+  if (!isa<MakeRecordOp, EnumConstructOp, ArrayOp, IntArrayOp, RecordArrayOp,
+           ConcatOp, CastOp, MakeDateOp, MakeTimeOp, MakeFontOp>(op))
+    return false;
+  return llvm::all_of(op->getOperands(), isTrivialInitialValue);
+}
+
 bool PropertyAnalysis::isImmutablePrivate(PropertyOp property) const {
   return property && property.getVisibility() == "private" &&
-         property.getMode().value_or("") != "once" &&
+         (property.getMode().value_or("") != "once" ||
+          isTrivialInitialValue(property.getInitial())) &&
          property.getAlias().value_or("") != "true" &&
          !writes.contains(property);
 }

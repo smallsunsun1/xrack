@@ -17,15 +17,15 @@ export component OcclusionDemo inherits Window {
     height: 300px;
     background: #141d29;
 
-    in-out property <bool> ao = true;
-    in-out property <bool> orthographic = false;
-    in-out property <bool> hdr = false;
-    in-out property <bool> glass = false;
-    in-out property <float> strength = 0.95;
-    in-out property <float> radius = 1.35;
-    in-out property <float> ambient = 1.2;
-    in-out property <float> direct = 0.2;
-    in-out property <float> angle = 30;
+    in-out property <bool> ao: true;
+    in-out property <bool> orthographic: false;
+    in-out property <bool> hdr: false;
+    in-out property <bool> glass: false;
+    in-out property <float> strength: 0.95;
+    in-out property <float> radius: 1.35;
+    in-out property <float> ambient: 1.2;
+    in-out property <float> direct: 0.2;
+    in-out property <float> angle: 30;
 
     property <OcclusionActor> defaults: OcclusionActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,

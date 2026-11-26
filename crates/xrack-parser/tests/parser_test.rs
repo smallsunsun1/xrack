@@ -76,8 +76,10 @@ fn properties_distinguish_storage_formulas_and_initializers() {
     let source = r#"component Demo inherits Window {
         in property <string> source;
         property <string> live: root.source;
-        property <string> draft = root.source;
+        property <string> draft: once root.source;
+        property <int> count: 1 + 2;
     }"#;
+    assert!(parse(&source.replace("count: 1 + 2", "count = 1 + 2")).is_err());
     let doc = parse(source).unwrap();
     let modes: Vec<_> = doc.components[0]
         .members
@@ -92,7 +94,8 @@ fn properties_distinguish_storage_formulas_and_initializers() {
         [
             PropertyMode::Stored,
             PropertyMode::Formula,
-            PropertyMode::Once
+            PropertyMode::Once,
+            PropertyMode::Once,
         ]
     );
 }

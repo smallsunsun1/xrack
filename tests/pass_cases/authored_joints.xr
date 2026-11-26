@@ -13,9 +13,9 @@ export component App inherits Window {
     property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, 0, 0), 0.02);
     property <[Body]> bodies;
     property <[Joint]> joints;
-    out property <int> before = 0;
-    out property <int> after = 0;
-    out property <bool> accepted = false;
+    out property <int> before: 0;
+    out property <int> after: 0;
+    out property <bool> accepted: false;
     callback install();
     install() => {
         root.before = Physics3D.joint-by-id(root.world, "hinge");

@@ -277,7 +277,7 @@ panel := Loader {
 
 ```xr
 component Details inherits VerticalLayout {
-    in-out property <string> title = "";
+    in-out property <string> title: once "";
     Text { text: root.title; }
 }
 

@@ -13,14 +13,14 @@ export component QualityDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <bool> smooth = false;
-    in-out property <int> aa-frames = 0;
-    in-out property <float> yaw = 0;
-    in-out property <bool> show-glass = false;
-    in-out property <float> aa-scale = 1;
-    in-out property <bool> fog = false;
-    in-out property <bool> hdr = false;
-    in-out property <float> fog-far = 10;
+    in-out property <bool> smooth: false;
+    in-out property <int> aa-frames: 0;
+    in-out property <float> yaw: 0;
+    in-out property <bool> show-glass: false;
+    in-out property <float> aa-scale: 1;
+    in-out property <bool> fog: false;
+    in-out property <bool> hdr: false;
+    in-out property <float> fog-far: 10;
     property <QualityActor> defaults: QualityActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1,

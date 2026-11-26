@@ -1,8 +1,8 @@
 // UI source. `root` references the component's properties.
 export component Counter inherits Window {
-    in-out property <int> count = 0;
+    in-out property <int> count: 0;
     out property <int> doubled: count * 2;
-    in property <string> caption = "XRack 计数器";
+    in property <string> caption: "XRack 计数器";
     property <length> panel-width: 320px;
 
     callback increment(step: int);
@@ -38,9 +38,9 @@ export component Counter inherits Window {
 
 export component DesktopCounter inherits Window {
     in property <string> caption;
-    in property <[string]> activity = [];
-    in-out property <int> count = 0;
-    in-out property <string> note = "";
+    in property <[string]> activity: [];
+    in-out property <int> count: 0;
+    in-out property <string> note: "";
     callback open-window;
     callback close-window;
     callback add-later;
@@ -68,9 +68,9 @@ export component DesktopCounter inherits Window {
 
 component InspectorWindow inherits Window {
     in property <int> shared-count;
-    in-out property <string> note = "";
-    in-out property <bool> allow-close = true;
-    out property <int> close-requests = 0;
+    in-out property <string> note: "";
+    in-out property <bool> allow-close: true;
+    out property <int> close-requests: 0;
 
     title: "XRack · 辅助窗口";
     width: 380px; height: 212px;
@@ -88,8 +88,8 @@ component InspectorWindow inherits Window {
 }
 
 export component SecondaryWindowDemo inherits Window {
-    in-out property <bool> inspecting = false;
-    in-out property <int> count = 0;
+    in-out property <bool> inspecting: false;
+    in-out property <int> count: 0;
 
     title: "XRack · 声明式多窗口";
     width: 500px; height: 238px;

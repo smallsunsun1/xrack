@@ -9,16 +9,16 @@ export component FogProfilesDemo inherits Window {
     width: 600px; height: 422px;
     resizable: false;
     background: #142134;
-    in-out property <bool> profiles = true;
-    in-out property <bool> overlap = true;
-    in-out property <bool> flipped = false;
-    in-out property <bool> reversed = false;
-    in-out property <bool> lit = false;
-    in-out property <float> angle = -22;
-    in-out property <float> camera-pitch = 0;
-    in-out property <float> height-start = 1.2;
-    in-out property <float> height-end = -1.1;
-    in-out property <string> shape = "box";
+    in-out property <bool> profiles: true;
+    in-out property <bool> overlap: true;
+    in-out property <bool> flipped: false;
+    in-out property <bool> reversed: false;
+    in-out property <bool> lit: false;
+    in-out property <float> angle: -22;
+    in-out property <float> camera-pitch: 0;
+    in-out property <float> height-start: 1.2;
+    in-out property <float> height-end: -1.1;
+    in-out property <string> shape: "box";
 
     property <FogProfile> cool: FogProfile {
         position: Point3D.new(0, 0, 0), size: Vector3D.new(6.0, 2.6, 2),

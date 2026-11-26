@@ -9,9 +9,9 @@
 struct Placement { position: point3d }
 
 export component InstanceTableTest inherits Window {
-    property <[Placement]> rows = [Placement { position: Point3D.new(1, 0, 0) }];
-    out property <int> old-count = 0;
-    out property <int> new-count = 0;
+    property <[Placement]> rows: once [Placement { position: Point3D.new(1, 0, 0) }];
+    out property <int> old-count: 0;
+    out property <int> new-count: 0;
     callback sample();
     sample => {
         let frozen = Scene3D.instance-table(root.rows);

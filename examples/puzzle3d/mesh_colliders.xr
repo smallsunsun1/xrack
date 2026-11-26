@@ -24,12 +24,12 @@ export component MeshCollidersDemo inherits Window {
     property <point3d> panel-origin: Point3D.new(0, 1.6, 0);
     property <vector3d> projectile-scale: Vector3D.new(0.25, 0.25, 0.25);
 
-    out property <int> terrain-body = 0;
-    out property <int> panels-body = 0;
-    out property <int> projectile = 0;
-    out property <int> mode = 0;
-    out property <int> ticks = 0;
-    in-out property <bool> running = false;
+    out property <int> terrain-body: 0;
+    out property <int> panels-body: 0;
+    out property <int> projectile: 0;
+    out property <int> mode: 0;
+    out property <int> ticks: 0;
+    in-out property <bool> running: false;
     property <point3d> start: root.mode == 0
         ? Point3D.new(0, 2.8, 1.15)
         : Point3D.new(root.mode == 1 ? 0 : 1.25, 1.8, -2.0);

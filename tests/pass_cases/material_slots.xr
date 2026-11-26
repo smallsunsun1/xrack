@@ -10,7 +10,7 @@ struct Actor {
     color: color, material-slots: Palette,
 }
 export component SlotPlan inherits Window {
-    in property <float> roughness = 0.2;
+    in property <float> roughness: 0.2;
     SceneView3D {
         width: 80px; height: 80px;
         model: [Actor {

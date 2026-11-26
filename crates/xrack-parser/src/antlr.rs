@@ -45,13 +45,32 @@ pub fn parse(source: &str) -> Result<Document, Vec<Diagnostic>> {
     parse_tree(source.strip_prefix('\u{feff}').unwrap_or(source)).map(|tree| document(&tree))
 }
 
-fn property_mode(property: &PropertyContextAll<'_>) -> PropertyMode {
-    if property.expression().is_none() {
-        PropertyMode::Stored
-    } else if child_text(property, property.get_child_count() - 3) == "=" {
-        PropertyMode::Once
-    } else {
-        PropertyMode::Formula
+/// Classify constant defaults from the source expression before optimization.
+fn constant_initializer(value: &Expr) -> bool {
+    match &value.kind {
+        ExprKind::Literal { .. } => true,
+        ExprKind::Array(values) => values.iter().all(constant_initializer),
+        ExprKind::Record { fields, base, .. } => {
+            base.as_deref().is_none_or(constant_initializer)
+                && fields
+                    .iter()
+                    .all(|field| constant_initializer(&field.value))
+        }
+        ExprKind::EnumValue { fields, .. } => fields
+            .iter()
+            .all(|field| constant_initializer(&field.value)),
+        ExprKind::Unary { value, .. } => constant_initializer(value),
+        ExprKind::Binary { op, left, right } => {
+            // Integer division and remainder can trap. Keep their ordinary
+            // binding behavior unless construction-time evaluation is explicit.
+            !matches!(op.as_str(), "/" | "%")
+                && constant_initializer(left)
+                && constant_initializer(right)
+        }
+        ExprKind::Conditional { condition, yes, no } => {
+            constant_initializer(condition) && constant_initializer(yes) && constant_initializer(no)
+        }
+        _ => false,
     }
 }
 
@@ -638,18 +657,26 @@ fn state_block(block: &StateBlockContextAll<'_>) -> StateBlock {
 fn member(ctx: &MemberContextAll<'_>) -> Member {
     if let Some(property) = ctx.property() {
         let alias = property.reference();
+        let (mode, value) = if let Some(initializer) = property.propertyInitializer() {
+            let value = expression(&initializer.expression().required("property initializer"));
+            let mode = if initializer.get_child_count() == 2 || constant_initializer(&value) {
+                PropertyMode::Once
+            } else {
+                PropertyMode::Formula
+            };
+            (mode, Some(value))
+        } else {
+            (PropertyMode::Stored, alias.as_deref().map(reference_expr))
+        };
         Member::Property(Property {
-            mode: property_mode(&property),
+            mode,
             name: property.identifier().required("property name").get_text(),
             ty: Type::from_source(&property.typeName().required("property type").get_text()),
             type_span: type_span(&property.typeName().required("property type")),
             visibility: property
                 .visibility()
                 .map_or_else(|| "private".into(), |v| v.get_text()),
-            value: alias
-                .as_deref()
-                .map(reference_expr)
-                .or_else(|| property.expression().as_deref().map(expression)),
+            value,
             two_way: alias.is_some(),
             span: span(&*property),
         })

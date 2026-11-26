@@ -12,15 +12,15 @@ export component TextureSizeDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <int> pixels-wide = 0;
-    in-out property <int> pixels-high = 0;
-    in-out property <float> quality = 1;
-    in-out property <float> view-width = 480;
-    in-out property <float> ssaa = 1;
-    in-out property <bool> msaa = false;
-    in-out property <bool> square-camera = false;
-    in-out property <bool> effects = false;
-    in-out property <point2d> cursor = Point2D.new(240px, 120px);
+    in-out property <int> pixels-wide: 0;
+    in-out property <int> pixels-high: 0;
+    in-out property <float> quality: 1;
+    in-out property <float> view-width: 480;
+    in-out property <float> ssaa: 1;
+    in-out property <bool> msaa: false;
+    in-out property <bool> square-camera: false;
+    in-out property <bool> effects: false;
+    in-out property <point2d> cursor: once Point2D.new(240px, 120px);
 
     property <point2d> viewport-size: Point2D.new(root.view-width * 1px, 240px);
     property <TextureActor> plain: TextureActor {

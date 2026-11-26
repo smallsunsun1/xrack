@@ -1145,7 +1145,7 @@ mod tests {
             translations "catalog.toml";
             component Caption inherits Label { text: @tr("subtitle"); }
             export component App inherits Window {
-                in-out property <int> count = 4;
+                in-out property <int> count: once 4;
                 title: @tr("count", n: root.count);
                 Caption {}
             }
@@ -1189,7 +1189,7 @@ mod tests {
         };
         let source = |count| {
             format!(
-                "export component App inherits Window {{ in-out property <int> count = {count}; }}"
+                "export component App inherits Window {{ in-out property <int> count: once {count}; }}"
             )
         };
         host.load("preview.xr", &source(1), BTreeMap::new(), None)
@@ -1229,15 +1229,15 @@ mod tests {
         };
         let before = r#"
             export component Main inherits Window {
-                in-out property <float> yaw = 24;
-                in-out property <int> marker = 1;
+                in-out property <float> yaw: once 24;
+                in-out property <int> marker: once 1;
                 out property <color> lamp: #ff0000;
             }
         "#;
         let after = r#"
             export component Main inherits Window {
-                in-out property <float> yaw = 24;
-                in-out property <string> marker = "new type";
+                in-out property <float> yaw: once 24;
+                in-out property <string> marker: once "new type";
                 out property <color> lamp: #00ff00;
             }
         "#;

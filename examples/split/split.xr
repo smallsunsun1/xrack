@@ -1,5 +1,5 @@
 component DetailSplit inherits SplitView {
-    out property <int> edits = 0;
+    out property <int> edits: 0;
     orientation: vertical;
     handle-color: #82a3e4;
     resized() => { root.edits += 1; }
@@ -18,7 +18,7 @@ component DetailSplit inherits SplitView {
 }
 
 export component SplitDemo inherits Window {
-    in-out property <bool> rtl = false;
+    in-out property <bool> rtl: false;
     layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
 
     title: "XRack · 分栏工作区";
@@ -26,10 +26,10 @@ export component SplitDemo inherits Window {
     height: 420px;
     background: #182331;
 
-    in-out property <bool> show-preview = true;
-    in-out property <bool> split-enabled = true;
-    in-out property <string> saved-layout = "";
-    property <int> outer-edits = 0;
+    in-out property <bool> show-preview: true;
+    in-out property <bool> split-enabled: true;
+    in-out property <string> saved-layout: "";
+    property <int> outer-edits: 0;
     out property <int> edits: root.outer-edits + detail.edits;
 
     VerticalLayout {
@@ -78,13 +78,13 @@ export component SplitDemo inherits Window {
 }
 
 export component CustomSplitDemo inherits Window {
-    in-out property <bool> rtl = false;
+    in-out property <bool> rtl: false;
     layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
 
     title: "XRack · 自定义分隔条";
     width: 640px; height: 240px;
-    in property <bool> show-center = true;
-    in property <color> grip-color = #ffffff;
+    in property <bool> show-center: true;
+    in property <color> grip-color: #ffffff;
     out property <bool> dragging: work.resizing;
 
     work := SplitView {
@@ -120,17 +120,17 @@ export component CustomSplitDemo inherits Window {
 }
 
 export component FillSplitDemo inherits Window {
-    in-out property <bool> rtl = false;
+    in-out property <bool> rtl: false;
     layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
 
     title: "XRack · 固定侧栏";
     width: 680px; height: 320px;
     background: #182331;
-    in-out property <bool> show-editor = true;
-    in-out property <string> saved-layout = "";
-    in property <length> handle-target = 24px;
+    in-out property <bool> show-editor: true;
+    in-out property <string> saved-layout: "";
+    in property <length> handle-target: 24px;
     out property <bool> dragging: work.resizing;
-    out property <int> edits = 0;
+    out property <int> edits: 0;
 
     VerticalLayout {
         padding: 14px;

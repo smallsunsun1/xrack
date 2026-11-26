@@ -6,9 +6,9 @@ enum TitleMode {
 component DocumentEditor inherits Rectangle {
     in property <string> document-title;
     out property <string> live-title: root.document-title;
-    private property <string> draft = root.document-title;
+    private property <string> draft: once root.document-title;
     in-out property <string> editable-title <=> root.draft;
-    private property <TitleMode> title-mode = TitleMode::Follow;
+    private property <TitleMode> title-mode: TitleMode::Follow;
     out property <string> display-title: match root.title-mode {
         Follow => root.document-title,
         Custom(text) => text,
@@ -28,8 +28,9 @@ component InputProbe inherits Rectangle {
 }
 
 export component PropertyOwnership inherits Window {
-    in-out property <string> document-title = "A";
-    in-out property <length> offset = -10px;
+    in-out property <string> document-title: "A";
+    in-out property <length> offset: -10px;
+    in-out property <int> count: 1 + 2;
     out property <string> live-title: document.live-title;
     out property <string> display-title: document.display-title;
     out property <string> draft-title: document.editable-title;

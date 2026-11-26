@@ -13,12 +13,12 @@ export component CameraAimDemo inherits Window {
     width: 440px; height: 325px;
     background: #172335;
 
-    in-out property <point3d> eye = Point3D.new(0, 2.5, 8);
-    in-out property <point3d> focus = Point3D.new(-1.5, 0.45, 0);
-    in-out property <point3d> target = Point3D.new(1.5, 0.5, -0.6);
-    in-out property <vector3d> up = Vector3D.new(0, 1, 0);
-    in-out property <bool> follow-node = false;
-    in-out property <bool> show-target = true;
+    in-out property <point3d> eye: once Point3D.new(0, 2.5, 8);
+    in-out property <point3d> focus: once Point3D.new(-1.5, 0.45, 0);
+    in-out property <point3d> target: once Point3D.new(1.5, 0.5, -0.6);
+    in-out property <vector3d> up: once Vector3D.new(0, 1, 0);
+    in-out property <bool> follow-node: false;
+    in-out property <bool> show-target: true;
     in-out property <quaternion3d> authored-orientation;
     property <point2d> viewport-size: Point2D.new(440px, 274px);
     property <point3d> selected: root.follow-node && root.show-target ? root.target : root.focus;

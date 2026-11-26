@@ -1,6 +1,6 @@
 component Details inherits VerticalLayout {
-    in-out property <string> title = "";
-    in-out property <int> hits = 0;
+    in-out property <string> title: "";
+    in-out property <int> hits: 0;
     callback bump(amount: int) -> int;
     bump(amount) => { root.hits += amount; root.hits }
     card := Button {
@@ -18,8 +18,8 @@ export component DynamicDemo inherits Window {
     private property <ExternalComponentHandle> external;
     out property <string> pending-state: left.status(root.pending);
     out property <string> external-state: right.status(root.external);
-    out property <int> mounted-count = 0;
-    out property <int> returned = 0;
+    out property <int> mounted-count: 0;
+    out property <int> returned: 0;
     out property <bool> first-mounted: left.is-mounted(root.first);
     out property <bool> in-wrong-container: right.is-mounted(root.first);
 

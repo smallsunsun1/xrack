@@ -15,10 +15,10 @@ export component GlTfAnimationDemo inherits Window {
     height: 390px;
     resizable: false;
     background: #141d29;
-    in-out property <bool> playing = true;
-    in-out property <float> time = 0;
-    in-out property <float> extension = 0.35;
-    property <string> clip = "Morph";
+    in-out property <bool> playing: true;
+    in-out property <float> time: 0;
+    in-out property <float> extension: 0.35;
+    property <string> clip: "Morph";
     playback := Timer {
         interval: 16;
         repeat: true;

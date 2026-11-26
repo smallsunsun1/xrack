@@ -18,10 +18,10 @@ export component MaterialDemo inherits Window {
     height: 300px;
     background: #141d29;
 
-    in-out property <bool> hdr = false;
-    in-out property <bool> shadows = false;
-    in-out property <bool> filtered = false;
-    in-out property <float> light-yaw = 0;
+    in-out property <bool> hdr: false;
+    in-out property <bool> shadows: false;
+    in-out property <bool> filtered: false;
+    in-out property <float> light-yaw: 0;
     property <[MaterialActor]> models: [
         MaterialActor {
             id: "finish", mesh: @mesh-url("models/finish.gltf"),

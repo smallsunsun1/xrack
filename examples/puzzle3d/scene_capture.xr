@@ -20,13 +20,13 @@ export component SceneCaptureDemo inherits Window {
     title: "XRack · 命名场景画面";
     width: 560px; height: 382px; resizable: false;
     background: #172738;
-    in-out property <string> feed-camera = "near-eye";
-    in-out property <int> feed-layers = 2;
-    in-out property <float> feed-scale = 0.5;
-    in-out property <bool> feed-enabled = true;
-    in-out property <bool> display-feeds = true;
-    in-out property <float> exposure = 1.0;
-    in-out property <color> near-color = #e34540;
+    in-out property <string> feed-camera: "near-eye";
+    in-out property <int> feed-layers: 2;
+    in-out property <float> feed-scale: 0.5;
+    in-out property <bool> feed-enabled: true;
+    in-out property <bool> display-feeds: true;
+    in-out property <float> exposure: 1.0;
+    in-out property <color> near-color: #e34540;
 
     property <CaptureActor> base: CaptureActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,

@@ -17,10 +17,10 @@ export component MaterialChannelsDemo inherits Window {
     width: 600px; height: 372px;
     background: #192330;
 
-    in-out property <string> base-channel = "rgb";
-    in-out property <string> shading-channel = "r";
-    in-out property <string> shading = "base";
-    in-out property <bool> shadows = false;
+    in-out property <string> base-channel: "rgb";
+    in-out property <string> shading-channel: "r";
+    in-out property <string> shading: "base";
+    in-out property <bool> shadows: false;
 
     property <string> swatch: @texture-url("models/channel-swatch.png");
     property <ChannelFinish> flat: ChannelFinish {

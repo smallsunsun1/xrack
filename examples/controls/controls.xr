@@ -1,22 +1,22 @@
 export component ControlsDemo inherits Window {
-    in-out property <float> volume = 25;
-    in-out property <float> level = 50;
-    in-out property <bool> muted = false;
-    in-out property <bool> busy = false;
-    out property <int> changes = 0;
-    out property <int> releases = 0;
-    out property <float> last-release = 0;
-    in-out property <float> lower = 20;
-    in-out property <float> upper = 75;
-    out property <int> interval-changes = 0;
-    out property <int> interval-releases = 0;
-    out property <float> released-lower = 0;
-    out property <float> released-upper = 0;
-    in-out property <float> rotation = 0;
-    in-out property <DialInputMode> linear-mode = horizontal;
-    out property <int> dial-changes = 0;
-    out property <int> dial-releases = 0;
-    out property <float> dial-last-release = 0;
+    in-out property <float> volume: 25;
+    in-out property <float> level: 50;
+    in-out property <bool> muted: false;
+    in-out property <bool> busy: false;
+    out property <int> changes: 0;
+    out property <int> releases: 0;
+    out property <float> last-release: 0;
+    in-out property <float> lower: 20;
+    in-out property <float> upper: 75;
+    out property <int> interval-changes: 0;
+    out property <int> interval-releases: 0;
+    out property <float> released-lower: 0;
+    out property <float> released-upper: 0;
+    in-out property <float> rotation: 0;
+    in-out property <DialInputMode> linear-mode: once horizontal;
+    out property <int> dial-changes: 0;
+    out property <int> dial-releases: 0;
+    out property <float> dial-last-release: 0;
     pure callback interval-caption(float, float) -> string;
     interval-caption(lower, upper) => { "区间 " + lower + " – " + upper }
 
@@ -165,16 +165,16 @@ export component CalendarAgendaDemo inherits Window {
     width: 576px;
     height: 478px;
     background: #162034;
-    in-out property <Date> month = Date { year: 2026, month: 11, day: 1 };
-    in-out property <Date> selected = Date { year: 2026, month: 11, day: 11 };
-    in-out property <Date> review-date = Date { year: 2026, month: 11, day: 12 };
-    in-out property <string> review-label = "评审";
-    in-out property <[int]> blocked-weekdays = [];
-    in-out property <[Date]> closed-dates = [];
-    in-out property <Date> highlight-start = Date { year: 0, month: 1, day: 1 };
-    in-out property <Date> highlight-end = Date { year: 0, month: 1, day: 1 };
+    in-out property <Date> month: Date { year: 2026, month: 11, day: 1 };
+    in-out property <Date> selected: Date { year: 2026, month: 11, day: 11 };
+    in-out property <Date> review-date: Date { year: 2026, month: 11, day: 12 };
+    in-out property <string> review-label: "评审";
+    in-out property <[int]> blocked-weekdays: [];
+    in-out property <[Date]> closed-dates: [];
+    in-out property <Date> highlight-start: Date { year: 0, month: 1, day: 1 };
+    in-out property <Date> highlight-end: Date { year: 0, month: 1, day: 1 };
     private property <Date> release-date: Date { year: 2026, month: 11, day: 19 };
-    out property <int> activations = 0;
+    out property <int> activations: 0;
     callback browse(int);
 
     previous := Button {
@@ -253,14 +253,14 @@ export component MonthGridDemo inherits Window {
     height: 372px;
     background: #162034;
 
-    in-out property <Date> selected = Date { year: 2021, month: 1, day: 11 };
-    in-out property <Date> month = Date { year: 2021, month: 1, day: 1 };
-    in-out property <Date> latest = Date { year: 2021, month: 2, day: 12 };
-    in-out property <bool> sunday = true;
+    in-out property <Date> selected: Date { year: 2021, month: 1, day: 11 };
+    in-out property <Date> month: Date { year: 2021, month: 1, day: 1 };
+    in-out property <Date> latest: Date { year: 2021, month: 2, day: 12 };
+    in-out property <bool> sunday: true;
     private property <int> first-weekday: root.sunday ? 7 : 1;
-    out property <int> changes = 0;
-    out property <int> browses = 0;
-    out property <int> activations = 0;
+    out property <int> changes: 0;
+    out property <int> browses: 0;
+    out property <int> activations: 0;
     callback browse(int);
 
     previous := Button {
@@ -320,19 +320,19 @@ export component CalendarDemo inherits Window {
     height: 460px;
     background: #162034;
 
-    in-out property <Date> selected = Date { year: 2024, month: 2, day: 28 };
-    in-out property <Date> month = Date { year: 2024, month: 2, day: 1 };
-    in-out property <bool> picker-open = false;
-    in-out property <[int]> blocked-weekdays = [];
-    in-out property <[Date]> closed-dates = [];
+    in-out property <Date> selected: Date { year: 2024, month: 2, day: 28 };
+    in-out property <Date> month: Date { year: 2024, month: 2, day: 1 };
+    in-out property <bool> picker-open: false;
+    in-out property <[int]> blocked-weekdays: [];
+    in-out property <[Date]> closed-dates: [];
     private property <Date> earliest: Date { year: 2024, month: 2, day: 5 };
-    in-out property <Date> latest = Date { year: 2024, month: 4, day: 15 };
+    in-out property <Date> latest: Date { year: 2024, month: 4, day: 15 };
     private property <[string]> weekdays: ["一", "二", "三", "四", "五", "六", "日"];
-    out property <int> date-changes = 0;
-    out property <int> month-changes = 0;
-    out property <int> picked-day = 0;
-    out property <int> accepts = 0;
-    out property <int> cancels = 0;
+    out property <int> date-changes: 0;
+    out property <int> month-changes: 0;
+    out property <int> picked-day: 0;
+    out property <int> accepts: 0;
+    out property <int> cancels: 0;
 
     Text {
         x: 22px; y: 14px;
@@ -436,14 +436,14 @@ export component CalendarBrowserDemo inherits Window {
     height: 575px;
     background: #162034;
 
-    in-out property <Date> range-start = Date { year: 2024, month: 2, day: 5 };
-    in-out property <Date> range-end = Date { year: 2124, month: 1, day: 31 };
-    in-out property <Date> selected = Date { year: 2024, month: 2, day: 28 };
-    in-out property <Date> jump-target = Date { year: 2080, month: 2, day: 29 };
-    in-out property <[Date]> closures = [Date { year: 2024, month: 2, day: 29 }];
-    in-out property <bool> select-range = false;
+    in-out property <Date> range-start: Date { year: 2024, month: 2, day: 5 };
+    in-out property <Date> range-end: Date { year: 2124, month: 1, day: 31 };
+    in-out property <Date> selected: Date { year: 2024, month: 2, day: 28 };
+    in-out property <Date> jump-target: Date { year: 2080, month: 2, day: 29 };
+    in-out property <[Date]> closures: [Date { year: 2024, month: 2, day: 29 }];
+    in-out property <bool> select-range: false;
     private property <Date> empty-date: Date { year: 0, month: 1, day: 1 };
-    out property <DateIntervalSelection> interval = DateIntervalSelection {
+    out property <DateIntervalSelection> interval: once DateIntervalSelection {
         start: root.empty-date, end: root.empty-date, choosing-end: false
     };
     callback pick-date(Date);
@@ -505,14 +505,14 @@ export component DecimalSpinDemo inherits Window {
     title: "XRack · 小数输入";
     width: 480px; height: 306px;
     background: #162034;
-    in-out property <float> level = 0.2;
-    in-out property <bool> use-comma = true;
-    in-out property <bool> locked = false;
-    in-out property <[DecimalPrice]> prices = [
+    in-out property <float> level: 0.2;
+    in-out property <bool> use-comma: true;
+    in-out property <bool> locked: false;
+    in-out property <[DecimalPrice]> prices: [
         DecimalPrice { label: "分析任务", price: 12.5 },
         DecimalPrice { label: "渲染任务", price: 18.75 },
     ];
-    out property <int> edits = 0;
+    out property <int> edits: 0;
 
     Text { x: 24px; y: 18px; text: "小数步进 · 数值 " + root.level; font-size: 22px; }
     gain := DoubleSpinBox {
@@ -557,20 +557,20 @@ export component TumblerDemo inherits Window {
     height: 324px;
     background: #162034;
 
-    in-out property <[string]> hours = [
+    in-out property <[string]> hours: [
         "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11",
         "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"
     ];
-    in-out property <int> hour = 8;
-    in-out property <int> minute = 30;
-    in-out property <bool> cycle = true;
-    in-out property <float> deceleration = 2400;
-    in-out property <bool> minute-enabled = true;
+    in-out property <int> hour: 8;
+    in-out property <int> minute: 30;
+    in-out property <bool> cycle: true;
+    in-out property <float> deceleration: 2400;
+    in-out property <bool> minute-enabled: true;
     out property <bool> dragging: minute-wheel.dragging;
     out property <bool> flicking: minute-wheel.flicking;
     out property <bool> moving: minute-wheel.moving;
-    out property <bool> moving-on-commit = false;
-    out property <int> changes = 0;
+    out property <bool> moving-on-commit: false;
+    out property <int> changes: 0;
 
     Text { x: 24px; y: 16px; text: "拖动或滚动选择时间"; color: #edf3ff; font-size: 22px; }
     hour-wheel := Tumbler {
@@ -621,20 +621,20 @@ export component RecordTumblerDemo inherits Window {
     width: 410px; height: 294px;
     background: #162034;
 
-    in-out property <[TimeZoneChoice]> zones = [
+    in-out property <[TimeZoneChoice]> zones: [
         TimeZoneChoice { label: "纽约（冬令时）", offset: -300, abbreviation: "EST" },
         TimeZoneChoice { label: "协调世界时", offset: 0, abbreviation: "UTC" },
         TimeZoneChoice { label: "上海", offset: 480, abbreviation: "CST" },
     ];
-    in-out property <int> offset = 480;
+    in-out property <int> offset: 480;
     out property <int> position: zone-wheel.current-index;
     out property <int> total: zone-wheel.count;
     out property <string> city: zone-wheel.current-text;
     out property <int> committed: zone-wheel.current-value;
-    out property <int> commits = 0;
-    out property <int> reported-offset = 0;
-    out property <int> observed-offset = 0;
-    out property <int> reported-index = -1;
+    out property <int> commits: 0;
+    out property <int> reported-offset: 0;
+    out property <int> observed-offset: 0;
+    out property <int> reported-index: -1;
 
     zone-wheel := Tumbler {
         x: 70px; y: 22px; width: 270px; height: 154px;
@@ -696,10 +696,10 @@ export component DelayDemo inherits Window {
     height: 214px;
     background: #162034;
 
-    in-out property <bool> confirmed = false;
-    in-out property <bool> allow-confirm = true;
-    in-out property <int> hold-time = 800;
-    out property <int> activations = 0;
+    in-out property <bool> confirmed: false;
+    in-out property <bool> allow-confirm: true;
+    in-out property <int> hold-time: 800;
+    out property <int> activations: 0;
 
     Text { x: 24px; y: 16px; text: "按住确认，松开前可取消"; color: #edf3ff; font-size: 20px; }
     confirm := DelayButton {
@@ -724,21 +724,21 @@ export component RepeatButtonsDemo inherits Window {
     title: "XRack · 按钮双击、长按与连发";
     width: 476px; height: 302px;
     background: #162034;
-    in-out property <int> value = 0;
-    in-out property <int> limit = 12;
-    in-out property <bool> repeating = true;
-    in-out property <int> first-delay = 300;
-    in-out property <int> interval = 100;
-    in-out property <int> hold-interval = 800;
-    out property <int> activations = 0;
-    out property <int> commands = 0;
-    out property <int> holds = 0;
-    out property <int> doubles = 0;
-    out property <int> clicks-before-double = 0;
+    in-out property <int> value: 0;
+    in-out property <int> limit: 12;
+    in-out property <bool> repeating: true;
+    in-out property <int> first-delay: 300;
+    in-out property <int> interval: 100;
+    in-out property <int> hold-interval: 800;
+    out property <int> activations: 0;
+    out property <int> commands: 0;
+    out property <int> holds: 0;
+    out property <int> doubles: 0;
+    out property <int> clicks-before-double: 0;
     out property <bool> increase-pressed: increment.pressed;
-    out property <bool> pressed-at-click = false;
-    in property <bool> disable-on-release = false;
-    out property <string> lifecycle = "";
+    out property <bool> pressed-at-click: false;
+    in property <bool> disable-on-release: false;
+    out property <string> lifecycle: "";
     callback record-double();
     record-double => {
         root.doubles += 1;
@@ -808,13 +808,13 @@ export component RepeatButtonsDemo inherits Window {
 export component ProgrammaticButtonsDemo inherits Window {
     title: "XRack · 程序化点击";
     width: 466px; height: 261px;
-    in-out property <bool> allow-click = true;
-    in property <bool> show-target = true;
-    in property <bool> disable-on-press = false;
-    in property <bool> disable-on-release = false;
-    in-out property <bool> checked = false;
-    in-out property <string> events = "";
-    out property <int> command-count = 0;
+    in-out property <bool> allow-click: true;
+    in property <bool> show-target: true;
+    in property <bool> disable-on-press: false;
+    in property <bool> disable-on-release: false;
+    in-out property <bool> checked: false;
+    in-out property <string> events: "";
+    out property <int> command-count: 0;
     callback run-click();
     callback run-animated();
     callback run-command();
@@ -866,15 +866,15 @@ export component ProgrammaticButtonsDemo inherits Window {
 export component ProgrammaticToggleDemo inherits Window {
     title: "XRack · 程序化勾选";
     width: 560px; height: 265px;
-    in-out property <bool> pin-visible = true;
-    in-out property <bool> pin-enabled = true;
-    in-out property <bool> pinned = false;
-    in-out property <bool> shared-checked = false;
-    in-out property <int> density = 1;
-    in-out property <string> view-mode = "";
-    in-out property <string> filter-mode = "";
-    in property <bool> prefer-grid-alias = false;
-    out property <int> user-events = 0;
+    in-out property <bool> pin-visible: true;
+    in-out property <bool> pin-enabled: true;
+    in-out property <bool> pinned: false;
+    in-out property <bool> shared-checked: false;
+    in-out property <int> density: 1;
+    in-out property <string> view-mode: "";
+    in-out property <string> filter-mode: "";
+    in property <bool> prefer-grid-alias: false;
+    out property <int> user-events: 0;
     out property <bool> plain-checked: plain.checked;
     out property <bool> shared-mirror-checked: shared-mirror.checked;
     out property <bool> grouped-flag-checked: grouped-flag.checked;
@@ -955,9 +955,9 @@ export component ProgrammaticToggleDemo inherits Window {
 }
 
 export component CheckedGroupPagesDemo inherits Window {
-    in-out property <int> tab-index = 0;
-    in-out property <int> swipe-index = 0;
-    in property <bool> allow-alias = true;
+    in-out property <int> tab-index: 0;
+    in-out property <int> swipe-index: 0;
+    in property <bool> allow-alias: true;
     out property <bool> fallback-checked: fallback.checked;
     callback open-options();
     open-options => { navigation.push("options"); }
@@ -998,22 +998,22 @@ export struct CheckedFilter {
 export component CheckableButtonsDemo inherits Window {
     title: "XRack · 可切换按钮";
     width: 440px; height: 455px;
-    in-out property <bool> pinned = false;
-    in property <bool> allow-pin = true;
-    in property <bool> pin-checkable = true;
-    in-out property <[CheckedFilter]> filters = [
+    in-out property <bool> pinned: false;
+    in property <bool> allow-pin: true;
+    in property <bool> pin-checkable: true;
+    in-out property <[CheckedFilter]> filters: [
         CheckedFilter { label: "文档", selected: false, overridden: false },
         CheckedFilter { label: "图片", selected: false, overridden: false },
         CheckedFilter { label: "视频", selected: false, overridden: false },
     ];
-    in property <bool> select-video = false;
-    private property <bool> tool-checked = true;
-    out property <string> events = "";
-    out property <int> filter-toggles = 0;
-    out property <string> filter-events = "";
-    in-out property <bool> shared-filter = false;
-    out property <string> manual-events = "";
-    out property <int> manual-notifications = 0;
+    in property <bool> select-video: false;
+    private property <bool> tool-checked: true;
+    out property <string> events: "";
+    out property <int> filter-toggles: 0;
+    out property <string> filter-events: "";
+    in-out property <bool> shared-filter: false;
+    out property <string> manual-events: "";
+    out property <int> manual-notifications: 0;
 
     VerticalLayout {
         padding: 18px; spacing: 10px;
@@ -1084,12 +1084,12 @@ export component CheckableButtonsDemo inherits Window {
 export component GroupedButtonsDemo inherits Window {
     title: "XRack · 按钮分组";
     width: 450px; height: 300px;
-    in-out property <string> view-mode = "list";
-    in property <bool> grid-available = true;
-    in property <bool> filters-enabled = true;
-    in-out property <bool> starred = false;
-    out property <string> events = "";
-    out property <int> filter-toggles = 0;
+    in-out property <string> view-mode: "list";
+    in property <bool> grid-available: true;
+    in property <bool> filters-enabled: true;
+    in-out property <bool> starred: false;
+    out property <string> events: "";
+    out property <int> filter-toggles: 0;
 
     modes := ButtonGroup {
         accessible-name: "视图模式";
@@ -1141,17 +1141,17 @@ export component CheckStateDemo inherits Window {
     height: 350px;
     background: #162034;
 
-    in-out property <bool> first = true;
-    in-out property <bool> second = false;
+    in-out property <bool> first: true;
+    in-out property <bool> second: false;
     in-out property <CheckState> cycle-state;
     private property <CheckState> summary:
         root.first && root.second ? CheckState.checked :
         (root.first || root.second ? CheckState.partially-checked : CheckState.unchecked);
-    out property <int> proposals = 0;
-    out property <int> cycle-edits = 0;
-    out property <int> first-edits = 0;
+    out property <int> proposals: 0;
+    out property <int> cycle-edits: 0;
+    out property <int> first-edits: 0;
     out property <CheckState> last-first-state;
-    in-out property <[ReviewRow]> reviews = [
+    in-out property <[ReviewRow]> reviews: once [
         ReviewRow { title: "渲染检查", state: CheckState.partially-checked },
         ReviewRow { title: "输入检查", state: CheckState.unchecked },
     ];
@@ -1201,17 +1201,17 @@ export component CheckGroupDemo inherits Window {
     title: "XRack · 复选组";
     width: 520px; height: 266px;
     background: #162034;
-    in-out property <bool> assets = true;
-    in-out property <bool> metadata = false;
-    in-out property <CheckState> validation = CheckState.partially-checked;
-    in-out property <bool> background-work = false;
-    in-out property <bool> show-validation = true;
-    in-out property <bool> allow-metadata = false;
-    in-out property <bool> group-enabled = true;
+    in-out property <bool> assets: true;
+    in-out property <bool> metadata: false;
+    in-out property <CheckState> validation: once CheckState.partially-checked;
+    in-out property <bool> background-work: false;
+    in-out property <bool> show-validation: true;
+    in-out property <bool> allow-metadata: false;
+    in-out property <bool> group-enabled: true;
     out property <CheckState> summary: options.check-state;
     out property <CheckState> master-result;
     out property <CheckState> before-bulk;
-    out property <int> child-edits = 0;
+    out property <int> child-edits: 0;
     callback apply-all(CheckState);
     apply-all(state) => {
         root.before-bulk = options.check-state;
@@ -1253,7 +1253,7 @@ export component CheckGroupDemo inherits Window {
 
 component ExpanderSettings inherits VerticalLayout {
     spacing: 8px;
-    out property <string> draft = "localhost";
+    out property <string> draft: "localhost";
     callback saved();
     endpoint := LineEdit {
         accessible-name: "服务地址";
@@ -1268,10 +1268,10 @@ export component ExpanderDemo inherits Window {
     height: 350px;
     background: #162034;
 
-    in-out property <bool> details-open = false;
+    in-out property <bool> details-open: false;
     out property <string> draft: settings.draft;
-    out property <int> expansion-changes = 0;
-    out property <int> saves = 0;
+    out property <int> expansion-changes: 0;
+    out property <int> saves: 0;
 
     close-details := Shortcut {
         sequence: "F8";
@@ -1298,12 +1298,12 @@ export component GroupBoxDemo inherits Window {
     height: 376px;
     background: #162034;
 
-    in-out property <bool> active = true;
-    in-out property <string> address = "notify@example.invalid";
-    in-out property <bool> preview-open = false;
-    in-out property <bool> audit = true;
-    out property <int> group-changes = 0;
-    out property <bool> last-active = true;
+    in-out property <bool> active: true;
+    in-out property <string> address: "notify@example.invalid";
+    in-out property <bool> preview-open: false;
+    in-out property <bool> audit: true;
+    out property <int> group-changes: 0;
+    out property <bool> last-active: true;
 
     open-preview := Action {
         text: "查看预览";
@@ -1350,10 +1350,10 @@ export component GroupBoxDemo inherits Window {
 export component CustomProgressDemo inherits Window {
     title: "XRack · 自定义进度条";
     width: 440px; height: 252px;
-    in-out property <float> amount = 380.0;
-    in-out property <bool> rtl = false;
-    in-out property <bool> running = false;
-    in-out property <bool> animated = true;
+    in-out property <float> amount: 380.0;
+    in-out property <bool> rtl: false;
+    in-out property <bool> running: false;
+    in-out property <bool> animated: true;
     out property <float> normalized: styled-progress.position;
     out property <float> visual: styled-progress.visual-position;
 
@@ -1398,9 +1398,9 @@ export component IndicatorsDemo inherits Window {
     height: 286px;
     background: #162034;
 
-    in-out property <bool> running = true;
-    in-out property <bool> animated = true;
-    in-out property <float> amount = 0.65;
+    in-out property <bool> running: true;
+    in-out property <bool> animated: true;
+    in-out property <float> amount: 0.65;
 
     Text { x: 24px; y: 14px; text: "进度与忙碌状态"; font-size: 22px; color: #edf3ff; }
     busy := BusyIndicator {
@@ -1457,15 +1457,15 @@ export component TimeDemo inherits Window {
     width: 520px; height: 372px;
     background: #162034;
 
-    in-out property <Time> selected = Time { hour: 23, minute: 58, second: 41 };
-    in-out property <bool> use-24 = true;
-    in-out property <bool> seconds = false;
-    in-out property <bool> picker-open = false;
-    in-out property <bool> inline-enabled = true;
-    out property <int> changes = 0;
-    out property <int> accepts = 0;
-    out property <int> cancels = 0;
-    out property <int> accepted-minute = -1;
+    in-out property <Time> selected: Time { hour: 23, minute: 58, second: 41 };
+    in-out property <bool> use-24: true;
+    in-out property <bool> seconds: false;
+    in-out property <bool> picker-open: false;
+    in-out property <bool> inline-enabled: true;
+    out property <int> changes: 0;
+    out property <int> accepts: 0;
+    out property <int> cancels: 0;
+    out property <int> accepted-minute: -1;
 
     Text { x: 24px; y: 18px; text: "已保存 · " + root.selected; font-size: 24px; }
     inline-time := TimePicker {
@@ -1502,13 +1502,13 @@ export component ColorDemo inherits Window {
     height: root.plane-visible ? 540px : 384px;
     background: #162034;
 
-    in-out property <color> selected = #4080C080;
-    in-out property <bool> picker-open = false;
-    in-out property <bool> alpha-visible = true;
-    in-out property <bool> plane-visible = false;
-    out property <color> accepted-color = #00000000;
-    out property <int> accepts = 0;
-    out property <int> cancels = 0;
+    in-out property <color> selected: #4080C080;
+    in-out property <bool> picker-open: false;
+    in-out property <bool> alpha-visible: true;
+    in-out property <bool> plane-visible: false;
+    out property <color> accepted-color: #00000000;
+    out property <int> accepts: 0;
+    out property <int> cancels: 0;
 
     Text { x: 24px; y: 22px; text: "选择绘图颜色"; font-size: 24px; }
     saved-color := Rectangle {
@@ -1546,13 +1546,13 @@ export component FontPickerDemo inherits Window {
     width: 510px;
     height: 430px;
 
-    in-out property <Font> selected = Font {
+    in-out property <Font> selected: Font {
         family: "sans-serif", size: 22px, weight: 400, italic: false
     };
-    in-out property <bool> picker-open = false;
+    in-out property <bool> picker-open: false;
     out property <Font> accepted-font;
-    out property <int> accepts = 0;
-    out property <int> cancels = 0;
+    out property <int> accepts: 0;
+    out property <int> cancels: 0;
 
     Text {
         x: 24px; y: 30px; width: 462px;
@@ -1583,12 +1583,12 @@ export component ThemeDemo inherits Window {
     width: 446px;
     height: 318px;
 
-    in-out property <ColorScheme> scheme = ColorScheme.system;
-    in-out property <color> accent = #3e65e8;
-    private property <bool> warm = false;
-    private property <bool> shown = false;
-    in-out property <string> draft = "保留输入状态";
-    in-out property <bool> selected = true;
+    in-out property <ColorScheme> scheme: once ColorScheme.system;
+    in-out property <color> accent: #3e65e8;
+    private property <bool> warm: false;
+    private property <bool> shown: false;
+    in-out property <string> draft: "保留输入状态";
+    in-out property <bool> selected: true;
 
     color-scheme: root.scheme;
     accent-color: root.accent;
@@ -1645,11 +1645,11 @@ export component TimerDemo inherits Window {
     width: 460px; height: 240px;
     background: #162034;
 
-    in-out property <int> remaining = 4;
-    in-out property <int> interval-ms = 250;
-    in-out property <bool> ticking = true;
-    in-out property <bool> pulse-pending = false;
-    out property <int> pulses = 0;
+    in-out property <int> remaining: 4;
+    in-out property <int> interval-ms: 250;
+    in-out property <bool> ticking: true;
+    in-out property <bool> pulse-pending: false;
+    out property <int> pulses: 0;
 
     countdown := Timer {
         interval: root.interval-ms;
@@ -1686,14 +1686,14 @@ export component PaneFrameDemo inherits Window {
     width: 460px; height: 270px;
     color-scheme: dark;
     background: #182331;
-    in property <length> left-padding = 20px;
-    in property <length> content-size = 390px;
-    in-out property <bool> content-enabled = true;
+    in property <length> left-padding: 20px;
+    in property <length> content-size: 390px;
+    in-out property <bool> content-enabled: true;
     out property <length> pane-inner-width: surface.available-width;
     out property <length> frame-inner-width: group.available-width;
     out property <length> frame-inner-height: group.available-height;
-    out property <int> inner-clicks = 0;
-    out property <int> lower-clicks = 0;
+    out property <int> inner-clicks: 0;
+    out property <int> lower-clicks: 0;
 
     toggle := CheckBox {
         x: 20px; y: 12px; width: 160px; height: 28px;
@@ -1735,17 +1735,17 @@ export component WheelControlsDemo inherits Window {
     title: "XRack · 滚轮调值";
     width: 460px; height: 310px;
     background: #182331;
-    in-out property <bool> wheel-enabled = true;
-    in-out property <bool> spin-read-only = false;
-    in-out property <float> slider-value = 4.0;
-    in-out property <float> interval-start = 2.0;
-    in-out property <float> interval-end = 8.0;
-    in-out property <float> dial-value = 4.0;
-    in-out property <int> spin-value = 10;
-    in-out property <float> decimal-value = 0.2;
-    out property <int> changes = 0;
-    out property <int> releases = 0;
-    out property <int> edits = 0;
+    in-out property <bool> wheel-enabled: true;
+    in-out property <bool> spin-read-only: false;
+    in-out property <float> slider-value: 4.0;
+    in-out property <float> interval-start: 2.0;
+    in-out property <float> interval-end: 8.0;
+    in-out property <float> dial-value: 4.0;
+    in-out property <int> spin-value: 10;
+    in-out property <float> decimal-value: 0.2;
+    out property <int> changes: 0;
+    out property <int> releases: 0;
+    out property <int> edits: 0;
 
     toggle := CheckBox {
         x: 20px; y: 14px; width: 200px; height: 28px;
@@ -1804,15 +1804,15 @@ export component SnapSlidersDemo inherits Window {
     title: "XRack · 滑条吸附";
     width: 500px; height: 290px;
     background: #162034;
-    in-out property <bool> live-update = false;
-    in-out property <float> level = 20;
-    in-out property <float> lower = 20;
-    in-out property <float> upper = 80;
-    out property <int> level-changes = 0;
-    out property <int> level-releases = 0;
-    out property <float> released-level = 20;
-    out property <int> band-changes = 0;
-    out property <float> released-lower = 20;
+    in-out property <bool> live-update: false;
+    in-out property <float> level: 20;
+    in-out property <float> lower: 20;
+    in-out property <float> upper: 80;
+    out property <int> level-changes: 0;
+    out property <int> level-releases: 0;
+    out property <float> released-level: 20;
+    out property <int> band-changes: 0;
+    out property <float> released-lower: 20;
 
     VerticalLayout {
         padding: 20px; spacing: 10px;
@@ -1844,16 +1844,16 @@ export component DirectionalSlidersDemo inherits Window {
     title: "XRack · 滑块方向";
     width: 400px; height: 260px;
     background: #162034;
-    in-out property <bool> rtl = true;
-    in-out property <float> level = 20;
-    in-out property <float> lower = 20;
-    in-out property <float> upper = 70;
-    in-out property <float> vertical-value = 40;
+    in-out property <bool> rtl: true;
+    in-out property <float> level: 20;
+    in-out property <float> lower: 20;
+    in-out property <float> upper: 70;
+    in-out property <float> vertical-value: 40;
     out property <float> shown-level: level-slider.value;
     out property <float> shown-lower: band-slider.lower-value;
     out property <float> shown-upper: band-slider.upper-value;
     out property <float> shown-vertical: vertical-slider.value;
-    out property <bool> callback-values-current = true;
+    out property <bool> callback-values-current: true;
 
     flip := Button {
         x: 20px; y: 18px; width: 200px; height: 32px;
@@ -1907,16 +1907,16 @@ export component DirectionalFeedbackDemo inherits Window {
     title: "XRack · 控件方向";
     width: 464px; height: 310px;
     background: #162034;
-    in-out property <bool> rtl = true;
-    in-out property <bool> checked = false;
-    in-out property <bool> wireless = true;
-    in-out property <bool> wireless-enabled = true;
-    out property <int> wireless-changes = 0;
-    in-out property <bool> custom-enabled = false;
-    out property <int> custom-changes = 0;
-    in-out property <bool> shared = false;
-    in-out property <int> profile = 0;
-    in-out property <int> page = 0;
+    in-out property <bool> rtl: true;
+    in-out property <bool> checked: false;
+    in-out property <bool> wireless: true;
+    in-out property <bool> wireless-enabled: true;
+    out property <int> wireless-changes: 0;
+    in-out property <bool> custom-enabled: false;
+    out property <int> custom-changes: 0;
+    in-out property <bool> shared: false;
+    in-out property <int> profile: 0;
+    in-out property <int> page: 0;
 
     flip := Button {
         x: 20px; y: 20px; width: 168px; height: 32px;
@@ -1997,13 +1997,13 @@ export component DirectionalCalendarDemo inherits Window {
     title: "XRack · 日历方向";
     width: 724px; height: 362px;
     background: #162034;
-    in-out property <bool> rtl = true;
-    in-out property <Date> selected = Date { year: 2024, month: 2, day: 28 };
-    in-out property <Date> calendar-month = Date { year: 2024, month: 2, day: 1 };
-    in-out property <Date> grid-date = Date { year: 2021, month: 1, day: 4 };
-    in-out property <Date> grid-month = Date { year: 2021, month: 1, day: 1 };
-    in-out property <bool> picker-open = false;
-    out property <int> activations = 0;
+    in-out property <bool> rtl: true;
+    in-out property <Date> selected: Date { year: 2024, month: 2, day: 28 };
+    in-out property <Date> calendar-month: Date { year: 2024, month: 2, day: 1 };
+    in-out property <Date> grid-date: Date { year: 2021, month: 1, day: 4 };
+    in-out property <Date> grid-month: Date { year: 2021, month: 1, day: 1 };
+    in-out property <bool> picker-open: false;
+    out property <int> activations: 0;
     private property <[string]> weekdays: ["一", "二", "三", "四", "五", "六", "日"];
 
     flip := Button {

@@ -19,17 +19,17 @@ export component ParticleDemo inherits Window {
     height: 410px;
     background: #182333;
 
-    in-out property <float> time = 0.65;
-    in-out property <float> emission = 100;
-    in-out property <float> burst-start = 0.2;
-    in-out property <int> burst-size = 60;
-    in-out property <int> layers = 3;
-    in-out property <bool> emitting = true;
-    in-out property <bool> cover = true;
-    in-out property <bool> weighted = true;
-    in-out property <bool> msaa = false;
-    in-out property <bool> hdr = false;
-    in-out property <bool> running = false;
+    in-out property <float> time: 0.65;
+    in-out property <float> emission: 100;
+    in-out property <float> burst-start: 0.2;
+    in-out property <int> burst-size: 60;
+    in-out property <int> layers: 3;
+    in-out property <bool> emitting: true;
+    in-out property <bool> cover: true;
+    in-out property <bool> weighted: true;
+    in-out property <bool> msaa: false;
+    in-out property <bool> hdr: false;
+    in-out property <bool> running: false;
 
     clock := Timer {
         interval: 16;

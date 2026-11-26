@@ -15,7 +15,7 @@ struct Wall {
 export component SweepPlan inherits Window {
     in property <[Wall]> walls;
     in property <point3d> start;
-    in property <float> radius = 0.5;
+    in property <float> radius: 0.5;
     in property <vector3d> displacement;
     out property <hit3d> cast: Scene3D.sphere-cast(root.walls,
         root.start, Vector3D.new(1, 0, 0), 8.0, root.radius);

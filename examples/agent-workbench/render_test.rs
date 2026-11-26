@@ -2113,7 +2113,7 @@ fn renders_a_workspace_with_sessions_and_a_centered_transcript()
     ui.set_workspace_file_text(StyledText::from_plain_text(concat!(
         "   1  export component Counter inherits Window {\n",
         "   2      title: \"Counter\";\n",
-        "   3      in-out property <int> count = 0;\n",
+        "   3      in-out property <int> count: once 0;\n",
         "   4\n",
         "   5      Button {\n",
         "   6          text: \"Count \" + root.count;\n",
@@ -2231,7 +2231,7 @@ fn renders_a_workspace_with_sessions_and_a_centered_transcript()
             concat!(
                 "export component Counter inherits Window {\n",
                 "    title: \"Counter\";\n",
-                "    in-out property <int> count = 0;\n\n",
+                "    in-out property <int> count: once 0;\n\n",
                 "    Button {\n",
                 "        text: \"Count \" + root.count;\n",
                 "        clicked => { root.count += 2; }\n",

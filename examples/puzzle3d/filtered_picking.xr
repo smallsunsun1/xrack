@@ -11,12 +11,12 @@ export component FilteredPickingDemo inherits Window {
     resizable: false;
     background: #182638;
 
-    in-out property <point2d> pointer = Point2D.new(269px, 166px);
-    in-out property <bool> rear-only = true;
-    in-out property <bool> orbit = false;
-    in-out property <int> mask = 1;
-    in-out property <int> target-row = 2;
-    in-out property <[int]> candidates = [2, 1, 2, 3, -1, 1000];
+    in-out property <point2d> pointer: once Point2D.new(269px, 166px);
+    in-out property <bool> rear-only: true;
+    in-out property <bool> orbit: false;
+    in-out property <int> mask: 1;
+    in-out property <int> target-row: 2;
+    in-out property <[int]> candidates: [2, 1, 2, 3, -1, 1000];
     property <point2d> view-size: Point2D.new(600px, 332px);
     property <hit3d> miss;
     property <PickingActor> base: PickingActor {

@@ -14,7 +14,7 @@ struct Buffer { name: string, previous-frame: bool, filter: string, wrap-u: stri
 struct TextureInput { texture: string, color-space: string, enabled: bool }
 struct FilePass { shader: string, buffers: [TextureInput] }
 export component App inherits Window {
-    in property <float> strength = 0.8;
+    in property <float> strength: 0.8;
     SceneView3D {
         scene-effect: @shader-url("effects/hologram.wgsl");
         scene-effect-strength: root.strength;

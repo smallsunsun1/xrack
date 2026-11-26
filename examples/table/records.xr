@@ -12,21 +12,21 @@ export component RecordTableDemo inherits Window {
     height: 330px;
     background: #182331;
 
-    in-out property <[StockRow]> records = [
+    in-out property <[StockRow]> records: [
         StockRow { name: "交换机", owner: "网络组", units: 12, available: true, load: 0.25 },
         StockRow { name: "工作站", owner: "设计组", units: 5, available: false, load: 0.5 },
         StockRow { name: "路由器", owner: "网络组", units: 8, available: true, load: 0.75 },
     ];
-    in property <int> pinned = 0;
-    in property <SelectionTarget> target = rows;
-    in property <bool> lock-owner = false;
-    in property <bool> lock-inactive-names = false;
-    in property <bool> click-edit = false;
-    in property <bool> selected-click-edit = false;
-    in property <bool> double-click-edit = true;
-    in property <bool> key-edit = true;
-    in-out property <bool> typing-edit = false;
-    in property <bool> editing-tools = false;
+    in property <int> pinned: 0;
+    in property <SelectionTarget> target: once rows;
+    in property <bool> lock-owner: false;
+    in property <bool> lock-inactive-names: false;
+    in property <bool> click-edit: false;
+    in property <bool> selected-click-edit: false;
+    in property <bool> double-click-edit: true;
+    in property <bool> key-edit: true;
+    in-out property <bool> typing-edit: false;
+    in property <bool> editing-tools: false;
     callback start-edit(int, int);
     start-edit(row, column) => { stock.edit-cell(row, column); }
     callback reveal-and-edit(int, int);
@@ -103,17 +103,17 @@ export component DelegateTableDemo inherits Window {
     width: 620px;
     height: 338px;
     background: #182331;
-    in-out property <[StockRow]> records = [
+    in-out property <[StockRow]> records: [
         StockRow { name: "交换机", owner: "网络组", units: 12, available: true, load: 0.25 },
         StockRow { name: "工作站", owner: "设计组", units: 5, available: false, load: 0.5 },
         StockRow { name: "路由器", owner: "网络组", units: 8, available: true, load: 0.75 },
     ];
-    in-out property <int> selected-row = -1;
-    out property <int> committed-row = -1;
-    out property <string> committed-name = "";
-    out property <int> committed-units = -1;
-    in property <bool> lock-names = false;
-    in property <bool> show-quantity = true;
+    in-out property <int> selected-row: -1;
+    out property <int> committed-row: -1;
+    out property <string> committed-name: "";
+    out property <int> committed-units: -1;
+    in property <bool> lock-names: false;
+    in property <bool> show-quantity: true;
     pure callback decode-quantity(string, int, int) -> QuantityPaste;
     callback sort-requested(int, bool);
     callback move-visible-column(int, int);
@@ -167,8 +167,8 @@ export component DelegateTableDemo inherits Window {
 component NameEditor inherits HorizontalLayout {
     in-out property <string> value <=> input.text;
     callback submitted <=> input.accepted;
-    in property <bool> locked = false;
-    property <int> stars = 0;
+    in property <bool> locked: false;
+    property <int> stars: 0;
     spacing: 4px;
     input := LineEdit { accessible-name: "设备名称"; read-only: root.locked; horizontal-stretch: 1; }
     star := Button {
@@ -198,7 +198,7 @@ export component NestedRecordsDemo inherits Window {
     title: "XRack · 仓库库存和货位";
     width: 840px;
     height: 580px;
-    in-out property <[WarehouseRow]> records = [
+    in-out property <[WarehouseRow]> records: [
         WarehouseRow {
             location: StockLocation { title: "仓库 A", height: 38px, key: 1, parent-key: -1 },
             stock: StockDetails { units: 12, available: true, note: "现货" },
@@ -210,7 +210,7 @@ export component NestedRecordsDemo inherits Window {
             reserve: StockDetails { units: 7, available: true, note: "备用" },
         },
     ];
-    in-out property <int> selected-location = 1;
+    in-out property <int> selected-location: 1;
     pure callback decode-quantity(string) -> QuantityPaste;
 
     VerticalLayout {

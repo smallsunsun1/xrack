@@ -23,16 +23,16 @@ export component AuthoredTextureDemo inherits Window {
     width: 644px; height: 478px;
     resizable: false; background: #182535;
 
-    in-out property <float> repeat = 1.5;
-    in-out property <float> rotation = 0;
-    in-out property <float> roughness = 0.5;
-    in-out property <bool> cutout = false;
-    in-out property <bool> bump = true;
-    in-out property <bool> imported = false;
-    in-out property <string> wrap = "repeat";
-    in-out property <bool> offset-pivot = false;
-    in-out property <bool> flip-u = false;
-    in-out property <bool> flip-v = false;
+    in-out property <float> repeat: 1.5;
+    in-out property <float> rotation: 0;
+    in-out property <float> roughness: 0.5;
+    in-out property <bool> cutout: false;
+    in-out property <bool> bump: true;
+    in-out property <bool> imported: false;
+    in-out property <string> wrap: "repeat";
+    in-out property <bool> offset-pivot: false;
+    in-out property <bool> flip-u: false;
+    in-out property <bool> flip-v: false;
     property <SurfaceMap> tiles: SurfaceMap {
         source: @texture-url("models/focus-grid.png"),
         wrap-u: root.wrap, wrap-v: root.wrap,

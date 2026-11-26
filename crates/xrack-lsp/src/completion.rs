@@ -1899,6 +1899,13 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             .iter()
             .any(|t| matches!(t.text, ":" | "<=>" | "=" | "+=" | "-="));
     if expression {
+        if last == ":" && head.iter().any(|token| token.text == "property") {
+            items.add(
+                "once",
+                KEYWORD,
+                "evaluate once when the component is initialized",
+            );
+        }
         if in_handler && head.is_empty() {
             items.words("if for let", KEYWORD, "XRack statement");
         }

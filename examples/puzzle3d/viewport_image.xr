@@ -9,11 +9,11 @@ struct ImageFeedActor {
 export component ViewportImageDemo inherits Window {
     title: "XRack · 在图片中显示 3D 视口";
     width: 436px; height: 222px; background: #172638;
-    in-out property <bool> orange = false;
-    in-out property <bool> tinted = false;
-    in-out property <bool> tiled = false;
-    in-out property <bool> feedback = false;
-    in-out property <bool> show-feed = true;
+    in-out property <bool> orange: false;
+    in-out property <bool> tinted: false;
+    in-out property <bool> tiled: false;
+    in-out property <bool> feedback: false;
+    in-out property <bool> show-feed: true;
 
     property <ImageFeedActor> unit: ImageFeedActor {
         id: "", mesh: "primitive:box", material: ImageFeedMaterial { unlit: true },

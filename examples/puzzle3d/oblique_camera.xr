@@ -15,12 +15,12 @@ export component ObliqueCameraDemo inherits Window {
     title: "XRack · Oblique depth clipping";
     width: 432px; height: 310px; resizable: false;
     background: #172335;
-    in-out property <bool> tilted = true;
-    in-out property <bool> device-reversed = false;
-    in-out property <bool> parallel = true;
-    in-out property <bool> effects = true;
-    in-out property <bool> culling = true;
-    in-out property <bool> msaa = false;
+    in-out property <bool> tilted: true;
+    in-out property <bool> device-reversed: false;
+    in-out property <bool> parallel: true;
+    in-out property <bool> effects: true;
+    in-out property <bool> culling: true;
+    in-out property <bool> msaa: false;
     property <point2d> viewport: Point2D.new(432px, 252px);
     property <CutActor> base: CutActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,

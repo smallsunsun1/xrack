@@ -20,11 +20,11 @@ export component EffectTextureInputsDemo inherits Window {
     background: #172332;
 
     property <string> swatch: @texture-url("models/channel-swatch.png");
-    in-out property <bool> file-enabled = true;
-    in-out property <bool> live-enabled = true;
-    in-out property <bool> cool = true;
-    in-out property <bool> item-mips = false;
-    in-out property <bool> show-object = true;
+    in-out property <bool> file-enabled: true;
+    in-out property <bool> live-enabled: true;
+    in-out property <bool> cool: true;
+    in-out property <bool> item-mips: false;
+    in-out property <bool> show-object: true;
 
     Rectangle { width: 480px; height: 240px; background: #24394e; }
     Rectangle {

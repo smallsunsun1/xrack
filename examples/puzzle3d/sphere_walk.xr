@@ -14,22 +14,22 @@ export component SphereWalkDemo inherits Window {
     resizable: false;
     background: #172638;
     property <point3d> spawn: Point3D.new(-2.4, root.radius + root.segment-height * 0.5, 0);
-    in-out property <point3d> center = Point3D.new(-2.4, 0.4, 0);
-    in-out property <float> drive = 1.8;
-    in-out property <float> vertical = 0;
-    in-out property <bool> steps = true;
-    in-out property <bool> snapping = true;
-    in-out property <bool> ceiling = false;
-    in-out property <bool> upright = false;
-    in-out property <float> ramp-angle = 30;
+    in-out property <point3d> center: once Point3D.new(-2.4, 0.4, 0);
+    in-out property <float> drive: 1.8;
+    in-out property <float> vertical: 0;
+    in-out property <bool> steps: true;
+    in-out property <bool> snapping: true;
+    in-out property <bool> ceiling: false;
+    in-out property <bool> upright: false;
+    in-out property <float> ramp-angle: 30;
     property <float> radius: 0.4;
     property <float> segment-height: root.upright ? 0.9 : 0;
-    in-out property <int> entries = 0;
-    in-out property <int> exits = 0;
+    in-out property <int> entries: 0;
+    in-out property <int> exits: 0;
     property <point3d> platform-home: Point3D.new(-0.55, 0.12, 0);
-    in-out property <point3d> platform-position = root.platform-home;
-    out property <bool> platform-blocked = false;
-    property <walkresult3d> last-motion = Scene3D.capsule-walk-with-contacts(
+    in-out property <point3d> platform-position: once root.platform-home;
+    out property <bool> platform-blocked: false;
+    property <walkresult3d> last-motion: once Scene3D.capsule-walk-with-contacts(
         root.terrain, root.center, Vector3D.new(0, 0, 0), root.radius, root.segment-height, 0, 0, 45);
     out property <bool> grounded: root.last-motion.grounded;
     out property <hit3d> ground-contact: root.last-motion.support;
@@ -39,9 +39,9 @@ export component SphereWalkDemo inherits Window {
     property <hit3d> no-shape-hit;
     callback shape-hit(hit3d);
     shape-hit(hit) => { root.last-shape-hit = hit; }
-    out property <bool> jumping = false;
-    out property <bool> jump-bumped = false;
-    property <float> jump-speed = 0;
+    out property <bool> jumping: false;
+    out property <bool> jump-bumped: false;
+    property <float> jump-speed: 0;
     property <int> jump-interval: 16;
 
     out property <int> active-triggers: Model.count(

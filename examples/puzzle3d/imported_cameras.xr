@@ -13,10 +13,10 @@ export component ImportedCamerasDemo inherits Window {
     height: 296px;
     background: #141d29;
 
-    in-out property <string> selected-camera = "rig/Hero";
-    in-out property <float> time = 0;
-    in-out property <bool> effects = false;
-    in-out property <point2d> cursor = Point2D.new(240px, 120px);
+    in-out property <string> selected-camera: "rig/Hero";
+    in-out property <float> time: 0;
+    in-out property <bool> effects: false;
+    in-out property <point2d> cursor: once Point2D.new(240px, 120px);
     property <point2d> viewport-size: Point2D.new(480px, 240px);
     property <CameraActor> defaults: CameraActor {
         id: "", mesh: "", parent: "", x: 0, y: 0, z: 0,

@@ -19,10 +19,10 @@ export component SpecularDemo inherits Window {
     height: 252px;
     background: #141d29;
 
-    in-out property <bool> filtered = false;
-    in-out property <bool> studio = false;
-    in-out property <bool> msaa = false;
-    in-out property <float> yaw = 0;
+    in-out property <bool> filtered: false;
+    in-out property <bool> studio: false;
+    in-out property <bool> msaa: false;
+    in-out property <float> yaw: 0;
     property <[ReflectionObject]> scene: [
         ReflectionObject {
             id: "spheres", mesh: @mesh-url("models/specular-spheres.gltf"),

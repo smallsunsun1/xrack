@@ -15,14 +15,14 @@ export component MaterialCullDemo inherits Window {
     width: 600px; height: 372px;
     background: #192330;
 
-    in-out property <string> mode = "back";
-    in-out property <bool> rear = false;
-    in-out property <bool> slot-override = false;
-    in-out property <bool> prepass = false;
-    in-out property <bool> motion = false;
-    in-out property <bool> shadows = false;
-    in-out property <bool> perspective = false;
-    in-out property <bool> mirror-y = false;
+    in-out property <string> mode: "back";
+    in-out property <bool> rear: false;
+    in-out property <bool> slot-override: false;
+    in-out property <bool> prepass: false;
+    in-out property <bool> motion: false;
+    in-out property <bool> shadows: false;
+    in-out property <bool> perspective: false;
+    in-out property <bool> mirror-y: false;
 
     property <string> camera-name: root.rear ? "rear" : "front";
     property <CullFinish> flat: CullFinish {

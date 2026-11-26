@@ -574,7 +574,7 @@ fn replay_recorded_actions() {
 fn compiler_report_links_paint_only_binding_to_its_named_source_element() {
     let source = r#"
         export component ProfileDemo inherits Window {
-            in-out property <color> accent = #112233;
+            in-out property <color> accent: once #112233;
             swatch := Rectangle {
                 width: 40px;
                 height: 40px;

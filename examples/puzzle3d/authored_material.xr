@@ -23,15 +23,15 @@ export component AuthoredMaterialDemo inherits Window {
     resizable: false;
     background: #182537;
 
-    in-out property <float> roughness = 0.26;
-    in-out property <float> metalness = 0.46;
-    in-out property <float> coat = 0.55;
-    in-out property <bool> warm = true;
-    in-out property <bool> glossy = false;
-    in-out property <float> glossiness = 0.86;
-    in-out property <string> glossiness-channel = "a";
-    in-out property <bool> style-import = true;
-    in-out property <string> mode = "opaque";
+    in-out property <float> roughness: 0.26;
+    in-out property <float> metalness: 0.46;
+    in-out property <float> coat: 0.55;
+    in-out property <bool> warm: true;
+    in-out property <bool> glossy: false;
+    in-out property <float> glossiness: 0.86;
+    in-out property <string> glossiness-channel: "a";
+    in-out property <bool> style-import: true;
+    in-out property <string> mode: "opaque";
 
     property <PrincipledStyle> finish: PrincipledStyle {
         enabled: true,

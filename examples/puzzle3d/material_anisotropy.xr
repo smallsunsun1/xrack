@@ -17,16 +17,16 @@ export component MaterialAnisotropyDemo inherits Window {
     title: "XRack · Brushed metal";
     width: 600px; height: 372px; background: #192330;
 
-    in-out property <float> strength = 0.85;
-    in-out property <float> rotation = 0.0;
-    in-out property <bool> mapped = false;
-    in-out property <bool> imported = false;
-    in-out property <bool> inherit = false;
-    in-out property <bool> sphere = false;
-    in-out property <bool> probe = false;
-    in-out property <bool> coat = false;
-    in-out property <bool> ao = false;
-    in-out property <float> yaw = 0.0;
+    in-out property <float> strength: 0.85;
+    in-out property <float> rotation: 0.0;
+    in-out property <bool> mapped: false;
+    in-out property <bool> imported: false;
+    in-out property <bool> inherit: false;
+    in-out property <bool> sphere: false;
+    in-out property <bool> probe: false;
+    in-out property <bool> coat: false;
+    in-out property <bool> ao: false;
+    in-out property <float> yaw: 0.0;
 
     property <BrushFinish> finish: BrushFinish {
         enabled: !root.inherit, base-color: #b38a50, metalness: 1, roughness: 0.38,

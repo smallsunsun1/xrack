@@ -17,17 +17,17 @@ export component ShadowFiltersDemo inherits Window {
     title: "XRack · 阴影过滤";
     background: #141d29; resizable: false;
 
-    in-out property <string> light-kind = "directional";
-    in-out property <string> filter-mode = "pcf16";
-    in-out property <float> radius = 10.0;
-    in-out property <float> world-radius = 0.5;
-    in-out property <bool> world-units = false;
-    in-out property <int> map-size = 128;
-    in-out property <float> strength = 1.0;
-    in-out property <float> bias = 0.001;
-    in-out property <bool> enabled = true;
-    in-out property <int> cascades = 1;
-    in-out property <bool> fill-light = false;
+    in-out property <string> light-kind: "directional";
+    in-out property <string> filter-mode: "pcf16";
+    in-out property <float> radius: 10.0;
+    in-out property <float> world-radius: 0.5;
+    in-out property <bool> world-units: false;
+    in-out property <int> map-size: 128;
+    in-out property <float> strength: 1.0;
+    in-out property <float> bias: 0.001;
+    in-out property <bool> enabled: true;
+    in-out property <int> cascades: 1;
+    in-out property <bool> fill-light: false;
 
     property <ShadowObject> wall: ShadowObject {
         id: "wall", mesh: "primitive:box", x: 0, y: 0, z: 0,

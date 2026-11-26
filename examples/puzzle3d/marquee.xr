@@ -12,12 +12,12 @@ export component MarqueeDemo inherits Window {
     resizable: false;
     background: #162333;
 
-    in-out property <point2d> start = Point2D.new(0px, 0px);
-    in-out property <point2d> end = Point2D.new(0px, 0px);
-    in-out property <bool> named-camera = true;
-    in-out property <bool> dragging = false;
-    in-out property <int> mask = 3;
-    in-out property <float> time = 0.5;
+    in-out property <point2d> start: once Point2D.new(0px, 0px);
+    in-out property <point2d> end: once Point2D.new(0px, 0px);
+    in-out property <bool> named-camera: true;
+    in-out property <bool> dragging: false;
+    in-out property <int> mask: 3;
+    in-out property <float> time: 0.5;
     property <length> view-width: 634px;
     property <length> view-height: 350px;
     property <point2d> view-size: Point2D.new(root.view-width, root.view-height);

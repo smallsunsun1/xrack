@@ -22,11 +22,11 @@ struct Feed { name: string, camera: string }
 export component MaterialDebugDemo inherits Window {
     title: "XRack · 材质调试"; width: 480px; height: 332px;
     background: #172437; resizable: false;
-    in-out property <int> mode = 0;
-    in-out property <bool> effects = false;
-    in-out property <bool> reference = false;
-    in-out property <bool> glass = false;
-    in-out property <bool> wireframe = false;
+    in-out property <int> mode: 0;
+    in-out property <bool> effects: false;
+    in-out property <bool> reference: false;
+    in-out property <bool> glass: false;
+    in-out property <bool> wireframe: false;
     property <[string]> modes: [
         "none", "base-color", "roughness", "metalness", "emission", "ambient-occlusion",
         "normals", "tangents", "binormals", "f0", "diffuse", "specular", "shadow-occlusion"

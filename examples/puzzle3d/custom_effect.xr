@@ -7,10 +7,10 @@ export component CustomEffectDemo inherits Window {
     title: "XRack · 3D 全息轮廓";
     width: 480px; height: 310px; resizable: false;
     background: #172332;
-    in-out property <bool> enabled-effect = true;
-    in-out property <bool> use-depth = true;
-    in-out property <bool> msaa = false;
-    in-out property <float> amount = 1;
+    in-out property <bool> enabled-effect: true;
+    in-out property <bool> use-depth: true;
+    in-out property <bool> msaa: false;
+    in-out property <float> amount: 1;
 
     Rectangle {
         width: 480px; height: 244px; background: #24394e;

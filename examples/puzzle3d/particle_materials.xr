@@ -17,15 +17,15 @@ export component ParticleMaterialsDemo inherits Window {
     width: 620px; height: 422px;
     background: #182333;
 
-    in-out property <float> time = 0.41;
-    in-out property <string> blend-mode = "source-over";
-    in-out property <bool> use-table = true;
-    in-out property <bool> use-sprite = false;
-    in-out property <bool> companion = true;
-    in-out property <bool> cover = false;
-    in-out property <bool> weighted = true;
-    in-out property <bool> msaa = false;
-    in-out property <bool> hdr = false;
+    in-out property <float> time: 0.41;
+    in-out property <string> blend-mode: "source-over";
+    in-out property <bool> use-table: true;
+    in-out property <bool> use-sprite: false;
+    in-out property <bool> companion: true;
+    in-out property <bool> cover: false;
+    in-out property <bool> weighted: true;
+    in-out property <bool> msaa: false;
+    in-out property <bool> hdr: false;
     property <image> empty-image;
     property <image> color-map: @image-url("models/particle-colors.png");
     property <image> ring-map: @image-url("models/particle-ring.png");

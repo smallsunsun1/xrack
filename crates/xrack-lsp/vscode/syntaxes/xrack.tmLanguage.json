@@ -205,7 +205,7 @@
           }
         },
         {
-          "match": "(?<![A-Za-z_0-9-])(property)\\s*(<)\\s*(\\[\\s*)?([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(\\s*\\])?\\s*(>)\\s*([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)?",
+          "match": "(?<![A-Za-z_0-9-])(property)\\s*(<)\\s*(\\[\\s*)?([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(\\s*\\])?\\s*(>)\\s*([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)?(?:\\s*(:)\\s*(once)(?![A-Za-z_0-9-]))?",
           "captures": {
             "1": {
               "name": "storage.type.xrack"
@@ -227,6 +227,12 @@
             },
             "7": {
               "name": "variable.other.property.declaration.xrack"
+            },
+            "8": {
+              "name": "punctuation.separator.xrack"
+            },
+            "9": {
+              "name": "keyword.other.initializer.xrack"
             }
           }
         },

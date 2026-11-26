@@ -550,7 +550,7 @@ fn completion_resolves_editing_scopes_and_replaces_a_partial_name() {
         "component Other inherits Rectangle { property <int> hidden: 0; }\n",
         "export component Demo inherits Window {\n",
         "  label := Text { text: \"🙂\" + root.co|unt; }\n",
-        "  in-out property <int> count = 0;\n",
+        "  in-out property <int> count: once 0;\n",
         "}",
     ));
     assert_eq!(items.len(), 1);
@@ -776,7 +776,7 @@ fn builtin_functions_expose_documentation_and_contextual_completions() {
 
 #[test]
 fn global_properties_are_completed_and_resolve_to_their_declarations() {
-    let source = "export global Session { in-out property <int> count = 1; private property <int> hidden: 0; } component App inherits Window { out property <int> seen: Session.|; }";
+    let source = "export global Session { in-out property <int> count: once 1; private property <int> hidden: 0; } component App inherits Window { out property <int> seen: Session.|; }";
     let items = complete_at(source);
     assert!(items.iter().any(|item| item["label"] == "count"));
     assert!(!items.iter().any(|item| item["label"] == "hidden"));
@@ -2424,8 +2424,8 @@ fn tab_reordering_completion_and_diagnostics_use_compiler_types() {
     let event = complete_at("component App inherits Window { TabBar { tab-mov| } }");
     assert!(event.iter().any(|item| item["label"] == "tab-moved"));
     let valid = r#"component App inherits Window {
-        in-out property <[string]> entries = ["a", "b"];
-        out property <int> last-move = 0;
+        in-out property <[string]> entries: once ["a", "b"];
+        out property <int> last-move: once 0;
         tabs := TabBar {
             reorderable: true;
             for label in root.entries: TabButton { text: label; }
@@ -2585,7 +2585,7 @@ fn tumbler_completion_uses_the_record_value_role_type() {
         struct Entry { label: string, key: int }
         component App inherits Window {
             in-out property <[Entry]> choices;
-            in-out property <int> chosen = 2;
+            in-out property <int> chosen: once 2;
             wheel := Tumbler {
                 model: root.choices;
                 text-role: "label";
@@ -6750,7 +6750,7 @@ fn input_validity_is_completed_as_a_read_only_enum() {
         |item| item["label"] == "input-validity" && item["detail"] == "read-only InputValidity"
     ));
     let values = complete_at(
-        "component App inherits Window { in property <InputValidity> status = InputValidity.| }",
+        "component App inherits Window { in property <InputValidity> status: once InputValidity.| }",
     );
     for expected in ["invalid", "intermediate", "acceptable"] {
         assert!(
@@ -7278,7 +7278,7 @@ fn position_child_completes_and_resolves_only_viewport_descendants() {
 fn completes_enum_variants_and_callback_local_bindings() {
     let source = r#"enum Phase { Idle, Running }
 component Demo inherits Window {
-    property <Phase> phase = Phase::Idle;
+    property <Phase> phase: once Phase::Idle;
     callback start();
     start => {
         let next-phase = Phase::Running;
@@ -7336,7 +7336,7 @@ fn payload_enum_completion_and_match_binding_definition() {
     Ready(string),
 }
 component Demo inherits Window {
-    in property <Job> work = Job::Ready("ok");
+    in property <Job> work: once Job::Ready("ok");
     out property <string> status: match root.work {
         Pending => "pending",
         Failed { reason: message, retryable: _ } => message,
@@ -7394,7 +7394,7 @@ fn custom_render_completes_renderer_inputs() {
 fn model_lookup_completes_with_a_literal_field_path() {
     let source = r#"struct Entry { owner: string, label: string }
         export component Demo inherits Window {
-            in property <[Entry]> rows = [];
+            in property <[Entry]> rows: once [];
             out property <[Entry]> selected: Model.lookup(root.rows, "owner", "group");
         }"#;
     let items = complete_at(&source.replace("Model.lookup", "Model.loo|"));
@@ -9012,7 +9012,7 @@ struct Actor {
     scale-x: float, scale-y: float, scale-z: float, color: color, geometry: MeshData,
 }
 export component App inherits Window {
-    in property <[Vertex]> points = [];
+    in property <[Vertex]> points: once [];
     SceneView3D { model: [
         Actor { id: "panel", x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0,
             scale-x: 1, scale-y: 1, scale-z: 1, color: #fff,
@@ -10489,7 +10489,7 @@ fn particle_bursts_validate_event_types_and_complete_record_fields() {
 #[test]
 fn initializers_format_and_formulas_report_read_only_writes() {
     let source = r#"export component Demo inherits Window {
-    property <string> draft = "A";
+    property <string> draft: once "A";
     out property <string> title-text: root.draft;
     callback rename();
     rename => { root.draft = "B"; }
@@ -10507,10 +10507,15 @@ fn initializers_format_and_formulas_report_read_only_writes() {
             .contains("read-only")
     );
 
-    let unformatted = source.replace("draft = ", "draft=");
+    let unformatted = source.replace("draft: once", "draft:once");
     let edits = formatting::edits(&unformatted, &json!({}));
     let formatted = edits[0]["newText"].as_str().unwrap();
-    assert!(formatted.contains(r#"draft = "A";"#));
+    assert!(formatted.contains(r#"draft: once "A";"#));
+    assert!(
+        complete_at("component Demo inherits Window { property <int> count: on| }")
+            .iter()
+            .any(|item| item["label"] == "once")
+    );
 }
 
 #[test]

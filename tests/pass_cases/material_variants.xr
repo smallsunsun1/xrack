@@ -8,7 +8,7 @@ struct Actor {
     color: color, material-variant: string,
 }
 export component VariantPlan inherits Window {
-    in property <string> finish = "Copper";
+    in property <string> finish: "Copper";
     SceneView3D {
         width: 80px; height: 80px;
         model: [Actor {

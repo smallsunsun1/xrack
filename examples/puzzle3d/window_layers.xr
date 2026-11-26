@@ -9,10 +9,10 @@ struct LayerActor {
 export component WindowLayersDemo inherits Window {
     title: "XRack · 窗口 3D 底层与顶层";
     width: 384px; height: 276px; background: #192638;
-    in-out property <string> mode = "underlay";
-    in-out property <bool> msaa = false;
-    in-out property <int> ui-hits = 0;
-    in-out property <int> view-hits = 0;
+    in-out property <string> mode: "underlay";
+    in-out property <bool> msaa: false;
+    in-out property <int> ui-hits: 0;
+    in-out property <int> view-hits: 0;
 
     property <LayerActor> actor: LayerActor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,

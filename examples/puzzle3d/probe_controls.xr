@@ -21,14 +21,14 @@ struct LocalProbe {
 export component ProbeControlsDemo inherits Window {
     title: "XRack · 环境探针方向";
     width: 420px; height: 256px; resizable: false; background: #1b2638;
-    in-out property <float> pitch = 0;
-    in-out property <float> roll = 0;
-    in-out property <float> horizon = 0;
-    in-out property <int> local = 0;
-    in-out property <float> local-pitch = 0;
-    in-out property <float> local-roll = 0;
-    in-out property <bool> independent = true;
-    in-out property <bool> procedural = false;
+    in-out property <float> pitch: 0;
+    in-out property <float> roll: 0;
+    in-out property <float> horizon: 0;
+    in-out property <int> local: 0;
+    in-out property <float> local-pitch: 0;
+    in-out property <float> local-roll: 0;
+    in-out property <bool> independent: true;
+    in-out property <bool> procedural: false;
 
     property <Actor> unit: Actor {
         id: "", mesh: "primitive:sphere", x: 0, y: -0.20, z: 0,

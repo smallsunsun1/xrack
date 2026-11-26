@@ -18,14 +18,14 @@ export component ShadowProjectionDemo inherits Window {
     title: "XRack · 逐灯阴影投影";
     width: 360px; height: 368px; resizable: false; background: #182438;
 
-    in-out property <string> lamp-kind = "directional";
-    in-out property <bool> short = false;
-    in-out property <bool> manual = false;
-    in-out property <bool> locked = true;
-    in-out property <bool> enabled = true;
-    in-out property <int> cascades = 3;
-    in-out property <float> orbit = 0;
-    in-out property <float> strength = 1;
+    in-out property <string> lamp-kind: "directional";
+    in-out property <bool> short: false;
+    in-out property <bool> manual: false;
+    in-out property <bool> locked: true;
+    in-out property <bool> enabled: true;
+    in-out property <int> cascades: 3;
+    in-out property <float> orbit: 0;
+    in-out property <float> strength: 1;
 
     property <Actor> panel: Actor {
         id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,

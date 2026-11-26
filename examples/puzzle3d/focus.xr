@@ -11,13 +11,13 @@ export component FocusDemo inherits Window {
     height: 300px;
     background: #141d29;
 
-    in-out property <bool> enabled = true;
-    in-out property <bool> orthographic = true;
-    in-out property <bool> glass = false;
-    in-out property <bool> hdr = false;
-    in-out property <float> focus = 12;
-    in-out property <length> radius = 24px;
-    in-out property <float> aa-scale = 1;
+    in-out property <bool> enabled: true;
+    in-out property <bool> orthographic: true;
+    in-out property <bool> glass: false;
+    in-out property <bool> hdr: false;
+    in-out property <float> focus: 12;
+    in-out property <length> radius: 24px;
+    in-out property <float> aa-scale: 1;
 
     property <FocusActor> defaults: FocusActor {
         id: "", mesh: "", x: 0, y: 0.3, z: 0, scale-x: 0.37, scale-y: 0.52, scale-z: 1,

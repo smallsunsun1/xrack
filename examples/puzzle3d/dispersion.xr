@@ -20,10 +20,10 @@ export component DispersionDemo inherits Window {
     height: 278px;
     background: #141d29;
 
-    in-out property <bool> dispersed = true;
-    in-out property <bool> show-glass = true;
-    in-out property <bool> msaa = false;
-    in-out property <float> yaw = 32;
+    in-out property <bool> dispersed: true;
+    in-out property <bool> show-glass: true;
+    in-out property <bool> msaa: false;
+    in-out property <float> yaw: 32;
     property <DispersionObject> defaults: DispersionObject {
         id: "", mesh: "", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1,

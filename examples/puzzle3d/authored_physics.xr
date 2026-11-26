@@ -17,12 +17,12 @@ export component AuthoredPhysicsDemo inherits Window {
     property <point3d> ball-start: Point3D.new(-1.5, 0.85, 0);
     property <vector3d> ball-size: Vector3D.new(0.72, 0.72, 0.72);
     property <vector3d> wall-size: Vector3D.new(0.36, 1.5, 2.1);
-    property <bool> reversed = false;
-    property <bool> shifted = false;
-    property <bool> frozen = false;
+    property <bool> reversed: false;
+    property <bool> shifted: false;
+    property <bool> frozen: false;
     property <scenemodel3d> frozen-scene;
 
-    out property <bool> accepted = false;
+    out property <bool> accepted: false;
     out property <int> ball: Physics3D.body-by-id(root.world, "ball");
     out property <int> wall: Physics3D.body-by-id(root.world, "wall");
     out property <point3d> ball-position: root.ball == 0 ? root.ball-start : Physics3D.position(root.world, root.ball);

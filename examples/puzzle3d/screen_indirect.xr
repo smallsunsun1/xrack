@@ -11,16 +11,16 @@ export component ScreenIndirectDemo inherits Window {
     resizable: false;
     background: #141d29;
 
-    in-out property <bool> global-light = true;
-    in-out property <bool> warm-panel = true;
-    in-out property <bool> show-panel = true;
-    in-out property <bool> msaa = false;
-    in-out property <bool> reflect-screen = false;
-    in-out property <bool> ambient-occlusion = false;
-    in-out property <float> strength = 3.0;
-    in-out property <float> occlusion = 0.6;
-    in-out property <float> ambient-level = 0.32;
-    in-out property <float> buffer-scale = 0.5;
+    in-out property <bool> global-light: true;
+    in-out property <bool> warm-panel: true;
+    in-out property <bool> show-panel: true;
+    in-out property <bool> msaa: false;
+    in-out property <bool> reflect-screen: false;
+    in-out property <bool> ambient-occlusion: false;
+    in-out property <float> strength: 3.0;
+    in-out property <float> occlusion: 0.6;
+    in-out property <float> ambient-level: 0.32;
+    in-out property <float> buffer-scale: 0.5;
 
     property <IndirectActor> base: IndirectActor {
         id: "", mesh: "primitive:box",

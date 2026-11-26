@@ -77,7 +77,7 @@
                               },
                               "span": {
                                 "line": 4,
-                                "column": 54
+                                "column": 53
                               }
                             }
                           },
@@ -92,7 +92,7 @@
                               },
                               "span": {
                                 "line": 4,
-                                "column": 74
+                                "column": 73
                               }
                             }
                           }
@@ -101,14 +101,14 @@
                     },
                     "span": {
                       "line": 4,
-                      "column": 41
+                      "column": 40
                     }
                   }
                 ]
               },
               "span": {
                 "line": 4,
-                "column": 40
+                "column": 39
               }
             },
             "span": {
@@ -140,7 +140,7 @@
                           },
                           "span": {
                             "line": 5,
-                            "column": 28
+                            "column": 27
                           }
                         },
                         "right": {
@@ -156,7 +156,7 @@
                                 },
                                 "span": {
                                   "line": 5,
-                                  "column": 32
+                                  "column": 31
                                 }
                               },
                               "right": {
@@ -168,21 +168,21 @@
                                 },
                                 "span": {
                                   "line": 5,
-                                  "column": 36
+                                  "column": 35
                                 }
                               }
                             }
                           },
                           "span": {
                             "line": 5,
-                            "column": 32
+                            "column": 31
                           }
                         }
                       }
                     },
                     "span": {
                       "line": 5,
-                      "column": 28
+                      "column": 27
                     }
                   },
                   "right": {
@@ -198,21 +198,21 @@
                           },
                           "span": {
                             "line": 5,
-                            "column": 41
+                            "column": 40
                           }
                         }
                       }
                     },
                     "span": {
                       "line": 5,
-                      "column": 40
+                      "column": 39
                     }
                   }
                 }
               },
               "span": {
                 "line": 5,
-                "column": 28
+                "column": 27
               }
             },
             "span": {

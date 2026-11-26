@@ -22,10 +22,10 @@ export component CapturePositionsDemo inherits Window {
     title: "XRack · 捕获相机反投影";
     width: 540px; height: 362px; resizable: false;
     background: #172437;
-    in-out property <float> west-shift = 0;
-    in-out property <float> west-z = 2;
-    in-out property <bool> asymmetric = false;
-    in-out property <bool> device-reversed = false;
+    in-out property <float> west-shift: 0;
+    in-out property <float> west-z: 2;
+    in-out property <bool> asymmetric: false;
+    in-out property <bool> device-reversed: false;
 
     property <[PositionInput]> samples: [
         PositionInput { capture: "west", attachment: "depth", filter: "nearest" },

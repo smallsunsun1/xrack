@@ -15,19 +15,19 @@ export component CompoundBodiesDemo inherits Window {
     width: 690px; height: 474px;
     resizable: false; background: #172738;
 
-    in-out property <bool> running = false;
+    in-out property <bool> running: false;
     property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, -9.81, 0), 0.016);
     property <point3d> origin: Point3D.new(0, 0, 0);
     property <vector3d> identity: Vector3D.new(0, 0, 0);
     property <float> radius: 0.25;
-    out property <int> gate = 0;
-    out property <int> ball = 0;
-    out property <int> sensor = 0;
-    out property <int> ticks = 0;
-    out property <int> entries = 0;
-    out property <int> exits = 0;
-    out property <bool> raised = false;
-    out property <bool> open-lane = true;
+    out property <int> gate: 0;
+    out property <int> ball: 0;
+    out property <int> sensor: 0;
+    out property <int> ticks: 0;
+    out property <int> entries: 0;
+    out property <int> exits: 0;
+    out property <bool> raised: false;
+    out property <bool> open-lane: true;
     out property <int> occupants: Physics3D.trigger-count(root.world, root.sensor);
     out property <point3d> ball-position: root.ball == 0 ? root.launch-position : Physics3D.position(root.world, root.ball);
     out property <point3d> gate-position: Physics3D.position(root.world, root.gate);

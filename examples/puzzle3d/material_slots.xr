@@ -18,11 +18,11 @@ export component MaterialSlotsDemo inherits Window {
     width: 634px; height: 420px;
     resizable: false; background: #1a2638;
 
-    in-out property <string> target = "Body finish";
-    in-out property <bool> warm = true;
-    in-out property <bool> cutout = false;
-    in-out property <bool> accent = true;
-    in-out property <bool> implicit-style = true;
+    in-out property <string> target: "Body finish";
+    in-out property <bool> warm: true;
+    in-out property <bool> cutout: false;
+    in-out property <bool> accent: true;
+    in-out property <bool> implicit-style: true;
     property <CoatStyle> original: CoatStyle {
         enabled: false, slot: "", base-color: #ffffff, alpha-mode: "opaque", alpha-cutoff: 0.5,
     };

@@ -37,9 +37,9 @@ struct Actor {
 }
 
 export component App inherits Window {
-    in property <[Actor]> objects = [];
-    in property <point3d> origin = Point3D.new(0, 1, 0);
-    in property <float> capsule-segment = 1;
+    in property <[Actor]> objects: [];
+    in property <point3d> origin: once Point3D.new(0, 1, 0);
+    in property <float> capsule-segment: 1;
     out property <hit3d> low: Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, 0, 1);
     out property <hit3d> high: Scene3D.capsule-cast(root.objects, root.origin, Vector3D.new(1, 0, 0), 6, 0.4, root.capsule-segment);
     out property <point3d> still: Scene3D.capsule-slide(root.objects, root.origin, Vector3D.new(0, 0, 0), 0.4, root.capsule-segment);

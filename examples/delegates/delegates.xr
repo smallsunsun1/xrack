@@ -1,8 +1,8 @@
 component RecordEditor inherits HorizontalLayout {
     in property <string> label;
     in property <int> position;
-    property <bool> pinned = false;
-    property <int> clicks = 0;
+    property <bool> pinned: false;
+    property <int> clicks: 0;
 
     spacing: 8px;
     padding-left: 10px;
@@ -52,10 +52,10 @@ export component DelegatesDemo inherits Window {
 }
 component MailRow inherits SwipeDelegate {
     in property <string> subject;
-    property <SwipeSide> revealed = closed;
-    property <bool> archived = false;
-    property <bool> pinned = false;
-    property <int> clicks = 0;
+    property <SwipeSide> revealed: once closed;
+    property <bool> archived: false;
+    property <bool> pinned: false;
+    property <int> clicks: 0;
     open-side <=> root.revealed;
     accessible-name: root.subject;
     clicked() => { root.clicks += 1; }

@@ -12,8 +12,8 @@ export component TextureMipmapDemo inherits Window {
     height: 258px;
     background: #141d29;
 
-    in-out property <float> distance = 20;
-    in-out property <float> yaw = 14;
+    in-out property <float> distance: 20;
+    in-out property <float> yaw: 14;
     property <[MipmapActor]> scene: [
         MipmapActor {
             id: "cards", mesh: @mesh-url("models/minification-cards.gltf"),

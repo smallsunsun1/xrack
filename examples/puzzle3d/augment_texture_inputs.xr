@@ -17,10 +17,10 @@ struct AugmentTextureEffect { shader: string, buffers: [AugmentTextureRead] }
 export component AugmentTextureInputsDemo inherits Window {
     title: "XRack · 捕获扩展纹理";
     width: 300px; height: 151px; background: #000;
-    in-out property <bool> read-data = false;
-    in-out property <bool> dim-red = false;
-    in-out property <bool> dim-green = false;
-    in-out property <bool> cycle = false;
+    in-out property <bool> read-data: false;
+    in-out property <bool> dim-red: false;
+    in-out property <bool> dim-green: false;
+    in-out property <bool> cycle: false;
 
     property <AugmentTextureActor> unit: AugmentTextureActor {
         id: "", mesh: "primitive:box", color: #444, material: AugmentTextureMaterial { unlit: true },

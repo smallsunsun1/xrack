@@ -88,7 +88,7 @@ fn live_base_item_mapping_uses_verified_texture_fields() {
             color: color, material: Surface,
         }
         export component Demo inherits Window {
-            in property <[Actor]> world = [];
+            in property <[Actor]> world: once [];
             SceneView3D { model: root.world; }
         }
         "#,
@@ -121,8 +121,8 @@ fn fused_string_concatenation_is_valid_in_visual_bindings() {
     let module = raw(
         r#"
         export component Demo inherits Window {
-            in property <string> first = "one";
-            in property <string> second = "two";
+            in property <string> first: once "one";
+            in property <string> second: once "two";
             Text { text: root.first + " / " + root.second; }
         }
         "#,
@@ -151,7 +151,7 @@ fn static_integer_repeats_share_only_equal_passive_scenes() {
         r#"
         component Badge inherits Text { text: "Delegate"; }
         export component App inherits Window {
-            in property <int> live = 3;
+            in property <int> live: once 3;
             for row in 4 : Text { text: "Fixed"; }
             for row in 4 : Text { text: "Fixed"; }
             for row in 5 : Text { text: "Fixed"; }
@@ -203,7 +203,7 @@ fn reactive_gradients_and_translations_can_use_shared_component_caches() {
         r#"
         translations "catalog.toml";
         export component App inherits Window {
-            in property <color> accent = #48a;
+            in property <color> accent: once #48a;
             pure callback tint() -> color;
             Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
             Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
@@ -260,7 +260,7 @@ fn unused_private_bindings_release_their_initializer_graph() {
     let unoptimized = raw(
         r#"
         export component App inherits Window {
-            in property <int> seed = 10;
+            in property <int> seed: once 10;
             property <int> dead-input: root.seed + 1;
             property <int> dead-middle: root.dead-input + root.dead-input;
             property <string> dead-tip: "unused marker " + root.dead-middle;
@@ -308,7 +308,7 @@ fn state_merging_requires_adjacent_identical_overrides_and_no_transitions() {
         r#"
         component Badge inherits Text { in property <string> caption; text: root.caption; }
         export component App inherits Window {
-            in property <int> mode = 0;
+            in property <int> mode: once 0;
             panel := Rectangle { width: 20px; }
             badge := Badge { caption: "base"; }
             states [
@@ -320,7 +320,7 @@ fn state_merging_requires_adjacent_identical_overrides_and_no_transitions() {
             ]
         }
         component Timed inherits Window {
-            in property <int> mode = 0;
+            in property <int> mode: once 0;
             panel := Rectangle { width: 20px; }
             states [
                 first when root.mode == 1: { panel.width: 40px;
@@ -497,7 +497,7 @@ fn fixed_image_source_plan_requires_a_stable_box_and_a_plain_image() {
         r#"
         component App inherits Window {
             in property <image> picture;
-            in property <length> live-width = 100px;
+            in property <length> live-width: once 100px;
             fixed := Image { source: root.picture; width: 100px; height: 50px; }
             intrinsic := Image { source: root.picture; width: 100px; }
             changing := Image { source: root.picture; width: root.live-width; height: 50px; }
@@ -538,7 +538,7 @@ fn builtin_literal_fields_fold_and_leave_public_values_reactive() {
         r#"
         component App inherits Window {
             property <Time> fixed: Time { hour: 30, minute: -2, second: 99 };
-            in-out property <Time> live = Time { hour: 30, minute: -2, second: 99 };
+            in-out property <Time> live: once Time { hour: 30, minute: -2, second: 99 };
             property <Date> today: Date { year: 2026, month: 11, day: 12 };
             property <Font> face: Font { family: "sans-serif", size: 18px, weight: 500, italic: false };
             out property <int> hour: root.fixed.hour;
@@ -587,13 +587,13 @@ fn window_layers_are_planned_only_when_the_stacking_band_is_known() {
             SceneView3D { render-mode: "underlay"; z: 20; }
         }
         export component ChangingLayer inherits Window {
-            in-out property <bool> front = false;
+            in-out property <bool> front: once false;
             SceneView3D { render-mode: root.front ? "overlay" : "underlay"; }
             Rectangle {}
         }
         export component StableLayer inherits Window {
-            in-out property <bool> direct = false;
-            in-out property <string> format = "rgba8";
+            in-out property <bool> direct: once false;
+            in-out property <string> format: once "rgba8";
             SceneView3D {
                 render-mode: root.direct ? "inline" : "offscreen";
                 render-format: root.format;
@@ -648,7 +648,7 @@ fn empty_repeat_plan_keeps_virtual_templates_and_normalizes_known_paint_order() 
     let optimized = raw(
         r#"
         component App inherits Window {
-            in-out property <int> count = 0;
+            in-out property <int> count: once 0;
             for row in 0 : Text { text: "" + row; }
             for item in [] : Label { text: item; }
             for row in root.count : Text { text: "" + row; }
@@ -715,8 +715,8 @@ fn scalar_record_projections_share_slots_and_hoist_the_row_independent_prefix() 
         r#"
         struct Strings { prefix: string, suffix: string }
         component App inherits Window {
-            in-out property <Strings> style = Strings { prefix: "x", suffix: "y" };
-            in property <[string]> items = ["one", "two"];
+            in-out property <Strings> style: once Strings { prefix: "x", suffix: "y" };
+            in property <[string]> items: once ["one", "two"];
             Text { text: root.style.prefix + root.style.suffix; }
             Text { text: root.style.prefix + root.style.suffix; }
             for item in root.items : Text { text: root.style.prefix + item; }
@@ -750,7 +750,7 @@ fn private_alias_chains_forward_reads_writes_and_public_endpoints() {
     let optimized = raw(
         r#"
         component App inherits Window {
-            property <int> storage = 7;
+            property <int> storage: once 7;
             property <int> middle <=> root.storage;
             property <int> tail <=> root.middle;
             in-out property <int> exposed <=> root.tail;
@@ -800,9 +800,9 @@ fn fixed_text_update_plan_requires_two_stable_absolute_dimensions() {
     let optimized = raw(
         r#"
         component App inherits Window {
-            in property <string> message = "status";
-            in property <length> height-input = 30px;
-            in property <bool> compact = false;
+            in property <string> message: once "status";
+            in property <length> height-input: once 30px;
+            in property <bool> compact: once false;
             states [ compact when root.compact: { stateful.height: 18px; } ]
 
             fixed := Text { text: root.message; width: 120px; height: 24px; }
@@ -854,9 +854,9 @@ fn record_projection_folding_keeps_writable_storage_and_other_field_evaluation()
         struct Pair { count: int, label: string }
         component App inherits Window {
             property <Pair> immutable: Pair { count: 7, label: "preset" };
-            property <Pair> writable = Pair { count: 8, label: "old" };
+            property <Pair> writable: once Pair { count: 8, label: "old" };
             in-out property <Pair> linked <=> root.writable;
-            property <Pair> assigned = Pair { count: 6, label: "old" };
+            property <Pair> assigned: once Pair { count: 6, label: "old" };
             callback change();
             change => { root.assigned = Pair { count: 10, label: "new" }; }
             property <Pair> dynamic: Pair { count: 9, label: root.label() };
@@ -1009,8 +1009,8 @@ fn tree_queries_keep_their_order_across_an_expansion_command() {
         struct Entry { id: int, parent: int }
         component App inherits Window {
             property <[Entry]> records;
-            out property <int> before = -1;
-            out property <int> after = -1;
+            out property <int> before: once -1;
+            out property <int> after: once -1;
             callback reveal();
             reveal => {
                 root.before = directory.row-for-key(2);
@@ -1049,9 +1049,9 @@ fn tree_queries_keep_their_order_across_an_expansion_command() {
 fn scroll_range_reads_remain_live_across_writes() {
     let optimized = raw(
         r#"component Demo inherits Window {
-            in-out property <float> offset = 0;
-            out property <float> before = 0;
-            out property <float> after = 0;
+            in-out property <float> offset: once 0;
+            out property <float> before: once 0;
+            out property <float> after: once 0;
             bar := ScrollBar { position <=> root.offset; size: 0.25; }
             callback jump();
             jump() => {
@@ -1167,7 +1167,7 @@ fn table_positioning_effects_keep_order_and_independent_axis_arguments() {
 fn static_gradient_plans_exclude_live_colors() {
     let input = raw(
         r#"export component Demo inherits Window {
-            in-out property <color> tint = #abc;
+            in-out property <color> tint: once #abc;
             Rectangle { background: @linear-gradient(90deg, #000, #fff); }
             Rectangle { background: @radial-gradient(circle, #000, #fff); }
             Rectangle { background: @radial-gradient(circle, #000, root.tint); }
@@ -1211,8 +1211,8 @@ fn unconditional_literal_states_become_bindings_and_unlock_scene_plans() {
         r#"
         component Badge inherits Rectangle {}
         export component App inherits Window {
-            in property <string> message = "Ready";
-            in property <bool> live = false;
+            in property <string> message: once "Ready";
+            in property <bool> live: once false;
             grid := GridLayout {
                 tile := Rectangle { col: 0; width: 20px; height: 20px; }
             }
@@ -1232,7 +1232,7 @@ fn unconditional_literal_states_become_bindings_and_unlock_scene_plans() {
             } ]
         }
         component DynamicValue inherits Window {
-            in property <length> target-width = 120px;
+            in property <length> target-width: once 120px;
             panel := Rectangle { width: 20px; }
             states [ settled when true: { panel.width: root.target-width; } ]
         }
@@ -1281,7 +1281,7 @@ fn unconditional_literal_states_become_bindings_and_unlock_scene_plans() {
 fn state_overrides_keep_grid_placement_and_subtree_values_live() {
     let module = raw(
         r#"export component Demo inherits Window {
-            in property <bool> compact = false;
+            in property <bool> compact: once false;
             grid := GridLayout { tile := Rectangle { col: 0; width: 16px; height: 16px; } }
             states [ small when root.compact: { tile.col: 1; tile.width: 12px; } ]
         }"#,
@@ -1314,7 +1314,7 @@ fn state_overrides_keep_grid_placement_and_subtree_values_live() {
 fn simplify_visuals_removes_disabled_timing_and_preserves_delayed_jumps() {
     let input = raw(
         r#"export component Demo inherits Window {
-            in property <bool> motion = true;
+            in property <bool> motion: once true;
             Rectangle {
                 animate width { duration: 200ms; enabled: false; }
                 animate height { duration: 200ms; enabled: true; }
@@ -1354,7 +1354,7 @@ fn simplify_visuals_removes_disabled_timing_and_preserves_delayed_jumps() {
 fn equivalent_visual_bindings_share_one_cache_across_sibling_elements() {
     let input = raw(
         r#"export component Demo inherits Window {
-            in-out property <int> count = 0;
+            in-out property <int> count: once 0;
             first := Text { text: "Count " + root.count; }
             second := Text { text: "Count " + root.count; }
         }"#,
@@ -1393,7 +1393,7 @@ fn equivalent_visual_bindings_share_one_cache_across_sibling_elements() {
 fn visual_cache_groups_are_separate_for_each_repeat_and_exclude_calls() {
     let module = raw(
         r#"export component Demo inherits Window {
-            in-out property <int> count = 0;
+            in-out property <int> count: once 0;
             pure callback format-count(int) -> string;
             a := Text { text: "Count " + root.format-count(root.count); }
             b := Text { text: "Count " + root.format-count(root.count); }
@@ -1456,7 +1456,7 @@ fn visual_cache_groups_are_separate_for_each_repeat_and_exclude_calls() {
 fn row_invariant_bindings_share_a_component_cache_across_repeats() {
     let input = raw(
         r#"export component Demo inherits Window {
-            in-out property <string> caption = "shared";
+            in-out property <string> caption: once "shared";
             for item in ["A", "B"] : VerticalLayout {
                 Text { text: "Caption " + root.caption; }
                 Text { text: "Row " + item; }
@@ -1506,7 +1506,7 @@ fn row_invariant_bindings_share_a_component_cache_across_repeats() {
 fn scene_plans_share_constant_table_columns_without_freezing_live_bindings() {
     let module = raw(
         r#"export component Demo inherits Window {
-            in property <length> current-width = 60px;
+            in property <length> current-width: once 60px;
             TableView {
                 TableColumn { title: "Fixed"; width: 80px; }
                 TableColumn { title: "Live"; width: root.current-width; }
@@ -1550,9 +1550,9 @@ fn scene_plans_share_constant_table_columns_without_freezing_live_bindings() {
 fn scene_plans_mark_paint_static_subtrees_and_only_invariant_subexpressions() {
     let optimized = raw(
         r#"export component Demo inherits Window {
-            in-out property <string> caption = "shared";
-            in-out property <color> tint = #abc;
-            in-out property <length> size = 40px;
+            in-out property <string> caption: once "shared";
+            in-out property <color> tint: once #abc;
+            in-out property <length> size: once 40px;
             swatch := Rectangle { background: root.tint; width: root.size; }
             panel := VerticalLayout { Text { text: "static"; } }
             for item in ["A", "B"] : Text { text: ("Caption " + root.caption) + item; }
@@ -1607,8 +1607,8 @@ fn scene_plans_mark_paint_static_subtrees_and_only_invariant_subexpressions() {
 fn precompiles_constant_paths_and_plans_only_fixed_grids() {
     let module = raw(
         r#"export component Demo inherits Window {
-            in-out property <string> path-source = "M0 0 L10 10";
-            in-out property <bool> show = true;
+            in-out property <string> path-source: once "M0 0 L10 10";
+            in-out property <bool> show: once true;
             fixed-path := Path { commands: "M0 0 " + "L10 10"; }
             live-path := Path { commands: root.path-source; }
             fixed-grid := GridLayout {
@@ -1648,8 +1648,8 @@ fn optimization_preserves_stack_reads_on_each_side_of_navigation() {
     let optimized = raw(
         r#"
         component App inherits Window {
-            out property <int> before = 0;
-            out property <int> after = 0;
+            out property <int> before: once 0;
+            out property <int> after: once 0;
             nav := StackView {
                 home := StackPage {}
                 detail := StackPage {}
@@ -1809,9 +1809,9 @@ fn constant_conversions_and_string_expressions_reach_rust_as_literals() {
 fn identities_keep_live_reads_and_calls_and_prune_dead_operands() {
     let optimized = raw(
         r#"export component App inherits Window {
-            in-out property <int> count = 2;
-            in-out property <bool> enabled = true;
-            in-out property <string> caption = "app";
+            in-out property <int> count: once 2;
+            in-out property <bool> enabled: once true;
+            in-out property <string> caption: once "app";
             pure callback probe() -> bool;
             callback ping;
             callback run;
@@ -1859,7 +1859,7 @@ fn identities_keep_live_reads_and_calls_and_prune_dead_operands() {
 fn only_unconditional_visual_guards_are_removed() {
     let input = raw(
         r#"export component App inherits Window {
-            in property <bool> show = true;
+            in property <bool> show: once true;
             if 1 + 2 == 3 : always := Button { clicked() => {} }
             if false : hidden := Text { text: "not-rendered-marker"; }
             if root.show : dynamic := Text { text: "dynamic"; }
@@ -1906,7 +1906,7 @@ fn only_unconditional_visual_guards_are_removed() {
 fn optimization_preserves_dynamic_conditions_and_trapping_operations() {
     let input = raw(
         r#"export component App inherits Window {
-        out property <int> count = 0;
+        out property <int> count: once 0;
         callback condition() -> bool;
         condition => { root.count += 1; true }
         callback choose();
@@ -1958,7 +1958,7 @@ fn optimization_preserves_dynamic_conditions_and_trapping_operations() {
 fn operation_views_keep_block_order_and_distinguish_reads_across_writes() {
     let module = raw(
         r#"export component App inherits Window {
-        in-out property <int> count = 1;
+        in-out property <int> count: once 1;
         callback step();
         step() => { root.count += 1; root.count += 1; }
     }"#,
@@ -2050,7 +2050,7 @@ fn table_selection_reads_stay_live_across_a_selection_command() {
 fn table_history_reads_observe_replay_in_the_same_callback() {
     let optimized = raw(
         r#"component App inherits Window {
-            in-out property <[string]> records = ["One"];
+            in-out property <[string]> records: once ["One"];
             out property <bool> before;
             out property <bool> after;
             callback revert();
@@ -2175,12 +2175,12 @@ fn changing_viewport_capture_names_and_display_controls_only_invalidates_paint()
         struct Feed { name: string, color-source: string, depth-source: string }
         struct Sky { sky-top-color: color, sun-latitude: float }
         export component Demo inherits Window {
-            in property <string> feed = "stage";
-            in property <float> amount = 0;
-            in property <color> tint = #000;
-            in property <bool> dither = false;
-            in property <int> ghost-count = 4;
-            in property <image> lens-mask = @image-url("");
+            in property <string> feed: once "stage";
+            in property <float> amount: once 0;
+            in property <color> tint: once #000;
+            in property <bool> dither: once false;
+            in property <int> ghost-count: once 4;
+            in property <image> lens-mask: once @image-url("");
             SceneView3D {
                 scene-captures: [Feed {
                     name: "forward", color-source: root.feed, depth-source: root.feed,
