@@ -2,7 +2,8 @@ mod debug_hir;
 mod loader;
 pub mod model;
 pub mod modules;
-mod ownership;
+#[doc(hidden)]
+pub mod ownership;
 pub mod semantic;
 mod slots;
 pub use model::*;

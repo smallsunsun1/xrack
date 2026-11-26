@@ -118,26 +118,20 @@ pub(crate) fn analyze(uri: &str, text: &str, workspace: Option<&Workspace<'_>>) 
         return analysis;
     };
     let document = xrack_ir::declare_handles(&document);
-    let (diagnostics, phase) = match xrack_ir::semantic::validate_with_warnings(&document) {
-        Ok(warnings) => (warnings, "ownership"),
-        Err(errors) => (errors, "semantic"),
-    };
-    for diagnostic in diagnostics {
-        if let Some((workspace, file)) = workspace.zip(
-            diagnostic
-                .span
-                .source
-                .checked_sub(1)
-                .and_then(|i| files.get(i)),
-        ) {
-            let import = analysis.inputs.get(file).copied();
-            analysis.report(uri, &source, workspace, file, diagnostic, phase, import);
-        } else {
-            analysis
-                .diagnostics
-                .entry(uri.into())
-                .or_default()
-                .push(source.diagnostic(diagnostic, phase));
+    if let Err(errors) = xrack_ir::semantic::for_each_component(&document, |_, _| {}) {
+        for error in errors {
+            if let Some((workspace, file)) =
+                workspace.zip(error.span.source.checked_sub(1).and_then(|i| files.get(i)))
+            {
+                let import = analysis.inputs.get(file).copied();
+                analysis.report(uri, &source, workspace, file, error, "semantic", import);
+            } else {
+                analysis
+                    .diagnostics
+                    .entry(uri.into())
+                    .or_default()
+                    .push(source.diagnostic(error, "semantic"));
+            }
         }
     }
     analysis
@@ -175,7 +169,6 @@ impl Analysis {
                     },
                     "import",
                 );
-                dependent["severity"] = diagnostic["severity"].clone();
                 dependent["relatedInformation"] = json!([{
                     "location": { "uri": target, "range": diagnostic["range"] }, "message": message,
                 }]);
@@ -300,7 +293,7 @@ impl<'a> Source<'a> {
         }
         let mut diagnostic = json!({
             "range": self.range(start, start + width),
-            "severity": if phase == "ownership" { 2 } else { 1 },
+            "severity": 1,
             "source": "xrack",
             "code": phase,
             "message": error.message,

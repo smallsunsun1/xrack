@@ -12903,6 +12903,8 @@ fn cross_file_writes_use_instance_storage_and_resolve_callback_effects() {
         rename-again(text) => { root.rename(text); }
         callback maybe-rename(string);
         maybe-rename(text) => { if text != "" { root.value = text; } }
+        callback never-rename(string);
+        never-rename(text) => { if false { root.value = text; } }
     }"#;
     for (binding, statement, diagnostic) in [
         (
@@ -12928,6 +12930,16 @@ fn cross_file_writes_use_instance_storage_and_resolve_callback_effects() {
         ("alternate: root.source;", r#"other.rename("X");"#, None),
         (
             "alternate: root.source;",
+            r#"editor.maybe-rename("X");"#,
+            Some("callback `editor.maybe-rename()` may write"),
+        ),
+        (
+            "alternate: root.source;",
+            r#"editor.never-rename("X");"#,
+            None,
+        ),
+        (
+            "alternate <=> root.source;",
             r#"editor.maybe-rename("X");"#,
             None,
         ),
@@ -12987,4 +12999,40 @@ fn raw_mlir_rejects_writes_through_a_second_name_for_one_way_input_storage() {
         error.contains("read-only property `editor.value`") && error.contains("one-way input"),
         "{error}"
     );
+}
+
+#[test]
+fn raw_mlir_rejects_conditional_callback_writes_to_a_one_way_input() {
+    for (condition, rejects) in [("text != \"\"", true), ("false", false)] {
+        let source = format!(
+            r#"component Editor inherits Rectangle {{
+                in-out property <string> value;
+                in-out property <string> alternate <=> root.value;
+                callback maybe-rename(string);
+                maybe-rename(text) => {{ if {condition} {{ root.value = text; }} }}
+            }}
+            export component App inherits Window {{
+                in-out property <string> source = "A";
+                editor := Editor {{ alternate: root.source; }}
+                other := Editor {{ value <=> root.source; }}
+                callback act();
+                act => {{ other.maybe-rename("X"); }}
+            }}"#
+        );
+        let raw = lower(&source, "callback-input.mlir");
+        assert!(mlir::Module::parse(&raw).is_ok());
+        let redirected = raw.replace(r#"owner = "other""#, r#"owner = "editor""#);
+        assert_ne!(raw, redirected);
+        let r = mlir::Module::parse(&redirected);
+        if rejects {
+            let error = r.err().unwrap();
+            assert!(
+                error.contains("may write read-only property `editor.value`")
+                    && error.contains("one-way input"),
+                "{error}"
+            );
+        } else if let Err(error) = r {
+            panic!("{error}");
+        }
+    }
 }

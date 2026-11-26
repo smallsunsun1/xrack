@@ -21,9 +21,10 @@ component DocumentEditor inherits Rectangle {
 }
 
 component InputProbe inherits Rectangle {
-    in-out property <string> supplied;
-    callback attempt(string);
-    attempt(value) => { if value != "" { root.supplied = value; } }
+    in property <string> supplied;
+    callback rename-requested(string);
+    callback request-rename(string);
+    request-rename(value) => { if value != "" { root.rename-requested(value); } }
 }
 
 export component PropertyOwnership inherits Window {
@@ -33,6 +34,7 @@ export component PropertyOwnership inherits Window {
     out property <string> display-title: document.display-title;
     out property <string> draft-title: document.editable-title;
     out property <string> probe-title: probe.supplied;
+    out property <string> requested-title;
     out property <string> reported;
     in-out property <string> draft <=> document.editable-title;
 
@@ -40,11 +42,14 @@ export component PropertyOwnership inherits Window {
     rename(text) => { document.rename(text); }
     callback restore-default();
     restore-default => { document.restore-default(); }
-    callback try-child-write(string);
-    try-child-write(text) => { probe.attempt(text); }
+    callback request-child-rename(string);
+    request-child-rename(text) => { probe.request-rename(text); }
 
     document := DocumentEditor { document-title: root.document-title; }
-    probe := InputProbe { supplied: root.document-title; }
+    probe := InputProbe {
+        supplied: root.document-title;
+        rename-requested(text) => { root.requested-title = text; }
+    }
 
     fixed := TextEdit {
         y: 20px;

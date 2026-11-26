@@ -48,11 +48,13 @@ fn strict_properties_keep_their_sources_in_both_backends() {
     titles(&actual, &generated, "B", "A", "B");
 
     actual
-        .invoke("try-child-write", &["X".to_owned().into()])
+        .invoke("request-child-rename", &["X".to_owned().into()])
         .unwrap();
-    generated.invoke_try_child_write("X".into());
+    generated.invoke_request_child_rename("X".into());
     assert_eq!(actual.get("probe-title"), Ok("B".to_owned().into()));
     assert_eq!(generated.get_probe_title(), "B");
+    assert_eq!(actual.get("requested-title"), Ok("X".to_owned().into()));
+    assert_eq!(generated.get_requested_title(), "X");
 
     actual.set("draft", "draft".to_owned().into()).unwrap();
     generated.set_draft("draft".into());

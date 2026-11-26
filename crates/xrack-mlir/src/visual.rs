@@ -3,6 +3,7 @@ use crate::{
     AliasGraph, AliasGraphs, Module, OperationRef, PropertyEndpoint, ValueRef, canonical_input,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use xrack_ir::ownership::{Access, blocked_write, operand_reachability};
 use xrack_ir::semantic::{
     LOADER_ASYNC, LOADER_REPEAT_ITEM, LOADER_SELECTED, LOADER_SOURCE, animation_target_error,
     builtin_event, builtin_property, control_binding_conflict, dependency_cycle, event_parameters,
@@ -495,6 +496,30 @@ fn verify_property_and_callback_dependencies(module: &Module) -> Result<(), Stri
             let mut bindings = ComponentBindingEdges::default();
             graph.collect(name, *component, "", "root", false, &mut bindings)?;
             graph.verify_instance_writes(name, *component, &bindings.edges)?;
+            for call in &bindings.calls {
+                if let Some((write, binding, conditional)) = blocked_write(
+                    &call.endpoint,
+                    &bindings.callbacks,
+                    |endpoint| endpoint,
+                    |endpoint| {
+                        bindings.edges.get(endpoint).and_then(|(binding, _)| {
+                            (binding.name() == "xr.bind").then_some(*binding)
+                        })
+                    },
+                ) {
+                    let action = if conditional { "may write" } else { "writes" };
+                    return Err(at(
+                        call.site,
+                        &format!(
+                            "callback `{}` {action} read-only property `{}` at {}; storage supplied by a one-way input at {}",
+                            call.endpoint.replace("/root.", "."),
+                            write.endpoint.replace("/root.", "."),
+                            at(write.site, "write"),
+                            at(binding, "binding"),
+                        ),
+                    ));
+                }
+            }
             for (slot, (operation, dependencies)) in bindings.state_inputs {
                 // An incoming link and a state in a nested component can reach
                 // the same storage even when their instance operations differ.
@@ -549,16 +574,47 @@ struct ComponentDependencies<'m> {
 struct ComponentBindingEdges<'m> {
     edges: DependencyEdges<'m>,
     state_inputs: DependencyEdges<'m>,
+    callbacks: BTreeMap<String, Vec<Access<OperationRef<'m>>>>,
+    calls: Vec<Access<OperationRef<'m>>>,
 }
 
 impl<'m> ComponentDependencies<'m> {
+    fn effect_slot(
+        &self,
+        component: &str,
+        prefix: &str,
+        reference: PropertyEndpoint<'m>,
+        callback: bool,
+    ) -> Result<String, String> {
+        let graphs = if callback {
+            &self.aliases.callbacks
+        } else {
+            &self.aliases.properties
+        };
+        let graph = &graphs[component];
+        let (owner, name) = graph.resolve(graphs, reference)?;
+        let mut slot = if let Some(child) = graph.instance(owner) {
+            instance_dependency_slot(prefix, owner, child, graphs, name)?
+        } else {
+            let namespace = if graph.is_control((owner, name)) {
+                "@control:"
+            } else {
+                ""
+            };
+            format!("{prefix}{owner}.{namespace}{name}")
+        };
+        if callback {
+            slot.push_str("()");
+        }
+        Ok(slot)
+    }
+
     fn verify_instance_writes(
         &self,
         component: &str,
         scope: OperationRef<'m>,
         bindings: &DependencyEdges<'m>,
     ) -> Result<(), String> {
-        let properties = &self.aliases.properties[component];
         let mut pending = vec![scope];
         while let Some(op) = pending.pop() {
             pending.extend(op.children());
@@ -584,14 +640,7 @@ impl<'m> ComponentDependencies<'m> {
             let Some(reference) = reference else {
                 continue;
             };
-            let (owner, name) = properties.resolve(&self.aliases.properties, reference)?;
-            let slot = if let Some(child) = properties.instance(owner) {
-                instance_dependency_slot("", owner, child, &self.aliases.properties, name)?
-            } else if properties.is_control((owner, name)) {
-                format!("{owner}.@control:{name}")
-            } else {
-                continue;
-            };
+            let slot = self.effect_slot(component, "", reference, false)?;
             if let Some((binding, _)) = bindings.get(&slot)
                 && binding.name() == "xr.bind"
             {
@@ -768,6 +817,37 @@ impl<'m> ComponentDependencies<'m> {
                 .insert(qualify(owner, "@progress-position"), (scope, inputs));
         }
         for member in scope.children() {
+            if matches!(member.name(), "xr.callback" | "xr.handler")
+                && member.attribute("pure") != Some("true")
+                && (prefix.is_empty()
+                    || member.name() == "xr.callback" && input_component.is_none())
+            {
+                let mut effects = Vec::new();
+                let resolve = |receiver, member, callback| {
+                    self.effect_slot(component, prefix, (receiver, member), callback)
+                };
+                let mut seen = HashSet::new();
+                for statement in member.children() {
+                    statement_accesses(statement, false, &resolve, &mut seen, &mut effects)?;
+                }
+                if prefix.is_empty() {
+                    bindings.calls.extend(
+                        effects
+                            .iter()
+                            .filter(|access| access.endpoint.ends_with("()"))
+                            .cloned(),
+                    );
+                }
+                if member.name() == "xr.callback"
+                    && input_component.is_none()
+                    && member.attribute("alias_owner").is_none()
+                {
+                    bindings.callbacks.insert(
+                        format!("{}()", qualify(owner, member.attr("name")?)),
+                        effects,
+                    );
+                }
+            }
             match member.name() {
                 "xr.element" | "xr.instance" => {
                     let key = if scope.name() == "xr.component" {
@@ -887,6 +967,111 @@ impl<'m> ComponentDependencies<'m> {
         }
         Ok(())
     }
+}
+
+fn literal_bool(value: Option<ValueRef<'_>>) -> Option<bool> {
+    let literal = value?.defining_operation()?;
+    (literal.name() == "xr.literal").then_some(())?;
+    literal.attribute("value")?.parse().ok()
+}
+
+fn statement_accesses<'m>(
+    op: OperationRef<'m>,
+    conditional: bool,
+    resolve: &impl Fn(&'m str, &'m str, bool) -> Result<String, String>,
+    seen: &mut HashSet<(ValueRef<'m>, bool)>,
+    accesses: &mut Vec<Access<OperationRef<'m>>>,
+) -> Result<(), String> {
+    // SSA values are evaluated by their consumers. A local declaration is
+    // also evaluated when its statement runs, even when no one reads it.
+    if op.result_count() != 0 && op.name() != "xr.local" {
+        return Ok(());
+    }
+    for i in 0..op.operand_count() {
+        if let Some(operand) = op.operand(i) {
+            expression_accesses(operand, conditional, resolve, seen, accesses)?;
+        }
+    }
+    match op.name() {
+        "xr.assign" | "xr.invoke" => {
+            let target = op.attr("name")?;
+            let receiver = op.attribute("owner").unwrap_or("root");
+            let endpoint = resolve(receiver, target, op.name() == "xr.invoke")?;
+            accesses.push(Access {
+                endpoint,
+                site: op,
+                conditional,
+            });
+        }
+        "xr.if" => {
+            let condition = literal_bool(op.operand(0));
+            for (arm, region) in op.regions().enumerate() {
+                if condition.is_some_and(|condition| condition != (arm == 0)) {
+                    continue;
+                }
+                for statement in region.blocks().flat_map(crate::BlockRef::operations) {
+                    statement_accesses(
+                        statement,
+                        conditional || condition.is_none(),
+                        resolve,
+                        seen,
+                        accesses,
+                    )?;
+                }
+            }
+        }
+        "xr.for" => {
+            for statement in op.children() {
+                statement_accesses(statement, true, resolve, seen, accesses)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn expression_accesses<'m>(
+    value: ValueRef<'m>,
+    conditional: bool,
+    resolve: &impl Fn(&'m str, &'m str, bool) -> Result<String, String>,
+    seen: &mut HashSet<(ValueRef<'m>, bool)>,
+    accesses: &mut Vec<Access<OperationRef<'m>>>,
+) -> Result<(), String> {
+    if !seen.insert((value, conditional)) {
+        return Ok(());
+    }
+    let Some(op) = value.defining_operation() else {
+        return Ok(());
+    };
+    if op.name() == "xr.local" {
+        return Ok(());
+    }
+    if op.name() == "xr.call" {
+        let endpoint = resolve(op.attr("owner")?, op.attr("value")?, true)?;
+        accesses.push(Access {
+            endpoint,
+            site: op,
+            conditional,
+        });
+    }
+    let name = op.name().strip_prefix("xr.").unwrap_or(op.name());
+    let operator = op.attribute("value").unwrap_or_default();
+    let condition = literal_bool(op.operand(0));
+    for i in 0..op.operand_count() {
+        if let Some(branch) = operand_reachability(name, operator, condition, i)
+            && let Some(operand) = op.operand(i)
+        {
+            expression_accesses(operand, conditional || branch, resolve, seen, accesses)?;
+        }
+    }
+    if op.name() == "xr.enum_match" {
+        for arm in op.children().filter(|arm| arm.name() == "xr.enum_case") {
+            for statement in arm.children() {
+                statement_accesses(statement, true, resolve, seen, accesses)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Direct children that occupy a scene slot, in declaration order.

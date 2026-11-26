@@ -11,17 +11,17 @@ pub(crate) struct OwnershipChecks {
 }
 
 #[derive(Clone)]
-pub(crate) struct Access {
-    pub(crate) endpoint: String,
-    pub(crate) span: Span,
-    conditional: bool,
+pub struct Access<Site = Span> {
+    pub endpoint: String,
+    pub site: Site,
+    pub conditional: bool,
 }
 
-impl Access {
+impl Access<Span> {
     pub(crate) fn new(endpoint: String, span: Span) -> Self {
         Self {
             endpoint,
-            span,
+            site: span,
             conditional: false,
         }
     }
@@ -72,7 +72,6 @@ impl OwnershipChecks {
         &self,
         terminal: impl Fn(String) -> String,
         source_files: &[String],
-        warnings: &mut Vec<Diagnostic>,
     ) -> Result<(), Diagnostic> {
         if self.inputs.is_empty() {
             return Ok(());
@@ -81,7 +80,7 @@ impl OwnershipChecks {
             let endpoint = terminal(access.endpoint.clone());
             if let Some(&binding) = self.inputs.get(&endpoint) {
                 return Err(Diagnostic {
-                    span: access.span,
+                    span: access.site,
                     message: format!(
                         "cannot write read-only property `{}`: its storage is supplied by a one-way input at {}; use `<=>` to share writable storage",
                         display_endpoint(&access.endpoint),
@@ -90,43 +89,54 @@ impl OwnershipChecks {
                 });
             }
 
-            let Some(calls) = self.callbacks.get(&endpoint) else {
-                continue;
-            };
-            let mut pending: Vec<_> = calls.iter().map(|call| (call, false)).collect();
-            let mut visited = BTreeSet::new();
-            let mut warning = None;
-            while let Some((effect, conditional)) = pending.pop() {
-                let conditional = conditional || effect.conditional;
-                let target = terminal(effect.endpoint.clone());
-                if let Some(&binding) = self.inputs.get(&target) {
-                    let certainty = if conditional { "may write" } else { "writes" };
-                    let diagnostic = Diagnostic {
-                        span: access.span,
-                        message: format!(
-                            "callback `{}` {certainty} read-only property `{}` at {}; its storage is supplied by a one-way input at {}; use `<=>` to share writable storage",
-                            display_endpoint(&access.endpoint),
-                            display_endpoint(&effect.endpoint),
-                            location(effect.span, source_files),
-                            location(binding, source_files),
-                        ),
-                    };
-                    if !conditional {
-                        return Err(diagnostic);
-                    }
-                    warning.get_or_insert(diagnostic);
-                } else if visited.insert((target.clone(), conditional))
-                    && let Some(calls) = self.callbacks.get(&target)
-                {
-                    pending.extend(calls.iter().map(|call| (call, conditional)));
-                }
-            }
-            if let Some(warning) = warning {
-                warnings.push(warning);
+            if let Some((effect, binding, conditional)) =
+                blocked_write(&endpoint, &self.callbacks, &terminal, |target| {
+                    self.inputs.get(target).copied()
+                })
+            {
+                let certainty = if conditional { "may write" } else { "writes" };
+                return Err(Diagnostic {
+                    span: access.site,
+                    message: format!(
+                        "callback `{}` {certainty} read-only property `{}` at {}; its storage is supplied by a one-way input at {}; use `<=>` to share writable storage",
+                        display_endpoint(&access.endpoint),
+                        display_endpoint(&effect.endpoint),
+                        location(effect.site, source_files),
+                        location(binding, source_files),
+                    ),
+                });
             }
         }
         Ok(())
     }
+}
+
+/// Find a possible write to an input supplied by a one-way binding.
+pub fn blocked_write<'a, Site: Copy>(
+    entry: &str,
+    callbacks: &'a BTreeMap<String, Vec<Access<Site>>>,
+    terminal: impl Fn(String) -> String,
+    binding: impl Fn(&str) -> Option<Site>,
+) -> Option<(&'a Access<Site>, Site, bool)> {
+    let mut pending: Vec<_> = callbacks
+        .get(entry)?
+        .iter()
+        .map(|effect| (effect, false))
+        .collect();
+    let mut visited = BTreeSet::new();
+    while let Some((effect, conditional)) = pending.pop() {
+        let conditional = conditional || effect.conditional;
+        let target = terminal(effect.endpoint.clone());
+        if let Some(binding) = binding(&target) {
+            return Some((effect, binding, conditional));
+        }
+        if visited.insert(target.clone())
+            && let Some(calls) = callbacks.get(&target)
+        {
+            pending.extend(calls.iter().map(|call| (call, conditional)));
+        }
+    }
+    None
 }
 
 fn statements(
@@ -141,7 +151,7 @@ fn statements(
                 expression(&assignment.value, conditional, path, accesses);
                 accesses.push(Access {
                     endpoint: path(&assignment.target.owner, &assignment.target.name),
-                    span: assignment.span,
+                    site: assignment.span,
                     conditional,
                 });
             }
@@ -151,7 +161,7 @@ fn statements(
                 }
                 accesses.push(Access {
                     endpoint: format!("{}()", path(&call.owner, &call.name)),
-                    span: call.span,
+                    site: call.span,
                     conditional,
                 });
             }
@@ -183,6 +193,25 @@ fn statements(
     }
 }
 
+/// For a lazy operand, return whether its evaluation is conditional.
+pub fn operand_reachability(
+    op: &str,
+    operator: &str,
+    condition: Option<bool>,
+    index: usize,
+) -> Option<bool> {
+    let selected = match (op, operator, index) {
+        ("select", _, 1) | ("binary", "&&", 1) => true,
+        ("select", _, 2) | ("binary", "||", 1) => false,
+        ("enum_match", _, 1..) => return Some(true),
+        _ => return Some(false),
+    };
+    match condition {
+        Some(value) if selected != value => None,
+        _ => Some(condition.is_none()),
+    }
+}
+
 fn expression(
     value: &Expr,
     conditional: bool,
@@ -194,15 +223,19 @@ fn expression(
     {
         accesses.push(Access {
             endpoint: format!("{}()", path(owner, &value.value)),
-            span: value.span,
+            site: value.span,
             conditional,
         });
     }
+    let condition = value
+        .args
+        .first()
+        .filter(|argument| argument.op == "literal")
+        .and_then(|argument| argument.value.parse().ok());
     for (index, argument) in value.args.iter().enumerate() {
-        let conditional = conditional
-            || index > 0 && matches!(value.op.as_str(), "select" | "enum_match")
-            || index > 0 && value.op == "binary" && matches!(value.value.as_str(), "&&" | "||");
-        expression(argument, conditional, path, accesses);
+        if let Some(branch) = operand_reachability(&value.op, &value.value, condition, index) {
+            expression(argument, conditional || branch, path, accesses);
+        }
     }
 }
 

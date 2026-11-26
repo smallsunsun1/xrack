@@ -2280,7 +2280,7 @@ pub fn resolve_symbols(
 ) -> std::result::Result<Vec<SymbolReference>, Vec<Diagnostic>> {
     let references = SymbolReferences::default();
     let doc = crate::declare_handles(doc);
-    analyze_components(&doc, Some(references.clone()), &mut Vec::new(), |_, _| {})?;
+    analyze_components(&doc, Some(references.clone()), |_, _| {})?;
     Ok(std::rc::Rc::unwrap_or_clone(references).into_inner())
 }
 
@@ -2289,22 +2289,12 @@ pub fn for_each_component(
     doc: &ast::Document,
     emit: impl FnMut(&ast::Component, Vec<LoweredMember<'_>>),
 ) -> std::result::Result<(), Vec<Diagnostic>> {
-    analyze_components(doc, None, &mut Vec::new(), emit)
-}
-
-/// Validate the same source compiled by the CLI and return potential ownership conflicts.
-pub fn validate_with_warnings(
-    doc: &ast::Document,
-) -> std::result::Result<Vec<Diagnostic>, Vec<Diagnostic>> {
-    let mut warnings = Vec::new();
-    analyze_components(doc, None, &mut warnings, |_, _| {})?;
-    Ok(warnings)
+    analyze_components(doc, None, emit)
 }
 
 fn analyze_components(
     doc: &ast::Document,
     references: Option<SymbolReferences>,
-    warnings: &mut Vec<Diagnostic>,
     mut emit: impl FnMut(&ast::Component, Vec<LoweredMember<'_>>),
 ) -> std::result::Result<(), Vec<Diagnostic>> {
     if !doc.imports.is_empty() {
@@ -2462,7 +2452,7 @@ fn analyze_components(
     if !errors.is_empty() {
         return Err(errors);
     }
-    check_composition(&validated, &doc.source_files, warnings).map_err(|error| vec![error])?;
+    check_composition(&validated, &doc.source_files).map_err(|error| vec![error])?;
     for (c, members) in validated {
         emit(c, members);
     }
@@ -12654,7 +12644,6 @@ pub fn qualify_global_dependency(component: &str, path: &str) -> String {
 fn check_composition(
     components: &[(&ast::Component, Vec<LoweredMember<'_>>)],
     source_files: &[String],
-    warnings: &mut Vec<Diagnostic>,
 ) -> Result<()> {
     let definitions: BTreeMap<_, _> = components
         .iter()
@@ -12736,11 +12725,9 @@ fn check_composition(
         }
         check_cycles(&edges, "property binding or callback call")?;
         checks.geometry.validate(&edges)?;
-        checks.ownership.validate(
-            |endpoint| terminal_binding(endpoint, &links),
-            source_files,
-            warnings,
-        )?;
+        checks
+            .ownership
+            .validate(|endpoint| terminal_binding(endpoint, &links), source_files)?;
     }
     Ok(())
 }

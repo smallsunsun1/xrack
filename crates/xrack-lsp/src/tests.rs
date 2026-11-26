@@ -10514,7 +10514,7 @@ fn initializers_format_and_formulas_report_read_only_writes() {
 }
 
 #[test]
-fn cross_file_ownership_diagnostics_distinguish_definite_and_possible_writes() {
+fn cross_file_ownership_diagnostics_reject_definite_and_possible_writes() {
     let entry = fixture_uri("ownership-app.xr");
     let dependency = fixture_uri("ownership-editor.xr");
     let editor = r#"export component Editor inherits Rectangle {
@@ -10534,7 +10534,7 @@ fn cross_file_ownership_diagnostics_distinguish_definite_and_possible_writes() {
         (r#"editor.rename("X");"#, 1, "writes read-only property"),
         (
             r#"editor.maybe-rename("X");"#,
-            2,
+            1,
             "may write read-only property",
         ),
     ] {
