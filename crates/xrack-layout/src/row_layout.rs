@@ -3,15 +3,18 @@ use std::{
     collections::BTreeMap,
     rc::{Rc, Weak},
 };
-use xrack_runtime::{LayoutDirection, Node, RowKey, SharedNodeIdentity};
+use xrack_runtime::{Node, RowKey, SharedNodeIdentity};
 
 const MAX_CACHED_ROWS: usize = 512;
 const MAX_CACHED_SCROLL_VIEWS: usize = 8;
-const MAX_SCROLL_CONTENT_NODES: usize = 4096;
+const MAX_SCROLL_CAPTURE_ON_EDIT: usize = 4096;
+const MAX_CACHED_SCROLL_SLOTS: usize = MAX_CACHED_SCROLL_VIEWS * MAX_SCROLL_CAPTURE_ON_EDIT;
+const MAX_CACHED_SCROLL_NODES: usize = MAX_CACHED_SCROLL_SLOTS;
 const MAX_LOCAL_SUBTREE_NODES: usize = 128;
 // Preserve the previous worst-case number of cached layout nodes while
 // allowing more small subtrees to share the budget.
 const MAX_CACHED_LOCAL_NODES: usize = MAX_CACHED_ROWS * MAX_LOCAL_SUBTREE_NODES;
+const MAX_CACHED_LAYOUT_NODES: usize = MAX_CACHED_SCROLL_NODES + MAX_CACHED_LOCAL_NODES;
 const MAX_ABSOLUTE_LEAVES: usize = 1024;
 
 #[derive(Clone, Copy)]
@@ -151,6 +154,44 @@ impl LocalLayouts {
         self.indexed_entries + self.nested.len()
     }
 
+    fn descendant_nodes(&self, path: &[usize]) -> usize {
+        let direct = if path.is_empty() {
+            self.direct.iter().flatten().map(|row| row.nodes).sum()
+        } else {
+            0
+        };
+        direct
+            + self
+                .nested
+                .iter()
+                .filter(|(key, _)| key.len() > path.len() && key.starts_with(path))
+                .map(|(_, row)| row.nodes)
+                .sum::<usize>()
+    }
+
+    fn evict_descendants(&mut self, path: &[usize], frame: u64) -> (usize, usize) {
+        let mut nodes = 0;
+        let mut visited = 0;
+        let mut remove = |row: &LocalLayout| {
+            nodes += row.nodes;
+            visited += usize::from(row.last_frame == frame);
+        };
+        if path.is_empty() {
+            for row in self.direct.drain(..).flatten() {
+                remove(&row);
+            }
+            self.indexed_entries = 0;
+        }
+        self.nested.retain(|key, row| {
+            let descendant = key.len() > path.len() && key.starts_with(path);
+            if descendant {
+                remove(row);
+            }
+            !descendant
+        });
+        (nodes, visited)
+    }
+
     fn retain_frame(&mut self, frame: u64) -> usize {
         let mut retained_nodes = 0;
         let mut indexed_entries = 0;
@@ -216,10 +257,27 @@ mod local_layout_tests {
         let reused_buffer = previous[0].children.as_ptr();
         previous[1].children.push(entry(0, 1).layout);
 
+        let mut old_row = entry(0, 4).layout;
+        old_row.children = previous;
+        let mut old_group = entry(0, 5).layout;
+        old_group.children.push(old_row);
+        let mut old_window = entry(0, 6).layout;
+        old_window.children.push(old_group);
+        let mut cache = RowLayoutCache::default();
+        cache.use_recycled_layout(Some(old_window));
+        let mut row = entry(1, 4);
+        row.layout = template;
+        let node = row.node.clone();
+        let inputs = row.inputs;
+        cache.local_subtrees.insert(&[0, 0], row);
+        let (template, children) = cache
+            .local_layout(&[0, 0], &node, inputs, LocalSubtree::Container)
+            .unwrap();
+
         let bounds = Rect::new(30.25, 20.5, 16.0, 16.0);
         let clip = Rect::new(32.0, 21.0, 10.0, 11.0);
-        let expected = clone_in_view(&template, bounds, clip, None);
-        let reused = clone_in_view_reusing(&template, bounds, clip, None, Some(previous));
+        let expected = clone_in_view(template, bounds, clip, None);
+        let reused = clone_in_view_reusing(template, bounds, clip, None, children);
         assert_eq!(reused, expected);
         assert_eq!(reused.children[0].children.as_ptr(), reused_buffer);
     }
@@ -246,6 +304,107 @@ mod local_layout_tests {
         assert_eq!(layouts.get(&[2, 0]).unwrap().nodes, 5);
         assert_eq!(layouts.get(&[MAX_INDEXED_CHILDREN]).unwrap().nodes, 8);
     }
+
+    #[test]
+    fn scroll_views_share_and_release_the_content_node_budget() {
+        let view = |nodes: usize| {
+            let leaf = Node::new("Label", None).into_shared();
+            let mut content = Node::new("VerticalLayout", None);
+            content.children = vec![leaf; nodes - 1];
+            let mut view = Node::new("ScrollView", None);
+            view.children.push(content);
+            view.into_shared()
+        };
+        let first_nodes = MAX_CACHED_SCROLL_NODES + 1;
+        let first = view(first_nodes);
+        let second = view(MAX_CACHED_LAYOUT_NODES - first_nodes + 1);
+        let scene = Rc::new(Node::new("Window", None));
+        let typography = Rc::new(());
+        let mut cache = RowLayoutCache::default();
+        cache.begin_frame(&scene, Some(typography.clone()));
+        assert!(cache.scroll_geometry(&[0], &first).is_none());
+        cache.finish_frame();
+        cache.begin_frame(&scene, Some(typography.clone()));
+        for index in 0..(MAX_CACHED_ROWS - 1) {
+            cache.local_subtrees.insert(
+                &[0, index],
+                entry(cache.local_frame, MAX_LOCAL_SUBTREE_NODES),
+            );
+        }
+        cache
+            .local_subtrees
+            .insert(&[1, 0], entry(cache.local_frame, MAX_LOCAL_SUBTREE_NODES));
+        cache.local_nodes = MAX_CACHED_LOCAL_NODES;
+        cache.local_visited = MAX_CACHED_ROWS;
+        assert!(cache.scroll_geometry(&[0], &first).unwrap().caches_child(0));
+        assert!(
+            !cache
+                .scroll_geometry(&[1], &second)
+                .unwrap()
+                .caches_child(0)
+        );
+        assert_eq!(cache.scroll_nodes, first_nodes);
+        assert_eq!(cache.local_subtrees.len(), 1);
+        assert_eq!(cache.local_nodes, MAX_LOCAL_SUBTREE_NODES);
+        assert_eq!(cache.local_visited, 1);
+        cache.finish_frame();
+
+        cache.begin_frame(&scene, Some(typography.clone()));
+        cache.finish_frame();
+        assert_eq!(cache.scroll_nodes, 0);
+        cache.begin_frame(&scene, Some(typography.clone()));
+        assert!(
+            cache
+                .scroll_geometry(&[1], &second)
+                .unwrap()
+                .caches_child(0)
+        );
+    }
+
+    #[test]
+    fn long_scroll_view_keeps_its_unchanged_slots_across_an_edit() {
+        let count = MAX_SCROLL_CAPTURE_ON_EDIT + 1;
+        let leaf = Node::new("Label", None).into_shared();
+        let mut view = Node::new("ScrollView", None);
+        view.children = vec![leaf.clone(); count];
+        let mut too_many = Node::new("ScrollView", None);
+        too_many.children = vec![leaf; MAX_CACHED_SCROLL_SLOTS];
+        let scene = Rc::new(Node::new("Window", None));
+        let typography = Rc::new(());
+        let mut cache = RowLayoutCache::default();
+        cache.begin_frame(&scene, Some(typography.clone()));
+        let pose = entry(1, 1);
+        let geometry = cache.scroll_geometry(&[0], &view).unwrap();
+        geometry.store_child(0, pose.inputs, pose.layout.clone(), false);
+        geometry.store_child(count - 1, pose.inputs, pose.layout, false);
+        geometry.measured = Some(ScrollMeasurement {
+            size: Size::new(16.0, 16.0),
+            mirrored: false,
+            viewport: Rect::new(0.0, 0.0, 16.0, 16.0),
+            extent: Size::new(16.0, 32.0),
+            child_rects: Rc::from([]),
+        });
+        assert_eq!(cache.scroll_slots, count);
+        assert!(cache.scroll_geometry(&[1], &too_many).is_none());
+        cache.finish_frame();
+
+        view.children[count - 1]
+            .properties
+            .insert("text", "A changed reply".to_owned().into());
+        let scene = Rc::new(Node::new("Window", None));
+        cache.begin_frame(&scene, Some(typography.clone()));
+        let geometry = cache.scroll_geometry(&[0], &view).unwrap();
+        assert!(geometry.child(0, pose.inputs).is_some());
+        assert!(geometry.child(count - 1, pose.inputs).is_none());
+        assert!(geometry.measured.is_none());
+        assert_eq!(cache.scroll_nodes, count);
+        assert_eq!(cache.scroll_slots, count);
+        cache.finish_frame();
+
+        cache.begin_frame(&scene, Some(typography));
+        cache.finish_frame();
+        assert_eq!(cache.scroll_slots, 0);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -270,32 +429,103 @@ pub(super) struct Slot {
 
 pub(super) struct ScrollGeometry {
     pub(super) measured: Option<ScrollMeasurement>,
-    children: Vec<Option<Box<(RowInputs, LayoutNode)>>>,
+    children: Vec<Option<Box<ScrollChild>>>,
     cached: usize,
-    pub(super) cacheable_children: Vec<bool>,
+    reserved_children: Vec<usize>,
+    reserved_nodes: usize,
+}
+
+pub(super) struct ScrollChild {
+    inputs: RowInputs,
+    pub(super) layout: LayoutNode,
+    pub(super) deferred_text: bool,
 }
 
 impl ScrollGeometry {
-    pub(super) fn child(&self, slot: usize, inputs: RowInputs) -> Option<&LayoutNode> {
-        let (last, layout) = self.children.get(slot)?.as_deref()?;
-        (*last == inputs).then_some(layout)
+    pub(super) fn caches_child(&self, slot: usize) -> bool {
+        self.reserved_children
+            .get(slot)
+            .is_some_and(|nodes| *nodes != 0)
     }
 
-    pub(super) fn store_child(&mut self, slot: usize, inputs: RowInputs, layout: LayoutNode) {
+    fn retain_unchanged_children(&mut self, previous: &Node, view: &Node, spare: usize) -> bool {
+        if previous.children.len() != view.children.len()
+            || !previous.same_local_layout_inputs_at_node(view)
+        {
+            return false;
+        }
+        let limit = scroll_edit_limit(self.children.len());
+        let mut changed = Vec::new();
+        let mut discarded = 0;
+        for (index, (old, new)) in previous.children.iter().zip(&view.children).enumerate() {
+            if !old.same_frame_inputs(new) {
+                if changed.len() == limit {
+                    return false;
+                }
+                changed.push(index);
+                discarded += usize::from(self.children[index].is_some());
+            }
+        }
+        if changed.is_empty() {
+            return true;
+        }
+        if discarded == self.cached {
+            return false;
+        }
+        // Existing local layouts stay valid at a new scroll position, but
+        // one changed child can move siblings or resize the content extent.
+        self.measured = None;
+        let released = changed
+            .iter()
+            .map(|&index| self.reserved_children[index])
+            .sum::<usize>();
+        let available = spare + released;
+        let mut remaining = available;
+        for index in changed {
+            self.children[index] = None;
+            self.reserved_children[index] =
+                reserve_scroll_child(&view.children[index], &mut remaining);
+        }
+        self.cached -= discarded;
+        self.reserved_nodes = self.reserved_nodes - released + (available - remaining);
+        true
+    }
+
+    pub(super) fn uses_local_budget(&self) -> bool {
+        self.reserved_nodes > MAX_CACHED_SCROLL_NODES
+    }
+
+    pub(super) fn child(&mut self, slot: usize, inputs: RowInputs) -> Option<&mut ScrollChild> {
+        self.children
+            .get_mut(slot)?
+            .as_deref_mut()
+            .filter(|child| child.inputs == inputs)
+    }
+
+    pub(super) fn store_child(
+        &mut self,
+        slot: usize,
+        inputs: RowInputs,
+        layout: LayoutNode,
+        deferred_text: bool,
+    ) {
         if let Some(entry) = self.children.get_mut(slot) {
             self.cached += usize::from(entry.is_none());
-            *entry = Some(Box::new((inputs, layout)));
+            *entry = Some(Box::new(ScrollChild {
+                inputs,
+                layout,
+                deferred_text,
+            }));
         }
     }
 
     pub(super) fn project_children(
-        &self,
+        &mut self,
         rects: impl ExactSizeIterator<Item = Rect>,
         clip: Rect,
-        visible: bool,
-        enabled: bool,
-        layout_direction: Option<LayoutDirection>,
+        inputs: RowInputs,
         ancestors: Option<&Rc<ClipChain>>,
+        mut prepare: impl FnMut(usize, Rect, &mut ScrollChild),
     ) -> Option<Vec<LayoutNode>> {
         if self.cached != rects.len() || self.children.len() != rects.len() {
             return None;
@@ -304,12 +534,13 @@ impl ScrollGeometry {
         for (slot, bounds) in rects.enumerate() {
             let inputs = RowInputs {
                 size: Size::new(bounds.width, bounds.height),
-                visible,
-                enabled,
-                layout_direction,
+                ..inputs
             };
             let local = self.child(slot, inputs)?;
-            projected.push(clone_in_view(local, bounds, clip, ancestors));
+            if local.deferred_text {
+                prepare(slot, bounds, local);
+            }
+            projected.push(clone_in_view(&local.layout, bounds, clip, ancestors));
         }
         Some(projected)
     }
@@ -331,8 +562,27 @@ struct ScrollViewEntry {
     used: bool,
 }
 
+fn scroll_edit_limit(slots: usize) -> usize {
+    (slots / 4).min(32)
+}
+
+fn has_stable_scroll_children(previous: &Node, view: &Node) -> bool {
+    let limit = scroll_edit_limit(view.children.len());
+    previous.children.len() == view.children.len()
+        && previous.same_local_layout_inputs_at_node(view)
+        && previous
+            .children
+            .iter()
+            .zip(&view.children)
+            .filter(|(previous, current)| !previous.shares_storage_with(current))
+            .take(limit + 1)
+            .count()
+            <= limit
+}
+
 #[derive(Default)]
 pub struct RowLayoutCache {
+    pub(super) defer_clipped_text: bool,
     scene: Weak<Node>,
     typography: Weak<()>,
     scene_changed: bool,
@@ -341,6 +591,8 @@ pub struct RowLayoutCache {
     entries: usize,
     stats: RowLayoutStats,
     scroll_views: BTreeMap<Vec<usize>, ScrollViewEntry>,
+    scroll_nodes: usize,
+    scroll_slots: usize,
     table_sizes: BTreeMap<Vec<usize>, crate::table::ColumnSizing>,
     local_subtrees: LocalLayouts,
     local_nodes: usize,
@@ -352,6 +604,12 @@ pub struct RowLayoutCache {
 }
 
 impl RowLayoutCache {
+    /// Window preparation can resolve offscreen text for programmatic scroll requests.
+    #[doc(hidden)]
+    pub fn set_defer_clipped_text(&mut self, defer: bool) {
+        self.defer_clipped_text = defer;
+    }
+
     #[doc(hidden)]
     pub fn use_recycled_layout(&mut self, layout: Option<LayoutNode>) {
         self.recycled_layout = layout;
@@ -374,6 +632,8 @@ impl RowLayoutCache {
             self.views.clear();
             self.entries = 0;
             self.scroll_views.clear();
+            self.scroll_nodes = 0;
+            self.scroll_slots = 0;
             self.table_sizes.clear();
         }
         let scene = Rc::downgrade(scene);
@@ -386,6 +646,8 @@ impl RowLayoutCache {
             // on each lookup, so an unrelated scene edit need not drop them.
             if self.typography.strong_count() == 0 {
                 self.scroll_views.clear();
+                self.scroll_nodes = 0;
+                self.scroll_slots = 0;
             }
             for sizing in self.table_sizes.values_mut() {
                 sizing.invalidate_scene();
@@ -464,15 +726,13 @@ impl RowLayoutCache {
         self.stats.subtree_reuses += 1;
         // Each field is refreshed from the cached template. The old
         // slot provides the child storage when the shape fits.
-        let old_children = if let [index] = path {
-            self.recycled_layout.as_mut().and_then(|recycled| {
-                let slot = recycled.children.get_mut(*index)?;
-                (slot.children.capacity() == row.layout.children.len())
-                    .then(|| std::mem::take(&mut slot.children))
-            })
-        } else {
-            None
-        };
+        let old_children = self.recycled_layout.as_mut().and_then(|recycled| {
+            let slot = path
+                .iter()
+                .try_fold(recycled, |parent, &index| parent.child_at_mut(index))?;
+            (slot.children.capacity() == row.layout.children.len())
+                .then(|| std::mem::take(&mut slot.children))
+        });
         Some((&row.layout, old_children))
     }
 
@@ -527,8 +787,8 @@ impl RowLayoutCache {
         if self.typography.strong_count() == 0 {
             return None;
         }
-        let limit =
-            (MAX_CACHED_LOCAL_NODES - self.local_nodes_with(path, 0)).min(MAX_LOCAL_SUBTREE_NODES);
+        let limit = (self.local_node_budget() - self.local_nodes_with(path, 0))
+            .min(MAX_LOCAL_SUBTREE_NODES);
         if limit < kind.minimum_nodes() {
             return None;
         }
@@ -544,6 +804,10 @@ impl RowLayoutCache {
         self.local_nodes - self.local_subtrees.get(path).map_or(0, |entry| entry.nodes) + nodes
     }
 
+    fn local_node_budget(&self) -> usize {
+        (MAX_CACHED_LAYOUT_NODES - self.scroll_nodes).min(MAX_CACHED_LOCAL_NODES)
+    }
+
     pub(super) fn store_local_layout(
         &mut self,
         path: &[usize],
@@ -554,7 +818,7 @@ impl RowLayoutCache {
     ) {
         // Measuring this subtree may also have filled the cache with children.
         let total = self.local_nodes_with(path, nodes);
-        if total > MAX_CACHED_LOCAL_NODES {
+        if total > self.local_node_budget() {
             return;
         }
         let previous = self.local_subtrees.insert(
@@ -584,7 +848,7 @@ impl RowLayoutCache {
                 path.to_vec(),
                 ScrollViewEntry {
                     identity: view.snapshot_identity(),
-                    source: None,
+                    source: self.changing_scene.then(|| view.clone()),
                     geometry: None,
                     checked: false,
                     used: self.changing_scene,
@@ -592,40 +856,87 @@ impl RowLayoutCache {
             );
         }
         let entry = self.scroll_views.get_mut(path)?;
+        let mut observed_stable_children = false;
         if !entry.identity.matches(view) {
-            if entry
-                .source
-                .as_ref()
-                .is_some_and(|source| source.same_local_layout_inputs(view))
+            observed_stable_children = entry.geometry.is_none()
+                && entry
+                    .source
+                    .as_ref()
+                    .is_some_and(|previous| has_stable_scroll_children(previous, view));
+            let mut kept = false;
+            if let (Some(source), Some(geometry)) = (entry.source.as_ref(), entry.geometry.as_mut())
             {
+                let old_nodes = geometry.reserved_nodes;
+                let spare = MAX_CACHED_LAYOUT_NODES - self.scroll_nodes - self.local_nodes;
+                kept = geometry.retain_unchanged_children(source, view, spare);
+                if kept {
+                    self.scroll_nodes = self.scroll_nodes - old_nodes + geometry.reserved_nodes;
+                }
+            }
+            if kept {
                 entry.source = Some(view.clone());
             } else {
-                entry.source = None;
-                entry.geometry = None;
+                entry.source = self.changing_scene.then(|| view.clone());
+                if let Some(previous) = entry.geometry.take() {
+                    self.scroll_nodes -= previous.reserved_nodes;
+                    self.scroll_slots -= previous.children.len();
+                }
                 entry.checked = false;
-                // Defer new captures while this view keeps changing. Other
-                // views can keep their cached measurements across scene edits.
-                entry.used = self.changing_scene;
+                // A live view may first appear while its last child is
+                // changing. Admit it after observing stable siblings.
+                entry.used = self.changing_scene && !observed_stable_children;
             }
             entry.identity = view.snapshot_identity();
         }
         if !entry.used && !entry.checked {
             entry.checked = true;
-            if view.children.len() <= MAX_SCROLL_CONTENT_NODES {
-                let mut budget = MAX_SCROLL_CONTENT_NODES;
-                entry.source = Some(view.clone());
-                entry.geometry = Some(ScrollGeometry {
-                    measured: None,
-                    children: std::iter::repeat_with(|| None)
-                        .take(view.children.len())
-                        .collect(),
-                    cached: 0,
-                    cacheable_children: view
-                        .children
+            if view.children.len() <= MAX_CACHED_SCROLL_SLOTS - self.scroll_slots {
+                let available = MAX_CACHED_LAYOUT_NODES - self.scroll_nodes - self.local_nodes;
+                let reclaimable = if self.scene_changed {
+                    0
+                } else {
+                    self.local_subtrees.descendant_nodes(path)
+                };
+                let budget = available + reclaimable;
+                let mut remaining = budget;
+                let reserved_children: Vec<_> = view
+                    .children
+                    .iter()
+                    .map(|child| reserve_scroll_child(child, &mut remaining))
+                    .collect();
+                let reserved_nodes = budget - remaining;
+                if self.scene_changed
+                    && !observed_stable_children
+                    && reserved_children
                         .iter()
-                        .map(|child| scroll_child(child, &mut budget))
-                        .collect(),
-                });
+                        .any(|&nodes| nodes > MAX_SCROLL_CAPTURE_ON_EDIT)
+                {
+                    // A large, changing subtree can make the whole capture
+                    // obsolete. Independent small children can be captured
+                    // immediately and retained across edits to their siblings.
+                    entry.checked = false;
+                    entry.source = Some(view.clone());
+                } else {
+                    if reserved_nodes > available || reserved_nodes > MAX_CACHED_SCROLL_NODES {
+                        let (nodes, visited) = self
+                            .local_subtrees
+                            .evict_descendants(path, self.local_frame);
+                        self.local_nodes -= nodes;
+                        self.local_visited -= visited;
+                    }
+                    self.scroll_nodes += reserved_nodes;
+                    self.scroll_slots += view.children.len();
+                    entry.source = Some(view.clone());
+                    entry.geometry = Some(ScrollGeometry {
+                        measured: None,
+                        children: std::iter::repeat_with(|| None)
+                            .take(view.children.len())
+                            .collect(),
+                        cached: 0,
+                        reserved_children,
+                        reserved_nodes,
+                    });
+                }
             }
         }
         entry.used = true;
@@ -680,7 +991,17 @@ impl RowLayoutCache {
 
     pub(super) fn finish_frame(&mut self) {
         self.absolute_leaves.truncate(self.next_absolute_leaf);
-        self.scroll_views.retain(|_, view| view.used);
+        let scroll_nodes = &mut self.scroll_nodes;
+        let scroll_slots = &mut self.scroll_slots;
+        self.scroll_views.retain(|_, view| {
+            if !view.used
+                && let Some(geometry) = &view.geometry
+            {
+                *scroll_nodes -= geometry.reserved_nodes;
+                *scroll_slots -= geometry.children.len();
+            }
+            view.used
+        });
         if self.scene_changed {
             self.table_sizes.retain(|_, sizing| sizing.used);
         }
@@ -704,6 +1025,17 @@ impl RowLayoutCache {
 pub(crate) fn cacheable_shared_row(node: &Node) -> bool {
     let mut remaining = MAX_LOCAL_SUBTREE_NODES;
     scroll_child(node, &mut remaining)
+}
+
+fn reserve_scroll_child(node: &Node, remaining: &mut usize) -> usize {
+    let mut rest = *remaining;
+    if scroll_child(node, &mut rest) {
+        let reserved = *remaining - rest;
+        *remaining = rest;
+        reserved
+    } else {
+        0
+    }
 }
 
 fn scroll_child(node: &Node, budget: &mut usize) -> bool {

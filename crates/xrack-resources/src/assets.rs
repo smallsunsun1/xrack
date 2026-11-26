@@ -1,12 +1,9 @@
 use crate::{
     EmbeddedImage, EmbeddedPath,
     animated_image::{MAX_DECODED_BYTES, MAX_FRAMES, encode_gif_frames},
-    mesh::MeshSource,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
-    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -14,6 +11,9 @@ use xrack_assets::{
     ImageFormat, MAX_ASSET_BYTES, color_lut_size, image_size, parse_path, validate_image_size,
     vector_bounds, vector_segments,
 };
+
+pub(crate) use xrack_assets::files::{asset_path, local_path, read_asset};
+use xrack_scene_import::{MeshSource, generate_mesh_lod, prepare_scene_texture};
 
 use xrack_mlir::{Module, OperationRef};
 use xrack_runtime::{
@@ -132,7 +132,7 @@ pub fn resolve_assets(
                     lod_sources
                         .entry((resolved, options.lightmap_uv))
                         .or_insert_with(|| {
-                            mesh.map_material_variants(|asset| Ok(crate::mesh_lod::generate(asset)))
+                            mesh.map_material_variants(|asset| Ok(generate_mesh_lod(asset)))
                                 .unwrap_or_else(|never: std::convert::Infallible| match never {})
                         })
                         .clone()
@@ -201,8 +201,7 @@ pub fn resolve_assets(
                     std::collections::btree_map::Entry::Occupied(texture) => texture.get().clone(),
                     std::collections::btree_map::Entry::Vacant(texture) => {
                         let bytes = read_asset(&path, "3D texture").map_err(error_at_texture)?;
-                        let image = crate::mesh_materials::prepare_scene_texture(&bytes)
-                            .map_err(error_at_texture)?;
+                        let image = prepare_scene_texture(&bytes).map_err(error_at_texture)?;
                         texture.insert(Arc::new(image)).clone()
                     }
                 };
@@ -674,46 +673,6 @@ pub(crate) fn declared_paths(
                 .collect()
         })
         .transpose()
-}
-
-pub(crate) fn local_path(url: &str) -> Result<&Path, String> {
-    let relative = Path::new(url);
-    if url.is_empty() || relative.is_absolute() || url.contains(':') {
-        return Err("expected a local path relative to the .xr file".into());
-    }
-    Ok(relative)
-}
-
-pub(crate) fn asset_path(
-    base: &Path,
-    relative: &Path,
-    declared: Option<&BTreeSet<PathBuf>>,
-    kind: &str,
-) -> Result<PathBuf, String> {
-    let path = base.join(relative).canonicalize().map_err(|error| {
-        if declared.is_some() {
-            format!("{error}; list the {kind} in xr_ui_library(assets = [...])")
-        } else {
-            error.to_string()
-        }
-    })?;
-    if declared.is_some_and(|inputs| !inputs.contains(&path)) {
-        return Err("not declared in xr_ui_library(assets = [...])".into());
-    }
-    Ok(path)
-}
-
-pub(crate) fn read_asset(path: &Path, kind: &str) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    File::open(path)
-        .map_err(|error| error.to_string())?
-        .take(MAX_ASSET_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > MAX_ASSET_BYTES {
-        return Err(format!("{kind} file exceeds 16 MiB"));
-    }
-    Ok(bytes)
 }
 
 /// Validate each supplied font, including any extra fonts added by the host.

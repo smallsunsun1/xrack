@@ -71,7 +71,7 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
   --test_arg=--ignored --test_arg=--nocapture --test_arg=benchmark_rectangle_animation
 ```
 
-加 `--test_env=XRACK_RECTANGLE_BENCH_ROUNDED=1` 可测 2 逻辑像素圆角的同一场景，保留抗锯齿与半透明混合。
+加 `--test_env=XRACK_RECTANGLE_BENCH_ROUNDED=1` 可测 2 逻辑像素圆角的同一场景，保留抗锯齿与半透明混合。同时设置 `--test_env=XRACK_RECTANGLE_BENCH_SUBPIXEL=1` 可测小数像素位移与透明度动画，覆盖圆角缓存缺失时的透明度图集路径。
 
 卡片动画基准在同一视口中绘制 24 张含文字和圆角色块的卡片。分别测量只改变整组透明度和同时移动卡片，记录纹理重新栅格化次数、复用次数及整帧耗时。
 
@@ -105,6 +105,17 @@ bazel test //tests:gpu_test -c opt --nocache_test_results --test_output=all \
 加上 `--test_env=XRACK_STYLED_TEXT_PARAGRAPHS=6000` 可测更长文档。`--test_env=XRACK_STYLED_TEXT_LATEST=1` 使滚动位置跟随末尾，`--test_env=XRACK_STYLED_TEXT_TRANSFORM=rotate` 或 `zoom` 让视口在追加时旋转或缩放。`--test_env=XRACK_STYLED_TEXT_OPTIMIZED_ONLY=1` 只测默认的增量路径。输出包含复用和裁掉的片段数。
 
 加 `--test_env=XRACK_STYLED_TEXT_STREAM=1` 使用 `MarkdownStream` 增量解析，测量流式更新下的同一组阶段耗时。
+
+会话基准把历史消息和同一条持续增长的富文本回复绘制到两倍像素密度的离屏纹理，调用桌面窗口使用的渲染入口。
+
+```sh
+bazel test //tests:transcript_layout_benchmark -c opt --nocache_test_results --test_output=all \
+  --test_arg=--nocapture --test_env=XRACK_PEER_ROWS=2048 \
+  --test_env=XRACK_PEER_PARAGRAPHS=2400 --test_env=XRACK_PEER_LOAD_DOCUMENT=1 \
+  --test_env=XRACK_PEER_TRACE_FRAMES=1
+```
+
+`XRACK_PEER_LOAD_DOCUMENT=1` 在首帧计时内装载整条回复并滚到末尾。使用 `XRACK_PEER_LIVE_START=1` 可以在计时前解析原有 Markdown，再从首次追加开始计时。每帧输出分别报告更新、布局、提交和 GPU 等待，稳态分位数从第 11 帧开始统计。做跨框架对比时，各框架应在相同的装载边界开始计时。设置 `XRACK_PEER_VERIFY_LAYOUT=1` 可对照关闭富文本增量与剔除的渲染结果。同时启用逐帧跟踪时，输出还会附上采样帧的像素哈希，供同一机器上的构建间对照。
 
 富文本交互基准预先布局 10,000 段文档并滚到末尾，分别测链接矩形枚举、鼠标命中、Tab 导航、选区命中和水平光标移动。输出包含普通和旋转视口的 CPU 耗时。
 

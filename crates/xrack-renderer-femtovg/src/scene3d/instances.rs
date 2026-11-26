@@ -759,6 +759,7 @@ struct InstanceVertex {
     transform: [[f32; 4]; 3],
     color: Color,
     metadata: u32,
+    lighting_index: u32,
 }
 
 fn lightmap_words(lightmap: Option<InstanceLightmap>) -> [f32; 8] {
@@ -770,7 +771,10 @@ impl InstanceVertex {
         Self {
             transform: object.transform_rows(),
             color: object.color,
-            metadata: (object.shader_instance_index() << 3) | flags(object, selected),
+            metadata: (u32::from(object.lod_coverage()) << 16)
+                | (object.shader_instance_index() << 3)
+                | flags(object, selected),
+            lighting_index: u32::from(object.lighting_index()),
         }
     }
 }
@@ -783,6 +787,7 @@ impl InstanceStreamRow for InstanceVertex {
         append_floats(bytes, self.transform.into_iter().flatten());
         append_floats(bytes, [r, g, b, a]);
         bytes.extend_from_slice(&self.metadata.to_ne_bytes());
+        bytes.extend_from_slice(&self.lighting_index.to_ne_bytes());
     }
 }
 
@@ -856,6 +861,19 @@ impl InstanceSet {
         self.sorted_blends
             .iter()
             .any(|&index| visibility.contains(index))
+    }
+
+    pub fn has_visible_scene_depth(
+        &self,
+        visibility: &SceneVisibility,
+        objects: &[SceneObject],
+    ) -> bool {
+        self.draws.iter().any(|range| {
+            visibility.runs(range.clone()).next().is_some()
+                && objects[range.start as usize]
+                    .mesh
+                    .has_opaque_depth_prepass()
+        })
     }
 
     pub fn visible_prepasses(

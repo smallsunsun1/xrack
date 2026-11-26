@@ -135,11 +135,14 @@ impl TemporalFilter {
         let filtered =
             blend.then(|| Attachment::get(&mut self.result, device, size, HDR_FORMAT, 1, true));
         let colors = [Some(attachment(&sample.current)), filtered.map(attachment)];
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack temporal AA"),
-            color_attachments: &colors[..1 + usize::from(blend)],
-            ..Default::default()
-        });
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack temporal AA"),
+                color_attachments: &colors[..1 + usize::from(blend)],
+                ..Default::default()
+            },
+        );
         pass.set_pipeline(&pipeline.render);
         pass.set_bind_group(0, &bindings, &[]);
         pass.draw(0..3, 0..1);

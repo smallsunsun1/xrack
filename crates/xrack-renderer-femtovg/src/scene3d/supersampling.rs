@@ -48,9 +48,36 @@ pub(super) fn extent(device: &wgpu::Device, size: [u32; 2], requested: f32) -> [
     size.map(|side| (f64::from(side) * scale.max(1.0)).floor() as u32)
 }
 
+#[derive(Clone, Copy)]
+enum Filter {
+    Area,
+    DecodeItem,
+    ViewportDisplay,
+}
+
+pub(super) fn mip_count(size: [u32; 2]) -> u32 {
+    size[0].max(size[1]).ilog2() + 1
+}
+
+pub(super) fn mip_extent(size: [u32; 2], level: usize) -> [u32; 2] {
+    size.map(|side| (side >> level).max(1))
+}
+
+pub(super) fn mip_views(texture: &wgpu::Texture) -> Vec<wgpu::TextureView> {
+    (0..texture.mip_level_count())
+        .map(|base_mip_level| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                base_mip_level,
+                mip_level_count: Some(1),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
 pub(super) struct Supersampling {
     shader: wgpu::ShaderModule,
-    pipelines: [Option<wgpu::RenderPipeline>; 3],
+    pipelines: [Option<wgpu::RenderPipeline>; 4],
     capture_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
 }
 
@@ -61,7 +88,7 @@ impl Supersampling {
                 label: Some("XRack 3D supersampling"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("supersampling.wgsl").into()),
             }),
-            pipelines: [None, None, None],
+            pipelines: [None, None, None, None],
             capture_pipelines: HashMap::new(),
         }
     }
@@ -84,7 +111,7 @@ impl Supersampling {
             &bytes,
             wgpu::BufferUsages::UNIFORM,
         );
-        let pipeline = self.pipeline(device, format, false);
+        let pipeline = self.pipeline(device, format, Filter::Area);
         Self::draw(
             device,
             encoder,
@@ -94,13 +121,46 @@ impl Supersampling {
         );
     }
 
+    pub fn resolve_mips(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        levels: &[wgpu::TextureView],
+        base_size: [u32; 2],
+        format: wgpu::TextureFormat,
+    ) {
+        for (previous, pair) in levels.windows(2).enumerate() {
+            self.resolve(
+                device,
+                encoder,
+                (&pair[0], &pair[1]),
+                mip_extent(base_size, previous + 1),
+                format,
+            );
+        }
+    }
+
     pub fn decode_item(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         views: (&wgpu::TextureView, &wgpu::TextureView),
     ) {
-        let pipeline = self.pipeline(device, COLOR_FORMAT, true);
+        let pipeline = self.pipeline(device, COLOR_FORMAT, Filter::DecodeItem);
+        Self::draw(device, encoder, views, pipeline, None);
+    }
+
+    pub fn display_viewport(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        views: (&wgpu::TextureView, &wgpu::TextureView),
+    ) {
+        let pipeline = self.pipeline(
+            device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            Filter::ViewportDisplay,
+        );
         Self::draw(device, encoder, views, pipeline, None);
     }
 
@@ -108,7 +168,7 @@ impl Supersampling {
         &mut self,
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        decode_item: bool,
+        filter: Filter,
     ) -> &wgpu::RenderPipeline {
         let create = || {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -122,10 +182,10 @@ impl Supersampling {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &self.shader,
-                    entry_point: Some(if decode_item {
-                        "decode_item"
-                    } else {
-                        "fragment"
+                    entry_point: Some(match filter {
+                        Filter::Area => "fragment",
+                        Filter::DecodeItem => "decode_item",
+                        Filter::ViewportDisplay => "viewport_display",
                     }),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
@@ -141,11 +201,14 @@ impl Supersampling {
                 cache: None,
             })
         };
-        let index = match (decode_item, format) {
-            (true, _) => 2,
-            (false, COLOR_FORMAT) => 0,
-            (false, HDR_FORMAT) => 1,
-            (false, format) => return self.capture_pipelines.entry(format).or_insert_with(create),
+        let index = match (filter, format) {
+            (Filter::Area, COLOR_FORMAT) => 0,
+            (Filter::Area, HDR_FORMAT) => 1,
+            (Filter::DecodeItem, _) => 2,
+            (Filter::ViewportDisplay, _) => 3,
+            (Filter::Area, format) => {
+                return self.capture_pipelines.entry(format).or_insert_with(create);
+            }
         };
         self.pipelines[index].get_or_insert_with(create)
     }
@@ -176,19 +239,22 @@ impl Supersampling {
             layout: &pipeline.get_bind_group_layout(0),
             entries: &inputs[..count],
         });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack 3D supersampling resolve"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack 3D supersampling resolve"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            },
+        );
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bindings, &[]);
         pass.draw(0..3, 0..1);

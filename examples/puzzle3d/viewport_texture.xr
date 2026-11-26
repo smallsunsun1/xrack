@@ -1,0 +1,86 @@
+struct FeedMaterial { base-item: string, unlit: bool }
+struct FeedEffectInput { item: string }
+struct FeedEffect { shader: string, buffers: [FeedEffectInput] }
+struct FeedActor {
+    id: string, mesh: string, material: FeedMaterial,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float,
+}
+
+export component ViewportTextureDemo inherits Window {
+    title: "XRack · 3D 视口纹理";
+    width: 474px; height: 252px; background: #17263a;
+    in-out property <bool> orange: false;
+    in-out property <bool> mips: false;
+    in-out property <bool> hide-source: false;
+    in-out property <bool> feedback: false;
+
+    property <FeedActor> unit: FeedActor {
+        id: "", mesh: "primitive:rectangle",
+        material: FeedMaterial { base-item: "", unlit: true },
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #fff,
+        camera-kind: "", camera-height: 2.2,
+    };
+    property <FeedActor> eye: FeedActor {
+        id: "eye", mesh: "", z: 5, camera-kind: "orthographic", ..root.unit
+    };
+    property <scenemodel3d> feed-model: Scene3D.prepare([
+        root.eye,
+        FeedActor {
+            id: "diamond", mesh: "primitive:box",
+            scale-x: 0.78, scale-y: 0.78, scale-z: 0.78,
+            pitch: 26, yaw: -30,
+            color: root.orange ? #ffae62 : #76daf2,
+            material: FeedMaterial { base-item: root.feedback ? "relay" : "", unlit: true },
+            ..root.unit
+        },
+    ]);
+    property <FeedActor> screen: FeedActor { scale-x: 2.28, scale-y: 1.55, ..root.unit };
+    property <scenemodel3d> relay-model: Scene3D.prepare([root.eye]);
+    property <scenemodel3d> consumer-model: Scene3D.prepare([
+        root.eye,
+        FeedActor {
+            id: "visible-screen", pitch: -12, yaw: 16,
+            material: FeedMaterial { base-item: "relay", unlit: true }, ..root.screen
+        },
+    ]);
+
+    source-view := SceneView3D {
+        x: 16px; y: 42px; width: 200px; height: 148px;
+        model: root.feed-model; camera: "eye"; scene-background: #30456a;
+        texture-source: "feed"; texture-only: root.hide-source; texture-mipmaps: root.mips;
+        render-mode: "inline";
+    }
+    relay-view := SceneView3D {
+        width: 200px; height: 148px; model: root.relay-model; camera: "eye";
+        scene-background: #202b46;
+        texture-source: "relay"; texture-only: true;
+        scene-effects: [
+            FeedEffect {
+                shader: @shader-url("effects/viewport_feed.wgsl"),
+                buffers: [FeedEffectInput { item: "feed" }],
+            },
+        ];
+    }
+    consumer-view := SceneView3D {
+        x: 238px; y: 42px; width: 220px; height: 148px;
+        model: root.consumer-model; camera: "eye";
+        scene-background: #354360; cache-rendering: true;
+    }
+    Text { x: 16px; y: 13px; text: "源视口"; color: #deebfa; }
+    Text { x: 238px; y: 13px; text: "采样两级视口输出"; color: #deebfa; }
+    tint-toggle := Button {
+        x: 16px; y: 206px; width: 132px; height: 34px;
+        text: "切换源配色"; clicked => { root.orange = !root.orange; }
+    }
+    mip-toggle := CheckBox {
+        x: 166px; y: 206px; width: 128px; height: 34px;
+        text: "Mipmap"; checked <=> root.mips;
+    }
+    source-toggle := CheckBox {
+        x: 306px; y: 206px; width: 152px; height: 34px;
+        text: "仅输出纹理"; checked <=> root.hide-source;
+    }
+}

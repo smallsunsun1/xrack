@@ -17,21 +17,11 @@ fn vertex(@builtin(vertex_index) id: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
 }
 
-fn face_direction(face: u32, u: f32, v: f32) -> vec3<f32> {
-    switch face {
-        case 0u: { return vec3<f32>(1.0, -v, -u); }
-        case 1u: { return vec3<f32>(-1.0, -v, u); }
-        case 2u: { return vec3<f32>(u, 1.0, v); }
-        case 3u: { return vec3<f32>(u, -1.0, -v); }
-        case 4u: { return vec3<f32>(u, -v, 1.0); }
-        default: { return vec3<f32>(-u, -v, -1.0); }
-    }
-}
 
 @fragment
 fn fragment(@builtin(position) point: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = point.xy * (2.0 / f32(settings.size)) - 1.0;
-    let n = normalize(face_direction(settings.face, uv.x, uv.y));
+    let n = normalize(xr_cube_direction(settings.face, uv.x, uv.y));
     let axis = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.z) > 0.999);
     let x = normalize(cross(axis, n));
     let y = cross(n, x);

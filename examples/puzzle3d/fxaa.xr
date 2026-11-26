@@ -1,0 +1,54 @@
+struct Matte { unlit: bool }
+struct EdgeActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: Matte, camera-kind: string, camera-height: float,
+}
+
+export component FxaaDemo inherits Window {
+    title: "XRack · FXAA";
+    width: 384px; height: 242px; resizable: false;
+    background: #3a6688;
+    in-out property <bool> smooth-edges: true;
+    in-out property <bool> multisample: false;
+    in-out property <bool> transparent: false;
+    in-out property <bool> coverage-only: false;
+    in-out property <bool> hdr: false;
+    in-out property <bool> float-output: false;
+    in-out property <bool> dithering: false;
+    in-out property <float> strength: 1;
+
+    property <EdgeActor> panel: EdgeActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: root.coverage-only ? #000 : #e4eaff,
+        material: Matte { unlit: true }, camera-kind: "", camera-height: 4,
+    };
+    SceneView3D {
+        width: 384px; height: 196px;
+        texture-width: 384; texture-height: 196;
+        scene-background: root.transparent ? #00000000 : #142034;
+        render-format: root.float-output ? "rgba16f" : "rgba8";
+        scene-hdr: root.hdr;
+        scene-exposure: 0.82;
+        cache-rendering: true;
+        camera: "eye";
+        model: [
+            EdgeActor { id: "eye", mesh: "", z: 6, camera-kind: "orthographic", ..root.panel },
+            EdgeActor { id: "panel", x: -0.66, scale-x: 2.25, scale-y: 0.95, roll: 27, ..root.panel },
+            EdgeActor {
+                id: "line", x: 1.43, y: 0.20, scale-x: 0.085, scale-y: 2.45,
+                roll: -29, color: root.coverage-only ? #000 : #f6ae62, ..root.panel
+            },
+        ];
+        multisampling: root.multisample;
+        fxaa: root.smooth-edges; fxaa-strength: root.strength;
+        fxaa-edge-threshold: 0.125; fxaa-min-threshold: 0.03125;
+        fxaa-subpixel: 0.75; fxaa-search-steps: 6;
+        scene-dithering: root.dithering;
+    }
+    fxaa-toggle := CheckBox { x: 10px; y: 204px; width: 74px; height: 31px; text: "FXAA"; checked <=> root.smooth-edges; }
+    msaa-toggle := CheckBox { x: 95px; y: 204px; width: 76px; height: 31px; text: "MSAA"; checked <=> root.multisample; }
+    alpha-toggle := CheckBox { x: 186px; y: 204px; width: 81px; height: 31px; text: "透明"; checked <=> root.transparent; }
+    dither-toggle := CheckBox { x: 282px; y: 204px; width: 92px; height: 31px; text: "抖动"; checked <=> root.dithering; }
+}

@@ -1,9 +1,9 @@
 use crate::{ButtonContent, Rect, Size, TextMeasurer, dimension, flow, participates_in_flow};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, hash_map::Entry};
 use xrack_runtime::{
     ControlAction, CrossAxisAlignment, DialogCommand, DialogRole, LayoutAlignment, Node,
-    Orientation, RowKey, Value, dialog_button_action, is_modal_overlay, is_multiline_text_input,
-    is_pane, is_text_input, is_toggle,
+    Orientation, RowKey, SharedNodeIdentity, Value, dialog_button_action, is_modal_overlay,
+    is_multiline_text_input, is_pane, is_text_input, is_toggle,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -279,17 +279,19 @@ struct Constraints {
 }
 
 struct RowMeasurements {
-    scene: Node,
+    scene: SharedNodeIdentity,
     sizes: Vec<(Constraints, Metrics)>,
+    frame: u64,
     depends_on_height: bool,
 }
 
 impl RowMeasurements {
-    fn new(node: &Node) -> Self {
+    fn new(node: &Node, frame: u64) -> Self {
         Self {
-            scene: node.clone(),
+            scene: node.snapshot_identity(),
             sizes: Vec::new(),
-            depends_on_height: reads_available_height(node),
+            frame,
+            depends_on_height: !node.intrinsic_height_independent(),
         }
     }
 
@@ -301,33 +303,56 @@ impl RowMeasurements {
     }
 }
 
-fn reads_available_height(node: &Node) -> bool {
-    // The supported row kinds propagate height to their children, but their
-    // intrinsic sizing uses width and text metrics. Relative lengths can add
-    // a dependency on the height assigned to the enclosing layout.
-    node.properties.iter().any(|(&name, value)| {
-        matches!(value, Value::Percent(_))
-            && !matches!(
-                name,
-                "width" | "min-width" | "preferred-width" | "max-width" | "x"
-            )
-    }) || node.children.iter().any(reads_available_height)
+const MAX_MEASURED_ROWS: usize = 4096;
+const MAX_FRAME_MEASUREMENTS: usize = 4096;
+
+#[derive(PartialEq, Eq, Hash)]
+struct FrameMeasureKey {
+    node: SharedNodeIdentity,
+    reference_width: u32,
+    width: u32,
 }
 
-/// Intrinsic measurements of immutable repeat rows for one font configuration.
+struct FrameMeasurement {
+    reference_height: u32,
+    metrics: Metrics,
+}
+
+/// Intrinsic measurements of repeat rows and linear containers.
 #[doc(hidden)]
 #[derive(Default)]
 pub struct IntrinsicMeasurements {
     rows: HashMap<RowKey, RowMeasurements>,
-    order: VecDeque<RowKey>,
+    frame_metrics: HashMap<FrameMeasureKey, FrameMeasurement>,
+    frame_fonts: [usize; 2],
+    frame: u64,
+    admission_limited: bool,
 }
 
 impl IntrinsicMeasurements {
-    fn get(&self, key: RowKey, node: &Node, constraints: Constraints) -> Option<Metrics> {
-        let row = self.rows.get(&key)?;
-        if !row.scene.shares_storage_with(node) {
+    pub(crate) fn begin_frame(&mut self) {
+        self.frame_metrics.clear();
+        if self.admission_limited {
+            self.rows.retain(|_, row| row.frame == self.frame);
+            self.admission_limited = false;
+        }
+        self.frame = self.frame.wrapping_add(1);
+    }
+
+    #[doc(hidden)]
+    pub fn set_frame_fonts(&mut self, fonts: [usize; 2]) {
+        if self.frame_fonts != fonts {
+            self.frame_metrics.clear();
+            self.frame_fonts = fonts;
+        }
+    }
+
+    fn get(&mut self, key: RowKey, node: &Node, constraints: Constraints) -> Option<Metrics> {
+        let row = self.rows.get_mut(&key)?;
+        if !row.scene.matches(node) {
             return None;
         }
+        row.frame = self.frame;
         let constraints = row.constraints(constraints);
         row.sizes
             .iter()
@@ -335,26 +360,171 @@ impl IntrinsicMeasurements {
     }
 
     fn insert(&mut self, key: RowKey, node: &Node, constraints: Constraints, metrics: Metrics) {
-        if !self.rows.contains_key(&key) {
-            if self.rows.len() == 512
-                && let Some(oldest) = self.order.pop_front()
-            {
-                self.rows.remove(&oldest);
+        let may_admit = self.rows.len() < MAX_MEASURED_ROWS;
+        let row = match self.rows.entry(key) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) if may_admit => {
+                entry.insert(RowMeasurements::new(node, self.frame))
             }
-            self.order.push_back(key);
+            Entry::Vacant(_) => {
+                // Keep rows already measured in this working set. Evicting
+                // on every miss turns a long sequential layout into all misses.
+                self.admission_limited = true;
+                return;
+            }
+        };
+        if !row.scene.matches(node) {
+            *row = RowMeasurements::new(node, self.frame);
         }
-        let row = self
-            .rows
-            .entry(key)
-            .or_insert_with(|| RowMeasurements::new(node));
-        if !row.scene.shares_storage_with(node) {
-            *row = RowMeasurements::new(node);
-        }
+        row.frame = self.frame;
         let constraints = row.constraints(constraints);
         if row.sizes.len() == 8 {
             row.sizes.remove(0);
         }
         row.sizes.push((constraints, metrics));
+    }
+}
+
+#[cfg(test)]
+mod intrinsic_cache_tests {
+    use super::*;
+    use xrack_runtime::VecModel;
+
+    #[derive(Default)]
+    struct CountingText {
+        measurements: usize,
+        cache: IntrinsicMeasurements,
+        fonts: [usize; 2],
+        register_font: bool,
+    }
+
+    impl TextMeasurer for CountingText {
+        fn measure(&mut self, text: &str, _font_size: f32, width: f32) -> Size {
+            self.measurements += 1;
+            let size = Size::new((text.len() as f32 * 8.0).min(width), 20.0);
+            if std::mem::take(&mut self.register_font) {
+                self.fonts[0] += 1;
+            }
+            size
+        }
+
+        fn frame_intrinsic_measurements(&mut self) -> Option<&mut IntrinsicMeasurements> {
+            self.cache.set_frame_fonts(self.fonts);
+            Some(&mut self.cache)
+        }
+    }
+
+    fn measured_container() -> Node {
+        let mut child = Node::new("Label", None);
+        child
+            .properties
+            .insert("text", "same child".to_owned().into());
+        let mut container = Node::new("VerticalLayout", None);
+        container.children.push(child);
+        container
+    }
+
+    #[test]
+    fn linear_measurements_reuse_a_snapshot_and_effective_width_within_a_frame() {
+        let mut node = measured_container();
+        let mut text = CountingText::default();
+        let reference = Size::new(240.0, 160.0);
+        let original = measure(&node, reference, &mut text);
+        assert_eq!(text.measurements, 1);
+        let same = measure_with_width(&node, reference, Some(240.0), &mut text);
+        assert_eq!(same.x.preferred, original.x.preferred);
+        assert_eq!(text.measurements, 1);
+        let resized = measure_with_width(&node, reference, Some(40.0), &mut text);
+        assert_eq!(resized.x.preferred, 40.0);
+        assert_eq!(text.measurements, 2);
+
+        node.children[0]
+            .properties
+            .insert("text", "edit".to_owned().into());
+        let edited = measure(&node, reference, &mut text);
+        assert_eq!(edited.x.preferred, 32.0);
+        assert_eq!(text.measurements, 3);
+        text.cache.begin_frame();
+        measure(&node, reference, &mut text);
+        assert_eq!(text.measurements, 4);
+    }
+
+    #[test]
+    fn height_independent_metrics_reuse_across_reference_heights() {
+        let mut node = measured_container();
+        let mut text = CountingText::default();
+        let compact = Size::new(240.0, 80.0);
+        let tall = Size::new(240.0, 480.0);
+        let fixed = measure(&node, compact, &mut text);
+        let expanded = measure(&node, tall, &mut text);
+        assert_eq!(fixed.y.preferred, expanded.y.preferred);
+        assert_eq!(text.measurements, 1);
+
+        node.children[0]
+            .properties
+            .insert("height", Value::Percent(xrack_runtime::Percent(0.5)));
+        let fixed = measure(&node, compact, &mut text);
+        let expanded = measure(&node, tall, &mut text);
+        assert_eq!(fixed.y.preferred, 40.0);
+        assert_eq!(expanded.y.preferred, 240.0);
+        assert_eq!(text.measurements, 3);
+    }
+
+    #[test]
+    fn a_font_loaded_during_measurement_retires_the_partial_metrics() {
+        let node = measured_container();
+        let mut text = CountingText {
+            register_font: true,
+            ..CountingText::default()
+        };
+        let reference = Size::new(240.0, 160.0);
+        measure(&node, reference, &mut text);
+        assert!(text.cache.frame_metrics.is_empty());
+        measure(&node, reference, &mut text);
+        assert_eq!(text.measurements, 2);
+        measure(&node, reference, &mut text);
+        assert_eq!(text.measurements, 2);
+    }
+
+    #[test]
+    fn a_long_layout_scan_keeps_hot_rows_and_reclaims_unused_entries() {
+        let model = VecModel::from(vec![0; MAX_MEASURED_ROWS + 1]);
+        let row = Node::new("VerticalLayout", None).into_shared();
+        let constraints = Constraints {
+            reference: Size::new(160.0, 80.0),
+            width: Some(160.0),
+        };
+        let metrics = Metrics {
+            x: AxisInfo::fixed(160.0),
+            y: AxisInfo::fixed(24.0),
+        };
+        let mut cache = IntrinsicMeasurements::default();
+        cache.begin_frame();
+        for index in 0..=MAX_MEASURED_ROWS {
+            cache.insert(model.row_key(index).unwrap(), &row, constraints, metrics);
+        }
+        cache.begin_frame();
+        for index in 0..MAX_MEASURED_ROWS {
+            assert!(
+                cache
+                    .get(model.row_key(index).unwrap(), &row, constraints)
+                    .is_some()
+            );
+        }
+        let overflow = model.row_key(MAX_MEASURED_ROWS).unwrap();
+        assert!(cache.get(overflow, &row, constraints).is_none());
+        cache.insert(overflow, &row, constraints, metrics);
+
+        cache.begin_frame();
+        cache.insert(overflow, &row, constraints, metrics);
+        cache.begin_frame();
+        cache.insert(overflow, &row, constraints, metrics);
+        assert!(cache.get(overflow, &row, constraints).is_some());
+        assert!(
+            cache
+                .get(model.row_key(0).unwrap(), &row, constraints)
+                .is_none()
+        );
     }
 }
 
@@ -472,7 +642,7 @@ pub(crate) fn measure_with_width(
     text: &mut impl TextMeasurer,
 ) -> Metrics {
     let Some(key) = node.row_key.filter(|_| node.has_shared_storage()) else {
-        return compute_measurement(node, reference, assigned_width, text);
+        return measure_linear_container(node, reference, assigned_width, text);
     };
     let constraints = Constraints {
         reference,
@@ -489,6 +659,51 @@ pub(crate) fn measure_with_width(
         && let Some(cache) = text.intrinsic_measurements()
     {
         cache.insert(key, node, constraints, metrics);
+    }
+    metrics
+}
+
+fn measure_linear_container(
+    node: &Node,
+    reference: Size,
+    assigned_width: Option<f32>,
+    text: &mut impl TextMeasurer,
+) -> Metrics {
+    if !matches!(node.kind, "HorizontalLayout" | "VerticalLayout") || node.children.is_empty() {
+        return compute_measurement(node, reference, assigned_width, text);
+    }
+    let Some(cache) = text.frame_intrinsic_measurements() else {
+        return compute_measurement(node, reference, assigned_width, text);
+    };
+    // For these containers the assigned width only chooses the inner width.
+    // The reference remains part of the key for percentage constraints.
+    let width = assigned_width.unwrap_or_else(|| measurement_width(node, reference));
+    let key = FrameMeasureKey {
+        node: node.snapshot_identity(),
+        reference_width: reference.width.to_bits(),
+        width: width.to_bits(),
+    };
+    let reference_height = reference.height.to_bits();
+    let existing = cache.frame_metrics.get(&key);
+    if let Some(entry) = existing
+        && (reference_height == entry.reference_height || node.intrinsic_height_independent())
+    {
+        return entry.metrics;
+    }
+    let replace = existing.is_some();
+    let fonts = cache.frame_fonts;
+    let metrics = compute_measurement(node, reference, Some(width), text);
+    if let Some(cache) = text.frame_intrinsic_measurements()
+        && cache.frame_fonts == fonts
+        && (replace || cache.frame_metrics.len() < MAX_FRAME_MEASUREMENTS)
+    {
+        cache.frame_metrics.insert(
+            key,
+            FrameMeasurement {
+                reference_height,
+                metrics,
+            },
+        );
     }
     metrics
 }
@@ -1184,13 +1399,12 @@ pub(crate) fn children(
     let mut cursor = f64::from(cursor);
     for (item, size) in items.into_iter().zip(sizes) {
         let child = &node.children[item.index];
-        let reflows = reflows_at_width(child) && size != measurement_width(child, available);
         let cross = if matches!(axis, Axis::Horizontal)
-            && (reflows
-                || !matches!(
-                    item.cross_alignment,
-                    CrossAxisAlignment::Stretch | CrossAxisAlignment::Auto
-                )) {
+            && (!matches!(
+                item.cross_alignment,
+                CrossAxisAlignment::Stretch | CrossAxisAlignment::Auto
+            ) || (size != measurement_width(child, available) && reflows_at_width(child)))
+        {
             measure_with_width(child, available, Some(size), text).along(axis.other())
         } else {
             item.cross

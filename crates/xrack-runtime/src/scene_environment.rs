@@ -3,6 +3,7 @@ use std::{io::Read, sync::Arc};
 
 use crate::{
     Node, RecordList, Value, VecModel,
+    procedural_sky::SkySettings,
     scene3d::{Point3D, Vector3D},
 };
 
@@ -14,6 +15,7 @@ pub fn environment_resource_key(url: &str) -> String {
 /// spherical harmonic coefficients for diffuse irradiance divided by pi.
 pub struct EnvironmentProbe {
     diffuse: [[f32; 3]; 9],
+    upper_diffuse: [[f32; 3]; 9],
     texels: Box<[u8]>,
 }
 
@@ -23,26 +25,45 @@ impl EnvironmentProbe {
     pub const BYTE_LEN: usize = ((Self::FACE_SIZE * Self::FACE_SIZE * 4 - 1) / 3 * 6 * 4) as usize;
 
     #[doc(hidden)]
-    pub fn new(diffuse: [[f32; 3]; 9], texels: Vec<u8>) -> Option<Self> {
-        (texels.len() == Self::BYTE_LEN && diffuse.iter().flatten().all(|value| value.is_finite()))
-            .then(|| Self {
-                diffuse,
-                texels: texels.into_boxed_slice(),
-            })
+    pub fn new(
+        diffuse: [[f32; 3]; 9],
+        upper_diffuse: [[f32; 3]; 9],
+        texels: Vec<u8>,
+    ) -> Option<Self> {
+        (texels.len() == Self::BYTE_LEN
+            && diffuse
+                .iter()
+                .chain(&upper_diffuse)
+                .flatten()
+                .all(|value| value.is_finite()))
+        .then(|| Self {
+            diffuse,
+            upper_diffuse,
+            texels: texels.into_boxed_slice(),
+        })
     }
 
     #[doc(hidden)]
-    pub fn from_packed(diffuse: [[f32; 3]; 9], compressed: &[u8]) -> Option<Self> {
+    pub fn from_packed(
+        diffuse: [[f32; 3]; 9],
+        upper_diffuse: [[f32; 3]; 9],
+        compressed: &[u8],
+    ) -> Option<Self> {
         let mut texels = Vec::with_capacity(Self::BYTE_LEN);
         flate2::read::ZlibDecoder::new(compressed)
             .take(Self::BYTE_LEN as u64 + 1)
             .read_to_end(&mut texels)
             .ok()?;
-        Self::new(diffuse, texels)
+        Self::new(diffuse, upper_diffuse, texels)
     }
 
     pub fn diffuse(&self) -> &[[f32; 3]; 9] {
         &self.diffuse
+    }
+
+    #[doc(hidden)]
+    pub fn upper_diffuse(&self) -> &[[f32; 3]; 9] {
+        &self.upper_diffuse
     }
 
     pub fn texels(&self) -> &[u8] {
@@ -69,31 +90,102 @@ impl PartialEq for EnvironmentProbe {
 #[doc(hidden)]
 #[derive(Clone, Copy)]
 pub struct ViewportEnvironment<'a> {
-    pub probe: &'a Arc<EnvironmentProbe>,
+    pub source: EnvironmentSource<'a>,
     pub intensity: f32,
-    pub yaw: f32,
-    pub skybox: bool,
+    pub orientation: EnvironmentOrientation,
+    pub horizon: f32,
+}
+
+/// One world-to-probe convention for skyboxes, IBL and baking.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EnvironmentOrientation([f32; 3]);
+
+impl EnvironmentOrientation {
+    pub fn degrees(yaw_pitch_roll: [f64; 3]) -> Self {
+        Self(yaw_pitch_roll.map(|angle| {
+            if angle.is_finite() {
+                angle.rem_euclid(360.0).to_radians() as f32
+            } else {
+                0.0
+            }
+        }))
+    }
+
+    #[doc(hidden)]
+    pub fn from_radians(yaw_pitch_roll: [f32; 3]) -> Self {
+        Self(yaw_pitch_roll)
+    }
+
+    #[doc(hidden)]
+    pub fn radians(self) -> [f32; 3] {
+        self.0
+    }
+
+    #[doc(hidden)]
+    pub fn rows(self) -> [[f32; 3]; 3] {
+        let [yaw, pitch, roll] = self.0;
+        let (sy, cy) = yaw.sin_cos();
+        let (sp, cp) = pitch.sin_cos();
+        let (sr, cr) = roll.sin_cos();
+        let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].map(|[x, y, z]| {
+            let (x, z) = (cy * x - sy * z, sy * x + cy * z);
+            let (y, z) = (cp * y + sp * z, -sp * y + cp * z);
+            [cr * x + sr * y, -sr * x + cr * y, z]
+        });
+        std::array::from_fn(|row| [axes[0][row], axes[1][row], axes[2][row]])
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum EnvironmentSource<'a> {
+    Panorama(&'a Arc<EnvironmentProbe>),
+    Sky(SkySettings),
+}
+
+impl<'a> EnvironmentSource<'a> {
+    #[doc(hidden)]
+    pub fn from_node(node: &'a Node, sky_field: &str, image_field: &str) -> Option<Self> {
+        let sky = match node.properties.get(sky_field) {
+            Some(Value::Record(record)) => SkySettings::from_record(record),
+            _ => None,
+        };
+        sky.map(EnvironmentSource::Sky).or_else(|| {
+            let Some(Value::SceneEnvironment(Some(probe))) = node.properties.get(image_field)
+            else {
+                return None;
+            };
+            Some(EnvironmentSource::Panorama(probe))
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn last_mip(self) -> u32 {
+        match self {
+            Self::Panorama(_) => EnvironmentProbe::LEVELS - 1,
+            Self::Sky(sky) => sky.resolution().ilog2(),
+        }
+    }
 }
 
 impl<'a> ViewportEnvironment<'a> {
     pub fn from_node(node: &'a Node) -> Option<Self> {
-        let Some(Value::SceneEnvironment(Some(probe))) = node.properties.get("environment") else {
-            return None;
-        };
+        let source = EnvironmentSource::from_node(node, "environment-sky", "environment")?;
         Some(Self {
-            probe,
+            source,
             intensity: node
                 .number("environment-intensity")
                 .filter(|value| !value.is_nan())
                 .unwrap_or(1.0)
                 .clamp(0.0, 100.0) as f32,
-            yaw: node
-                .number("environment-yaw")
-                .filter(|value| value.is_finite())
+            orientation: EnvironmentOrientation::degrees(
+                ["environment-yaw", "environment-pitch", "environment-roll"]
+                    .map(|field| node.number(field).unwrap_or(0.0)),
+            ),
+            horizon: node
+                .number("environment-horizon")
+                .filter(|value| !value.is_nan())
                 .unwrap_or(0.0)
-                .rem_euclid(360.0)
-                .to_radians() as f32,
-            skybox: node.boolean("environment-skybox", false),
+                .clamp(0.0, 1.0) as f32,
         })
     }
 
@@ -173,7 +265,7 @@ pub struct ReflectionProbe {
     pub position: [f32; 3],
     pub min: [f32; 3],
     pub max: [f32; 3],
-    pub yaw: f32,
+    pub orientation: EnvironmentOrientation,
     pub intensity: f32,
     pub parallax: bool,
     pub debug_view: bool,
@@ -187,7 +279,7 @@ impl ReflectionProbe {
         position: Point3D,
         size: Vector3D,
         offset: Vector3D,
-        yaw: f64,
+        rotation: [f64; 3],
         intensity: f64,
         parallax: bool,
     ) -> Option<Self> {
@@ -204,7 +296,7 @@ impl ReflectionProbe {
                 return None;
             }
         }
-        if !yaw.is_finite() || !intensity.is_finite() {
+        if !rotation.into_iter().all(f64::is_finite) || !intensity.is_finite() {
             return None;
         }
         Some(Self {
@@ -212,7 +304,7 @@ impl ReflectionProbe {
             position,
             min,
             max,
-            yaw: yaw.rem_euclid(360.0).to_radians() as f32,
+            orientation: EnvironmentOrientation::degrees(rotation),
             intensity: intensity.clamp(0.0, 100.0) as f32,
             parallax,
             debug_view: false,
@@ -320,7 +412,7 @@ pub fn record_reflections(
             *position,
             *size,
             offset,
-            number("yaw", 0.0),
+            ["yaw", "pitch", "roll"].map(|field| number(field, 0.0)),
             number("intensity", 1.0),
             row.field("parallax-correction") == Some(&Value::Bool(true)),
         )

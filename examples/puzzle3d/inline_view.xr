@@ -1,0 +1,80 @@
+struct InlineActor {
+    id: string, mesh: string,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float,
+}
+
+struct Scissor { x: length, y: length, width: length, height: length, enabled: bool }
+
+export component InlineViewDemo inherits Window {
+    title: "XRack · 窗口内联 3D";
+    width: 408px; height: 292px; background: #192838;
+    in-out property <bool> inline: true;
+    in-out property <bool> msaa: false;
+    in-out property <bool> transparent: false;
+    in-out property <bool> dimmed: false;
+    in-out property <bool> second: false;
+    in-out property <bool> prepass: false;
+    in-out property <bool> scissored: false;
+    in-out property <bool> supersampled: false;
+    in-out property <bool> cached: false;
+    in-out property <length> scissor-width: 136px;
+
+    property <InlineActor> base: InlineActor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #53bcf6, camera-kind: "", camera-height: 3,
+    };
+    property <scenemodel3d> world: Scene3D.prepare([
+        InlineActor { id: "eye", mesh: "", z: 8, camera-kind: "orthographic", ..root.base },
+        InlineActor { id: "cube", x: -0.65, yaw: 30, pitch: 18, ..root.base },
+        InlineActor {
+            id: "planet", mesh: "primitive:sphere", x: 0.65, z: -0.3,
+            scale-x: 0.62, scale-y: 0.62, scale-z: 0.62, color: #ecaa56, ..root.base
+        },
+    ]);
+
+    Rectangle { x: 16px; y: 46px; width: 216px; height: 123px; background: #317d72; }
+    main-view := SceneView3D {
+        x: 55px; y: 26px; width: 296px; height: 184px;
+        model: root.world; camera: "eye"; shadows: true;
+        shadow-map-size: 256; shadow-bias: 0.012;
+        render-mode: root.inline ? "inline" : "offscreen";
+        depth-prepass: root.prepass;
+        scissor-rect: Scissor { x: 36px, y: 24px, width: root.scissor-width, height: 120px, enabled: root.scissored };
+        supersampling: root.supersampled ? 1.5 : 1;
+        cache-rendering: root.cached;
+        multisampling: root.msaa; opacity: root.dimmed ? 0.5 : 1;
+        scene-background: root.transparent ? #2c426d59 : #2c426d;
+    }
+    if root.second: mini-view := SceneView3D {
+        x: 262px; y: 111px; width: 108px; height: 82px;
+        model: root.world; camera: "eye";
+        render-mode: root.inline ? "inline" : "offscreen";
+        depth-prepass: root.prepass;
+        scene-background: #415568;
+    }
+    Rectangle {
+        x: 199px; y: 186px; width: 184px; height: 31px; border-radius: 6px;
+        background: #26394bea;
+        Text { x: 12px; y: 6px; text: "2D 内容覆盖视口"; color: #ecf4ff; }
+    }
+    inline-toggle := CheckBox {
+        x: 14px; y: 237px; width: 130px; height: 31px;
+        text: "窗口内联"; checked <=> root.inline;
+    }
+    samples-toggle := CheckBox {
+        x: 148px; y: 237px; width: 76px; height: 31px;
+        text: "MSAA"; checked <=> root.msaa;
+    }
+    second-toggle := CheckBox {
+        x: 229px; y: 237px; width: 97px; height: 31px;
+        text: "第二视口"; checked <=> root.second;
+    }
+    scissor-toggle := CheckBox {
+        x: 331px; y: 237px; width: 70px; height: 31px;
+        text: "裁剪"; checked <=> root.scissored;
+    }
+}

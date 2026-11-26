@@ -3260,10 +3260,18 @@ impl<C: Component> Application<C> {
         if !scroll.is_empty()
             && let Some(layout) = &self.layout
         {
-            if self
-                .input
-                .apply_scroll_requests(&self.scene, layout, scroll)
-            {
+            if self.input.apply_scroll_requests_with_text(
+                &self.scene,
+                layout,
+                scroll,
+                |node, item| {
+                    self.state
+                        .as_ref()?
+                        .renderer
+                        .text
+                        .measure_styled_text(node, item)
+                },
+            ) {
                 self.prepare_frame(self.transition_epoch.elapsed());
             } else {
                 self.viewport_observers.sync(&self.scene, layout);
@@ -7764,6 +7772,9 @@ impl<C: Component> Application<C> {
         state
             .renderer
             .set_scene_observation(self.component.source_generation(), profile.is_some());
+        state
+            .renderer
+            .set_viewport_statistics_enabled(profile.is_some());
         #[cfg(target_os = "macos")]
         let metal_frame =
             if std::env::var_os("XRACK_PROFILE_PRESENT").is_some_and(|value| value == "1") {
@@ -7907,6 +7918,15 @@ impl<C: Component> Application<C> {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = feedback;
+        if let Some(inspector) = profile {
+            inspector.set_viewport_statistics(
+                state
+                    .renderer
+                    .viewport_statistics()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
         if let (Some(inspector), Some(sample)) = (profile, render_sample) {
             let micros = self
                 .profile_input_at
@@ -8292,6 +8312,27 @@ impl<C: Component> HostedWindow for Application<C> {
         if let Some(state) = &mut self.state {
             self.component
                 .publish_window_status(state.sample_window_status());
+            if state.renderer.viewport_gpu_timing_pending() {
+                if let Some(inspector) = self
+                    .component
+                    .window_inspector(&self.base_scene)
+                    .filter(|inspector| inspector.profiling())
+                {
+                    state
+                        .renderer
+                        .set_scene_observation(self.component.source_generation(), true);
+                    if state.renderer.poll_viewport_gpu_timing()
+                        && let Some(frame) = state
+                            .renderer
+                            .viewport_statistics()
+                            .and_then(|statistics| statistics.gpu.clone())
+                    {
+                        inspector.set_viewport_gpu_frame(frame);
+                    }
+                } else {
+                    state.renderer.set_viewport_statistics_enabled(false);
+                }
+            }
         }
         if self
             .viewport_observers
@@ -8410,6 +8451,10 @@ impl<C: Component> HostedWindow for Application<C> {
         [
             deadline,
             window_deadline,
+            self.state
+                .as_ref()
+                .is_some_and(|state| state.renderer.viewport_gpu_timing_pending())
+                .then_some(now + Duration::from_millis(8)),
             (self.state.is_some() && self.component.has_window_commands()).then_some(now),
             self.animation_wake,
             scroll_wake,

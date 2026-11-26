@@ -91,6 +91,29 @@ class BindingTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.program.create("Missing")
 
+    def test_runtime_mesh_asset_round_trip(self) -> None:
+        source = """
+            export component App inherits Window {
+                in property <meshasset3d> loaded;
+            }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main = root / "app.xr"
+            main.write_text(source, encoding="utf-8")
+            mesh = root / "panel.obj"
+            mesh.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+            ui = xrack.load_file(main).create("App")
+            self.assertEqual(ui.get("loaded"), xrack.MeshAsset3D())
+            prepared = xrack.load_mesh_file(mesh, lightmap_uv=True)
+            self.assertTrue(prepared.loaded)
+            ui.set("loaded", prepared)
+            self.assertEqual(ui.get("loaded"), prepared)
+            with self.assertRaises(TypeError):
+                ui.set("loaded", str(mesh))
+            with self.assertRaises(ValueError):
+                xrack.load_mesh_file(root / "missing.obj")
+
     def test_ui_methods_reject_worker_threads(self) -> None:
         errors: list[str] = []
 

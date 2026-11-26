@@ -10,15 +10,19 @@ mod deform;
 mod depth;
 mod depth_of_field;
 pub(super) mod effect_history;
+mod fxaa;
 pub(super) use custom_effect::has_history as has_effect_history;
 mod environment;
 mod fog;
 mod instances;
 pub(crate) mod item_textures;
+mod lens_flare;
 mod lighting;
 mod lightmap;
+mod linked_transparency;
 mod lut;
 mod material;
+mod material_debug;
 pub(crate) use material::material_texture_limit;
 mod motion;
 mod occlusion;
@@ -30,6 +34,7 @@ mod particles;
 mod physics_debug;
 mod pipeline;
 mod postprocess;
+mod preload;
 mod probe_debug;
 mod progressive;
 pub(super) mod reflection_capture;
@@ -37,11 +42,18 @@ pub(super) mod retained_view;
 mod screen_depth;
 mod screen_lighting;
 mod shadow;
+mod shadow_compact;
+mod shadow_debug;
+mod shadow_tiles;
+mod sky_cube;
 mod supersampling;
 mod temporal;
+#[cfg(test)]
+mod texture_budget_tests;
 mod transmission;
 mod transparency;
 mod vertex_program;
+mod viewport_statistics;
 mod volumetric_fog;
 mod wireframe;
 
@@ -49,21 +61,22 @@ use crate::{GpuPaintContext, Node};
 use capture_region::CaptureRegion;
 use capture_stencil::{StencilBuffers, StencilPass};
 use color_capture::{
-    CaptureInput, CapturePlan, CaptureStage, CaptureViews, ColorCaptures, SharedProjectionBuffers,
-    capture_scene, cube_revisions, geometry_scene, material_sources,
+    CaptureInput, CaptureMask, CapturePlan, CaptureStage, CaptureViews, ColorCaptures,
+    SharedProjectionBuffers, capture_scene, cube_revisions, geometry_scene, material_sources,
 };
 use composite_input::{CompositeInput, CompositeInputs};
 use custom_effect::EffectSurface;
 use deform::{Deformation, DeformationBinding, DeformationBuffers, GeometryBindings};
 use depth::{DepthPass, DepthPipelines};
 use depth_of_field::FocusDepth;
-use environment::{EnvironmentGpu, EnvironmentInput, LocalReflections};
+use environment::{EnvironmentGpu, EnvironmentInput, LocalReflections, SkyboxInput};
 use fog::Fog;
 use instances::{ColorPlan, InstanceBuffers, InstanceSet};
 use item_textures::{FrozenItemTextures, ItemTextureViews};
 use lighting::{LightBuffers, LightSet};
 use lightmap::{LightmapBindings, LightmapTextures};
 use material::{MaterialBindings, Materials};
+use material_debug::MaterialDebug;
 use motion::{MotionInputs, MotionPass};
 use occlusion::{AmbientOcclusion, OcclusionSettings, OcclusionSource};
 use particles::{ModelParticleBatch, ParticleBatches, ParticleDraw, ParticlePipelines};
@@ -71,9 +84,9 @@ use pipeline::{
     ColorOutput, ColorPass, GeometryOutput, NAMED_GEOMETRY_ATTACHMENTS, Pipelines, Surface,
     VolumeMode,
 };
-use postprocess::{PostProcess, PostSettings};
+use postprocess::{PostProcess, PostSettings, PostStats};
 use reflection_capture::{CapturedCube, ProbeBudget, Reflections, capture_node};
-use retained_view::AaSample;
+use retained_view::{AaSample, DisplayFrame};
 use screen_lighting::{
     IndirectSettings, ReflectionSettings, ScreenLighting, ScreenSettings, ScreenTarget,
 };
@@ -81,6 +94,7 @@ use shadow::{ShadowRequest, Shadows};
 use std::{
     collections::{BTreeSet, HashMap},
     ops::Range,
+    rc::Rc,
     sync::{Arc, Weak},
 };
 use transmission::{OpaqueDepth, Transmission};
@@ -90,11 +104,13 @@ use wireframe::RasterMode;
 use xrack_runtime::{
     Color, Value,
     scene_effect::{
-        CaptureAttachment, CapturePipelineState, CaptureRenderables, encode_capture_depth_clear,
+        CaptureAttachment, CaptureAugment, CapturePipelineState, CaptureRenderables,
+        MATERIAL_DATA_ATTACHMENTS, encode_capture_depth_clear,
     },
     scene3d::{
         CaptureMaterial, Mesh3D, MeshCullMode, MeshData, MeshDepthCoverage, MeshDepthDraw,
-        MeshVertex, MeshVertexStreams, ReflectionSource, SceneCamera, SceneObject, SceneVisibility,
+        MeshVertex, MeshVertexStreams, ReflectionSource, SceneCamera, SceneGeometry, SceneObject,
+        SceneVisibility,
     },
 };
 
@@ -103,7 +119,7 @@ pub(super) use supersampling::texture_extent;
 
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const INSTANCE_STRIDE: u64 = 68;
+const INSTANCE_STRIDE: u64 = 72;
 
 /// Cumulative counters for SceneView3D color passes on this renderer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -124,16 +140,30 @@ pub struct SceneDrawStats {
     pub physics_debug_lines: u64,
     /// Vertex buffers created for changed physics debug snapshots.
     pub physics_debug_uploads: u64,
+    /// Viewport passes submitting shadow guides.
+    pub shadow_debug_draws: u64,
+    /// Line segments submitted by the shadow guides.
+    pub shadow_debug_lines: u64,
+    /// Vertex buffer uploads for changed guide snapshots.
+    pub shadow_debug_uploads: u64,
     /// Viewports that recorded their 3D render pass or background clear.
     pub viewport_renders: u64,
+    /// Viewports rendered directly into the window color target.
+    pub viewport_inline_renders: u64,
+    /// 3D viewport textures sampled for 2D composition.
+    pub viewport_texture_composites: u64,
+    /// Floating-point views converted to premultiplied sRGB for 2D.
+    pub viewport_display_resolves: u64,
     /// Viewports composited from a completed offscreen color texture.
     pub viewport_cache_hits: u64,
     /// Color textures allocated for retained viewports.
     pub viewport_cache_allocations: u64,
     /// Dimensions of the most recently painted viewport's composited texture.
     pub last_texture_size: [u32; 2],
-    /// Dimensions of that viewport's color raster before an area resolve.
+    /// Dimensions of the viewport's internal color raster, or zero for a custom pipeline.
     pub last_raster_size: [u32; 2],
+    /// Samples per pixel in the most recently recorded viewport raster.
+    pub last_sample_count: u32,
     /// Cumulative scene color raster area, counted before MSAA sample expansion.
     pub raster_pixels: u64,
     /// Prepared light buffers uploaded for changed lights or shadow assignments.
@@ -160,6 +190,8 @@ pub struct SceneDrawStats {
     pub mesh_deformation_bytes_uploaded: u64,
     /// Mesh uploads that used compact index buffers.
     pub indexed_mesh_uploads: u64,
+    /// Preload steps that transferred mesh buffers or static material images.
+    pub preloaded_meshes: u64,
     /// Instanced sprite draws, independent of the number of particles.
     pub particle_draws: u64,
     /// Live sprites submitted to the GPU before hardware clipping.
@@ -180,6 +212,10 @@ pub struct SceneDrawStats {
     pub particle_shadow_draws: u64,
     /// Scene bounds consumed by new shadow fits, with each authored envelope counted once.
     pub shadow_fit_bounds: u64,
+    /// Logical depth texture storage for the last rendered viewport, including retained tiles.
+    pub shadow_atlas_bytes: u64,
+    /// Updated 16-bit shadow maps converted into the mixed-precision sampling buffer.
+    pub shadow_packed_passes: u64,
     /// GPU transforms generated for a capture step, shared by its cubemap faces.
     pub particle_reflection_instances: u64,
     /// Objects for which a replacement mesh was selected, before camera culling.
@@ -222,10 +258,16 @@ pub struct SceneDrawStats {
     pub screen_indirect_pixels: u64,
     /// Lower-resolution levels uploaded for material textures.
     pub material_mip_levels_uploaded: u64,
+    /// Native anisotropic sampler variants created for material maps.
+    pub material_anisotropic_samplers: u64,
     /// GPU variants compiled for authored material shaders.
     pub custom_material_pipeline_builds: u64,
     /// File image GPU allocations shared by materials and postprocessing.
     pub scene_image_uploads: u64,
+    /// Procedural environment cubes generated on the GPU, including their roughness mips.
+    pub procedural_sky_generations: u64,
+    /// File probe cubemaps prefiltered after attenuation of their lower hemisphere.
+    pub environment_horizon_prefilters: u64,
     /// Viewports that retained opaque color for transmission.
     pub transmission_captures: u64,
     /// Downsampling passes used by frosted transmission.
@@ -236,9 +278,15 @@ pub struct SceneDrawStats {
     pub opaque_depth_captures: u64,
     /// Weighted transparency composites recorded for viewports with visible blended geometry.
     pub transparency_composites: u64,
+    /// Viewports that gathered and resolved per-pixel fragment lists.
+    pub linked_transparency_composites: u64,
+    /// Bytes reserved for the most recent linked transparency target.
+    pub linked_transparency_bytes: u64,
+    /// Working set allocations for the per-pixel fragment lists.
+    pub linked_transparency_allocations: u64,
     /// Depth-only mesh draws recorded for ambient occlusion.
     pub occlusion_depth_draws: u64,
-    /// Depth-only mesh draws requested by material depth modes.
+    /// Depth-only mesh draws requested by materials or the viewport prepass.
     pub material_depth_prepass_draws: u64,
     /// Half-resolution ambient occlusion evaluation passes.
     pub occlusion_evaluations: u64,
@@ -248,12 +296,24 @@ pub struct SceneDrawStats {
     pub hdr_resolves: u64,
     /// Viewports with color adjustments in the final display conversion.
     pub color_adjustment_resolves: u64,
+    /// Full-screen resolves shared by tone mapping, grading and final display effects.
+    pub display_resolves: u64,
+    /// Format and attachment variants compiled for the display resolve.
+    pub display_pipeline_builds: u64,
+    /// Display resolves that reused the scene and upstream postprocessing inputs.
+    pub display_input_cache_hits: u64,
+    /// Screen-space FXAA work. The temporary color input is only used after color conversion.
+    pub fxaa_passes: u64,
+    pub fxaa_pixels: u64,
+    pub fxaa_input_allocations: u64,
     /// Full-screen passes using an authored scene effect.
     pub custom_effect_passes: u64,
     /// Draws of named scene color feeds into offscreen textures.
     pub scene_capture_passes: u64,
     /// Named captures that wrote lit color and geometry in one render pass.
     pub scene_capture_mrt_passes: u64,
+    /// Derived mip levels written after named color capture renders.
+    pub scene_capture_mip_passes: u64,
     /// Named color and depth imported by a fullscreen draw in the opaque pass.
     pub scene_capture_composite_draws: u64,
     /// Stencil aspects copied between named captures.
@@ -294,6 +354,14 @@ pub struct SceneDrawStats {
     pub bloom_pixels: u64,
     /// Bloom texture allocations, including new viewport sizes and levels.
     pub bloom_target_allocations: u64,
+    /// Quarter-resolution lens flare passes and their pixel work.
+    pub lens_flare_passes: u64,
+    pub lens_flare_pixels: u64,
+    /// Highlight passes exclusive to the flare and viewports that shared bloom's highlights.
+    pub lens_flare_highlight_passes: u64,
+    pub lens_flare_shared_highlights: u64,
+    pub lens_flare_image_uploads: u64,
+    pub lens_flare_target_allocations: u64,
     /// Depth of field reduction, filtering and composition passes.
     pub depth_of_field_passes: u64,
     /// Pixels filtered by the half-resolution depth of field passes.
@@ -328,14 +396,20 @@ impl SceneDrawStats {
 pub(super) struct SceneRenderer {
     reflections: Reflections,
     probe_debug: probe_debug::ProbeDebug,
-    physics_debug: physics_debug::PhysicsDebugRenderer,
+    debug_lines: physics_debug::DebugLineRenderer,
+    shadow_cameras: shadow_debug::FrozenCameras,
     color_captures: ColorCaptures,
     composite_inputs: CompositeInputs,
     stencil_buffers: StencilBuffers,
     item_textures: Arc<ItemTextureViews>,
     item_texture_revision: u64,
+    preloads: preload::Preloads,
     scene: Option<SceneGpu>,
+    native_anisotropy: bool,
+    linked_transparency_supported: bool,
+    linked_sample_shading: bool,
     depth: [Option<Attachment>; 2],
+    inline_depth: [Option<Attachment>; 2],
     sampled_depth: [Option<Attachment>; 2],
     multisampled_color: [Option<Attachment>; 2],
     continued_color: [Option<Attachment>; 2],
@@ -347,15 +421,25 @@ pub(super) struct SceneRenderer {
     motion: MotionPass,
     screen_lighting: ScreenLighting,
     pub stats: SceneDrawStats,
+    pub(crate) viewport_collector: viewport_statistics::ViewportCollector,
+}
+
+#[derive(Clone, Copy)]
+struct InlineViewport<'a> {
+    origin: [u32; 2],
+    geometry: &'a Arc<SceneGeometry>,
 }
 
 enum DrawTarget<'a> {
-    Viewport(
-        &'a [Option<CapturedCube>],
-        Option<&'a AaSample>,
-        effect_history::Owner<'a>,
-        &'a CaptureViews,
-    ),
+    Viewport {
+        cubes: &'a [Option<CapturedCube>],
+        sample: Option<&'a AaSample>,
+        owner: effect_history::Owner<'a>,
+        captures: &'a CaptureViews,
+        inline: Option<InlineViewport<'a>>,
+        retain_display: bool,
+        scissor: Option<[f64; 4]>,
+    },
     ColorCapture {
         cubes: &'a [Option<CapturedCube>],
         inputs: &'a CaptureViews,
@@ -366,6 +450,7 @@ enum DrawTarget<'a> {
         depth_clear: f32,
         stencil: Option<&'a StencilPass>,
         override_material: Option<&'a Arc<CaptureMaterial>>,
+        augment: Option<&'a CaptureAugment>,
         composite: Option<CompositeInput<'a>>,
     },
     Reflection(
@@ -378,18 +463,20 @@ enum DrawTarget<'a> {
 #[derive(Clone, Copy)]
 struct NamedGeometry<'a> {
     views: [Option<&'a wgpu::TextureView>; NAMED_GEOMETRY_ATTACHMENTS.len()],
-    data: Option<&'a wgpu::TextureView>,
-    mask: u8,
+    data: [Option<&'a wgpu::TextureView>; MATERIAL_DATA_ATTACHMENTS.len()],
+    mask: CaptureMask,
     combined: bool,
 }
 
 impl NamedGeometry<'_> {
     fn output(self) -> GeometryOutput {
-        let data = self.data.map(|view| view.texture().format());
+        let data = self
+            .data
+            .map(|view| view.map(|view| view.texture().format()));
         if self.combined {
             GeometryOutput::Combined(self.mask, data)
-        } else if let Some(format) = data {
-            GeometryOutput::Data(format)
+        } else if data.iter().any(Option::is_some) {
+            GeometryOutput::Data(data)
         } else {
             GeometryOutput::Named(self.mask)
         }
@@ -428,37 +515,55 @@ impl NamedGeometry<'_> {
             };
             self.views[index].map(|view| clear(view, color))
         });
+        let [data0, data1, data2] = self
+            .data
+            .map(|view| view.map(|view| clear(view, wgpu::Color::TRANSPARENT)));
         let targets = [
             normal,
             base,
             emissive,
             captured_depth,
             color.map(|(view, value)| clear(view, value)),
-            self.data.map(|view| clear(view, wgpu::Color::TRANSPARENT)),
+            data0,
+            data1,
+            data2,
         ];
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(if self.combined {
-                "XRack named scene color and geometry"
-            } else {
-                "XRack named scene geometry"
-            }),
-            color_attachments: if self.combined {
-                &targets[..NAMED_GEOMETRY_ATTACHMENTS.len() + 1 + usize::from(self.data.is_some())]
-            } else if self.data.is_some() {
-                &targets[NAMED_GEOMETRY_ATTACHMENTS.len() + 1..]
-            } else {
-                &targets[..NAMED_GEOMETRY_ATTACHMENTS.len()]
-            },
-            depth_stencil_attachment: depth.map(|view| wgpu::RenderPassDepthStencilAttachment {
-                view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(depth_clear),
-                    store: wgpu::StoreOp::Discard,
+        crate::viewport_gpu_timing::render_pass(
+            encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some(if self.combined {
+                    "XRack named scene color and geometry"
+                } else {
+                    "XRack named scene geometry"
                 }),
-                stencil_ops: stencil.map(|pass| pass.operations(true)),
-            }),
-            ..Default::default()
-        })
+                color_attachments: {
+                    let data_start = NAMED_GEOMETRY_ATTACHMENTS.len() + 1;
+                    let data_len = self
+                        .data
+                        .iter()
+                        .rposition(Option::is_some)
+                        .map_or(0, |index| index + 1);
+                    if self.combined {
+                        &targets[..data_start + data_len]
+                    } else if data_len != 0 {
+                        &targets[data_start..data_start + data_len]
+                    } else {
+                        &targets[..NAMED_GEOMETRY_ATTACHMENTS.len()]
+                    }
+                },
+                depth_stencil_attachment: depth.map(|view| {
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(depth_clear),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: stencil.map(|pass| pass.operations(true)),
+                    }
+                }),
+                ..Default::default()
+            },
+        )
     }
 }
 
@@ -615,7 +720,6 @@ struct MeshCache {
     box_mesh: MeshBuffer,
     sphere_mesh: MeshBuffer,
     wire_sphere: Option<MeshBuffer>,
-    expand_triangles: bool,
     materials: Materials,
     item_texture_revision: u64,
     imported: HashMap<(usize, bool), ImportedMesh>,
@@ -654,7 +758,7 @@ impl SceneGpu {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         item_textures: &Arc<ItemTextureViews>,
-        textures: (material::SharedImages, SharedProjectionBuffers),
+        textures: (material::SharedImages, SharedProjectionBuffers, bool),
     ) -> Self {
         let pipelines = Pipelines::new(device);
         let mut materials = Materials::new(
@@ -735,7 +839,6 @@ impl SceneGpu {
                 box_mesh,
                 sphere_mesh,
                 wire_sphere: None,
-                expand_triangles: false,
                 transfers,
                 materials,
                 item_texture_revision: 0,
@@ -753,23 +856,30 @@ impl SceneGpu {
 impl MeshCache {
     fn begin_frame(&mut self) {
         self.frame = self.frame.wrapping_add(1);
-        self.captured
-            .retain(|_, entry| self.frame.wrapping_sub(entry.frame) <= 4);
-    }
-
-    fn prune(&mut self) {
         self.imported
             .retain(|_, entry| entry.source.strong_count() != 0);
-        self.captured
-            .retain(|_, entry| entry.source.strong_count() != 0);
+        self.captured.retain(|_, entry| {
+            self.frame.wrapping_sub(entry.frame) <= 4 && entry.source.strong_count() != 0
+        });
         self.geometry
             .retain(|_, (data, _)| data.strong_count() != 0);
     }
 
     fn get(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, kind: &Mesh3D) -> &MeshBuffer {
+        self.get_for_raster(device, queue, kind, RasterMode::Fill)
+    }
+
+    fn get_for_raster(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        kind: &Mesh3D,
+        raster: RasterMode,
+    ) -> &MeshBuffer {
+        let expand_triangles = raster == RasterMode::ShaderLine;
         match kind {
             Mesh3D::Box => &self.box_mesh,
-            Mesh3D::Sphere if self.expand_triangles && self.sphere_mesh.index.is_some() => {
+            Mesh3D::Sphere if expand_triangles && self.sphere_mesh.index.is_some() => {
                 self.wire_sphere.get_or_insert_with(|| {
                     let mesh = mesh_buffer(device, kind, true);
                     self.transfers.upload(&mesh);
@@ -782,7 +892,7 @@ impl MeshCache {
             }
             Mesh3D::Sphere => &self.sphere_mesh,
             Mesh3D::Imported(data) => {
-                let expanded = self.expand_triangles && kind.draw_indices().is_some();
+                let expanded = expand_triangles && kind.draw_indices().is_some();
                 let box_geometry = &self.box_mesh.geometry;
                 let sphere_geometry = &self.sphere_mesh.geometry;
                 let materials = &mut self.materials;
@@ -940,9 +1050,41 @@ impl MeshCache {
 }
 
 impl SceneRenderer {
+    pub(super) fn new(adapter: &wgpu::Adapter, features: wgpu::Features) -> Self {
+        let capabilities = adapter.get_downlevel_capabilities().flags;
+        let mut scene = Self {
+            native_anisotropy: capabilities.contains(wgpu::DownlevelFlags::ANISOTROPIC_FILTERING),
+            linked_transparency_supported: capabilities.contains(
+                wgpu::DownlevelFlags::FRAGMENT_WRITABLE_STORAGE
+                    | wgpu::DownlevelFlags::READ_ONLY_DEPTH_STENCIL,
+            ),
+            linked_sample_shading: capabilities
+                .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING),
+            ..Default::default()
+        };
+        scene.postprocess.effects.formats = custom_effect::OutputFormats::new(adapter, features);
+        scene
+    }
+
     fn set_item_textures(&mut self, revision: u64, items: ItemTextureViews) {
         self.item_textures = Arc::new(items);
         self.item_texture_revision = revision;
+    }
+
+    pub(super) fn resolve_viewport_display(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        views: (&wgpu::TextureView, &wgpu::TextureView),
+    ) {
+        self.postprocess
+            .area_filter(device)
+            .display_viewport(device, encoder, views);
+        self.stats.viewport_display_resolves += 1;
+    }
+
+    pub(super) fn item_color_texture(&self, name: &str) -> Option<wgpu::Texture> {
+        Some(self.item_textures.get(name)?.color_texture.clone())
     }
 
     pub(super) fn item_texture_revision(&self, node: &Node) -> u64 {
@@ -950,6 +1092,9 @@ impl SceneRenderer {
             return 0;
         }
         if Self::uses_material_items(node)
+            || matches!(node.properties.get("scene-captures"), Some(Value::SceneCaptures(captures))
+                if captures.values().filter_map(|capture| capture.augment.as_ref())
+                    .any(|augment| augment.item_sources(augment.textures.len()).next().is_some()))
             || matches!(node.properties.get("scene-effects"), Some(Value::SceneEffects(effects))
                 if effects.item_sources().next().is_some())
         {
@@ -971,7 +1116,9 @@ impl SceneRenderer {
     }
 
     pub(super) fn begin_frame(&mut self) {
+        self.viewport_collector.begin_frame();
         self.reflections.begin_frame();
+        self.shadow_cameras.begin_frame();
         self.color_captures.begin_frame();
         self.postprocess.effects.history.begin_frame();
         self.postprocess.effects.images.borrow_mut().prune();
@@ -982,7 +1129,11 @@ impl SceneRenderer {
     }
 
     pub(super) fn finish_frame(&mut self, submitted: bool) {
+        if !submitted {
+            self.viewport_collector.clear();
+        }
         self.reflections.finish_frame(submitted);
+        self.shadow_cameras.finish_frame(submitted);
         self.color_captures.finish_frame(submitted);
         self.postprocess.effects.history.finish_frame(submitted);
         let images = self.postprocess.effects.images.borrow();
@@ -991,7 +1142,17 @@ impl SceneRenderer {
         self.stats.scene_capture_projection_uploads =
             self.postprocess.effects.projections.borrow().uploads;
         if let Some(scene) = &mut self.scene {
+            self.stats.material_anisotropic_samplers = scene.meshes.materials.anisotropic_samplers;
+            scene.environment.finish_frame(submitted);
+            self.stats.procedural_sky_generations = scene.environment.sky_generations;
+            self.stats.environment_horizon_prefilters = scene.environment.masked_generations;
             self.stats.custom_material_pipeline_builds = scene.pipelines.material_shader_builds();
+            self.stats.scene_capture_material_bindings = scene.meshes.capture_binding_builds;
+            self.stats.mesh_vertex_bytes_uploaded = scene.meshes.transfers.vertex_bytes;
+            self.stats.mesh_index_bytes_uploaded = scene.meshes.transfers.index_bytes;
+            self.stats.mesh_wireframe_uploads = scene.meshes.transfers.wireframe_meshes;
+            self.stats.mesh_deformation_bytes_uploaded = scene.meshes.transfers.deformation_bytes;
+            self.stats.indexed_mesh_uploads = scene.meshes.transfers.indexed;
             scene
                 .environment
                 .retain_captured_bindings(|view| self.reflections.contains_view(view));
@@ -1002,6 +1163,7 @@ impl SceneRenderer {
         if let Some(scene) = &mut self.scene {
             scene.shadows.discard_recorded_layers();
             scene.occlusion.discard_recorded_maps();
+            scene.environment.finish_frame(false);
         }
     }
 
@@ -1037,8 +1199,15 @@ impl SceneRenderer {
             .map_or(0, |scene| scene.instances.uploads)
     }
 
-    pub(super) fn visit_effect_history(&mut self, owner: effect_history::Owner<'_>, active: bool) {
-        self.postprocess.effects.history.visit(owner, active);
+    pub(super) fn visit_viewport(
+        &mut self,
+        owner: effect_history::Owner<'_>,
+        node: &Node,
+        feedback: bool,
+    ) {
+        self.postprocess.effects.history.visit(owner, feedback);
+        self.shadow_cameras
+            .visit(owner, node.boolean("shadow-freeze-camera", false));
     }
 
     pub(super) fn draw(
@@ -1053,12 +1222,20 @@ impl SceneRenderer {
             Option<&AaSample>,
             PreparedCaptures,
         ),
-    ) {
+        (retain_display, scissor): (bool, Option<[f64; 4]>),
+    ) -> Option<Rc<DisplayFrame>> {
         self.stats.viewport_renders = self.stats.viewport_renders.saturating_add(1);
         let plan = captures.plan.take().unwrap_or_else(|| {
-            CapturePlan::for_view(node, ctx.device, ctx.size, camera, &BTreeSet::new())
+            CapturePlan::for_view(
+                node,
+                (ctx.device, self.postprocess.effects.formats),
+                ctx.size,
+                camera,
+                &BTreeSet::new(),
+            )
         });
         self.stats.scene_capture_feedback_edges += plan.feedback_edges;
+        let internal_passes = !node.scene_internal_passes_disabled();
         self.draw_color_captures(
             node,
             CaptureContext {
@@ -1068,11 +1245,15 @@ impl SceneRenderer {
                 owner,
                 paint: ctx.paint,
             },
-            Some(cubes),
+            internal_passes.then_some(cubes),
             plan.stages,
             &mut captures.ready,
         );
-        self.draw_target(
+        if !internal_passes {
+            self.draw_custom_pipeline(node, &mut ctx, queue, owner, &captures.ready);
+            return None;
+        }
+        let prepared = self.draw_target(
             node,
             GpuPaintContext {
                 encoder: &mut *ctx.encoder,
@@ -1081,17 +1262,104 @@ impl SceneRenderer {
             queue,
             owner.path,
             camera,
-            DrawTarget::Viewport(cubes, sample, owner, &captures.ready),
+            DrawTarget::Viewport {
+                cubes,
+                sample,
+                owner,
+                captures: &captures.ready,
+                inline: None,
+                retain_display: retain_display
+                    && !node.properties.contains_key("__xr-physics-debug-lines"),
+                scissor,
+            },
         );
+        let region = CaptureRegion::scissor(scissor, ctx.size);
         if let (Some(camera), Some(Value::PhysicsDebugLines(lines))) =
             (camera, node.properties.get("__xr-physics-debug-lines"))
             && let Some((lines, uploaded)) =
-                self.physics_debug.draw(&mut ctx, camera, lines.vertices())
+                self.debug_lines
+                    .draw(&mut ctx, camera, lines.vertices(), region)
         {
             self.stats.physics_debug_draws += 1;
             self.stats.physics_debug_lines += u64::from(lines);
             self.stats.physics_debug_uploads += u64::from(uploaded);
         }
+        prepared
+    }
+
+    fn draw_custom_pipeline(
+        &mut self,
+        node: &Node,
+        ctx: &mut GpuPaintContext<'_>,
+        queue: &wgpu::Queue,
+        owner: effect_history::Owner<'_>,
+        captures: &CaptureViews,
+    ) {
+        self.stats.last_texture_size = ctx.size;
+        self.stats.last_raster_size = [0; 2];
+        self.stats.last_sample_count = 0;
+        let settings = PostSettings::custom(node);
+        let source = composite_input::capture_reads(node)
+            .color
+            .and_then(|read| captures.get(&read));
+        let source = match source {
+            Some(capture) => capture.view.clone(),
+            None if settings.has_effects() => {
+                self.postprocess.transparent_source(ctx.device).clone()
+            }
+            None => {
+                drop(viewport_pass(
+                    ctx.encoder,
+                    ctx.target,
+                    None,
+                    None,
+                    false,
+                    (
+                        Some(wgpu::Color::TRANSPARENT),
+                        wgpu::LoadOp::Clear(1.0),
+                        None,
+                    ),
+                    false,
+                ));
+                return;
+            }
+        };
+        self.resolve_postprocessing(
+            ctx,
+            queue,
+            (&source, None),
+            (None, None, Some(captures)),
+            (settings, None, None, Some(owner), false),
+        );
+    }
+
+    pub(super) fn draw_inline(
+        &mut self,
+        node: &Node,
+        ctx: GpuPaintContext<'_>,
+        queue: &wgpu::Queue,
+        owner: effect_history::Owner<'_>,
+        camera: SceneCamera,
+        (origin, geometry, scissor): ([u32; 2], &Arc<SceneGeometry>, Option<[f64; 4]>),
+    ) {
+        self.stats.viewport_renders = self.stats.viewport_renders.saturating_add(1);
+        self.stats.viewport_inline_renders = self.stats.viewport_inline_renders.saturating_add(1);
+        self.draw_target(
+            node,
+            ctx,
+            queue,
+            owner.path,
+            Some(camera),
+            DrawTarget::Viewport {
+                cubes: &[],
+                sample: None,
+                owner,
+                captures: &CaptureViews::default(),
+                inline: Some(InlineViewport { origin, geometry }),
+                retain_display: false,
+                scissor,
+            },
+        );
     }
 
     fn draw_color_captures(
@@ -1150,7 +1418,14 @@ impl SceneRenderer {
                     scene: scene.clone(),
                     size: target.size,
                     color_format,
-                    material_data_format: target.material_data_format,
+                    mipmaps: target.mipmaps,
+                    material_data_formats: std::array::from_fn(|index| {
+                        if attachments & (1 << MATERIAL_DATA_ATTACHMENTS[index].index()) != 0 {
+                            target.material_data_formats[index]
+                        } else {
+                            HDR_FORMAT
+                        }
+                    }),
                     cubes: if target.geometry {
                         Vec::new()
                     } else {
@@ -1164,6 +1439,17 @@ impl SceneRenderer {
                     composition: stage.composition.clone(),
                     renderables: target.renderables,
                     override_material: stage.override_material.clone(),
+                    augment: stage.augment.clone(),
+                    augment_items: stage.augment.as_ref().map_or_else(Vec::new, |augment| {
+                        augment
+                            .item_sources(augment.textures.len())
+                            .map(|name| {
+                                self.item_textures
+                                    .get(name)
+                                    .map(|view| [view.allocation, view.revision])
+                            })
+                            .collect()
+                    }),
                     pipeline_state: target.pipeline_state,
                     region: target.region,
                     depth_clear: target.depth_clear,
@@ -1176,13 +1462,13 @@ impl SceneRenderer {
                     let Some(primary) = &work.views[primary.attachment.index()] else {
                         continue;
                     };
-                    primary.view.clone()
+                    primary.render_view().clone()
                 } else {
                     work.views[CaptureAttachment::Color.index()]
                         .as_ref()
                         .map_or_else(
                             || self.stencil_buffers.color(device, target.size),
-                            |target| target.view.clone(),
+                            |target| target.render_view().clone(),
                         )
                 };
                 let stencil_output = work.views[CaptureAttachment::Stencil.index()].as_ref();
@@ -1219,9 +1505,11 @@ impl SceneRenderer {
                             .as_ref()
                             .map(|capture| &capture.view)
                     }),
-                    data: work.views[CaptureAttachment::MaterialData.index()]
-                        .as_ref()
-                        .map(|capture| &capture.view),
+                    data: MATERIAL_DATA_ATTACHMENTS.map(|attachment| {
+                        work.views[attachment.index()]
+                            .as_ref()
+                            .map(|capture| &capture.view)
+                    }),
                     mask: attachments,
                     combined: !target.geometry,
                 });
@@ -1244,6 +1532,7 @@ impl SceneRenderer {
                         geometry,
                         renderables: target.renderables,
                         override_material: stage.override_material.as_ref(),
+                        augment: stage.augment.as_ref(),
                         pipeline_state: target.pipeline_state,
                         region: target.region,
                         depth_clear: target.depth_clear,
@@ -1255,6 +1544,19 @@ impl SceneRenderer {
                         ),
                     },
                 );
+                if let Some(levels) = work.views[CaptureAttachment::Color.index()]
+                    .as_ref()
+                    .and_then(|color| color.mip_views.as_deref())
+                {
+                    self.postprocess.area_filter(device).resolve_mips(
+                        device,
+                        encoder,
+                        levels,
+                        target.size,
+                        color_format,
+                    );
+                    self.stats.scene_capture_mip_passes += (levels.len() - 1) as u64;
+                }
                 self.stats.scene_capture_passes += 1;
                 self.stats.scene_capture_mrt_passes +=
                     u64::from(!target.geometry && geometry.is_some());
@@ -1285,7 +1587,10 @@ impl SceneRenderer {
         ) else {
             return ReflectionFrame::default();
         };
-        let geometry = model.geometry(&camera);
+        let geometry = model.render_geometry(
+            &camera,
+            f64::from(node.length("lod-fade-width").unwrap_or_default()),
+        );
         let scene = self.scene.get_or_insert_with(|| {
             SceneGpu::new(
                 device,
@@ -1294,6 +1599,7 @@ impl SceneRenderer {
                 (
                     self.postprocess.effects.images.clone(),
                     self.postprocess.effects.projections.clone(),
+                    self.native_anisotropy,
                 ),
             )
         });
@@ -1357,7 +1663,13 @@ impl SceneRenderer {
         let roots: BTreeSet<_> = feed_names.iter().flatten().cloned().collect();
         let mut captures = PreparedCaptures::default();
         if !roots.is_empty() {
-            let mut plan = CapturePlan::for_view(node, device, texture_size, Some(camera), &roots);
+            let mut plan = CapturePlan::for_view(
+                node,
+                (device, self.postprocess.effects.formats),
+                texture_size,
+                Some(camera),
+                &roots,
+            );
             let upstream = plan.take_dependencies(&roots);
             // Probe inputs precede scene-derived cubemaps. Static environment
             // inputs remain available without recursively reading the probes.
@@ -1513,13 +1825,20 @@ impl SceneRenderer {
         path: &[usize],
         camera: Option<SceneCamera>,
         kind: DrawTarget<'_>,
-    ) {
+    ) -> Option<Rc<DisplayFrame>> {
         let reflection = matches!(kind, DrawTarget::Reflection(..));
+        let (inline, scissor) = match &kind {
+            DrawTarget::Viewport {
+                inline, scissor, ..
+            } => (*inline, *scissor),
+            _ => (None, None),
+        };
+        let inline_origin = inline.map(|viewport| viewport.origin);
         let (
             named_geometry,
             source_filter,
             override_material,
-            pipeline_state,
+            mut pipeline_state,
             region,
             depth_clear,
             stencil,
@@ -1559,7 +1878,37 @@ impl SceneRenderer {
         } else {
             depth_clear
         };
-        let offscreen = !matches!(kind, DrawTarget::Viewport(..));
+        let offscreen = !matches!(kind, DrawTarget::Viewport { .. });
+        let requested_raster = if !offscreen && camera.is_some() {
+            supersampling::extent(
+                ctx.device,
+                ctx.size,
+                node.float("supersampling").unwrap_or(1.0),
+            )
+        } else {
+            ctx.size
+        };
+        let region = if offscreen {
+            region
+        } else {
+            CaptureRegion::scissor(scissor, requested_raster)
+                .translated(inline_origin.unwrap_or([0, 0]))
+        };
+        let display_region = CaptureRegion::scissor(scissor, ctx.size);
+        if !offscreen {
+            pipeline_state.wireframe = node.boolean("debug-wireframe", false);
+        }
+        let diagnostic = if offscreen {
+            MaterialDebug::None
+        } else {
+            MaterialDebug::from_node(node)
+        };
+        let debug_material = diagnostic.active();
+        let shadow_debug = if offscreen {
+            Default::default()
+        } else {
+            shadow_debug::Settings::from_node(node)
+        };
         let blend_constant = pipeline_state.blend_constant.map(|color| {
             let [r, g, b] = linear_rgb(color);
             let a = f64::from(color.0 as u8) / 255.0;
@@ -1574,22 +1923,39 @@ impl SceneRenderer {
             }
             region.clip(pass);
         };
-        let (scene_cubes, sample, captured_particles, owner, captures, composite) = match kind {
-            DrawTarget::Viewport(cubes, sample, owner, captures) => {
-                let composite =
-                    camera.and_then(|camera| CompositeInput::from_node(node, camera, captures));
-                (cubes, sample, None, Some(owner), Some(captures), composite)
-            }
-            DrawTarget::ColorCapture {
-                cubes,
-                inputs,
-                composite,
-                ..
-            } => (cubes, None, None, None, Some(inputs), composite),
-            DrawTarget::Reflection(particles, captures, _) => {
-                (&[][..], None, particles, None, Some(captures), None)
-            }
-        };
+        let (scene_cubes, sample, captured_particles, owner, captures, composite, retain_display) =
+            match kind {
+                DrawTarget::Viewport {
+                    cubes,
+                    sample,
+                    owner,
+                    captures,
+                    retain_display,
+                    ..
+                } => {
+                    let composite = camera
+                        .filter(|_| !region.is_empty())
+                        .and_then(|camera| CompositeInput::from_node(node, camera, captures));
+                    (
+                        cubes,
+                        sample,
+                        None,
+                        Some(owner),
+                        Some(captures),
+                        composite,
+                        retain_display,
+                    )
+                }
+                DrawTarget::ColorCapture {
+                    cubes,
+                    inputs,
+                    composite,
+                    ..
+                } => (cubes, None, None, None, Some(inputs), composite, false),
+                DrawTarget::Reflection(particles, captures, _) => {
+                    (&[][..], None, particles, None, Some(captures), None, false)
+                }
+            };
         let model = match node.properties.get("model") {
             Some(Value::SceneObjects(model)) => Some(model),
             _ => None,
@@ -1601,18 +1967,30 @@ impl SceneRenderer {
         } else {
             CaptureRenderables::All
         };
-        let geometry = model
-            .filter(|_| !region.is_empty() && source_filter != CaptureRenderables::None)
-            .zip(camera.as_ref())
-            .map(|(model, camera)| {
-                let geometry = model.geometry(camera);
-                match override_material {
-                    Some(material) => {
-                        geometry.with_capture_material(camera.layer_mask(), source_filter, material)
+        let geometry = if region.is_empty() {
+            None
+        } else if let Some(viewport) = inline {
+            Some(viewport.geometry.clone())
+        } else {
+            model
+                .filter(|_| source_filter != CaptureRenderables::None)
+                .zip(camera.as_ref())
+                .map(|(model, camera)| {
+                    let geometry = model.render_geometry(
+                        camera,
+                        f64::from(node.length("lod-fade-width").unwrap_or_default()),
+                    );
+                    match override_material {
+                        Some(material) => geometry.with_capture_material(
+                            camera.layer_mask(),
+                            source_filter,
+                            material,
+                        ),
+                        None => geometry,
                     }
-                    None => geometry,
-                }
-            });
+                })
+        };
+        let lod_fade = geometry.as_ref().is_some_and(|geometry| geometry.lod_fade);
         let objects = geometry
             .as_ref()
             .map(|geometry| geometry.objects())
@@ -1676,9 +2054,6 @@ impl SceneRenderer {
                 .as_ref()
                 .map_or(0, |geometry| geometry.lod_objects as u64),
         );
-        if !offscreen && let Some(scene) = &mut self.scene {
-            scene.meshes.prune();
-        }
         let background = background(node);
         let [r, g, b] = linear_rgb(background);
         let alpha = if reflection {
@@ -1693,8 +2068,15 @@ impl SceneRenderer {
             a: alpha,
         };
         let environment = EnvironmentInput::from_node(node);
-        let skybox = environment.as_ref().is_some_and(|input| input.skybox);
-        let fog_volumes = volumetric_fog::prepare(node, camera.as_ref());
+        let sky = (!debug_material)
+            .then(|| SkyboxInput::from_node(node, environment.as_ref()))
+            .flatten();
+        let skybox = sky.is_some();
+        let fog_volumes = if debug_material {
+            Vec::new()
+        } else {
+            volumetric_fog::prepare(node, camera.as_ref())
+        };
         let fog_background = !fog_volumes.is_empty();
 
         let probes = match node.properties.get("reflection-probes") {
@@ -1709,27 +2091,34 @@ impl SceneRenderer {
                         .any(|probe| probe_debug::visible(probe, camera.layer_mask()))
                 })
             });
-        let mut post = PostSettings::from_node(
-            node,
-            camera.is_some() && (environment.is_some() || probes.is_some() && has_geometry),
-            has_geometry || has_model_particles,
-            alpha < 1.0 && (camera.is_none() || !skybox),
-        );
+        let retain_display = retain_display && !debug_probes && !shadow_debug.active();
+        let composite_alpha = alpha < 1.0 && (camera.is_none() || !skybox);
+        let mut post = if debug_material {
+            PostSettings::unprocessed(composite_alpha)
+        } else {
+            PostSettings::from_node(
+                node,
+                camera.is_some()
+                    && (environment.is_some() || skybox || probes.is_some() && has_geometry),
+                has_geometry || has_model_particles,
+                composite_alpha,
+            )
+        };
+        if !offscreen && matches!(ctx.format, HDR_FORMAT | wgpu::TextureFormat::Rgba32Float) {
+            post.require_linear_intermediate();
+        }
         let retain_depth =
             !offscreen && (debug_probes || post.focus.is_some() || post.needs_effect_depth());
         let raster_size =
-            if !offscreen && camera.is_some() && (has_drawables || skybox || fog_background) {
-                supersampling::extent(
-                    ctx.device,
-                    ctx.size,
-                    node.float("supersampling").unwrap_or(1.0),
-                )
+            if (has_drawables || skybox || fog_background) && (offscreen || !region.is_empty()) {
+                requested_raster
             } else {
                 ctx.size
             };
         if !offscreen {
             self.stats.last_texture_size = ctx.size;
             self.stats.last_raster_size = raster_size;
+            self.stats.last_sample_count = 1;
             self.stats.raster_pixels = self
                 .stats
                 .raster_pixels
@@ -1740,9 +2129,17 @@ impl SceneRenderer {
             Some(AaSample::Temporal(sample)) => sample.motion.as_ref(),
             _ => None,
         };
-        let Some(camera) = camera
-            .filter(|_| debug_probes || has_drawables || environment.is_some() || fog_background)
-        else {
+        let Some(camera) = camera.filter(|_| {
+            (offscreen || !region.is_empty())
+                && (debug_probes
+                    || has_drawables
+                    || environment.is_some()
+                    || skybox
+                    || fog_background)
+        }) else {
+            if inline_origin.is_some() {
+                return None;
+            }
             if let Some(named) = named_geometry {
                 drop(named.begin(
                     ctx.encoder,
@@ -1751,7 +2148,7 @@ impl SceneRenderer {
                     stencil,
                     named.combined.then_some((ctx.target, clear)),
                 ));
-                return;
+                return None;
             }
             if let Some(history) = motion_history {
                 *history.borrow_mut() = Default::default();
@@ -1781,15 +2178,15 @@ impl SceneRenderer {
                 false,
             );
             if let Some(source) = &post_target {
-                self.resolve_postprocessing(
+                return self.resolve_postprocessing(
                     &mut ctx,
                     queue,
-                    (source, raster_size),
+                    (source, Some(raster_size)),
                     (None, None, captures),
-                    (post, sample, None, owner),
+                    (post, sample, None, owner, retain_display),
                 );
             }
-            return;
+            return retain_display.then(|| self.postprocess.pin_direct(ctx.target));
         };
         let clip_offset = sample.map_or([0.0; 2], |sample| sample.clip_offset(raster_size));
         let culling_camera = sample.map_or(camera, |_| camera.with_clip_offset(clip_offset));
@@ -1797,6 +2194,9 @@ impl SceneRenderer {
         let multisampling = !supersampled
             && (has_drawables || fog_background)
             && node.boolean("multisampling", false);
+        if !offscreen && multisampling {
+            self.stats.last_sample_count = 4;
+        }
         let scene = self.scene.get_or_insert_with(|| {
             SceneGpu::new(
                 ctx.device,
@@ -1805,9 +2205,15 @@ impl SceneRenderer {
                 (
                     self.postprocess.effects.images.clone(),
                     self.postprocess.effects.projections.clone(),
+                    self.native_anisotropy,
                 ),
             )
         });
+        let augment = match kind {
+            DrawTarget::ColorCapture { augment, .. } => augment,
+            _ => None,
+        };
+        scene.pipelines.capture_augment = augment.map(|augment| augment.source.clone());
         if let DrawTarget::Reflection(_, _, Some(items)) = kind {
             scene.meshes.materials.items.clone_from(&items.views);
             scene.meshes.item_texture_revision = items.revision;
@@ -1820,8 +2226,20 @@ impl SceneRenderer {
         } else {
             scene.meshes.materials.captures.clear();
         }
+        let augment_slots = augment.map_or(0, |augment| augment.textures.len());
+        scene
+            .pipelines
+            .prepare_augment_layout(ctx.device, augment_slots);
+        scene.pipelines.capture_augment_slots = augment_slots;
+        let augment_textures = augment.filter(|_| augment_slots != 0).map(|augment| {
+            let materials = &scene.meshes.materials;
+            let (flags, views) =
+                materials.external_textures(ctx.device, queue, &augment.textures, augment_slots);
+            let projections =
+                materials.external_projections(ctx.device, &augment.textures, augment_slots);
+            (flags, views, projections)
+        });
         let raster = RasterMode::select(ctx.device, pipeline_state.wireframe);
-        scene.meshes.expand_triangles = raster == RasterMode::ShaderLine;
         let selected = node.text("selected-object").unwrap_or_default();
         let instances = objects
             .filter(|_| has_geometry)
@@ -1847,29 +2265,41 @@ impl SceneRenderer {
             && instances
                 .as_ref()
                 .is_some_and(|set| set.requires_sorted_transparency(visibility));
-        let force_direct = pipeline_state.blend.is_some()
+        let oit_method = (!offscreen).then(|| node.text("oit-method")).flatten();
+        let force_direct = oit_method == Some("sorted")
+            || pipeline_state.blend.is_some()
             || pipeline_state.depth_write == Some(true)
             || pipeline_state.color_write_mask != 15;
         let model_transparency = renderables.includes(true)
             && particles.is_some_and(ParticleDraw::has_model_transparency);
+        let wants_weighted = oit_method.map_or_else(
+            || node.boolean("order-independent-transparency", false),
+            |mode| matches!(mode, "weighted" | "linked-list"),
+        );
         let weighted = !force_direct
             && (model_transparency
-                || (node.boolean("order-independent-transparency", false)
+                || (wants_weighted
                     && !ordered_material
                     && (particles.is_some_and(ParticleDraw::has_source_over)
                         || visible_transparency)));
         let direct_models = force_direct && model_transparency;
         let weighted_meshes = weighted && !ordered_material;
         let sorted_meshes = visible_transparency && !weighted_meshes;
-        let prepasses = instances
+        let (prepasses, scene_depth_prepass) = instances
             .as_ref()
             .filter(|_| stencil.is_none() && pipeline::uses_material_prepass(pipeline_state))
             .zip(objects)
-            .map_or([false; 2], |(set, objects)| {
-                set.visible_prepasses(visibility, objects, renderables)
+            .map_or(([false; 2], false), |(set, objects)| {
+                (
+                    set.visible_prepasses(visibility, objects, renderables),
+                    !offscreen
+                        && node.boolean("depth-prepass", false)
+                        && set.has_visible_scene_depth(visibility, objects),
+                )
             });
+        let opaque_prepass = prepasses[0] || scene_depth_prepass;
         let mut effects = ScreenSettings::default();
-        if !offscreen {
+        if !offscreen && !debug_material {
             let visible_material = |receives: &dyn Fn(&Mesh3D) -> bool| {
                 objects.is_some_and(|objects| {
                     objects.iter().enumerate().any(|(index, object)| {
@@ -1922,12 +2352,15 @@ impl SceneRenderer {
         );
         let output = ColorOutput {
             hdr: offscreen || post.uses_linear_intermediate(),
-            format_override: (offscreen
-                && named_geometry.is_none_or(|geometry| geometry.combined)
-                && ctx.format != HDR_FORMAT)
+            format_override: (inline_origin.is_some()
+                || offscreen
+                    && named_geometry.is_none_or(|geometry| geometry.combined)
+                    && ctx.format != HDR_FORMAT)
                 .then_some(ctx.format),
+            encode_srgb: inline_origin.is_some() && !ctx.format.is_srgb(),
             reverse_winding: reflection ^ raster_camera.reverses_winding(),
             reverse_depth,
+            lod_fade,
             multisampling,
             pass: ColorPass::Opaque,
             renderables,
@@ -1946,6 +2379,8 @@ impl SceneRenderer {
             named_geometry: false,
             lightmapped: false,
             model_particles: false,
+            linked_transparency: false,
+            debug_material,
             fog: scattering.mode(&fog_volumes),
         };
         let post_target = (!offscreen && (supersampled || post.needs_target() || sample.is_some()))
@@ -1967,19 +2402,60 @@ impl SceneRenderer {
             !weighted_meshes || writes_depth || has_custom_blend || prepasses[1]
         });
         let captured_depth = depth_snapshot.as_ref().filter(|_| needs_volume_depth);
+        let linked = weighted
+            && oit_method == Some("linked-list")
+            && self.linked_transparency_supported
+            && (!multisampling
+                || (self.linked_sample_shading
+                    && ctx.device.limits().max_inter_stage_shader_variables
+                        >= 15 + u32::from(raster == RasterMode::ShaderLine)))
+            && !ordered_material
+            && !has_custom_blend
+            && linked_texture_budget(ctx.device, objects, visibility, particles);
         let transparency = weighted.then(|| {
             self.transparency.prepare(
                 ctx.device,
                 raster_size,
                 output,
-                retain_depth || captured_depth.is_some() || surfaces.is_some(),
+                (
+                    retain_depth || captured_depth.is_some() || surfaces.is_some(),
+                    if linked {
+                        region.pixels(raster_size)
+                    } else {
+                        None
+                    },
+                ),
                 stencil.map(|pass| &pass.view),
             )
         });
-        let (depth, multisampled) = if let Some(frame) = &transparency {
+        let linked_frame = transparency
+            .as_ref()
+            .and_then(|frame| frame.linked.as_ref());
+        if let Some(frame) = linked_frame {
+            scene
+                .pipelines
+                .prepare_linked_layout(ctx.device, multisampling);
+            frame.clear(ctx.encoder);
+            self.stats.linked_transparency_bytes = frame.bytes();
+            self.stats.linked_transparency_allocations = frame.allocations;
+        }
+        let (depth, multisampled) = if inline_origin.is_some() {
+            let target = ctx.target.texture();
+            (
+                Attachment::get(
+                    &mut self.inline_depth[usize::from(opaque_prepass)],
+                    ctx.device,
+                    [target.width(), target.height()],
+                    DEPTH_FORMAT,
+                    1,
+                    opaque_prepass,
+                ),
+                None,
+            )
+        } else if let Some(frame) = &transparency {
             (frame.depth, frame.multisampled_color)
         } else {
-            let preserve_depth = retain_depth || capturing || surfaces.is_some() || prepasses[0];
+            let preserve_depth = retain_depth || capturing || surfaces.is_some() || opaque_prepass;
             let pool = if preserve_depth {
                 &mut self.sampled_depth
             } else {
@@ -2064,7 +2540,8 @@ impl SceneRenderer {
             {
                 return false;
             }
-            (lights.has_ambient()
+            (diagnostic == MaterialDebug::AmbientOcclusion
+                || lights.has_ambient()
                 || environment
                     .as_ref()
                     .is_some_and(EnvironmentInput::contributes_light)
@@ -2087,7 +2564,7 @@ impl SceneRenderer {
         let instance_buffer = instances
             .as_ref()
             .map_or(&scene.instances.empty, |set| &set.buffer);
-        let mut uniforms = Vec::with_capacity(304 + volumetric_fog::VOLUME_UNIFORM_BYTES);
+        let mut uniforms = Vec::with_capacity(336 + volumetric_fog::VOLUME_UNIFORM_BYTES);
         append_floats(
             &mut uniforms,
             raster_camera.clip_rows().into_iter().flatten(),
@@ -2165,7 +2642,12 @@ impl SceneRenderer {
                 pass,
                 batches,
                 output,
-                accumulation,
+                (
+                    accumulation,
+                    linked_frame
+                        .filter(|_| accumulation)
+                        .map(|frame| (frame, depth)),
+                ),
                 particles.affectors.as_ref(),
             );
         };
@@ -2223,6 +2705,13 @@ impl SceneRenderer {
             &mut uniforms,
             inverse.unwrap_or([[0.0; 4]; 4]).into_iter().flatten(),
         );
+        let [x, y, z] = augment.map_or([0.0; 3], |augment| augment.parameters);
+        append_floats(&mut uniforms, [x, y, z]);
+        uniforms.extend_from_slice(&(diagnostic as u32).to_ne_bytes());
+        let augment_flags = augment_textures
+            .as_ref()
+            .map_or([0; 4], |(flags, _, _)| *flags);
+        uniforms.extend(augment_flags.into_iter().flat_map(u32::to_ne_bytes));
         let uniform_buffer = buffer(
             ctx.device,
             "XRack 3D camera",
@@ -2252,12 +2741,19 @@ impl SceneRenderer {
                         wgpu::BufferUsages::UNIFORM,
                     )
                 });
+        let cascade_camera = owner.map_or(camera, |owner| {
+            self.shadow_cameras.reference(
+                owner,
+                node.boolean("shadow-freeze-camera", false),
+                camera,
+            )
+        });
         let request = ShadowRequest::for_view(
             node,
             (objects.filter(|_| has_geometry), &particles.models),
             lights.lights(),
-            camera,
-            path,
+            (camera, cascade_camera),
+            (path, shadow_debug),
             eligibility.as_ref(),
             if scattering.strength > 0.0 {
                 volumetric_fog::receiver_corners(&fog_volumes)
@@ -2269,7 +2765,7 @@ impl SceneRenderer {
         let deformations = scene.deformations.prepare(
             ctx.device,
             queue,
-            &mut scene.meshes,
+            (&mut scene.meshes, RasterMode::Fill),
             objects.map_or(&[][..], Arc::as_ref),
             |index, object| {
                 visibility.contains(index)
@@ -2280,6 +2776,26 @@ impl SceneRenderer {
                             .is_none_or(|filter| filter.contains(index))
             },
         );
+        // Morph indices are in the draw stream's vertex order. Filled auxiliary
+        // passes keep compact buffers while the portable line shader uses triangle corners.
+        let wire_deformations = objects
+            .filter(|objects| {
+                raster == RasterMode::ShaderLine
+                    && objects.iter().enumerate().any(|(index, object)| {
+                        visibility.contains(index as u32)
+                            && object.morph_weights().is_some()
+                            && object.mesh.draw_indices().is_some()
+                    })
+            })
+            .map(|objects| {
+                scene.deformations.prepare(
+                    ctx.device,
+                    queue,
+                    (&mut scene.meshes, raster),
+                    objects,
+                    |index, _| visibility.contains(index),
+                )
+            });
         let geometry = GeometryBindings {
             instances: instance_buffer,
             instance_data: instances
@@ -2289,6 +2805,8 @@ impl SceneRenderer {
             offsets: instances.as_ref().map_or(&[], |set| set.buffer_offsets()),
             zero_data: &scene.instances.zero_data,
             deformations: &deformations,
+            wire_deformations: wire_deformations.as_deref(),
+            lod_fade,
         };
         let ao_frame =
             ao.zip(instances.as_ref())
@@ -2318,16 +2836,20 @@ impl SceneRenderer {
                 geometry,
                 plan: color_plan.as_deref(),
                 region,
+                inline_rect: inline_origin.map(|origin| (origin, ctx.size)),
             });
         let sampler = scene.shadows.sampler.clone();
-        let (shadow, particle_shadow_draws, shadow_fit_bounds) =
-            scene
-                .shadows
-                .prepare(&mut ctx, queue, &mut scene.meshes, geometry, request);
-        let lights = scene.lights.get(ctx.device, lights, shadow.slots);
+        let shadow = scene
+            .shadows
+            .prepare(&mut ctx, queue, &mut scene.meshes, geometry, request);
+        let lights = scene.lights.get(ctx.device, lights, shadow.atlas.slots);
         self.stats.light_buffer_uploads = scene.lights.uploads;
-        self.stats.particle_shadow_draws = particle_shadow_draws;
-        self.stats.shadow_fit_bounds = shadow_fit_bounds;
+        self.stats.particle_shadow_draws = shadow.particle_draws;
+        self.stats.shadow_fit_bounds = shadow.fit_bounds;
+        self.stats.shadow_atlas_bytes = shadow.atlas.bytes;
+        self.stats.shadow_packed_passes = shadow.packed_passes;
+        let guides = shadow.guides;
+        let shadow = shadow.atlas;
         if let Some((frame, settings)) = ao_frame.as_ref().zip(ao) {
             if frame.depth_dirty
                 && let Some(draws) = &draws
@@ -2356,6 +2878,7 @@ impl SceneRenderer {
                             renderables,
                             reverse_winding: raster_camera.reverses_winding(),
                             reverse_depth,
+                            lod_fade,
                         },
                         wgpu::LoadOp::Clear(raster_camera.depth_clear()),
                     ),
@@ -2378,51 +2901,86 @@ impl SceneRenderer {
         let bind_background = |uniforms: &wgpu::Buffer,
                                background: &wgpu::TextureView,
                                texture_sampler: &wgpu::Sampler,
-                               captured_depth: &wgpu::Buffer| {
+                               captured_depth: &wgpu::Buffer,
+                               linked: bool| {
+            let entries = [
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: lights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shadow.matrices.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow.depth),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: ao_frame
+                        .as_ref()
+                        .map_or(&scene.occlusion.fallback, |frame| &frame.map)
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(background),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(texture_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: captured_depth.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: pipeline::PACKED_SHADOW_BINDING,
+                    resource: shadow.packed.as_entire_binding(),
+                },
+            ];
+            let extended;
+            let entries =
+                if let Some(frame) = linked_frame.filter(|_| linked) {
+                    extended = entries
+                        .into_iter()
+                        .chain(frame.capture_entries(depth))
+                        .collect::<Vec<_>>();
+                    extended.as_slice()
+                } else if let Some((_, views, projections)) = &augment_textures {
+                    extended =
+                        entries
+                            .into_iter()
+                            .chain(views.iter().enumerate().map(|(slot, view)| {
+                                wgpu::BindGroupEntry {
+                                    binding: pipeline::AUGMENT_TEXTURE_BINDING + slot as u32,
+                                    resource: wgpu::BindingResource::TextureView(view),
+                                }
+                            }))
+                            .chain(std::iter::once(wgpu::BindGroupEntry {
+                                binding: pipeline::AUGMENT_CAPTURE_BINDING,
+                                resource: projections.as_entire_binding(),
+                            }))
+                            .collect::<Vec<_>>();
+                    extended.as_slice()
+                } else {
+                    &entries
+                };
             ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("XRack 3D globals"),
-                layout: &scene.pipelines.globals,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniforms.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: lights.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: shadow.matrices.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&shadow.depth),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: ao_frame
-                            .as_ref()
-                            .map_or(&scene.occlusion.fallback, |frame| &frame.map)
-                            .as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: wgpu::BindingResource::TextureView(background),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: wgpu::BindingResource::Sampler(texture_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 8,
-                        resource: captured_depth.as_entire_binding(),
-                    },
-                ],
+                layout: scene
+                    .pipelines
+                    .globals_layout(augment_slots, linked, multisampling),
+                entries,
             })
         };
 
@@ -2431,6 +2989,7 @@ impl SceneRenderer {
             &scene.background,
             &scene.background_sampler,
             &scene.background_depth,
+            false,
         );
         let sky_bind_group = sky_uniform.as_ref().map(|uniform| {
             bind_background(
@@ -2438,6 +2997,7 @@ impl SceneRenderer {
                 &scene.background,
                 &scene.background_sampler,
                 &scene.background_depth,
+                false,
             )
         });
         let transmitted_group = capture.as_ref().map(|(frame, _, _)| {
@@ -2446,9 +3006,28 @@ impl SceneRenderer {
                 &frame.sampled,
                 &scene.background_sampler,
                 captured_depth.unwrap_or(&scene.background_depth),
+                false,
             )
         });
         let resumed_group = transmitted_group.as_ref().unwrap_or(&bind_group);
+        let linked_group = linked_frame.map(|_| {
+            let (image, depth) = capture.as_ref().map_or(
+                (&scene.background, &scene.background_depth),
+                |(frame, _, _)| {
+                    (
+                        &frame.sampled,
+                        captured_depth.unwrap_or(&scene.background_depth),
+                    )
+                },
+            );
+            bind_background(
+                &uniform_buffer,
+                image,
+                &scene.background_sampler,
+                depth,
+                true,
+            )
+        });
 
         let lightmaps = draws.as_ref().and_then(|draws| {
             let params = draws.set.lightmap_parameters.as_ref()?;
@@ -2468,7 +3047,13 @@ impl SceneRenderer {
                     if let Some((buffer, texture)) =
                         buffer.zip(scene.lightmaps.texture(ctx.device, queue, map))
                     {
-                        entry.insert(bind_background(&uniform_buffer, &texture, &sampler, buffer));
+                        entry.insert(bind_background(
+                            &uniform_buffer,
+                            &texture,
+                            &sampler,
+                            buffer,
+                            false,
+                        ));
                     }
                 }
             }
@@ -2479,9 +3064,10 @@ impl SceneRenderer {
         });
         self.stats.lightmap_uploads = scene.lightmaps.uploads;
 
-        let environment_bindings = scene
-            .environment
-            .bind(ctx.device, queue, environment.as_ref());
+        let environment_bindings =
+            scene
+                .environment
+                .bind(ctx.device, queue, ctx.encoder, environment.as_ref());
         let local_bindings = probe_slots.as_ref().zip(probes).map(|(slots, probes)| {
             scene.environment.local_bindings(
                 (ctx.device, queue),
@@ -2539,14 +3125,12 @@ impl SceneRenderer {
                     ),
                 );
             }
-            self.stats.scene_capture_material_bindings = scene.meshes.capture_binding_builds;
-            self.stats.mesh_index_bytes_uploaded = scene.meshes.transfers.index_bytes;
-            self.stats.mesh_wireframe_uploads = scene.meshes.transfers.wireframe_meshes;
-            self.stats.mesh_deformation_bytes_uploaded = scene.meshes.transfers.deformation_bytes;
-            self.stats.indexed_mesh_uploads = scene.meshes.transfers.indexed;
-            self.stats.mesh_vertex_bytes_uploaded = scene.meshes.transfers.vertex_bytes;
-            return;
+            return None;
         }
+        let skybox_bindings =
+            scene
+                .environment
+                .bind_skybox(ctx.device, queue, ctx.encoder, sky.as_ref());
         let effect_surface = (!offscreen && post.needs_effect_surface())
             .then(|| {
                 self.postprocess
@@ -2570,6 +3154,7 @@ impl SceneRenderer {
             );
             pass.set_bind_group(0, &bind_group, &[]);
             pass.set_bind_group(2, &environment_bindings, &[]);
+            prepare_pass(&mut pass);
             let capture = ColorOutput {
                 hdr: true,
                 multisampling: false,
@@ -2622,7 +3207,7 @@ impl SceneRenderer {
         let opaque = capture
             .as_ref()
             .map_or(target, |(frame, _, _)| &frame.levels[0]);
-        let mut material_depth = prepasses.into_iter().any(|enabled| enabled).then(|| {
+        let mut material_depth = (opaque_prepass || prepasses[1]).then(|| {
             scene.material_depth.get_or_insert_with(|| {
                 DepthPipelines::new(
                     ctx.device,
@@ -2634,13 +3219,16 @@ impl SceneRenderer {
         });
         let material_stage = |transmission| DepthPass::Material {
             transmission,
+            scene_opaque: scene_depth_prepass && !transmission,
+            explicit: prepasses[usize::from(transmission)],
             cull_override: pipeline_state.cull,
             renderables,
             multisampling: output.multisampling,
             reverse_winding: output.reverse_winding,
             reverse_depth,
+            lod_fade,
         };
-        if prepasses[0]
+        if opaque_prepass
             && let Some((pipeline, draws)) = material_depth.as_deref_mut().zip(draws.as_ref())
         {
             let count = draws.depth_prepass(
@@ -2653,7 +3241,7 @@ impl SceneRenderer {
             );
             self.stats.material_depth_prepass_draws += count;
         }
-        let depth_load = if prepasses[0] {
+        let depth_load = if opaque_prepass {
             wgpu::LoadOp::Load
         } else {
             wgpu::LoadOp::Clear(depth_clear)
@@ -2679,7 +3267,7 @@ impl SceneRenderer {
                     Some(depth),
                     weighted || retain_depth || capturing,
                     (
-                        Some(clear),
+                        inline_origin.is_none().then_some(clear),
                         depth_load,
                         stencil.map(|pass| pass.operations(true)),
                     ),
@@ -2688,12 +3276,22 @@ impl SceneRenderer {
                 output,
             )
         };
+        if let Some(origin) = inline_origin {
+            set_inline_rect(&mut pass, origin, ctx.size);
+        }
         pass.set_bind_group(0, &bind_group, &[]);
         pass.set_bind_group(2, &environment_bindings, &[]);
-        let background_first = custom_clear || composite.is_some() || region != CaptureRegion::Full;
+        if !offscreen {
+            prepare_pass(&mut pass);
+        }
+        let background_first =
+            custom_clear || composite.is_some() || offscreen && region != CaptureRegion::Full;
         if skybox && !fog_background || fog_background && background_first {
             if let Some(group) = &sky_bind_group {
                 pass.set_bind_group(0, group, &[]);
+            }
+            if let Some(group) = &skybox_bindings {
+                pass.set_bind_group(2, group, &[]);
             }
             pass.set_pipeline(
                 scene
@@ -2703,6 +3301,9 @@ impl SceneRenderer {
             pass.draw(0..3, 0..1);
             if sky_bind_group.is_some() {
                 pass.set_bind_group(0, &bind_group, &[]);
+            }
+            if skybox_bindings.is_some() {
+                pass.set_bind_group(2, &environment_bindings, &[]);
             }
         }
         if let Some(composite) = composite {
@@ -2717,7 +3318,9 @@ impl SceneRenderer {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.set_bind_group(2, &environment_bindings, &[]);
         }
-        prepare_pass(&mut pass);
+        if offscreen {
+            prepare_pass(&mut pass);
+        }
         draw_model_particles(
             (&particles.models, geometry.zero_data),
             (&mut scene.meshes, &mut scene.pipelines),
@@ -2743,8 +3346,15 @@ impl SceneRenderer {
                     .skybox(ctx.device, opaque_output, custom_clear),
             );
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.set_bind_group(2, &environment_bindings, &[]);
+            pass.set_bind_group(
+                2,
+                skybox_bindings.as_ref().unwrap_or(&environment_bindings),
+                &[],
+            );
             pass.draw(0..3, 0..1);
+            if skybox_bindings.is_some() {
+                pass.set_bind_group(2, &environment_bindings, &[]);
+            }
         }
         if !capturing && surfaces.is_none() {
             if sorted_meshes && let Some(draws) = &draws {
@@ -2949,8 +3559,9 @@ impl SceneRenderer {
                 stencil.map(|pass| pass.operations(false)),
             );
             prepare_pass(&mut pass);
+            let transparency_group = linked_group.as_ref().unwrap_or(resumed_group);
             if !particles.models.is_empty() {
-                pass.set_bind_group(0, resumed_group, &[]);
+                pass.set_bind_group(0, transparency_group, &[]);
                 pass.set_bind_group(2, &environment_bindings, &[]);
                 draw_model_particles(
                     (&particles.models, geometry.zero_data),
@@ -2960,12 +3571,13 @@ impl SceneRenderer {
                     &mut self.stats,
                     ColorOutput {
                         pass: ColorPass::Weighted,
+                        linked_transparency: linked_frame.is_some(),
                         ..output
                     },
                 );
             }
             if weighted_meshes && let Some(draws) = &draws {
-                pass.set_bind_group(0, resumed_group, &[]);
+                pass.set_bind_group(0, transparency_group, &[]);
                 pass.set_bind_group(2, &environment_bindings, &[]);
                 draws.batches(
                     (&mut scene.meshes, &mut scene.pipelines),
@@ -2974,6 +3586,7 @@ impl SceneRenderer {
                     &mut self.stats,
                     ColorOutput {
                         pass: ColorPass::Weighted,
+                        linked_transparency: linked_frame.is_some(),
                         ..output
                     },
                     (reflections, None),
@@ -2982,12 +3595,17 @@ impl SceneRenderer {
             draw_particles(&mut pass, true);
             drop(pass);
             transparency.composite(ctx.encoder, target);
+            self.stats.linked_transparency_composites += u64::from(linked_frame.is_some());
             self.stats.transparency_composites =
                 self.stats.transparency_composites.saturating_add(1);
         }
         let motion = motion_history.and_then(|history| {
             let mut history = history.borrow_mut();
-            let Some((draws, objects)) = draws.as_ref().zip(objects) else {
+            let Some((draws, objects)) = draws
+                .as_ref()
+                .zip(objects)
+                .filter(|_| !display_region.is_empty())
+            else {
                 *history = Default::default();
                 return None;
             };
@@ -2999,57 +3617,67 @@ impl SceneRenderer {
                     &scene.pipelines.materials[0],
                     &scene.pipelines.deformations,
                 ),
-                (draws, objects, raster_camera),
+                (draws, objects, raster_camera, raster, display_region),
                 &mut history,
             );
             self.stats.motion_vector_draws += count;
             Some(inputs)
         });
-        self.stats.scene_capture_material_bindings = scene.meshes.capture_binding_builds;
-        self.stats.mesh_vertex_bytes_uploaded = scene.meshes.transfers.vertex_bytes;
-        self.stats.mesh_index_bytes_uploaded = scene.meshes.transfers.index_bytes;
-        self.stats.mesh_wireframe_uploads = scene.meshes.transfers.wireframe_meshes;
-        self.stats.mesh_deformation_bytes_uploaded = scene.meshes.transfers.deformation_bytes;
-        self.stats.indexed_mesh_uploads = scene.meshes.transfers.indexed;
-        if let Some(source) = &post_target {
+        let prepared = if let Some(source) = &post_target {
             self.resolve_postprocessing(
                 &mut ctx,
                 queue,
-                (source, raster_size),
+                (source, Some(raster_size)),
                 (focus_depth.as_ref(), effect_surface.as_ref(), captures),
-                (post, sample, motion.as_ref(), owner),
-            );
-        }
-        if debug_probes && let (Some(probes), Some(depth)) = (probes, focus_depth.as_ref()) {
+                (post, sample, motion.as_ref(), owner, retain_display),
+            )
+        } else {
+            retain_display.then(|| self.postprocess.pin_direct(ctx.target))
+        };
+        if debug_probes
+            && !display_region.is_empty()
+            && let (Some(probes), Some(depth)) = (probes, focus_depth.as_ref())
+        {
             self.probe_debug
-                .draw(&mut ctx, probes, camera, depth, clip_offset);
+                .draw(&mut ctx, probes, camera, depth, clip_offset, display_region);
             self.stats.reflection_debug_draws += 1;
         }
+        if let Some(guides) = guides
+            && let Some((lines, uploaded)) =
+                self.debug_lines
+                    .draw(&mut ctx, camera, &guides, display_region)
+        {
+            self.stats.shadow_debug_draws += 1;
+            self.stats.shadow_debug_lines += u64::from(lines);
+            self.stats.shadow_debug_uploads += u64::from(uploaded);
+        }
+        prepared
     }
 
     fn resolve_postprocessing(
         &mut self,
         ctx: &mut GpuPaintContext<'_>,
         queue: &wgpu::Queue,
-        source: (&wgpu::TextureView, [u32; 2]),
+        source: (&wgpu::TextureView, Option<[u32; 2]>),
         (depth, surface, captures): (
             Option<&FocusDepth>,
             Option<&EffectSurface>,
             Option<&CaptureViews>,
         ),
-        (settings, sample, motion, owner): (
+        (settings, sample, motion, owner, retain_display): (
             PostSettings<'_>,
             Option<&AaSample>,
             Option<&MotionInputs>,
             Option<effect_history::Owner<'_>>,
+            bool,
         ),
-    ) {
-        let work = self.postprocess.resolve(
+    ) -> Option<Rc<DisplayFrame>> {
+        let (work, prepared) = self.postprocess.resolve(
             ctx,
             (queue, &self.item_textures, captures),
             source,
             (depth, surface),
-            (&settings, sample, motion, owner),
+            (&settings, sample, motion, owner, retain_display),
         );
         self.stats.progressive_aa_samples = self
             .stats
@@ -3068,21 +3696,14 @@ impl SceneRenderer {
                 .temporal_reprojections
                 .saturating_add(u64::from(motion.is_some() && sample.previous.is_some()));
         }
-        if source.1 != ctx.size {
+        if let Some(raster_size) = source.1.filter(|&size| size != ctx.size) {
             self.stats.supersample_resolves = self.stats.supersample_resolves.saturating_add(1);
             self.stats.supersample_pixels = self
                 .stats
                 .supersample_pixels
-                .saturating_add(source.1.into_iter().map(u64::from).product());
+                .saturating_add(raster_size.into_iter().map(u64::from).product());
         }
-        self.stats.hdr_resolves = self
-            .stats
-            .hdr_resolves
-            .saturating_add(u64::from(settings.hdr));
-        self.stats.color_adjustment_resolves = self
-            .stats
-            .color_adjustment_resolves
-            .saturating_add(u64::from(settings.has_adjustments()));
+        self.record_display_work(&settings, &work);
         self.stats.custom_effect_passes = self
             .stats
             .custom_effect_passes
@@ -3107,18 +3728,18 @@ impl SceneRenderer {
             .stats
             .custom_effect_bytes_allocated
             .saturating_add(work.custom_effect_bytes_allocated);
-        self.stats.alpha_composite_resolves = self
-            .stats
-            .alpha_composite_resolves
-            .saturating_add(u64::from(settings.composites_alpha()));
-        self.stats.lut_resolves = self.stats.lut_resolves.saturating_add(work.lut_resolves);
-        self.stats.lut_uploads = self.stats.lut_uploads.saturating_add(work.lut_uploads);
         self.stats.bloom_passes = self.stats.bloom_passes.saturating_add(work.bloom_passes);
         self.stats.bloom_pixels = self.stats.bloom_pixels.saturating_add(work.bloom_pixels);
         self.stats.bloom_target_allocations = self
             .stats
             .bloom_target_allocations
             .saturating_add(work.bloom_target_allocations);
+        self.stats.lens_flare_passes += work.lens_flare_passes;
+        self.stats.lens_flare_pixels += work.lens_flare_pixels;
+        self.stats.lens_flare_highlight_passes += work.lens_flare_highlight_passes;
+        self.stats.lens_flare_shared_highlights += work.lens_flare_shared_highlights;
+        self.stats.lens_flare_image_uploads += work.lens_flare_image_uploads;
+        self.stats.lens_flare_target_allocations += work.lens_flare_target_allocations;
         if work.focus_filtered_pixels != 0 {
             self.stats.depth_of_field_passes = self.stats.depth_of_field_passes.saturating_add(3);
             self.stats.depth_of_field_pixels = self
@@ -3126,6 +3747,50 @@ impl SceneRenderer {
                 .depth_of_field_pixels
                 .saturating_add(work.focus_filtered_pixels);
         }
+        prepared
+    }
+
+    pub(super) fn reprocess_display(
+        &mut self,
+        node: &Node,
+        ctx: &mut GpuPaintContext<'_>,
+        queue: &wgpu::Queue,
+        frame: &DisplayFrame,
+    ) {
+        let settings = PostSettings::for_retained(node, frame);
+        let work = self
+            .postprocess
+            .render_display(ctx, queue, frame, &settings);
+        self.record_display_work(&settings, &work);
+        self.stats.display_input_cache_hits += 1;
+    }
+
+    fn record_display_work(&mut self, settings: &PostSettings<'_>, work: &PostStats) {
+        self.stats.fxaa_passes += work.fxaa_passes;
+        self.stats.fxaa_pixels += work.fxaa_pixels;
+        self.stats.fxaa_input_allocations += work.fxaa_input_allocations;
+        self.stats.hdr_resolves = self
+            .stats
+            .hdr_resolves
+            .saturating_add(u64::from(settings.hdr));
+        self.stats.color_adjustment_resolves = self
+            .stats
+            .color_adjustment_resolves
+            .saturating_add(u64::from(settings.has_adjustments()));
+        self.stats.display_resolves = self
+            .stats
+            .display_resolves
+            .saturating_add(work.display_resolves);
+        self.stats.display_pipeline_builds = self
+            .stats
+            .display_pipeline_builds
+            .saturating_add(work.display_pipeline_builds);
+        self.stats.alpha_composite_resolves = self
+            .stats
+            .alpha_composite_resolves
+            .saturating_add(u64::from(settings.composites_alpha()));
+        self.stats.lut_resolves = self.stats.lut_resolves.saturating_add(work.lut_resolves);
+        self.stats.lut_uploads = self.stats.lut_uploads.saturating_add(work.lut_uploads);
     }
 }
 
@@ -3136,6 +3801,7 @@ struct MeshColorDraws<'a> {
     geometry: GeometryBindings<'a>,
     plan: Option<&'a ColorPlan>,
     region: CaptureRegion,
+    inline_rect: Option<([u32; 2], [u32; 2])>,
 }
 
 impl MeshColorDraws<'_> {
@@ -3179,18 +3845,24 @@ impl MeshColorDraws<'_> {
         (stage, load): (DepthPass, wgpu::LoadOp<f32>),
     ) -> u64 {
         let globals = pipelines.camera_group(device, camera);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack 3D depth prepass"),
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: target,
-                depth_ops: Some(wgpu::Operations {
-                    load,
-                    store: wgpu::StoreOp::Store,
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack 3D depth prepass"),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: target,
+                    depth_ops: Some(wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
                 }),
-                stencil_ops: None,
-            }),
-            ..Default::default()
-        });
+                ..Default::default()
+            },
+        );
+        if let Some((origin, size)) = self.inline_rect {
+            set_inline_rect(&mut pass, origin, size);
+        }
         if !self.region.clip(&mut pass) {
             return 0;
         }
@@ -3200,8 +3872,10 @@ impl MeshColorDraws<'_> {
         let mut active = None;
         // Color compaction may omit wholly translucent batches. Depth-writing
         // translucent materials need the original visible ranges for this pass.
-        let raw = matches!(stage, DepthPass::Material { .. })
-            || self.set.has_visible_blended_depth(self.visibility);
+        let raw = match stage {
+            DepthPass::Material { explicit, .. } => explicit,
+            _ => self.set.has_visible_blended_depth(self.visibility),
+        };
         let color_batches = (!raw)
             .then(|| self.set.color_draws(self.plan, self.visibility))
             .into_iter()
@@ -3222,9 +3896,19 @@ impl MeshColorDraws<'_> {
             let eligible = match stage {
                 DepthPass::Material {
                     transmission,
+                    scene_opaque,
+                    explicit,
                     renderables,
                     ..
-                } => instances::mesh_material_prepass(kind, renderables, usize::from(transmission)),
+                } => {
+                    scene_opaque && kind.has_opaque_depth_prepass()
+                        || explicit
+                            && instances::mesh_material_prepass(
+                                kind,
+                                renderables,
+                                usize::from(transmission),
+                            )
+                }
                 _ => kind.has_auxiliary_depth(),
             };
             if !eligible {
@@ -3285,7 +3969,7 @@ impl MeshColorDraws<'_> {
                 }
             }
             self.bind_instances(pass, &mut bound_instances, &draw);
-            let mesh = meshes.get(device, queue, kind);
+            let mesh = meshes.get_for_raster(device, queue, kind, output.raster);
             mesh.bind(pass);
             let mut lightmapped = false;
             if let Some(bindings) = lightmaps {
@@ -3334,7 +4018,7 @@ impl MeshColorDraws<'_> {
                     (mesh, part),
                     (
                         draw.instances.clone(),
-                        self.geometry.deformation(draw.source),
+                        self.geometry.deformation_for(draw.source, output.raster),
                     ),
                     ColorOutput {
                         lightmapped,
@@ -3379,14 +4063,14 @@ impl MeshColorDraws<'_> {
             }
             let object = &self.objects[draw.instance as usize];
             let kind = &object.mesh;
-            let mesh = meshes.get(device, queue, kind);
+            let mesh = meshes.get_for_raster(device, queue, kind, output.raster);
             if active_mesh != Some(kind) {
                 mesh.bind(pass);
                 active_mesh = Some(kind);
             }
             let part = &mesh.parts[draw.part];
             let mut range = draw.instance..draw.instance + 1;
-            let deformation = self.geometry.deformation(draw.instance);
+            let deformation = self.geometry.deformation_for(draw.instance, output.raster);
             if deformation.is_none()
                 && let Some(order) = object.instance_order()
             {
@@ -3428,6 +4112,37 @@ impl MeshColorDraws<'_> {
     }
 }
 
+fn linked_texture_budget(
+    device: &wgpu::Device,
+    objects: Option<&Arc<[SceneObject]>>,
+    visibility: &SceneVisibility,
+    particles: Option<&ParticleDraw<'_>>,
+) -> bool {
+    let limits = device.limits();
+    if limits.max_storage_buffers_per_shader_stage < 5 {
+        return false;
+    }
+    let slots = limits.max_sampled_textures_per_shader_stage;
+    if slots > material::FULL_MATERIAL_TEXTURES {
+        return true;
+    }
+    let fits = |material| material::capture_material_texture_count(device, material) < slots;
+    objects.is_none_or(|objects| {
+        objects.iter().enumerate().all(|(index, object)| {
+            !visibility.contains(index as u32)
+                || object
+                    .mesh
+                    .materials()
+                    .iter()
+                    .filter(|material| material.is_blended())
+                    .all(fits)
+        })
+    }) && particles.is_none_or(|draw| {
+        draw.model_meshes()
+            .all(|mesh| mesh.materials().iter().all(fits))
+    })
+}
+
 fn receives_occlusion(mesh: &Mesh3D) -> bool {
     mesh.parts().is_empty()
         || mesh.sections().any(|(_, material)| {
@@ -3438,6 +4153,11 @@ fn receives_occlusion(mesh: &Mesh3D) -> bool {
                     && material.transmission_blur().is_none()
             })
         })
+}
+
+fn set_inline_rect(pass: &mut wgpu::RenderPass<'_>, [x, y]: [u32; 2], [w, h]: [u32; 2]) {
+    pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+    pass.set_scissor_rect(x, y, w, h);
 }
 
 fn viewport_pass<'a>(
@@ -3453,35 +4173,38 @@ fn viewport_pass<'a>(
     ),
     keep_multisampled: bool,
 ) -> wgpu::RenderPass<'a> {
-    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("XRack 3D viewport"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
-            depth_slice: None,
-            resolve_target: resolve,
-            ops: wgpu::Operations {
-                load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
-                store: if resolve.is_some() && !keep_multisampled {
-                    wgpu::StoreOp::Discard
-                } else {
-                    wgpu::StoreOp::Store
+    crate::viewport_gpu_timing::render_pass(
+        encoder,
+        &wgpu::RenderPassDescriptor {
+            label: Some("XRack 3D viewport"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: resolve,
+                ops: wgpu::Operations {
+                    load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                    store: if resolve.is_some() && !keep_multisampled {
+                        wgpu::StoreOp::Discard
+                    } else {
+                        wgpu::StoreOp::Store
+                    },
                 },
-            },
-        })],
-        depth_stencil_attachment: depth.map(|depth| wgpu::RenderPassDepthStencilAttachment {
-            view: depth,
-            depth_ops: Some(wgpu::Operations {
-                load: depth_load,
-                store: if keep_depth {
-                    wgpu::StoreOp::Store
-                } else {
-                    wgpu::StoreOp::Discard
-                },
+            })],
+            depth_stencil_attachment: depth.map(|depth| wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: depth_load,
+                    store: if keep_depth {
+                        wgpu::StoreOp::Store
+                    } else {
+                        wgpu::StoreOp::Discard
+                    },
+                }),
+                stencil_ops,
             }),
-            stencil_ops,
-        }),
-        ..Default::default()
-    })
+            ..Default::default()
+        },
+    )
 }
 
 fn draw_model_particles(
@@ -3497,13 +4220,14 @@ fn draw_model_particles(
     }
     let output = ColorOutput {
         model_particles: true,
+        lod_fade: false,
         ..output
     };
     let mut active = None;
     for batch in batches {
         deform::bind_instance_streams(pass, &batch.instances, zero_data);
         for prototype in batch.meshes.iter() {
-            let mesh = meshes.get(device, queue, prototype);
+            let mesh = meshes.get_for_raster(device, queue, prototype, output.raster);
             mesh.bind(pass);
             for part in &mesh.parts {
                 let translucent = batch.fading || part.surface.blend;
@@ -3572,7 +4296,9 @@ fn draw_part(
     } else {
         part.surface
     };
-    let shader = part.material.program(output.writes_material_data());
+    let shader = part
+        .material
+        .program(output.writes_material_data() && pipelines.capture_augment.is_none());
     let selection = MeshPipelineKey {
         surface,
         deformation: deformation.map_or(Deformation::Rigid, |binding| binding.mode),
@@ -3738,8 +4464,69 @@ fn mesh_samples_item_alpha(mesh: &Mesh3D) -> bool {
         })
 }
 
+pub(super) fn prepare_inline_geometry(
+    node: &Node,
+    camera: &SceneCamera,
+    format: wgpu::TextureFormat,
+) -> Option<Arc<SceneGeometry>> {
+    if !matches!(
+        format,
+        wgpu::TextureFormat::Rgba8Unorm
+            | wgpu::TextureFormat::Bgra8Unorm
+            | wgpu::TextureFormat::Rgba8UnormSrgb
+            | wgpu::TextureFormat::Bgra8UnormSrgb
+    ) || background(node).0 as u8 != 255
+        || [
+            "multisampling",
+            "cache-rendering",
+            "ambient-occlusion",
+            "screen-space-reflections",
+            "screen-space-global-illumination",
+            "order-independent-transparency",
+        ]
+        .into_iter()
+        .any(|name| node.boolean(name, false))
+        || matches!(node.text("oit-method"), Some("weighted" | "linked-list"))
+        || retained_view::Sampling::from_node(node).is_active()
+        || node.float("supersampling").is_some_and(|scale| scale > 1.0)
+        || node.properties.contains_key("__xr-physics-debug-lines")
+        || shadow_debug::Settings::from_node(node).active()
+        || matches!(node.properties.get("scene-captures"), Some(Value::SceneCaptures(captures)) if !captures.is_empty())
+        || matches!(node.properties.get("particle-emitters"), Some(Value::SceneParticleEmitters(emitters)) if !emitters.is_empty())
+        || matches!(node.properties.get("fog-volumes"), Some(Value::SceneFogVolumes(volumes)) if !volumes.is_empty())
+    {
+        return None;
+    }
+    let environment = EnvironmentInput::from_node(node);
+    let hdr_environment = environment.is_some()
+        || SkyboxInput::from_node(node, environment.as_ref()).is_some()
+        || matches!(node.properties.get("reflection-probes"), Some(Value::SceneReflections(probes)) if !probes.is_empty());
+    if PostSettings::from_node(node, hdr_environment, true, false).needs_target() {
+        return None;
+    }
+    let Some(Value::SceneObjects(model)) = node.properties.get("model") else {
+        return None;
+    };
+    let geometry = model.render_geometry(
+        camera,
+        f64::from(node.length("lod-fade-width").unwrap_or_default()),
+    );
+    (!geometry.lod_fade
+        && geometry.objects().iter().all(|object| {
+            let mesh = &object.mesh;
+            mesh.transmission_blur().is_none()
+                && mesh.depth_participation().0 == [false; 2]
+                && (format.is_srgb() || mesh.blended_parts().is_empty())
+        }))
+    .then_some(geometry)
+}
+
 pub(super) fn background(node: &Node) -> Color {
-    node.color("scene-background").unwrap_or(Color(0x202a38ff))
+    if node.scene_internal_passes_disabled() {
+        Color(0)
+    } else {
+        node.color("scene-background").unwrap_or(Color(0x202a38ff))
+    }
 }
 
 fn linear_rgb(color: Color) -> [f64; 3] {

@@ -1501,21 +1501,38 @@ LogicalResult ElementOp::verify() {
     if (auto bind = dyn_cast<BindOp>(child)) {
       auto name = bind.getName();
       auto type = bind.getInput().getType();
+      if (kind == "Image" && name == "texture-input" && !isa<StringType>(type))
+        return child.emitOpError("Image texture-input requires a string");
       if (kind == "CustomRender" &&
           (((name == "renderer" || name == "data") && !isa<StringType>(type)) ||
            (name == "revision" && !isa<IntType>(type))))
         return child.emitOpError("CustomRender requires string renderer and data and integer revision");
       if (kind == "SceneView3D" &&
           ((name == "model" && !isa<RecordListType, SceneModel3DType>(type)) ||
+           (name == "preload-model" && !isa<SceneModel3DType>(type)) ||
+           ((name == "environment-sky" || name == "skybox-sky" || name == "scissor-rect") && !isa<RecordType>(type)) ||
            ((name == "lights" || name == "reflection-probes" || name == "fog-volumes" || name == "particle-emitters" || name == "particle-affectors" || name == "scene-effects" || name == "scene-captures") && !isa<RecordListType>(type)) ||
-           ((name == "selected-object" || name == "environment" || name == "camera" || name == "temporal-aa-mode" || name == "scene-effect" ||
-             name == "scene-color-capture" || name == "scene-depth-capture") && !isa<StringType>(type)) ||
+           ((name == "selected-object" || name == "environment" || name == "skybox-source" ||
+             name == "camera" || name == "temporal-aa-mode" || name == "scene-effect" ||
+             name == "scene-color-capture" || name == "scene-depth-capture" ||
+             name == "render-mode" || name == "render-format" || name == "render-overrides" ||
+             name == "texture-source" || name == "shadow-map-precision" || name == "material-debug" || name == "oit-method") && !isa<StringType>(type)) ||
            ((name == "shadows" || name == "imported-lights" || name == "environment-skybox" || name == "frustum-culling" ||
+             name == "depth-prepass" || name == "debug-wireframe" ||
+             name == "shadow-debug-cascades" || name == "shadow-debug-light-volumes" ||
+             name == "shadow-debug-casters" || name == "shadow-debug-receivers" ||
+             name == "shadow-debug-intersections" || name == "shadow-freeze-camera" ||
              name == "cache-rendering" || name == "multisampling" || name == "specular-aa" || name == "temporal-aa" || name == "order-independent-transparency" ||
              name == "ambient-occlusion" || name == "scene-hdr" || name == "bloom" || name == "screen-space-reflections" || name == "screen-space-global-illumination" ||
+             name == "scene-dithering" ||
+             name == "fxaa" ||
+             name == "lens-flare" || name == "lens-flare-aspect-corrected" ||
              name == "fog-depth-enabled" || name == "fog-height-enabled" ||
-             name == "fog-transmit-enabled" || name == "depth-of-field" || name == "scene-effect-depth" || name == "scene-effect-animate") && !isa<BoolType>(type)) ||
+             name == "fog-transmit-enabled" || name == "depth-of-field" || name == "scene-effect-depth" || name == "scene-effect-animate" ||
+             name == "texture-only" || name == "texture-mipmaps") && !isa<BoolType>(type)) ||
            ((name == "shadow-map-size" || name == "shadow-cascades" || name == "bloom-levels" ||
+             name == "lens-flare-ghost-count" || name == "lens-flare-blur-levels" ||
+             name == "fxaa-search-steps" ||
              name == "scene-lut-size" || name == "texture-width" || name == "texture-height" || name == "progressive-aa" || name == "ssr-steps" || name == "ssgi-rays" || name == "ssgi-steps" ||
              name == "fog-volume-samples" || name == "fog-volume-density-samples" || name == "layer-mask" ||
              name == "scene-effect-history-revision" || name == "reflection-faces-per-frame" ||
@@ -1524,28 +1541,40 @@ LogicalResult ElementOp::verify() {
            (name == "physics-world" && !isa<PhysicsWorld3DType>(type)) ||
            (name == "physics-debug" && !isa<BoolType>(type)) ||
            (name == "physics-debug-body" && !isa<IntType>(type)) ||
-           (name == "scene-lut" && !isa<ImageType>(type)) ||
-           (name == "dof-blur-radius" && !isa<LengthType>(type)) ||
+           ((name == "scene-lut" || name == "lens-flare-color-map" || name == "lens-flare-dirt-map" ||
+             name == "lens-flare-starburst-map") && !isa<ImageType>(type)) ||
+           ((name == "dof-blur-radius" || name == "lod-fade-width") && !isa<LengthType>(type)) ||
            (name == "scene-tone-map" && !isa<SceneToneMapType>(type)) ||
-           ((name == "scene-background" || name == "ambient-color" || name == "fog-color") && !isa<ColorType>(type)) ||
+           ((name == "scene-background" || name == "ambient-color" || name == "fog-color" ||
+             name == "scene-vignette-color") && !isa<ColorType>(type)) ||
            ((name.starts_with("camera-") || name.starts_with("light-") ||
              name == "ambient-intensity" || name == "shadow-bias" || name == "shadow-distance" ||
              name == "shadow-cascade-blend" || name == "shadow-split-balance" ||
              name == "environment-yaw" || name == "environment-intensity" || name == "scene-exposure" ||
+             name == "environment-pitch" || name == "environment-roll" || name == "environment-horizon" ||
+             name == "skybox-yaw" || name == "skybox-pitch" || name == "skybox-roll" ||
+             name == "skybox-intensity" || name == "skybox-blur" ||
              name == "bake-indirect-factor" ||
              name == "supersampling" || name == "temporal-aa-strength" || name == "render-scale" ||
+             name == "fxaa-edge-threshold" || name == "fxaa-min-threshold" ||
+             name == "fxaa-subpixel" || name == "fxaa-strength" ||
              name == "ssr-strength" || name == "ssr-distance" || name == "ssr-thickness" ||
              name == "ssr-roughness-cutoff" || name == "ssr-scale" ||
              name == "ssgi-strength" || name == "ssgi-occlusion" || name == "ssgi-radius" ||
              name == "ssgi-thickness" || name == "ssgi-scale" ||
              name == "scene-white-point" || name == "scene-brightness" ||
              name == "scene-contrast" || name == "scene-saturation" || name == "scene-lut-strength" || name == "scene-effect-strength" ||
+             name == "scene-vignette-strength" || name == "scene-vignette-radius" || name == "scene-sharpness" ||
              name == "fog-near" || name == "fog-far" || name == "fog-density" ||
              name == "fog-depth-curve" || name == "fog-height-start" || name == "fog-height-end" ||
              name == "fog-height-curve" || name == "fog-transmit-curve" ||
              name == "fog-volume-scattering" || name == "fog-volume-anisotropy" || name == "particle-time" ||
              name == "ao-strength" || name == "ao-distance" || name == "ao-bias" ||
              name == "bloom-strength" || name == "bloom-threshold" ||
+             name == "lens-flare-strength" || name == "lens-flare-threshold" ||
+             name == "lens-flare-ghost-dispersal" || name == "lens-flare-halo-width" ||
+             name == "lens-flare-halo-strength" || name == "lens-flare-distortion" ||
+             name == "lens-flare-rotation" ||
              name == "dof-focus-distance" || name == "dof-focus-range") &&
             !isa<FloatType>(type))))
         return child.emitOpError("invalid SceneView3D property type");
@@ -4706,7 +4735,7 @@ LogicalResult LiteralOp::verify() {
     valid = parseGeometryLiteral(type, spelling).has_value();
   } else if (isa<RotationTrack3DType>(type)) {
     valid = parseRotationTrackLiteral(spelling).has_value();
-  } else if (isa<ProjectedPoint3DType, Hit3DType, Instance3DType, InstanceTable3DType, WalkResult3DType, PhysicsWorld3DType, SceneModel3DType, PhysicsContact3DType, PhysicsHit3DType>(type)) {
+  } else if (isa<ProjectedPoint3DType, Hit3DType, Instance3DType, InstanceTable3DType, MeshAsset3DType, WalkResult3DType, PhysicsWorld3DType, SceneModel3DType, PhysicsContact3DType, PhysicsHit3DType>(type)) {
     valid = spelling.empty();
   } else if (isa<BoolType>(type)) {
     valid = spelling == "true" || spelling == "false";
@@ -6403,7 +6432,7 @@ static bool recordScalarType(llvm::StringRef type) {
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
               "point2d", "vector2d", "transform2d", "Point2D", "Vector2D", "Transform2D",
               "point3d", "Point3D", "vector3d", "Vector3D", "quaternion3d", "Quaternion3D", "rotationtrack3d", "RotationTrack3D", "hit3d", "Hit3D",
-              "projectedpoint3d", "ProjectedPoint3D", "instance3d", "Instance3D", "instancetable3d", "InstanceTable3D", "walkresult3d", "WalkResult3D",
+              "projectedpoint3d", "ProjectedPoint3D", "instance3d", "Instance3D", "instancetable3d", "InstanceTable3D", "meshasset3d", "MeshAsset3D", "walkresult3d", "WalkResult3D",
               "physicsworld3d", "PhysicsWorld3D", "scenemodel3d", "SceneModel3D", "physicscontact3d", "PhysicsContact3D",
               "physicshit3d", "PhysicsHit3D",
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
@@ -6872,6 +6901,41 @@ static LogicalResult verifySceneRecords(
   return success();
 }
 
+static LogicalResult verifySceneScissor(BindOp binding, const Records &records,
+                                        const EnumLayouts &enums) {
+  auto record = dyn_cast<RecordType>(binding.getInput().getType());
+  if (!record || !records.contains(record.getName()) || enums.contains(record.getName()))
+    return binding.emitOpError("3D viewport scissor requires a rectangle record");
+  for (llvm::StringRef field : {"x", "y", "width", "height"})
+    if (recordFieldType(records, enums, record.getName(), field) != "length")
+      return binding.emitOpError("3D viewport scissor requires a length field named ") << field;
+  if (auto enabled = recordFieldType(records, enums, record.getName(), "enabled");
+      enabled && *enabled != "bool")
+    return binding.emitOpError("3D viewport scissor requires a bool field named enabled");
+  return success();
+}
+
+static LogicalResult verifySceneSky(BindOp binding, const Records &records,
+                                    const EnumLayouts &enums) {
+  auto record = dyn_cast<RecordType>(binding.getInput().getType());
+  if (!record || !records.contains(record.getName()) || enums.contains(record.getName()))
+    return binding.emitOpError("3D sky input requires a sky record");
+  for (const auto &[name, expected] :
+       std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
+           {"enabled", "bool"}, {"resolution", "int"},
+           {"sky-horizon-color", "color"}, {"sky-top-color", "color"},
+           {"ground-horizon-color", "color"}, {"ground-bottom-color", "color"},
+           {"sky-curve", "float"}, {"ground-curve", "float"},
+           {"sky-energy", "float"}, {"ground-energy", "float"},
+           {"sun-color", "color"}, {"sun-curve", "float"}, {"sun-energy", "float"},
+           {"sun-latitude", "float"}, {"sun-longitude", "float"},
+           {"sun-angle-min", "float"}, {"sun-angle-max", "float"}}) {
+    if (auto type = recordFieldType(records, enums, record.getName(), name); type && *type != expected)
+      return binding.emitOpError("invalid 3D sky field ") << name << ", expected " << expected;
+  }
+  return success();
+}
+
 static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material,
                                          const Records &records, const EnumLayouts &enums) {
   auto style = records.find(material);
@@ -6879,7 +6943,7 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
       return op->emitOpError("3D model requires material to be a record");
     for (const auto &[name, expected] :
         std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
-          {"enabled", "bool"}, {"vertex-colors", "bool"}, {"base-color", "color"}, {"base-item", "string"}, {"metalness", "float"},
+          {"enabled", "bool"}, {"vertex-colors", "bool"}, {"base-color", "color"}, {"metalness", "float"},
           {"material-shader", "string"}, {"shader-parameters", "vector3d"}, {"shader-displacement", "float"},
           {"roughness", "float"}, {"glossiness", "float"}, {"material-workflow", "string"},
           {"emissive-color", "color"}, {"emissive-strength", "float"},
@@ -6928,7 +6992,7 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
           field && *field != "string")
         return op->emitOpError("invalid 3D vertex mask channel ") << name << ", expected string";
     }
-    for (llvm::StringRef name : {"base-color-map", "metallic-roughness-map", "glossiness-map",
+    for (llvm::StringRef name : {"base-item", "base-color-map", "metallic-roughness-map", "glossiness-map",
                                "emissive-map", "occlusion-map", "normal-map",
                                "clearcoat-map", "clearcoat-roughness-map",
                                "clearcoat-normal-map", "transmission-map",
@@ -6943,8 +7007,10 @@ static LogicalResult verifySceneMaterial(Operation *op, llvm::StringRef material
          std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>>{
              {"source", "string"}, {"wrap-u", "string"}, {"wrap-v", "string"},
              {"min-filter", "string"}, {"mag-filter", "string"}, {"mip-filter", "string"},
-             {"uv-set", "int"}, {"uv-scale-u", "float"}, {"uv-scale-v", "float"},
-             {"uv-offset-u", "float"}, {"uv-offset-v", "float"}, {"uv-rotation", "float"}}) {
+             {"max-anisotropy", "int"}, {"uv-set", "int"}, {"uv-scale-u", "float"}, {"uv-scale-v", "float"},
+             {"uv-pivot-u", "float"}, {"uv-pivot-v", "float"},
+             {"uv-offset-u", "float"}, {"uv-offset-v", "float"}, {"uv-rotation", "float"},
+             {"uv-flip-u", "bool"}, {"uv-flip-v", "bool"}}) {
       auto field = recordFieldType(records, enums, *texture, setting);
       if ((setting == "source" || field) && (!field || *field != expected))
         return op->emitOpError("invalid 3D texture field ") << setting << ", expected " << expected;
@@ -7028,7 +7094,7 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
       {{"id", "string"}, {"x", "float"}, {"y", "float"}, {"z", "float"},
        {"scale-x", "float"}, {"scale-y", "float"}, {"scale-z", "float"}, {"yaw", "float"},
        {"pitch", "float"}, {"roll", "float"}, {"color", "color"}},
-      {{"mesh", "string"}, {"casts-shadow", "bool"}, {"receives-shadow", "bool"}, {"receives-reflections", "bool"},
+      {{"mesh", "string"}, {"mesh-asset", "meshasset3d"}, {"casts-shadow", "bool"}, {"receives-shadow", "bool"}, {"receives-reflections", "bool"},
        {"casts-reflections", "bool"}, {"parent", "string"}, {"layers", "int"},
        {"physics-body", "string"}, {"visible", "bool"}, {"depth-bias", "float"},
        {"motion-vector-enabled", "bool"}, {"motion-vector-scale", "float"},
@@ -7136,8 +7202,10 @@ static LogicalResult verifySceneModel(Operation *op, Type type, const Records &r
             return op->emitOpError("invalid 3D geometry field ") << name << ", expected " << expected;
         }
       }
-    } else if (!recordFieldType(records, enums, model.getName(), "mesh") && !collisionShapes) {
-      return op->emitOpError("3D model requires a string mesh field, a geometry record, or a collision-shapes list");
+    } else if (!recordFieldType(records, enums, model.getName(), "mesh") &&
+               !recordFieldType(records, enums, model.getName(), "mesh-asset") &&
+               !collisionShapes) {
+      return op->emitOpError("3D model requires mesh, mesh-asset, a geometry record, or a collision-shapes list");
     }
     if (auto material = recordFieldType(records, enums, model.getName(), "material"))
       if (failed(verifySceneMaterial(op, *material, records, enums)))
@@ -7166,7 +7234,11 @@ static LogicalResult verifySceneLights(BindOp lights, const Records &records,
        {"inner-angle", "float"}, {"outer-angle", "float"}},
       {{"casts-shadow", "bool"}, {"parent", "string"}, {"visible", "bool"}, {"layers", "int"},
        {"shadow-filter", "string"}, {"shadow-strength", "float"}, {"shadow-radius", "float"},
-       {"shadow-bias", "float"}, {"bake-mode", "string"}});
+       {"shadow-world-radius", "float"}, {"shadow-bias", "float"}, {"shadow-map-far", "float"}, {"shadow-map-size", "int"}, {"shadow-map-precision", "string"},
+       {"shadow-cascades", "int"},
+       {"shadow-split-1", "float"}, {"shadow-split-2", "float"}, {"shadow-split-3", "float"},
+       {"shadow-split-balance", "float"}, {"shadow-cascade-blend", "float"},
+       {"shadow-lock-texels", "bool"}, {"bake-mode", "string"}, {"scope", "string"}});
 }
 
 static LogicalResult verifyParticleEmitters(BindOp emitters, const Records &records,
@@ -7226,6 +7298,7 @@ static LogicalResult verifySceneReflections(BindOp probes, const Records &record
       {{"source", "string"}, {"capture-size", "int"}, {"capture-revision", "int"}, {"refresh-mode", "string"},
        {"time-slicing", "string"},
        {"box-offset", "vector3d"}, {"visible", "bool"}, {"yaw", "float"},
+       {"pitch", "float"}, {"roll", "float"},
        {"intensity", "float"}, {"parallax-correction", "bool"}, {"layers", "int"},
        {"debug-view", "bool"}});
 }
@@ -7428,6 +7501,9 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
         if ((binding.getName() == "model" &&
              failed(verifySceneModel(binding, binding.getInput().getType(), records, enums))) ||
             (binding.getName() == "lights" && failed(verifySceneLights(binding, records, enums))) ||
+            (binding.getName() == "scissor-rect" && failed(verifySceneScissor(binding, records, enums))) ||
+            ((binding.getName() == "environment-sky" || binding.getName() == "skybox-sky") &&
+             failed(verifySceneSky(binding, records, enums))) ||
             (binding.getName() == "particle-emitters" && failed(verifyParticleEmitters(binding, records, enums))) ||
             (binding.getName() == "particle-affectors" && failed(verifyParticleAffectors(binding, records, enums))) ||
             (binding.getName() == "fog-volumes" && failed(verifyFogVolumes(binding, records, enums))) ||

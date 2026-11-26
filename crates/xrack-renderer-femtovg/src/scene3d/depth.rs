@@ -18,15 +18,19 @@ pub(super) enum DepthPass {
         renderables: CaptureRenderables,
         reverse_winding: bool,
         reverse_depth: bool,
+        lod_fade: bool,
     },
     Particles,
     Material {
         transmission: bool,
+        scene_opaque: bool,
+        explicit: bool,
         cull_override: Option<MeshCullMode>,
         renderables: CaptureRenderables,
         multisampling: bool,
         reverse_winding: bool,
         reverse_depth: bool,
+        lod_fade: bool,
     },
 }
 
@@ -39,6 +43,8 @@ struct DepthVariant {
     multisampling: bool,
     reverse_winding: bool,
     reverse_depth: bool,
+    lod_fade: bool,
+    conservative: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -52,6 +58,7 @@ pub(super) struct DepthPipelines {
     layouts: [wgpu::PipelineLayout; 4],
     pipelines: VertexPipelines<DepthVariant>,
     bias: wgpu::DepthBiasState,
+    format: wgpu::TextureFormat,
 }
 
 impl DepthPipelines {
@@ -60,6 +67,16 @@ impl DepthPipelines {
         materials: &wgpu::BindGroupLayout,
         deformations: &DeformationLayouts,
         bias: wgpu::DepthBiasState,
+    ) -> Self {
+        Self::with_format(device, materials, deformations, bias, DEPTH_FORMAT)
+    }
+
+    pub fn with_format(
+        device: &wgpu::Device,
+        materials: &wgpu::BindGroupLayout,
+        deformations: &DeformationLayouts,
+        bias: wgpu::DepthBiasState,
+        format: wgpu::TextureFormat,
     ) -> Self {
         let camera = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("XRack 3D depth camera layout"),
@@ -88,6 +105,7 @@ impl DepthPipelines {
             layouts,
             pipelines: VertexPipelines::new(device, include_str!("depth.wgsl")),
             bias,
+            format,
         }
     }
 
@@ -134,34 +152,55 @@ impl DepthPipelines {
             let Some(coverage) = part.depth_coverage else {
                 continue;
             };
-            let (multisampling, reverse_winding, reverse_depth, cull) = match stage {
-                DepthPass::Material {
-                    transmission,
-                    cull_override,
-                    multisampling,
-                    reverse_winding,
-                    reverse_depth,
-                    ..
-                } => {
-                    if part.surface.depth_draw != MeshDepthDraw::OpaquePrepass
-                        || part.surface.transmission != transmission
-                    {
-                        continue;
-                    }
-                    (
+            let (multisampling, reverse_winding, reverse_depth, cull, lod_fade, conservative) =
+                match stage {
+                    DepthPass::Material {
+                        transmission,
+                        scene_opaque,
+                        explicit,
+                        cull_override,
                         multisampling,
                         reverse_winding,
                         reverse_depth,
-                        cull_override.unwrap_or(part.surface.cull),
-                    )
-                }
-                DepthPass::Auxiliary {
-                    reverse_winding,
-                    reverse_depth,
-                    ..
-                } => (false, reverse_winding, reverse_depth, part.surface.cull),
-                DepthPass::Particles => (false, false, false, part.surface.cull),
-            };
+                        lod_fade,
+                        ..
+                    } => {
+                        let surface = part.surface;
+                        let conservative = scene_opaque
+                            && surface
+                                .depth_draw
+                                .admits_opaque_prepass(surface.blend, surface.transmission);
+                        if !(conservative
+                            || explicit
+                                && surface.depth_draw == MeshDepthDraw::OpaquePrepass
+                                && surface.transmission == transmission)
+                        {
+                            continue;
+                        }
+                        (
+                            multisampling,
+                            reverse_winding,
+                            reverse_depth,
+                            cull_override.unwrap_or(part.surface.cull),
+                            lod_fade,
+                            conservative,
+                        )
+                    }
+                    DepthPass::Auxiliary {
+                        reverse_winding,
+                        reverse_depth,
+                        lod_fade,
+                        ..
+                    } => (
+                        false,
+                        reverse_winding,
+                        reverse_depth,
+                        part.surface.cull,
+                        lod_fade,
+                        false,
+                    ),
+                    DepthPass::Particles => (false, false, false, part.surface.cull, false, false),
+                };
             let variant = DepthVariant {
                 coverage,
                 cull,
@@ -170,6 +209,8 @@ impl DepthPipelines {
                 multisampling,
                 reverse_winding: reverse_winding ^ reflected,
                 reverse_depth,
+                lod_fade,
+                conservative,
             };
             let program = part.material.vertex.as_ref();
             let key = DepthPipelineKey {
@@ -204,8 +245,11 @@ impl DepthPipelines {
             multisampling,
             reverse_winding,
             reverse_depth,
+            lod_fade,
+            conservative,
         } = variant;
         let mask = coverage.samples_alpha();
+        let fragment = mask || lod_fade;
         self.pipelines.get(device, program, variant, |module| {
             let skinned_buffers = [
                 GEOMETRY_LAYOUTS[0].clone(),
@@ -219,7 +263,7 @@ impl DepthPipelines {
                 layout: Some(&self.layouts[mode as usize]),
                 vertex: wgpu::VertexState {
                     module,
-                    entry_point: Some(match (mask, mode, particle) {
+                    entry_point: Some(match (fragment, mode, particle) {
                         (false, _, true) => "vertex_particle_opaque",
                         (true, _, true) => "vertex_particle_mask",
                         (false, Deformation::Rigid, false) => "vertex_opaque",
@@ -234,18 +278,22 @@ impl DepthPipelines {
                     compilation_options: Default::default(),
                     buffers: &skinned_buffers,
                 },
-                fragment: mask.then_some(wgpu::FragmentState {
+                fragment: fragment.then_some(wgpu::FragmentState {
                     module,
                     entry_point: Some("fragment_mask"),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[(
-                            "DEPTH_ALPHA",
-                            match coverage {
-                                MeshDepthCoverage::Opaque | MeshDepthCoverage::Mask => 0.0,
-                                MeshDepthCoverage::NonzeroAlpha => 1.0,
-                                MeshDepthCoverage::OpaqueAlpha => 2.0,
-                            },
-                        )],
+                        constants: &[
+                            ("DEPTH_TEST_MATERIAL", f64::from(mask)),
+                            ("DEPTH_LOD_FADE", f64::from(lod_fade)),
+                            (
+                                "DEPTH_ALPHA",
+                                match coverage {
+                                    MeshDepthCoverage::Opaque | MeshDepthCoverage::Mask => 0.0,
+                                    MeshDepthCoverage::NonzeroAlpha => 1.0,
+                                    MeshDepthCoverage::OpaqueAlpha => 2.0,
+                                },
+                            ),
+                        ],
                         ..Default::default()
                     },
                     targets: &[],
@@ -260,14 +308,23 @@ impl DepthPipelines {
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
+                    format: self.format,
                     depth_write_enabled: Some(true),
                     depth_compare: Some(orient_depth_compare(
                         wgpu::CompareFunction::Less,
                         reverse_depth,
                     )),
                     stencil: Default::default(),
-                    bias: self.bias,
+                    // Seed depth just behind the surface, so the color pass can
+                    // keep its strict comparison and still decide equal-depth ties.
+                    bias: if conservative {
+                        wgpu::DepthBiasState {
+                            constant: if reverse_depth { -2 } else { 2 },
+                            ..Default::default()
+                        }
+                    } else {
+                        self.bias
+                    },
                 }),
                 multisample: wgpu::MultisampleState {
                     count: if multisampling { 4 } else { 1 },

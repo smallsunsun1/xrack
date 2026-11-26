@@ -1,0 +1,94 @@
+struct AugmentTextureMaterial { unlit: bool }
+struct AugmentTextureActor {
+    id: string, mesh: string, color: color, material: AugmentTextureMaterial,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, camera-kind: string, camera-height: float,
+}
+struct AugmentTextureInput {
+    capture: string, attachment: string, item: string, texture: string, filter: string,
+}
+struct AugmentTextureCapture {
+    name: string, camera: string, renderables: string, background: color,
+    combine-attachments: bool, augment-shader: string, augment-textures: [AugmentTextureInput],
+}
+struct AugmentTextureRead { capture: string, attachment: string, enabled: bool }
+struct AugmentTextureEffect { shader: string, buffers: [AugmentTextureRead] }
+
+export component AugmentTextureInputsDemo inherits Window {
+    title: "XRack · 捕获扩展纹理";
+    width: 300px; height: 151px; background: #000;
+    in-out property <bool> read-data: false;
+    in-out property <bool> dim-red: false;
+    in-out property <bool> dim-green: false;
+    in-out property <bool> cycle: false;
+
+    property <AugmentTextureActor> unit: AugmentTextureActor {
+        id: "", mesh: "primitive:box", color: #444, material: AugmentTextureMaterial { unlit: true },
+        x: 0, y: 0, z: 0, scale-x: 1.5, scale-y: 1.5, scale-z: 1.5,
+        yaw: 0, pitch: 0, roll: 0, camera-kind: "", camera-height: 2.0,
+    };
+    property <AugmentTextureInput> empty: AugmentTextureInput {
+        capture: "", attachment: "color", item: "", texture: "", filter: "nearest",
+    };
+
+    Rectangle {
+        width: 32px; height: 32px; texture-source: "swatch"; texture-only: true;
+        background: root.dim-green ? #00a000 : #0f0;
+    }
+    SceneView3D {
+        x: 8px; y: 8px; width: 284px; height: 96px; camera: "eye";
+        cache-rendering: true;
+        render-overrides: "disable-internal-passes";
+        scene-color-capture: "surface";
+        model: [
+            AugmentTextureActor { id: "eye", mesh: "", z: 5, camera-kind: "orthographic", ..root.unit },
+            AugmentTextureActor { id: "block", ..root.unit },
+        ];
+        scene-captures: [
+            AugmentTextureCapture {
+                name: "feed", camera: "eye", renderables: "none", combine-attachments: false,
+                background: root.dim-red ? #c00000 : #f00, augment-shader: "", augment-textures: [],
+            },
+            AugmentTextureCapture {
+                name: "depth", camera: "eye", renderables: "opaque", combine-attachments: false,
+                background: #0000, augment-shader: "", augment-textures: [],
+            },
+            AugmentTextureCapture {
+                name: "surface", camera: "eye", renderables: "opaque", combine-attachments: true,
+                background: #0000, augment-shader: @material-shader-url("effects/augment_inputs.wgsl"),
+                augment-textures: [
+                    AugmentTextureInput {
+                        capture: root.cycle ? "surface" : "feed",
+                        attachment: root.cycle ? "material-data" : "color",
+                        ..root.empty
+                    },
+                    AugmentTextureInput { item: "swatch", ..root.empty },
+                    AugmentTextureInput { texture: @texture-url("models/augment-input-swatch.png"), ..root.empty },
+                    AugmentTextureInput { capture: "depth", attachment: "depth", ..root.empty },
+                ],
+            },
+        ];
+        scene-effects: [
+            AugmentTextureEffect {
+                shader: @shader-url("effects/augment_display.wgsl"),
+                buffers: [AugmentTextureRead { capture: "surface", attachment: "material-data", enabled: root.read-data }],
+            },
+        ];
+    }
+    read-data := CheckBox {
+        x: 8px; y: 112px; width: 68px; height: 29px;
+        text: "读数据"; checked <=> root.read-data;
+    }
+    red := CheckBox {
+        x: 82px; y: 112px; width: 67px; height: 29px;
+        text: "上游"; checked <=> root.dim-red;
+    }
+    green := CheckBox {
+        x: 153px; y: 112px; width: 67px; height: 29px;
+        text: "二维"; checked <=> root.dim-green;
+    }
+    cycle := CheckBox {
+        x: 225px; y: 112px; width: 69px; height: 29px;
+        text: "循环"; checked <=> root.cycle;
+    }
+}

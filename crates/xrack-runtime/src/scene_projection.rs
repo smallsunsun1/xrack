@@ -7,7 +7,7 @@ use crate::{
     scene_authored_mesh::SceneMeshInputs,
     scene_camera::{CameraMatrixCache, SceneCameraSettings},
     scene_hierarchy::{
-        SceneModel, SceneNode, model_cameras, model_nodes, prepare_record_scene, rest_mesh_objects,
+        SceneModel, SceneNode, prepare_model, prepare_record_scene, rest_mesh_objects,
     },
     scene_instance_table::{InstanceTable3D, InstanceTableRow},
     scene_particle_mesh::{ParticleMeshSurface, ParticleSurfaceCache},
@@ -198,26 +198,28 @@ impl SceneProjectionCache {
 
     pub fn model_nodes<T: Clone>(
         &self,
-        model: &VecModel<T>,
+        model: VecModel<T>,
         schema: &str,
         project: impl Fn(T, &SceneMeshInputs) -> Option<SceneNode>,
     ) -> Arc<SceneModel> {
-        self.get(model, schema, true, |inputs| {
-            model_nodes(model, |row| project(row, inputs))
+        self.get(&model, schema, true, |inputs, observe_rows| {
+            prepare_model(&model, |row| project(row, inputs), true, observe_rows)
         })
     }
 
     pub fn model_cameras<T: Clone>(
         &self,
-        model: &VecModel<T>,
+        model: VecModel<T>,
         schema: &str,
         project: impl Fn(T, &SceneMeshInputs) -> Option<SceneNode>,
     ) -> Arc<SceneModel> {
-        self.get(model, schema, false, |inputs| {
-            model_cameras(model, |row| project(row, inputs))
+        self.get(&model, schema, false, |inputs, observe_rows| {
+            prepare_model(&model, |row| project(row, inputs), false, observe_rows)
         })
     }
 
+    /// The interpreter passes its evaluated argument; other handles to a
+    /// live record list keep its rows observable.
     pub fn record_objects(
         &self,
         model: &RecordList,
@@ -225,12 +227,12 @@ impl SceneProjectionCache {
         textures: impl Fn(&str) -> Option<Arc<MeshImage>>,
         shaders: impl Fn(&str) -> Option<Arc<str>>,
     ) -> Arc<SceneModel> {
-        self.get(model.model(), model.name(), true, |inputs| {
+        self.get(model.model(), model.name(), true, |inputs, observe_rows| {
             prepare_record_scene(
                 model,
                 imported,
                 (textures, shaders),
-                true,
+                (true, observe_rows),
                 inputs,
                 &self.camera_matrices,
             )
@@ -242,16 +244,21 @@ impl SceneProjectionCache {
         model: &RecordList,
         imported: impl Fn(&str) -> Option<MeshAsset>,
     ) -> Arc<SceneModel> {
-        self.get(model.model(), model.name(), false, |inputs| {
-            prepare_record_scene(
-                model,
-                imported,
-                (|_| None, |_| None),
-                false,
-                inputs,
-                &self.camera_matrices,
-            )
-        })
+        self.get(
+            model.model(),
+            model.name(),
+            false,
+            |inputs, observe_rows| {
+                prepare_record_scene(
+                    model,
+                    imported,
+                    (|_| None, |_| None),
+                    (false, observe_rows),
+                    inputs,
+                    &self.camera_matrices,
+                )
+            },
+        )
     }
 
     fn get<T>(
@@ -259,11 +266,13 @@ impl SceneProjectionCache {
         model: &VecModel<T>,
         schema: &str,
         renderables: bool,
-        build: impl FnOnce(&SceneMeshInputs) -> Arc<SceneModel>,
+        build: impl FnOnce(&SceneMeshInputs, bool) -> Arc<SceneModel>,
     ) -> Arc<SceneModel> {
         if !model.is_shared() {
             crate::update_profile::scene_projection(false);
-            return build(&SceneMeshInputs::default());
+            // Its dependency signals would be dropped with the evaluated
+            // argument, immediately invalidating the prepared scene.
+            return build(&SceneMeshInputs::default(), false);
         }
         // Register the model dependency even when this binding gets a cache
         // hit prepared earlier by a different binding or a ray query.
@@ -287,7 +296,7 @@ impl SceneProjectionCache {
         }
         crate::update_profile::scene_projection(false);
         let mesh_inputs = SceneMeshInputs::default();
-        let scene = build(&mesh_inputs);
+        let scene = build(&mesh_inputs, true);
         if model.edit_stamp().1 == revision {
             let mut projections = self.projections.borrow_mut();
             // A complete scene can serve camera-only queries as well.

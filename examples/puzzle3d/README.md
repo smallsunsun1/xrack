@@ -33,6 +33,8 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 
 ## 网格细节 LOD
 
+运行 `bazel run //examples/puzzle3d:play_lod_fade`，或在 VS Code 预览 [lod_fade.xr](lod_fade.xr)。拖动滑块改变视口的垂直覆盖范围，观察面板从主网格过渡到较小的替代网格。可分别切换「平滑切换」和「MSAA」进行对照。
+
 运行 `bazel run //examples/puzzle3d:play_lod`，或在 VS Code 预览 [lod.xr](lod.xr)。拖动相机距离滑块，蓝色物体会依次使用球体、八面体和盒体。切到正交相机后，相机距离变化时物体的投影尺寸和细节级别保持一致。「始终用主网格」用于对照同一视角的画面。
 
 示例中的「自动减面」会换到带两种材质的密集 glTF 球体，并使用 `@mesh-url(..., auto-lod)` 生成的级别。「始终用主网格」可在同一相机位置做画面对照。
@@ -45,7 +47,31 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 
 ## 阴影过滤
 
-运行 `bazel run //examples/puzzle3d:play_shadow_filters`，或在 VS Code 中预览 [shadow_filters.xr](shadow_filters.xr)。两个按钮切换灯光类型和过滤模式，滑块改变采样半径和阴影强度。切到点光源可看到软阴影跨过立方体面接缝。
+运行 `bazel run //examples/puzzle3d:play_shadow_filters`，或在 VS Code 中预览 [shadow_filters.xr](shadow_filters.xr)。可以切换三种灯和最多 64 次采样。勾选「世界单位」后，在 128 和 512 像素阴影图间切换，对照软边宽度。点光源的软阴影可以跨过立方体面接缝。
+
+## 阴影图集
+
+运行 `bazel run //examples/puzzle3d:play_shadow_atlas`，或在 VS Code 预览 [shadow_atlas.xr](shadow_atlas.xr)。开启「混合分辨率」，红灯继续用 512 像素，绿灯和蓝灯各用 128 像素并共享一个图集层。可以单独增大绿灯的阴影图，切换 16 位深度，或把蓝灯切换为点光观察多个立方体面的阴影。底部两个开关可以单独为绿灯或蓝灯指定 16 位深度，红灯继续沿用视口精度。
+
+## 不透明深度预通道
+
+运行 `bazel run //examples/puzzle3d:play_material_depth`，或预览 [material_depth.xr](material_depth.xr)。切换「Depth prepass」比较遮挡结果。条纹面使用透明纹理，左下按钮可切换该材质自己的深度写入模式。
+
+## 材质调试
+
+运行 `bazel run //examples/puzzle3d:play_material_debug`，或在 VS Code 预览 [material_debug.xr](material_debug.xr)。下拉菜单可切换材质和光照的诊断通道。右侧面板用自定义材质改动底色、发光、粗糙度和金属度，左侧保留内建材质。勾选「线框」可组合查看材质通道和三角形拓扑。切换「后期效果」和「透明面」可查看诊断颜色与最终渲染的区别。
+
+## 阴影调试
+
+运行 `bazel run //examples/puzzle3d:play_shadow_debug`，或在 VS Code 预览 [shadow_debug.xr](shadow_debug.xr)。点击左上方按钮依次查看级联切分、灯光投影、投影与受光物体包围盒，以及级联相交轮廓。选中「冻结阴影相机」再勾选「侧面观察」或「移远相机」，可以从另一个位置查看同一组投影。
+
+## 逐灯阴影投影
+
+运行 `bazel run //examples/puzzle3d:play_shadow_projection`，或在 VS Code 预览 [shadow_projection.xr](shadow_projection.xr)。方向光缩短阴影时只保留近处投影。点光和聚光灯缩短阴影时，近处面板仍收到红色直接光。可切换手动分点，再用滑块转动相机观察锁定和未锁定的阴影。
+
+## 灯光作用域
+
+运行 `bazel run //examples/puzzle3d:play_light_scope`，或在 VS Code 预览 [light_scope.xr](light_scope.xr)。循环点击左侧按钮，把红灯限制在左组、右组、整场或一个不存在的节点。勾选「左下模型移入右组」，模型位置固定，受光范围随新的父节点更新。蓝色补光照亮整个视口。
 
 ## 混合光照
 
@@ -141,6 +167,8 @@ bazel run --repo_env=CARGO_BAZEL_ISOLATED=false --run_env=XRACK_LIVE_PROJECT="$P
 
 运行 `bazel run //examples/puzzle3d:play_item_texture`，或在 VS Code 预览 [item_texture.xr](item_texture.xr)。两块 3D 面片共用左下角的 2D 控制台。直接点击任一面片上的按钮或拖动滑块，可以操作同一个控制台。用「缩小观察」切到细条纹远景，切换「远景滤波」可以对照 mip 链的效果。「只在面片显示」移除窗口里的 2D 副本，面片上的按钮、滑块和键盘焦点仍可用。切到「滚动控制台」后，用滚轮可操作嵌套滚动区和滑块。用触摸或按住鼠标中键在面片内上拖，可滚动控制台并在松手时继续惯性滚动。
 
+点击「原始 UV」循环查看交换纹理轴、重复平铺和镜像平铺。每个副本都可以操作原控制台，跨副本拖动会结束当前手势。「采样 mip 层」控制材质是否使用已经生成的 mip 层。
+
 ## 视口纹理尺寸
 
 运行 `bazel run //examples/puzzle3d:play_texture_size`，或在 VS Code 预览 [texture_size.xr](texture_size.xr)。按钮切换自动、半分辨率和 192×96 固定纹理。右侧滑块改变逻辑视口宽度。
@@ -189,7 +217,7 @@ bazel run //examples/puzzle3d:play_material_slots
 bazel run //examples/puzzle3d:play_authored_texture
 ```
 
-拖动平铺和旋转滑块查看 UV 变化，切换裁切观察底色 alpha 在表面和阴影中的效果。右侧可切换法线贴图，也可以换成导入模型的 UV。VS Code 可直接预览 `authored_texture.xr`。
+拖动平铺和旋转滑块查看 UV 变化，开启「偏心旋转」可把中心移到 UV 的 `(0.7, 0.5)`。「水平翻转」和「垂直翻转」分别镜像对应轴。结合「底色裁切」可以观察透明区域在表面和阴影中一起移动。右侧可切换法线贴图，也可以换成导入模型的 UV。VS Code 可直接预览 `authored_texture.xr`。
 
 ## glTF 材质对照
 
@@ -223,6 +251,26 @@ bazel run //examples/puzzle3d:play_authored_texture
 
 运行 `bazel run //examples/puzzle3d:play_off_axis_camera`，或在 VS Code 预览 [off_axis_camera.xr](off_axis_camera.xr)。拖动滑块平移镜头的近裁剪面构图，点击边缘出现的方块验证拾取。用「居中」恢复对称视锥。
 
+## 反向深度
+
+运行 `bazel run //examples/puzzle3d:play_reverse_depth`，或在 VS Code 预览 [reverse_depth.xr](reverse_depth.xr)。两块面板距相机约 100 个场景单位，沿深度方向只相隔 0.02。切换「反向深度」可以对照蓝色远板与橙色近板的遮挡结果。再切换「MSAA」验证多采样的深度选择。两种深度模式下，画面中心的拾取都命中近板。
+
+## 3D 资源预加载
+
+运行 `bazel run //examples/puzzle3d:play_resource_preload`，或在 VS Code 预览 [resource_preload.xr](resource_preload.xr)。开启「预加载」会分帧上传三个模型的主网格、中央模型的两个替代网格及其贴图。点击「显示模型」，再用右侧按钮切换中央模型的细节级别。Rust 可通过 `Renderer::scene_draw_stats().preloaded_meshes` 查看预加载上传次数。
+
+## 窗口内联 3D
+
+运行 `bazel run //examples/puzzle3d:play_inline_view`，或在 VS Code 预览 [inline_view.xr](inline_view.xr)。切换「窗口内联」对照两条绘制路径。开启「第二视口」可观察重叠视口和 2D 标注的画序。开启「MSAA」时主视口会采用离屏路径。开启「裁剪」后只在主视口的逻辑矩形内绘制 3D 内容，矩形外仍显示清屏背景。
+
+运行 `bazel run //examples/puzzle3d:play_window_layers`，或预览 [window_layers.xr](window_layers.xr)。切换底层和顶层后，点击视口与按钮重叠的区域，观察 2D 按钮与 3D 视口分别收到的点击次数。打开「MSAA」可对照离屏合成时的顺序。
+
+## 3D 视口作为纹理
+
+运行 `bazel run //examples/puzzle3d:play_viewport_texture`，或预览 [viewport_texture.xr](viewport_texture.xr)。右侧面板经一个隐藏视口读取左侧的颜色输出。切换源配色可观察更新沿两级依赖传递。打开「仅输出纹理」可以隐藏源视口，同时继续更新右侧面板。
+
+运行 `bazel run //examples/puzzle3d:play_viewport_image`，或预览 [viewport_image.xr](viewport_image.xr)。左侧图片直接采样隐藏的 3D 视口，右侧经过一个命名的 2D 图层转发。切换配色可观察两边的半透明背景一起更新，也可以给右侧图片单独着色。
+
 ## glTF 导入布光
 
 运行 `bazel run //examples/puzzle3d:play_punctual_lights`，或在 VS Code 预览 [punctual_lights.xr](punctual_lights.xr)。红色点光和绿色聚光灯由 glTF 动画驱动，蓝色方向光提供底色。滑块可拖动动画时间，也可切换导入灯光和手写补光。
@@ -243,21 +291,35 @@ bazel run //examples/puzzle3d:play_authored_texture
 
 运行 `bazel run //examples/puzzle3d:play_texture_mips`，或在 VS Code 预览 [texture_mips.xr](texture_mips.xr)。两张卡片共享一张奇数尺寸棋盘格，左边使用最近点，右边使用三线性 mipmap。移动距离和绕视滑块，对照两张卡片的远景纹理。
 
+## FXAA
+
+运行 `bazel run //examples/puzzle3d:play_fxaa` 或在 VS Code 中预览 [fxaa.xr](fxaa.xr)。用两个抗锯齿开关对照斜边和细线，可叠加 MSAA 与 FXAA。「透明」让窗口底色透过轮廓，「抖动」在最终颜色写出时生效。
+
 ## 镜面高光抗锯齿
 
 运行 `bazel run //examples/puzzle3d:play_specular_aa`，或在 VS Code 预览 [specular_aa.xr](specular_aa.xr)。从左到右依次是抛光金属、带清漆的半透明球体和无光照参考。拖动滑块移动镜头，对照开关前后的高光。选择「环境反射」切到 HDR 探针光照。
 
 ## 相交透明面
 
-运行 `bazel run //examples/puzzle3d:play_transparency` 或在 VS Code 中预览 [transparency.xr](transparency.xr)。默认的子网格排序下，反转模型行会改变两张相交面片的混合结果。 可用「默认排序」按钮给红片加上正或负的深度偏移，再反转行序验证显式排序。开启「加权透明」后可以比较相交处两侧的颜色，前方不透明盒体仍遮挡两张面片。HDR 和 4× MSAA 可独立切换。
+运行 `bazel run //examples/puzzle3d:play_transparency` 或在 VS Code 中预览 [transparency.xr](transparency.xr)。默认的子网格排序下，反转模型行会改变两张相交面片的混合结果。 可用「默认排序」按钮给红片加上正或负的深度偏移，再反转行序验证显式排序。开启「加权透明」后可以比较相交处两侧的颜色，前方不透明盒体仍遮挡两张面片。选择「逐像素透明」可以看到两个面片在交线两侧按不同的实际深度合成。HDR 和 4× MSAA 可独立切换。开启 4× MSAA 后可对照逐样本合成在几何边缘的效果。「裁剪」可缩小透明链表覆盖区，保留区内的混色和遮挡关系。
 
 ## 屏幕空间环境遮蔽
 
 运行 `bazel run //examples/puzzle3d:play_occlusion` 或在 VS Code 中预览 [occlusion.xr](occlusion.xr)。用「环境遮蔽」切换接触阴影，拖动右侧滑块调整采样半径。可以在透视、正交、HDR 和透明面片同时出现时比较效果。透明面片启用 4× MSAA 和加权透明。
 
+## 程序化天空
+
+运行 `bazel run //examples/puzzle3d:play_procedural_sky` 或在 VS Code 中预览 [procedural_sky.xr](procedural_sky.xr)。左球显示漫反射，右球显示金属镜面反射。「暮色」改变天空颜色，「移动太阳」改变太阳仰角。「显示天空」可单独隐藏背景，「程序天空」切换到同场景的文件探针。
+
+运行 `bazel run //examples/puzzle3d:play_skybox` 或预览 [skybox.xr](skybox.xr)，在 HDR 十字图、程序化背景和受光环境之间切换。可以单独旋转和模糊背景，用前面的两个球体对照受光。
+
+运行 `bazel run //examples/puzzle3d:play_probe_controls` 或预览 [probe_controls.xr](probe_controls.xr)。用「俯仰」「滚转」改变两个球的受光方向，用「地平线」对照来自探针下半球的光。切换「全局探针」「局部 HDR」「实时反射」，可观察右侧金属球的局部反射。
+
 ## HDR 泛光
 
 运行 `bazel run //examples/puzzle3d:play_bloom` 或在 VS Code 中预览 [bloom.xr](bloom.xr)。橙色发光片取自带有 glTF 发光强度扩展的模型。可以切换泛光、遮挡和前景玻璃，并拖动「强度」滑块。玻璃会同时启用 4× MSAA 和加权透明。
+
+运行 `bazel run //examples/puzzle3d:play_lens_flare` 或预览 [lens_flare.xr](lens_flare.xr)。打开「光晕」观察亮源对侧的鬼影和光环，分别切换「泛光」和「镜头纹理」查看叠加效果。打开「遮挡」可以遮住亮源。
 
 ## 景深与焦平面
 
@@ -266,6 +328,8 @@ bazel run //examples/puzzle3d:play_authored_texture
 ## 色调映射与颜色调整
 
 运行 `bazel run //examples/puzzle3d:play_tone` 或在 VS Code 中预览 [tone.xr](tone.xr)。点击曲线名称切换左侧 HDR 视口的显示曲线，右侧保留同一组材质的 LDR 参考。亮度、对比度和饱和度滑块作用于两个视口。
+
+运行 `bazel run //examples/puzzle3d:play_display_finish` 或预览 [display_finish.xr](display_finish.xr)。用左侧视口对照右侧的暗角、锐化和 8 位抖动。三个开关可独立使用，也可叠加。
 
 ## LUT 调色
 

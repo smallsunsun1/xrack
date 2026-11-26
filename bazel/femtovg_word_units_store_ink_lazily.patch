@@ -1,0 +1,189 @@
+diff --git a/src/text/font.rs b/src/text/font.rs
+index daa5247..4c8f332 100644
+--- a/src/text/font.rs
++++ b/src/text/font.rs
+@@ -829,6 +829,11 @@ impl Font {
+         self.metrics(size)
+     }
+ 
++    #[cfg(feature = "textlayout")]
++    pub(crate) fn units_per_em(&self) -> u16 {
++        self.units_per_em
++    }
++
+     pub fn scale(&self, size: f32) -> f32 {
+         size / self.units_per_em as f32
+     }
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+index d4b5674..0baeb25 100644
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -38,6 +38,7 @@ pub(super) struct ShapedWord {
+     glyphs: Vec<ShapedGlyph>,
+     units_per_em: u16,
+     ascii_slice: Option<Box<AsciiWordSlice>>,
++    has_ink: bool,
+ }
+ 
+ #[derive(Clone, Debug)]
+@@ -195,6 +196,7 @@ impl super::TextContext {
+                 rustybuzz::Direction::LeftToRight,
+                 settings.font_ids,
+                 &settings.font_variations,
++                WordMetrics::Advances,
+             ) {
+                 width += word.width(word.scale(settings.font_size), settings.letter_spacing);
+             }
+@@ -203,12 +205,13 @@ impl super::TextContext {
+         Ok(width)
+     }
+ 
+-    /// Retrieves the shaped glyph for a standalone unified ideograph.
+-    ///
+-    /// The advances and offsets are scaled to the paint's size. Placement
+-    /// and the text baseline are supplied by the caller.
++    /// Retrieves the scaled advance and offset of a standalone ideograph.
+     #[doc(hidden)]
+-    pub fn shaped_ideograph(&self, text: &str, paint: &Paint) -> Option<ShapedGlyph> {
++    pub fn shaped_ideograph_placement(
++        &self,
++        text: &str,
++        paint: &Paint,
++    ) -> Option<(FontId, u16, [f32; 2], [f32; 2])> {
+         if text.len() != 3 || !text.chars().next().is_some_and(unified_ideograph) {
+             return None;
+         }
+@@ -220,21 +223,18 @@ impl super::TextContext {
+             rustybuzz::Direction::LeftToRight,
+             settings.font_ids,
+             &settings.font_variations,
++            WordMetrics::Advances,
+         )?;
+         let [glyph] = word.glyphs.as_slice() else {
+             return None;
+         };
+         let scale = word.scale(settings.font_size);
+-        Some(ShapedGlyph {
+-            width: glyph.width * scale,
+-            height: glyph.height * scale,
+-            advance_x: glyph.advance_x * scale,
+-            advance_y: glyph.advance_y * scale,
+-            offset_x: glyph.offset_x * scale,
+-            offset_y: glyph.offset_y * scale,
+-            bearing_y: glyph.bearing_y * scale,
+-            ..*glyph
+-        })
++        Some((
++            glyph.font_id,
++            glyph.glyph_id,
++            [glyph.advance_x * scale, glyph.advance_y * scale],
++            [glyph.offset_x * scale, glyph.offset_y * scale],
++        ))
+     }
+ 
+     /// Returns the sum of finite glyph advances on the first line.
+@@ -508,7 +508,9 @@ fn shape_run(
+         let is_rtl_run = hb_direction == rustybuzz::Direction::RightToLeft;
+ 
+         for mut word_txt in sub_text.split_word_bounds() {
+-            if let Some(mut word) = cached_word(context, word_txt, hb_direction, font_ids, variations) {
++            if let Some(mut word) = cached_word(
++                context, word_txt, hb_direction, font_ids, variations, WordMetrics::Ink,
++            ) {
+                 let mut scale = word.scale(font_size);
+                 let mut width = word.width(scale, letter_spacing);
+                 if let Some(max_width) = max_width {
+@@ -532,8 +534,9 @@ fn shape_run(
+                                 break;
+                             }
+                             word_txt = &word_txt[..bytes_included];
+-                            let Some(subword) = cached_word(context, word_txt, hb_direction, font_ids, variations)
+-                            else {
++                            let Some(subword) = cached_word(
++                                context, word_txt, hb_direction, font_ids, variations, WordMetrics::Ink,
++                            ) else {
+                                 break;
+                             };
+                             word = subword;
+@@ -627,12 +630,19 @@ fn sliced_word_width(context: &super::TextContextImpl, word: &str, settings: &Te
+     None
+ }
+ 
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum WordMetrics {
++    Advances,
++    Ink,
++}
++
+ fn cached_word<'a>(
+     context: &'a mut super::TextContextImpl,
+     word: &str,
+     direction: rustybuzz::Direction,
+     font_ids: [Option<FontId>; 8],
+     variations: &FontVariations,
++    metrics: WordMetrics,
+ ) -> Option<&'a ShapedWord> {
+     let mut hasher = FnvHasher::default();
+     word.hash(&mut hasher);
+@@ -653,7 +663,23 @@ fn cached_word<'a>(
+         }
+         context.shaped_words_cache.put(id, shaped);
+     }
+-    context.shaped_words_cache.get(&id)?.as_ref().ok()
++    let word = context.shaped_words_cache.get_mut(&id)?.as_mut().ok()?;
++    if metrics == WordMetrics::Ink && !word.has_ink {
++        if let Some(glyph) = word.glyphs.first() {
++            let font = context.fonts.get(glyph.font_id.0)?;
++            let face = font.face_ref_with_variations(variations);
++            let coordinates = font.normalize_variations(variations);
++            for glyph in &mut word.glyphs {
++                if let Some(ink) = font.glyph(&face, glyph.glyph_id, &coordinates) {
++                    glyph.width = ink.metrics.width;
++                    glyph.height = ink.metrics.height;
++                    glyph.bearing_y = ink.metrics.bearing_y;
++                }
++            }
++        }
++        word.has_ink = true;
++    }
++    Some(word)
+ }
+ 
+ fn shape_word(
+@@ -688,19 +714,17 @@ fn shape_word(
+             return (true, None);
+         }
+ 
+-        // Ink metrics are needed only for the selected face. Missing glyphs
+-        // in the failed fallback attempts do not populate the glyph cache.
+-        let font_face = font.face_ref_with_variations(variations);
+-        let normalized_coords = font.normalize_variations(variations);
+         let infos = output.glyph_infos();
++        // Width probes use shaping advances even when no outline has been loaded.
+         let mut shaped_word = ShapedWord {
+             glyphs: Vec::with_capacity(positions.len()),
+-            units_per_em: font_face.0.units_per_em(),
++            units_per_em: font.units_per_em(),
+             ascii_slice: None,
++            has_ink: false,
+         };
+ 
+         for (position, (info, c)) in glyphs {
+-            let mut g = ShapedGlyph {
++            let g = ShapedGlyph {
+                 x: 0.0,
+                 y: 0.0,
+                 c,
+@@ -719,12 +743,6 @@ fn shape_word(
+                 bearing_y: 0.0,
+             };
+ 
+-            if let Some(glyph) = font.glyph(&font_face, g.glyph_id, &normalized_coords) {
+-                g.width = glyph.metrics.width;
+-                g.height = glyph.metrics.height;
+-                g.bearing_y = glyph.metrics.bearing_y;
+-            }
+-
+             shaped_word.glyphs.push(g);
+         }
+ 

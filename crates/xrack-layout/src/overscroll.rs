@@ -212,7 +212,7 @@ impl Overscroll {
         options: ElasticOptions,
         refresh: bool,
     ) -> bool {
-        let Some(owner) = &item.viewport_handle else {
+        let Some(owner) = item.viewport_handle() else {
             return false;
         };
         let bounds = item.scroll_viewport(axis);
@@ -316,7 +316,7 @@ impl Overscroll {
             if !item.visible || !item.enabled {
                 return None;
             }
-            if item.viewport_handle.as_ref() == Some(&lane.owner) {
+            if item.viewport_handle() == Some(&lane.owner) {
                 if lane.refresh {
                     return (item.pull_to_refresh
                         && axis == Orientation::Vertical

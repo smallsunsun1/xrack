@@ -9,6 +9,32 @@ use std::{
     rc::{Rc, Weak},
 };
 use xrack_runtime::{Color as UiColor, ImageAsset, ImageFit};
+use xrack_runtime::{ViewportRenderWork, scene_effect::SceneScissor, scene3d::SceneCamera};
+
+pub(super) fn scene_view_content(
+    node: &Node,
+    bounds: Rect,
+) -> (Option<SceneCamera>, Rect, Option<[f64; 4]>) {
+    let camera = SceneCamera::for_view(node, [f64::from(bounds.width), f64::from(bounds.height)]);
+    let content = camera.map_or(bounds, |camera| {
+        let [x, y, width, height] = camera.content_rect();
+        Rect::new(
+            bounds.x + x as f32,
+            bounds.y + y as f32,
+            width as f32,
+            height as f32,
+        )
+    });
+    let scissor = SceneScissor::for_view(node)
+        .map(|scissor| {
+            scissor.relative_to(camera.map_or(
+                [0.0, 0.0, f64::from(bounds.width), f64::from(bounds.height)],
+                |camera| camera.content_rect(),
+            ))
+        })
+        .filter(|bounds| *bounds != [0.0, 0.0, 1.0, 1.0]);
+    (camera, content, scissor)
+}
 
 /// Geometry in the custom element's local logical coordinates.
 pub enum Geometry {
@@ -476,28 +502,17 @@ impl Renderer {
     pub(super) fn paint_scene3d(
         &mut self,
         node: &Node,
-        bounds: Rect,
+        item: &LayoutNode,
         path: &[usize],
         scale: f32,
     ) -> Result<(), String> {
-        use crate::scene3d::retained_view::{Sampling, ViewInputs, ViewSize, ViewTexture};
+        use crate::scene3d::retained_view::{Sampling, ViewSize, viewport_format};
 
+        let bounds = item.bounds;
         if !usable_rect(bounds) {
             return Ok(());
         }
-        let camera = xrack_runtime::scene3d::SceneCamera::for_view(
-            node,
-            [f64::from(bounds.width), f64::from(bounds.height)],
-        );
-        let content = camera.map_or(bounds, |camera| {
-            let [x, y, width, height] = camera.content_rect();
-            Rect {
-                x: bounds.x + x as f32,
-                y: bounds.y + y as f32,
-                width: width as f32,
-                height: height as f32,
-            }
-        });
+        let (camera, content, scissor) = scene_view_content(node, bounds);
         let background = crate::scene3d::background(node);
         let alpha = background.0.to_be_bytes()[3];
         if content != bounds && alpha == 255 {
@@ -536,6 +551,12 @@ impl Renderer {
         if !usable_rect(content) {
             return Ok(());
         }
+        if let Some(texture) = self.scene_item_textures.viewport_output(node, path) {
+            let texture = self.viewport_display_texture(texture);
+            self.composite_native_texture(content, texture)?;
+            self.scene3d.stats.viewport_texture_composites += 1;
+            return Ok(());
+        }
         let (nominal, pixel_scale) = self.native_texture_extent(content);
         let texture_size = crate::scene3d::texture_extent(
             node,
@@ -548,9 +569,6 @@ impl Renderer {
             data: "",
             revision: 0,
         };
-        let feedback = crate::scene3d::has_effect_history(node);
-        let animate_feedback = feedback && node.boolean("scene-effect-animate", false);
-        self.needs_redraw |= animate_feedback;
         let scope = [self.geometry_row, self.effect_mount];
         let effect_owner = crate::scene3d::effect_history::Owner {
             path,
@@ -560,14 +578,115 @@ impl Renderer {
             logical_size: [content.width, content.height],
             revision: node.int("scene-effect-history-revision").unwrap_or(0),
         };
-        let reflections = if crate::scene3d::has_scene_reflections(node)
+        let format = viewport_format(&self.device, node);
+        if format == crate::scene3d::COLOR_FORMAT
+            && node.scene_view_render_mode() != xrack_runtime::SceneViewRenderMode::Offscreen
+            && path.len() == 1
+            && node.opacity() == 1.0
+            && !item.has_ancestor_clip_chain()
+            && item.clip.intersect(content) == content
+            && texture_size == nominal
+            && let Some(camera) = camera
+            && let Some((target, origin, extent)) = self.inline_surface(content, scale)
+            && let Some(geometry) =
+                crate::scene3d::prepare_inline_geometry(node, &camera, target.format())
+        {
+            let recording = self.scene3d.begin_viewport_recording();
+            self.scene3d.visit_viewport(effect_owner, node, false);
+            self.viewport_textures
+                .clear_disabled_temporal((path, self.scene_generation, scope), Sampling::default());
+            fill_rect(&mut self.canvas, content, &Paint::color(color(background)));
+            self.submit_opacity_atlas();
+            self.rectangle_batches.upload(&mut self.canvas)?;
+            self.submit_canvas(&target);
+            let view = target.create_view(&Default::default());
+            let _gpu_scope = recording.as_ref().and_then(|_| {
+                self.viewport_gpu_timing
+                    .enter(&self.device, effect_owner.path, effect_owner.id)
+            });
+            let encoder = native_encoder(&mut self.custom_encoder, &self.device);
+            self.scene3d.draw_inline(
+                node,
+                GpuPaintContext {
+                    paint: context,
+                    device: &self.device,
+                    encoder,
+                    target: &view,
+                    size: extent,
+                    format: target.format(),
+                },
+                &self.queue,
+                effect_owner,
+                camera,
+                (origin, &geometry, scissor),
+            );
+            self.scene3d.finish_viewport_recording(
+                recording,
+                effect_owner,
+                ViewportRenderWork::Inline,
+                extent,
+            );
+            return Ok(());
+        }
+        let size = ViewSize {
+            pixels: texture_size,
+            logical: [content.width, content.height],
+            scissor,
+            format,
+        };
+        if let Some(output) = self.render_scene_output(
+            node,
+            context,
+            camera,
+            effect_owner,
+            size,
+            pixel_scale,
+            false,
+        )? {
+            let texture = self.viewport_display_texture(output.texture);
+            self.composite_native_texture(content, texture)?;
+            self.scene3d.stats.viewport_texture_composites += 1;
+        }
+        Ok(())
+    }
+
+    pub(super) fn render_scene_output(
+        &mut self,
+        node: &Node,
+        context: PaintContext<'_>,
+        camera: Option<SceneCamera>,
+        effect_owner: crate::scene3d::effect_history::Owner<'_>,
+        size: crate::scene3d::retained_view::ViewSize,
+        pixel_scale: f32,
+        export: bool,
+    ) -> Result<Option<crate::scene3d::retained_view::ViewOutput>, String> {
+        use crate::scene3d::retained_view::{Sampling, ViewInputs, ViewOutput, ViewTexture};
+
+        let [width, height] = size.pixels;
+        crate::validate_extent(
+            width,
+            height,
+            pixel_scale,
+            self.device.limits().max_texture_dimension_2d,
+        )?;
+        let recording = self.scene3d.begin_viewport_recording();
+        let _gpu_scope = recording.as_ref().and_then(|_| {
+            self.viewport_gpu_timing
+                .enter(&self.device, effect_owner.path, effect_owner.id)
+        });
+        let feedback = crate::scene3d::has_effect_history(node);
+        let animate_feedback = feedback && node.boolean("scene-effect-animate", false);
+        self.needs_redraw |= animate_feedback;
+        let internal_passes = !node.scene_internal_passes_disabled();
+        let reflections = if internal_passes
+            && crate::scene3d::has_scene_reflections(node)
             && let Some(camera) = camera
         {
             let encoder = native_encoder(&mut self.custom_encoder, &self.device);
             self.scene3d.capture_reflections(
                 node,
                 (&self.device, &self.queue, encoder),
-                (effect_owner, texture_size),
+                (effect_owner, size.pixels),
                 camera,
                 context,
             )
@@ -576,97 +695,156 @@ impl Renderer {
         };
         self.needs_redraw |= reflections.needs_redraw;
         let cubes = reflections.cubes;
-        let captures = RefCell::new(reflections.captures);
-        self.scene3d.visit_effect_history(effect_owner, feedback);
+        self.scene3d.visit_viewport(effect_owner, node, feedback);
         let sampling = camera
+            .filter(|_| internal_passes)
             .map_or_else(Sampling::default, |_| Sampling::from_node(node))
             .with_feedback(feedback, animate_feedback);
-        let owner = (path, self.scene_generation, scope);
+        let owner = (
+            effect_owner.path,
+            effect_owner.generation,
+            effect_owner.scope,
+        );
         self.viewport_textures
             .clear_disabled_temporal(owner, sampling);
-        let (cached_target, sample) =
-            if sampling.is_active() || node.boolean("cache-rendering", false) {
-                let [width, height] = texture_size;
-                crate::validate_extent(
-                    width,
-                    height,
-                    pixel_scale,
-                    self.device.limits().max_texture_dimension_2d,
-                )?;
-                let target = self.viewport_textures.get(
-                    &self.device,
-                    node,
-                    owner,
-                    ViewSize {
-                        pixels: texture_size,
-                        logical: [content.width, content.height],
-                    },
-                    ViewInputs {
-                        reflections: std::array::from_fn(|index| {
-                            cubes
-                                .get(index)
-                                .and_then(Option::as_ref)
-                                .map_or(0, |cube| cube.revision)
-                        }),
-                        items: self.scene3d.item_texture_revision(node),
-                    },
-                    sampling,
-                );
-                self.scene3d.stats.viewport_cache_allocations = self.viewport_textures.allocations;
-                match target {
-                    Some(ViewTexture::Ready(texture)) => {
-                        self.scene3d.stats.viewport_cache_hits =
-                            self.scene3d.stats.viewport_cache_hits.saturating_add(1);
-                        return self.composite_native_texture(content, texture);
-                    }
-                    Some(ViewTexture::Render {
-                        texture,
-                        sample,
-                        needs_redraw,
-                    }) => {
-                        self.needs_redraw |= needs_redraw;
-                        (Some(texture), sample)
-                    }
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            };
-        let renderer = RefCell::new(std::mem::take(&mut self.scene3d));
-        let queue = self.queue.clone();
-        let render = |context: GpuPaintContext<'_>| {
-            renderer.borrow_mut().draw(
+        let cached = if export || sampling.is_active() || node.boolean("cache-rendering", false) {
+            let target = self.viewport_textures.get(
+                &self.device,
                 node,
-                context,
-                &queue,
-                effect_owner,
-                camera,
-                (&cubes, sample.as_ref(), captures.take()),
+                owner,
+                size,
+                ViewInputs {
+                    reflections: std::array::from_fn(|index| {
+                        cubes
+                            .get(index)
+                            .and_then(Option::as_ref)
+                            .map_or(0, |cube| cube.revision)
+                    }),
+                    items: self.scene3d.item_texture_revision(node),
+                },
+                sampling,
             );
-            Ok(())
-        };
-        // The scene render or resolve pass initializes the entire texture.
-        let result = if let Some(texture) = cached_target {
-            self.draw_native_texture(
-                content,
-                context,
-                crate::scene3d::COLOR_FORMAT,
-                texture,
-                false,
-                &render,
-            )
+            self.scene3d.stats.viewport_cache_allocations = self.viewport_textures.allocations;
+            target
         } else {
-            self.draw_native_at_size(
-                content,
-                context,
-                crate::scene3d::COLOR_FORMAT,
-                (texture_size, pixel_scale),
-                false,
-                &render,
-            )
+            None
         };
-        self.scene3d = renderer.into_inner();
-        result
+        let (output, sample) = match cached {
+            Some(ViewTexture::Ready(output)) => {
+                self.scene3d.stats.viewport_cache_hits =
+                    self.scene3d.stats.viewport_cache_hits.saturating_add(1);
+                self.scene3d.finish_viewport_recording(
+                    recording,
+                    effect_owner,
+                    ViewportRenderWork::Retained,
+                    size.pixels,
+                );
+                return Ok(Some(output));
+            }
+            Some(ViewTexture::Reprocess(output, frame)) => {
+                let view = output.attachment();
+                let encoder = native_encoder(&mut self.custom_encoder, &self.device);
+                self.scene3d.reprocess_display(
+                    node,
+                    &mut GpuPaintContext {
+                        paint: context,
+                        device: &self.device,
+                        encoder,
+                        target: &view,
+                        size: size.pixels,
+                        format: size.format,
+                    },
+                    &self.queue,
+                    &frame,
+                );
+                self.scene3d.finish_viewport_recording(
+                    recording,
+                    effect_owner,
+                    ViewportRenderWork::DisplayOnly,
+                    size.pixels,
+                );
+                return Ok(Some(output));
+            }
+            Some(ViewTexture::Render {
+                output,
+                sample,
+                needs_redraw,
+            }) => {
+                self.needs_redraw |= needs_redraw;
+                (output, sample)
+            }
+            None if export => return Ok(None),
+            None => {
+                let (texture, _) = self.transient_textures.acquire_render_view(
+                    &self.device,
+                    size.pixels,
+                    size.format,
+                );
+                (
+                    ViewOutput {
+                        texture,
+                        revision: 0,
+                        readers: std::sync::Weak::new(),
+                    },
+                    None,
+                )
+            }
+        };
+        let view = output.attachment();
+        let encoder = native_encoder(&mut self.custom_encoder, &self.device);
+        let frame = self.scene3d.draw(
+            node,
+            GpuPaintContext {
+                paint: context,
+                device: &self.device,
+                encoder,
+                target: &view,
+                size: size.pixels,
+                format: size.format,
+            },
+            &self.queue,
+            effect_owner,
+            camera,
+            (&cubes, sample.as_ref(), reflections.captures),
+            (
+                output.revision != 0 && sampling.retains_display(node),
+                size.scissor,
+            ),
+        );
+        if let Some(frame) = frame {
+            self.viewport_textures.keep_display_frame(&output, frame);
+        }
+        self.scene3d.finish_viewport_recording(
+            recording,
+            effect_owner,
+            ViewportRenderWork::Offscreen,
+            size.pixels,
+        );
+        Ok(Some(output))
+    }
+
+    pub(super) fn viewport_display_texture(&mut self, source: wgpu::Texture) -> wgpu::Texture {
+        if source.format() == wgpu::TextureFormat::Rgba8Unorm {
+            return source;
+        }
+        let (output, refresh) = self
+            .viewport_textures
+            .display_target(&self.device, &source)
+            .unwrap_or_else(|| {
+                let size = [source.width(), source.height()];
+                let (texture, _) = self.transient_textures.acquire(&self.device, size);
+                (texture, true)
+            });
+        if refresh {
+            let encoder = native_encoder(&mut self.custom_encoder, &self.device);
+            let target = output.create_view(&Default::default());
+            self.scene3d.resolve_viewport_display(
+                &self.device,
+                encoder,
+                (&source.create_view(&Default::default()), &target),
+            );
+        }
+        output
     }
 
     fn draw_native(
@@ -794,20 +972,7 @@ impl Renderer {
         direct: bool,
         source: &PassSource,
     ) -> Result<(), String> {
-        let device_rect = bounds.scaled(context.scale);
-        let extent = [device_rect.width as u32, device_rect.height as u32];
-        let origin = [device_rect.x as u32, device_rect.y as u32];
-        if direct
-            && bounds.x >= 0.0
-            && bounds.y >= 0.0
-            && extent[0] > 0
-            && extent[1] > 0
-            && crate::pixel_aligned(bounds, context.scale)
-            && crate::has_device_scale(canvas_transform(&self.canvas), context.scale)
-            && let Some(target) = self.inline_target.clone().filter(|target| {
-                origin[0].saturating_add(extent[0]) <= target.width()
-                    && origin[1].saturating_add(extent[1]) <= target.height()
-            })
+        if direct && let Some((target, origin, extent)) = self.inline_surface(bounds, context.scale)
         {
             self.submit_opacity_atlas();
             self.rectangle_batches.upload(&mut self.canvas)?;
@@ -837,6 +1002,26 @@ impl Renderer {
         self.draw_native(bounds, context, wgpu::TextureFormat::Rgba8Unorm, &|ctx| {
             record_gpu_pass(ctx, None, source)
         })
+    }
+
+    fn inline_surface(
+        &self,
+        bounds: Rect,
+        scale: f32,
+    ) -> Option<(wgpu::Texture, [u32; 2], [u32; 2])> {
+        let target = self.inline_target.as_ref()?;
+        let device_rect = bounds.scaled(scale);
+        let extent = [device_rect.width as u32, device_rect.height as u32];
+        let origin = [device_rect.x as u32, device_rect.y as u32];
+        (bounds.x >= 0.0
+            && bounds.y >= 0.0
+            && extent[0] > 0
+            && extent[1] > 0
+            && crate::pixel_aligned(bounds, scale)
+            && crate::has_device_scale(canvas_transform(&self.canvas), scale)
+            && origin[0].saturating_add(extent[0]) <= target.width()
+            && origin[1].saturating_add(extent[1]) <= target.height())
+        .then(|| (target.clone(), origin, extent))
     }
 }
 

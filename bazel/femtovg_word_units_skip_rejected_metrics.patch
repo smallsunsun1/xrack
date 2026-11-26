@@ -1,0 +1,69 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+index 6061cca..1c647a2 100644
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -670,10 +670,8 @@ fn shape_word(
+         && (9..=24).contains(&word.len())
+         && word.bytes().all(|byte| byte.is_ascii_alphanumeric());
+     let mut attempts = 0;
+-    context.find_font(font_ids, |(font_id, font)| {
++    let mut shape = |(font_id, font): (FontId, &mut super::font::Font), allow_missing: bool| {
+         attempts += 1;
+-        let font_face = font.face_ref_with_variations(variations);
+-        let normalized_coords = font.normalize_variations(variations);
+         // Call harfbuzz
+         let output = {
+             let mut buffer = rustybuzz::UnicodeBuffer::new();
+@@ -684,21 +682,24 @@ fn shape_word(
+         };
+ 
+         let positions = output.glyph_positions();
+-        let infos = output.glyph_infos();
++        let glyphs = positions.iter().zip(output.glyph_infos().iter().zip(word.chars()));
++        let has_missing = glyphs.clone().any(|(_, (info, _))| info.glyph_id == 0);
++        if has_missing && !allow_missing {
++            return (true, None);
++        }
+ 
++        // Ink metrics are needed only for the selected face. Missing glyphs
++        // in the failed fallback attempts do not populate the glyph cache.
++        let font_face = font.face_ref_with_variations(variations);
++        let normalized_coords = font.normalize_variations(variations);
++        let infos = output.glyph_infos();
+         let mut shaped_word = ShapedWord {
+             glyphs: Vec::with_capacity(positions.len()),
+             units_per_em: font_face.0.units_per_em(),
+             ascii_slice: None,
+         };
+ 
+-        let mut has_missing = false;
+-
+-        for (position, (info, c)) in positions.iter().zip(infos.iter().zip(word.chars())) {
+-            if info.glyph_id == 0 {
+-                has_missing = true;
+-            }
+-
++        for (position, (info, c)) in glyphs {
+             let mut g = ShapedGlyph {
+                 x: 0.0,
+                 y: 0.0,
+@@ -750,8 +751,17 @@ fn shape_word(
+             }));
+         }
+ 
+-        (has_missing, shaped_word)
+-    })
++        (has_missing, Some(shaped_word))
++    };
++    if let Some(word) = context.find_font(font_ids, |font| shape(font, false))? {
++        return Ok(word);
++    }
++
++    // Preserve the first registered font's .notdef glyph when every face
++    // fails, including when the paint lists a different face first.
++    context
++        .find_font(&[None; 8], |font| (false, shape(font, true).1))?
++        .ok_or(ErrorKind::UnknownError)
+ }
+ 
+ // Resolve the font metrics once per shaped run. The caller's origin and

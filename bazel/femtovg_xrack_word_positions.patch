@@ -1,0 +1,155 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -17,6 +17,7 @@
+ mod ideograph_prewarm;
+ pub(super) use ideograph_prewarm::PreparedIdeographs;
+ 
++#[doc(hidden)]
+ #[derive(Copy, Clone, Debug)]
+ pub struct ShapedGlyph {
+     pub x: f32,
+@@ -231,6 +232,32 @@
+         self.0.borrow_mut().measure_text(x, y, text, &paint.text)
+     }
+ 
++    /// Raw glyph advances, offsets and the baseline of the unwrapped first
++    /// line. Consumers position the glyphs themselves and do not need ink.
++    #[doc(hidden)]
++    pub fn glyph_placements(&self, text: &str, paint: &Paint) -> Result<(f32, Vec<ShapedGlyph>), ErrorKind> {
++        let settings = &paint.text;
++        let mut context = self.0.borrow_mut();
++        let id = unwrapped_shaping_id(text, settings);
++        if let Some(run) = context.shaping_run_cache.get(&id) {
++            let baseline = baseline_offset(settings.text_baseline, run.ascender, run.descender);
++            return Ok((baseline, run.metrics.glyphs.clone()));
++        }
++        let metrics = shape_run(
++            &mut context,
++            settings.font_size,
++            settings.font_ids,
++            settings.letter_spacing,
++            text,
++            None,
++            &settings.font_variations,
++            WordMetrics::Advances,
++        );
++        let [ascender, descender] = run_extents(&mut context, &metrics, settings)?;
++        // Keep advances-only runs out of the cache used by ink measurement.
++        Ok((baseline_offset(settings.text_baseline, ascender, descender), metrics.glyphs))
++    }
++
+     /// Measures the line width without copying or placing the cached glyphs.
+     pub fn measure_text_width(&self, text: &str, paint: &Paint) -> Result<f32, ErrorKind> {
+         let mut context = self.0.borrow_mut();
+@@ -245,14 +272,7 @@
+             return cached_run(&mut context, settings, text, None).map(|run| run.metrics.width());
+         }
+ 
+-        let id = ShapingId::new(
+-            settings.font_size,
+-            settings.font_ids,
+-            text,
+-            None,
+-            &settings.font_variations,
+-            settings.letter_spacing,
+-        );
++        let id = unwrapped_shaping_id(text, settings);
+         if let Some(run) = context.shaping_run_cache.get(&id) {
+             return Ok(run.metrics.width());
+         }
+@@ -528,6 +548,17 @@
+     Ok(metrics)
+ }
+ 
++fn unwrapped_shaping_id(text: &str, settings: &TextSettings) -> ShapingId {
++    ShapingId::new(
++        settings.font_size,
++        settings.font_ids,
++        text,
++        None,
++        &settings.font_variations,
++        settings.letter_spacing,
++    )
++}
++
+ fn cached_run<'a>(
+     context: &'a mut super::TextContextImpl,
+     text_settings: &TextSettings,
+@@ -553,6 +584,7 @@
+             text,
+             max_width,
+             variations,
++            WordMetrics::Ink,
+         );
+         let [ascender, descender] = run_extents(context, &metrics, text_settings)?;
+         let unwrapped_advance = metrics
+@@ -584,6 +616,7 @@
+     text: &str,
+     max_width: Option<f32>,
+     variations: &FontVariations,
++    word_metrics: WordMetrics,
+ ) -> TextMetrics {
+     let mut result = TextMetrics {
+         x: 0.0,
+@@ -633,7 +666,7 @@
+ 
+         for mut word_txt in sub_text.split_word_bounds() {
+             if let Some(mut word) = cached_word(
+-                context, word_txt, hb_direction, &style, WordMetrics::Ink,
++                context, word_txt, hb_direction, &style, word_metrics,
+             ) {
+                 let mut scale = word.scale(font_size);
+                 let mut width = word.width(scale, letter_spacing);
+@@ -659,7 +692,7 @@
+                             }
+                             word_txt = &word_txt[..bytes_included];
+                             let Some(subword) = cached_word(
+-                                context, word_txt, hb_direction, &style, WordMetrics::Ink,
++                                context, word_txt, hb_direction, &style, word_metrics,
+                             ) else {
+                                 break;
+                             };
+@@ -933,6 +966,15 @@
+     Ok([ascender, descender])
+ }
+ 
++fn baseline_offset(baseline: Baseline, ascender: f32, descender: f32) -> f32 {
++    match baseline {
++        Baseline::Top => ascender,
++        Baseline::Middle => ascender.midpoint(descender),
++        Baseline::Alphabetic => 0.0,
++        Baseline::Bottom => descender,
++    }
++}
++
+ // Calculates the x,y coordinates for each glyph based on their advances. Calculates total width and height of the shaped text run
+ fn layout(x: f32, y: f32, res: &mut TextMetrics, text_settings: &TextSettings, [ascender, descender]: [f32; 2]) {
+     let mut cursor_x = x;
+@@ -951,12 +993,7 @@
+     let mut max_y = cursor_y;
+ 
+     // Baseline alignment
+-    let alignment_offset_y = match text_settings.text_baseline {
+-        Baseline::Top => ascender,
+-        Baseline::Middle => ascender.midpoint(descender),
+-        Baseline::Alphabetic => 0.0,
+-        Baseline::Bottom => descender,
+-    };
++    let alignment_offset_y = baseline_offset(text_settings.text_baseline, ascender, descender);
+ 
+     // Record where the alphabetic baseline lands so consumers (glyph drawing,
+     // text decorations) need not re-derive it from glyph positions, which
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -42,6 +42,9 @@
+ };
+ 
+ pub use text::TextContext;
++#[cfg(feature = "textlayout")]
++#[doc(hidden)]
++pub use text::ShapedGlyph;
+ #[cfg(feature = "textlayout")]
+ pub use text::TextMetrics;
+ 

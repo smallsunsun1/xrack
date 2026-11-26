@@ -34,6 +34,7 @@ def XR_Quaternion3D : XR_Type<"Quaternion3D", "quaternion3d">;
 def XR_RotationTrack3D : XR_Type<"RotationTrack3D", "rotationtrack3d">;
 def XR_Hit3D : XR_Type<"Hit3D", "hit3d">;
 def XR_Instance3D : XR_Type<"Instance3D", "instance3d">;
+def XR_MeshAsset3D : XR_Type<"MeshAsset3D", "meshasset3d">;
 def XR_InstanceTable3D : XR_Type<"InstanceTable3D", "instancetable3d">;
 def XR_Hit3DList : XR_Type<"Hit3DList", "hit3dlist">;
 def XR_PhysicsContact3D : XR_Type<"PhysicsContact3D", "physicscontact3d">;
@@ -112,7 +113,7 @@ def XR_DateList : XR_Type<"DateList", "datelist">;
 def XR_Time : XR_Type<"Time", "time">;
 def XR_Font : XR_Type<"Font", "font">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
-def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_InstanceTable3D, XR_Hit3DList, XR_PhysicsContact3D, XR_PhysicsHit3D, XR_PhysicsContact3DList, XR_PhysicsHit3DList, XR_ProjectedPoint3D, XR_WalkResult3D, XR_PhysicsWorld3D, XR_SceneModel3D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
+def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_InstanceTable3D, XR_MeshAsset3D, XR_Hit3DList, XR_PhysicsContact3D, XR_PhysicsHit3D, XR_PhysicsContact3DList, XR_PhysicsHit3DList, XR_ProjectedPoint3D, XR_WalkResult3D, XR_PhysicsWorld3D, XR_SceneModel3D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers, XR_WheelEvent,
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,

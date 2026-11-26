@@ -1293,6 +1293,9 @@ pub(crate) fn complete_with_imports(
     if let Some(items) = imports::scene_item_texture_values(&source, &tokens, cursor, text.len()) {
         return items;
     }
+    if let Some(scopes) = imports::scene_light_scope_values(&source, &tokens, cursor) {
+        return scopes;
+    }
     if let Some(references) = imports::scene_instance_reference_values(&source, &tokens, cursor) {
         return references;
     }

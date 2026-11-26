@@ -1,5 +1,4 @@
 use crate::{
-    assets::{asset_path, local_path, read_asset},
     mesh_animation, mesh_instances, mesh_lights,
     mesh_materials::{MaterialImages, Materials, NormalCoordinates},
     mesh_morph::{self, MorphData},
@@ -18,7 +17,10 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use xrack_assets::MAX_ASSET_BYTES;
+use xrack_assets::{
+    MAX_ASSET_BYTES,
+    files::{asset_path, local_path, read_asset},
+};
 use xrack_runtime::scene3d::{
     AnimatedMesh, MAX_ANIMATION_NODES, MAX_IMPORTED_VERTICES, MAX_MORPH_DELTAS, MAX_MORPH_TARGETS,
     Mesh3D, MeshAnimationNode, MeshAsset, MeshCamera, MeshCameraProjection, MeshInfluence,
@@ -31,44 +33,54 @@ use xrack_syntax::gltf_metadata::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum MeshSource {
+pub enum MeshSource {
     Gltf,
     Heightfield,
+    Obj,
 }
 
 impl MeshSource {
-    pub(super) fn resolve(
+    pub fn resolve(
         base: &Path,
         url: &str,
         declared: Option<&BTreeSet<PathBuf>>,
     ) -> Result<(PathBuf, Self), String> {
-        use xrack_syntax::builtins::{HEIGHTFIELD_EXTENSION, MESH_SOURCE_EXTENSIONS};
         let relative = local_path(url)?;
-        let extension = relative
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("");
+        let source = Self::from_path(relative)?;
+        let path = asset_path(base, relative, declared, "mesh")?;
+        Ok((path, source))
+    }
+
+    pub(crate) fn from_path(path: &Path) -> Result<Self, String> {
+        use xrack_syntax::builtins::{
+            HEIGHTFIELD_EXTENSION, MESH_SOURCE_EXTENSIONS, OBJ_EXTENSION,
+        };
+        let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
         let source = if extension.eq_ignore_ascii_case(HEIGHTFIELD_EXTENSION) {
             Self::Heightfield
+        } else if extension.eq_ignore_ascii_case(OBJ_EXTENSION) {
+            Self::Obj
         } else if MESH_SOURCE_EXTENSIONS
             .iter()
             .any(|ext| extension.eq_ignore_ascii_case(ext))
         {
             Self::Gltf
         } else {
-            return Err("expected a .gltf or .glb mesh or a grayscale PNG heightfield".into());
+            return Err(
+                "expected a .gltf, .glb, or .obj mesh or a grayscale PNG heightfield".into(),
+            );
         };
-        let path = asset_path(base, relative, declared, "mesh")?;
-        Ok((path, source))
+        Ok(source)
     }
 
-    pub(super) fn load(
+    pub fn load(
         self,
         path: &Path,
         declared: Option<&BTreeSet<PathBuf>>,
     ) -> Result<(MeshAsset, BTreeSet<PathBuf>), String> {
         match self {
             Self::Gltf => load_mesh(path, declared),
+            Self::Obj => crate::mesh_obj::load(path, declared),
             Self::Heightfield => {
                 let mesh = crate::heightfield::load(path)?;
                 Ok((mesh, BTreeSet::from([path.to_owned()])))
@@ -76,9 +88,9 @@ impl MeshSource {
         }
     }
 
-    pub(super) fn generate_lightmap_uv(self, mesh: MeshAsset) -> Result<MeshAsset, String> {
+    pub fn generate_lightmap_uv(self, mesh: MeshAsset) -> Result<MeshAsset, String> {
         match self {
-            Self::Gltf => crate::lightmap_unwrap::generate(mesh),
+            Self::Gltf | Self::Obj => crate::lightmap_unwrap::generate(mesh),
             Self::Heightfield => crate::heightfield::generate_lightmap_uv(mesh),
         }
     }

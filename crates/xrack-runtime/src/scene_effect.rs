@@ -1,6 +1,6 @@
 //! WGSL interface shared by asset validation and scene rendering.
 use crate::{
-    Color, RecordList, Value, VecModel, Vector3D,
+    Color, Node, RecordList, Value, VecModel, Vector3D,
     scene_material::{MeshImage, TextureColorSpace, TextureFilter, TextureWrap},
 };
 use std::{collections::BTreeMap, fmt::Write, sync::Arc};
@@ -85,6 +85,36 @@ fn xr_capture_unproject(pixel: vec2<i32>, size: vec2<u32>, depth: f32,
 }
 "#;
 
+/// The linked capture shader and its pass-local uniform values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaptureAugment {
+    pub source: Arc<str>,
+    pub parameters: [f32; 3],
+    pub textures: Vec<BufferInput>,
+}
+
+impl CaptureAugment {
+    pub fn item_sources(&self, slots: usize) -> impl Iterator<Item = &str> {
+        self.textures.iter().take(slots).filter_map(|input| {
+            if let Some(ExternalTexture::Item(name)) = input.external_texture() {
+                Some(name)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn capture_sources(&self, slots: usize) -> impl Iterator<Item = &CaptureRead> {
+        self.textures.iter().take(slots).filter_map(|input| {
+            if let Some(ExternalTexture::Capture(read)) = input.external_texture() {
+                Some(read)
+            } else {
+                None
+            }
+        })
+    }
+}
+
 /// A scene-linear color target rendered from a viewport's scene.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Capture {
@@ -93,13 +123,15 @@ pub struct Capture {
     pub scale: f64,
     pub background: Color,
     pub color_format: OutputFormat,
-    pub material_data_format: OutputFormat,
+    pub mipmaps: bool,
+    pub material_data_formats: [OutputFormat; MATERIAL_DATA_ATTACHMENTS.len()],
     pub combine_attachments: bool,
     pub depth_clear: f32,
     pub stencil_clear: u8,
     pub inputs: CaptureInputs,
     pub renderables: CaptureRenderables,
     pub override_material: Option<Arc<crate::scene3d::CaptureMaterial>>,
+    pub augment: Option<CaptureAugment>,
     pub pipeline_state: CapturePipelineState,
     pub raster: CaptureRasterSettings,
 }
@@ -111,7 +143,8 @@ pub struct CaptureDefinition<'a> {
     pub scale: f64,
     pub background: Color,
     pub color_format: OutputFormat,
-    pub material_data_format: OutputFormat,
+    pub mipmaps: bool,
+    pub material_data_formats: [OutputFormat; MATERIAL_DATA_ATTACHMENTS.len()],
     pub combine_attachments: bool,
     pub depth_clear: f64,
     pub stencil_clear: i64,
@@ -121,6 +154,9 @@ pub struct CaptureDefinition<'a> {
     pub stencil_source: &'a str,
     pub renderables: &'a str,
     pub override_material: Option<crate::scene3d::SceneMaterial>,
+    pub augment_shader: Option<Arc<str>>,
+    pub augment_parameters: Vector3D,
+    pub augment_textures: Vec<BufferInput>,
     pub pipeline_state: CapturePipelineState,
     pub raster: CaptureRasterSettings,
 }
@@ -136,7 +172,8 @@ impl CaptureDefinition<'_> {
                     scale: effect_scale(self.scale),
                     background: self.background,
                     color_format: self.color_format,
-                    material_data_format: self.material_data_format,
+                    mipmaps: self.mipmaps,
+                    material_data_formats: self.material_data_formats,
                     combine_attachments: self.combine_attachments,
                     depth_clear: if self.depth_clear.is_finite() {
                         self.depth_clear.clamp(0.0, 1.0) as f32
@@ -153,6 +190,14 @@ impl CaptureDefinition<'_> {
                     override_material: self
                         .override_material
                         .map(crate::scene3d::CaptureMaterial::new),
+                    augment: self.augment_shader.and_then(|source| {
+                        crate::material_shader::capture_augment_parts(&source)?;
+                        Some(CaptureAugment {
+                            source,
+                            parameters: shader_parameters(self.augment_parameters),
+                            textures: self.augment_textures,
+                        })
+                    }),
                     pipeline_state: self.pipeline_state,
                     raster: self.raster,
                 },
@@ -171,10 +216,23 @@ pub enum CaptureAttachment {
     EmissiveOcclusion,
     Stencil,
     MaterialData,
+    MaterialData1,
+    MaterialData2,
 }
 
+pub const MATERIAL_DATA_ATTACHMENTS: [CaptureAttachment; 3] = [
+    CaptureAttachment::MaterialData,
+    CaptureAttachment::MaterialData1,
+    CaptureAttachment::MaterialData2,
+];
+pub const MATERIAL_DATA_FORMAT_FIELDS: [&str; MATERIAL_DATA_ATTACHMENTS.len()] = [
+    "material-data-format",
+    "material-data-1-format",
+    "material-data-2-format",
+];
+
 impl CaptureAttachment {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Color,
         Self::Depth,
         Self::NormalRoughness,
@@ -182,6 +240,8 @@ impl CaptureAttachment {
         Self::EmissiveOcclusion,
         Self::Stencil,
         Self::MaterialData,
+        Self::MaterialData1,
+        Self::MaterialData2,
     ];
 
     pub fn parse(name: &str) -> Self {
@@ -191,12 +251,23 @@ impl CaptureAttachment {
             "base-color-metalness" => Self::BaseColorMetalness,
             "emissive-occlusion" => Self::EmissiveOcclusion,
             "material-data" => Self::MaterialData,
+            "material-data-1" => Self::MaterialData1,
+            "material-data-2" => Self::MaterialData2,
             _ => Self::Color,
         }
     }
 
     pub const fn index(self) -> usize {
         self as usize
+    }
+
+    pub const fn material_data_slot(self) -> Option<usize> {
+        match self {
+            Self::MaterialData => Some(0),
+            Self::MaterialData1 => Some(1),
+            Self::MaterialData2 => Some(2),
+            _ => None,
+        }
     }
 }
 
@@ -702,6 +773,52 @@ impl CaptureRect {
     }
 }
 
+/// A viewport-local scissor in logical pixels, measured from the top left.
+#[derive(Clone, Copy)]
+pub struct SceneScissor([f64; 4]);
+
+impl SceneScissor {
+    pub fn for_view(node: &Node) -> Option<Self> {
+        let Value::Record(record) = node.properties.get("scissor-rect")? else {
+            return None;
+        };
+        if record.field("enabled") == Some(&Value::Bool(false)) {
+            return None;
+        }
+        let length = |field| match record.field(field) {
+            Some(Value::Length(value)) => value.0,
+            _ => 0.0,
+        };
+        let (x, y) = (length("x"), length("y"));
+        let edges = [x, y, x + length("width"), y + length("height")];
+        Some(Self(if edges.into_iter().all(f64::is_finite) {
+            edges
+        } else {
+            [0.0; 4]
+        }))
+    }
+
+    pub fn contains(self, [x, y]: [f64; 2]) -> bool {
+        let [left, top, right, bottom] = self.0;
+        x >= left && x < right && y >= top && y < bottom
+    }
+
+    /// Normalize against the camera's drawable content, including letterbox offsets.
+    pub fn relative_to(self, [x, y, width, height]: [f64; 4]) -> [f64; 4] {
+        if ![x, y, width, height].into_iter().all(f64::is_finite) || width <= 0.0 || height <= 0.0 {
+            return [0.0; 4];
+        }
+        let [left, top, right, bottom] = self.0;
+        [
+            (left - x) / width,
+            (top - y) / height,
+            (right - x) / width,
+            (bottom - y) / height,
+        ]
+        .map(|edge| edge.clamp(0.0, 1.0))
+    }
+}
+
 pub type Captures = BTreeMap<String, Capture>;
 
 pub fn model_captures<T: Clone>(
@@ -745,7 +862,9 @@ pub fn record_captures(
                 _ => Color(0),
             },
             color_format: OutputFormat::parse(text("color-format")),
-            material_data_format: OutputFormat::parse(text("material-data-format")),
+            mipmaps: row.field("mipmaps") == Some(&Value::Bool(true)),
+            material_data_formats: MATERIAL_DATA_FORMAT_FIELDS
+                .map(|name| OutputFormat::parse(text(name))),
             combine_attachments: row.field("combine-attachments") == Some(&Value::Bool(true)),
             depth_clear: match row.field("depth-clear") {
                 Some(Value::Float(value)) => *value,
@@ -766,10 +885,30 @@ pub fn record_captures(
                 }
                 _ => None,
             },
+            augment_shader: shaders(text("augment-shader")),
+            augment_parameters: match row.field("augment-parameters") {
+                Some(Value::Vector3D(parameters)) => *parameters,
+                _ => Vector3D::default(),
+            },
+            augment_textures: match row.field("augment-textures") {
+                Some(Value::RecordList(textures_model)) => record_buffer_inputs(
+                    textures_model,
+                    crate::material_shader::MAX_TEXTURES,
+                    &textures,
+                ),
+                _ => Vec::new(),
+            },
             pipeline_state,
             raster,
         }
         .prepare()
+    })
+}
+
+fn shader_parameters(parameters: Vector3D) -> [f32; 3] {
+    [parameters.x, parameters.y, parameters.z].map(|value| {
+        let value = value as f32;
+        if value.is_finite() { value } else { 0.0 }
     })
 }
 
@@ -784,22 +923,30 @@ fn effect_scale(scale: f64) -> f64 {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OutputFormat {
     R8,
+    R16,
     R16Float,
+    R32Float,
     Rg8,
     Rg16Float,
+    Rg32Float,
     Rgba8,
     #[default]
     Rgba16Float,
+    Rgba32Float,
 }
 
 impl OutputFormat {
     pub fn parse(name: &str) -> Self {
         match name {
             "r8" => Self::R8,
+            "r16" => Self::R16,
             "r16f" => Self::R16Float,
+            "r32f" => Self::R32Float,
             "rg8" => Self::Rg8,
             "rg16f" => Self::Rg16Float,
+            "rg32f" => Self::Rg32Float,
             "rgba8" => Self::Rgba8,
+            "rgba32f" => Self::Rgba32Float,
             _ => Self::Rgba16Float,
         }
     }
@@ -807,22 +954,63 @@ impl OutputFormat {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BufferSampling {
-    pub filter: TextureFilter,
+    pub min_filter: TextureFilter,
+    pub mag_filter: TextureFilter,
     pub wrap: [TextureWrap; 2],
+    pub mip_filter: Option<TextureFilter>,
+    pub max_anisotropy: u8,
 }
 
 impl BufferSampling {
     pub const DEFAULT: Self = Self {
-        filter: TextureFilter::Linear,
+        min_filter: TextureFilter::Linear,
+        mag_filter: TextureFilter::Linear,
         wrap: [TextureWrap::Clamp; 2],
+        mip_filter: None,
+        max_anisotropy: 1,
     };
 
     pub fn new(filter: &str, wrap_u: &str, wrap_v: &str) -> Self {
+        let filter = TextureFilter::parse(filter);
         Self {
-            filter: TextureFilter::parse(filter),
+            min_filter: filter,
+            mag_filter: filter,
             wrap: [wrap_u, wrap_v]
                 .map(|mode| TextureWrap::parse(mode).unwrap_or(TextureWrap::Clamp)),
+            mip_filter: None,
+            max_anisotropy: 1,
         }
+    }
+    pub fn with_filters(mut self, minimum: &str, maximum: &str) -> Self {
+        if let Some(filter) = sampling_filter(minimum) {
+            self.min_filter = filter;
+        }
+        if let Some(filter) = sampling_filter(maximum) {
+            self.mag_filter = filter;
+        }
+        self
+    }
+
+    pub fn with_mip_filter(mut self, value: &str) -> Self {
+        self.mip_filter = sampling_filter(value);
+        self
+    }
+    pub fn with_max_anisotropy(mut self, maximum: i64) -> Self {
+        self.max_anisotropy = maximum.clamp(1, 16) as u8;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn anisotropy_bits(self) -> u32 {
+        u32::from(self.max_anisotropy.saturating_sub(1).min(15))
+    }
+}
+
+fn sampling_filter(value: &str) -> Option<TextureFilter> {
+    match value {
+        "nearest" => Some(TextureFilter::Nearest),
+        "linear" => Some(TextureFilter::Linear),
+        _ => None,
     }
 }
 
@@ -857,10 +1045,7 @@ impl Pass {
             strength,
             depth,
             scale: effect_scale(scale),
-            parameters: [parameters.x, parameters.y, parameters.z].map(|value| {
-                let value = value as f32;
-                if value.is_finite() { value } else { 0.0 }
-            }),
+            parameters: shader_parameters(parameters),
             format: OutputFormat::default(),
             output: String::new(),
             input: String::new(),
@@ -1180,7 +1365,13 @@ pub fn record_buffer_inputs(
             attachment: CaptureAttachment::parse(text("attachment")),
             color_space: text("color-space"),
             enabled: item.field("enabled") != Some(&Value::Bool(false)),
-            sampling: BufferSampling::new(text("filter"), text("wrap-u"), text("wrap-v")),
+            sampling: BufferSampling::new(text("filter"), text("wrap-u"), text("wrap-v"))
+                .with_filters(text("min-filter"), text("mag-filter"))
+                .with_mip_filter(text("mip-filter"))
+                .with_max_anisotropy(match item.field("max-anisotropy") {
+                    Some(Value::Int(maximum)) => *maximum,
+                    _ => 1,
+                }),
         }
         .prepare(resolve)
     })
@@ -1267,6 +1458,9 @@ fn scene_depth(uv: vec2<f32>) -> f32 {
     let source = without_headers(source);
     let mut shader = format!("{source}\n{INTERFACE}\n{depth}\n{CAPTURE_POSITION}\n");
     let buffers = buffers.min(MAX_BUFFERS);
+    if buffers != 0 {
+        shader.push_str(crate::material_shader::TEXTURE_FOOTPRINT);
+    }
     write_buffer_interface(&mut shader, buffers, nearest_buffers);
     write_capture_positions(
         &mut shader,
@@ -1301,7 +1495,14 @@ fn write_buffer_interface(shader: &mut String, count: usize, nearest_buffers: u8
         shader,
         "fn scene_has_buffer(index: u32) -> bool {{ return index < {count}u && (xr_effect_uniform.buffers & (1u << (index & 31u))) != 0u; }}"
     );
-    shader.push_str("fn scene_buffer_color(index: u32, uv: vec2<f32>) -> vec4<f32> {\n");
+    shader.push_str(
+        "fn scene_buffer_color(index: u32, uv: vec2<f32>) -> vec4<f32> {
+        return scene_buffer_color_lod(index, uv, 0.0);
+    }\n",
+    );
+    shader.push_str(
+        "fn scene_buffer_color_lod(index: u32, uv: vec2<f32>, lod: f32) -> vec4<f32> {\n",
+    );
     shader.push_str("  if !scene_has_buffer(index) { return vec4(0.0); }\n  switch index {\n");
     for index in 0..count {
         let texture = format!("xr_effect_buffer_{index}");
@@ -1312,11 +1513,35 @@ fn write_buffer_interface(shader: &mut String, count: usize, nearest_buffers: u8
             }}");
         } else {
             let _ = writeln!(shader, "    case {index}u: {{
-                return xr_effect_decode_buffer(index, textureSampleLevel({texture}, xr_effect_buffer_sampler_{index}, uv, 0.0));
+                let finite_lod = select(0.0, lod, abs(lod) <= 1e20);
+                return xr_effect_decode_buffer(index, textureSampleLevel({texture}, xr_effect_buffer_sampler_{index}, uv, max(finite_lod, 0.0)));
             }}");
         }
     }
     shader.push_str("    default: { return vec4(0.0); }\n  }\n}\n");
+    shader.push_str(
+        "fn scene_buffer_color_grad(index: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+            if !scene_has_buffer(index) { return vec4(0.0); }
+            if !all(abs(vec4(dx, dy)) <= vec4(1e20)) { return scene_buffer_color(index, uv); }
+            let slope_x = clamp(dx, vec2(-1e12), vec2(1e12));
+            let slope_y = clamp(dy, vec2(-1e12), vec2(1e12));
+            switch index {\n",
+    );
+    for index in 0..count {
+        if nearest_buffers & (1 << index) != 0 {
+            let _ = writeln!(
+                shader,
+                "case {index}u: {{ return scene_buffer_color({index}u, uv); }}"
+            );
+        } else {
+            let _ = writeln!(shader, "case {index}u: {{
+                let maximum = 1u + ((xr_effect_uniform.anisotropy >> (4u * {index}u)) & 15u);
+                return xr_effect_decode_buffer({index}u, xr_sample_texture_footprint(
+                    xr_effect_buffer_{index}, xr_effect_buffer_sampler_{index}, uv, slope_x, slope_y, maximum));
+            }}");
+        }
+    }
+    shader.push_str("default: { return vec4(0.0); }\n}\n}\n");
     shader.push_str("fn scene_buffer_size(index: u32) -> vec2<f32> {\n");
     shader.push_str("  if !scene_has_buffer(index) { return vec2(0.0); }\n  switch index {\n");
     for index in 0..count {
@@ -1411,6 +1636,7 @@ struct XrEffectUniform {
     buffers: u32,
     parameters: vec4<f32>,
     encoding: u32,
+    anisotropy: u32,
 }
 
 @group(0) @binding(0) var xr_effect_color: texture_2d<f32>;
@@ -1420,6 +1646,14 @@ struct XrEffectUniform {
 
 fn scene_size() -> vec2<f32> {
     return xr_effect_uniform.size;
+}
+
+fn scene_uv_dx() -> vec2<f32> {
+    return vec2(1.0 / max(scene_size().x, 1.0), 0.0);
+}
+
+fn scene_uv_dy() -> vec2<f32> {
+    return vec2(0.0, 1.0 / max(scene_size().y, 1.0));
 }
 
 fn scene_input_size() -> vec2<f32> {

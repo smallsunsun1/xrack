@@ -1,0 +1,50 @@
+struct AnisotropicMap {
+    source: string, min-filter: string, mag-filter: string, mip-filter: string,
+    wrap-u: string, wrap-v: string, uv-scale-v: float, max-anisotropy: int,
+}
+struct MapMaterial { unlit: bool, base-color-map: AnisotropicMap }
+struct MapActor {
+    id: string, mesh: string, color: color, material: MapMaterial,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, camera-kind: string, camera-height: float,
+}
+
+export component MaterialMapAnisotropyDemo inherits Window {
+    title: "XRack · 材质贴图各向异性";
+    width: 256px; height: 180px; background: #000;
+    in-out property <int> max-anisotropy: 1;
+    in-out property <bool> nearest: false;
+
+    property <MapActor> unit: MapActor {
+        id: "", mesh: "primitive:rectangle", color: #fff,
+        x: 0, y: 0, z: 0, scale-x: 4, scale-y: 2, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, camera-kind: "", camera-height: 2,
+        material: MapMaterial {
+            unlit: true,
+            base-color-map: AnisotropicMap {
+                source: @texture-url("models/anisotropic-map.png"),
+                min-filter: root.nearest ? "nearest" : "linear",
+                mag-filter: "linear", mip-filter: "linear",
+                wrap-u: "clamp", wrap-v: "repeat", uv-scale-v: 256,
+                max-anisotropy: root.max-anisotropy,
+            },
+        },
+    };
+    SceneView3D {
+        width: 256px; height: 128px; texture-width: 256; texture-height: 128;
+        camera: "eye"; cache-rendering: true;
+        model: [
+            MapActor { id: "eye", mesh: "", z: 5, camera-kind: "orthographic", ..root.unit },
+            MapActor { id: "map", ..root.unit },
+        ];
+    }
+    anisotropy := Button {
+        x: 10px; y: 140px; width: 102px; height: 30px;
+        text: root.max-anisotropy > 1 ? "16×" : "1×";
+        clicked => { root.max-anisotropy = root.max-anisotropy == 1 ? 16 : 1; }
+    }
+    nearest := CheckBox {
+        x: 132px; y: 140px; width: 110px; height: 30px;
+        text: "缩小最近"; checked <=> root.nearest;
+    }
+}

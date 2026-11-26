@@ -44,6 +44,7 @@ fn wrapped_document_reflows_through_distinct_widths() -> Result<(), Box<dyn std:
         "wrapped_document_distinct_widths",
         "wrapped-document-benchmark.json",
     )
+    .map(|_| ())
 }
 
 #[test]
@@ -61,6 +62,144 @@ fn wrapped_document_scrolls_at_fixed_width() -> Result<(), Box<dyn std::error::E
         "wrapped_document_fixed_width_scroll",
         "wrapped-document-scroll-benchmark.json",
     )
+    .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn missing_glyph_uses_the_first_registered_font() -> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::femtovg::{Color, Paint, TextContext};
+
+    let context = TextContext::default();
+    let font = fs::read("/System/Library/Fonts/Menlo.ttc")?;
+    let first = context.add_font_mem(&font)?;
+    let preferred = context.add_font_mem(&font)?;
+    assert_ne!(first, preferred);
+    let paint = Paint::color(Color::white()).with_font(&[preferred]);
+    let missing = context.measure_text(0.0, 0.0, "\u{10ffff}", &paint)?;
+    assert_eq!(missing.glyphs.len(), 1);
+    assert_eq!(missing.glyphs[0].font_id, first);
+    assert_eq!(missing.glyphs[0].glyph_id, 0);
+    let present = context.measure_text(0.0, 0.0, "A", &paint)?;
+    assert_eq!(present.glyphs[0].font_id, preferred);
+    assert_ne!(present.glyphs[0].glyph_id, 0);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn prepared_ideographs_preserve_missing_glyph_fallback() -> Result<(), Box<dyn std::error::Error>> {
+    use std::num::NonZeroUsize;
+    use xrack_renderer_femtovg::femtovg::{Color, Paint, TextContext};
+
+    let data = fs::read("/System/Library/Fonts/Menlo.ttc")?;
+    let context = TextContext::default();
+    let first = context.add_font_mem(&data)?;
+    let preferred = context.add_font_mem(&data)?;
+    let paint = Paint::color(Color::white())
+        .with_font(&[preferred])
+        .with_font_size(17.25)
+        .with_letter_spacing(0.125);
+    let text: String = (0x4e00..0x5e00).filter_map(char::from_u32).collect();
+    assert!(context.cached_ideograph_placement('一', &paint).is_none());
+    let mut advances = vec![f32::NAN; 0x1000];
+    let capacity = NonZeroUsize::new(8192).unwrap();
+    context.resize_shaped_words_cache(capacity);
+    context.prepare_ideographs(&text, &paint, &mut advances);
+    let parallel = std::thread::available_parallelism().is_ok_and(|workers| workers.get() > 1);
+    for word in ["一", "丁", "以"] {
+        if parallel {
+            let character = word.chars().next().unwrap();
+            assert!(
+                context
+                    .cached_ideograph_placement(character, &paint)
+                    .is_some()
+            );
+        }
+        let measured = context.measure_text(0.0, 0.0, word, &paint)?;
+        assert_eq!(measured.glyphs.len(), 1);
+        let glyph = &measured.glyphs[0];
+        assert_eq!(glyph.font_id, first);
+        assert_eq!(glyph.glyph_id, 0);
+        if parallel {
+            assert_eq!(
+                advances[(u32::from(glyph.c) - 0x4e00) as usize],
+                measured.width()
+            );
+        }
+        assert_eq!(
+            context.cached_ideograph_placement(glyph.c, &paint),
+            Some((first, 0, [glyph.advance_y, glyph.offset_y]))
+        );
+    }
+    if parallel {
+        context.add_font_mem(&data)?;
+        assert!(context.cached_ideograph_placement('一', &paint).is_none());
+        context.prepare_ideographs(&text, &paint, &mut advances);
+        assert!(context.cached_ideograph_placement('一', &paint).is_some());
+        context.resize_shaped_words_cache(NonZeroUsize::MIN);
+        assert!(context.cached_ideograph_placement('一', &paint).is_none());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn width_probe_keeps_full_ink_metrics_available() -> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::femtovg::{Color, Paint, TextContext};
+
+    let font = fs::read("/System/Library/Fonts/Menlo.ttc")?;
+    let make_context = || -> Result<_, Box<dyn std::error::Error>> {
+        let context = TextContext::default();
+        let id = context.add_font_mem(&font)?;
+        Ok((context, Paint::color(Color::white()).with_font(&[id])))
+    };
+    let text = "Ag17汉";
+    let (cached, paint) = make_context()?;
+    let (fresh, reference) = make_context()?;
+    let width = cached.measure_text_width(text, &paint.clone().with_font_size(12.0))?;
+    let expected_width = fresh
+        .measure_text(0.0, 0.0, text, &reference.clone().with_font_size(12.0))?
+        .width();
+    assert_eq!(width, expected_width);
+    let measured = cached.measure_text(3.5, 7.25, text, &paint.with_font_size(26.5))?;
+    let expected = fresh.measure_text(3.5, 7.25, text, &reference.with_font_size(26.5))?;
+
+    assert!(measured.height() > 0.0);
+    assert_eq!(measured.height(), expected.height());
+    assert_eq!(measured.width(), expected.width());
+    assert_eq!(measured.glyphs.len(), expected.glyphs.len());
+    for (a, b) in measured.glyphs.iter().zip(&expected.glyphs) {
+        assert_eq!(a.glyph_id, b.glyph_id);
+        assert_eq!(
+            [a.x, a.y, a.width, a.height, a.bearing_y],
+            [b.x, b.y, b.width, b.height, b.bearing_y],
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wrapped_document_with_many_distinct_glyphs_keeps_batching()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Exercise the system CJK fallback with enough different glyphs to
+    // exceed the budget for retained positions while seeding the atlas.
+    let mut text = String::new();
+    for row in 0..700 {
+        text.extend(
+            (0..44).filter_map(|column| char::from_u32(0x4e00 + (row * 44 + column) % 0x4f00)),
+        );
+        text.push('\n');
+    }
+    let batches = benchmark_document(
+        text,
+        (0..73).map(|phase| (328 + 4 * phase as u32, Some(-125 * phase - 8))),
+        "wrapped_document_distinct_glyphs",
+        "wrapped-document-distinct-glyphs-benchmark.json",
+    )?;
+    assert_eq!(batches, 73, "expected batched text from the first frame");
+    Ok(())
 }
 
 fn benchmark_document(
@@ -68,7 +207,7 @@ fn benchmark_document(
     placements: impl ExactSizeIterator<Item = (u32, Option<i32>)>,
     scenario: &str,
     filename: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<u64, Box<dyn std::error::Error>> {
     const EARLY_FRAMES: usize = 16;
 
     let text_bytes = text.len();
@@ -149,6 +288,7 @@ fn benchmark_document(
     }
 
     let info = renderer.adapter.get_info();
+    let glyph_batches = renderer.display_batch_stats().glyph_batches;
     let report = serde_json::json!({
         "scenario": scenario,
         "mode": "offscreen_serialized_gpu",
@@ -158,6 +298,7 @@ fn benchmark_document(
         "scale": SCALE,
         "text_bytes": text_bytes,
         "early_frames": EARLY_FRAMES,
+        "glyph_batches": glyph_batches,
         "prepare_ms": percentiles(prepare),
         "draw_and_submit_ms": percentiles(submit),
         "gpu_wait_ms": percentiles(wait),
@@ -171,5 +312,5 @@ fn benchmark_document(
         )?;
     }
     println!("{report}");
-    Ok(())
+    Ok(glyph_batches)
 }

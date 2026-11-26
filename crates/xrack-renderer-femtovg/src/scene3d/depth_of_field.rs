@@ -6,8 +6,9 @@ use xrack_runtime::{Node, scene3d::SceneCamera};
 use crate::GpuPaintContext;
 
 use super::{
-    COLOR_FORMAT, HDR_FORMAT, append_floats, attachment_view, buffer,
-    postprocess::RETAINED_VIEW_SIZES, screen_depth,
+    COLOR_FORMAT, HDR_FORMAT, append_floats, buffer,
+    postprocess::{DisplayLeases, RETAINED_VIEW_SIZES, color_target},
+    screen_depth,
 };
 
 #[derive(Clone, Copy)]
@@ -99,6 +100,7 @@ impl DepthOfField {
         depth: &FocusDepth,
         settings: FocusSettings,
         (resolve, composite_alpha): (Option<wgpu::TextureFormat>, bool),
+        leases: &DisplayLeases,
     ) -> FocusOutput {
         let device = ctx.device;
         let size = ctx.size;
@@ -129,8 +131,11 @@ impl DepthOfField {
         let format = resolve.unwrap_or(COLOR_FORMAT);
         let format_index = usize::from(format == HDR_FORMAT);
         let resolved = resolve.map(|format| {
-            target.resolve[format_index]
-                .get_or_insert_with(|| image(device, size, format))
+            let slot = &mut target.resolve[format_index];
+            if slot.as_ref().is_some_and(|view| leases.contains(view)) {
+                *slot = None;
+            }
+            slot.get_or_insert_with(|| image(device, size, format))
                 .clone()
         });
         let [reduced, blurred, foreground, foreground_depth] = &target.layers;
@@ -231,14 +236,7 @@ impl DepthOfField {
 }
 
 fn image(device: &wgpu::Device, size: [u32; 2], format: wgpu::TextureFormat) -> wgpu::TextureView {
-    attachment_view(
-        device,
-        size,
-        format,
-        1,
-        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        "XRack 3D depth of field target",
-    )
+    color_target(device, size, format, "XRack 3D depth of field target")
 }
 
 struct Pass {
@@ -334,11 +332,14 @@ impl Pass {
                 })
             })
             .collect();
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack 3D depth of field"),
-            color_attachments: &colors,
-            ..Default::default()
-        });
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack 3D depth of field"),
+                color_attachments: &colors,
+                ..Default::default()
+            },
+        );
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);

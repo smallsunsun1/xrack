@@ -23,6 +23,7 @@ export component MaterialDepthDemo inherits Window {
     in-out property <bool> weighted: false;
     in-out property <bool> shadows: false;
     in-out property <bool> glass: false;
+    in-out property <bool> prepass: false;
 
     property <DepthMap> no-map: DepthMap {
         source: "", wrap-u: "clamp", wrap-v: "clamp", min-filter: "nearest",
@@ -71,16 +72,18 @@ export component MaterialDepthDemo inherits Window {
     SceneView3D {
         width: 600px; height: 320px; model: root.world; camera: "eye";
         multisampling: root.smooth; order-independent-transparency: root.weighted;
+        depth-prepass: root.prepass;
         shadows: root.shadows; shadow-map-size: 256; light-yaw: -50; light-elevation: 15;
         ambient-intensity: 0.2; scene-background: #22334b;
     }
     depth-button := Button {
-        x: 12px; y: 334px; width: 190px; height: 30px; text: root.mode;
+        x: 12px; y: 334px; width: 162px; height: 30px; text: root.mode;
         clicked => {
             root.mode = root.mode == "opaque-only" ? "always" :
                 root.mode == "always" ? "never" : root.mode == "never" ? "opaque-prepass" : "opaque-only";
         }
     }
-    blend-toggle := CheckBox { x: 230px; y: 334px; width: 160px; text: "Alpha blend"; checked <=> root.blended; }
-    shadow-toggle := CheckBox { x: 420px; y: 334px; width: 150px; text: "Shadows"; checked <=> root.shadows; }
+    blend-toggle := CheckBox { x: 186px; y: 334px; width: 122px; text: "Alpha blend"; checked <=> root.blended; }
+    shadow-toggle := CheckBox { x: 318px; y: 334px; width: 98px; text: "Shadows"; checked <=> root.shadows; }
+    prepass-toggle := CheckBox { x: 431px; y: 334px; width: 157px; text: "Depth prepass"; checked <=> root.prepass; }
 }

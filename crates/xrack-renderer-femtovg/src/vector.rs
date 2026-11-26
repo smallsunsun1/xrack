@@ -4,12 +4,14 @@ use std::{
     collections::{HashMap, VecDeque, hash_map::RandomState},
     hash::BuildHasher,
 };
-use xrack_assets::{parse_path, vector_bounds, vector_segments};
+use xrack_assets::{VectorPath, parse_path, vector_bounds, vector_segments};
 use xrack_layout::{Rect, Size, fitted_rect};
 use xrack_runtime::{ImageFit, Node, VectorSegment};
 
 const MAX_RETAINED_PATHS: usize = 512;
 const MAX_RETAINED_BYTES: usize = 4 * 1024 * 1024;
+const MAX_FRAME_SOURCES: usize = 128;
+const MAX_FRAME_SOURCE_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct GeometryKey {
@@ -105,14 +107,43 @@ impl<'a> Geometry<'a> {
     }
 
     pub(super) fn build(&self, bounds: Rect) -> Result<Option<Path>, String> {
-        build_path(
-            self.node,
-            self.commands,
-            self.source_geometry,
+        self.build_with(bounds, parse_path)
+    }
+
+    fn build_with(
+        &self,
+        bounds: Rect,
+        read_source: impl FnOnce(&str) -> Result<Option<VectorPath>, String>,
+    ) -> Result<Option<Path>, String> {
+        if let Some((extents, segments)) = self.source_geometry {
+            if segments.is_empty() {
+                return Ok(None);
+            }
+            return map_segments(
+                bounds,
+                self.fit,
+                self.viewbox,
+                self.stroke,
+                segments.iter().copied(),
+                || extents,
+            );
+        }
+        let Some(source) = read_source(self.commands).map_err(|error| {
+            format!(
+                "invalid Path commands on {}: {error}",
+                self.node.element_id().unwrap_or("an anonymous element")
+            )
+        })?
+        else {
+            return Ok(None);
+        };
+        map_segments(
             bounds,
             self.fit,
             self.viewbox,
             self.stroke,
+            vector_segments(&source),
+            || vector_bounds(&source),
         )
     }
 }
@@ -130,10 +161,17 @@ pub(crate) struct Paths {
     entries: HashMap<GeometryKey, RetainedPath>,
     order: VecDeque<GeometryKey>,
     bytes: usize,
+    frame_sources: HashMap<Box<str>, Option<VectorPath>>,
+    frame_source_bytes: usize,
     pub(super) disabled: bool,
 }
 
 impl Paths {
+    pub(super) fn begin_frame(&mut self) {
+        self.frame_sources.clear();
+        self.frame_source_bytes = 0;
+    }
+
     pub(crate) fn set_enabled(&mut self, enabled: bool) {
         if enabled == self.disabled {
             *self = Self {
@@ -168,11 +206,37 @@ impl Paths {
             );
             return Ok(());
         }
-        if let Some(path) = geometry.build(bounds)? {
+        if let Some(path) = self.build(geometry, bounds)? {
             paint_path(canvas, geometry.node, bounds, geometry.stroke, &path);
             self.retain(key, geometry, path);
         }
         Ok(())
+    }
+
+    pub(super) fn build(
+        &mut self,
+        geometry: &Geometry<'_>,
+        bounds: Rect,
+    ) -> Result<Option<Path>, String> {
+        geometry.build_with(bounds, |commands| {
+            if let Some(source) = self.frame_sources.get(commands) {
+                return Ok(source.clone());
+            }
+            let source = parse_path(commands)?;
+            let bytes = commands.len()
+                + source.as_ref().map_or(0, |path| {
+                    std::mem::size_of_val(path.points()) + std::mem::size_of_val(path.verbs())
+                });
+            // Identical commands share coordinates before positions, viewport
+            // fitting or stroke widths are applied for each instance.
+            if self.frame_sources.len() < MAX_FRAME_SOURCES
+                && bytes <= MAX_FRAME_SOURCE_BYTES - self.frame_source_bytes
+            {
+                self.frame_source_bytes += bytes;
+                self.frame_sources.insert(commands.into(), source.clone());
+            }
+            Ok(source)
+        })
     }
 
     fn retain(&mut self, key: GeometryKey, geometry: &Geometry<'_>, path: Path) {
@@ -203,47 +267,6 @@ impl Paths {
             },
         );
     }
-}
-
-fn build_path(
-    node: &Node,
-    commands: &str,
-    source_geometry: Option<([f32; 4], &[VectorSegment])>,
-    bounds: Rect,
-    fit: ImageFit,
-    viewbox: Rect,
-    stroke: f32,
-) -> Result<Option<Path>, String> {
-    if let Some((extents, segments)) = source_geometry {
-        if segments.is_empty() {
-            return Ok(None);
-        }
-        return map_segments(
-            bounds,
-            fit,
-            viewbox,
-            stroke,
-            segments.iter().copied(),
-            || extents,
-        );
-    }
-    let Some(source) = parse_path(commands).map_err(|error| {
-        format!(
-            "invalid Path commands on {}: {error}",
-            node.element_id().unwrap_or("an anonymous element")
-        )
-    })?
-    else {
-        return Ok(None);
-    };
-    map_segments(
-        bounds,
-        fit,
-        viewbox,
-        stroke,
-        vector_segments(&source),
-        || vector_bounds(&source),
-    )
 }
 
 fn map_segments(

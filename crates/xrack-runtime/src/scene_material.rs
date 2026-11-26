@@ -275,23 +275,65 @@ impl TextureTransform {
 #[derive(Clone, Debug)]
 pub struct MeshTexture {
     pub image: Arc<MeshImage>,
-    pub wrap: [TextureWrap; 2],
-    pub min_filter: TextureFilter,
-    pub mag_filter: TextureFilter,
-    /// None restricts sampling to the source image.
-    pub mip_filter: Option<TextureFilter>,
+    pub sampling: TextureSampling,
     /// Slot in the prepared vertex buffer. The base color map always uses slot zero.
     pub uv_slot: u8,
     pub transform: TextureTransform,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureSampling {
+    pub wrap: [TextureWrap; 2],
+    pub min_filter: TextureFilter,
+    pub mag_filter: TextureFilter,
+    /// None restricts sampling to the base level.
+    pub mip_filter: Option<TextureFilter>,
+    pub max_anisotropy: u8,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneItemTexture {
+    source: Arc<str>,
+    pub sampling: TextureSampling,
+    pub transform: TextureTransform,
+}
+
+impl SceneItemTexture {
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub(crate) fn source_key(&self) -> Arc<str> {
+        Arc::clone(&self.source)
+    }
+
+    pub(crate) fn project(&self, uv: [f32; 2]) -> Option<([f32; 2], [i64; 2])> {
+        let mapped = self.transform.map(uv);
+        if !mapped.into_iter().all(f32::is_finite) {
+            return None;
+        }
+        let mut tile = [0; 2];
+        let uv = std::array::from_fn(|axis| {
+            let value = f64::from(mapped[axis]);
+            let wrap = self.sampling.wrap[axis];
+            if wrap != TextureWrap::Clamp {
+                tile[axis] = value.floor() as i64;
+            }
+            let coordinate = wrap.coordinate(value);
+            if wrap == TextureWrap::Mirror {
+                coordinate.min(2.0 - coordinate) as f32
+            } else {
+                coordinate as f32
+            }
+        });
+        Some((uv, tile))
+    }
+}
+
 impl PartialEq for MeshTexture {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.image, &other.image)
-            && self.wrap == other.wrap
-            && self.min_filter == other.min_filter
-            && self.mag_filter == other.mag_filter
-            && self.mip_filter == other.mip_filter
+            && self.sampling == other.sampling
             && self.uv_slot == other.uv_slot
             && self.transform == other.transform
     }
@@ -310,12 +352,17 @@ pub struct SceneTexture<'a> {
     pub min_filter: &'a str,
     pub mag_filter: &'a str,
     pub mip_filter: &'a str,
+    pub max_anisotropy: i64,
     pub uv_set: i64,
     pub uv_scale_u: f64,
     pub uv_scale_v: f64,
+    pub uv_pivot_u: f64,
+    pub uv_pivot_v: f64,
     pub uv_offset_u: f64,
     pub uv_offset_v: f64,
     pub uv_rotation: f64,
+    pub uv_flip_u: bool,
+    pub uv_flip_v: bool,
 }
 
 impl Default for SceneTexture<'_> {
@@ -327,24 +374,65 @@ impl Default for SceneTexture<'_> {
             min_filter: "linear",
             mag_filter: "linear",
             mip_filter: "linear",
+            max_anisotropy: 1,
             uv_set: 0,
             uv_scale_u: 1.0,
             uv_scale_v: 1.0,
+            uv_pivot_u: 0.0,
+            uv_pivot_v: 0.0,
             uv_offset_u: 0.0,
             uv_offset_v: 0.0,
             uv_rotation: 0.0,
+            uv_flip_u: false,
+            uv_flip_v: false,
         }
     }
 }
 
 impl SceneTexture<'_> {
+    pub fn item_defaults() -> Self {
+        Self {
+            wrap_u: "clamp",
+            wrap_v: "clamp",
+            ..Self::default()
+        }
+    }
+
     pub fn prepare(
         self,
         base_color: bool,
         resolve: impl Fn(&str) -> Option<Arc<MeshImage>>,
     ) -> Option<MeshTexture> {
-        let image = resolve(self.source)?;
+        Some(MeshTexture {
+            image: resolve(self.source)?,
+            sampling: self.sampling(),
+            uv_slot: u8::from(!base_color && self.uv_set == 1),
+            transform: self.transform(),
+        })
+    }
+
+    pub fn prepare_item(self) -> Option<Arc<SceneItemTexture>> {
+        (!self.source.is_empty()).then(|| {
+            Arc::new(SceneItemTexture {
+                source: Arc::from(self.source),
+                sampling: self.sampling(),
+                transform: self.transform(),
+            })
+        })
+    }
+
+    fn sampling(&self) -> TextureSampling {
         let wrap = |mode| TextureWrap::parse(mode).unwrap_or(TextureWrap::Repeat);
+        TextureSampling {
+            wrap: [wrap(self.wrap_u), wrap(self.wrap_v)],
+            min_filter: TextureFilter::parse(self.min_filter),
+            mag_filter: TextureFilter::parse(self.mag_filter),
+            mip_filter: (self.mip_filter != "none").then(|| TextureFilter::parse(self.mip_filter)),
+            max_anisotropy: self.max_anisotropy.clamp(1, 16) as u8,
+        }
+    }
+
+    fn transform(&self) -> TextureTransform {
         let angle = if self.uv_rotation.is_finite() {
             self.uv_rotation.rem_euclid(360.0).to_radians()
         } else {
@@ -353,22 +441,26 @@ impl SceneTexture<'_> {
         let (sin, cos) = angle.sin_cos();
         let [u, v] = [self.uv_scale_u, self.uv_scale_v];
         let [x, y] = [self.uv_offset_u, self.uv_offset_v];
+        let pivot = [self.uv_pivot_u, self.uv_pivot_v];
+        let flip = [self.uv_flip_u, self.uv_flip_v];
+        let mut rows = [[cos * u, -sin * v, x], [sin * u, cos * v, y]];
+        // Scale and rotate about the pivot, translate, then mirror the sampling axes.
+        for (axis, [a, b, offset]) in rows.iter_mut().enumerate() {
+            *offset += pivot[axis] - (*a * pivot[0] + *b * pivot[1]);
+            if flip[axis] {
+                *a = -*a;
+                *b = -*b;
+                *offset = 1.0 - *offset;
+            }
+        }
         let transform = TextureTransform {
-            rows: [[cos * u, -sin * v, x], [sin * u, cos * v, y]].map(|row| row.map(|v| v as f32)),
+            rows: rows.map(|row| row.map(|v| v as f32)),
         };
-        Some(MeshTexture {
-            image,
-            wrap: [wrap(self.wrap_u), wrap(self.wrap_v)],
-            min_filter: TextureFilter::parse(self.min_filter),
-            mag_filter: TextureFilter::parse(self.mag_filter),
-            mip_filter: (self.mip_filter != "none").then(|| TextureFilter::parse(self.mip_filter)),
-            uv_slot: u8::from(!base_color && self.uv_set == 1),
-            transform: if transform.is_valid() {
-                transform
-            } else {
-                TextureTransform::IDENTITY
-            },
-        })
+        if transform.is_valid() {
+            transform
+        } else {
+            TextureTransform::IDENTITY
+        }
     }
 
     fn from_value(
@@ -376,14 +468,12 @@ impl SceneTexture<'_> {
         base_color: bool,
         resolve: &impl Fn(&str) -> Option<Arc<MeshImage>>,
     ) -> Option<MeshTexture> {
+        SceneTexture::authored(value, SceneTexture::default())?.prepare(base_color, resolve)
+    }
+
+    fn authored<'a>(value: &'a Value, defaults: SceneTexture<'a>) -> Option<SceneTexture<'a>> {
         let record = match value {
-            Value::String(source) => {
-                return SceneTexture {
-                    source,
-                    ..Default::default()
-                }
-                .prepare(base_color, resolve);
-            }
+            Value::String(source) => return Some(SceneTexture { source, ..defaults }),
             Value::Record(record) => record,
             _ => return None,
         };
@@ -395,25 +485,31 @@ impl SceneTexture<'_> {
             Some(Value::Float(value)) => Some(*value),
             _ => None,
         };
-        let defaults = SceneTexture::default();
-        SceneTexture {
+        Some(SceneTexture {
             source: string("source")?,
             wrap_u: string("wrap-u").unwrap_or(defaults.wrap_u),
             wrap_v: string("wrap-v").unwrap_or(defaults.wrap_v),
             min_filter: string("min-filter").unwrap_or(defaults.min_filter),
             mag_filter: string("mag-filter").unwrap_or(defaults.mag_filter),
             mip_filter: string("mip-filter").unwrap_or(defaults.mip_filter),
+            max_anisotropy: match record.field("max-anisotropy") {
+                Some(Value::Int(maximum)) => *maximum,
+                _ => defaults.max_anisotropy,
+            },
             uv_set: match record.field("uv-set") {
                 Some(Value::Int(i)) => *i,
                 _ => 0,
             },
             uv_scale_u: number("uv-scale-u").unwrap_or(1.0),
             uv_scale_v: number("uv-scale-v").unwrap_or(1.0),
+            uv_pivot_u: number("uv-pivot-u").unwrap_or(defaults.uv_pivot_u),
+            uv_pivot_v: number("uv-pivot-v").unwrap_or(defaults.uv_pivot_v),
             uv_offset_u: number("uv-offset-u").unwrap_or(0.0),
             uv_offset_v: number("uv-offset-v").unwrap_or(0.0),
             uv_rotation: number("uv-rotation").unwrap_or(0.0),
-        }
-        .prepare(base_color, resolve)
+            uv_flip_u: matches!(record.field("uv-flip-u"), Some(Value::Bool(true))),
+            uv_flip_v: matches!(record.field("uv-flip-v"), Some(Value::Bool(true))),
+        })
     }
 }
 
@@ -509,17 +605,18 @@ impl MeshTexture {
     ) -> [f32; N] {
         let uv = self.transform.map(uv);
         let [width, height] = self.image.size.map(i64::from);
-        let x = self.wrap[0].coordinate(f64::from(uv[0])) * width as f64;
-        let y = self.wrap[1].coordinate(f64::from(uv[1])) * height as f64;
+        let [wrap_u, wrap_v] = self.sampling.wrap;
+        let x = wrap_u.coordinate(f64::from(uv[0])) * width as f64;
+        let y = wrap_v.coordinate(f64::from(uv[1])) * height as f64;
         let texel = |x, y| {
-            let column = self.wrap[0].offset(x, width);
-            let row = self.wrap[1].offset(y, height);
+            let column = wrap_u.offset(x, width);
+            let row = wrap_v.offset(y, height);
             let start = (row * width as usize + column) * 4;
             convert(std::array::from_fn(|channel| {
                 self.image.rgba[start + channel]
             }))
         };
-        if self.mag_filter == TextureFilter::Nearest {
+        if self.sampling.mag_filter == TextureFilter::Nearest {
             return texel(x.floor() as i64, y.floor() as i64);
         }
         let [x, y] = [x - 0.5, y - 0.5];
@@ -589,6 +686,11 @@ impl MeshDepthDraw {
             Self::Always => true,
             Self::Never | Self::OpaquePrepass => false,
         }
+    }
+
+    #[doc(hidden)]
+    pub fn admits_opaque_prepass(self, blended: bool, transmission: bool) -> bool {
+        !blended && !transmission && self.writes_color_depth(false)
     }
 }
 
@@ -870,7 +972,7 @@ impl VertexColorMasks {
 pub struct MeshMaterial {
     pub base_color: [f32; 4],
     pub base_texture: Option<MeshTexture>,
-    pub base_item: Option<Arc<str>>,
+    pub base_item: Option<Arc<SceneItemTexture>>,
     pub channels: MaterialChannels,
     pub vertex_colors: bool,
     pub vertex_masks: VertexColorMasks,
@@ -1392,7 +1494,7 @@ impl SceneAppearance {
 #[doc(hidden)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneMaterial {
-    pub base_item: Option<String>,
+    pub base_item: Option<Option<Arc<SceneItemTexture>>>,
     pub channels: MaterialChannels,
     pub vertex_colors: Option<bool>,
     pub vertex_masks: VertexColorMasks,
@@ -1486,10 +1588,10 @@ impl SceneMaterial {
                 }
                 _ => None,
             },
-            base_item: match record.field("base-item") {
-                Some(Value::String(name)) => Some(name.to_string()),
-                _ => None,
-            },
+            base_item: record
+                .field("base-item")
+                .and_then(|value| SceneTexture::authored(value, SceneTexture::item_defaults()))
+                .map(SceneTexture::prepare_item),
             maps: SceneMaterialMaps::from_record(record, textures),
             channels: MaterialChannels::from_fields(CHANNEL_FIELDS.iter().filter_map(
                 |(name, _)| match record.field(name)? {
@@ -1602,8 +1704,8 @@ impl SceneMaterial {
     // Resolve fields before applying them to imported factors. In particular,
     // an emissive-strength override must multiply the final authored color once.
     pub(crate) fn overlay(&mut self, later: &Self) {
-        if let Some(name) = &later.base_item {
-            self.base_item = Some(name.clone());
+        if let Some(item) = &later.base_item {
+            self.base_item = Some(item.clone());
         }
         self.channels.overlay(later.channels);
         self.vertex_masks.overlay(later.vertex_masks);
@@ -1737,8 +1839,8 @@ impl SceneMaterial {
         let empty = SceneMaterialMaps::default();
         let maps = self.maps.as_deref().unwrap_or(&empty);
         replace_map(&mut result.base_texture, &maps.base_color_map);
-        if let Some(name) = &self.base_item {
-            result.base_item = (!name.is_empty()).then(|| Arc::from(name.as_str()));
+        if let Some(item) = &self.base_item {
+            result.base_item = item.clone();
         }
         if let Some(color) = self.base_color {
             let [r, g, b] = linear_color(color);
@@ -2076,19 +2178,7 @@ impl MeshMaterial {
                         && self.base_color[3] == other.base_color[3]
                         && self.vertex_colors == other.vertex_colors
                         && self.base_item == other.base_item
-                        && match (self.alpha_texture(), other.alpha_texture()) {
-                            (None, None) => true,
-                            (Some(a), Some(b)) => {
-                                Arc::ptr_eq(&a.image, &b.image)
-                                    && a.wrap == b.wrap
-                                    && a.min_filter == b.min_filter
-                                    && a.mag_filter == b.mag_filter
-                                    && a.mip_filter == b.mip_filter
-                                    && a.uv_slot == b.uv_slot
-                                    && a.transform == b.transform
-                            }
-                            _ => false,
-                        })
+                        && self.alpha_texture() == other.alpha_texture())
         })
     }
 
@@ -2195,6 +2285,76 @@ mod tests {
 #[cfg(test)]
 mod material_slot_tests {
     use super::*;
+
+    #[test]
+    fn texture_pivot_and_flips_compose_in_sampling_space() {
+        let image = Arc::new(MeshImage::new([1, 1], vec![255; 4]).unwrap());
+        let resolve = |_: &str| Some(Arc::clone(&image));
+        let texture = SceneTexture {
+            uv_scale_u: 2.0,
+            uv_scale_v: 3.0,
+            uv_pivot_u: 0.25,
+            uv_pivot_v: 0.5,
+            uv_offset_u: 0.125,
+            uv_offset_v: -0.25,
+            uv_rotation: 90.0,
+            uv_flip_u: true,
+            uv_flip_v: true,
+            ..SceneTexture::default()
+        }
+        .prepare(true, resolve)
+        .unwrap();
+        for (actual, expected) in [
+            (texture.transform.map([0.30, 0.40]), [0.325, 0.65]),
+            (texture.transform.map([0.25, 0.50]), [0.625, 0.75]),
+            (texture.transform.map_linear([0.1, 0.2]), [0.60, -0.20]),
+        ] {
+            assert!((actual[0] - expected[0]).abs() < 1e-6, "{actual:?}");
+            assert!((actual[1] - expected[1]).abs() < 1e-6, "{actual:?}");
+        }
+        let unchanged = SceneTexture {
+            uv_pivot_u: 0.25,
+            uv_pivot_v: 0.50,
+            ..SceneTexture::default()
+        }
+        .prepare(true, resolve)
+        .unwrap();
+        assert_eq!(unchanged.transform, TextureTransform::IDENTITY);
+    }
+
+    #[test]
+    fn anisotropy_invalidates_alpha_sampled_shadow_surfaces() {
+        let image = Arc::new(MeshImage::new([1, 1], vec![255; 4]).unwrap());
+        let map = |max_anisotropy| {
+            SceneTexture {
+                max_anisotropy,
+                ..SceneTexture::default()
+            }
+            .prepare(true, |_| Some(Arc::clone(&image)))
+        };
+        let mut base = MeshMaterial {
+            shader: None,
+            channels: Default::default(),
+            vertex_colors: false,
+            vertex_masks: Default::default(),
+            cull_mode: MeshCullMode::Back,
+            depth_draw_mode: Default::default(),
+            blend_mode: Default::default(),
+            base_color: [1.0; 4],
+            base_texture: map(1),
+            base_item: None,
+            alpha_mode: MeshAlphaMode::Opaque,
+            pbr: None,
+        };
+        let mut filtered = base.clone();
+        filtered.base_texture = map(16);
+        assert!(base.same_shadow_surface(&filtered));
+
+        base.alpha_mode = MeshAlphaMode::Mask(0.5);
+        filtered.alpha_mode = base.alpha_mode;
+        assert!(!base.same_shadow_surface(&filtered));
+        assert!(filtered.same_shadow_surface(&filtered.clone()));
+    }
 
     #[test]
     fn matching_slot_bindings_compose_factors_before_preparing_the_source() {

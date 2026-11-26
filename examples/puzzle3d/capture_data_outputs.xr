@@ -1,0 +1,71 @@
+struct CaptureDataMaterial { material-shader: string, unlit: bool }
+struct CaptureDataActor {
+    id: string, mesh: string, color: color,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, camera-kind: string, camera-height: float,
+    material: CaptureDataMaterial,
+}
+struct CaptureDataStage {
+    name: string, camera: string, renderables: string, combine-attachments: bool,
+    material-data-format: string, material-data-1-format: string, material-data-2-format: string,
+}
+struct CaptureDataInput { capture: string, attachment: string, enabled: bool }
+struct CaptureDataEffect { shader: string, buffers: [CaptureDataInput] }
+
+export component CaptureDataOutputsDemo inherits Window {
+    title: "XRack · 多附件材质数据";
+    width: 240px; height: 142px; background: #000;
+    in-out property <bool> extra: false;
+    in-out property <bool> wide: false;
+
+    property <CaptureDataActor> unit: CaptureDataActor {
+        id: "", mesh: "primitive:box", color: #fff,
+        x: 0, y: 0, z: 0, scale-x: 1.25, scale-y: 1.25, scale-z: 1.25,
+        yaw: 0, pitch: 0, roll: 0, camera-kind: "", camera-height: 2.0,
+        material: CaptureDataMaterial { material-shader: "", unlit: true },
+    };
+
+    SceneView3D {
+        x: 12px; y: 8px; width: 216px; height: 88px; camera: "eye";
+        cache-rendering: true;
+        render-overrides: "disable-internal-passes";
+        scene-color-capture: "data";
+        model: [
+            CaptureDataActor { id: "eye", mesh: "", z: 5, camera-kind: "orthographic", ..root.unit },
+            CaptureDataActor {
+                id: "block",
+                material: CaptureDataMaterial {
+                    material-shader: @material-shader-url("effects/capture_data_outputs.wgsl"),
+                    unlit: true,
+                },
+                ..root.unit
+            },
+        ];
+        scene-captures: [
+            CaptureDataStage {
+                name: "data", camera: "eye", renderables: "opaque", combine-attachments: true,
+                material-data-format: root.wide ? "rgba32f" : "r16f",
+                material-data-1-format: root.wide ? "rgba32f" : "r16f",
+                material-data-2-format: root.wide ? "rgba32f" : "r32f",
+            },
+        ];
+        scene-effects: [
+            CaptureDataEffect {
+                shader: @shader-url("effects/capture_data_display.wgsl"),
+                buffers: [
+                    CaptureDataInput { capture: "data", attachment: "material-data", enabled: true },
+                    CaptureDataInput { capture: "data", attachment: "material-data-1", enabled: root.extra },
+                    CaptureDataInput { capture: "data", attachment: "material-data-2", enabled: root.extra },
+                ],
+            },
+        ];
+    }
+    extra := CheckBox {
+        x: 12px; y: 104px; width: 104px; height: 30px;
+        text: "三个附件"; checked <=> root.extra;
+    }
+    wide := CheckBox {
+        x: 125px; y: 104px; width: 103px; height: 30px;
+        text: "RGBA32F"; checked <=> root.wide;
+    }
+}

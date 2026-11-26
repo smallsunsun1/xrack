@@ -47,8 +47,13 @@ impl Run {
     }
 }
 
+#[cfg(xrack_femtovg_glyph_samples)]
+type MeasuredCell = (f32, Vec<femtovg::ShapedGlyph>);
+#[cfg(not(xrack_femtovg_glyph_samples))]
+type MeasuredCell = TextMetrics;
+
 pub(super) enum Measurement {
-    Legacy(TextMetrics),
+    Legacy(MeasuredCell),
     Portable(Run),
 }
 
@@ -124,12 +129,26 @@ impl Cache {
                 if self.recent.is_empty() {
                     self.recent.resize(RECENT_ENTRIES, 0);
                 }
+                #[cfg(xrack_femtovg_glyph_samples)]
+                let (baseline, glyphs) = (metrics.0, metrics.1.as_slice());
+                #[cfg(not(xrack_femtovg_glyph_samples))]
+                let (baseline, glyphs) = (metrics.baseline(), metrics.glyphs.as_slice());
+                let glyphs = glyphs.iter().map(|glyph| Glyph {
+                    advance: [glyph.advance_x, glyph.advance_y],
+                    offset: [glyph.offset_x, glyph.offset_y],
+                    font: glyph.font_id,
+                    id: glyph.glyph_id,
+                    drawable: !glyph.c.is_control(),
+                });
                 let recent = &mut self.recent[key as usize % RECENT_ENTRIES];
                 if std::mem::replace(recent, key) == key {
-                    self.insert(key, text, settings, Run::from_metrics(&metrics), false);
+                    let run = Run {
+                        baseline,
+                        glyphs: glyphs.clone().collect(),
+                    };
+                    self.insert(key, text, settings, run, false);
                 }
-                placed_glyphs(measured_glyphs(&metrics), metrics.baseline(), origin, scale)
-                    .all(visit)
+                placed_glyphs(glyphs, baseline, origin, scale).all(visit)
             }
             Measurement::Portable(run) => {
                 let result = placed_glyphs(run.glyphs.iter().copied(), run.baseline, origin, scale)

@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import compiler_bundles as bundles
+import femtovg_bundle
 import mlir_bundles
 import media_bundles
 
@@ -27,6 +28,7 @@ CRATES = (
     "xrack-media",
     "xrack-platform-winit",
     "xrack-syntax",
+    "xrack-scene-import",
     "xrack-ir",
     "xrack-mlir",
     "xrack-resources",
@@ -36,7 +38,7 @@ CRATES = (
 )
 BOOTSTRAP_CRATES = (
     "xrack-runtime", "xrack-assets", "xrack-layout", "xrack-testing",
-    "xrack-renderer-femtovg", "xrack-syntax",
+    "xrack-renderer-femtovg", "xrack-syntax", "xrack-scene-import",
 )
 
 
@@ -77,7 +79,24 @@ def matches_commit(name, version, checksum, commit):
     return recorded.get("sha1") == commit and not recorded.get("dirty", False)
 
 
-def pending_crates(version, commit):
+def pending_staged_package(name: str, version: str, identity: dict[str, object]) -> bool:
+    published = published_version(name, version)
+    if published is None:
+        return True
+    recorded = published_metadata(name, version, published["cksum"], "release.json")
+    if (
+        published["yanked"]
+        or not isinstance(recorded, dict)
+        or any(recorded.get(key) != value for key, value in identity.items())
+    ):
+        raise RuntimeError(f"{name} {version} already exists with a different release state")
+    print(f"{name} {version} already published from {str(identity['source_commit'])[:7]}", flush=True)
+    return False
+
+
+def pending_crates(
+    version: str, commit: str, renderer_identity: dict[str, object] | None = None
+) -> list[str]:
     metadata = json.loads(output("cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"))
     versions = {package["name"]: package["version"] for package in metadata["packages"]
                 if package["publish"] != []}
@@ -86,6 +105,10 @@ def pending_crates(version, commit):
             raise RuntimeError(f"{name}: release version {version} does not match the manifest")
     pending = []
     for name in CRATES:
+        if name == femtovg_bundle.RENDERER and renderer_identity is not None:
+            if pending_staged_package(name, version, renderer_identity):
+                pending.append(name)
+            continue
         published = published_version(name, version)
         if published is None:
             pending.append(name)
@@ -100,14 +123,8 @@ def pending_bundles(workspace, archives, version, commit):
     pending = []
 
     def add(name, identity):
-        published = published_version(name, version)
-        if published is None:
+        if pending_staged_package(name, version, identity):
             pending.append(name)
-            return
-        recorded = published_metadata(name, version, published["cksum"], "release.json") or {}
-        if published["yanked"] or any(recorded.get(key) != value for key, value in identity.items()):
-            raise RuntimeError(f"{name} {version} already exists with a different release state")
-        print(f"{name} {version} already published from {commit[:7]}", flush=True)
 
     for host in bundles.hosts():
         provenance = bundles.install_bundle(workspace, archives, version, host, commit)
@@ -178,42 +195,70 @@ def main():
     if args.publish and args.archives is None:
         parser.error("--publish requires --archives")
     commit = output("git", "rev-parse", "HEAD")
-    pending = pending_crates(args.version, commit)
+    # Manual retries can run newer tooling against a tag that predates the
+    # optimized renderer packages.
+    optimized_renderer = (ROOT / "tools" / "femtovg_bundle.py").is_file()
     # Cargo's temporary package registry caches by crate version and target directory.
     # A fresh directory keeps a previous dry-run of the same version out of this release.
     with tempfile.TemporaryDirectory(prefix="xrack-release-") as directory:
         stage = Path(directory)
+        workspace = stage / "workspace"
+        if optimized_renderer or args.archives is not None:
+            bundles.stage_workspace(workspace)
+
+        renderer_identity: dict[str, object] | None = None
+        companion = []
+        if optimized_renderer:
+            package = femtovg_bundle.stage_renderer(workspace, source_commit=commit)
+            renderer_identity = json.loads((package / "release.json").read_text(encoding="utf-8"))
+            if pending_staged_package(femtovg_bundle.PACKAGE, args.version, renderer_identity):
+                companion.append(femtovg_bundle.PACKAGE)
+            femtovg_bundle.update_lock(workspace)
+
+        pending = pending_crates(args.version, commit, renderer_identity)
+        renderer = [
+            name for name in pending if optimized_renderer and name == femtovg_bundle.RENDERER
+        ]
+        bootstrap = [name for name in pending if name in BOOTSTRAP_CRATES and name not in renderer]
+        sources = [name for name in pending if name not in bootstrap and name not in renderer]
+
         if args.archives is None:
             # Before the compiler build, verify the packages that have no host payload dependency.
-            cargo(ROOT, stage / "build", ["publish", "--dry-run"], [
-                name for name in pending if name in BOOTSTRAP_CRATES
-            ])
+            verification = ["publish", "--dry-run"]
+            if optimized_renderer:
+                verification.append("--allow-dirty")
+            cargo(
+                workspace if optimized_renderer else ROOT,
+                stage / "build",
+                verification,
+                [*bootstrap, *companion, *renderer],
+            )
             return
-        workspace = stage / "workspace"
-        bundles.stage_workspace(workspace)
         archives = args.archives.resolve()
         verify_media_sources(archives, args.version)
         payloads = pending_bundles(workspace, archives, args.version, commit)
         if not args.publish:
             # The platform matrix has already built and run the Cargo consumer.
             # Verify the normalized package graph before providing the registry token.
-            packages = [*payloads, *pending]
+            packages = [*payloads, *companion, *pending]
             cargo(workspace, stage / "build", ["package", "--no-verify", "--allow-dirty"], packages)
             for name in packages:
                 artifact = stage / "build" / "package" / f"{name}-{args.version}.crate"
                 if artifact.stat().st_size > 10_000_000:
                     raise RuntimeError(f"{artifact.name} exceeds the crates.io package size limit")
             return
-        if (payloads or pending) and not os.environ.get("CARGO_REGISTRY_TOKEN"):
+        if (payloads or companion or pending) and not os.environ.get("CARGO_REGISTRY_TOKEN"):
             parser.error("configure CARGO_REGISTRY_TOKEN in the crates-io environment")
-        cargo(ROOT, stage / "bootstrap", ["publish", "--no-verify"], [
-            name for name in pending if name in BOOTSTRAP_CRATES
-        ])
+        cargo(ROOT, stage / "bootstrap", ["publish", "--no-verify"], bootstrap)
+        cargo(
+            workspace,
+            stage / "renderer",
+            ["publish", "--no-verify", "--allow-dirty"],
+            [*companion, *renderer],
+        )
         cargo(workspace, stage / "bundles", ["publish", "--no-verify", "--allow-dirty"], payloads)
         # Source crates are packaged from the clean tag and resolve published payloads.
-        cargo(ROOT, stage / "source", ["publish", "--no-verify"], [
-            name for name in pending if name not in BOOTSTRAP_CRATES
-        ])
+        cargo(ROOT, stage / "source", ["publish", "--no-verify"], sources)
 
 
 if __name__ == "__main__":

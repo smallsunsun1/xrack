@@ -1,4 +1,5 @@
 //! Scene geometry, camera projection, and ray queries shared by 3D hosts.
+pub use crate::procedural_sky::SkySettings;
 pub use crate::scene_animation::{
     AnimatedMesh, MAX_ANIMATION_KEYS, MAX_ANIMATION_NODES, MAX_MESH_INSTANCES, MeshAnimationBlend,
     MeshAnimationClip, MeshAnimationNode, MeshAnimationProperty, MeshAnimationTrack, MeshAsset,
@@ -19,9 +20,9 @@ pub use crate::scene_cast::{
     capsule_walk_with_contacts, sphere_cast, sphere_overlap, sphere_slide, sphere_walk,
 };
 pub use crate::scene_environment::{
-    EnvironmentProbe, ReflectionCapture, ReflectionProbe, ReflectionRefresh, ReflectionSlicing,
-    ReflectionSource, ViewportEnvironment, environment_resource_key, model_reflections,
-    record_reflections,
+    EnvironmentOrientation, EnvironmentProbe, EnvironmentSource, ReflectionCapture,
+    ReflectionProbe, ReflectionRefresh, ReflectionSlicing, ReflectionSource, ViewportEnvironment,
+    environment_resource_key, model_reflections, record_reflections,
 };
 pub use crate::scene_fog::{
     FogNoise, FogVolume3D, FogVolumeDefinition, MAX_FOG_VOLUMES, model_fog_volumes,
@@ -30,24 +31,26 @@ pub use crate::scene_fog::{
 use crate::scene_hierarchy::{NO_MESH_NODE, SceneTransform};
 pub use crate::scene_hierarchy::{
     SceneCollisionShape, SceneGeometry, SceneGeometryInput, SceneModel, SceneNodeDefinition,
-    model_cameras, model_nodes, prepare_collision_shapes, record_cameras, record_objects,
+    ScenePreloadCursor, ScenePreloadStep, model_cameras, model_nodes, prepare_collision_shapes,
+    record_cameras, record_objects,
 };
 use crate::scene_indices::MIN_INDEXED_VERTICES;
 pub use crate::scene_indices::{MeshDrawIndices, MeshIndexElements};
 pub use crate::scene_instance_table::{InstanceTable3D, InstanceTableRow};
 pub use crate::scene_lighting::{
     DirectionalShadowSpace, LightBakeMode, MAX_SCENE_LIGHTS, PointShadowProjection, SceneLight,
-    SceneLightDefinition, SceneLightModel, SceneLightSource, ShadowFilter, ShadowLight,
-    ShadowSampling, linear_color, model_lights, record_lights,
+    SceneLightDefinition, SceneLightModel, SceneLightScope, SceneLightSource, ShadowFilter,
+    ShadowLight, ShadowMapPrecision, ShadowProjectionSettings, ShadowRadius, ShadowSampling,
+    linear_color, model_lights, record_lights, shadow_clip_corners,
 };
 pub use crate::scene_material::{
     MAX_MESH_TEXTURE_DIMENSION, MaterialChannel, MaterialChannels, MeshAlphaMode, MeshAnisotropy,
     MeshBlendMode, MeshClearcoat, MeshCullMode, MeshDepthCoverage, MeshDepthDraw, MeshDielectric,
     MeshFresnel, MeshImage, MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPart, MeshPbr,
     MeshShader, MeshTexture, MeshTransmission, MeshVolume, MeshWorkflow, RefractionChannels,
-    SceneMaterial, SceneMaterialBinding, SceneMaterialMaps, SceneTexture, TextureChannel,
-    TextureColorSpace, TextureFilter, TextureTransform, TextureWrap, VertexColorMasks,
-    texture_resource_key,
+    SceneItemTexture, SceneMaterial, SceneMaterialBinding, SceneMaterialMaps, SceneTexture,
+    TextureChannel, TextureColorSpace, TextureFilter, TextureSampling, TextureTransform,
+    TextureWrap, VertexColorMasks, texture_resource_key,
 };
 use crate::scene_morph::MorphPose;
 pub use crate::scene_morph::{
@@ -241,6 +244,7 @@ pub struct MeshData {
     has_opaque_parts: bool,
     instance_blended: bool,
     has_auxiliary_depth: bool,
+    has_opaque_depth_prepass: bool,
     has_face_culling: bool,
     depth_prepasses: [bool; 2],
     blended_depth: bool,
@@ -318,6 +322,7 @@ impl MeshData {
         let mut transmission_blur = None::<f32>;
         let mut has_opaque_parts = geometry.parts.is_empty();
         let mut has_auxiliary_depth = geometry.parts.is_empty();
+        let mut has_opaque_depth_prepass = geometry.parts.is_empty();
         let mut has_face_culling = false;
         let mut depth_prepasses = [false; 2];
         let mut blended_depth = false;
@@ -331,6 +336,9 @@ impl MeshData {
             has_auxiliary_depth |= writes_depth;
             blended_depth |= writes_depth && blended;
             let transmission = material.transmission_blur();
+            has_opaque_depth_prepass |= material
+                .depth_draw_mode
+                .admits_opaque_prepass(blended, transmission.is_some());
             if material.depth_draw_mode == MeshDepthDraw::OpaquePrepass {
                 depth_prepasses[usize::from(transmission.is_some())] = true;
             }
@@ -357,6 +365,7 @@ impl MeshData {
                     material
                         .base_item
                         .as_deref()
+                        .map(SceneItemTexture::source)
                         .into_iter()
                         .chain(material.shader.iter().flat_map(MeshShader::item_sources))
                 })
@@ -397,6 +406,7 @@ impl MeshData {
             transmission_blur,
             has_opaque_parts,
             has_auxiliary_depth,
+            has_opaque_depth_prepass,
             has_face_culling,
             depth_prepasses,
             blended_depth,
@@ -505,8 +515,8 @@ impl CaptureMaterial {
     }
 }
 
-#[doc(hidden)]
-#[derive(Clone, Copy)]
+/// Import-time preparation for a mesh file. Both options default to false.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct MeshImportOptions {
     pub automatic_lod: bool,
     pub lightmap_uv: bool,
@@ -525,6 +535,26 @@ impl MeshImportOptions {
             automatic_lod,
             lightmap_uv,
         })
+    }
+}
+
+/// An immutable mesh supplied by a host at runtime. Clones share the prepared
+/// geometry and textures. The default is empty.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MeshAsset3D(Option<MeshAsset>);
+
+impl MeshAsset3D {
+    #[doc(hidden)]
+    pub fn new(asset: MeshAsset) -> Self {
+        Self(Some(asset))
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.0.is_some()
+    }
+
+    pub(crate) fn asset(&self) -> Option<&MeshAsset> {
+        self.0.as_ref()
     }
 }
 
@@ -1454,6 +1484,14 @@ impl Mesh3D {
     }
 
     #[doc(hidden)]
+    pub fn has_opaque_depth_prepass(&self) -> bool {
+        match self {
+            Self::Imported(mesh) => mesh.has_opaque_depth_prepass,
+            _ => true,
+        }
+    }
+
+    #[doc(hidden)]
     pub fn depth_participation(&self) -> ([bool; 2], bool) {
         match self {
             Self::Imported(mesh) => (mesh.depth_prepasses, mesh.blended_depth),
@@ -1556,6 +1594,7 @@ pub struct SceneObject {
     pub color: Color,
     /// World-unit offset used only by depth-sorted transparency.
     depth_bias: f64,
+    pub(crate) lod_coverage: u8,
     motion_vector_enabled: bool,
     motion_vector_scale: f32,
     pub(crate) instancing_lod: InstancingLodRange,
@@ -1569,6 +1608,7 @@ pub struct SceneObject {
     pub bake_role: BakeRole,
     pub lightmap_resolution: LightmapResolution,
     source_row: Option<NonZeroU32>,
+    pub(crate) lighting_index: u16,
     pub(crate) imported_placement: Option<(u32, Option<u32>)>,
     pub(crate) instance_order: Option<InstanceOrder>,
     pub(crate) instance_shadow_bounds: Option<Arc<[[f32; 3]; 2]>>,
@@ -1609,6 +1649,11 @@ impl SceneObject {
             return Some([row, -1, -1]);
         };
         Some([row, mesh_node_index(node), instance.map_or(-1, i64::from)])
+    }
+
+    #[doc(hidden)]
+    pub fn lighting_index(&self) -> u16 {
+        self.lighting_index
     }
 
     #[doc(hidden)]
@@ -1688,6 +1733,7 @@ impl SceneObject {
             mesh,
             color,
             depth_bias: 0.0,
+            lod_coverage: 0,
             motion_vector_enabled: true,
             motion_vector_scale: 1.0,
             instancing_lod: InstancingLodRange::ALL,
@@ -1701,6 +1747,7 @@ impl SceneObject {
             bake_role: BakeRole::Auto,
             lightmap_resolution: LightmapResolution::Inherit,
             source_row: None,
+            lighting_index: 0,
             imported_placement: None,
             instance_order: None,
             instance_shadow_bounds: None,
@@ -1722,6 +1769,11 @@ impl SceneObject {
 
     pub fn depth_bias(&self) -> f64 {
         self.depth_bias
+    }
+
+    #[doc(hidden)]
+    pub fn lod_coverage(&self) -> u8 {
+        self.lod_coverage
     }
 
     /// Configure this surface's participation and displacement in temporal reprojection.
@@ -2601,6 +2653,7 @@ impl SceneObject {
             emission: emission.into(),
             layers: self.layers,
             receives_shadow: self.receives_shadow,
+            lighting_index: self.lighting_index,
         })
     }
 
@@ -3151,6 +3204,7 @@ pub struct BakedSurface {
     pub emission: [f32; 3],
     pub layers: u64,
     pub receives_shadow: bool,
+    pub lighting_index: u16,
 }
 
 pub(crate) fn bake_opaque(material: &MeshMaterial) -> bool {
@@ -3312,6 +3366,7 @@ pub struct SceneTextureHit {
     pub id: String,
     pub placement: Option<(u32, Option<u32>)>,
     pub uv: [f32; 2],
+    pub tile: [i64; 2],
 }
 
 impl SceneRay {
@@ -3412,27 +3467,21 @@ impl SceneRay {
             .get(index)
             .and_then(|part| object.mesh.materials().get(part.material));
         Some(material.and_then(|material| {
-            let source = material
-                .base_item
-                .as_ref()
-                .filter(|_| object.pickable)?
-                .clone();
+            let item = material.base_item.as_ref().filter(|_| object.pickable)?;
             let tri = &object.mesh.vertices()[hit.vertex..hit.vertex + 3];
             let uv = std::array::from_fn(|axis| {
                 tri[0].uv[axis] * hit.weights[0]
                     + tri[1].uv[axis] * hit.weights[1]
                     + tri[2].uv[axis] * hit.weights[2]
             });
-            let uv = material
-                .base_texture
-                .as_ref()
-                .map_or(uv, |texture| texture.transform.map(uv));
-            uv.into_iter().all(f32::is_finite).then(|| SceneTextureHit {
-                source,
+            let (uv, tile) = item.project(uv)?;
+            Some(SceneTextureHit {
+                source: item.source_key(),
                 row: object.scene_row(),
                 id: object.id.clone(),
                 placement: object.imported_placement,
-                uv: uv.map(|value| value.clamp(0.0, 1.0)),
+                uv,
+                tile,
             })
         }))
     }

@@ -2805,10 +2805,12 @@ impl PreviewScene {
         // scenes that use their own measured size to drive their constraints.
         let mut previous = self.frame.as_ref().map(|(scene, _)| scene.clone());
         for pass in 0..8 {
-            if self
-                .input
-                .apply_scroll_requests(&scene, &layout, self.scroll.drain())
-            {
+            if self.input.apply_scroll_requests_with_text(
+                &scene,
+                &layout,
+                self.scroll.drain(),
+                |node, item| renderer.text.measure_styled_text(node, item),
+            ) {
                 (scene, layout, width, height) = self.prepare_frame(renderer, animated);
                 self.input.reconcile(&scene, &layout);
             }

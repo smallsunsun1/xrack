@@ -1,5 +1,5 @@
 use crate::{
-    Canvas, Color, LayoutNode, Node, Paint, Path, Rect, WGPURenderer, append_rect,
+    Canvas, Color, LayoutNode, Node, Paint, Path, Rect, Renderer, WGPURenderer, append_rect,
     canvas_transform, color, pixel_phase,
     retained_layers::{CachedLayerImage, WindowLayer, device_bounds, logical_bounds},
     transform::has_pixel_aligned_scale,
@@ -9,7 +9,11 @@ use femtovg::{
     Atlas, BlendFactor, DrawCommand, GlyphDrawCommands, ImageFlags, ImageId, ImageInfo,
     LayerEffects, PixelFormat, Quad, imgref::Img,
 };
-use std::{cell::OnceCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::OnceCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 use xrack_runtime::{Brush, Value};
 
 const ATLAS_WIDTH: usize = 128;
@@ -573,20 +577,13 @@ impl RoundedAtlas {
         self.used = false;
     }
 
-    fn quad(
-        &mut self,
-        queue: &wgpu::Queue,
-        rectangle: Solid,
-        scale: f32,
-        clip: RoundedTileClip,
-    ) -> Option<Quad> {
-        let device = device_bounds(rectangle.shape, scale);
+    fn key(rectangle: Solid, device: Rect, scale: f32, clip: RoundedTileClip) -> RoundedKey {
         let color = if clip == RoundedTileClip::Shape {
             rectangle.color
         } else {
             Color::rgbaf(1.0, 1.0, 1.0, rectangle.color.a)
         };
-        let key = RoundedKey {
+        RoundedKey {
             size: [rectangle.shape.width, rectangle.shape.height].map(f32::to_bits),
             pixels: [device.width as u32, device.height as u32],
             phase: [
@@ -598,7 +595,52 @@ impl RoundedAtlas {
             opacity: rectangle.opacity.to_bits(),
             scale: scale.to_bits(),
             clip,
-        };
+        }
+    }
+
+    fn exceeds_fractional_capacity(rectangles: &[Solid], scale: f32) -> bool {
+        let mut keys = HashSet::new();
+        let mut pixels = 0usize;
+        for &rect in rectangles
+            .iter()
+            .filter(|rect| rect.fractional && rect.opacity < 1.0)
+        {
+            let key = Self::key(
+                rect,
+                device_bounds(rect.shape, scale),
+                scale,
+                RoundedTileClip::Shape,
+            );
+            if keys.insert(key) {
+                pixels += key.pixels[0] as usize * key.pixels[1] as usize;
+                if pixels > ROUND_ATLAS_SIZE * (ROUND_ATLAS_SIZE / 2) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn quad(
+        &mut self,
+        queue: &wgpu::Queue,
+        rectangle: Solid,
+        scale: f32,
+        clip: RoundedTileClip,
+    ) -> Option<Quad> {
+        self.quad_with_admission(queue, rectangle, scale, clip, true)
+    }
+
+    fn quad_with_admission(
+        &mut self,
+        queue: &wgpu::Queue,
+        rectangle: Solid,
+        scale: f32,
+        clip: RoundedTileClip,
+        admit_new: bool,
+    ) -> Option<Quad> {
+        let device = device_bounds(rectangle.shape, scale);
+        let key = Self::key(rectangle, device, scale, clip);
         let cached = if rectangle.fractional {
             self.fractional_slots.get_mut(&key).map(|slot| {
                 slot.last_frame = self.frame;
@@ -609,6 +651,7 @@ impl RoundedAtlas {
         };
         let [left, top] = match cached {
             Some(origin) => origin,
+            None if !admit_new => return None,
             None => {
                 let warm = self.should_warm_capsule(key);
                 let origin = self.rasterize(queue, rectangle, scale, key, true)?;
@@ -1179,52 +1222,6 @@ impl RectangleBatches {
         });
     }
 
-    pub(super) fn draw_rounded(
-        &mut self,
-        canvas: &mut Canvas<WGPURenderer>,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        scale: f32,
-        rectangles: &mut Vec<Solid>,
-        capturing: bool,
-    ) {
-        if rectangles.len() < MIN_BATCH_SIZE {
-            for rectangle in rectangles.drain(..) {
-                rectangle.draw(canvas);
-            }
-            return;
-        }
-        if self.rounded.is_none() {
-            self.rounded = RoundedAtlas::new(device, queue);
-        }
-        let slot = self.rounded.as_mut().and_then(|atlas| {
-            let image = atlas.image(canvas, capturing)?;
-            Some((atlas, image))
-        });
-        let Some((atlas, image)) = slot else {
-            for rectangle in rectangles.drain(..) {
-                rectangle.draw(canvas);
-            }
-            return;
-        };
-        if atlas.pending_scale.is_some_and(|pending| pending != scale) {
-            atlas.submit(queue);
-        }
-        let mut quads = Vec::with_capacity(rectangles.len());
-        for rectangle in rectangles.drain(..) {
-            if let Some(quad) = atlas.quad(queue, rectangle, scale, RoundedTileClip::Shape) {
-                quads.push(quad);
-            } else {
-                self.rounded_draws += draw_quads(canvas, image, std::mem::take(&mut quads));
-                rectangle.draw(canvas);
-            }
-        }
-        self.rounded_draws += draw_quads(canvas, image, quads);
-        if self.eager_atlas_submission {
-            atlas.submit(queue);
-        }
-    }
-
     pub(super) fn upload(&mut self, canvas: &mut Canvas<WGPURenderer>) -> Result<(), String> {
         if let Some(image) = self.image
             && !self.uploaded_colors.starts_with(&self.colors)
@@ -1244,6 +1241,109 @@ impl RectangleBatches {
             result.map_err(|error| error.to_string())?;
             std::mem::swap(&mut self.colors, &mut self.uploaded_colors);
             self.palette_uploads += 1;
+        }
+        Ok(())
+    }
+}
+
+impl Renderer {
+    pub(super) fn draw_rounded_batch(
+        &mut self,
+        rectangles: &mut Vec<Solid>,
+        scale: f32,
+    ) -> Result<(), String> {
+        if rectangles.len() < MIN_BATCH_SIZE {
+            for rectangle in rectangles.drain(..) {
+                rectangle.draw(&mut self.canvas);
+            }
+            return Ok(());
+        }
+        let capturing = self.using_capture_canvas();
+        if self.rectangle_batches.rounded.is_none() {
+            self.rectangle_batches.rounded = RoundedAtlas::new(&self.device, &self.queue);
+        }
+        let image = self.rectangle_batches.rounded.as_mut().and_then(|atlas| {
+            let image = atlas.image(&mut self.canvas, capturing)?;
+            if atlas.pending_scale.is_some_and(|pending| pending != scale) {
+                atlas.submit(&self.queue);
+            }
+            Some(image)
+        });
+        let Some(image) = image else {
+            for rectangle in rectangles.drain(..) {
+                rectangle.draw(&mut self.canvas);
+            }
+            return Ok(());
+        };
+
+        // When the whole set cannot fit in the retained fractional atlas,
+        // take its hits and send new captures to the existing transient atlas.
+        let prefer_transient = self.can_capture_transient_rectangles(scale)
+            && RoundedAtlas::exceeds_fractional_capacity(rectangles, scale)
+            && self.prepare_opacity_atlas_for_rectangles(
+                rectangles
+                    .iter()
+                    .filter(|rect| rect.fractional && rect.opacity < 1.0)
+                    .map(|rect| rect.bounds),
+                scale,
+            );
+        let mut quads = Vec::with_capacity(rectangles.len());
+        let mut opacity_tiles = Vec::new();
+        let mut rectangles = rectangles.drain(..);
+        let mut prepared_opacity_atlas = prefer_transient;
+        while let Some(rectangle) = rectangles.next() {
+            let quad = self.rectangle_batches.rounded.as_mut().and_then(|atlas| {
+                let admit = !(prefer_transient && rectangle.fractional && rectangle.opacity < 1.0);
+                atlas.quad_with_admission(
+                    &self.queue,
+                    rectangle,
+                    scale,
+                    RoundedTileClip::Shape,
+                    admit,
+                )
+            });
+            if let Some(quad) = quad {
+                self.draw_transient_rectangles(&mut opacity_tiles);
+                quads.push(quad);
+                continue;
+            }
+            // Keep the cached quads and the isolated draws in paint order.
+            self.rectangle_batches.rounded_draws +=
+                draw_quads(&mut self.canvas, image, std::mem::take(&mut quads));
+            if rectangle.fractional && rectangle.opacity < 1.0 {
+                if !prepared_opacity_atlas {
+                    let bounds = std::iter::once(rectangle)
+                        .chain(rectangles.as_slice().iter().copied())
+                        .filter(|rect| rect.fractional && rect.opacity < 1.0)
+                        .map(|rect| rect.bounds);
+                    self.prepare_opacity_atlas_for_rectangles(bounds, scale);
+                    prepared_opacity_atlas = true;
+                }
+                // Capture the unfaded fill. Opacity and the element scissor
+                // apply to the premultiplied pixels at composition time.
+                if let Some(tile) = self.capture_transient_rectangle(
+                    rectangle.bounds,
+                    scale,
+                    rectangle.opacity,
+                    |canvas| {
+                        let mut path = Path::new();
+                        append_rect(&mut path, rectangle.shape, rectangle.radii);
+                        canvas.fill_path(&path, &Paint::color(rectangle.color));
+                    },
+                )? {
+                    opacity_tiles.push(tile);
+                    continue;
+                }
+            }
+            self.draw_transient_rectangles(&mut opacity_tiles);
+            rectangle.draw(&mut self.canvas);
+        }
+        self.draw_transient_rectangles(&mut opacity_tiles);
+        self.rectangle_batches.rounded_draws += draw_quads(&mut self.canvas, image, quads);
+        if self.rectangle_batches.eager_atlas_submission
+            && let Some(atlas) = self.rectangle_batches.rounded.as_mut()
+        {
+            atlas.submit(&self.queue);
         }
         Ok(())
     }

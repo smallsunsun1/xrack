@@ -8,7 +8,7 @@ use xrack_runtime::scene3d::{
     MorphWeights, SceneObject,
 };
 
-use super::{MeshCache, append_floats, buffer};
+use super::{MeshCache, append_floats, buffer, wireframe::RasterMode};
 
 pub(super) const SKIN_LAYOUT: Option<wgpu::VertexBufferLayout<'static>> = Some(
     wgpu::VertexBufferLayout {
@@ -80,10 +80,12 @@ impl DeformationLayouts {
 pub(super) fn shader_source(source: &str) -> wgpu::ShaderSource<'static> {
     wgpu::ShaderSource::Wgsl(
         format!(
-            "{}\n{}\n{}\n{source}",
+            "{}\n{}\n{}\n{}\n{}\n{source}",
             include_str!("skin.wgsl"),
             include_str!("morph.wgsl"),
+            xrack_runtime::material_shader::TEXTURE_FOOTPRINT,
             include_str!("uv.wgsl"),
+            include_str!("lod_coverage.wgsl"),
         )
         .into(),
     )
@@ -96,6 +98,8 @@ pub(super) struct GeometryBindings<'a> {
     pub offsets: &'a [u32],
     pub zero_data: &'a wgpu::Buffer,
     pub deformations: &'a [Option<DeformationBinding>],
+    pub wire_deformations: Option<&'a [Option<DeformationBinding>]>,
+    pub lod_fade: bool,
 }
 
 impl GeometryBindings<'_> {
@@ -158,7 +162,25 @@ impl GeometryBindings<'_> {
     }
 
     pub fn deformation(&self, instance: u32) -> Option<&DeformationBinding> {
-        self.deformations.get(instance as usize)?.as_ref()
+        self.deformation_for(instance, RasterMode::Fill)
+    }
+
+    pub fn deformation_for(
+        &self,
+        instance: u32,
+        raster: RasterMode,
+    ) -> Option<&DeformationBinding> {
+        self.deformations_for(raster)
+            .get(instance as usize)?
+            .as_ref()
+    }
+
+    pub fn deformations_for(&self, raster: RasterMode) -> &[Option<DeformationBinding>] {
+        if raster == RasterMode::ShaderLine {
+            self.wire_deformations.unwrap_or(self.deformations)
+        } else {
+            self.deformations
+        }
     }
 }
 
@@ -209,7 +231,7 @@ impl DeformationBuffers {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        meshes: &mut MeshCache,
+        (meshes, raster): (&mut MeshCache, RasterMode),
         objects: &[SceneObject],
         eligible: impl Fn(u32, &SceneObject) -> bool,
     ) -> Vec<Option<DeformationBinding>> {
@@ -241,7 +263,7 @@ impl DeformationBuffers {
                         return None;
                     };
                     morph_source = Some(Arc::downgrade(source.geometry()));
-                    let mesh = meshes.get(device, queue, &object.mesh);
+                    let mesh = meshes.get_for_raster(device, queue, &object.mesh, raster);
                     let morph = mesh.morph.as_ref()?;
                     Some((
                         self.morph_buffer(device, morph.record_offset, weights),

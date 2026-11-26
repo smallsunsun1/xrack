@@ -1,0 +1,78 @@
+struct ImageFeedMaterial { unlit: bool }
+struct ImageFeedActor {
+    id: string, mesh: string, material: ImageFeedMaterial,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float,
+}
+
+export component ViewportImageDemo inherits Window {
+    title: "XRack · 在图片中显示 3D 视口";
+    width: 436px; height: 222px; background: #172638;
+    in-out property <bool> orange: false;
+    in-out property <bool> tinted: false;
+    in-out property <bool> tiled: false;
+    in-out property <bool> feedback: false;
+    in-out property <bool> show-feed: true;
+
+    property <ImageFeedActor> unit: ImageFeedActor {
+        id: "", mesh: "primitive:box", material: ImageFeedMaterial { unlit: true },
+        x: 0, y: 0, z: 0, scale-x: 0.65, scale-y: 0.65, scale-z: 0.65,
+        yaw: -30, pitch: 22, roll: 0, color: #f2dc9c,
+        camera-kind: "", camera-height: 2.2,
+    };
+    property <scenemodel3d> world: Scene3D.prepare([
+        ImageFeedActor { id: "eye", mesh: "", z: 5, yaw: 0, pitch: 0, camera-kind: "orthographic", ..root.unit },
+        ImageFeedActor { id: "beacon", ..root.unit },
+    ]);
+    SceneView3D {
+        width: 128px; height: 96px; visible: root.show-feed;
+        texture-width: 128; texture-height: 96;
+        texture-source: "camera-feed"; texture-only: true;
+        model: root.world; camera: "eye";
+        scene-background: root.orange ? #ff6c0080 : #0098ff80;
+    }
+    Rectangle {
+        texture-source: "relay-panel"; texture-only: true;
+        width: 128px; height: 96px;
+        Image {
+            width: 128px; height: 96px;
+            texture-input: root.feedback ? "relay-panel" : "camera-feed";
+        }
+    }
+    Text { x: 12px; y: 14px; text: "直接显示视口"; color: #dcecff; }
+    Text { x: 226px; y: 14px; text: "通过 2D 图层转发"; color: #dcecff; }
+    Rectangle { x: 12px; y: 42px; width: 194px; height: 116px; background: #000; }
+    Image {
+        x: 12px; y: 42px; width: 194px; height: 116px;
+        texture-input: "camera-feed"; image-fit: contain;
+    }
+    Rectangle {
+        x: 226px; y: 42px; width: 194px; height: 116px;
+        background: #000; cache-rendering-hint: true;
+        if !root.tiled: Image {
+            width: 194px; height: 116px;
+            texture-input: "relay-panel"; image-fit: cover;
+            colorize: root.tinted ? #d08afa : #00000000;
+        }
+        if root.tiled: Image {
+            width: 194px; height: 116px;
+            texture-input: "camera-feed";
+            source-clip-x: 34; source-clip-y: 25;
+            source-clip-width: 32; source-clip-height: 32;
+            horizontal-tile-mode: repeat; vertical-tile-mode: repeat;
+        }
+    }
+    tint-toggle := Button {
+        x: 12px; y: 174px; width: 140px; height: 36px;
+        text: "切换视口配色"; clicked => { root.orange = !root.orange; }
+    }
+    image-tint := CheckBox {
+        x: 178px; y: 174px; width: 126px; height: 36px;
+        text: "图片着色"; checked <=> root.tinted;
+    }
+    image-tile := CheckBox {
+        x: 314px; y: 174px; width: 106px; height: 36px;
+        text: "平铺"; checked <=> root.tiled;
+    }
+}

@@ -1,5 +1,6 @@
 struct TextureTransform {
     // First three lanes are the affine rows. W flags skip identity work.
+    // Higher bits of v.w encode the portable anisotropy budget.
     u: vec4<f32>,
     v: vec4<f32>,
 }
@@ -19,6 +20,21 @@ fn texture_gradient(transform: TextureTransform, gradient: vec2<f32>) -> vec2<f3
     return vec2<f32>(dot(transform.u.xy, gradient), dot(transform.v.xy, gradient));
 }
 
+
+fn texture_anisotropy(transform: TextureTransform) -> u32 {
+    return 1u + (u32(transform.v.w) >> 1u);
+}
+
+fn sample_base_texture(image: texture_2d<f32>, filtering: sampler,
+                       transform: TextureTransform, uv: vec2<f32>) -> vec4<f32> {
+    let at = texture_uv(transform, uv);
+    if transform.v.w < 2.0 {
+        return textureSample(image, filtering, at);
+    }
+    return xr_sample_texture_footprint(image, filtering, at,
+        texture_gradient(transform, dpdx(uv)), texture_gradient(transform, dpdy(uv)),
+        texture_anisotropy(transform));
+}
 
 fn base_texture_uses_alpha(channels: vec4<u32>) -> bool {
     // Scalar base-color selectors replicate a channel and use alpha one.

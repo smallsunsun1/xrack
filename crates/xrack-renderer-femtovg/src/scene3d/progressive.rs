@@ -105,23 +105,26 @@ impl Accumulator {
                 resource: wgpu::BindingResource::TextureView(source),
             }],
         });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack progressive 3D AA blend"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &sample.history,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: if sample.index == 0 {
-                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
-                    } else {
-                        wgpu::LoadOp::Load
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack progressive 3D AA blend"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &sample.history,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if sample.index == 0 {
+                            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                        store: wgpu::StoreOp::Store,
                     },
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
+                })],
+                ..Default::default()
+            },
+        );
         let weight = f64::from(sample.index + 1).recip();
         pass.set_pipeline(&self.pipeline);
         pass.set_blend_constant(wgpu::Color {

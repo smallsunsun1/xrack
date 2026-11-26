@@ -1,4 +1,4 @@
-//! Collider lines drawn over the viewport's resolved color.
+//! World-space debug lines drawn over the viewport's resolved color.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -16,22 +16,26 @@ struct CachedVertices {
 }
 
 #[derive(Default)]
-pub(super) struct PhysicsDebugRenderer {
+pub(super) struct DebugLineRenderer {
     shader: Option<wgpu::ShaderModule>,
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     vertices: VecDeque<CachedVertices>,
 }
 
-impl PhysicsDebugRenderer {
+impl DebugLineRenderer {
     pub(super) fn draw(
         &mut self,
         ctx: &mut GpuPaintContext<'_>,
         camera: SceneCamera,
         lines: &Arc<[PhysicsDebugVertex]>,
+        region: super::CaptureRegion,
     ) -> Option<(u32, bool)> {
         let count = u32::try_from(lines.len()).ok()?;
         const STRIDE: u64 = 16;
-        if count == 0 || u64::from(count) * STRIDE > ctx.device.limits().max_buffer_size {
+        if region.is_empty()
+            || count == 0
+            || u64::from(count) * STRIDE > ctx.device.limits().max_buffer_size
+        {
             return None;
         }
         let source = Arc::downgrade(lines);
@@ -52,7 +56,7 @@ impl PhysicsDebugRenderer {
                 source,
                 buffer: buffer(
                     ctx.device,
-                    "XRack physics debug vertices",
+                    "XRack 3D debug vertices",
                     &bytes,
                     wgpu::BufferUsages::VERTEX,
                 ),
@@ -65,7 +69,7 @@ impl PhysicsDebugRenderer {
         append_floats(&mut bytes, camera.clip_rows().into_iter().flatten());
         let matrix = buffer(
             ctx.device,
-            "XRack physics debug camera",
+            "XRack 3D debug camera",
             &bytes,
             wgpu::BufferUsages::UNIFORM,
         );
@@ -73,13 +77,13 @@ impl PhysicsDebugRenderer {
             let shader = self.shader.get_or_insert_with(|| {
                 ctx.device
                     .create_shader_module(wgpu::ShaderModuleDescriptor {
-                        label: Some("XRack physics debug lines"),
+                        label: Some("XRack 3D debug lines"),
                         source: wgpu::ShaderSource::Wgsl(include_str!("physics_debug.wgsl").into()),
                     })
             });
             ctx.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("XRack physics debug lines"),
+                    label: Some("XRack 3D debug lines"),
                     layout: None,
                     vertex: wgpu::VertexState {
                         module: shader,
@@ -112,26 +116,30 @@ impl PhysicsDebugRenderer {
                 })
         });
         let bindings = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("XRack physics debug camera binding"),
+            label: Some("XRack 3D debug camera binding"),
             layout: &pipeline.get_bind_group_layout(0),
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: matrix.as_entire_binding(),
             }],
         });
-        let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack physics debug overlay"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            ctx.encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack 3D debug overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: ctx.target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            },
+        );
+        region.clip(&mut pass);
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bindings, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));

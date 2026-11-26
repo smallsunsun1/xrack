@@ -44,8 +44,8 @@ fn write_model(index: u32, source: ParticleCenter, visible: bool, tint: vec4<f32
     let row_y = scale * vec3<f32>(s.z * c.y, s.z * s.y * s.x + c.z * c.x, s.z * s.y * c.x - c.z * s.x);
     let row_z = scale * vec3<f32>(-s.y, c.y * s.x, c.y * c.x);
     let color = instance_srgb(emitter.color.rgb * tint.rgb);
-    // Match the 68-byte scene geometry instance stream exactly.
-    let address = index * 17u;
+    // Match the 72-byte scene geometry instance stream exactly.
+    let address = index * 18u;
     instances[address] = bitcast<u32>(row_x.x);
     instances[address + 1u] = bitcast<u32>(row_x.y);
     instances[address + 2u] = bitcast<u32>(row_x.z);
@@ -63,11 +63,12 @@ fn write_model(index: u32, source: ParticleCenter, visible: bool, tint: vec4<f32
     instances[address + 14u] = bitcast<u32>(color.z);
     instances[address + 15u] = bitcast<u32>(alpha);
     instances[address + 16u] = (index << 3u) | u32(settings.spin.w);
+    instances[address + 17u] = 0u;
 }
 
 @compute @workgroup_size(64)
 fn compute_vector(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(vector_source(gid.x));
         write_model(gid.x, source, true, vec4<f32>(1.0));
     }
@@ -75,7 +76,7 @@ fn compute_vector(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn compute_vector_tinted(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(vector_source(gid.x));
         write_model(gid.x, source, true, model_tint(source));
     }
@@ -83,7 +84,7 @@ fn compute_vector_tinted(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn compute_vector_affected(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(vector_source(gid.x));
         let displaced = apply_affectors(source);
         write_model(gid.x, displaced.source, displaced.visible, vec4<f32>(1.0));
@@ -92,7 +93,7 @@ fn compute_vector_affected(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn compute_vector_affected_tinted(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(vector_source(gid.x));
         let displaced = apply_affectors(source);
         write_model(gid.x, displaced.source, displaced.visible, model_tint(displaced.source));
@@ -101,7 +102,7 @@ fn compute_vector_affected_tinted(@builtin(global_invocation_id) gid: vec3<u32>)
 
 @compute @workgroup_size(64)
 fn compute_spatial(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(spatial_source(gid.x));
         write_model(gid.x, source, true, vec4<f32>(1.0));
     }
@@ -109,7 +110,7 @@ fn compute_spatial(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn compute_spatial_tinted(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(spatial_source(gid.x));
         write_model(gid.x, source, true, model_tint(source));
     }
@@ -117,7 +118,7 @@ fn compute_spatial_tinted(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn compute_spatial_affected(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(spatial_source(gid.x));
         let displaced = apply_affectors(source);
         write_model(gid.x, displaced.source, displaced.visible, vec4<f32>(1.0));
@@ -126,7 +127,7 @@ fn compute_spatial_affected(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn compute_spatial_affected_tinted(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(spatial_source(gid.x));
         let displaced = apply_affectors(source);
         write_model(gid.x, displaced.source, displaced.visible, model_tint(displaced.source));
@@ -135,7 +136,7 @@ fn compute_spatial_affected_tinted(@builtin(global_invocation_id) gid: vec3<u32>
 
 @compute @workgroup_size(64)
 fn compute_mesh(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(mesh_source(gid.x));
         write_model(gid.x, source, true, vec4<f32>(1.0));
     }
@@ -143,7 +144,7 @@ fn compute_mesh(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn compute_mesh_tinted(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(mesh_source(gid.x));
         write_model(gid.x, source, true, model_tint(source));
     }
@@ -151,7 +152,7 @@ fn compute_mesh_tinted(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn compute_mesh_affected(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(mesh_source(gid.x));
         let displaced = apply_affectors(source);
         write_model(gid.x, displaced.source, displaced.visible, vec4<f32>(1.0));
@@ -160,7 +161,7 @@ fn compute_mesh_affected(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn compute_mesh_affected_tinted(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x < arrayLength(&instances) / 17u {
+    if gid.x < arrayLength(&instances) / 18u {
         let source = present_position(mesh_source(gid.x));
         let displaced = apply_affectors(source);
         write_model(gid.x, displaced.source, displaced.visible, model_tint(displaced.source));

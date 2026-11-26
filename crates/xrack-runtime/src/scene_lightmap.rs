@@ -172,7 +172,13 @@ impl<'a> LightmapTrace<'a> {
         (distance > 0.0 && distance.is_finite()).then_some(distance)
     }
 
-    pub fn occluded(&self, ray: crate::scene3d::Ray3D, distance: f32, layers: u64) -> bool {
+    pub fn occluded(
+        &self,
+        ray: crate::scene3d::Ray3D,
+        distance: f32,
+        layers: u64,
+        scope: crate::scene3d::SceneLightScope,
+    ) -> bool {
         let mut blocked = false;
         crate::scene_pick::visit_bounds(
             &self.tree,
@@ -185,6 +191,7 @@ impl<'a> LightmapTrace<'a> {
                 if !blocked
                     && object.casts_shadow
                     && object.layers & layers != 0
+                    && scope.contains(object.lighting_index())
                     && object.bake_occludes(ray, closest)
                 {
                     blocked = true;

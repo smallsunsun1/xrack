@@ -79,6 +79,7 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode, text: &mut impl Text
             continue;
         }
         let mut context = LayoutContext {
+            defer_styled_text: false,
             text,
             layout_direction: item.direction_override,
             offsets: &offsets,

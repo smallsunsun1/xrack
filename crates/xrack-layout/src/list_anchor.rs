@@ -149,8 +149,7 @@ pub(crate) fn capture_list_anchors(
                 }
                 for axis in [Orientation::Horizontal, Orientation::Vertical] {
                     let bound = layout
-                        .viewport_handle
-                        .as_ref()
+                        .viewport_handle()
                         .is_some_and(|handle| handle.has_bound_offset(axis));
                     if !bound
                         && let Some(scroll) = layout.scroll_on(axis)

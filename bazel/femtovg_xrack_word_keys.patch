@@ -1,0 +1,234 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -129,10 +129,43 @@
+     }
+ }
+ 
++#[derive(Clone, Copy, Eq, PartialEq)]
++struct FontList {
++    hash: u64,
++    ids: [Option<FontId>; 8],
++}
++
++impl FontList {
++    fn new(ids: [Option<FontId>; 8]) -> Self {
++        let mut hash = FnvHasher::default();
++        ids.hash(&mut hash);
++        Self { hash: hash.finish(), ids }
++    }
++}
++
++impl Hash for FontList {
++    fn hash<H: Hasher>(&self, state: &mut H) {
++        // Equality still compares the complete ordered font list.
++        state.write_u64(self.hash);
++    }
++}
++
++struct WordStyle<'a> {
++    fonts: FontList,
++    variations: &'a FontVariations,
++    variation_hash: u64,
++}
++
++impl<'a> WordStyle<'a> {
++    fn new(ids: [Option<FontId>; 8], variations: &'a FontVariations) -> Self {
++        Self { fonts: FontList::new(ids), variations, variation_hash: variations.hash() }
++    }
++}
++
+ #[derive(Clone, Copy, Hash, Eq, PartialEq)]
+ pub(super) struct WordId {
+     word_hash: u64,
+-    font_ids: [Option<FontId>; 8],
++    fonts: FontList,
+     variation_hash: u64,
+     rtl: bool,
+ }
+@@ -219,15 +252,15 @@
+         // Printable ASCII and these unified ideographs form one LTR run.
+         // Use shape_run's word boundaries and additions without positioning glyphs.
+         let mut width = 0.0;
++        let style = WordStyle::new(settings.font_ids, &settings.font_variations);
+         let mut add_word = |word: &str| {
+-            if let Some(advance) = sliced_word_width(&context, word, settings) {
++            if let Some(advance) = sliced_word_width(&context, word, settings, &style) {
+                 width += advance;
+             } else if let Some(word) = cached_word(
+                 &mut context,
+                 word,
+                 rustybuzz::Direction::LeftToRight,
+-                settings.font_ids,
+-                &settings.font_variations,
++                &style,
+                 WordMetrics::Advances,
+             ) {
+                 width += word.width(word.scale(settings.font_size), settings.letter_spacing);
+@@ -262,10 +295,10 @@
+         if text.chars().all(|ch| (' '..='~').contains(&ch) || unified_ideograph(ch)) {
+             // These characters form a single LTR run. Use the same words
+             // and floating point additions as shape_run followed by layout.
++            let style = WordStyle::new(settings.font_ids, &settings.font_variations);
+             for text in text.split_word_bounds() {
+                 if let Some(word) = cached_word(
+-                    &mut context, text, rustybuzz::Direction::LeftToRight, settings.font_ids,
+-                    &settings.font_variations, WordMetrics::Ink,
++                    &mut context, text, rustybuzz::Direction::LeftToRight, &style, WordMetrics::Ink,
+                 ) {
+                     let scale = word.scale(settings.font_size);
+                     for glyph in &word.glyphs {
+@@ -299,8 +332,7 @@
+             &mut context,
+             text,
+             rustybuzz::Direction::LeftToRight,
+-            settings.font_ids,
+-            &settings.font_variations,
++            &WordStyle::new(settings.font_ids, &settings.font_variations),
+             WordMetrics::Advances,
+         )?;
+         let [glyph] = word.glyphs.as_slice() else {
+@@ -572,6 +604,7 @@
+ 
+     let (levels, runs) = bidi_info.visual_runs(paragraph, line);
+ 
++    let style = WordStyle::new(font_ids, variations);
+     for run in runs {
+         let sub_text = &text[run.clone()];
+ 
+@@ -592,7 +625,7 @@
+ 
+         for mut word_txt in sub_text.split_word_bounds() {
+             if let Some(mut word) = cached_word(
+-                context, word_txt, hb_direction, font_ids, variations, WordMetrics::Ink,
++                context, word_txt, hb_direction, &style, WordMetrics::Ink,
+             ) {
+                 let mut scale = word.scale(font_size);
+                 let mut width = word.width(scale, letter_spacing);
+@@ -618,7 +651,7 @@
+                             }
+                             word_txt = &word_txt[..bytes_included];
+                             let Some(subword) = cached_word(
+-                                context, word_txt, hb_direction, font_ids, variations, WordMetrics::Ink,
++                                context, word_txt, hb_direction, &style, WordMetrics::Ink,
+                             ) else {
+                                 break;
+                             };
+@@ -659,7 +692,12 @@
+     result
+ }
+ 
+-fn sliced_word_width(context: &super::TextContextImpl, word: &str, settings: &TextSettings) -> Option<f32> {
++fn sliced_word_width(
++    context: &super::TextContextImpl,
++    word: &str,
++    settings: &TextSettings,
++    style: &WordStyle<'_>,
++) -> Option<f32> {
+     if context.word_slice_hints.is_empty()
+         || !(4..=8).contains(&word.len())
+         || !word.bytes().all(|byte| byte.is_ascii_alphanumeric())
+@@ -668,7 +706,6 @@
+     }
+ 
+     let latin = word.bytes().any(|byte| byte.is_ascii_alphabetic());
+-    let variation_hash = settings.font_variations.hash();
+     for suffix in [false, true] {
+         let slot = word_slice_hint(word.as_bytes(), suffix)?;
+         let word_hash = context.word_slice_hints[slot];
+@@ -677,8 +714,8 @@
+         }
+         let id = WordId {
+             word_hash,
+-            font_ids: settings.font_ids,
+-            variation_hash,
++            fonts: style.fonts,
++            variation_hash: style.variation_hash,
+             rtl: false,
+         };
+         let Some(Ok(parent)) = context.shaped_words_cache.peek(&id) else {
+@@ -723,15 +760,16 @@
+     context: &'a mut super::TextContextImpl,
+     word: &str,
+     direction: rustybuzz::Direction,
+-    font_ids: [Option<FontId>; 8],
+-    variations: &FontVariations,
++    style: &WordStyle<'_>,
+     metrics: WordMetrics,
+ ) -> Option<&'a ShapedWord> {
+-    let variation_hash = variations.hash();
++    let font_ids = &style.fonts.ids;
++    let variation_hash = style.variation_hash;
++    let variations = style.variations;
+     if let Some(index) = context.prepared_ideographs.as_ref()
+         .filter(|prepared| word.len() == 3
+             && direction == rustybuzz::Direction::LeftToRight
+-            && prepared.matches(&font_ids, variation_hash))
++            && prepared.matches(font_ids, variation_hash))
+         .and_then(|prepared| prepared.word_index(word.chars().next()?))
+     {
+         let word = context.prepared_ideographs.as_mut()?.words.get_mut(index)?;
+@@ -741,12 +779,12 @@
+     word.hash(&mut hasher);
+     let id = WordId {
+         word_hash: hasher.finish(),
+-        font_ids,
++        fonts: style.fonts,
+         variation_hash,
+         rtl: direction == rustybuzz::Direction::RightToLeft,
+     };
+     if !context.shaped_words_cache.contains(&id) {
+-        let shaped = shape_word(word, direction, context, &font_ids, variations);
++        let shaped = shape_word(word, direction, context, font_ids, variations);
+         if shaped.as_ref().is_ok_and(|word| word.ascii_slice.is_some()) {
+             for suffix in [false, true] {
+                 if let Some(slot) = word_slice_hint(word.as_bytes(), suffix) {
+diff --git a/src/text/textlayout/ideograph_prewarm.rs b/src/text/textlayout/ideograph_prewarm.rs
+--- a/src/text/textlayout/ideograph_prewarm.rs
++++ b/src/text/textlayout/ideograph_prewarm.rs
+@@ -4,7 +4,7 @@
+ use rustybuzz::{script, Direction, Face, ShapePlan, UnicodeBuffer};
+ use ttf_parser::{GlyphId, Rect};
+ 
+-use super::{unified_ideograph, ShapedGlyph, ShapedWord, WordId};
++use super::{unified_ideograph, FontList, ShapedGlyph, ShapedWord, WordId};
+ use crate::{FontId, Paint};
+ 
+ const FIRST_IDEOGRAPH: u32 = 0x4e00;
+@@ -96,7 +96,7 @@
+             .filter(|prepared| prepared.matches(&settings.font_ids, variation_hash))
+             .and_then(|prepared| prepared.words.get(prepared.word_index(character)?))
+             .or_else(|| {
+-                let id = ideograph_word_id(character, &settings.font_ids, variation_hash);
++                let id = ideograph_word_id(character, FontList::new(settings.font_ids), variation_hash);
+                 context.shaped_words_cache.peek(&id)?.as_ref().ok()
+             })?;
+         let [glyph] = word.glyphs.as_slice() else {
+@@ -133,7 +133,8 @@
+         let settings = &paint.text;
+         let variation_hash = settings.font_variations.hash();
+         let font_ids = settings.font_ids;
+-        let word_id = |character| ideograph_word_id(character, &font_ids, variation_hash);
++        let font_list = FontList::new(font_ids);
++        let word_id = |character| ideograph_word_id(character, font_list, variation_hash);
+         let previous = context
+             .prepared_ideographs
+             .as_ref()
+@@ -228,7 +229,7 @@
+ 
+ fn ideograph_word_id(
+     character: char,
+-    font_ids: &[Option<FontId>; 8],
++    fonts: FontList,
+     variation_hash: u64,
+ ) -> WordId {
+     use std::hash::Hasher;
+@@ -239,7 +240,7 @@
+     word.hash(&mut hasher);
+     WordId {
+         word_hash: hasher.finish(),
+-        font_ids: *font_ids,
++        fonts,
+         variation_hash,
+         rtl: false,
+     }

@@ -32,6 +32,9 @@ def stage_workspace(destination):
     destination.mkdir()
     for name in ("Cargo.toml", "Cargo.lock", "README.md", "LICENSE-APACHE", "LICENSE-MIT"):
         shutil.copyfile(ROOT / name, destination / name)
+    toolchain = ROOT / "rust-toolchain.toml"
+    if toolchain.is_file():
+        shutil.copyfile(toolchain, destination / toolchain.name)
     for name in ("crates", "bundles", "bindings/python"):
         shutil.copytree(ROOT / name, destination / name)
 

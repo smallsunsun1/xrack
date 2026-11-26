@@ -142,10 +142,13 @@ impl ModelInstanceGenerator {
             layout: &pipeline.get_bind_group_layout(0),
             entries: &entries,
         });
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("XRack update model particle instances"),
-            ..Default::default()
-        });
+        let mut pass = crate::viewport_gpu_timing::compute_pass(
+            encoder,
+            &wgpu::ComputePassDescriptor {
+                label: Some("XRack update model particle instances"),
+                ..Default::default()
+            },
+        );
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.dispatch_workgroups(input.count.div_ceil(64), 1, 1);

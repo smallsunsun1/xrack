@@ -54,6 +54,7 @@ from ._native import (
     ProjectedPoint3D,
     Instance3D,
     InstanceTable3D,
+    MeshAsset3D,
     WalkResult3D,
     PhysicsWorld3D,
     SceneModel3D,
@@ -144,6 +145,7 @@ __all__ = [
     "ProjectedPoint3D",
     "Instance3D",
     "InstanceTable3D",
+    "MeshAsset3D",
     "WalkResult3D",
     "PhysicsWorld3D",
     "SceneModel3D",
@@ -239,6 +241,7 @@ Value: TypeAlias = (
     | ProjectedPoint3D
     | Instance3D
     | InstanceTable3D
+    | MeshAsset3D
     | WalkResult3D
     | PhysicsWorld3D
     | SceneModel3D

@@ -257,6 +257,12 @@ pub(crate) fn query(
     let Some(cursor) = position.and_then(|(line, column)| source.offset_at(line, column)) else {
         return Value::Null;
     };
+    if method == "textDocument/definition"
+        && let Some(target) =
+            super::imports::scene_light_scope_definition(&source, &tokens, cursor, uri)
+    {
+        return target;
+    }
     if method == "textDocument/hover"
         && let Some(hint) = workspace.and_then(|workspace| {
             super::imports::mesh_asset_hover(&source, &tokens, cursor, workspace)

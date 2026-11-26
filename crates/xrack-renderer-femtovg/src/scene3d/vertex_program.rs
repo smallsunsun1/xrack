@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, VecDeque},
     hash::Hash,
     sync::Arc,
@@ -18,17 +19,18 @@ struct Program<K> {
 }
 
 pub(super) struct VertexPipelines<K> {
-    source: &'static str,
+    source: Cow<'static, str>,
     module: wgpu::ShaderModule,
     variants: HashMap<K, wgpu::RenderPipeline>,
     programs: VecDeque<Program<K>>,
 }
 
 impl<K: Eq + Hash> VertexPipelines<K> {
-    pub fn new(device: &wgpu::Device, source: &'static str) -> Self {
+    pub fn new(device: &wgpu::Device, source: impl Into<Cow<'static, str>>) -> Self {
+        let source = source.into();
         Self {
+            module: module(device, &MaterialHooks::default().prepare(""), &source),
             source,
-            module: module(device, &MaterialHooks::default().prepare(""), source),
             variants: HashMap::new(),
             programs: VecDeque::new(),
         }
@@ -49,7 +51,7 @@ impl<K: Eq + Hash> VertexPipelines<K> {
             if index != Some(0) {
                 let program = index.and_then(|index| self.programs.remove(index)).unwrap_or_else(|| {
                     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                    let module = module(device, source, self.source);
+                    let module = module(device, source, &self.source);
                     let module = match pollster::block_on(scope.pop()) {
                         Some(error) => {
                             tracing::warn!(%error, "XRack disabled an invalid vertex program in an auxiliary pass");

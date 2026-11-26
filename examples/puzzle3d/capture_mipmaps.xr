@@ -1,0 +1,138 @@
+struct CaptureMipInput {
+    capture: string, attachment: string, mip-filter: string, min-filter: string, mag-filter: string,
+    max-anisotropy: int,
+}
+struct CaptureMipMaterial {
+    enabled: bool, unlit: bool, material-shader: string,
+    shader-parameters: vector3d, shader-textures: [CaptureMipInput],
+}
+struct CaptureMipActor {
+    id: string, mesh: string, color: color, material: CaptureMipMaterial,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, camera-kind: string, camera-height: float,
+}
+struct CaptureMipStage {
+    name: string, camera: string, renderables: string, mipmaps: bool,
+    override-material: CaptureMipMaterial, augment-shader: string,
+    augment-parameters: vector3d, augment-textures: [CaptureMipInput],
+}
+struct CaptureMipEffect { shader: string, parameters: vector3d, buffers: [CaptureMipInput] }
+
+export component CaptureMipmapsDemo inherits Window {
+    title: "XRack · 捕获 mip 层";
+    width: 256px; height: 256px; background: #000;
+    in-out property <bool> mipmaps: false;
+    in-out property <bool> green: false;
+    in-out property <float> lod: 8;
+    in-out property <bool> gradients: false;
+    in-out property <float> frequency: 1024;
+    in-out property <bool> nearest-min: true;
+    in-out property <int> max-anisotropy: 1;
+    in-out property <bool> oblique: false;
+    in-out property <bool> horizontal: false;
+
+    property <vector3d> sampling: Vector3D.new(
+        root.gradients && root.oblique ? (root.horizontal ? -1 : 1) : root.lod,
+        root.gradients ? (root.oblique ? 3 : (root.mipmaps ? 1 : 2)) : 0,
+        root.frequency
+    );
+    property <CaptureMipInput> sampled: CaptureMipInput {
+        capture: "feed", attachment: "color", mip-filter: "linear",
+        min-filter: root.nearest-min ? "nearest" : "linear", mag-filter: "linear",
+        max-anisotropy: root.max-anisotropy,
+    };
+    property <CaptureMipMaterial> plain: CaptureMipMaterial {
+        enabled: true, unlit: true, material-shader: "",
+        shader-parameters: Vector3D.new(0, 0, 0), shader-textures: [],
+    };
+    property <CaptureMipActor> unit: CaptureMipActor {
+        id: "", mesh: "primitive:box", color: #fff, material: root.plain,
+        x: 0, y: 0, z: 0, scale-x: 6, scale-y: 4, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, camera-kind: "", camera-height: 2,
+    };
+
+    SceneView3D {
+        width: 256px; height: 128px; camera: "eye"; cache-rendering: true;
+        texture-width: 256; texture-height: 128;
+        render-overrides: "disable-internal-passes";
+        model: [
+            CaptureMipActor { id: "eye", mesh: "", z: 5, camera-kind: "orthographic", ..root.unit },
+            CaptureMipActor { id: "screen", ..root.unit },
+        ];
+        scene-captures: [
+            CaptureMipStage {
+                name: "feed", camera: "eye", renderables: "opaque", mipmaps: root.mipmaps,
+                override-material: CaptureMipMaterial {
+                    material-shader: @material-shader-url("effects/capture_mip_pattern.wgsl"),
+                    shader-parameters: Vector3D.new(root.green ? 1 : 0, 0, 0),
+                    ..root.plain
+                },
+                augment-shader: "", augment-parameters: Vector3D.new(0, 0, 0), augment-textures: [],
+            },
+            CaptureMipStage {
+                name: "material", camera: "eye", renderables: "opaque", mipmaps: false,
+                override-material: CaptureMipMaterial {
+                    material-shader: @material-shader-url("effects/capture_mip_material.wgsl"),
+                    shader-parameters: root.sampling, shader-textures: [root.sampled],
+                    ..root.plain
+                },
+                augment-shader: "", augment-parameters: Vector3D.new(0, 0, 0), augment-textures: [],
+            },
+            CaptureMipStage {
+                name: "augment", camera: "eye", renderables: "opaque", mipmaps: false,
+                override-material: CaptureMipMaterial { enabled: false, ..root.plain },
+                augment-shader: @material-shader-url("effects/capture_mip_augment.wgsl"),
+                augment-parameters: root.sampling, augment-textures: [root.sampled],
+            },
+        ];
+        scene-effects: [
+            CaptureMipEffect {
+                shader: @shader-url("effects/capture_mip_display.wgsl"),
+                parameters: root.sampling,
+                buffers: [
+                    root.sampled,
+                    CaptureMipInput { capture: "material", attachment: "color", mip-filter: "", min-filter: "", mag-filter: "", max-anisotropy: 1 },
+                    CaptureMipInput { capture: "augment", attachment: "material-data", mip-filter: "", min-filter: "", mag-filter: "", max-anisotropy: 1 },
+                ],
+            },
+        ];
+    }
+    enable-mips := CheckBox {
+        x: 9px; y: 141px; width: 79px; height: 30px;
+        text: "Mip 层"; checked <=> root.mipmaps;
+    }
+    palette := CheckBox {
+        x: 93px; y: 141px; width: 74px; height: 30px;
+        text: "变配色"; checked <=> root.green;
+    }
+    lod := Button {
+        x: 174px; y: 141px; width: 74px; height: 30px;
+        text: root.lod == 8 ? "LOD 8" : "LOD 7.5"; enabled: !root.gradients;
+        clicked => { root.lod = root.lod == 8 ? 7.5 : 8; }
+    }
+    gradient := CheckBox {
+        x: 9px; y: 178px; width: 68px; height: 30px;
+        text: "梯度"; checked <=> root.gradients;
+    }
+    frequency := Slider {
+        x: 80px; y: 181px; width: 82px; height: 24px;
+        minimum: 0.125; maximum: 1024; value <=> root.frequency;
+    }
+    min-filter := CheckBox {
+        x: 168px; y: 178px; width: 84px; height: 30px;
+        text: "缩小最近"; checked <=> root.nearest-min;
+    }
+    oblique := CheckBox {
+        x: 9px; y: 216px; width: 74px; height: 30px;
+        text: "斜视"; checked <=> root.oblique; enabled: root.gradients;
+    }
+    axis := CheckBox {
+        x: 90px; y: 216px; width: 74px; height: 30px;
+        text: "横向"; checked <=> root.horizontal; enabled: root.oblique && root.gradients;
+    }
+    anisotropy := Button {
+        x: 174px; y: 216px; width: 74px; height: 30px;
+        text: root.max-anisotropy > 1 ? "16×" : "1×";
+        clicked => { root.max-anisotropy = root.max-anisotropy == 1 ? 16 : 1; }
+    }
+}

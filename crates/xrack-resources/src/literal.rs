@@ -166,6 +166,12 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
             Default(Value::WalkResult3D(runtime::WalkResult3D::default()))
         }
         Type::RotationTrack3D => rotation_track(spelling)?,
+        Type::MeshAsset3D => {
+            if !spelling.is_empty() {
+                return Err("invalid mesh asset literal".into());
+            }
+            Default(Value::MeshAsset3D(runtime::MeshAsset3D::default()))
+        }
         Type::InstanceTable3D => {
             if !spelling.is_empty() {
                 return Err("invalid instance table literal".into());

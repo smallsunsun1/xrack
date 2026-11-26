@@ -1,4 +1,7 @@
 //! Image decoding and SVG path parsing shared by the compiler and renderer.
+#[doc(hidden)]
+pub mod files;
+
 use resvg::{tiny_skia, usvg};
 use std::io::Cursor;
 use svgtypes::{SimplePathSegment, SimplifyingPathParser};

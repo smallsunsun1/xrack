@@ -281,6 +281,7 @@ pub(crate) fn snapshot(ui: &ReloadableInstance, versions: SourceVersions) -> Jso
                 "paint": changes.paint, "input": changes.input,
             },
         })}).collect::<Vec<_>>());
+        payload["viewportStatistics"] = viewport_statistics_json(&inspector.viewport_statistics());
         payload["presentedFrames"] = json!(inspector.presentations().into_iter().map(|sample| json!({
             "frame": sample.frame, "generation": sample.generation, "hostMicros": sample.host_micros,
             "inputToPresentedMicros": sample.input_to_present_micros,
@@ -614,6 +615,7 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
             "InstanceTable3D",
             json!({"loaded": value.is_loaded(), "count": value.len()}),
         ),
+        Value::MeshAsset3D(value) => ("MeshAsset3D", json!({"loaded": value.is_loaded()})),
         Value::Instance3D(value) => (
             "Instance3D",
             json!({
@@ -987,4 +989,43 @@ mod tests {
         );
         assert_eq!(value["fields"][1]["value"], true);
     }
+}
+
+fn viewport_statistics_json(report: &xrack_runtime::ViewportStatistics) -> serde_json::Value {
+    use serde_json::json;
+    let views = report
+        .views
+        .iter()
+        .map(|view| {
+            let mut result = json!({
+                "path": view.path, "id": view.id, "work": view.work.name(),
+                "outputSize": view.output_size, "rasterSize": view.raster_size,
+                "samples": view.samples, "cpuRecordMicros": view.cpu_record_micros,
+                "linkedWorkingBytes": view.linked_working_bytes,
+            });
+            for (key, value) in view.counts() {
+                result[key] = value.into();
+            }
+            result
+        })
+        .collect::<Vec<_>>();
+    let gpu = report.gpu.as_ref().map(|frame| {
+        json!({
+            "frame": frame.frame,
+            "truncated": frame.truncated,
+            "views": frame.views.iter().map(|view| json!({
+                "path": view.path, "id": view.id, "gpuNanos": view.gpu_nanos,
+                "passes": view.passes.iter().map(|pass| json!({
+                    "name": pass.name, "count": pass.count, "gpuNanos": pass.gpu_nanos,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        })
+    });
+    json!({
+        "frame": report.frame,
+        "views": views,
+        "truncated": report.truncated,
+        "gpuTimingSupported": report.gpu_timing_supported,
+        "gpu": gpu,
+    })
 }

@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 68;
+pub const CODEGEN_ABI_VERSION: u32 = 69;
 
 mod animation;
 mod arithmetic;
@@ -27,6 +27,7 @@ mod font_picker;
 mod geometry;
 #[doc(hidden)]
 pub mod material_shader;
+mod procedural_sky;
 #[doc(hidden)]
 pub mod scene3d;
 mod scene_animation;
@@ -69,7 +70,9 @@ mod image_asset;
 mod inspection;
 #[doc(hidden)]
 pub use inspection::{
-    InspectionInput, PresentationFeedback, PresentedFrame, RecordedAction, WindowInspector,
+    InspectionInput, PresentationFeedback, PresentedFrame, RecordedAction, ViewportGpuFrame,
+    ViewportGpuPass, ViewportGpuStats, ViewportRenderStats, ViewportRenderWork, ViewportStatistics,
+    WindowInspector,
 };
 mod media;
 #[doc(hidden)]
@@ -308,7 +311,8 @@ pub use scene_plan::{
 };
 pub use scene_rotation::{Quaternion3D, RotationTrack3D};
 pub use scene3d::{
-    Hit3D, Instance3D, InstanceTable3D, Point3D, ProjectedPoint3D, Vector3D, WalkResult3D,
+    Hit3D, Instance3D, InstanceTable3D, MeshAsset3D, Point3D, ProjectedPoint3D, Vector3D,
+    WalkResult3D,
 };
 #[doc(hidden)]
 pub use split::{
@@ -1757,6 +1761,7 @@ pub enum Value {
     ProjectedPoint3D(ProjectedPoint3D),
     Instance3D(Instance3D),
     InstanceTable3D(InstanceTable3D),
+    MeshAsset3D(MeshAsset3D),
     WalkResult3D(WalkResult3D),
     PhysicsWorld3D(PhysicsWorld3D),
     Vector2D(Vector2D),
@@ -1893,6 +1898,7 @@ value_from!(VecModel<PhysicsHit3D>, PhysicsHit3DList);
 value_from!(ProjectedPoint3D, ProjectedPoint3D);
 value_from!(Instance3D, Instance3D);
 value_from!(InstanceTable3D, InstanceTable3D);
+value_from!(MeshAsset3D, MeshAsset3D);
 value_from!(WalkResult3D, WalkResult3D);
 value_from!(PhysicsWorld3D, PhysicsWorld3D);
 value_from!(Arc<scene3d::SceneModel>, SceneObjects);
@@ -1971,13 +1977,30 @@ pub struct Node(Rc<NodeStorage>);
 struct NodeStorage {
     data: NodeData,
     frozen: bool,
-    scene_features: OnceCell<u8>,
+    scene_features: OnceCell<u16>,
     stacking_order: OnceCell<f64>,
+    visibility: OnceCell<bool>,
+    opacity: OnceCell<f32>,
+    height_independent_metrics: OnceCell<bool>,
 }
 
 /// A storage identity for caches that should not keep a scene node alive.
 #[doc(hidden)]
 pub struct SharedNodeIdentity(std::rc::Weak<NodeStorage>);
+
+impl PartialEq for SharedNodeIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+
+impl Eq for SharedNodeIdentity {}
+
+impl std::hash::Hash for SharedNodeIdentity {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.0.as_ptr(), state);
+    }
+}
 
 impl SharedNodeIdentity {
     pub fn matches(&self, node: &Node) -> bool {
@@ -1998,6 +2021,8 @@ pub enum SceneFeature {
     ScrollEndpoint = 32,
     SceneTextureSource = 64,
     SceneViewport = 128,
+    ScenePreload = 256,
+    SceneImageTexture = 512,
 }
 
 /// Scene data shared by clones of a node. Mutating a node detaches its data.
@@ -2295,6 +2320,27 @@ pub fn supports_untyped_dispatch(kind: &str, event: &str) -> bool {
         )
 }
 
+/// Window placement and rendering preference for a 3D viewport.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SceneViewRenderMode {
+    #[default]
+    Offscreen,
+    Inline,
+    Underlay,
+    Overlay,
+}
+
+impl SceneViewRenderMode {
+    pub const fn window_layer(self) -> i8 {
+        match self {
+            Self::Underlay => -1,
+            Self::Offscreen | Self::Inline => 0,
+            Self::Overlay => 1,
+        }
+    }
+}
+
 impl Node {
     #[doc(hidden)]
     pub fn table_edit_history_enabled(&self) -> bool {
@@ -2386,6 +2432,9 @@ impl Node {
             frozen: false,
             scene_features: OnceCell::new(),
             stacking_order: OnceCell::new(),
+            visibility: OnceCell::new(),
+            opacity: OnceCell::new(),
+            height_independent_metrics: OnceCell::new(),
         }))
     }
 
@@ -2433,9 +2482,48 @@ impl Node {
         SharedNodeIdentity(Rc::downgrade(&self.0))
     }
 
+    /// Whether the intrinsic metrics of this snapshot are independent of its
+    /// enclosing height. Layout can use a previously measured height for
+    /// these nodes when the width constraints match.
+    #[doc(hidden)]
+    pub fn intrinsic_height_independent(&self) -> bool {
+        *self.0.height_independent_metrics.get_or_init(|| {
+            if self.properties.iter().any(|(&name, value)| {
+                matches!(value, Value::Percent(_))
+                    && !matches!(
+                        name,
+                        "width" | "min-width" | "preferred-width" | "max-width" | "x"
+                    )
+            }) {
+                return false;
+            }
+            // These measurement branches don't consult child sizes or the
+            // enclosing height. Containers propagate height to their children.
+            if matches!(
+                self.kind,
+                "Rectangle"
+                    | "Path"
+                    | "TouchArea"
+                    | "Label"
+                    | "Text"
+                    | "StyledText"
+                    | "Image"
+                    | "AnimatedImage"
+                    | "Empty"
+            ) || (self.length("width").is_some() && self.length("height").is_some())
+            {
+                return true;
+            }
+            matches!(
+                self.kind,
+                "HorizontalLayout" | "VerticalLayout" | "Pane" | "Button" | "ButtonContent"
+            ) && self.children.iter().all(Self::intrinsic_height_independent)
+        })
+    }
+
     #[doc(hidden)]
     pub fn contains_scene_feature(&self, feature: SceneFeature) -> bool {
-        self.scene_features() & feature as u8 != 0
+        self.scene_features() & feature as u16 != 0
     }
 
     /// Dynamic branches can be cheap to visit directly. Avoid
@@ -2445,7 +2533,7 @@ impl Node {
         self.has_shared_storage() && !self.contains_scene_feature(feature)
     }
 
-    fn scene_features(&self) -> u8 {
+    fn scene_features(&self) -> u16 {
         // A clone retains the same snapshot even for non-frozen nodes.
         // data_mut clears these bits on each edited path.
         *self
@@ -2454,22 +2542,24 @@ impl Node {
             .get_or_init(|| self.collect_scene_features())
     }
 
-    fn collect_scene_features(&self) -> u8 {
+    fn collect_scene_features(&self) -> u16 {
         use SceneFeature::*;
 
         let mut features = 0;
-        if self.kind == "Rectangle"
-            && self
-                .text("texture-source")
-                .is_some_and(|name| !name.is_empty())
-        {
-            features |= SceneTextureSource as u8;
+        if self.scene_texture_source().is_some() {
+            features |= SceneTextureSource as u16;
+        }
+        if self.image_texture_input().is_some() {
+            features |= SceneImageTexture as u16;
         }
         if self.kind == "SceneView3D" {
-            features |= SceneViewport as u8;
+            features |= SceneViewport as u16;
+            if self.properties.contains_key("preload-model") {
+                features |= ScenePreload as u16;
+            }
         }
         if self.list.is_some() {
-            features |= VirtualList as u8 | ListPreparation as u8;
+            features |= VirtualList as u16 | ListPreparation as u16;
         }
         if let Some((_, page)) = self
             .swipe_preview
@@ -2477,19 +2567,19 @@ impl Node {
             .and_then(|preview| preview.page.as_ref())
         {
             // Only virtual-list preparation visits the separate swipe scene.
-            features |= ListPreparation as u8 | (page.scene_features() & VirtualList as u8);
+            features |= ListPreparation as u16 | (page.scene_features() & VirtualList as u16);
         }
         if is_font_family_choice(self) {
-            features |= FontFamilyChoice as u8;
+            features |= FontFamilyChoice as u16;
         }
         if is_window_overlay(self.kind) {
-            features |= WindowOverlay as u8;
+            features |= WindowOverlay as u16;
         }
         if self.scroll_target.is_some() {
-            features |= AttachedScrollBar as u8 | ScrollEndpoint as u8;
+            features |= AttachedScrollBar as u16 | ScrollEndpoint as u16;
         }
         if self.viewport_handle.is_some() {
-            features |= ScrollEndpoint as u8;
+            features |= ScrollEndpoint as u16;
         }
         self.children.iter().fold(features, |features, child| {
             features | child.scene_features()
@@ -2524,6 +2614,9 @@ impl Node {
         let node = Rc::make_mut(&mut self.0);
         node.scene_features.take();
         node.stacking_order.take();
+        node.visibility.take();
+        node.opacity.take();
+        node.height_independent_metrics.take();
         &mut node.data
     }
 
@@ -2604,6 +2697,13 @@ impl Node {
             (
                 "SceneView3D",
                 "model"
+                | "preload-model"
+                | "lod-fade-width"
+                | "render-mode"
+                | "render-format"
+                | "render-overrides"
+                | "texture-source"
+                | "texture-mipmaps"
                 | "lights"
                 | "ambient-color"
                 | "ambient-intensity"
@@ -2613,6 +2713,18 @@ impl Node {
                 | "shadows"
                 | "imported-lights"
                 | "shadow-map-size"
+                | "shadow-map-precision"
+                | "scissor-rect"
+                | "depth-prepass"
+                | "debug-wireframe"
+                | "shadow-debug-cascades"
+                | "shadow-debug-light-volumes"
+                | "shadow-debug-casters"
+                | "shadow-debug-receivers"
+                | "shadow-debug-intersections"
+                | "shadow-freeze-camera"
+                | "oit-method"
+                | "material-debug"
                 | "shadow-bias"
                 | "shadow-cascades"
                 | "shadow-distance"
@@ -2624,8 +2736,19 @@ impl Node {
                 | "camera-distance"
                 | "selected-object"
                 | "environment"
+                | "environment-sky"
+                | "skybox-source"
+                | "skybox-sky"
+                | "skybox-yaw"
+                | "skybox-pitch"
+                | "skybox-roll"
+                | "skybox-intensity"
+                | "skybox-blur"
                 | "environment-intensity"
                 | "environment-yaw"
+                | "environment-pitch"
+                | "environment-roll"
+                | "environment-horizon"
                 | "environment-skybox"
                 | "frustum-culling"
                 | "multisampling"
@@ -2698,6 +2821,31 @@ impl Node {
                 | "scene-lut"
                 | "scene-lut-size"
                 | "scene-lut-strength"
+                | "scene-vignette-strength"
+                | "scene-vignette-radius"
+                | "scene-vignette-color"
+                | "scene-sharpness"
+                | "scene-dithering"
+                | "fxaa"
+                | "fxaa-edge-threshold"
+                | "fxaa-min-threshold"
+                | "fxaa-subpixel"
+                | "fxaa-strength"
+                | "fxaa-search-steps"
+                | "lens-flare"
+                | "lens-flare-strength"
+                | "lens-flare-threshold"
+                | "lens-flare-ghost-count"
+                | "lens-flare-ghost-dispersal"
+                | "lens-flare-halo-width"
+                | "lens-flare-halo-strength"
+                | "lens-flare-distortion"
+                | "lens-flare-rotation"
+                | "lens-flare-aspect-corrected"
+                | "lens-flare-blur-levels"
+                | "lens-flare-color-map"
+                | "lens-flare-dirt-map"
+                | "lens-flare-starburst-map"
                 | "scene-effect"
                 | "scene-effect-strength"
                 | "scene-effect-depth"
@@ -2714,6 +2862,7 @@ impl Node {
                 | "accessible-heading-level"
                 | "accessible-live",
             ) => 128,
+            ("Image", "texture-input") => 16,
             (kind, "flat") if is_button(kind) || kind == "StandardButton" => 16,
             ("Button" | "ToolButton" | "RoundButton" | "DelayButton", "primary") => 32,
             _ => 0,
@@ -2745,6 +2894,11 @@ impl Node {
     }
 
     #[doc(hidden)]
+    pub fn same_local_layout_inputs_at_node(&self, other: &Self) -> bool {
+        self.shares_storage_with(other) || self.same_own_layout_inputs(other, true, false, false)
+    }
+
+    #[doc(hidden)]
     pub fn same_measurement_inputs_at_node(&self, other: &Self) -> bool {
         self.shares_storage_with(other) || self.same_own_layout_inputs(other, false, true, false)
     }
@@ -2768,10 +2922,16 @@ impl Node {
             return true;
         }
         let fixed_text_children = self.fixed_text_children();
+        let window = matches!(self.kind, "Window" | "ApplicationWindow");
         self.children
             .iter()
             .zip(&other.children)
-            .all(|(child, other)| child.same_layout_inputs(other, false, fixed_text_children))
+            .all(|(child, other)| {
+                (!window
+                    || child.scene_view_render_mode().window_layer()
+                        == other.scene_view_render_mode().window_layer())
+                    && child.same_layout_inputs(other, false, fixed_text_children)
+            })
     }
 
     fn fixed_text_children(&self) -> bool {
@@ -2838,6 +2998,12 @@ impl Node {
             }
             "source" if is_image => !ignore_image_source,
             "text" => !ignore_text(),
+            "render-mode" if self.kind == "SceneView3D" => false,
+            "texture-source"
+                if self.boolean("texture-only", false) || other.boolean("texture-only", false) =>
+            {
+                true
+            }
             name if paint_only != 0 && paint_only & self.paint_only_bit(name) != 0 => false,
             "opacity" => false,
             "selection-color" | "selected-text-color" => false,
@@ -3057,14 +3223,30 @@ impl Node {
         self.boolean("pull-to-refresh", false) && !self.boolean("refreshing", false)
     }
 
+    #[doc(hidden)]
+    pub fn scene_texture_source(&self) -> Option<&str> {
+        if matches!(self.kind, "Rectangle" | "SceneView3D") {
+            self.text("texture-source").filter(|name| !name.is_empty())
+        } else {
+            None
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn image_texture_input(&self) -> Option<&str> {
+        if self.kind == "Image" {
+            self.text("texture-input").filter(|name| !name.is_empty())
+        } else {
+            None
+        }
+    }
+
     /// Keep this named source in its texture instead of the 2D window.
     #[doc(hidden)]
     pub fn scene_texture_only(&self) -> bool {
-        self.kind == "Rectangle"
+        matches!(self.kind, "Rectangle" | "SceneView3D")
             && self.boolean("texture-only", false)
-            && self
-                .text("texture-source")
-                .is_some_and(|name| !name.is_empty())
+            && self.scene_texture_source().is_some()
     }
 
     pub fn boolean(&self, name: &str, default: bool) -> bool {
@@ -3163,7 +3345,10 @@ impl Node {
 
     /// Visual opacity has no effect on layout, focus or hit testing.
     pub fn opacity(&self) -> f32 {
-        self.number("opacity").unwrap_or(1.0).clamp(0.0, 1.0) as f32
+        *self
+            .0
+            .opacity
+            .get_or_init(|| self.number("opacity").unwrap_or(1.0).clamp(0.0, 1.0) as f32)
     }
 
     /// Finite stacking order within an ordinary sibling list.
@@ -3172,6 +3357,25 @@ impl Node {
             .0
             .stacking_order
             .get_or_init(|| self.number("z").filter(|&z| z != 0.0).unwrap_or_default())
+    }
+
+    #[doc(hidden)]
+    pub fn scene_view_render_mode(&self) -> SceneViewRenderMode {
+        if self.kind != "SceneView3D" {
+            return SceneViewRenderMode::Offscreen;
+        }
+        match self.text("render-mode") {
+            Some("inline") => SceneViewRenderMode::Inline,
+            Some("underlay") => SceneViewRenderMode::Underlay,
+            Some("overlay") => SceneViewRenderMode::Overlay,
+            _ => SceneViewRenderMode::Offscreen,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn scene_internal_passes_disabled(&self) -> bool {
+        self.kind == "SceneView3D"
+            && self.text("render-overrides") == Some("disable-internal-passes")
     }
 
     pub fn layout_direction(&self) -> Option<LayoutDirection> {
@@ -3295,8 +3499,10 @@ impl Node {
     }
 
     pub fn is_visible(&self) -> bool {
-        self.boolean("visible", true)
-            && (!is_window_overlay(self.kind) || self.boolean("open", false))
+        *self.0.visibility.get_or_init(|| {
+            self.boolean("visible", true)
+                && (!is_window_overlay(self.kind) || self.boolean("open", false))
+        })
     }
 
     #[doc(hidden)]
@@ -3723,6 +3929,28 @@ impl Node {
 #[cfg(test)]
 mod node_storage_tests {
     use super::*;
+
+    #[test]
+    fn cached_visibility_and_opacity_follow_snapshot_edits() {
+        let original = Node::new("Rectangle", None).into_shared();
+        assert!(original.is_visible());
+        assert_eq!(original.opacity(), 1.0);
+
+        let mut edited = original.clone();
+        edited.properties.insert("visible", false.into());
+        edited.properties.insert("opacity", 0.25.into());
+        assert!(!edited.is_visible());
+        assert_eq!(edited.opacity(), 0.25);
+        assert!(original.is_visible());
+        assert_eq!(original.opacity(), 1.0);
+
+        edited.properties.insert("visible", true.into());
+        assert!(edited.is_visible());
+        edited.kind = "PopupWindow";
+        assert!(!edited.is_visible());
+        edited.properties.insert("open", true.into());
+        assert!(edited.is_visible());
+    }
 
     #[test]
     fn layout_property_comparison_handles_different_ignored_keys() {

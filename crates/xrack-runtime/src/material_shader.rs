@@ -4,6 +4,46 @@ pub fn resource_key(path: &str) -> String {
     format!("material-shader:{path}")
 }
 
+const CAPTURE_AUGMENT_HEADER: &str = "// XRack capture augment: ";
+pub const CAPTURE_AUGMENT_PREFIX: &str = "xrack_augment_";
+pub const CAPTURE_AUGMENT_ENTRY: &str = "xrack_augment_scene_capture_augment";
+
+pub const VALIDATION_AUGMENT_INPUTS: &str = r#"
+fn capture_augment_parameters() -> vec3<f32> { return vec3(0.0); }
+"#;
+
+pub const EMPTY_AUGMENT_TEXTURES: &str = r#"
+fn capture_augment_has_texture(index: u32) -> bool { return false; }
+fn capture_augment_texture_size(index: u32) -> vec2<u32> { return vec2(0u); }
+fn capture_augment_texture(index: u32, uv: vec2<f32>) -> vec4<f32> { return vec4(0.0); }
+fn capture_augment_texture_lod(index: u32, uv: vec2<f32>, lod: f32) -> vec4<f32> { return vec4(0.0); }
+fn capture_augment_texture_grad(index: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> { return vec4(0.0); }
+fn capture_augment_texture_world_position(index: u32, uv: vec2<f32>) -> XrCapturePosition {
+    return xr_invalid_capture_position();
+}
+"#;
+
+pub fn prepare_capture_augment(directives: &str, body: &str) -> String {
+    format!(
+        "{CAPTURE_AUGMENT_HEADER}{}\n{directives}{body}\nconst XRACK_AUGMENT_UV_GRADIENTS: bool = {};\n",
+        directives.len(),
+        uses_uv_gradients(body)
+    )
+}
+
+pub fn capture_augment_parts(source: &str) -> Option<(&str, &str)> {
+    let (length, wgsl) = source
+        .strip_prefix(CAPTURE_AUGMENT_HEADER)?
+        .split_once('\n')?;
+    wgsl.split_at_checked(length.parse().ok()?)
+}
+
+fn uses_uv_gradients(source: &str) -> bool {
+    ["uv0_dx", "uv0_dy", "uv1_dx", "uv1_dy"]
+        .into_iter()
+        .any(|field| source.contains(field))
+}
+
 pub const INTERFACE: &str = r#"
 struct XrVertexInput {
     position: vec3<f32>,
@@ -17,6 +57,10 @@ struct XrVertexInput {
 struct XrMaterialInput {
     uv0: vec2<f32>,
     uv1: vec2<f32>,
+    uv0_dx: vec2<f32>,
+    uv0_dy: vec2<f32>,
+    uv1_dx: vec2<f32>,
+    uv1_dy: vec2<f32>,
     world_position: vec3<f32>,
     view_direction: vec3<f32>,
     vertex_color: vec4<f32>,
@@ -68,12 +112,16 @@ struct XrAmbientInput {
 }
 "#;
 
+pub const TEXTURE_FOOTPRINT: &str = include_str!("texture_footprint.wgsl");
+
 pub const MAX_TEXTURES: usize = 4;
 
 pub const VALIDATION_TEXTURES: &str = r#"
 fn material_has_texture(index: u32) -> bool { return false; }
 fn material_texture_size(index: u32) -> vec2<u32> { return vec2(0u); }
 fn material_texture(index: u32, uv: vec2<f32>) -> vec4<f32> { return vec4(0.0); }
+fn material_texture_lod(index: u32, uv: vec2<f32>, lod: f32) -> vec4<f32> { return vec4(0.0); }
+fn material_texture_grad(index: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> { return vec4(0.0); }
 fn material_texture_world_position(index: u32, uv: vec2<f32>) -> XrCapturePosition {
     return xr_invalid_capture_position();
 }
@@ -87,6 +135,7 @@ pub struct MaterialHooks {
     pub ambient: bool,
     pub capture_position: bool,
     pub data: bool,
+    pub indexed_data: bool,
 }
 
 impl MaterialHooks {
@@ -105,6 +154,7 @@ impl MaterialHooks {
             ambient: mask & 8 != 0,
             capture_position: mask & 16 != 0,
             data: mask & 32 != 0,
+            indexed_data: mask & 64 != 0,
         }
     }
 
@@ -113,7 +163,11 @@ impl MaterialHooks {
     }
 
     pub fn uses_fragment(self, data: bool) -> bool {
-        self.surface || self.light || self.ambient || (data && self.data)
+        self.surface || self.light || self.ambient || (data && self.has_data())
+    }
+
+    pub fn has_data(self) -> bool {
+        self.data || self.indexed_data
     }
 
     pub fn prepare(self, source: &str) -> String {
@@ -122,13 +176,15 @@ impl MaterialHooks {
             | (u8::from(self.light) << 2)
             | (u8::from(self.ambient) << 3)
             | (u8::from(self.capture_position) << 4)
-            | (u8::from(self.data) << 5);
+            | (u8::from(self.data) << 5)
+            | (u8::from(self.indexed_data) << 6);
         let mut prepared = format!(
-            "{}{mask:x}\n{source}\nconst XRACK_VERTEX_PROGRAM: bool = {};\nconst XRACK_DIRECT_LIGHT_PROGRAM: bool = {};\nconst XRACK_AMBIENT_PROGRAM: bool = {};\n",
+            "{}{mask:x}\n{source}\nconst XRACK_VERTEX_PROGRAM: bool = {};\nconst XRACK_DIRECT_LIGHT_PROGRAM: bool = {};\nconst XRACK_AMBIENT_PROGRAM: bool = {};\nconst XRACK_MATERIAL_UV_GRADIENTS: bool = {};\n",
             Self::HEADER,
             self.vertex,
             self.light,
-            self.ambient
+            self.ambient,
+            uses_uv_gradients(source)
         );
         for (present, identity) in [
             (self.vertex, IDENTITY_VERTEX),
@@ -136,6 +192,7 @@ impl MaterialHooks {
             (self.light, IDENTITY_LIGHT),
             (self.ambient, IDENTITY_AMBIENT),
             (self.data, IDENTITY_DATA),
+            (self.indexed_data, DEFAULT_INDEXED_DATA),
         ] {
             if !present {
                 prepared.push_str(identity);
@@ -175,6 +232,15 @@ fn scene_material_data(input: XrMaterialInput, surface: XrMaterialSurface) -> ve
 }
 "#;
 
+const DEFAULT_INDEXED_DATA: &str = r#"
+fn scene_material_data_at(input: XrMaterialInput, surface: XrMaterialSurface, index: u32) -> vec4<f32> {
+    if index == 0u {
+        return scene_material_data(input, surface);
+    }
+    return vec4(0.0);
+}
+"#;
+
 pub const VERTEX_APPLICATION: &str = r#"
 fn xr_displaced_vertex(position: vec3<f32>, parameters: vec4<f32>, data: vec4<f32>,
                        index: u32, tint: vec4<f32>, rows: mat3x4<f32>) -> vec3<f32> {
@@ -200,11 +266,12 @@ pub const VALIDATION_VERTEX_ENTRY: &str = r#"
 
 pub const VALIDATION_ENTRY: &str = r#"
 @fragment fn xr_material_check(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
-    let input = XrMaterialInput(at.xy, at.xy, at.xyz, vec3(0.0, 0.0, 1.0),
+    let input = XrMaterialInput(at.xy, at.xy, vec2(0.0), vec2(0.0), vec2(0.0), vec2(0.0), at.xyz, vec3(0.0, 0.0, 1.0),
         vec4(1.0), vec3(0.0), true, vec4(0.0), 0u, vec4(1.0));
     let surface = XrMaterialSurface(vec3(1.0), vec3(0.0), vec3(0.0, 0.0, 1.0), 0.5, 0.0);
     let result: XrMaterialSurface = scene_material(input, surface);
-    let data: vec4<f32> = scene_material_data(input, result);
+    let data: vec4<f32> = scene_material_data(input, result)
+        + scene_material_data_at(input, result, 1u);
     let shading = XrLightingInput(input, result, vec3(0.04));
     let light = XrLightInput(shading, XR_DIRECTIONAL_LIGHT, 0u, vec3(0.0, 0.0, 1.0),
         vec3(1.0), 1.0, 1.0, vec3(0.04));

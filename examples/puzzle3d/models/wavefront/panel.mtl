@@ -1,0 +1,9 @@
+newmtl Backdrop
+illum 0
+Kd 0.12 0.29 0.5
+d 0.82
+
+newmtl Trim
+illum 0
+Kd 0.95 0.72 0.45
+map_Kd -clamp on -s 1 0.75 1 -o 0 0.125 0 ../focus-grid.png

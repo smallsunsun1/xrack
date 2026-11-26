@@ -35,6 +35,7 @@ xrack-mlir = { path = "crates/xrack-mlir", version = "0.9.0" }
 xrack-interpreter = { path = "crates/xrack-interpreter", version = "=0.9.0" }
 xrack-codegen = { path = "crates/xrack-codegen" }
 xrack-resources = { path = "crates/xrack-resources", version = "0.9.0" }
+xrack-scene-import = { path = "crates/xrack-scene-import", version = "0.9.0" }
 xrack-layout = { path = "crates/xrack-layout", version = "0.9.0" }
 xrack-renderer-femtovg = { path = "crates/xrack-renderer-femtovg", version = "0.9.0" }
 xrack-platform-winit = { path = "crates/xrack-platform-winit", version = "0.9.0" }

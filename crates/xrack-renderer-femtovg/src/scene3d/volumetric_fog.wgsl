@@ -95,6 +95,9 @@ fn fog_incident_light(ray: FogRay, distance: f32) -> vec3<f32> {
     var radiance = vec3<f32>(0.0);
     for (var index = 0u; index < u32(lighting.settings.x); index += 1u) {
         let light = lighting.lights[index];
+        if light.scope != 0u {
+            continue;
+        }
         let incident = incident_light(light, world);
         if all(incident.radiance <= vec3<f32>(0.0)) {
             continue;

@@ -2,7 +2,7 @@ use crate::{
     Paint, Point, TextSystem,
     text::{
         AsciiMetrics, LabelFont, LabelWordIndex, PreparedLabel, ascii_word_bounds,
-        atlas_size_range, single_ltr_shaping_run,
+        atlas_size_range, han_word_bounds, single_ltr_shaping_run,
     },
 };
 use femtovg::{Baseline, FontId, PositionedGlyph, TextContext, TextMetrics};
@@ -139,7 +139,7 @@ pub(super) struct Cache {
     unicode_word_index: Weak<LabelWordIndex>,
     reflow_word_index: Option<Rc<LabelWordIndex>>,
     previous_reflow_label: Weak<PreparedLabel>,
-    unicode_word_slots: Vec<IndexedUnicodeWord>,
+    unicode_word_slots: UnicodeWordSlots,
     unicode_lines: StoredRuns<Rc<UnicodeLine>>,
     unicode_ranges: UnicodeLineRanges,
     #[cfg(xrack_femtovg_glyph_samples)]
@@ -150,6 +150,8 @@ pub(super) struct Cache {
     recent_positions: VecDeque<(Weak<PreparedLabel>, Placement)>,
     positioned: VecDeque<PositionedBatch>,
     unicode: Option<UnicodeLabel>,
+    #[cfg(xrack_femtovg_glyph_samples)]
+    document_ink: Option<(Weak<PreparedLabel>, Option<[f32; 2]>)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -221,6 +223,45 @@ struct IndexedUnicodeWord {
     positioned: Option<PositionedWord>,
 }
 
+#[derive(Default)]
+struct UnicodeWordSlots {
+    indexed: Vec<IndexedUnicodeWord>,
+    #[cfg(not(xrack_femtovg_glyph_samples))]
+    compact: Vec<Weak<UnicodeRun>>,
+}
+
+impl UnicodeWordSlots {
+    fn prepare(&mut self, len: usize, _indexed_measurement: bool) {
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        {
+            if !_indexed_measurement {
+                // Glyph-only indexing never uses the native position proofs.
+                self.indexed = Vec::new();
+                self.compact.clear();
+                self.compact.resize_with(len, Weak::new);
+                return;
+            }
+            self.compact = Vec::new();
+        }
+        self.indexed.clear();
+        self.indexed.resize_with(len, IndexedUnicodeWord::default);
+    }
+
+    fn run(&self, id: usize) -> Option<&Weak<UnicodeRun>> {
+        let run = self.indexed.get(id).map(|word| &word.run);
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        let run = run.or_else(|| self.compact.get(id));
+        run
+    }
+
+    fn run_mut(&mut self, id: usize) -> Option<&mut Weak<UnicodeRun>> {
+        let run = self.indexed.get_mut(id).map(|word| &mut word.run);
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        let run = run.or_else(|| self.compact.get_mut(id));
+        run
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct WordOutline {
     edges: [f32; 2],
@@ -283,6 +324,8 @@ impl<const SLOTS: usize> KnownAtlasPhases<SLOTS> {
 
 fn visit_ltr_words(value: &str, mut visit: impl FnMut(&str) -> Option<()>) -> Option<()> {
     if let Some(mut words) = ascii_word_bounds(value) {
+        words.try_for_each(visit)
+    } else if let Some(mut words) = han_word_bounds(value) {
         words.try_for_each(visit)
     } else if single_ltr_shaping_run(value) {
         value.split_word_bounds().try_for_each(&mut visit)
@@ -472,6 +515,16 @@ impl UnicodeLine {
         self.atlas_origin_x.set(Some(x.to_bits()));
     }
 
+    #[cfg(not(xrack_femtovg_glyph_samples))]
+    pub(super) fn ink_rows(&self, y: f32, scale: f32) -> Option<[f32; 2]> {
+        let [top, bottom] = self.bounds?;
+        let y = y * scale;
+        // Use the same safe coordinate range and raster rounding margin as
+        // offscreen culling. Unsupported glyphs have no bounds to merge.
+        (y.abs().max(top.abs()).max(bottom.abs()) <= 1_048_576.0)
+            .then_some([y + top - 2.0, y + bottom + 2.0])
+    }
+
     pub(super) fn offscreen(&self, y: f32, scale: f32, target_height: f32) -> bool {
         self.bounds
             .is_some_and(|bounds| outside_target(bounds, y * scale, target_height))
@@ -535,6 +588,7 @@ pub(super) struct UnicodePaint<'a> {
     font: LabelFont,
     paint: Paint,
     pub(super) measurement_scale: f32,
+    pub(super) seed_offscreen: bool,
     scale: f32,
     size_range: [f32; 2],
     ink: RefCell<[Option<VerticalGlyphInk>; GLYPH_INK_SLOTS]>,
@@ -554,6 +608,7 @@ impl<'a> UnicodePaint<'a> {
         scale: f32,
         height: f32,
         label: &'a PreparedLabel,
+        seed_offscreen: bool,
     ) -> Self {
         let measurement_scale = crate::cell_glyphs::measurement_scale(scale);
         let source = label.source_text();
@@ -565,6 +620,7 @@ impl<'a> UnicodePaint<'a> {
                 .clone()
                 .with_font_size(paint.font_size() * measurement_scale),
             measurement_scale,
+            seed_offscreen,
             scale,
             size_range: atlas_size_range(paint.font_size(), scale),
             // Repeated glyphs across freshly wrapped words share the same
@@ -595,10 +651,9 @@ impl<'a> UnicodePaint<'a> {
         };
         if !std::ptr::eq(cache.unicode_word_index.as_ptr(), Rc::as_ptr(index)) {
             cache.unicode_word_index = Rc::downgrade(index);
-            cache.unicode_word_slots.clear();
             cache
                 .unicode_word_slots
-                .resize_with(index.len(), IndexedUnicodeWord::default);
+                .prepare(index.len(), self.indexed_measurement);
         }
         true
     }
@@ -836,6 +891,13 @@ impl UnicodeLabel {
         if lines.len() > MAX_LINES {
             return Ok(None);
         }
+        #[cfg(xrack_femtovg_glyph_samples)]
+        let document_ink = if !paint.seed_offscreen && paint.paint.text_baseline() == Baseline::Top
+        {
+            cache.document_ink(label, paint)
+        } else {
+            None
+        };
         let mut glyph_count = 0;
         let mut measured = Vec::with_capacity(lines.len());
         let source = cache.unicode_ranges.prepare(label);
@@ -846,6 +908,20 @@ impl UnicodeLabel {
         });
         for (origin, value) in lines {
             let key = source.and_then(|source| UnicodeLineRanges::key(source, value));
+            #[cfg(xrack_femtovg_glyph_samples)]
+            if let Some(bounds) = document_ink
+                && key.is_some()
+                && outside_target(bounds, origin.y * paint.scale, paint.height)
+            {
+                // Source ranges contain only whole ideographs. Generated
+                // lines (for example with ellipses) need their own bounds.
+                glyph_count += value.len() / 3;
+                if glyph_count > glyph_budget {
+                    return Ok(None);
+                }
+                measured.push(UnicodeLabelLine::Deferred(bounds));
+                continue;
+            }
             let cached = key.and_then(|key| cache.unicode_ranges.get(key, *origin, paint));
             let (line, count) = if let Some(cached) = cached {
                 cached
@@ -890,6 +966,72 @@ impl UnicodeLabel {
 }
 
 impl Cache {
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn document_ink(
+        &mut self,
+        label: &Rc<PreparedLabel>,
+        paint: &UnicodePaint<'_>,
+    ) -> Option<[f32; 2]> {
+        let cached = self.document_ink.take().filter(|(previous, _)| {
+            std::ptr::eq(previous.as_ptr(), Rc::as_ptr(label))
+                || previous
+                    .upgrade()
+                    .is_some_and(|old| old.shares_text_with(label))
+        });
+        let bounds = match cached {
+            Some((_, bounds)) => bounds,
+            None => self.measure_document_ink(label.source_text()?, paint),
+        };
+        self.document_ink = Some((Rc::downgrade(label), bounds));
+        bounds
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn measure_document_ink(&mut self, source: &str, paint: &UnicodePaint<'_>) -> Option<[f32; 2]> {
+        const FIRST: u32 = 0x4e00;
+        const LAST: u32 = 0x9fff;
+        let mut seen = [false; (LAST - FIRST + 1) as usize];
+        for character in source.chars().filter(|ch| !matches!(ch, '\r' | '\n')) {
+            let index = u32::from(character).checked_sub(FIRST)? as usize;
+            *seen.get_mut(index)? = true;
+        }
+
+        let context = paint.text.context();
+        let size = paint.paint.font_size();
+        let scale = paint.scale / paint.measurement_scale;
+        let mut top = f32::INFINITY;
+        let mut bottom = f32::NEG_INFINITY;
+        let mut min_ascent = f32::INFINITY;
+        let mut max_ascent = f32::NEG_INFINITY;
+        for (index, _) in seen.iter().enumerate().filter(|(_, seen)| **seen) {
+            let character = char::from_u32(FIRST + index as u32)?;
+            let (font, glyph, [advance_y, offset_y]) =
+                context.cached_ideograph_placement(character, &paint.paint)?;
+            let ascent = self.outline_font_ascent(context, font, size)? * scale;
+            let offset = offset_y * scale;
+            // Enclose every possible per-line ascent and outline offset,
+            // leaving room for the rounding margin in outside_target.
+            if advance_y != 0.0
+                || !(f32::EPSILON..=262_144.0).contains(&ascent)
+                || !(-262_144.0..=262_144.0).contains(&offset)
+            {
+                return None;
+            }
+            min_ascent = min_ascent.min(ascent);
+            max_ascent = max_ascent.max(ascent);
+            if let Some(extents) = paint
+                .text
+                .outline_glyph(font, glyph)?
+                .atlas_extents(paint.size_range)
+            {
+                let [_, low, _, high] = extents.padded_edges();
+                top = top.min(low + offset);
+                bottom = bottom.max(high + offset);
+            }
+        }
+        (top.is_finite() && bottom.is_finite()).then_some([top + min_ascent, bottom + max_ascent])
+    }
+
     fn word_index_for_reflow(&mut self, label: &Rc<PreparedLabel>) -> Option<Rc<LabelWordIndex>> {
         // The index has a slot for each source byte and each word. Retain
         // one bounded document when its text survives a change of line plan.
@@ -917,14 +1059,14 @@ impl Cache {
         visit: impl FnOnce(&Self, &Rc<UnicodeRun>) -> T,
     ) -> Option<T> {
         if let Some(run) = id
-            .and_then(|id| self.unicode_word_slots.get(id))
-            .and_then(|slot| slot.run.upgrade())
+            .and_then(|id| self.unicode_word_slots.run(id))
+            .and_then(Weak::upgrade)
         {
             return Some(visit(self, &run));
         }
         let (run, _) = self.unicode_words.entries.get(word)?;
-        if let Some(slot) = id.and_then(|id| self.unicode_word_slots.get_mut(id)) {
-            slot.run = Rc::downgrade(run);
+        if let Some(slot) = id.and_then(|id| self.unicode_word_slots.run_mut(id)) {
+            *slot = Rc::downgrade(run);
         }
         Some(visit(self, run))
     }
@@ -941,14 +1083,14 @@ impl Cache {
 
     #[cfg(xrack_femtovg_glyph_samples)]
     fn word_outline(&mut self, word: &str, id: Option<usize>) -> Option<WordOutline> {
-        if let Some(slot) = id.and_then(|id| self.unicode_word_slots.get(id))
+        if let Some(slot) = id.and_then(|id| self.unicode_word_slots.indexed.get(id))
             && slot.outline.glyph_count != 0
         {
             return Some(slot.outline);
         }
         let outline =
             self.with_unicode_word(word, id, |cache, run| cache.outline_for_run(run))??;
-        if let Some(slot) = id.and_then(|id| self.unicode_word_slots.get_mut(id)) {
+        if let Some(slot) = id.and_then(|id| self.unicode_word_slots.indexed.get_mut(id)) {
             // Atlas residency lasts for the selected canvas and font scale.
             // Keep the bounds even after the shaped glyph array is evicted.
             slot.outline = outline;
@@ -964,6 +1106,9 @@ impl Cache {
     ) -> Option<(UnicodeLabelLine, usize)> {
         #[cfg(not(xrack_femtovg_glyph_samples))]
         {
+            if !paint.seed_offscreen {
+                return None;
+            }
             self.seed_offscreen_glyphs(value, origin, paint)
         }
         #[cfg(xrack_femtovg_glyph_samples)]
@@ -992,6 +1137,7 @@ impl Cache {
                     .and_then(|(index, source)| {
                         let words = self
                             .unicode_word_slots
+                            .indexed
                             .get(index.full_words(source, value)?)?;
                         words.iter().try_fold(empty, |bounds, word| {
                             (word.outline.glyph_count != 0).then(|| include(bounds, word.outline))
@@ -1048,7 +1194,7 @@ impl Cache {
         paint.visit_words(value, |word, id| {
             let start = x.to_bits();
             let cached = id
-                .and_then(|id| self.unicode_word_slots.get(id))
+                .and_then(|id| self.unicode_word_slots.indexed.get(id))
                 .and_then(|word| word.positioned);
             let outline = if let Some(cached) = cached.filter(|word| word.start == start) {
                 x = cached.end;
@@ -1086,7 +1232,8 @@ impl Cache {
                 // Reuse the exact end position, including additions rounded
                 // by the original placement loop. A miss still needs seeds.
                 if glyphs.len() == before
-                    && let Some(slot) = id.and_then(|id| self.unicode_word_slots.get_mut(id))
+                    && let Some(slot) =
+                        id.and_then(|id| self.unicode_word_slots.indexed.get_mut(id))
                 {
                     slot.positioned = Some(PositionedWord {
                         start,
@@ -1280,14 +1427,14 @@ impl Cache {
             #[cfg(xrack_femtovg_glyph_samples)]
             if let Some(id) = id
                 && let Some(outline) = self.outline_for_run(&run)
-                && let Some(slot) = self.unicode_word_slots.get_mut(id)
+                && let Some(slot) = self.unicode_word_slots.indexed.get_mut(id)
             {
                 slot.outline = outline;
             }
             let run = Rc::new(run);
             line.push(run.clone());
-            if let Some(slot) = id.and_then(|id| self.unicode_word_slots.get_mut(id)) {
-                slot.run = Rc::downgrade(&run);
+            if let Some(slot) = id.and_then(|id| self.unicode_word_slots.run_mut(id)) {
+                *slot = Rc::downgrade(&run);
             }
             self.unicode_words.insert(word, run, bytes, word_budget);
             Some(())
@@ -1352,6 +1499,25 @@ impl Cache {
                 ..UnicodeRun::default()
             });
         }
+        #[cfg(xrack_femtovg_glyph_samples)]
+        if let Some((font, id, [advance_x, advance_y], [offset_x, offset_y])) =
+            context.shaped_ideograph_placement(word, &paint.paint)
+        {
+            let baseline = self.outline_font_ascent(context, font, size)?;
+            return Some(UnicodeRun {
+                baseline,
+                glyphs: vec![UnicodeGlyph {
+                    font,
+                    id,
+                    offset_x,
+                    offset_y,
+                    advance_x,
+                    advance_y,
+                    control: false,
+                }],
+                ..UnicodeRun::default()
+            });
+        }
         let metrics = context.measure_text(0.0, 0.0, word, &paint.paint).ok()?;
         let mut ascent: f32 = 0.0;
         let mut previous = None;
@@ -1393,7 +1559,9 @@ impl Cache {
         self.unicode_word_index = Weak::new();
         self.reflow_word_index = None;
         self.previous_reflow_label = Weak::new();
-        self.unicode_word_slots.clear();
+        self.unicode_word_slots.indexed.clear();
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        self.unicode_word_slots.compact.clear();
         #[cfg(not(xrack_femtovg_glyph_samples))]
         self.atlas_phases.clear();
         #[cfg(xrack_femtovg_glyph_samples)]
@@ -1582,6 +1750,28 @@ impl Cache {
 }
 
 mod tests {
+    #[cfg(not(xrack_femtovg_glyph_samples))]
+    #[test]
+    fn glyph_only_word_slots_release_position_proofs() {
+        use super::{UnicodeRun, UnicodeWordSlots};
+        use std::rc::Rc;
+
+        let mut slots = UnicodeWordSlots::default();
+        slots.prepare(64, true);
+        assert_eq!(slots.indexed.len(), 64);
+
+        slots.prepare(32, false);
+        assert_eq!(slots.indexed.capacity(), 0);
+        assert_eq!(slots.compact.len(), 32);
+        let word = Rc::new(UnicodeRun::default());
+        *slots.run_mut(0).unwrap() = Rc::downgrade(&word);
+        assert!(slots.run(0).unwrap().upgrade().is_some());
+
+        slots.prepare(32, true);
+        assert_eq!(slots.compact.capacity(), 0);
+        assert!(slots.run(0).unwrap().upgrade().is_none());
+    }
+
     #[test]
     fn reflow_word_index_follows_the_prepared_source() {
         use super::{Cache, TextSystem};

@@ -6,8 +6,9 @@ use crate::{
     nine_slice,
 };
 use femtovg::{
-    Atlas as PackingAtlas, Canvas, ImageFlags, ImageId, ImageInfo, ImageSource, Paint, Path,
-    PixelFormat, Quad, renderer::WGPURenderer,
+    Atlas as PackingAtlas, Canvas, Color, CompositeOperation, ImageFlags, ImageId, ImageInfo,
+    ImageSource, Paint, Path, PixelFormat, Quad,
+    renderer::{RenderTarget, WGPURenderer},
 };
 use rgb::{FromSlice, Gray, RGBA8};
 use std::{
@@ -1145,4 +1146,105 @@ fn fill(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, paint: &Paint) {
     let mut path = Path::new();
     path.rect(bounds.x, bounds.y, bounds.width, bounds.height);
     canvas.fill_path(&path, paint);
+}
+
+pub(super) fn draw_live_texture(
+    canvas: &mut Canvas<WGPURenderer>,
+    texture: wgpu::Texture,
+    bounds: Rect,
+    presentation: ImagePresentation,
+    colorize: Colorize<'_>,
+) -> Result<(), String> {
+    let size = [texture.width(), texture.height()];
+    let region = presentation.region;
+    if region.width == 0 || region.height == 0 {
+        return Ok(());
+    }
+    let placement = presentation.placement(bounds);
+    if placement.visible.width <= 0.0 || placement.visible.height <= 0.0 {
+        return Ok(());
+    }
+    let cropped = region != ImageRegion::full(size);
+    // Crop edges must clamp to the selected texels. Colorize also needs a
+    // separate GPU target for the source alpha mask.
+    let render_region = colorize.uses_alpha() || cropped;
+    let mut flags = ImageFlags::PREMULTIPLIED;
+    if presentation.rendering == ImageRendering::Pixelated {
+        flags |= ImageFlags::NEAREST;
+    }
+    let mut repeat = ImageFlags::empty();
+    repeat.set(ImageFlags::REPEAT_X, placement.repeat[0]);
+    repeat.set(ImageFlags::REPEAT_Y, placement.repeat[1]);
+    let source = canvas
+        .create_image_from_native_texture(
+            texture,
+            ImageInfo::new(
+                if render_region { flags } else { flags | repeat },
+                size[0] as usize,
+                size[1] as usize,
+                PixelFormat::Rgba8,
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+    let result = if render_region {
+        raster_live_region(canvas, source, size, region, flags | repeat, colorize).map(|image| {
+            let paint = Colorize::Original.paint(image, placement.pattern);
+            fill(canvas, placement.visible, &paint);
+            canvas.delete_image(image);
+        })
+    } else {
+        let paint = Colorize::Original.paint(source, placement.pattern);
+        fill(canvas, placement.visible, &paint);
+        Ok(())
+    };
+    canvas.delete_image(source);
+    result
+}
+
+fn raster_live_region(
+    canvas: &mut Canvas<WGPURenderer>,
+    source: ImageId,
+    size: [u32; 2],
+    region: ImageRegion,
+    flags: ImageFlags,
+    colorize: Colorize<'_>,
+) -> Result<ImageId, String> {
+    let target = canvas
+        .create_image_empty(
+            region.width as usize,
+            region.height as usize,
+            PixelFormat::Rgba8,
+            flags | ImageFlags::FLIP_Y,
+        )
+        .map_err(|error| error.to_string())?;
+    let source_bounds = Rect::new(
+        -(region.x as f32),
+        -(region.y as f32),
+        size[0] as f32,
+        size[1] as f32,
+    );
+    let bounds = Rect::new(0.0, 0.0, region.width as f32, region.height as f32);
+    let mut copy = Colorize::Original.paint(source, source_bounds);
+    copy.set_anti_alias(false);
+    let tint = match colorize {
+        Colorize::Original => None,
+        Colorize::Solid(color) => Some(Paint::color(color)),
+        Colorize::Gradient(brush) => Some(crate::paint_brush(brush, source_bounds, 0.0)),
+    };
+    canvas.save();
+    canvas.reset_transform();
+    canvas.reset_scissor();
+    canvas.set_global_alpha(1.0);
+    canvas.with_render_target(RenderTarget::Image(target), |canvas| {
+        canvas.clear_rect(0, 0, region.width, region.height, Color::rgba(0, 0, 0, 0));
+        canvas.global_composite_operation(CompositeOperation::SourceOver);
+        fill(canvas, bounds, &copy);
+        if let Some(mut tint) = tint {
+            tint.set_anti_alias(false);
+            canvas.global_composite_operation(CompositeOperation::SourceIn);
+            fill(canvas, bounds, &tint);
+        }
+    });
+    canvas.restore();
+    Ok(target)
 }

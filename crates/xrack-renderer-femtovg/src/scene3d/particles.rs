@@ -545,10 +545,10 @@ impl Composite {
 
 #[derive(Default)]
 pub(super) struct ParticlePipelines {
-    shaders: [Option<wgpu::ShaderModule>; 2],
+    shaders: [Option<wgpu::ShaderModule>; 6],
     variants: HashMap<
         (
-            [bool; 10],
+            [bool; 11],
             Composite,
             CapturePipelineState,
             super::wireframe::RasterMode,
@@ -773,19 +773,37 @@ impl ParticlePipelines {
         pass: &mut wgpu::RenderPass<'_>,
         batches: &[GpuParticleBatch],
         output: ColorOutput,
-        weighted: bool,
+        (weighted, linked): (
+            bool,
+            Option<(
+                &super::linked_transparency::LinkedFrame<'_>,
+                &wgpu::TextureView,
+            )>,
+        ),
         affectors: Option<&wgpu::Buffer>,
     ) {
         if batches.is_empty() {
             return;
         }
         let wireframe = output.raster == super::wireframe::RasterMode::ShaderLine;
-        let shader = self.shaders[usize::from(wireframe)].get_or_insert_with(|| {
+        let linked_samples = linked.map(|_| {
+            super::linked_transparency::LinkedSamples::from_multisampling(output.multisampling)
+        });
+        let shader_slot =
+            usize::from(wireframe) + linked_samples.map_or(0, |samples| 2 + 2 * samples.slot());
+        let shader = self.shaders[shader_slot].get_or_insert_with(|| {
             let source = include_str!("particles.wgsl");
             let source = if wireframe {
                 std::borrow::Cow::Owned(super::wireframe::particles(source))
             } else {
                 std::borrow::Cow::Borrowed(source)
+            };
+            let source = if let Some(samples) = linked_samples {
+                std::borrow::Cow::Owned(super::linked_transparency::capture_shader(
+                    &source, samples,
+                ))
+            } else {
+                source
             };
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("XRack 3D sprites"),
@@ -820,6 +838,7 @@ impl ParticlePipelines {
                     output.hdr && !weighted,
                     output.stenciled,
                     output.reverse_depth,
+                    linked.is_some(),
                 ],
                 composite,
                 super::pipeline::fixed_state(output.pipeline_state),
@@ -831,6 +850,8 @@ impl ParticlePipelines {
                 },
             );
             let pipeline = self.variants.entry(key).or_insert_with(|| {
+                let linked_constants =
+                    [("XR_LINKED_REVERSE_DEPTH", f64::from(output.reverse_depth))];
                 let ordinary = [Some(wgpu::ColorTargetState {
                     format: output.format(),
                     blend: output.pipeline_state.blend.map_or_else(
@@ -860,7 +881,14 @@ impl ParticlePipelines {
                     fragment: Some(wgpu::FragmentState {
                         module: shader,
                         entry_point: Some(composite.fragment(textured, trail)),
-                        compilation_options: Default::default(),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: if linked.is_some() {
+                                &linked_constants
+                            } else {
+                                &[]
+                            },
+                            ..Default::default()
+                        },
                         targets: if weighted {
                             &super::pipeline::WEIGHTED_TARGETS
                         } else {
@@ -949,6 +977,9 @@ impl ParticlePipelines {
                         resource: wgpu::BindingResource::TextureView(&color_table.view),
                     });
                 }
+            }
+            if let Some((frame, depth)) = linked {
+                entries.extend(frame.capture_entries(depth));
             }
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("XRack 3D emitter bindings"),

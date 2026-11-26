@@ -10633,6 +10633,34 @@ fn vector_masks_match_translucent_paint_and_clipping() -> Result<(), Box<dyn std
             "{case}: largest channel error: {max_diff:?}"
         );
     };
+    let rgba = cached.snapshot(&scene, 192, 92, 2.0, &input)?;
+    cached.set_vector_mask_cache_enabled(false);
+    cached.set_vector_mask_cache_enabled(true);
+    let before = cached.vector_mask_stats();
+    let target = cached.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("BGRA vector coverage"),
+        size: wgpu::Extent3d {
+            width: 192,
+            height: 92,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    cached.draw_with_layout(&scene, &rgba.layout, &target, 2.0, &input)?;
+    assert_eq!(cached.vector_mask_stats().rasterized - before.rasterized, 2);
+    let mut bgra = gpu_readback::read_texture(&cached, &target)?;
+    for pixel in bgra.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    assert_eq!(bgra, rgba.rgba, "BGRA and RGBA vector coverage");
+    cached.set_vector_mask_cache_enabled(false);
+    cached.set_vector_mask_cache_enabled(true);
+
     for scale in [1.0, 2.0] {
         let first = &mut scene.children[0].children[0];
         first.properties.insert("fill", Color(0xf0856599).into());
@@ -10802,12 +10830,65 @@ fn vector_masks_match_translucent_paint_and_clipping() -> Result<(), Box<dyn std
 }
 
 #[test]
-#[ignore = "manual GPU measurement for animated fills on fixed vector paths"]
+fn changing_vector_contours_only_cache_masks_when_they_settle()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut cached = Renderer::with_device(gpu.clone())?;
+    let mut direct = Renderer::with_device(gpu)?;
+    direct.set_vector_mask_cache_enabled(false);
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    for index in 0..16 {
+        let mut icon = Node::new("Path", None);
+        icon.properties
+            .insert("x", Length(index as f64 * 16.0).into());
+        icon.properties.insert("width", Length(16.0).into());
+        icon.properties.insert("height", Length(16.0).into());
+        icon.properties.insert("viewbox-width", 24.0_f64.into());
+        icon.properties.insert("viewbox-height", 24.0_f64.into());
+        icon.properties.insert("fill", Color(0x5450c3ff).into());
+        scene.children.push(icon);
+    }
+    for frame in 0..3 {
+        for (index, icon) in scene.children.iter_mut().enumerate() {
+            let control = 4.0 + (index / 2) as f64 + frame as f64 / 4.0;
+            let commands = format!(
+                "M3 8 C{control} 1 22 1 22 8 C24 10 17 16 21 22 C10 26 1 24 4 16 C7 13 3 13 3 8 Z "
+            )
+            .repeat(5);
+            icon.properties.insert("commands", commands.into());
+        }
+        let before = cached.vector_mask_stats();
+        let output = cached.snapshot(&scene, 256, 16, 1.0, &input)?;
+        let captures = cached.vector_mask_stats().rasterized - before.rasterized;
+        if frame == 0 {
+            assert_eq!(captures, 4);
+        } else {
+            assert_eq!(captures, 0);
+            let reference = direct.snapshot(&scene, 256, 16, 1.0, &input)?;
+            assert_same_pixels(&output, &reference);
+        }
+    }
+    let before = cached.vector_mask_stats().rasterized;
+    cached.snapshot(&scene, 256, 16, 1.0, &input)?;
+    assert!(cached.vector_mask_stats().rasterized > before);
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual GPU measurement for animated vector paths"]
 fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
     use xrack_runtime::{Brush, Color, GradientStop, Length, Node, Value};
 
     let gradient = std::env::var_os("XRACK_VECTOR_BENCH_GRADIENT").is_some();
+    let dynamic = std::env::var_os("XRACK_VECTOR_BENCH_DYNAMIC").is_some();
     let viewport = Size::new(640.0, 480.0);
     let mut scene = Node::new("Window", None);
     for row in 0..12 {
@@ -10848,12 +10929,16 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
-    for shapes in [1, 12] {
-        // Explicit subpath starts keep the single-shape case compatible with Qt Quick and Slint.
-        let commands: Vec<_> = (0..shapes).map(|index| {
-            let control = 17.0 + index as f32 / 4.0;
-            format!("M12 4 C{control} 1 23 7 20 12 C23 17 17 23 12 20 C7 23 1 17 4 12 C1 7 7 1 12 4 Z ").repeat(8)
-        }).collect();
+    let shape_counts: &[usize] = if dynamic { &[48] } else { &[1, 12, 48, 96] };
+    // Explicit subpath starts keep the shape compatible with Qt Quick and Slint.
+    let commands_for = |control| {
+        format!("M12 4 C{control} 1 23 7 20 12 C23 17 17 23 12 20 C7 23 1 17 4 12 C1 7 7 1 12 4 Z ")
+            .repeat(8)
+    };
+    for &shapes in shape_counts {
+        let commands: Vec<_> = (0..shapes)
+            .map(|index| commands_for(17.0 + index as f32 / 4.0))
+            .collect();
         for (index, icon) in scene.children.iter_mut().enumerate() {
             icon.properties
                 .insert("commands", commands[index % shapes].clone().into());
@@ -10868,7 +10953,21 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
             let before = renderer.vector_mask_stats();
             let mut submit = Vec::with_capacity(60);
             let mut total = Vec::with_capacity(60);
-            for index in 0..70 {
+            let warmup = if !dynamic && shapes > 12 { 100 } else { 10 };
+            let sequence: Vec<Vec<_>> = if dynamic {
+                (0..warmup + 60)
+                    .map(|frame| {
+                        (0..shapes)
+                            .map(|shape| {
+                                commands_for(15.0 + shape as f32 / 8.0 + frame as f32 / 64.0)
+                            })
+                            .collect()
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for index in 0..warmup + 60 {
                 let rgb = if index % 2 == 0 {
                     0x526ff4ff
                 } else {
@@ -10897,8 +10996,14 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     Color(rgb).into()
                 };
-                for icon in &mut scene.children {
+                for (position, icon) in scene.children.iter_mut().enumerate() {
                     icon.properties.insert("fill", fill.clone());
+                    if dynamic {
+                        icon.properties.insert(
+                            "commands",
+                            sequence[index][position % shapes].clone().into(),
+                        );
+                    }
                 }
                 let start = Instant::now();
                 renderer.draw_with_layout(&scene, &layout, &texture, 2.0, &input)?;
@@ -10907,7 +11012,7 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
                     submission_index: None,
                     timeout: Some(Duration::from_secs(10)),
                 })?;
-                if index >= 10 {
+                if index >= warmup {
                     submit.push(submitted);
                     total.push(start.elapsed());
                 }
@@ -10921,7 +11026,7 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             let after = renderer.vector_mask_stats();
-            if masks {
+            if masks && !dynamic {
                 assert_eq!(after.rasterized - before.rasterized, shapes as u64 * 2);
                 assert!(after.reused - before.reused > 10_000);
             }
@@ -11318,6 +11423,119 @@ fn rounded_atlas_reuses_fractional_tiles_across_frames() -> Result<(), Box<dyn s
     }
     assert!(reset.rounded_tile_rasterizations() > 0);
     assert_eq!(retained.rounded_tile_rasterizations(), 0);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn uncached_fractional_rounded_rectangles_share_an_opacity_atlas()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0x314567ff).into());
+    for index in 0..80 {
+        let repeated = index % 4 == 0;
+        let phase = if repeated {
+            0.125
+        } else {
+            (index % 63 + 1) as f64 / 64.0
+        };
+        let mut rectangle = Node::new("Rectangle", None);
+        for (name, value) in [
+            ("x", 7.0 + (index % 10) as f64 * 14.0 + phase),
+            ("y", 6.0 + (index / 10) as f64 * 12.0 + phase),
+            ("width", 17.0),
+            ("height", 15.0),
+            ("border-radius", 3.0),
+        ] {
+            rectangle.properties.insert(name, Length(value).into());
+        }
+        let color = if repeated { 0x467ec9ff } else { 0xe5a664ba };
+        rectangle
+            .properties
+            .insert("background", Color(color).into());
+        let opacity = if repeated {
+            0.46
+        } else {
+            0.41 + (index % 7) as f64 * 0.07
+        };
+        rectangle.properties.insert("opacity", opacity.into());
+        scene.children.push(rectangle);
+    }
+
+    for scale in [1.0, 1.25, 2.0] {
+        let mut renderer = Renderer::with_device(gpu.clone())?;
+        let mut isolated = Renderer::with_device(gpu.clone())?;
+        isolated.set_opacity_atlas_enabled(false);
+        let [width, height] = [160, 112].map(|pixels| (pixels as f32 * scale) as u32);
+        let expected = isolated.snapshot(&scene, width, height, scale, &input)?;
+        let mut actual = None;
+        let profile = xrack_runtime::update_profile::measure(|| {
+            actual = Some(renderer.snapshot(&scene, width, height, scale, &input));
+        })
+        .ok_or("missing rectangle profile")?;
+        let actual = actual.ok_or("missing rounded frame")??;
+        assert!(profile.quad_batches > renderer.rounded_rectangle_batch_draws() as usize);
+        assert_eq!(actual.layout, expected.layout);
+        assert!(renderer.rounded_rectangle_batch_draws() > 0);
+        assert!(renderer.opacity_atlas_stats().groups > 32);
+        assert_eq!(renderer.opacity_atlas_stats().submissions, 1);
+        for (index, (&actual, &expected)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                actual.abs_diff(expected) <= 1,
+                "RGBA error at {scale}x, pixel ({}, {}), channel {}: {actual} vs {expected}",
+                index / 4 % width as usize,
+                index / 4 / width as usize,
+                index % 4
+            );
+        }
+    }
+    // This set of distinct tiles needs more pixels than the retained atlas.
+    // A fresh renderer should use one transient capture without seeding tiles
+    // that cannot cover the current batch.
+    for (index, rectangle) in scene.children.iter_mut().enumerate() {
+        let mut phase = rectangle.length("x").unwrap().fract();
+        if (phase * 2.0).fract() == 0.0 {
+            phase += 1.0 / 64.0;
+        }
+        for (name, value) in [
+            ("x", 7.0 + (index % 10) as f64 * 34.0 + f64::from(phase)),
+            ("y", 6.0 + (index / 10) as f64 * 30.0 + f64::from(phase)),
+            ("width", 32.0),
+            ("height", 28.0),
+        ] {
+            rectangle.properties.insert(name, Length(value).into());
+        }
+    }
+    let mut renderer = Renderer::with_device(gpu.clone())?;
+    let mut isolated = Renderer::with_device(gpu)?;
+    isolated.set_opacity_atlas_enabled(false);
+    let actual = renderer.snapshot(&scene, 724, 508, 2.0, &input)?;
+    let expected = isolated.snapshot(&scene, 724, 508, 2.0, &input)?;
+    assert_eq!(actual.layout, expected.layout);
+    assert_eq!(renderer.rounded_tile_rasterizations(), 0);
+    assert_eq!(
+        renderer.opacity_atlas_stats().groups,
+        scene.children.len() as u64
+    );
+    assert_eq!(renderer.opacity_atlas_stats().submissions, 1);
+    assert!(
+        actual
+            .rgba
+            .iter()
+            .zip(&expected.rgba)
+            .all(|(a, b)| a.abs_diff(*b) <= 1),
+        "transient atlas output differs from isolated painting",
+    );
     Ok(())
 }
 

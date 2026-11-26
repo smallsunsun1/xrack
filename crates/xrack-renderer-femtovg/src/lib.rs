@@ -37,6 +37,7 @@ mod transform;
 mod transient_textures;
 mod vector;
 mod vector_masks;
+mod viewport_gpu_timing;
 mod window_damage;
 #[cfg(target_os = "android")]
 #[doc(hidden)]
@@ -45,6 +46,8 @@ pub use display_list::DisplayBatchStats;
 use display_list::DisplayList;
 #[doc(hidden)]
 pub use entry::{PointerCaret, TouchSelectionHandle};
+/// FemtoVG types accepted and returned by this renderer, including `TextSystem`.
+pub use femtovg;
 use femtovg::{
     Canvas, Color, FillRule, LayerEffects, Paint, Path, Solidity, renderer::WGPURenderer,
 };
@@ -303,6 +306,7 @@ pub struct Renderer {
     scene_changes: xrack_runtime::SceneChanges,
     transient_textures: transient_textures::TransientTextures,
     scene3d: scene3d::SceneRenderer,
+    viewport_gpu_timing: viewport_gpu_timing::ViewportGpuTimer,
     viewport_textures: scene3d::retained_view::ViewportTextures,
     scene_item_textures: scene3d::item_textures::ItemTextures,
     inline_target: Option<wgpu::Texture>,
@@ -404,6 +408,15 @@ impl RenderDevice {
         } else {
             wgpu::Features::empty()
         };
+        required_features |=
+            features & (wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::FLOAT32_BLENDABLE);
+        // Timestamp queries are only recorded when viewport statistics are enabled.
+        required_features |= features & wgpu::Features::TIMESTAMP_QUERY;
+        let normalized_targets = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        if features.contains(normalized_targets) {
+            required_features |= normalized_targets;
+        }
         if scroll_immediates {
             required_features |= wgpu::Features::IMMEDIATES;
         }
@@ -460,6 +473,7 @@ impl Renderer {
             device,
             queue,
         } = gpu;
+        let scene3d = scene3d::SceneRenderer::new(&adapter, device.features());
         let canvas = Canvas::new_with_text_context(
             WGPURenderer::new(device.clone(), queue.clone()),
             text.context().clone(),
@@ -484,7 +498,8 @@ impl Renderer {
                 std::env::var_os("XRACK_RETAINED_GEOMETRY").is_some_and(|value| value == "1"),
             ),
             transient_textures: Default::default(),
-            scene3d: Default::default(),
+            scene3d,
+            viewport_gpu_timing: viewport_gpu_timing::ViewportGpuTimer::default(),
             viewport_textures: Default::default(),
             scene_item_textures: Default::default(),
             render_scene: Default::default(),
@@ -580,7 +595,9 @@ impl Renderer {
         previous: Option<LayoutNode>,
     ) -> (Rc<Node>, LayoutNode) {
         self.row_layouts.use_recycled_layout(previous);
+        self.row_layouts.set_defer_clipped_text(true);
         let output = self.prepare_scene(component, scene, viewport, input);
+        self.row_layouts.set_defer_clipped_text(false);
         self.row_layouts.use_recycled_layout(None);
         output
     }
@@ -667,6 +684,44 @@ impl Renderer {
         self.scene3d.instance_uploads()
     }
 
+    /// Enable collection of viewport work for subsequent frames.
+    pub fn set_viewport_statistics_enabled(&mut self, enabled: bool) {
+        if enabled != self.viewport_statistics().is_some() {
+            self.viewport_gpu_timing.invalidate();
+            self.scene3d.viewport_collector.set_gpu(None);
+        }
+        self.scene3d.viewport_collector.enable(
+            enabled,
+            self.device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY),
+        );
+    }
+
+    pub fn viewport_statistics(&self) -> Option<&xrack_runtime::ViewportStatistics> {
+        self.scene3d.viewport_collector.statistics()
+    }
+
+    /// Consume the latest completed query readback without waiting for GPU work.
+    pub fn poll_viewport_gpu_timing(&mut self) -> bool {
+        let Some(statistics) = self.viewport_statistics() else {
+            return false;
+        };
+        let previous = statistics.gpu.as_ref().map(|frame| frame.frame);
+        let Some(frame) = self.viewport_gpu_timing.poll(&self.device, &self.queue) else {
+            return false;
+        };
+        if previous.is_some_and(|previous| previous >= frame.frame) {
+            return false;
+        }
+        self.scene3d.viewport_collector.set_gpu(Some(frame));
+        true
+    }
+
+    pub fn viewport_gpu_timing_pending(&self) -> bool {
+        self.viewport_statistics().is_some() && self.viewport_gpu_timing.pending()
+    }
+
     /// Color submissions and camera-frustum rejections since renderer creation.
     pub fn scene_draw_stats(&self) -> SceneDrawStats {
         self.scene3d.stats
@@ -684,6 +739,10 @@ impl Renderer {
 
     #[doc(hidden)]
     pub fn set_scene_observation(&mut self, generation: u64, enabled: bool) {
+        if self.scene_generation != generation {
+            self.viewport_gpu_timing.invalidate();
+            self.scene3d.viewport_collector.set_gpu(None);
+        }
         self.scene_generation = generation;
         self.inspect_scene = enabled;
     }
@@ -984,6 +1043,7 @@ impl Renderer {
         self.scene3d.finish_frame(result.is_ok());
         self.inline_target = None;
         if result.is_err() {
+            self.viewport_gpu_timing.start_frame(None);
             self.custom_encoder = None;
             self.scene3d.discard_recorded_passes();
             if let Some(compositor) = &mut self.layer_compositor {
@@ -1020,11 +1080,9 @@ impl Renderer {
         self.text.set_window(scene);
         let canvas_changed = !Rc::ptr_eq(&self.canvas_font_context, self.text.context_key());
         if canvas_changed {
-            self.canvas = Canvas::new_with_text_context(
-                WGPURenderer::new(self.device.clone(), self.queue.clone()),
-                self.text.context().clone(),
-            )
-            .map_err(|error| error.to_string())?;
+            self.canvas = self
+                .create_auxiliary_canvas()
+                .map_err(|error| error.to_string())?;
             self.canvas_font_context = self.text.context_key().clone();
             self.text.label_glyphs.get_mut().reset_canvas();
             self.glyph_masks = Default::default();
@@ -1034,6 +1092,7 @@ impl Renderer {
             self.scene_item_textures.clear();
         }
         self.glyph_masks.begin_frame();
+        self.vector_paths.begin_frame();
         self.rectangle_batches.begin_frame(canvas_changed);
         self.geometry_cache.begin_frame();
         if self.geometry_cache.enabled || self.inspect_scene {
@@ -1042,6 +1101,12 @@ impl Renderer {
         self.transient_textures.begin_frame();
         self.viewport_textures.begin_frame();
         self.scene3d.begin_frame();
+        self.poll_viewport_gpu_timing();
+        self.viewport_gpu_timing.start_frame(
+            self.viewport_statistics()
+                .filter(|statistics| statistics.gpu_timing_supported)
+                .map(|statistics| statistics.frame),
+        );
         self.custom_encoder = None;
         #[cfg(any(target_os = "android", target_os = "ios"))]
         self.text.begin_color_glyph_frame(canvas_changed);
@@ -1061,6 +1126,8 @@ impl Renderer {
         self.images.begin_frame();
         self.scroll_images.begin_frame();
         let frame = if self.prepare_scene_item_textures(scene, layout, frame)? {
+            self.retained_layers
+                .invalidate_live_image_layers(&mut self.canvas);
             PaintFrame {
                 damage: None,
                 ..frame
@@ -1253,6 +1320,9 @@ impl Renderer {
             stroke.set_line_width(3.0);
             self.canvas.stroke_path(&outline, &stroke);
         }
+        self.needs_redraw |=
+            self.scene3d
+                .preload_resources(scene, layout, &self.device, &self.queue);
         self.rectangle_batches.warm_capsules(&self.queue);
         self.rectangle_batches.upload(&mut self.canvas)?;
         #[cfg(not(xrack_femtovg_glyph_samples))]
@@ -1264,6 +1334,8 @@ impl Renderer {
             // extra submission or change to the presented image.
             self.glyph_masks.warm_atlas_pipelines(&mut self.canvas);
         }
+        self.viewport_gpu_timing
+            .finish(&self.device, &mut self.custom_encoder);
         self.submit_canvas_with_transfer(target, transfer);
         #[cfg(any(target_os = "android", target_os = "ios"))]
         self.text.end_color_glyph_frame(&mut self.canvas);
@@ -1271,6 +1343,14 @@ impl Renderer {
         self.retained_layers
             .finish_frame(&mut self.canvas, &self.render_scene);
         Ok(())
+    }
+
+    fn create_auxiliary_canvas(&self) -> Result<Canvas<WGPURenderer>, femtovg::ErrorKind> {
+        #[cfg(xrack_femtovg_glyph_samples)]
+        let renderer = self.canvas.renderer().new_sibling();
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        let renderer = WGPURenderer::new(self.device.clone(), self.queue.clone());
+        Canvas::new_with_text_context(renderer, self.text.context().clone())
     }
 
     fn start_frame_canvas(&mut self, size: wgpu::Extent3d, scale: f32, started: &mut bool) {
@@ -1541,6 +1621,7 @@ impl Renderer {
             self.canvas.clip_path(&mask, FillRule::NonZero);
         }
         let layer = opacity < 1.0;
+        let inline_target = layer.then(|| self.inline_target.take());
         let previous_mask_deferral = self.glyph_masks.defer_preparation;
         // An isolated layer may suppress its draws. Pending masks should
         // only become ready after their coverage has actually been recorded.
@@ -1560,6 +1641,9 @@ impl Renderer {
         self.retained_layers.vectors.opacity_passthrough = previous_passthrough;
         if layer {
             self.canvas.end_layer();
+        }
+        if let Some(target) = inline_target {
+            self.inline_target = target;
         }
         self.canvas.restore();
         result
@@ -2131,6 +2215,19 @@ impl Renderer {
                     ImagePresentation::for_node(node, frame.size(), in_layout),
                 )?;
             }
+        } else if let Some(texture) = node
+            .image_texture_input()
+            .and_then(|name| self.scene3d.item_color_texture(name))
+        {
+            let texture = self.viewport_display_texture(texture);
+            let size = [texture.width(), texture.height()];
+            image::draw_live_texture(
+                &mut self.canvas,
+                texture,
+                bounds,
+                ImagePresentation::for_node(node, size, in_layout),
+                image::Colorize::from_value(node.properties.get("colorize")),
+            )?;
         } else if matches!(node.kind, "Image" | "AnimatedImage")
             && let Some(image) = node.image_asset("source")
         {
@@ -2156,7 +2253,7 @@ impl Renderer {
                 scale,
             })?;
         } else if node.kind == "SceneView3D" {
-            self.paint_scene3d(node, bounds, path, scale)?;
+            self.paint_scene3d(node, layout, path, scale)?;
         } else if node.kind == "CustomRender" {
             self.paint_custom(node, layout, path, scale)?;
         } else if node.kind == "ColorPlane" {
@@ -3124,25 +3221,18 @@ impl Renderer {
         rectangles: &mut Vec<rectangle::Solid>,
         scale: f32,
         clip: Rect,
-    ) {
+    ) -> Result<(), String> {
         if self.draw_retained_geometry(rectangles, scale) {
             rectangles.clear();
-            return;
+            return Ok(());
         }
         if rectangles.first().is_some_and(rectangle::Solid::rounded) {
-            let capturing = self.using_capture_canvas();
-            self.rectangle_batches.draw_rounded(
-                &mut self.canvas,
-                &self.device,
-                &self.queue,
-                scale,
-                rectangles,
-                capturing,
-            );
+            self.draw_rounded_batch(rectangles, scale)?;
         } else {
             self.rectangle_batches
                 .draw_squares(&mut self.canvas, scale, clip, rectangles);
         }
+        Ok(())
     }
 
     fn paint_progress_parts(
@@ -3673,6 +3763,7 @@ impl Renderer {
         }
         drop(view);
         buffer.unmap();
+        self.poll_viewport_gpu_timing();
         Ok(Snapshot {
             width,
             height,

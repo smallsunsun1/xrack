@@ -6,9 +6,11 @@ use xrack_runtime::scene3d::{Mesh3D, MeshCullMode, SceneCamera, SceneObject};
 use super::{
     Attachment, DEPTH_FORMAT, HDR_FORMAT, MeshCache, MeshColorDraws, append_floats,
     attachment_view, buffer,
+    capture_region::CaptureRegion,
     deform::{Deformation, DeformationBinding, DeformationLayouts, SKIN_LAYOUT},
     pipeline::{GEOMETRY_LAYOUTS, INSTANCE_DATA_LAYOUT, culled_face, orient_depth_compare},
     vertex_program::VertexPipelines,
+    wireframe::{self, RasterMode},
 };
 
 const CAMERA_BYTES: u64 = 176;
@@ -29,6 +31,8 @@ struct MotionFrame {
     objects: Arc<[SceneObject]>,
     deformations: Vec<Option<DeformationBinding>>,
     size: [u32; 2],
+    raster: RasterMode,
+    region: CaptureRegion,
 }
 
 pub(super) struct MotionInputs {
@@ -51,7 +55,13 @@ impl MotionPass {
         ctx: &mut crate::GpuPaintContext<'_>,
         queue: &wgpu::Queue,
         (meshes, materials, layouts): (&mut MeshCache, &wgpu::BindGroupLayout, &DeformationLayouts),
-        (draws, objects, camera): (&MeshColorDraws<'_>, &Arc<[SceneObject]>, SceneCamera),
+        (draws, objects, camera, raster, region): (
+            &MeshColorDraws<'_>,
+            &Arc<[SceneObject]>,
+            SceneCamera,
+            RasterMode,
+            CaptureRegion,
+        ),
         history: &mut MotionHistory,
     ) -> (MotionInputs, u64) {
         let device = ctx.device;
@@ -59,7 +69,10 @@ impl MotionPass {
         let reverse_depth = camera.reverse_depth();
         // A supersampled color image resolves to this grid before temporal filtering.
         let size = ctx.size;
-        let previous = history.last.take().filter(|frame| frame.size == size);
+        let previous = history
+            .last
+            .take()
+            .filter(|frame| frame.size == size && frame.raster == raster && frame.region == region);
         let ids = history.spare.take().unwrap_or_else(|| {
             attachment_view(
                 device,
@@ -161,19 +174,23 @@ impl MotionPass {
                 },
             })
         });
-        let mut encoder = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack 3D motion vectors"),
-            color_attachments: &colors,
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(camera.depth_clear()),
-                    store: wgpu::StoreOp::Discard,
+        let mut encoder = crate::viewport_gpu_timing::render_pass(
+            ctx.encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack 3D motion vectors"),
+                color_attachments: &colors,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(camera.depth_clear()),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
                 }),
-                stencil_ops: None,
-            }),
-            ..Default::default()
-        });
+                ..Default::default()
+            },
+        );
+        region.clip(&mut encoder);
         encoder.set_bind_group(0, &globals, &[0]);
         let mut active_parameters = 0;
         let mut bound_instances = None;
@@ -195,7 +212,7 @@ impl MotionPass {
                 draws
                     .geometry
                     .bind_instance_range(&mut encoder, &mut bound_instances, source);
-                let mesh = meshes.get(device, queue, kind);
+                let mesh = meshes.get_for_raster(device, queue, kind, raster);
                 let parts = mesh.parts.iter().enumerate().filter(|(_, part)| {
                     let surface = part.surface;
                     match phase {
@@ -204,7 +221,7 @@ impl MotionPass {
                         Phase::Translucent => surface.blend,
                     }
                 });
-                let current = draws.geometry.deformation(source);
+                let current = draws.geometry.deformation_for(source, raster);
                 let mode = current.map_or(Deformation::Rigid, |binding| binding.mode);
                 mesh.bind_geometry(&mut encoder);
                 if mode.skin() {
@@ -226,6 +243,8 @@ impl MotionPass {
                         cull: part.surface.cull,
                         reflected: object.is_reflected() ^ reverses_winding,
                         reverse_depth,
+                        lod_fade: draws.geometry.lod_fade,
+                        raster,
                     };
                     let program = part.material.vertex.as_ref();
                     let selection = (
@@ -265,8 +284,10 @@ impl MotionPass {
             ids: ids.clone(),
             camera,
             objects: objects.clone(),
-            deformations: draws.geometry.deformations.to_vec(),
+            deformations: draws.geometry.deformations_for(raster).to_vec(),
             size,
+            raster,
+            region,
         });
         (
             MotionInputs {
@@ -390,12 +411,15 @@ struct Variant {
     cull: MeshCullMode,
     reflected: bool,
     reverse_depth: bool,
+    lod_fade: bool,
+    raster: RasterMode,
 }
 
 struct MotionPipelines {
     globals: wgpu::BindGroupLayout,
     layouts: [wgpu::PipelineLayout; 4],
     pipelines: VertexPipelines<Variant>,
+    wire_pipelines: Option<VertexPipelines<Variant>>,
 }
 
 impl MotionPipelines {
@@ -452,6 +476,7 @@ impl MotionPipelines {
             globals,
             layouts,
             pipelines: VertexPipelines::new(device, include_str!("motion.wgsl")),
+            wire_pipelines: None,
         }
     }
 
@@ -461,7 +486,14 @@ impl MotionPipelines {
         variant: Variant,
         program: Option<&Arc<str>>,
     ) -> &wgpu::RenderPipeline {
-        self.pipelines.get(device, program, variant, |module| {
+        let pipelines = if variant.raster == RasterMode::ShaderLine {
+            self.wire_pipelines.get_or_insert_with(|| {
+                VertexPipelines::new(device, wireframe::mesh(include_str!("motion.wgsl")))
+            })
+        } else {
+            &mut self.pipelines
+        };
+        pipelines.get(device, program, variant, |module| {
             let buffers = [
                 GEOMETRY_LAYOUTS[0].clone(),
                 GEOMETRY_LAYOUTS[1].clone(),
@@ -495,6 +527,7 @@ impl MotionPipelines {
                     entry_point: Some("fragment"),
                     compilation_options: wgpu::PipelineCompilationOptions {
                         constants: &[
+                            ("LOD_FADE", f64::from(variant.lod_fade)),
                             ("TEST_COVERAGE", if variant.coverage { 1.0 } else { 0.0 }),
                             (
                                 "TRACK_SURFACE",
@@ -516,6 +549,7 @@ impl MotionPipelines {
                         wgpu::FrontFace::Ccw
                     },
                     cull_mode: culled_face(variant.cull),
+                    polygon_mode: variant.raster.polygon_mode(),
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {

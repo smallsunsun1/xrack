@@ -1,0 +1,118 @@
+struct Style {
+    base-color: color, roughness: float, metalness: float,
+    emissive-color: color, emissive-strength: float, occlusion-strength: float,
+    clearcoat: float, clearcoat-roughness: float, alpha-mode: string,
+    material-shader: string, shader-parameters: vector3d,
+}
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float,
+    casts-shadow: bool, receives-shadow: bool, visible: bool,
+    material: Style,
+}
+struct Lamp {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
+    casts-shadow: bool,
+}
+struct Feed { name: string, camera: string }
+
+export component MaterialDebugDemo inherits Window {
+    title: "XRack · 材质调试"; width: 480px; height: 332px;
+    background: #172437; resizable: false;
+    in-out property <int> mode: 0;
+    in-out property <bool> effects: false;
+    in-out property <bool> reference: false;
+    in-out property <bool> glass: false;
+    in-out property <bool> wireframe: false;
+    property <[string]> modes: [
+        "none", "base-color", "roughness", "metalness", "emission", "ambient-occlusion",
+        "normals", "tangents", "binormals", "f0", "diffuse", "specular", "shadow-occlusion"
+    ];
+
+    property <Style> stock: Style {
+        base-color: #c08040, roughness: 0.25, metalness: 0,
+        emissive-color: #000, emissive-strength: 1, occlusion-strength: 1,
+        clearcoat: 0, clearcoat-roughness: 0.25, alpha-mode: "opaque",
+        material-shader: "", shader-parameters: Vector3D.new(0, 0, 0),
+    };
+    property <Actor> card: Actor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 1.8, scale-y: 2.0, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, camera-kind: "", camera-height: 4, material: root.stock,
+        casts-shadow: false, receives-shadow: true, visible: true,
+    };
+
+    view := SceneView3D {
+        width: 480px; height: 250px; camera: "eye"; cache-rendering: true;
+        scene-background: #26354a; scene-tone-map: none; ambient-intensity: 0.28;
+        material-debug: Model.at(root.modes, root.mode, "none");
+        debug-wireframe: root.wireframe;
+        shadows: true; shadow-map-size: 256;
+        bloom: root.effects; bloom-strength: 0.42; bloom-threshold: 0.13;
+        scene-exposure: root.effects ? 1.8 : 1;
+        temporal-aa: root.effects; temporal-aa-mode: "motion-vectors";
+        ambient-occlusion: true; ao-strength: 1;
+        scene-captures: [Feed { name: "lit", camera: "eye" }];
+        scene-color-capture: root.reference ? "lit" : "";
+        lights: [Lamp {
+            kind: "directional", x: 0, y: 0, z: 0, yaw: -35, elevation: 12,
+            intensity: 1.7, color: #fff, range: 0, inner-angle: 18, outer-angle: 40,
+            casts-shadow: true,
+        }];
+        model: [
+            Actor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.card },
+            Actor { id: "stock", x: -1.4, ..root.card },
+            Actor {
+                id: "sphere", mesh: "primitive:sphere", y: 0.92,
+                scale-x: 0.53, scale-y: 0.53, scale-z: 0.53,
+                material: Style { base-color: #74c5c0, roughness: 0.35, ..root.stock },
+                ..root.card
+            },
+            Actor {
+                id: "custom", x: 1.4, yaw: -12,
+                material: Style {
+                    material-shader: @material-shader-url("effects/material_surface.wgsl"),
+                    shader-parameters: Vector3D.new(1, 0, 0), clearcoat: 0.4,
+                    ..root.stock
+                },
+                ..root.card
+            },
+            Actor {
+                id: "occluder", mesh: "primitive:box", x: -1.88, y: 0.46, z: 0.42,
+                scale-x: 0.38, scale-y: 0.52, scale-z: 0.22,
+                casts-shadow: true, receives-shadow: false, ..root.card
+            },
+            Actor {
+                id: "glass", visible: root.glass, mesh: "primitive:rectangle", x: -1.4, y: -0.53, z: 0.62,
+                scale-x: 1.42, scale-y: 0.36, scale-z: 1,
+                material: Style { base-color: #2a90e080, alpha-mode: "blend", ..root.stock },
+                ..root.card
+            },
+        ];
+    }
+
+    mode-next := Button {
+        x: 12px; y: 259px; width: 108px; height: 33px;
+        text: "下一视图"; clicked => { root.mode = (root.mode + 1) % 13; }
+    }
+    ComboBox {
+        x: 133px; y: 259px; width: 208px; height: 33px;
+        model: root.modes; current-index <=> root.mode;
+    }
+    wireframe-toggle := CheckBox {
+        x: 356px; y: 261px; width: 104px; height: 28px;
+        text: "线框"; checked <=> root.wireframe;
+    }
+    Label { x: 12px; y: 303px; width: 155px; text: "左 内建  ·  右 自定义"; }
+    effects-toggle := CheckBox {
+        x: 190px; y: 300px; width: 91px; height: 26px;
+        text: "后期效果"; checked <=> root.effects;
+    }
+    glass-toggle := CheckBox {
+        x: 291px; y: 300px; width: 91px; height: 26px;
+        text: "透明面"; checked <=> root.glass;
+    }
+}

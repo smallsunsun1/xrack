@@ -1,9 +1,10 @@
 use crate::{
-    Interaction, LayoutNode, Point, Rect, ScrollBarGeometry, ScrollLayout,
+    Interaction, LayoutNode, Point, Rect, ScrollBarGeometry, ScrollLayout, StyledTextLayout,
     scroll_gesture::PanDevice, view_cells::ViewCells,
 };
 use std::{
     collections::BTreeMap,
+    rc::Rc,
     time::{Duration, Instant},
 };
 use xrack_runtime::{
@@ -15,8 +16,7 @@ pub(crate) type MotionOwners = Vec<(ViewportHandle, [bool; 2])>;
 
 pub(crate) fn record_motion(owners: &mut MotionOwners, item: &LayoutNode, axis: Orientation) {
     let Some(handle) = item
-        .viewport_handle
-        .as_ref()
+        .viewport_handle()
         .filter(|handle| handle.observes_motion())
     else {
         return;
@@ -93,7 +93,7 @@ impl MotionState {
             if !item.visible || !item.enabled {
                 return false;
             }
-            if item.viewport_handle.as_ref() == Some(handle) {
+            if item.viewport_handle() == Some(handle) {
                 let bounds = item.clip_rect(item.bounds);
                 bounds.width > 0.0
                     && bounds.height > 0.0
@@ -137,8 +137,7 @@ impl UserScrollChange {
         offset: f32,
     ) {
         let Some(target) = item
-            .viewport_handle
-            .as_ref()
+            .viewport_handle()
             .filter(|handle| handle.observes_user_scroll())
         else {
             return;
@@ -194,11 +193,11 @@ impl LayoutNode {
     }
 
     pub(crate) fn bound_offset(&self, axis: Orientation) -> Option<f32> {
-        self.viewport_handle.as_ref()?.bound_offset(axis)
+        self.viewport_handle()?.bound_offset(axis)
     }
 
     pub(crate) fn write_bound_offset(&self, axis: Orientation, offset: f32) {
-        if let Some(handle) = &self.viewport_handle {
+        if let Some(handle) = self.viewport_handle() {
             handle.write_bound_offset(axis, offset);
         }
     }
@@ -564,6 +563,17 @@ impl Interaction {
         layout: &LayoutNode,
         requests: impl IntoIterator<Item = ScrollRequest>,
     ) -> bool {
+        self.apply_scroll_requests_with_text(scene, layout, requests, |_, _| None)
+    }
+
+    #[doc(hidden)]
+    pub fn apply_scroll_requests_with_text(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        requests: impl IntoIterator<Item = ScrollRequest>,
+        mut measure_text: impl FnMut(&Node, &LayoutNode) -> Option<Rc<StyledTextLayout>>,
+    ) -> bool {
         let mut changed = false;
         for request in requests {
             let mut path = Vec::new();
@@ -657,13 +667,15 @@ impl Interaction {
                         continue;
                     };
                     let rect = if let Some((_, offset)) = text {
-                        let Some((fragment, offset_y)) =
-                            item.styled_text.as_ref().and_then(|text| {
-                                text.fragments
-                                    .placed()
-                                    .find(|(fragment, _)| fragment.contains_text_offset(offset))
-                            })
-                        else {
+                        let plan = item
+                            .styled_text
+                            .clone()
+                            .or_else(|| measure_text(scene.at_path(&path)?, item));
+                        let Some((fragment, offset_y)) = plan.as_ref().and_then(|text| {
+                            text.fragments
+                                .placed()
+                                .find(|(fragment, _)| fragment.contains_text_offset(offset))
+                        }) else {
                             continue;
                         };
                         let bounds = fragment.bounds;

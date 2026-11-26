@@ -187,6 +187,8 @@ bazel test //examples/agent-workbench:workbench_render_test -c opt --nocache_tes
 
 GPU 基准使用 2 倍像素比例绘制到离屏纹理。分别测纯滚动和边滚动边更新最后一条回复，报告模型更新、场景生成、布局、绘制提交、GPU 等待和整帧的 p50、p95。加上 `--test_env=XRACK_TRANSCRIPT_BENCH_LATEST=1` 会让流式更新阶段跟随最新回复，测试视口内文字持续变化的情况。可用 `--test_env=XRACK_TRANSCRIPT_BENCH_ROUNDS=20` 延长运行时间，便于采样 CPU 调用栈。
 
+用 `--test_env=XRACK_TRANSCRIPT_BENCH_ROWS=1024` 测试较长的会话历史。加上 `--test_env=XRACK_TRANSCRIPT_BENCH_WINDOW_ENTRY=1` 会走桌面端的帧缓存和窗口绘制入口，仍然绘制到离屏纹理。
+
 ```sh
 bazel test //examples/agent-workbench:workbench_render_test -c opt --nocache_test_results \
   --test_arg=--ignored --test_arg=--nocapture \

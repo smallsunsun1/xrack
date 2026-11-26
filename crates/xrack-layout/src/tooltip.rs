@@ -421,6 +421,7 @@ pub fn layout_tooltip(
         height,
     );
     let mut context = LayoutContext {
+        defer_styled_text: false,
         row_key: None,
         layout_direction,
         anchor: None,

@@ -1,0 +1,197 @@
+diff --git a/src/text/font.rs b/src/text/font.rs
+--- a/src/text/font.rs
++++ b/src/text/font.rs
+@@ -360,6 +360,20 @@
+ type GlyphCacheKey = (u16, u64);
+ 
+ #[cfg(feature = "textlayout")]
++#[derive(Default)]
++struct LayoutInk {
++    variable: bool,
++    variants: std::collections::VecDeque<LayoutInkVariant>,
++}
++
++#[cfg(feature = "textlayout")]
++#[derive(Default)]
++struct LayoutInkVariant {
++    variations: FontVariations,
++    glyphs: FnvHashMap<u16, Option<GlyphMetrics>>,
++}
++
++#[cfg(feature = "textlayout")]
+ struct ParsedFace<'a> {
+     default: TtfFont<'a>,
+     shaping: std::cell::OnceCell<RefCell<ShapingFace<'a>>>,
+@@ -402,6 +416,8 @@
+     units_per_em: u16,
+     metrics: FontMetrics,
+     glyphs: RefCell<FnvHashMap<GlyphCacheKey, Glyph>>,
++    #[cfg(feature = "textlayout")]
++    layout_ink: RefCell<LayoutInk>,
+     #[cfg(all(feature = "swash", not(feature = "textlayout")))]
+     swash_scale_context: Rc<RefCell<swash::scale::ScaleContext>>,
+ }
+@@ -416,6 +432,7 @@
+         let ttf_font = TtfFont::parse(data.as_ref(), face_index).map_err(|_| ErrorKind::FontParseError)?;
+ 
+         let units_per_em = ttf_font.units_per_em();
++        let variable = ttf_font.is_variable();
+ 
+         let ascender = ttf_font.ascender() as f32;
+         let descender = ttf_font.descender() as f32;
+@@ -510,6 +527,7 @@
+             units_per_em,
+             metrics,
+             glyphs: RefCell::default(),
++            layout_ink: RefCell::new(LayoutInk { variable, ..LayoutInk::default() }),
+         })
+     }
+ 
+@@ -901,6 +919,78 @@
+     }
+ 
+     #[cfg(feature = "textlayout")]
++    fn bitmap_metrics(&self, face: &FontFaceRef<'_>, id: GlyphId) -> Option<GlyphMetrics> {
++        let image = face.0.glyph_raster_image(id, u16::MAX)
++            .filter(|image| image.format == ttf_parser::RasterImageFormat::PNG)?;
++        let scale = if image.pixels_per_em != 0 {
++            self.units_per_em as f32 / image.pixels_per_em as f32
++        } else {
++            1.0
++        };
++        Some(GlyphMetrics {
++            width: image.width as f32 * scale,
++            height: image.height as f32 * scale,
++            bearing_x: image.x as f32 * scale,
++            bearing_y: (image.y as f32 + image.height as f32) * scale,
++        })
++    }
++
++    #[cfg(feature = "textlayout")]
++    fn outline_metrics(bounds: ttf_parser::Rect) -> GlyphMetrics {
++        GlyphMetrics {
++            width: bounds.width() as f32,
++            height: bounds.height() as f32,
++            bearing_x: bounds.x_min as f32,
++            bearing_y: bounds.y_max as f32,
++        }
++    }
++
++    #[cfg(feature = "textlayout")]
++    pub(crate) fn write_ink_metrics(
++        &self,
++        variations: &FontVariations,
++        glyphs: &mut [super::textlayout::ShapedGlyph],
++    ) {
++        let mut cache = self.layout_ink.borrow_mut();
++        let defaults = FontVariations::default();
++        let variations = if cache.variable { variations } else { &defaults };
++        let variant = cache.variants.iter().position(|cached| {
++            cached.variations.iter().eq(variations.iter())
++        });
++        if variant != Some(0) {
++            let variant = variant.and_then(|index| cache.variants.remove(index)).unwrap_or_else(|| {
++                // Keep recent weights and italics together without retaining
++                // every coordinate set from animation or repeated resizing.
++                const LIMIT: usize = 4;
++                let mut entry = if cache.variants.len() == LIMIT {
++                    cache.variants.pop_back().unwrap_or_default()
++                } else {
++                    LayoutInkVariant::default()
++                };
++                entry.variations = variations.clone();
++                entry.glyphs.clear();
++                entry
++            });
++            cache.variants.push_front(variant);
++        }
++        let variant = &mut cache.variants[0];
++        let mut face = None;
++        for glyph in glyphs {
++            let metrics = variant.glyphs.entry(glyph.glyph_id).or_insert_with(|| {
++                let face = face.get_or_insert_with(|| self.face_ref_with_variations(variations));
++                let id = GlyphId(glyph.glyph_id);
++                self.bitmap_metrics(face, id)
++                    .or_else(|| face.0.glyph_bounding_box(id).map(Self::outline_metrics))
++            });
++            if let Some(metrics) = metrics {
++                glyph.width = metrics.width;
++                glyph.height = metrics.height;
++                glyph.bearing_y = metrics.bearing_y;
++            }
++        }
++    }
++
++    #[cfg(feature = "textlayout")]
+     pub(crate) fn glyph(
+         &self,
+         face: &FontFaceRef<'_>,
+@@ -910,42 +1000,17 @@
+         let cache_key: GlyphCacheKey = (codepoint, Self::hash_normalized_coords(normalized_coords));
+ 
+         if let Entry::Vacant(entry) = self.glyphs.borrow_mut().entry(cache_key) {
+-            let mut path = Path::new();
+-
+             let id = GlyphId(codepoint);
+-
+-            let maybe_glyph = if let Some(image) = face
+-                .0
+-                .glyph_raster_image(id, u16::MAX)
+-                .filter(|img| img.format == ttf_parser::RasterImageFormat::PNG)
+-            {
+-                let scale = if image.pixels_per_em != 0 {
+-                    self.units_per_em as f32 / image.pixels_per_em as f32
+-                } else {
+-                    1.0
+-                };
+-                Some(Glyph {
+-                    path: None,
+-                    metrics: GlyphMetrics {
+-                        width: image.width as f32 * scale,
+-                        height: image.height as f32 * scale,
+-                        bearing_x: image.x as f32 * scale,
+-                        bearing_y: (image.y as f32 + image.height as f32) * scale,
+-                    },
+-                })
++            let glyph = if let Some(metrics) = self.bitmap_metrics(face, id) {
++                Some(Glyph { path: None, metrics })
+             } else {
+-                face.0.outline_glyph(id, &mut path).map(|bbox| Glyph {
++                let mut path = Path::new();
++                face.0.outline_glyph(id, &mut path).map(|bounds| Glyph {
+                     path: Some(path),
+-                    metrics: GlyphMetrics {
+-                        width: bbox.width() as f32,
+-                        height: bbox.height() as f32,
+-                        bearing_x: bbox.x_min as f32,
+-                        bearing_y: bbox.y_max as f32,
+-                    },
++                    metrics: Self::outline_metrics(bounds),
+                 })
+             };
+-
+-            if let Some(glyph) = maybe_glyph {
++            if let Some(glyph) = glyph {
+                 entry.insert(glyph);
+             }
+         }
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -769,15 +769,7 @@
+     if metrics == WordMetrics::Ink && !word.has_ink {
+         if let Some(glyph) = word.glyphs.first() {
+             let font = fonts.get(glyph.font_id.0)?;
+-            let face = font.face_ref_with_variations(variations);
+-            let coordinates = font.normalize_variations(variations);
+-            for glyph in &mut word.glyphs {
+-                if let Some(ink) = font.glyph(&face, glyph.glyph_id, &coordinates) {
+-                    glyph.width = ink.metrics.width;
+-                    glyph.height = ink.metrics.height;
+-                    glyph.bearing_y = ink.metrics.bearing_y;
+-                }
+-            }
++            font.write_ink_metrics(variations, &mut word.glyphs);
+         }
+         word.has_ink = true;
+     }

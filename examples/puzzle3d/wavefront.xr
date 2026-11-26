@@ -1,0 +1,46 @@
+struct PanelFinish { slot: string, enabled: bool, base-color: color, unlit: bool }
+struct PanelPalette { trim: PanelFinish }
+struct PanelActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, camera-kind: string, camera-height: float, material-slots: PanelPalette,
+}
+
+export component WavefrontDemo inherits Window {
+    title: "XRack · OBJ 导入";
+    width: 440px; height: 285px; background: #192638;
+    in-out property <bool> painted: false;
+    in-out property <float> ray-x: 0;
+    property <PanelActor> defaults: PanelActor {
+        id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #fff, camera-kind: "", camera-height: 2.8,
+        material-slots: PanelPalette {
+            trim: PanelFinish { slot: "Trim", enabled: false, base-color: #d9fb82, unlit: true },
+        },
+    };
+    property <[PanelActor]> world: [
+        PanelActor { id: "eye", z: 7, camera-kind: "orthographic", ..root.defaults },
+        PanelActor {
+            id: "panel", mesh: @mesh-url("models/concave-panel.obj"),
+            material-slots: PanelPalette {
+                trim: PanelFinish { slot: "Trim", enabled: root.painted, base-color: #72dca5, unlit: true },
+            },
+            ..root.defaults
+        },
+    ];
+    out property <hit3d> ray-hit: Scene3D.ray-hit(
+        root.world, Point3D.new(root.ray-x, 0.6, 5), Vector3D.new(0, 0, -1), 10);
+    SceneView3D {
+        width: 440px; height: 230px; model: root.world; camera: "eye";
+        scene-background: #101827; cache-rendering: true;
+    }
+    CheckBox {
+        x: 16px; y: 239px; width: 183px; height: 36px;
+        text: "覆盖 Trim 材质"; checked <=> root.painted;
+    }
+    ray-toggle := Button {
+        x: 213px; y: 239px; width: 211px; height: 36px;
+        text: root.ray-x == 0 ? "拾取凹口：z = " + root.ray-hit.position.z : "拾取前板：z = " + root.ray-hit.position.z;
+        clicked => { root.ray-x = root.ray-x == 0 ? 1.25 : 0; }
+    }
+}

@@ -339,6 +339,14 @@
         select();
         showCalls(data.trace);
         showDiagnostics(data.diagnostics);
+        const viewports = data.viewportStatistics;
+        const viewportSection = byId('viewport-statistics-section');
+        viewportSection.hidden = !viewports?.views?.length && !viewports?.gpu?.views?.length;
+        if (!viewportSection.hidden) {
+            const output = byId('viewport-statistics-data');
+            const text = globalThis.formatViewportStatistics(viewports);
+            if (text !== output.textContent) output.textContent = text;
+        }
         if (nativePick) buttons.get(selected)?.scrollIntoView({ block: 'nearest' });
     });
     vscode.postMessage({ type: 'ready' });

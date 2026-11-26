@@ -1,5 +1,9 @@
+struct PanelMap {
+    source: string, wrap-u: string, uv-scale-u: float, uv-rotation: float,
+    uv-pivot-u: float, uv-pivot-v: float, uv-flip-u: bool, mip-filter: string,
+}
 struct ScreenMaterial {
-    base-color: color, base-item: string, unlit: bool, alpha-mode: string,
+    base-color: color, base-item: PanelMap, unlit: bool, alpha-mode: string,
 }
 struct DisplayActor {
     id: string, mesh: string, x: float, y: float, z: float,
@@ -8,9 +12,11 @@ struct DisplayActor {
     material: ScreenMaterial,
 }
 
+struct Scissor { x: length, y: length, width: length, height: length, enabled: bool }
+
 export component ItemTextureDemo inherits Window {
     title: "XRack · 3D 面板贴图";
-    width: 600px; height: 350px; resizable: false;
+    width: 600px; height: 389px; resizable: false;
     background: #172332;
 
     in-out property <bool> active: false;
@@ -30,6 +36,7 @@ export component ItemTextureDemo inherits Window {
     in-out property <float> camera-height: 4.2;
     in-out property <bool> duplicate: false;
     in-out property <bool> input-enabled: true;
+    in-out property <bool> clip-right-panel: false;
     in-out property <bool> source-enabled: true;
     in-out property <bool> blocker: false;
     in-out property <float> level: 16;
@@ -48,9 +55,20 @@ export component ItemTextureDemo inherits Window {
     in-out property <float> camera-turn: 0;
     in-out property <length> panel-width: 174px;
     in-out property <string> texture-name: "dashboard";
+    in-out property <int> mapping: 0;
+    in-out property <bool> sample-mips: true;
 
     property <ScreenMaterial> finish: ScreenMaterial {
-        base-color: #ffffff, base-item: root.texture-name, unlit: true, alpha-mode: "blend",
+        base-color: #ffffff, unlit: true, alpha-mode: "blend",
+        base-item: PanelMap {
+            source: root.texture-name,
+            wrap-u: root.mapping == 2 ? "repeat" : root.mapping == 3 ? "mirror" : "clamp",
+            uv-scale-u: root.mapping >= 2 ? 2 : 1,
+            uv-rotation: root.mapping == 1 ? 90 : 0,
+            uv-pivot-u: root.mapping == 1 ? 0.5 : 0,
+            uv-pivot-v: root.mapping == 1 ? 0.5 : 0, uv-flip-u: root.mapping == 1,
+            mip-filter: root.sample-mips ? "linear" : "none",
+        },
     };
     property <DisplayActor> base: DisplayActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
@@ -66,7 +84,10 @@ export component ItemTextureDemo inherits Window {
         DisplayActor { id: "right", x: 2.3, ..root.base },
         DisplayActor {
             id: "cover", x: -2.3, z: 1, visible: root.blocker, pickable: false,
-            material: ScreenMaterial { base-color: #50384e, base-item: "", alpha-mode: "opaque", ..root.finish },
+            material: ScreenMaterial {
+                base-color: #50384e, base-item: PanelMap { source: "", ..root.finish.base-item },
+                alpha-mode: "opaque", ..root.finish
+            },
             ..root.base
         },
     ];
@@ -81,6 +102,7 @@ export component ItemTextureDemo inherits Window {
         SceneView3D {
             width: 600px; height: 224px; model: root.world; camera: "eye";
             scene-background: #253d52; cache-rendering: true; texture-input: root.input-enabled;
+            scissor-rect: Scissor { x: 0px, y: 0px, width: 300px, height: 224px, enabled: root.clip-right-panel };
         }
     }
     source-panel := Rectangle {
@@ -210,5 +232,15 @@ export component ItemTextureDemo inherits Window {
         x: 421px; y: 294px; width: 156px; height: 35px;
         text: root.offscreen-only ? "恢复 2D 面板" : "只在面片显示";
         clicked => { root.offscreen-only = !root.offscreen-only; }
+    }
+    mapping-mode := Button {
+        x: 232px; y: 340px; width: 175px; height: 35px;
+        text: root.mapping == 0 ? "原始 UV" : root.mapping == 1 ? "交换纹理轴"
+            : root.mapping == 2 ? "重复平铺" : "镜像平铺";
+        clicked => { root.mapping = (root.mapping + 1) % 4; }
+    }
+    sample-mips-toggle := CheckBox {
+        x: 421px; y: 340px; width: 156px; height: 35px;
+        text: "采样 mip 层"; checked <=> root.sample-mips;
     }
 }

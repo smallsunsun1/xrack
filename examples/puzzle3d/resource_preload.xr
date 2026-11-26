@@ -1,0 +1,87 @@
+struct PreloadShape {
+    shape: string, radius: float, tube-radius: float, segments: int, rings: int,
+}
+struct PreloadFinish { base-color-map: string, unlit: bool }
+struct PreloadActor {
+    id: string, mesh: string, geometry: PreloadShape, material: PreloadFinish, visible: bool,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float, camera-lod-bias: float,
+    lod-of: string, lod-max-size: length, instancing-lod-factor: float,
+}
+
+export component ResourcePreloadDemo inherits Window {
+    title: "XRack · 3D 资源预加载";
+    width: 480px; height: 300px; background: #182535;
+    in-out property <bool> warm: true;
+    in-out property <bool> show-gallery: false;
+    in-out property <int> detail: 0;
+    in-out property <bool> automatic: false;
+    in-out property <float> force-lod: -1;
+
+    property <PreloadShape> shape: PreloadShape {
+        shape: "", radius: 0.55, tube-radius: 0.17, segments: 24, rings: 16,
+    };
+    property <PreloadActor> eye: PreloadActor {
+        id: "eye", mesh: "", geometry: root.shape, visible: true,
+        material: PreloadFinish { base-color-map: @texture-url("models/focus-grid.png"), unlit: true },
+        x: 0, y: 0, z: 8, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #fff,
+        camera-kind: "orthographic", camera-height: 3.1, camera-lod-bias: 0,
+        lod-of: "", lod-max-size: 0px, instancing-lod-factor: -1,
+    };
+    property <PreloadActor> mid-eye: PreloadActor { id: "mid-eye", camera-lod-bias: 1, ..root.eye };
+    property <PreloadActor> low-eye: PreloadActor { id: "low-eye", camera-lod-bias: 8, ..root.eye };
+    property <string> gallery-camera: root.detail == 0 ? "eye" : root.detail == 1 ? "mid-eye" : "low-eye";
+    property <PreloadActor> piece: PreloadActor { z: 0, camera-kind: "", ..root.eye };
+    property <scenemodel3d> empty: Scene3D.prepare([root.eye, root.mid-eye, root.low-eye]);
+    property <scenemodel3d> gallery: Scene3D.prepare([
+        root.eye, root.mid-eye, root.low-eye,
+        PreloadActor {
+            id: "globe", x: -1.45, color: #78caff,
+            geometry: PreloadShape { shape: "sphere", ..root.shape }, ..root.piece
+        },
+        PreloadActor {
+            id: "crate", yaw: -22, pitch: 18, color: #ffc477,
+            mesh: root.automatic ? @mesh-url("models/lod-surface.gltf", auto-lod) : "",
+            geometry: PreloadShape { shape: root.automatic ? "" : "box", ..root.shape },
+            instancing-lod-factor: root.force-lod, ..root.piece
+        },
+        PreloadActor {
+            id: "ring", x: 1.45, yaw: 25, color: #a6e4a9,
+            geometry: PreloadShape { shape: "torus", ..root.shape }, ..root.piece
+        },
+        PreloadActor {
+            lod-of: "crate", lod-max-size: 800px, visible: !root.automatic,
+            geometry: PreloadShape { shape: "cylinder", ..root.shape }, ..root.piece
+        },
+        PreloadActor {
+            lod-of: "crate", lod-max-size: 80px, visible: !root.automatic,
+            geometry: PreloadShape { shape: "sphere", radius: 0.4, ..root.shape }, ..root.piece
+        },
+    ]);
+    property <scenemodel3d> active-scene: root.show-gallery ? root.gallery : root.empty;
+    out property <string> picked: Scene3D.pick-camera(
+        root.active-scene, root.gallery-camera, Point2D.new(480px, 240px), Point2D.new(240px, 120px));
+
+    view := SceneView3D {
+        width: 480px; height: 240px; model: root.active-scene; camera: root.gallery-camera;
+        preload-model: root.warm ? root.gallery : root.empty;
+        cache-rendering: true; scene-background: #243952; scene-tone-map: none;
+    }
+    warm-toggle := CheckBox {
+        x: 16px; y: 252px; width: 150px; height: 34px;
+        text: "预加载"; checked <=> root.warm;
+    }
+    show-toggle := Button {
+        x: 181px; y: 252px; width: 136px; height: 34px;
+        text: root.show-gallery ? "隐藏模型" : "显示模型";
+        clicked => { root.show-gallery = !root.show-gallery; }
+    }
+    detail-toggle := Button {
+        x: 333px; y: 252px; width: 132px; height: 34px;
+        text: root.detail == 0 ? "主网格" : root.detail == 1 ? "中细节" : "低细节";
+        clicked => { root.detail = (root.detail + 1) % 3; }
+    }
+}

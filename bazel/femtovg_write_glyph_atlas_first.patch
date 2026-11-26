@@ -40,7 +40,129 @@ diff --git a/src/lib.rs b/src/lib.rs
          self.verts.clear();
          for image in self.clip_masks.end_frame() {
              self.images.remove(&mut self.renderer, image);
-@@ -2703,8 +2702,9 @@
+@@ -1572,8 +1571,8 @@
+         }
+     }
+
+-    /// The eight samples of an outline share the flattened and expanded
+-    /// contours. Rasterize each with its device-space offset in the atlas.
++    /// Reuses quantized outline vertices for all samples of a glyph mask.
++    /// Returns whether every sample stays within the reserved atlas cell.
+     fn fill_glyph_samples(
+         &mut self,
+         path: &Path,
+@@ -1581,7 +1580,8 @@
+         scale: f32,
+         samples: &[(f32, f32)],
+         paint: &PaintFlavor,
+-    ) {
++        cell: (u32, u32, u32, u32),
++    ) -> bool {
+         const SUBPIXELS: f32 = 4096.0;
+         let transform = Transform2D::new(scale, 0.0, 0.0, scale, 0.0, 0.0);
+         let mut cache = path.cache(&transform, self.tess_tol, self.dist_tol);
+@@ -1598,7 +1598,13 @@
+             -1.0,
+         );
+         let composite = self.state().composite_operation;
+-        for &(dx, dy) in samples {
++        let Some((&first, rest)) = samples.split_first() else {
++            return false;
++        };
++        if self.commands_suppressed() {
++            return false;
++        }
++        let new_command = || {
+             let kind = if cache.is_convex() {
+                 CommandType::ConvexFill { params: params.clone() }
+             } else {
+@@ -1607,22 +1613,72 @@
+                     fill_params: params.clone(),
+                 }
+             };
+-            let mut cmd = Command::new(kind);
+-            cmd.fill_rule = FillRule::NonZero;
+-            cmd.composite_operation = composite;
+-
+-            let start = self.verts.len();
+-            self.push_fill(&mut cmd, &cache, 0.0);
++            let mut command = Command::new(kind);
++            command.fill_rule = FillRule::NonZero;
++            command.composite_operation = composite;
++            command
++        };
++
++        let mut first_command = new_command();
++        let start = self.verts.len();
++        self.push_fill(&mut first_command, &cache, 0.0);
++        let end = self.verts.len();
++        // Test the extreme translations of the shared outline. Every sample's
++        // translated vertices lie between these positions, including its cover.
++        let (x, y, width, height) = cell;
++        let [left, top, right, bottom] = [x as f32, y as f32, (x + width) as f32, (y + height) as f32];
++        let (min_tx, max_tx, min_ty, max_ty) = samples.iter().fold(
++            (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY),
++            |(min_tx, max_tx, min_ty, max_ty), &(dx, dy)| {
++                let tx = origin[4] + dx;
++                let ty = origin[5] + dy;
++                (min_tx.min(tx), max_tx.max(tx), min_ty.min(ty), max_ty.max(ty))
++            },
++        );
++        let mut confined = true;
++        for vertex in &mut self.verts[start..end] {
++            vertex.x = (vertex.x * SUBPIXELS).round() / SUBPIXELS;
++            vertex.y = (vertex.y * SUBPIXELS).round() / SUBPIXELS;
++            confined &= vertex.x + min_tx > left
++                && vertex.x + max_tx < right
++                && vertex.y + min_ty > top
++                && vertex.y + max_ty < bottom;
++        }
++
++        let translate = |vertices: &mut [Vertex], (dx, dy)| {
+             let tx = origin[4] + dx;
+             let ty = origin[5] + dy;
+-            for vertex in &mut self.verts[start..] {
+-                // Use a shared subpixel grid so translating to another atlas
+-                // cell can't round the coordinates to different samples.
+-                vertex.x = (vertex.x * SUBPIXELS).round() / SUBPIXELS + tx;
+-                vertex.y = (vertex.y * SUBPIXELS).round() / SUBPIXELS + ty;
++            for vertex in vertices {
++                vertex.x += tx;
++                vertex.y += ty;
+             }
+-            self.append_cmd(cmd);
+-        }
++        };
++        let first_index = self.commands.len();
++        self.append_cmd(first_command);
++        self.verts.reserve((end - start) * rest.len());
++        for &sample in rest {
++            let sample_start = self.verts.len();
++            let offset = sample_start - start;
++            let first = &self.commands[first_index];
++            let shift = |(vertex, count)| (vertex + offset, count);
++            let mut command = new_command();
++            command.drawables = first
++                .drawables
++                .iter()
++                .map(|drawable| Drawable {
++                    fill_verts: drawable.fill_verts.map(shift),
++                    stroke_verts: drawable.stroke_verts.map(shift),
++                })
++                .collect();
++            command.triangles_verts = first.triangles_verts.map(shift);
++
++            self.verts.extend_from_within(start..end);
++            translate(&mut self.verts[sample_start..], sample);
++            self.append_cmd(command);
++        }
++        // Keep the first copy on the shared grid until all copies are recorded.
++        translate(&mut self.verts[start..end], first);
++        confined
+     }
+
+     /// Strokes the provided Path with the specified Paint.
+@@ -2703,8 +2759,9 @@
      /// Call this at the end of each frame.
      pub fn flush(&mut self) {
          self.upload_fill_masks();
@@ -84,24 +206,48 @@ diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
 diff --git a/src/text.rs b/src/text.rs
 --- a/src/text.rs
 +++ b/src/text.rs
-@@ -477,6 +477,16 @@
- const COMMANDS_PER_MASK: usize = 1 + MASK_SAMPLES.len();
- 
- impl PendingMask<'_> {
-+    fn confines_vertices(&self, vertices: &[crate::renderer::Vertex]) -> bool {
-+        let (x, y, width, height) = self.cell;
-+        vertices.iter().all(|vertex| {
-+            (x as f32) < vertex.x
-+                && vertex.x < (x + width) as f32
-+                && (y as f32) < vertex.y
-+                && vertex.y < (y + height) as f32
-+        })
-+    }
-+
+@@ -480,13 +480,12 @@
      // Clears the glyph's atlas cell and draws the path into it with 8x supersampling.
      // Must be called inside an offscreen_pass() with the atlas texture as the render target,
      // because it changes the current state.
-@@ -529,34 +539,22 @@
+-    fn draw<T: Renderer>(&self, canvas: &mut Canvas<T>, mode: RenderMode) -> usize {
++    fn draw<T: Renderer>(&self, canvas: &mut Canvas<T>, mode: RenderMode) -> bool {
+         // clear_rect() records the current composite operation, which the previous mask left
+         // additive. Reset the state so the clear is queued with the default one.
+         canvas.enter_offscreen_state(self.origin);
+         let (x, y, width, height) = self.cell;
+         canvas.clear_rect(x, y, width, height, Color::black());
+-        let first_vertex = canvas.verts.len();
+         canvas.global_composite_blend_func(crate::BlendFactor::SrcAlpha, crate::BlendFactor::One);
+
+         let factor = 1.0 / MASK_SAMPLES.len() as f32;
+@@ -494,14 +493,14 @@
+         let mask_color = Color::rgbf(factor, factor, factor);
+
+         if mode == RenderMode::Fill {
+-            canvas.fill_glyph_samples(
++            return canvas.fill_glyph_samples(
+                 &self.path,
+                 self.origin,
+                 self.scale,
+                 &MASK_SAMPLES,
+                 &PaintFlavor::Color(mask_color),
++                self.cell,
+             );
+-            return first_vertex;
+         }
+         for point in MASK_SAMPLES {
+             canvas.state_mut().transform = self.origin;
+@@ -518,7 +517,7 @@
+                 },
+             );
+         }
+-        first_vertex
++        false
+     }
+ }
+
+@@ -529,34 +528,22 @@
  }
  
  impl GlyphMaskBatches {
@@ -139,7 +285,7 @@ diff --git a/src/text.rs b/src/text.rs
              });
          // A render-target change inserts a command between the masks.
          if !isolated || self.current.end != start {
-@@ -641,6 +639,90 @@
+@@ -641,6 +628,99 @@
      }
  }
  
@@ -185,11 +331,20 @@ diff --git a/src/text.rs b/src/text.rs
 +        }
 +    }
 +
-+    pub(crate) fn prepend(&mut self, commands: Vec<crate::renderer::Command>) -> Vec<crate::renderer::Command> {
++    pub(crate) fn prepend(&mut self, mut commands: Vec<crate::renderer::Command>) -> Vec<crate::renderer::Command> {
 +        use crate::renderer::{Command, CommandType};
 +
 +        let spans = std::mem::take(&mut self.spans);
-+        if std::mem::take(&mut self.keep_inline) || spans.len() < 2 {
++        if std::mem::take(&mut self.keep_inline) || spans.is_empty() {
++            return commands;
++        }
++        if let [span] = spans.as_slice() {
++            // Even one atlas scope can split a scene render pass. Move it
++            // ahead of the scene without rebuilding the command buffer.
++            // wgpu starts each flush on the screen, including when the
++            // original scope was recorded inside an offscreen layer.
++            commands[span.end - 1] = Command::new(CommandType::SetRenderTarget(RenderTarget::Screen));
++            commands[..span.end].rotate_right(span.len());
 +            return commands;
 +        }
 +        let mut scene = Vec::new();
@@ -230,7 +385,7 @@ diff --git a/src/text.rs b/src/text.rs
  pub struct GlyphAtlas {
      pub rendered_glyphs: RefCell<FnvHashMap<RenderedGlyphId, Option<RenderedGlyph>>>,
      pub glyph_textures: RefCell<Vec<FontTexture>>,
-@@ -691,6 +773,7 @@
+@@ -691,6 +771,7 @@
              0.0
          };
  
@@ -238,12 +393,12 @@ diff --git a/src/text.rs b/src/text.rs
          let mut add_glyph = |canvas: &mut Canvas<T>,
                               glyph: PositionedGlyph,
                               batches: &mut GlyphMaskBatches|
-@@ -739,8 +822,13 @@
+@@ -738,9 +819,12 @@
+                         // The masks of one run can be in different atlas textures.
                          canvas.set_render_target(RenderTarget::Image(mask.image_id));
                          let first_command = canvas.commands.len();
-                         let first_vertex = mask.draw(canvas, mode);
-+                        let confined =
-+                            mode == RenderMode::Fill && mask.confines_vertices(&canvas.verts[first_vertex..]);
+-                        let first_vertex = mask.draw(canvas, mode);
++                        let confined = mask.draw(canvas, mode);
                          if mode == RenderMode::Fill {
 -                            batches.record(canvas, first_command, first_vertex, mask.cell);
 +                            batches.record(canvas, first_command, confined);
@@ -253,7 +408,7 @@ diff --git a/src/text.rs b/src/text.rs
                          }
                      }
                      glyph_cache_entry.insert_entry(placed.map(|(rendered, _)| rendered))
-@@ -793,12 +881,21 @@
+@@ -793,12 +877,21 @@
          // and render target when it ends, also when a glyph fails. It is opened on the caller's
          // own render target, so no target switch is queued unless a mask is drawn.
          let target = canvas.current_render_target;
@@ -277,3 +432,83 @@ diff --git a/src/text.rs b/src/text.rs
  
          Ok(GlyphDrawCommands {
              alpha_glyphs: alpha_cmd_map.drain().map(|(_, cmd)| cmd).collect(),
+diff --git a/src/text/atlas.rs b/src/text/atlas.rs
+--- a/src/text/atlas.rs
++++ b/src/text/atlas.rs
+@@ -13,6 +13,7 @@
+     width: usize,
+     height: usize,
+     nodes: Vec<Node>,
++    failed_rects: Vec<(usize, usize)>,
+ }
+
+ impl Atlas {
+@@ -22,6 +23,7 @@
+             width,
+             height,
+             nodes: vec![Node { x: 0, y: 0, width }],
++            failed_rects: Vec::new(),
+         }
+     }
+
+@@ -40,6 +42,7 @@
+
+         self.width = width;
+         self.height = height;
++        self.failed_rects.clear();
+     }
+
+     /// Resets the atlas to the specified width and height.
+@@ -51,6 +54,13 @@
+     ///
+     /// Returns the position (x, y) of the added rectangle, or `None` if the rectangle cannot be added.
+     pub fn add_rect(&mut self, rect_width: usize, rect_height: usize) -> Option<(usize, usize)> {
++        if self
++            .failed_rects
++            .iter()
++            .any(|&(width, height)| rect_width >= width && rect_height >= height)
++        {
++            return None;
++        }
+         // The best place so far: none yet. Starting from the atlas's own
+         // height and width, as fontstash does, refused a rect that reaches
+         // the bottom from a span as wide as the atlas, though it fits there.
+@@ -79,6 +89,15 @@
+             return Some((bestx, besty));
+         }
+
++        // The skyline only rises. A rectangle at least this wide and tall
++        // cannot fit later either, unless the atlas is expanded or reset.
++        const MAX_FAILED_RECTS: usize = 8;
++        self.failed_rects
++            .retain(|&(width, height)| width < rect_width || height < rect_height);
++        if self.failed_rects.len() == MAX_FAILED_RECTS {
++            self.failed_rects.swap_remove(0);
++        }
++        self.failed_rects.push((rect_width, rect_height));
+         None
+     }
+
+@@ -181,9 +200,22 @@
+     }
+
+     #[test]
++    fn failed_dimensions_only_reject_dominated_rectangles() {
++        let mut atlas = Atlas::new(16, 16);
++        assert_eq!(atlas.add_rect(8, 16), Some((0, 0)));
++        assert_eq!(atlas.add_rect(9, 1), None);
++        assert_eq!(atlas.add_rect(10, 2), None);
++        assert_eq!(atlas.failed_rects, [(9, 1)]);
++        assert_eq!(atlas.add_rect(8, 16), Some((8, 0)));
++        atlas.reset(16, 16);
++        assert_eq!(atlas.add_rect(10, 2), Some((0, 0)));
++    }
++
++    #[test]
+     fn an_expanded_atlas_keeps_its_rects_and_packs_beside_and_below_them() {
+         let mut atlas = Atlas::new(32, 32);
+         assert_eq!(atlas.add_rect(32, 20), Some((0, 0)));
++        assert_eq!(atlas.add_rect(32, 32), None);
+         atlas.expand(64, 32);
+         assert_eq!(atlas.add_rect(32, 32), Some((32, 0)));
+         assert_eq!(atlas.add_rect(32, 12), Some((0, 20)));

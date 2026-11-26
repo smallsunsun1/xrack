@@ -153,6 +153,23 @@ impl Cache {
         })
     }
 
+    pub(super) fn word_advance(
+        &mut self,
+        system: &TextSystem,
+        text: &str,
+        fonts: &CellFonts,
+        size: f32,
+    ) -> Option<f32> {
+        self.select_context(system);
+        let word = self.word(system, text, fonts)?;
+        let scale = size / word.units_per_em;
+        Some(
+            word.glyphs
+                .iter()
+                .fold(0.0, |width, glyph| width + (glyph.advance[0] * scale + 0.0)),
+        )
+    }
+
     pub(super) fn label_word(
         &mut self,
         system: &TextSystem,

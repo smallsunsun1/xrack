@@ -13,6 +13,7 @@ export component ReverseDepthDemo inherits Window {
     background: #152130;
     in-out property <bool> reversed: true;
     in-out property <bool> msaa: false;
+    in-out property <bool> prepass: false;
     property <point2d> viewport: Point2D.new(432px, 252px);
     property <PrecisionActor> base: PrecisionActor {
         id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
@@ -30,11 +31,13 @@ export component ReverseDepthDemo inherits Window {
 
     SceneView3D {
         width: root.viewport.x; height: root.viewport.y; model: root.scene; camera: "eye";
+        depth-prepass: root.prepass;
         scene-background: #23384f; scene-tone-map: none; multisampling: root.msaa;
     }
     HorizontalLayout {
         x: 14px; y: 263px; width: 404px; height: 36px; spacing: 12px;
         depth-switch := CheckBox { text: "反向深度"; checked <=> root.reversed; }
         sample-switch := CheckBox { text: "MSAA"; checked <=> root.msaa; }
+        prepass-switch := CheckBox { text: "深度预通道"; checked <=> root.prepass; }
     }
 }

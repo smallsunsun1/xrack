@@ -1072,6 +1072,11 @@ fn scene_viewport_options_have_viewport_specific_types() {
         ("render-sc", "render-scale", "float"),
         ("layer-ma", "layer-mask", "int"),
         ("cache-rend", "cache-rendering", "bool"),
+        ("preload-m", "preload-model", "scenemodel3d"),
+        ("lod-fa", "lod-fade-width", "length"),
+        ("render-mo", "render-mode", "string"),
+        ("render-form", "render-format", "string"),
+        ("render-over", "render-overrides", "string"),
         ("imported-li", "imported-lights", "bool"),
         ("specular-", "specular-aa", "bool"),
         ("particle-t", "particle-time", "float"),
@@ -1338,15 +1343,26 @@ fn bake_quality_properties_complete_in_scene_viewports() {
 }
 
 #[test]
-fn temporal_modes_complete_in_scene_viewport_string_values() {
-    let items = complete_at(
-        "component App inherits Window { SceneView3D { temporal-aa-mode: \"motion-|\"; } }",
-    );
-    assert!(items.iter().any(|item| item["label"] == "motion-vectors"));
-    let outside = complete_at(
-        "component App inherits Window { Rectangle { temporal-aa-mode: \"motion-|\"; } }",
-    );
-    assert!(!outside.iter().any(|item| item["label"] == "motion-vectors"));
+fn viewport_modes_complete_in_scene_viewport_string_values() {
+    for (property, prefix, value) in [
+        ("temporal-aa-mode", "motion-", "motion-vectors"),
+        ("render-mode", "inl", "inline"),
+        ("render-mode", "off", "offscreen"),
+        ("render-mode", "und", "underlay"),
+        ("render-mode", "ove", "overlay"),
+        ("render-format", "rgba1", "rgba16f"),
+        ("render-format", "rgba3", "rgba32f"),
+        ("render-overrides", "dis", "disable-internal-passes"),
+        ("render-overrides", "no", "none"),
+    ] {
+        let source = |kind| {
+            format!("component App inherits Window {{ {kind} {{ {property}: \"{prefix}|\"; }} }}")
+        };
+        let items = complete_at(&source("SceneView3D"));
+        assert!(items.iter().any(|item| item["label"] == value), "{items:?}");
+        let outside = complete_at(&source("Rectangle"));
+        assert!(!outside.iter().any(|item| item["label"] == value));
+    }
 }
 
 #[test]
@@ -1389,13 +1405,13 @@ fn reflection_probe_time_slicing_completes_inside_probe_records() {
 #[test]
 fn shadow_filter_completes_in_scene_light_records() {
     let source = r#"
-        struct Lamp { shadow-filter: string, shadow-radius: float, shadow-strength: float }
+        struct Lamp { shadow-filter: string, shadow-radius: float, shadow-strength: float, shadow-world-radius: float }
         component App inherits Window {
             SceneView3D { lights: [Lamp { shadow-filter: "pcf|" }]; }
         }
     "#;
     let items = complete_at(source);
-    for name in ["pcf4", "pcf8", "pcf16"] {
+    for name in ["pcf4", "pcf8", "pcf16", "pcf32", "pcf64"] {
         assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
     }
     let fields = complete_at(&source.replace("shadow-filter: \"pcf|\"", "shadow-r|"));
@@ -1405,6 +1421,354 @@ fn shadow_filter_completes_in_scene_light_records() {
             .any(|item| item["label"] == "shadow-radius" && item["detail"] == "float"),
         "{fields:?}"
     );
+    let fields = complete_at(&source.replace("shadow-filter: \"pcf|\"", "shadow-w|"));
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "shadow-world-radius" && item["detail"] == "float"),
+        "{fields:?}",
+    );
+}
+
+#[test]
+fn shadow_debug_flags_complete_as_viewport_booleans() {
+    let items = complete_at("component App inherits Window { SceneView3D { shadow-| } }");
+    for suffix in [
+        "debug-cascades",
+        "debug-light-volumes",
+        "debug-casters",
+        "debug-receivers",
+        "debug-intersections",
+        "freeze-camera",
+    ] {
+        let name = format!("shadow-{suffix}");
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == name && item["detail"] == "bool"),
+            "{name}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn viewport_scissor_completes_property_and_rect_fields() {
+    let items = complete_at("component App inherits Window { SceneView3D { scissor-r| } }");
+    assert!(
+        items.iter().any(|item| item["label"] == "scissor-rect"
+            && item["detail"] == r#"record<"SceneScissorRect">"#),
+        "{items:?}"
+    );
+    let fields = complete_at(
+        r#"
+        struct Region { x: length, y: length, width: length, height: length }
+        component App inherits Window { SceneView3D { scissor-rect: Region { x: 0px, wid| }; } }
+    "#,
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "width" && item["detail"] == "length"),
+        "{fields:?}"
+    );
+}
+
+#[test]
+fn depth_prepass_completes_as_a_viewport_boolean() {
+    let items = complete_at("component App inherits Window { SceneView3D { depth-pre| } }");
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "depth-prepass" && item["detail"] == "bool"),
+        "{items:?}"
+    );
+    let outside = complete_at("component App inherits Window { Rectangle { depth-pre| } }");
+    assert!(outside.iter().all(|item| item["label"] != "depth-prepass"));
+}
+
+#[test]
+fn wireframe_completes_as_a_viewport_boolean() {
+    let items = complete_at("component App inherits Window { SceneView3D { debug-w| } }");
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "debug-wireframe" && item["detail"] == "bool"),
+        "{items:?}"
+    );
+    let outside = complete_at("component App inherits Window { Rectangle { debug-w| } }");
+    assert!(
+        outside
+            .iter()
+            .all(|item| item["label"] != "debug-wireframe")
+    );
+}
+
+#[test]
+fn transparency_methods_complete_on_the_viewport() {
+    let fields = complete_at("component App inherits Window { SceneView3D { oit-m| } }");
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "oit-method" && item["detail"] == "string"),
+        "{fields:?}"
+    );
+    let items =
+        complete_at(r#"component App inherits Window { SceneView3D { oit-method: "|"; } }"#);
+    for (name, _) in xrack_parser::builtins::SCENE_OIT_METHODS {
+        assert!(
+            items.iter().any(|item| item["label"] == *name),
+            "{name}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn material_diagnostics_complete_on_the_viewport() {
+    let fields = complete_at("component App inherits Window { SceneView3D { material-d| } }");
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "material-debug" && item["detail"] == "string")
+    );
+    let values =
+        complete_at(r#"component App inherits Window { SceneView3D { material-debug: "|"; } }"#);
+    for (name, _) in xrack_parser::builtins::SCENE_MATERIAL_DEBUG_MODES {
+        assert!(
+            values.iter().any(|item| item["label"] == *name),
+            "{name}: {values:?}"
+        );
+    }
+    let outside =
+        complete_at(r#"component App inherits Window { Rectangle { material-debug: "|"; } }"#);
+    assert!(outside.iter().all(|item| item["label"] != "normals"));
+}
+
+#[test]
+fn shadow_atlas_precision_completes_as_a_property_and_string_value() {
+    let property = complete_at("component App inherits Window { SceneView3D { shadow-map-p| } }");
+    assert!(
+        property
+            .iter()
+            .any(|item| item["label"] == "shadow-map-precision")
+    );
+    let values = complete_at(
+        r#"component App inherits Window { SceneView3D { shadow-map-precision: "dep|"; } }"#,
+    );
+    for value in ["depth16", "depth32"] {
+        assert!(
+            values.iter().any(|item| item["label"] == value),
+            "{values:?}"
+        );
+    }
+    let light = complete_at(
+        r#"
+        struct Lamp { shadow-map-precision: string }
+        component App inherits Window { SceneView3D { lights: [Lamp { shadow-map-precision: "|"}]; } }
+    "#,
+    );
+    for value in ["depth16", "depth32", "inherit"] {
+        assert!(light.iter().any(|item| item["label"] == value), "{light:?}");
+    }
+}
+
+#[test]
+fn shadow_projection_fields_complete_inside_typed_light_rows() {
+    let source = r#"
+        struct Lamp {
+            shadow-map-far: float, shadow-map-size: int, shadow-cascades: int, shadow-lock-texels: bool,
+            shadow-split-1: float, shadow-split-2: float, shadow-split-3: float,
+            shadow-split-balance: float, shadow-cascade-blend: float,
+        }
+        component App inherits Window { SceneView3D { lights: [Lamp { shadow-| }]; } }
+    "#;
+    let items = complete_at(source);
+    for (name, ty) in [
+        ("shadow-map-far", "float"),
+        ("shadow-map-size", "int"),
+        ("shadow-cascades", "int"),
+        ("shadow-lock-texels", "bool"),
+        ("shadow-split-1", "float"),
+        ("shadow-split-2", "float"),
+        ("shadow-split-3", "float"),
+        ("shadow-split-balance", "float"),
+        ("shadow-cascade-blend", "float"),
+    ] {
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == name && item["detail"] == ty),
+            "{name}: {items:?}"
+        );
+    }
+    let viewport = complete_at("component App inherits Window { SceneView3D { shadow-map-| } }");
+    assert!(
+        viewport
+            .iter()
+            .all(|item| item["label"] != "shadow-map-far")
+    );
+}
+
+#[test]
+fn light_scope_completes_and_navigates_unique_model_nodes() {
+    const SOURCE: &str = r#"
+        struct Actor { id: string, mesh: string, lod-of: string }
+        struct Light { scope: string }
+        component App inherits Window {
+            property <[Actor]> models: [
+                Actor { id: "left-wing", mesh: "", lod-of: "" },
+                Actor { id: "left-dupe", mesh: "", lod-of: "" },
+                Actor { id: "left-dupe", mesh: "", lod-of: "" },
+                Actor { id: "left-lod", mesh: "", lod-of: "left-wing" },
+                Actor { id: "right-wing", mesh: "", lod-of: "" },
+            ];
+            SceneView3D {
+                model: root.models;
+                lights: [Light { scope: "le|" }];
+            }
+            SceneView3D {
+                model: [Actor { id: "left-other", mesh: "", lod-of: "" }];
+            }
+        }
+    "#;
+    let items = complete_at(SOURCE);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["label"], "left-wing");
+    assert_eq!(items[0]["textEdit"]["newText"], "left-wing");
+    let uri = "file:///light-scope.xr";
+    assert_eq!(
+        request_at(
+            "textDocument/definition",
+            uri,
+            &SOURCE.replace("le|", "le|ft-wing"),
+            None
+        ),
+        location_at(
+            uri,
+            &SOURCE
+                .replace("le|", "left-wing")
+                .replacen("id: \"left-wing", "id: \"|left-wing", 1),
+            "left-wing"
+        ),
+    );
+    assert!(
+        request_at(
+            "textDocument/definition",
+            uri,
+            &SOURCE.replace("le|", "le|ft-dupe"),
+            None
+        )
+        .is_null()
+    );
+    let fields = complete_at(&SOURCE.replace("scope: \"le|\"", "sc|"));
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "scope" && item["detail"] == "string")
+    );
+}
+
+#[test]
+fn environment_orientation_and_probe_rotation_complete() {
+    let properties = complete_at("component App inherits Window { SceneView3D { environment-| } }");
+    for property in [
+        "environment-pitch",
+        "environment-roll",
+        "environment-horizon",
+    ] {
+        assert!(
+            properties.iter().any(|item| item["label"] == property),
+            "{properties:?}"
+        );
+    }
+    let record = complete_at(
+        r#"
+        struct Probe { position: point3d, box-size: vector3d, pitch: float, roll: float }
+        component App inherits Window {
+            SceneView3D { reflection-probes: [Probe { position: Point3D.new(0, 0, 0), pi| }]; }
+        }
+    "#,
+    );
+    assert!(
+        record
+            .iter()
+            .any(|item| item["label"] == "pitch" && item["detail"] == "float"),
+        "{record:?}"
+    );
+}
+
+#[test]
+fn independent_skybox_completes_resource_and_transform_properties() {
+    let items = complete_at("component App inherits Window { SceneView3D { skybox-| } }");
+    for name in [
+        "skybox-source",
+        "skybox-sky",
+        "skybox-yaw",
+        "skybox-pitch",
+        "skybox-roll",
+        "skybox-intensity",
+        "skybox-blur",
+    ] {
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+}
+
+#[test]
+fn procedural_sky_completes_property_and_structural_fields() {
+    let items = complete_at("component App inherits Window { SceneView3D { environment-s| } }");
+    assert!(items.iter().any(|item| item["label"] == "environment-sky"));
+    let fields = complete_at(
+        r#"
+        struct Sky { sky-top-color: color, sun-latitude: float, sun-longitude: float }
+        component App inherits Window {
+            SceneView3D { environment-sky: Sky { sky-top-color: #acf, sun-la| }; }
+        }
+    "#,
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|item| item["label"] == "sun-latitude" && item["detail"] == "float"),
+        "{fields:?}"
+    );
+}
+
+#[test]
+fn fxaa_settings_complete_only_on_a_scene_view() {
+    let members = complete_at("component App inherits Window { SceneView3D { fxaa-| } }");
+    for setting in [
+        "fxaa-strength",
+        "fxaa-subpixel",
+        "fxaa-edge-threshold",
+        "fxaa-min-threshold",
+        "fxaa-search-steps",
+    ] {
+        assert!(
+            members.iter().any(|item| item["label"] == setting),
+            "{members:?}"
+        );
+    }
+    let nodes = complete_at("component App inherits Window { Rectangle { fxaa-| } }");
+    assert!(!nodes.iter().any(|item| item["label"] == "fxaa-strength"));
+}
+
+#[test]
+fn lens_flare_members_complete_on_a_scene_view() {
+    let items = complete_at("component App inherits Window { SceneView3D { lens-flare-| } }");
+    for expected in [
+        "lens-flare-strength",
+        "lens-flare-ghost-count",
+        "lens-flare-distortion",
+        "lens-flare-halo-width",
+        "lens-flare-color-map",
+        "lens-flare-dirt-map",
+        "lens-flare-starburst-map",
+        "lens-flare-aspect-corrected",
+    ] {
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{expected}: {items:?}"
+        );
+    }
 }
 
 #[test]
@@ -1416,6 +1780,11 @@ fn scene_tone_map_completes_typed_curves_and_color_adjustments() {
         "scene-brightness",
         "scene-contrast",
         "scene-saturation",
+        "scene-vignette-strength",
+        "scene-vignette-radius",
+        "scene-vignette-color",
+        "scene-sharpness",
+        "scene-dithering",
     ] {
         assert!(
             members.iter().any(|item| item["label"] == expected),
@@ -3599,6 +3968,7 @@ fn scene_asset_urls_complete_and_link_local_resources() {
         "room.glb",
         "roof.gltf",
         "room.bin",
+        "room.obj",
         "room.hdr",
         "room.wgsl",
         "room.png",
@@ -3627,7 +3997,12 @@ fn scene_asset_urls_complete_and_link_local_resources() {
             .iter()
             .map(|item| item["label"].as_str())
             .collect::<Vec<_>>(),
-        [Some("roof.gltf"), Some("room.glb"), Some("room.png")]
+        [
+            Some("roof.gltf"),
+            Some("room.glb"),
+            Some("room.obj"),
+            Some("room.png")
+        ]
     );
     assert_eq!(items[1]["textEdit"]["newText"], "room.glb");
     let emitter = r#"struct Emitter { emitter-mesh: string } component App inherits Window { property <Emitter> emitter: Emitter { emitter-mesh: @mesh-url("models/ro"#;
@@ -3739,6 +4114,81 @@ fn png_mesh_resource_links_and_displays_heightfield_dimensions() {
     );
     let links = completion::document_links(source, &workspace);
     assert_eq!(links[0]["target"], workspace.uri(&png).unwrap());
+}
+
+#[test]
+fn host_mesh_asset_type_completes_and_is_checked_as_a_scene_field() {
+    let completed = complete_at("component App inherits Window { in property <mesha|> asset; }");
+    assert!(completed.iter().any(|item| item["label"] == "meshasset3d"));
+    let source = r#"struct Actor {
+        id: string, x: float, y: float, z: float,
+        scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+        color: color, mesh-asset: meshasset3d,
+    }
+    export component App inherits Window {
+        in property <meshasset3d> asset;
+        SceneView3D {
+            model: [Actor {
+                id: "asset", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+                yaw: 0, pitch: 0, roll: 0, color: #fff, mesh-asset: root.asset,
+            }];
+        }
+    }"#;
+    assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
+    let invalid = source
+        .replace("mesh-asset: meshasset3d", "mesh-asset: string")
+        .replace("root.asset", r#""""#);
+    let errors = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(
+        errors.values().flatten().any(|error| {
+            let message = error["message"].as_str().unwrap_or_default();
+            message.contains("mesh-asset") && message.contains("meshasset3d")
+        }),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn obj_asset_links_hover_and_material_slot_completion() {
+    let root = workspace_fixture("obj-hover");
+    let uri = workspace_file_uri(&root.join("app.xr"));
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let obj = root.join("panel.obj");
+    std::fs::write(&obj, "\u{feff}v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\nusemtl Trim\nf 1 2 3 # comment\nusemtl Unused\n").unwrap();
+    let complete =
+        r#"component App inherits Window { property <string> mesh: @mesh-url("panel.obj"); }"#;
+    let hover = completion::query(
+        "textDocument/hover",
+        &uri,
+        complete,
+        Some(analysis::Source::new(complete).coordinates(complete.find("panel.obj").unwrap())),
+        Some(&workspace),
+    );
+    let description = hover["contents"]["value"].as_str().unwrap();
+    assert!(description.contains("3 vertices · 2 faces"));
+    assert!(description.contains("#0  Trim"));
+    assert!(description.contains("#default  implicit material"));
+    assert!(!description.contains("Unused"));
+    assert_eq!(
+        completion::document_links(complete, &workspace)[0]["target"],
+        workspace.uri(&obj).unwrap()
+    );
+
+    let partial = r#"component App inherits Window { property <Actor> model: Actor {
+        mesh: @mesh-url("panel.obj"), material-slots: Palette { paint: Style { slot: ""#;
+    let options = completion::complete(
+        partial,
+        1,
+        partial.lines().last().unwrap().len(),
+        Some(&workspace),
+    );
+    for label in ["#0", "#default", "Trim"] {
+        assert!(
+            options.iter().any(|item| item["label"] == label),
+            "{label}: {options:?}"
+        );
+    }
+    assert!(!options.iter().any(|item| item["label"] == "Unused"));
 }
 
 #[test]
@@ -8633,6 +9083,48 @@ component App inherits Window {
     );
     assert_eq!(items.len(), 1, "{items:?}");
     assert_eq!(items[0]["label"], "dashboard");
+    let property = complete_at("component App inherits Window { SceneView3D { texture-so| } }");
+    assert!(
+        property
+            .iter()
+            .any(|item| item["label"] == "texture-source")
+    );
+    let viewport = complete_at(
+        r#"
+        struct Finish { base-item: string }
+        component App inherits Window {
+            SceneView3D { texture-source: "security-feed"; }
+            property <Finish> finish: Finish { base-item: "secur|"; };
+        }
+        "#,
+    );
+    assert_eq!(viewport.len(), 1, "{viewport:?}");
+    assert_eq!(viewport[0]["label"], "security-feed");
+    let mapped = complete_at(
+        r#"
+        struct PanelMap { source: string, uv-flip-u: bool }
+        struct Finish { base-item: PanelMap }
+        component Other inherits Window { Rectangle { texture-source: "dashboard-other"; } }
+        component App inherits Window {
+            Rectangle { texture-source: "dashboard"; }
+            property <Finish> finish: Finish {
+                base-item: PanelMap { source: "dash|", uv-flip-u: true },
+            };
+        }
+        "#,
+    );
+    assert_eq!(mapped.len(), 1, "{mapped:?}");
+    assert_eq!(mapped[0]["label"], "dashboard");
+    let image_names = complete_at(
+        r#"
+        component App inherits Window {
+            SceneView3D { texture-source: "security-feed"; }
+            Image { texture-input: "secur|"; }
+        }
+        "#,
+    );
+    assert_eq!(image_names.len(), 1, "{image_names:?}");
+    assert_eq!(image_names[0]["label"], "security-feed");
 }
 
 #[test]
@@ -9141,7 +9633,7 @@ fn capture_color_format_completes_linear_attachment_formats() {
         .iter()
         .filter_map(|item| item["label"].as_str())
         .collect();
-    for format in ["rg8", "rg16f", "rgba8", "rgba16f"] {
+    for format in ["rg8", "rg16f", "rg32f", "rgba8", "rgba16f", "rgba32f"] {
         assert!(labels.contains(&format), "{labels:?}");
     }
     assert!(!labels.contains(&"r16f"), "{labels:?}");
@@ -9184,6 +9676,98 @@ fn reflection_probe_completes_its_debug_view_field() {
 }
 
 #[test]
+fn texture_map_completes_sampling_and_transform_fields() {
+    let template = r#"struct Map {
+            source: string, max-anisotropy: int, uv-pivot-u: float, uv-pivot-v: float,
+            uv-flip-u: bool, uv-flip-v: bool,
+        }
+        struct Material { base-color-map: Map }
+        component App inherits Window {
+            property <Material> structure: Material {
+                base-color-map: Map { source: "", PREFIX| },
+            };
+        }"#;
+    for (prefix, expected) in [
+        ("max-an", &[("max-anisotropy", "int")][..]),
+        ("uv-pi", &[("uv-pivot-u", "float"), ("uv-pivot-v", "float")]),
+        ("uv-fl", &[("uv-flip-u", "bool"), ("uv-flip-v", "bool")]),
+    ] {
+        let items = complete_at(&template.replace("PREFIX", prefix));
+        for (name, ty) in expected {
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item["label"] == *name && item["detail"] == *ty),
+                "{items:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn capture_completes_the_mipmap_option_and_filter() {
+    let record = complete_at(
+        r#"struct Feed { name: string, mipmaps: bool }
+        component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "surface", mip| }]; }
+        }"#,
+    );
+    assert!(
+        record
+            .iter()
+            .any(|item| item["label"] == "mipmaps" && item["detail"] == "bool")
+    );
+    let filter = complete_at(
+        r#"component App inherits Window {
+            SceneView3D { scene-effects: [Pass { buffers: [Input { capture: "feed", mip-filter: "li|" }] }]; }
+        }"#,
+    );
+    assert!(filter.iter().any(|item| item["label"] == "linear"));
+
+    for property in ["min-filter", "mag-filter"] {
+        let candidates = complete_at(&format!(
+            r#"component App inherits Window {{ SceneView3D {{
+                scene-effects: [Pass {{ buffers: [Input {{ capture: "feed", {property}: "ne|" }}] }}];
+            }} }}"#,
+        ));
+        assert!(candidates.iter().any(|item| item["label"] == "nearest"));
+    }
+
+    let anisotropy = complete_at(
+        r#"struct Input { capture: string, max-anisotropy: int }
+        struct Pass { buffers: [Input], shader: string }
+        component App inherits Window {
+            SceneView3D { scene-effects: [Pass { buffers: [Input { capture: "feed", max-a| }] }]; }
+        }"#,
+    );
+    assert!(
+        anisotropy
+            .iter()
+            .any(|item| item["label"] == "max-anisotropy" && item["detail"] == "int")
+    );
+}
+
+#[test]
+fn capture_augment_inputs_complete_upstream_names_without_their_own_capture() {
+    let prefix = r#"component App inherits Window {
+        SceneView3D { scene-captures: [
+            Feed { name: "first" },
+            Feed { name: "second", augment-textures: [Input { capture: "|", attachment: "depth" }] },
+        ]; }
+    }"#;
+    let candidates = complete_at(prefix);
+    assert!(candidates.iter().any(|item| item["label"] == "first"));
+    assert!(candidates.iter().all(|item| item["label"] != "second"));
+
+    let attachments = complete_at(
+        &prefix
+            .replace(r#"capture: "|""#, r#"capture: "first""#)
+            .replace(r#"attachment: "depth""#, r#"attachment: "de|""#),
+    );
+    assert!(attachments.iter().any(|item| item["label"] == "depth"));
+}
+
+#[test]
 fn capture_material_data_completes_attachment_and_format() {
     let attachment = complete_at(
         r#"
@@ -9209,4 +9793,44 @@ fn capture_material_data_completes_attachment_and_format() {
     );
     assert_eq!(formats.len(), 1, "{formats:?}");
     assert_eq!(formats[0]["label"], "rg16f");
+    assert!(
+        attachment
+            .iter()
+            .any(|item| item["label"] == "material-data-1")
+    );
+    assert!(
+        attachment
+            .iter()
+            .any(|item| item["label"] == "material-data-2")
+    );
+    let indexed = complete_at(
+        r#"component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "surface", material-data-2-format: "rgba32|" }]; }
+        }"#,
+    );
+    assert_eq!(indexed[0]["label"], "rgba32f");
+
+    let augmentation = complete_at(
+        r#"struct Feed { name: string, augment-shader: string, augment-parameters: vector3d }
+        component App inherits Window {
+            SceneView3D { scene-captures: [Feed { name: "surface", augment-| }]; }
+        }"#,
+    );
+    for (name, ty) in [
+        ("augment-shader", "string"),
+        ("augment-parameters", "vector3d"),
+    ] {
+        assert!(
+            augmentation
+                .iter()
+                .any(|item| item["label"] == name && item["detail"] == ty)
+        );
+    }
+
+    let high_precision = complete_at(
+        r#"component App inherits Window {
+            SceneView3D { scene-effects: [Pass { output-format: "r32|" }]; }
+        }"#,
+    );
+    assert!(high_precision.iter().any(|item| item["label"] == "r32f"));
 }

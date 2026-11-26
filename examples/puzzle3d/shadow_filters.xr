@@ -8,7 +8,8 @@ struct ShadowObject {
 struct ShadowLamp {
     kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
     intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
-    shadow-filter: string, shadow-radius: float, shadow-strength: float, shadow-bias: float,
+    shadow-filter: string, shadow-radius: float, shadow-world-radius: float,
+    shadow-strength: float, shadow-bias: float,
 }
 
 export component ShadowFiltersDemo inherits Window {
@@ -19,6 +20,9 @@ export component ShadowFiltersDemo inherits Window {
     in-out property <string> light-kind: "directional";
     in-out property <string> filter-mode: "pcf16";
     in-out property <float> radius: 10.0;
+    in-out property <float> world-radius: 0.5;
+    in-out property <bool> world-units: false;
+    in-out property <int> map-size: 128;
     in-out property <float> strength: 1.0;
     in-out property <float> bias: 0.001;
     in-out property <bool> enabled: true;
@@ -44,6 +48,7 @@ export component ShadowFiltersDemo inherits Window {
         intensity: root.light-kind == "directional" ? 2.6 : 60,
         color: root.fill-light ? #ff0000 : #fffafa, range: 10, inner-angle: 18, outer-angle: 35,
         shadow-filter: root.filter-mode, shadow-radius: root.radius,
+        shadow-world-radius: root.world-units ? root.world-radius : -1,
         shadow-strength: root.strength, shadow-bias: root.bias,
     };
     property <[ShadowLamp]> lamps: [
@@ -58,7 +63,7 @@ export component ShadowFiltersDemo inherits Window {
         width: 512px; height: 304px; model: root.objects;
         lights: root.lamps; camera-yaw: 0; camera-pitch: 0; camera-distance: 8;
         scene-background: #23334a; ambient-intensity: 0.15;
-        shadows: root.enabled; shadow-map-size: 128;
+        shadows: root.enabled; shadow-map-size: root.map-size;
         shadow-cascades: root.cascades; shadow-distance: 20;
         cache-rendering: true;
     }
@@ -78,15 +83,26 @@ export component ShadowFiltersDemo inherits Window {
                 root.filter-mode = root.filter-mode == "hard" ? "bilinear"
                     : root.filter-mode == "bilinear" ? "pcf4"
                     : root.filter-mode == "pcf4" ? "pcf8"
-                    : root.filter-mode == "pcf8" ? "pcf16" : "hard";
+                    : root.filter-mode == "pcf8" ? "pcf16"
+                    : root.filter-mode == "pcf16" ? "pcf32"
+                    : root.filter-mode == "pcf32" ? "pcf64" : "hard";
             }
         }
         Text { text: "半径"; color: #e2eaf4; }
-        Slider { minimum: 0; maximum: 16; value <=> root.radius; }
+        if !root.world-units : Slider { minimum: 0; maximum: 16; value <=> root.radius; }
+        if root.world-units : Slider { minimum: 0; maximum: 1.5; value <=> root.world-radius; }
     }
     HorizontalLayout {
         x: 12px; y: 355px; width: 488px; height: 35px; spacing: 10px;
         Text { text: "阴影强度"; color: #e2eaf4; }
         Slider { minimum: 0; maximum: 1; value <=> root.strength; }
+        world-toggle := CheckBox {
+            width: 114px; text: "世界单位"; checked: root.world-units;
+            toggled => { root.world-units = !root.world-units; }
+        }
+        resolution-button := Button {
+            width: 95px; text: root.map-size == 128 ? "128 px" : "512 px";
+            clicked => { root.map-size = root.map-size == 128 ? 512 : 128; }
+        }
     }
 }

@@ -42,7 +42,9 @@ pub(super) struct ColumnSizing {
     tracks: Vec<ColumnTrack>,
     fitted_viewport: Option<f32>,
     fitted: Vec<f32>,
+    exact_fitted_total: Option<i32>,
     widths: Vec<f32>,
+    overridden: Vec<usize>,
     total: f32,
     geometry: ColumnGeometryCache,
     prepared_nodes: Option<PreparedTableNodes>,
@@ -213,18 +215,35 @@ impl ColumnSizing {
         self.used = true;
         let input = (std::ptr::from_ref(header).addr(), width);
         if self.input != Some(input) {
-            self.fit(&header.columns, width);
-            // Manual overrides are applied after fitting the declared tracks.
-            // A drag can change the overrides without invalidating that fit.
-            self.widths.clone_from(&self.fitted);
-            apply_width_overrides(&mut self.widths, header, width);
-            self.total = self.widths.iter().sum();
+            if self.fit(&header.columns, width) {
+                self.widths.clone_from(&self.fitted);
+                self.overridden.clear();
+            } else {
+                // A drag only changes the manual overrides. Restore the
+                // previous ones without copying all column widths.
+                for index in self.overridden.drain(..) {
+                    self.widths[index] = self.fitted[index];
+                }
+            }
+            let mut total = self.exact_fitted_total;
+            for (index, width) in width_overrides(header, width) {
+                self.widths[index] = width;
+                self.overridden.push(index);
+                total = total.and_then(|total| {
+                    let next = total - exact_column_width(self.fitted[index])?
+                        + exact_column_width(width)?;
+                    (next <= MAX_EXACT_COLUMN_TOTAL).then_some(next)
+                });
+            }
+            self.total = total
+                .filter(|&total| total > 0)
+                .map_or_else(|| self.widths.iter().sum(), |total| total as f32);
             self.input = Some(input);
             self.geometry = ColumnGeometryCache::default();
         }
     }
 
-    fn fit(&mut self, columns: &[Node], viewport: f32) {
+    fn fit(&mut self, columns: &[Node], viewport: f32) -> bool {
         let same_viewport = self.fitted_viewport == Some(viewport);
         let mut refit = !same_viewport || self.tracks.len() != columns.len();
         self.tracks.truncate(columns.len());
@@ -253,9 +272,23 @@ impl ColumnSizing {
         );
         if refit {
             self.fitted = fit_axis(self.tracks.iter().map(|track| track.sizing), viewport);
+            self.exact_fitted_total = self.fitted.iter().try_fold(0, |total, &width| {
+                let next = total + exact_column_width(width)?;
+                (next <= MAX_EXACT_COLUMN_TOTAL).then_some(next)
+            });
             self.fitted_viewport = Some(viewport);
         }
+        refit
     }
+}
+
+// An ordered f32 sum of nonnegative whole-pixel widths is exact up to 2^24.
+// Fractional and large table tracks keep the original ordered sum.
+const MAX_EXACT_COLUMN_TOTAL: i32 = 1 << f32::MANTISSA_DIGITS;
+
+fn exact_column_width(width: f32) -> Option<i32> {
+    (width >= 0.0 && width <= MAX_EXACT_COLUMN_TOTAL as f32 && width.trunc() == width)
+        .then_some(width as i32)
 }
 
 pub(crate) fn column_limits(column: &Node, viewport_width: f32) -> (f32, f32) {
@@ -302,18 +335,25 @@ fn column_track(column: &Node, viewport: f32) -> AxisInfo {
 }
 
 fn apply_width_overrides(widths: &mut [f32], header: &TableHeader, viewport: f32) {
-    for ((width, override_width), column) in widths
-        .iter_mut()
-        .zip(&header.column_widths)
-        .zip(&header.columns)
-    {
-        if let Some(override_width) = override_width
-            && column.is_visible()
-        {
-            let (min, max) = column_limits(column, viewport);
-            *width = (*override_width as f32).clamp(min, max);
-        }
+    for (index, width) in width_overrides(header, viewport) {
+        widths[index] = width;
     }
+}
+
+fn width_overrides(header: &TableHeader, viewport: f32) -> impl Iterator<Item = (usize, f32)> + '_ {
+    header
+        .column_widths
+        .iter()
+        .zip(&header.columns)
+        .enumerate()
+        .filter_map(move |(index, (&width, column))| {
+            let width = width?;
+            if !column.is_visible() {
+                return None;
+            }
+            let (min, max) = column_limits(column, viewport);
+            Some((index, (width as f32).clamp(min, max)))
+        })
 }
 
 #[doc(hidden)]
@@ -481,40 +521,83 @@ impl TableGeometry {
             frozen_count += 1;
             frozen_end = visual + 1;
         }
-        let mut x = body.x;
         let mut viewport_columns = Vec::new();
         let mut hidden_positions = Vec::new();
-        let mut place_column = |visual, index| {
-            if visual == frozen_end {
-                x -= horizontal.offset;
-            }
-            let width = widths[index];
-            if width == 0.0 {
-                hidden_positions.push(visual);
-            }
-            let column = place_in_direction(
-                Rect::new(x, bounds.y, width, header_bounds.height),
-                body,
-                direction,
+        let permutation = order.as_slice(widths.len());
+        let right = body.x + body.width;
+        let indexed = permutation.is_none()
+            && direction == LayoutDirection::LeftToRight
+            && right.is_finite()
+            && horizontal.offset.is_finite()
+            && (body.x + total_width).is_finite();
+        let columns = if indexed {
+            let (frozen_widths, scrolling_widths) = widths.split_at(frozen_end);
+            let mut columns = Vec::with_capacity(widths.len());
+            let mut x = body.x;
+            let y = bounds.y;
+            let height = header_bounds.height;
+            columns.extend(frozen_widths.iter().map(|&width| {
+                let column = Rect::new(x, y, width, height);
+                x += width;
+                column
+            }));
+            x -= horizontal.offset;
+            columns.extend(scrolling_widths.iter().map(|&width| {
+                let column = Rect::new(x, y, width, height);
+                x += width;
+                column
+            }));
+            hidden_positions.extend(
+                widths
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, &width)| (width == 0.0).then_some(index)),
             );
-            if width > 0.0 && column.x <= body.x + body.width && column.x + width >= body.x {
-                viewport_columns.push(index);
+            // The panes are ordered individually even where scrolling puts
+            // the leading edge of the second pane behind the frozen columns.
+            let (frozen_columns, scrolling_columns) = columns.split_at(frozen_end);
+            for (start, pane) in [(0, frozen_columns), (frozen_end, scrolling_columns)] {
+                let first = pane.partition_point(|column| column.x + column.width < body.x);
+                let end = pane.partition_point(|column| column.x <= right);
+                viewport_columns.extend(
+                    (first..end)
+                        .filter_map(|index| (pane[index].width > 0.0).then_some(start + index)),
+                );
             }
-            x += width;
-            column
-        };
-        let columns = if let Some(permutation) = order.as_slice(widths.len()) {
-            let mut columns = vec![Rect::default(); widths.len()];
-            for (visual, &index) in permutation.iter().enumerate() {
-                columns[index] = place_column(visual, index);
-            }
-            viewport_columns.sort_unstable();
             columns
         } else {
-            // Declaration order needs no placeholder rectangles or sort.
-            (0..widths.len())
-                .map(|index| place_column(index, index))
-                .collect()
+            let mut x = body.x;
+            let mut place_column = |visual, index| {
+                if visual == frozen_end {
+                    x -= horizontal.offset;
+                }
+                let width = widths[index];
+                if width == 0.0 {
+                    hidden_positions.push(visual);
+                }
+                let column = place_in_direction(
+                    Rect::new(x, bounds.y, width, header_bounds.height),
+                    body,
+                    direction,
+                );
+                if width > 0.0 && column.x <= right && column.x + width >= body.x {
+                    viewport_columns.push(index);
+                }
+                x += width;
+                column
+            };
+            if let Some(permutation) = permutation {
+                let mut columns = vec![Rect::default(); widths.len()];
+                for (visual, &index) in permutation.iter().enumerate() {
+                    columns[index] = place_column(visual, index);
+                }
+                viewport_columns.sort_unstable();
+                columns
+            } else {
+                (0..widths.len())
+                    .map(|index| place_column(index, index))
+                    .collect()
+            }
         };
         let layout = Self {
             header: header_bounds,
@@ -850,5 +933,96 @@ impl TableGeometry {
             })
             .min_by(|(_, a), (_, b)| a.total_cmp(b))
             .map(|(slot, _)| slot)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xrack_runtime::Length;
+
+    #[test]
+    fn cached_column_widths_match_a_fresh_layout_after_dragging() {
+        for base_width in [0.0, 73.0, 73.375, 950_000.0] {
+            let mut table = Node::new("TableView", None);
+            table.properties.insert("frozen-columns", 2_i64.into());
+            let columns = (0..48)
+                .map(|index| {
+                    let mut column = Node::new("TableColumn", None);
+                    column.properties.insert("width", Length(base_width).into());
+                    column.properties.insert("visible", (index % 7 != 5).into());
+                    column.into_shared()
+                })
+                .collect();
+            table.table_header = Some(Box::new(TableHeader {
+                columns,
+                sort: None,
+                column_widths: Vec::new(),
+            }));
+            let mut cache = ColumnSizing::default();
+            for (step, widths) in [
+                vec![],
+                vec![Some(97)],
+                vec![Some(109), None, Some(141)],
+                vec![Some(109)],
+                vec![None, Some(139)],
+                vec![],
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let header = table.table_header.as_mut().unwrap();
+                header.column_widths = widths;
+                if step == 3 {
+                    // This limit changes the override even if the fitted
+                    // track itself is unchanged.
+                    header.columns[0]
+                        .properties
+                        .insert("max-width", Length(103.25).into());
+                } else if step == 4 {
+                    header.columns[5].properties.insert("visible", true.into());
+                }
+                let origin = if base_width.fract() == 0.0 {
+                    -19.0
+                } else {
+                    -19.125
+                };
+                let width = if step == 5 { 801.25 } else { 800.0 };
+                let bounds = Rect::new(origin, 9.0, width, 480.0);
+                let direction = LayoutDirection::LeftToRight;
+                let offset = [0.0, 78.0, 130.0, 89.25, 93.0, f32::MAX][step];
+                let clip = bounds.intersect(Rect::new(0.0, 0.0, 680.0, 600.0));
+                cache.invalidate_scene();
+                let cached = TableGeometry::with_offset(
+                    &table,
+                    bounds,
+                    clip,
+                    offset,
+                    direction,
+                    34.0,
+                    Some(&mut cache),
+                )
+                .unwrap();
+                let uncached =
+                    TableGeometry::with_offset(&table, bounds, clip, offset, direction, 34.0, None)
+                        .unwrap();
+                assert_eq!(cached, uncached);
+                assert_eq!(
+                    cached.horizontal.max_offset.to_bits(),
+                    uncached.horizontal.max_offset.to_bits()
+                );
+                let expected = uncached
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, bounds)| {
+                        (bounds.width > 0.0
+                            && bounds.x <= uncached.body.x + uncached.body.width
+                            && bounds.x + bounds.width >= uncached.body.x)
+                            .then_some(index)
+                    });
+                assert!(cached.columns_in_viewport().eq(expected));
+            }
+        }
     }
 }

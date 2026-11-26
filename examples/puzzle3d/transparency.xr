@@ -2,7 +2,11 @@ struct TransparentActor {
     id: string, mesh: string,
     x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
     yaw: float, pitch: float, roll: float, color: color, visible: bool,
-    camera-kind: string, camera-height: float, depth-bias: float,
+    camera-kind: string, camera-height: float, camera-reverse-depth: bool, depth-bias: float,
+}
+
+struct TransparencyScissor {
+    x: length, y: length, width: length, height: length, enabled: bool,
 }
 
 export component TransparencyDemo inherits Window {
@@ -12,6 +16,11 @@ export component TransparencyDemo inherits Window {
     background: #141d29;
 
     in-out property <bool> weighted: false;
+    in-out property <bool> linked: false;
+    in-out property <bool> clipped: false;
+    in-out property <length> clip-x: 96px;
+    in-out property <length> clip-width: 208px;
+    in-out property <bool> reverse-depth: false;
     in-out property <float> red-depth-bias: 0;
     in-out property <bool> cache: false;
     in-out property <bool> reversed: false;
@@ -23,7 +32,7 @@ export component TransparencyDemo inherits Window {
 
     property <TransparentActor> defaults: TransparentActor {
         id: "", mesh: "", x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
-        yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true, camera-kind: "", camera-height: 6, depth-bias: 0,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff, visible: true, camera-kind: "", camera-height: 6, camera-reverse-depth: root.reverse-depth, depth-bias: 0,
     };
     property <string> sheet: @mesh-url("models/oit-sheet.gltf");
     property <TransparentActor> red: TransparentActor {
@@ -63,7 +72,10 @@ export component TransparencyDemo inherits Window {
         height: 248px;
         camera: "eye";
         model: root.models;
-        order-independent-transparency: root.weighted;
+        oit-method: root.linked ? "linked-list" : root.weighted ? "weighted" : "sorted";
+        scissor-rect: TransparencyScissor {
+            x: root.clip-x, y: 48px, width: root.clip-width, height: 152px, enabled: root.clipped,
+        };
         cache-rendering: root.cache;
         multisampling: root.smooth;
         environment: root.hdr ? @environment-url("models/studio.hdr") : "";
@@ -83,12 +95,20 @@ export component TransparencyDemo inherits Window {
     }
     bias-toggle := Button {
         x: 12px; y: 302px; width: 156px; height: 32px;
-        enabled: !root.weighted;
+        enabled: !root.weighted && !root.linked;
         text: root.red-depth-bias == 0 ? "默认排序"
             : root.red-depth-bias > 0 ? "红片先画" : "红片后画";
         clicked => {
             root.red-depth-bias = root.red-depth-bias == 0 ? 0.8
                 : root.red-depth-bias > 0 ? -0.8 : 0;
         }
+    }
+    linked-toggle := CheckBox {
+        x: 184px; y: 303px; width: 154px; height: 30px;
+        text: "逐像素透明"; checked <=> root.linked;
+    }
+    scissor-toggle := CheckBox {
+        x: 352px; y: 303px; width: 110px; height: 30px;
+        text: "裁剪"; checked <=> root.clipped;
     }
 }

@@ -5102,14 +5102,14 @@ impl Interaction {
                     ..
                 } = &input
                 && scene.at_path(path).is_some_and(Node::can_pull_to_refresh)
-                && item.viewport_handle.is_some()
+                && item.viewport_handle().is_some()
             {
                 refresh_owner = Some(item);
             }
             if let ScrollInput::Pan { flicking, .. } = &input
                 && delta != 0.0
                 && scroll.max_offset > 0.0
-                && item.viewport_handle.is_some()
+                && item.viewport_handle().is_some()
                 && item
                     .elastic_options()
                     .is_some_and(|options| options.behavior.allows_overshoot(*flicking))
@@ -5880,7 +5880,7 @@ impl Interaction {
                     item.visible
                         && item.enabled
                         && item.accepts_pan(axis, device)
-                        && item.viewport_handle.as_ref() == Some(handle)
+                        && item.viewport_handle() == Some(handle)
                         && item
                             .elastic_options()
                             .is_some_and(|options| options.behavior.allows_overshoot(false))

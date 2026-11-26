@@ -1,0 +1,72 @@
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -2954,6 +2954,8 @@
+     clip_shape: bool,
+     /// The draw is under a coverage mask, which only its fragment entry point reads.
+     clip_mask: bool,
++    /// A winding draw with no sampled coverage and no color output.
++    stencil_only: bool,
+ }
+
+ impl PipelineState {
+@@ -3001,6 +3003,7 @@
+             stencil_state: has_stencil_buffer.then_some(stencil_state),
+             clip_shape: false,
+             clip_mask: false,
++            stencil_only: false,
+         }
+     }
+
+@@ -3020,17 +3023,19 @@
+             stencil_state,
+             clip_shape,
+             clip_mask,
++            stencil_only,
+         } = self;
+         let vertex_entry_point = if *render_to_texture {
+             "vs_main_texture"
+         } else {
+             "vs_main"
+         };
+-        let fragment_entry_point = match (*clip_shape, *clip_mask) {
+-            (false, false) => "fs_main",
+-            (true, false) => "fs_main_clip",
+-            (false, true) => "fs_main_mask",
+-            (true, true) => "fs_main_clip_mask",
++        let fragment_entry_point = match (*stencil_only, *clip_shape, *clip_mask) {
++            (true, false, false) => "fs_stencil",
++            (_, false, false) => "fs_main",
++            (_, true, false) => "fs_main_clip",
++            (_, false, true) => "fs_main_mask",
++            (_, true, true) => "fs_main_clip_mask",
+         };
+
+         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+@@ -4071,6 +4076,11 @@
+         // to hash, by 1.3 % of the time 600 unclipped fills take to encode.
+         pipeline_state.clip_shape = params.clip.is_some();
+         pipeline_state.clip_mask = params.clip_mask.is_some();
++        pipeline_state.stencil_only = matches!(params.shader_type, ShaderType::Stencil)
++            && params.stroke_thr == -1.0
++            && !pipeline_state.clip_shape
++            && !pipeline_state.clip_mask
++            && pipeline_state.color_target_state.write_mask.is_empty();
+
+         // An unchanged pipeline was looked up, and stamped with this flush, when it was bound.
+         if render_pass_builder.current_pipeline_state.as_ref() != Some(&pipeline_state) {
+diff --git a/src/renderer/wgpu/shader.wgsl b/src/renderer/wgpu/shader.wgsl
+--- a/src/renderer/wgpu/shader.wgsl
++++ b/src/renderer/wgpu/shader.wgsl
+@@ -124,6 +124,11 @@
+ @binding(5)
+ var clip_mask_texture: texture_2d<f32>;
+
++// Winding with no sampled clip cannot discard a fragment. Color writes are disabled.
++@fragment
++fn fs_stencil() -> @location(0) vec4<f32> {
++    return vec4<f32>(0.0);
++}
+
+ @fragment
+ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {

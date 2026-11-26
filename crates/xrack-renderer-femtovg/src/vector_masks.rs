@@ -1,6 +1,6 @@
 use crate::{
     Renderer, color, pixel_aligned,
-    retained_layers::{LayerStats, Raster},
+    retained_layers::{LayerStats, Raster, device_bounds},
     vector::{Geometry, GeometryKey, Source},
 };
 use femtovg::{
@@ -11,10 +11,12 @@ use std::collections::{HashMap, HashSet, hash_map::RandomState};
 use xrack_layout::{LayoutNode, Rect};
 use xrack_runtime::{Brush, Node, Value};
 
-const MAX_MASKS: usize = 24;
 const MAX_CANDIDATES: usize = 128;
 const MAX_CAPTURES_PER_FRAME: usize = 4;
 const MAX_EDGE_PX: f32 = 256.0;
+// Keep the worst-case coverage memory of 24 maximum-size RGBA masks.
+const MASK_BUDGET_BYTES: u64 = 6 * 1024 * 1024;
+const MAX_MASK_TEXTURES: usize = MAX_CANDIDATES * 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Key {
@@ -68,7 +70,11 @@ pub(super) struct Masks {
     entries: HashMap<Key, Entry>,
     seen: HashSet<Key>,
     previous: HashSet<Key>,
+    saw_previous_candidate: bool,
+    require_previous_candidate: bool,
     captures: usize,
+    textures: usize,
+    bytes: u64,
     disabled: bool,
     pub(super) opacity_passthrough: bool,
     pub(super) stats: LayerStats,
@@ -76,6 +82,12 @@ pub(super) struct Masks {
 
 impl Masks {
     pub(super) fn begin_frame(&mut self) {
+        // Several copies in one frame can be a morphing set of icons. When a
+        // whole batch of candidates changed, wait for a stable shape before
+        // spending a capture on it. Hits on existing masks bypass this check.
+        self.require_previous_candidate =
+            self.seen.len() >= MAX_CAPTURES_PER_FRAME * 2 && !self.saw_previous_candidate;
+        self.saw_previous_candidate = false;
         std::mem::swap(&mut self.seen, &mut self.previous);
         self.seen.clear();
         self.captures = 0;
@@ -91,6 +103,8 @@ impl Masks {
             }
             for raster in entry.rasters.iter().flatten() {
                 canvas.delete_image(raster.image);
+                self.bytes -= raster.bytes;
+                self.textures -= 1;
             }
             false
         });
@@ -102,29 +116,40 @@ impl Masks {
                 canvas.delete_image(raster.image);
             }
         }
-        self.seen.clear();
-        self.previous.clear();
+        self.reset_canvas();
     }
 
     pub(super) fn reset_canvas(&mut self) {
         self.entries.clear();
         self.seen.clear();
         self.previous.clear();
+        self.saw_previous_candidate = false;
+        self.require_previous_candidate = false;
+        self.bytes = 0;
+        self.textures = 0;
     }
 
-    pub(super) fn rasters(&self) -> impl Iterator<Item = Raster> + '_ {
-        self.entries
-            .values()
-            .flat_map(|entry| entry.rasters)
-            .flatten()
+    pub(super) fn resident_bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    fn can_capture(&self, local: Rect, scale: f32, missing: usize) -> bool {
+        let physical = device_bounds(local, scale);
+        let bytes = physical.width as u64 * physical.height as u64 * 4;
+        self.captures + missing <= MAX_CAPTURES_PER_FRAME
+            && self.textures + missing <= MAX_MASK_TEXTURES
+            && self.bytes + bytes * missing as u64 <= MASK_BUDGET_BYTES
     }
 
     fn repeated(&mut self, key: Key) -> bool {
-        let repeated = self.seen.contains(&key) || self.previous.contains(&key);
-        if self.seen.len() < MAX_CANDIDATES {
-            self.seen.insert(key);
-        }
-        repeated
+        let repeated_from_previous = self.previous.contains(&key);
+        self.saw_previous_candidate |= repeated_from_previous;
+        let repeated_this_frame = if self.seen.len() < MAX_CANDIDATES {
+            !self.seen.insert(key)
+        } else {
+            self.seen.contains(&key)
+        };
+        repeated_from_previous || (!self.require_previous_candidate && repeated_this_frame)
     }
 }
 
@@ -201,12 +226,24 @@ impl Renderer {
             scale: scale.to_bits(),
             alpha: [fill, stroke].map(|paint| paint.map_or(0, |paint| paint.alpha().to_bits())),
         };
-        if let Some(entry) = cache.entries.get_mut(&key) {
+        let present = if let Some(entry) = cache.entries.get_mut(&key) {
             if !entry.source.matches(geometry) {
                 return Ok(false);
             }
             entry.used = true;
-        } else if !cache.repeated(key) || cache.entries.len() >= MAX_MASKS {
+            entry.rasters.map(|raster| raster.is_some())
+        } else {
+            if !cache.repeated(key) {
+                return Ok(false);
+            }
+            [false; 2]
+        };
+        let missing = [fill, stroke]
+            .into_iter()
+            .zip(present)
+            .filter(|(paint, present)| paint.is_some() && !present)
+            .count();
+        if missing != 0 && !cache.can_capture(local, scale, missing) {
             return Ok(false);
         }
 
@@ -264,25 +301,29 @@ impl Renderer {
             cache.stats.reused += 1;
             return Ok(Some(raster));
         }
-        if cache.captures >= MAX_CAPTURES_PER_FRAME || cache.rasters().count() >= MAX_MASKS {
-            return Ok(None);
-        }
-        let Some(path) = geometry.build(bounds)? else {
+        let Some(path) = self.vector_paths.build(geometry, bounds)? else {
             return Ok(None);
         };
         cache.captures += 1;
         let alpha = f32::from_bits(key.alpha[plane.index()]);
-        let Some(raster) = self.capture_layer(bounds, scale, ImageFlags::NEAREST, |renderer| {
-            let mut paint = Paint::color(Color::rgbaf(1.0, 1.0, 1.0, alpha));
-            match plane {
-                Plane::Fill => renderer.canvas.fill_path(&path, &paint),
-                Plane::Stroke => {
-                    paint.set_line_width(geometry.stroke);
-                    renderer.canvas.stroke_path(&path, &paint);
+        // A white coverage mask samples identically from either linear format.
+        // Match a BGRA window so the capture can share the window's pipelines.
+        let format = match self.inline_target.as_ref().map(wgpu::Texture::format) {
+            Some(wgpu::TextureFormat::Bgra8Unorm) => wgpu::TextureFormat::Bgra8Unorm,
+            _ => wgpu::TextureFormat::Rgba8Unorm,
+        };
+        let Some(raster) =
+            self.capture_layer(bounds, scale, format, ImageFlags::NEAREST, |renderer| {
+                let mut paint = Paint::color(Color::rgbaf(1.0, 1.0, 1.0, alpha));
+                match plane {
+                    Plane::Fill => renderer.canvas.fill_path(&path, &paint),
+                    Plane::Stroke => {
+                        paint.set_line_width(geometry.stroke);
+                        renderer.canvas.stroke_path(&path, &paint);
+                    }
                 }
-            }
-            Ok(())
-        })?
+                Ok(())
+            })?
         else {
             return Ok(None);
         };
@@ -293,6 +334,8 @@ impl Renderer {
             used: true,
         });
         entry.rasters[plane.index()] = Some(raster);
+        cache.bytes += raster.bytes;
+        cache.textures += 1;
         cache.stats.rasterized += 1;
         Ok(Some(raster))
     }

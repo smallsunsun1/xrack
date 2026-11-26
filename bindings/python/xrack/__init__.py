@@ -15,9 +15,16 @@ from typing import ParamSpec, TypeAlias, TypeVar, cast
 from . import _native
 from . import values as _values
 from .values import *
-from .values import RecordModel, StringModel, Value
+from .values import MeshAsset3D, RecordModel, StringModel, Value
 
-__all__ = ["Component", "Program", "load_file", "load_mlir_file", *_values.__all__]
+__all__ = [
+    "Component",
+    "Program",
+    "load_file",
+    "load_mesh_file",
+    "load_mlir_file",
+    *_values.__all__,
+]
 
 Handler: TypeAlias = Callable[..., Value | Awaitable[object] | None]
 _Path: TypeAlias = str | PathLike[str]
@@ -55,6 +62,13 @@ def load_mlir_file(path: _Path) -> Program:
     """Load an exported XRack MLIR file and its resources."""
     _check_ui_thread()
     return Program(_native.load_mlir_file(path))
+
+
+def load_mesh_file(
+    path: _Path, *, auto_lod: bool = False, lightmap_uv: bool = False
+) -> MeshAsset3D:
+    """Prepare a 3D mesh from a local file. Use asyncio.to_thread from a UI callback."""
+    return _native.load_mesh_file(path, auto_lod=auto_lod, lightmap_uv=lightmap_uv)
 
 
 class _AsyncRuntime:

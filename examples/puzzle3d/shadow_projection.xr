@@ -1,0 +1,94 @@
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    casts-shadow: bool, receives-shadow: bool,
+}
+struct Lamp {
+    kind: string, x: float, y: float, z: float,
+    yaw: float, elevation: float, intensity: float, color: color,
+    range: float, inner-angle: float, outer-angle: float,
+    shadow-map-far: float, shadow-cascades: int,
+    shadow-split-1: float, shadow-split-2: float, shadow-split-3: float,
+    shadow-split-balance: float, shadow-cascade-blend: float, shadow-lock-texels: bool,
+    shadow-filter: string, shadow-strength: float, casts-shadow: bool,
+}
+
+export component ShadowProjectionDemo inherits Window {
+    title: "XRack · 逐灯阴影投影";
+    width: 360px; height: 368px; resizable: false; background: #182438;
+
+    in-out property <string> lamp-kind: "directional";
+    in-out property <bool> short: false;
+    in-out property <bool> manual: false;
+    in-out property <bool> locked: true;
+    in-out property <bool> enabled: true;
+    in-out property <int> cascades: 3;
+    in-out property <float> orbit: 0;
+    in-out property <float> strength: 1;
+
+    property <Actor> panel: Actor {
+        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        scale-x: 1.46, scale-y: 2, scale-z: 0.1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffffff, casts-shadow: false, receives-shadow: true,
+    };
+    property <Actor> caster: Actor {
+        scale-x: 0.55, scale-y: 1, scale-z: 0.2,
+        color: #ab6951, casts-shadow: true, receives-shadow: false, ..root.panel
+    };
+    property <Lamp> red: Lamp {
+        kind: root.lamp-kind, x: -4, y: 0, z: 13, yaw: -45, elevation: 0, color: #ff5448,
+        intensity: root.lamp-kind == "directional" ? 2.6 : 90,
+        range: 0, inner-angle: 12, outer-angle: 44, casts-shadow: true,
+        shadow-map-far: root.lamp-kind == "directional" ? (root.short ? 12 : 30) : (root.short ? 3.6 : 0),
+        shadow-cascades: root.cascades,
+        shadow-split-1: root.manual ? 0.55 : 0, shadow-split-2: root.manual ? 0.72 : 0, shadow-split-3: 0,
+        shadow-split-balance: 0, shadow-cascade-blend: 0.2, shadow-lock-texels: root.locked,
+        shadow-filter: "pcf4", shadow-strength: root.strength,
+    };
+
+    view := SceneView3D {
+        width: 360px; height: 272px;
+        scene-background: #23334c; ambient-intensity: 0.12; shadows: root.enabled;
+        shadow-map-size: 256; cache-rendering: true;
+        camera-distance: 16; camera-pitch: 0; camera-yaw: root.orbit;
+        model: [
+            Actor { id: "near", x: -1, z: 10, ..root.panel },
+            Actor { id: "far", x: 4, z: -8, scale-x: 4, scale-y: 3, ..root.panel },
+            Actor { id: "near-caster", x: -2.6, z: 11.6, ..root.caster },
+            Actor { id: "far-caster", x: 2.6, z: -6.6, scale-x: 0.9, scale-y: 2, ..root.caster },
+            Actor { id: "side-caster", x: -10, z: 13, ..root.caster },
+        ];
+        lights: [
+            root.red,
+            Lamp {
+                kind: "directional", color: #6ec391, intensity: 0.55,
+                shadow-map-far: 0, shadow-cascades: 1, shadow-strength: 1,
+                shadow-filter: "hard", ..root.red
+            },
+        ];
+    }
+
+    lamp-button := Button {
+        x: 10px; y: 281px; width: 102px; height: 34px;
+        text: root.lamp-kind == "directional" ? "方向光" : root.lamp-kind == "point" ? "点光源" : "聚光灯";
+        clicked => { root.lamp-kind = root.lamp-kind == "directional" ? "point"
+            : root.lamp-kind == "point" ? "spot" : "directional"; }
+    }
+    far-toggle := CheckBox {
+        x: 124px; y: 281px; width: 106px; height: 34px;
+        text: "缩短阴影"; checked: root.short; toggled => { root.short = !root.short; }
+    }
+    split-toggle := CheckBox {
+        x: 241px; y: 281px; width: 110px; height: 34px;
+        text: "手动分点"; checked: root.manual; toggled => { root.manual = !root.manual; }
+    }
+    lock-toggle := CheckBox {
+        x: 10px; y: 323px; width: 132px; height: 34px;
+        text: "锁定纹素"; checked: root.locked; toggled => { root.locked = !root.locked; }
+    }
+    Slider {
+        x: 155px; y: 323px; width: 195px; height: 34px;
+        minimum: -8; maximum: 8; value <=> root.orbit;
+    }
+}

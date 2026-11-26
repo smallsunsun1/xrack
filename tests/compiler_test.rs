@@ -11974,6 +11974,21 @@ fn scene_effect_output_format_and_sampling_fields_have_string_types() {
             .expect("invalid effect record");
         assert!(error.contains(diagnostic), "{error}");
     }
+
+    let source = r#"
+        struct Buffer { name: string, max-anisotropy: float }
+        struct Pass { shader: string, buffers: [Buffer] }
+        export component App inherits Window { SceneView3D {
+            scene-effects: [Pass { shader: "", buffers: [Buffer { name: "field", max-anisotropy: 1.5 }] }];
+        } }
+    "#;
+    let error = compile(source, "anisotropy.xr")
+        .err()
+        .expect("anisotropy must be an integer");
+    assert!(
+        error.contains("optional int field `max-anisotropy`"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -12050,6 +12065,10 @@ fn material_shader_files_are_embedded_and_reject_fragment_discard() {
         ),
         (
             "fn scene_vertex(input: XrVertexInput) -> vec3<f32> { return material_texture_world_position(0u, input.position.xy).position; }",
+            "scene_vertex cannot sample fragment material textures",
+        ),
+        (
+            "fn scene_vertex(input: XrVertexInput) -> vec3<f32> { return material_texture_grad(0u, input.position.xy, vec2(0.5), vec2(0.0)).rgb; }",
             "scene_vertex cannot sample fragment material textures",
         ),
     ] {
@@ -12520,6 +12539,7 @@ fn light_sampling_and_bake_fields_are_typed_in_source_and_mlir() {
         "shadow-filter",
         "shadow-strength",
         "shadow-radius",
+        "shadow-world-radius",
         "shadow-bias",
         "bake-mode",
     ] {
@@ -12560,6 +12580,214 @@ fn model_bake_fields_are_typed_in_source_and_mlir() {
             mlir::process(&raw.replace("marker", field)).expect_err("model bake field MLIR type");
         assert!(diagnostic.contains(field), "{diagnostic}");
     }
+}
+
+#[test]
+fn scene_light_settings_are_typed_in_source_and_mlir() {
+    let source = r#"
+        struct Lamp {
+            kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+            intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
+            marker: bool,
+        }
+        export component App inherits Window {
+            SceneView3D { lights: [Lamp {
+                kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
+                intensity: 1, color: #fff, range: 0, inner-angle: 20, outer-angle: 35,
+                marker: true,
+            }]; }
+        }
+    "#;
+    let raw = lower(source, "scene-light-settings.xr");
+    for (field, ty) in [
+        ("scope", "string"),
+        ("shadow-map-far", "float"),
+        ("shadow-map-size", "int"),
+        ("shadow-map-precision", "string"),
+        ("shadow-cascades", "int"),
+        ("shadow-split-1", "float"),
+        ("shadow-cascade-blend", "float"),
+    ] {
+        let invalid = source.replace("marker", field);
+        let diagnostic = compile(&invalid, "scene-light-settings.xr")
+            .err()
+            .expect("invalid light field");
+        assert!(
+            diagnostic.contains(field) && diagnostic.contains(ty),
+            "{diagnostic}"
+        );
+        let diagnostic =
+            mlir::process(&raw.replace("marker", field)).expect_err("verify light field");
+        assert!(
+            diagnostic.contains(field) && diagnostic.contains(ty),
+            "{diagnostic}"
+        );
+    }
+    let text = source
+        .replace("marker: bool", "marker: string")
+        .replace("marker: true", "marker: \"x\"");
+    let raw = lower(&text, "scene-light-settings.xr").replace("marker", "shadow-lock-texels");
+    let diagnostic = mlir::process(&raw).expect_err("verify shadow texel lock type");
+    assert!(
+        diagnostic.contains("shadow-lock-texels") && diagnostic.contains("bool"),
+        "{diagnostic}"
+    );
+}
+
+#[test]
+fn viewport_scissor_validates_rect_fields_and_only_affects_paint() {
+    let text = r#"
+        struct Region { x: length, y: length, width: length, height: length, enabled: bool }
+        export component App inherits Window {
+            in-out property <Region> rect: Region { x: 0px, y: 0px, width: 80px, height: 40px, enabled: true };
+            SceneView3D { scissor-rect: root.rect; }
+        }
+    "#;
+    let raw = lower(text, "scissor.xr");
+    let mlir = mlir::process(&raw)
+        .expect("verify viewport scissor")
+        .to_mlir();
+    assert!(
+        mlir.lines()
+            .any(|line| line.contains("scissor-rect")
+                && line.contains("xr.update_effect = \"paint\""))
+    );
+    let invalid = text
+        .replace("width: length", "width: int")
+        .replace("width: 80px", "width: 80");
+    assert!(compile(&invalid, "scissor.xr").is_err());
+    let raw = lower(
+        &invalid.replace("scissor-rect", "environment-sky"),
+        "scissor.xr",
+    )
+    .replace("environment-sky", "scissor-rect");
+    assert!(
+        mlir::process(&raw)
+            .expect_err("verify rect width")
+            .contains("length")
+    );
+}
+
+#[test]
+fn viewport_flags_are_typed_and_only_affect_paint() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <bool> inspect: true;
+            SceneView3D {
+                depth-prepass: root.inspect;
+                debug-wireframe: root.inspect;
+                shadow-debug-cascades: root.inspect;
+                shadow-freeze-camera: root.inspect;
+            }
+        }
+    "#;
+    let raw = lower(source, "shadow-debug.xr");
+    let optimized = mlir::process(&raw)
+        .expect("verify shadow debug flags")
+        .to_mlir();
+    for name in [
+        "depth-prepass",
+        "debug-wireframe",
+        "shadow-debug-cascades",
+        "shadow-freeze-camera",
+    ] {
+        assert!(
+            optimized
+                .lines()
+                .any(|line| line.contains(name) && line.contains("xr.update_effect = \"paint\""))
+        );
+        let invalid =
+            format!("export component App inherits Window {{ SceneView3D {{ {name}: 1; }} }}");
+        assert!(compile(&invalid, "shadow-debug.xr").is_err());
+        let bad = lower(&invalid.replace(name, "shadow-map-size"), "shadow-debug.xr")
+            .replace("shadow-map-size", name);
+        assert!(mlir::process(&bad).is_err());
+    }
+}
+
+#[test]
+fn viewport_oit_method_is_typed_and_only_affects_paint() {
+    let input = r#"
+        export component App inherits Window {
+            in-out property <string> method: "linked-list";
+            SceneView3D { oit-method: root.method; }
+        }
+    "#;
+    let mlir = mlir::process(&lower(input, "oit-method.xr"))
+        .expect("verify OIT method")
+        .to_mlir();
+    assert!(
+        mlir.lines().any(
+            |line| line.contains("oit-method") && line.contains("xr.update_effect = \"paint\"")
+        )
+    );
+    let invalid = input.replace("<string> method: \"linked-list\"", "<float> method: 1.0");
+    assert!(compile(&invalid, "oit-method.xr").is_err());
+    let raw = lower(
+        &invalid.replace("oit-method", "camera-yaw"),
+        "oit-method.xr",
+    )
+    .replace("camera-yaw", "oit-method");
+    assert!(mlir::process(&raw).is_err());
+}
+
+#[test]
+fn viewport_material_debug_is_typed_and_only_affects_paint() {
+    let input = r#"
+        export component App inherits Window {
+            in-out property <string> mode: "normals";
+            SceneView3D { material-debug: root.mode; }
+        }
+    "#;
+    let mlir = mlir::process(&lower(input, "material-debug.xr"))
+        .expect("verify material debug")
+        .to_mlir();
+    assert!(mlir.lines().any(
+        |line| line.contains("material-debug") && line.contains("xr.update_effect = \"paint\"")
+    ));
+    let invalid = input.replace("<string> mode: \"normals\"", "<float> mode: 1.0");
+    assert!(compile(&invalid, "material-debug.xr").is_err());
+    let raw = lower(
+        &invalid.replace("material-debug", "camera-yaw"),
+        "material-debug.xr",
+    )
+    .replace("camera-yaw", "material-debug");
+    assert!(mlir::process(&raw).is_err());
+}
+
+#[test]
+fn viewport_shadow_precision_is_typed_and_only_affects_paint() {
+    let text = r#"
+        export component App inherits Window {
+            in-out property <string> precision: "depth16";
+            SceneView3D { shadow-map-precision: root.precision; }
+        }
+    "#;
+    let raw = lower(text, "shadow-precision.xr");
+    let optimized = mlir::process(&raw)
+        .expect("verify the shadow precision binding")
+        .to_mlir();
+    assert!(
+        optimized
+            .lines()
+            .any(|line| line.contains("shadow-map-precision")
+                && line.contains("xr.update_effect = \"paint\""))
+    );
+    let invalid = text.replace("<string> precision: \"depth16\"", "<float> precision: 1.0");
+    let diagnostic = compile(&invalid, "shadow-precision.xr")
+        .err()
+        .expect("invalid precision type");
+    assert!(
+        diagnostic.contains("string") && diagnostic.contains("float"),
+        "{diagnostic}"
+    );
+    let invalid = lower(
+        &invalid.replace("shadow-map-precision", "camera-yaw"),
+        "shadow-precision.xr",
+    )
+    .replace("camera-yaw", "shadow-map-precision");
+    let diagnostic = mlir::process(&invalid).expect_err("verify the invalid precision type");
+    assert!(diagnostic.contains("SceneView3D property type"));
 }
 
 #[test]

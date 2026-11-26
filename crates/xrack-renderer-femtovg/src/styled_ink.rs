@@ -443,9 +443,42 @@ fn measure_ink(
     baseline: f32,
     spans: Option<&mut InkSpans>,
 ) -> Option<Ink> {
-    let (fragments, range) = fragments;
+    let (plan, range) = fragments;
     let count = range.len();
-    let fragments = fragments.iter_range(range);
+    if range.start == 0
+        && count == plan.len()
+        && let Some(representatives) = plan.ink_representatives()
+    {
+        return measure_ink_candidates(
+            system,
+            node,
+            document,
+            representatives,
+            count,
+            baseline,
+            spans,
+        );
+    }
+    measure_ink_candidates(
+        system,
+        node,
+        document,
+        plan.iter_range(range),
+        count,
+        baseline,
+        spans,
+    )
+}
+
+fn measure_ink_candidates<'a>(
+    system: &TextSystem,
+    node: &Node,
+    document: &StyledText,
+    fragments: impl Iterator<Item = &'a StyledFragment> + Clone,
+    count: usize,
+    baseline: f32,
+    spans: Option<&mut InkSpans>,
+) -> Option<Ink> {
     let Some(spans) = spans else {
         return measure_ink_runs(system, node, document, fragments, baseline, None);
     };
@@ -488,6 +521,8 @@ fn measure_ink(
         baseline,
         Some(spans),
     )?;
+    // Store coverage only for the run ranges that have been measured. A
+    // later reflow may expose a different representative and measure its ink.
     spans.cover(ink, fragments);
     Some(ink)
 }
@@ -534,12 +569,20 @@ fn measure_ink_runs<'a>(
         }
         let (_, paint) = paints[paint_slot(style)].as_ref()?;
         let measure = || {
-            let metrics = system
-                .context()
-                .measure_text(0.0, baseline, text.as_ref(), paint)
+            let context = system.context();
+            #[cfg(xrack_femtovg_glyph_samples)]
+            let [top, bottom] = context
+                .alphabetic_ink_bounds(baseline, text.as_ref(), paint)
                 .ok()?;
+            #[cfg(not(xrack_femtovg_glyph_samples))]
+            let [top, bottom] = {
+                let metrics = context
+                    .measure_text(0.0, baseline, text.as_ref(), paint)
+                    .ok()?;
+                [metrics.y, metrics.y + metrics.height()]
+            };
             let mut span = Ink::default();
-            span.add(metrics.y, metrics.y + metrics.height())?;
+            span.add(top, bottom)?;
             Some(span)
         };
         let shape = if let Some(spans) = &mut spans {
@@ -574,4 +617,56 @@ fn measure_ink_runs<'a>(
         }
     }
     Some(ink)
+}
+
+mod tests {
+    #[cfg(xrack_femtovg_glyph_samples)]
+    #[test]
+    fn cached_vertical_ink_matches_positioned_glyphs() -> Result<(), String> {
+        use super::{Color, Node, TextStyle, TextSystem};
+
+        let system = TextSystem::system()?;
+        let context = system.context();
+        let node = Node::new("StyledText", None);
+        for style in [
+            TextStyle::default(),
+            TextStyle {
+                bold: true,
+                monospace: true,
+                ..TextStyle::default()
+            },
+        ] {
+            let mut paint = system.paint_styled(&node, Color::white(), style);
+            paint.set_letter_spacing(0.75);
+            for text in [
+                "",
+                "  ",
+                "Tests 123?",
+                "构建 123",
+                "汉字",
+                "A • أَبْجَد 123",
+                "é e\u{0301} 👩‍🚀",
+                "line\nשורה",
+            ] {
+                for baseline in [0.0, 11.25, -17500.1] {
+                    let actual = context
+                        .alphabetic_ink_bounds(baseline, text, &paint)
+                        .map_err(|err| err.to_string())?;
+                    let positioned = context
+                        .measure_text(0.0, baseline, text, &paint)
+                        .map_err(|err| err.to_string())?;
+                    assert_eq!(
+                        actual,
+                        [positioned.y, positioned.y + positioned.height()],
+                        "{text:?} at {baseline}"
+                    );
+                    let width = context
+                        .measure_text_width(text, &paint)
+                        .map_err(|err| err.to_string())?;
+                    assert_eq!(width.to_bits(), positioned.width().to_bits(), "{text:?}");
+                }
+            }
+        }
+        Ok(())
+    }
 }

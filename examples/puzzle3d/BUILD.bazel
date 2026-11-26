@@ -2,6 +2,305 @@ load("@rules_python//python:defs.bzl", "py_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//bazel:xrack.bzl", "xr_ui_library")
 
+exports_files(
+    ["material_map_anisotropy.xr", "models/anisotropic-map.png"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "material_map_anisotropy_ui",
+    src = "material_map_anisotropy.xr",
+    assets = ["models/anisotropic-map.png"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_material_map_anisotropy",
+    srcs = ["play_material_map_anisotropy.rs"],
+    edition = "2024",
+    deps = [
+        ":material_map_anisotropy_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+CAPTURE_MIPMAP_ASSETS = [
+    "effects/capture_mip_augment.wgsl",
+    "effects/capture_mip_display.wgsl",
+    "effects/capture_mip_material.wgsl",
+    "effects/capture_mip_pattern.wgsl",
+]
+
+exports_files(
+    ["capture_mipmaps.xr"] + CAPTURE_MIPMAP_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "capture_mipmaps_ui",
+    src = "capture_mipmaps.xr",
+    assets = CAPTURE_MIPMAP_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_capture_mipmaps",
+    srcs = ["play_capture_mipmaps.rs"],
+    edition = "2024",
+    deps = [
+        ":capture_mipmaps_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+AUGMENT_TEXTURE_ASSETS = [
+    "effects/augment_display.wgsl",
+    "effects/augment_inputs.wgsl",
+    "models/augment-input-swatch.png",
+]
+
+exports_files(
+    ["augment_texture_inputs.xr", "effects/augment_inputs.wgsl", "models/augment-input-swatch.png"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "augment_texture_inputs_ui",
+    src = "augment_texture_inputs.xr",
+    assets = AUGMENT_TEXTURE_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_augment_texture_inputs",
+    srcs = ["play_augment_texture_inputs.rs"],
+    edition = "2024",
+    deps = [
+        ":augment_texture_inputs_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+CAPTURE_AUGMENT_ASSETS = [
+    "effects/augment_capture.wgsl",
+    "effects/augment_display.wgsl",
+    "effects/augment_model.wgsl",
+]
+
+exports_files(
+    ["capture_augment.xr"] + CAPTURE_AUGMENT_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "capture_augment_ui",
+    src = "capture_augment.xr",
+    assets = CAPTURE_AUGMENT_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_capture_augment",
+    srcs = ["play_capture_augment.rs"],
+    edition = "2024",
+    deps = [
+        ":capture_augment_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+CAPTURE_DATA_ASSETS = [
+    "effects/capture_data_display.wgsl",
+    "effects/capture_data_outputs.wgsl",
+]
+
+exports_files(
+    ["capture_data_outputs.xr"] + CAPTURE_DATA_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "capture_data_outputs_ui",
+    src = "capture_data_outputs.xr",
+    assets = CAPTURE_DATA_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_capture_data_outputs",
+    srcs = ["play_capture_data_outputs.rs"],
+    edition = "2024",
+    deps = [
+        ":capture_data_outputs_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(
+    ["custom_pipeline.xr", "effects/custom_pipeline_output.wgsl"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "custom_pipeline_ui",
+    src = "custom_pipeline.xr",
+    assets = ["effects/custom_pipeline_output.wgsl"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_custom_pipeline",
+    srcs = ["play_custom_pipeline.rs"],
+    edition = "2024",
+    deps = [
+        ":custom_pipeline_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(
+    [
+        "effects/viewport_exposure.wgsl",
+        "effects/viewport_radiance.wgsl",
+        "viewport_format.xr",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "viewport_format_ui",
+    src = "viewport_format.xr",
+    assets = [
+        "effects/viewport_exposure.wgsl",
+        "effects/viewport_radiance.wgsl",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_viewport_format",
+    srcs = ["play_viewport_format.rs"],
+    edition = "2024",
+    deps = [
+        ":viewport_format_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["viewport_image.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "viewport_image_ui",
+    src = "viewport_image.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_viewport_image",
+    srcs = ["play_viewport_image.rs"],
+    edition = "2024",
+    deps = [
+        ":viewport_image_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["viewport_texture.xr", "effects/viewport_feed.wgsl"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "viewport_texture_ui",
+    src = "viewport_texture.xr",
+    assets = ["effects/viewport_feed.wgsl"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_viewport_texture",
+    srcs = ["play_viewport_texture.rs"],
+    edition = "2024",
+    deps = [
+        ":viewport_texture_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["window_layers.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "window_layers_ui",
+    src = "window_layers.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_window_layers",
+    srcs = ["play_window_layers.rs"],
+    edition = "2024",
+    deps = [
+        ":window_layers_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["inline_view.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "inline_view_ui",
+    src = "inline_view.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_inline_view",
+    srcs = ["play_inline_view.rs"],
+    edition = "2024",
+    deps = [
+        ":inline_view_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["lod_fade.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "lod_fade_ui",
+    src = "lod_fade.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_lod_fade",
+    srcs = ["play_lod_fade.rs"],
+    edition = "2024",
+    deps = [
+        ":lod_fade_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["resource_preload.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "resource_preload_ui",
+    src = "resource_preload.xr",
+    assets = [
+        "models/focus-grid.png",
+        "models/lod-surface.bin",
+        "models/lod-surface.gltf",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_resource_preload",
+    srcs = ["play_resource_preload.rs"],
+    edition = "2024",
+    deps = [
+        ":resource_preload_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
 ASSETS = [
     "models/amber.glb",
     "models/exit.bin",
@@ -26,6 +325,79 @@ REFLECTION_ASSETS = [
 exports_files(["reflection_probes.xr"] + REFLECTION_ASSETS, visibility = ["//tests:__pkg__"])
 
 exports_files(["live_reflections.xr"], visibility = ["//tests:__pkg__"])
+
+exports_files(["material_debug.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "material_debug_ui",
+    src = "material_debug.xr",
+    assets = ["effects/material_surface.wgsl"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_material_debug",
+    srcs = ["play_material_debug.rs"],
+    edition = "2024",
+    deps = [
+        ":material_debug_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["shadow_atlas.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "shadow_atlas_ui",
+    src = "shadow_atlas.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_shadow_atlas",
+    srcs = ["play_shadow_atlas.rs"],
+    edition = "2024",
+    deps = [
+        ":shadow_atlas_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["shadow_debug.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "shadow_debug_ui",
+    src = "shadow_debug.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_shadow_debug",
+    srcs = ["play_shadow_debug.rs"],
+    edition = "2024",
+    deps = [
+        ":shadow_debug_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["shadow_projection.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "shadow_projection_ui",
+    src = "shadow_projection.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_shadow_projection",
+    srcs = ["play_shadow_projection.rs"],
+    edition = "2024",
+    deps = [
+        ":shadow_projection_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
 
 exports_files(["shadow_filters.xr"], visibility = ["//tests:__pkg__"])
 
@@ -1561,6 +1933,127 @@ rust_binary(
     ],
 )
 
+exports_files(["fxaa.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "fxaa_ui",
+    src = "fxaa.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_fxaa",
+    srcs = ["play_fxaa.rs"],
+    edition = "2024",
+    deps = [
+        ":fxaa_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["procedural_sky.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "procedural_sky_ui",
+    src = "procedural_sky.xr",
+    assets = ["models/studio.hdr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_procedural_sky",
+    srcs = ["play_procedural_sky.rs"],
+    edition = "2024",
+    deps = [
+        ":procedural_sky_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["skybox.xr", "models/skybox-cross.hdr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "skybox_ui",
+    src = "skybox.xr",
+    assets = ["models/studio.hdr", "models/skybox-cross.hdr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_skybox",
+    srcs = ["play_skybox.rs"],
+    edition = "2024",
+    deps = [
+        ":skybox_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["probe_controls.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "probe_controls_ui",
+    src = "probe_controls.xr",
+    assets = ["models/skybox-cross.hdr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_probe_controls",
+    srcs = ["play_probe_controls.rs"],
+    edition = "2024",
+    deps = [
+        ":probe_controls_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["light_scope.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "light_scope_ui",
+    src = "light_scope.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_light_scope",
+    srcs = ["play_light_scope.rs"],
+    edition = "2024",
+    deps = [
+        ":light_scope_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+LENS_FLARE_MAPS = [
+    "models/lens-color.png",
+    "models/lens-dirt.png",
+    "models/lens-starburst.png",
+]
+
+exports_files(["lens_flare.xr"] + LENS_FLARE_MAPS, visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "lens_flare_ui",
+    src = "lens_flare.xr",
+    assets = [
+        "models/bloom-emitter.gltf",
+        "models/lut-warm.png",
+    ] + LENS_FLARE_MAPS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_lens_flare",
+    srcs = ["play_lens_flare.rs"],
+    edition = "2024",
+    deps = [
+        ":lens_flare_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
 FOCUS_ASSETS = ["models/focus-card.gltf", "models/focus-grid.png"]
 
 exports_files(["focus.xr"] + FOCUS_ASSETS, visibility = ["//tests:__pkg__"])
@@ -1597,6 +2090,25 @@ rust_binary(
     edition = "2024",
     deps = [
         ":tone_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["display_finish.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "display_finish_ui",
+    src = "display_finish.xr",
+    assets = ["effects/grade.wgsl"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_display_finish",
+    srcs = ["play_display_finish.rs"],
+    edition = "2024",
+    deps = [
+        ":display_finish_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
     ],
 )
@@ -2619,5 +3131,52 @@ rust_binary(
     deps = [
         ":authored_physics_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+WAVEFRONT_ASSETS = [
+    "models/concave-panel.obj",
+    "models/focus-grid.png",
+    "models/wavefront/panel.mtl",
+]
+
+exports_files(
+    ["wavefront.xr", "models/concave-panel.obj", "models/wavefront/panel.mtl"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "wavefront_ui",
+    src = "wavefront.xr",
+    assets = WAVEFRONT_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_wavefront",
+    srcs = ["play_wavefront.rs"],
+    edition = "2024",
+    deps = [
+        ":wavefront_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+exports_files(["runtime_mesh.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "runtime_mesh_ui",
+    src = "runtime_mesh.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_runtime_mesh",
+    srcs = ["play_runtime_mesh.rs"],
+    edition = "2024",
+    deps = [
+        ":runtime_mesh_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+        "//crates/xrack-scene-import:xrack_scene_import",
     ],
 )

@@ -1,7 +1,7 @@
 //! Lazy property bindings with dynamically tracked dependencies.
 use std::{
     cell::{Cell, OnceCell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::{Rc, Weak},
 };
 
@@ -61,7 +61,7 @@ impl ReadWatch {
             {
                 source.insert(Rc::downgrade(&node));
                 if !node.dirty.get() {
-                    pending.extend(node.sources.borrow().iter().filter_map(Weak::upgrade));
+                    pending.extend(node.sources.borrow().nodes.iter().filter_map(Weak::upgrade));
                 }
             }
             next = pending.pop();
@@ -168,10 +168,37 @@ pub(crate) fn input_path_is_current() -> bool {
 }
 
 #[derive(Default)]
+struct DependencySources {
+    nodes: Vec<Weak<DependencyNode>>,
+    index: Option<Box<HashSet<*const DependencyNode>>>,
+}
+
+impl DependencySources {
+    fn insert(&mut self, node: &Rc<DependencyNode>) -> bool {
+        const INDEX_THRESHOLD: usize = 64;
+        let address = Rc::as_ptr(node);
+        let inserted = match &mut self.index {
+            Some(index) => index.insert(address),
+            None => !self.nodes.iter().any(|source| source.as_ptr() == address),
+        };
+        if !inserted {
+            return false;
+        }
+        // The weak references also keep the addresses from being reused
+        // while the index contains them.
+        self.nodes.push(Rc::downgrade(node));
+        if self.nodes.len() == INDEX_THRESHOLD && self.index.is_none() {
+            self.index = Some(Box::new(self.nodes.iter().map(Weak::as_ptr).collect()));
+        }
+        true
+    }
+}
+
+#[derive(Default)]
 struct DependencyNode {
     dirty: Cell<bool>,
     evaluating: Cell<bool>,
-    sources: RefCell<Vec<Weak<Self>>>,
+    sources: RefCell<DependencySources>,
     dependents: RefCell<Vec<Weak<Self>>>,
 }
 
@@ -188,10 +215,7 @@ impl DependencyNode {
             if Rc::ptr_eq(self, binding) {
                 return;
             }
-            let mut sources = binding.sources.borrow_mut();
-            let source = Rc::downgrade(self);
-            if !sources.iter().any(|existing| existing.ptr_eq(&source)) {
-                sources.push(source);
+            if binding.sources.borrow_mut().insert(self) {
                 self.dependents.borrow_mut().push(Rc::downgrade(binding));
             }
         });
@@ -199,7 +223,7 @@ impl DependencyNode {
 
     fn detach(&self) {
         let address = self as *const Self;
-        for source in self.sources.take() {
+        for source in self.sources.take().nodes {
             if let Some(source) = source.upgrade() {
                 source
                     .dependents
@@ -771,6 +795,43 @@ impl<T: PartialEq> InputProperty<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_bindings_deduplicate_reads_and_detach_unused_inputs() {
+        let wide = Property::default();
+        wide.set(true);
+        let inputs: Vec<Property<i32>> = (0..128).map(|_| Property::default()).collect();
+        let total = Property::default();
+        let sum = || {
+            if wide.get(|| false) {
+                inputs
+                    .iter()
+                    .map(|input| input.get(|| 1) + input.get(|| 1))
+                    .sum()
+            } else {
+                inputs[0].get(|| 1)
+            }
+        };
+
+        assert_eq!(total.get(sum), 256);
+        {
+            let dependencies = total.dependency.sources.borrow();
+            assert_eq!(dependencies.nodes.len(), 129);
+            assert_eq!(dependencies.index.as_ref().unwrap().len(), 129);
+        }
+        inputs[127].set(7);
+        assert!(total.is_dirty());
+        assert_eq!(total.get(sum), 268);
+
+        wide.set(false);
+        assert_eq!(total.get(sum), 1);
+        assert!(total.dependency.sources.borrow().index.is_none());
+        inputs[127].set(9);
+        assert!(!total.is_dirty());
+        inputs[0].set(4);
+        assert!(total.is_dirty());
+        assert_eq!(total.get(sum), 4);
+    }
 
     #[test]
     fn shared_string_reads_reuse_the_cached_buffer_until_invalidated() {

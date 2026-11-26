@@ -120,6 +120,8 @@ pub use styled_text::{
 pub use swipe_delegate::SwipeDelegateGeometry;
 pub use swipe_gesture::SwipeDelivery;
 pub use table::{TableGeometry, table_heading_font_size};
+#[doc(hidden)]
+pub use text_area::is_basic_han_text;
 pub use text_area::{
     TextAreaLayout, TextAreaMotion, text_editor_line_bounds, text_editor_viewport,
 };
@@ -157,6 +159,13 @@ pub trait TextMeasurer {
 
     #[doc(hidden)]
     fn intrinsic_measurements(&mut self) -> Option<&mut IntrinsicMeasurements> {
+        None
+    }
+
+    /// Reuse measurements in the current frame. Implementations must clear
+    /// these measurements when the active font metrics change.
+    #[doc(hidden)]
+    fn frame_intrinsic_measurements(&mut self) -> Option<&mut IntrinsicMeasurements> {
         None
     }
 
@@ -218,6 +227,13 @@ pub trait TextMeasurer {
         self.layout_styled_text(node, available).map(Rc::new)
     }
 
+    // Font resolution can register a new fallback. Only defer a node whose
+    // layout cannot change the font set used by subsequent nodes.
+    #[doc(hidden)]
+    fn can_defer_styled_text(&self, _node: &Node) -> bool {
+        false
+    }
+
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
         if let Some(plan) = self.layout_styled_text(node, Size::new(max_width, f32::INFINITY)) {
             return plan.size;
@@ -255,6 +271,8 @@ struct LayoutDetails {
     overlays: Option<Box<modal::OverlayIndex>>,
     paint_order: Option<xrack_runtime::ScenePlanSlice<usize>>,
     child_shape: Option<RoundedClip>,
+    viewport_handle: Option<xrack_runtime::ViewportHandle>,
+    transform: Option<Box<TransformPlacement>>,
     table_pane: Option<(Rect, Transform2D<LayoutSpace, LayoutSpace>)>,
 }
 
@@ -275,7 +293,6 @@ pub struct LayoutNode {
     direction_override: Option<LayoutDirection>,
     details: Option<Rc<LayoutDetails>>,
     pub scroll: Option<ScrollLayout>,
-    viewport_handle: Option<xrack_runtime::ViewportHandle>,
     missing_list_rows: bool,
     missing_descendant_list_rows: bool,
     mouse_drag_pan: bool,
@@ -299,7 +316,6 @@ pub struct LayoutNode {
     overflow: bool,
     ancestor_shapes: Option<Rc<ClipChain>>,
     space: Option<Rc<TransformSpace>>,
-    transform: Option<Box<TransformPlacement>>,
     table_column_window: xrack_runtime::TableColumnWindow,
     pub children: Vec<LayoutNode>,
 }
@@ -406,7 +422,6 @@ macro_rules! layout_placement_fields {
             ]
             clone [
                 details,
-                viewport_handle,
                 table,
                 split,
                 tumbler,
@@ -414,7 +429,6 @@ macro_rules! layout_placement_fields {
                 swipe_preview,
                 styled_text,
                 space,
-                transform,
                 table_column_window,
             ]
         }
@@ -543,7 +557,6 @@ impl LayoutNode {
             direction_override: direction,
             details: None,
             scroll: None,
-            viewport_handle: None,
             missing_list_rows: false,
             missing_descendant_list_rows: false,
             mouse_drag_pan: false,
@@ -563,7 +576,6 @@ impl LayoutNode {
             overflow: false,
             ancestor_shapes: None,
             space: None,
-            transform: None,
             table_column_window: node.table_column_window.clone(),
             children: Vec::new(),
         }
@@ -709,9 +721,30 @@ impl LayoutNode {
             .and_then(|details| details.child_shape)
     }
 
-    pub fn local_transform(&self) -> Transform2D<LayoutSpace, LayoutSpace> {
-        self.transform
+    fn viewport_handle(&self) -> Option<&xrack_runtime::ViewportHandle> {
+        self.details
             .as_deref()
+            .and_then(|details| details.viewport_handle.as_ref())
+    }
+
+    fn transform_placement(&self) -> Option<&TransformPlacement> {
+        self.details
+            .as_deref()
+            .and_then(|details| details.transform.as_deref())
+    }
+
+    fn set_transform_placement(&mut self, transform: Option<Box<TransformPlacement>>) {
+        if transform.is_some() || self.transform_placement().is_some() {
+            let details = self.details_mut();
+            details.transform = transform;
+            if *details == LayoutDetails::default() {
+                self.details = None;
+            }
+        }
+    }
+
+    pub fn local_transform(&self) -> Transform2D<LayoutSpace, LayoutSpace> {
+        self.transform_placement()
             .map_or(Transform2D::IDENTITY, |transform| transform.local)
     }
 
@@ -850,6 +883,15 @@ impl LayoutNode {
         node.materialized_children()
             .zip(&self.children)
             .map(|((index, child), layout)| (index, child, layout))
+    }
+
+    #[doc(hidden)]
+    pub fn measure_styled_text(
+        &self,
+        node: &Node,
+        measure: impl FnOnce(Size) -> Option<Rc<StyledTextLayout>>,
+    ) -> Option<Rc<StyledTextLayout>> {
+        styled_text_at(node, self.bounds, self.direction_override, measure)
     }
 
     pub fn text_link_regions(&self) -> impl Iterator<Item = (usize, Rect)> + '_ {
@@ -1013,12 +1055,27 @@ fn sibling_paint_order(node: &Node, count: usize) -> Option<xrack_runtime::Scene
         return Some(order.clone());
     }
     let children = &node.children[..count];
+    let window = matches!(node.kind, "Window" | "ApplicationWindow");
+    let stacking = |child: &Node| {
+        let layer = if window {
+            child.scene_view_render_mode().window_layer()
+        } else {
+            0
+        };
+        (layer, child.z())
+    };
     // Already ordered (including the default of all zeroes) needs no storage.
-    if children.iter().map(Node::z).is_sorted() {
+    if children.iter().map(stacking).is_sorted() {
         return None;
     }
     let mut order: Vec<_> = (0..children.len()).collect();
-    order.sort_by(|&left, &right| children[left].z().total_cmp(&children[right].z()));
+    order.sort_by(|&left, &right| {
+        let (left_layer, left_z) = stacking(&children[left]);
+        let (right_layer, right_z) = stacking(&children[right]);
+        left_layer
+            .cmp(&right_layer)
+            .then_with(|| left_z.total_cmp(&right_z))
+    });
     Some(ScenePlanSlice::Owned(order))
 }
 
@@ -1241,9 +1298,13 @@ fn layout_current_window(
     input: Option<&Interaction>,
     row_layouts: Option<&mut RowLayoutCache>,
 ) -> LayoutNode {
+    if let Some(cache) = text.intrinsic_measurements() {
+        cache.begin_frame();
+    }
     let bounds = Rect::new(0.0, 0.0, viewport.width.max(0.0), viewport.height.max(0.0));
     let safe_viewport = window_safe_area(scene, bounds);
     let mut layout = LayoutContext {
+        defer_styled_text: false,
         text,
         layout_direction: None,
         offsets,
@@ -1326,6 +1387,7 @@ pub fn layout_choice_option(
     text: &mut impl TextMeasurer,
 ) -> LayoutNode {
     LayoutContext {
+        defer_styled_text: false,
         text,
         layout_direction: Some(direction),
         offsets: &BTreeMap::new(),
@@ -1452,6 +1514,7 @@ fn prepare_scene_with_offsets(
     if scene.contains_scene_feature(xrack_runtime::SceneFeature::VirtualList) {
         let viewport = Rect::new(0.0, 0.0, viewport.width.max(0.0), viewport.height.max(0.0));
         LayoutContext {
+            defer_styled_text: false,
             text,
             layout_direction: None,
             offsets,
@@ -1526,7 +1589,26 @@ fn unclipped_content() -> Rect {
     )
 }
 
+fn styled_text_at(
+    node: &Node,
+    bounds: Rect,
+    direction: Option<LayoutDirection>,
+    measure: impl FnOnce(Size) -> Option<Rc<StyledTextLayout>>,
+) -> Option<Rc<StyledTextLayout>> {
+    let mut plan = measure(Size::new(bounds.width, bounds.height))?;
+    if let Some(direction) = direction {
+        Rc::make_mut(&mut plan).align_in_direction(node, bounds.width, direction);
+    }
+    Some(plan)
+}
+
+fn outside_clip(bounds: Rect, clip: Rect) -> bool {
+    let visible = bounds.intersect(clip);
+    visible.width <= 0.0 || visible.height <= 0.0
+}
+
 struct LayoutContext<'a, T> {
+    defer_styled_text: bool,
     text: &'a mut T,
     layout_direction: Option<LayoutDirection>,
     offsets: &'a BTreeMap<Vec<usize>, f32>,
@@ -1788,7 +1870,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             node.children = children;
             node.list = Some(list);
             let (incoming_clip, incoming_shapes, incoming_space) =
-                if let Some(placement) = &layout.transform {
+                if let Some(placement) = layout.transform_placement() {
                     (
                         placement.parent_clip,
                         layout
@@ -2066,16 +2148,21 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             .list_row_renderer
             .as_ref()
             .filter(|_| node.routing_row_key().or(self.row_key).is_some());
-        let details = (child_shape.is_some() || nested_list.is_some()).then(|| {
+        let details = (child_shape.is_some()
+            || nested_list.is_some()
+            || node.viewport_handle.is_some()
+            || transform.is_some())
+        .then(|| {
             Rc::new(LayoutDetails {
                 child_shape,
                 nested_list: nested_list.cloned(),
+                viewport_handle: node.viewport_handle.clone(),
+                transform,
                 ..LayoutDetails::default()
             })
         });
         LayoutNode {
             details,
-            viewport_handle: node.viewport_handle.clone(),
             mouse_drag_pan: node.boolean("mouse-drag-pan-enabled", false),
             middle_mouse_pan: true,
             pan_axes: [true; 2],
@@ -2083,7 +2170,6 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             overflow: matches!(clipping, Some(xrack_runtime::Value::Bool(false))),
             ancestor_shapes,
             space,
-            transform,
             ..LayoutNode::leaf(
                 node,
                 bounds,
@@ -2235,29 +2321,72 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             enabled,
             layout_direction: self.layout_direction,
         };
-        let Some((geometry, ancestors)) =
-            self.scroll_geometry(view, path_len)
-                .filter(|(geometry, _)| {
-                    geometry.cacheable_children.get(dense_index).copied() == Some(true)
-                })
+        let text_outside = self
+            .row_layouts
+            .as_ref()
+            .is_some_and(|cache| cache.defer_clipped_text)
+            && outside_clip(bounds, clip);
+        if self.row_key.is_some() || self.space.is_some() {
+            return self.place(child, bounds, clip, visible, enabled, None);
+        }
+        let Some(geometry) = self
+            .row_layouts
+            .as_deref_mut()
+            .and_then(|cache| cache.scroll_geometry(&self.path[..path_len], view))
+            .filter(|geometry| geometry.caches_child(dense_index))
         else {
             return self.place(child, bounds, clip, visible, enabled, None);
         };
         if let Some(local) = geometry.child(dense_index, inputs) {
-            return row_layout::clone_in_view(local, bounds, clip, ancestors);
+            if local.deferred_text && !text_outside {
+                Self::resolve_scroll_text(self.text, child, local);
+            }
+            return row_layout::clone_in_view(
+                &local.layout,
+                bounds,
+                clip,
+                self.ancestor_shapes.as_ref(),
+            );
         }
 
+        // This capture will retain every descendant. When it borrows from
+        // the local layout budget, don't also build separate templates.
+        let row_layouts = if geometry.uses_local_budget() {
+            self.row_layouts.take()
+        } else {
+            None
+        };
         let local = Rect::new(0.0, 0.0, bounds.width, bounds.height);
         // Apply the viewport clip after translation. Descendants can overflow
         // the content item's own extent when their parents allow it.
         let ancestors = self.ancestor_shapes.take();
+        let defer = text_outside
+            && visible
+            && child.is_visible()
+            && child.kind == "StyledText"
+            && child.children.is_empty()
+            && child.routing_row_key().is_none()
+            && !child.selectable_styled_text()
+            && self.text.can_defer_styled_text(child);
+        self.defer_styled_text = defer;
         let mut layout = self.place(child, local, unclipped_content(), visible, enabled, None);
+        self.defer_styled_text = false;
         self.ancestor_shapes = ancestors;
+        if let Some(row_layouts) = row_layouts {
+            self.row_layouts = Some(row_layouts);
+        }
         if let Some((geometry, _)) = self.scroll_geometry(view, path_len) {
-            geometry.store_child(dense_index, inputs, layout.clone());
+            geometry.store_child(dense_index, inputs, layout.clone(), defer);
         }
         row_layout::place_in_view(&mut layout, bounds, clip, self.ancestor_shapes.as_ref());
         layout
+    }
+
+    fn resolve_scroll_text(text: &mut T, child: &Node, local: &mut row_layout::ScrollChild) {
+        local.layout.styled_text = local
+            .layout
+            .measure_styled_text(child, |size| text.shared_styled_text_layout(child, size));
+        local.deferred_text = false;
     }
 
     fn place_node(
@@ -2357,7 +2486,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             return LayoutNode {
                 ancestor_shapes,
                 space,
-                transform,
+                details: transform.map(|transform| {
+                    Rc::new(LayoutDetails {
+                        transform: Some(transform),
+                        ..LayoutDetails::default()
+                    })
+                }),
                 ..LayoutNode::leaf(
                     node,
                     bounds,
@@ -2526,11 +2660,11 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     horizontal_scroll: header_scroll
                         .filter(|_| orientation == Orientation::Horizontal),
                     tab_strip: tabs.as_ref().map(|geometry| geometry.bar),
+                    transform,
                     ..LayoutDetails::default()
                 }
                 .into_shared(),
                 scroll: header_scroll.filter(|_| orientation == Orientation::Vertical),
-                viewport_handle: None,
                 missing_list_rows: false,
                 missing_descendant_list_rows: false,
                 mouse_drag_pan: false,
@@ -2550,7 +2684,6 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 overflow: false,
                 ancestor_shapes,
                 space,
-                transform,
                 table_column_window: node.table_column_window.clone(),
                 children,
             };
@@ -3073,23 +3206,38 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         };
         // A complete viewport cache can place its children together. These
         // cached slots already exclude scroll parts and special child layouts.
-        let direction = self.layout_direction;
         let projected = if cached_scroll_children
+            && self.row_key.is_none()
+            && self.space.is_none()
             && page.is_none()
             && swipe_delegate.is_none()
             && tree_parts.is_none()
             && list_section_headers.is_none()
             && let Some(rects) = scroll_rects.as_ref().filter(|rects| rects.len() == count)
-            && let Some((geometry, ancestors)) = self.scroll_geometry(node, self.path.len())
+            && let Some(cache) = self.row_layouts.as_deref_mut()
         {
-            geometry.project_children(
-                rects.clone(),
-                child_clip,
+            let defer = cache.defer_clipped_text;
+            let inputs = row_layout::RowInputs {
+                size: Size::default(),
                 visible,
-                content_enabled,
-                direction,
-                ancestors,
-            )
+                enabled: content_enabled,
+                layout_direction: self.layout_direction,
+            };
+            cache
+                .scroll_geometry(&self.path, node)
+                .and_then(|geometry| {
+                    geometry.project_children(
+                        rects.clone(),
+                        child_clip,
+                        inputs,
+                        self.ancestor_shapes.as_ref(),
+                        |slot, bounds, local| {
+                            if !defer || !outside_clip(bounds, child_clip) {
+                                Self::resolve_scroll_text(self.text, &node.children[slot], local);
+                            }
+                        },
+                    )
+                })
         } else {
             None
         };
@@ -3326,11 +3474,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 group_title,
                 paint_order: sibling_paint_order(node, children.len()),
                 child_shape,
+                viewport_handle: node.viewport_handle.clone(),
+                transform,
                 ..LayoutDetails::default()
             }
             .into_shared(),
             scroll,
-            viewport_handle: node.viewport_handle.clone(),
             missing_list_rows: false,
             missing_descendant_list_rows: false,
             mouse_drag_pan: node.boolean("mouse-drag-pan-enabled", node.kind == "Flickable"),
@@ -3355,19 +3504,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             switch_position,
             swipe_delegate,
             swipe_preview: None,
-            styled_text: if visible && node.kind == "StyledText" {
-                self.text
-                    .shared_styled_text_layout(node, Size::new(bounds.width, bounds.height))
-                    .map(|mut plan| {
-                        if let Some(direction) = self.layout_direction {
-                            Rc::make_mut(&mut plan).align_in_direction(
-                                node,
-                                bounds.width,
-                                direction,
-                            );
-                        }
-                        plan
-                    })
+            styled_text: if visible && node.kind == "StyledText" && !self.defer_styled_text {
+                styled_text_at(node, bounds, self.layout_direction, |size| {
+                    self.text.shared_styled_text_layout(node, size)
+                })
             } else {
                 None
             },
@@ -3375,7 +3515,6 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             overflow,
             ancestor_shapes,
             space,
-            transform,
             table_column_window: node.table_column_window.clone(),
             children,
         }

@@ -201,9 +201,11 @@ function page(webview, media, filename) {
             <button type="button" id="zoom-fit" title="Fit preview to panel">Fit</button>
         </div>
         <button type="button" id="inspect" hidden>Inspect</button>
+        <button type="button" id="viewport-stats-toggle" aria-pressed="false" hidden>3D Stats</button>
         <span class="status" id="status" data-phase="busy" role="status">Starting preview…</span>
     </div>
 </header>
+<div class="preview-details">
 <details id="diagnostics" class="diagnostics" hidden open>
     <summary>Preview diagnostics</summary>
     <pre id="error"></pre>
@@ -213,6 +215,11 @@ function page(webview, media, filename) {
     <div id="scene-elements" role="group" aria-label="Preview elements"></div>
     <pre id="scene-properties"></pre>
 </details>
+<details id="viewport-stats" class="diagnostics scene-tree" hidden open>
+    <summary>3D viewport statistics</summary>
+    <pre id="viewport-stats-data"></pre>
+</details>
+</div>
 <main class="canvas" id="canvas" aria-label="Component preview">
     <div class="waiting" id="waiting">
         <strong>Waiting for the first frame</strong>
@@ -227,6 +234,7 @@ function page(webview, media, filename) {
     <span>Refreshes as you edit</span>
     <span id="dimensions">No frame yet</span>
 </footer>
+<script nonce="${nonce}" src="${resource('viewport-statistics.js')}"></script>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 const select = document.getElementById('component');
@@ -234,6 +242,9 @@ const windowPicker = document.getElementById('window-picker');
 const windowSelect = document.getElementById('window');
 const status = document.getElementById('status');
 const inspect = document.getElementById('inspect');
+const viewportStatsToggle = document.getElementById('viewport-stats-toggle');
+const viewportStats = document.getElementById('viewport-stats');
+const viewportStatsData = document.getElementById('viewport-stats-data');
 const sceneTree = document.getElementById('scene-tree');
 const sceneElements = document.getElementById('scene-elements');
 const sceneProperties = document.getElementById('scene-properties');
@@ -264,6 +275,17 @@ sceneTree.addEventListener('toggle', positionInspection);
 inspect.onclick = () => {
     if (frame !== undefined) vscode.postMessage({ type: 'inspect', frame });
 };
+viewportStatsToggle.onclick = () => {
+    if (frame !== undefined) vscode.postMessage({
+        type: 'viewport_statistics',
+        enabled: viewportStatsToggle.getAttribute('aria-pressed') !== 'true',
+    });
+};
+function showViewportStatistics(report) {
+    viewportStatsToggle.setAttribute('aria-pressed', String(Boolean(report)));
+    viewportStats.hidden = !report;
+    viewportStatsData.textContent = report ? globalThis.formatViewportStatistics(report) : '';
+}
 const diagnostics = document.getElementById('diagnostics');
 const error = document.getElementById('error');
 const waiting = document.getElementById('waiting');
@@ -692,6 +714,8 @@ window.addEventListener('message', ({data}) => {
         restoreWindow.hidden = true;
         viewControls.hidden = true;
         inspect.hidden = true;
+        viewportStatsToggle.hidden = true;
+        showViewportStatistics();
         clearInspection();
         logicalWidth = undefined;
         logicalHeight = undefined;
@@ -706,6 +730,8 @@ window.addEventListener('message', ({data}) => {
             frame = data.frame;
             dynamic = Boolean(data.dynamic);
             inspect.hidden = !dynamic;
+            viewportStatsToggle.hidden = !dynamic || Boolean(data.windowMinimized);
+            showViewportStatistics(data.viewportStatistics);
             if (!dynamic) clearInspection();
             treeNavigationEnabled = Boolean(data.treeNavigationEnabled);
             controlNavigationEnabled = Boolean(data.controlNavigationEnabled);
@@ -796,6 +822,7 @@ function registerPreview(context) {
         const showFrame = (image, metadata = {}) => {
             void panel.webview.postMessage({
                 ...metadata, image, size: session?.size, dynamic: session?.dynamic, frame: ++frame,
+                viewportStatistics: session?.viewportStatistics,
             });
         };
         const queue = new PreviewQueue(async isCurrent => {
@@ -842,6 +869,7 @@ function registerPreview(context) {
                             const active = session = {
                                 renderer, image: reply.image, component: selected, dynamic: true, cwd, window: reply.window ?? null,
                                 size: reply.size, scale: requestedScale, windowMinimized: reply.window_minimized,
+                                viewportStatistics: reply.viewport_statistics,
                             };
                             showFrame(reply.image, {
                                 status: 'Live preview', phase: 'live',
@@ -1099,6 +1127,7 @@ function registerPreview(context) {
                         active.windows = reply.windows;
                         active.window = reply.window ?? null;
                         active.windowMinimized = reply.window_minimized;
+                        active.viewportStatistics = reply.viewport_statistics;
                         if (session === active && !disposed) scheduleAnimation(active, reply.next_frame_ms);
                     } else {
                         const command = message.type === 'scale'
@@ -1132,7 +1161,7 @@ function registerPreview(context) {
             uri.toString() === document.uri.toString()
             || (dependencies ? dependencies.has(canonical(uri.fsPath)) : path.extname(uri.fsPath) === '.xr')
         );
-        const watcher = vscode.workspace.createFileSystemWatcher('**/*.{xr,png,jpg,jpeg,svg,gif,ttf,otf,ttc,otc,toml,ftl,gltf,glb,bin,xml,hdr,wgsl}');
+        const watcher = vscode.workspace.createFileSystemWatcher('**/*.{xr,png,jpg,jpeg,svg,gif,ttf,otf,ttc,otc,toml,ftl,gltf,glb,bin,xml,hdr,wgsl,[oO][bB][jJ],[mM][tT][lL]}');
         const onDiskChange = uri => {
             if (affected(uri)) queue.refresh();
         };
@@ -1152,7 +1181,7 @@ function registerPreview(context) {
                 } else if (message.type === 'select' && typeof message.component === 'string') {
                     component = message.component;
                     queue.refresh(0);
-                } else if (['click', 'wheel', 'edit', 'composition', 'escape', 'pointer', 'delay_key', 'key', 'context_menu', 'hover', 'leave', 'select_window', 'restore_window', 'file_drop', 'inspect'].includes(message.type)) {
+                } else if (['click', 'wheel', 'edit', 'composition', 'escape', 'pointer', 'delay_key', 'key', 'context_menu', 'hover', 'leave', 'select_window', 'restore_window', 'file_drop', 'inspect', 'viewport_statistics'].includes(message.type)) {
                     interact(message);
                 }
             }),

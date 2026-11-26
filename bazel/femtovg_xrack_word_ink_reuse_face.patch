@@ -1,0 +1,72 @@
+diff --git a/src/text/font.rs b/src/text/font.rs
+--- a/src/text/font.rs
++++ b/src/text/font.rs
+@@ -919,8 +919,8 @@
+     }
+ 
+     #[cfg(feature = "textlayout")]
+-    fn bitmap_metrics(&self, face: &FontFaceRef<'_>, id: GlyphId) -> Option<GlyphMetrics> {
+-        let image = face.0.glyph_raster_image(id, u16::MAX)
++    fn bitmap_metrics(&self, face: &TtfFont<'_>, id: GlyphId) -> Option<GlyphMetrics> {
++        let image = face.glyph_raster_image(id, u16::MAX)
+             .filter(|image| image.format == ttf_parser::RasterImageFormat::PNG)?;
+         let scale = if image.pixels_per_em != 0 {
+             self.units_per_em as f32 / image.pixels_per_em as f32
+@@ -974,20 +974,35 @@
+             cache.variants.push_front(variant);
+         }
+         let variant = &mut cache.variants[0];
+-        let mut face = None;
+-        for glyph in glyphs {
+-            let metrics = variant.glyphs.entry(glyph.glyph_id).or_insert_with(|| {
+-                let face = face.get_or_insert_with(|| self.face_ref_with_variations(variations));
+-                let id = GlyphId(glyph.glyph_id);
+-                self.bitmap_metrics(face, id)
+-                    .or_else(|| face.0.glyph_bounding_box(id).map(Self::outline_metrics))
+-            });
+-            if let Some(metrics) = metrics {
+-                glyph.width = metrics.width;
+-                glyph.height = metrics.height;
+-                glyph.bearing_y = metrics.bearing_y;
++        let has_variations = variations.iter().next().is_some();
++        self.data.with_dependent(|_, parsed| {
++            let mut variable_face = None;
++            for glyph in glyphs {
++                let metrics = variant.glyphs.entry(glyph.glyph_id).or_insert_with(|| {
++                    // Cache misses can occur one ideograph at a time. Reuse the
++                    // parsed face, cloning it only to apply variable axes.
++                    let face = if has_variations {
++                        variable_face.get_or_insert_with(|| {
++                            let mut face = parsed.default.clone();
++                            for (tag, value) in variations.iter() {
++                                face.set_variation(ttf_parser::Tag(tag), value);
++                            }
++                            face
++                        })
++                    } else {
++                        &parsed.default
++                    };
++                    let id = GlyphId(glyph.glyph_id);
++                    self.bitmap_metrics(face, id)
++                        .or_else(|| face.glyph_bounding_box(id).map(Self::outline_metrics))
++                });
++                if let Some(metrics) = metrics {
++                    glyph.width = metrics.width;
++                    glyph.height = metrics.height;
++                    glyph.bearing_y = metrics.bearing_y;
++                }
+             }
+-        }
++        });
+     }
+ 
+     #[cfg(feature = "textlayout")]
+@@ -1001,7 +1016,7 @@
+ 
+         if let Entry::Vacant(entry) = self.glyphs.borrow_mut().entry(cache_key) {
+             let id = GlyphId(codepoint);
+-            let glyph = if let Some(metrics) = self.bitmap_metrics(face, id) {
++            let glyph = if let Some(metrics) = self.bitmap_metrics(&face.0, id) {
+                 Some(Glyph { path: None, metrics })
+             } else {
+                 let mut path = Path::new();

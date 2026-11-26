@@ -32,6 +32,7 @@ impl ProbeDebug {
         camera: SceneCamera,
         depth: &FocusDepth,
         jitter: [f32; 2],
+        region: super::CaptureRegion,
     ) {
         let geometry: Vec<_> = probes
             .iter()
@@ -147,19 +148,23 @@ impl ProbeDebug {
                 },
             ],
         });
-        let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack reflection probe guide overlay"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            ctx.encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack reflection probe guide overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: ctx.target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            },
+        );
+        region.clip(&mut pass);
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bindings, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));

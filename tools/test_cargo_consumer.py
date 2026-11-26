@@ -15,6 +15,7 @@ from threading import Thread
 import tomllib
 
 import compiler_bundles as bundles
+import femtovg_bundle
 import mlir_bundles
 import media_bundles
 
@@ -195,6 +196,20 @@ def stage_media(workspace, archives, version, host):
     media_bundles.stage_bundle(workspace, archive, host)
 
 
+def check_renderer_dependency(app: Path) -> None:
+    with (app / "Cargo.lock").open("rb") as lock:
+        packages = tomllib.load(lock)["package"]
+    if not any(
+        package["name"] == femtovg_bundle.RENDERER
+        and any(
+            dependency.split()[0] == femtovg_bundle.PACKAGE
+            for dependency in package.get("dependencies", ())
+        )
+        for package in packages
+    ):
+        raise ValueError("Cargo consumer did not resolve the staged FemtoVG renderer")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archives", type=Path, nargs="?")
@@ -221,8 +236,6 @@ def main():
     with tempfile.TemporaryDirectory(prefix="xrack-cargo-consumer-") as directory:
         stage = Path(directory)
         workspace = stage / "sdk"
-        if not args.published:
-            bundles.stage_workspace(workspace)
         app = stage / "app"
         env = {
             **os.environ,
@@ -231,6 +244,10 @@ def main():
         }
         for key in ("XRACKC", "XRACK_ANTLR_DIR", "XRACK_MLIR_BINDINGS", "XRACK_MEDIA_LIBRARY", "OUT_DIR"):
             env.pop(key, None)
+        if not args.published:
+            bundles.stage_workspace(workspace)
+            renderer_package = femtovg_bundle.stage_renderer(workspace)
+            femtovg_bundle.update_lock(workspace, env=env)
         if args.interpreter:
             archive, _ = bundles.verified_archive(archives, version, args.host)
             commit = subprocess.check_output(("git", "rev-parse", "HEAD"), cwd=root, text=True).strip()
@@ -256,6 +273,7 @@ def main():
             # Patch the standalone registry graph to the exact staged release sources.
             patches = {path.parent.name: path.parent for path in (workspace / "crates").glob("*/Cargo.toml")
                        if path.parent.name not in ("xrack-compiler", "xrack-codegen", "xrack-lsp", "xrack-preview")}
+            patches[femtovg_bundle.PACKAGE] = renderer_package
             if args.interpreter:
                 patches.pop("xrack-build")
             for host in bundles.hosts():
@@ -281,6 +299,7 @@ def main():
         if args.desktop_example:
             subprocess.run(["cargo", "test", *command[2:]], cwd=app, env=env, check=True)
             subprocess.run(["cargo", "build", *command[2:]], cwd=app, env=env, check=True)
+            check_renderer_dependency(app)
             return
         with media_server(app / "hls") if args.media else nullcontext() as url:
             if url:
@@ -289,6 +308,8 @@ def main():
         print(result.stdout, end="")
         if result.stdout.strip() != expected:
             raise SystemExit("unexpected Cargo consumer output")
+        if not args.published:
+            check_renderer_dependency(app)
         if not (args.interpreter or args.media):
             subprocess.run(["cargo", "test", *command[2:]], cwd=app, env=env, check=True)
 

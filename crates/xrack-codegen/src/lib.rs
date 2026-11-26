@@ -63,6 +63,35 @@ fn field_access<'a>(path: impl IntoIterator<Item = &'a str>) -> TokenStream {
     quote!(#(.#fields)*)
 }
 
+fn project_scene_texture(
+    field: &Parameter,
+    records: &BTreeMap<&str, Vec<Parameter>>,
+    defaults: TokenStream,
+) -> Option<TokenStream> {
+    let member = ident(&field.name);
+    let Type::Record(record) = &field.ty else {
+        return Some(quote!(::xrack_runtime::scene3d::SceneTexture {
+            source: &__style.#member, ..#defaults
+        }));
+    };
+    let schema = records.get(record.as_ref())?;
+    let fields = xrack_syntax::builtins::SCENE_TEXTURE_FIELDS
+        .iter()
+        .filter(|(name, _)| schema.iter().any(|field| field.name == *name))
+        .map(|(name, ty)| {
+            let field = ident(name);
+            if *ty == Type::String {
+                quote!(#field: &__texture.#field)
+            } else {
+                quote!(#field: __texture.#field)
+            }
+        });
+    Some(quote!({
+        let __texture = &__style.#member;
+        ::xrack_runtime::scene3d::SceneTexture { #(#fields,)* ..#defaults }
+    }))
+}
+
 fn project_scene_maps(
     fields: &[Parameter],
     records: &BTreeMap<&str, Vec<Parameter>>,
@@ -73,31 +102,8 @@ fn project_scene_maps(
             let field = fields.iter().find(|field| field.name == *name)?;
             let member = ident(name);
             let base_color = *name == "base-color-map";
-            let sampler = if let Type::Record(record) = &field.ty {
-                let schema = records.get(record.as_ref())?;
-                let fields = xrack_syntax::builtins::SCENE_TEXTURE_FIELDS
-                    .iter()
-                    .filter(|(name, _)| schema.iter().any(|field| field.name == *name))
-                    .map(|(name, ty)| {
-                        let field = ident(name);
-                        if *ty == Type::String {
-                            quote!(#field: &__texture.#field)
-                        } else {
-                            quote!(#field: __texture.#field)
-                        }
-                    });
-                quote!({
-                    let __texture = &__style.#member;
-                    ::xrack_runtime::scene3d::SceneTexture {
-                        #(#fields,)*
-                        ..::core::default::Default::default()
-                    }
-                })
-            } else {
-                quote!(::xrack_runtime::scene3d::SceneTexture {
-                    source: &__style.#member, ..::core::default::Default::default()
-                })
-            };
+            let sampler =
+                project_scene_texture(field, records, quote!(::core::default::Default::default()))?;
             Some(quote!(#member: ::core::option::Option::Some(
                 #sampler.prepare(#base_color, __xr_texture)
             )))
@@ -168,8 +174,6 @@ fn project_scene_material(
             let field = ident(name);
             if name == "material-shader" {
                 quote!(#field: ::core::option::Option::Some(__xr_material_shader(&__style.#field)))
-            } else if name == "base-item" {
-                quote!(#field: ::core::option::Option::Some(__style.#field.to_string()))
             } else {
                 quote!(#field: ::core::option::Option::Some(__style.#field))
             }
@@ -190,6 +194,17 @@ fn project_scene_material(
             quote!(shader_textures: ::core::option::Option::Some((#inputs).into()),)
         });
     let maps = project_scene_maps(fields, records);
+    let base_item = fields
+        .iter()
+        .find(|field| field.name == "base-item")
+        .and_then(|field| {
+            project_scene_texture(
+                field,
+                records,
+                quote!(::xrack_runtime::scene3d::SceneTexture::item_defaults()),
+            )
+        })
+        .map(|texture| quote!(base_item: ::core::option::Option::Some(#texture.prepare_item()),));
     let alpha_mode = has("alpha-mode").then(|| {
             let threshold = if has("alpha-cutoff") {
                 quote!(::core::option::Option::Some(__style.alpha_cutoff))
@@ -230,6 +245,7 @@ fn project_scene_material(
             #cull_mode
             #workflow
             #shader_textures
+            #base_item
             maps: #maps,
             vertex_masks: ::xrack_runtime::scene3d::VertexColorMasks::from_fields([#(#vertex_masks),*]),
             channels: ::xrack_runtime::scene3d::MaterialChannels::from_fields([#(#channels),*]),
@@ -624,15 +640,21 @@ fn project_scene_objects(
     } else {
         quote!(model_nodes)
     };
+    let mesh_asset = if fields.iter().any(|field| field.name == "mesh-asset") {
+        quote!(::core::option::Option::Some(&object.mesh_asset))
+    } else {
+        quote!(::core::option::Option::None)
+    };
     let schema = match ty {
         Type::RecordList(name) => name.as_ref(),
         _ => "",
     };
     quote! {
-        __XR_SCENE_PROJECTIONS.with(|cache| cache.#prepare(&(#model), #schema, |object, mesh_inputs| {
+        __XR_SCENE_PROJECTIONS.with(|cache| cache.#prepare((#model), #schema, |object, mesh_inputs| {
             ::xrack_runtime::scene3d::SceneNodeDefinition {
                 id: object.id,
                 mesh: &(#mesh),
+                mesh_asset: #mesh_asset,
                 geometry: #geometry,
                 collision_shapes: #collision_shapes,
                 material_variant: &(#material_variant),
@@ -799,6 +821,10 @@ fn project_buffer_inputs(model: &TokenStream, fields: &[Parameter], named: bool)
     let filter = scene_field(fields, "filter", "buffer", quote!("linear"));
     let wrap_u = scene_field(fields, "wrap-u", "buffer", quote!("clamp"));
     let wrap_v = scene_field(fields, "wrap-v", "buffer", quote!("clamp"));
+    let mip_filter = scene_field(fields, "mip-filter", "buffer", quote!(""));
+    let min_filter = scene_field(fields, "min-filter", "buffer", quote!(""));
+    let mag_filter = scene_field(fields, "mag-filter", "buffer", quote!(""));
+    let max_anisotropy = scene_field(fields, "max-anisotropy", "buffer", quote!(1));
     quote!(::xrack_runtime::scene_effect::model_buffer_inputs(
         #model,
         #limit,
@@ -813,7 +839,9 @@ fn project_buffer_inputs(model: &TokenStream, fields: &[Parameter], named: bool)
             enabled: #enabled,
             sampling: ::xrack_runtime::scene_effect::BufferSampling::new(
                 &(#filter), &(#wrap_u), &(#wrap_v)
-            ),
+            ).with_filters(&(#min_filter), &(#mag_filter))
+                .with_mip_filter(&(#mip_filter))
+                .with_max_anisotropy(#max_anisotropy),
         }.prepare(__xr_texture)
     ))
 }
@@ -830,6 +858,26 @@ fn project_scene_captures(
     let stencil_source = field("stencil-source", quote!(""));
     let stencil_clear = field("stencil-clear", quote!(0));
     let renderables = field("renderables", quote!("all"));
+    let augment_shader = if fields.iter().any(|field| field.name == "augment-shader") {
+        quote!(__xr_material_shader(&capture.augment_shader))
+    } else {
+        quote!(::core::option::Option::None)
+    };
+    let augment_parameters = field(
+        "augment-parameters",
+        quote!(::xrack_runtime::Vector3D::default()),
+    );
+    let augment_textures = fields
+        .iter()
+        .find(|field| field.name == "augment-textures")
+        .and_then(|field| match &field.ty {
+            Type::RecordList(record) => records.get(record.as_ref()),
+            _ => None,
+        })
+        .map_or_else(
+            || quote!(::std::vec::Vec::new()),
+            |fields| project_buffer_inputs(&quote!(&capture.augment_textures), fields, false),
+        );
     let override_material = fields
         .iter()
         .find(|field| field.name == "override-material")
@@ -894,7 +942,9 @@ fn project_scene_captures(
     let scale = field("scale", quote!(1.0));
     let background = field("background", quote!(::xrack_runtime::Color(0)));
     let color_format = field("color-format", quote!("rgba16f"));
-    let material_data_format = field("material-data-format", quote!("rgba16f"));
+    let mipmaps = field("mipmaps", quote!(false));
+    let data_formats = xrack_runtime::scene_effect::MATERIAL_DATA_FORMAT_FIELDS
+        .map(|name| field(name, quote!("rgba16f")));
     let combine_attachments = field("combine-attachments", quote!(false));
     let depth_clear = field("depth-clear", quote!(1.0));
     let enabled = field("enabled", quote!(true));
@@ -910,12 +960,16 @@ fn project_scene_captures(
                 name: &capture.name, camera: &(#camera), layers: #layers,
                 scale: #scale, background: #background, enabled: #enabled, depth_clear: #depth_clear,
                 color_format: ::xrack_runtime::scene_effect::OutputFormat::parse(&(#color_format)),
-                material_data_format: ::xrack_runtime::scene_effect::OutputFormat::parse(&(#material_data_format)),
+                mipmaps: #mipmaps,
+                material_data_formats: [#(::xrack_runtime::scene_effect::OutputFormat::parse(&(#data_formats))),*],
                 combine_attachments: #combine_attachments,
                 color_source: &(#color_source), depth_source: &(#depth_source),
                 stencil_source: &(#stencil_source), stencil_clear: #stencil_clear,
                 renderables: &(#renderables),
                 override_material: #override_material,
+                augment_shader: #augment_shader,
+                augment_parameters: #augment_parameters,
+                augment_textures: #augment_textures,
                 pipeline_state, raster,
             }.prepare()
         })
@@ -1090,6 +1144,8 @@ fn project_reflections(model: &TokenStream, fields: &[Parameter]) -> TokenStream
     let visible = field("visible", quote!(true));
     let offset = field("box-offset", quote!(::xrack_runtime::Vector3D::default()));
     let yaw = field("yaw", quote!(0.0));
+    let pitch = field("pitch", quote!(0.0));
+    let roll = field("roll", quote!(0.0));
     let intensity = field("intensity", quote!(1.0));
     let parallax = field("parallax-correction", quote!(false));
     let debug_view = field("debug-view", quote!(false));
@@ -1107,7 +1163,7 @@ fn project_reflections(model: &TokenStream, fields: &[Parameter]) -> TokenStream
             if !#visible { return ::core::option::Option::None; }
             let source = ::xrack_runtime::scene3d::ReflectionSource::resolve(&(#source), #size, &(#refresh), #revision, &(#slicing), __xr_environment)?;
             ::xrack_runtime::scene3d::ReflectionProbe::prepare(source,
-                probe.position, probe.box_size, #offset, #yaw, #intensity, #parallax)
+                probe.position, probe.box_size, #offset, [#yaw, #pitch, #roll], #intensity, #parallax)
                 .map(|reflection| reflection.with_layers((#layers) as u64).with_debug_view(#debug_view))
         })
     }
@@ -1129,14 +1185,33 @@ fn project_scene_lights(model: &TokenStream, fields: &[Parameter]) -> TokenStrea
         "light",
         quote!(::xrack_runtime::scene3d::ShadowSampling::DEFAULT_RADIUS),
     );
-    let bias = if fields.iter().any(|param| param.name == "shadow-bias") {
-        quote!(::core::option::Option::Some(light.shadow_bias))
-    } else {
-        quote!(::core::option::Option::None)
+    let optional = |field| {
+        if fields.iter().any(|param| param.name == field) {
+            let name = ident(field);
+            quote!(::core::option::Option::Some(light.#name))
+        } else {
+            quote!(::core::option::Option::None)
+        }
     };
+    let world_radius = optional("shadow-world-radius");
+    let bias = optional("shadow-bias");
+    let far = optional("shadow-map-far");
+    let resolution = optional("shadow-map-size");
+    let precision = scene_field(fields, "shadow-map-precision", "light", quote!(""));
+    let cascades = optional("shadow-cascades");
+    let splits = ["shadow-split-1", "shadow-split-2", "shadow-split-3"].map(optional);
+    let blend = optional("shadow-cascade-blend");
+    let balance = optional("shadow-split-balance");
+    let lock = optional("shadow-lock-texels");
     let parent = scene_field(
         fields,
         "parent",
+        "light",
+        quote!(::std::string::String::new()),
+    );
+    let scope = scene_field(
+        fields,
+        "scope",
         "light",
         quote!(::std::string::String::new()),
     );
@@ -1166,10 +1241,14 @@ fn project_scene_lights(model: &TokenStream, fields: &[Parameter]) -> TokenStrea
                 shadow_filter: &(#filter),
                 shadow_strength: #strength,
                 shadow_radius: #radius,
+                shadow_world_radius: #world_radius,
                 shadow_bias: #bias,
+                shadow_projection: ::xrack_runtime::scene3d::ShadowProjectionSettings::new(
+                    #far, #resolution, &(#precision), #cascades, [#(#splits),*], #blend, #balance, #lock,
+                ),
                 bake_mode: &(#bake_mode),
                 layers: (#layers) as u64,
-            }.prepare().map(|source| (source, #parent))
+            }.prepare().map(|source| (source, #parent, #scope))
         })
     }
 }
@@ -1211,6 +1290,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::ProjectedPoint3D => quote!(::xrack_runtime::ProjectedPoint3D),
         Type::Instance3D => quote!(::xrack_runtime::Instance3D),
         Type::InstanceTable3D => quote!(::xrack_runtime::InstanceTable3D),
+        Type::MeshAsset3D => quote!(::xrack_runtime::MeshAsset3D),
         Type::WalkResult3D => quote!(::xrack_runtime::WalkResult3D),
         Type::PhysicsWorld3D => quote!(::xrack_runtime::PhysicsWorld3D),
         Type::SceneModel3D => quote!(::std::sync::Arc<::xrack_runtime::scene3d::SceneModel>),
@@ -10069,8 +10149,38 @@ impl<'a> Generator<'a> {
                         quote!(::xrack_runtime::Value::SceneObjects(#objects))
                     }
                 }
-                (Ok("SceneView3D"), "environment") => {
+                (Ok("SceneView3D"), "preload-model") => {
+                    quote!(::xrack_runtime::Value::SceneObjects(#value))
+                }
+                (Ok("SceneView3D"), "environment" | "skybox-source") => {
                     quote!(::xrack_runtime::Value::SceneEnvironment(__xr_environment(&(#value))))
+                }
+                (Ok("SceneView3D"), "environment-sky" | "skybox-sky" | "scissor-rect") => {
+                    let Some(Type::Record(record)) = operand_type(binding) else {
+                        return Err(format!("missing SceneView3D {key} record type"));
+                    };
+                    let schema = self
+                        .records
+                        .get(record.as_ref())
+                        .ok_or_else(|| format!("unknown SceneView3D {key} record type"))?;
+                    let fields = if key == "scissor-rect" {
+                        xrack_syntax::builtins::SCENE_SCISSOR_FIELDS
+                    } else {
+                        xrack_syntax::builtins::SCENE_SKY_FIELDS
+                    }
+                    .iter()
+                        .filter(|(name, _)| schema.iter().any(|field| field.name == *name))
+                        .map(|(name, _)| {
+                            let member = ident(name);
+                            quote!((::std::string::String::from(#name), ::xrack_runtime::Value::from(__settings.#member)))
+                        });
+                    let record = record.as_ref();
+                    quote!({
+                        let __settings = #value;
+                        ::xrack_runtime::Value::Record(::xrack_runtime::RecordValue::new(
+                            #record, ::std::collections::BTreeMap::from([#(#fields),*]),
+                        ))
+                    })
                 }
                 (Ok("SceneView3D"), "lights") => {
                     let ty = operand_type(binding).ok_or("missing 3D light type")?;
@@ -16650,7 +16760,7 @@ fn binds_scene_environment(op: OperationRef<'_>) -> bool {
             child.name() == "xr.bind"
                 && matches!(
                     child.attribute("name"),
-                    Some("environment" | "reflection-probes")
+                    Some("environment" | "skybox-source" | "reflection-probes")
                 )
         })
         || op.children().any(binds_scene_environment)
@@ -16706,10 +16816,14 @@ fn embed_environments(assets: &xrack_resources::SceneAssets) -> Result<TokenStre
                 let packed =
                     proc_macro2::Literal::byte_string(&xrack_resources::pack_environment(probe)?);
                 let diffuse = probe.diffuse().iter().map(|[r, g, b]| quote!([#r, #g, #b]));
+                let upper_diffuse = probe
+                    .upper_diffuse()
+                    .iter()
+                    .map(|[r, g, b]| quote!([#r, #g, #b]));
                 declarations.extend(quote! {
                     static #name: ::std::sync::LazyLock<::core::option::Option<::std::sync::Arc<::xrack_runtime::scene3d::EnvironmentProbe>>> =
                         ::std::sync::LazyLock::new(|| ::xrack_runtime::scene3d::EnvironmentProbe::from_packed(
-                            [#(#diffuse),*], #packed
+                            [#(#diffuse),*], [#(#upper_diffuse),*], #packed
                         ).map(::std::sync::Arc::new));
                 });
                 entry.insert(name).clone()
@@ -17330,7 +17444,9 @@ fn embed_mesh_light(mount: &xrack_runtime::scene3d::MeshLight) -> TokenStream {
         light: ::xrack_runtime::scene3d::SceneLight {
             source: #source, radiance: [#r, #g, #b], casts_shadow: #casts_shadow, layers: #layers,
             shadow: ::core::default::Default::default(),
+            shadow_projection: ::core::default::Default::default(),
             bake_mode: ::core::default::Default::default(),
+            scope: ::core::default::Default::default(),
         },
     })
 }
@@ -17525,7 +17641,7 @@ fn embed_mesh_texture(
         }
     };
     let name = &*name;
-    let [u, v] = texture.wrap.map(|wrap| match wrap {
+    let [u, v] = texture.sampling.wrap.map(|wrap| match wrap {
         TextureWrap::Clamp => quote!(::xrack_runtime::scene3d::TextureWrap::Clamp),
         TextureWrap::Repeat => quote!(::xrack_runtime::scene3d::TextureWrap::Repeat),
         TextureWrap::Mirror => quote!(::xrack_runtime::scene3d::TextureWrap::Mirror),
@@ -17534,21 +17650,25 @@ fn embed_mesh_texture(
         TextureFilter::Linear => quote!(::xrack_runtime::scene3d::TextureFilter::Linear),
         TextureFilter::Nearest => quote!(::xrack_runtime::scene3d::TextureFilter::Nearest),
     };
-    let min = filter(texture.min_filter);
-    let mag = filter(texture.mag_filter);
-    let mip = match texture.mip_filter.map(filter) {
+    let min = filter(texture.sampling.min_filter);
+    let mag = filter(texture.sampling.mag_filter);
+    let mip = match texture.sampling.mip_filter.map(filter) {
         Some(filter) => quote!(::core::option::Option::Some(#filter)),
         None => quote!(::core::option::Option::None),
     };
+    let max_anisotropy = texture.sampling.max_anisotropy;
     let uv_slot = texture.uv_slot;
     let [[ux, uy, offset_u], [vx, vy, offset_v]] = texture.transform.rows;
     Ok(
         quote!(::core::option::Option::Some(::xrack_runtime::scene3d::MeshTexture {
             image: (*#name).clone()?,
-            wrap: [#u, #v],
-            min_filter: #min,
-            mag_filter: #mag,
-            mip_filter: #mip,
+            sampling: ::xrack_runtime::scene3d::TextureSampling {
+                wrap: [#u, #v],
+                min_filter: #min,
+                mag_filter: #mag,
+                mip_filter: #mip,
+                max_anisotropy: #max_anisotropy,
+            },
             uv_slot: #uv_slot,
             transform: ::xrack_runtime::scene3d::TextureTransform { rows: [[#ux, #uy, #offset_u], [#vx, #vy, #offset_v]] },
         })),
@@ -17584,7 +17704,7 @@ fn generate_with_resources(
     let with_locale = translations.is_some() || module.operations().any(uses_locale);
     let mut out = quote! {
         const _: () = assert!(
-            ::xrack_runtime::CODEGEN_ABI_VERSION == 68,
+            ::xrack_runtime::CODEGEN_ABI_VERSION == 69,
             "xrackc and xrack-runtime have incompatible code generation interfaces"
         );
     };

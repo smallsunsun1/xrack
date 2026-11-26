@@ -70,7 +70,19 @@ impl LutCache {
         queue: &wgpu::Queue,
         settings: &LutSettings,
     ) -> Option<LutBinding> {
-        let pixels = settings.asset.pixels()?;
+        self.image(device, queue, &settings.asset)
+    }
+
+    pub(super) fn image(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        asset: &ImageAsset,
+    ) -> Option<LutBinding> {
+        let pixels = asset.pixels()?;
+        if pixels.format != ImageFormat::Png || pixels.edges.is_some() {
+            return None;
+        }
         let key = (pixels.identity, pixels.size, pixels.bytes.len());
         let index = self.textures.iter().position(|cached| cached.key == key);
         let cached = index.and_then(|index| self.textures.remove(index));

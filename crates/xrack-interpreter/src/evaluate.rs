@@ -3652,7 +3652,8 @@ impl Instance {
                 });
                 node.properties
                     .insert(name, Value::SceneReflections(probes));
-            } else if node.kind == "SceneView3D" && name == "environment" {
+            } else if node.kind == "SceneView3D" && matches!(name, "environment" | "skybox-source")
+            {
                 let Value::String(key) = value else {
                     return Err(evaluation("expected an environment key"));
                 };
@@ -6595,6 +6596,7 @@ impl ValueType {
                 | (Self::ProjectedPoint3D, Value::ProjectedPoint3D(_))
                 | (Self::Instance3D, Value::Instance3D(_))
                 | (Self::InstanceTable3D, Value::InstanceTable3D(_))
+                | (Self::MeshAsset3D, Value::MeshAsset3D(_))
                 | (Self::WalkResult3D, Value::WalkResult3D(_))
                 | (Self::PhysicsWorld3D, Value::PhysicsWorld3D(_))
                 | (Self::SceneModel3D, Value::SceneObjects(_))

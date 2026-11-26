@@ -1,4 +1,6 @@
 override DEPTH_ALPHA: u32 = 0u;
+override DEPTH_TEST_MATERIAL: bool = true;
+override DEPTH_LOD_FADE: bool = false;
 
 struct Projection {
     x: vec4<f32>,
@@ -26,13 +28,13 @@ struct Geometry {
     @location(5) y: vec4<f32>,
     @location(6) z: vec4<f32>,
     @location(7) tint: vec4<f32>,
-    @location(8) metadata: u32,
+    @location(8) metadata: vec2<u32>,
     @location(15) instance_data: vec4<f32>,
 }
 
 fn project(vertex: Geometry) -> vec4<f32> {
     let local = vec4(xr_displaced_vertex(vertex.position, material.shader_parameters, vertex.instance_data,
-        vertex.metadata >> 3u, vertex.tint, mat3x4(vertex.x, vertex.y, vertex.z)), 1.0);
+        xr_instance_number(vertex.metadata.x), vertex.tint, mat3x4(vertex.x, vertex.y, vertex.z)), 1.0);
     let world = vec4<f32>(dot(vertex.x, local), dot(vertex.y, local), dot(vertex.z, local), 1.0);
     return vec4<f32>(dot(clip.x, world), dot(clip.y, world), dot(clip.z, world), dot(clip.w, world));
 }
@@ -46,11 +48,12 @@ struct MaskVertex {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) alpha: vec2<f32>,
+    @location(2) @interpolate(flat) metadata: u32,
 }
 
 @vertex
 fn vertex_mask(vertex: Geometry, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>) -> MaskVertex {
-    return MaskVertex(project(vertex), uv, vec2<f32>(color.a, vertex.tint.a));
+    return MaskVertex(project(vertex), uv, vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
 }
 
 // Instance alpha also covers particles hidden by an affector or lifetime fade.
@@ -68,7 +71,7 @@ fn vertex_particle_opaque(vertex: Geometry) -> @builtin(position) vec4<f32> {
 
 @vertex
 fn vertex_particle_mask(vertex: Geometry, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>) -> MaskVertex {
-    return MaskVertex(particle_shadow_position(vertex, vertex.tint.a), uv, vec2<f32>(color.a, 1.0));
+    return MaskVertex(particle_shadow_position(vertex, vertex.tint.a), uv, vec2<f32>(color.a, 1.0), vertex.metadata.x);
 }
 
 @vertex
@@ -83,7 +86,7 @@ fn vertex_skin_mask(vertex: Geometry, weights: SkinWeights, @location(2) uv: vec
                     @location(3) color: vec4<f32>) -> MaskVertex {
     var deformed = vertex;
     deformed.position = skin_point(skin_transform(weights), vertex.position);
-    return MaskVertex(project(deformed), uv, vec2<f32>(color.a, vertex.tint.a));
+    return MaskVertex(project(deformed), uv, vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
 }
 
 @vertex
@@ -98,7 +101,7 @@ fn vertex_morph_mask(vertex: Geometry, @builtin(vertex_index) index: u32, @locat
                      @location(3) color: vec4<f32>) -> MaskVertex {
     var deformed = vertex;
     deformed.position += morph_displacement(index).position;
-    return MaskVertex(project(deformed), uv, vec2<f32>(color.a, vertex.tint.a));
+    return MaskVertex(project(deformed), uv, vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
 }
 
 @vertex
@@ -114,15 +117,14 @@ fn vertex_skin_morph_mask(vertex: Geometry, weights: SkinWeights, @builtin(verte
                           @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>) -> MaskVertex {
     var deformed = vertex;
     deformed.position = skin_point(skin_transform(weights), vertex.position + morph_displacement(index).position);
-    return MaskVertex(project(deformed), uv, vec2<f32>(color.a, vertex.tint.a));
+    return MaskVertex(project(deformed), uv, vec2<f32>(color.a, vertex.tint.a), vertex.metadata.x);
 }
 
-@fragment
-fn fragment_mask(vertex: MaskVertex) {
+fn test_material_depth(vertex: MaskVertex) {
     var surface = material.base.a * coverage_vertex_alpha(material.channels, vertex.alpha.x);
     if material.params.z > 0.5 && base_texture_uses_alpha(material.channels)
         && (material.params.w < 1.5 || material.params.x >= 0.0) {
-        surface *= textureSample(base_texture, base_sampler, texture_uv(material.base_uv, vertex.uv)).a;
+        surface *= sample_base_texture(base_texture, base_sampler, material.base_uv, vertex.uv).a;
     }
     let coverage = material_coverage(material.params.w, surface, vertex.alpha.y);
     if coverage.y < material.params.x {
@@ -136,5 +138,15 @@ fn fragment_mask(vertex: MaskVertex) {
         if coverage.x < 1.0 {
             discard;
         }
+    }
+}
+
+@fragment
+fn fragment_mask(vertex: MaskVertex) {
+    if DEPTH_TEST_MATERIAL {
+        test_material_depth(vertex);
+    }
+    if DEPTH_LOD_FADE && !xr_lod_covered(vertex.metadata, vertex.position.xy) {
+        discard;
     }
 }

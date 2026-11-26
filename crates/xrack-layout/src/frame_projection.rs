@@ -101,7 +101,7 @@ fn project(
         return None;
     }
     layout.clip = clip;
-    layout.transform = transform;
+    layout.set_transform_placement(transform);
     layout.space = space.clone();
     layout.ancestor_shapes = shapes.clone();
     if let Some(shape) = layout.child_clip_shape() {

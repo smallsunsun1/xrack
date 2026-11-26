@@ -248,6 +248,21 @@ impl InstanceTable3D {
     }
 }
 
+owned_value!(MeshAsset3D, rt::MeshAsset3D);
+
+#[pymethods]
+impl MeshAsset3D {
+    #[new]
+    fn new() -> Self {
+        Self(rt::MeshAsset3D::default())
+    }
+
+    #[getter]
+    fn loaded(&self) -> bool {
+        self.0.is_loaded()
+    }
+}
+
 owned_value!(Instance3D, rt::Instance3D);
 
 #[pymethods]
@@ -2068,7 +2083,7 @@ macro_rules! bridge_values {
         #[pymodule]
         mod _native {
             #[pymodule_export]
-            use super::{GradientStop, RecordModel, $($wrapper,)+ $($name),+};
+            use super::{GradientStop, RecordModel, load_mesh_file, $($wrapper,)+ $($name),+};
             #[pymodule_export]
             use crate::{PyComponent, PyProgram, call_on_ui, load_file, load_mlir_file, post};
         }
@@ -2094,6 +2109,7 @@ bridge_values! {
         Hit3D => Hit3D,
         Instance3D => Instance3D,
         InstanceTable3D => InstanceTable3D,
+        MeshAsset3D => MeshAsset3D,
         ProjectedPoint3D => ProjectedPoint3D,
         WalkResult3D => WalkResult3D,
         PhysicsWorld3D => PhysicsWorld3D,
@@ -2165,4 +2181,27 @@ bridge_values! {
         TextVerticalAlignment { Top, Center, Bottom },
         TextWrap { WordWrap, NoWrap, CharWrap },
     }
+}
+
+/// Prepare a local OBJ, glTF, or grayscale PNG mesh for a scene row.
+#[pyfunction]
+#[pyo3(signature = (path, *, auto_lod = false, lightmap_uv = false))]
+fn load_mesh_file(
+    py: Python<'_>,
+    path: PathBuf,
+    auto_lod: bool,
+    lightmap_uv: bool,
+) -> PyResult<MeshAsset3D> {
+    use xrack_scene_import::MeshImportOptions;
+    py.detach(move || {
+        xrack_scene_import::load_mesh_file(
+            path,
+            MeshImportOptions {
+                automatic_lod: auto_lod,
+                lightmap_uv,
+            },
+        )
+        .map(|loaded| MeshAsset3D(loaded.asset))
+        .map_err(PyValueError::new_err)
+    })
 }

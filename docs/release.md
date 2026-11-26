@@ -33,9 +33,11 @@ cargo package --locked -p xrack-runtime -p xrack-assets -p xrack-layout \
 
 Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 crate。Cargo 版桌面宿主使用上游 AccessKit，Bazel 版带有 macOS 三态复选框无障碍值修补。
 
-手动运行 [Release XRack](../.github/workflows/release-crates.yml) 并输入 workspace 版本号，可以预检运行时包。正式发布时，给 `main` 上已合并的提交推送与 workspace 版本一致的 tag。发布流程跑各平台 CI，并从五份 Bazel 归档生成宿主编译器包、目标平台 MLIR 包和解析器包。发布顺序为运行时和语法基础包、Bazel 产物对应的包，再到 `xrack-interpreter`、`xrack` 和 `xrack-build` 等上层包。GitHub Release 提供归档及校验文件。
+发布版 `xrack-renderer-femtovg` 通过精确版本依赖取得同版本的 `xrack-femtovg`。打包工具从 `Cargo.lock` 校验 FemtoVG 上游源码，在暂存区应用与 Bazel 相同的补丁。应用继续通过 `xrack` 使用渲染器，使用底层 FemtoVG 类型时从 `xrack::renderer::femtovg` 导入。
 
-在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 重试，脚本会校验已发布的版本及对应的源码提交。升版本时同步 workspace 版本、内部 crate 依赖、宿主包版本、Bazel 目标版本和 Cargo 消费示例。
+手动运行 [Release XRack](../.github/workflows/release-crates.yml) 并输入 workspace 版本号，可以预检运行时包。正式发布时，给 `main` 上已合并的提交推送与 workspace 版本一致的 tag。发布流程跑各平台 CI，并从五份 Bazel 归档生成宿主编译器包、目标平台 MLIR 包和解析器包。发布依次上传运行时和语法基础包、补丁版 FemtoVG 和渲染器、Bazel 产物对应的包，以及 `xrack-interpreter`、`xrack` 和 `xrack-build` 等上层包。GitHub Release 提供归档及校验文件。
+
+在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 重试，脚本会校验已发布的版本及对应的源码提交。暂存的渲染包还会校验上游源码与补丁摘要。升版本时同步 workspace 版本、内部 crate 依赖、宿主包版本、Bazel 目标版本和 Cargo 消费示例。
 
 如果已有稳定 tag 的流水线需要更新发布工具，在 `main` 上手动运行 **Release XRack**，输入版本并勾选 **Publish an existing release tag from main**。`crates-io` 环境需允许 `main` 发布。工作流从 tag 读取源码，复用该提交通过 main CI 时生成的产物，并用当前工作流版本的打包工具重新验证和发布 Cargo 包与 GitHub 归档。主 CI 会逐个平台检查编译器和 MLIR 的 Cargo 包大小。
 

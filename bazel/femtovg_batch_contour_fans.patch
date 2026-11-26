@@ -1,6 +1,185 @@
 --- a/src/renderer/wgpu.rs
 +++ b/src/renderer/wgpu.rs
-@@ -2386,7 +2386,13 @@
+@@ -156,9 +156,52 @@
+ const UNIFORM_BUFFER_USAGE: wgpu::BufferUsages = wgpu::BufferUsages::UNIFORM.union(wgpu::BufferUsages::COPY_DST);
+ const VERTEX_BUFFER_LABEL: &str = "Main Vertex Buffer";
+ const VERTEX_BUFFER_USAGE: wgpu::BufferUsages = wgpu::BufferUsages::VERTEX.union(wgpu::BufferUsages::COPY_DST);
+-const FAN_INDEX_LABEL: &str = "femtovg fan indices";
++const FAN_INDEX_LABEL: &str = "femtovg contour indices";
+ const FAN_INDEX_USAGE: wgpu::BufferUsages = wgpu::BufferUsages::INDEX.union(wgpu::BufferUsages::COPY_DST);
+
++/// Index multiple fringe or stroke contours as one draw. A restart
++/// between contours preserves the winding and order of separate strips.
++#[derive(Debug, Default)]
++struct StripIndices {
++    indices: Vec<u32>,
++    draws: Vec<Option<std::ops::Range<u32>>>,
++}
++
++impl StripIndices {
++    fn build(&mut self, first_index: u32, commands: &[super::Command]) {
++        self.indices.clear();
++        self.draws.clear();
++        for command in commands {
++            let draw = self.append(first_index, command);
++            self.draws.push(draw);
++        }
++    }
++
++    fn append(&mut self, first_index: u32, command: &super::Command) -> Option<std::ops::Range<u32>> {
++        if command.drawables.len() < 2
++            || !matches!(
++                command.cmd_type,
++                super::CommandType::ConcaveFill { .. }
++                    | super::CommandType::Stroke { .. }
++                    | super::CommandType::StencilStroke { .. }
++                    | super::CommandType::FinishBlur { stencil_params: Some(_), .. }
++            )
++        {
++            return None;
++        }
++        let mut strips = command.drawables.iter().filter_map(|drawable| drawable.stroke_verts);
++        let (start, count) = strips.next()?;
++        let (second, second_count) = strips.next()?;
++        let first = first_index + self.indices.len() as u32;
++        self.indices.extend(start as u32..(start + count) as u32);
++        for (start, count) in std::iter::once((second, second_count)).chain(strips) {
++            self.indices.push(u32::MAX);
++            self.indices.extend(start as u32..(start + count) as u32);
++        }
++        Some(first..first_index + self.indices.len() as u32)
++    }
++}
++
+ /// Replaces `buffer` with a larger one when `needed` bytes no longer fit.
+ fn grow_buffer(device: &wgpu::Device, buffer: &mut wgpu::Buffer, needed: u64, label: &str, usage: wgpu::BufferUsages) {
+     if buffer.size() >= needed {
+@@ -509,6 +552,7 @@
+     uniform_stride: u64,
+     vertex_buffer: wgpu::Buffer,
+     fan_indices: FanIndices,
++    strip_indices: StripIndices,
+     fan_index_buffer: wgpu::Buffer,
+     // Staging for a frame's vertices, fan indices, uniforms and image uploads, copied by the frame's own command
+     // buffers.
+@@ -751,6 +795,7 @@
+             uniform_stride,
+             vertex_buffer,
+             fan_indices: FanIndices::default(),
++            strip_indices: StripIndices::default(),
+             fan_index_buffer,
+             screen_stencil: TargetStencil::default(),
+             stencil_buffer_for_textures: HashMap::new(),
+@@ -1203,11 +1248,15 @@
+         }
+         let vertex_buffer = self.vertex_buffer.clone();
+         self.fan_indices.build(&commands);
+-        let fan_index_bytes: &[u8] = bytemuck::cast_slice(self.fan_indices.indices());
++        let fans = self.fan_indices.indices();
++        self.strip_indices.build(fans.len() as u32, &commands);
++        let fan_index_bytes: &[u8] = bytemuck::cast_slice(fans);
++        let strip_index_bytes: &[u8] = bytemuck::cast_slice(&self.strip_indices.indices);
++        let index_bytes = (fan_index_bytes.len() + strip_index_bytes.len()) as u64;
+         grow_buffer(
+             &self.device,
+             &mut self.fan_index_buffer,
+-            fan_index_bytes.len() as u64,
++            index_bytes,
+             FAN_INDEX_LABEL,
+             FAN_INDEX_USAGE,
+         );
+@@ -1215,10 +1264,18 @@
+             if !fan_index_bytes.is_empty() {
+                 self.queue.write_buffer(&self.fan_index_buffer, 0, fan_index_bytes);
+             }
+-        } else if let Some(size) = wgpu::BufferSize::new(fan_index_bytes.len() as u64) {
+-            self.staging_belt
+-                .write_buffer(&mut encoder, &self.fan_index_buffer, 0, size)
+-                .copy_from_slice(fan_index_bytes);
++            if !strip_index_bytes.is_empty() {
++                self.queue.write_buffer(&self.fan_index_buffer, fan_index_bytes.len() as u64, strip_index_bytes);
++            }
++        } else if let Some(size) = wgpu::BufferSize::new(index_bytes) {
++            let mut staging = self.staging_belt.write_buffer(&mut encoder, &self.fan_index_buffer, 0, size);
++            let split = fan_index_bytes.len();
++            if !fan_index_bytes.is_empty() {
++                staging.slice(..split).copy_from_slice(fan_index_bytes);
++            }
++            if !strip_index_bytes.is_empty() {
++                staging.slice(split..).copy_from_slice(strip_index_bytes);
++            }
+         }
+
+         // A screen of another size starts over: its clip plane went with the old stencil.
+@@ -1295,6 +1352,7 @@
+         let mut sampled = false;
+         for (index, (command, &fans)) in commands.into_iter().zip(&self.fan_indices.firsts).enumerate() {
+             render_pass_builder.command_index = index;
++            render_pass_builder.stroke_indices = self.strip_indices.draws[index].clone();
+             render_pass_builder.set_clip_bounds(&command);
+             match command.cmd_type {
+                 super::CommandType::SetRenderTarget(render_target) => {
+@@ -2267,11 +2325,7 @@
+         command.glyph_texture,
+     );
+
+-    for drawable in &command.drawables {
+-        if let Some((start, count)) = drawable.stroke_verts {
+-            render_pass_builder.draw(start as u32..(start + count) as u32);
+-        }
+-    }
++    render_pass_builder.draw_stroke_strips(command);
+
+     // Draw anti-aliased pixels.
+
+@@ -2305,11 +2359,7 @@
+         command.glyph_texture,
+     );
+
+-    for drawable in &command.drawables {
+-        if let Some((start, count)) = drawable.stroke_verts {
+-            render_pass_builder.draw(start as u32..(start + count) as u32);
+-        }
+-    }
++    render_pass_builder.draw_stroke_strips(command);
+
+     // clear stencil buffer
+
+@@ -2344,11 +2394,7 @@
+         command.glyph_texture,
+     );
+
+-    for drawable in &command.drawables {
+-        if let Some((start, count)) = drawable.stroke_verts {
+-            render_pass_builder.draw(start as u32..(start + count) as u32);
+-        }
+-    }
++    render_pass_builder.draw_stroke_strips(command);
+ }
+
+ fn stroke(
+@@ -2358,10 +2404,7 @@
+     params: Params,
+     images: &mut ImageStore<Image>,
+ ) {
+-    for drawable in &command.drawables {
+-        let Some((start, count)) = drawable.stroke_verts else {
+-            continue;
+-        };
++    if command.drawables.iter().any(|drawable| drawable.stroke_verts.is_some()) {
+         pipeline_and_bindgroup_mapper.update_renderpass(
+             render_pass_builder,
+             blend_state(command).into(),
+@@ -2373,7 +2416,7 @@
+             command.image,
+             command.glyph_texture,
+         );
+-        render_pass_builder.draw(start as u32..(start + count) as u32);
++        render_pass_builder.draw_stroke_strips(command);
+     }
+ }
+
+@@ -2386,7 +2429,13 @@
      images: &mut ImageStore<Image>,
      fill_params: &Params,
  ) {
@@ -15,10 +194,10 @@
          pipeline_and_bindgroup_mapper.update_renderpass(
              render_pass_builder,
              None,
-@@ -2427,12 +2433,9 @@
+@@ -2427,63 +2476,55 @@
              GlyphTexture::None,
          );
- 
+
 -        let mut first = fans;
 -        for drawable in &command.drawables {
 -            if let Some((_, count)) = drawable.fill_verts {
@@ -29,19 +208,152 @@
 +        // list. All of them use the same winding stencil state.
 +        render_pass_builder.draw_indexed(fans..fans + index_count);
      }
- 
+
      let blend_state = blend_state(command);
-@@ -3817,8 +3820,12 @@
+
+     if command.drawables.iter().any(|drawable| drawable.stroke_verts.is_some()) {
+-        for drawable in &command.drawables {
+-            // draw fringes
+-            pipeline_and_bindgroup_mapper.update_renderpass(
+-                render_pass_builder,
+-                blend_state.into(),
+-                wgpu::PrimitiveTopology::TriangleStrip,
+-                StencilTest::Enabled {
+-                    stencil_state: wgpu::StencilState {
+-                        front: wgpu::StencilFaceState {
+-                            compare: wgpu::CompareFunction::Equal,
+-                            fail_op: wgpu::StencilOperation::Keep,
+-                            depth_fail_op: wgpu::StencilOperation::Keep,
+-                            pass_op: wgpu::StencilOperation::Keep,
+-                        },
+-                        back: wgpu::StencilFaceState {
+-                            compare: wgpu::CompareFunction::Equal,
+-                            fail_op: wgpu::StencilOperation::Keep,
+-                            depth_fail_op: wgpu::StencilOperation::Keep,
+-                            pass_op: wgpu::StencilOperation::Keep,
+-                        },
+-                        read_mask: match (command.clip_active, command.fill_rule) {
+-                            (false, FillRule::NonZero) => 0xff,
+-                            (false, FillRule::EvenOdd) => 0x1,
+-                            // Fringe where the clip bit is set and no winding
+-                            // arrived (stencil == exactly 0x80).
+-                            (true, FillRule::NonZero) => 0xff,
+-                            (true, FillRule::EvenOdd) => 0x81,
+-                        },
+-                        write_mask: match command.fill_rule {
+-                            FillRule::NonZero => 0xff,
+-                            FillRule::EvenOdd => 0x1,
+-                        },
++        // Draw fringes where the fill winding is zero.
++        pipeline_and_bindgroup_mapper.update_renderpass(
++            render_pass_builder,
++            blend_state.into(),
++            wgpu::PrimitiveTopology::TriangleStrip,
++            StencilTest::Enabled {
++                stencil_state: wgpu::StencilState {
++                    front: wgpu::StencilFaceState {
++                        compare: wgpu::CompareFunction::Equal,
++                        fail_op: wgpu::StencilOperation::Keep,
++                        depth_fail_op: wgpu::StencilOperation::Keep,
++                        pass_op: wgpu::StencilOperation::Keep,
+                     },
+-                    stencil_reference: if command.clip_active { 0x80 } else { 0 },
++                    back: wgpu::StencilFaceState {
++                        compare: wgpu::CompareFunction::Equal,
++                        fail_op: wgpu::StencilOperation::Keep,
++                        depth_fail_op: wgpu::StencilOperation::Keep,
++                        pass_op: wgpu::StencilOperation::Keep,
++                    },
++                    read_mask: match (command.clip_active, command.fill_rule) {
++                        (false, FillRule::NonZero) => 0xff,
++                        (false, FillRule::EvenOdd) => 0x1,
++                        // Fringe where the clip bit is set and no winding
++                        // arrived (stencil == exactly 0x80).
++                        (true, FillRule::NonZero) => 0xff,
++                        (true, FillRule::EvenOdd) => 0x81,
++                    },
++                    write_mask: match command.fill_rule {
++                        FillRule::NonZero => 0xff,
++                        FillRule::EvenOdd => 0x1,
++                    },
+                 },
+-                Some(wgpu::Face::Back),
+-                fill_params,
+-                images,
+-                command.image,
+-                command.glyph_texture,
+-            );
+-
+-            if let Some((start, count)) = drawable.stroke_verts {
+-                render_pass_builder.draw(start as u32..(start + count) as u32);
+-            }
+-        }
++                stencil_reference: if command.clip_active { 0x80 } else { 0 },
++            },
++            Some(wgpu::Face::Back),
++            fill_params,
++            images,
++            command.image,
++            command.glyph_texture,
++        );
++        render_pass_builder.draw_stroke_strips(command);
+     }
+
+     if let Some((start, count)) = command.triangles_verts {
+@@ -2977,6 +3018,8 @@
+             }),
+             primitive: wgpu::PrimitiveState {
+                 topology: *primitive_topology,
++                strip_index_format: (*primitive_topology == wgpu::PrimitiveTopology::TriangleStrip)
++                    .then_some(wgpu::IndexFormat::Uint32),
+                 front_face: if *render_to_texture {
+                     wgpu::FrontFace::Cw
+                 } else {
+@@ -3438,6 +3481,7 @@
+     viewport: [f32; 2],
+     vertex_buffer: wgpu::Buffer,
+     fan_indices: wgpu::Buffer,
++    stroke_indices: Option<std::ops::Range<u32>>,
+     rendering_to_texture: bool,
+     viewport_bind_groups: &'a mut ViewportBindGroups,
+     flush_count: u64,
+@@ -3495,6 +3539,7 @@
+             viewport: screen_view,
+             vertex_buffer,
+             fan_indices,
++            stroke_indices: None,
+             rendering_to_texture: false,
+             viewport_bind_groups,
+             flush_count,
+@@ -3811,16 +3856,30 @@
+     fn draw(&mut self, vertices: std::ops::Range<u32>) {
+         self.ensure_pass();
+         self.rpass.as_mut().unwrap().draw(vertices, 0..1);
++    }
++
++    fn draw_stroke_strips(&mut self, command: &super::Command) {
++        if let Some(indices) = self.stroke_indices.clone() {
++            self.draw_indexed(indices);
++        } else {
++            for (start, count) in command.drawables.iter().filter_map(|drawable| drawable.stroke_verts) {
++                self.draw(start as u32..(start + count) as u32);
++            }
++        }
+     }
+
+     /// Draws the fan of `count` vertices whose triangles start at `first` in
      /// the frame's fan indices, and moves `first` past them.
      fn draw_fan(&mut self, first: &mut u32, count: usize) {
          let end = *first + FanIndices::count(count);
 -        self.rpass.as_mut().unwrap().draw_indexed(*first..end, 0, 0..1);
 +        self.draw_indexed(*first..end);
          *first = end;
-+    }
-+
+     }
+
 +    fn draw_indexed(&mut self, indices: std::ops::Range<u32>) {
 +        self.rpass.as_mut().unwrap().draw_indexed(indices, 0, 0..1);
-     }
- 
++    }
++
      /// Limits the open pass to `crop` - x, y, width and height in the
+     /// target's texel rows - and says whether that leaves anything to draw.
+     fn crop(&mut self, crop: Option<[u32; 4]>) -> bool {

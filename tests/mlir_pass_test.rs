@@ -77,6 +77,46 @@ fn compiled_rotation_tracks_fold_metadata_and_reject_malformed_keys() {
 }
 
 #[test]
+fn live_base_item_mapping_uses_verified_texture_fields() {
+    let module = raw(
+        r#"
+        struct Map { source: string, uv-pivot-u: float, uv-flip-u: bool, max-anisotropy: int }
+        struct Surface { base-item: Map }
+        struct Actor {
+            id: string, mesh: string, x: float, y: float, z: float,
+            scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+            color: color, material: Surface,
+        }
+        export component Demo inherits Window {
+            in property <[Actor]> world: [];
+            SceneView3D { model: root.world; }
+        }
+        "#,
+        "live-material-map.xr",
+    );
+    let mlir = module.to_mlir();
+    module.optimize().unwrap().verify().unwrap();
+    for (field, expected, invalid) in [
+        ("uv-pivot-u", "float", "int"),
+        ("uv-flip-u", "bool", "float"),
+        ("max-anisotropy", "int", "string"),
+    ] {
+        let schema = |ty| format!(r#"\22name\22:\22{field}\22,\22ty\22:\22{ty}\22"#);
+        let invalid = mlir.replace(&schema(expected), &schema(invalid));
+        assert_ne!(invalid, mlir);
+        let error = Module::parse(&invalid)
+            .and_then(|module| module.verify())
+            .expect_err("the dialect must reject the invalid sampling record");
+        assert!(
+            error.contains(&format!(
+                "invalid 3D texture field {field}, expected {expected}"
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn fused_string_concatenation_is_valid_in_visual_bindings() {
     let module = raw(
         r#"
@@ -534,6 +574,73 @@ fn builtin_literal_fields_fold_and_leave_public_values_reactive() {
     }
     let live = definition(member(component, "xr.property", "active-hour"), 0);
     assert_eq!(live.name(), "xr.time_field");
+}
+
+#[test]
+fn window_layers_are_planned_only_when_the_stacking_band_is_known() {
+    let optimized = raw(
+        r#"
+        export component FixedLayers inherits Window {
+            SceneView3D { render-mode: "overlay"; z: -100; }
+            Rectangle {}
+            SceneView3D { render-mode: "underlay"; z: 100; }
+            SceneView3D { render-mode: "underlay"; z: 20; }
+        }
+        export component ChangingLayer inherits Window {
+            in-out property <bool> front: false;
+            SceneView3D { render-mode: root.front ? "overlay" : "underlay"; }
+            Rectangle {}
+        }
+        export component StableLayer inherits Window {
+            in-out property <bool> direct: false;
+            in-out property <string> format: "rgba8";
+            SceneView3D {
+                render-mode: root.direct ? "inline" : "offscreen";
+                render-format: root.format;
+                render-overrides: root.direct ? "disable-internal-passes" : "none";
+            }
+            Rectangle {}
+        }
+        "#,
+        "window-layers.xr",
+    )
+    .optimize()
+    .unwrap();
+    let root = |name| {
+        optimized
+            .operations()
+            .find(|op| op.attribute("sym_name") == Some(name))
+            .unwrap()
+            .children()
+            .find(|op| op.name() == "xr.element")
+            .unwrap()
+    };
+    let view_effect = |name, property| {
+        let view = root(name)
+            .children()
+            .find(|op| op.attribute("kind") == Some("SceneView3D"))
+            .unwrap();
+        member(view, "xr.bind", property).attribute("xr.update_effect")
+    };
+    assert_eq!(
+        root("FixedLayers").i64_array_attribute("xr.static_z_order"),
+        Some(vec![3, 2, 1, 0])
+    );
+    assert_eq!(
+        root("ChangingLayer").i64_array_attribute("xr.static_z_order"),
+        None
+    );
+    assert_ne!(view_effect("ChangingLayer", "render-mode"), Some("paint"));
+    assert_eq!(
+        root("StableLayer").i64_array_attribute("xr.static_z_order"),
+        Some(vec![])
+    );
+    assert_eq!(view_effect("StableLayer", "render-mode"), Some("paint"));
+    assert_eq!(view_effect("StableLayer", "render-format"), Some("paint"));
+    assert_eq!(
+        view_effect("StableLayer", "render-overrides"),
+        Some("paint")
+    );
 }
 
 #[test]
@@ -2063,18 +2170,44 @@ fn parsed_operator_signatures_match_xr_expression_types() {
 }
 
 #[test]
-fn changing_viewport_capture_names_only_invalidates_paint() {
+fn changing_viewport_capture_names_and_display_controls_only_invalidates_paint() {
     let module = raw(
         r#"
         struct Feed { name: string, color-source: string, depth-source: string }
+        struct Sky { sky-top-color: color, sun-latitude: float }
         export component Demo inherits Window {
             in property <string> feed: "stage";
+            in property <float> amount: 0;
+            in property <color> tint: #000;
+            in property <bool> dither: false;
+            in property <int> ghost-count: 4;
+            in property <image> lens-mask: @image-url("");
             SceneView3D {
                 scene-captures: [Feed {
                     name: "forward", color-source: root.feed, depth-source: root.feed,
                 }];
                 scene-color-capture: root.feed;
                 scene-depth-capture: root.feed;
+                scene-vignette-strength: root.amount;
+                scene-vignette-radius: root.amount;
+                scene-vignette-color: root.tint;
+                scene-sharpness: root.amount;
+                scene-dithering: root.dither;
+                lens-flare: root.dither;
+                lens-flare-ghost-count: root.ghost-count;
+                lens-flare-distortion: root.amount;
+                lens-flare-starburst-map: root.lens-mask;
+                fxaa: root.dither;
+                fxaa-search-steps: root.ghost-count;
+                fxaa-strength: root.amount;
+                environment-sky: Sky { sky-top-color: root.tint, sun-latitude: root.amount };
+                skybox-sky: Sky { sky-top-color: root.tint, sun-latitude: root.amount };
+                skybox-source: root.feed;
+                skybox-yaw: root.amount;
+                skybox-blur: root.amount;
+                environment-pitch: root.amount;
+                environment-roll: root.amount;
+                environment-horizon: root.amount;
             }
         }
         "#,
@@ -2098,6 +2231,26 @@ fn changing_viewport_capture_names_only_invalidates_paint() {
         "scene-captures",
         "scene-color-capture",
         "scene-depth-capture",
+        "scene-vignette-strength",
+        "scene-vignette-radius",
+        "scene-vignette-color",
+        "scene-sharpness",
+        "scene-dithering",
+        "lens-flare",
+        "lens-flare-ghost-count",
+        "lens-flare-distortion",
+        "lens-flare-starburst-map",
+        "fxaa",
+        "fxaa-search-steps",
+        "fxaa-strength",
+        "environment-sky",
+        "skybox-sky",
+        "skybox-source",
+        "skybox-yaw",
+        "skybox-blur",
+        "environment-pitch",
+        "environment-roll",
+        "environment-horizon",
     ] {
         let binding = viewport
             .children()

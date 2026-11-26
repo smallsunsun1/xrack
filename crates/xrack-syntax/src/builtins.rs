@@ -1424,7 +1424,6 @@ pub const SCENE_MATERIAL_FIELDS: &[(&str, Type)] = &[
     ("material-shader", Type::String),
     ("shader-parameters", Type::Vector3D),
     ("shader-displacement", Type::Float),
-    ("base-item", Type::String),
     ("material-workflow", Type::String),
     ("glossiness", Type::Float),
     ("normal-strength", Type::Float),
@@ -1489,12 +1488,37 @@ pub const SCENE_TEXTURE_FIELDS: &[(&str, Type)] = &[
     ("min-filter", Type::String),
     ("mag-filter", Type::String),
     ("mip-filter", Type::String),
+    ("max-anisotropy", Type::Int),
     ("uv-set", Type::Int),
     ("uv-scale-u", Type::Float),
     ("uv-scale-v", Type::Float),
+    ("uv-pivot-u", Type::Float),
+    ("uv-pivot-v", Type::Float),
     ("uv-offset-u", Type::Float),
     ("uv-offset-v", Type::Float),
     ("uv-rotation", Type::Float),
+    ("uv-flip-u", Type::Bool),
+    ("uv-flip-v", Type::Bool),
+];
+
+pub const SCENE_SKY_FIELDS: &[(&str, Type)] = &[
+    ("enabled", Type::Bool),
+    ("sky-horizon-color", Type::Color),
+    ("sky-top-color", Type::Color),
+    ("sky-curve", Type::Float),
+    ("sky-energy", Type::Float),
+    ("ground-horizon-color", Type::Color),
+    ("ground-bottom-color", Type::Color),
+    ("ground-curve", Type::Float),
+    ("ground-energy", Type::Float),
+    ("sun-color", Type::Color),
+    ("sun-curve", Type::Float),
+    ("sun-energy", Type::Float),
+    ("sun-latitude", Type::Float),
+    ("sun-longitude", Type::Float),
+    ("sun-angle-min", Type::Float),
+    ("sun-angle-max", Type::Float),
+    ("resolution", Type::Int),
 ];
 
 pub const SCENE_TEXTURE_WRAP: &[(&str, &str)] = &[
@@ -1675,6 +1699,7 @@ pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("instancing-lod-factor", Type::Float),
     ("physics-body", Type::String),
     ("mesh", Type::String),
+    ("mesh-asset", Type::MeshAsset3D),
     ("material-variant", Type::String),
     ("instance-of", Type::String),
     ("instance-root", Type::String),
@@ -1749,7 +1774,12 @@ pub const SCENE_CAPTURE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("camera", Type::String),
     ("color-source", Type::String),
     ("color-format", Type::String),
+    ("mipmaps", Type::Bool),
     ("material-data-format", Type::String),
+    ("material-data-1-format", Type::String),
+    ("material-data-2-format", Type::String),
+    ("augment-shader", Type::String),
+    ("augment-parameters", Type::Vector3D),
     ("combine-attachments", Type::Bool),
     ("depth-source", Type::String),
     ("depth-clear", Type::Float),
@@ -1759,6 +1789,14 @@ pub const SCENE_CAPTURE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("layers", Type::Int),
     ("scale", Type::Float),
     ("background", Type::Color),
+    ("enabled", Type::Bool),
+];
+
+pub const SCENE_SCISSOR_FIELDS: &[(&str, Type)] = &[
+    ("x", Type::Length),
+    ("y", Type::Length),
+    ("width", Type::Length),
+    ("height", Type::Length),
     ("enabled", Type::Bool),
 ];
 
@@ -1915,6 +1953,10 @@ pub const SCENE_EFFECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
 
 pub const SCENE_EFFECT_FORMATS: &[(&str, &str)] = &[
     (
+        "rgba32f",
+        "Four 32-bit float channels for high-precision linear color and alpha",
+    ),
+    (
         "rgba16f",
         "Four 16-bit float channels for HDR color and alpha",
     ),
@@ -1922,9 +1964,12 @@ pub const SCENE_EFFECT_FORMATS: &[(&str, &str)] = &[
         "rgba8",
         "Four normalized 8-bit channels for linear color and alpha",
     ),
+    ("rg32f", "Two 32-bit float data channels"),
     ("rg16f", "Two 16-bit float data channels"),
     ("rg8", "Two normalized 8-bit data channels"),
+    ("r32f", "One 32-bit float data channel"),
     ("r16f", "One 16-bit float data channel"),
+    ("r16", "One normalized 16-bit data channel"),
     ("r8", "One normalized 8-bit data channel"),
 ];
 
@@ -1945,7 +1990,15 @@ pub const SCENE_CAPTURE_ATTACHMENTS: &[(&str, &str)] = &[
     ),
     (
         "material-data",
-        "Linear data returned by scene_material_data",
+        "First programmable material data attachment",
+    ),
+    (
+        "material-data-1",
+        "Second programmable material data attachment",
+    ),
+    (
+        "material-data-2",
+        "Third programmable material data attachment",
     ),
 ];
 
@@ -2137,6 +2190,8 @@ pub const SCENE_REFLECTION_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("box-offset", Type::Vector3D),
     ("visible", Type::Bool),
     ("yaw", Type::Float),
+    ("pitch", Type::Float),
+    ("roll", Type::Float),
     ("intensity", Type::Float),
     ("parallax-correction", Type::Bool),
     ("debug-view", Type::Bool),
@@ -2152,7 +2207,8 @@ pub const REFLECTION_REFRESH_MODES: &[(&str, &str)] = &[
 ];
 
 pub const HEIGHTFIELD_EXTENSION: &str = "png";
-pub const MESH_SOURCE_EXTENSIONS: &[&str] = &["glb", "gltf", HEIGHTFIELD_EXTENSION];
+pub const OBJ_EXTENSION: &str = "obj";
+pub const MESH_SOURCE_EXTENSIONS: &[&str] = &["glb", "gltf", OBJ_EXTENSION, HEIGHTFIELD_EXTENSION];
 
 pub const MESH_URL_OPTIONS: &[(&str, &str)] = &[
     ("auto-lod", "Generate mesh levels of detail"),
@@ -2190,6 +2246,87 @@ pub const LIGHTMAP_MODES: &[(&str, &str)] = &[
     (
         "mixed",
         "Combine a mixed bake with the lights still evaluated in real time",
+    ),
+];
+
+pub const SCENE_RENDER_MODES: &[(&str, &str)] = &[
+    (
+        "offscreen",
+        "Render into a texture and compose it in paint order.",
+    ),
+    (
+        "inline",
+        "Draw eligible viewports directly into the window in paint order.",
+    ),
+    (
+        "underlay",
+        "Draw a window's direct child viewport behind ordinary window content.",
+    ),
+    (
+        "overlay",
+        "Draw a window's direct child viewport above ordinary window content.",
+    ),
+];
+
+pub const SCENE_OIT_METHODS: &[(&str, &str)] = &[
+    ("sorted", "Sort transparent submeshes by camera depth."),
+    (
+        "weighted",
+        "Approximate order-independent blending with weighted accumulation.",
+    ),
+    (
+        "linked-list",
+        "Sort visible fragments per pixel, with weighted fallback when the fragment budget is exceeded.",
+    ),
+];
+
+pub const SCENE_MATERIAL_DEBUG_MODES: &[(&str, &str)] = &[
+    ("none", "Show regular material shading"),
+    ("base-color", "Show resolved base color without lighting"),
+    ("roughness", "Show sampled material roughness"),
+    ("metalness", "Show sampled material metalness"),
+    ("emission", "Show emitted material radiance"),
+    (
+        "ambient-occlusion",
+        "Show combined material and screen-space visibility",
+    ),
+    ("normals", "Encode the resolved world-space normal as RGB"),
+    ("tangents", "Encode the world-space material tangent as RGB"),
+    (
+        "binormals",
+        "Encode the world-space material binormal as RGB",
+    ),
+    ("f0", "Show reflectance at perpendicular incidence"),
+    ("diffuse", "Show only the diffuse lighting contribution"),
+    ("specular", "Show only the specular lighting contribution"),
+    ("shadow-occlusion", "Show direct shadow visibility"),
+];
+
+pub const SCENE_SHADOW_PRECISIONS: &[(&str, &str)] = &[
+    ("depth32", "Use 32-bit floating-point shadow depth"),
+    ("depth16", "Use 16-bit normalized shadow depth"),
+];
+
+pub const SCENE_RENDER_FORMATS: &[(&str, &str)] = &[
+    (
+        "rgba8",
+        "8-bit sRGB viewport output for ordinary composition",
+    ),
+    (
+        "rgba16f",
+        "16-bit float linear viewport output for materials and effects",
+    ),
+    (
+        "rgba32f",
+        "32-bit float linear viewport output on GPUs with float32 filtering",
+    ),
+];
+
+pub const SCENE_RENDER_OVERRIDES: &[(&str, &str)] = &[
+    ("none", "Render the default 3D viewport passes."),
+    (
+        "disable-internal-passes",
+        "Produce the viewport from explicit scene captures and WGSL effects.",
     ),
 ];
 
@@ -2308,8 +2445,20 @@ pub const SCENE_LIGHT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("shadow-filter", Type::String),
     ("shadow-strength", Type::Float),
     ("shadow-radius", Type::Float),
+    ("shadow-world-radius", Type::Float),
     ("shadow-bias", Type::Float),
+    ("shadow-map-far", Type::Float),
+    ("shadow-map-size", Type::Int),
+    ("shadow-map-precision", Type::String),
+    ("shadow-cascades", Type::Int),
+    ("shadow-split-1", Type::Float),
+    ("shadow-split-2", Type::Float),
+    ("shadow-split-3", Type::Float),
+    ("shadow-split-balance", Type::Float),
+    ("shadow-cascade-blend", Type::Float),
+    ("shadow-lock-texels", Type::Bool),
     ("bake-mode", Type::String),
+    ("scope", Type::String),
     ("parent", Type::String),
     ("visible", Type::Bool),
 ];
@@ -2335,6 +2484,8 @@ pub const SCENE_SHADOW_FILTERS: &[(&str, &str)] = &[
     ("pcf4", "Soften the shadow with four filtered taps"),
     ("pcf8", "Soften the shadow with eight filtered taps"),
     ("pcf16", "Soften the shadow with sixteen filtered taps"),
+    ("pcf32", "Soften the shadow with thirty-two disk samples"),
+    ("pcf64", "Soften the shadow with sixty-four disk samples"),
 ];
 
 pub const SCENE_LIGHT_FIELDS: &[(&str, Type)] = &[

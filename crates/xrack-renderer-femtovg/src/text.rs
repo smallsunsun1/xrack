@@ -5,7 +5,7 @@ use femtovg::{
 use fontdb::{Database, Family, Query, Style, Weight};
 use std::{
     cell::{Cell, OnceCell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     hash::BuildHasher,
     num::NonZeroUsize,
     ops::Range,
@@ -13,8 +13,8 @@ use std::{
     sync::Arc,
 };
 use xrack_layout::{
-    LabelMeasurements, LabelPlan, LabelStyle, Point, Rect, Size, StyledTextLayout, TextAlignment,
-    TextAreaLayout, TextMeasurer, VisualTextLine, text_editor_viewport,
+    LabelMeasurements, LabelPlan, LabelStyle, LayoutNode, Point, Rect, Size, StyledTextLayout,
+    TextAlignment, TextAreaLayout, TextMeasurer, VisualTextLine, text_editor_viewport,
 };
 use xrack_runtime::{
     EmbeddedFonts, LayoutDirection, Node, SharedNodeIdentity, TextStyle, TextWrap,
@@ -151,10 +151,13 @@ impl Drop for CachedLabel {
     }
 }
 
+const LARGE_LABEL_BYTES: usize = 48 * 1024;
+
 struct LabelSource {
     text: Box<str>,
     fingerprint: u64,
     cached_plans: Cell<usize>,
+    large_glyph_repertoire: OnceCell<bool>,
 }
 
 impl LabelSource {
@@ -211,6 +214,22 @@ impl PreparedLabel {
 
     pub(super) fn source_text(&self) -> Option<&str> {
         self.source.as_ref().map(|source| source.text.as_ref())
+    }
+
+    pub(super) fn prefers_visible_glyphs(&self) -> bool {
+        const DISTINCT_CHARACTERS: usize = 4096;
+        self.source.as_ref().is_some_and(|source| {
+            source.text.len() >= LARGE_LABEL_BYTES
+                && *source.large_glyph_repertoire.get_or_init(|| {
+                    // Width changes share the source and this admission decision.
+                    let mut seen = HashSet::new();
+                    source.text.chars().any(|character| {
+                        !character.is_ascii()
+                            && seen.insert(character)
+                            && seen.len() == DISTINCT_CHARACTERS
+                    })
+                })
+        })
     }
 
     pub(super) fn shares_text_with(&self, other: &Self) -> bool {
@@ -299,6 +318,7 @@ struct LabelAdvances {
     widths: HashMap<Box<str>, f32>,
     token_widths: HashMap<Box<str>, f32>,
     word_advances: Option<LabelWordAdvances>,
+    ideograph_widths: Option<Box<[f32]>>,
     bytes: usize,
     unretained: u16,
 }
@@ -306,6 +326,8 @@ struct LabelAdvances {
 impl LabelAdvances {
     const CACHE_PRESSURE: u16 = 1024;
     const MAX_TOKEN_BYTES: usize = 48;
+    const FIRST_IDEOGRAPH: u32 = 0x4e00;
+    const LAST_IDEOGRAPH: u32 = 0x9fff;
 
     fn select(&mut self, font: LabelAdvanceFont) {
         if self.font != Some(font) {
@@ -313,23 +335,72 @@ impl LabelAdvances {
             self.widths.clear();
             self.token_widths.clear();
             self.word_advances = None;
+            self.ideograph_widths = None;
             self.bytes = 0;
             self.unretained = 0;
         }
     }
 
-    fn retain_word_advances(&mut self, source: &str) -> bool {
-        if self.unretained < Self::CACHE_PRESSURE {
-            return false;
-        }
+    fn retain_word_advances(&mut self, source: &str, has_measurements: bool) -> bool {
         if self
             .word_advances
             .as_ref()
-            .is_none_or(|index| index.source.as_ref() != source)
+            .is_some_and(|index| index.source.as_ref() == source)
         {
-            self.word_advances = Some(LabelWordAdvances::new(source));
+            return true;
         }
+        // Mostly ASCII documents can reuse long prefixes during the first
+        // wrap. Keep early admission bounded for documents with many words.
+        const MAX_EARLY_INDEX_BYTES: usize = 256 * 1024;
+        let under_pressure = has_measurements && self.unretained >= Self::CACHE_PRESSURE;
+        let admit = under_pressure
+            || (LARGE_LABEL_BYTES..=MAX_EARLY_INDEX_BYTES).contains(&source.len())
+                && (source.is_ascii()
+                    || source.bytes().filter(u8::is_ascii).count()
+                        >= source.len() - source.len() / 8);
+        if !admit {
+            return false;
+        }
+        self.word_advances = Some(LabelWordAdvances::new(source));
         true
+    }
+
+    fn prepare_ideograph_widths(&mut self, text: &str, context: &TextContext) {
+        const MIN_IDEOGRAPHS: usize = 4096;
+        if self.ideograph_widths.is_some()
+            || !(LARGE_LABEL_BYTES..=LabelMeasurements::MAX_SOURCE_BYTES).contains(&text.len())
+            || text
+                .chars()
+                .filter(|&ch| {
+                    (Self::FIRST_IDEOGRAPH..=Self::LAST_IDEOGRAPH).contains(&u32::from(ch))
+                })
+                .nth(MIN_IDEOGRAPHS - 1)
+                .is_none()
+        {
+            return;
+        }
+        let slots = (Self::LAST_IDEOGRAPH - Self::FIRST_IDEOGRAPH + 1) as usize;
+        self.ideograph_widths = Some(vec![f32::NAN; slots].into_boxed_slice());
+        // Width probes and the glyph pass share FemtoVG's shaped words.
+        reserve_reflow_words(context);
+    }
+
+    fn ideograph_width(
+        widths: &mut Option<Box<[f32]>>,
+        text: &str,
+        measure: &impl Fn(&str) -> f32,
+    ) -> Option<f32> {
+        let widths = widths.as_mut()?;
+        // Unified ideographs in the indexed range occupy exactly three bytes.
+        if text.len() != 3 {
+            return None;
+        }
+        let index = u32::from(text.chars().next()?).checked_sub(Self::FIRST_IDEOGRAPH)? as usize;
+        let width = widths.get_mut(index)?;
+        if width.is_nan() {
+            *width = measure(text);
+        }
+        Some(*width)
     }
 
     fn measure(
@@ -339,6 +410,22 @@ impl LabelAdvances {
         context: &TextContext,
         measure: impl Fn(&str) -> f32,
     ) -> f32 {
+        if let Some(width) = Self::ideograph_width(&mut self.ideograph_widths, text, &measure) {
+            return width;
+        }
+        #[cfg(xrack_femtovg_glyph_samples)]
+        if (6..16).contains(&text.len())
+            && self.ideograph_widths.is_some()
+            && let Some(words) = han_word_bounds(text)
+        {
+            // Short wrap probes can use the same advances and addition
+            // order as FemtoVG without rebuilding a shaping cache key.
+            return words.fold(0.0, |width, word| {
+                width
+                    + Self::ideograph_width(&mut self.ideograph_widths, word, &measure)
+                        .unwrap_or_else(|| measure(word))
+            });
+        }
         let indexed = source
             .filter(|_| text.len() >= 16)
             .zip(self.word_advances.as_mut());
@@ -351,9 +438,8 @@ impl LabelAdvances {
         }
         if let Some((source, index)) = indexed
             && let Some(width) = index.measure(source, text, |word| {
-                self.widths
-                    .get(word)
-                    .copied()
+                Self::ideograph_width(&mut self.ideograph_widths, word, &measure)
+                    .or_else(|| self.widths.get(word).copied())
                     .unwrap_or_else(|| Self::measure_token(&mut self.token_widths, word, &measure))
             })
         {
@@ -371,6 +457,8 @@ impl LabelAdvances {
             && (under_pressure || cfg!(not(xrack_femtovg_glyph_samples)) || !text.is_ascii())
         {
             let width = if let Some(words) = ascii_word_bounds(text) {
+                self.measure_words(words, under_pressure, context, &measure)
+            } else if let Some(words) = han_word_bounds(text) {
                 self.measure_words(words, under_pressure, context, &measure)
             } else if single_ltr_shaping_run(text) {
                 self.measure_words(text.split_word_bounds(), under_pressure, context, &measure)
@@ -404,13 +492,14 @@ impl LabelAdvances {
                 .chain(words)
                 .fold(0.0, |width, word| {
                     width
-                        + match self.widths.get(word) {
-                            Some(&advance) => advance,
-                            None if under_pressure => {
-                                Self::measure_token(&mut self.token_widths, word, measure)
-                            }
-                            None => self.remember(word, measure(word), context),
-                        }
+                        + Self::ideograph_width(&mut self.ideograph_widths, word, measure)
+                            .unwrap_or_else(|| match self.widths.get(word) {
+                                Some(&advance) => advance,
+                                None if under_pressure => {
+                                    Self::measure_token(&mut self.token_widths, word, measure)
+                                }
+                                None => self.remember(word, measure(word), context),
+                            })
                 }),
         )
     }
@@ -617,6 +706,8 @@ impl LabelWordIndex {
             };
             if let Some(words) = ascii_word_bounds(segment) {
                 words.for_each(&mut record);
+            } else if let Some(words) = han_word_bounds(segment) {
+                words.for_each(record);
             } else {
                 segment.split_word_bounds().for_each(record);
             }
@@ -744,6 +835,11 @@ pub(super) fn single_ltr_shaping_run(text: &str) -> bool {
                 | BidiClass::NSM
         )
     })
+}
+
+pub(super) fn han_word_bounds(text: &str) -> Option<impl Iterator<Item = &str>> {
+    xrack_layout::is_basic_han_text(text)
+        .then(|| (0..text.len()).step_by(3).map(|byte| &text[byte..byte + 3]))
 }
 
 #[derive(Default)]
@@ -978,6 +1074,7 @@ impl LabelCache {
                     text: text.into(),
                     fingerprint: fingerprint.unwrap_or_default(),
                     cached_plans: Cell::new(0),
+                    large_glyph_repertoire: OnceCell::new(),
                 })
             })
         });
@@ -1114,13 +1211,55 @@ struct FontCatalog {
     loaded: HashMap<fontdb::ID, Option<FontId>>,
     // Glyph bounds use the same bytes as the registered font.
     outline_faces: HashMap<FontId, FontSource>,
+    parsed_outlines: RefCell<HashMap<FontId, ParsedOutlineFace>>,
     matches: HashMap<FontRequest, Option<FontId>>,
 }
+
+type OutlineFace<'a> = ttf_parser::Face<'a>;
+
+self_cell::self_cell!(
+    struct ParsedOutlineFace {
+        owner: FontSource,
+        #[covariant]
+        dependent: OutlineFace,
+    }
+);
 
 #[derive(Clone, Copy)]
 pub(crate) struct OutlineGlyph {
     pub(crate) bounds: Option<ttf_parser::Rect>,
     pub(crate) units_per_em: u16,
+}
+
+const OUTLINE_PAGE_SIZE: usize = 128;
+type OutlinePage = [Option<Option<OutlineGlyph>>; OUTLINE_PAGE_SIZE];
+
+#[derive(Default)]
+struct OutlineGlyphCache {
+    pages: HashMap<(FontId, usize), Box<OutlinePage>>,
+}
+
+impl OutlineGlyphCache {
+    fn get(
+        &mut self,
+        font: FontId,
+        glyph: u16,
+        read: impl FnOnce() -> Option<OutlineGlyph>,
+    ) -> Option<OutlineGlyph> {
+        // Bounds for a large character set fit in the cache without a
+        // hash-table entry for every glyph. Allocate only pages in use.
+        const MAX_PAGES: usize = 512;
+        let glyph = usize::from(glyph);
+        let key = (font, glyph / OUTLINE_PAGE_SIZE);
+        if self.pages.len() == MAX_PAGES && !self.pages.contains_key(&key) {
+            self.pages.clear();
+        }
+        let page = self
+            .pages
+            .entry(key)
+            .or_insert_with(|| Box::new([None; OUTLINE_PAGE_SIZE]));
+        *page[glyph % OUTLINE_PAGE_SIZE].get_or_insert_with(read)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1166,8 +1305,21 @@ impl GlyphExtents {
 
 impl FontCatalog {
     fn outline_glyph(&self, font: FontId, glyph: u16) -> Option<OutlineGlyph> {
-        let source = self.outline_faces.get(&font)?;
-        let face = ttf_parser::Face::parse(source.bytes.as_ref(), source.index).ok()?;
+        use std::collections::hash_map::Entry;
+
+        let mut parsed = self.parsed_outlines.borrow_mut();
+        let face = match parsed.entry(font) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let source = self.outline_faces.get(&font)?.clone();
+                let face = ParsedOutlineFace::try_new(source, |source| {
+                    ttf_parser::Face::parse(source.bytes.as_ref(), source.index)
+                })
+                .ok()?;
+                entry.insert(face)
+            }
+        }
+        .borrow_dependent();
         let glyph = ttf_parser::GlyphId(glyph);
         if face.is_variable()
             || face.is_color_glyph(glyph)
@@ -1207,6 +1359,7 @@ impl FontCatalog {
             primary,
             loaded,
             outline_faces,
+            parsed_outlines: RefCell::default(),
             matches: HashMap::new(),
         }
     }
@@ -1561,7 +1714,7 @@ pub struct TextSystem {
     label_layouts: RefCell<LabelCache>,
     pub(super) label_glyphs: RefCell<crate::label_glyphs::Cache>,
     label_snapshots_enabled: bool,
-    outline_glyphs: RefCell<HashMap<(FontId, u16), Option<OutlineGlyph>>>,
+    outline_glyphs: RefCell<OutlineGlyphCache>,
     cell_shapes: RefCell<cell_shaping::Cache>,
     pub(super) cell_glyphs: RefCell<crate::cell_glyphs::Cache>,
     styled_layouts: RefCell<crate::styled_text::LayoutCache>,
@@ -1862,28 +2015,51 @@ impl TextSystem {
         self.label_layouts.get_mut().clear();
         *self.label_glyphs.get_mut() = Default::default();
         self.label_snapshots_enabled = true;
-        self.outline_glyphs.get_mut().clear();
+        self.outline_glyphs.get_mut().pages.clear();
         self.cell_glyphs.get_mut().clear();
     }
 
     pub(crate) fn outline_glyph(&self, font: FontId, glyph: u16) -> Option<OutlineGlyph> {
-        const MAX_OUTLINES: usize = 4096;
-        let mut outlines = self.outline_glyphs.borrow_mut();
-        let key = (font, glyph);
-        if let Some(outline) = outlines.get(&key) {
-            return *outline;
+        self.outline_glyphs.borrow_mut().get(font, glyph, || {
+            let context = self.font_context();
+            context
+                .bundled
+                .as_ref()
+                .and_then(|catalog| catalog.borrow().outline_glyph(font, glyph))
+                .or_else(|| context.catalog.borrow().outline_glyph(font, glyph))
+        })
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn prepare_ideographs(&self, text: &str, paint: &Paint, advances: &mut [f32]) {
+        let prepared = self.context().prepare_ideographs(text, paint, advances);
+        if prepared.is_empty() {
+            return;
         }
-        let context = self.font_context();
-        let outline = context
-            .bundled
-            .as_ref()
-            .and_then(|catalog| catalog.borrow().outline_glyph(font, glyph))
-            .or_else(|| context.catalog.borrow().outline_glyph(font, glyph));
-        if outlines.len() >= MAX_OUTLINES {
-            outlines.clear();
+
+        let fonts = self.font_context();
+        let mut known_fonts: HashSet<_> = fonts
+            .catalog
+            .borrow()
+            .outline_faces
+            .keys()
+            .copied()
+            .collect();
+        if let Some(bundled) = &fonts.bundled {
+            known_fonts.extend(bundled.borrow().outline_faces.keys().copied());
         }
-        outlines.insert(key, outline);
-        outline
+
+        let mut cache = self.outline_glyphs.borrow_mut();
+        for glyph in prepared {
+            if known_fonts.contains(&glyph.font_id) {
+                cache.get(glyph.font_id, glyph.glyph_id, || {
+                    Some(OutlineGlyph {
+                        bounds: glyph.bounds,
+                        units_per_em: glyph.units_per_em,
+                    })
+                });
+            }
+        }
     }
 
     fn font_context(&self) -> &FontContext {
@@ -1965,6 +2141,13 @@ impl TextSystem {
         {
             return Some(Measurement::Portable(run));
         }
+        #[cfg(xrack_femtovg_glyph_samples)]
+        return self
+            .context()
+            .glyph_placements(text, paint)
+            .ok()
+            .map(Measurement::Legacy);
+        #[cfg(not(xrack_femtovg_glyph_samples))]
         self.context()
             .measure_text(0.0, 0.0, text, paint)
             .ok()
@@ -1973,6 +2156,31 @@ impl TextSystem {
 
     pub(crate) fn context(&self) -> &TextContext {
         &self.font_context().context
+    }
+
+    /// Resolve a clipped text item when a scroll command targets its content.
+    #[doc(hidden)]
+    pub fn measure_styled_text(
+        &self,
+        node: &Node,
+        item: &LayoutNode,
+    ) -> Option<Rc<StyledTextLayout>> {
+        item.measure_styled_text(node, |available| self.styled_text_plan(node, available))
+    }
+
+    fn styled_text_plan(&self, node: &Node, available: Size) -> Option<Rc<StyledTextLayout>> {
+        if self.retained_styled_text_available()
+            && let Some(plan) = self
+                .retained_text
+                .borrow_mut()
+                .get_or_insert_with(Default::default)
+                .layout(self, node, available)
+        {
+            return Some(plan);
+        }
+        self.styled_layouts
+            .borrow_mut()
+            .get(self, node, available, true)
     }
 
     pub(crate) fn set_styled_text_incremental_enabled(&mut self, enabled: bool) {
@@ -2157,28 +2365,32 @@ impl TextSystem {
         self.resolve_face(self.font_attributes(node), style)
     }
 
-    fn resolve_face(
+    fn font_request(
         &self,
         (family, weight, italic): (&str, u16, bool),
         style: TextStyle,
-    ) -> Option<StyledFace> {
+    ) -> Option<FontRequest> {
         let family = if style.monospace { "monospace" } else { family };
-        let weight = if style.bold { weight.max(700) } else { weight };
-        let weight = self.effective_weight(weight);
+        let weight = self.effective_weight(if style.bold { weight.max(700) } else { weight });
         let italic = italic || style.italic;
-        let fonts = self.font_context();
-        if family.is_empty() && weight == 400 && !italic && !fonts.fallback.is_empty() {
+        if family.is_empty() && weight == 400 && !italic && !self.font_context().fallback.is_empty()
+        {
             return None;
         }
-        let request = FontRequest {
+        Some(FontRequest {
             family: family.into(),
             weight,
             italic,
-        };
+        })
+    }
+
+    fn resolve_face(&self, attributes: (&str, u16, bool), style: TextStyle) -> Option<StyledFace> {
+        let request = self.font_request(attributes, style)?;
+        let fonts = self.font_context();
         let id = fonts
             .bundled
             .as_ref()
-            .filter(|_| !family.is_empty() || fonts.fallback.is_empty())
+            .filter(|_| !request.family.is_empty() || fonts.fallback.is_empty())
             .and_then(|catalog| {
                 catalog
                     .borrow_mut()
@@ -2190,7 +2402,11 @@ impl TextSystem {
                     .borrow_mut()
                     .resolve(&fonts.context, &request, true)
             });
-        Some(StyledFace { id, weight, italic })
+        Some(StyledFace {
+            id,
+            weight: request.weight,
+            italic: request.italic,
+        })
     }
 
     pub fn paint(&self, font_size: f32, color: Color, centered: bool) -> Paint {
@@ -2521,7 +2737,15 @@ impl TextSystem {
         };
         let mut cache = self.label_layouts.borrow_mut();
         let label = cache.get(text, settings, |advances, measurements| {
-            let paint = self.paint_face(face, size, Color::white(), false);
+            let CellPaint { paint, fonts } =
+                self.paint_with_fonts(face, size, Color::white(), false);
+            let cache_ideograph_widths = measurements.is_none()
+                && text.len() >= LARGE_LABEL_BYTES
+                && !cfg!(any(
+                    xrack_femtovg_glyph_samples,
+                    target_os = "android",
+                    target_os = "ios"
+                ));
             // Width changes can revisit the same word-wrap probes many times.
             // Keep their advances across line plans for long labels.
             let mut retained = (text.len() >= 1024).then(|| {
@@ -2533,15 +2757,51 @@ impl TextSystem {
                 advances
             });
             let context = self.context();
-            let indexed_source = (measurements.is_some()
+            #[cfg(xrack_femtovg_glyph_samples)]
+            let new_ideograph_cache = measurements.is_none()
                 && retained
-                    .as_mut()
-                    .is_some_and(|advances| advances.retain_word_advances(text)))
-            .then_some(text);
+                    .as_ref()
+                    .is_some_and(|advances| advances.ideograph_widths.is_none());
+            if measurements.is_none()
+                && let Some(advances) = retained.as_mut()
+            {
+                advances.prepare_ideograph_widths(text, context);
+            }
+            // Start the workers only when layout has encountered a substantial
+            // number of uncached advances. A short clipped label can stop earlier.
+            #[cfg(xrack_femtovg_glyph_samples)]
+            let prewarm_remaining = Cell::new(
+                (new_ideograph_cache
+                    && retained
+                        .as_ref()
+                        .is_some_and(|advances| advances.ideograph_widths.is_some()))
+                .then_some(512_usize),
+            );
+            let indexed_source = retained
+                .as_mut()
+                .filter(|_| style.reflows())
+                .is_some_and(|advances| advances.retain_word_advances(text, measurements.is_some()))
+                .then_some(text);
             let ascii_metrics = OnceCell::new();
             let layout =
                 LabelPlan::measured_text(text, available, size, style, measurements, |value| {
+                    #[cfg(xrack_femtovg_glyph_samples)]
+                    if prewarm_remaining.get() == Some(0)
+                        && let Some(widths) = retained
+                            .as_deref_mut()
+                            .and_then(|advances| advances.ideograph_widths.as_deref_mut())
+                    {
+                        prewarm_remaining.set(None);
+                        self.prepare_ideographs(text, &paint, widths);
+                    }
                     let measure = |word: &str| {
+                        #[cfg(xrack_femtovg_glyph_samples)]
+                        if let Some(remaining) = prewarm_remaining.get()
+                            && word.len() == 3
+                            && xrack_layout::is_basic_han_text(word)
+                        {
+                            prewarm_remaining.set(Some(remaining.saturating_sub(1)));
+                        }
                         if indexed_source.is_some()
                             && let Some(width) = self
                                 .ascii_metrics_for_word(
@@ -2565,6 +2825,21 @@ impl TextSystem {
                                     })
                                 },
                             )
+                        {
+                            return width;
+                        }
+                        // A standalone unified ideograph is a single LTR word.
+                        // Try the paint's font list with cached face and shape
+                        // plans before measuring through the full text context.
+                        if cache_ideograph_widths
+                            && word.len() == 3
+                            && word.chars().next().is_some_and(|character| {
+                                matches!(character, '\u{4e00}'..='\u{9fff}')
+                            })
+                            && let Some(width) = self
+                                .cell_shapes
+                                .borrow_mut()
+                                .word_advance(self, word, &fonts, size)
                         {
                             return width;
                         }
@@ -2634,6 +2909,12 @@ impl TextMeasurer for TextSystem {
         Some(&mut self.intrinsic_measurements)
     }
 
+    fn frame_intrinsic_measurements(&mut self) -> Option<&mut xrack_layout::IntrinsicMeasurements> {
+        let fonts = self.registered_font_counts();
+        self.intrinsic_measurements.set_frame_fonts(fonts);
+        Some(&mut self.intrinsic_measurements)
+    }
+
     fn font_families(&self) -> &[String] {
         &self.font_context().families
     }
@@ -2656,18 +2937,46 @@ impl TextMeasurer for TextSystem {
         node: &Node,
         available: Size,
     ) -> Option<Rc<StyledTextLayout>> {
-        if self.retained_styled_text_available()
-            && let Some(plan) = self
-                .retained_text
-                .borrow_mut()
-                .get_or_insert_with(Default::default)
-                .layout(self, node, available)
-        {
-            return Some(plan);
+        self.styled_text_plan(node, available)
+    }
+
+    fn can_defer_styled_text(&self, node: &Node) -> bool {
+        if self.retained_styled_text_available() {
+            return false;
         }
-        self.styled_layouts
-            .borrow_mut()
-            .get(self, node, available, true)
+        let Some(document) = node.styled_text("text") else {
+            return false;
+        };
+        let attributes = self.font_attributes(Some(node));
+        let fonts = self.font_context();
+        let base = fonts.catalog.borrow();
+        let bundled = fonts.bundled.as_ref().map(|catalog| catalog.borrow());
+        let mut checked = 0_u8;
+        std::iter::once(TextStyle::default())
+            .chain(document.runs().iter().map(|run| run.style))
+            .all(|style| {
+                let bit = 1
+                    << (u8::from(style.bold)
+                        | u8::from(style.italic) << 1
+                        | u8::from(style.monospace) << 2);
+                if checked & bit != 0 {
+                    return true;
+                }
+                checked |= bit;
+                let Some(request) = self.font_request(attributes, style) else {
+                    return true;
+                };
+                if let Some(bundled) = &bundled
+                    && (!request.family.is_empty() || fonts.fallback.is_empty())
+                {
+                    match bundled.matches.get(&request) {
+                        Some(Some(_)) => return true,
+                        Some(None) => {}
+                        None => return false,
+                    }
+                }
+                base.matches.contains_key(&request)
+            })
     }
 
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
@@ -2728,6 +3037,36 @@ fn weight(value: Option<i64>, fallback: u16) -> u16 {
 }
 
 mod word_advances_tests {
+    #[test]
+    fn ideograph_widths_are_reused_until_the_font_size_changes() {
+        use super::{LabelAdvanceFont, LabelAdvances, TextContext};
+
+        let context = TextContext::default();
+        let mut advances = LabelAdvances::default();
+        let text = "汉字".repeat(8192);
+        let font = LabelAdvanceFont {
+            face: None,
+            size: 12.0f32.to_bits(),
+            registered_fonts: [0; 2],
+        };
+        advances.select(font);
+        advances.prepare_ideograph_widths(&text, &context);
+        assert_eq!(advances.measure("汉", None, &context, |_| 6.0), 6.0);
+        assert_eq!(
+            advances.measure("汉", None, &context, |_| panic!(
+                "measured a cached advance"
+            )),
+            6.0,
+        );
+
+        advances.select(LabelAdvanceFont {
+            size: 24.0f32.to_bits(),
+            ..font
+        });
+        advances.prepare_ideograph_widths(&text, &context);
+        assert_eq!(advances.measure("汉", None, &context, |_| 12.0), 12.0);
+    }
+
     #[test]
     fn returning_to_an_earlier_width_interval_reuses_the_clipped_plan() {
         use super::{Color, LabelCache, LabelPlan, LabelSettings, LabelStyle, Node, Paint, Size};

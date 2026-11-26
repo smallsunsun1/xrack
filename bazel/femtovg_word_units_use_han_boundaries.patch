@@ -1,0 +1,45 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+index 0baeb25..8ed79a0 100644
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -166,9 +166,13 @@ impl super::TextContext {
+     pub fn measure_text_width(&self, text: &str, paint: &Paint) -> Result<f32, ErrorKind> {
+         let mut context = self.0.borrow_mut();
+         let settings = &paint.text;
+-        if !text.bytes().all(|byte| (b' '..=b'~').contains(&byte))
+-            && !text.chars().all(|ch| (' '..='~').contains(&ch) || unified_ideograph(ch))
+-        {
++        let ascii = text.bytes().all(|byte| (b' '..=b'~').contains(&byte));
++        let mut han_only = !ascii;
++        if !ascii && !text.chars().all(|ch| {
++            let ideograph = unified_ideograph(ch);
++            han_only &= ideograph;
++            ideograph || (' '..='~').contains(&ch)
++        }) {
+             return cached_run(&mut context, settings, text, None).map(|run| run.metrics.width());
+         }
+ 
+@@ -187,7 +191,7 @@ impl super::TextContext {
+         // Printable ASCII and these unified ideographs form one LTR run.
+         // Use shape_run's word boundaries and additions without positioning glyphs.
+         let mut width = 0.0;
+-        for word in text.split_word_bounds() {
++        let mut add_word = |word: &str| {
+             if let Some(advance) = sliced_word_width(&context, word, settings) {
+                 width += advance;
+             } else if let Some(word) = cached_word(
+@@ -200,6 +204,14 @@ impl super::TextContext {
+             ) {
+                 width += word.width(word.scale(settings.font_size), settings.letter_spacing);
+             }
++        };
++        if han_only {
++            // Each unified ideograph in this range is a three-byte word.
++            for byte in (0..text.len()).step_by(3) {
++                add_word(&text[byte..byte + 3]);
++            }
++        } else {
++            text.split_word_bounds().for_each(add_word);
+         }
+         context.find_font(&settings.font_ids, |_| (false, ()))?;
+         Ok(width)

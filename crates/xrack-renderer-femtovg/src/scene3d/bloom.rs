@@ -3,15 +3,23 @@ use std::collections::VecDeque;
 
 use xrack_runtime::{Node, Value};
 
-use super::{HDR_FORMAT, append_floats, attachment_view, buffer, postprocess::RETAINED_VIEW_SIZES};
+use super::{
+    HDR_FORMAT, append_floats, attachment_view, buffer,
+    postprocess::{DisplayLeases, RETAINED_VIEW_SIZES},
+};
 
 const MAX_LEVELS: i64 = 6;
 
 #[derive(Clone, Copy)]
 pub(super) struct BloomSettings {
     pub strength: f32,
-    threshold: f32,
-    levels: usize,
+    pub source: HighlightSettings,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct HighlightSettings {
+    pub threshold: f32,
+    pub levels: usize,
 }
 
 impl BloomSettings {
@@ -27,15 +35,16 @@ impl BloomSettings {
         };
         (strength > 0.0).then_some(Self {
             strength,
-            threshold,
-            levels: levels.clamp(1, MAX_LEVELS) as usize,
+            source: HighlightSettings {
+                threshold,
+                levels: levels.clamp(1, MAX_LEVELS) as usize,
+            },
         })
     }
 }
 
-pub(super) struct BloomOutput<'a> {
-    pub view: &'a wgpu::TextureView,
-    pub sampler: &'a wgpu::Sampler,
+pub(super) struct BloomOutput {
+    pub view: wgpu::TextureView,
     pub passes: u64,
     pub pixels: u64,
     pub allocations: u64,
@@ -88,9 +97,15 @@ impl Bloom {
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::TextureView,
         size: [u32; 2],
-        settings: BloomSettings,
-    ) -> Option<BloomOutput<'_>> {
-        let index = self.pyramids.iter().position(|entry| entry.size == size);
+        settings: HighlightSettings,
+        (leases, protected): (&DisplayLeases, Option<&wgpu::TextureView>),
+    ) -> Option<BloomOutput> {
+        let index = self.pyramids.iter().position(|entry| {
+            entry.size == size
+                && entry.levels.first().is_none_or(|first| {
+                    !leases.contains(&first.view) && protected != Some(&first.view)
+                })
+        });
         let cached = index
             .and_then(|index| self.pyramids.remove(index))
             .unwrap_or_else(|| Pyramid {
@@ -155,8 +170,7 @@ impl Bloom {
         }
         let area = |level: &Level| level.size.into_iter().map(u64::from).product::<u64>();
         Some(BloomOutput {
-            view: &first.view,
-            sampler: &self.sampler,
+            view: first.view.clone(),
             passes: (2 * active.len() - 1) as u64,
             allocations: (pyramid.levels.len() - original_levels) as u64,
             pixels: active.iter().map(area).sum::<u64>()
@@ -241,23 +255,26 @@ impl Filter {
         target: &wgpu::TextureView,
         input: &wgpu::BindGroup,
     ) {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack 3D bloom filter"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: if self.expand {
-                        wgpu::LoadOp::Load
-                    } else {
-                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack 3D bloom filter"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if self.expand {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                        },
+                        store: wgpu::StoreOp::Store,
                     },
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
+                })],
+                ..Default::default()
+            },
+        );
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, input, &[]);
         pass.draw(0..3, 0..1);

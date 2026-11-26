@@ -1,0 +1,51 @@
+struct FormatInput { item: string }
+struct FormatEffect { shader: string, buffers: [FormatInput] }
+
+export component ViewportFormatDemo inherits Window {
+    title: "XRack · 视口浮点输出";
+    width: 272px; height: 152px; background: #000;
+    in-out property <string> format: "rgba16f";
+    in-out property <bool> hidden: false;
+    in-out property <bool> show-image: true;
+    in-out property <bool> mips: false;
+
+    source-view := SceneView3D {
+        x: 8px; y: 32px; width: 80px; height: 64px;
+        scene-background: #00000000;
+        render-format: root.format; render-mode: "inline";
+        texture-source: "radiance"; texture-only: root.hidden;
+        texture-mipmaps: root.mips;
+        scene-effects: [
+            FormatEffect { shader: @shader-url("effects/viewport_radiance.wgsl"), buffers: [] },
+        ];
+    }
+    Image {
+        x: 96px; y: 32px; width: 80px; height: 64px;
+        visible: root.show-image; texture-input: "radiance";
+    }
+    SceneView3D {
+        x: 184px; y: 32px; width: 80px; height: 64px;
+        cache-rendering: true;
+        scene-effects: [
+            FormatEffect {
+                shader: @shader-url("effects/viewport_exposure.wgsl"),
+                buffers: [FormatInput { item: "radiance" }],
+            },
+        ];
+    }
+    Text { x: 8px; y: 6px; text: "源视口"; color: #ddd; }
+    Text { x: 96px; y: 6px; text: "图片"; color: #ddd; }
+    Text { x: 184px; y: 6px; text: "降低亮度"; color: #ddd; }
+    format-toggle := Button {
+        x: 8px; y: 108px; width: 128px; height: 32px;
+        text: root.format;
+        clicked => {
+            root.format = root.format == "rgba8" ? "rgba16f"
+                : root.format == "rgba16f" ? "rgba32f" : "rgba8";
+        }
+    }
+    CheckBox {
+        x: 148px; y: 108px; width: 116px; height: 32px;
+        text: "Mipmap"; checked <=> root.mips;
+    }
+}

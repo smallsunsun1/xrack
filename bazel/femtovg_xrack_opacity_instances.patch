@@ -1,0 +1,380 @@
+diff --git a/src/renderer.rs b/src/renderer.rs
+--- a/src/renderer.rs
++++ b/src/renderer.rs
+@@ -14,7 +14,7 @@
+ #[cfg(feature = "wgpu")]
+ mod wgpu;
+ #[cfg(feature = "wgpu")]
+-pub use wgpu::{SubmissionSlicing, WGPURenderOutput, WGPURenderer};
++pub use wgpu::{OpacityTile, SubmissionSlicing, WGPURenderOutput, WGPURenderer};
+ 
+ mod void;
+ pub use void::Void;
+diff --git a/src/renderer/params.rs b/src/renderer/params.rs
+--- a/src/renderer/params.rs
++++ b/src/renderer/params.rs
+@@ -38,6 +38,8 @@
+     /// Whether a two-stop gradient's endpoints are premultiplied (see
+     /// [`set_two_stop_colors`](Self::set_two_stop_colors)).
+     pub(crate) gradient_premultiplied: bool,
++    /// The WGPU command carries atlas tile instances in the vertex stream.
++    pub(crate) opacity_tiles: bool,
+ }
+ 
+ /// Where both backends' uniform arrays keep [`Params::gradient_premultiplied`]:
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -1,4 +1,4 @@
+-use std::cell::{Cell, RefCell};
++use std::cell::{Cell, OnceCell, RefCell};
+ use std::collections::HashMap;
+ use std::rc::Rc;
+ 
+@@ -20,6 +20,10 @@
+ use super::Renderer;
+ 
+ pub use wgpu;
++
++mod opacity_tiles;
++pub use opacity_tiles::OpacityTile;
++use opacity_tiles::TILE_VERTICES;
+ 
+ /// Describes the render surface for the WGPU renderer.
+ ///
+@@ -539,6 +543,7 @@
+ #[derive(Debug)]
+ struct SharedGpuResources {
+     shader_module: wgpu::ShaderModule,
++    opacity_tiles_shader: OnceCell<wgpu::ShaderModule>,
+     empty_texture_view: wgpu::TextureView,
+     sampler_cache: SamplerCache,
+     viewport_layout: wgpu::BindGroupLayout,
+@@ -607,6 +612,7 @@
+ 
+         Self {
+             shader_module,
++            opacity_tiles_shader: OnceCell::new(),
+             empty_texture_view: empty_texture.create_view(&Default::default()),
+             sampler_cache: Rc::new(RefCell::new(HashMap::new())),
+             viewport_layout: viewport_bind_group_layout,
+@@ -614,6 +620,18 @@
+             pipelines: Default::default(),
+             epoch: Cell::new(0),
+         }
++    }
++
++    fn shader_for(&self, device: &wgpu::Device, opacity_tiles: bool) -> &wgpu::ShaderModule {
++        if !opacity_tiles {
++            return &self.shader_module;
++        }
++        self.opacity_tiles_shader.get_or_init(|| {
++            device.create_shader_module(wgpu::ShaderModuleDescriptor {
++                label: Some("femtovg opacity tiles"),
++                source: wgpu::ShaderSource::Wgsl(include_str!("wgpu/opacity_tiles.wgsl").into()),
++            })
++        })
+     }
+ 
+     fn next_epoch(&self) -> u64 {
+@@ -2295,18 +2313,28 @@
+     let Some((start, count)) = command.triangles_verts else {
+         return;
+     };
++    let opacity_tiles = params.opacity_tiles;
++    let (topology, cull) = if opacity_tiles {
++        (wgpu::PrimitiveTopology::TriangleStrip, None)
++    } else {
++        (wgpu::PrimitiveTopology::TriangleList, Some(wgpu::Face::Back))
++    };
+     pipeline_and_bindgroup_mapper.update_renderpass(
+         render_pass_builder,
+         blend_state(command).into(),
+-        wgpu::PrimitiveTopology::TriangleList,
++        topology,
+         clip_guard(command.clip_active),
+-        Some(wgpu::Face::Back),
++        cull,
+         params,
+         images,
+         command.image,
+         command.glyph_texture,
+     );
+-    render_pass_builder.draw(start as u32..(start + count) as u32);
++    if opacity_tiles {
++        render_pass_builder.draw_opacity_tiles(start, count);
++    } else {
++        render_pass_builder.draw(start as u32..(start + count) as u32);
++    }
+ }
+ 
+ fn stencil_stroke(
+@@ -2956,6 +2984,7 @@
+     clip_mask: bool,
+     /// A winding draw with no sampled coverage and no color output.
+     stencil_only: bool,
++    opacity_tiles: bool,
+ }
+ 
+ impl PipelineState {
+@@ -3004,6 +3033,7 @@
+             clip_shape: false,
+             clip_mask: false,
+             stencil_only: false,
++            opacity_tiles: false,
+         }
+     }
+ 
+@@ -3024,30 +3054,45 @@
+             clip_shape,
+             clip_mask,
+             stencil_only,
++            opacity_tiles,
+         } = self;
+-        let vertex_entry_point = if *render_to_texture {
+-            "vs_main_texture"
+-        } else {
+-            "vs_main"
++        let vertex_entry_point = match (*opacity_tiles, *render_to_texture) {
++            (true, false) => "opacity_vertex",
++            (true, true) => "opacity_vertex_texture",
++            (false, true) => "vs_main_texture",
++            (false, false) => "vs_main",
+         };
+-        let fragment_entry_point = match (*stencil_only, *clip_shape, *clip_mask) {
+-            (true, false, false) => "fs_stencil",
+-            (_, false, false) => "fs_main",
+-            (_, true, false) => "fs_main_clip",
+-            (_, false, true) => "fs_main_mask",
+-            (_, true, true) => "fs_main_clip_mask",
++        let fragment_entry_point = match (*opacity_tiles, *stencil_only, *clip_shape, *clip_mask) {
++            (true, _, _, _) => "opacity_fragment",
++            (false, true, false, false) => "fs_stencil",
++            (false, _, false, false) => "fs_main",
++            (false, _, true, false) => "fs_main_clip",
++            (false, _, false, true) => "fs_main_mask",
++            (false, _, true, true) => "fs_main_clip_mask",
+         };
+ 
++        const TILE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
++            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
++        ];
++        const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
+         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+             label: None,
+             layout: Some(pipeline_layout),
+             vertex: wgpu::VertexState {
+                 module: shader_module,
+                 entry_point: Some(vertex_entry_point),
+-                buffers: &[Some(wgpu::VertexBufferLayout {
+-                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+-                    step_mode: wgpu::VertexStepMode::Vertex,
+-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
++                buffers: &[Some(if *opacity_tiles {
++                    wgpu::VertexBufferLayout {
++                        array_stride: (TILE_VERTICES * size_of::<Vertex>()) as u64,
++                        step_mode: wgpu::VertexStepMode::Instance,
++                        attributes: &TILE_ATTRIBUTES,
++                    }
++                } else {
++                    wgpu::VertexBufferLayout {
++                        array_stride: size_of::<Vertex>() as u64,
++                        step_mode: wgpu::VertexStepMode::Vertex,
++                        attributes: &VERTEX_ATTRIBUTES,
++                    }
+                 })],
+                 compilation_options: Default::default(),
+             },
+@@ -3899,6 +3944,16 @@
+         self.rpass.as_mut().unwrap().draw(vertices, 0..1);
+     }
+ 
++    fn draw_opacity_tiles(&mut self, start: usize, count: usize) {
++        self.ensure_pass();
++        let stride = size_of::<Vertex>();
++        let bytes = (start * stride) as u64..((start + count) * stride) as u64;
++        let pass = self.rpass.as_mut().unwrap();
++        pass.set_vertex_buffer(0, self.vertex_buffer.slice(bytes));
++        pass.draw(0..4, 0..(count / TILE_VERTICES) as u32);
++        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
++    }
++
+     fn draw_stroke_strips(&mut self, command: &super::Command) {
+         if let Some(indices) = self.stroke_indices.clone() {
+             self.draw_indexed(indices);
+@@ -4076,6 +4131,7 @@
+         // to hash, by 1.3 % of the time 600 unclipped fills take to encode.
+         pipeline_state.clip_shape = params.clip.is_some();
+         pipeline_state.clip_mask = params.clip_mask.is_some();
++        pipeline_state.opacity_tiles = params.opacity_tiles;
+         pipeline_state.stencil_only = matches!(params.shader_type, ShaderType::Stencil)
+             && params.stroke_thr == -1.0
+             && !pipeline_state.clip_shape
+@@ -4087,7 +4143,8 @@
+             let mut pipeline_cache = self.shared.pipelines.borrow_mut();
+             let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
+                 let layout = &self.shared.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline;
+-                let pipeline = pipeline_state.materialize(&self.device, layout, &self.shared.shader_module);
++                let shader = self.shared.shader_for(&self.device, pipeline_state.opacity_tiles);
++                let pipeline = pipeline_state.materialize(&self.device, layout, shader);
+                 CachedPipeline {
+                     pipeline,
+                     last_used: self.pipeline_epoch,
+diff --git a/src/renderer/wgpu/opacity_tiles.rs b/src/renderer/wgpu/opacity_tiles.rs
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/wgpu/opacity_tiles.rs
+@@ -0,0 +1,101 @@
++use super::WGPURenderer;
++use crate::{
++    geometry::Bounds, paint::GlyphTexture, renderer::{Command, CommandType, Params, Vertex},
++    Canvas, ImageFlags, ImageId, Paint, PixelFormat, Rect, Scissor, Transform2D,
++};
++
++// Each instance occupies five ordinary vertex slots. The WGPU backend
++// binds that range of the frame buffer with an instance-rate layout.
++pub(super) const TILE_VERTICES: usize = 5;
++
++/// A premultiplied atlas tile painted with a rectangular scissor.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug)]
++pub struct OpacityTile {
++    /// Drawn bounds before clipping, in user coordinates as `[x, y, width, height]`.
++    pub bounds: [f32; 4],
++    /// Scissor rectangle, in user coordinates as `[x, y, width, height]`.
++    pub clip: [f32; 4],
++    /// Atlas paint origin and extent, in user coordinates as `[x, y, width, height]`.
++    pub mapping: [f32; 4],
++    /// Opacity applied after sampling the premultiplied atlas.
++    pub opacity: f32,
++}
++
++impl Canvas<WGPURenderer> {
++    /// Draws atlas tiles in order and returns the vertex bytes written.
++    /// Returns None if the canvas requires the
++    /// ordinary painter (for example, a rounded scissor or a clip path).
++    #[doc(hidden)]
++    pub fn draw_opacity_tiles(&mut self, image: ImageId, tiles: &[OpacityTile]) -> Option<usize> {
++        let state = *self.state();
++        let Transform2D([sx, b, c, sy, _, _]) = state.transform;
++        let Transform2D([_, clip_b, clip_c, _, _, _]) = state.scissor.transform;
++        if b != 0.0 || c != 0.0 || !(sx > 0.0 && sy > 0.0)
++            || clip_b != 0.0 || clip_c != 0.0 || state.scissor.radius != 0.0
++            || state.clip_depth != 0 || self.shadow_enabled()
++            || !state.composite_operation.takes_coverage()
++            || !self.images.info(image).is_some_and(|info| {
++                info.format() == PixelFormat::Rgba8
++                    && info.flags().contains(ImageFlags::PREMULTIPLIED)
++                    && !info.flags().contains(ImageFlags::FLIP_Y)
++            })
++        {
++            return None;
++        }
++        self.reconcile_current_clip_plane();
++        if self.clip_active() {
++            return None;
++        }
++        let first = self.verts.len();
++        self.verts.reserve(tiles.len() * TILE_VERTICES);
++        for tile in tiles {
++            let [x, y, w, h] = tile.bounds;
++            let (x0, y0) = state.transform.transform_point(x, y);
++            let (x1, y1) = state.transform.transform_point(x + w, y + h);
++            let mut bounds = Rect::new(x0, y0, x1 - x0, y1 - y0);
++            self.state_mut().scissor = state.scissor;
++            if tile.clip != tile.bounds {
++                let [x, y, w, h] = tile.clip;
++                self.intersect_scissor(x, y, w, h);
++            }
++            let clip = self.draw_clip(
++                || Bounds { minx: x0, miny: y0, maxx: x1, maxy: y1 },
++                None,
++            );
++            let mut scissor = clip.scissor;
++            if let Some(rect) = scissor.as_rect(self.width() as f32, self.height() as f32) {
++                let Some(intersection) = bounds.intersection(&rect) else {
++                    continue;
++                };
++                bounds = intersection;
++                scissor = Scissor::default();
++            }
++            let [x, y, w, h] = tile.mapping;
++            let paint = Paint::image(image, x, y, w, h, 0.0, tile.opacity * state.alpha);
++            let params = Params::new(&self.images, &state.transform, &paint.flavor,
++                &GlyphTexture::None, &scissor, self.fringe_width, self.fringe_width, -1.0);
++            let m = params.paint_mat;
++            let s = params.scissor_mat;
++            self.verts.extend_from_slice(&[
++                Vertex::new(bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h),
++                Vertex::new(m[0], m[5], m[8], m[9]),
++                Vertex::new(s[0], s[5], s[8], s[9]),
++                Vertex::new(params.scissor_ext[0], params.scissor_ext[1], params.scissor_scale[0], params.scissor_scale[1]),
++                Vertex::new(params.extent[0], params.extent[1], params.inner_col[3], 0.0),
++            ]);
++        }
++        self.state_mut().scissor = state.scissor;
++        let count = self.verts.len() - first;
++        if count != 0 {
++            let mut command = Command::new(CommandType::Triangles {
++                params: Params { opacity_tiles: true, ..Params::default() }
++            });
++            command.image = Some(image);
++            command.composite_operation = state.composite_operation;
++            command.triangles_verts = Some((first, count));
++            self.append_cmd(command);
++        }
++        Some(count * size_of::<Vertex>())
++    }
++}
+diff --git a/src/renderer/wgpu/opacity_tiles.wgsl b/src/renderer/wgpu/opacity_tiles.wgsl
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/wgpu/opacity_tiles.wgsl
+@@ -0,0 +1,47 @@
++struct ViewSize {
++    x: f32,
++    y: f32,
++    pad: vec2f,
++}
++
++@group(0) @binding(0) var<uniform> view_size: ViewSize;
++@group(1) @binding(1) var atlas: texture_2d<f32>;
++@group(1) @binding(2) var atlas_sampler: sampler;
++
++struct TileVertex {
++    @builtin(position) position: vec4f,
++    @location(0) device_point: vec2f,
++    @location(1) @interpolate(flat) paint_mat: vec4f,
++    @location(2) @interpolate(flat) scissor_mat: vec4f,
++    @location(3) @interpolate(flat) scissor: vec4f,
++    @location(4) @interpolate(flat) image: vec4f,
++}
++
++fn tile_vertex(index: u32, bounds: vec4f, paint_mat: vec4f, scissor_mat: vec4f,
++    scissor: vec4f, image: vec4f, flipped: bool) -> TileVertex {
++    let p = vec2f(select(bounds.x, bounds.z, (index & 1u) != 0u),
++                  select(bounds.y, bounds.w, index >= 2u));
++    let y = select(1.0 - 2.0 * p.y / view_size.y, 2.0 * p.y / view_size.y - 1.0, flipped);
++    return TileVertex(vec4f(2.0 * p.x / view_size.x - 1.0, y, 0.0, 1.0),
++        p, paint_mat, scissor_mat, scissor, image);
++}
++
++@vertex fn opacity_vertex(@builtin(vertex_index) index: u32, @location(0) bounds: vec4f,
++    @location(1) paint_mat: vec4f, @location(2) scissor_mat: vec4f,
++    @location(3) scissor: vec4f, @location(4) image: vec4f) -> TileVertex {
++    return tile_vertex(index, bounds, paint_mat, scissor_mat, scissor, image, false);
++}
++
++@vertex fn opacity_vertex_texture(@builtin(vertex_index) index: u32, @location(0) bounds: vec4f,
++    @location(1) paint_mat: vec4f, @location(2) scissor_mat: vec4f,
++    @location(3) scissor: vec4f, @location(4) image: vec4f) -> TileVertex {
++    return tile_vertex(index, bounds, paint_mat, scissor_mat, scissor, image, true);
++}
++
++@fragment fn opacity_fragment(input: TileVertex) -> @location(0) vec4f {
++    let uv = (input.device_point * input.paint_mat.xy + input.paint_mat.zw) / input.image.xy;
++    let sample = textureSampleBias(atlas, atlas_sampler, uv, -0.5);
++    let distance = abs(input.device_point * input.scissor_mat.xy + input.scissor_mat.zw) - input.scissor.xy;
++    let fringe = clamp(vec2f(0.5) - distance * input.scissor.zw, vec2f(0.0), vec2f(1.0));
++    return (sample * input.image.z) * (fringe.x * fringe.y);
++}

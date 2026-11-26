@@ -1,0 +1,60 @@
+struct LensActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, visible: bool, camera-kind: string, camera-height: float,
+}
+
+export component LensFlareDemo inherits Window {
+    title: "XRack · 镜头光晕";
+    width: 384px; height: 224px; resizable: false;
+    background: #182334;
+    in-out property <bool> flare-enabled: true;
+    in-out property <bool> glow: false;
+    in-out property <bool> covered: false;
+    in-out property <bool> artwork: false;
+    in-out property <bool> grading: false;
+    in-out property <float> gain: 1.25;
+    in-out property <float> threshold: 1;
+    in-out property <int> ghost-count: 4;
+    in-out property <float> halo: 0.65;
+    in-out property <float> distortion: 1;
+    in-out property <float> spin: 0;
+    in-out property <float> emitter-x: -2.2;
+
+    property <LensActor> unit: LensActor {
+        id: "", mesh: "primitive:rectangle", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #334357, visible: true, camera-kind: "", camera-height: 4,
+    };
+    SceneView3D {
+        width: 384px; height: 176px;
+        texture-width: 384; texture-height: 176;
+        camera: "eye"; cache-rendering: true; scene-background: #16283e;
+        scene-hdr: true;
+        model: [
+            LensActor { id: "eye", mesh: "", z: 7, camera-kind: "orthographic", ..root.unit },
+            LensActor {
+                id: "emitter", mesh: @mesh-url("models/bloom-emitter.gltf"),
+                x: root.emitter-x, y: 0.58, scale-x: 0.17, scale-y: 0.24, ..root.unit
+            },
+            LensActor {
+                id: "cover", x: root.emitter-x, y: 0.58, z: 2,
+                scale-x: 1.1, scale-y: 1, visible: root.covered, ..root.unit
+            },
+        ];
+        bloom: root.glow; bloom-levels: 3; bloom-threshold: 1;
+        lens-flare: root.flare-enabled;
+        lens-flare-strength: root.gain; lens-flare-threshold: root.threshold;
+        lens-flare-blur-levels: 3; lens-flare-ghost-count: root.ghost-count;
+        lens-flare-halo-width: 0.30; lens-flare-halo-strength: root.halo;
+        lens-flare-distortion: root.distortion; lens-flare-rotation: root.spin;
+        lens-flare-color-map: root.artwork ? @image-url("models/lens-color.png") : @image-url("");
+        lens-flare-dirt-map: root.artwork ? @image-url("models/lens-dirt.png") : @image-url("");
+        lens-flare-starburst-map: root.artwork ? @image-url("models/lens-starburst.png") : @image-url("");
+        scene-lut: root.grading ? @image-url("models/lut-warm.png") : @image-url("");
+    }
+    flare-toggle := CheckBox { x: 10px; y: 184px; width: 87px; height: 30px; text: "光晕"; checked <=> root.flare-enabled; }
+    bloom-toggle := CheckBox { x: 99px; y: 184px; width: 81px; height: 30px; text: "泛光"; checked <=> root.glow; }
+    map-toggle := CheckBox { x: 181px; y: 184px; width: 111px; height: 30px; text: "镜头纹理"; checked <=> root.artwork; }
+    cover-toggle := CheckBox { x: 293px; y: 184px; width: 87px; height: 30px; text: "遮挡"; checked <=> root.covered; }
+}

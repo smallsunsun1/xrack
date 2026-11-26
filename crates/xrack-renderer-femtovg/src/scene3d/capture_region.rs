@@ -25,13 +25,48 @@ impl CaptureRegion {
         if clip == CaptureRect::FULL {
             return Self::Full;
         }
-        let Some(pixels) = pixel_rect(clip, size) else {
+        let Some(pixels) = pixel_rect(clip.bounds().map(f64::from), size) else {
             return Self::Empty;
         };
         if viewport.is_none() && pixels == [0, 0, size[0], size[1]] {
             Self::Full
         } else {
             Self::Restricted { viewport, pixels }
+        }
+    }
+
+    pub fn scissor(bounds: Option<[f64; 4]>, size: [u32; 2]) -> Self {
+        let Some(bounds) = bounds else {
+            return Self::Full;
+        };
+        match pixel_rect(bounds, size) {
+            None => Self::Empty,
+            Some(pixels) if pixels == [0, 0, size[0], size[1]] => Self::Full,
+            Some(pixels) => Self::Restricted {
+                viewport: None,
+                pixels,
+            },
+        }
+    }
+
+    pub fn pixels(self, [width, height]: [u32; 2]) -> Option<[u32; 4]> {
+        match self {
+            Self::Full => Some([0, 0, width, height]),
+            Self::Empty => None,
+            Self::Restricted { pixels, .. } => Some(pixels),
+        }
+    }
+
+    pub fn translated(self, [x, y]: [u32; 2]) -> Self {
+        match self {
+            Self::Restricted {
+                viewport,
+                pixels: [left, top, width, height],
+            } => Self::Restricted {
+                viewport,
+                pixels: [left + x, top + y, width, height],
+            },
+            _ => self,
         }
     }
 
@@ -74,12 +109,11 @@ impl CaptureRegion {
     }
 }
 
-fn pixel_rect(rect: CaptureRect, [width, height]: [u32; 2]) -> Option<[u32; 4]> {
-    let [left, top, right, bottom] = rect.bounds();
+fn pixel_rect([left, top, right, bottom]: [f64; 4], [width, height]: [u32; 2]) -> Option<[u32; 4]> {
     // Include the pixel centers within the half-open rectangle. Adjacent
     // regions then neither overlap nor leave a gap at fractional scales.
-    let edge = |unit: f32, size: u32| {
-        (f64::from(unit) * f64::from(size) - 0.5)
+    let edge = |unit: f64, size: u32| {
+        (unit * f64::from(size) - 0.5)
             .ceil()
             .clamp(0.0, f64::from(size)) as u32
     };

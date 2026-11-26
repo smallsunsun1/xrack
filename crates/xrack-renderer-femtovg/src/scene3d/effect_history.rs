@@ -4,7 +4,7 @@ use xrack_runtime::{RowKey, scene_effect::Chain};
 
 use super::{
     Attachment, attachment_view,
-    custom_effect::{effect_format, effect_size, texture_bytes},
+    custom_effect::{OutputFormats, effect_size, texture_bytes},
 };
 
 const IDLE_FRAMES: u64 = 120;
@@ -129,6 +129,7 @@ impl History {
         owner: Owner<'_>,
         size: [u32; 2],
         chain: &'a Chain,
+        formats: OutputFormats,
     ) -> Option<Frame<'a>> {
         if chain.history_writers().is_empty() {
             return None;
@@ -144,7 +145,7 @@ impl History {
         for &index in chain.history_writers() {
             let pass = &chain.passes()[index];
             let size = effect_size(size, pass.scale);
-            let format = effect_format(pass.format);
+            let format = formats.sampled(pass.format);
             let cost = pair_bytes(size, format);
             if cost <= BYTE_BUDGET - bytes {
                 requested.push(Writer {

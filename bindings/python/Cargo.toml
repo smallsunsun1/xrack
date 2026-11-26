@@ -20,6 +20,7 @@ xrack-assets.workspace = true
 xrack-interpreter = { workspace = true, features = ["live-reload"] }
 xrack-platform-winit.workspace = true
 xrack-runtime.workspace = true
+xrack-scene-import.workspace = true
 
 [dev-dependencies]
 pyo3-introspection = "=0.29.0"

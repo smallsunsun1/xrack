@@ -927,7 +927,7 @@ impl BakeLighting<'_> {
         let mut result = Vector3::zeros();
         for light in lights {
             let layers = surface.layers & light.layers & self.visible_layers;
-            if layers == 0 {
+            if layers == 0 || !light.scope.contains(surface.lighting_index) {
                 continue;
             }
             let Some((direction, distance, intensity)) =
@@ -943,8 +943,12 @@ impl BakeLighting<'_> {
             if light.casts_shadow
                 && surface.receives_shadow
                 && Ray3D::new(origin.into(), direction.into()).is_some_and(|ray| {
-                    self.trace
-                        .occluded(ray, (distance - self.options.bias * 2.0).max(0.0), layers)
+                    self.trace.occluded(
+                        ray,
+                        (distance - self.options.bias * 2.0).max(0.0),
+                        layers,
+                        light.scope,
+                    )
                 })
             {
                 continue;
@@ -1148,6 +1152,100 @@ mod tests {
     }
 
     #[test]
+    fn scoped_bake_filters_receivers_and_occluders() -> TestResult {
+        use xrack_runtime::{
+            RecordList, RecordValue, Value, VecModel,
+            scene3d::{MeshAsset, model_lights, record_objects},
+        };
+
+        let plate = plate("receiver", 0.0, false)?.mesh;
+        let row = |id: &str, parent: &str, mesh: &str, x, z, size: [f64; 3]| {
+            let named = [("id", id), ("parent", parent), ("mesh", mesh)]
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), Value::String(value.into())));
+            let numeric = [
+                "x", "y", "z", "scale-x", "scale-y", "scale-z", "yaw", "pitch", "roll",
+            ]
+            .into_iter()
+            .zip([x, 0.0, z, size[0], size[1], size[2], 0.0, 0.0, 0.0])
+            .map(|(name, value)| (name.to_owned(), Value::Float(value)));
+            RecordValue::new(
+                "Actor",
+                named
+                    .chain(numeric)
+                    .chain([("color".into(), Value::Color(Color(0xffffffff)))])
+                    .collect(),
+            )
+        };
+        let light = SceneLight {
+            source: SceneLightSource::Directional {
+                toward_light: [0.0, 0.0, 1.0],
+            },
+            radiance: [PI, 0.0, 0.0],
+            casts_shadow: true,
+            shadow: Default::default(),
+            shadow_projection: Default::default(),
+            bake_mode: LightBakeMode::All,
+            layers: 1,
+            scope: Default::default(),
+        };
+        let authored = model_lights(&VecModel::from(vec![light]), |light| {
+            Some((light, String::new(), "group".into()))
+        });
+        let bake = |parent| -> Result<[u8; 2], Box<dyn std::error::Error>> {
+            let scene = record_objects(
+                &RecordList::new(
+                    "Actor",
+                    vec![
+                        row("receiver", "group", "plate", 0.0, 0.0, [1.0; 3]),
+                        row("neighbor", "", "plate", 2.0, 0.0, [1.0; 3]),
+                        row(
+                            "caster",
+                            parent,
+                            "primitive:box",
+                            0.0,
+                            0.4,
+                            [0.45, 0.45, 0.1],
+                        ),
+                        row("group", "", "", 0.0, 0.0, [1.0; 3]),
+                    ],
+                ),
+                |name| (name == "plate").then(|| MeshAsset::Static(plate.clone())),
+                |_| None,
+            );
+            let atlas = bake_lightmaps(
+                scene.objects(),
+                &authored.resolve(Some(&scene)),
+                [0.0; 3],
+                1,
+                &[],
+                BakeOptions {
+                    size: 16,
+                    mode: LightmapMode::Mixed,
+                    indirect_factor: 0.0,
+                    ..Default::default()
+                },
+            )?;
+            let png = xrack_assets::decode_png(&atlas.png)?;
+            let center = |id| -> Result<u8, &'static str> {
+                let region = atlas
+                    .regions
+                    .iter()
+                    .find(|region| region.id == id)
+                    .ok_or("missing region")?;
+                let [x, y, w, h] = region.atlas;
+                let row = ((y + h * 0.5) * atlas.size[1] as f32) as usize;
+                let column = ((x + w * 0.5) * atlas.size[0] as f32) as usize;
+                Ok(png.rgba[4 * (row * atlas.size[0] as usize + column)])
+            };
+            Ok([center("receiver")?, center("neighbor")?])
+        };
+        assert_eq!(bake("")?, [255, 0]);
+        assert_eq!(bake("group")?, [0, 0]);
+        Ok(())
+    }
+
+    #[test]
     fn direct_bake_keeps_shadows_from_unpickable_geometry_and_is_deterministic() -> TestResult {
         let panel = plate("receiver", 0.0, false)?;
         let occluder = SceneObject::cuboid(
@@ -1166,8 +1264,10 @@ mod tests {
             radiance: [PI; 3],
             casts_shadow: true,
             shadow: Default::default(),
+            shadow_projection: Default::default(),
             bake_mode: LightBakeMode::Disabled,
             layers: 1,
+            scope: Default::default(),
         };
         let objects = [panel, occluder];
         let settings = BakeOptions {
@@ -1210,8 +1310,10 @@ mod tests {
             radiance: [PI; 3],
             casts_shadow: true,
             shadow: Default::default(),
+            shadow_projection: Default::default(),
             bake_mode: LightBakeMode::All,
             layers: 1,
+            scope: Default::default(),
         };
         let options = BakeOptions {
             size: 16,
@@ -1538,10 +1640,12 @@ mod tests {
                     lights: &[],
                     ambient: [0.0; 3],
                     environment: Some(ViewportEnvironment {
-                        probe: &probe,
-                        yaw,
+                        source: xrack_runtime::scene3d::EnvironmentSource::Panorama(&probe),
+                        orientation: xrack_runtime::scene3d::EnvironmentOrientation::from_radians(
+                            [yaw, 0.0, 0.0],
+                        ),
+                        horizon: 0.0,
                         intensity,
-                        skybox: false,
                     }),
                 },
                 1,
@@ -1585,10 +1689,10 @@ mod tests {
                 .ok_or("invalid HDR hotspot")?,
         );
         let environment = EnvironmentRadiance::new(ViewportEnvironment {
-            probe: &probe,
-            yaw: 0.0,
+            source: xrack_runtime::scene3d::EnvironmentSource::Panorama(&probe),
+            orientation: Default::default(),
+            horizon: 0.0,
             intensity: 1.0,
-            skybox: false,
         });
         let importance = environment
             .importance
@@ -1725,7 +1829,9 @@ mod tests {
                     bake_mode,
                     casts_shadow: true,
                     shadow: Default::default(),
+                    shadow_projection: Default::default(),
                     layers: 1,
+                    scope: Default::default(),
                 }
             })
             .collect();

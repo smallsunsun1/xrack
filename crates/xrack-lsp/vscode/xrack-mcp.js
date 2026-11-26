@@ -21,7 +21,7 @@ const tools = {
         schema({ session: string, id: string, generation, text: { type: 'string', minLength: 0, maxLength: 2048 } })],
     get_recording: ['Export the opt-in, named native UI actions as a versioned replay recording.',
         schema({ session: string })],
-    get_update_profile: ['Read the compiler update plan and CPU samples from native application updates.',
+    get_update_profile: ['Read the compiler update plan, CPU samples, and 3D viewport statistics from native application updates.',
         schema({ session: string, element: string }, ['session'])],
     wait_for_property: ['Wait for a typed property value or model row count to equal the requested value.',
         schema({ session: string, nodeKey: string, property: string,
@@ -179,6 +179,7 @@ async function call(project, name, args) {
                 updates: snapshot.updates ?? [],
                 renderSamples: snapshot.renderSamples ?? [],
                 presentedFrames: snapshot.presentedFrames ?? [],
+                viewportStatistics: snapshot.viewportStatistics ?? null,
             };
         }
         case 'get_ui_tree':

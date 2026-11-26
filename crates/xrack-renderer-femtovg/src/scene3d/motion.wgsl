@@ -1,4 +1,5 @@
 override TEST_COVERAGE: bool = false;
+override LOD_FADE: bool = false;
 override TRACK_SURFACE: bool = true;
 
 struct Projection {
@@ -43,6 +44,7 @@ struct Material {
 @group(2) @binding(1) var<uniform> previous_morph: MorphSettings;
 
 struct Vertex {
+    @builtin(vertex_index) index: u32,
     @location(0) point: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
@@ -50,7 +52,7 @@ struct Vertex {
     @location(5) y: vec4<f32>,
     @location(6) z: vec4<f32>,
     @location(7) tint: vec4<f32>,
-    @location(8) metadata: u32,
+    @location(8) metadata: vec2<u32>,
     @location(15) instance_data: vec4<f32>,
 }
 
@@ -62,12 +64,14 @@ struct RasterVertex {
     @location(3) alpha: vec2<f32>,
     @location(4) @interpolate(flat) ids: vec2<u32>,
     @location(5) @interpolate(flat) scale: f32,
+    @location(6) @interpolate(flat) metadata: u32,
+    // XRack wireframe varying
 }
 
 fn paired_vertex(vertex: Vertex, index: u32, current: vec3<f32>, previous: vec3<f32>) -> RasterVertex {
     let old = previous_instances[index];
     let p = vec4(xr_displaced_vertex(current, material.shader_parameters, vertex.instance_data,
-        vertex.metadata >> 3u, vertex.tint, mat3x4(vertex.x, vertex.y, vertex.z)), 1.0);
+        xr_instance_number(vertex.metadata.x), vertex.tint, mat3x4(vertex.x, vertex.y, vertex.z)), 1.0);
     let old_tint = vec4<f32>((vec4<u32>(old.tint) >> vec4<u32>(24u, 16u, 8u, 0u)) & vec4<u32>(255u)) / 255.0;
     let q = vec4(xr_displaced_vertex(previous, previous_vertex_parameters, old.instance_data,
         old.index_and_enabled >> 1u, old_tint, mat3x4(old.x, old.y, old.z)), 1.0);
@@ -81,6 +85,8 @@ fn paired_vertex(vertex: Vertex, index: u32, current: vec3<f32>, previous: vec3<
         vec2<f32>(vertex.color.a, vertex.tint.a),
         vec2<u32>(select(0u, index + 1u, (old.index_and_enabled & 1u) != 0u), old.previous_id),
         old.scale,
+        vertex.metadata.x,
+        // XRack wireframe corner
     );
 }
 
@@ -120,17 +126,17 @@ fn skinned(vertex: Vertex, weights: SkinWeights, @builtin(instance_index) instan
 }
 
 @vertex
-fn morphed(vertex: Vertex, @builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> RasterVertex {
+fn morphed(vertex: Vertex, @builtin(instance_index) instance: u32) -> RasterVertex {
     return paired_vertex(vertex, instance,
-        vertex.point + morph_displacement(index).position, previous_morph_point(index, vertex.point));
+        vertex.point + morph_displacement(vertex.index).position, previous_morph_point(vertex.index, vertex.point));
 }
 
 @vertex
 fn skinned_morphed(vertex: Vertex, weights: SkinWeights,
-    @builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> RasterVertex {
+    @builtin(instance_index) instance: u32) -> RasterVertex {
     return paired_vertex(vertex, instance,
-        skin_point(skin_transform(weights), vertex.point + morph_displacement(index).position),
-        previous_skin_point(weights, previous_morph_point(index, vertex.point)));
+        skin_point(skin_transform(weights), vertex.point + morph_displacement(vertex.index).position),
+        previous_skin_point(weights, previous_morph_point(vertex.index, vertex.point)));
 }
 
 struct MotionOutput {
@@ -140,17 +146,22 @@ struct MotionOutput {
 
 @fragment
 fn fragment(vertex: RasterVertex) -> MotionOutput {
+    // XRack wireframe distance
     if TEST_COVERAGE {
         var surface = material.base.a * coverage_vertex_alpha(material.channels, vertex.alpha.x);
         if material.params.z > 0.5 && base_texture_uses_alpha(material.channels)
             && (material.params.w < 1.5 || material.params.x >= 0.0) {
-            surface *= textureSample(base_texture, base_sampler, texture_uv(material.base_uv, vertex.uv)).a;
+            surface *= sample_base_texture(base_texture, base_sampler, material.base_uv, vertex.uv).a;
         }
         let coverage = material_coverage(material.params.w, surface, vertex.alpha.y);
         if coverage.y < material.params.x || (material.params.w > 0.5 && coverage.x <= 0.0) {
             discard;
         }
     }
+    if LOD_FADE && !xr_lod_covered(vertex.metadata, vertex.position.xy) {
+        discard;
+    }
+    // XRack wireframe discard
     if !TRACK_SURFACE || vertex.ids.x == 0u {
         // These surfaces cover the motion of any model behind them.
         return MotionOutput(vec4<f32>(0.0), 0u);

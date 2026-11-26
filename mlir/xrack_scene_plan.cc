@@ -12,6 +12,7 @@
 #include <cmath>
 #include <numeric>
 #include <optional>
+#include <utility>
 
 namespace xrack::dialect {
 #define GEN_PASS_DEF_XRPLANUPDATEEFFECTS
@@ -57,6 +58,26 @@ bool ordinaryRepeatContainer(llvm::StringRef kind) {
       .Default(false);
 }
 
+std::optional<int> literalWindowLayer(Value value) {
+  auto literal = value.getDefiningOp<LiteralOp>();
+  if (!literal || !isa<StringType>(value.getType()))
+    return {};
+  return llvm::StringSwitch<std::optional<int>>(literal.getValue())
+      .Case("\"underlay\"", -1)
+      .Case("\"overlay\"", 1)
+      .Cases({"\"offscreen\"", "\"inline\""}, 0)
+      .Default(std::nullopt);
+}
+
+std::optional<int> knownWindowLayer(Value value) {
+  if (auto select = value.getDefiningOp<SelectOp>()) {
+    auto yes = literalWindowLayer(select.getOnTrue());
+    auto no = literalWindowLayer(select.getOnFalse());
+    return yes == no ? yes : std::nullopt;
+  }
+  return literalWindowLayer(value);
+}
+
 /// Shared analysis of scene properties and row structure. The planning passes
 /// only attach discardable hints, so each can preserve these facts.
 struct SceneAnalysis {
@@ -78,13 +99,18 @@ struct SceneAnalysis {
                             kind == "RoundButton" || kind == "DelayButton";
       bool sceneViewport = kind == "SceneView3D" &&
           llvm::StringSwitch<bool>(name)
-              .Cases({"model", "lights", "ambient-color", "ambient-intensity", "light-yaw",
-                      "light-elevation", "scene-background", "shadows", "imported-lights", "shadow-map-size",
+              .Cases({"model", "preload-model", "lod-fade-width", "texture-mipmaps", "render-format", "render-overrides", "lights", "ambient-color", "ambient-intensity", "light-yaw",
+                      "light-elevation", "scene-background", "shadows", "imported-lights", "shadow-map-size", "shadow-map-precision", "material-debug", "oit-method",
+                      "scissor-rect", "depth-prepass", "debug-wireframe", "shadow-debug-cascades", "shadow-debug-light-volumes", "shadow-debug-casters",
+                      "shadow-debug-receivers", "shadow-debug-intersections", "shadow-freeze-camera",
                       "shadow-bias", "shadow-cascades", "shadow-distance", "shadow-cascade-blend",
                       "shadow-split-balance", "camera", "camera-yaw", "camera-pitch", "camera-distance",
-                      "selected-object", "environment", "reflection-probes", "environment-yaw", "environment-intensity",
+                      "selected-object", "environment", "environment-sky", "reflection-probes", "environment-yaw", "environment-intensity",
+                      "environment-pitch", "environment-roll", "environment-horizon",
                       "environment-skybox", "frustum-culling", "scene-exposure", "multisampling", "supersampling",
+                      "skybox-source", "skybox-sky", "skybox-yaw", "skybox-pitch", "skybox-roll", "skybox-intensity", "skybox-blur",
                       "progressive-aa", "temporal-aa", "temporal-aa-mode", "temporal-aa-strength",
+                      "fxaa", "fxaa-edge-threshold", "fxaa-min-threshold", "fxaa-subpixel", "fxaa-strength", "fxaa-search-steps",
                       "reflection-faces-per-frame", "reflection-filter-passes-per-frame",
                       "reflection-filter-texels-per-frame", "bake-denoise-passes", "bake-indirect-factor",
                       "screen-space-reflections", "ssr-strength", "ssr-distance", "ssr-thickness",
@@ -98,9 +124,15 @@ struct SceneAnalysis {
                       "fog-volume-scattering", "fog-volume-anisotropy", "fog-volume-samples", "fog-volume-density-samples",
                       "ambient-occlusion", "ao-strength", "ao-distance", "ao-bias",
                       "scene-hdr", "bloom", "bloom-strength", "bloom-threshold", "bloom-levels",
+                      "lens-flare", "lens-flare-strength", "lens-flare-threshold", "lens-flare-ghost-count",
+                      "lens-flare-ghost-dispersal", "lens-flare-halo-width", "lens-flare-halo-strength",
+                      "lens-flare-distortion", "lens-flare-rotation", "lens-flare-aspect-corrected",
+                      "lens-flare-blur-levels", "lens-flare-color-map", "lens-flare-dirt-map", "lens-flare-starburst-map",
                       "depth-of-field", "dof-blur-radius", "dof-focus-distance", "dof-focus-range",
                       "scene-tone-map", "scene-white-point", "scene-brightness", "scene-contrast",
                       "scene-saturation", "scene-lut", "scene-lut-size", "scene-lut-strength",
+                      "scene-vignette-strength", "scene-vignette-radius", "scene-vignette-color",
+                      "scene-sharpness", "scene-dithering",
                       "scene-effect", "scene-effect-strength", "scene-effect-depth", "scene-effects", "scene-captures",
                       "scene-color-capture", "scene-depth-capture",
                       "scene-effect-history-revision", "scene-effect-animate"}, true)
@@ -109,9 +141,12 @@ struct SceneAnalysis {
                                     name == "texture-mipmaps")) ||
           ((kind == "Text" || kind == "Label" || kind == "StyledText") && name == "color") ||
           (kind == "StyledText" && name == "link-color") ||
+          (kind == "Image" && name == "texture-input") ||
           (ordinaryButton && (name == "primary" || name == "flat")) ||
           ((kind == "DialogButton" || kind == "StandardButton") && name == "flat") ||
-          sceneViewport)
+          sceneViewport ||
+          (kind == "SceneView3D" && name == "render-mode" &&
+           knownWindowLayer(binding.getInput()).has_value()))
         paintOnly.insert(binding);
       if (name == "accessible-name" || name == "accessible-description" ||
           name == "accessible-heading-level" || name == "accessible-live")
@@ -150,40 +185,53 @@ private:
   static std::optional<llvm::SmallVector<int64_t>> staticZOrder(ElementOp parent) {
     if (!passiveElement(parent.getKind()) && parent.getKind() != "Window")
       return {};
-    llvm::SmallVector<double> z;
+    bool window = parent.getKind() == "Window";
+    llvm::SmallVector<std::pair<int, double>> stacking;
     for (auto &op : parent.getBody().front()) {
       if (isa<InstanceOp>(op))
         return {};
       auto child = dyn_cast<ElementOp>(op);
       if (!child)
         continue;
-      if (!passiveElement(child.getKind()) && child.getKind() != "Button")
+      bool layeredViewport = window && child.getKind() == "SceneView3D";
+      if (!passiveElement(child.getKind()) && child.getKind() != "Button" &&
+          !layeredViewport)
         return {};
       double value = 0;
+      int layer = 0;
       for (auto &member : child.getBody().front()) {
         if (isa<RepeatOp, ShowIfOp>(member))
           return {};
-        if (auto binding = dyn_cast<BindOp>(member);
-            binding && binding.getName() == "z") {
-          auto literal = binding.getInput().getDefiningOp<LiteralOp>();
-          if (!literal || literal.getValue().getAsDouble(value) ||
-              !std::isfinite(value))
+        if (auto binding = dyn_cast<BindOp>(member)) {
+          auto name = binding.getName();
+          if (name == "z") {
+            auto literal = binding.getInput().getDefiningOp<LiteralOp>();
+            if (!literal || literal.getValue().getAsDouble(value) ||
+                !std::isfinite(value))
+              return {};
+          } else if (layeredViewport && name == "render-mode") {
+            auto planned = knownWindowLayer(binding.getInput());
+            if (!planned)
+              return {};
+            layer = *planned;
+          }
+        }
+        if (isa<StateSetOp, AnimateOp>(member)) {
+          auto name = member.getAttrOfType<StringAttr>("name").getValue();
+          if (name == "z" || (layeredViewport && name == "render-mode"))
             return {};
         }
-        if (isa<StateSetOp, AnimateOp>(member) &&
-            member.getAttrOfType<StringAttr>("name").getValue() == "z")
-          return {};
       }
-      z.push_back(value);
+      stacking.emplace_back(layer, value);
     }
-    if (z.size() < 2)
+    if (stacking.size() < 2)
       return {};
-    if (std::is_sorted(z.begin(), z.end()))
+    if (std::is_sorted(stacking.begin(), stacking.end()))
       return llvm::SmallVector<int64_t>{};
-    llvm::SmallVector<int64_t> order(z.size());
+    llvm::SmallVector<int64_t> order(stacking.size());
     std::iota(order.begin(), order.end(), 0);
     std::stable_sort(order.begin(), order.end(),
-                     [&](int64_t a, int64_t b) { return z[a] < z[b]; });
+                     [&](int64_t a, int64_t b) { return stacking[a] < stacking[b]; });
     return order;
   }
 

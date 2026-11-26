@@ -15,7 +15,7 @@ const WEIGHTS: [f32; ATTRIBUTES] = [
 const LEVELS: [(f32, f32, f64); 2] = [(0.5, 0.035, 140.0), (0.125, 0.12, 60.0)];
 const PIXEL_ERROR: f64 = 2.0;
 
-pub(super) fn generate(asset: MeshAsset) -> MeshAsset {
+pub fn generate(asset: MeshAsset) -> MeshAsset {
     let meshes = asset.geometry_meshes();
     let palettes = asset.lod_joint_palettes();
     let prepared: Vec<_> = meshes

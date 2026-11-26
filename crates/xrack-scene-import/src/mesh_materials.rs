@@ -1,7 +1,4 @@
-use crate::{
-    assets::{asset_path, local_path, read_asset},
-    mesh::{decode_uri, inline_data},
-};
+use crate::mesh::{decode_uri, inline_data};
 use flate2::{Compression, write::ZlibEncoder};
 use gltf::{
     Material,
@@ -17,10 +14,12 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use xrack_assets::files::{asset_path, local_path, read_asset};
 use xrack_runtime::scene3d::{
     MeshAlphaMode, MeshAnisotropy, MeshClearcoat, MeshCullMode, MeshDielectric, MeshImage,
     MeshMaterial, MeshMaterialSlot, MeshNormalMap, MeshPbr, MeshTexture, MeshTransmission,
-    MeshVolume, MeshWorkflow, TextureColorSpace, TextureFilter, TextureTransform, TextureWrap,
+    MeshVolume, MeshWorkflow, TextureColorSpace, TextureFilter, TextureSampling, TextureTransform,
+    TextureWrap,
 };
 use xrack_syntax::gltf_metadata::{
     ANISOTROPY, CLEARCOAT, DISPERSION, EMISSIVE_STRENGTH, EXTENDED_MATERIALS, GltfMetadata, IOR,
@@ -582,12 +581,15 @@ impl<'a> Materials<'a> {
         }
         Ok(MeshTexture {
             image,
-            wrap: [wrap(sampler.wrap_s()), wrap(sampler.wrap_t())],
-            min_filter,
-            mip_filter,
-            mag_filter: match sampler.mag_filter() {
-                Some(MagFilter::Nearest) => TextureFilter::Nearest,
-                _ => TextureFilter::Linear,
+            sampling: TextureSampling {
+                wrap: [wrap(sampler.wrap_s()), wrap(sampler.wrap_t())],
+                min_filter,
+                mip_filter,
+                max_anisotropy: 1,
+                mag_filter: match sampler.mag_filter() {
+                    Some(MagFilter::Nearest) => TextureFilter::Nearest,
+                    _ => TextureFilter::Linear,
+                },
             },
             uv_slot: slot as u8,
             transform,
@@ -851,7 +853,7 @@ fn wrap(wrap: WrappingMode) -> TextureWrap {
     }
 }
 
-pub(crate) fn prepare_scene_texture(bytes: &[u8]) -> Result<MeshImage, String> {
+pub fn prepare_scene_texture(bytes: &[u8]) -> Result<MeshImage, String> {
     let image = decode(bytes, None)
         .map_err(|error| error.replace("glTF material textures", "3D textures"))?;
     for color in TextureColorSpace::ALL {
@@ -860,7 +862,7 @@ pub(crate) fn prepare_scene_texture(bytes: &[u8]) -> Result<MeshImage, String> {
     Ok(image)
 }
 
-fn decode(bytes: &[u8], mime: Option<&str>) -> Result<MeshImage, String> {
+pub(super) fn decode(bytes: &[u8], mime: Option<&str>) -> Result<MeshImage, String> {
     const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
     let mime = mime.or_else(|| {
         if bytes.starts_with(PNG_SIGNATURE) {

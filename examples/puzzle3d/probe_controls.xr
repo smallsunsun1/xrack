@@ -1,0 +1,85 @@
+struct Surface { metalness: float, roughness: float }
+struct Actor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: Surface, camera-kind: string,
+}
+struct Lamp {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
+}
+struct Sky {
+    enabled: bool, sky-top-color: color, sky-horizon-color: color,
+    ground-horizon-color: color, ground-bottom-color: color,
+    ground-energy: float, sun-energy: float,
+}
+struct LocalProbe {
+    source: string, position: point3d, box-size: vector3d, visible: bool,
+    pitch: float, roll: float, capture-size: int, refresh-mode: string,
+}
+
+export component ProbeControlsDemo inherits Window {
+    title: "XRack · 环境探针方向";
+    width: 420px; height: 256px; resizable: false; background: #1b2638;
+    in-out property <float> pitch: 0;
+    in-out property <float> roll: 0;
+    in-out property <float> horizon: 0;
+    in-out property <int> local: 0;
+    in-out property <float> local-pitch: 0;
+    in-out property <float> local-roll: 0;
+    in-out property <bool> independent: true;
+    in-out property <bool> procedural: false;
+
+    property <Actor> unit: Actor {
+        id: "", mesh: "primitive:sphere", x: 0, y: -0.20, z: 0,
+        scale-x: 0.88, scale-y: 0.88, scale-z: 0.88, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, material: Surface { metalness: 0, roughness: 0.76 }, camera-kind: "",
+    };
+    view := SceneView3D {
+        width: 420px; height: 202px; camera: "eye"; cache-rendering: true;
+        scene-background: #223148; ambient-intensity: 0;
+        model: [
+            Actor { id: "eye", mesh: "", y: 0.12, z: 6.3, camera-kind: "perspective", ..root.unit },
+            Actor { id: "matte", x: -1.30, ..root.unit },
+            Actor { id: "metal", x: 1.30, material: Surface { metalness: 1, roughness: 0.18 }, ..root.unit },
+        ];
+        lights: [Lamp {
+            kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
+            intensity: 0, color: #fff, range: 0, inner-angle: 0, outer-angle: 0,
+        }];
+        environment: @environment-url("models/skybox-cross.hdr");
+        environment-sky: Sky {
+            enabled: root.procedural, sky-top-color: #3a82ed, sky-horizon-color: #bbdaff,
+            ground-horizon-color: #e2924c, ground-bottom-color: #a94232, ground-energy: 1, sun-energy: 0,
+        };
+        environment-skybox: true;
+        skybox-sky: Sky {
+            enabled: root.independent, sky-top-color: #334773, sky-horizon-color: #a6b6d8,
+            ground-horizon-color: #544358, ground-bottom-color: #282a3d, ground-energy: 0.65, sun-energy: 0,
+        };
+        environment-pitch: root.pitch; environment-roll: root.roll; environment-horizon: root.horizon;
+        reflection-probes: [LocalProbe {
+            source: root.local == 1 ? @environment-url("models/skybox-cross.hdr") : "",
+            position: Point3D.new(1.25, 0.45, 1.5), box-size: Vector3D.new(2.3, 4, 5),
+            visible: root.local != 0,
+            pitch: root.local-pitch, roll: root.local-roll, capture-size: 32, refresh-mode: "on-change",
+        }];
+    }
+    pitch-toggle := Button {
+        x: 10px; y: 212px; width: 76px; height: 34px; text: "俯仰";
+        clicked => { root.pitch = root.pitch == 0 ? 48 : 0; }
+    }
+    roll-toggle := Button {
+        x: 97px; y: 212px; width: 76px; height: 34px; text: "滚转";
+        clicked => { root.roll = root.roll == 0 ? 83 : 0; }
+    }
+    horizon-toggle := CheckBox {
+        x: 185px; y: 212px; width: 106px; height: 34px; text: "地平线";
+        checked: root.horizon > 0; toggled => { root.horizon = root.horizon > 0 ? 0 : 1; }
+    }
+    local-toggle := Button {
+        x: 301px; y: 212px; width: 109px; height: 34px;
+        text: root.local == 0 ? "全局探针" : root.local == 1 ? "局部 HDR" : "实时反射";
+        clicked => { root.local = (root.local + 1) % 3; root.local-pitch = 40; }
+    }
+}

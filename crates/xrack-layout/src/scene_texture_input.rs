@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use xrack_runtime::{
     Length, Node, Point2D, SceneFeature, Value,
-    scene3d::{SceneCamera, SceneTextureHit},
+    scene_effect::SceneScissor,
+    scene3d::{SceneCamera, SceneItemTexture, SceneTextureHit},
 };
 
 use crate::{LayoutNode, Point, Target};
@@ -16,6 +17,7 @@ pub(crate) struct Capture {
     object: String,
     row: Option<u32>,
     placement: Option<(u32, Option<u32>)>,
+    tile: [i64; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +43,9 @@ pub(crate) fn viewport_hit(
         Length(f64::from(local.x - bounds.x)),
         Length(f64::from(local.y - bounds.y)),
     );
+    if SceneScissor::for_view(node).is_some_and(|clip| !clip.contains([point.x.0, point.y.0])) {
+        return None;
+    }
     camera.item_texture_at(model, point)
 }
 
@@ -69,6 +74,7 @@ pub(crate) fn project(
             object: hit.id,
             row: hit.row,
             placement: hit.placement,
+            tile: hit.tile,
         },
     })
 }
@@ -93,7 +99,7 @@ fn source_target(scene: &Node, layout: &LayoutNode, name: &str) -> Option<Target
         if !layout.visible || !node.contains_scene_feature(SceneFeature::SceneTextureSource) {
             return Some(());
         }
-        if node.kind == "Rectangle" && node.text("texture-source") == Some(name) {
+        if node.scene_texture_source() == Some(name) {
             if found.is_some() {
                 return None;
             }
@@ -111,7 +117,10 @@ fn source_target(scene: &Node, layout: &LayoutNode, name: &str) -> Option<Target
     let path = found?;
     let node = scene.at_path(&path)?;
     let item = layout.at_path(&path)?;
-    if !item.enabled || node.contains_scene_feature(SceneFeature::SceneViewport) {
+    if !item.enabled
+        || node.kind != "Rectangle"
+        || node.contains_scene_feature(SceneFeature::SceneViewport)
+    {
         return None;
     }
     let row = scene.row_key_at(&path);
@@ -139,6 +148,12 @@ pub fn scene_texture_source_active(
             && let Some(camera) =
                 SceneCamera::for_view(node, [item.bounds.width.into(), item.bounds.height.into()])
         {
+            if SceneScissor::for_view(node).is_some_and(|clip| {
+                let [left, top, right, bottom] = clip.relative_to(camera.content_rect());
+                right <= left || bottom <= top
+            }) {
+                return false;
+            }
             let geometry = model.geometry(&camera);
             let visibility = geometry.visibility(&camera);
             let eye = camera.eye_position();
@@ -148,11 +163,9 @@ pub fn scene_texture_source_active(
                     && object.visible_at_distance(eye)
                     && visibility.contains(index as u32)
                     && object.mesh.uses_base_items()
-                    && object
-                        .mesh
-                        .materials()
-                        .iter()
-                        .any(|material| material.base_item.as_deref() == Some(name))
+                    && object.mesh.materials().iter().any(|material| {
+                        material.base_item.as_deref().map(SceneItemTexture::source) == Some(name)
+                    })
             }) {
                 return true;
             }

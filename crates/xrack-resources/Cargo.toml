@@ -8,19 +8,14 @@ repository.workspace = true
 description = "XRack resources support"
 
 [dependencies]
-base64 = "0.22"
-bevy_mikktspace = "=1.0.0"
 flate2.workspace = true
 fluent-syntax.workspace = true
 gif.workspace = true
 gif-dispose.workspace = true
-gltf = { version = "=1.4.1", default-features = false, features = ["utils", "extensions", "KHR_materials_unlit"] }
-jpeg-decoder = { version = "=0.3.2", default-features = false }
 naga = { version = "=30.0.1", default-features = false, features = ["wgsl-in"] }
 nalgebra.workspace = true
 png.workspace = true
 rgb.workspace = true
-rmeshopt = "=0.1.3"
 roxmltree = "=0.21.2"
 serde.workspace = true
 serde_json.workspace = true
@@ -32,4 +27,5 @@ unic-langid.workspace = true
 xrack-assets.workspace = true
 xrack-mlir.workspace = true
 xrack-runtime.workspace = true
+xrack-scene-import.workspace = true
 xrack-syntax.workspace = true

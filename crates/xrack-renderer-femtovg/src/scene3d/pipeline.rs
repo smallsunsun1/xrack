@@ -5,27 +5,33 @@ use std::{
 
 use crate::scene3d::{
     COLOR_FORMAT, DEPTH_FORMAT, HDR_FORMAT, INSTANCE_STRIDE,
-    color_capture::attachment_format,
+    color_capture::{CaptureMask, attachment_format},
     material::{
         CLEARCOAT_SETTINGS_BINDING, CLEARCOAT_TEXTURES, FIRST_SHADER_TEXTURE_BINDING,
         MATERIAL_TEXTURES, SHADER_CAPTURE_BINDING, shader_texture_slots,
     },
 };
 use xrack_runtime::{
-    material_shader::{INTERFACE, MaterialHooks, VALIDATION_TEXTURES, VERTEX_APPLICATION},
+    material_shader::{
+        EMPTY_AUGMENT_TEXTURES, INTERFACE, MAX_TEXTURES, MaterialHooks, VALIDATION_TEXTURES,
+        VERTEX_APPLICATION, capture_augment_parts,
+    },
     scene_effect::{
         CAPTURE_DEPTH_READ, CAPTURE_POSITION, CaptureAttachment, CaptureBlend,
         CaptureBlendComponent, CaptureBlendFactor, CaptureBlendOp, CaptureDepthCompare,
-        CapturePipelineState, CaptureRenderables, CaptureStencilOp,
+        CapturePipelineState, CaptureRenderables, CaptureStencilOp, MATERIAL_DATA_ATTACHMENTS,
     },
     scene3d::{MeshBlendMode, MeshCullMode, MeshDepthDraw, MeshVertex},
 };
 
 use super::deform::{Deformation, DeformationLayouts, SKIN_LAYOUT, shader_source};
-use super::screen_lighting::surface_targets;
 use super::transparency::{ACCUMULATION, REVEALAGE};
 use super::volumetric_fog::FogMode;
 use super::wireframe::{self, RasterMode};
+use super::{
+    linked_transparency::{self, LinkedSamples},
+    screen_lighting::surface_targets,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum VolumeMode {
@@ -246,10 +252,12 @@ pub(super) enum ColorPass {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum GeometryOutput {
     Surface,
-    Named(u8),
-    Data(wgpu::TextureFormat),
-    Combined(u8, Option<wgpu::TextureFormat>),
+    Named(CaptureMask),
+    Data(DataTargets),
+    Combined(CaptureMask, DataTargets),
 }
+
+type DataTargets = [Option<wgpu::TextureFormat>; MATERIAL_DATA_ATTACHMENTS.len()];
 
 pub(super) const NAMED_GEOMETRY_ATTACHMENTS: [CaptureAttachment; 4] = [
     CaptureAttachment::NormalRoughness,
@@ -262,7 +270,9 @@ impl GeometryOutput {
     fn has_attachment(self, attachment: CaptureAttachment) -> bool {
         match self {
             Self::Named(mask) | Self::Combined(mask, _) => mask & (1 << attachment.index()) != 0,
-            Self::Data(_) => attachment == CaptureAttachment::MaterialData,
+            Self::Data(data) => attachment
+                .material_data_slot()
+                .is_some_and(|index| data[index].is_some()),
             Self::Surface => false,
         }
     }
@@ -282,22 +292,48 @@ impl GeometryOutput {
         })
     }
 
+    fn data_formats(self) -> DataTargets {
+        match self {
+            Self::Data(data) | Self::Combined(_, data) => data,
+            _ => [None; MATERIAL_DATA_ATTACHMENTS.len()],
+        }
+    }
+
+    fn data_targets(self, writes: wgpu::ColorWrites) -> [Option<wgpu::ColorTargetState>; 3] {
+        self.data_formats().map(|format| {
+            format.map(|format| wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: writes,
+            })
+        })
+    }
+
     pub(super) fn combined_targets(
         self,
         color: wgpu::ColorTargetState,
         writes: wgpu::ColorWrites,
-    ) -> Option<([Option<wgpu::ColorTargetState>; 6], usize)> {
-        let Self::Combined(_, data_format) = self else {
+    ) -> Option<([Option<wgpu::ColorTargetState>; 8], usize)> {
+        if !self.combined() {
             return None;
-        };
+        }
         let [normal, base, emissive, depth] = self.geometry_targets(writes);
-        let data = data_format.map(|format| wgpu::ColorTargetState {
-            format,
-            blend: None,
-            write_mask: writes,
-        });
-        let len = NAMED_GEOMETRY_ATTACHMENTS.len() + 1 + usize::from(data.is_some());
-        Some(([normal, base, emissive, depth, Some(color), data], len))
+        let [data0, data1, data2] = self.data_targets(writes);
+        let targets = [
+            normal,
+            base,
+            emissive,
+            depth,
+            Some(color),
+            data0,
+            data1,
+            data2,
+        ];
+        let len = targets
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |index| index + 1);
+        Some((targets, len))
     }
 }
 
@@ -305,6 +341,7 @@ impl GeometryOutput {
 pub(super) struct ColorOutput {
     pub hdr: bool,
     pub format_override: Option<wgpu::TextureFormat>,
+    pub encode_srgb: bool,
     pub multisampling: bool,
     pub pass: ColorPass,
     pub renderables: CaptureRenderables,
@@ -313,19 +350,22 @@ pub(super) struct ColorOutput {
     pub raster: RasterMode,
     pub reverse_winding: bool,
     pub reverse_depth: bool,
+    pub lod_fade: bool,
     pub screen_reflections: bool,
     pub screen_indirect_light: bool,
     pub capture_geometry: Option<GeometryOutput>,
     pub named_geometry: bool,
     pub lightmapped: bool,
     pub model_particles: bool,
+    pub linked_transparency: bool,
+    pub debug_material: bool,
     pub fog: FogMode,
 }
 
 impl ColorOutput {
     pub(super) fn writes_material_data(self) -> bool {
         self.capture_geometry
-            .is_some_and(|geometry| geometry.has_attachment(CaptureAttachment::MaterialData))
+            .is_some_and(|geometry| geometry.data_formats().iter().any(Option::is_some))
     }
 
     pub(super) fn draws_geometry(self) -> bool {
@@ -355,7 +395,9 @@ impl ColorOutput {
     pub(super) fn format(self) -> wgpu::TextureFormat {
         match self.capture_geometry {
             Some(GeometryOutput::Surface | GeometryOutput::Named(_)) => HDR_FORMAT,
-            Some(GeometryOutput::Data(format)) => format,
+            Some(GeometryOutput::Data(formats)) => {
+                formats.into_iter().flatten().next().unwrap_or(HDR_FORMAT)
+            }
             _ => self
                 .format_override
                 .unwrap_or(if self.hdr { HDR_FORMAT } else { COLOR_FORMAT }),
@@ -383,7 +425,7 @@ pub(super) const GEOMETRY_LAYOUTS: [Option<wgpu::VertexBufferLayout<'static>>; 2
     Some(wgpu::VertexBufferLayout {
         array_stride: INSTANCE_STRIDE,
         step_mode: wgpu::VertexStepMode::Instance,
-        attributes: &wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Uint32],
+        attributes: &wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Uint32x2],
     }),
 ];
 
@@ -396,7 +438,11 @@ pub(super) const INSTANCE_DATA_LAYOUT: Option<wgpu::VertexBufferLayout<'static>>
     });
 
 pub(super) struct Pipelines {
+    pub capture_augment: Option<Arc<str>>,
+    pub capture_augment_slots: usize,
     pub globals: wgpu::BindGroupLayout,
+    augment_globals: [Option<wgpu::BindGroupLayout>; MAX_TEXTURES],
+    linked_globals: [Option<wgpu::BindGroupLayout>; 2],
     pub materials: [wgpu::BindGroupLayout; 2],
     pub environment: wgpu::BindGroupLayout,
     pub shader_materials: [[Option<wgpu::BindGroupLayout>; 2]; 2],
@@ -404,6 +450,7 @@ pub(super) struct Pipelines {
     layouts: [[wgpu::PipelineLayout; 4]; 2],
     shader: wgpu::ShaderModule,
     wire_shader: Option<wgpu::ShaderModule>,
+    linked_shaders: [Option<wgpu::ShaderModule>; 4],
     variants: [[Option<wgpu::RenderPipeline>; 64]; 24],
     weighted: [[Option<wgpu::RenderPipeline>; 32]; 24],
     skybox: [Option<wgpu::RenderPipeline>; 48 * FogMode::COUNT],
@@ -436,7 +483,7 @@ type VariantKey = (
         bool,
         RasterMode,
         Option<wgpu::TextureFormat>,
-        bool,
+        (bool, bool, bool, bool, bool),
     ),
 );
 
@@ -447,9 +494,12 @@ struct CustomMaterials {
 }
 
 struct CustomProgram {
-    source: Arc<str>,
+    source: Option<Arc<str>>,
+    augment: Option<Arc<str>>,
     slots: usize,
+    augment_slots: usize,
     wireframe: bool,
+    linked: Option<LinkedSamples>,
     module: Option<wgpu::ShaderModule>,
     pipelines: HashMap<VariantKey, wgpu::RenderPipeline>,
 }
@@ -458,85 +508,161 @@ impl CustomMaterials {
     fn get(
         &mut self,
         device: &wgpu::Device,
-        (source, slots, wireframe): (&Arc<str>, usize, bool),
+        (source, augment): (Option<&Arc<str>>, Option<&Arc<str>>),
+        (slots, augment_slots, wireframe, linked): (usize, usize, bool, Option<LinkedSamples>),
         key: VariantKey,
-        create: impl Fn(Option<&wgpu::ShaderModule>) -> wgpu::RenderPipeline,
+        create: impl Fn(Option<&wgpu::ShaderModule>, bool) -> wgpu::RenderPipeline,
     ) -> Option<&wgpu::RenderPipeline> {
         const RETAINED_PROGRAMS: usize = 16;
+        let load = |augment: Option<(&str, &str)>| {
+            let built_in;
+            let wgsl = if let Some(source) = source {
+                source
+            } else {
+                built_in = MaterialHooks::default().prepare("");
+                built_in.as_str()
+            };
+            let bindings = if augment.is_some() { augment_slots } else { 0 };
+            checked_material_gpu(device, || {
+                mesh_shader(
+                    device,
+                    wgsl,
+                    slots,
+                    (wireframe, linked),
+                    (augment, bindings),
+                )
+            })
+        };
         let index = self.programs.iter().position(|program| {
-            program.slots == slots && program.wireframe == wireframe && program.source == *source
+            program.slots == slots
+                && program.augment_slots == augment_slots
+                && program.wireframe == wireframe
+                && program.linked == linked
+                && program.source.as_ref() == source
+                && program.augment.as_ref() == augment
         });
         if index != Some(0) {
             let program = index
                 .and_then(|index| self.programs.remove(index))
-                .unwrap_or_else(|| {
-                    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                    let module = mesh_shader(device, source, slots, wireframe);
-                    let module = match pollster::block_on(scope.pop()) {
-                        Some(error) => {
-                            tracing::warn!(%error, "XRack disabled an invalid material shader");
-                            None
-                        }
-                        None => Some(module),
-                    };
-                    CustomProgram {
-                        source: source.clone(),
-                        slots,
-                        wireframe,
-                        module,
-                        pipelines: HashMap::new(),
-                    }
+                .unwrap_or_else(|| CustomProgram {
+                    source: source.cloned(),
+                    augment: augment.cloned(),
+                    slots,
+                    augment_slots,
+                    wireframe,
+                    linked,
+                    module: load(augment.and_then(|source| capture_augment_parts(source))),
+                    pipelines: HashMap::new(),
                 });
             self.programs.truncate(RETAINED_PROGRAMS - 1);
             self.programs.push_front(program);
         }
         let program = self.programs.front_mut()?;
         Some(program.pipelines.entry(key).or_insert_with(|| {
-            let Some(module) = &program.module else {
-                return create(None);
+            let mut build = |module, augmented| {
+                self.builds += 1;
+                checked_material_gpu(device, || create(Some(module), augmented))
             };
-            self.builds += 1;
-            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let pipeline = create(Some(module));
-            if let Some(error) = pollster::block_on(scope.pop()) {
-                tracing::warn!(%error, "XRack fell back to built-in material shading");
-                create(None)
-            } else {
-                pipeline
-            }
+            program
+                .module
+                .as_ref()
+                .and_then(|module| build(module, augment.is_some()))
+                .or_else(|| {
+                    // Keep the original vertex and material program if the device rejects the link.
+                    if augment.is_some() && source.is_some() {
+                        let module = load(None)?;
+                        self.builds += 1;
+                        checked_material_gpu(device, || create(Some(&module), false))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| create(None, false))
         }))
     }
 }
 
-fn texture_interface(slots: usize, positions: bool) -> String {
+fn checked_material_gpu<T>(device: &wgpu::Device, build: impl FnOnce() -> T) -> Option<T> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let value = build();
+    if let Some(error) = pollster::block_on(scope.pop()) {
+        tracing::warn!(%error, "XRack GPU rejected a material program variant");
+        None
+    } else {
+        Some(value)
+    }
+}
+
+pub(super) const AUGMENT_TEXTURE_BINDING: u32 = 9;
+pub(super) const AUGMENT_CAPTURE_BINDING: u32 = AUGMENT_TEXTURE_BINDING + MAX_TEXTURES as u32;
+pub(super) const PACKED_SHADOW_BINDING: u32 = AUGMENT_CAPTURE_BINDING + 1;
+
+struct TextureInterface {
+    name: &'static str,
+    flags: &'static str,
+    group: u32,
+    textures: u32,
+    projections: u32,
+}
+
+const MATERIAL_INPUTS: TextureInterface = TextureInterface {
+    name: "material",
+    flags: "material.shader_texture_flags",
+    group: 1,
+    textures: FIRST_SHADER_TEXTURE_BINDING,
+    projections: SHADER_CAPTURE_BINDING,
+};
+
+const AUGMENT_INPUTS: TextureInterface = TextureInterface {
+    name: "capture_augment",
+    flags: "globals.augment_texture_flags",
+    group: 0,
+    textures: AUGMENT_TEXTURE_BINDING,
+    projections: AUGMENT_CAPTURE_BINDING,
+};
+
+fn texture_interface(interface: TextureInterface, slots: usize, positions: bool) -> String {
+    let TextureInterface {
+        name,
+        flags,
+        group,
+        textures,
+        projections,
+    } = interface;
     let bindings: String = (0..slots)
         .map(|slot| {
-            let binding = FIRST_SHADER_TEXTURE_BINDING + slot as u32;
+            let binding = textures + slot as u32;
             format!(
-                "@group(1) @binding({binding}) var xr_material_image_{slot}: texture_2d<f32>;\n"
+                "@group({group}) @binding({binding}) var xr_{name}_image_{slot}: texture_2d<f32>;\n"
             )
         })
         .collect();
     let sizes: String = (0..slots)
         .map(|slot| {
-            format!("case {slot}u: {{ return textureDimensions(xr_material_image_{slot}); }}\n")
+            format!("case {slot}u: {{ return textureDimensions(xr_{name}_image_{slot}); }}\n")
         })
         .collect();
     let samples: String = (0..slots)
-        .map(|slot| format!("case {slot}u: {{ return xr_material_sample(xr_material_image_{slot}, uv, flags); }}\n"))
+        .map(|slot| format!("case {slot}u: {{ return xr_material_sample(xr_{name}_image_{slot}, uv, flags); }}\n"))
+        .collect();
+    let samples_lod: String = (0..slots)
+        .map(|slot| format!("case {slot}u: {{ return xr_material_sample_lod(xr_{name}_image_{slot}, uv, flags, lod); }}\n"))
+        .collect();
+    let samples_grad: String = (0..slots)
+        .map(|slot| format!("case {slot}u: {{ return xr_material_sample_grad(xr_{name}_image_{slot}, uv, flags, dx, dy); }}\n"))
         .collect();
     let positions = if positions {
         let cases: String = (0..slots).map(|slot| format!(
-            "case {slot}u: {{ return xr_material_world_position(xr_material_image_{slot}, uv, flags, xr_material_inverse_clip[{slot}]); }}\n"
+            "case {slot}u: {{ return xr_material_world_position(xr_{name}_image_{slot}, uv, flags, xr_{name}_inverse_clip[{slot}]); }}\n"
         )).collect();
         format!(
             r#"
-@group(1) @binding({SHADER_CAPTURE_BINDING}) var<uniform> xr_material_inverse_clip: array<mat4x4<f32>, {slots}>;
-fn material_texture_world_position(index: u32, uv: vec2<f32>) -> XrCapturePosition {{
-    if !material_has_texture(index) || !all(abs(uv) <= vec2(1e20)) {{
+@group({group}) @binding({projections}) var<uniform> xr_{name}_inverse_clip: array<mat4x4<f32>, {slots}>;
+fn {name}_texture_world_position(index: u32, uv: vec2<f32>) -> XrCapturePosition {{
+    if !{name}_has_texture(index) || !all(abs(uv) <= vec2(1e20)) {{
         return xr_invalid_capture_position();
     }}
-    let flags = material.shader_texture_flags[index];
+    let flags = {flags}[index];
     switch index {{
         {cases}
         default: {{ return xr_invalid_capture_position(); }}
@@ -544,34 +670,54 @@ fn material_texture_world_position(index: u32, uv: vec2<f32>) -> XrCapturePositi
 }}"#
         )
     } else {
-        "fn material_texture_world_position(index: u32, uv: vec2<f32>) -> XrCapturePosition { return xr_invalid_capture_position(); }".to_owned()
+        format!(
+            "fn {name}_texture_world_position(index: u32, uv: vec2<f32>) -> XrCapturePosition {{ return xr_invalid_capture_position(); }}"
+        )
     };
     format!(
         r#"
 {bindings}
-{}
-fn material_has_texture(index: u32) -> bool {{
-    return index < {slots}u && (material.shader_texture_flags[index] & 1u) != 0u;
+fn {name}_has_texture(index: u32) -> bool {{
+    return index < {slots}u && ({flags}[index] & 1u) != 0u;
 }}
-fn material_texture_size(index: u32) -> vec2<u32> {{
-    if !material_has_texture(index) {{ return vec2(0u); }}
+fn {name}_texture_size(index: u32) -> vec2<u32> {{
+    if !{name}_has_texture(index) {{ return vec2(0u); }}
     switch index {{
         {sizes}
         default: {{ return vec2(0u); }}
     }}
 }}
-fn material_texture(index: u32, uv: vec2<f32>) -> vec4<f32> {{
-    if !material_has_texture(index) || !all(abs(uv) <= vec2(1e20)) {{
+fn {name}_texture(index: u32, uv: vec2<f32>) -> vec4<f32> {{
+    if !{name}_has_texture(index) || !all(abs(uv) <= vec2(1e20)) {{
         return vec4(0.0);
     }}
-    let flags = material.shader_texture_flags[index];
+    let flags = {flags}[index];
     switch index {{
         {samples}
         default: {{ return vec4(0.0); }}
     }}
 }}
-{positions}"#,
-        include_str!("material_sampling.wgsl")
+fn {name}_texture_lod(index: u32, uv: vec2<f32>, lod: f32) -> vec4<f32> {{
+    if !{name}_has_texture(index) || !all(abs(uv) <= vec2(1e20)) {{
+        return vec4(0.0);
+    }}
+    let flags = {flags}[index];
+    switch index {{
+        {samples_lod}
+        default: {{ return vec4(0.0); }}
+    }}
+}}
+fn {name}_texture_grad(index: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {{
+    if !{name}_has_texture(index) || !all(abs(uv) <= vec2(1e20)) {{
+        return vec4(0.0);
+    }}
+    let flags = {flags}[index];
+    switch index {{
+        {samples_grad}
+        default: {{ return vec4(0.0); }}
+    }}
+}}
+{positions}"#
     )
 }
 
@@ -579,23 +725,54 @@ fn mesh_shader(
     device: &wgpu::Device,
     custom: &str,
     slots: usize,
-    wireframe: bool,
+    (wireframe, linked): (bool, Option<LinkedSamples>),
+    (augment, augment_slots): (Option<(&str, &str)>, usize),
 ) -> wgpu::ShaderModule {
     let standard = include_str!("scene.wgsl");
+    let sky_radiance = include_str!("sky_radiance.wgsl");
     let scene = if wireframe {
         std::borrow::Cow::Owned(wireframe::mesh(standard))
     } else {
         std::borrow::Cow::Borrowed(standard)
     };
+    let scene = if let Some(samples) = linked {
+        std::borrow::Cow::Owned(linked_transparency::capture_shader(&scene, samples))
+    } else {
+        scene
+    };
     let textures = if slots == 0 {
         VALIDATION_TEXTURES.to_owned()
     } else {
-        texture_interface(slots, MaterialHooks::from_source(custom).capture_position)
+        texture_interface(
+            MATERIAL_INPUTS,
+            slots,
+            MaterialHooks::from_source(custom).capture_position,
+        )
     };
+    let augment_textures = if augment_slots == 0 {
+        std::borrow::Cow::Borrowed(EMPTY_AUGMENT_TEXTURES)
+    } else {
+        std::borrow::Cow::Owned(texture_interface(AUGMENT_INPUTS, augment_slots, true))
+    };
+    let texture_sampling = if slots != 0 || augment_slots != 0 {
+        concat!(
+            "
+",
+            include_str!("material_sampling.wgsl")
+        )
+    } else {
+        ""
+    };
+    let (directives, augment) = augment.unwrap_or(("", r#"
+        const XRACK_AUGMENT_UV_GRADIENTS: bool = false;
+        fn xrack_augment_scene_capture_augment(input: XrMaterialInput, surface: XrMaterialSurface, index: u32) -> vec4<f32> {
+            return vec4(0.0);
+        }
+    "#));
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("XRack 3D mesh shader"),
         source: shader_source(&format!(
-            "{custom}\n{INTERFACE}\n{CAPTURE_POSITION}\n{CAPTURE_DEPTH_READ}\n{textures}\n{VERTEX_APPLICATION}\n{}\n{}\n{}\n{}\n{}",
+            "{directives}\n{custom}\n{augment}\n{INTERFACE}\n{CAPTURE_POSITION}\n{CAPTURE_DEPTH_READ}\n{texture_sampling}\n{textures}\n{augment_textures}\n{VERTEX_APPLICATION}\n{sky_radiance}\n{}\n{}\n{}\n{}\n{}",
             include_str!("screen_packing.wgsl"),
             include_str!("volumetric_fog.wgsl"),
             include_str!("volumetric_fog_profile.wgsl"),
@@ -676,6 +853,131 @@ fn material_layout(
     })
 }
 
+fn global_layout(
+    device: &wgpu::Device,
+    augment_slots: usize,
+    linked: Option<LinkedSamples>,
+) -> wgpu::BindGroupLayout {
+    let uniform = |binding, visibility| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let mut entries = vec![
+        uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
+        uniform(1, wgpu::ShaderStages::FRAGMENT),
+        uniform(2, wgpu::ShaderStages::FRAGMENT),
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 5,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 6,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 7,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 8,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: PACKED_SHADOW_BINDING,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+    ];
+
+    if augment_slots != 0 {
+        entries.extend((0..augment_slots).map(|slot| wgpu::BindGroupLayoutEntry {
+            binding: AUGMENT_TEXTURE_BINDING + slot as u32,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }));
+        entries.push(uniform(
+            AUGMENT_CAPTURE_BINDING,
+            wgpu::ShaderStages::FRAGMENT,
+        ));
+    }
+    if let Some(samples) = linked {
+        entries.extend(linked_transparency::capture_layout_entries(samples));
+    }
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("XRack 3D globals layout"),
+        entries: &entries,
+    })
+}
+
+fn globals_layout<'a>(
+    base: &'a wgpu::BindGroupLayout,
+    augment: &'a [Option<wgpu::BindGroupLayout>],
+    linked: Option<&'a wgpu::BindGroupLayout>,
+    slots: usize,
+    use_linked: bool,
+) -> &'a wgpu::BindGroupLayout {
+    if use_linked {
+        linked.unwrap_or(base)
+    } else {
+        slots
+            .checked_sub(1)
+            .and_then(|index| augment.get(index)?.as_ref())
+            .unwrap_or(base)
+    }
+}
+
 impl Pipelines {
     pub(super) fn new(device: &wgpu::Device) -> Self {
         let uniform = |binding, visibility| wgpu::BindGroupLayoutEntry {
@@ -688,66 +990,7 @@ impl Pipelines {
             },
             count: None,
         };
-        let globals = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("XRack 3D globals layout"),
-            entries: &[
-                uniform(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                uniform(1, wgpu::ShaderStages::FRAGMENT),
-                uniform(2, wgpu::ShaderStages::FRAGMENT),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 8,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let globals = global_layout(device, 0, None);
         let materials = [false, true].map(|coated| material_layout(device, coated, 0, false));
         let shader_materials = [false, true].map(|coated| {
             let slots = shader_texture_slots(device, coated);
@@ -794,7 +1037,13 @@ impl Pipelines {
                 })
             })
         });
-        let shader = mesh_shader(device, &MaterialHooks::default().prepare(""), 0, false);
+        let shader = mesh_shader(
+            device,
+            &MaterialHooks::default().prepare(""),
+            0,
+            (false, None),
+            (None, 0),
+        );
         Self {
             globals,
             materials,
@@ -804,13 +1053,47 @@ impl Pipelines {
             layouts,
             shader,
             wire_shader: None,
+            linked_shaders: Default::default(),
             variants: [const { [const { None }; 64] }; 24],
             weighted: [const { [const { None }; 32] }; 24],
             skybox: [const { None }; 48 * FogMode::COUNT],
             skybox_formats: HashMap::new(),
             specialized: HashMap::new(),
             custom: CustomMaterials::default(),
+            capture_augment: None,
+            capture_augment_slots: 0,
+            augment_globals: Default::default(),
+            linked_globals: Default::default(),
         }
+    }
+
+    pub(super) fn prepare_augment_layout(&mut self, device: &wgpu::Device, slots: usize) {
+        if let Some(index) = slots.checked_sub(1)
+            && let Some(layout) = self.augment_globals.get_mut(index)
+        {
+            layout.get_or_insert_with(|| global_layout(device, slots, None));
+        }
+    }
+
+    pub(super) fn prepare_linked_layout(&mut self, device: &wgpu::Device, multisampling: bool) {
+        let samples = LinkedSamples::from_multisampling(multisampling);
+        self.linked_globals[samples.slot()]
+            .get_or_insert_with(|| global_layout(device, 0, Some(samples)));
+    }
+
+    pub(super) fn globals_layout(
+        &self,
+        augment_slots: usize,
+        linked: bool,
+        multisampling: bool,
+    ) -> &wgpu::BindGroupLayout {
+        globals_layout(
+            &self.globals,
+            &self.augment_globals,
+            self.linked_globals[usize::from(multisampling)].as_ref(),
+            augment_slots,
+            linked,
+        )
     }
 
     pub(super) fn get(
@@ -831,35 +1114,95 @@ impl Pipelines {
         let hooks = custom.map_or_else(MaterialHooks::default, |(source, _)| {
             MaterialHooks::from_source(source)
         });
-        let writes_material_data = output.writes_material_data();
+        let data_formats = output.capture_geometry.map_or(
+            [None; MATERIAL_DATA_ATTACHMENTS.len()],
+            GeometryOutput::data_formats,
+        );
+        let mask = |predicate: fn(wgpu::TextureFormat) -> bool| {
+            data_formats
+                .iter()
+                .enumerate()
+                .fold(0u8, |mask, (index, format)| {
+                    mask | (u8::from(format.is_some_and(predicate)) << index)
+                })
+        };
+        let data_mask = mask(|_| true);
+        let full_precision = mask(|format| {
+            matches!(
+                format,
+                wgpu::TextureFormat::R32Float
+                    | wgpu::TextureFormat::Rg32Float
+                    | wgpu::TextureFormat::Rgba32Float
+            )
+        });
+        let writes_material_data = data_mask != 0;
+        let augment = self
+            .capture_augment
+            .as_ref()
+            .filter(|_| writes_material_data);
 
+        let augment_slots = if augment.is_some() {
+            self.capture_augment_slots
+        } else {
+            0
+        };
+        let linked = output.linked_transparency;
+        let globals = globals_layout(
+            &self.globals,
+            &self.augment_globals,
+            self.linked_globals[usize::from(output.multisampling)].as_ref(),
+            augment_slots,
+            linked,
+        );
         let wireframe = output.raster == RasterMode::ShaderLine;
-        let shader = if wireframe {
+        let linked_samples =
+            linked.then(|| LinkedSamples::from_multisampling(output.multisampling));
+        let shader = if let Some(samples) = linked_samples {
+            self.linked_shaders[usize::from(wireframe) + 2 * samples.slot()].get_or_insert_with(
+                || {
+                    mesh_shader(
+                        device,
+                        &MaterialHooks::default().prepare(""),
+                        0,
+                        (wireframe, Some(samples)),
+                        (None, 0),
+                    )
+                },
+            )
+        } else if wireframe {
             self.wire_shader.get_or_insert_with(|| {
-                mesh_shader(device, &MaterialHooks::default().prepare(""), 0, true)
+                mesh_shader(
+                    device,
+                    &MaterialHooks::default().prepare(""),
+                    0,
+                    (true, None),
+                    (None, 0),
+                )
             })
         } else {
             &self.shader
         };
-        let create = |custom: Option<&wgpu::ShaderModule>| {
-            let custom_fragment = custom.filter(|_| hooks.uses_fragment(writes_material_data));
-            let layout = self.shader_materials[coated][usize::from(hooks.capture_position)]
-                .as_ref()
-                .filter(|_| custom_slots > 0)
-                .map(|materials| {
-                    let extra = self.deformations.get(deformation);
-                    let groups = [
-                        Some(&self.globals),
-                        Some(materials),
-                        Some(&self.environment),
-                        extra,
-                    ];
-                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some("XRack 3D programmable material pipeline layout"),
-                        bind_group_layouts: &groups[..if extra.is_some() { 4 } else { 3 }],
-                        immediate_size: 0,
-                    })
-                });
+        let create = |custom: Option<&wgpu::ShaderModule>, augmented: bool| {
+            let custom_fragment =
+                custom.filter(|_| augmented || hooks.uses_fragment(writes_material_data));
+            let material_layout = self.shader_materials[coated]
+                [usize::from(hooks.capture_position)]
+            .as_ref()
+            .filter(|_| custom_slots > 0);
+            let layout = (linked || material_layout.is_some() || augment_slots != 0).then(|| {
+                let extra = self.deformations.get(deformation);
+                let groups = [
+                    Some(globals),
+                    Some(material_layout.unwrap_or(&self.materials[coated])),
+                    Some(&self.environment),
+                    extra,
+                ];
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("XRack 3D programmable material pipeline layout"),
+                    bind_group_layouts: &groups[..if extra.is_some() { 4 } else { 3 }],
+                    immediate_size: 0,
+                })
+            });
             let mut buffers = [
                 GEOMETRY_LAYOUTS[0].clone(),
                 GEOMETRY_LAYOUTS[1].clone(),
@@ -892,6 +1235,10 @@ impl Pipelines {
             let geometry_targets = output
                 .capture_geometry
                 .map(|geometry| geometry.geometry_targets(wgpu::ColorWrites::ALL));
+            let data_targets = output.capture_geometry.and_then(|geometry| {
+                matches!(geometry, GeometryOutput::Data(_))
+                    .then(|| geometry.data_targets(wgpu::ColorWrites::ALL))
+            });
             let combined = output
                 .capture_geometry
                 .is_some_and(GeometryOutput::combined);
@@ -903,6 +1250,128 @@ impl Pipelines {
                 surface_targets(output.multisampling, output.screen_indirect_light);
             let volume = f64::from(u8::from(surface.volume != VolumeMode::Off));
             let dispersion = f64::from(u8::from(surface.volume == VolumeMode::Dispersion));
+            let constants = [
+                ("VOLUME_MATERIAL", volume),
+                ("DISPERSION_MATERIAL", dispersion),
+                ("LOD_FADE", f64::from(output.lod_fade)),
+                ("ENCODE_SRGB", f64::from(output.encode_srgb)),
+                (
+                    "CAPTURE_EFFECT_SURFACE",
+                    f64::from(output.capture_geometry.is_some() && !combined),
+                ),
+                ("CAPTURE_LIT_SURFACE", f64::from(combined)),
+                (
+                    "CAPTURE_MATERIAL_DATA",
+                    f64::from(
+                        if (hooks.has_data() || augmented) && custom_fragment.is_some() {
+                            data_mask
+                        } else {
+                            0
+                        },
+                    ),
+                ),
+                ("CAPTURE_FULL_PRECISION_DATA", f64::from(full_precision)),
+                (
+                    "CAPTURE_AUGMENT",
+                    f64::from(augmented && custom_fragment.is_some()),
+                ),
+                (
+                    "CAPTURE_MATERIAL_OCCLUSION",
+                    f64::from(output.capture_geometry.is_some_and(|geometry| {
+                        geometry.has_attachment(CaptureAttachment::EmissiveOcclusion)
+                    })),
+                ),
+                (
+                    "CUSTOM_MATERIAL",
+                    f64::from(u8::from(custom_fragment.is_some() && hooks.surface)),
+                ),
+                (
+                    "ANISOTROPIC_MATERIAL",
+                    f64::from(u8::from(surface.anisotropy)),
+                ),
+                (
+                    "REMAP_MATERIAL_CHANNELS",
+                    f64::from(u8::from(surface.channel_remapping)),
+                ),
+                (
+                    "USE_VERTEX_COLORS",
+                    f64::from(u8::from(surface.vertex_colors)),
+                ),
+                (
+                    "APPLY_VERTEX_MASKS",
+                    f64::from(u8::from(surface.vertex_masks)),
+                ),
+                (
+                    "CUSTOM_BASE_FRESNEL",
+                    f64::from(u8::from(surface.custom_base_fresnel)),
+                ),
+                (
+                    "CUSTOM_COAT_FRESNEL",
+                    f64::from(u8::from(surface.custom_coat_fresnel)),
+                ),
+                (
+                    "NO_DEPTH_EFFECTS",
+                    f64::from(u8::from(surface.depth_draw == MeshDepthDraw::Never)),
+                ),
+                (
+                    "LIMIT_BLEND_TINT",
+                    f64::from(u8::from(state.blend.map_or(
+                        surface.blend_mode != MeshBlendMode::SourceOver,
+                        |mode| matches!(mode, CaptureBlend::Multiply | CaptureBlend::Screen),
+                    ))),
+                ),
+                ("BAKED_LIGHTMAP", f64::from(u8::from(output.lightmapped))),
+                ("DEBUG_MATERIAL", f64::from(u8::from(output.debug_material))),
+                (
+                    "MODEL_PARTICLES",
+                    f64::from(u8::from(output.model_particles)),
+                ),
+                (
+                    "VOLUMETRIC_FOG",
+                    f64::from(u8::from(output.fog != FogMode::Off)),
+                ),
+                (
+                    "TANGENT_VERTEX",
+                    f64::from(u8::from(surface.vertex_tangents)),
+                ),
+                ("FOG_SCATTERING", f64::from(u8::from(output.fog.lit()))),
+                (
+                    "FOG_HEIGHT_PROFILE",
+                    f64::from(u8::from(output.fog.profiled())),
+                ),
+                ("FOG_DENSITY_NOISE", f64::from(u8::from(output.fog.noisy()))),
+                (
+                    "SCREEN_INDIRECT_LIGHT",
+                    f64::from(u8::from(output.screen_indirect_light)),
+                ),
+                (
+                    "PACK_REFLECTION_ATTRIBUTES",
+                    f64::from(u8::from(output.multisampling)),
+                ),
+                (
+                    "SCREEN_REFLECTIONS",
+                    if output.screen_reflections { 1.0 } else { 0.0 },
+                ),
+            ];
+            let linked_constants;
+            let fragment_constants = if linked {
+                linked_constants = constants
+                    .into_iter()
+                    .chain([
+                        ("XR_LINKED_REVERSE_DEPTH", f64::from(output.reverse_depth)),
+                        (
+                            "XR_LINKED_EQUAL_DEPTH",
+                            f64::from(
+                                surface.depth_draw == MeshDepthDraw::OpaquePrepass
+                                    && material_prepass,
+                            ),
+                        ),
+                    ])
+                    .collect::<Vec<_>>();
+                linked_constants.as_slice()
+            } else {
+                &constants
+            };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if surface.blend {
                     "XRack 3D blended meshes"
@@ -978,106 +1447,17 @@ impl Pipelines {
                         },
                     }),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[
-                            ("VOLUME_MATERIAL", volume),
-                            ("DISPERSION_MATERIAL", dispersion),
-                            (
-                                "CAPTURE_EFFECT_SURFACE",
-                                f64::from(output.capture_geometry.is_some() && !combined),
-                            ),
-                            ("CAPTURE_LIT_SURFACE", f64::from(combined)),
-                            (
-                                "CAPTURE_MATERIAL_DATA",
-                                f64::from(
-                                    writes_material_data && hooks.data && custom_fragment.is_some(),
-                                ),
-                            ),
-                            (
-                                "CAPTURE_MATERIAL_OCCLUSION",
-                                f64::from(output.capture_geometry.is_some_and(|geometry| {
-                                    geometry.has_attachment(CaptureAttachment::EmissiveOcclusion)
-                                })),
-                            ),
-                            (
-                                "CUSTOM_MATERIAL",
-                                f64::from(u8::from(custom_fragment.is_some() && hooks.surface)),
-                            ),
-                            (
-                                "ANISOTROPIC_MATERIAL",
-                                f64::from(u8::from(surface.anisotropy)),
-                            ),
-                            (
-                                "REMAP_MATERIAL_CHANNELS",
-                                f64::from(u8::from(surface.channel_remapping)),
-                            ),
-                            (
-                                "USE_VERTEX_COLORS",
-                                f64::from(u8::from(surface.vertex_colors)),
-                            ),
-                            (
-                                "APPLY_VERTEX_MASKS",
-                                f64::from(u8::from(surface.vertex_masks)),
-                            ),
-                            (
-                                "CUSTOM_BASE_FRESNEL",
-                                f64::from(u8::from(surface.custom_base_fresnel)),
-                            ),
-                            (
-                                "CUSTOM_COAT_FRESNEL",
-                                f64::from(u8::from(surface.custom_coat_fresnel)),
-                            ),
-                            (
-                                "NO_DEPTH_EFFECTS",
-                                f64::from(u8::from(surface.depth_draw == MeshDepthDraw::Never)),
-                            ),
-                            (
-                                "LIMIT_BLEND_TINT",
-                                f64::from(u8::from(state.blend.map_or(
-                                    surface.blend_mode != MeshBlendMode::SourceOver,
-                                    |mode| {
-                                        matches!(
-                                            mode,
-                                            CaptureBlend::Multiply | CaptureBlend::Screen
-                                        )
-                                    },
-                                ))),
-                            ),
-                            ("BAKED_LIGHTMAP", f64::from(u8::from(output.lightmapped))),
-                            (
-                                "MODEL_PARTICLES",
-                                f64::from(u8::from(output.model_particles)),
-                            ),
-                            (
-                                "VOLUMETRIC_FOG",
-                                f64::from(u8::from(output.fog != FogMode::Off)),
-                            ),
-                            (
-                                "TANGENT_VERTEX",
-                                f64::from(u8::from(surface.vertex_tangents)),
-                            ),
-                            ("FOG_SCATTERING", f64::from(u8::from(output.fog.lit()))),
-                            (
-                                "FOG_HEIGHT_PROFILE",
-                                f64::from(u8::from(output.fog.profiled())),
-                            ),
-                            ("FOG_DENSITY_NOISE", f64::from(u8::from(output.fog.noisy()))),
-                            (
-                                "SCREEN_INDIRECT_LIGHT",
-                                f64::from(u8::from(output.screen_indirect_light)),
-                            ),
-                            (
-                                "PACK_REFLECTION_ATTRIBUTES",
-                                f64::from(u8::from(output.multisampling)),
-                            ),
-                            (
-                                "SCREEN_REFLECTIONS",
-                                if output.screen_reflections { 1.0 } else { 0.0 },
-                            ),
-                        ],
+                        constants: fragment_constants,
                         ..Default::default()
                     },
                     targets: if let Some((targets, len)) = &combined_targets {
                         &targets[..*len]
+                    } else if let Some(targets) = &data_targets {
+                        let len = targets
+                            .iter()
+                            .rposition(Option::is_some)
+                            .map_or(0, |index| index + 1);
+                        &targets[..len]
                     } else if let Some(targets) = &geometry_targets
                         && matches!(output.capture_geometry, Some(GeometryOutput::Named(_)))
                     {
@@ -1161,23 +1541,36 @@ impl Pipelines {
                 output.stenciled,
                 output.raster,
                 format,
-                output.reverse_depth,
+                (
+                    output.reverse_depth,
+                    output.lod_fade,
+                    output.encode_srgb,
+                    output.debug_material,
+                    linked,
+                ),
             ),
         );
-        if let Some(source) = custom
-            && let Some(pipeline) =
-                self.custom
-                    .get(device, (source.0, source.1, wireframe), key, create)
+        if (custom.is_some() || augment.is_some())
+            && let Some(pipeline) = self.custom.get(
+                device,
+                (custom.map(|(source, _)| source), augment),
+                (custom_slots, augment_slots, wireframe, linked_samples),
+                key,
+                create,
+            )
         {
             return pipeline;
         }
-        if output.stenciled
+        if linked
+            || output.stenciled
             || output.reverse_depth
+            || output.lod_fade
             || format.is_some()
             || output.pipeline_state != CapturePipelineState::default()
             || output.screen_data()
             || output.capture_geometry.is_some()
             || output.lightmapped
+            || output.debug_material
             || output.model_particles
             || output.fog != FogMode::Off
             || surface.blend_mode != MeshBlendMode::SourceOver
@@ -1190,12 +1583,14 @@ impl Pipelines {
             || surface.custom_coat_fresnel
             || surface.anisotropy
         {
-            self.specialized.entry(key).or_insert_with(|| create(None))
+            self.specialized
+                .entry(key)
+                .or_insert_with(|| create(None, false))
         } else if output.weighted() {
             self.weighted[mode][surface.index() + 8 * deformation as usize]
-                .get_or_insert_with(|| create(None))
+                .get_or_insert_with(|| create(None, false))
         } else {
-            self.variants[mode][index].get_or_insert_with(|| create(None))
+            self.variants[mode][index].get_or_insert_with(|| create(None, false))
         }
     }
 

@@ -51,6 +51,12 @@ Rust 宿主可用 `xrack_interpreter::load_mlir_file` 加载文本 MLIR。图片
 
 打开 [解谜场景](../examples/puzzle3d/puzzle.xr) 并启动实时预览，在视口内拖动绕视、滚轮缩放、点击选择物体。运行仓库任务 **XRack: Play 3D Puzzle** 可启动原生窗口，再用 **XRack: Sync Editor to Running App** 修改运行中的灯光和布局。[解谜示例说明](../examples/puzzle3d/README.md)
 
+## 3D 视口统计
+
+在 VS Code 预览工具栏点击 **3D Stats**，可查看当帧各个视口的输出尺寸、光栅尺寸和采样数，以及网格绘制、顶点引用、粒子、阴影、捕获、深度预通道和透明合成等计数。视口用声明 ID 或场景路径标识。复用的纹理和仅重做显示处理的视口会标出各自的状态。面板显示 CPU 录制耗时。支持时间戳查询的设备也会异步回读实际完成的 GPU 通道时间，逐视口显示通道次数和耗时总和。GPU 数据带有独立的帧号，可对应较早的一帧。动态预览的后续帧会随画面更新这些数据，再点一次 **3D Stats** 可关闭采样。
+
+以 `XRACK_PROFILE_UI=1` 启动的实时附加应用也会提供当前窗口的视口统计，附加面板显示同一组字段。MCP 的 `get_update_profile` 也包含 `viewportStatistics`。CPU 录制耗时覆盖命令录制区间。GPU 总和覆盖已采样的 3D 渲染和计算通道。最终的 2D 合成和呈现属于其它阶段，Live Attach 的呈现反馈单独显示。每帧最多收集 64 条视口记录与 512 对通道时间戳，三个读回槽全忙时跳过当帧的 GPU 采样。
+
 ### 检查运行中的应用
 
 以热重载模式启动应用，在 VS Code 运行 **XRack: Sync Editor to Running App**。组件树可以查看组件属性、值的类型与可写性，以及记录和模型的采样。属性旁的 **Definition** 跳到声明。**Recent calls** 保留最近完成的 XR 回调和控件处理器，可查看调用链、耗时、参数类型，以及当前源码版本对应的调用位置和定义位置。

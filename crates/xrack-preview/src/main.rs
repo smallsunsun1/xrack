@@ -102,6 +102,9 @@ enum Request {
     Activate,
     Frame,
     Inspect,
+    ViewportStatistics {
+        enabled: bool,
+    },
     RestoreWindow,
     Scale {
         scale: f32,
@@ -254,6 +257,47 @@ struct Reply {
     window: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     inspection: Option<Inspection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    viewport_statistics: Option<serde_json::Value>,
+}
+
+fn viewport_statistics_json(report: &xrack_runtime::ViewportStatistics) -> serde_json::Value {
+    use serde_json::json;
+    let views = report
+        .views
+        .iter()
+        .map(|view| {
+            let mut result = json!({
+                "path": view.path, "id": view.id, "work": view.work.name(),
+                "outputSize": view.output_size, "rasterSize": view.raster_size,
+                "samples": view.samples, "cpuRecordMicros": view.cpu_record_micros,
+                "linkedWorkingBytes": view.linked_working_bytes,
+            });
+            for (key, value) in view.counts() {
+                result[key] = value.into();
+            }
+            result
+        })
+        .collect::<Vec<_>>();
+    let gpu = report.gpu.as_ref().map(|frame| {
+        json!({
+            "frame": frame.frame,
+            "truncated": frame.truncated,
+            "views": frame.views.iter().map(|view| json!({
+                "path": view.path, "id": view.id, "gpuNanos": view.gpu_nanos,
+                "passes": view.passes.iter().map(|pass| json!({
+                    "name": pass.name, "count": pass.count, "gpuNanos": pass.gpu_nanos,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        })
+    });
+    json!({
+        "frame": report.frame,
+        "views": views,
+        "truncated": report.truncated,
+        "gpuTimingSupported": report.gpu_timing_supported,
+        "gpu": gpu,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -492,6 +536,11 @@ impl Host {
             window_minimized: windows.selected().window_status().minimized,
             size: (!png.is_empty()).then(|| windows.selected().logical_size()),
             ime_area: ime_area(windows.selected()),
+            viewport_statistics: self
+                .renderer
+                .as_ref()
+                .and_then(Renderer::viewport_statistics)
+                .map(viewport_statistics_json),
             ..Reply::default()
         };
         self.pending = Some(Preview {
@@ -601,6 +650,7 @@ impl Host {
                 ime_area: ime_area(scene),
                 split_navigation_enabled: scene.split_navigation_enabled(),
                 delay_keyboard_enabled: scene.delay_keyboard_enabled(),
+                viewport_statistics: renderer.viewport_statistics().map(viewport_statistics_json),
                 ..Reply::default()
             },
             png,
@@ -650,6 +700,14 @@ impl Host {
                 Ok((reply, Vec::new()))
             }
             Request::Frame => self.render_active(true),
+            Request::ViewportStatistics { enabled } => {
+                let renderer = self
+                    .renderer
+                    .as_mut()
+                    .ok_or_else(|| failure("no preview renderer is active"))?;
+                renderer.set_viewport_statistics_enabled(enabled);
+                self.render_active(true)
+            }
             Request::Inspect => {
                 let Preview {
                     instance, windows, ..

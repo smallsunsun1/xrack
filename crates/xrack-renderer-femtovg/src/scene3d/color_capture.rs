@@ -10,24 +10,32 @@ use xrack_runtime::{
     Color, Node, RowKey, Value,
     material_shader::MaterialHooks,
     scene_effect::{
-        CaptureAttachment, CaptureInputs, CapturePipelineState, CaptureRead, CaptureRenderables,
-        MAX_BUFFERS,
+        CaptureAttachment, CaptureAugment, CaptureInputs, CapturePipelineState, CaptureRead,
+        CaptureRenderables, MATERIAL_DATA_ATTACHMENTS, MAX_BUFFERS,
     },
     scene3d::{CaptureMaterial, Mesh3D, MeshDepthDraw, ReflectionSource, SceneCamera, SceneModel},
 };
 
 use super::{
-    Attachment, HDR_FORMAT, append_floats, attachment_view, buffer,
+    Attachment, HDR_FORMAT, append_floats, buffer,
     capture_region::CaptureRegion,
     capture_stencil,
-    custom_effect::{effect_format, effect_size, texture_bytes},
+    custom_effect::{OutputFormats, effect_size, texture_bytes},
     effect_history::Owner,
-    material::shader_texture_slots,
+    environment::SKYBOX_PROPERTIES,
+    material::{
+        BASE_MATERIAL_TEXTURES, FULL_MATERIAL_TEXTURES, augment_texture_slots,
+        capture_material_texture_count, shader_texture_slots,
+    },
     particles::ParticleDraw,
     pipeline::{NAMED_GEOMETRY_ATTACHMENTS, uses_material_prepass},
     reflection_capture::{CapturedCube, same_inputs},
     retained_view::Sampling,
+    supersampling::{mip_count, mip_extent, mip_views},
 };
+
+pub(super) type CaptureMask = u16;
+pub(super) type DataFormats = [wgpu::TextureFormat; MATERIAL_DATA_ATTACHMENTS.len()];
 
 pub(super) type CaptureViews = BTreeMap<CaptureRead, CapturedTexture>;
 
@@ -38,10 +46,22 @@ pub(super) struct CapturedTexture {
     pub revision: u64,
     pub projection: Option<Arc<CaptureProjection>>,
     image: Weak<CaptureAllocation>,
+    pub mip_views: Option<Arc<[wgpu::TextureView]>>,
+}
+
+impl CapturedTexture {
+    pub fn render_view(&self) -> &wgpu::TextureView {
+        self.mip_views
+            .as_deref()
+            .and_then(|levels| levels.first())
+            .unwrap_or(&self.view)
+    }
 }
 
 struct CaptureAllocation {
     attachment: Attachment,
+    mip_views: Option<Arc<[wgpu::TextureView]>>,
+    bytes: u64,
     id: u64,
 }
 
@@ -156,17 +176,20 @@ pub(super) struct CaptureInput {
     pub scene: Node,
     pub size: [u32; 2],
     pub color_format: wgpu::TextureFormat,
-    pub material_data_format: wgpu::TextureFormat,
+    pub mipmaps: bool,
+    pub material_data_formats: DataFormats,
     pub cubes: Vec<Option<u64>>,
     pub dependencies: Vec<(CaptureRead, u64)>,
     pub composition: CaptureInputs,
     pub override_material: Option<Arc<CaptureMaterial>>,
+    pub augment: Option<CaptureAugment>,
+    pub augment_items: Vec<Option<[u64; 2]>>,
     pub renderables: CaptureRenderables,
     pub pipeline_state: CapturePipelineState,
     pub region: CaptureRegion,
     pub depth_clear: f32,
     pub stencil_clear: u8,
-    pub attachments: u8,
+    pub attachments: CaptureMask,
 }
 
 pub(super) struct CaptureWork {
@@ -187,17 +210,7 @@ impl ColorCaptures {
             if std::mem::take(&mut entry.recorded) {
                 entry.valid = submitted;
             }
-            let storage: u64 = entry
-                .images
-                .iter()
-                .flatten()
-                .map(|image| {
-                    texture_bytes(
-                        image.attachment.size,
-                        image.attachment.view.texture().format(),
-                    )
-                })
-                .sum();
+            let storage: u64 = entry.images.iter().flatten().map(|image| image.bytes).sum();
             let next_bytes = bytes.saturating_add(storage);
             if self.frame.wrapping_sub(entry.frame) > IDLE_FRAMES || next_bytes > BYTE_BUDGET {
                 return false;
@@ -229,27 +242,39 @@ impl ColorCaptures {
             .and_then(|index| self.entries.remove(index));
         let mut allocated_bytes = 0;
         let next_allocation = &mut self.next_allocation;
-        let mut create_image = |size, format| {
+        let mut create_image = |size: [u32; 2], format, levels| {
             *next_allocation = next_allocation.wrapping_add(1);
-            allocated_bytes += texture_bytes(size, format);
+            let bytes: u64 = (0..levels)
+                .map(|level| texture_bytes(mip_extent(size, level as usize), format))
+                .sum();
+            allocated_bytes += bytes;
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("XRack named scene capture"),
+                size: wgpu::Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: levels,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | if format == capture_stencil::FORMAT {
+                        wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST
+                    } else {
+                        wgpu::TextureUsages::empty()
+                    },
+                view_formats: &[],
+            });
             Arc::new(CaptureAllocation {
                 attachment: Attachment {
                     size,
-                    view: attachment_view(
-                        device,
-                        size,
-                        format,
-                        1,
-                        wgpu::TextureUsages::RENDER_ATTACHMENT
-                            | wgpu::TextureUsages::TEXTURE_BINDING
-                            | if format == capture_stencil::FORMAT {
-                                wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST
-                            } else {
-                                wgpu::TextureUsages::empty()
-                            },
-                        "XRack named scene capture",
-                    ),
+                    view: texture.create_view(&Default::default()),
                 },
+                mip_views: (levels > 1).then(|| mip_views(&texture).into()),
+                bytes,
                 id: *next_allocation,
             })
         };
@@ -270,6 +295,8 @@ impl ColorCaptures {
                     dependencies: Vec::new(),
                     composition: CaptureInputs::default(),
                     override_material: None,
+                    augment: None,
+                    augment_items: Vec::new(),
                     ..input
                 },
                 images: Default::default(),
@@ -286,6 +313,9 @@ impl ColorCaptures {
             || entry.input.dependencies != input.dependencies
             || entry.input.composition != input.composition
             || entry.input.override_material != input.override_material
+            || input_mask & MATERIAL_DATA_MASK != 0
+                && (entry.input.augment != input.augment
+                    || entry.input.augment_items != input.augment_items)
             || entry.input.pipeline_state != input.pipeline_state
             || entry.input.region != input.region
             || entry.input.depth_clear != input.depth_clear
@@ -293,7 +323,15 @@ impl ColorCaptures {
             || entry.input.renderables != input.renderables
             || entry.input.size != input.size
             || entry.input.color_format != input.color_format
-            || entry.input.material_data_format != input.material_data_format
+            || input_mask & COLOR_ATTACHMENT != 0 && entry.input.mipmaps != input.mipmaps
+            || MATERIAL_DATA_ATTACHMENTS
+                .into_iter()
+                .enumerate()
+                .any(|(slot, attachment)| {
+                    input_mask & (1 << attachment.index()) != 0
+                        && entry.input.material_data_formats[slot]
+                            != input.material_data_formats[slot]
+                })
             || input.attachments & !entry.input.attachments != 0
             || !same_inputs(&entry.input.scene, &input.scene);
         if render {
@@ -305,15 +343,23 @@ impl ColorCaptures {
                 } else {
                     let format = match attachment {
                         CaptureAttachment::Color => input.color_format,
-                        CaptureAttachment::MaterialData => input.material_data_format,
-                        _ => attachment_format(attachment),
+                        _ => attachment.material_data_slot().map_or_else(
+                            || attachment_format(attachment),
+                            |index| input.material_data_formats[index],
+                        ),
+                    };
+                    let levels = if attachment == CaptureAttachment::Color && input.mipmaps {
+                        mip_count(input.size)
+                    } else {
+                        1
                     };
                     if slot.as_ref().is_none_or(|image| {
                         Arc::strong_count(image) > 1
                             || image.attachment.size != input.size
                             || image.attachment.view.texture().format() != format
+                            || image.attachment.view.texture().mip_level_count() != levels
                     }) {
-                        *slot = Some(create_image(input.size, format));
+                        *slot = Some(create_image(input.size, format, levels));
                     }
                 }
             }
@@ -361,6 +407,7 @@ impl ColorCaptures {
                         None
                     },
                     image: Arc::downgrade(image),
+                    mip_views: image.mip_views.clone(),
                 })
             }),
             render,
@@ -379,11 +426,11 @@ pub(super) fn attachment_format(attachment: CaptureAttachment) -> wgpu::TextureF
     }
 }
 
-const COLOR_ATTACHMENT: u8 = 1 << CaptureAttachment::Color.index();
-const STENCIL_ATTACHMENT: u8 = 1 << CaptureAttachment::Stencil.index();
-const MATERIAL_DATA_ATTACHMENT: u8 = 1 << CaptureAttachment::MaterialData.index();
+const COLOR_ATTACHMENT: CaptureMask = 1 << CaptureAttachment::Color.index();
+const STENCIL_ATTACHMENT: CaptureMask = 1 << CaptureAttachment::Stencil.index();
+const MATERIAL_DATA_MASK: CaptureMask = 0b111 << CaptureAttachment::MaterialData.index();
 
-fn geometry_attachments(mask: u8) -> bool {
+fn geometry_attachments(mask: CaptureMask) -> bool {
     mask & !(COLOR_ATTACHMENT | STENCIL_ATTACHMENT) != 0
 }
 
@@ -391,17 +438,17 @@ fn geometry_attachments(mask: u8) -> bool {
 enum CapturePassKind {
     Color,
     Geometry,
-    MaterialData,
+    MaterialData(CaptureMask),
     Combined,
 }
 
-fn attachment_class(mask: u8) -> CapturePassKind {
+fn attachment_class(mask: CaptureMask) -> CapturePassKind {
     if !geometry_attachments(mask) {
         CapturePassKind::Color
     } else if mask & COLOR_ATTACHMENT != 0 {
         CapturePassKind::Combined
-    } else if mask == MATERIAL_DATA_ATTACHMENT {
-        CapturePassKind::MaterialData
+    } else if mask & !MATERIAL_DATA_MASK == 0 {
+        CapturePassKind::MaterialData(mask)
     } else {
         CapturePassKind::Geometry
     }
@@ -413,7 +460,8 @@ pub(super) struct CaptureTarget {
     pub size: [u32; 2],
     pub background: Color,
     pub color_format: wgpu::TextureFormat,
-    pub material_data_format: wgpu::TextureFormat,
+    pub mipmaps: bool,
+    pub material_data_formats: DataFormats,
     pub geometry: bool,
     material_data: bool,
     combine_attachments: bool,
@@ -435,12 +483,13 @@ pub(super) struct CaptureStage {
     pub outputs: Vec<CaptureRead>,
     pub composition: CaptureInputs,
     pub override_material: Option<Arc<CaptureMaterial>>,
+    pub augment: Option<CaptureAugment>,
     reads: Vec<(CaptureRead, usize)>,
     removed_feedback: bool,
 }
 
 impl CaptureStage {
-    pub fn attachments(&self) -> u8 {
+    pub fn attachments(&self) -> CaptureMask {
         self.outputs
             .iter()
             .fold(0, |mask, output| mask | (1 << output.attachment.index()))
@@ -475,7 +524,7 @@ pub(super) struct CapturePlan {
 impl CapturePlan {
     pub fn for_view(
         node: &Node,
-        device: &wgpu::Device,
+        (device, formats): (&wgpu::Device, OutputFormats),
         size: [u32; 2],
         camera: Option<SceneCamera>,
         additional: &BTreeSet<CaptureRead>,
@@ -490,6 +539,9 @@ impl CapturePlan {
             Some(Value::SceneObjects(model)) => Some(model.as_ref()),
             _ => None,
         };
+        let limits = device.limits();
+        let default_augment_slots = augment_texture_slots(device, FULL_MATERIAL_TEXTURES);
+        let mut capture_augment_limits = BTreeMap::new();
         let viewport_camera = node.text("camera").unwrap_or_default();
         let target_for = |read: &CaptureRead| {
             let feed = captures.get(read.name.as_ref())?;
@@ -497,7 +549,7 @@ impl CapturePlan {
                 read.attachment,
                 CaptureAttachment::Color | CaptureAttachment::Stencil
             );
-            let material_data = read.attachment == CaptureAttachment::MaterialData;
+            let material_data = read.attachment.material_data_slot().is_some();
             if read.attachment == CaptureAttachment::Depth
                 && feed.pipeline_state.depth_write == Some(false)
             {
@@ -564,12 +616,18 @@ impl CapturePlan {
                 color_format: if geometry {
                     HDR_FORMAT
                 } else {
-                    effect_format(feed.color_format)
+                    if renderables == CaptureRenderables::None && feed.inputs.color.is_none() {
+                        formats.sampled(feed.color_format)
+                    } else {
+                        formats.blended(feed.color_format)
+                    }
                 },
-                material_data_format: if material_data {
-                    effect_format(feed.material_data_format)
+                mipmaps: read.attachment == CaptureAttachment::Color && feed.mipmaps,
+                material_data_formats: if material_data {
+                    feed.material_data_formats
+                        .map(|format| formats.sampled(format))
                 } else {
-                    HDR_FORMAT
+                    [HDR_FORMAT; MATERIAL_DATA_ATTACHMENTS.len()]
                 },
             })
         };
@@ -579,23 +637,28 @@ impl CapturePlan {
                     && target.raster_camera().clip_rows() == camera.clip_rows()
             })
         };
-        let mut roots = camera.map_or_else(BTreeSet::new, |camera| {
-            material_sources(
-                node,
-                model,
-                device,
-                camera,
-                (false, CaptureRenderables::All, false),
-                None,
-                None,
-            )
-        });
+        let internal_passes = !node.scene_internal_passes_disabled();
+        let mut roots = camera
+            .filter(|_| internal_passes)
+            .map_or_else(BTreeSet::new, |camera| {
+                material_sources(
+                    node,
+                    model,
+                    device,
+                    camera,
+                    (false, CaptureRenderables::All, false),
+                    None,
+                    None,
+                )
+            });
         if let Some(Value::SceneEffects(effects)) = node.properties.get("scene-effects") {
             roots.extend(effects.capture_sources().cloned());
         }
-        if let Some(camera) = camera {
-            let inputs = super::composite_input::capture_reads(node);
+        let inputs = super::composite_input::capture_reads(node);
+        if camera.is_some() || !internal_passes {
             roots.extend(inputs.color);
+        }
+        if let Some(camera) = camera.filter(|_| internal_passes) {
             roots.extend(inputs.depth.filter(|read| depth_matches(read, camera)));
         }
         roots.extend(additional.iter().cloned());
@@ -605,7 +668,38 @@ impl CapturePlan {
             |read: CaptureRead, stages: &mut Vec<CaptureStage>, pending: &mut VecDeque<usize>| {
                 *discovered.entry(read.clone()).or_insert_with(|| {
                     let target = target_for(&read)?;
-                    let inputs = &captures.get(read.name.as_ref())?.inputs;
+                    let definition = captures.get(read.name.as_ref())?;
+                    let inputs = &definition.inputs;
+                    let override_material = (target.renderables != CaptureRenderables::None)
+                        .then(|| definition.override_material.clone())
+                        .flatten();
+                    let augment = target
+                        .material_data
+                        .then(|| {
+                            let mut augment = definition.augment.clone()?;
+                            let requested = augment
+                                .textures
+                                .len()
+                                .min(xrack_runtime::material_shader::MAX_TEXTURES);
+                            if requested > default_augment_slots {
+                                let slots = *capture_augment_limits
+                                    .entry(read.name.clone())
+                                    .or_insert_with(|| {
+                                        capture_augment_texture_slots(
+                                            node,
+                                            model,
+                                            device,
+                                            target,
+                                            override_material.as_ref(),
+                                        )
+                                    });
+                                augment.textures.truncate(slots);
+                            } else {
+                                augment.textures.truncate(requested);
+                            }
+                            Some(augment)
+                        })
+                        .flatten();
                     let composition = CaptureInputs {
                         color: if target.geometry {
                             None
@@ -628,9 +722,6 @@ impl CapturePlan {
                                 && capture_stencil::can_copy(device, target.size)
                         }),
                     };
-                    let override_material = (target.renderables != CaptureRenderables::None)
-                        .then(|| captures.get(read.name.as_ref())?.override_material.clone())
-                        .flatten();
                     // A stage that declares inputs keeps its name while resolving
                     // cycles. Merging a self-referencing stage with a consumer
                     // could incorrectly turn the consumer's valid read into a loop.
@@ -639,6 +730,14 @@ impl CapturePlan {
                             stage.target == target
                                 && stage.composition.is_empty()
                                 && stage.override_material == override_material
+                                && stage.augment == augment
+                                && (!target.material_data
+                                    || attachment_limits_match(
+                                        &limits,
+                                        None,
+                                        target.material_data_formats,
+                                        stage.attachments() | (1 << read.attachment.index()),
+                                    ))
                         })
                     } else {
                         None
@@ -658,6 +757,7 @@ impl CapturePlan {
                             outputs: vec![read],
                             composition,
                             override_material,
+                            augment,
                             reads: Vec::new(),
                             removed_feedback: false,
                         };
@@ -689,12 +789,18 @@ impl CapturePlan {
                     (
                         false,
                         target.renderables,
-                        stages[index].attachments() & MATERIAL_DATA_ATTACHMENT != 0,
+                        stages[index].attachments() & MATERIAL_DATA_MASK != 0
+                            && stages[index].augment.is_none(),
                     ),
                     stages[index].override_material.as_ref(),
                     None,
                 )
             };
+            if !target.region.is_empty()
+                && let Some(augment) = &stages[index].augment
+            {
+                dependencies.extend(augment.capture_sources(augment.textures.len()).cloned());
+            }
             dependencies.extend(stages[index].composition.iter().cloned());
             let reads = dependencies
                 .into_iter()
@@ -721,7 +827,15 @@ impl CapturePlan {
                     previous.target == stage.target
                         && previous.composition == stage.composition
                         && previous.override_material == stage.override_material
+                        && previous.augment == stage.augment
                         && previous.reads == stage.reads
+                        && (!stage.target.material_data
+                            || attachment_limits_match(
+                                &limits,
+                                None,
+                                stage.target.material_data_formats,
+                                previous.attachments() | stage.attachments(),
+                            ))
                 })
             {
                 previous.removed_feedback |= stage.removed_feedback;
@@ -731,7 +845,7 @@ impl CapturePlan {
             }
         }
         Self {
-            stages: combine_capture_stages(ordered, node, model, device.limits()),
+            stages: combine_capture_stages(ordered, node, model, limits),
             feedback_edges,
         }
     }
@@ -826,8 +940,9 @@ fn combine_capture_stages(
         if previous_stage.target.geometry {
             std::mem::swap(previous_stage, &mut stage);
         }
-        if stage.target.material_data {
-            previous_stage.target.material_data_format = stage.target.material_data_format;
+        previous_stage.target.material_data_formats = merged_data_formats(previous_stage, &stage);
+        if stage.attachments() & MATERIAL_DATA_MASK != 0 {
+            previous_stage.augment = stage.augment;
         }
         previous_stage.outputs.append(&mut stage.outputs);
         previous_stage.reads.append(&mut stage.reads);
@@ -897,11 +1012,15 @@ fn can_combine(limits: &wgpu::Limits, color: &CaptureStage, geometry: &CaptureSt
         material_data: geometry.target.material_data,
         background: Color(0),
         color_format: HDR_FORMAT,
-        material_data_format: geometry.target.material_data_format,
+        mipmaps: false,
+        material_data_formats: geometry.target.material_data_formats,
         pipeline_state,
         ..color_target
     };
     geometry_target == geometry.target
+        && (color.attachments() & MATERIAL_DATA_MASK == 0
+            || geometry.attachments() & MATERIAL_DATA_MASK == 0
+            || color.augment == geometry.augment)
         && color.composition.stencil == geometry.composition.stencil
         && color.outputs.iter().any(|source| {
             geometry
@@ -911,37 +1030,107 @@ fn can_combine(limits: &wgpu::Limits, color: &CaptureStage, geometry: &CaptureSt
         })
         && attachment_limits_match(
             limits,
-            color_target.color_format,
-            if geometry.target.material_data {
-                geometry.target.material_data_format
-            } else {
-                color_target.material_data_format
-            },
+            Some(color_target.color_format),
+            merged_data_formats(color, geometry),
             color.attachments() | geometry.attachments(),
         )
 }
 
+fn merged_data_formats(color: &CaptureStage, geometry: &CaptureStage) -> DataFormats {
+    let mask = geometry.attachments();
+    std::array::from_fn(|slot| {
+        if mask & (1 << MATERIAL_DATA_ATTACHMENTS[slot].index()) != 0 {
+            geometry.target.material_data_formats[slot]
+        } else {
+            color.target.material_data_formats[slot]
+        }
+    })
+}
+
 fn attachment_limits_match(
     limits: &wgpu::Limits,
-    color: wgpu::TextureFormat,
-    data: wgpu::TextureFormat,
-    mask: u8,
+    color: Option<wgpu::TextureFormat>,
+    data: DataFormats,
+    mask: CaptureMask,
 ) -> bool {
-    let needs_data = mask & MATERIAL_DATA_ATTACHMENT != 0;
-    limits.max_color_attachments
-        >= (NAMED_GEOMETRY_ATTACHMENTS.len() + 1 + usize::from(needs_data)) as u32
+    let present = |attachment: CaptureAttachment| mask & (1 << attachment.index()) != 0;
+    let data_slots = MATERIAL_DATA_ATTACHMENTS
+        .iter()
+        .rposition(|&attachment| present(attachment))
+        .map_or(0, |index| index + 1);
+    let color_slots = if color.is_some() {
+        NAMED_GEOMETRY_ATTACHMENTS.len() + 1
+    } else {
+        0
+    };
+    limits.max_color_attachments >= (color_slots + data_slots) as u32
         && NAMED_GEOMETRY_ATTACHMENTS
             .into_iter()
-            .filter(|attachment| mask & (1 << attachment.index()) != 0)
+            .filter(|&attachment| present(attachment))
             .map(attachment_format)
-            .chain(std::iter::once(color))
-            .chain(needs_data.then_some(data))
+            .chain(color)
+            .chain(
+                MATERIAL_DATA_ATTACHMENTS
+                    .into_iter()
+                    .zip(data)
+                    .filter_map(|(attachment, format)| present(attachment).then_some(format)),
+            )
             .try_fold(0u32, |bytes, format| {
                 let cost = format.target_pixel_byte_cost()?;
                 let alignment = format.target_component_alignment()?;
                 Some(bytes.next_multiple_of(alignment) + cost)
             })
             .is_some_and(|bytes| bytes <= limits.max_color_attachment_bytes_per_sample)
+}
+
+fn capture_augment_texture_slots(
+    node: &Node,
+    model: Option<&SceneModel>,
+    device: &wgpu::Device,
+    target: CaptureTarget,
+    override_material: Option<&Arc<CaptureMaterial>>,
+) -> usize {
+    if target.renderables == CaptureRenderables::None || target.region.is_empty() {
+        return 0;
+    }
+    if let Some(material) = override_material {
+        return augment_texture_slots(
+            device,
+            capture_material_texture_count(device, material.material()),
+        );
+    }
+
+    // The capture uses these projected meshes. Include every section in the
+    // selected layers so clipping and alpha coverage can only lower the cost.
+    let mut used = BASE_MATERIAL_TEXTURES;
+    let mut include_mesh = |mesh: &Mesh3D| {
+        for (_, material) in mesh.sections() {
+            if let Some(material) = material {
+                used = used.max(capture_material_texture_count(device, material));
+            }
+        }
+    };
+    if let Some(model) = model {
+        let geometry = model.render_geometry(
+            &target.camera,
+            f64::from(node.length("lod-fade-width").unwrap_or_default()),
+        );
+        for object in geometry
+            .objects()
+            .iter()
+            .filter(|object| object.layers & target.camera.layer_mask() != 0)
+        {
+            include_mesh(&object.mesh);
+        }
+    }
+    if let Some(particles) =
+        ParticleDraw::sample_with_capture_material(node, &target.camera, target.renderables, None)
+    {
+        for mesh in particles.model_meshes() {
+            include_mesh(mesh);
+        }
+    }
+    augment_texture_slots(device, used)
 }
 
 fn supports_combined_geometry(
@@ -964,7 +1153,10 @@ fn supports_combined_geometry(
             })
     };
     model.is_none_or(|model| {
-        let geometry = model.geometry(camera);
+        let geometry = model.render_geometry(
+            camera,
+            f64::from(node.length("lod-fade-width").unwrap_or_default()),
+        );
         let eye = camera.eye_position();
         geometry.objects().iter().all(|object| {
             object.layers & camera.layer_mask() == 0
@@ -1013,9 +1205,9 @@ pub(super) fn material_sources(
                 continue;
             }
             if let Some(names) = &mut item_names
-                && let Some(name) = &material.base_item
+                && let Some(item) = &material.base_item
             {
-                names.insert(name.to_string());
+                names.insert(item.source().to_owned());
             }
             let Some(shader) = material.shader.as_ref() else {
                 continue;
@@ -1039,7 +1231,10 @@ pub(super) fn material_sources(
         }
     };
     if let Some(model) = model {
-        let geometry = model.geometry(&camera);
+        let geometry = model.render_geometry(
+            &camera,
+            f64::from(node.length("lod-fade-width").unwrap_or_default()),
+        );
         let geometry = match override_material {
             Some(material) => {
                 geometry.with_capture_material(camera.layer_mask(), renderables, material)
@@ -1080,7 +1275,10 @@ pub(super) fn material_sources(
     sources
 }
 
-fn capture_postorder(len: usize, dependency: impl Fn(usize, usize) -> Option<usize>) -> Vec<usize> {
+pub(super) fn capture_postorder(
+    len: usize,
+    dependency: impl Fn(usize, usize) -> Option<usize>,
+) -> Vec<usize> {
     let mut order = Vec::with_capacity(len);
     let mut visited = vec![false; len];
     let mut stack = Vec::new();
@@ -1169,6 +1367,7 @@ pub(super) fn geometry_scene(view: &Node, item_revision: u64) -> Node {
     let mut scene = Node::new("SceneView3D", None);
     for name in [
         "model",
+        "lod-fade-width",
         "frustum-culling",
         "particle-emitters",
         "particle-affectors",
@@ -1197,10 +1396,15 @@ pub(super) fn capture_scene(
     // only inputs consumed by this offscreen stage so effect changes can reuse it.
     for name in [
         "model",
+        "lod-fade-width",
         "lights",
         "imported-lights",
         "environment",
+        "environment-sky",
         "environment-yaw",
+        "environment-pitch",
+        "environment-roll",
+        "environment-horizon",
         "environment-intensity",
         "environment-skybox",
         "ambient-color",
@@ -1209,6 +1413,7 @@ pub(super) fn capture_scene(
         "light-elevation",
         "shadows",
         "shadow-map-size",
+        "shadow-map-precision",
         "shadow-bias",
         "shadow-cascades",
         "shadow-distance",
@@ -1241,7 +1446,10 @@ pub(super) fn capture_scene(
         "particle-emitters",
         "particle-affectors",
         "particle-time",
-    ] {
+    ]
+    .into_iter()
+    .chain(SKYBOX_PROPERTIES)
+    {
         if let Some(value) = view.properties.get(name) {
             scene.properties.insert(name, value.clone());
         }

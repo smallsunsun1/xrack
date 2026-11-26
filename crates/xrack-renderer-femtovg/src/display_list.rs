@@ -1107,7 +1107,7 @@ impl<'a> DisplayList<'a> {
                         rectangles.push(*next);
                         items.next();
                     }
-                    renderer.draw_rectangle_batch(&mut rectangles, self.scale, self.clip);
+                    renderer.draw_rectangle_batch(&mut rectangles, self.scale, self.clip)?;
                 }
                 item @ (Primitive::Image { quad: Some(_), .. } | Primitive::Icon { .. })
                     if image_quads =>
@@ -2787,17 +2787,17 @@ impl Renderer {
             && !self.using_capture_canvas()
             && !self.glyph_masks.defer_preparation;
         if lines.iter().any(|(_, text)| !text.is_ascii()) {
-            return match label {
-                Some(label)
-                    if clipped
-                        && label.reuse_unicode
-                        && paint.text_align() == femtovg::Align::Left
-                        && paint.letter_spacing() == 0.0 =>
-                {
-                    self.draw_unicode_label_batch(lines, paint, label, scale)
+            if let Some(label) = label
+                && clipped
+                && paint.text_align() == femtovg::Align::Left
+                && paint.letter_spacing() == 0.0
+            {
+                let visible_only = label.label.prefers_visible_glyphs();
+                if label.reuse_unicode || visible_only {
+                    return self.draw_unicode_label_batch(lines, paint, label, scale, visible_only);
                 }
-                _ => Ok(false),
-            };
+            }
+            return Ok(false);
         }
         let new_batch = || LineGlyphBatch {
             font: None,
@@ -2920,10 +2920,15 @@ impl Renderer {
         paint: &Paint,
         label: LabelBatchContext<'_>,
         scale: f32,
+        visible_only: bool,
     ) -> Result<bool, String> {
         use crate::glyph_masks::{OutlineBatch, OutlineRuns};
         use crate::label_glyphs::{BatchScratch, FontRun, UnicodeLabel, UnicodePaint};
 
+        // A batch can seed glyphs for the whole document before retention
+        // keeps only the visible runs. Bound this staging area independently
+        // of the smaller cache for recurring placements.
+        const MAX_BATCH_GLYPHS: usize = 64 * 1024;
         let mut offscreen = OffscreenGlyphs {
             scale,
             translation_y: 0.0,
@@ -2940,17 +2945,24 @@ impl Renderer {
         } = std::mem::take(&mut self.label_batch_scratch);
         let (mut batch, priming) = {
             let mut cache = self.text.label_glyphs.borrow_mut();
-            let mut shaping =
-                UnicodePaint::new(&self.text, paint, scale, offscreen.height, label.label);
+            let mut shaping = UnicodePaint::new(
+                &self.text,
+                paint,
+                scale,
+                offscreen.height,
+                label.label,
+                !visible_only,
+            );
             cache.select(
                 label.label.font,
                 shaping.measurement_scale,
                 label.placement.registered_fonts,
             );
             let indexed_words = shaping.select_word_index(&mut cache, label.label);
-            let mut batch = if let Some(batch) =
-                cache.take_unicode(label.label, label.placement, indexed_words)
-            {
+            let retained = cache.take_unicode(label.label, label.placement, indexed_words);
+            #[cfg(not(xrack_femtovg_glyph_samples))]
+            let merge_rows = retained.is_none();
+            let mut batch = if let Some(batch) = retained {
                 batch
             } else {
                 let Some(batch) = UnicodeLabel::measure(
@@ -2966,9 +2978,13 @@ impl Renderer {
                 batch
             };
             let mut priming = false;
+            #[cfg(not(xrack_femtovg_glyph_samples))]
+            let mut previous_rows: Option<[f32; 2]> = None;
             for (slot, (origin, value)) in batch.lines.iter_mut().zip(lines) {
                 #[cfg(not(xrack_femtovg_glyph_samples))]
-                if let Some(seeds) = slot.take_offscreen_seeds(&shaping, origin.y) {
+                if shaping.seed_offscreen
+                    && let Some(seeds) = slot.take_offscreen_seeds(&shaping, origin.y)
+                {
                     // Submit missing atlas glyphs in source order. Their ink
                     // remains outside the target at this exact placement.
                     let mut font = None;
@@ -2997,8 +3013,9 @@ impl Renderer {
                             glyphs: start..positions.len(),
                         });
                         priming = true;
+                        previous_rows = None;
                     }
-                    if positions.capacity() > crate::label_glyphs::Cache::MAX_POSITIONED_GLYPHS
+                    if positions.capacity() > MAX_BATCH_GLYPHS
                         || runs.capacity() > crate::label_glyphs::Cache::MAX_POSITIONED_RUNS
                     {
                         return Ok(false);
@@ -3011,12 +3028,20 @@ impl Renderer {
                 let Some(line) = slot.shape(&mut cache, &shaping, value)? else {
                     return Ok(false);
                 };
-                let prime_line = !line.atlas_ready_at(origin.x);
+                let prime_line = shaping.seed_offscreen && !line.atlas_ready_at(origin.x);
                 priming |= prime_line;
                 let outside = line.offscreen(origin.y, scale, offscreen.height);
                 if !prime_line && outside {
                     continue;
                 }
+                #[cfg(not(xrack_femtovg_glyph_samples))]
+                let rows = if merge_rows {
+                    line.ink_rows(origin.y, scale)
+                } else {
+                    None
+                };
+                #[cfg(not(xrack_femtovg_glyph_samples))]
+                let line_start = positions.len();
                 let mut glyphs = line
                     .place(*origin, shaping.measurement_scale, |font, glyph, x| {
                         #[cfg(not(xrack_femtovg_glyph_samples))]
@@ -3069,9 +3094,32 @@ impl Renderer {
                                 glyphs: glyphs.clone(),
                             });
                         }
-                        runs.push(FontRun { font, glyphs });
+                        // Stock FemtoVG groups masks by atlas page within a run.
+                        // Combining disjoint rows keeps their paint equivalent
+                        // and leaves the glyphs in their original atlas order.
+                        #[cfg(not(xrack_femtovg_glyph_samples))]
+                        let merged = if start == line_start
+                            && let Some(([top, bottom], [old_top, old_bottom])) =
+                                rows.zip(previous_rows)
+                            && (top >= old_bottom || old_top >= bottom)
+                            && let Some(previous) = runs.last_mut()
+                            && previous.font == font
+                            && previous.glyphs.end == start
+                        {
+                            previous.glyphs.end = glyphs.end;
+                            previous_rows = Some([top.min(old_top), bottom.max(old_bottom)]);
+                            true
+                        } else {
+                            previous_rows = rows;
+                            false
+                        };
+                        #[cfg(xrack_femtovg_glyph_samples)]
+                        let merged = false;
+                        if !merged {
+                            runs.push(FontRun { font, glyphs });
+                        }
                     }
-                    if positions.capacity() > crate::label_glyphs::Cache::MAX_POSITIONED_GLYPHS
+                    if positions.capacity() > MAX_BATCH_GLYPHS
                         || runs.capacity() > crate::label_glyphs::Cache::MAX_POSITIONED_RUNS
                     {
                         return Ok(false);
@@ -3080,10 +3128,11 @@ impl Renderer {
             }
             (batch, priming)
         };
-        // The first draw seeds the atlas in the original order. The retained
-        // replay can omit whole runs beyond the render target.
+        // Large glyph repertoires populate the atlas as their glyphs become
+        // visible. Other documents can seed unseen runs in the original order.
         let moved_vertically = batch.update_placement(label.placement);
-        let masked = if !cfg!(xrack_femtovg_glyph_samples)
+        let masked = if !visible_only
+            && !cfg!(xrack_femtovg_glyph_samples)
             && moved_vertically
             && batch.allow_outline_masks
             && !priming

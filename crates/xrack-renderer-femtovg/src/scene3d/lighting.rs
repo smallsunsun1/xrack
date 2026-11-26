@@ -2,7 +2,7 @@ use std::{collections::VecDeque, sync::Arc};
 use xrack_runtime::{
     Node,
     scene3d::{
-        LightBakeMode, MAX_SCENE_LIGHTS, SceneLight, SceneLightSource, SceneModel,
+        LightBakeMode, MAX_SCENE_LIGHTS, SceneLight, SceneLightSource, SceneModel, ShadowRadius,
         viewport_lighting,
     },
 };
@@ -11,13 +11,34 @@ use super::{append_floats, buffer, shadow::MAX_SHADOW_MAPS};
 
 const MAX_CACHED_LIGHT_SETS: usize = 8;
 
-#[derive(PartialEq)]
 pub(super) struct LightSet {
     lights: Option<Arc<[SceneLight]>>,
     fallback: [SceneLight; 1],
     ambient: [f32; 3],
     shadow_bias: f32,
     shadow_slots: [u8; MAX_SCENE_LIGHTS],
+}
+
+impl PartialEq for LightSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.lights.is_some() == other.lights.is_some()
+            && self.shadow_slots == other.shadow_slots
+            && self.ambient == other.ambient
+            && self.shadow_bias == other.shadow_bias
+            && self.lights().len() == other.lights().len()
+            && self
+                .lights()
+                .iter()
+                .zip(other.lights())
+                .zip(self.shadow_slots)
+                .all(|((a, b), slot)| {
+                    a.source == b.source
+                        && a.radiance == b.radiance
+                        && a.scope == b.scope
+                        && a.bake_mode == b.bake_mode
+                        && (slot == 0 || a.shadow == b.shadow)
+                })
+    }
 }
 
 impl LightSet {
@@ -67,7 +88,11 @@ impl LightSet {
                 let shadow = light.shadow;
                 sampling[usize::from(slot - 1)] = [
                     shadow.strength,
-                    shadow.radius,
+                    // A negative radius denotes world units. Zero is a single filtered tap.
+                    match shadow.radius {
+                        ShadowRadius::Texels(value) => value,
+                        ShadowRadius::World(value) => -value,
+                    },
                     shadow.filter.taps() as f32,
                     shadow.bias.unwrap_or(self.shadow_bias),
                 ];
@@ -102,7 +127,10 @@ impl LightSet {
                 ],
             };
             rows[3][2] = f32::from(u8::from(light.bake_mode == LightBakeMode::All));
-            append_floats(&mut bytes, rows.into_iter().flatten());
+            let [position, axis, radiance, cone] = rows;
+            append_floats(&mut bytes, position.into_iter().chain(axis).chain(radiance));
+            append_floats(&mut bytes, [cone[0], cone[1], cone[2]]);
+            bytes.extend_from_slice(&light.scope.packed().to_ne_bytes());
         }
         bytes.resize(lights_end, 0);
         append_floats(&mut bytes, sampling.into_iter().flatten());

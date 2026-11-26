@@ -102,6 +102,7 @@ fn same_depth_inputs(
                     && before.mesh.has_opaque_parts() == after.mesh.has_opaque_parts()
                     && before.mesh.same_shadow_mesh(&after.mesh)
                     && before.transform_rows() == after.transform_rows()
+                    && before.lod_coverage() == after.lod_coverage()
                     && before.same_vertex_program_instance(after)
                     && before.color.0 as u8 == after.color.0 as u8
             })
@@ -283,10 +284,13 @@ impl AmbientOcclusion {
                 },
             ],
         });
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("XRack screen-space ambient occlusion"),
-            timestamp_writes: None,
-        });
+        let mut pass = crate::viewport_gpu_timing::compute_pass(
+            encoder,
+            &wgpu::ComputePassDescriptor {
+                label: Some("XRack screen-space ambient occlusion"),
+                timestamp_writes: None,
+            },
+        );
         pass.set_pipeline(&evaluator.pipeline);
         pass.set_bind_group(0, &inputs, &[]);
         pass.dispatch_workgroups(frame.size[0].div_ceil(8), frame.size[1].div_ceil(8), 1);

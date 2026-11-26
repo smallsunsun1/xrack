@@ -14,8 +14,30 @@ pub struct SceneLight {
     pub radiance: [f32; 3],
     pub casts_shadow: bool,
     pub shadow: ShadowSampling,
+    pub shadow_projection: ShadowProjectionSettings,
     pub bake_mode: LightBakeMode,
     pub layers: u64,
+    pub scope: SceneLightScope,
+}
+
+/// Inclusive preorder interval in a prepared scene. Zero matches the whole scene.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneLightScope(u32);
+
+impl SceneLightScope {
+    pub(crate) fn subtree(first: u16, last: u16) -> Self {
+        Self(u32::from(first) | (u32::from(last) << 16))
+    }
+
+    pub fn packed(self) -> u32 {
+        self.0
+    }
+
+    pub fn contains(self, index: u16) -> bool {
+        let index = u32::from(index);
+        self.0 == 0 || index >= (self.0 & 0xffff) && index <= (self.0 >> 16)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,6 +66,8 @@ pub enum ShadowFilter {
     Pcf4,
     Pcf8,
     Pcf16,
+    Pcf32,
+    Pcf64,
 }
 
 impl ShadowFilter {
@@ -54,8 +78,16 @@ impl ShadowFilter {
             Self::Pcf4 => 4,
             Self::Pcf8 => 8,
             Self::Pcf16 => 16,
+            Self::Pcf32 => 32,
+            Self::Pcf64 => 64,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ShadowRadius {
+    Texels(f32),
+    World(f32),
 }
 
 /// Receiver-side settings. Shadow map projection and depth caching are independent.
@@ -63,7 +95,7 @@ impl ShadowFilter {
 pub struct ShadowSampling {
     pub filter: ShadowFilter,
     pub strength: f32,
-    pub radius: f32,
+    pub radius: ShadowRadius,
     pub bias: Option<f32>,
 }
 
@@ -72,7 +104,7 @@ impl Default for ShadowSampling {
         Self {
             filter: ShadowFilter::Bilinear,
             strength: Self::DEFAULT_STRENGTH as f32,
-            radius: Self::DEFAULT_RADIUS as f32,
+            radius: ShadowRadius::Texels(Self::DEFAULT_RADIUS as f32),
             bias: None,
         }
     }
@@ -82,7 +114,13 @@ impl ShadowSampling {
     pub const DEFAULT_STRENGTH: f64 = 1.0;
     pub const DEFAULT_RADIUS: f64 = 2.0;
 
-    fn prepare(filter: &str, strength: f64, radius: f64, bias: Option<f64>) -> Self {
+    fn prepare(
+        filter: &str,
+        strength: f64,
+        radius: f64,
+        world_radius: Option<f64>,
+        bias: Option<f64>,
+    ) -> Self {
         let default = Self::default();
         let bounded =
             |value: f64, maximum: f64| value.is_finite().then(|| value.clamp(0.0, maximum) as f32);
@@ -92,11 +130,85 @@ impl ShadowSampling {
                 "pcf4" => ShadowFilter::Pcf4,
                 "pcf8" => ShadowFilter::Pcf8,
                 "pcf16" => ShadowFilter::Pcf16,
+                "pcf32" => ShadowFilter::Pcf32,
+                "pcf64" => ShadowFilter::Pcf64,
                 _ => default.filter,
             },
             strength: bounded(strength, 1.0).unwrap_or(default.strength),
-            radius: bounded(radius, 16.0).unwrap_or(default.radius),
+            radius: world_radius
+                .filter(|value| *value >= 0.0)
+                .map(|value| value as f32)
+                .filter(|value| value.is_finite())
+                .map(ShadowRadius::World)
+                .or_else(|| bounded(radius, 16.0).map(ShadowRadius::Texels))
+                .unwrap_or(default.radius),
             bias: bias.and_then(|value| bounded(value, 0.05)),
+        }
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ShadowMapPrecision {
+    #[default]
+    Depth32,
+    Depth16,
+}
+
+impl ShadowMapPrecision {
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value {
+            "depth16" => Some(Self::Depth16),
+            "depth32" => Some(Self::Depth32),
+            _ => None,
+        }
+    }
+
+    pub fn bytes(self) -> u32 {
+        match self {
+            Self::Depth32 => 4,
+            Self::Depth16 => 2,
+        }
+    }
+}
+
+/// Per-light projection overrides. Receiver sampling is configured independently.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShadowProjectionSettings {
+    pub far: Option<f32>,
+    pub resolution: Option<u32>,
+    pub precision: Option<ShadowMapPrecision>,
+    pub cascades: Option<u8>,
+    pub splits: [Option<f32>; 3],
+    pub blend: Option<f32>,
+    pub balance: Option<f32>,
+    pub lock_texels: Option<bool>,
+}
+
+impl ShadowProjectionSettings {
+    pub fn new(
+        far: Option<f64>,
+        resolution: Option<i64>,
+        precision: &str,
+        cascades: Option<i64>,
+        splits: [Option<f64>; 3],
+        blend: Option<f64>,
+        balance: Option<f64>,
+        lock_texels: Option<bool>,
+    ) -> Self {
+        let finite = |value: Option<f64>| value.map(|value| value as f32).filter(|v| v.is_finite());
+        Self {
+            far: finite(far).filter(|value| *value > 0.0),
+            resolution: resolution
+                .filter(|v| *v > 0)
+                .map(|v| v.clamp(128, 4096) as u32),
+            precision: ShadowMapPrecision::from_name(precision),
+            cascades: cascades.map(|value| value.clamp(1, 4) as u8),
+            splits: splits.map(|value| finite(value).filter(|v| *v > 0.0 && *v < 1.0)),
+            blend: finite(blend).map(|value| value.clamp(0.0, 1.0)),
+            balance: finite(balance).map(|value| value.clamp(0.0, 1.0)),
+            lock_texels,
         }
     }
 }
@@ -136,7 +248,9 @@ pub struct SceneLightDefinition<'a> {
     pub shadow_filter: &'a str,
     pub shadow_strength: f64,
     pub shadow_radius: f64,
+    pub shadow_world_radius: Option<f64>,
     pub shadow_bias: Option<f64>,
+    pub shadow_projection: ShadowProjectionSettings,
     pub bake_mode: &'a str,
     pub layers: u64,
 }
@@ -213,10 +327,13 @@ impl SceneLightDefinition<'_> {
                 self.shadow_filter,
                 self.shadow_strength,
                 self.shadow_radius,
+                self.shadow_world_radius,
                 self.shadow_bias,
             ),
+            shadow_projection: self.shadow_projection,
             bake_mode: LightBakeMode::from_name(self.bake_mode),
             layers: self.layers,
+            scope: SceneLightScope::default(),
         })
     }
 }
@@ -373,26 +490,34 @@ impl SceneLight {
 #[derive(Debug, PartialEq)]
 pub struct SceneLightModel {
     lights: Arc<[SceneLight]>,
-    mounts: Vec<(usize, String)>,
+    targets: Vec<(usize, String, String)>,
 }
 
 impl SceneLightModel {
     pub fn resolve(&self, model: Option<&SceneModel>) -> Arc<[SceneLight]> {
-        if self.mounts.is_empty() {
+        if self.targets.is_empty() {
             return self.lights.clone();
         }
-        let mut mounts = self.mounts.iter().peekable();
+        let mut targets = self.targets.iter().peekable();
         self.lights
             .iter()
             .copied()
             .enumerate()
-            .filter_map(|(index, light)| {
-                if mounts.peek().is_some_and(|(mounted, _)| *mounted == index) {
-                    let (_, parent) = mounts.next()?;
-                    light.mounted(model?, parent)
-                } else {
-                    Some(light)
+            .filter_map(|(index, mut light)| {
+                if targets
+                    .peek()
+                    .is_some_and(|(target, _, _)| *target == index)
+                {
+                    let (_, parent, scope) = targets.next()?;
+                    let model = model?;
+                    if !parent.is_empty() {
+                        light = light.mounted(model, parent)?;
+                    }
+                    if !scope.is_empty() {
+                        light.scope = model.light_scope(scope)?;
+                    }
                 }
+                Some(light)
             })
             .collect()
     }
@@ -401,21 +526,21 @@ impl SceneLightModel {
 #[doc(hidden)]
 pub fn model_lights<T: Clone>(
     model: &VecModel<T>,
-    project: impl Fn(T) -> Option<(SceneLight, String)>,
+    project: impl Fn(T) -> Option<(SceneLight, String, String)>,
 ) -> Arc<SceneLightModel> {
     let mut lights = Vec::new();
-    let mut mounts = Vec::new();
-    for (light, parent) in
+    let mut targets = Vec::new();
+    for (light, parent, scope) in
         (0..model.len().min(MAX_SCENE_LIGHTS)).filter_map(|index| project(model.row(index)?))
     {
-        if !parent.is_empty() {
-            mounts.push((lights.len(), parent));
+        if !parent.is_empty() || !scope.is_empty() {
+            targets.push((lights.len(), parent, scope));
         }
         lights.push(light);
     }
     Arc::new(SceneLightModel {
         lights: lights.into(),
-        mounts,
+        targets,
     })
 }
 
@@ -425,10 +550,6 @@ pub fn record_lights(list: &RecordList) -> Arc<SceneLightModel> {
         if row.field("visible") == Some(&Value::Bool(false)) {
             return None;
         }
-        let parent = match row.field("parent") {
-            Some(Value::String(parent)) => parent.clone(),
-            _ => String::new(),
-        };
         let number = |name| match row.field(name)? {
             Value::Float(value) => Some(*value),
             _ => None,
@@ -457,7 +578,27 @@ pub fn record_lights(list: &RecordList) -> Arc<SceneLightModel> {
             shadow_filter: text("shadow-filter"),
             shadow_strength: number("shadow-strength").unwrap_or(ShadowSampling::DEFAULT_STRENGTH),
             shadow_radius: number("shadow-radius").unwrap_or(ShadowSampling::DEFAULT_RADIUS),
+            shadow_world_radius: number("shadow-world-radius"),
             shadow_bias: number("shadow-bias"),
+            shadow_projection: ShadowProjectionSettings::new(
+                number("shadow-map-far"),
+                match row.field("shadow-map-size") {
+                    Some(Value::Int(size)) => Some(*size),
+                    _ => None,
+                },
+                text("shadow-map-precision"),
+                match row.field("shadow-cascades") {
+                    Some(Value::Int(count)) => Some(*count),
+                    _ => None,
+                },
+                ["shadow-split-1", "shadow-split-2", "shadow-split-3"].map(number),
+                number("shadow-cascade-blend"),
+                number("shadow-split-balance"),
+                match row.field("shadow-lock-texels") {
+                    Some(Value::Bool(lock)) => Some(*lock),
+                    _ => None,
+                },
+            ),
             bake_mode: text("bake-mode"),
             layers: match row.field("layers") {
                 Some(Value::Int(layers)) => *layers as u64,
@@ -465,7 +606,7 @@ pub fn record_lights(list: &RecordList) -> Arc<SceneLightModel> {
             },
         }
         .prepare()
-        .map(|light| (light, parent))
+        .map(|light| (light, text("parent").to_owned(), text("scope").to_owned()))
     })
 }
 
@@ -488,7 +629,7 @@ pub enum ShadowLight {
 
 impl ShadowLight {
     pub fn for_light(light: &SceneLight) -> Option<Self> {
-        if !light.casts_shadow {
+        if !light.casts_shadow || light.scope.packed() != 0 {
             return None;
         }
         match light.source {
@@ -517,7 +658,11 @@ impl ShadowLight {
 
     /// World-to-light clip rows. Fit the map to scene bounds independently of
     /// the viewing camera so orbiting the viewport reuses the same depth.
-    pub fn planar_projection(self, corners: &[[f32; 3]]) -> Option<[[f32; 4]; 4]> {
+    pub fn planar_projection(
+        self,
+        corners: &[[f32; 3]],
+        shadow_far: Option<f32>,
+    ) -> Option<[[f32; 4]; 4]> {
         let toward_light = match self {
             Self::Directional(axis) => axis,
             Self::Spot { toward_light, .. } => toward_light,
@@ -551,6 +696,7 @@ impl ShadowLight {
                 if inverse_range_squared > 0.0 {
                     far = far.min(inverse_range_squared.sqrt().recip());
                 }
+                let far = far.min(shadow_far.unwrap_or(f32::INFINITY));
                 if !far.is_finite() || far <= 0.0 {
                     return None;
                 }
@@ -568,6 +714,28 @@ impl ShadowLight {
             Self::Point { .. } => None,
         }
     }
+}
+
+/// Recover the exact fitted volume from the world-to-shadow clip rows.
+#[doc(hidden)]
+pub fn shadow_clip_corners(rows: [[f32; 4]; 4]) -> Option<[[f32; 3]; 8]> {
+    let matrix = nalgebra::Matrix4::from_row_slice(rows.as_flattened()).cast::<f64>();
+    let inverse = matrix.try_inverse()?;
+    let corners = std::array::from_fn(|i| {
+        let point = inverse
+            * nalgebra::Vector4::new(
+                if i & 1 == 0 { -1.0 } else { 1.0 },
+                if i & 2 == 0 { -1.0 } else { 1.0 },
+                if i & 4 == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        [point.x, point.y, point.z].map(|value| (value / point.w) as f32)
+    });
+    corners
+        .iter()
+        .flatten()
+        .all(|value| value.is_finite())
+        .then_some(corners)
 }
 
 fn light_axes(forward: Vector3<f32>) -> [Vector3<f32>; 2] {
@@ -656,24 +824,36 @@ impl DirectionalShadowSpace {
         camera: &SceneCamera,
         [near, far]: [f32; 2],
         resolution: u32,
+        lock_texels: bool,
     ) -> Option<DirectionalShadowCascade> {
         let (corners, center, radius) = camera.frustum_slice(near, far);
-        // A sphere keeps the projection scale unchanged as the camera rotates.
-        // Reserve a texel around it for position rounding and PCF taps.
+        let [mut min, mut max] = self.bounds(&corners)?;
         let resolution = resolution as f32;
-        let radius = radius * (resolution / (resolution - 2.0));
-        if !radius.is_finite() || radius <= 0.0 {
-            return None;
-        }
-        let texel = 2.0 * radius / resolution;
-        let [x, y, _] = self
-            .project(center)
-            .map(|value| (value / texel).round() * texel);
-        let [min, max] = self.bounds(&corners)?;
+        let texel = if lock_texels {
+            // A sphere keeps the projection scale unchanged as the camera rotates.
+            let radius = radius * (resolution / (resolution - 2.0));
+            if !radius.is_finite() || radius <= 0.0 {
+                return None;
+            }
+            let texel = 2.0 * radius / resolution;
+            let [x, y, _] = self
+                .project(center)
+                .map(|value| (value / texel).round() * texel);
+            [min[0], min[1]] = [x - radius, y - radius];
+            [max[0], max[1]] = [x + radius, y + radius];
+            Some(texel)
+        } else {
+            for axis in 0..2 {
+                let padding = ((max[axis] - min[axis]) / (resolution - 2.0)).max(0.005);
+                min[axis] -= padding;
+                max[axis] += padding;
+            }
+            None
+        };
         Some(DirectionalShadowCascade {
             space: self,
-            min: [x - radius, y - radius, min[2]],
-            max: [x + radius, y + radius, max[2]],
+            min,
+            max,
             texel,
         })
     }
@@ -684,7 +864,7 @@ pub struct DirectionalShadowCascade {
     space: DirectionalShadowSpace,
     min: [f32; 3],
     max: [f32; 3],
-    texel: f32,
+    texel: Option<f32>,
 }
 
 impl DirectionalShadowCascade {
@@ -704,8 +884,14 @@ impl DirectionalShadowCascade {
     }
 
     pub fn rows(mut self) -> [[f32; 4]; 4] {
-        self.min[2] = ((self.min[2] / self.texel).floor() - 1.0) * self.texel;
-        self.max[2] = ((self.max[2] / self.texel).ceil() + 1.0) * self.texel;
+        if let Some(texel) = self.texel {
+            self.min[2] = ((self.min[2] / texel).floor() - 1.0) * texel;
+            self.max[2] = ((self.max[2] / texel).ceil() + 1.0) * texel;
+        } else {
+            let padding = ((self.max[2] - self.min[2]) * 0.005).max(0.005);
+            self.min[2] -= padding;
+            self.max[2] += padding;
+        }
         self.space.orthographic(self.min, self.max)
     }
 }
@@ -728,6 +914,7 @@ impl PointShadowProjection {
         position: [f32; 3],
         inverse_range_squared: f32,
         scene_corners: &[[f32; 3]],
+        shadow_far: Option<f32>,
         caster_bounds: impl Iterator<Item = [[f32; 3]; 2]>,
     ) -> Option<Self> {
         let extent = scene_corners.iter().fold(0.0_f32, |extent, point| {
@@ -736,7 +923,7 @@ impl PointShadowProjection {
             })
         }) * 1.02;
         let range = inverse_range_squared.sqrt().recip();
-        let far = extent.min(range);
+        let far = extent.min(range).min(shadow_far.unwrap_or(f32::INFINITY));
         if !far.is_finite() || far <= 0.0 {
             return None;
         }
@@ -872,8 +1059,10 @@ pub fn viewport_lighting(
         radiance: [2.4; 3],
         casts_shadow: true,
         shadow: ShadowSampling::default(),
+        shadow_projection: ShadowProjectionSettings::default(),
         bake_mode: LightBakeMode::Disabled,
         layers: u64::MAX,
+        scope: SceneLightScope::default(),
     };
     let ambient = linear_color(node.color("ambient-color").unwrap_or(Color(0xffffffff)))
         .map(|channel| channel * ambient_intensity);

@@ -2,7 +2,8 @@ struct SurfaceMap {
     source: string, wrap-u: string, wrap-v: string,
     min-filter: string, mag-filter: string, mip-filter: string,
     uv-scale-u: float, uv-scale-v: float, uv-offset-u: float, uv-offset-v: float,
-    uv-rotation: float,
+    uv-rotation: float, uv-pivot-u: float, uv-pivot-v: float,
+    uv-flip-u: bool, uv-flip-v: bool,
 }
 struct TexturedStyle {
     enabled: bool, base-color: color, metalness: float, roughness: float,
@@ -19,7 +20,7 @@ struct TexturedActor {
 
 export component AuthoredTextureDemo inherits Window {
     title: "XRack · 材质贴图";
-    width: 644px; height: 434px;
+    width: 644px; height: 478px;
     resizable: false; background: #182535;
 
     in-out property <float> repeat: 1.5;
@@ -29,19 +30,24 @@ export component AuthoredTextureDemo inherits Window {
     in-out property <bool> bump: true;
     in-out property <bool> imported: false;
     in-out property <string> wrap: "repeat";
+    in-out property <bool> offset-pivot: false;
+    in-out property <bool> flip-u: false;
+    in-out property <bool> flip-v: false;
     property <SurfaceMap> tiles: SurfaceMap {
         source: @texture-url("models/focus-grid.png"),
         wrap-u: root.wrap, wrap-v: root.wrap,
         min-filter: "linear", mag-filter: "nearest", mip-filter: "linear",
         uv-scale-u: root.repeat, uv-scale-v: root.repeat,
         uv-offset-u: 0, uv-offset-v: 0, uv-rotation: root.rotation,
+        uv-pivot-u: root.offset-pivot ? 0.7 : 0, uv-pivot-v: root.offset-pivot ? 0.5 : 0,
+        uv-flip-u: root.flip-u, uv-flip-v: root.flip-v,
     };
     property <TexturedStyle> left: TexturedStyle {
         enabled: true, base-color: root.cutout ? #b39bf0 : #7fbdde,
         metalness: 0.05, roughness: root.roughness,
         base-color-map: root.cutout ? SurfaceMap {
             source: @texture-url("models/particle-ring.png"),
-            uv-scale-u: 1, uv-scale-v: 1, uv-rotation: 0,
+            uv-scale-u: 1, uv-scale-v: 1,
             ..root.tiles
         } : root.tiles,
         metallic-roughness-map: "", normal-map: "", normal-strength: 1,
@@ -103,4 +109,7 @@ export component AuthoredTextureDemo inherits Window {
         text: root.wrap == "repeat" ? "重复寻址" : root.wrap == "mirror" ? "镜像寻址" : "边缘延伸";
         clicked => { root.wrap = root.wrap == "repeat" ? "mirror" : root.wrap == "mirror" ? "clamp" : "repeat"; }
     }
+    pivot-toggle := CheckBox { x: 14px; y: 420px; width: 139px; height: 36px; text: "偏心旋转"; checked <=> root.offset-pivot; }
+    flip-u-toggle := CheckBox { x: 153px; y: 420px; width: 124px; height: 36px; text: "水平翻转"; checked <=> root.flip-u; }
+    flip-v-toggle := CheckBox { x: 285px; y: 420px; width: 139px; height: 36px; text: "垂直翻转"; checked <=> root.flip-v; }
 }

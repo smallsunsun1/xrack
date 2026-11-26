@@ -1,0 +1,358 @@
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -1,4 +1,4 @@
+-use std::cell::RefCell;
++use std::cell::{Cell, RefCell};
+ use std::collections::HashMap;
+ use std::rc::Rc;
+
+@@ -533,7 +533,94 @@
+             "pipeline 1, used {} flushes ago, was kept",
+             PIPELINE_RECENT_FLUSHES + 1
+         );
++    }
++}
++
++#[derive(Debug)]
++struct SharedGpuResources {
++    shader_module: wgpu::ShaderModule,
++    empty_texture_view: wgpu::TextureView,
++    sampler_cache: SamplerCache,
++    viewport_layout: wgpu::BindGroupLayout,
++    draw_layouts: [DrawLayout; 2],
++    pipelines: RefCell<HashMap<PipelineState, CachedPipeline>>,
++    epoch: Cell<u64>,
++}
++
++impl SharedGpuResources {
++    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
++        let module = wgpu::ShaderModuleDescriptor {
++            label: Some("femtovg"),
++            source: wgpu::ShaderSource::Wgsl(
++                concat!(
++                    include_str!("wgpu/shader.wgsl"),
++                    "\n",
++                    include_str!("wgpu/filters.wgsl")
++                )
++                .into(),
++            ),
++        };
++        let shader_module = device.create_shader_module(module);
++
++        let texture_descriptor = wgpu::TextureDescriptor {
++            size: wgpu::Extent3d::default(),
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: wgpu::TextureDimension::D2,
++            format: wgpu::TextureFormat::Rgba8Unorm,
++            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
++            label: None,
++            view_formats: &[],
++        };
++        let empty_texture = device.create_texture(&wgpu::TextureDescriptor {
++            label: Some("empty"),
++            view_formats: &[],
++            ..texture_descriptor
++        });
++
++        queue.write_texture(
++            empty_texture.as_image_copy(),
++            &[255, 0, 0, 255],
++            wgpu::TexelCopyBufferLayout {
++                offset: 0,
++                bytes_per_row: Some(4),
++                rows_per_image: None,
++            },
++            wgpu::Extent3d::default(),
++        );
++
++        let viewport_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
++            label: Some("Bind Group Layout for Viewport uniform"),
++            entries: &[wgpu::BindGroupLayoutEntry {
++                binding: 0,
++                visibility: wgpu::ShaderStages::VERTEX,
++                ty: wgpu::BindingType::Buffer {
++                    ty: wgpu::BufferBindingType::Uniform,
++                    has_dynamic_offset: false,
++                    min_binding_size: None,
++                },
++                count: None,
++            }],
++        });
++
++        let draw_layouts = [false, true].map(|mask| DrawLayout::new(device, &viewport_bind_group_layout, mask));
++
++        Self {
++            shader_module,
++            empty_texture_view: empty_texture.create_view(&Default::default()),
++            sampler_cache: Rc::new(RefCell::new(HashMap::new())),
++            viewport_layout: viewport_bind_group_layout,
++            draw_layouts,
++            pipelines: Default::default(),
++            epoch: Cell::new(0),
++        }
+     }
++
++    fn next_epoch(&self) -> u64 {
++        let epoch = self.epoch.get() + 1;
++        self.epoch.set(epoch);
++        epoch
++    }
+ }
+
+ /// WGPU renderer.
+@@ -542,12 +629,8 @@
+     device: wgpu::Device,
+     queue: wgpu::Queue,
+
+-    shader_module: Rc<wgpu::ShaderModule>,
+-
++    shared: Rc<SharedGpuResources>,
+     screen_view: [f32; 2],
+-
+-    empty_texture_view: wgpu::TextureView,
+-    sampler_cache: SamplerCache,
+     uniform_buffer: wgpu::Buffer,
+     uniform_stride: u64,
+     vertex_buffer: wgpu::Buffer,
+@@ -562,9 +645,6 @@
+     screen_stencil: TargetStencil,
+     stencil_buffer_for_textures: HashMap<wgpu::Texture, TargetStencil>,
+     viewport_bind_groups: ViewportBindGroups,
+-    /// Without and with a coverage mask.
+-    draw_layouts: [DrawLayout; 2],
+-    pipeline_cache: Rc<RefCell<HashMap<PipelineState, CachedPipeline>>>,
+     slicing: Option<SubmissionSlicing>,
+     last_frame_slices: Vec<u32>,
+     /// Built on the first upload of an image with `GENERATE_MIPMAPS`.
+@@ -699,29 +779,21 @@
+
+     /// Creates a new renderer for the device.
+     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+-        let module = wgpu::ShaderModuleDescriptor {
+-            label: Some("femtovg"),
+-            source: wgpu::ShaderSource::Wgsl(
+-                concat!(
+-                    include_str!("wgpu/shader.wgsl"),
+-                    "\n",
+-                    include_str!("wgpu/filters.wgsl")
+-                )
+-                .into(),
+-            ),
+-        };
+-        let shader_module = Rc::new(device.create_shader_module(module));
++        let shared = Rc::new(SharedGpuResources::new(&device, &queue));
++        Self::with_shared_resources(device, queue, shared)
++    }
+
+-        let texture_descriptor = wgpu::TextureDescriptor {
+-            size: wgpu::Extent3d::default(),
+-            mip_level_count: 1,
+-            sample_count: 1,
+-            dimension: wgpu::TextureDimension::D2,
+-            format: wgpu::TextureFormat::Rgba8Unorm,
+-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+-            label: None,
+-            view_formats: &[],
+-        };
++    /// Creates an independent canvas renderer on the same device and queue.
++    /// The shader, bind group layouts and compiled pipelines are shared.
++    pub fn new_sibling(&self) -> Self {
++        Self::with_shared_resources(self.device.clone(), self.queue.clone(), self.shared.clone())
++    }
++
++    fn with_shared_resources(
++        device: wgpu::Device,
++        queue: wgpu::Queue,
++        shared: Rc<SharedGpuResources>,
++    ) -> Self {
+         // A dynamic offset must be a multiple of this, usually 256.
+         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment).max(1);
+         let uniform_stride = UNIFORM_BYTES.div_ceil(alignment) * alignment;
+@@ -739,39 +811,6 @@
+             mapped_at_creation: false,
+         });
+
+-        let empty_texture = device.create_texture(&wgpu::TextureDescriptor {
+-            label: Some("empty"),
+-            view_formats: &[],
+-            ..texture_descriptor
+-        });
+-
+-        queue.write_texture(
+-            empty_texture.as_image_copy(),
+-            &[255, 0, 0, 255],
+-            wgpu::TexelCopyBufferLayout {
+-                offset: 0,
+-                bytes_per_row: Some(4),
+-                rows_per_image: None,
+-            },
+-            wgpu::Extent3d::default(),
+-        );
+-
+-        let viewport_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+-            label: Some("Bind Group Layout for Viewport uniform"),
+-            entries: &[wgpu::BindGroupLayoutEntry {
+-                binding: 0,
+-                visibility: wgpu::ShaderStages::VERTEX,
+-                ty: wgpu::BindingType::Buffer {
+-                    ty: wgpu::BufferBindingType::Uniform,
+-                    has_dynamic_offset: false,
+-                    min_binding_size: None,
+-                },
+-                count: None,
+-            }],
+-        });
+-
+-        let draw_layouts = [false, true].map(|mask| DrawLayout::new(&device, &viewport_bind_group_layout, mask));
+-
+         let fan_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+             label: Some(FAN_INDEX_LABEL),
+             size: MIN_VERTEX_BYTES,
+@@ -785,12 +824,11 @@
+             device,
+             queue,
+
+-            shader_module,
++            viewport_bind_groups: ViewportBindGroups::new(shared.viewport_layout.clone()),
++            shared,
+
+             screen_view: [0.0, 0.0],
+
+-            empty_texture_view: empty_texture.create_view(&Default::default()),
+-            sampler_cache: Rc::new(RefCell::new(HashMap::new())),
+             uniform_buffer,
+             uniform_stride,
+             vertex_buffer,
+@@ -799,9 +837,6 @@
+             fan_index_buffer,
+             screen_stencil: TargetStencil::default(),
+             stencil_buffer_for_textures: HashMap::new(),
+-            viewport_bind_groups: ViewportBindGroups::new(viewport_bind_group_layout),
+-            draw_layouts,
+-            pipeline_cache: Default::default(),
+             slicing: None,
+             last_frame_slices: Vec::new(),
+             mipmaps: None,
+@@ -1336,15 +1371,12 @@
+         // The screen is the target until a command sets another.
+         render_pass_builder.set_render_target_screen();
+
++        let pipeline_epoch = self.shared.next_epoch();
+         let mut pipeline_and_bindgroup_mapper = CommandToPipelineAndBindGroupMapper::new(
+             self.device.clone(),
+-            self.empty_texture_view.clone(),
+-            self.sampler_cache.clone(),
+-            self.uniform_buffer.clone(),
+-            self.shader_module.clone(),
+-            self.draw_layouts.clone(),
+-            self.pipeline_cache.clone(),
+-            self.flush_count,
++            self.uniform_buffer.clone(),
++            self.shared.clone(),
++            pipeline_epoch,
+         );
+
+         let mut current_render_target = RenderTarget::Screen;
+@@ -1545,8 +1577,8 @@
+
+         self.viewport_bind_groups.evict(self.flush_count);
+         evict_least_recently_used(
+-            &mut self.pipeline_cache.borrow_mut(),
+-            self.flush_count,
++            &mut self.shared.pipelines.borrow_mut(),
++            pipeline_epoch,
+             PIPELINE_CACHE_CAPACITY,
+             PIPELINE_RECENT_FLUSHES,
+             |cached_pipeline| cached_pipeline.last_used,
+@@ -3897,11 +3929,8 @@
+
+ struct CommandToPipelineAndBindGroupMapper {
+     device: wgpu::Device,
+-    empty_texture_view: wgpu::TextureView,
+-    sampler_cache: SamplerCache,
+     uniform_buffer: wgpu::Buffer,
+     current_uniforms: Option<UniformArray>,
+-    shader_module: Rc<wgpu::ShaderModule>,
+
+     current_bind_group_state: Option<BindGroupState>,
+     current_bind_group: Option<wgpu::BindGroup>,
+@@ -3911,36 +3940,26 @@
+     /// each is made once a flush, not at every change. The images and the
+     /// uniform buffer they hold do not change within a flush.
+     bind_groups: FnvHashMap<BindGroupState, wgpu::BindGroup>,
+-    /// Without and with a coverage mask.
+-    draw_layouts: [DrawLayout; 2],
+-    pipeline_cache: Rc<RefCell<HashMap<PipelineState, CachedPipeline>>>,
+-    flush_count: u64,
++    shared: Rc<SharedGpuResources>,
++    pipeline_epoch: u64,
+ }
+
+ impl CommandToPipelineAndBindGroupMapper {
+     fn new(
+         device: wgpu::Device,
+-        empty_texture_view: wgpu::TextureView,
+-        sampler_cache: SamplerCache,
+         uniform_buffer: wgpu::Buffer,
+-        shader_module: Rc<wgpu::ShaderModule>,
+-        draw_layouts: [DrawLayout; 2],
+-        pipeline_cache: Rc<RefCell<HashMap<PipelineState, CachedPipeline>>>,
+-        flush_count: u64,
++        shared: Rc<SharedGpuResources>,
++        pipeline_epoch: u64,
+     ) -> Self {
+         Self {
+-            device: device.clone(),
+-            empty_texture_view,
+-            sampler_cache,
++            device,
+             uniform_buffer,
+             current_uniforms: None,
+-            shader_module,
+             current_bind_group_state: None,
+             current_bind_group: None,
+             bind_groups: FnvHashMap::default(),
+-            draw_layouts,
+-            pipeline_cache,
+-            flush_count,
++            shared,
++            pipeline_epoch,
+         }
+     }
+
+@@ -4011,9 +4030,9 @@
+                 bind_group_state.materialize(
+                     &self.device,
+                     images,
+-                    &self.draw_layouts[usize::from(bind_group_state.clip_mask.is_some())].bind_group,
+-                    &self.empty_texture_view,
+-                    &self.sampler_cache,
++                    &self.shared.draw_layouts[usize::from(bind_group_state.clip_mask.is_some())].bind_group,
++                    &self.shared.empty_texture_view,
++                    &self.shared.sampler_cache,
+                     &self.uniform_buffer,
+                 )
+             });
+@@ -4051,16 +4070,16 @@
+
+         // An unchanged pipeline was looked up, and stamped with this flush, when it was bound.
+         if render_pass_builder.current_pipeline_state.as_ref() != Some(&pipeline_state) {
+-            let mut pipeline_cache = self.pipeline_cache.borrow_mut();
++            let mut pipeline_cache = self.shared.pipelines.borrow_mut();
+             let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
+-                let layout = &self.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline;
+-                let pipeline = pipeline_state.materialize(&self.device, layout, &self.shader_module);
++                let layout = &self.shared.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline;
++                let pipeline = pipeline_state.materialize(&self.device, layout, &self.shared.shader_module);
+                 CachedPipeline {
+                     pipeline,
+-                    last_used: self.flush_count,
++                    last_used: self.pipeline_epoch,
+                 }
+             });
+-            render_pipeline.last_used = self.flush_count;
++            render_pipeline.last_used = self.pipeline_epoch;
+             render_pass.set_pipeline(&render_pipeline.pipeline);
+             render_pass_builder.current_pipeline_state = Some(pipeline_state);
+         }

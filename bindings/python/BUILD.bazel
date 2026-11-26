@@ -49,6 +49,7 @@ pyo3_extension(
         "//crates/xrack-interpreter:xrack_interpreter_live",
         "//crates/xrack-platform-winit:xrack_platform_winit",
         "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-scene-import:xrack_scene_import",
         "@crates//:pyo3-async-runtimes",
         "@crates//:tokio",
     ],

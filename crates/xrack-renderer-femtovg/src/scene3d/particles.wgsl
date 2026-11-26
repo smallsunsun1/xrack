@@ -90,6 +90,7 @@ struct Sprite {
     @location(3) @interpolate(flat) sheet: vec4<f32>,
     @location(4) @interpolate(flat) frames: vec3<f32>,
     // XRack wireframe varying
+    // XRack linked sample varying
 }
 
 struct SpriteVertex {
@@ -358,6 +359,7 @@ fn sprite_vertex(vertex: u32, source: ParticleCenter, visible: bool) -> SpriteVe
     let sprite = Sprite(clip, uv, vec4<f32>(emitter.color.rgb * alpha, alpha),
         dot(view.view_depth, world), emitter.sheet, frames,
         // XRack wireframe corner
+        // XRack linked clip depth
     );
     return SpriteVertex(sprite, age_fraction, seed);
 }
@@ -537,11 +539,13 @@ struct Ribbon {
     @location(3) @interpolate(flat) sheet: vec4<f32>,
     @location(4) @interpolate(flat) frames: vec3<f32>,
     // XRack wireframe varying
+    // XRack linked sample varying
 }
 
 fn ribbon(sprite: Sprite) -> Ribbon {
     return Ribbon(sprite.position, sprite.uv, sprite.color, sprite.depth, sprite.sheet, sprite.frames,
         // XRack wireframe ribbon
+        // XRack linked ribbon depth
     );
 }
 
@@ -628,6 +632,7 @@ fn trail_vertex(vertex: u32, sample: Displaced, interval: TrailInterval,
     let sprite = Sprite(offset_clip, vec2<f32>(side, 1.0 - 2.0 * interval.fraction),
         vec4<f32>(emitter.color.rgb * alpha, alpha), dot(view.view_depth, world), emitter.sheet, frames,
         // XRack wireframe corner
+        // XRack linked offset clip depth
     );
     return SpriteVertex(sprite, life_fraction, particle.seed);
 }
@@ -722,8 +727,10 @@ fn fragment_trail_bounded(sprite: Ribbon) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fragment_trail_weighted(sprite: Ribbon) -> WeightedColor {
-    return weighted_color(trail_color(sprite), sprite.depth);
+fn fragment_trail_weighted(sprite: Ribbon /* XRack linked sample */) -> WeightedColor {
+    let color = trail_color(sprite);
+    // XRack linked fragment sprite.position
+    return weighted_color(color, sprite.depth);
 }
 
 @fragment
@@ -773,8 +780,10 @@ fn fragment_trail_texture_bounded(sprite: Ribbon) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fragment_trail_texture_weighted(sprite: Ribbon) -> WeightedColor {
-    return weighted_color(ribbon_texture(sprite), sprite.depth);
+fn fragment_trail_texture_weighted(sprite: Ribbon /* XRack linked sample */) -> WeightedColor {
+    let color = ribbon_texture(sprite);
+    // XRack linked fragment sprite.position
+    return weighted_color(color, sprite.depth);
 }
 
 @fragment
@@ -804,13 +813,17 @@ struct WeightedColor {
 }
 
 @fragment
-fn fragment_weighted(sprite: Sprite) -> WeightedColor {
-    return weighted_color(sprite_color(sprite), sprite.depth);
+fn fragment_weighted(sprite: Sprite /* XRack linked sample */) -> WeightedColor {
+    let color = sprite_color(sprite);
+    // XRack linked fragment sprite.position
+    return weighted_color(color, sprite.depth);
 }
 
 @fragment
-fn fragment_texture_weighted(sprite: Sprite) -> WeightedColor {
-    return weighted_color(texture_color(sprite), sprite.depth);
+fn fragment_texture_weighted(sprite: Sprite /* XRack linked sample */) -> WeightedColor {
+    let color = texture_color(sprite);
+    // XRack linked fragment sprite.position
+    return weighted_color(color, sprite.depth);
 }
 
 fn weighted_color(color: vec4<f32>, view_depth: f32) -> WeightedColor {

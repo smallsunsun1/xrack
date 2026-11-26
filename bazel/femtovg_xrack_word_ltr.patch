@@ -1,0 +1,36 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -81,6 +81,14 @@
+     matches!(character, '\u{4e00}'..='\u{9fff}')
+ }
+ 
++// These classes leave BidiInfo's implicit LTR paragraph at level zero.
++// Paragraph separators and directional controls still need the full layout.
++fn simple_ltr_character(character: char) -> bool {
++    use unicode_bidi::BidiClass::{L, EN, ES, ET, CS, NSM, ON, WS, S};
++    matches!(character, ' '..='~')
++        || matches!(unicode_bidi::bidi_class(character), L | EN | ES | ET | CS | NSM | ON | WS | S)
++}
++
+ const WORD_SLICE_HINT_SLOTS: usize = 16_384;
+ const MIN_WORD_CACHE_FOR_SLICES: usize = 8_192;
+ 
+@@ -232,7 +240,7 @@
+         if !ascii && !text.chars().all(|ch| {
+             let ideograph = unified_ideograph(ch);
+             han_only &= ideograph;
+-            ideograph || (' '..='~').contains(&ch)
++            ideograph || simple_ltr_character(ch)
+         }) {
+             return cached_run(&mut context, settings, text, None).map(|run| run.metrics.width());
+         }
+@@ -292,7 +300,7 @@
+             bottom = bottom.max(y + glyph.height * scale);
+             cursor += glyph.advance_y * scale;
+         };
+-        if text.chars().all(|ch| (' '..='~').contains(&ch) || unified_ideograph(ch)) {
++        if text.chars().all(|ch| unified_ideograph(ch) || simple_ltr_character(ch)) {
+             // These characters form a single LTR run. Use the same words
+             // and floating point additions as shape_run followed by layout.
+             let style = WordStyle::new(settings.font_ids, &settings.font_variations);

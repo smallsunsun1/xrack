@@ -1,0 +1,67 @@
+struct Surface { metalness: float, roughness: float }
+struct Actor {
+    id: string, parent: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: Surface, camera-kind: string, visible: bool,
+}
+struct Lamp {
+    kind: string, x: float, y: float, z: float, yaw: float, elevation: float,
+    intensity: float, color: color, range: float, inner-angle: float, outer-angle: float,
+    scope: string, casts-shadow: bool, bake-mode: string,
+}
+
+export component LightScopeDemo inherits Window {
+    title: "XRack · 灯光作用域";
+    width: 432px; height: 254px; resizable: false; background: #182438;
+    in-out property <int> scope-mode: 0;
+    in-out property <bool> reparent: false;
+
+    property <Actor> stand: Actor {
+        id: "", parent: "", mesh: "", x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #ffffff, material: Surface { metalness: 0, roughness: 0.72 },
+        camera-kind: "", visible: true,
+    };
+    property <Lamp> fill: Lamp {
+        kind: "directional", x: 0, y: 0, z: 0, yaw: 0, elevation: 0,
+        intensity: 0.55, color: #2888ff, range: 0, inner-angle: 20, outer-angle: 35,
+        scope: "", casts-shadow: false, bake-mode: "all",
+    };
+
+    view := SceneView3D {
+        width: 432px; height: 198px;
+        scene-background: #202e4a; ambient-intensity: 0.04; shadows: true; shadow-map-size: 128;
+        cache-rendering: true; camera: "camera"; imported-lights: false;
+        model: [
+            Actor { id: "camera", z: 6.7, camera-kind: "perspective", ..root.stand },
+            Actor { id: "left-plate", parent: "left-group", mesh: "primitive:box", x: -1.65, y: 0.55, ..root.stand },
+            Actor { id: "right-plate", parent: "right-group", mesh: "primitive:box", x: 1.65, y: 0.55, ..root.stand },
+            Actor { id: "left-leaf", parent: "inner-group", mesh: "primitive:box", x: -1.65, y: -0.75, ..root.stand },
+            Actor { id: "right-group", ..root.stand },
+            Actor { id: "inner-group", parent: root.reparent ? "right-group" : "left-group", ..root.stand },
+            Actor { id: "left-group", ..root.stand },
+        ];
+        lights: [
+            root.fill,
+            Lamp {
+                intensity: 2.6, color: #ff3c24, casts-shadow: true,
+                scope: root.scope-mode == 0 ? "left-group"
+                    : root.scope-mode == 1 ? "right-group"
+                    : root.scope-mode == 2 ? "" : "missing-group",
+                ..root.fill
+            },
+        ];
+    }
+    scope-button := Button {
+        x: 12px; y: 209px; width: 185px; height: 34px;
+        text: root.scope-mode == 0 ? "红灯照左组" :
+            root.scope-mode == 1 ? "红灯照右组" :
+            root.scope-mode == 2 ? "红灯照整场" : "作用域不存在";
+        clicked => { root.scope-mode = (root.scope-mode + 1) % 4; }
+    }
+    reparent-toggle := CheckBox {
+        x: 212px; y: 209px; width: 208px; height: 34px;
+        text: "左下模型移入右组"; checked: root.reparent;
+        toggled => { root.reparent = !root.reparent; }
+    }
+}

@@ -1,0 +1,88 @@
+struct AugmentMaterial { material-shader: string, unlit: bool }
+struct AugmentActor {
+    id: string, mesh: string, color: color,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, camera-kind: string, camera-height: float,
+    material: AugmentMaterial,
+}
+struct AugmentCapture {
+    name: string, camera: string, renderables: string, combine-attachments: bool,
+    augment-shader: string, augment-parameters: vector3d,
+}
+struct AugmentInput { capture: string, attachment: string, enabled: bool }
+struct AugmentEffect { shader: string, buffers: [AugmentInput] }
+
+export component CaptureAugmentDemo inherits Window {
+    title: "XRack · 捕获材质扩展";
+    width: 250px; height: 178px; background: #000;
+    in-out property <bool> augment: false;
+    in-out property <bool> model-shader: true;
+    in-out property <bool> read-data: true;
+    in-out property <bool> compare: false;
+    in-out property <float> gain: 0.5;
+
+    property <AugmentActor> unit: AugmentActor {
+        id: "", mesh: "primitive:box", color: #fff,
+        x: 0, y: 0, z: 0, scale-x: 1.50, scale-y: 1.5, scale-z: 1.5,
+        yaw: 0, pitch: 0, roll: 0, camera-kind: "", camera-height: 2.0,
+        material: AugmentMaterial { material-shader: "", unlit: true },
+    };
+    SceneView3D {
+        x: 8px; y: 8px; width: 234px; height: 84px; camera: "eye";
+        cache-rendering: true;
+        render-overrides: "disable-internal-passes";
+        scene-color-capture: "surface";
+        model: [
+            AugmentActor { id: "eye", mesh: "", z: 5, camera-kind: "orthographic", ..root.unit },
+            AugmentActor {
+                id: "block",
+                material: AugmentMaterial {
+                    material-shader: root.model-shader ? @material-shader-url("effects/augment_model.wgsl") : "",
+                    unlit: true,
+                },
+                ..root.unit
+            },
+        ];
+        scene-captures: [
+            AugmentCapture {
+                name: "surface", camera: "eye", renderables: "opaque", combine-attachments: true,
+                augment-shader: root.augment ? @material-shader-url("effects/augment_capture.wgsl") : "",
+                augment-parameters: Vector3D.new(root.gain, 0.125, 0.0625),
+            },
+            AugmentCapture {
+                name: "comparison", camera: "eye", renderables: "opaque", combine-attachments: true,
+                augment-shader: root.augment ? @material-shader-url("effects/augment_capture.wgsl") : "",
+                augment-parameters: Vector3D.new(0.25, 0.125, 0.0625),
+            },
+        ];
+        scene-effects: [
+            AugmentEffect {
+                shader: @shader-url("effects/augment_display.wgsl"),
+                buffers: [
+                    AugmentInput { capture: "surface", attachment: "material-data", enabled: root.read-data },
+                    AugmentInput { capture: "comparison", attachment: "material-data", enabled: root.read-data && root.compare },
+                ],
+            },
+        ];
+    }
+    augment := CheckBox {
+        x: 8px; y: 101px; width: 69px; height: 29px;
+        text: "扩展"; checked <=> root.augment;
+    }
+    model-shader := CheckBox {
+        x: 85px; y: 101px; width: 76px; height: 29px;
+        text: "原材质"; checked <=> root.model-shader;
+    }
+    read-data := CheckBox {
+        x: 170px; y: 101px; width: 74px; height: 29px;
+        text: "读附件"; checked <=> root.read-data;
+    }
+    gain := Slider {
+        x: 8px; y: 140px; width: 139px; height: 25px;
+        minimum: 0; maximum: 1; value <=> root.gain;
+    }
+    compare := CheckBox {
+        x: 154px; y: 138px; width: 92px; height: 29px;
+        text: "两个捕获"; checked <=> root.compare;
+    }
+}

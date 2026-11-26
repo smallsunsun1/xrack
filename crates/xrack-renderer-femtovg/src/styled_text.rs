@@ -5,7 +5,7 @@ use crate::{
 use femtovg::{Canvas, Paint, Path, renderer::WGPURenderer};
 use std::{
     cell::Cell,
-    collections::{HashMap, VecDeque, hash_map::Entry},
+    collections::{BTreeMap, HashMap, VecDeque, hash_map::Entry},
     hash::BuildHasher,
     num::NonZeroUsize,
     ops::Range,
@@ -227,6 +227,8 @@ struct CachedLayout {
     registered_fonts: [usize; 2],
     reusable_widths: Option<Range<f32>>,
     prefix: Option<ReusedPrefix>,
+    last_used: u64,
+    eviction_stamp: u64,
     bytes: usize,
 }
 
@@ -305,8 +307,11 @@ pub(super) fn unchanged_paragraph_prefix(previous: &StyledText, next: &StyledTex
 #[derive(Default)]
 pub(crate) struct LayoutCache {
     entries: HashMap<LayoutKey, CachedLayout>,
+    // Creation order searches recent document revisions for a reusable prefix.
     order: VecDeque<LayoutKey>,
+    eviction_order: BTreeMap<u64, LayoutKey>,
     bytes: usize,
+    use_clock: u64,
     prefix_disabled: bool,
     reflow: Option<ReflowMeasurements>,
     shaped_spans: Option<ShapedSpans>,
@@ -317,7 +322,9 @@ impl LayoutCache {
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+        self.eviction_order.clear();
         self.bytes = 0;
+        self.use_clock = 0;
         self.reflow = None;
         self.shaped_spans = None;
     }
@@ -416,9 +423,11 @@ impl LayoutCache {
         {
             key = source;
         }
-        if let Some(cached) = self.entries.get(&key)
+        if let Some(cached) = self.entries.get_mut(&key)
             && (!selection || cached.shaped_fragments == cached.plan.fragments.len())
         {
+            self.use_clock += 1;
+            cached.last_used = self.use_clock;
             return Some(cached.plan.clone());
         }
 
@@ -439,6 +448,11 @@ impl LayoutCache {
             {
                 self.reused_fragments = self.reused_fragments.saturating_add(reused as u64);
                 return cached;
+            }
+            if can_index && document.text().len() >= 64 * 1024 {
+                // The default word cache can evict earlier shaping results
+                // during a long layout, before the first ink scan can use them.
+                crate::text::reserve_reflow_words(system.context());
             }
             let reflow = can_index && self.prepare_reflow(system, document, &key);
             let mode = if let Some(reflow) = self.reflow.as_mut().filter(|_| reflow) {
@@ -468,6 +482,8 @@ impl LayoutCache {
                 selection_allocations: Vec::new(),
                 registered_fonts: system.registered_font_counts(),
                 prefix: None,
+                last_used: 0,
+                eviction_stamp: 0,
                 bytes: 0,
             }
         });
@@ -501,7 +517,11 @@ impl LayoutCache {
                     .get_or_insert_with(|| shaping_paint(system, node, style));
                 Arc::new(system.shape_visual_line(text, paint))
             };
-            if let Some(spans) = self.shaped_spans.as_mut().filter(|_| share_spans) {
+            if let Some(spans) = self
+                .shaped_spans
+                .as_mut()
+                .filter(|_| share_spans && document.text().len() >= 4096)
+            {
                 spans.sync_fonts(registered_fonts);
                 if cached.shaped_fragments == 0
                     && (spans
@@ -552,7 +572,7 @@ impl LayoutCache {
         document: &StyledText,
         font: &LayoutFont,
     ) -> bool {
-        if self.prefix_disabled || document.text().len() < 4096 {
+        if self.prefix_disabled {
             return false;
         }
         let Some(typography) = system.typography_revision() else {
@@ -564,6 +584,10 @@ impl LayoutCache {
             && spans.scope.matches(font, context, &typography)
         {
             spans.sync_fonts(registered_fonts);
+        } else if document.text().len() < 4096 {
+            // Short siblings can reuse the active width cache without
+            // displacing a differently styled document's reflow state.
+            return false;
         } else {
             self.shaped_spans = Some(ShapedSpans {
                 scope: FontScope {
@@ -704,6 +728,8 @@ impl LayoutCache {
                     source_document: document_identity(&old.document),
                     fragments: reused,
                 }),
+                last_used: 0,
+                eviction_stamp: 0,
                 bytes: 0,
             },
             reused,
@@ -742,7 +768,12 @@ impl LayoutCache {
     fn take(&mut self, key: &LayoutKey) -> Option<CachedLayout> {
         let cached = self.entries.remove(key)?;
         self.bytes -= cached.bytes;
-        self.order.retain(|previous| previous != key);
+        self.eviction_order.remove(&cached.eviction_stamp);
+        if self.order.front() == Some(key) {
+            self.order.pop_front();
+        } else if let Some(index) = self.order.iter().rposition(|previous| previous == key) {
+            self.order.remove(index);
+        }
         Some(cached)
     }
 
@@ -752,9 +783,7 @@ impl LayoutCache {
             .last()
             .map_or(0, |entry| entry.total_bytes);
         cached.bytes = document_bytes(&cached.document)
-            .saturating_add(
-                cached.plan.fragments.capacity() * std::mem::size_of::<StyledFragment>(),
-            )
+            .saturating_add(cached.plan.fragments.allocated_bytes())
             .saturating_add(
                 cached.selection_allocations.capacity()
                     * std::mem::size_of::<SelectionAllocation>(),
@@ -770,17 +799,33 @@ impl LayoutCache {
         if bytes > MAX_CACHE_BYTES {
             return;
         }
-        while self.entries.len() >= MAX_LAYOUTS || self.bytes + bytes > MAX_CACHE_BYTES {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            if let Some(entry) = self.entries.remove(&oldest) {
-                self.bytes -= entry.bytes;
-            }
-        }
+        self.evict_for(bytes);
+        self.use_clock += 1;
+        cached.last_used = self.use_clock;
+        cached.eviction_stamp = self.use_clock;
         self.bytes += bytes;
         self.order.push_back(key.clone());
+        self.eviction_order.insert(self.use_clock, key.clone());
         self.entries.insert(key, cached);
+    }
+
+    fn evict_for(&mut self, incoming_bytes: usize) {
+        while self.entries.len() >= MAX_LAYOUTS || self.bytes + incoming_bytes > MAX_CACHE_BYTES {
+            let Some((stamp, key)) = self.eviction_order.pop_first() else {
+                break;
+            };
+            let Some(entry) = self.entries.get_mut(&key) else {
+                continue;
+            };
+            // Refresh a stale timestamp only when the entry becomes a
+            // candidate. Cache hits don't have to update the ordered index.
+            if stamp != entry.last_used {
+                entry.eviction_stamp = entry.last_used;
+                self.eviction_order.insert(entry.last_used, key);
+            } else {
+                self.take(&key);
+            }
+        }
     }
 }
 
@@ -788,6 +833,74 @@ enum LayoutMode<'a> {
     Regular,
     Indexed,
     Reflow(&'a mut ReflowMeasurements),
+}
+
+#[cfg(test)]
+mod layout_cache_tests {
+    use super::*;
+
+    #[test]
+    fn byte_pressure_keeps_recently_read_history() {
+        let mut cache = LayoutCache::default();
+        let mut add = |text: &str| {
+            let document = StyledText::from_markdown(text).unwrap();
+            let available = Size::new(240.0, f32::INFINITY);
+            let plan = Rc::new(StyledTextLayout::new(
+                &Node::new("StyledText", None),
+                &document,
+                available,
+                16.0,
+                |text, _| text.len() as f32 * 8.0,
+            ));
+            let key = LayoutKey {
+                document: document_identity(&document),
+                settings: LayoutSettings {
+                    kind: "StyledText",
+                    available: [available.width.to_bits(), available.height.to_bits()],
+                    font: LayoutFont {
+                        size: 16.0_f32.to_bits(),
+                        family: String::new(),
+                        weight: 400,
+                        italic: false,
+                    },
+                    wrap: TextWrap::WordWrap as u8,
+                    overflow: TextOverflow::Clip as u8,
+                    max_lines: 0,
+                    horizontal: TextHorizontalAlignment::Start as u8,
+                    vertical: TextVerticalAlignment::Top as u8,
+                    direction: None,
+                    selectable: false,
+                },
+            };
+            cache.insert(
+                key.clone(),
+                CachedLayout {
+                    document,
+                    plan,
+                    lines: None,
+                    shaped_fragments: 0,
+                    selection_allocations: Vec::new(),
+                    registered_fonts: [0; 2],
+                    reusable_widths: None,
+                    prefix: None,
+                    last_used: 0,
+                    eviction_stamp: 0,
+                    bytes: 0,
+                },
+            );
+            key
+        };
+        let history = add("Earlier message");
+        let obsolete = add("Earlier reply revision");
+        let latest = add("Current reply revision");
+        cache.use_clock += 1;
+        cache.entries.get_mut(&history).unwrap().last_used = cache.use_clock;
+        let live_bytes = cache.entries[&history].bytes + cache.entries[&latest].bytes;
+        cache.evict_for(MAX_CACHE_BYTES - live_bytes);
+        assert!(!cache.entries.contains_key(&obsolete));
+        assert_eq!(cache.bytes, live_bytes);
+        assert!(cache.order.iter().eq([&history, &latest]));
+    }
 }
 
 fn layout(
@@ -957,8 +1070,18 @@ pub(crate) fn draw(
     focused: Option<usize>,
     selection: Range<usize>,
 ) -> Result<(), String> {
-    let (Some(document), Some(plan)) = (node.styled_text("text"), &layout.styled_text) else {
+    let Some(document) = node.styled_text("text") else {
         return Ok(());
+    };
+    let deferred;
+    let plan = if let Some(plan) = &layout.styled_text {
+        plan
+    } else {
+        deferred = system.measure_styled_text(node, layout);
+        let Some(plan) = &deferred else {
+            return Ok(());
+        };
+        plan
     };
     let PaintFrame { theme, scale, .. } = frame;
     let bounds = layout.bounds;

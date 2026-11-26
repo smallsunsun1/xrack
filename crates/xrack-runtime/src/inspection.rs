@@ -64,6 +64,100 @@ impl PresentationFeedback {
     }
 }
 
+/// CPU recordings and submitted work for the observed 3D viewports of a frame.
+#[derive(Clone, Debug, Default)]
+pub struct ViewportStatistics {
+    pub frame: u64,
+    pub views: Vec<ViewportRenderStats>,
+    pub truncated: bool,
+    pub gpu_timing_supported: bool,
+    pub gpu: Option<ViewportGpuFrame>,
+}
+
+/// The latest completed timestamp readback, which can precede the CPU frame.
+#[derive(Clone, Debug)]
+pub struct ViewportGpuFrame {
+    pub frame: u64,
+    pub truncated: bool,
+    pub views: Vec<ViewportGpuStats>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewportGpuStats {
+    pub path: Vec<usize>,
+    pub id: Option<String>,
+    pub gpu_nanos: u64,
+    pub passes: Vec<ViewportGpuPass>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewportGpuPass {
+    pub name: String,
+    pub count: u32,
+    pub gpu_nanos: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewportRenderWork {
+    Inline,
+    Offscreen,
+    Retained,
+    DisplayOnly,
+}
+
+impl ViewportRenderWork {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Inline => "inline",
+            Self::Offscreen => "offscreen",
+            Self::Retained => "retained",
+            Self::DisplayOnly => "display-only",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewportRenderStats {
+    pub path: Vec<usize>,
+    pub id: Option<String>,
+    pub work: ViewportRenderWork,
+    pub output_size: [u32; 2],
+    pub raster_size: Option<[u32; 2]>,
+    pub samples: Option<u32>,
+    pub cpu_record_micros: u64,
+    pub mesh_draws: u64,
+    pub mesh_vertices: u64,
+    pub sprite_draws: u64,
+    pub sprites: u64,
+    pub shadow_passes: u64,
+    pub reflection_faces: u64,
+    pub capture_passes: u64,
+    pub depth_prepass_draws: u64,
+    pub mesh_upload_bytes: u64,
+    pub blended_resolves: u64,
+    pub linked_resolves: u64,
+    pub linked_working_bytes: Option<u64>,
+}
+
+impl ViewportRenderStats {
+    #[doc(hidden)]
+    pub fn counts(&self) -> [(&'static str, u64); 11] {
+        [
+            ("meshDraws", self.mesh_draws),
+            ("meshVertices", self.mesh_vertices),
+            ("spriteDraws", self.sprite_draws),
+            ("sprites", self.sprites),
+            ("shadowPasses", self.shadow_passes),
+            ("reflectionFaces", self.reflection_faces),
+            ("capturePasses", self.capture_passes),
+            ("depthPrepassDraws", self.depth_prepass_draws),
+            ("meshUploadBytes", self.mesh_upload_bytes),
+            ("blendedResolves", self.blended_resolves),
+            ("linkedResolves", self.linked_resolves),
+        ]
+    }
+}
+
 /// UI-thread state shared by a live-reload component and its native host.
 #[doc(hidden)]
 #[derive(Clone, Default)]
@@ -87,6 +181,7 @@ struct State {
     input: Option<InspectionInput>,
     samples: VecDeque<(u64, u64, UpdateSample)>,
     render_samples: VecDeque<RenderSample>,
+    viewport_statistics: ViewportStatistics,
     presented_frames: Arc<Mutex<VecDeque<PresentedFrame>>>,
     next_frame: u64,
     diagnostics: Option<ui_trace::Buffer>,
@@ -169,6 +264,7 @@ impl WindowInspector {
         let mut state = self.0.borrow_mut();
         state.generation += 1;
         let generation = state.generation;
+        state.viewport_statistics = ViewportStatistics::default();
         if state.record {
             drop(state);
             self.push_action(RecordedAction::Reload { generation });
@@ -227,6 +323,18 @@ impl WindowInspector {
             prepared_revision,
             scene,
         });
+    }
+
+    pub fn set_viewport_statistics(&self, statistics: ViewportStatistics) {
+        self.0.borrow_mut().viewport_statistics = statistics;
+    }
+
+    pub fn set_viewport_gpu_frame(&self, frame: ViewportGpuFrame) {
+        self.0.borrow_mut().viewport_statistics.gpu = Some(frame);
+    }
+
+    pub fn viewport_statistics(&self) -> ViewportStatistics {
+        self.0.borrow().viewport_statistics.clone()
     }
 
     pub fn render_samples(&self) -> Vec<RenderSample> {

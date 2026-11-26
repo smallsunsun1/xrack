@@ -5,11 +5,13 @@ use std::{
     sync::{Arc, Weak},
 };
 use xrack_runtime::material_shader::{MAX_TEXTURES, MaterialHooks};
-use xrack_runtime::scene_effect::{BufferSampling, CaptureAttachment, ExternalTexture};
+use xrack_runtime::scene_effect::{
+    BufferInput, BufferSampling, CaptureAttachment, ExternalTexture,
+};
 use xrack_runtime::scene3d::{
     MaterialChannel, MeshAlphaMode, MeshDielectric, MeshFresnel, MeshImage, MeshMaterial,
     MeshShader, MeshTexture, MeshWorkflow, TextureChannel, TextureColorSpace, TextureFilter,
-    TextureTransform, TextureWrap,
+    TextureSampling, TextureTransform, TextureWrap,
 };
 
 use super::{
@@ -25,18 +27,51 @@ pub(super) const FIRST_SHADER_TEXTURE_BINDING: u32 = CLEARCOAT_SETTINGS_BINDING 
 pub(super) const SHADER_CAPTURE_BINDING: u32 = FIRST_SHADER_TEXTURE_BINDING + MAX_TEXTURES as u32;
 // Shadow atlas, baked lightmap, and environment cubemap also occupy fragment slots.
 const LIGHTING_TEXTURES: u32 = 3;
+pub(super) const BASE_MATERIAL_TEXTURES: u32 = MATERIAL_TEXTURES + LIGHTING_TEXTURES;
+pub(super) const FULL_MATERIAL_TEXTURES: u32 =
+    BASE_MATERIAL_TEXTURES + CLEARCOAT_TEXTURES + MAX_TEXTURES as u32;
 
 pub(crate) fn material_texture_limit(supported: u32) -> u32 {
-    supported.min(MATERIAL_TEXTURES + CLEARCOAT_TEXTURES + LIGHTING_TEXTURES + MAX_TEXTURES as u32)
+    supported.min(FULL_MATERIAL_TEXTURES + MAX_TEXTURES as u32)
 }
 
-pub(super) fn shader_texture_slots(device: &wgpu::Device, coated: bool) -> usize {
-    let used = LIGHTING_TEXTURES + MATERIAL_TEXTURES + u32::from(coated) * CLEARCOAT_TEXTURES;
+pub(super) fn augment_texture_slots(device: &wgpu::Device, used: u32) -> usize {
     (device
         .limits()
         .max_sampled_textures_per_shader_stage
         .saturating_sub(used) as usize)
         .min(MAX_TEXTURES)
+}
+
+pub(super) fn shader_texture_slots(device: &wgpu::Device, coated: bool) -> usize {
+    let used = BASE_MATERIAL_TEXTURES + u32::from(coated) * CLEARCOAT_TEXTURES;
+    (device
+        .limits()
+        .max_sampled_textures_per_shader_stage
+        .saturating_sub(used) as usize)
+        .min(MAX_TEXTURES)
+}
+
+pub(super) fn capture_material_texture_count(
+    device: &wgpu::Device,
+    material: &MeshMaterial,
+) -> u32 {
+    let coated = material
+        .pbr
+        .as_ref()
+        .and_then(|pbr| pbr.clearcoat.as_ref())
+        .is_some_and(|coat| coat.amount > 0.0);
+    let uses_inputs = material.shader.as_ref().is_some_and(|shader| {
+        !shader.textures.is_empty()
+            && MaterialHooks::from_source(&shader.source).uses_fragment(false)
+    });
+    BASE_MATERIAL_TEXTURES
+        + u32::from(coated) * CLEARCOAT_TEXTURES
+        + if uses_inputs {
+            shader_texture_slots(device, coated) as u32
+        } else {
+            0
+        }
 }
 
 fn shader_texture_flags(sampling: BufferSampling, encoding: u32) -> u32 {
@@ -45,10 +80,13 @@ fn shader_texture_flags(sampling: BufferSampling, encoding: u32) -> u32 {
         TextureWrap::Repeat => 1,
         TextureWrap::Mirror => 2,
     };
-    1 | (u32::from(sampling.filter == TextureFilter::Linear) << 1)
+    1 | (u32::from(sampling.mag_filter == TextureFilter::Linear) << 1)
         | (wrap(sampling.wrap[0]) << 2)
         | (wrap(sampling.wrap[1]) << 4)
         | (encoding << 6)
+        | (u32::from(sampling.mip_filter == Some(TextureFilter::Linear)) << 8)
+        | (u32::from(sampling.min_filter == TextureFilter::Linear) << 9)
+        | (sampling.anisotropy_bits() << 10)
 }
 
 #[derive(Clone)]
@@ -124,14 +162,24 @@ impl Images {
             .retain(|_, image| image.owner.strong_count() != 0);
     }
 
-    pub fn base_view(
+    pub fn sampled_input_view(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         image: &Arc<MeshImage>,
         color: TextureColorSpace,
+        sampling: BufferSampling,
     ) -> wgpu::TextureView {
-        self.view(device, queue, image, color, (false, false))
+        self.view(
+            device,
+            queue,
+            image,
+            color,
+            (
+                sampling.mip_filter.is_some() || sampling.max_anisotropy > 1,
+                false,
+            ),
+        )
     }
 
     fn view(
@@ -200,30 +248,23 @@ impl Images {
     }
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct SamplerKey {
-    wrap: [TextureWrap; 2],
-    min: TextureFilter,
-    mag: TextureFilter,
-    mip: Option<TextureFilter>,
-}
+const PLACEHOLDER_SAMPLING: TextureSampling = TextureSampling {
+    wrap: [TextureWrap::Clamp; 2],
+    min_filter: TextureFilter::Nearest,
+    mag_filter: TextureFilter::Nearest,
+    mip_filter: None,
+    max_anisotropy: 1,
+};
 
-impl SamplerKey {
-    fn from_texture(texture: Option<&MeshTexture>) -> Self {
-        let Some(texture) = texture else {
-            return Self {
-                wrap: [TextureWrap::Clamp; 2],
-                min: TextureFilter::Nearest,
-                mag: TextureFilter::Nearest,
-                mip: None,
-            };
-        };
-        Self {
-            wrap: texture.wrap,
-            min: texture.min_filter,
-            mag: texture.mag_filter,
-            mip: texture.mip_filter,
-        }
+fn native_anisotropy_limit(sampling: TextureSampling, supported: bool) -> u8 {
+    if supported
+        && sampling.min_filter == TextureFilter::Linear
+        && sampling.mag_filter == TextureFilter::Linear
+        && sampling.mip_filter == Some(TextureFilter::Linear)
+    {
+        sampling.max_anisotropy.clamp(1, 16)
+    } else {
+        1
     }
 }
 
@@ -232,11 +273,12 @@ pub(super) struct Materials {
     shader_layouts: [[Option<wgpu::BindGroupLayout>; 2]; 2],
     white: ImageViews,
     images: SharedImages,
-    samplers: HashMap<SamplerKey, wgpu::Sampler>,
+    samplers: HashMap<TextureSampling, wgpu::Sampler>,
+    native_anisotropy: bool,
+    pub anisotropic_samplers: u64,
     pub(super) items: Arc<ItemTextureViews>,
     pub(super) captures: CaptureViews,
     projections: SharedProjectionBuffers,
-    item_sampler: Option<wgpu::Sampler>,
 }
 
 impl Materials {
@@ -245,7 +287,7 @@ impl Materials {
         queue: &wgpu::Queue,
         layouts: [wgpu::BindGroupLayout; 2],
         shader_layouts: [[Option<wgpu::BindGroupLayout>; 2]; 2],
-        (images, projections): (SharedImages, SharedProjectionBuffers),
+        (images, projections, native_anisotropy): (SharedImages, SharedProjectionBuffers, bool),
     ) -> Self {
         Self {
             layouts,
@@ -253,10 +295,11 @@ impl Materials {
             white: upload(device, queue, [1, 1], &[255; 4], std::iter::empty()).full,
             images,
             samplers: HashMap::new(),
+            native_anisotropy,
+            anisotropic_samplers: 0,
             items: Arc::default(),
             captures: CaptureViews::new(),
             projections,
-            item_sampler: None,
         }
     }
 
@@ -269,8 +312,7 @@ impl Materials {
     ) -> MaterialBindings {
         let item = material
             .and_then(|material| material.base_item.as_deref())
-            .and_then(|name| self.items.get(name))
-            .cloned();
+            .and_then(|item| Some((item, self.items.get(item.source())?.clone())));
         let base_texture = material.and_then(|material| material.base_texture.as_ref());
         let pbr = material.and_then(|material| material.pbr.as_ref());
         let mr = pbr.and_then(|pbr| pbr.surface_texture.as_ref());
@@ -315,19 +357,21 @@ impl Materials {
         .map(|(texture, srgb)| self.texture(device, queue, texture, srgb));
         let item_kind = item
             .as_ref()
-            .map(|item| if item.linear_premultiplied { 3.0 } else { 2.0 });
-        if let Some(item) = item {
-            let sampler = self.item_sampler.get_or_insert_with(|| {
-                device.create_sampler(&wgpu::SamplerDescriptor {
-                    label: Some("XRack live 2D material texture sampler"),
-                    min_filter: wgpu::FilterMode::Linear,
-                    mag_filter: wgpu::FilterMode::Linear,
-                    mipmap_filter: wgpu::MipmapFilterMode::Linear,
-                    ..Default::default()
-                })
-            });
-            bindings[0] = (item.view, sampler.clone());
-        }
+            .map(|(_, view)| if view.linear_premultiplied { 3.0 } else { 2.0 });
+        let live_transform = item.map(|(item, view)| {
+            let mut sampling = item.sampling;
+            if view.base_view.is_none() {
+                sampling.mip_filter = None;
+            }
+            let texture = if sampling.mip_filter.is_some() {
+                view.view
+            } else {
+                view.base_view.unwrap_or(view.view)
+            };
+            let portable = portable_anisotropy_limit(sampling, self.native_anisotropy);
+            bindings[0] = (texture, self.sampler(device, sampling));
+            transform_words(item.transform, portable)
+        });
 
         let rgba = material.map_or([1.0; 4], |material| material.base_color);
         let mode = material.map_or(MeshAlphaMode::Opaque, |material| material.alpha_mode);
@@ -393,26 +437,33 @@ impl Materials {
         let slots = shader
             .filter(|shader| !shader.textures.is_empty() && hooks.fragment())
             .map_or(0, |_| shader_texture_slots(device, coat.is_some()));
-        let (texture_flags, shader_views) = self.shader_textures(device, queue, shader, slots);
+        let (texture_flags, shader_views) = self.external_textures(
+            device,
+            queue,
+            shader.map_or(&[][..], |shader| &shader.textures),
+            slots,
+        );
         let projections = shader
             .filter(|_| slots != 0 && hooks.capture_position)
-            .map(|shader| {
-                self.projections.borrow_mut().get(
-                    device,
-                    slots,
-                    shader.textures.iter().map(|texture| {
-                        let ExternalTexture::Capture(read) = texture.external_texture()? else {
-                            return None;
-                        };
-                        self.captures.get(read)?.projection.as_deref()
-                    }),
-                )
-            });
+            .map(|shader| self.external_projections(device, &shader.textures, slots));
         let parameters = shader.map_or([0.0; 4], MeshShader::vertex_parameters);
+        let native_anisotropy = self.native_anisotropy;
+        let map_transform = |texture: Option<&MeshTexture>| {
+            texture.map_or_else(
+                || transform_words(TextureTransform::IDENTITY, 1),
+                |texture| {
+                    transform_words(
+                        texture.transform,
+                        portable_anisotropy_limit(texture.sampling, native_anisotropy),
+                    )
+                },
+            )
+        };
+        let base_transform = live_transform.unwrap_or_else(|| map_transform(base_texture));
         let bytes: Vec<_> = rgba
             .into_iter()
             .chain(flags)
-            .chain(transform_words(base_texture))
+            .chain(base_transform)
             // The shader reads this uniform word as u32, preserving its packed bits.
             .chain(channels.map(f32::from_bits))
             .chain(parameters)
@@ -457,14 +508,14 @@ impl Materials {
                     thickness_texture,
                 ]
                 .into_iter()
-                .flat_map(transform_words),
+                .flat_map(map_transform),
             )
             .chain(fresnel.gpu_factors())
             .chain(anisotropy.map_or([0.0, 1.0, 0.0, -1.0], |term| {
                 let (sine, cosine) = term.rotation.sin_cos();
                 [term.strength, cosine, sine, slot(anisotropy_map)]
             }))
-            .chain(transform_words(anisotropy_map))
+            .chain(map_transform(anisotropy_map))
             .chain(texture_flags.map(f32::from_bits))
             .flat_map(f32::to_ne_bytes)
             .collect();
@@ -501,7 +552,7 @@ impl Materials {
             .into_iter()
             .chain(textures.map(slot))
             .chain([0.0])
-            .chain(textures.into_iter().flat_map(transform_words))
+            .chain(textures.into_iter().flat_map(map_transform))
             .chain(coat.fresnel.gpu_factors())
             .flat_map(f32::to_ne_bytes)
             .collect();
@@ -577,11 +628,11 @@ impl Materials {
         })
     }
 
-    fn shader_textures(
+    pub(super) fn external_textures(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        shader: Option<&MeshShader>,
+        inputs: &[BufferInput],
         slots: usize,
     ) -> ([u32; MAX_TEXTURES], Vec<wgpu::TextureView>) {
         let mut flags = [0; MAX_TEXTURES];
@@ -589,17 +640,18 @@ impl Materials {
             .iter_mut()
             .enumerate()
             .map(|(index, flag)| {
-                let Some(input) = shader.and_then(|shader| shader.textures.get(index)) else {
+                let Some(input) = inputs.get(index) else {
                     return self.white.linear.clone();
                 };
                 let mut sampling = input.sampling;
                 let (view, encoding) = match input.external_texture() {
                     Some(ExternalTexture::Image(image)) => (
-                        self.images.borrow_mut().base_view(
+                        self.images.borrow_mut().sampled_input_view(
                             device,
                             queue,
                             &image.image,
                             image.color,
+                            sampling,
                         ),
                         0,
                     ),
@@ -611,7 +663,9 @@ impl Materials {
                         if let Some(capture) = self.captures.get(read) =>
                     {
                         if read.attachment == CaptureAttachment::Depth {
-                            sampling.filter = TextureFilter::Nearest;
+                            sampling.min_filter = TextureFilter::Nearest;
+                            sampling.mag_filter = TextureFilter::Nearest;
+                            sampling.max_anisotropy = 1;
                         }
                         (
                             capture.view.clone(),
@@ -629,6 +683,24 @@ impl Materials {
             })
             .collect();
         (flags, views)
+    }
+
+    pub(super) fn external_projections(
+        &self,
+        device: &wgpu::Device,
+        inputs: &[BufferInput],
+        slots: usize,
+    ) -> wgpu::Buffer {
+        self.projections.borrow_mut().get(
+            device,
+            slots,
+            inputs.iter().map(|texture| {
+                let ExternalTexture::Capture(read) = texture.external_texture()? else {
+                    return None;
+                };
+                self.captures.get(read)?.projection.as_deref()
+            }),
+        )
     }
 
     fn texture(
@@ -649,38 +721,58 @@ impl Materials {
                 queue,
                 &texture.image,
                 color,
-                (texture.mip_filter.is_some(), true),
+                (texture.sampling.mip_filter.is_some(), true),
             )
         } else if srgb {
             self.white.srgb.clone()
         } else {
             self.white.linear.clone()
         };
-        let key = SamplerKey::from_texture(texture);
-        let sampler = self.samplers.entry(key).or_insert_with(|| {
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("XRack 3D material sampler"),
-                address_mode_u: address(key.wrap[0]),
-                address_mode_v: address(key.wrap[1]),
-                min_filter: filter(key.min),
-                mag_filter: filter(key.mag),
-                mipmap_filter: match key.mip {
-                    Some(TextureFilter::Linear) => wgpu::MipmapFilterMode::Linear,
-                    _ => wgpu::MipmapFilterMode::Nearest,
-                },
-                ..Default::default()
+        let sampling = texture.map_or(PLACEHOLDER_SAMPLING, |texture| texture.sampling);
+        (view, self.sampler(device, sampling))
+    }
+
+    fn sampler(&mut self, device: &wgpu::Device, sampling: TextureSampling) -> wgpu::Sampler {
+        let key = TextureSampling {
+            max_anisotropy: native_anisotropy_limit(sampling, self.native_anisotropy),
+            ..sampling
+        };
+        self.samplers
+            .entry(key)
+            .or_insert_with(|| {
+                self.anisotropic_samplers += u64::from(key.max_anisotropy > 1);
+                device.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some("XRack 3D material sampler"),
+                    address_mode_u: address(key.wrap[0]),
+                    address_mode_v: address(key.wrap[1]),
+                    min_filter: filter(key.min_filter),
+                    mag_filter: filter(key.mag_filter),
+                    anisotropy_clamp: u16::from(key.max_anisotropy),
+                    mipmap_filter: match key.mip_filter {
+                        Some(TextureFilter::Linear) => wgpu::MipmapFilterMode::Linear,
+                        _ => wgpu::MipmapFilterMode::Nearest,
+                    },
+                    ..Default::default()
+                })
             })
-        });
-        (view, sampler.clone())
+            .clone()
     }
 }
 
-fn transform_words(texture: Option<&MeshTexture>) -> [f32; 8] {
-    let transform = texture.map_or(TextureTransform::IDENTITY, |texture| texture.transform);
+fn portable_anisotropy_limit(sampling: TextureSampling, supported: bool) -> u8 {
+    if native_anisotropy_limit(sampling, supported) > 1 {
+        1
+    } else {
+        sampling.max_anisotropy.clamp(1, 16)
+    }
+}
+
+fn transform_words(transform: TextureTransform, portable_anisotropy: u8) -> [f32; 8] {
     let [[ux, uy, u], [vx, vy, v]] = transform.rows;
     let active = f32::from(u8::from(transform != TextureTransform::IDENTITY));
     let linear = f32::from(u8::from([ux, uy, vx, vy] != [1.0, 0.0, 0.0, 1.0]));
-    [ux, uy, u, active, vx, vy, v, linear]
+    let gradient_flags = linear + 2.0 * f32::from(portable_anisotropy.saturating_sub(1));
+    [ux, uy, u, active, vx, vy, v, gradient_flags]
 }
 
 fn texture_entries<'a>(

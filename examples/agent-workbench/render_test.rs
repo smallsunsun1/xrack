@@ -14,12 +14,12 @@ use xrack_runtime::{
     StyledLink, StyledRun, StyledText, TextStyle, TreeCommand,
 };
 
-fn transcript_benchmark_window() -> Result<AgentWorkbench, Box<dyn std::error::Error>> {
+fn transcript_benchmark_window(rows: usize) -> Result<AgentWorkbench, Box<dyn std::error::Error>> {
     let mut ui = AgentWorkbench::new();
     ui.set_connected(true);
     ui.set_workspace("/workspace/xrack".into());
     let entries = ui.model_entries();
-    for index in 0..120 {
+    for index in 0..rows {
         let text = format!(
             "**第 {index} 条回复**\n\n渲染检查包括桌面窗口、文本布局、键盘输入和无障碍。\
              The transcript contains mixed Chinese and English text, **emphasis**, `cargo test`, \
@@ -44,7 +44,7 @@ fn long_transcript_scroll_benchmark() -> Result<(), Box<dyn std::error::Error>> 
     use xrack_runtime::Orientation;
 
     let viewport = Size::new(1120.0, 760.0);
-    let mut ui = transcript_benchmark_window()?;
+    let mut ui = transcript_benchmark_window(120)?;
     let entries = ui.model_entries();
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -111,10 +111,11 @@ fn long_transcript_scroll_benchmark() -> Result<(), Box<dyn std::error::Error>> 
 fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
         fmt::Write as _,
+        hash::{Hash, Hasher},
         rc::Rc,
         time::{Duration, Instant},
     };
-    use xrack_layout::StackTransitions;
+    use xrack_layout::{FrameCache, StackTransitions};
     use xrack_renderer_femtovg::{RenderDevice, WindowDamage};
     use xrack_runtime::Orientation;
 
@@ -125,6 +126,11 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         window_entry && std::env::var_os("XRACK_TRANSCRIPT_BENCH_VERIFY_DAMAGE").is_some();
     let paragraphs = std::env::var("XRACK_TRANSCRIPT_BENCH_PARAGRAPHS")
         .map_or(Ok(0_usize), |count| count.parse())?;
+    let rows =
+        std::env::var("XRACK_TRANSCRIPT_BENCH_ROWS").map_or(Ok(120_usize), |rows| rows.parse())?;
+    if rows == 0 {
+        return Err("XRACK_TRANSCRIPT_BENCH_ROWS must be positive".into());
+    }
     let rounds = std::env::var("XRACK_TRANSCRIPT_BENCH_ROUNDS")
         .map_or(Ok(1_usize), |rounds| rounds.parse())?;
     let passes = rounds
@@ -133,7 +139,7 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("XRACK_TRANSCRIPT_BENCH_ROUNDS is out of range")?;
     let viewport = Size::new(1120.0, 760.0);
     let scale = 2;
-    let ui = transcript_benchmark_window()?;
+    let ui = transcript_benchmark_window(rows)?;
     let entries = ui.model_entries();
     let device = pollster::block_on(RenderDevice::request(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -176,9 +182,18 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?;
     let transitions = StackTransitions::default();
     let mut input = Interaction::default();
-    let (mut scene, initial_layout) =
-        renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
-    let mut layout = Rc::new(initial_layout);
+    let mut frame_cache = window_entry.then(FrameCache::default);
+    let mut prepare = |renderer: &mut Renderer, base, input: &Interaction| {
+        if let Some(cache) = &mut frame_cache {
+            cache.prepare_reusing(base, viewport, input, |base, previous| {
+                renderer.prepare_scene_recycling(&ui, base, viewport, input, previous)
+            })
+        } else {
+            let (scene, layout) = renderer.prepare_scene(&ui, base, viewport, input);
+            (scene, Rc::new(layout))
+        }
+    };
+    let (mut scene, mut layout) = prepare(&mut renderer, ui.render_shared(), &input);
     let mut long_reply = String::new();
     let mut streamed_markdown = xrack_runtime::MarkdownStream::default();
     let mut linked_markdown = file_references::TranscriptStream::default();
@@ -234,9 +249,7 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
             }
             let base = ui.render_shared();
             let generated = Instant::now();
-            let next;
-            (scene, next) = renderer.prepare_scene(&ui, base, viewport, &input);
-            layout = Rc::new(next);
+            (scene, layout) = prepare(&mut renderer, base, &input);
             let prepared = Instant::now();
             let target = alternate
                 .as_ref()
@@ -270,6 +283,9 @@ fn transcript_gpu_benchmark() -> Result<(), Box<dyn std::error::Error>> {
                     &input,
                 )?;
                 let actual = gpu_readback::read_texture(&renderer, target)?;
+                let mut hash = std::hash::DefaultHasher::new();
+                actual.hash(&mut hash);
+                println!("fingerprint {streaming} {pass} {:016x}", hash.finish());
                 let expected = gpu_readback::read_texture(reference, reference_target)?;
                 for (byte, (a, b)) in actual.iter().zip(&expected).enumerate() {
                     let delta = a.abs_diff(*b);

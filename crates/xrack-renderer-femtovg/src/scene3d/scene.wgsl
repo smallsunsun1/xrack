@@ -1,10 +1,15 @@
 override ANISOTROPIC_MATERIAL: bool = false;
+override DEBUG_MATERIAL: bool = false;
+override LOD_FADE: bool = false;
+override ENCODE_SRGB: bool = false;
 override CUSTOM_BASE_FRESNEL: bool = false;
 override CUSTOM_COAT_FRESNEL: bool = false;
 override CUSTOM_MATERIAL: bool = false;
 override CAPTURE_EFFECT_SURFACE: bool = false;
 override CAPTURE_LIT_SURFACE: bool = false;
-override CAPTURE_MATERIAL_DATA: bool = false;
+override CAPTURE_MATERIAL_DATA: u32 = 0u;
+override CAPTURE_FULL_PRECISION_DATA: u32 = 0u;
+override CAPTURE_AUGMENT: bool = false;
 override CAPTURE_MATERIAL_OCCLUSION: bool = false;
 override USE_VERTEX_COLORS: bool = true;
 override APPLY_VERTEX_MASKS: bool = false;
@@ -58,6 +63,9 @@ struct Globals {
     camera_up: vec4<f32>,
     custom_viewer: vec4<f32>,
     custom_inverse_clip: array<vec4<f32>, 4>,
+    augment_parameters: vec3<f32>,
+    material_debug: u32,
+    augment_texture_flags: vec4<u32>,
 }
 
 struct Material {
@@ -110,7 +118,8 @@ struct Light {
     // RGB radiance and the one-based index of the shadow light.
     radiance: vec4<f32>,
     // Cone scale, cone offset, and fully baked light flag.
-    cone: vec4<f32>,
+    cone: vec3<f32>,
+    scope: u32,
 }
 
 struct Lighting {
@@ -118,24 +127,30 @@ struct Lighting {
     // Active light count and explicit light list flag.
     settings: vec4<f32>,
     lights: array<Light, 16>,
-    // Strength, filter radius in texels, tap count and receiver bias.
+    // Strength, signed radius (negative for world units), taps and bias.
     shadow_sampling: array<vec4<f32>, 4>,
 }
 
 struct ShadowLight {
     layers: array<vec4<i32>, 2>,
-    // Near, far, cascade count (0 for other lights), blend ratio.
+    // Near, far, cascade count, cascade blend (or radial limit for punctual lights).
     parameters: vec4<f32>,
     cascade_ends: vec4<f32>,
+    cascade_reference: vec4<f32>,
 }
 
 struct ShadowProjections {
     rows: array<mat4x4<f32>, 24>,
+    // Native tiles use origin, size and layer. Packed tiles use word offset,
+    // row stride, size and the reserved packed-layer sentinel.
+    tiles: array<vec4<u32>, 24>,
+    // XY projection scales in UV units per world unit before the homogeneous divide.
+    uv_scales: array<vec4<f32>, 24>,
     maps: array<ShadowLight, 4>,
 }
 
 struct Environment {
-    // Inverse yaw sine/cosine, intensity and highest valid roughness mip.
+    // Intensity and highest valid roughness mip.
     // A negative mip count selects the probe-free path.
     settings: vec4<f32>,
     diffuse: array<vec4<f32>, 9>,
@@ -144,6 +159,11 @@ struct Environment {
     capture: vec4<f32>,
     box_min: vec4<f32>,
     box_max: vec4<f32>,
+    sky: XrSkyRadiance,
+    // World-to-skybox rows, followed by intensity and blur mip in the first two W lanes.
+    skybox: array<vec4<f32>, 3>,
+    diffuse_basis: array<vec4<f32>, 3>,
+    specular_basis: array<vec4<f32>, 3>,
 }
 
 @group(2) @binding(0) var<uniform> environment: Environment;
@@ -153,6 +173,7 @@ struct Environment {
 @group(0) @binding(2) var<uniform> shadows: ShadowProjections;
 @group(0) @binding(3) var shadow_depth: texture_depth_2d_array;
 @group(0) @binding(4) var shadow_sampler: sampler_comparison;
+@group(0) @binding(14) var<storage, read> packed_shadow: array<u32>;
 struct OcclusionSamples {
     size: vec2<u32>,
     padding: vec2<u32>,
@@ -195,24 +216,23 @@ struct OcclusionSamples {
 @group(1) @binding(26) var coat_normal_sampler: sampler;
 @group(1) @binding(27) var<uniform> clearcoat: ClearcoatSettings;
 
+// Pack values with the same interpolation to leave room for wireframe barycentrics.
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) @interpolate(flat) tint: vec4<f32>,
-    @location(2) @interpolate(flat) instance_metadata: vec2<u32>,
-    @location(3) uv: vec2<f32>,
+    @location(2) @interpolate(flat) instance_metadata: vec3<u32>,
+    @location(3) uvs: vec4<f32>,
     @location(4) color: vec4<f32>,
-    @location(5) uv1: vec2<f32>,
-    @location(6) world: vec3<f32>,
-    @location(7) tangent: vec3<f32>,
-    @location(9) @interpolate(flat) model_x: vec3<f32>,
-    @location(10) @interpolate(flat) model_y: vec3<f32>,
+    @location(6) world_and_lightmap_v: vec4<f32>,
+    @location(7) tangent_and_lightmap_u: vec4<f32>,
+    @location(9) @interpolate(flat) model_x_and_lightmap_strength: vec4<f32>,
+    @location(10) @interpolate(flat) model_y_and_lightmap_blend: vec4<f32>,
     @location(11) @interpolate(flat) model_z: vec3<f32>,
-    @location(12) lightmap_uv: vec2<f32>,
     @location(13) @interpolate(flat) lightmap_atlas: vec4<f32>,
-    @location(14) @interpolate(flat) lightmap_options: vec2<f32>,
     @location(15) @interpolate(flat) instance_data: vec4<f32>,
     // XRack wireframe varying
+    // XRack linked sample varying
 }
 
 struct VertexInput {
@@ -225,7 +245,7 @@ struct VertexInput {
     @location(5) model1: vec4<f32>,
     @location(6) model2: vec4<f32>,
     @location(7) tint: vec4<f32>,
-    @location(8) metadata: u32,
+    @location(8) metadata: vec2<u32>,
     @location(9) uv1: vec2<f32>,
     @location(15) instance_data: vec4<f32>,
 }
@@ -245,9 +265,11 @@ fn lightmapped(vertex: VertexOut, uv: vec2<f32>, instance: u32) -> VertexOut {
     // variant binds the matching instance parameter stream instead.
     let i = instance * 8u;
     var result = vertex;
-    result.lightmap_uv = uv;
+    result.tangent_and_lightmap_u.w = uv.x;
+    result.world_and_lightmap_v.w = uv.y;
     result.lightmap_atlas = vec4<f32>(opaque_depth[i], opaque_depth[i + 1u], opaque_depth[i + 2u], opaque_depth[i + 3u]);
-    result.lightmap_options = vec2<f32>(opaque_depth[i + 4u], opaque_depth[i + 5u]);
+    result.model_x_and_lightmap_strength.w = opaque_depth[i + 4u];
+    result.model_y_and_lightmap_blend.w = opaque_depth[i + 5u];
     return result;
 }
 
@@ -318,7 +340,7 @@ fn vertex_skin_morph_tangent(vertex: VertexInput, weights: SkinWeights,
 
 fn transform_vertex(vertex: VertexInput, tangent: vec4<f32>) -> VertexOut {
     let local = vec4(xr_displaced_vertex(vertex.position, material.shader_parameters, vertex.instance_data,
-        vertex.metadata >> 3u, vertex.tint, mat3x4(vertex.model0, vertex.model1, vertex.model2)), 1.0);
+        xr_instance_number(vertex.metadata.x), vertex.tint, mat3x4(vertex.model0, vertex.model1, vertex.model2)), 1.0);
     let world = vec4<f32>(
         dot(vertex.model0, local), dot(vertex.model1, local), dot(vertex.model2, local), 1.0,
     );
@@ -333,19 +355,21 @@ fn transform_vertex(vertex: VertexInput, tangent: vec4<f32>) -> VertexOut {
     let z = vec3<f32>(vertex.model0.z, vertex.model1.z, vertex.model2.z);
     // Cofactors include the determinant sign. Remove it for inverse-transpose
     // normals, and apply it to the tangent frame's handedness.
-    let orientation = select(1.0, -1.0, (vertex.metadata & 4u) != 0u);
+    let orientation = select(1.0, -1.0, (vertex.metadata.x & 4u) != 0u);
     let normal = orientation * (vertex.normal.x * cross(y, z)
         + vertex.normal.y * cross(z, x)
         + vertex.normal.z * cross(x, y));
     let world_tangent = x * tangent.x + y * tangent.y + z * tangent.z;
     return VertexOut(
-        clip, normal, vertex.tint, vec2(vertex.metadata, bitcast<u32>(tangent.w * orientation)), vertex.uv, vertex.color,
-        vertex.uv1, world.xyz, world_tangent,
-        select(vec3<f32>(0.0), x, VOLUME_MATERIAL || ANISOTROPIC_MATERIAL),
-        select(vec3<f32>(0.0), y, VOLUME_MATERIAL || ANISOTROPIC_MATERIAL),
+        clip, normal, vertex.tint,
+        vec3(vertex.metadata.x, bitcast<u32>(tangent.w * orientation), vertex.metadata.y),
+        vec4(vertex.uv, vertex.uv1), vertex.color, vec4(world.xyz, -1.0), vec4(world_tangent, -1.0),
+        vec4(select(vec3<f32>(0.0), x, VOLUME_MATERIAL || ANISOTROPIC_MATERIAL), 0.0),
+        vec4(select(vec3<f32>(0.0), y, VOLUME_MATERIAL || ANISOTROPIC_MATERIAL), 0.0),
         select(vec3<f32>(0.0), z, VOLUME_MATERIAL || ANISOTROPIC_MATERIAL),
-        vec2<f32>(-1.0), vec4<f32>(0.0), vec2<f32>(0.0), vertex.instance_data,
+        vec4<f32>(0.0), vertex.instance_data,
         // XRack wireframe corner
+        // XRack linked clip depth
     );
 }
 
@@ -355,6 +379,13 @@ fn srgb_to_linear(color: vec3<f32>) -> vec3<f32> {
 
 fn linear_to_srgb(color: vec3<f32>) -> vec3<f32> {
     return select(color * 12.92, 1.055 * pow(color, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055), color > vec3<f32>(0.0031308));
+}
+
+fn target_color(color: vec4<f32>) -> vec4<f32> {
+    if ENCODE_SRGB {
+        return vec4(linear_to_srgb(clamp(color.rgb, vec3<f32>(0.0), vec3<f32>(1.0))), color.a);
+    }
+    return color;
 }
 
 struct UvDerivatives {
@@ -369,11 +400,13 @@ fn sample_material_map(
     transform: TextureTransform,
 ) -> vec4<f32> {
     let second = slot > 0.5;
-    return textureSampleGrad(
-        map, filtering, texture_uv(transform, select(vertex.uv, vertex.uv1, second)),
-        texture_gradient(transform, select(uv.dx0, uv.dx1, second)),
-        texture_gradient(transform, select(uv.dy0, uv.dy1, second)),
-    );
+    let at = texture_uv(transform, select(vertex.uvs.xy, vertex.uvs.zw, second));
+    let dx = texture_gradient(transform, select(uv.dx0, uv.dx1, second));
+    let dy = texture_gradient(transform, select(uv.dy0, uv.dy1, second));
+    if transform.v.w < 2.0 {
+        return textureSampleGrad(map, filtering, at, dx, dy);
+    }
+    return xr_sample_texture_footprint(map, filtering, at, dx, dy, texture_anisotropy(transform));
 }
 
 fn material_channel(role: u32) -> u32 {
@@ -449,8 +482,8 @@ fn mapped_normal(
 }
 
 fn alternate_tangent_frame(vertex: VertexOut, n: vec3<f32>, uv: UvDerivatives, slot: f32, transform: TextureTransform) -> TangentFrame {
-    let px = dpdx(vertex.world);
-    let py = dpdy(vertex.world);
+    let px = dpdx(vertex.world_and_lightmap_v.xyz);
+    let py = dpdy(vertex.world_and_lightmap_v.xyz);
     let dx = texture_gradient(transform, select(uv.dx0, uv.dx1, slot > 0.5));
     let dy = texture_gradient(transform, select(uv.dy0, uv.dy1, slot > 0.5));
     let determinant = dx.x * dy.y - dx.y * dy.x;
@@ -477,10 +510,12 @@ fn brush_direction(vertex: VertexOut, n: vec3<f32>, uv: UvDerivatives, frame: Ta
     var handedness = frame.sign;
     if dot(tangent, tangent) <= 1e-8 || abs(handedness) < 0.5 {
         // A model-space direction keeps an unparameterized mesh stable as the camera moves.
-        let axis_x = vertex.model_x - n * dot(vertex.model_x, n);
-        let axis_y = vertex.model_y - n * dot(vertex.model_y, n);
+        let model_x = vertex.model_x_and_lightmap_strength.xyz;
+        let model_y = vertex.model_y_and_lightmap_blend.xyz;
+        let axis_x = model_x - n * dot(model_x, n);
+        let axis_y = model_y - n * dot(model_y, n);
         tangent = select(axis_y, axis_x, dot(axis_x, axis_x) > 1e-8);
-        handedness = select(1.0, -1.0, dot(cross(vertex.model_x, vertex.model_y), vertex.model_z) < 0.0);
+        handedness = select(1.0, -1.0, dot(cross(model_x, model_y), vertex.model_z) < 0.0);
     }
     if dot(tangent, tangent) <= 1e-12 {
         let axis = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.x) < 0.75);
@@ -571,7 +606,7 @@ fn coat_surface(vertex: VertexOut, uv: UvDerivatives, front_facing: bool) -> Coa
     }
     let normal = normalize(vertex.normal);
     let slot = clearcoat.map_slots.z;
-    var frame = TangentFrame(vertex.tangent, bitcast<f32>(vertex.instance_metadata.y));
+    var frame = TangentFrame(vertex.tangent_and_lightmap_u.xyz, bitcast<f32>(vertex.instance_metadata.y));
     let transform = clearcoat.transforms[2];
     let base_transform = material.transforms[3];
     // Offsets affect the lookup only. Different derivatives need their own frame.
@@ -593,6 +628,10 @@ struct IncidentLight {
     axis: vec3<f32>,
     radiance: vec3<f32>,
     attenuation: f32,
+}
+
+fn light_reaches(light: Light, node: u32) -> bool {
+    return light.scope == 0u || (node >= (light.scope & 0xffffu) && node <= (light.scope >> 16u));
 }
 
 fn incident_light(light: Light, world: vec3<f32>) -> IncidentLight {
@@ -643,15 +682,62 @@ struct ShadowCoordinate {
     uv: vec2<f32>,
     reference: f32,
     layer: i32,
+    clip_w: f32,
 }
 
-const NO_SHADOW = ShadowCoordinate(vec2(0.0), 0.0, -1);
+const NO_SHADOW = ShadowCoordinate(vec2(0.0), 0.0, -1, 0.0);
 const SHADOW_OFFSETS = array<vec2<f32>, 16>(
     vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(0.5, 0.5), vec2(-0.5, 0.5),
     vec2(-1.0, 0.0), vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, 1.0),
     vec2(-0.92, -0.38), vec2(-0.38, -0.92), vec2(0.38, -0.92), vec2(0.92, -0.38),
     vec2(0.92, 0.38), vec2(0.38, 0.92), vec2(-0.38, 0.92), vec2(-0.92, 0.38),
 );
+
+// Centered golden-angle disk. Each entry is used with its opposite.
+// PCF32 takes alternate pairs to cover the same radial area as PCF64.
+const SHADOW_DISK = array<vec2<f32>, 32>(
+    vec2(0.125000, 0.000000),
+    vec2(-0.159645, 0.146248),
+    vec2(0.024436, -0.278438),
+    vec2(0.201222, 0.262459),
+    vec2(-0.369268, -0.065318),
+    vec2(0.349802, -0.222516),
+    vec2(-0.117002, 0.435242),
+    vec2(-0.223136, -0.429634),
+    vec2(0.484115, 0.176798),
+    vec2(-0.503641, 0.207896),
+    vec2(0.242788, -0.518824),
+    vec2(0.179414, 0.572001),
+    vec2(-0.540757, -0.313380),
+    vec2(0.634370, -0.139464),
+    vec2(-0.387146, 0.550675),
+    vec2(-0.089440, -0.690200),
+    vec2(0.549072, 0.462758),
+    vec2(-0.738878, 0.030555),
+    vec2(0.538955, -0.536332),
+    vec2(-0.036058, 0.779792),
+    vec2(-0.512818, -0.614527),
+    vec2(0.812360, 0.109302),
+    vec2(-0.688311, 0.478909),
+    vec2(0.188086, -0.836061),
+    vec2(0.435033, 0.759191),
+    vec2(-0.850448, -0.271316),
+    vec2(0.826102, -0.381680),
+    vec2(-0.357888, 0.855156),
+    vec2(-0.319407, -0.888034),
+    vec2(0.849909, 0.446688),
+    vec2(-0.944035, 0.248845),
+    vec2(0.536596, -0.834530),
+);
+
+fn shadow_offset(index: u32, taps: u32) -> vec2<f32> {
+    if taps <= 16u {
+        return SHADOW_OFFSETS[index];
+    }
+    let stride = select(1u, 2u, taps == 32u);
+    let sign = select(1.0, -1.0, (index & 1u) != 0u);
+    return SHADOW_DISK[(index / 2u) * stride] * sign;
+}
 
 fn shadow_coordinate(map: ShadowLight, world: vec3<f32>, face: u32, point: bool, bias: f32) -> ShadowCoordinate {
     let layer = map.layers[face / 4u][face % 4u] - 1;
@@ -681,20 +767,57 @@ fn shadow_coordinate(map: ShadowLight, world: vec3<f32>, face: u32, point: bool,
         }
         reference = (far / (far - near)) * (1.0 - near / biased_depth);
     }
-    return ShadowCoordinate(uv, reference, layer);
+    return ShadowCoordinate(uv, reference, layer, clip.w);
+}
+
+const PACKED_SHADOW_LAYER = 0xffffffffu;
+
+fn compare_packed(pixel: vec2<i32>, reference: f32, tile: vec4<u32>) -> f32 {
+    let position = vec2<u32>(clamp(pixel, vec2(0), vec2(i32(tile.z) - 1)));
+    let word = packed_shadow[tile.x + tile.y * position.y + position.x / 2u];
+    let value = (word >> (16u * (position.x & 1u))) & 65535u;
+    return f32(reference <= f32(value) / 65535.0);
+}
+
+fn compare_filtered(uv: vec2<f32>, reference: f32, tile: vec4<u32>) -> f32 {
+    if tile.w == PACKED_SHADOW_LAYER {
+        // Same sample footprint and edge clamp as a comparison sampler.
+        let texel = uv * f32(tile.z) - vec2(0.5);
+        let p = vec2<i32>(floor(texel));
+        let f = fract(texel);
+        let above = mix(compare_packed(p, reference, tile),
+            compare_packed(p + vec2(1, 0), reference, tile), f.x);
+        let below = mix(compare_packed(p + vec2(0, 1), reference, tile),
+            compare_packed(p + vec2(1), reference, tile), f.x);
+        return mix(above, below, f.y);
+    }
+    let atlas_size = textureDimensions(shadow_depth);
+    var sample_uv = uv;
+    if tile.z != atlas_size.x {
+        let size = f32(tile.z);
+        // Keep bilinear taps inside the region when two lights share a layer.
+        let pixel = clamp(uv * size, vec2(0.5), vec2(size - 0.5));
+        sample_uv = (vec2<f32>(tile.xy) + pixel) / vec2<f32>(atlas_size);
+    }
+    return textureSampleCompareLevel(shadow_depth, shadow_sampler, sample_uv,
+        i32(tile.w), reference);
 }
 
 fn shadow_compare(coordinate: ShadowCoordinate, hard: bool) -> f32 {
     if coordinate.layer < 0 {
         return 1.0;
     }
+    let tile = shadows.tiles[coordinate.layer];
     if hard {
-        let size = vec2<i32>(textureDimensions(shadow_depth));
-        let pixel = clamp(vec2<i32>(coordinate.uv * vec2<f32>(size)), vec2(0), size - 1);
-        return f32(coordinate.reference <= textureLoad(shadow_depth, pixel, coordinate.layer, 0));
+        if tile.w == PACKED_SHADOW_LAYER {
+            return compare_packed(vec2<i32>(coordinate.uv * f32(tile.z)), coordinate.reference, tile);
+        }
+        let size = i32(tile.z);
+        let pixel = clamp(vec2<i32>(coordinate.uv * f32(size)), vec2(0), vec2(size - 1))
+            + vec2<i32>(tile.xy);
+        return f32(coordinate.reference <= textureLoad(shadow_depth, pixel, i32(tile.w), 0));
     }
-    return textureSampleCompareLevel(shadow_depth, shadow_sampler,
-        coordinate.uv, coordinate.layer, coordinate.reference);
+    return compare_filtered(coordinate.uv, coordinate.reference, tile);
 }
 
 fn sample_planar_shadow(map: ShadowLight, sampling: vec4<f32>, world: vec3<f32>, face: u32) -> f32 {
@@ -703,11 +826,17 @@ fn sample_planar_shadow(map: ShadowLight, sampling: vec4<f32>, world: vec3<f32>,
     if coordinate.layer < 0 || taps <= 1u || sampling.y == 0.0 {
         return shadow_compare(coordinate, taps == 0u);
     }
-    let radius = vec2<f32>(sampling.y) / vec2<f32>(textureDimensions(shadow_depth));
+    let tile = shadows.tiles[coordinate.layer];
+    var radius = vec2(sampling.y / f32(tile.z));
+    if sampling.y < 0.0 {
+        // The fitted projection carries its scales. Only spotlight perspective
+        // depends on the receiver depth.
+        let uv_per_world = shadows.uv_scales[coordinate.layer].xy / coordinate.clip_w;
+        radius = min(-sampling.y * uv_per_world, vec2(1.0));
+    }
     var sum = 0.0;
     for (var i = 0u; i < taps; i += 1u) {
-        sum += textureSampleCompareLevel(shadow_depth, shadow_sampler,
-            coordinate.uv + radius * SHADOW_OFFSETS[i], coordinate.layer, coordinate.reference);
+        sum += compare_filtered(coordinate.uv + radius * shadow_offset(i, taps), coordinate.reference, tile);
     }
     return sum / f32(taps);
 }
@@ -726,13 +855,23 @@ fn sample_point_shadow(map: ShadowLight, sampling: vec4<f32>, world: vec3<f32>, 
     let seed = select(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), abs(axis.z) > 0.95);
     let tangent = normalize(cross(seed, axis));
     let bitangent = cross(axis, tangent);
-    let radius = 2.0 * sampling.y / f32(textureDimensions(shadow_depth).x);
+    var depth = 1.0;
+    var radius = 2.0 * sampling.y / f32(map.layers[1].z);
+    if sampling.y < 0.0 {
+        // Project the disk in the receiver's tangent plane onto the cube.
+        // Rescale both terms together to keep even very large radii finite.
+        let world_radius = -sampling.y;
+        let scale = max(distance, world_radius);
+        depth = distance / scale;
+        radius = world_radius / scale;
+    }
+    let scaled_axis = axis * depth;
     // Select the face for each tap. A kernel can span a cube edge even if
     // the center face has no casters and was omitted from the atlas.
     var sum = 0.0;
     for (var i = 0u; i < taps; i += 1u) {
-        let offset = SHADOW_OFFSETS[i] * radius;
-        let ray = axis + tangent * offset.x + bitangent * offset.y;
+        let offset = shadow_offset(i, taps) * radius;
+        let ray = scaled_axis + tangent * offset.x + bitangent * offset.y;
         let sample_world = origin + normalize(ray) * distance;
         sum += shadow_compare(shadow_coordinate(map, sample_world,
             point_shadow_face(ray), true, sampling.w), false);
@@ -741,7 +880,7 @@ fn sample_point_shadow(map: ShadowLight, sampling: vec4<f32>, world: vec3<f32>, 
 }
 
 fn cascade_visibility(map: ShadowLight, sampling: vec4<f32>, world: vec3<f32>, count: u32) -> f32 {
-    let depth = dot(globals.view_depth, vec4<f32>(world, 1.0));
+    let depth = dot(map.cascade_reference, vec4<f32>(world, 1.0));
     if depth < map.parameters.x || depth > map.parameters.y {
         return 1.0;
     }
@@ -773,8 +912,10 @@ fn world_shadow_visibility(light: Light, world: vec3<f32>) -> f32 {
     }
     let map = shadows.maps[slot];
     var visibility: f32;
-    if map.parameters.z > 1.0 {
+    if map.parameters.z >= 1.0 {
         visibility = cascade_visibility(map, sampling, world, u32(map.parameters.z));
+    } else if map.parameters.w > 0.0 && distance(world, light.position_kind.xyz) > map.parameters.w {
+        return 1.0;
     } else if light.position_kind.w == 1.0 {
         visibility = sample_point_shadow(map, sampling, world, light.position_kind.xyz);
     } else {
@@ -787,28 +928,25 @@ fn shadow_visibility(light: Light, vertex: VertexOut) -> f32 {
     if (vertex.instance_metadata.x & 2u) == 0u {
         return 1.0;
     }
-    return world_shadow_visibility(light, vertex.world);
+    return world_shadow_visibility(light, vertex.world_and_lightmap_v.xyz);
 }
 
-fn probe_dir(direction: vec3<f32>, rotation: vec2<f32>) -> vec3<f32> {
-    let sn = rotation.x;
-    let cs = rotation.y;
-    return vec3<f32>(cs * direction.x - sn * direction.z, direction.y,
-                     sn * direction.x + cs * direction.z);
+fn probe_dir(direction: vec3<f32>, basis: array<vec4<f32>, 3>) -> vec3<f32> {
+    return vec3<f32>(dot(basis[0].xyz, direction), dot(basis[1].xyz, direction), dot(basis[2].xyz, direction));
 }
 
 fn environment_diffuse(normal: vec3<f32>) -> vec3<f32> {
-    if environment.settings.w < 0.0 {
+    if environment.settings.y < 0.0 {
         return vec3<f32>(0.0);
     }
-    let n = probe_dir(normal, environment.settings.xy);
+    let n = probe_dir(normal, environment.diffuse_basis);
     let c = environment.diffuse;
     let irradiance = 0.282095 * c[0].rgb
         + 0.488603 * (n.y * c[1].rgb + n.z * c[2].rgb + n.x * c[3].rgb)
         + 1.092548 * (n.x * n.y * c[4].rgb + n.y * n.z * c[5].rgb + n.x * n.z * c[7].rgb)
         + 0.315392 * (3.0 * n.z * n.z - 1.0) * c[6].rgb
         + 0.546274 * (n.x * n.x - n.y * n.y) * c[8].rgb;
-    return max(vec3<f32>(0.0), irradiance) * environment.settings.z;
+    return max(vec3<f32>(0.0), irradiance) * environment.settings.x;
 }
 
 fn box_reflection(world: vec3<f32>, direction: vec3<f32>) -> vec3<f32> {
@@ -826,12 +964,12 @@ fn box_reflection(world: vec3<f32>, direction: vec3<f32>) -> vec3<f32> {
 
 fn environment_specular(world: vec3<f32>, direction: vec3<f32>, f0: vec3<f32>, f90: f32,
     nv: f32, roughness: f32, curve: vec4<f32>, custom: bool) -> vec3<f32> {
-    if environment.specular.w < 0.0 {
+    if environment.specular.y < 0.0 {
         return vec3<f32>(0.0);
     }
-    let lookup = probe_dir(box_reflection(world, direction), environment.specular.xy);
-    let radiance = textureSampleLevel(probe, probe_sampler, lookup, roughness * environment.specular.w).rgb;
-    return radiance * reflection_response(f0, f90, nv, roughness, curve, custom) * environment.specular.z;
+    let lookup = probe_dir(box_reflection(world, direction), environment.specular_basis);
+    let radiance = textureSampleLevel(probe, probe_sampler, lookup, roughness * environment.specular.y).rgb;
+    return radiance * reflection_response(f0, f90, nv, roughness, curve, custom) * environment.specular.x;
 }
 
 fn reflection_response(f0: vec3<f32>, f90: f32, nv: f32, roughness: f32,
@@ -930,8 +1068,17 @@ fn sky_color(vertex: SkyVertex) -> vec4<f32> {
     var alpha = globals.background_alpha;
     var color = globals.volume_background.rgb * alpha;
     if !VOLUMETRIC_FOG || globals.volume_background.w > 0.5 {
-        color = textureSampleLevel(probe, probe_sampler, probe_dir(direction, environment.settings.xy), 0.0).rgb
-            * environment.settings.z;
+        let lookup = probe_dir(direction, environment.skybox);
+        let lod = environment.skybox[1].w;
+        if environment.sky.sun_curve.y > 0.5 && lod < 1.0 {
+            color = xr_sky_radiance(environment.sky, lookup);
+            if lod > 0.0 {
+                color = mix(color, textureSampleLevel(probe, probe_sampler, lookup, 1.0).rgb, lod);
+            }
+        } else {
+            color = textureSampleLevel(probe, probe_sampler, lookup, lod).rgb;
+        }
+        color *= environment.skybox[0].w;
         alpha = 1.0;
     }
     if VOLUMETRIC_FOG {
@@ -1018,7 +1165,7 @@ fn screen_ambient_visibility(vertex: VertexOut) -> f32 {
     let location = vertex.position.xy * vec2<f32>(size) / globals.ao.zw - 0.5;
     let tile = vec2<i32>(floor(location));
     let fraction = fract(location);
-    let depth = dot(globals.view_depth, vec4<f32>(vertex.world, 1.0));
+    let depth = dot(globals.view_depth, vec4<f32>(vertex.world_and_lightmap_v.xyz, 1.0));
     let tolerance = max(globals.ao.y * 0.22, depth * 0.001);
     var weight_sum = 0.0;
     var occlusion = 0.0;
@@ -1098,8 +1245,8 @@ struct VolumeFrame {
 }
 
 fn volume_frame(vertex: VertexOut) -> VolumeFrame {
-    let x = vertex.model_x;
-    let y = vertex.model_y;
+    let x = vertex.model_x_and_lightmap_strength.xyz;
+    let y = vertex.model_y_and_lightmap_blend.xyz;
     let z = vertex.model_z;
     let c0 = cross(y, z);
     return VolumeFrame(mat3x3<f32>(c0, cross(z, x), cross(x, y)), abs(dot(x, c0)));
@@ -1189,13 +1336,13 @@ fn sample_transmitted_light(vertex: VertexOut, uv: UvDerivatives, normal: vec3<f
         let thickness = volume_thickness(vertex, uv);
         if thickness > 0.0 {
             let frame = volume_frame(vertex);
-            let green = refracted_sample(entry, vertex.world,
+            let green = refracted_sample(entry, vertex.world_and_lightmap_v.xyz,
                 volume_ray(frame, -view, normal, material.volume.z, thickness));
             let green_light = opaque_light(green.uv, green_lod);
             if DISPERSION_MATERIAL {
-                let red = refracted_sample(entry, vertex.world,
+                let red = refracted_sample(entry, vertex.world_and_lightmap_v.xyz,
                     volume_ray(frame, -view, normal, material.spectral.x, thickness));
-                let blue = refracted_sample(entry, vertex.world,
+                let blue = refracted_sample(entry, vertex.world_and_lightmap_v.xyz,
                     volume_ray(frame, -view, normal, material.spectral.y, thickness));
                 let r = opaque_light(red.uv, lod * material.spectral.z);
                 let b = opaque_light(blue.uv, lod * material.spectral.w);
@@ -1213,7 +1360,7 @@ fn sample_transmitted_light(vertex: VertexOut, uv: UvDerivatives, normal: vec3<f
 }
 
 fn baked_irradiance(vertex: VertexOut) -> vec4<f32> {
-    let uv = vertex.lightmap_uv;
+    let uv = vec2(vertex.tangent_and_lightmap_u.w, vertex.world_and_lightmap_v.w);
     if !BAKED_LIGHTMAP || any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
         return vec4<f32>(0.0);
     }
@@ -1222,7 +1369,7 @@ fn baked_irradiance(vertex: VertexOut) -> vec4<f32> {
     let half_texel = min(0.5 / vec2<f32>(textureDimensions(opaque_radiance)), extent * 0.5);
     let at = clamp(origin + uv * extent, origin + half_texel, origin + extent - half_texel);
     let irradiance = textureSampleLevel(opaque_radiance, transmission_sampler, at, 0.0).rgb;
-    return vec4<f32>(irradiance * vertex.lightmap_options.x, 1.0 + vertex.lightmap_options.y);
+    return vec4<f32>(irradiance * vertex.model_x_and_lightmap_strength.w, 1.0 + vertex.model_y_and_lightmap_blend.w);
 }
 
 struct SurfaceLight {
@@ -1242,14 +1389,14 @@ fn material_view_direction(world: vec3<f32>) -> vec3<f32> {
     return -globals.view_depth.xyz;
 }
 
-fn material_input(vertex: VertexOut, front_facing: bool, view: vec3<f32>) -> XrMaterialInput {
-    return XrMaterialInput(vertex.uv, vertex.uv1, vertex.world, view,
+fn material_input(vertex: VertexOut, uv: UvDerivatives, front_facing: bool, view: vec3<f32>) -> XrMaterialInput {
+    return XrMaterialInput(vertex.uvs.xy, vertex.uvs.zw, uv.dx0, uv.dy0, uv.dx1, uv.dy1, vertex.world_and_lightmap_v.xyz, view,
         vertex.color, material.shader_parameters.xyz, front_facing, vertex.instance_data,
-        vertex.instance_metadata.x >> 3u, vertex.tint);
+        xr_instance_number(vertex.instance_metadata.x), vertex.tint);
 }
 
-fn apply_surface_program(vertex: VertexOut, front_facing: bool, surface: XrMaterialSurface) -> XrMaterialSurface {
-    let input = material_input(vertex, front_facing, material_view_direction(vertex.world));
+fn apply_surface_program(vertex: VertexOut, uv: UvDerivatives, front_facing: bool, surface: XrMaterialSurface) -> XrMaterialSurface {
+    let input = material_input(vertex, uv, front_facing, material_view_direction(vertex.world_and_lightmap_v.xyz));
     var result = scene_material(input, surface);
     let length_squared = dot(result.normal, result.normal);
     if length_squared > 1e-12 && length_squared <= 1e20 {
@@ -1279,7 +1426,7 @@ fn valid_program_light(authored: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
 var<private> captured_effect_surface: vec4<f32>;
 var<private> captured_base_color_metalness: vec4<f32>;
 var<private> captured_emissive_occlusion: vec4<f32>;
-var<private> captured_material_data: vec4<f32>;
+var<private> captured_material_data: array<vec4<f32>, 3>;
 
 fn effect_surface_sample(normal: vec3<f32>, roughness: f32) -> vec4<f32> {
     let squared = dot(normal, normal);
@@ -1290,15 +1437,38 @@ fn effect_surface_sample(normal: vec3<f32>, roughness: f32) -> vec4<f32> {
     return vec4(n, clamp(roughness, 0.0, 1.0));
 }
 
-fn capture_surface(vertex: VertexOut, front_facing: bool, surface: XrMaterialSurface, occlusion: f32) -> vec4<f32> {
+fn capture_augment_parameters() -> vec3<f32> {
+    return globals.augment_parameters;
+}
+
+fn capture_data_value(input: XrMaterialInput, surface: XrMaterialSurface, index: u32) -> vec4<f32> {
+    var data: vec4<f32>;
+    if CAPTURE_AUGMENT {
+        data = xrack_augment_scene_capture_augment(input, surface, index);
+    } else {
+        data = scene_material_data_at(input, surface, index);
+    }
+    let largest_finite = bitcast<f32>(0x7f7fffffu);
+    let limit = select(65000.0, largest_finite, (CAPTURE_FULL_PRECISION_DATA & (1u << index)) != 0u);
+    return select(vec4(0.0), clamp(data, vec4(-limit), vec4(limit)),
+        abs(data) <= vec4(largest_finite));
+}
+
+fn capture_surface(vertex: VertexOut, uv: UvDerivatives, front_facing: bool, surface: XrMaterialSurface, occlusion: f32) -> vec4<f32> {
     captured_base_color_metalness = vec4(surface.base_color, surface.metallic);
     captured_emissive_occlusion = vec4(surface.emissive, occlusion);
     captured_effect_surface = effect_surface_sample(surface.normal, surface.roughness);
-    if CAPTURE_MATERIAL_DATA {
-        let input = material_input(vertex, front_facing, material_view_direction(vertex.world));
-        let data = scene_material_data(input, surface);
-        captured_material_data = select(vec4(0.0), clamp(data, vec4(-65000.0), vec4(65000.0)),
-            abs(data) <= vec4(3.402823e38));
+    if CAPTURE_MATERIAL_DATA != 0u {
+        let input = material_input(vertex, uv, front_facing, material_view_direction(vertex.world_and_lightmap_v.xyz));
+        if (CAPTURE_MATERIAL_DATA & 1u) != 0u {
+            captured_material_data[0] = capture_data_value(input, surface, 0u);
+        }
+        if (CAPTURE_MATERIAL_DATA & 2u) != 0u {
+            captured_material_data[1] = capture_data_value(input, surface, 1u);
+        }
+        if (CAPTURE_MATERIAL_DATA & 4u) != 0u {
+            captured_material_data[2] = capture_data_value(input, surface, 2u);
+        }
     }
     return captured_effect_surface;
 }
@@ -1310,6 +1480,76 @@ fn surface_occlusion(vertex: VertexOut, uv: UvDerivatives) -> f32 {
     let texel = sample_material_map(occlusion_texture, occlusion_sampler, vertex, uv, material.map_slots.z, material.transforms[2]);
     return mix(1.0, scalar_texel(texel, 4u, 0u),
         material.pbr.z * vertex_mask(vertex.color, VERTEX_OCCLUSION));
+}
+
+// Values match the viewport's MaterialDebug enum. The normal pipeline
+// specializes DEBUG_MATERIAL to false, removing all diagnostic shading.
+const DEBUG_BASE_COLOR = 1u;
+const DEBUG_ROUGHNESS = 2u;
+const DEBUG_METALNESS = 3u;
+const DEBUG_EMISSION = 4u;
+const DEBUG_AMBIENT_OCCLUSION = 5u;
+const DEBUG_NORMALS = 6u;
+const DEBUG_TANGENTS = 7u;
+const DEBUG_BINORMALS = 8u;
+const DEBUG_F0 = 9u;
+const DEBUG_DIFFUSE = 10u;
+const DEBUG_SPECULAR = 11u;
+const DEBUG_SHADOW_OCCLUSION = 12u;
+
+fn debug_scalar(value: f32) -> vec3<f32> {
+    // Display the numeric value in the final sRGB image.
+    return srgb_to_linear(vec3(clamp(value, 0.0, 1.0)));
+}
+
+fn debug_direction(axis: vec3<f32>) -> vec3<f32> {
+    return srgb_to_linear(clamp(axis * 0.5 + vec3(0.5), vec3(0.0), vec3(1.0)));
+}
+
+fn debug_tangent_mode() -> bool {
+    return globals.material_debug == DEBUG_TANGENTS || globals.material_debug == DEBUG_BINORMALS;
+}
+
+fn debug_basis(frame: TangentFrame, normal: vec3<f32>) -> vec3<f32> {
+    let tangent = frame.tangent - normal * dot(frame.tangent, normal);
+    if abs(frame.sign) < 0.5 || dot(tangent, tangent) < 1e-8 {
+        return vec3(0.0);
+    }
+    let axis = normalize(tangent);
+    return debug_direction(select(axis, cross(normal, axis) * frame.sign,
+        globals.material_debug == DEBUG_BINORMALS));
+}
+
+fn debug_property(surface: XrMaterialSurface, occlusion: f32) -> vec3<f32> {
+    switch globals.material_debug {
+        case DEBUG_BASE_COLOR: { return surface.base_color; }
+        case DEBUG_ROUGHNESS: { return debug_scalar(surface.roughness); }
+        case DEBUG_METALNESS: { return debug_scalar(surface.metallic); }
+        case DEBUG_EMISSION: { return surface.emissive; }
+        case DEBUG_AMBIENT_OCCLUSION: { return debug_scalar(occlusion); }
+        case DEBUG_NORMALS: { return debug_direction(surface.normal); }
+        case DEBUG_SHADOW_OCCLUSION: { return vec3(1.0); }
+        default: { return vec3(0.0); }
+    }
+}
+
+fn debug_shadow(vertex: VertexOut, normal: vec3<f32>) -> vec3<f32> {
+    var visibility = 1.0;
+    for (var index = 0u; index < u32(lighting.settings.x); index += 1u) {
+        let light = lighting.lights[index];
+        if light.radiance.w <= 0.0 || !light_reaches(light, vertex.instance_metadata.z) {
+            continue;
+        }
+        let incident = incident_light(light, vertex.world_and_lightmap_v.xyz);
+        if incident.attenuation > 0.0 && dot(incident.axis, normal) > 0.0 {
+            visibility = min(visibility, shadow_visibility(light, vertex));
+        }
+    }
+    return debug_scalar(visibility);
+}
+
+fn debug_lighting(color: vec3<f32>) -> SurfaceLight {
+    return SurfaceLight(color, vec3(0.0), vec3(0.0), 0.0);
 }
 
 fn shade_pbr(
@@ -1340,7 +1580,7 @@ fn shade_pbr(
     var n = initial_normal;
     var albedo = initial_albedo;
     if CUSTOM_MATERIAL {
-        let surface = apply_surface_program(vertex, front_facing,
+        let surface = apply_surface_program(vertex, uv, front_facing,
             XrMaterialSurface(albedo, emissive, n, roughness, metallic));
         albedo = surface.base_color;
         emissive = surface.emissive;
@@ -1349,21 +1589,39 @@ fn shade_pbr(
         metallic = surface.metallic;
     }
     var occlusion = 1.0;
-    if !CAPTURE_EFFECT_SURFACE || CAPTURE_MATERIAL_OCCLUSION {
+    if (!CAPTURE_EFFECT_SURFACE || CAPTURE_MATERIAL_OCCLUSION)
+        && (!DEBUG_MATERIAL || globals.material_debug == DEBUG_AMBIENT_OCCLUSION
+            || globals.material_debug == DEBUG_DIFFUSE || globals.material_debug == DEBUG_SPECULAR) {
         occlusion = surface_occlusion(vertex, uv);
     }
     if CAPTURE_EFFECT_SURFACE || CAPTURE_LIT_SURFACE {
-        _ = capture_surface(vertex, front_facing, XrMaterialSurface(albedo, emissive, n, roughness, metallic), occlusion);
+        _ = capture_surface(vertex, uv, front_facing, XrMaterialSurface(albedo, emissive, n, roughness, metallic), occlusion);
     }
     if CAPTURE_EFFECT_SURFACE {
         return SurfaceLight(vec3(0.0), vec3(0.0), vec3(0.0), 0.0);
+    }
+    if DEBUG_MATERIAL {
+        if globals.material_debug <= DEBUG_NORMALS {
+            var visibility = 1.0;
+            if globals.material_debug == DEBUG_AMBIENT_OCCLUSION {
+                visibility = screen_ambient_visibility(vertex);
+            }
+            return debug_lighting(debug_property(XrMaterialSurface(albedo, emissive, n, roughness, metallic),
+                occlusion * visibility));
+        }
+        if globals.material_debug == DEBUG_SHADOW_OCCLUSION {
+            return debug_lighting(debug_shadow(vertex, n));
+        }
     }
     let transmission_roughness = roughness;
     roughness = filtered_roughness(roughness, specular_filter);
     let dielectric = sample_dielectric(vertex, uv, metallic);
     let f0 = mix(dielectric.f0, albedo, metallic);
+    if DEBUG_MATERIAL && globals.material_debug == DEBUG_F0 {
+        return debug_lighting(f0);
+    }
     let f90 = mix(dielectric.f90, 1.0, metallic);
-    let v = material_view_direction(vertex.world);
+    let v = material_view_direction(vertex.world_and_lightmap_v.xyz);
     let nv = clamp(dot(n, v), 0.0, 1.0);
     let transmission = transmission_strength(vertex, uv, metallic);
     let base_albedo = albedo * (1.0 - metallic);
@@ -1371,12 +1629,12 @@ fn shade_pbr(
     let view_edge = curve_edge(nv, fresnel_edge(nv), material.fresnel, CUSTOM_BASE_FRESNEL);
     let energy = diffuse_energy(dielectric, view_edge);
     let ambient_diffuse = diffuse_albedo * energy;
-    let shading = XrLightingInput(material_input(vertex, front_facing, v),
+    let shading = XrLightingInput(material_input(vertex, uv, front_facing, v),
         XrMaterialSurface(albedo, emissive, n, roughness, metallic), f0);
     var transmitted = vec3<f32>(0.0);
     var uncovered = 0.0;
     let background_weight = (transmission * energy) * base_albedo;
-    if transmission > 0.0 {
+    if !DEBUG_MATERIAL && transmission > 0.0 {
         let sample = sample_transmitted_light(vertex, uv, n, v, transmission_roughness);
         transmitted = sample.radiance * (transmission * energy) * base_albedo;
         if globals.background_alpha < 1.0 && globals.volume_background.w < 0.5 {
@@ -1395,7 +1653,7 @@ fn shade_pbr(
         lobe = brush_direction(vertex, n, uv, brush);
         reflection_normal = anisotropic_probe_normal(n, v, lobe, roughness);
     }
-    let reflection = environment_specular(vertex.world, reflect(-v, reflection_normal), f0, f90, nv, roughness,
+    let reflection = environment_specular(vertex.world_and_lightmap_v.xyz, reflect(-v, reflection_normal), f0, f90, nv, roughness,
         material.fresnel, CUSTOM_BASE_FRESNEL);
     var ambient = (constant + diffuse_env + reflection) * occlusion;
     // The clear layer is a dielectric with IOR 1.5 (F0 = 0.04).
@@ -1412,7 +1670,7 @@ fn shade_pbr(
     if coat.amount > 0.0 {
         let weight = coat.amount * coat_fresnel(coat_nv, fresnel_edge(coat_nv), coat.fresnel);
         base_attenuation = 1.0 - weight;
-        coat_reflection = environment_specular(vertex.world, reflect(-v, coat.normal),
+        coat_reflection = environment_specular(vertex.world_and_lightmap_v.xyz, reflect(-v, coat.normal),
             vec3<f32>(0.04), 1.0, coat_nv, coat.roughness, coat.fresnel, CUSTOM_COAT_FRESNEL);
         ambient = ambient * base_attenuation + coat_reflection * (coat.amount * occlusion);
         emissive *= base_attenuation;
@@ -1444,7 +1702,15 @@ fn shade_pbr(
                 reflection * (base_attenuation * visibility));
         }
     }
+    var debug_indirect = vec3(0.0);
+    if DEBUG_MATERIAL {
+        // The diffuse term already includes material occlusion, ambient
+        // visibility and the clearcoat attenuation of the base layer.
+        debug_indirect = select(max(ambient * ao - existing_diffuse, vec3(0.0)),
+            existing_diffuse + replace_diffuse, globals.material_debug == DEBUG_DIFFUSE);
+    }
     if nv <= 0.0 && (coat.amount == 0.0 || coat_nv <= 0.0) {
+        if DEBUG_MATERIAL { return debug_lighting(debug_indirect); }
         return SurfaceLight(ambient * ao + replace_diffuse + emissive + transmitted,
             transmitted, background_weight * base_attenuation, uncovered * base_attenuation);
     }
@@ -1462,10 +1728,11 @@ fn shade_pbr(
     var direct = vec3<f32>(0.0);
     for (var index = 0u; index < u32(lighting.settings.x); index += 1u) {
         let light = lighting.lights[index];
-        if BAKED_LIGHTMAP && mixed_bake && light.cone.z > 0.5 {
+        if !light_reaches(light, vertex.instance_metadata.z)
+            || (BAKED_LIGHTMAP && mixed_bake && light.cone.z > 0.5) {
             continue;
         }
-        let incident = incident_light(light, vertex.world);
+        let incident = incident_light(light, vertex.world_and_lightmap_v.xyz);
         let l = incident.axis;
         let nl = clamp(dot(n, l), 0.0, 1.0);
         let coat_nl = clamp(dot(coat.normal, l), 0.0, 1.0);
@@ -1502,7 +1769,7 @@ fn shade_pbr(
             }
             let specular = fresnel * microfacet;
             response = (diffuse + specular) * nl;
-            if programmable {
+            if programmable || DEBUG_MATERIAL {
                 standard = XrLightResponse(diffuse * nl, specular * nl);
             }
         }
@@ -1513,16 +1780,29 @@ fn shade_pbr(
             let authored = scene_light(input, standard);
             let diffuse_response = valid_program_light(authored.diffuse, standard.diffuse);
             let specular_response = valid_program_light(authored.specular, standard.specular);
-            response = select(diffuse_response, vec3(0.0), full_diffuse_bake) + specular_response;
+            let diffuse = select(diffuse_response, vec3(0.0), full_diffuse_bake);
+            response = diffuse + specular_response;
+            if DEBUG_MATERIAL {
+                standard = XrLightResponse(diffuse, specular_response);
+            }
         }
         if coat_lit {
             let nh = clamp(dot(coat.normal, h), 0.0, 1.0);
             let weight = coat.amount * coat_fresnel(vh, edge, coat.fresnel);
             let coat_specular = ggx_scale(coat_nl, coat_nv, nh, coat_alpha2, coat_smith_v);
-            response = response * (1.0 - weight) + vec3<f32>(coat_specular * weight * coat_nl);
+            let coat_response = vec3<f32>(coat_specular * weight * coat_nl);
+            response = response * (1.0 - weight) + coat_response;
+            if DEBUG_MATERIAL {
+                standard.diffuse *= 1.0 - weight;
+                standard.specular = standard.specular * (1.0 - weight) + coat_response;
+            }
+        }
+        if DEBUG_MATERIAL {
+            response = select(standard.specular, standard.diffuse, globals.material_debug == DEBUG_DIFFUSE);
         }
         direct += response * (shadow * incident.radiance);
     }
+    if DEBUG_MATERIAL { return debug_lighting(debug_indirect + direct); }
     return SurfaceLight(ambient * ao + replace_diffuse + emissive + direct + transmitted,
             transmitted, background_weight * base_attenuation, uncovered * base_attenuation);
 }
@@ -1549,10 +1829,14 @@ fn shade_builtin(vertex: VertexOut, normal: vec3<f32>) -> vec3<f32> {
         record_diffuse(normal, tint * ambient, tint * indirect);
     }
     for (var index = 0u; index < u32(lighting.settings.x); index += 1u) {
-        let incident = incident_light(lighting.lights[index], vertex.world);
+        let light = lighting.lights[index];
+        if !light_reaches(light, vertex.instance_metadata.z) {
+            continue;
+        }
+        let incident = incident_light(light, vertex.world_and_lightmap_v.xyz);
         let cosine = max(dot(normal, incident.axis), 0.0);
         if cosine > 0.0 {
-            let shadow = shadow_visibility(lighting.lights[index], vertex);
+            let shadow = shadow_visibility(light, vertex);
             irradiance += incident.radiance * (cosine * shadow / 3.14159265);
         }
     }
@@ -1570,13 +1854,17 @@ fn fragment_coated(vertex: VertexOut, @builtin(front_facing) front_facing: bool)
 }
 
 @fragment
-fn fragment_weighted(vertex: VertexOut, @builtin(front_facing) front_facing: bool) -> WeightedColor {
-    return weighted_color(plain_surface(vertex, front_facing), vertex.world);
+fn fragment_weighted(vertex: VertexOut, @builtin(front_facing) front_facing: bool /* XRack linked sample */) -> WeightedColor {
+    let color = plain_surface(vertex, front_facing);
+    // XRack linked fragment vertex.position
+    return weighted_color(color, vertex.world_and_lightmap_v.xyz);
 }
 
 @fragment
-fn fragment_weighted_coated(vertex: VertexOut, @builtin(front_facing) front_facing: bool) -> WeightedColor {
-    return weighted_color(coated_surface(vertex, front_facing), vertex.world);
+fn fragment_weighted_coated(vertex: VertexOut, @builtin(front_facing) front_facing: bool /* XRack linked sample */) -> WeightedColor {
+    let color = coated_surface(vertex, front_facing);
+    // XRack linked fragment vertex.position
+    return weighted_color(color, vertex.world_and_lightmap_v.xyz);
 }
 
 fn with_surfaces(color: vec4<f32>) -> ReflectedColor {
@@ -1656,14 +1944,19 @@ fn weighted_color(premultiplied: vec4<f32>, world: vec3<f32>) -> WeightedColor {
 fn plain_surface(vertex: VertexOut, front_facing: bool) -> vec4<f32> {
     // XRack wireframe distance
     var uv: UvDerivatives;
-    if material.pbr.w > 0.5 && (any(material.map_slots >= vec4<f32>(0.0)) ||
-        any(material.dielectric.yz >= vec2<f32>(0.0)) || material.transmission.y >= 0.0 ||
-        (VOLUME_MATERIAL && material.volume.y >= 0.0)) {
+    if (DEBUG_MATERIAL && debug_tangent_mode()) || XRACK_MATERIAL_UV_GRADIENTS
+        || (CAPTURE_AUGMENT && XRACK_AUGMENT_UV_GRADIENTS)
+        || (material.pbr.w > 0.5 && (any(material.map_slots >= vec4<f32>(0.0)) ||
+            any(material.dielectric.yz >= vec2<f32>(0.0)) || material.transmission.y >= 0.0 ||
+            (VOLUME_MATERIAL && material.volume.y >= 0.0))) {
         uv = uv_derivatives(vertex);
     }
     let color = fragment_surface(vertex, front_facing, uv, CoatSurface(vec3<f32>(0.0), 0.0, 0.0, vec4<f32>(5.0, 1.0, 0.0, 0.0)));
+    if LOD_FADE && !xr_lod_covered(vertex.instance_metadata.x, vertex.position.xy) {
+        discard;
+    }
     // XRack wireframe discard
-    return color;
+    return target_color(color);
 }
 
 fn coated_surface(vertex: VertexOut, front_facing: bool) -> vec4<f32> {
@@ -1671,8 +1964,11 @@ fn coated_surface(vertex: VertexOut, front_facing: bool) -> vec4<f32> {
     let uv = uv_derivatives(vertex);
     let coat = coat_surface(vertex, uv, front_facing);
     let color = fragment_surface(vertex, front_facing, uv, coat);
+    if LOD_FADE && !xr_lod_covered(vertex.instance_metadata.x, vertex.position.xy) {
+        discard;
+    }
     // XRack wireframe discard
-    return color;
+    return target_color(color);
 }
 
 struct CaptureGeometry {
@@ -1717,13 +2013,15 @@ struct LitDataCapture {
     @location(2) emissive_occlusion: vec4<f32>,
     @location(3) depth: f32,
     @location(4) color: vec4<f32>,
-    @location(5) data: vec4<f32>,
+    @location(5) data0: vec4<f32>,
+    @location(6) data1: vec4<f32>,
+    @location(7) data2: vec4<f32>,
 }
 
 fn lit_data_capture(vertex: VertexOut, color: vec4<f32>) -> LitDataCapture {
     let lit = lit_capture(vertex, color);
     return LitDataCapture(lit.normal_roughness, lit.base_color_metalness, lit.emissive_occlusion,
-        lit.depth, lit.color, captured_material_data);
+        lit.depth, lit.color, captured_material_data[0], captured_material_data[1], captured_material_data[2]);
 }
 
 @fragment
@@ -1736,10 +2034,16 @@ fn fragment_capture_lit_data_coat(vertex: VertexOut, @builtin(front_facing) fron
     return lit_data_capture(vertex, coated_surface(vertex, front_facing));
 }
 
+struct DataCapture {
+    @location(0) data0: vec4<f32>,
+    @location(1) data1: vec4<f32>,
+    @location(2) data2: vec4<f32>,
+}
+
 @fragment
-fn fragment_capture_data(vertex: VertexOut, @builtin(front_facing) front_facing: bool) -> @location(0) vec4<f32> {
+fn fragment_capture_data(vertex: VertexOut, @builtin(front_facing) front_facing: bool) -> DataCapture {
     _ = plain_surface(vertex, front_facing);
-    return captured_material_data;
+    return DataCapture(captured_material_data[0], captured_material_data[1], captured_material_data[2]);
 }
 
 @fragment
@@ -1751,7 +2055,9 @@ fn fragment_capture_depth(vertex: VertexOut, @builtin(front_facing) front_facing
 }
 
 fn uv_derivatives(vertex: VertexOut) -> UvDerivatives {
-    return UvDerivatives(dpdx(vertex.uv), dpdy(vertex.uv), dpdx(vertex.uv1), dpdy(vertex.uv1));
+    let dx = dpdx(vertex.uvs);
+    let dy = dpdy(vertex.uvs);
+    return UvDerivatives(dx.xy, dy.xy, dx.zw, dy.zw);
 }
 
 fn fog_curve(amount: f32, curve: f32) -> f32 {
@@ -1764,7 +2070,8 @@ fn fog_curve(amount: f32, curve: f32) -> f32 {
 fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, coat: CoatSurface) -> vec4<f32> {
     let normal = normalize(vertex.normal);
     let filter_specular = material.pbr.w > 0.5 && globals.specular_aa > 0.5;
-    var tangent = TangentFrame(vertex.tangent, bitcast<f32>(vertex.instance_metadata.y));
+    let geometric_normal = select(-normal, normal, front_facing);
+    var tangent = TangentFrame(vertex.tangent_and_lightmap_u.xyz, bitcast<f32>(vertex.instance_metadata.y));
     var brush = tangent;
     if ANISOTROPIC_MATERIAL {
         // Take derivatives before alpha-cut fragments diverge.
@@ -1777,6 +2084,15 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
     let normal_strength = material.emissive.w * vertex_mask(vertex.color, VERTEX_NORMAL);
     if !TANGENT_VERTEX && material.map_slots.w >= 0.0 && material.emissive.w != 0.0 {
         tangent = alternate_tangent_frame(vertex, normal, uv, material.map_slots.w, material.transforms[3]);
+    }
+    var debug_frame = vec3(0.0);
+    if DEBUG_MATERIAL && debug_tangent_mode() {
+        let derived = alternate_tangent_frame(vertex, normal, uv, 0.0,
+            TextureTransform(vec4(0.0), vec4(0.0)));
+        if abs(tangent.sign) < 0.5 {
+            tangent = derived;
+        }
+        debug_frame = debug_basis(tangent, geometric_normal);
     }
     var mapped = normal;
     var specular_filter = 0.0;
@@ -1794,7 +2110,7 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
     if material.params.y > 0.5 {
         var texel = vec4<f32>(1.0);
         if material.params.z > 0.5 {
-            var base_sample = textureSample(base_texture, base_sampler, texture_uv(material.base_uv, vertex.uv));
+            var base_sample = sample_base_texture(base_texture, base_sampler, material.base_uv, vertex.uvs.xy);
             if material.params.z > 1.5 {
                 // Live layers use premultiplied alpha. A mip view decodes
                 // premultiplied linear RGB in hardware.
@@ -1822,6 +2138,9 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
             alpha = vertex.tint.a;
         }
         let albedo = srgb_to_linear(vertex.tint.rgb) * surface.rgb;
+        if DEBUG_MATERIAL && debug_tangent_mode() {
+            return vec4(debug_frame * alpha, alpha);
+        }
         if material.pbr.w > 0.5 {
             if !filter_specular {
                 mapped = mapped_normal(vertex, normal, uv, tangent,
@@ -1839,13 +2158,17 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
             let oriented = select(-normal, normal, front_facing);
             var surface = XrMaterialSurface(albedo, vec3(0.0), oriented, 1.0, 0.0);
             if CUSTOM_MATERIAL {
-                surface = apply_surface_program(vertex, front_facing, surface);
+                surface = apply_surface_program(vertex, uv, front_facing, surface);
             }
             if CAPTURE_EFFECT_SURFACE || CAPTURE_LIT_SURFACE {
-                let captured = capture_surface(vertex, front_facing, surface, 1.0);
+                let captured = capture_surface(vertex, uv, front_facing, surface, 1.0);
                 if CAPTURE_EFFECT_SURFACE {
                     return captured;
                 }
+            }
+            if DEBUG_MATERIAL {
+                let color = debug_property(surface, 1.0);
+                return vec4(color * alpha, alpha);
             }
             base = surface.base_color + surface.emissive;
             if SCREEN_INDIRECT_LIGHT {
@@ -1855,16 +2178,32 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
     } else {
         if CAPTURE_EFFECT_SURFACE || CAPTURE_LIT_SURFACE {
             let oriented = select(-normal, normal, front_facing);
-            let captured = capture_surface(vertex, front_facing,
+            let captured = capture_surface(vertex, uv, front_facing,
                 XrMaterialSurface(srgb_to_linear(vertex.tint.rgb), vec3(0.0), oriented, 1.0, 0.0), 1.0);
             if CAPTURE_EFFECT_SURFACE {
                 return captured;
             }
         }
-        base = shade_builtin(vertex, normal);
         if MODEL_PARTICLES || material.params.w > 0.5 {
             alpha = vertex.tint.a;
         }
+        if DEBUG_MATERIAL {
+            let surface = XrMaterialSurface(srgb_to_linear(vertex.tint.rgb), vec3(0.0),
+                geometric_normal, 1.0, 0.0);
+            var color = debug_property(surface, screen_ambient_visibility(vertex));
+            if debug_tangent_mode() {
+                color = debug_frame;
+            } else if globals.material_debug == DEBUG_SHADOW_OCCLUSION {
+                color = debug_shadow(vertex, normal);
+            } else if globals.material_debug == DEBUG_DIFFUSE {
+                color = shade_builtin(vertex, normal);
+            }
+            return vec4(color * alpha, alpha);
+        }
+        base = shade_builtin(vertex, normal);
+    }
+    if DEBUG_MATERIAL {
+        return vec4(min(base, vec3(65000.0)) * alpha, alpha);
     }
     if (vertex.instance_metadata.x & 1u) != 0u {
         if SCREEN_REFLECTIONS {
@@ -1881,13 +2220,13 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
         var depth_mix = 0.0;
         var depth_amount = 0.0;
         if globals.fog_depth.y > 0.0 {
-            let depth = dot(globals.view_depth, vec4<f32>(vertex.world, 1.0));
+            let depth = dot(globals.view_depth, vec4<f32>(vertex.world_and_lightmap_v.xyz, 1.0));
             depth_mix = clamp((depth - globals.fog_depth.x) * globals.fog_depth.y, 0.0, 1.0);
             depth_amount = fog_curve(depth_mix, globals.fog_depth.z);
         }
         var height_amount = 0.0;
         if globals.fog_height.y != 0.0 {
-            let height = (vertex.world.y - globals.fog_height.x) * globals.fog_height.y;
+            let height = (vertex.world_and_lightmap_v.y - globals.fog_height.x) * globals.fog_height.y;
             height_amount = fog_curve(smoothstep(0.0, 1.0, height), globals.fog_height.z);
         }
         let fog = max(depth_amount, height_amount) * globals.fog.a;
@@ -1914,7 +2253,7 @@ fn fragment_surface(vertex: VertexOut, front_facing: bool, uv: UvDerivatives, co
         }
     }
     if VOLUMETRIC_FOG {
-        let fog = fog_to_surface(vertex.world);
+        let fog = fog_to_surface(vertex.world_and_lightmap_v.xyz);
         // The screen-space transmission sample has already traversed foreground fog.
         base = base * fog.transmission
             + transmitted * (1.0 - fog.transmission)

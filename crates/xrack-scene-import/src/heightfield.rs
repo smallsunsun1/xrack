@@ -1,8 +1,8 @@
 //! Turn linear grayscale samples into a static, pickable terrain mesh.
-use crate::assets::read_asset;
 use nalgebra::Vector3;
 use png::{BitDepth, ColorType, Decoder};
 use std::{io::Cursor, path::Path};
+use xrack_assets::files::read_asset;
 use xrack_runtime::scene3d::{
     MAX_IMPORTED_VERTICES, Mesh3D, MeshAlphaMode, MeshAsset, MeshMaterial, MeshPart, MeshPbr,
     MeshVertex,

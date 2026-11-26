@@ -634,6 +634,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     if kind == "Image" {
         return match name {
             "source" => Some(Type::Image),
+            "texture-input" => Some(Type::String),
             "image-fit" => Some(Type::ImageFit),
             "colorize" => Some(Type::Brush),
             "source-clip-x" | "source-clip-y" | "source-clip-width" | "source-clip-height" => {
@@ -1408,9 +1409,12 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         }
         "renderer" | "data" if kind == "CustomRender" => Type::String,
         "revision" if kind == "CustomRender" => Type::Int,
-        "texture-source" if kind == "Rectangle" => Type::String,
-        "texture-only" | "texture-mipmaps" if kind == "Rectangle" => Type::Bool,
+        "texture-source" if matches!(kind, "Rectangle" | "SceneView3D") => Type::String,
+        "texture-only" | "texture-mipmaps" if matches!(kind, "Rectangle" | "SceneView3D") => {
+            Type::Bool
+        }
         "model" if kind == "SceneView3D" => Type::RecordList("SceneObject3D".into()),
+        "preload-model" if kind == "SceneView3D" => Type::SceneModel3D,
         "physics-world" if kind == "SceneView3D" => Type::PhysicsWorld3D,
         "physics-debug" if kind == "SceneView3D" => Type::Bool,
         "physics-debug-body" if kind == "SceneView3D" => Type::Int,
@@ -1427,10 +1431,21 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "reflection-probes" if kind == "SceneView3D" => {
             Type::RecordList("ReflectionProbe3D".into())
         }
+        "scissor-rect" if kind == "SceneView3D" => Type::Record("SceneScissorRect".into()),
+        "environment-sky" | "skybox-sky" if kind == "SceneView3D" => {
+            Type::Record("ProceduralSky3D".into())
+        }
         "selected-object"
         | "environment"
+        | "skybox-source"
         | "camera"
         | "temporal-aa-mode"
+        | "render-mode"
+        | "render-format"
+        | "render-overrides"
+        | "shadow-map-precision"
+        | "oit-method"
+        | "material-debug"
         | "scene-effect"
         | "scene-color-capture"
         | "scene-depth-capture"
@@ -1439,12 +1454,21 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::String
         }
         "shadows"
+        | "depth-prepass"
+        | "debug-wireframe"
+        | "shadow-debug-cascades"
+        | "shadow-debug-light-volumes"
+        | "shadow-debug-casters"
+        | "shadow-debug-receivers"
+        | "shadow-debug-intersections"
+        | "shadow-freeze-camera"
         | "imported-lights"
         | "environment-skybox"
         | "frustum-culling"
         | "cache-rendering"
         | "texture-input"
         | "multisampling"
+        | "fxaa"
         | "temporal-aa"
         | "screen-space-reflections"
         | "screen-space-global-illumination"
@@ -1455,7 +1479,10 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "fog-transmit-enabled"
         | "ambient-occlusion"
         | "scene-hdr"
+        | "scene-dithering"
         | "bloom"
+        | "lens-flare"
+        | "lens-flare-aspect-corrected"
         | "depth-of-field"
         | "scene-effect-depth"
         | "scene-effect-animate"
@@ -1466,9 +1493,12 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "shadow-map-size"
         | "shadow-cascades"
         | "bloom-levels"
+        | "lens-flare-ghost-count"
+        | "lens-flare-blur-levels"
         | "texture-width"
         | "texture-height"
         | "progressive-aa"
+        | "fxaa-search-steps"
         | "reflection-faces-per-frame"
         | "reflection-filter-passes-per-frame"
         | "reflection-filter-texels-per-frame"
@@ -1483,10 +1513,21 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Int
         }
-        "scene-background" | "ambient-color" | "fog-color" if kind == "SceneView3D" => Type::Color,
-        "dof-blur-radius" if kind == "SceneView3D" => Type::Length,
+        "scene-background" | "ambient-color" | "fog-color" | "scene-vignette-color"
+            if kind == "SceneView3D" =>
+        {
+            Type::Color
+        }
+        "dof-blur-radius" | "lod-fade-width" if kind == "SceneView3D" => Type::Length,
         "scene-tone-map" if kind == "SceneView3D" => Type::SceneToneMap,
-        "scene-lut" if kind == "SceneView3D" => Type::Image,
+        "scene-lut"
+        | "lens-flare-color-map"
+        | "lens-flare-dirt-map"
+        | "lens-flare-starburst-map"
+            if kind == "SceneView3D" =>
+        {
+            Type::Image
+        }
         "scene-lut-size" | "layer-mask" if kind == "SceneView3D" => Type::Int,
         "camera-yaw"
         | "camera-pitch"
@@ -1500,6 +1541,14 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "shadow-split-balance"
         | "environment-intensity"
         | "environment-yaw"
+        | "environment-pitch"
+        | "environment-roll"
+        | "environment-horizon"
+        | "skybox-yaw"
+        | "skybox-pitch"
+        | "skybox-roll"
+        | "skybox-intensity"
+        | "skybox-blur"
         | "scene-exposure"
         | "bake-indirect-factor"
         | "scene-effect-strength"
@@ -1507,9 +1556,16 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "scene-brightness"
         | "scene-contrast"
         | "scene-saturation"
+        | "scene-vignette-strength"
+        | "scene-vignette-radius"
+        | "scene-sharpness"
         | "scene-lut-strength"
         | "supersampling"
         | "temporal-aa-strength"
+        | "fxaa-edge-threshold"
+        | "fxaa-min-threshold"
+        | "fxaa-subpixel"
+        | "fxaa-strength"
         | "ssr-strength"
         | "ssr-distance"
         | "ssr-thickness"
@@ -1537,6 +1593,13 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "ao-bias"
         | "bloom-strength"
         | "bloom-threshold"
+        | "lens-flare-strength"
+        | "lens-flare-threshold"
+        | "lens-flare-ghost-dispersal"
+        | "lens-flare-halo-width"
+        | "lens-flare-halo-strength"
+        | "lens-flare-distortion"
+        | "lens-flare-rotation"
         | "dof-focus-distance"
         | "dof-focus-range"
             if kind == "SceneView3D" =>
@@ -2712,12 +2775,13 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
             }
         }
     } else if record_field_type(&scope.records, record, "mesh").is_none()
+        && record_field_type(&scope.records, record, "mesh-asset").is_none()
         && collision_shapes.is_none()
     {
         return fail(
             value.span,
             format!(
-                "3D model record `{record}` requires a string field named `mesh`, a geometry record, or a collision-shapes list",
+                "3D model record `{record}` requires `mesh`, `mesh-asset`, a geometry record, or a collision-shapes list",
             ),
         );
     }
@@ -2784,6 +2848,57 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
     Ok(())
 }
 
+fn validate_shader_texture_inputs(
+    value: &ir::Expr,
+    scope: &Scope<'_>,
+    ty: &Type,
+    property: &str,
+) -> Result<()> {
+    let input = if property == "shader-textures" {
+        "material shader texture"
+    } else {
+        "capture augment texture"
+    };
+    let Type::RecordList(inputs) = ty else {
+        return fail(value.span, format!("3D {property} requires a record list"));
+    };
+    let ty = |name| record_field_type(&scope.records, inputs, name);
+    if ["texture", "item", "capture"]
+        .into_iter()
+        .all(|name| ty(name) != Some(Type::String))
+    {
+        return fail(
+            value.span,
+            format!("3D {input} requires a string field named texture, item or capture"),
+        );
+    }
+    for (name, expected) in [
+        "texture",
+        "item",
+        "capture",
+        "attachment",
+        "filter",
+        "min-filter",
+        "mag-filter",
+        "mip-filter",
+        "wrap-u",
+        "wrap-v",
+        "color-space",
+    ]
+    .map(|name| (name, Type::String))
+    .into_iter()
+    .chain([("enabled", Type::Bool), ("max-anisotropy", Type::Int)])
+    {
+        if ty(name).is_some_and(|actual| actual != expected) {
+            return fail(
+                value.span,
+                format!("3D {input} field `{name}` requires {}", expected.name()),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_scene_material(value: &ir::Expr, scope: &Scope<'_>, material: &str) -> Result<()> {
     let Some(schema) = scope
         .records
@@ -2825,49 +2940,14 @@ fn validate_scene_material(value: &ir::Expr, scope: &Scope<'_>, material: &str) 
         .iter()
         .find(|field| field.name == "shader-textures")
     {
-        let Type::RecordList(inputs) = &field.ty else {
-            return fail(
-                value.span,
-                "3D material shader-textures requires a record list",
-            );
-        };
-        let ty = |name| record_field_type(&scope.records, inputs, name);
-        if ["texture", "item", "capture"]
-            .into_iter()
-            .all(|name| ty(name) != Some(Type::String))
-        {
-            return fail(
-                value.span,
-                "3D material shader texture requires a string field named texture, item or capture",
-            );
-        }
-        for (name, expected) in [
-            "texture",
-            "item",
-            "capture",
-            "attachment",
-            "filter",
-            "wrap-u",
-            "wrap-v",
-            "color-space",
-        ]
-        .map(|name| (name, Type::String))
-        .into_iter()
-        .chain([("enabled", Type::Bool)])
-        {
-            if ty(name).is_some_and(|actual| actual != expected) {
-                return fail(
-                    value.span,
-                    format!(
-                        "3D material shader texture field `{name}` requires {}",
-                        expected.name()
-                    ),
-                );
-            }
-        }
+        validate_shader_texture_inputs(value, scope, &field.ty, "shader-textures")?;
     }
-    for name in builtins::SCENE_MATERIAL_MAP_FIELDS {
-        let Some(field) = schema.fields.iter().find(|field| field.name == *name) else {
+    for name in builtins::SCENE_MATERIAL_MAP_FIELDS
+        .iter()
+        .copied()
+        .chain(["base-item"])
+    {
+        let Some(field) = schema.fields.iter().find(|field| field.name == name) else {
             continue;
         };
         if field.ty == Type::String {
@@ -8485,7 +8565,10 @@ fn element<'a>(
                     && matches!(
                         b.name.as_str(),
                         "model"
+                            | "scissor-rect"
                             | "lights"
+                            | "environment-sky"
+                            | "skybox-sky"
                             | "reflection-probes"
                             | "fog-volumes"
                             | "scene-effects"
@@ -8495,7 +8578,53 @@ fn element<'a>(
                     )
                 {
                     let value = expression(&b.value, scope, owner)?;
-                    if b.name == "lights" {
+                    if b.name == "scissor-rect" {
+                        let Type::Record(record) = &value.ty else {
+                            return fail(
+                                value.span,
+                                "3D viewport scissor requires a rectangle record",
+                            );
+                        };
+                        for (field, expected) in builtins::SCENE_SCISSOR_FIELDS {
+                            let actual = record_field_type(&scope.records, record, field);
+                            if actual.as_ref() != Some(expected)
+                                && !(*field == "enabled" && actual.is_none())
+                            {
+                                return fail(
+                                    value.span,
+                                    format!(
+                                        "3D viewport scissor requires a {} field named `{field}`",
+                                        expected.name()
+                                    ),
+                                );
+                            }
+                        }
+                    } else if matches!(b.name.as_str(), "environment-sky" | "skybox-sky") {
+                        let Type::Record(sky) = &value.ty else {
+                            return fail(value.span, "3D sky input requires a sky record");
+                        };
+                        let Some(schema) = scope
+                            .records
+                            .get(sky.as_ref())
+                            .filter(|schema| schema.variants.is_empty())
+                        else {
+                            return fail(value.span, "3D sky input requires a sky record");
+                        };
+                        for (name, expected) in builtins::SCENE_SKY_FIELDS {
+                            if let Some(field) =
+                                schema.fields.iter().find(|field| field.name == *name)
+                                && field.ty != *expected
+                            {
+                                return fail(
+                                    value.span,
+                                    format!(
+                                        "3D sky record requires a {} field named `{name}`",
+                                        expected.name()
+                                    ),
+                                );
+                            }
+                        }
+                    } else if b.name == "lights" {
                         validate_scene_records(
                             &value,
                             scope,
@@ -8546,6 +8675,17 @@ fn element<'a>(
                                 );
                             };
                             validate_scene_material(&value, scope, &material)?;
+                        }
+                        if let Type::RecordList(capture) = &value.ty
+                            && let Some(textures) =
+                                record_field_type(&scope.records, capture, "augment-textures")
+                        {
+                            validate_shader_texture_inputs(
+                                &value,
+                                scope,
+                                &textures,
+                                "augment-textures",
+                            )?;
                         }
                         if let Type::RecordList(capture) = &value.ty
                             && let Some(state) =
@@ -8654,13 +8794,14 @@ fn element<'a>(
                                         record_field_type(&scope.records, &buffer, field) == Some(Type::String))
                                     && ["previous-frame", "enabled"].iter().all(|field|
                                         record_field_type(&scope.records, &buffer, field).is_none_or(|ty| ty == Type::Bool))
-                                    && ["name", "texture", "item", "capture", "attachment", "filter", "wrap-u", "wrap-v", "color-space"].into_iter().all(|field|
+                                    && record_field_type(&scope.records, &buffer, "max-anisotropy").is_none_or(|ty| ty == Type::Int)
+                                    && ["name", "texture", "item", "capture", "attachment", "filter", "min-filter", "mag-filter", "mip-filter", "wrap-u", "wrap-v", "color-space"].into_iter().all(|field|
                                         record_field_type(&scope.records, &buffer, field)
                                             .is_none_or(|ty| ty == Type::String)))
                         {
                             return fail(
                                 value.span,
-                                "3D effect pass buffers requires a record list with a string field named `name`, `texture`, `item` or `capture`, optional bool fields `previous-frame` and `enabled`, and optional string fields `filter`, `wrap-u` and `wrap-v` and `color-space`",
+                                "3D effect pass buffers requires a record list with a string field named `name`, `texture`, `item` or `capture`, optional bool fields `previous-frame` and `enabled`, and optional string fields `filter`, `wrap-u` and `wrap-v`, string settings for mip and texel filters, and an optional int field `max-anisotropy`",
                             );
                         }
                     } else if b.name == "reflection-probes" {
@@ -10287,7 +10428,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         );
     }
     let value = match &ty {
-        Type::Instance3D | Type::InstanceTable3D | Type::RotationTrack3D => "",
+        Type::Instance3D | Type::InstanceTable3D | Type::MeshAsset3D | Type::RotationTrack3D => "",
         Type::Point2D | Type::Vector2D => "0 0",
         Type::Point3D | Type::Vector3D => "0 0 0",
         Type::Quaternion3D => "0 0 0 1",

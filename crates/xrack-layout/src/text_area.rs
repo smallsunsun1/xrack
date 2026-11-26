@@ -96,6 +96,12 @@ pub(crate) fn grapheme_boundaries(text: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Checks for nonempty text entirely in the CJK Unified Ideographs block.
+#[doc(hidden)]
+pub fn is_basic_han_text(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|ch| matches!(ch, '\u{4e00}'..='\u{9fff}'))
+}
+
 pub(crate) fn fitting_prefix(start: usize, last: usize, fits: impl FnMut(usize) -> bool) -> usize {
     fitting_prefix_until(start, last, fits, |_, _| false)
 }
@@ -570,6 +576,28 @@ fn logical_word_prefix(text: &str, width: f32, advance: impl Fn(&str) -> f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn basic_han_shortcut_matches_unicode_boundaries() {
+        let text = (0x4e00..=0x9fff)
+            .filter_map(char::from_u32)
+            .flat_map(|ch| [ch, ch])
+            .collect::<String>();
+        assert!(is_basic_han_text(&text));
+        assert!(
+            text.grapheme_indices(true)
+                .map(|(byte, _)| byte)
+                .eq((0..text.len()).step_by(3))
+        );
+        assert!(
+            text.split_word_bound_indices()
+                .map(|(byte, _)| byte)
+                .eq((0..text.len()).step_by(3))
+        );
+        for contextual in ["", "汉字。", "汉\u{fe00}", "字\u{0301}", "漢א", "A漢"] {
+            assert!(!is_basic_han_text(contextual));
+        }
+    }
 
     fn advance(text: &str) -> f32 {
         text.graphemes(true).count() as f32

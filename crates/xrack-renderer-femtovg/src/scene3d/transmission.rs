@@ -190,10 +190,13 @@ impl OpaqueDepth {
                 },
             ],
         });
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("XRack 3D opaque depth capture"),
-            timestamp_writes: None,
-        });
+        let mut pass = crate::viewport_gpu_timing::compute_pass(
+            encoder,
+            &wgpu::ComputePassDescriptor {
+                label: Some("XRack 3D opaque depth capture"),
+                timestamp_writes: None,
+            },
+        );
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bindings, &[]);
         pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);

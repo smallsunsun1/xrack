@@ -1,0 +1,78 @@
+struct Matte { unlit: bool, alpha-mode: string }
+struct DisplayActor {
+    id: string, mesh: string, x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float, yaw: float, pitch: float, roll: float,
+    color: color, material: Matte, camera-kind: string, camera-height: float,
+}
+
+export component DisplayFinishDemo inherits Window {
+    title: "XRack · 场景显示效果";
+    width: 392px; height: 190px; resizable: false;
+    background: #253045;
+
+    in-out property <float> vignette: 0;
+    in-out property <float> radius: 0.45;
+    in-out property <color> tint: #691735;
+    in-out property <float> sharpness: 0;
+    in-out property <bool> dithering: false;
+    in-out property <bool> hdr: true;
+    in-out property <bool> transparent: false;
+    in-out property <bool> reuse-inputs: true;
+    in-out property <bool> glow: false;
+    in-out property <bool> filter: false;
+    in-out property <bool> focus: false;
+    in-out property <color> reference-color: #677b95;
+    in-out property <float> panel-offset: 0;
+    property <color> backdrop: root.transparent ? #00000000 : #677b95;
+    property <string> grade-shader: root.filter ? @shader-url("effects/grade.wgsl") : "";
+
+    property <DisplayActor> panel: DisplayActor {
+        id: "panel", mesh: "primitive:rectangle", x: root.panel-offset, y: 0, z: 0,
+        scale-x: 2, scale-y: 1.5, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #e6b66c, material: Matte { unlit: true, alpha-mode: "opaque" },
+        camera-kind: "", camera-height: 4,
+    };
+    property <[DisplayActor]> world: [
+        DisplayActor { id: "eye", mesh: "", x: 0, z: 6, camera-kind: "orthographic", ..root.panel },
+        root.panel,
+        DisplayActor {
+            id: "glass", x: 1.13, y: 0.64, z: 1, scale-x: 0.62, scale-y: 0.47,
+            color: #6fc9e980, material: Matte { unlit: true, alpha-mode: "blend" },
+            ..root.panel
+        },
+    ];
+    SceneView3D {
+        width: 192px; height: 144px; camera: "eye"; model: root.world;
+        scene-background: root.transparent ? #00000000 : root.reference-color;
+        scene-hdr: root.hdr; scene-exposure: 0.72;
+        bloom: root.glow; bloom-threshold: 0.08; bloom-levels: 3;
+        scene-effect: root.grade-shader; scene-effect-strength: 0.28;
+        depth-of-field: root.focus; dof-focus-distance: 4;
+        cache-rendering: true;
+    }
+    processed := SceneView3D {
+        x: 200px; width: 192px; height: 144px; camera: "eye"; model: root.world;
+        scene-background: root.backdrop; scene-hdr: root.hdr; scene-exposure: 0.72;
+        cache-rendering: root.reuse-inputs;
+        scene-vignette-strength: root.vignette; scene-vignette-radius: root.radius;
+        scene-vignette-color: root.tint;
+        scene-sharpness: root.sharpness; scene-dithering: root.dithering;
+        bloom: root.glow; bloom-threshold: 0.08; bloom-levels: 3;
+        scene-effect: root.grade-shader; scene-effect-strength: 0.28;
+        depth-of-field: root.focus; dof-focus-distance: 4;
+    }
+    vignette-toggle := CheckBox {
+        x: 10px; y: 150px; width: 99px; height: 32px; text: "暗角";
+        checked: root.vignette > 0;
+        toggled => { root.vignette = root.vignette > 0 ? 0 : 1; }
+    }
+    sharpness-toggle := CheckBox {
+        x: 111px; y: 150px; width: 99px; height: 32px; text: "锐化";
+        checked: root.sharpness > 0;
+        toggled => { root.sharpness = root.sharpness > 0 ? 0 : 0.8; }
+    }
+    dither-toggle := CheckBox {
+        x: 211px; y: 150px; width: 164px; height: 32px; text: "8 位抖动";
+        checked <=> root.dithering;
+    }
+}

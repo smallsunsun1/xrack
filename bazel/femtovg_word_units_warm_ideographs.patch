@@ -1,0 +1,557 @@
+diff --git a/src/text/textlayout/ideograph_prewarm.rs b/src/text/textlayout/ideograph_prewarm.rs
+new file mode 100644
+index 0000000..b0bec26
+--- /dev/null
++++ b/src/text/textlayout/ideograph_prewarm.rs
+@@ -0,0 +1,379 @@
++use std::{hash::Hash, thread};
++
++use fnv::FnvHasher;
++use rustybuzz::{script, Direction, Face, ShapePlan, UnicodeBuffer};
++use ttf_parser::{GlyphId, Rect};
++
++use super::{unified_ideograph, ShapedGlyph, ShapedWord, WordId};
++use crate::{FontId, Paint};
++
++const FIRST_IDEOGRAPH: u32 = 0x4e00;
++const IDEOGRAPH_COUNT: usize = (0x9fff - FIRST_IDEOGRAPH + 1) as usize;
++const MIN_WORDS: usize = 4096;
++const MAX_WORKERS: usize = 4;
++
++/// A bounded set of standalone ideographs for one font list and variation.
++pub(in super::super) struct PreparedIdeographs {
++    font_ids: [Option<FontId>; 8],
++    variation_hash: u64,
++    // One-based word indices, with zero reserved for an unprepared code point.
++    slots: Box<[u16]>,
++    pub(super) words: Vec<ShapedWord>,
++}
++
++impl PreparedIdeographs {
++    fn new(font_ids: [Option<FontId>; 8], variation_hash: u64, capacity: usize) -> Self {
++        Self {
++            font_ids,
++            variation_hash,
++            slots: vec![0; IDEOGRAPH_COUNT].into_boxed_slice(),
++            words: Vec::with_capacity(capacity),
++        }
++    }
++
++    pub(in super::super) fn len(&self) -> usize {
++        self.words.len()
++    }
++
++    pub(super) fn matches(&self, font_ids: &[Option<FontId>; 8], variation_hash: u64) -> bool {
++        self.font_ids == *font_ids && self.variation_hash == variation_hash
++    }
++
++    pub(super) fn word_index(&self, character: char) -> Option<usize> {
++        let slot = u32::from(character).checked_sub(FIRST_IDEOGRAPH)? as usize;
++        usize::from(*self.slots.get(slot)?).checked_sub(1)
++    }
++
++    fn push(&mut self, character: char, word: ShapedWord) {
++        let slot = (u32::from(character) - FIRST_IDEOGRAPH) as usize;
++        debug_assert_eq!(self.slots[slot], 0);
++        self.words.push(word);
++        // At most IDEOGRAPH_COUNT distinct entries can be prepared.
++        self.slots[slot] = self.words.len() as u16;
++    }
++}
++
++#[doc(hidden)]
++#[derive(Debug)]
++pub struct PreparedIdeographOutline {
++    pub font_id: FontId,
++    pub glyph_id: u16,
++    pub bounds: Option<Rect>,
++    pub units_per_em: u16,
++}
++
++#[derive(Clone, Copy)]
++struct ShapingFont<'a> {
++    id: FontId,
++    data: &'a [u8],
++    index: u32,
++}
++
++struct IdeographResult {
++    character: char,
++    units_per_em: u16,
++    glyph: Option<ShapedGlyph>,
++    outline: Option<PreparedIdeographOutline>,
++}
++
++impl super::super::TextContext {
++    /// Reads a standalone ideograph's vertical placement without shaping it.
++    #[doc(hidden)]
++    pub fn cached_ideograph_placement(
++        &self,
++        character: char,
++        paint: &Paint,
++    ) -> Option<(FontId, u16, [f32; 2])> {
++        if !unified_ideograph(character) {
++            return None;
++        }
++        let context = self.0.borrow();
++        let settings = &paint.text;
++        let variation_hash = settings.font_variations.hash();
++        let word = context
++            .prepared_ideographs
++            .as_ref()
++            .filter(|prepared| prepared.matches(&settings.font_ids, variation_hash))
++            .and_then(|prepared| prepared.words.get(prepared.word_index(character)?))
++            .or_else(|| {
++                let id = ideograph_word_id(character, &settings.font_ids, variation_hash);
++                context.shaped_words_cache.peek(&id)?.as_ref().ok()
++            })?;
++        let [glyph] = word.glyphs.as_slice() else {
++            return None;
++        };
++        let scale = word.scale(settings.font_size);
++        Some((
++            glyph.font_id,
++            glyph.glyph_id,
++            [glyph.advance_y * scale, glyph.offset_y * scale],
++        ))
++    }
++
++    /// Prepares independent words in a long document containing only unified
++    /// ideographs and paragraph breaks. Fills advances indexed from U+4E00.
++    #[doc(hidden)]
++    pub fn prepare_ideographs(
++        &self,
++        text: &str,
++        paint: &Paint,
++        advances: &mut [f32],
++    ) -> Vec<PreparedIdeographOutline> {
++        let workers = thread::available_parallelism()
++            .map_or(1, |n| n.get())
++            .min(MAX_WORKERS);
++        if workers < 2 {
++            return Vec::new();
++        }
++        let Some(mut characters) = document_ideographs(text) else {
++            return Vec::new();
++        };
++
++        let mut context = self.0.borrow_mut();
++        let settings = &paint.text;
++        let variation_hash = settings.font_variations.hash();
++        let font_ids = settings.font_ids;
++        let word_id = |character| ideograph_word_id(character, &font_ids, variation_hash);
++        let previous = context
++            .prepared_ideographs
++            .as_ref()
++            .filter(|prepared| prepared.matches(&font_ids, variation_hash));
++        characters.retain(|&ch| {
++            !previous.is_some_and(|prepared| prepared.word_index(ch).is_some())
++                && !context.shaped_words_cache.contains(&word_id(ch))
++        });
++        if characters.len() < MIN_WORDS {
++            return Vec::new();
++        }
++
++        let Some((first, _)) = context.fonts.iter().next() else {
++            return Vec::new();
++        };
++        let first = super::super::FontId(first);
++        let mut fonts = Vec::new();
++        for id in settings
++            .font_ids
++            .iter()
++            .map_while(|id| *id)
++            .chain(context.fonts.keys().map(super::super::FontId))
++        {
++            if fonts.iter().any(|font: &ShapingFont| font.id == id) {
++                continue;
++            }
++            if let Some(font) = context.font(id) {
++                fonts.push(ShapingFont {
++                    id,
++                    data: font.data(),
++                    index: font.face_index(),
++                });
++            }
++        }
++        let variations: Vec<_> = settings.font_variations.iter().collect();
++        let results = shape_in_parallel(&characters, &fonts, first, &variations, workers);
++        drop(fonts);
++        let Some(results) = results else {
++            return Vec::new();
++        };
++
++        // Update the cache in document order after every worker has finished.
++        let capacity = context.shaped_words_cache.cap().get()
++            + context
++                .prepared_ideographs
++                .as_ref()
++                .map_or(0, PreparedIdeographs::len);
++        let previous = context
++            .prepared_ideographs
++            .take()
++            .filter(|prepared| prepared.matches(&font_ids, variation_hash));
++        let prepared_len = previous.as_ref().map_or(0, PreparedIdeographs::len) + results.len();
++        let mut prepared = (prepared_len < capacity).then(|| {
++            let mut prepared = previous
++                .unwrap_or_else(|| PreparedIdeographs::new(font_ids, variation_hash, prepared_len));
++            prepared.words.reserve(results.len());
++            prepared
++        });
++        // Keep the public word-cache limit across the dense entries and the LRU.
++        let remaining = capacity - prepared.as_ref().map_or(0, |_| prepared_len);
++        context
++            .shaped_words_cache
++            .resize(std::num::NonZeroUsize::new(remaining).unwrap_or(std::num::NonZeroUsize::MIN));
++        let mut outlines = Vec::with_capacity(results.len());
++        for record in results {
++            if let Some(outline) = record.outline {
++                outlines.push(outline);
++            }
++            let word = ShapedWord {
++                glyphs: record.glyph.into_iter().collect(),
++                units_per_em: record.units_per_em,
++                ascii_slice: None,
++                has_ink: false,
++            };
++            if let Some(advance) =
++                advances.get_mut((u32::from(record.character) - FIRST_IDEOGRAPH) as usize)
++            {
++                *advance = word.width(word.scale(settings.font_size), settings.letter_spacing);
++            }
++            if let Some(prepared) = &mut prepared {
++                prepared.push(record.character, word);
++            } else {
++                context
++                    .shaped_words_cache
++                    .put(word_id(record.character), Ok(word));
++            }
++        }
++        context.prepared_ideographs = prepared;
++        outlines
++    }
++}
++
++fn ideograph_word_id(
++    character: char,
++    font_ids: &[Option<FontId>; 8],
++    variation_hash: u64,
++) -> WordId {
++    use std::hash::Hasher;
++
++    let mut utf8 = [0; 4];
++    let word = character.encode_utf8(&mut utf8) as &str;
++    let mut hasher = FnvHasher::default();
++    word.hash(&mut hasher);
++    WordId {
++        word_hash: hasher.finish(),
++        font_ids: *font_ids,
++        variation_hash,
++        rtl: false,
++    }
++}
++
++fn document_ideographs(text: &str) -> Option<Vec<char>> {
++    let mut seen = [false; IDEOGRAPH_COUNT];
++    let mut characters = Vec::new();
++    for ch in text.chars() {
++        if matches!(ch, '\n' | '\r') {
++            continue;
++        }
++        if !unified_ideograph(ch) {
++            return None;
++        }
++        let index = (u32::from(ch) - FIRST_IDEOGRAPH) as usize;
++        if !std::mem::replace(&mut seen[index], true) {
++            characters.push(ch);
++        }
++    }
++    Some(characters)
++}
++
++fn shape_in_parallel(
++    characters: &[char],
++    fonts: &[ShapingFont<'_>],
++    first: FontId,
++    variations: &[(u32, f32)],
++    workers: usize,
++) -> Option<Vec<IdeographResult>> {
++    thread::scope(|scope| {
++        let mut jobs = Vec::new();
++        for chunk in characters.chunks(characters.len().div_ceil(workers)) {
++            let Ok(job) = thread::Builder::new().spawn_scoped(scope, move || {
++                shape_ideographs(chunk, fonts, first, variations)
++            }) else {
++                break;
++            };
++            jobs.push(job);
++        }
++        let mut results = Vec::with_capacity(characters.len());
++        for job in jobs {
++            if let Ok(Some(mut shaped)) = job.join() {
++                results.append(&mut shaped);
++            }
++        }
++        (results.len() == characters.len()).then_some(results)
++    })
++}
++
++fn shape_ideographs(
++    characters: &[char],
++    fonts: &[ShapingFont<'_>],
++    first: FontId,
++    variations: &[(u32, f32)],
++) -> Option<Vec<IdeographResult>> {
++    let faces = fonts
++        .iter()
++        .map(|font| {
++            let mut face = Face::from_slice(font.data, font.index)?;
++            if face.is_variable() {
++                for &(tag, value) in variations {
++                    face.set_variation(ttf_parser::Tag(tag), value);
++                }
++            }
++            let plan = ShapePlan::new(&face, Direction::LeftToRight, Some(script::HAN), None, &[]);
++            Some((font.id, face, plan))
++        })
++        .collect::<Option<Vec<_>>>()?;
++
++    let mut results = Vec::with_capacity(characters.len());
++    let mut buffer = UnicodeBuffer::new();
++    for &character in characters {
++        let mut first_result = None;
++        let mut matched = None;
++        for (id, face, plan) in &faces {
++            buffer.add(character, 0);
++            buffer.set_direction(Direction::LeftToRight);
++            buffer.guess_segment_properties();
++            if buffer.script() != script::HAN {
++                return None;
++            }
++            let output = rustybuzz::shape_with_plan(face, plan, buffer);
++            let glyph = output
++                .glyph_infos()
++                .first()
++                .zip(output.glyph_positions().first())
++                .map(|(info, position)| ShapedGlyph::from_shaping(*id, character, info, position));
++            buffer = output.clear();
++            let units_per_em = face.as_ref().units_per_em();
++            if glyph.is_none_or(|g| g.glyph_id != 0) {
++                let outline =
++                    glyph.and_then(|g| outline_bounds(face, g.font_id, g.glyph_id, units_per_em));
++                matched = Some(IdeographResult {
++                    character,
++                    units_per_em,
++                    glyph,
++                    outline,
++                });
++                break;
++            }
++            if *id == first {
++                first_result = Some(IdeographResult {
++                    character,
++                    units_per_em,
++                    glyph,
++                    outline: None,
++                });
++            }
++        }
++        // The first registered face supplies .notdef if all candidates failed.
++        results.push(matched.or(first_result)?);
++    }
++    Some(results)
++}
++
++fn outline_bounds(
++    face: &Face<'_>,
++    font_id: FontId,
++    glyph_id: u16,
++    units_per_em: u16,
++) -> Option<PreparedIdeographOutline> {
++    let glyph = GlyphId(glyph_id);
++    if face.is_variable()
++        || face.is_color_glyph(glyph)
++        || face.glyph_svg_image(glyph).is_some()
++        || face.glyph_raster_image(glyph, u16::MAX).is_some()
++    {
++        return None;
++    }
++    Some(PreparedIdeographOutline {
++        font_id,
++        glyph_id,
++        bounds: face.glyph_bounding_box(glyph),
++        units_per_em,
++    })
++}
+diff --git a/src/text.rs b/src/text.rs
+--- a/src/text.rs
++++ b/src/text.rs
+@@ -236,6 +236,8 @@
+     shaped_words_cache: textlayout::ShapedWordsCache<fnv::FnvBuildHasher>,
+     #[cfg(feature = "textlayout")]
+     word_slice_hints: Vec<u64>,
++    #[cfg(feature = "textlayout")]
++    prepared_ideographs: Option<textlayout::PreparedIdeographs>,
+     #[cfg(feature = "swash")]
+     swash_scale_context: Rc<RefCell<swash::scale::ScaleContext>>,
+ }
+@@ -267,6 +269,8 @@
+             ),
+             #[cfg(feature = "textlayout")]
+             word_slice_hints: Vec::new(),
++            #[cfg(feature = "textlayout")]
++            prepared_ideographs: None,
+             #[cfg(feature = "swash")]
+             swash_scale_context: Rc::new(RefCell::new(swash::scale::ScaleContext::new())),
+         }
+@@ -389,9 +393,16 @@
+         #[cfg(feature = "textlayout")]
+         self.shaping_run_cache.clear();
+         #[cfg(feature = "textlayout")]
+-        self.shaped_words_cache.clear();
+-        #[cfg(feature = "textlayout")]
+-        self.word_slice_hints.fill(0);
++        {
++            self.shaped_words_cache.clear();
++            if let Some(prepared) = self.prepared_ideographs.take() {
++                let capacity = self.shaped_words_cache.cap().get() + prepared.len();
++                if let Some(capacity) = std::num::NonZeroUsize::new(capacity) {
++                    self.shaped_words_cache.resize(capacity);
++                }
++            }
++            self.word_slice_hints.fill(0);
++        }
+     }
+ 
+     pub fn measure_font(
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -13,6 +13,9 @@
+ 
+ use unicode_bidi::BidiInfo;
+ use unicode_segmentation::UnicodeSegmentation;
++
++mod ideograph_prewarm;
++pub(super) use ideograph_prewarm::PreparedIdeographs;
+ 
+ #[derive(Copy, Clone, Debug)]
+ pub struct ShapedGlyph {
+@@ -29,6 +32,31 @@
+     pub offset_x: f32,
+     pub offset_y: f32,
+     pub bearing_y: f32,
++}
++
++impl ShapedGlyph {
++    fn from_shaping(
++        font_id: FontId,
++        c: char,
++        info: &rustybuzz::GlyphInfo,
++        position: &rustybuzz::GlyphPosition,
++    ) -> Self {
++        Self {
++            x: 0.0,
++            y: 0.0,
++            c,
++            byte_index: info.cluster as usize,
++            font_id,
++            glyph_id: info.glyph_id.try_into().expect("rustybuzz guarantees the output glyph id is u16"),
++            width: 0.0,
++            height: 0.0,
++            advance_x: position.x_advance as f32,
++            advance_y: position.y_advance as f32,
++            offset_x: position.x_offset as f32,
++            offset_y: position.y_offset as f32,
++            bearing_y: 0.0,
++        }
++    }
+ }
+ 
+ #[derive(Clone, Debug, Default)]
+@@ -292,7 +320,12 @@
+     }
+ 
+     pub fn resize_shaped_words_cache(&mut self, capacity: std::num::NonZeroUsize) {
+-        self.shaped_words_cache.resize(capacity);
++        let prepared = self.prepared_ideographs.as_ref().map_or(0, PreparedIdeographs::len);
++        let remaining = capacity.get().checked_sub(prepared).and_then(std::num::NonZeroUsize::new);
++        if remaining.is_none() {
++            self.prepared_ideographs = None;
++        }
++        self.shaped_words_cache.resize(remaining.unwrap_or(capacity));
+         if capacity.get() < MIN_WORD_CACHE_FOR_SLICES {
+             self.word_slice_hints = Vec::new();
+         } else if self.word_slice_hints.is_empty() {
+@@ -656,12 +689,22 @@
+     variations: &FontVariations,
+     metrics: WordMetrics,
+ ) -> Option<&'a ShapedWord> {
++    let variation_hash = variations.hash();
++    if let Some(index) = context.prepared_ideographs.as_ref()
++        .filter(|prepared| word.len() == 3
++            && direction == rustybuzz::Direction::LeftToRight
++            && prepared.matches(&font_ids, variation_hash))
++        .and_then(|prepared| prepared.word_index(word.chars().next()?))
++    {
++        let word = context.prepared_ideographs.as_mut()?.words.get_mut(index)?;
++        return word_with_metrics(word, metrics, &context.fonts, variations);
++    }
+     let mut hasher = FnvHasher::default();
+     word.hash(&mut hasher);
+     let id = WordId {
+         word_hash: hasher.finish(),
+         font_ids,
+-        variation_hash: variations.hash(),
++        variation_hash,
+         rtl: direction == rustybuzz::Direction::RightToLeft,
+     };
+     if !context.shaped_words_cache.contains(&id) {
+@@ -676,9 +719,18 @@
+         context.shaped_words_cache.put(id, shaped);
+     }
+     let word = context.shaped_words_cache.get_mut(&id)?.as_mut().ok()?;
++    word_with_metrics(word, metrics, &context.fonts, variations)
++}
++
++fn word_with_metrics<'a>(
++    word: &'a mut ShapedWord,
++    metrics: WordMetrics,
++    fonts: &slotmap::SlotMap<slotmap::DefaultKey, super::font::Font>,
++    variations: &FontVariations,
++) -> Option<&'a ShapedWord> {
+     if metrics == WordMetrics::Ink && !word.has_ink {
+         if let Some(glyph) = word.glyphs.first() {
+-            let font = context.fonts.get(glyph.font_id.0)?;
++            let font = fonts.get(glyph.font_id.0)?;
+             let face = font.face_ref_with_variations(variations);
+             let coordinates = font.normalize_variations(variations);
+             for glyph in &mut word.glyphs {
+@@ -736,26 +788,7 @@
+         };
+ 
+         for (position, (info, c)) in glyphs {
+-            let g = ShapedGlyph {
+-                x: 0.0,
+-                y: 0.0,
+-                c,
+-                byte_index: info.cluster as usize,
+-                font_id,
+-                glyph_id: info
+-                    .glyph_id
+-                    .try_into()
+-                    .expect("rustybuzz guarantees the output glyph id is u16"),
+-                width: 0.0,
+-                height: 0.0,
+-                advance_x: position.x_advance as f32,
+-                advance_y: position.y_advance as f32,
+-                offset_x: position.x_offset as f32,
+-                offset_y: position.y_offset as f32,
+-                bearing_y: 0.0,
+-            };
+-
+-            shaped_word.glyphs.push(g);
++            shaped_word.glyphs.push(ShapedGlyph::from_shaping(font_id, c, info, position));
+         }
+ 
+         // A slice might select a different fallback face. Keep hints only

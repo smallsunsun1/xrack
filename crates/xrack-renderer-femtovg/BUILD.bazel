@@ -1,5 +1,10 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+PATCHED_FEMTOVG_FLAGS = [
+    "--cfg=xrack_femtovg_glyph_samples",
+    "--check-cfg=cfg(xrack_femtovg_glyph_samples)",
+]
 
 rust_library(
     name = "xrack_renderer_femtovg",
@@ -12,7 +17,14 @@ rust_library(
     compile_data = [
         "src/scene3d/bloom.wgsl",
         "src/scene3d/composite_input.wgsl",
+        "src/scene3d/cube_direction.wgsl",
         "src/scene3d/depth_of_field.wgsl",
+        "src/scene3d/display_color.wgsl",
+        "src/scene3d/fxaa.wgsl",
+        "src/scene3d/lens_flare.wgsl",
+        "src/scene3d/linked_capture.wgsl",
+        "src/scene3d/linked_resolve.wgsl",
+        "src/scene3d/lod_coverage.wgsl",
         "src/scene3d/morph.wgsl",
         "src/scene3d/motion.wgsl",
         "src/scene3d/occlusion.wgsl",
@@ -22,6 +34,8 @@ rust_library(
         "src/scene3d/probe_debug.wgsl",
         "src/pixel_blit.wgsl",
         "src/scene3d/reflection_filter.wgsl",
+        "src/scene3d/sky_cube.wgsl",
+        "src/scene3d/sky_radiance.wgsl",
         "src/scene3d/screen_data_float.wgsl",
         "src/scene3d/screen_data_packed.wgsl",
         "src/scene3d/screen_depth.wgsl",
@@ -31,6 +45,7 @@ rust_library(
         "src/scene3d/screen_reflection_msaa.wgsl",
         "src/scene3d/screen_reflection_single.wgsl",
         "src/scene3d/scene.wgsl",
+        "src/scene3d/shadow_compact.wgsl",
         "src/scene3d/material_sampling.wgsl",
         "src/scene3d/depth.wgsl",
         "src/scene3d/skin.wgsl",
@@ -45,10 +60,7 @@ rust_library(
         "src/scene3d/volumetric_fog_noise.wgsl",
     ],
     crate_name = "xrack_renderer_femtovg",
-    rustc_flags = [
-        "--cfg=xrack_femtovg_glyph_samples",
-        "--check-cfg=cfg(xrack_femtovg_glyph_samples)",
-    ],
+    rustc_flags = PATCHED_FEMTOVG_FLAGS,
     crate_root = "src/lib.rs",
     edition = "2024",
     version = "0.9.0",
@@ -60,6 +72,13 @@ rust_library(
     ] + all_crate_deps(normal = True),
 )
 
+
+rust_test(
+    name = "texture_budget_test",
+    crate = ":xrack_renderer_femtovg",
+    rustc_flags = PATCHED_FEMTOVG_FLAGS,
+    tags = ["manual"],
+)
 
 rust_binary(
     name = "xrack-gpu-trace",

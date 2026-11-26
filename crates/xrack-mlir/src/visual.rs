@@ -168,6 +168,9 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
                     && matches!(actual, Type::RecordList(_))
                 || kind == "SceneView3D" && name == "model" && actual == Type::SceneModel3D
                 || kind == "SceneView3D"
+                    && matches!(name, "environment-sky" | "skybox-sky" | "scissor-rect")
+                    && matches!(actual, Type::Record(_))
+                || kind == "SceneView3D"
                     && matches!(
                         name,
                         "lights"

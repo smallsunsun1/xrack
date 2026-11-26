@@ -1,24 +1,86 @@
 //! Reuse completed viewport images across 2D frames and canvas changes.
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    rc::Rc,
+    sync::{Arc, Weak},
+};
 
 use xrack_runtime::{Node, RowKey, SharedNodeIdentity, Value};
 
-use crate::transient_textures::{bytes, create_render_texture};
+use crate::transient_textures::{bytes, create_render_texture, render_bytes};
 
 use super::{
     COLOR_FORMAT, HDR_FORMAT, attachment_view,
+    environment::SKYBOX_PROPERTIES,
+    lens_flare::FlareSettings,
     progressive::ProgressiveSample,
     temporal::{TemporalHistory, TemporalSample, TemporalSettings},
 };
 
 const MAX_TEXTURES: usize = 8;
 const MAX_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_DISPLAY_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 const IDLE_FRAMES: u64 = 120;
+
+const DISPLAY_PROPERTIES: &[&str] = &[
+    "scene-exposure",
+    "scene-tone-map",
+    "scene-white-point",
+    "scene-brightness",
+    "scene-contrast",
+    "scene-saturation",
+    "scene-lut",
+    "scene-lut-size",
+    "scene-lut-strength",
+    "scene-vignette-strength",
+    "scene-vignette-radius",
+    "scene-vignette-color",
+    "scene-sharpness",
+    "scene-dithering",
+    "fxaa",
+    "fxaa-edge-threshold",
+    "fxaa-min-threshold",
+    "fxaa-subpixel",
+    "fxaa-strength",
+    "fxaa-search-steps",
+];
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ViewSize {
     pub pixels: [u32; 2],
     pub logical: [f32; 2],
+    pub scissor: Option<[f64; 4]>,
+    pub format: wgpu::TextureFormat,
+}
+
+pub(super) fn viewport_bytes(size: [u32; 2], format: wgpu::TextureFormat) -> u64 {
+    // Reserve space for a display resolve, while allocating it only on demand.
+    render_bytes(size, format)
+        + if format == COLOR_FORMAT {
+            0
+        } else {
+            bytes(size)
+        }
+}
+
+pub(crate) fn viewport_format(device: &wgpu::Device, node: &Node) -> wgpu::TextureFormat {
+    let format = match node.text("render-format") {
+        Some("rgba16f") => HDR_FORMAT,
+        Some("rgba32f") => wgpu::TextureFormat::Rgba32Float,
+        _ => return COLOR_FORMAT,
+    };
+    let features = format.guaranteed_format_features(device.features());
+    if features
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
+        && features
+            .flags
+            .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
+    {
+        format
+    } else {
+        COLOR_FORMAT
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -37,6 +99,9 @@ pub(crate) struct Sampling {
 
 impl Sampling {
     pub(crate) fn from_node(node: &Node) -> Self {
+        if super::material_debug::MaterialDebug::from_node(node).active() {
+            return Self::default();
+        }
         let progressive = match node.int("progressive-aa") {
             Some(samples @ (2 | 4 | 8)) => samples as u8,
             _ => 0,
@@ -77,6 +142,16 @@ impl Sampling {
     pub(crate) fn is_active(self) -> bool {
         self.progressive != 0 || self.temporal.is_some()
     }
+
+    pub(crate) fn retains_display(self, node: &Node) -> bool {
+        !self.is_active()
+            && !self.feedback
+            && node.boolean("cache-rendering", false)
+            && (node.properties.contains_key("lens-flare-strength")
+                || DISPLAY_PROPERTIES
+                    .iter()
+                    .any(|name| node.properties.contains_key(*name)))
+    }
 }
 
 pub(crate) enum AaSample {
@@ -94,10 +169,51 @@ impl AaSample {
     }
 }
 
+/// A completed color target and the lifetime used by retained GPU readers.
+#[derive(Clone)]
+pub(crate) struct ViewOutput {
+    pub texture: wgpu::Texture,
+    pub revision: u64,
+    pub readers: Weak<()>,
+}
+
+impl ViewOutput {
+    pub fn attachment(&self) -> wgpu::TextureView {
+        self.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.texture.format().add_srgb_suffix()),
+            ..Default::default()
+        })
+    }
+}
+
+/// The actual inputs of the final color pass. Source views are pinned until this
+/// frame is evicted, so passes from other viewports may safely reuse their pools.
+pub(crate) struct DisplayFrame {
+    pub color: wgpu::TextureView,
+    pub glow: Option<wgpu::TextureView>,
+    pub flare: Option<wgpu::TextureView>,
+    pub hdr: bool,
+    pub composite_alpha: bool,
+}
+
+impl DisplayFrame {
+    fn bytes(&self) -> u64 {
+        std::iter::once(&self.color)
+            .chain(self.glow.as_ref())
+            .chain(self.flare.as_ref())
+            .map(|view| {
+                let texture = view.texture();
+                render_bytes([texture.width(), texture.height()], texture.format())
+            })
+            .sum()
+    }
+}
+
 pub(crate) enum ViewTexture {
-    Ready(wgpu::Texture),
+    Ready(ViewOutput),
+    Reprocess(ViewOutput, Rc<DisplayFrame>),
     Render {
-        texture: wgpu::Texture,
+        output: ViewOutput,
         sample: Option<AaSample>,
         needs_redraw: bool,
     },
@@ -108,6 +224,12 @@ struct Progress {
     history: Option<wgpu::TextureView>,
 }
 
+struct Display {
+    texture: wgpu::Texture,
+    revision: Option<u64>,
+    pending: bool,
+}
+
 struct Entry {
     path: Vec<usize>,
     generation: u64,
@@ -116,6 +238,10 @@ struct Entry {
     settings: Vec<(&'static str, Value)>,
     inputs: ViewInputs,
     texture: wgpu::Texture,
+    display: Option<Display>,
+    display_frame: Option<Rc<DisplayFrame>>,
+    readers: Arc<()>,
+    revision: u64,
     frame: u64,
     committed: bool,
     id: Option<&'static str>,
@@ -148,8 +274,68 @@ impl Entry {
         }) && settings.next().is_none()
     }
 
-    fn render(&mut self, device: &wgpu::Device, stable: bool) -> ViewTexture {
+    fn output(&self) -> ViewOutput {
+        ViewOutput {
+            texture: self.texture.clone(),
+            revision: self.revision,
+            readers: Arc::downgrade(&self.readers),
+        }
+    }
+
+    fn matches_display_inputs(&self, node: &Node, size: ViewSize, inputs: ViewInputs) -> bool {
+        if self.size != size
+            || self.inputs != inputs
+            // An explicit tone curve also enables the HDR raster target.
+            || self.settings.iter().any(|(name, _)| *name == "scene-tone-map")
+                != node.properties.contains_key("scene-tone-map")
+        {
+            return false;
+        }
+        let reuses_flare = self
+            .display_frame
+            .as_ref()
+            .is_some_and(|frame| frame.flare.is_some())
+            && FlareSettings::strength(node).is_some();
+        let upstream = |name: &str| {
+            !DISPLAY_PROPERTIES.contains(&name) && !(reuses_flare && name == "lens-flare-strength")
+        };
+        let mut current = scene_settings(node).filter(|(name, _)| upstream(name));
+        self.settings
+            .iter()
+            .filter(|(name, _)| upstream(name))
+            .all(|(name, old)| {
+                current
+                    .next()
+                    .is_some_and(|(next, new)| *name == next && same_value(old, new))
+            })
+            && current.next().is_none()
+    }
+
+    fn begin_output(
+        &mut self,
+        device: &wgpu::Device,
+        (allocations, revision): (&mut u64, &mut u64),
+        aliases_input: bool,
+    ) {
+        // Sliced probes and retained inputs can still read the old output.
+        if aliases_input || Arc::strong_count(&self.readers) > 1 {
+            *allocations = allocations.saturating_add(1);
+            self.texture = viewport_texture(device, self.size);
+            self.readers = Arc::new(());
+        }
+        *revision = revision.wrapping_add(1).max(1);
+        self.revision = *revision;
         self.committed = false;
+    }
+
+    fn render(
+        &mut self,
+        device: &wgpu::Device,
+        stable: bool,
+        (allocations, revision): (&mut u64, &mut u64),
+    ) -> ViewTexture {
+        self.display_frame = None;
+        self.begin_output(device, (allocations, revision), false);
         let sample = if let Some(progress) = self.progress.as_mut().filter(|_| stable) {
             // A stationary scene can start accumulating independent jitter samples.
             self.temporal = TemporalHistory::default();
@@ -180,7 +366,7 @@ impl Entry {
             sample
         };
         ViewTexture::Render {
-            texture: self.texture.clone(),
+            output: self.output(),
             sample,
             needs_redraw: self.needs_redraw,
         }
@@ -202,6 +388,13 @@ impl Entry {
                 "camera",
                 "layer-mask",
                 "environment",
+                "environment-sky",
+                "environment-skybox",
+                "environment-yaw",
+                "environment-pitch",
+                "environment-roll",
+                "environment-horizon",
+                "environment-intensity",
                 "scene-hdr",
                 "scene-background",
                 "scene-color-capture",
@@ -211,6 +404,7 @@ impl Entry {
                 "particle-affectors",
             ]
             .iter()
+            .chain(SKYBOX_PROPERTIES.iter())
             .all(|name| {
                 self.settings
                     .iter()
@@ -228,6 +422,7 @@ pub(crate) struct ViewportTextures {
     entries: VecDeque<Entry>,
     frame: u64,
     pub allocations: u64,
+    revision: u64,
 }
 
 impl ViewportTextures {
@@ -248,6 +443,80 @@ impl ViewportTextures {
         } else {
             self.entries.retain(|entry| entry.committed);
         }
+        for display in self
+            .entries
+            .iter_mut()
+            .filter_map(|entry| entry.display.as_mut())
+        {
+            if std::mem::take(&mut display.pending) && !submitted {
+                display.revision = None;
+            }
+        }
+    }
+
+    pub(crate) fn display_target(
+        &mut self,
+        device: &wgpu::Device,
+        source: &wgpu::Texture,
+    ) -> Option<(wgpu::Texture, bool)> {
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.texture == *source)?;
+        let display = entry.display.get_or_insert_with(|| Display {
+            texture: create_render_texture(
+                device,
+                entry.size.pixels,
+                wgpu::TextureFormat::Rgba8Unorm,
+                "XRack viewport display",
+            ),
+            revision: None,
+            pending: false,
+        });
+        let refresh = display.revision != Some(entry.revision);
+        if refresh {
+            display.revision = Some(entry.revision);
+            display.pending = true;
+        }
+        Some((display.texture.clone(), refresh))
+    }
+
+    pub(crate) fn keep_display_frame(&mut self, output: &ViewOutput, frame: Rc<DisplayFrame>) {
+        let bytes = frame.bytes();
+        if bytes > MAX_DISPLAY_INPUT_BYTES {
+            return;
+        }
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.revision == output.revision && entry.texture == output.texture)
+        else {
+            return;
+        };
+        let mut resident: u64 = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, entry)| {
+                (slot != index).then(|| {
+                    entry
+                        .display_frame
+                        .as_ref()
+                        .map_or(0, |frame| frame.bytes())
+                })
+            })
+            .sum();
+        for (slot, entry) in self.entries.iter_mut().enumerate().rev() {
+            if resident + bytes <= MAX_DISPLAY_INPUT_BYTES {
+                break;
+            }
+            if slot != index
+                && let Some(frame) = entry.display_frame.take()
+            {
+                resident -= frame.bytes();
+            }
+        }
+        self.entries[index].display_frame = Some(frame);
     }
 
     pub(crate) fn clear_disabled_temporal(
@@ -274,7 +543,7 @@ impl ViewportTextures {
         inputs: ViewInputs,
         sampling: Sampling,
     ) -> Option<ViewTexture> {
-        let required = bytes(size.pixels);
+        let required = viewport_bytes(size.pixels, size.format);
         if required > MAX_BYTES {
             return None;
         }
@@ -296,18 +565,50 @@ impl ViewportTextures {
             entry.frame = self.frame;
             entry.node = node.snapshot_identity();
             let result = if solve_next_sample {
-                entry.render(device, true)
+                entry.render(device, true, (&mut self.allocations, &mut self.revision))
             } else {
-                ViewTexture::Ready(entry.texture.clone())
+                ViewTexture::Ready(entry.output())
             };
             self.entries.push_front(entry);
             return Some(result);
         }
 
+        if sampling.retains_display(node)
+            && let Some(index) = self.entries.iter().position(|entry| {
+                entry.committed
+                    && !entry.needs_redraw
+                    && entry.frame != self.frame
+                    && same_owner(entry)
+                    && entry.sampling == sampling
+                    && entry.display_frame.is_some()
+                    && entry.matches_display_inputs(node, size, inputs)
+            })
+            && let Some(mut entry) = self.entries.remove(index)
+            && let Some(frame) = entry.display_frame.clone()
+        {
+            entry.frame = self.frame;
+            entry.node = node.snapshot_identity();
+            entry.settings = scene_settings(node)
+                .map(|(name, value)| (name, value.clone()))
+                .collect();
+            let aliases_input = frame.color.texture() == &entry.texture;
+            entry.begin_output(
+                device,
+                (&mut self.allocations, &mut self.revision),
+                aliases_input,
+            );
+            let output = entry.output();
+            self.entries.push_front(entry);
+            return Some(ViewTexture::Reprocess(output, frame));
+        }
+
         // Earlier frames are ordered on the same queue. A texture still
         // referenced in this frame must stay intact until composition.
         let index = self.entries.iter().position(|entry| {
-            entry.frame != self.frame && same_owner(entry) && entry.size.pixels == size.pixels
+            entry.frame != self.frame
+                && same_owner(entry)
+                && entry.size.pixels == size.pixels
+                && entry.size.format == size.format
         });
         let recycled = index.and_then(|index| self.entries.remove(index));
         if sampling.is_active() {
@@ -322,7 +623,7 @@ impl ViewportTextures {
         let mut resident: u64 = self
             .entries
             .iter()
-            .map(|entry| bytes(entry.size.pixels))
+            .map(|entry| viewport_bytes(entry.size.pixels, entry.size.format))
             .sum();
         while self.entries.len() >= MAX_TEXTURES || resident + required > MAX_BYTES {
             // Keep sampling viewports painted in consecutive frames
@@ -332,12 +633,14 @@ impl ViewportTextures {
                     && (!entry.sampling.is_active() || entry.frame.wrapping_add(1) != self.frame)
             })?;
             let evicted = self.entries.remove(index)?;
-            resident -= bytes(evicted.size.pixels);
+            resident -= viewport_bytes(evicted.size.pixels, evicted.size.format);
         }
-        let (texture, history, temporal) = if let Some(entry) = recycled {
+        let (texture, display, readers, history, temporal) = if let Some(entry) = recycled {
             let keep_history = entry.preserves_temporal_history(node, size, inputs, sampling);
             (
                 entry.texture,
+                entry.display,
+                entry.readers,
                 entry
                     .progress
                     .filter(|_| sampling.temporal.is_none())
@@ -351,12 +654,9 @@ impl ViewportTextures {
         } else {
             self.allocations = self.allocations.saturating_add(1);
             (
-                create_render_texture(
-                    device,
-                    size.pixels,
-                    COLOR_FORMAT,
-                    "XRack retained 3D viewport",
-                ),
+                viewport_texture(device, size),
+                None,
+                Arc::new(()),
                 None,
                 TemporalHistory::default(),
             )
@@ -371,6 +671,10 @@ impl ViewportTextures {
                 .collect(),
             inputs,
             texture,
+            display,
+            display_frame: None,
+            readers,
+            revision: 0,
             frame: self.frame,
             committed: false,
             id: node.id,
@@ -386,10 +690,19 @@ impl ViewportTextures {
             needs_redraw: false,
             temporal_samples: 0,
         };
-        let result = entry.render(device, false);
+        let result = entry.render(device, false, (&mut self.allocations, &mut self.revision));
         self.entries.push_front(entry);
         Some(result)
     }
+}
+
+fn viewport_texture(device: &wgpu::Device, size: ViewSize) -> wgpu::Texture {
+    create_render_texture(
+        device,
+        size.pixels,
+        size.format,
+        "XRack retained 3D viewport",
+    )
 }
 
 fn scene_settings(node: &Node) -> impl Iterator<Item = (&'static str, &Value)> {
@@ -402,7 +715,13 @@ fn scene_settings(node: &Node) -> impl Iterator<Item = (&'static str, &Value)> {
         (!matches!(
             name,
             "cache-rendering"
+                | "scissor-rect" // Normalized bounds are part of ViewSize.
+                | "preload-model"
+                | "render-mode"
                 | "texture-input"
+                | "texture-source"
+                | "texture-only"
+                | "texture-mipmaps"
                 | "x"
                 | "y"
                 | "z"

@@ -1,0 +1,67 @@
+struct FadeShape { shape: string, width: float, height: float }
+struct FadeMaterial { unlit: bool }
+struct FadeActor {
+    id: string, geometry: FadeShape, material: FadeMaterial,
+    x: float, y: float, z: float,
+    scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    camera-kind: string, camera-height: float, camera-lod-bias: float,
+    camera-reverse-depth: bool, lod-of: string, lod-max-size: length,
+}
+
+export component LodFadeDemo inherits Window {
+    title: "XRack · LOD 平滑过渡";
+    width: 320px; height: 304px; background: #182535;
+    in-out property <float> span: 2.4;
+    in-out property <bool> fade: true;
+    in-out property <bool> msaa: false;
+    in-out property <bool> reversed: false;
+    in-out property <int> detail: 1;
+    property <string> camera-name: root.detail == 0 ? "fine" : root.detail == 2 ? "coarse" : "adaptive";
+
+    property <FadeActor> defaults: FadeActor {
+        id: "", geometry: FadeShape { shape: "", width: 1.6, height: 1.0 },
+        material: FadeMaterial { unlit: true },
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #ffbc62,
+        camera-kind: "", camera-height: root.span, camera-lod-bias: 1,
+        camera-reverse-depth: root.reversed, lod-of: "", lod-max-size: 0px,
+    };
+    property <FadeActor> eye: FadeActor { z: 5, camera-kind: "orthographic", ..root.defaults };
+    property <scenemodel3d> world: Scene3D.prepare([
+        FadeActor { id: "fine", camera-lod-bias: 0, ..root.eye },
+        FadeActor { id: "adaptive", ..root.eye },
+        FadeActor { id: "coarse", camera-lod-bias: 4, ..root.eye },
+        FadeActor {
+            id: "panel", geometry: FadeShape { shape: "plane", ..root.defaults.geometry },
+            ..root.defaults
+        },
+        FadeActor {
+            lod-of: "panel", lod-max-size: 190px,
+            geometry: FadeShape { shape: "plane", width: 0.8, height: 0.76 }, ..root.defaults
+        },
+    ]);
+    out property <string> picked: Scene3D.pick-camera(
+        root.world, root.camera-name, Point2D.new(320px, 240px), Point2D.new(218px, 108px));
+
+    scene := SceneView3D {
+        width: 320px; height: 240px;
+        model: root.world; camera: root.camera-name; preload-model: root.world;
+        lod-fade-width: root.fade ? 60px : 0px;
+        scene-background: #243952; scene-tone-map: none;
+        multisampling: root.msaa; shadows: true; shadow-map-size: 128;
+        cache-rendering: true;
+    }
+    zoom-slider := Slider {
+        x: 10px; y: 246px; width: 300px; height: 24px;
+        minimum: 1.9; maximum: 3.2; value <=> root.span;
+    }
+    fade-toggle := CheckBox {
+        x: 10px; y: 274px; width: 140px; height: 24px;
+        text: "平滑切换"; checked <=> root.fade;
+    }
+    samples-toggle := CheckBox {
+        x: 160px; y: 274px; width: 140px; height: 24px;
+        text: "MSAA"; checked <=> root.msaa;
+    }
+}

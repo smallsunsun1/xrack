@@ -46,6 +46,7 @@ function page(webview, media) {
     const nonce = randomBytes(16).toString('hex');
     const script = webview.asWebviewUri(vscode.Uri.joinPath(media, 'attached-app.js'));
     const stylesheet = webview.asWebviewUri(vscode.Uri.joinPath(media, 'attached-app.css'));
+    const viewportStatistics = webview.asWebviewUri(vscode.Uri.joinPath(media, 'viewport-statistics.js'));
     return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${webview.cspSource};">
@@ -75,12 +76,17 @@ function page(webview, media) {
   <h2 id="update-title">UI updates</h2>
   <div id="update-details"></div>
 </section>
+<section id="viewport-statistics-section" hidden aria-labelledby="viewport-statistics-title">
+  <h2 id="viewport-statistics-title">3D viewport statistics</h2>
+  <pre id="viewport-statistics-data"></pre>
+</section>
 <section id="diagnostics-section" hidden aria-labelledby="diagnostics-title">
   <h2 id="diagnostics-title">Request traces</h2>
   <label>Request <select id="diagnostic-request"></select></label>
   <ol id="diagnostic-events"></ol>
 </section>
 </main>
+<script nonce="${nonce}" src="${viewportStatistics}"></script>
 <script nonce="${nonce}" src="${script}"></script>
 </body></html>`;
 }

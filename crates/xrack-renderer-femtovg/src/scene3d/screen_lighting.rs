@@ -148,19 +148,22 @@ impl OpaqueSurfaces {
             Some(color_attachment(&self.data[1], wgpu::Color::TRANSPARENT)),
             Some(color_attachment(&self.data[2], wgpu::Color::TRANSPARENT)),
         ];
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack opaque radiance and screen lighting surfaces"),
-            color_attachments: &colors,
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: depth_load,
-                    store: wgpu::StoreOp::Store,
+        crate::viewport_gpu_timing::render_pass(
+            encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack opaque radiance and screen lighting surfaces"),
+                color_attachments: &colors,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: depth_load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
                 }),
-                stencil_ops: None,
-            }),
-            ..Default::default()
-        })
+                ..Default::default()
+            },
+        )
     }
 }
 
@@ -562,11 +565,14 @@ impl PassPipeline {
             layout: &self.inputs,
             entries: inputs,
         });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack screen reflection resolve"),
-            color_attachments: attachments,
-            ..Default::default()
-        });
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack screen reflection resolve"),
+                color_attachments: attachments,
+                ..Default::default()
+            },
+        );
         pass.set_pipeline(&self.render);
         pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..3, 0..1);

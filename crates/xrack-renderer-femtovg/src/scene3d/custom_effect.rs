@@ -10,7 +10,7 @@ use xrack_runtime::{
         Input, MAX_BUFFERS, OutputFormat, SURFACE_BINDING, SURFACE_CAMERA_BINDING, buffer_bindings,
         needs_capture_position, needs_surface, shader, source_is_valid,
     },
-    scene3d::SceneCamera,
+    scene3d::{SceneCamera, TextureFilter},
 };
 
 use crate::GpuPaintContext;
@@ -22,6 +22,7 @@ use super::{
     effect_history::{History, Owner},
     item_textures::ItemTextureView,
     material::{SharedImages, address, filter},
+    postprocess::DisplayLeases,
 };
 
 #[derive(Clone, Copy)]
@@ -54,6 +55,7 @@ impl<'a> EffectSettings<'a> {
     }
 }
 
+#[derive(Default)]
 pub(super) struct EffectList<'a> {
     single: Option<EffectSettings<'a>>,
     chain: Option<&'a Chain>,
@@ -110,14 +112,87 @@ pub(super) fn effect_size(view: [u32; 2], scale: f64) -> [u32; 2] {
     view.map(|side| (f64::from(side) * scale).ceil().max(1.0) as u32)
 }
 
-pub(super) fn effect_format(format: OutputFormat) -> wgpu::TextureFormat {
-    match format {
-        OutputFormat::R8 => wgpu::TextureFormat::R8Unorm,
-        OutputFormat::R16Float => wgpu::TextureFormat::R16Float,
-        OutputFormat::Rg8 => wgpu::TextureFormat::Rg8Unorm,
-        OutputFormat::Rg16Float => wgpu::TextureFormat::Rg16Float,
-        OutputFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
-        OutputFormat::Rgba16Float => HDR_FORMAT,
+const OPTIONAL_OUTPUT_FORMATS: [(wgpu::TextureFormat, wgpu::TextureFormat); 4] = [
+    (wgpu::TextureFormat::R16Unorm, wgpu::TextureFormat::R8Unorm),
+    (wgpu::TextureFormat::R32Float, wgpu::TextureFormat::R16Float),
+    (
+        wgpu::TextureFormat::Rg32Float,
+        wgpu::TextureFormat::Rg16Float,
+    ),
+    (wgpu::TextureFormat::Rgba32Float, HDR_FORMAT),
+];
+
+/// All consumers agree on the effective storage format. Resolve optional
+/// capabilities once per device, before building a capture or effect plan.
+#[derive(Clone, Copy)]
+pub(super) struct OutputFormats([wgpu::TextureFormatFeatureFlags; 4]);
+
+impl Default for OutputFormats {
+    fn default() -> Self {
+        Self([wgpu::TextureFormatFeatureFlags::empty(); 4])
+    }
+}
+
+impl OutputFormats {
+    pub fn new(adapter: &wgpu::Adapter, features: wgpu::Features) -> Self {
+        Self(OPTIONAL_OUTPUT_FORMATS.map(|(format, _)| {
+            if !features.contains(format.required_features())
+                || format != wgpu::TextureFormat::R16Unorm
+                    && !features.contains(wgpu::Features::FLOAT32_FILTERABLE)
+            {
+                return wgpu::TextureFormatFeatureFlags::empty();
+            }
+            let caps =
+                if features.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
+                    adapter.get_texture_format_features(format)
+                } else {
+                    format.guaranteed_format_features(features)
+                };
+            if caps.allowed_usages.contains(
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            ) {
+                caps.flags
+            } else {
+                wgpu::TextureFormatFeatureFlags::empty()
+            }
+        }))
+    }
+
+    pub fn sampled(self, requested: OutputFormat) -> wgpu::TextureFormat {
+        self.select(requested, wgpu::TextureFormatFeatureFlags::FILTERABLE)
+    }
+
+    pub fn blended(self, requested: OutputFormat) -> wgpu::TextureFormat {
+        self.select(
+            requested,
+            wgpu::TextureFormatFeatureFlags::FILTERABLE
+                | wgpu::TextureFormatFeatureFlags::BLENDABLE,
+        )
+    }
+
+    fn select(
+        self,
+        requested: OutputFormat,
+        flags: wgpu::TextureFormatFeatureFlags,
+    ) -> wgpu::TextureFormat {
+        let index = match requested {
+            OutputFormat::R16 => 0,
+            OutputFormat::R32Float => 1,
+            OutputFormat::Rg32Float => 2,
+            OutputFormat::Rgba32Float => 3,
+            OutputFormat::R8 => return wgpu::TextureFormat::R8Unorm,
+            OutputFormat::R16Float => return wgpu::TextureFormat::R16Float,
+            OutputFormat::Rg8 => return wgpu::TextureFormat::Rg8Unorm,
+            OutputFormat::Rg16Float => return wgpu::TextureFormat::Rg16Float,
+            OutputFormat::Rgba8 => return wgpu::TextureFormat::Rgba8Unorm,
+            OutputFormat::Rgba16Float => return HDR_FORMAT,
+        };
+        let (preferred, fallback) = OPTIONAL_OUTPUT_FORMATS[index];
+        if self.0[index].contains(flags) {
+            preferred
+        } else {
+            fallback
+        }
     }
 }
 
@@ -143,6 +218,7 @@ pub(super) struct EffectStats {
 
 #[derive(Default)]
 pub(super) struct Effects {
+    pub formats: OutputFormats,
     pipelines: VecDeque<Pipeline>,
     outputs: VecDeque<Attachment>,
     samplers: HashMap<BufferSampling, wgpu::Sampler>,
@@ -242,6 +318,7 @@ impl Effects {
             &BTreeMap<String, ItemTextureView>,
             Option<&CaptureViews>,
         ),
+        leases: &DisplayLeases,
     ) -> (Option<Attachment>, EffectStats) {
         let mut last = None::<Attachment>;
         let mut stats = EffectStats::default();
@@ -250,7 +327,7 @@ impl Effects {
         }
         let mut history = owner
             .zip(chain.chain)
-            .and_then(|(owner, chain)| self.history.prepare(owner, ctx.size, chain));
+            .and_then(|(owner, chain)| self.history.prepare(owner, ctx.size, chain, self.formats));
         let mut retained = BTreeMap::<usize, (usize, Attachment)>::new();
         let mut target_capacity = RETAINED_TARGETS;
         let pipeline_capacity = chain.chain.map_or(MAX_PIPELINES, |chain| {
@@ -289,11 +366,12 @@ impl Effects {
                             .map(Cow::Borrowed),
                         Some(BufferSource::Image(image)) => {
                             encoding = BufferEncoding::Straight;
-                            Some(Cow::Owned(self.images.borrow_mut().base_view(
+                            Some(Cow::Owned(self.images.borrow_mut().sampled_input_view(
                                 ctx.device,
                                 queue,
                                 &image.image,
                                 image.color,
+                                buffer.sampling,
                             )))
                         }
                         Some(BufferSource::Capture(read)) => {
@@ -351,6 +429,7 @@ impl Effects {
                 settings,
                 pipeline_capacity,
                 &mut stats,
+                leases,
             );
             retained.retain(|_, (last_read, _)| *last_read > index);
             if let Some(rendered) = rendered {
@@ -387,6 +466,7 @@ impl Effects {
         settings: EffectSettings<'_>,
         pipeline_capacity: usize,
         stats: &mut EffectStats,
+        leases: &DisplayLeases,
     ) -> Option<Attachment> {
         let surface = surface.filter(|_| settings.surface);
         let depth = surface
@@ -408,7 +488,7 @@ impl Effects {
             .fold(0u8, |bits, (index, input)| {
                 bits | (u8::from(input.nearest) << index)
             });
-        let format = effect_format(settings.format);
+        let format = self.formats.sampled(settings.format);
         let cached = self
             .pipelines
             .iter()
@@ -450,13 +530,17 @@ impl Effects {
             .chain(inputs.buffers.iter().map(|buffer| buffer.sampling))
         {
             self.samplers.entry(sampling).or_insert_with(|| {
-                let filtering = filter(sampling.filter);
                 ctx.device.create_sampler(&wgpu::SamplerDescriptor {
                     label: Some("XRack scene effect sampler"),
                     address_mode_u: address(sampling.wrap[0]),
                     address_mode_v: address(sampling.wrap[1]),
-                    mag_filter: filtering,
-                    min_filter: filtering,
+                    mag_filter: filter(sampling.mag_filter),
+                    min_filter: filter(sampling.min_filter),
+                    mipmap_filter: if sampling.mip_filter == Some(TextureFilter::Linear) {
+                        wgpu::MipmapFilterMode::Linear
+                    } else {
+                        wgpu::MipmapFilterMode::Nearest
+                    },
                     ..Default::default()
                 })
             });
@@ -468,6 +552,7 @@ impl Effects {
             let previous = self.outputs.iter().position(|slot| {
                 slot.size == size
                     && slot.view.texture().format() == format
+                    && !leases.contains(&slot.view)
                     && &slot.view != inputs.previous
                     && &slot.view != inputs.original
                     && !inputs
@@ -516,7 +601,15 @@ impl Effects {
                 encoding | ((buffer.encoding as u32) << (2 * index))
             });
         bytes.extend_from_slice(&encoding.to_ne_bytes());
-        bytes.extend_from_slice(&[0; 12]);
+        let anisotropy = inputs
+            .buffers
+            .iter()
+            .enumerate()
+            .fold(0u32, |bits, (index, buffer)| {
+                bits | (buffer.sampling.anisotropy_bits() << (4 * index))
+            });
+        bytes.extend_from_slice(&anisotropy.to_ne_bytes());
+        bytes.extend_from_slice(&[0; 8]);
         let uniform = buffer(
             ctx.device,
             "XRack scene effect frame",
@@ -600,19 +693,22 @@ impl Effects {
             layout: &program.layout,
             entries: &entries,
         });
-        let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("XRack scene effect"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output.view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
+        let mut pass = crate::viewport_gpu_timing::render_pass(
+            ctx.encoder,
+            &wgpu::RenderPassDescriptor {
+                label: Some("XRack scene effect"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &output.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            },
+        );
         pass.set_pipeline(&program.pipeline);
         pass.set_bind_group(0, &bindings, &[]);
         pass.draw(0..3, 0..1);
@@ -758,16 +854,7 @@ impl Program {
                 entry_point: Some("xr_effect_fragment"),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &[
-                        (
-                            "XR_EFFECT_DATA",
-                            f64::from(u8::from(matches!(
-                                format,
-                                wgpu::TextureFormat::R8Unorm
-                                    | wgpu::TextureFormat::R16Float
-                                    | wgpu::TextureFormat::Rg8Unorm
-                                    | wgpu::TextureFormat::Rg16Float
-                            ))),
-                        ),
+                        ("XR_EFFECT_DATA", f64::from(format.components() < 4)),
                         ("XR_EFFECT_REVERSE_DEPTH", f64::from(reverse_depth)),
                     ],
                     ..Default::default()

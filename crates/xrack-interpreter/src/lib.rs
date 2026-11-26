@@ -35,6 +35,7 @@ mod tests;
 mod timer;
 mod tree;
 mod viewport;
+
 mod visual_cache;
 
 use std::{
@@ -321,6 +322,7 @@ pub enum ValueType {
     ProjectedPoint3D,
     Instance3D,
     InstanceTable3D,
+    MeshAsset3D,
     WalkResult3D,
     PhysicsWorld3D,
     SceneModel3D,

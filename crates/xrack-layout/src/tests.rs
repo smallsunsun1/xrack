@@ -328,6 +328,7 @@ fn leaf_placement_matches_general_placement() {
                     .insert("layout-direction", LayoutDirection::LeftToRight.into());
             }
             let mut context = LayoutContext {
+                defer_styled_text: false,
                 text: &mut Text,
                 layout_direction: Some(LayoutDirection::RightToLeft),
                 offsets: &BTreeMap::new(),

@@ -1,0 +1,48 @@
+diff --git a/src/text/textlayout.rs b/src/text/textlayout.rs
+--- a/src/text/textlayout.rs
++++ b/src/text/textlayout.rs
+@@ -243,6 +243,44 @@
+         }
+         context.find_font(&settings.font_ids, |_| (false, ()))?;
+         Ok(width)
++    }
++
++    /// Measures vertical ink at an alphabetic baseline without positioning glyphs.
++    #[doc(hidden)]
++    pub fn alphabetic_ink_bounds(&self, baseline: f32, text: &str, paint: &Paint) -> Result<[f32; 2], ErrorKind> {
++        let mut context = self.0.borrow_mut();
++        let settings = &paint.text;
++        let mut cursor = baseline;
++        let mut top = baseline;
++        let mut bottom = baseline;
++        let mut add = |glyph: &ShapedGlyph, scale: f32| {
++            let y = cursor + glyph.offset_y * scale - glyph.bearing_y * scale;
++            top = top.min(y);
++            bottom = bottom.max(y + glyph.height * scale);
++            cursor += glyph.advance_y * scale;
++        };
++        if text.chars().all(|ch| (' '..='~').contains(&ch) || unified_ideograph(ch)) {
++            // These characters form a single LTR run. Use the same words
++            // and floating point additions as shape_run followed by layout.
++            for text in text.split_word_bounds() {
++                if let Some(word) = cached_word(
++                    &mut context, text, rustybuzz::Direction::LeftToRight, settings.font_ids,
++                    &settings.font_variations, WordMetrics::Ink,
++                ) {
++                    let scale = word.scale(settings.font_size);
++                    for glyph in &word.glyphs {
++                        add(glyph, scale);
++                    }
++                }
++            }
++            context.find_font(&settings.font_ids, |_| (false, ()))?;
++        } else {
++            let run = cached_run(&mut context, settings, text, None)?;
++            for glyph in &run.metrics.glyphs {
++                add(glyph, 1.0);
++            }
++        }
++        Ok([top, top + (bottom - top)])
+     }
+ 
+     /// Retrieves the scaled advance and offset of a standalone ideograph.

@@ -15,6 +15,7 @@ use super::{
     HDR_FORMAT, buffer,
     color_capture::{CaptureViews, FrozenCaptureViews},
     effect_history::Owner,
+    environment::SKYBOX_PROPERTIES,
     item_textures::{FrozenItemTextures, ItemTextureViews},
 };
 
@@ -605,23 +606,26 @@ impl Reflections {
             let index = ((level - 1) * FACES + face) as usize;
             let mip = step.cube.gpu.filtered[index]
                 .get_or_init(|| filter.mip_face(device, &step.cube, level, face));
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("XRack reflection prefilter roughness mip"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &mip.target,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: if full_face {
-                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                        } else {
-                            wgpu::LoadOp::Load
+            let mut pass = crate::viewport_gpu_timing::render_pass(
+                encoder,
+                &wgpu::RenderPassDescriptor {
+                    label: Some("XRack reflection prefilter roughness mip"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &mip.target,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: if full_face {
+                                wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                            } else {
+                                wgpu::LoadOp::Load
+                            },
+                            store: wgpu::StoreOp::Store,
                         },
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
+                    })],
+                    ..Default::default()
+                },
+            );
             pass.set_pipeline(&filter.pipeline);
             pass.set_bind_group(0, &mip.input, &[]);
             if full_face {
@@ -710,10 +714,15 @@ pub(super) fn capture_node(view: &Node, layers: u64) -> Node {
     let mut scene = Node::new("SceneView3D", None);
     for name in [
         "model",
+        "lod-fade-width",
         "lights",
         "imported-lights",
         "environment",
+        "environment-sky",
         "environment-yaw",
+        "environment-pitch",
+        "environment-roll",
+        "environment-horizon",
         "environment-intensity",
         "environment-skybox",
         "ambient-color",
@@ -723,9 +732,13 @@ pub(super) fn capture_node(view: &Node, layers: u64) -> Node {
         "scene-background",
         "shadows",
         "shadow-map-size",
+        "shadow-map-precision",
         "shadow-bias",
         "order-independent-transparency",
-    ] {
+    ]
+    .into_iter()
+    .chain(SKYBOX_PROPERTIES)
+    {
         if let Some(value) = view.properties.get(name) {
             scene.properties.insert(name, value.clone());
         }
@@ -779,7 +792,14 @@ impl Filter {
     fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("XRack cubemap GGX prefilter"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("reflection_filter.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("cube_direction.wgsl"),
+                    "\n",
+                    include_str!("reflection_filter.wgsl")
+                )
+                .into(),
+            ),
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("XRack cubemap GGX prefilter"),

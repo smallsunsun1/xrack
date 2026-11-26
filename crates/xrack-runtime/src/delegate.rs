@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     ops::Range,
     rc::Rc,
 };
@@ -261,6 +261,19 @@ enum SceneRetention {
     None,
     Equal,
     Reactive { reads_index: bool },
+}
+
+fn retain_visible_rows<T>(cache: &mut BTreeMap<RowKey, T>, sorted_visible: &[RowKey]) {
+    let mut visible = sorted_visible.iter().copied();
+    let mut current = visible.next();
+    // BTreeMap::retain visits keys in ascending order. Match the projection
+    // in one pass, including when the model displays rows in a different order.
+    cache.retain(|key, _| {
+        while current.is_some_and(|visible| visible < *key) {
+            current = visible.next();
+        }
+        current == Some(*key)
+    });
 }
 
 #[derive(Default)]
@@ -551,7 +564,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
                 .borrow_mut()
                 .retain(|key, _| rows.contains_key(key));
         }
-        let mut visible = BTreeSet::new();
+        let mut visible = Vec::new();
         let nodes = crate::list::try_render_stable_rows(model, stamp, indices(count), |index| {
             let key = model.row_key(index);
             let row = match self.rows.borrow_mut().entry(key) {
@@ -582,7 +595,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
             };
             match retention {
                 SceneRetention::Reactive { reads_index } => {
-                    visible.insert(key);
+                    visible.push(key);
                     let scene = self.scenes.borrow_mut().entry(key).or_default().clone();
                     scene.render(|| {
                         if reads_index {
@@ -593,7 +606,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
                 }
                 SceneRetention::Equal => {
                     let scene = draw()?;
-                    visible.insert(key);
+                    visible.push(key);
                     let mut previous = self.previous.borrow_mut();
                     if let Some(old) = previous.get(&key)
                         && *old == scene
@@ -607,12 +620,9 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
                 SceneRetention::None => draw(),
             }
         });
-        self.scenes
-            .borrow_mut()
-            .retain(|key, _| visible.contains(key));
-        self.previous
-            .borrow_mut()
-            .retain(|key, _| visible.contains(key));
+        visible.sort_unstable();
+        retain_visible_rows(&mut self.scenes.borrow_mut(), &visible);
+        retain_visible_rows(&mut self.previous.borrow_mut(), &visible);
         nodes
     }
 
