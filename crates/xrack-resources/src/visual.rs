@@ -12,7 +12,7 @@ fn children<'m, 'n>(
 }
 
 /// The declaration file used for media paths in source modules.
-pub fn media_declaration_file<'a>(op: OperationRef<'a>, entry: &'a str) -> &'a str {
+pub fn asset_declaration_file<'a>(op: OperationRef<'a>, entry: &'a str) -> &'a str {
     // MLIR gives an unnamed parser buffer the filename "-".
     op.source_file()
         .filter(|file| !matches!(*file, "" | "-"))
@@ -20,15 +20,15 @@ pub fn media_declaration_file<'a>(op: OperationRef<'a>, entry: &'a str) -> &'a s
 }
 
 /// Resolve the media declaration in a source or file-backed MLIR module.
-pub fn media_source_file<'a>(op: OperationRef<'a>, entry: &'a str) -> Cow<'a, str> {
-    if let Some(file) = op.exported_media_source_file()
+pub fn runtime_asset_source_file<'a>(op: OperationRef<'a>, entry: &'a str) -> Cow<'a, str> {
+    if let Some(file) = op.exported_runtime_asset_source_file()
         && let Some(directory) = Path::new(entry).parent()
     {
         let path = directory.join(file);
         let path = std::path::absolute(&path).unwrap_or(path);
         return Cow::Owned(path.to_string_lossy().into_owned());
     }
-    Cow::Borrowed(media_declaration_file(op, entry))
+    Cow::Borrowed(asset_declaration_file(op, entry))
 }
 
 /// A media effect whose seek position has yet to be evaluated.

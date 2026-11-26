@@ -1,20 +1,28 @@
 //! Prepared glTF node geometry and keyframes shared by both XRack backends.
 use crate::{
+    Point3D, Quaternion3D, RecordValue, Value, VecModel,
+    scene_authored_mesh::SceneMeshInputs,
     scene_camera::{CameraNode, SceneCameraSettings},
     scene_lighting::{MAX_SCENE_LIGHTS, SceneLight, SceneLightSource},
     scene_morph::MorphOverrides,
+    scene_particle_track::{
+        MAX_EMISSION_KEYS, MAX_EMISSION_TIME, ParticleEmissionAnimation, ParticleEmissionTrack,
+    },
     scene3d::{JointPalette, MAX_MORPH_TARGETS, Mesh3D, MeshSkin, MorphWeights},
 };
 use nalgebra::{Matrix3, Matrix4, Quaternion, Rotation3, Translation3, UnitQuaternion, Vector3};
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::BTreeSet,
+    ops::Range,
     sync::{Arc, OnceLock},
 };
 
 pub const MAX_ANIMATION_NODES: usize = 4096;
 pub const MAX_ANIMATION_KEYS: usize = 1_000_000;
 pub const MAX_MESH_INSTANCES: usize = 4096;
+const MAX_ANIMATION_LAYERS: usize = 16;
 
 /// Prepared geometry for a static mesh or an animated glTF scene.
 #[doc(hidden)]
@@ -54,6 +62,55 @@ impl MeshAsset {
             Self::Lods(lods) => lods.primary().has_lights(),
             Self::Variants(variants) => variants.primary.has_lights(),
             Self::Static(_) => false,
+        }
+    }
+
+    pub fn node(&self, selector: &str) -> crate::MeshNode3D {
+        self.node_catalog()
+            .map_or_else(crate::MeshNode3D::default, |catalog| catalog.node(selector))
+    }
+
+    pub fn node_at(&self, source: i64) -> crate::MeshNode3D {
+        self.node_catalog()
+            .map_or_else(crate::MeshNode3D::default, |catalog| {
+                catalog.node_at(source)
+            })
+    }
+
+    pub fn node_indices(&self, kind: &str) -> crate::VecModel<i64> {
+        self.node_catalog()
+            .map_or_else(crate::VecModel::default, |catalog| catalog.indices(kind))
+    }
+
+    pub fn mesh_nodes(&self, kind: &str) -> Vec<crate::MeshNode3D> {
+        self.node_catalog()
+            .map_or_else(Vec::new, |catalog| catalog.nodes(kind).cloned().collect())
+    }
+
+    pub(crate) fn shared_node_catalog(&self) -> Option<Arc<crate::mesh_nodes::MeshNodeCatalog>> {
+        match self {
+            Self::Static(mesh) => mesh.shared_node_catalog(),
+            Self::Animated(rig) => rig.node_catalog.clone(),
+            Self::Lods(lods) => lods.primary().shared_node_catalog(),
+            Self::Variants(variants) => variants.primary().shared_node_catalog(),
+        }
+    }
+
+    fn node_catalog(&self) -> Option<&crate::mesh_nodes::MeshNodeCatalog> {
+        match self {
+            Self::Static(mesh) => mesh.node_catalog(),
+            Self::Animated(rig) => rig.node_catalog(),
+            Self::Lods(lods) => lods.primary().node_catalog(),
+            Self::Variants(variants) => variants.primary().node_catalog(),
+        }
+    }
+
+    pub(crate) fn animated_primary(&self) -> Option<&Arc<AnimatedMesh>> {
+        match self {
+            Self::Static(_) => None,
+            Self::Animated(rig) => Some(rig),
+            Self::Lods(lods) => lods.primary().animated_primary(),
+            Self::Variants(variants) => variants.primary().animated_primary(),
         }
     }
 
@@ -361,7 +418,7 @@ impl MeshNodeTransform {
     }
 }
 
-fn matrix_orientation(matrix: Matrix4<f32>) -> Option<UnitQuaternion<f32>> {
+pub(crate) fn matrix_orientation(matrix: Matrix4<f32>) -> Option<UnitQuaternion<f32>> {
     let basis = matrix.fixed_view::<3, 3>(0, 0);
     // glTF TRS decomposition assigns a reflection to the first scale axis.
     let x = basis.column(0).into_owned().try_normalize(1e-12)?
@@ -790,6 +847,74 @@ pub struct MeshAnimationBlend {
     pub from: MeshPlayback,
     pub to: MeshPlayback,
     pub weight: f64,
+    pub layers: Arc<[MeshAnimationLayer]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AnimationLayerMode {
+    Override,
+    Additive,
+}
+
+/// One weighted glTF clip layered over the base pose.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshAnimationLayer {
+    playback: MeshPlayback,
+    root: String,
+    weight: f32,
+    mode: AnimationLayerMode,
+}
+
+impl MeshAnimationLayer {
+    pub fn new(playback: MeshPlayback, root: String, weight: f64, mode: &str) -> Option<Self> {
+        if !weight.is_finite() || weight <= 0.0 || playback.clip.is_empty() {
+            return None;
+        }
+        let mode = match mode {
+            "override" => AnimationLayerMode::Override,
+            "additive" => AnimationLayerMode::Additive,
+            _ => return None,
+        };
+        Some(Self {
+            playback,
+            root,
+            weight: weight.min(1.0) as f32,
+            mode,
+        })
+    }
+
+    pub(crate) fn from_record(row: &RecordValue) -> Option<Self> {
+        let string = |name| match row.field(name) {
+            Some(Value::String(value)) => Some(value.as_str()),
+            _ => None,
+        };
+        let number = |name| match row.field(name) {
+            Some(Value::Float(value)) => Some(*value),
+            _ => None,
+        };
+        Self::new(
+            MeshPlayback {
+                clip: string("clip")?.to_owned(),
+                time: number("time").unwrap_or(0.0),
+                looping: row.field("looping") == Some(&Value::Bool(true)),
+            },
+            string("root-node").unwrap_or_default().to_owned(),
+            number("weight").unwrap_or(1.0),
+            string("mode").unwrap_or("override"),
+        )
+    }
+}
+
+#[doc(hidden)]
+pub fn prepare_animation_layers<T: 'static>(
+    inputs: &SceneMeshInputs,
+    model: &VecModel<T>,
+    prepare: impl FnMut(&T) -> Option<MeshAnimationLayer>,
+) -> Arc<[MeshAnimationLayer]> {
+    inputs.remember(model);
+    let (_, layers) = model.inspect_rows(0, MAX_ANIMATION_LAYERS, prepare);
+    layers.into_iter().flatten().collect()
 }
 
 #[derive(Clone, Copy, Default)]
@@ -811,6 +936,79 @@ impl<'a> ClipSample<'a> {
     fn morph_tracks(self) -> &'a [MorphAnimationTrack] {
         self.clip.map_or(&[], |clip| &clip.morph_tracks)
     }
+}
+
+struct LayerSample<'a> {
+    clip: ClipSample<'a>,
+    mask: Option<(&'a [Range<u16>], Range<u16>)>,
+    weight: f32,
+    mode: AnimationLayerMode,
+}
+
+impl LayerSample<'_> {
+    fn includes(&self, node: usize) -> bool {
+        self.mask
+            .as_ref()
+            .is_none_or(|(ranges, mask)| mask.contains(&ranges[node].start))
+    }
+
+    fn scalar(&self, current: f32, target: f32, rest: f32) -> f32 {
+        match self.mode {
+            AnimationLayerMode::Override => current * (1.0 - self.weight) + target * self.weight,
+            AnimationLayerMode::Additive => current + (target - rest) * self.weight,
+        }
+    }
+
+    fn transform_channel(
+        &self,
+        property: MeshAnimationProperty,
+        current: [f32; 4],
+        target: [f32; 4],
+        rest: [f32; 4],
+    ) -> Option<[f32; 4]> {
+        let result = if property != MeshAnimationProperty::Rotation {
+            std::array::from_fn(|i| self.scalar(current[i], target[i], rest[i]))
+        } else if self.mode == AnimationLayerMode::Override {
+            interpolate_rotation(current, target, self.weight)?
+        } else {
+            let delta = quaternion(rest)?.inverse() * quaternion(target)?;
+            let delta = interpolate_rotation(
+                [0.0, 0.0, 0.0, 1.0],
+                [delta.i, delta.j, delta.k, delta.w],
+                self.weight,
+            )?;
+            let rotation = quaternion(current)? * quaternion(delta)?;
+            [rotation.i, rotation.j, rotation.k, rotation.w]
+        };
+        result
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(result)
+    }
+}
+
+// The input is parent-first. Reserve a contiguous interval for each subtree
+// even when the source does not store its children consecutively.
+fn animation_subtrees(nodes: &[MeshAnimationNode]) -> Vec<Range<u16>> {
+    let mut sizes = vec![1_u16; nodes.len()];
+    for (index, node) in nodes.iter().enumerate().rev() {
+        if let Some(parent) = node.parent {
+            sizes[parent] += sizes[index];
+        }
+    }
+    let mut offsets = vec![0_u16; nodes.len()];
+    let mut root_offset = 0;
+    let mut ranges = Vec::with_capacity(nodes.len());
+    for (index, node) in nodes.iter().enumerate() {
+        let offset = node
+            .parent
+            .map_or(&mut root_offset, |parent| &mut offsets[parent]);
+        let range = *offset..*offset + sizes[index];
+        *offset = range.end;
+        offsets[index] = range.start + 1;
+        ranges.push(range);
+    }
+    ranges
 }
 
 /// Merge the two sorted sets of channels without allocating a second node pose.
@@ -909,8 +1107,22 @@ pub(crate) struct MeshInstanceSpace {
     pub to_root: Matrix4<f32>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct MeshPose {
+    pub matrices: Vec<Option<Matrix4<f32>>>,
+    orientations: Option<Vec<Option<UnitQuaternion<f32>>>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct SampledMesh {
+    pub placements: Vec<MeshPlacement>,
+    pub pose: Option<Arc<MeshPose>>,
+}
+
 pub(crate) struct MeshSampleOptions<'a> {
     pub renderables: bool,
+    pub retain_pose: bool,
+    pub pose: Option<&'a Arc<MeshPose>>,
     pub overrides: &'a [Option<MorphOverrides>],
     pub lights: Option<&'a mut Vec<SceneLight>>,
     pub cameras: Option<&'a mut Vec<CameraPlacement>>,
@@ -963,18 +1175,20 @@ impl AttachmentFrames {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AnimatedMesh {
     meshes: Vec<Mesh3D>,
     placements: usize,
     nodes: Arc<[MeshAnimationNode]>,
     clips: Arc<[MeshAnimationClip]>,
     clip_durations: Arc<[f32]>,
+    subtrees: Arc<OnceLock<Vec<Range<u16>>>>,
     skins: Arc<[MeshSkin]>,
     lights: Arc<[MeshLight]>,
     cameras: Arc<[MeshCamera]>,
     camera_settings: Arc<[SceneCameraSettings]>,
     attachment_frames: Option<Arc<AttachmentFrames>>,
+    node_catalog: Option<Arc<crate::mesh_nodes::MeshNodeCatalog>>,
 }
 
 #[derive(Debug)]
@@ -1094,11 +1308,13 @@ impl AnimatedMesh {
             nodes: nodes.into(),
             clips: clips.into(),
             clip_durations,
+            subtrees: Arc::new(OnceLock::new()),
             skins: skins.into(),
             lights: lights.into(),
             cameras: cameras.into(),
             camera_settings: camera_settings.into(),
             attachment_frames,
+            node_catalog: None,
         })
     }
 
@@ -1110,12 +1326,25 @@ impl AnimatedMesh {
             nodes: self.nodes.clone(),
             clips: self.clips.clone(),
             clip_durations: self.clip_durations.clone(),
+            subtrees: self.subtrees.clone(),
             skins: self.skins.clone(),
             lights: self.lights.clone(),
             cameras: self.cameras.clone(),
             camera_settings: self.camera_settings.clone(),
             attachment_frames: self.attachment_frames.clone(),
+            node_catalog: self.node_catalog.clone(),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn with_node_catalog(mut self, catalog: Arc<crate::mesh_nodes::MeshNodeCatalog>) -> Self {
+        self.node_catalog = Some(catalog);
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn node_catalog(&self) -> Option<&crate::mesh_nodes::MeshNodeCatalog> {
+        self.node_catalog.as_deref()
     }
 
     pub fn meshes(&self) -> &[Mesh3D] {
@@ -1157,22 +1386,132 @@ impl AnimatedMesh {
         };
         let motion_options = || MeshSampleOptions {
             renderables: true,
+            retain_pose: false,
+            pose: None,
             overrides: &[],
             lights: None,
             cameras: None,
             instance_space: None,
         };
         let mut motion = MeshAnimationBlend::default();
-        record(self.sample(&motion, motion_options()));
+        record(self.sample(&motion, motion_options()).placements);
         for clip in self.clips.iter().take(8) {
             motion.from.clip = format!("#{}", clip.index);
             let duration = f64::from(clip.duration());
             for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
                 motion.from.time = fraction * duration;
-                record(self.sample(&motion, motion_options()));
+                record(self.sample(&motion, motion_options()).placements);
             }
         }
         samples
+    }
+
+    /// Sample the selected ancestor chain without evaluating skinning or unrelated nodes.
+    pub(crate) fn emission_track(
+        &self,
+        settings: &ParticleEmissionAnimation,
+    ) -> Option<ParticleEmissionTrack> {
+        let ordinal = self.node_catalog()?.selector_ordinal(&settings.node)?;
+        let clip_index = self.clip(&settings.clip)?;
+        let clip = self.clips.get(clip_index)?;
+        let duration = self.clip_durations[clip_index];
+        if !(1.0..=240.0).contains(&settings.sample_rate)
+            || !(0.0..=MAX_EMISSION_TIME).contains(&f64::from(duration))
+        {
+            return None;
+        }
+        let scale = [settings.scale.x, settings.scale.y, settings.scale.z];
+        let position = [
+            settings.position.x,
+            settings.position.y,
+            settings.position.z,
+        ];
+        if !scale
+            .into_iter()
+            .chain(position)
+            .all(|value| value.abs() <= 1.0e8)
+        {
+            return None;
+        }
+        let [qx, qy, qz, qw] = settings.orientation.components().map(|value| value as f32);
+        let orientation = quaternion([qx, qy, qz, qw])?;
+        let placement = Translation3::from(Vector3::from(position.map(|value| value as f32)))
+            .to_homogeneous()
+            * orientation.to_homogeneous()
+            * Matrix4::new_nonuniform_scaling(&Vector3::from(scale.map(|value| value as f32)));
+
+        let mut chain = Vec::new();
+        let mut next = Some(ordinal);
+        while let Some(index) = next {
+            let node = self.nodes.get(index)?;
+            let start = clip.tracks.partition_point(|track| track.node < index);
+            let end = clip.tracks.partition_point(|track| track.node <= index);
+            let rest_orientation = match node.transform {
+                MeshNodeTransform::Matrix(_) => Some(matrix_orientation(node.transform.matrix()?)?),
+                MeshNodeTransform::Trs { .. } => None,
+            };
+            chain.push((node.transform, rest_orientation, &clip.tracks[start..end]));
+            next = node.parent;
+        }
+
+        // Nonnegative f32 bit patterns sort in time order. Retain both sides
+        // of each step even when regular samples fall on neither side.
+        let mut times = BTreeSet::from([0]);
+        if chain.iter().any(|(_, _, tracks)| !tracks.is_empty()) {
+            times.insert(duration.to_bits());
+            for (_, _, tracks) in &chain {
+                for track in *tracks {
+                    for (index, &time) in track.times.iter().enumerate() {
+                        times.insert(if time == 0.0 { 0 } else { time.to_bits() });
+                        if index > 0 && time > 0.0 && track.interpolation == MeshInterpolation::Step
+                        {
+                            times.insert(time.next_down().to_bits());
+                        }
+                        if times.len() > MAX_EMISSION_KEYS {
+                            return None;
+                        }
+                    }
+                }
+            }
+            let intervals = ((f64::from(duration) * settings.sample_rate).ceil() as usize)
+                .min(MAX_EMISSION_KEYS - times.len() + 1);
+            for index in 1..intervals {
+                let time = (f64::from(duration) * index as f64 / intervals as f64) as f32;
+                times.insert(time.to_bits());
+            }
+        }
+
+        ParticleEmissionTrack::from_frames(times.into_iter().map(|bits| {
+            let time = f32::from_bits(bits);
+            let mut world = placement;
+            let mut rotation = orientation;
+            for &(mut local, rest_orientation, tracks) in chain.iter().rev() {
+                for track in tracks {
+                    local.set_channel(track.property, track.sample(time)?);
+                }
+                world *= local.matrix()?;
+                let axis = match local {
+                    MeshNodeTransform::Trs { rotation, .. } => quaternion(rotation)?,
+                    MeshNodeTransform::Matrix(_) => rest_orientation?,
+                };
+                rotation *= axis;
+            }
+            let point = Point3D::new(
+                f64::from(world[(0, 3)]),
+                f64::from(world[(1, 3)]),
+                f64::from(world[(2, 3)]),
+            );
+            Some((
+                f64::from(time),
+                point,
+                Quaternion3D::new(
+                    f64::from(rotation.i),
+                    f64::from(rotation.j),
+                    f64::from(rotation.k),
+                    f64::from(rotation.w),
+                ),
+            ))
+        }))
     }
 
     fn clip(&self, name: &str) -> Option<usize> {
@@ -1235,6 +1574,32 @@ impl AnimatedMesh {
         (from, blend)
     }
 
+    fn layer_samples<'a>(&'a self, motion: &MeshAnimationBlend) -> Vec<LayerSample<'a>> {
+        motion
+            .layers
+            .iter()
+            .filter_map(|layer| {
+                let clip = self.clip_sample(&layer.playback);
+                clip.clip?;
+                let mask = if layer.root.is_empty() {
+                    None
+                } else {
+                    let index = self.node_catalog()?.selector_ordinal(&layer.root)?;
+                    let ranges = self
+                        .subtrees
+                        .get_or_init(|| animation_subtrees(&self.nodes));
+                    Some((ranges.as_slice(), ranges.get(index)?.clone()))
+                };
+                Some(LayerSample {
+                    clip,
+                    mask,
+                    weight: layer.weight,
+                    mode: layer.mode,
+                })
+            })
+            .collect()
+    }
+
     pub(crate) fn morph_overrides(&self, fields: &[(&str, f64)]) -> Vec<Option<MorphOverrides>> {
         if fields.is_empty() {
             return Vec::new();
@@ -1248,20 +1613,25 @@ impl AnimatedMesh {
             .collect()
     }
 
-    pub(crate) fn sample(
+    pub(crate) fn sample_pose(
         &self,
         motion: &MeshAnimationBlend,
-        options: MeshSampleOptions<'_>,
-    ) -> Vec<MeshPlacement> {
-        let MeshSampleOptions {
-            renderables,
-            overrides: morph_overrides,
-            lights,
-            cameras,
-            instance_space,
-        } = options;
+        track_orientation: bool,
+    ) -> MeshPose {
+        self.pose_from_samples(
+            self.motion_samples(motion),
+            &self.layer_samples(motion),
+            track_orientation,
+        )
+    }
+
+    fn pose_from_samples(
+        &self,
+        (from, blend): (ClipSample<'_>, Option<(ClipSample<'_>, f32)>),
+        layers: &[LayerSample<'_>],
+        track_orientation: bool,
+    ) -> MeshPose {
         let mut transforms: Vec<_> = self.nodes.iter().map(|node| node.transform).collect();
-        let (from, blend) = self.motion_samples(motion);
         if let Some((to, weight)) = blend {
             for (a, b) in channel_pairs(from.tracks(), to.tracks(), |track| {
                 (track.node, track.property)
@@ -1290,11 +1660,31 @@ impl AnimatedMesh {
                 }
             }
         }
+        for layer in layers {
+            for track in layer
+                .clip
+                .tracks()
+                .iter()
+                .filter(|track| layer.includes(track.node))
+            {
+                let current = &mut transforms[track.node];
+                let rest = self.nodes[track.node].transform;
+                if let Some(((current_value, target), rest)) = current
+                    .channel(track.property)
+                    .zip(track.sample(layer.clip.time))
+                    .zip(rest.channel(track.property))
+                    && let Some(result) =
+                        layer.transform_channel(track.property, current_value, target, rest)
+                {
+                    current.set_channel(track.property, result);
+                }
+            }
+        }
         let mut world: Vec<Option<Matrix4<f32>>> = Vec::with_capacity(self.nodes.len());
         let frames = self
             .attachment_frames
             .as_deref()
-            .filter(|_| lights.is_some() || cameras.is_some());
+            .filter(|_| track_orientation);
         let mut orientations =
             frames.map(|_| Vec::<Option<UnitQuaternion<f32>>>::with_capacity(self.nodes.len()));
         for (index, (node, local)) in self.nodes.iter().zip(transforms).enumerate() {
@@ -1324,7 +1714,51 @@ impl AnimatedMesh {
                 orientations.push(rotation);
             }
         }
-        if let Some((lights, orientations)) = lights.zip(orientations.as_ref()) {
+        MeshPose {
+            matrices: world,
+            orientations,
+        }
+    }
+
+    pub(crate) fn sample(
+        &self,
+        motion: &MeshAnimationBlend,
+        options: MeshSampleOptions<'_>,
+    ) -> SampledMesh {
+        let MeshSampleOptions {
+            renderables,
+            retain_pose,
+            pose,
+            overrides: morph_overrides,
+            lights,
+            cameras,
+            instance_space,
+        } = options;
+        let samples = self.motion_samples(motion);
+        let layers = if renderables || pose.is_none() {
+            self.layer_samples(motion)
+        } else {
+            Vec::new()
+        };
+        let evaluated = pose.map_or_else(
+            || {
+                Cow::Owned(self.pose_from_samples(
+                    samples,
+                    &layers,
+                    lights.is_some() || cameras.is_some(),
+                ))
+            },
+            |pose| Cow::Borrowed(pose.as_ref()),
+        );
+        let world = &evaluated.matrices;
+        let orientations = evaluated.orientations.as_ref();
+        let retain = |evaluated: Cow<'_, MeshPose>| {
+            retain_pose.then(|| {
+                pose.cloned()
+                    .unwrap_or_else(|| Arc::new(evaluated.into_owned()))
+            })
+        };
+        if let Some((lights, orientations)) = lights.zip(orientations) {
             for mount in self.lights.iter() {
                 if lights.len() >= MAX_SCENE_LIGHTS {
                     break;
@@ -1350,7 +1784,7 @@ impl AnimatedMesh {
                 }
             }
         }
-        if let Some((cameras, orientations)) = cameras.zip(orientations.as_ref()) {
+        if let Some((cameras, orientations)) = cameras.zip(orientations) {
             for (camera, &settings) in self.cameras.iter().zip(self.camera_settings.iter()) {
                 let Some((matrix, rotation)) = world[camera.node].zip(orientations[camera.node])
                 else {
@@ -1370,14 +1804,18 @@ impl AnimatedMesh {
             }
         }
         if !renderables {
-            return Vec::new();
+            return SampledMesh {
+                placements: Vec::new(),
+                pose: retain(evaluated),
+            };
         }
+        let (from, blend) = samples;
         let (to, weight) = blend.unwrap_or_default();
         let mut morph_channels =
             channel_pairs(from.morph_tracks(), to.morph_tracks(), |track| track.node).peekable();
-        let palettes: Vec<_> = self.skins.iter().map(|skin| skin.palette(&world)).collect();
+        let palettes: Vec<_> = self.skins.iter().map(|skin| skin.palette(world)).collect();
         let mut placements = Vec::with_capacity(self.placements);
-        for (index, (node, matrix)) in self.nodes.iter().zip(world).enumerate() {
+        for (index, (node, matrix)) in self.nodes.iter().zip(world.iter().copied()).enumerate() {
             let Some(mesh) = node.mesh else {
                 continue;
             };
@@ -1409,6 +1847,32 @@ impl AnimatedMesh {
                         .or_else(|| {
                             (!node.morph_weights.is_empty()).then(|| node.morph_weights.clone())
                         });
+                    if let Some(weights) = weights.as_mut() {
+                        for layer in layers.iter().filter(|layer| layer.includes(index)) {
+                            let tracks = layer.clip.morph_tracks();
+                            let Ok(track) = tracks.binary_search_by_key(&index, |track| track.node)
+                            else {
+                                continue;
+                            };
+                            let mut sample = [0.0; MAX_MORPH_TARGETS];
+                            let target = tracks[track].sample(layer.clip.time, &mut sample);
+                            let rest = &node.morph_weights;
+                            let mut blended = [0.0; MAX_MORPH_TARGETS];
+                            let blended = &mut blended[..weights.len()];
+                            for (((value, &current), &target), &rest) in blended
+                                .iter_mut()
+                                .zip(weights.iter())
+                                .zip(target)
+                                .zip(rest.iter())
+                            {
+                                let next = layer.scalar(current, target, rest);
+                                *value = if next.is_finite() { next } else { current };
+                            }
+                            if *weights.as_ref() != *blended {
+                                Arc::make_mut(weights).copy_from_slice(blended);
+                            }
+                        }
+                    }
                     if let Some((weights, MorphOverrides::Partial(overrides))) =
                         weights.as_mut().zip(overrides)
                         && overrides
@@ -1497,6 +1961,9 @@ impl AnimatedMesh {
                 push(&mut placements, None, matrix, None);
             }
         }
-        placements
+        SampledMesh {
+            placements,
+            pose: retain(evaluated),
+        }
     }
 }

@@ -1,6 +1,8 @@
+struct ParticleBurst { time: float, count: int }
+
 struct ModelEmitter {
     position: point3d, color: color, size: float, end-size: float, lifetime: float,
-    burst-count: int, fade-in: float, fade-out: float, seed: int,
+    bursts: [ParticleBurst], fade-in: float, fade-out: float, seed: int,
     particle-model: string, particle-rotation: vector3d, particle-angular-velocity: vector3d,
     particle-rotation-variation: vector3d,
     emitter-shape: string, emitter-extents: vector3d, velocity: vector3d,
@@ -31,7 +33,7 @@ export component ParticleModelsDemo inherits Window {
     property <ModelEmitter> first: ModelEmitter {
         position: Point3D.new(-1.65, 0.35, 0.5), color: root.translucent ? #5cd9ff70 : #5cd9ffff,
         size: 1.15, end-size: 1.02, lifetime: 4,
-        burst-count: root.population, fade-in: 0, fade-out: 0, seed: 23,
+        bursts: [ParticleBurst { time: 0, count: root.population }], fade-in: 0, fade-out: 0, seed: 23,
         particle-model: root.prototype, particle-rotation: Vector3D.new(20, 35, 15),
         particle-rotation-variation: Vector3D.new(0, 0, 0),
         particle-angular-velocity: root.spin ? Vector3D.new(40, 110, 35) : Vector3D.new(0, 0, 0),

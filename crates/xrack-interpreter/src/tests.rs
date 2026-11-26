@@ -100,6 +100,59 @@ fn reload_keeps_in_flight_host_state_and_does_not_restart_named_one_shot() {
 }
 
 #[test]
+fn reload_preserves_edited_list_literals_and_their_row_identities() {
+    let source = r#"
+        export struct Entry { count: int }
+        export component App inherits Window {
+            in-out property <[Entry]> events: [];
+            in-out property <[Entry]> untouched: [Entry { count: 1 }];
+            property <[Entry]> internal: [Entry { count: 2 }];
+            in-out property <[Entry]> derived: root.internal;
+            callback append();
+            append => {
+                Model.append(root.events, Entry { count: 3 });
+                Model.append(root.derived, Entry { count: 4 });
+            }
+        }
+    "#;
+    let program = |source: &str| load_mlir(&compile(source).to_mlir()).unwrap();
+    let old = program(source).create("App").unwrap();
+    old.invoke("append", &[]).unwrap();
+    let list = |instance: &Instance, name| match instance.get(name).unwrap() {
+        Value::RecordList(rows) => rows,
+        other => panic!("expected record list, got {other:?}"),
+    };
+    let original = list(&old, "events");
+    assert!(original.model().row_key(0).is_some());
+    assert_eq!(list(&old, "untouched").model().len(), 1);
+    assert_eq!(list(&old, "derived").model().len(), 2);
+    let revised = program(
+        &source
+            .replace("count: 1", "count: 12")
+            .replace("count: 2", "count: 21"),
+    );
+    let preview = revised.create("App").unwrap();
+    preview.restore_preview_state(&old).unwrap();
+    let live = ReloadableInstance::new(old);
+    live.reload(&revised).unwrap();
+
+    for updated in [preview, live.current()] {
+        assert_eq!(list(&updated, "events"), original);
+        let untouched = list(&updated, "untouched");
+        assert_eq!(
+            untouched.model().row(0).unwrap().field("count"),
+            Some(&Value::Int(12))
+        );
+        let derived = list(&updated, "derived");
+        assert_eq!(derived.model().len(), 1);
+        assert_eq!(
+            derived.model().row(0).unwrap().field("count"),
+            Some(&Value::Int(21))
+        );
+    }
+}
+
+#[test]
 fn execute_mlir_bindings_and_callbacks_after_releasing_module() {
     let source = r#"
         export component Counter inherits Window {

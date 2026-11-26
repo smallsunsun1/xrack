@@ -1,5 +1,7 @@
+struct ParticleBurst { time: float, count: int }
+
 struct ParticleLightEmitter {
-    position: point3d, size: float, color: color, lifetime: float, burst-count: int,
+    position: point3d, size: float, color: color, lifetime: float, bursts: [ParticleBurst],
     velocity: vector3d, fade-out: float, particle-model: string,
     particle-angular-velocity: vector3d,
     particle-casts-shadow: bool, particle-receives-shadow: bool, particle-casts-reflections: bool,
@@ -51,7 +53,7 @@ export component ParticleLightingDemo inherits Window {
     ];
     property <ParticleLightEmitter> sparks: ParticleLightEmitter {
         position: Point3D.new(-1.9, 1, 1.15), size: 1.35, color: #ff8848,
-        lifetime: 3.0, burst-count: root.population, fade-out: 0.2,
+        lifetime: 3.0, bursts: [ParticleBurst { time: 0, count: root.population }], fade-out: 0.2,
         velocity: Vector3D.new(0, -0.62, 0.1), particle-model: "primitive:box",
         particle-angular-velocity: Vector3D.new(45, 64, 18),
         particle-casts-shadow: root.cast-shadow,

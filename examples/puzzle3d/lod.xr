@@ -5,8 +5,9 @@ struct LodActor {
     yaw: float, pitch: float, roll: float, color: color,
     visible: bool, pickable: bool,
     casts-shadow: bool, receives-shadow: bool,
-    camera-kind: string, camera-height: float, camera-lod-bias: float,
+    camera-kind: string, camera-height: float, camera-lod-bias: float, camera-far: float,
     lod-of: string, lod-max-size: length, lod-bias: float,
+    instancing-lod-max: float,
     animation: string, animation-time: float,
     instance-of: string, instance-template: bool, instancing-lod-factor: float,
 }
@@ -30,6 +31,11 @@ export component LodDemo inherits Window {
     in-out property <bool> morph-only: false;
     in-out property <float> time: 0;
     in-out property <bool> shadows: false;
+    in-out property <int> probe-layers: 1;
+    in-out property <float> probe-max: 20;
+    in-out property <float> clip-far: 100;
+    in-out property <float> visible-distance: -1;
+    in-out property <[int]> probe-rows: [1];
     property <point2d> viewport: Point2D.new(280px, 252px);
     property <point2d> center: Point2D.new(140px, 126px);
 
@@ -38,8 +44,8 @@ export component LodDemo inherits Window {
         scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
         visible: true, pickable: true, casts-shadow: true, receives-shadow: true,
-        camera-kind: "", camera-height: 8, camera-lod-bias: 1,
-        lod-of: "", lod-max-size: 0px, lod-bias: 1,
+        camera-kind: "", camera-height: 8, camera-lod-bias: 1, camera-far: 100,
+        lod-of: "", lod-max-size: 0px, lod-bias: 1, instancing-lod-max: -1,
         animation: "", animation-time: 0,
         instance-of: "", instance-template: false, instancing-lod-factor: -1,
     };
@@ -59,7 +65,7 @@ export component LodDemo inherits Window {
             mesh: root.instanced ? "" : root.target-mesh,
             instance-of: root.instanced ? "template" : "",
             instancing-lod-factor: root.lod-factor,
-            lod-bias: root.object-bias,
+            lod-bias: root.object-bias, instancing-lod-max: root.visible-distance,
             animation: root.deformation ? "Deform" : "Slide", animation-time: root.time,
             ..root.defaults
         },
@@ -72,7 +78,7 @@ export component LodDemo inherits Window {
         LodActor {
             id: "view", z: root.distance,
             camera-kind: root.orthographic ? "orthographic" : "perspective",
-            camera-lod-bias: root.full-detail ? 0 : 1,
+            camera-lod-bias: root.full-detail ? 0 : 1, camera-far: root.clip-far,
             ..root.defaults
         },
         LodActor {
@@ -95,14 +101,27 @@ export component LodDemo inherits Window {
     out property <hit3d> world-hit: Scene3D.ray-hit(
         root.scene, Point3D.new(0, 0, 10), Vector3D.new(0, 0, -1), 20);
 
+    property <point3d> probe-origin: Point3D.new(0, 0, 10);
+    property <vector3d> probe-direction: Vector3D.new(0, 0, -2);
+    property <string> probe-result: "检测射线";
+    out property <hit3d> view-ray: viewport-view.ray-hit(root.probe-origin, root.probe-direction, root.probe-max);
+    out property <[hit3d]> view-rays: viewport-view.ray-hit-all(root.probe-origin, root.probe-direction, root.probe-max);
+    out property <hit3d> view-ray-row: viewport-view.ray-hit-row(root.probe-origin, root.probe-direction, root.probe-max, 1);
+    out property <[hit3d]> view-ray-subset: viewport-view.ray-hit-subset(root.probe-origin, root.probe-direction, root.probe-max, root.probe-rows);
+    out property <hit3d> view-ray-instance: viewport-view.ray-hit-instance(
+        root.probe-origin, root.probe-direction, root.probe-max,
+        root.view-ray.row-index, root.view-ray.mesh-node-index, root.view-ray.instance-index);
+    out property <hit3d> nearest: viewport-view.closest-point(root.probe-origin, root.probe-max);
+    out property <hit3d> nearest-row: viewport-view.closest-point-row(root.probe-origin, root.probe-max, 1);
+
     HorizontalLayout {
         padding: 14px;
         spacing: 14px;
-        SceneView3D {
+        viewport-view := SceneView3D {
             width: root.viewport.x;
             height: root.viewport.y;
             model: root.scene;
-            camera: "view";
+            camera: "view"; layer-mask: root.probe-layers;
             shadows: root.shadows;
             shadow-map-size: 256;
             light-yaw: 26;
@@ -129,6 +148,14 @@ export component LodDemo inherits Window {
             factor-slider := Slider {
                 width: 142px; height: 28px; minimum: -1; maximum: 1; step: 0.1;
                 value <=> root.lod-factor;
+            }
+            probe-button := Button {
+                width: 142px; height: 30px;
+                text: root.probe-result;
+                clicked => {
+                    let hit = viewport-view.ray-hit(root.probe-origin, root.probe-direction, root.probe-max);
+                    root.probe-result = hit.valid ? "射线 Z = " + Math.round(hit.position.z * 1000) / 1000.0 : "射线未命中";
+                }
             }
             if root.automatic: deform-toggle := CheckBox {
                 text: "蒙皮与形变";

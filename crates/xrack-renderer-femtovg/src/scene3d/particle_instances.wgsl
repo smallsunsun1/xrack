@@ -3,6 +3,7 @@ struct ModelSettings {
     rotation: vec4<f32>,
     variation: vec4<f32>,
     spin: vec4<f32>,
+    spin_variation: vec4<f32>,
 }
 
 struct ParticleModels {
@@ -33,10 +34,14 @@ fn write_model(index: u32, source: ParticleCenter, visible: bool, tint: vec4<f32
     let settings = models.settings[particle.slot];
     let age = particle.seconds;
     let fraction = clamp(age / emitter.spread_lifetime.w, 0.0, 1.0);
-    let alpha = select(0.0, base_alpha(emitter, age) * tint.a, visible);
+    let alpha = select(0.0, base_alpha(emitter, age) * tint.a, visible && age < emitter.spread_lifetime.w);
     let scale = select(0.0, 2.0 * mix(emitter.position_radius.w, emitter.velocity_end_radius.w, fraction), alpha > 0.0);
     let variation = (2.0 * random3(particle.seed ^ 0x3141592du) - 1.0) * settings.variation.xyz;
-    let angles = fract((settings.rotation.xyz + variation + age * settings.spin.xyz) / vec3<f32>(360.0)) * 6.28318530718;
+    var spin = settings.spin.xyz;
+    if any(settings.spin_variation.xyz != vec3<f32>(0.0)) {
+        spin += (2.0 * random3(particle.seed ^ 0x75d77a21u) - 1.0) * settings.spin_variation.xyz;
+    }
+    let angles = fract((settings.rotation.xyz + variation + age * spin) / vec3<f32>(360.0)) * 6.28318530718;
     let c = cos(angles);
     let s = sin(angles);
     // X, then Y, then Z rotation, in the same order as authored model poses.

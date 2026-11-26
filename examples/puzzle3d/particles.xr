@@ -1,6 +1,8 @@
+struct ParticleBurst { time: float, count: int }
+
 struct Emitter {
     position: point3d, color: color, lifetime: float, size: float, end-size: float,
-    rate: float, burst-count: int, start-time: float, seed: int,
+    rate: float, bursts: [ParticleBurst], start-time: float, seed: int,
     velocity: vector3d, velocity-spread: vector3d, gravity: vector3d,
     intensity: float, layers: int, enabled: bool,
 }
@@ -39,7 +41,7 @@ export component ParticleDemo inherits Window {
         Emitter {
             position: Point3D.new(-1.25, -1.2, -0.2), color: #ff952dc0,
             lifetime: 1.6, size: 0.25, end-size: 0.04,
-            rate: root.emission, burst-count: 0, start-time: 0, seed: 47,
+            rate: root.emission, bursts: [], start-time: 0, seed: 47,
             velocity: Vector3D.new(0.5, 4.8, 0), velocity-spread: Vector3D.new(1.3, 1.6, 0.8),
             gravity: Vector3D.new(0, -6.5, 0),
             intensity: 1.8, layers: 1, enabled: root.emitting,
@@ -47,7 +49,7 @@ export component ParticleDemo inherits Window {
         Emitter {
             position: Point3D.new(1.15, -0.03, 0.4), color: #31dfffc0,
             lifetime: 1.4, size: 0.32, end-size: 0.08,
-            rate: 0, burst-count: root.burst-size, start-time: root.burst-start, seed: 99,
+            rate: 0, bursts: [ParticleBurst { time: 0, count: root.burst-size }], start-time: root.burst-start, seed: 99,
             velocity: Vector3D.new(0, 0.9, 0), velocity-spread: Vector3D.new(3, 2.4, 1),
             gravity: Vector3D.new(0, -2.1, 0),
             intensity: 1.25, layers: 2, enabled: root.emitting,

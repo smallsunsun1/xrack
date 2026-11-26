@@ -615,6 +615,21 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
             "InstanceTable3D",
             json!({"loaded": value.is_loaded(), "count": value.len()}),
         ),
+        Value::Bounds3D(bounds) => {
+            let point = |point: xrack_runtime::Point3D| [point.x, point.y, point.z];
+            (
+                "Bounds3D",
+                json!({"valid": bounds.valid(), "min": point(bounds.min()), "max": point(bounds.max())}),
+            )
+        }
+        Value::MeshNode3D(node) => (
+            "MeshNode3D",
+            json!({
+                "valid": node.valid(), "name": node.name, "path": node.path, "source-index": node.source_index,
+                "parent-index": node.parent_index, "origin": [node.origin.x, node.origin.y, node.origin.z],
+                "has-mesh": node.has_mesh, "has-camera": node.has_camera, "has-light": node.has_light,
+            }),
+        ),
         Value::MeshAsset3D(value) => ("MeshAsset3D", json!({"loaded": value.is_loaded()})),
         Value::Instance3D(value) => (
             "Instance3D",

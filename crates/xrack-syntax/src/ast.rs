@@ -264,6 +264,8 @@ pub enum Type {
     Instance3D,
     InstanceTable3D,
     MeshAsset3D,
+    MeshNode3D,
+    Bounds3D,
     WalkResult3D,
     PhysicsWorld3D,
     SceneModel3D,
@@ -356,6 +358,9 @@ impl Type {
             | Self::ProjectedPoint3D
             | Self::Instance3D
             | Self::InstanceTable3D
+            | Self::MeshAsset3D
+            | Self::MeshNode3D
+            | Self::Bounds3D
             | Self::WalkResult3D
             | Self::Vector2D
             | Self::TouchPoint => self.builtin_field(field).map(|(_, ty)| ty),
@@ -401,6 +406,8 @@ impl Type {
             Self::Instance3D => "instance3d",
             Self::InstanceTable3D => "instancetable3d",
             Self::MeshAsset3D => "meshasset3d",
+            Self::MeshNode3D => "meshnode3d",
+            Self::Bounds3D => "bounds3d",
             Self::WalkResult3D => "walkresult3d",
             Self::PhysicsWorld3D => "physicsworld3d",
             Self::SceneModel3D => "scenemodel3d",
@@ -501,6 +508,8 @@ impl Type {
             "instance3d" | "Instance3D" => Self::Instance3D,
             "instancetable3d" | "InstanceTable3D" => Self::InstanceTable3D,
             "meshasset3d" | "MeshAsset3D" => Self::MeshAsset3D,
+            "meshnode3d" | "MeshNode3D" => Self::MeshNode3D,
+            "bounds3d" | "Bounds3D" => Self::Bounds3D,
             "walkresult3d" | "WalkResult3D" => Self::WalkResult3D,
             "physicsworld3d" | "PhysicsWorld3D" => Self::PhysicsWorld3D,
             "scenemodel3d" | "SceneModel3D" => Self::SceneModel3D,

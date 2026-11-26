@@ -290,14 +290,17 @@ impl Module {
         Ok(self)
     }
 
-    /// Record each media declaration's path relative to the exported MLIR file.
-    pub fn map_media_source_files(
+    /// Record the paths of file-backed runtime declarations relative to exported MLIR.
+    pub fn map_runtime_asset_source_files(
         self,
         mut map: impl FnMut(OperationRef<'_>) -> Result<String, String>,
     ) -> Result<Self, String> {
         self.visit_operations(|op| {
             if op.name() == "xr.element"
-                && matches!(op.attribute("kind"), Some("MediaPlayer" | "SoundEffect"))
+                && matches!(
+                    op.attribute("kind"),
+                    Some("MediaPlayer" | "SoundEffect" | "MeshLoader3D")
+                )
             {
                 let path = map(op)?;
                 // The module owns the operation and string attribute.
@@ -593,7 +596,7 @@ impl<'m> OperationRef<'m> {
     }
 
     /// The declaration path recorded relative to an exported MLIR file.
-    pub fn exported_media_source_file(self) -> Option<&'m str> {
+    pub fn exported_runtime_asset_source_file(self) -> Option<&'m str> {
         self.attribute(MEDIA_SOURCE_FILE)
     }
 

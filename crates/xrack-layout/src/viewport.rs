@@ -315,6 +315,7 @@ impl LayoutObservers {
                     .iter()
                     .chain(node.instance_geometry_handle.iter())
                 {
+                    handle.publish_scene_view(node, [rect.width.into(), rect.height.into()]);
                     handle.publish_with_content(
                         [
                             rect.x - parent.x,

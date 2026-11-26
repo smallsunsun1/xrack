@@ -20,8 +20,7 @@ pub struct TableGeometry {
     direction: LayoutDirection,
     order: TableColumnOrder,
     viewport_columns: Vec<usize>,
-    hidden_positions: Vec<usize>,
-    frozen: Vec<bool>,
+    hidden_positions: Rc<[usize]>,
     frozen_count: usize,
     frozen_end: usize,
     frozen_width: f32,
@@ -39,9 +38,12 @@ pub(crate) struct PaneClip {
 #[derive(Default)]
 pub(super) struct ColumnSizing {
     input: Option<(usize, f32)>,
-    tracks: Vec<ColumnTrack>,
+    tracks: Vec<AxisInfo>,
+    definitions: Vec<Option<SharedNodeIdentity>>,
     fitted_viewport: Option<f32>,
     fitted: Vec<f32>,
+    fitted_hidden: Rc<[usize]>,
+    hidden: Rc<[usize]>,
     exact_fitted_total: Option<i32>,
     widths: Vec<f32>,
     overridden: Vec<usize>,
@@ -110,11 +112,6 @@ impl PreparedTableRows {
             node: node.clone(),
         }));
     }
-}
-
-struct ColumnTrack {
-    identity: Option<SharedNodeIdentity>,
-    sizing: AxisInfo,
 }
 
 impl ColumnSizing {
@@ -226,7 +223,9 @@ impl ColumnSizing {
                 }
             }
             let mut total = self.exact_fitted_total;
+            let mut hidden_changed = false;
             for (index, width) in width_overrides(header, width) {
+                hidden_changed |= (self.fitted[index] == 0.0) != (width == 0.0);
                 self.widths[index] = width;
                 self.overridden.push(index);
                 total = total.and_then(|total| {
@@ -238,6 +237,11 @@ impl ColumnSizing {
             self.total = total
                 .filter(|&total| total > 0)
                 .map_or_else(|| self.widths.iter().sum(), |total| total as f32);
+            self.hidden = if hidden_changed {
+                hidden_columns(&self.widths)
+            } else {
+                self.fitted_hidden.clone()
+            };
             self.input = Some(input);
             self.geometry = ColumnGeometryCache::default();
         }
@@ -245,33 +249,54 @@ impl ColumnSizing {
 
     fn fit(&mut self, columns: &[Node], viewport: f32) -> bool {
         let same_viewport = self.fitted_viewport == Some(viewport);
-        let mut refit = !same_viewport || self.tracks.len() != columns.len();
-        self.tracks.truncate(columns.len());
-        for (track, column) in self.tracks.iter_mut().zip(columns) {
-            let shared = track
-                .identity
+        let same_count = self.tracks.len() == columns.len();
+        let same_column = |identity: &Option<SharedNodeIdentity>, column: &Node| {
+            identity
                 .as_ref()
-                .is_some_and(|identity| identity.matches(column));
-            if shared && same_viewport {
-                continue;
-            }
-            let sizing = column_track(column, viewport);
-            refit |= track.sizing != sizing;
-            track.sizing = sizing;
-            if !shared {
-                track.identity = column.shared_identity();
+                .is_some_and(|identity| identity.matches(column))
+        };
+        // A resize usually changes only the overrides. Check the packed
+        // identities without loading the cached sizing records.
+        if same_viewport
+            && same_count
+            && self
+                .definitions
+                .iter()
+                .zip(columns)
+                .all(|(identity, column)| same_column(identity, column))
+        {
+            return false;
+        }
+        let mut refit = !same_viewport || !same_count;
+        self.tracks.truncate(columns.len());
+        self.definitions.truncate(columns.len());
+        let existing = self.tracks.len();
+        for ((sizing, identity), column) in self
+            .tracks
+            .iter_mut()
+            .zip(&mut self.definitions)
+            .zip(columns)
+        {
+            let shared = same_column(identity, column);
+            if !shared || !same_viewport {
+                let next = column_track(column, viewport);
+                refit |= *sizing != next;
+                *sizing = next;
+                if !shared {
+                    *identity = column.shared_identity();
+                }
             }
         }
         self.tracks.extend(
-            columns[self.tracks.len()..]
+            columns[existing..]
                 .iter()
-                .map(|column| ColumnTrack {
-                    identity: column.shared_identity(),
-                    sizing: column_track(column, viewport),
-                }),
+                .map(|column| column_track(column, viewport)),
         );
+        self.definitions
+            .extend(columns[existing..].iter().map(Node::shared_identity));
         if refit {
-            self.fitted = fit_axis(self.tracks.iter().map(|track| track.sizing), viewport);
+            self.fitted = fit_axis(self.tracks.iter().copied(), viewport);
+            self.fitted_hidden = hidden_columns(&self.fitted);
             self.exact_fitted_total = self.fitted.iter().try_fold(0, |total, &width| {
                 let next = total + exact_column_width(width)?;
                 (next <= MAX_EXACT_COLUMN_TOTAL).then_some(next)
@@ -332,6 +357,14 @@ fn column_track(column: &Node, viewport: f32) -> AxisInfo {
         max: if stretch == 0.0 { preferred } else { max },
         stretch,
     }
+}
+
+fn hidden_columns(widths: &[f32]) -> Rc<[usize]> {
+    widths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &width)| (width == 0.0).then_some(index))
+        .collect()
 }
 
 fn apply_width_overrides(widths: &mut [f32], header: &TableHeader, viewport: f32) {
@@ -443,11 +476,12 @@ impl TableGeometry {
         );
         let header_bounds = Rect::new(body.x, bounds.y, body.width, body.y - bounds.y);
         let mut widths;
-        let (widths, total_width, cache) = if let Some(sizing) = sizing {
+        let (widths, total_width, cached_hidden, cache) = if let Some(sizing) = sizing {
             sizing.resolve(header, body.width);
             (
                 sizing.widths.as_slice(),
                 sizing.total,
+                Some(sizing.hidden.clone()),
                 Some(&mut sizing.geometry),
             )
         } else {
@@ -457,7 +491,7 @@ impl TableGeometry {
                 .map(|column| column_track(column, body.width));
             widths = fit_axis(tracks, body.width);
             apply_width_overrides(&mut widths, header, body.width);
-            (widths.as_slice(), widths.iter().sum(), None)
+            (widths.as_slice(), widths.iter().sum(), None, None)
         };
         let horizontal = ScrollLayout::new(requested, total_width - body.width);
         let order = node.table_column_order.clone();
@@ -502,7 +536,6 @@ impl TableGeometry {
         let mut frozen_width = 0.0;
         let mut frozen_count = 0;
         let mut frozen_end = 0;
-        let mut frozen = Vec::new();
         for (visual, column) in order
             .iter(widths.len())
             .enumerate()
@@ -513,10 +546,6 @@ impl TableGeometry {
             if end > limit {
                 break;
             }
-            if frozen.is_empty() {
-                frozen.resize(widths.len(), false);
-            }
-            frozen[column] = true;
             frozen_width = end;
             frozen_count += 1;
             frozen_end = visual + 1;
@@ -547,12 +576,6 @@ impl TableGeometry {
                 x += width;
                 column
             }));
-            hidden_positions.extend(
-                widths
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, &width)| (width == 0.0).then_some(index)),
-            );
             // The panes are ordered individually even where scrolling puts
             // the leading edge of the second pane behind the frozen columns.
             let (frozen_columns, scrolling_columns) = columns.split_at(frozen_end);
@@ -572,7 +595,7 @@ impl TableGeometry {
                     x -= horizontal.offset;
                 }
                 let width = widths[index];
-                if width == 0.0 {
+                if width == 0.0 && permutation.is_some() {
                     hidden_positions.push(visual);
                 }
                 let column = place_in_direction(
@@ -599,6 +622,11 @@ impl TableGeometry {
                     .collect()
             }
         };
+        let hidden_positions = if permutation.is_none() {
+            cached_hidden.unwrap_or_else(|| hidden_columns(widths))
+        } else {
+            hidden_positions.into()
+        };
         let layout = Self {
             header: header_bounds,
             body,
@@ -609,7 +637,6 @@ impl TableGeometry {
             order,
             viewport_columns,
             hidden_positions,
-            frozen,
             frozen_count,
             frozen_end,
             frozen_width,
@@ -706,7 +733,10 @@ impl TableGeometry {
     }
 
     pub fn is_frozen(&self, column: usize) -> bool {
-        self.frozen.get(column).copied().unwrap_or(false)
+        self.is_column_visible(column)
+            && self
+                .visual_index(column)
+                .is_some_and(|position| position < self.frozen_end)
     }
 
     pub fn mirrored(&self) -> bool {
@@ -1022,6 +1052,62 @@ mod tests {
                             .then_some(index)
                     });
                 assert!(cached.columns_in_viewport().eq(expected));
+            }
+        }
+    }
+
+    #[test]
+    fn cached_visibility_follows_zero_width_overrides_in_both_panes() {
+        for direction in [LayoutDirection::LeftToRight, LayoutDirection::RightToLeft] {
+            for reordered in [false, true] {
+                let mut table = Node::new("TableView", None);
+                table.properties.insert("frozen-columns", 2_i64.into());
+                table.table_header = Some(Box::new(TableHeader {
+                    columns: [80.0, 0.0, 48.0, 60.0]
+                        .into_iter()
+                        .map(|width| {
+                            let mut column = Node::new("TableColumn", None);
+                            column.properties.insert("width", Length(width).into());
+                            column.properties.insert("min-width", Length(0.0).into());
+                            column.into_shared()
+                        })
+                        .collect(),
+                    sort: None,
+                    column_widths: Vec::new(),
+                }));
+                if reordered {
+                    table.table_column_order = table.table_column_order.moved(4, 3, 0).unwrap().1;
+                }
+                let mut sizing = ColumnSizing::default();
+                let bounds = Rect::new(0.0, 0.0, 512.0, 400.0);
+                for widths in [vec![], vec![Some(0), Some(32)], vec![]] {
+                    let restored = widths.is_empty();
+                    table.table_header.as_mut().unwrap().column_widths = widths;
+                    sizing.invalidate_scene();
+                    let layout = TableGeometry::with_offset(
+                        &table,
+                        bounds,
+                        bounds,
+                        0.0,
+                        direction,
+                        34.0,
+                        Some(&mut sizing),
+                    )
+                    .unwrap();
+                    let first = usize::from(!restored);
+                    let visible = if reordered {
+                        [3, first, 2]
+                    } else {
+                        [first, 2, 3]
+                    };
+                    assert!(layout.visible_columns().eq(visible));
+                    assert_eq!(layout.visible_column_count(), visible.len());
+                    for (position, column) in visible.into_iter().enumerate() {
+                        assert_eq!(layout.visible_column_index(column), Some(position));
+                        assert_eq!(layout.is_frozen(column), position < 2);
+                    }
+                    assert!(!layout.is_frozen(1 - first));
+                }
             }
         }
     }

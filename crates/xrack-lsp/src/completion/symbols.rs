@@ -258,8 +258,10 @@ pub(crate) fn query(
         return Value::Null;
     };
     if method == "textDocument/definition"
-        && let Some(target) =
-            super::imports::scene_light_scope_definition(&source, &tokens, cursor, uri)
+        && let Some(target) = super::imports::scene_light_scope_definition(
+            &source, &tokens, cursor, uri,
+        )
+        .or_else(|| super::imports::scene_particle_parent_definition(&source, &tokens, cursor, uri))
     {
         return target;
     }
@@ -918,6 +920,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
                 .chain(catalog::viewport_move_methods(kind))
                 .chain(catalog::child_position_methods(kind))
                 .chain(catalog::scroll_bar_methods(kind))
+                .chain(catalog::scene_view_methods(kind))
                 .chain(catalog::row_key_methods(kind))
                 .chain(catalog::batch_selection_methods(kind))
                 .chain(catalog::row_selection_methods(kind))
@@ -1071,6 +1074,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
                     .chain(catalog::viewport_move_methods(kind))
                     .chain(catalog::child_position_methods(kind))
                     .chain(catalog::scroll_bar_methods(kind))
+                    .chain(catalog::scene_view_methods(kind))
                     .chain(catalog::row_key_methods(kind))
                     .chain(catalog::batch_selection_methods(kind))
                     .chain(catalog::row_selection_methods(kind))

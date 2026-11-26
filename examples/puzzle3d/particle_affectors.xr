@@ -1,3 +1,5 @@
+struct ParticleBurst { time: float, count: int }
+
 struct Field3D {
     affector-kind: string, position: point3d, direction: vector3d,
     position-variation: vector3d, duration: float, duration-variation: float,
@@ -7,7 +9,7 @@ struct Field3D {
 
 struct FieldEmitter {
     position: point3d, color: color, size: float, lifetime: float,
-    burst-count: int, fade-out: float, seed: int, layers: int,
+    bursts: [ParticleBurst], fade-out: float, seed: int, layers: int,
     emitter-shape: string, emitter-extents: vector3d, velocity: vector3d,
 }
 
@@ -59,7 +61,7 @@ export component ParticleAffectorsDemo inherits Window {
 
     property <FieldEmitter> emitter: FieldEmitter {
         position: Point3D.new(-2.2, 0.7, 0), color: #53dfffff, size: 0.06, lifetime: 4,
-        burst-count: root.population, fade-out: 0, seed: 36, layers: 1,
+        bursts: [ParticleBurst { time: 0, count: root.population }], fade-out: 0, seed: 36, layers: 1,
         emitter-shape: "box", emitter-extents: Vector3D.new(0.5, 0.34, 0.03),
         velocity: Vector3D.new(1.4, 0, 0),
     };
@@ -103,4 +105,97 @@ export component ParticleAffectorsDemo inherits Window {
     order-toggle := CheckBox { x: 483px; y: 367px; width: 111px; height: 36px; text: "交换顺序"; checked <=> root.reverse-order; }
     Label { x: 15px; y: 415px; width: 55px; height: 36px; text: "时间"; }
     time-slider := Slider { x: 72px; y: 417px; width: 580px; height: 34px; minimum: 0; maximum: 2; value <=> root.time; }
+}
+
+struct WaveField {
+    affector-kind: string, parent: string, enabled: bool, seed: int, particle-group: string,
+    global-amount: vector3d, global-pace: vector3d, global-pace-start: vector3d,
+    unique-amount: vector3d, unique-pace: vector3d,
+    unique-amount-variation: float, unique-pace-variation: float,
+    fade-in-duration: float, fade-out-duration: float,
+    duration: float, min-size: float, max-size: float, scale-mode: string, scale-easing: string,
+}
+
+struct WaveEmitter {
+    position: point3d, color: color, size: float, lifetime: float, fade-out: float,
+    bursts: [ParticleBurst], seed: int, particle-group: string, velocity: vector3d,
+    trail-segments: int, trail-duration: float, particle-model: string, particle-casts-shadow: bool,
+}
+
+export component ParticleWavesDemo inherits Window {
+    title: "XRack · 粒子游动与缩放";
+    width: 624px; height: 406px; background: #182333;
+
+    in-out property <float> time: 0.5;
+    in-out property <bool> wander: true;
+    in-out property <bool> pulse: true;
+    in-out property <bool> attached: false;
+    in-out property <bool> trail: false;
+    in-out property <bool> model-particles: false;
+    in-out property <float> jitter: 0.3;
+    in-out property <int> population: 24;
+    in-out property <int> seed: 17;
+    in-out property <float> fade-out: 0.75;
+    in-out property <string> scale-mode: "triangle";
+    in-out property <string> scale-easing: "linear";
+    property <WaveField> defaults;
+
+    property <FieldCamera> eye: FieldCamera {
+        id: "eye", mesh: "", x: 0, y: 0, z: 10,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0,
+        color: #fff, camera-kind: "orthographic", camera-height: 6,
+    };
+    view := SceneView3D {
+        width: 624px; height: 300px;
+        model: [
+            root.eye,
+            FieldCamera { id: "anchor", z: 0, scale-x: 2, roll: 90, camera-kind: "", ..root.eye },
+            FieldCamera {
+                id: "floor", mesh: root.model-particles ? "primitive:box" : "",
+                y: -1.9, z: 0, scale-x: 10, scale-y: 0.16, scale-z: 3,
+                color: #33445b, camera-kind: "", ..root.eye
+            },
+        ];
+        camera: "eye"; scene-background: #101925;
+        shadows: root.model-particles; shadow-map-size: 128;
+        particle-time: root.time;
+        particle-emitters: [
+            WaveEmitter {
+                position: Point3D.new(0, 0, 0.4), color: #ff46d9, size: 0.32, lifetime: 2,
+                fade-out: 0, seed: 46, particle-group: "sparks",
+                bursts: [ParticleBurst { time: 0, count: root.population }],
+                velocity: root.trail ? Vector3D.new(0.8, 0.35, 0) : Vector3D.new(0,0,0),
+                trail-segments: root.trail ? 8 : 0, trail-duration: 0.35,
+                particle-model: root.model-particles ? "primitive:box" : "",
+                particle-casts-shadow: root.model-particles,
+            },
+        ];
+        particle-affectors: [
+            WaveField {
+                affector-kind: "wander", enabled: root.wander,
+                particle-group: "sparks", parent: root.attached ? "anchor" : "",
+                global-amount: Vector3D.new(1.2, 0, 0), global-pace: Vector3D.new(0.5, 0, 0),
+                unique-amount: Vector3D.new(root.jitter, root.jitter, 0),
+                unique-pace: Vector3D.new(0.9, 1.3, 0),
+                unique-amount-variation: 0.5, unique-pace-variation: 0.35,
+                seed: root.seed, fade-in-duration: 0.2, fade-out-duration: root.fade-out,
+                ..root.defaults
+            },
+            WaveField {
+                affector-kind: "scale", particle-group: "sparks", enabled: root.pulse,
+                min-size: 0.5, max-size: 2, duration: 1,
+                scale-mode: root.scale-mode, scale-easing: root.scale-easing, ..root.defaults
+            },
+        ];
+    }
+    Label { x: 18px; y: 306px; width: 58px; height: 34px; text: "时间"; }
+    time-slider := Slider {
+        x: 78px; y: 306px; width: 526px; height: 34px;
+        minimum: 0; maximum: 1.99; value <=> root.time;
+    }
+    wander-toggle := CheckBox { x: 18px; y: 357px; width: 106px; text: "游动"; checked <=> root.wander; }
+    pulse-toggle := CheckBox { x: 130px; y: 357px; width: 100px; text: "缩放"; checked <=> root.pulse; }
+    attachment-toggle := CheckBox { x: 236px; y: 357px; width: 100px; text: "挂点"; checked <=> root.attached; }
+    trail-toggle := CheckBox { x: 342px; y: 357px; width: 100px; text: "拖尾"; checked <=> root.trail; }
+    mesh-toggle := CheckBox { x: 448px; y: 357px; width: 110px; text: "模型"; checked <=> root.model-particles; }
 }

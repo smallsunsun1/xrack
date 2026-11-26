@@ -3224,13 +3224,14 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 layout_direction: self.layout_direction,
             };
             cache
-                .scroll_geometry(&self.path, node)
-                .and_then(|geometry| {
+                .scroll_geometry_for_projection(&self.path, node, count)
+                .and_then(|(geometry, reuse)| {
                     geometry.project_children(
                         rects.clone(),
                         child_clip,
                         inputs,
                         self.ancestor_shapes.as_ref(),
+                        reuse,
                         |slot, bounds, local| {
                             if !defer || !outside_clip(bounds, child_clip) {
                                 Self::resolve_scroll_text(self.text, &node.children[slot], local);

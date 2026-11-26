@@ -5265,6 +5265,7 @@ dependencies = [
  "xrack-media",
  "xrack-renderer-femtovg",
  "xrack-runtime",
+ "xrack-scene-import",
  "zbus",
 ]
 

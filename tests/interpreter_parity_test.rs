@@ -3252,6 +3252,11 @@ fn ordinary_row_scene_cache_handles_visibility_reorder_and_routes_the_live_row()
     let mut generated = expressions_ui::OrdinaryRowSceneCache::new();
     let interpreted_rows = interpreted.string_model("rows").unwrap();
     let generated_rows = generated.model_rows();
+    for index in 0..128 {
+        let row = format!("history {index}");
+        interpreted_rows.push(row.clone());
+        generated_rows.push(row);
+    }
     let render = |interpreted: &Instance, generated: &expressions_ui::OrdinaryRowSceneCache| {
         let actual = interpreted.try_render().unwrap();
         let compiled = generated.render_shared();
@@ -3259,6 +3264,7 @@ fn ordinary_row_scene_cache_handles_visibility_reorder_and_routes_the_live_row()
         [actual, compiled]
     };
     let before = render(&interpreted, &generated);
+    assert_eq!(before[0].children[0].children.len(), generated_rows.len());
     for rows in [&interpreted_rows, &generated_rows] {
         assert!(rows.set_row(1, String::new()));
     }

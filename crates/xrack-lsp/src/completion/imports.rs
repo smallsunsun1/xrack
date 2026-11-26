@@ -496,8 +496,8 @@ fn source_links(text: &str, workspace: &Workspace<'_>) -> Vec<(Range<usize>, Str
         let [_, open, token] = window else {
             return None;
         };
-        let extensions = scene_asset_extensions(&tokens, index)?;
-        if open.text != "(" || !token.quoted() {
+        let (extensions, delimiter) = scene_asset_extensions(&tokens, index)?;
+        if open.text != delimiter || !token.quoted() {
             return None;
         }
         let spelling: String = serde_json::from_str(token.text).ok()?;
@@ -532,13 +532,16 @@ pub(crate) fn document_links(text: &str, workspace: &Workspace<'_>) -> Value {
     )
 }
 
-fn scene_asset_extensions(tokens: &[Token<'_>], index: usize) -> Option<&'static [&'static str]> {
+fn scene_asset_extensions(
+    tokens: &[Token<'_>],
+    index: usize,
+) -> Option<(&'static [&'static str], &'static str)> {
     match tokens.get(index)?.text {
-        "@mesh-url" => Some(MESH_SOURCE_EXTENSIONS),
-        "@environment-url" => Some(&["hdr"]),
-        "@instance-table-url" => Some(&["xml", "bin"]),
-        "@shader-url" | "@material-shader-url" => Some(&["wgsl"]),
-        "@texture-url" => Some(&["png", "jpg", "jpeg"]),
+        "@mesh-url" => Some((MESH_SOURCE_EXTENSIONS, "(")),
+        "@environment-url" => Some((&["hdr"], "(")),
+        "@instance-table-url" => Some((&["xml", "bin"], "(")),
+        "@shader-url" | "@material-shader-url" => Some((&["wgsl"], "(")),
+        "@texture-url" => Some((&["png", "jpg", "jpeg"], "(")),
         "@image-url"
             if index >= 2
                 && matches!(
@@ -547,7 +550,14 @@ fn scene_asset_extensions(tokens: &[Token<'_>], index: usize) -> Option<&'static
                 )
                 && tokens[index - 1].text == ":" =>
         {
-            Some(&["png"])
+            Some((&["png"], "("))
+        }
+        "source"
+            if enclosing_block(tokens, index)
+                .and_then(|open| tokens.get(open.checked_sub(1)?))
+                .is_some_and(|kind| kind.text == "MeshLoader3D") =>
+        {
+            Some((MESH_SOURCE_EXTENSIONS, ":"))
         }
         _ => None,
     }
@@ -567,7 +577,7 @@ pub(super) fn scene_asset_selector_values(
     source: &Source<'_>,
     tokens: &[Token<'_>],
     cursor: usize,
-    workspace: &Workspace<'_>,
+    workspace: Option<&Workspace<'_>>,
 ) -> Option<Vec<Value>> {
     let (field, kind, literal) = tokens.windows(3).enumerate().find_map(|(index, tokens)| {
         let [field, colon, string] = tokens else {
@@ -575,7 +585,13 @@ pub(super) fn scene_asset_selector_values(
         };
         (matches!(
             field.text,
-            "animation" | "animation-to" | "material-variant"
+            "animation"
+                | "animation-to"
+                | "material-variant"
+                | "clip"
+                | "root-node"
+                | "mode"
+                | "node"
         ) && colon.text == ":"
             && string.text.starts_with('"')
             && string.blocks_completion(cursor))
@@ -585,12 +601,49 @@ pub(super) fn scene_asset_selector_values(
     if !name(tokens.get(open.checked_sub(1)?)?.text) {
         return None;
     }
-    let metadata = scene_metadata(&scene_row_asset(tokens, open)?, workspace)?;
+    let emission_animation = open
+        .checked_sub(3)
+        .and_then(|start| tokens.get(start..open))
+        .is_some_and(|prefix| prefix[0].text == "emission-animation" && prefix[1].text == ":");
+    let row = if emission_animation && matches!(kind, "clip" | "node") {
+        open
+    } else if matches!(kind, "clip" | "root-node" | "mode") {
+        let array = enclosing_array(tokens, open)?;
+        let prefix = tokens.get(array.checked_sub(2)?..array)?;
+        if prefix[0].text != "animation-layers" || prefix[1].text != ":" {
+            return None;
+        }
+        enclosing_block(tokens, array)?
+    } else if kind == "node" {
+        return None;
+    } else {
+        open
+    };
     let prefix = &literal.text[1..cursor - literal.range.start];
     let range = source.range(
         literal.range.start + 1,
         literal.range.end - usize::from(literal.quoted()),
     );
+    if kind == "mode" {
+        return Some(
+            xrack_parser::builtins::SCENE_ANIMATION_LAYER_MODES
+                .iter()
+                .filter(|mode| mode.starts_with(prefix))
+                .map(|mode| {
+                    json!({
+                        "label": mode, "kind": 12, "detail": "glTF animation layer mode",
+                        "textEdit": {"range": range, "newText": mode},
+                    })
+                })
+                .collect(),
+        );
+    }
+    let workspace = workspace?;
+    let path = scene_row_asset_with_bindings(tokens, row)?;
+    if matches!(kind, "root-node" | "node") {
+        return mesh_node_selector_items(source, literal, cursor, &path, workspace);
+    }
+    let metadata = scene_metadata(&path, workspace)?;
     let (selectors, detail) = if kind == "material-variant" {
         (
             metadata.material_variant_selectors(),
@@ -851,6 +904,10 @@ fn literal_scene_rows(tokens: &[Token<'_>], view: usize, property: &str) -> Vec<
     else {
         return Vec::new();
     };
+    scene_array_rows(tokens, array)
+}
+
+fn scene_array_rows(tokens: &[Token<'_>], array: usize) -> Vec<usize> {
     let mut rows = Vec::new();
     let mut depth = 0usize;
     for (index, token) in tokens
@@ -871,6 +928,207 @@ fn literal_scene_rows(tokens: &[Token<'_>], view: usize, property: &str) -> Vec<
         }
     }
     rows
+}
+
+/// Follow authored lists through component properties and Scene3D.prepare.
+fn scene_view_rows(tokens: &[Token<'_>], view: usize, property: &str) -> Option<Vec<usize>> {
+    let mut expression = literal_field_value(tokens, view, property)?;
+    let mut visited = BTreeSet::new();
+    while visited.insert(expression) {
+        match tokens.get(expression)?.text {
+            "[" => return Some(scene_array_rows(tokens, expression)),
+            "root" => {
+                let [dot, member] = tokens.get(expression + 1..expression + 3)? else {
+                    return None;
+                };
+                if dot.text != "." || !name(member.text) {
+                    return None;
+                }
+                let mut container = view;
+                let component = loop {
+                    container = enclosing_block(tokens, container)?;
+                    if tokens[..container]
+                        .iter()
+                        .rev()
+                        .filter(|token| token.code())
+                        .take_while(|token| !matches!(token.text, "{" | "}" | ";"))
+                        .any(|token| token.text == "component")
+                    {
+                        break container;
+                    }
+                };
+                expression = literal_field_value(tokens, component, member.text)?;
+            }
+            "Scene3D" if property == "model" => {
+                let [dot, function, open] = tokens.get(expression + 1..expression + 4)? else {
+                    return None;
+                };
+                if dot.text != "." || function.text != "prepare" || open.text != "(" {
+                    return None;
+                }
+                expression += 4;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn inline_particle_list<'a>(tokens: &[Token<'a>], row: usize) -> Option<(&'a str, usize)> {
+    let array = enclosing_array(tokens, row)?;
+    let [property, colon] = tokens.get(array.checked_sub(2)?..array)? else {
+        return None;
+    };
+    let view = enclosing_block(tokens, array)?;
+    (matches!(property.text, "particle-emitters" | "particle-affectors")
+        && colon.text == ":"
+        && tokens.get(view.checked_sub(1)?)?.text == "SceneView3D")
+        .then_some((property.text, view))
+}
+
+struct ParticleParentReference<'a> {
+    row: usize,
+    node_selector: bool,
+    literal: &'a Token<'a>,
+    rows: BTreeMap<String, Option<usize>>,
+}
+
+fn particle_parent_reference<'a>(
+    tokens: &'a [Token<'a>],
+    cursor: usize,
+) -> Option<ParticleParentReference<'a>> {
+    let (field, node_selector, literal) =
+        tokens.windows(3).enumerate().find_map(|(index, window)| {
+            let [field, colon, literal] = window else {
+                return None;
+            };
+            (matches!(field.text, "parent" | "parent-node")
+                && colon.text == ":"
+                && literal.text.starts_with('"')
+                && literal.blocks_completion(cursor))
+            .then_some((index, field.text == "parent-node", literal))
+        })?;
+    let row = enclosing_block(tokens, field)?;
+    let (_, view) = inline_particle_list(tokens, row)?;
+    let mut names = BTreeMap::new();
+    for target in scene_view_rows(tokens, view, "model")? {
+        if scene_row_string(tokens, target, "lod-of").is_some_and(|id| !id.is_empty()) {
+            continue;
+        }
+        if let Some(id) = scene_row_string(tokens, target, "id").filter(|id| !id.is_empty()) {
+            names
+                .entry(id)
+                .and_modify(|row| *row = None)
+                .or_insert(Some(target));
+        }
+    }
+    Some(ParticleParentReference {
+        row,
+        node_selector,
+        literal,
+        rows: names,
+    })
+}
+
+pub(super) fn scene_particle_parent_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    workspace: Option<&Workspace<'_>>,
+) -> Option<Vec<Value>> {
+    let ParticleParentReference {
+        row,
+        node_selector,
+        literal,
+        rows,
+    } = particle_parent_reference(tokens, cursor)?;
+    if node_selector {
+        let parent = scene_row_string(tokens, row, "parent")?;
+        let target = rows.get(&parent).copied().flatten()?;
+        let path = scene_row_asset_with_bindings(tokens, target)?;
+        return mesh_node_selector_items(source, literal, cursor, &path, workspace?);
+    }
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    Some(
+        rows.into_iter()
+            .filter(|(name, row)| row.is_some() && name.starts_with(prefix))
+            .map(|(name, _)| {
+                let replacement = json!(name).to_string();
+                json!({
+                    "label": name, "kind": 12, "detail": "Scene particle parent",
+                    "textEdit": {"range": range, "newText": &replacement[1..replacement.len() - 1]}
+                })
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn scene_particle_group_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+) -> Option<Vec<Value>> {
+    let (field, literal) = tokens.windows(3).enumerate().find_map(|(index, window)| {
+        let [field, colon, literal] = window else {
+            return None;
+        };
+        (field.text == "particle-group"
+            && colon.text == ":"
+            && literal.text.starts_with('"')
+            && literal.blocks_completion(cursor))
+        .then_some((index, literal))
+    })?;
+    let (property, view) = inline_particle_list(tokens, enclosing_block(tokens, field)?)?;
+    if property != "particle-affectors" {
+        return None;
+    }
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    let groups: BTreeSet<_> = scene_view_rows(tokens, view, "particle-emitters")?
+        .into_iter()
+        .filter_map(|row| scene_row_string(tokens, row, "particle-group"))
+        .filter(|name| !name.is_empty() && name.starts_with(prefix))
+        .collect();
+    Some(
+        groups
+            .into_iter()
+            .map(|name| {
+                let escaped = json!(name).to_string();
+                json!({
+                    "label": name, "kind": 12, "detail": "Particle emitter group",
+                    "textEdit": {"range": range, "newText": &escaped[1..escaped.len() - 1]}
+                })
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn scene_particle_parent_definition(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    uri: &str,
+) -> Option<Value> {
+    let ParticleParentReference {
+        node_selector,
+        literal,
+        rows,
+        ..
+    } = particle_parent_reference(tokens, cursor)?;
+    if node_selector {
+        return None;
+    }
+    let parent: String = serde_json::from_str(literal.text).ok()?;
+    let target = rows.get(&parent).copied().flatten()?;
+    let id = scene_row_field(tokens, target, "id")?;
+    Some(json!({"uri": uri, "range": source.range(id.range.start + 1, id.range.end - 1)}))
 }
 
 struct SceneLightScope<'a> {
@@ -901,28 +1159,7 @@ fn scene_light_scope<'a>(tokens: &'a [Token<'a>], cursor: usize) -> Option<Scene
     {
         return None;
     }
-    let model = literal_field_value(tokens, view, "model")?;
-    let rows = if let Some([root, dot, declaration]) = tokens.get(model..model + 3)
-        && root.text == "root"
-        && dot.text == "."
-        && name(declaration.text)
-    {
-        let mut container = view;
-        loop {
-            container = enclosing_block(tokens, container)?;
-            if tokens[..container]
-                .iter()
-                .rev()
-                .filter(|token| token.code())
-                .take_while(|token| !matches!(token.text, "{" | "}" | ";"))
-                .any(|token| token.text == "component")
-            {
-                break literal_scene_rows(tokens, container, declaration.text);
-            }
-        }
-    } else {
-        literal_scene_rows(tokens, view, "model")
-    };
+    let rows = scene_view_rows(tokens, view, "model").unwrap_or_default();
     let mut names = BTreeMap::new();
     for row in rows {
         let Some(id) = scene_row_field(tokens, row, "id").filter(|id| id.quoted()) else {
@@ -1691,6 +1928,8 @@ pub(super) fn scene_string_options(
         "particle-blend-mode" => xrack_parser::builtins::PARTICLE_BLEND_MODES,
         "emitter-shape" => xrack_parser::builtins::PARTICLE_EMITTER_SHAPES,
         "affector-kind" => xrack_parser::builtins::PARTICLE_AFFECTOR_KINDS,
+        "scale-mode" => xrack_parser::builtins::PARTICLE_SCALE_MODES,
+        "scale-easing" => xrack_parser::builtins::PARTICLE_SCALE_EASINGS,
         "velocity-mode" => xrack_parser::builtins::PARTICLE_VELOCITY_MODES,
         "temporal-aa-mode" => xrack_parser::builtins::TEMPORAL_AA_MODES,
         "render-mode" => xrack_parser::builtins::SCENE_RENDER_MODES,
@@ -2143,8 +2382,8 @@ pub(super) fn scene_asset_paths(
         let [_, open, path] = window else {
             return None;
         };
-        let extensions = scene_asset_extensions(tokens, index)?;
-        (open.text == "(" && path.text.starts_with('"') && path.blocks_completion(cursor))
+        let (extensions, delimiter) = scene_asset_extensions(tokens, index)?;
+        (open.text == delimiter && path.text.starts_with('"') && path.blocks_completion(cursor))
             .then_some((extensions, path))
     })?;
     let prefix = &path.text[1..cursor - path.range.start];
@@ -2236,4 +2475,280 @@ pub(crate) fn file_path(uri: &str) -> Option<PathBuf> {
     };
     let path = Path::new(&path);
     path.is_absolute().then(|| path.to_owned())
+}
+
+pub(super) fn scene_parent_node_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    workspace: &Workspace<'_>,
+) -> Option<Vec<Value>> {
+    let (field, literal) = tokens.windows(3).enumerate().find_map(|(index, window)| {
+        let [field, colon, literal] = window else {
+            return None;
+        };
+        (field.text == "parent-node"
+            && colon.text == ":"
+            && literal.text.starts_with('"')
+            && literal.blocks_completion(cursor))
+        .then_some((index, literal))
+    })?;
+    let row = enclosing_block(tokens, field)?;
+    let parent = scene_row_string(tokens, row, "parent").filter(|name| !name.is_empty())?;
+    let record = tokens.get(row.checked_sub(1)?)?.text;
+    let list = enclosing_array(tokens, row)?;
+    let mut depth = 0usize;
+    let mut target = None;
+    for (index, token) in tokens
+        .iter()
+        .enumerate()
+        .skip(list + 1)
+        .filter(|(_, token)| token.code())
+    {
+        match token.text {
+            "[" | "(" => depth += 1,
+            "{" => {
+                if depth == 0
+                    && tokens[index - 1].text == record
+                    && scene_row_string(tokens, index, "id").as_deref() == Some(parent.as_str())
+                {
+                    if target.is_some() {
+                        return None;
+                    }
+                    target = Some(index);
+                }
+                depth += 1;
+            }
+            "]" | ")" | "}" if depth == 0 => break,
+            "]" | ")" | "}" => depth -= 1,
+            _ => {}
+        }
+    }
+    let target = target.filter(|target| *target != row)?;
+    let path = scene_row_asset_with_bindings(tokens, target)?;
+    mesh_node_selector_items(source, literal, cursor, &path, workspace)
+}
+
+fn scene_row_asset_with_bindings(tokens: &[Token<'_>], row: usize) -> Option<String> {
+    let referenced_asset = |field| {
+        let start = literal_field_value(tokens, row, field)?;
+        let [owner, dot, member, end] = tokens.get(start..start + 4)? else {
+            return None;
+        };
+        if dot.text != "." || !matches!(end.text, "," | "}") {
+            return None;
+        }
+        scene_mesh_expression_path(tokens, row, &[owner, dot, member])
+    };
+    referenced_asset("mesh-asset")
+        .or_else(|| scene_row_asset(tokens, row))
+        .or_else(|| referenced_asset("mesh"))
+}
+
+pub(super) fn mesh_node_query_values(
+    source: &Source<'_>,
+    tokens: &[Token<'_>],
+    cursor: usize,
+    workspace: Option<&Workspace<'_>>,
+) -> Option<Vec<Value>> {
+    let (query, method, comma, literal) =
+        tokens
+            .windows(4)
+            .enumerate()
+            .rev()
+            .find_map(|(index, window)| {
+                let [namespace, dot, method, open] = window else {
+                    return None;
+                };
+                if namespace.text != "Scene3D"
+                    || dot.text != "."
+                    || !matches!(method.text, "mesh-node" | "mesh-node-indices")
+                    || open.text != "("
+                    || open.range.end > cursor
+                {
+                    return None;
+                }
+                let mut depth = 0usize;
+                for (offset, token) in tokens[index + 4..].iter().enumerate() {
+                    if token.range.start >= cursor {
+                        return None;
+                    }
+                    if !token.code() {
+                        continue;
+                    }
+                    match token.text {
+                        "(" | "[" | "{" => depth += 1,
+                        ")" | "]" | "}" if depth == 0 => return None,
+                        ")" | "]" | "}" => depth -= 1,
+                        "," if depth == 0 => {
+                            let comma = index + 4 + offset;
+                            let literal = tokens.get(comma + 1)?;
+                            return (literal.text.starts_with('"')
+                                && literal.blocks_completion(cursor))
+                            .then_some((index, method.text, comma, literal));
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            })?;
+    if method == "mesh-node-indices" {
+        let prefix = &literal.text[1..cursor - literal.range.start];
+        let range = source.range(
+            literal.range.start + 1,
+            literal.range.end - usize::from(literal.quoted()),
+        );
+        return Some(
+            ["all", "mesh", "camera", "light"]
+                .into_iter()
+                .filter(|kind| kind.starts_with(prefix))
+                .map(|kind| {
+                    json!({
+                        "label": kind, "kind": 12, "detail": "glTF node category",
+                        "textEdit": {"range": range, "newText": kind},
+                    })
+                })
+                .collect(),
+        );
+    }
+    let arguments: Vec<_> = tokens[query + 4..comma]
+        .iter()
+        .filter(|token| token.code() || token.quoted())
+        .collect();
+    let workspace = workspace?;
+    let path = scene_mesh_expression_path(tokens, query, &arguments)?;
+    mesh_node_selector_items(source, literal, cursor, &path, workspace)
+}
+
+fn scene_mesh_expression_path(
+    tokens: &[Token<'_>],
+    context: usize,
+    arguments: &[&Token<'_>],
+) -> Option<String> {
+    Some(match arguments {
+        [url, open, path, .., close]
+            if url.text == "@mesh-url" && open.text == "(" && close.text == ")" =>
+        {
+            serde_json::from_str(path.text).ok()?
+        }
+        [loader, dot, field] if dot.text == "." => {
+            let mut root = enclosing_block(tokens, context)?;
+            while let Some(parent) = enclosing_block(tokens, root) {
+                root = parent;
+            }
+            let members = &tokens[root + 1..];
+            let end = members
+                .iter()
+                .scan(0usize, |depth, token| {
+                    let state = *depth;
+                    if token.code() {
+                        match token.text {
+                            "{" => *depth += 1,
+                            "}" if *depth == 0 => return None,
+                            "}" => *depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    Some(state)
+                })
+                .collect::<Vec<_>>();
+            if loader.text == "root" {
+                members.windows(5).enumerate().find_map(|(index, window)| {
+                    let [name, colon, url, open, path] = window else {
+                        return None;
+                    };
+                    (end.get(index) == Some(&0)
+                        && name.text == field.text
+                        && colon.text == ":"
+                        && url.text == "@mesh-url"
+                        && open.text == "("
+                        && path.quoted())
+                    .then(|| serde_json::from_str(path.text).ok())
+                    .flatten()
+                })?
+            } else if field.text == "asset" {
+                let open = members.windows(4).enumerate().find_map(|(index, window)| {
+                    let [name, declare, kind, open] = window else {
+                        return None;
+                    };
+                    (end.get(index) == Some(&0)
+                        && name.text == loader.text
+                        && declare.text == ":="
+                        && kind.text == "MeshLoader3D"
+                        && open.text == "{")
+                        .then_some(index + 3)
+                })?;
+                members[open + 1..]
+                    .windows(3)
+                    .enumerate()
+                    .find_map(|(relative, window)| {
+                        let [property, colon, path] = window else {
+                            return None;
+                        };
+                        let index = open + relative + 1;
+                        (end.get(index) == Some(&1)
+                            && enclosing_block(members, index) == Some(open)
+                            && property.text == "source"
+                            && colon.text == ":"
+                            && path.quoted())
+                        .then(|| serde_json::from_str(path.text).ok())
+                        .flatten()
+                    })?
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    })
+}
+
+fn mesh_node_selector_items(
+    source: &Source<'_>,
+    literal: &Token<'_>,
+    cursor: usize,
+    path: &str,
+    workspace: &Workspace<'_>,
+) -> Option<Vec<Value>> {
+    let prefix = &literal.text[1..cursor - literal.range.start];
+    let range = source.range(
+        literal.range.start + 1,
+        literal.range.end - usize::from(literal.quoted()),
+    );
+    let metadata = scene_metadata(path, workspace)?;
+    let nodes = metadata.scene_node_addresses().ok()?;
+    let mut labels: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for node in nodes {
+        let detail = match (node.has_mesh, node.has_camera, node.has_light) {
+            (true, _, _) => "glTF mesh node",
+            (_, true, _) => "glTF camera node",
+            (_, _, true) => "glTF light node",
+            _ => "glTF transform node",
+        };
+        let name = if node.name.starts_with(['#', '/']) {
+            ""
+        } else {
+            node.name
+        };
+        for label in [name.to_owned(), node.path, format!("#{}", node.source)] {
+            if !label.is_empty() && label.starts_with(prefix) {
+                labels
+                    .entry(label)
+                    .and_modify(|detail| *detail = None)
+                    .or_insert(Some(detail.to_owned()));
+            }
+        }
+    }
+    Some(
+        labels
+            .into_iter()
+            .filter_map(|(label, detail)| {
+                let replacement = json!(label).to_string();
+                Some(json!({
+                    "label": label, "kind": 12, "detail": detail?,
+                    "textEdit": {"range": range, "newText": &replacement[1..replacement.len() - 1]},
+                }))
+            })
+            .take(256)
+            .collect(),
+    )
 }

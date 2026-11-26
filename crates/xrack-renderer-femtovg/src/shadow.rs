@@ -13,6 +13,8 @@ use xrack_runtime::{Brush, Color as UiColor, Node, Value};
 // eight 24-pixel steps per axis.
 const MAX_SIGMA_PX: f32 = 512.0;
 const MAX_SPREAD_PX: f32 = 192.0;
+// FemtoVG filters a larger sigma through a downsample pyramid.
+const MAX_FULL_SIZE_SIGMA_PX: f32 = 8.0;
 const MIN_INTERPOLATED_SIGMA_PX: f32 = 10.0;
 
 struct Shadow {
@@ -293,6 +295,15 @@ impl OuterShadow {
         self.spread_px != 0.0 || self.shadow.sigma > 0.0
     }
 
+    pub(super) fn initial_batch_tile(&self, scale: f32, clip: Rect) -> Option<ShadowTile> {
+        // Each chunk shares the canvas's filter budget. Keep the work per
+        // tile bounded to one full-size separable blur with no morphology.
+        if self.spread_px != 0.0 || self.shadow.sigma > MAX_FULL_SIZE_SIGMA_PX {
+            return None;
+        }
+        self.mask_tile(scale, clip)
+    }
+
     pub(super) fn mask_tile(&self, scale: f32, clip: Rect) -> Option<ShadowTile> {
         let source_alphas = self.source_alphas?;
         let bounds = self.paint_bounds();
@@ -306,12 +317,17 @@ impl OuterShadow {
             return None;
         }
         let device = device_bounds(bounds, scale);
-        // Interpolating a wide Gaussian avoids rerunning the filter on every
-        // fractional translation. Keep phase-dependent sampling where sharper
-        // or higher-contrast edges reveal interpolation of the 8-bit mask.
-        let interpolated = self.spread_px == 0.0
-            && self.shadow.sigma >= MIN_INTERPOLATED_SIGMA_PX
-            && self.shadow.alpha() <= 0.5;
+        // A low-alpha shadow from an opaque fill can reuse a full-size
+        // Gaussian mask across fractional translations. Above an 8-pixel
+        // sigma the filter downsamples the source, which needs the wider
+        // threshold for phase-independent sampling.
+        let alpha = self.shadow.alpha();
+        let full_size = (7.25..=MAX_FULL_SIZE_SIGMA_PX).contains(&self.shadow.sigma)
+            && alpha <= 0.4
+            && (1.0..=2.0).contains(&scale)
+            && source_alphas == (255, 0);
+        let wide = self.shadow.sigma >= MIN_INTERPOLATED_SIGMA_PX && alpha <= 0.5;
+        let interpolated = self.spread_px == 0.0 && (full_size || wide);
         let [width, height] = if interpolated {
             [self.shape.width, self.shape.height]
                 .map(|size| ((size + 2.0 * self.reach) * scale).ceil() + 2.0)
@@ -368,9 +384,48 @@ impl OuterShadow {
         tile: ShadowTile,
         scale: f32,
     ) {
-        let Some((fill, border)) = self.source_alphas else {
+        if let Some(mask) = self.mask_source(tile, scale) {
+            mask.draw(canvas, mask.paint_bounds());
+        }
+    }
+
+    // Initial batches bind each tile as an image render target. Filtering
+    // premultiplied white coverage in that image keeps RGB equal to alpha
+    // throughout the blur and avoids an extra layer capture and composite.
+    pub(super) fn draw_mask_into_image(
+        &self,
+        canvas: &mut Canvas<WGPURenderer>,
+        tile: ShadowTile,
+        scale: f32,
+        image: ImageId,
+    ) {
+        let Some(mask) = self.mask_source(tile, scale) else {
             return;
         };
+        mask.paint_shape(canvas);
+        if canvas
+            .filter_image_chain(
+                image,
+                &[ImageFilter::gaussian_blur(self.shadow.sigma)],
+                image,
+            )
+            .is_err()
+        {
+            // The rejected filter leaves the unblurred source where it was.
+            // Discard it before retrying via the general layer painter.
+            canvas.clear_rect(
+                0,
+                0,
+                canvas.width(),
+                canvas.height(),
+                Color::rgba(0, 0, 0, 0),
+            );
+            mask.draw(canvas, mask.paint_bounds());
+        }
+    }
+
+    fn mask_source(&self, tile: ShadowTile, scale: f32) -> Option<Self> {
+        let (fill, border) = self.source_alphas?;
         let [x, y] = if tile.key.interpolated {
             [1.0 / scale; 2]
         } else {
@@ -379,7 +434,7 @@ impl OuterShadow {
                 .map(|phase| f32::from(phase) / (256.0 * scale))
         };
         let white = |alpha| Paint::color(Color::rgba(255, 255, 255, alpha));
-        let mask = Self {
+        Some(Self {
             shadow: Shadow {
                 tint: UiColor(0xffff_ffff),
                 offset: [0.0; 2],
@@ -401,8 +456,7 @@ impl OuterShadow {
             source_alphas: self.source_alphas,
             spread_px: self.spread_px,
             reach: self.reach,
-        };
-        mask.draw(canvas, mask.paint_bounds());
+        })
     }
 
     pub(super) fn masked_draw(&self, image: ImageId, tile: ShadowTile) -> ShadowDraw {
@@ -419,16 +473,20 @@ impl OuterShadow {
         canvas.intersect_scissor(clip.x, clip.y, clip.width, clip.height);
         filtered(canvas, self.shadow.layer(self.spread_px), |canvas| {
             canvas.translate(self.shadow.offset[0], self.shadow.offset[1]);
-            if let Some(fill) = &self.fill {
-                let mut path = Path::new();
-                append_rect(&mut path, self.shape, self.radii);
-                canvas.fill_path(&path, fill);
-            }
-            if let Some((width, paint)) = &self.border {
-                canvas.fill_path(&border_path(self.shape, self.radii, *width), paint);
-            }
+            self.paint_shape(canvas);
         });
         canvas.restore();
+    }
+
+    fn paint_shape(&self, canvas: &mut Canvas<WGPURenderer>) {
+        if let Some(fill) = &self.fill {
+            let mut path = Path::new();
+            append_rect(&mut path, self.shape, self.radii);
+            canvas.fill_path(&path, fill);
+        }
+        if let Some((width, paint)) = &self.border {
+            canvas.fill_path(&border_path(self.shape, self.radii, *width), paint);
+        }
     }
 }
 

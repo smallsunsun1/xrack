@@ -15,6 +15,7 @@ xrack-media = { path = "../xrack-media", version = "=0.9.0", default-features = 
 accesskit = "=0.25.2"
 accesskit_winit = "=0.34.2"
 xrack-runtime.workspace = true
+xrack-scene-import.workspace = true
 xrack-assets.workspace = true
 xrack-layout.workspace = true
 xrack-renderer-femtovg.workspace = true

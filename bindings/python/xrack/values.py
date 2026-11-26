@@ -55,6 +55,8 @@ from ._native import (
     Instance3D,
     InstanceTable3D,
     MeshAsset3D,
+    MeshNode3D,
+    Bounds3D,
     WalkResult3D,
     PhysicsWorld3D,
     SceneModel3D,
@@ -146,6 +148,8 @@ __all__ = [
     "Instance3D",
     "InstanceTable3D",
     "MeshAsset3D",
+    "MeshNode3D",
+    "Bounds3D",
     "WalkResult3D",
     "PhysicsWorld3D",
     "SceneModel3D",
@@ -242,6 +246,8 @@ Value: TypeAlias = (
     | Instance3D
     | InstanceTable3D
     | MeshAsset3D
+    | MeshNode3D
+    | Bounds3D
     | WalkResult3D
     | PhysicsWorld3D
     | SceneModel3D

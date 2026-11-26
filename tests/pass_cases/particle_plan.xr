@@ -1,10 +1,12 @@
+struct ParticleBurst { time: float, count: int }
+
 // CHECK-DAG: "xr.bind"{{.*}}name = "particle-emitters"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist
 // CHECK-DAG: "xr.bind"{{.*}}name = "particle-time"{{.*}}xr.update_effect = "paint"{{.*}}!xr.float
 // CHECK-DAG: "xr.bind"{{.*}}name = "particle-affectors"{{.*}}xr.update_effect = "paint"{{.*}}!xr.recordlist
 
 struct Sparks {
     position: point3d, color: color, size: float, lifetime: float,
-    rate: float, burst-count: int, gravity: vector3d,
+    rate: float, bursts: [ParticleBurst], gravity: vector3d,
     sprite: image, sprite-frames: int, sprite-playback: string,
     sprite-duration: float, sprite-duration-variation: float,
     sprite-interpolate: bool, sprite-random-start: bool, sprite-frame: int,

@@ -546,6 +546,12 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => None,
         };
     }
+    if kind == "MeshLoader3D" {
+        return builtins::MESH_LOADER_INPUTS
+            .iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, ty)| ty.clone());
+    }
     if kind == "SoundEffect" {
         return match name {
             "source" => Some(Type::String),
@@ -1415,6 +1421,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         }
         "model" if kind == "SceneView3D" => Type::RecordList("SceneObject3D".into()),
         "preload-model" if kind == "SceneView3D" => Type::SceneModel3D,
+        "camera-fit" if kind == "SceneView3D" => Type::Bounds3D,
         "physics-world" if kind == "SceneView3D" => Type::PhysicsWorld3D,
         "physics-debug" if kind == "SceneView3D" => Type::Bool,
         "physics-debug-body" if kind == "SceneView3D" => Type::Int,
@@ -1532,6 +1539,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "camera-yaw"
         | "camera-pitch"
         | "camera-distance"
+        | "camera-fit-margin"
         | "light-yaw"
         | "light-elevation"
         | "ambient-intensity"
@@ -2664,6 +2672,35 @@ fn validate_scene_model(value: &ir::Expr, scope: &Scope<'_>) -> Result<()> {
     if let Some(ty) = record_field_type(&scope.records, record, "random-instances") {
         validate_random_instance_settings(ty, value.span, scope)?;
     }
+    if let Some(ty) = record_field_type(&scope.records, record, "animation-layers") {
+        let schema = match ty {
+            Type::RecordList(name) => scope
+                .records
+                .get(name.as_ref())
+                .filter(|schema| schema.variants.is_empty()),
+            _ => None,
+        };
+        let Some(schema) = schema else {
+            return fail(
+                value.span,
+                "3D animation-layers requires a list of layer records",
+            );
+        };
+        for (name, expected) in builtins::SCENE_ANIMATION_LAYER_FIELDS {
+            let field = schema.fields.iter().find(|field| field.name == *name);
+            if (*name == "clip" || field.is_some())
+                && field.map(|field| &field.ty) != Some(expected)
+            {
+                return fail(
+                    value.span,
+                    format!(
+                        "3D animation-layers field `{name}` requires type {}",
+                        expected.name()
+                    ),
+                );
+            }
+        }
+    }
     let collision_shapes = record_field_type(&scope.records, record, "collision-shapes");
     if let Some(ty) = &collision_shapes {
         validate_collision_shapes(ty, value.span, scope)?;
@@ -3628,6 +3665,7 @@ pub fn nonvisual_element(kind: &str) -> bool {
             | "Timer"
             | "FrameAnimation"
             | "SoundEffect"
+            | "MeshLoader3D"
             | "SecondaryWindow"
     ) || native_dialog(kind)
 }
@@ -4556,6 +4594,7 @@ impl<'a> Scope<'a> {
                 || self.check_group_read(reference, span)?.is_some()
                 || self.action_group_read(current, reference, span)?.is_some()
                 || self.native_dialog_read(current, reference, span).is_some()
+                || self.mesh_loader_read(current, reference, span).is_some()
                 || self.image_playback_read(current, reference, span).is_some()
                 || self.media_read(current, reference, span).is_some()
                 || self.text_validation(current, reference, span)?.is_some()
@@ -4682,6 +4721,22 @@ impl<'a> Scope<'a> {
                 value: name.into(),
                 ..ir::Expr::operation("window_read", Type::Bool, vec![], span)
             })
+    }
+
+    fn mesh_loader_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
+        let (owner, property) = reference.split_once('.')?;
+        let owner = self.receiver(current, owner).unwrap_or(owner);
+        if self.owners.get(owner)?.kind != "MeshLoader3D" {
+            return None;
+        }
+        let (_, ty) = builtins::MESH_LOADER_OUTPUTS
+            .iter()
+            .find(|(name, _)| *name == property)?;
+        Some(ir::Expr {
+            owner: Some(owner.into()),
+            value: property.into(),
+            ..ir::Expr::operation("mesh_loader_read", ty.clone(), vec![], span)
+        })
     }
 
     fn native_dialog_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
@@ -5530,6 +5585,46 @@ impl<'a> Scope<'a> {
             ty: if membership { Type::Bool } else { Type::Int },
             args: vec![expression_as(index, self, current, Type::Int)?],
             span: call.span,
+        }))
+    }
+
+    fn scene_view_call(&self, call: &ast::Call, current: &str) -> Result<Option<ir::Expr>> {
+        let Some((receiver, name)) = call.callee.rsplit_once('.') else {
+            return Ok(None);
+        };
+        let Some(owner) = self.receiver(current, receiver) else {
+            return Ok(None);
+        };
+        if self
+            .owners
+            .get(owner)
+            .is_none_or(|element| element.kind != "SceneView3D" || element.instance)
+        {
+            return Ok(None);
+        }
+        let Some(method) = builtins::SCENE_VIEW_METHODS
+            .iter()
+            .find(|method| method.signature.name == name)
+        else {
+            return Ok(None);
+        };
+        self.require_static_viewport(owner, call.span)?;
+        if call.arguments.len() != method.inputs.len() {
+            return fail(
+                call.span,
+                format!("expected {}", method.signature.signature()),
+            );
+        }
+        let args = call
+            .arguments
+            .iter()
+            .zip(method.inputs)
+            .map(|(argument, ty)| expression_as(argument, self, current, ty.clone()))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Some(ir::Expr {
+            owner: Some(owner.into()),
+            value: name.into(),
+            ..ir::Expr::operation("scene_view_query", method.output.clone(), args, call.span)
         }))
     }
 
@@ -7271,6 +7366,7 @@ fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredM
         "Timer"
             | "FrameAnimation"
             | "SoundEffect"
+            | "MeshLoader3D"
             | "ActionGroup"
             | "ButtonGroup"
             | "SecondaryWindow"
@@ -7855,10 +7951,12 @@ fn element<'a>(
                 "ActionGroup only accepts bindings, Actions and activated(value)",
             );
         }
-        if kind == "SoundEffect" && !matches!(m, Member::Binding(b) if !b.two_way) {
+        if matches!(kind, "SoundEffect" | "MeshLoader3D")
+            && !matches!(m, Member::Binding(b) if !b.two_way)
+        {
             return fail(
                 m.span(),
-                "SoundEffect only accepts one-way property bindings",
+                format!("{kind} only accepts one-way property bindings"),
             );
         }
         if matches!(kind, "Timer" | "FrameAnimation")
@@ -8640,6 +8738,122 @@ fn element<'a>(
                             builtins::SCENE_PARTICLE_FIELDS,
                             builtins::SCENE_PARTICLE_OPTIONAL_FIELDS,
                         )?;
+                        if let Type::RecordList(emitter) = &value.ty
+                            && let Some(bursts) =
+                                record_field_type(&scope.records, emitter, "bursts")
+                        {
+                            let schema = match bursts {
+                                Type::RecordList(name) => scope
+                                    .records
+                                    .get(name.as_ref())
+                                    .filter(|schema| schema.variants.is_empty()),
+                                _ => None,
+                            };
+                            let Some(schema) = schema else {
+                                return fail(
+                                    value.span,
+                                    "3D bursts requires a list of emission event records",
+                                );
+                            };
+                            let declares =
+                                |name| schema.fields.iter().any(|field| field.name == name);
+                            if declares("orientation") && !declares("position") {
+                                return fail(
+                                    value.span,
+                                    "3D burst orientation requires a world position",
+                                );
+                            }
+                            let required = builtins::SCENE_PARTICLE_BURST_FIELDS;
+                            let optional = builtins::SCENE_PARTICLE_BURST_OPTIONAL_FIELDS;
+                            for (name, expected) in required.iter().chain(optional) {
+                                let field = schema.fields.iter().find(|field| field.name == *name);
+                                if (required.iter().any(|(field, _)| field == name)
+                                    || field.is_some())
+                                    && field.map(|field| &field.ty) != Some(expected)
+                                {
+                                    return fail(
+                                        value.span,
+                                        format!(
+                                            "3D bursts requires a {} field named `{name}`",
+                                            expected.name()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        if let Type::RecordList(emitter) = &value.ty
+                            && let Some(track) =
+                                record_field_type(&scope.records, emitter, "emission-track")
+                        {
+                            let keys = match track {
+                                Type::RecordList(name) => scope
+                                    .records
+                                    .get(name.as_ref())
+                                    .filter(|schema| schema.variants.is_empty()),
+                                _ => None,
+                            };
+                            let Some(keys) = keys else {
+                                return fail(
+                                    value.span,
+                                    "3D emission-track requires a list of keyframe records",
+                                );
+                            };
+                            for (name, expected) in builtins::SCENE_PARTICLE_EMISSION_KEY_FIELDS {
+                                let field = keys.fields.iter().find(|field| field.name == *name);
+                                if (*name != "orientation" || field.is_some())
+                                    && field.map(|field| &field.ty) != Some(expected)
+                                {
+                                    return fail(
+                                        value.span,
+                                        format!(
+                                            "3D emission-track requires a {} field named `{name}`",
+                                            expected.name()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        if let Type::RecordList(emitter) = &value.ty
+                            && let Some(animation) =
+                                record_field_type(&scope.records, emitter, "emission-animation")
+                        {
+                            let schema = match animation {
+                                Type::Record(name) => scope
+                                    .records
+                                    .get(name.as_ref())
+                                    .filter(|schema| schema.variants.is_empty()),
+                                _ => None,
+                            };
+                            let Some(schema) = schema else {
+                                return fail(value.span, "3D emission-animation requires a record");
+                            };
+                            if !schema
+                                .fields
+                                .iter()
+                                .any(|field| matches!(field.name.as_str(), "mesh" | "mesh-asset"))
+                            {
+                                return fail(
+                                    value.span,
+                                    "3D emission-animation requires mesh or mesh-asset",
+                                );
+                            }
+                            for (name, expected) in
+                                builtins::SCENE_PARTICLE_EMISSION_ANIMATION_FIELDS
+                            {
+                                let field = schema.fields.iter().find(|field| field.name == *name);
+                                if (matches!(*name, "node" | "clip") || field.is_some())
+                                    && field.map(|field| &field.ty) != Some(expected)
+                                {
+                                    return fail(
+                                        value.span,
+                                        format!(
+                                            "3D emission-animation requires a {} field named `{name}`",
+                                            expected.name()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
                     } else if b.name == "particle-affectors" {
                         validate_scene_records(
                             &value,
@@ -10428,6 +10642,8 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         );
     }
     let value = match &ty {
+        Type::MeshNode3D => "",
+        Type::Bounds3D => "",
         Type::Instance3D | Type::InstanceTable3D | Type::MeshAsset3D | Type::RotationTrack3D => "",
         Type::Point2D | Type::Vector2D => "0 0",
         Type::Point3D | Type::Vector3D => "0 0 0",
@@ -11287,12 +11503,38 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             if let Some(value) = scope.dynamic_call(call, owner)? {
                 return Ok(value);
             }
+            if let Some(value) = scope.scene_view_call(call, owner)? {
+                return Ok(value);
+            }
             if let Some(function) = scope.builtin_call(call)? {
                 return match function.kind {
                     FunctionKind::Format => format_call(call, scope, owner),
                     FunctionKind::Math(kind) => math_call(call, scope, owner, function, kind),
                     FunctionKind::Geometry(kind) => {
                         let args = builtin_arguments(call, scope, owner, function)?;
+                        if matches!(
+                            kind,
+                            builtins::GeometryFunction::MeshNode3D
+                                | builtins::GeometryFunction::MeshNodeIndices3D
+                        ) && let Some(asset) = args.first()
+                        {
+                            if !matches!(asset.ty, Type::MeshAsset3D | Type::String) {
+                                return fail(asset.span, "expected a meshasset3d or asset key");
+                            }
+                        }
+                        let selector = match kind {
+                            builtins::GeometryFunction::MeshNode3D => args.get(1),
+                            builtins::GeometryFunction::SceneNode3D => args.get(2),
+                            _ => None,
+                        };
+                        if let Some(selector) = selector
+                            && !matches!(selector.ty, Type::Int | Type::String)
+                        {
+                            return fail(
+                                selector.span,
+                                "expected a node name, path or integer index",
+                            );
+                        }
                         if kind == builtins::GeometryFunction::QuaternionTrack
                             && let Some(keys) = args.first()
                         {
@@ -11611,6 +11853,9 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                                 | Type::ProjectedPoint3D
                                 | Type::Instance3D
                                 | Type::InstanceTable3D
+                                | Type::Bounds3D
+                                | Type::MeshAsset3D
+                                | Type::MeshNode3D
                                 | Type::WalkResult3D
                                 | Type::Vector2D
                         ) =>
@@ -11738,6 +11983,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 .or_else(|| scope.media_read(owner, s, span))
                 .or_else(|| scope.window_read(owner, s, span))
                 .or_else(|| scope.native_dialog_read(owner, s, span))
+                .or_else(|| scope.mesh_loader_read(owner, s, span))
             {
                 return Ok(read);
             }
@@ -12734,7 +12980,7 @@ fn collect_bindings(
             };
             let target = path(owner, name);
             out.push(
-                if e.op == "geometry_read"
+                if matches!(e.op.as_str(), "geometry_read" | "scene_view_query")
                     || e.op == "scroll_control_read"
                         && (e.ty == Type::Bool || e.value.starts_with("visual-"))
                 {

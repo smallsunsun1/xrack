@@ -30,7 +30,7 @@ use std::{
 };
 use xrack_mlir::{Module, OperationRef};
 use xrack_runtime::{Image, ImageAsset, ImageFormat, NineSlice, StyledText, VectorSegment};
-pub use xrack_scene_import::pack_mesh_image;
+pub use xrack_scene_import::{install_mesh_importer, pack_mesh_image};
 
 pub enum EmbeddedImage {
     Static {

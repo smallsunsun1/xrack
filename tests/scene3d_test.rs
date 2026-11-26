@@ -5404,7 +5404,10 @@ fn local_reflections_follow_probe_boxes_and_keep_geometry_resident() -> TestResu
 #[test]
 fn animation_crossfade_shares_one_pose_between_pixels_skin_morph_and_rays() -> TestResult {
     use animation_blend_ui::AnimationBlendDemo;
-    use xrack_runtime::scene3d::{Point3D, ProjectedPoint3D, SceneObject};
+    use xrack_runtime::{
+        MeshNode3D, Vector3D,
+        scene3d::{Point3D, ProjectedPoint3D, SceneObject},
+    };
 
     const NAME: &str = "examples/puzzle3d/animation_blend.xr";
     let source = std::fs::read_to_string(NAME)?;
@@ -5440,6 +5443,10 @@ fn animation_crossfade_shares_one_pose_between_pixels_skin_morph_and_rays() -> T
         objects: Vec<SceneObject>,
         picked: String,
         dolly: ProjectedPoint3D,
+        dolly_node: MeshNode3D,
+        moving_node: MeshNode3D,
+        badge_center: Point3D,
+        badge_right: Vector3D,
         uploads: [u64; 4],
     }
     let mut frame = |request: Request| -> TestResult<Frame> {
@@ -5466,6 +5473,22 @@ fn animation_crossfade_shares_one_pose_between_pixels_skin_morph_and_rays() -> T
         let dolly = app.get_dolly();
         assert_eq!(dynamic.get("picked")?, Value::String(picked.clone()));
         assert_eq!(dynamic.get("dolly")?, Value::ProjectedPoint3D(dolly));
+        let dolly_node = app.get_dolly_node();
+        let moving_node = app.get_moving_node();
+        assert_eq!(
+            dynamic.get("dolly-node")?,
+            Value::MeshNode3D(dolly_node.clone())
+        );
+        assert_eq!(
+            dynamic.get("moving-node")?,
+            Value::MeshNode3D(moving_node.clone())
+        );
+        let badge_center = app.get_badge_center();
+        let badge_right = app.get_badge_right();
+        assert_eq!(dynamic.get("badge-center")?, Value::Point3D(badge_center));
+        assert_eq!(dynamic.get("badge-right")?, Value::Vector3D(badge_right));
+        assert_eq!(dynamic.get("badge-hit")?, Value::Hit3D(app.get_badge_hit()));
+        assert_eq!(app.get_badge_hit().object_id, "badge");
         let png = aot.render(&mut renderer)?.to_vec();
         assert!(
             png.as_slice() == interpreted.render(&mut renderer)?,
@@ -5483,6 +5506,10 @@ fn animation_crossfade_shares_one_pose_between_pixels_skin_morph_and_rays() -> T
             objects: scene.to_vec(),
             picked,
             dolly,
+            dolly_node,
+            moving_node,
+            badge_center,
+            badge_right,
             uploads: [
                 renderer.scene_mesh_uploads(),
                 renderer.scene_skin_uploads(),
@@ -5539,6 +5566,40 @@ fn animation_crossfade_shares_one_pose_between_pixels_skin_morph_and_rays() -> T
     near(rows[0][3], -4.5);
     near(rows[0][0], 0.5_f32.sqrt());
     near(rows[1][0], 0.5_f32.sqrt());
+    assert!(blended.moving_node.valid() && blended.moving_node.has_mesh);
+    near(blended.moving_node.origin.x as f32, rows[0][3]);
+    near(blended.moving_node.axis_x.y as f32, rows[1][0]);
+    let badge = blended
+        .objects
+        .iter()
+        .find(|object| object.id == "badge")
+        .ok_or("missing attached badge")?;
+    let badge_rows = badge.transform_rows();
+    near(
+        blended.badge_center.x as f32,
+        rows[0][3] + 0.60 * rows[0][0],
+    );
+    near(
+        blended.badge_center.y as f32,
+        rows[1][3] + 0.60 * rows[1][0],
+    );
+    near(blended.badge_center.z as f32, 0.35);
+    near(blended.badge_right.x as f32, rows[0][0]);
+    near(blended.badge_right.y as f32, rows[1][0]);
+    near(badge_rows[0][3], blended.badge_center.x as f32);
+    near(badge_rows[1][3], blended.badge_center.y as f32);
+    assert_ne!(from.badge_center, to.badge_center);
+    let hero = &blended.dolly_node;
+    assert!(hero.valid() && hero.has_camera && !hero.has_mesh);
+    assert_eq!((hero.source_index, hero.parent_index), (1, 0));
+    near(from.dolly_node.origin.x as f32, 1.5);
+    near(to.dolly_node.origin.x as f32, 3.1);
+    near(hero.origin.x as f32, 2.3);
+    near(hero.origin.y as f32, 0.25);
+    near(hero.origin.z as f32, 3.0);
+    near(hero.axis_x.x as f32, 1.0);
+    assert_eq!(from.dolly_node, inactive_target.dolly_node);
+    assert_eq!(to.dolly_node, inactive_source.dolly_node);
     let palette = |frame: &Frame| -> TestResult<_> {
         Ok(frame
             .objects
@@ -5616,6 +5677,812 @@ fn animation_crossfade_shares_one_pose_between_pixels_skin_morph_and_rays() -> T
     })?;
     near(rest.objects[0].transform_rows()[0][3], -5.5);
     near(rest.objects[0].transform_rows()[0][0], 1.0);
+    let mut app = weak.upgrade().ok_or("missing animation demo")?;
+    app.set_badge_node("missing".into());
+    dynamic.set("badge-node", Value::String("missing".into()))?;
+    let fallback = Point3D::new(100.0, 100.0, 100.0);
+    assert_eq!(app.get_badge_center(), fallback);
+    assert_eq!(dynamic.get("badge-center")?, Value::Point3D(fallback));
+    assert!(!app.get_badge_hit().valid);
+    let missing = aot.render(&mut renderer)?.to_vec();
+    assert!(missing == interpreted.render(&mut renderer)?);
+    let (view, _) = inspect(&interpreted)?;
+    let Some(Value::SceneObjects(scene)) = view.properties.get("model") else {
+        return Err("missing crossfade model".into());
+    };
+    assert!(scene.iter().all(|object| object.id != "badge"));
+    Ok(())
+}
+
+#[test]
+fn animation_layers_share_masked_transforms_skin_morph_and_picking() -> TestResult {
+    use animation_blend_ui::{AnimationBlendDemo, BlendLayer};
+    use xrack_runtime::{RecordList, RecordValue, scene3d::SceneModel};
+
+    const NAME: &str = "examples/puzzle3d/animation_blend.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("AnimationBlendDemo")?;
+    let mut app = AnimationBlendDemo::new();
+    app.set_blend(0.0);
+    dynamic.set("blend", Value::Float(0.0))?;
+    let layer = |clip: &str, mode: &str, root: &str, time, weight| BlendLayer {
+        clip: clip.into(),
+        time,
+        looping: false,
+        weight,
+        root_node: root.into(),
+        mode: mode.into(),
+    };
+    let record = |row: &BlendLayer| {
+        RecordValue::new(
+            "BlendLayer",
+            [
+                ("clip", Value::String(row.clip.clone())),
+                ("time", Value::Float(row.time)),
+                ("looping", Value::Bool(row.looping)),
+                ("weight", Value::Float(row.weight)),
+                ("root-node", Value::String(row.root_node.clone())),
+                ("mode", Value::String(row.mode.clone())),
+            ]
+            .into_iter()
+            .map(|(name, value)| (name.into(), value))
+            .collect(),
+        )
+    };
+    let initial = [
+        layer("Turn", "override", "#1", 1.0, 0.0),
+        layer("Turn", "additive", "#1", 1.0, 0.0),
+        // Slide has a translation channel on #0, so the mask initially excludes it.
+        layer("Slide", "override", "#1", 0.0, 1.0),
+    ];
+    let overrides = VecModel::from(initial.to_vec());
+    let records = RecordList::new("BlendLayer", initial.iter().map(record).collect());
+    app.bind_model_movement_layers(overrides.clone());
+    dynamic.set("movement-layers", Value::RecordList(records.clone()))?;
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+
+    let mut frame = || -> TestResult<(std::sync::Arc<SceneModel>, u64)> {
+        let rendered = aot.render(&mut renderer)?.to_vec();
+        assert!(rendered == interpreted.render(&mut renderer)?);
+        let (view, _) = inspect(&interpreted)?;
+        let Some(Value::SceneObjects(model)) = view.properties.get("model") else {
+            return Err("missing layered scene model".into());
+        };
+        let app = weak.upgrade().ok_or("missing layer demo")?;
+        let node = app.get_moving_node();
+        assert_eq!(node, model.scene_node_at("movement", 1));
+        assert_eq!(dynamic.get("moving-node")?, Value::MeshNode3D(node));
+        assert_eq!(app.get_badge_hit().object_id, "badge");
+        assert_eq!(dynamic.get("badge-hit")?, Value::Hit3D(app.get_badge_hit()));
+        Ok((model.clone(), renderer.scene_mesh_uploads()))
+    };
+    let angle = |model: &SceneModel| {
+        let axis = model.scene_node_at("movement", 1).axis_x;
+        axis.y.atan2(axis.x).to_degrees()
+    };
+    let near = |actual: f64, expected: f64| {
+        assert!((actual - expected).abs() < 1e-4, "{actual} != {expected}");
+    };
+    let base = frame()?;
+    near(angle(&base.0), 0.0);
+    let base_x = base.0.scene_node_at("movement", 0).origin.x;
+    near(base_x, -3.5);
+    let edit = |index, row: BlendLayer| {
+        assert!(records.model().set_row(index, record(&row)));
+        assert!(overrides.set_row(index, row));
+    };
+    edit(0, layer("Turn", "override", "#1", 1.0, 0.5));
+    edit(1, layer("Turn", "additive", "#1", 1.0, 0.5));
+    let overlapped = frame()?;
+    near(angle(&overlapped.0), 90.0);
+    near(overlapped.0.scene_node_at("movement", 0).origin.x, base_x);
+    assert_eq!(overlapped.1, base.1);
+    assert!(overrides.move_row(1, 0));
+    assert!(records.model().move_row(1, 0));
+    let reordered = frame()?;
+    near(angle(&reordered.0), 67.5);
+    edit(2, layer("Slide", "override", "#0", 0.0, 1.0));
+    let full_subtree = frame()?;
+    near(angle(&full_subtree.0), 67.5);
+    near(full_subtree.0.scene_node_at("movement", 0).origin.x, -5.5);
+    edit(2, layer("Slide", "override", "#999", 0.0, 1.0));
+    let missing_subtree = frame()?;
+    near(
+        missing_subtree.0.scene_node_at("movement", 0).origin.x,
+        base_x,
+    );
+
+    let mut app = weak.upgrade().ok_or("missing layer demo")?;
+    app.set_layer_weight(0.5);
+    dynamic.set("layer-weight", Value::Float(0.5))?;
+    let layered = frame()?;
+    let joint_x = |model: &SceneModel| model.scene_node_at("skin", 2).origin.x;
+    near(joint_x(&layered.0) - joint_x(&base.0), 1.0);
+    let skin_palette = |model: &SceneModel| {
+        model
+            .iter()
+            .find(|object| object.id == "skin")
+            .and_then(|object| object.skin_palette())
+            .cloned()
+            .ok_or("missing skin palette")
+    };
+    assert_ne!(skin_palette(&layered.0)?, skin_palette(&base.0)?);
+    let morph = |model: &SceneModel| -> Vec<Vec<f32>> {
+        model
+            .iter()
+            .filter(|object| object.id == "morph")
+            .filter_map(|object| object.morph_weights().map(|weights| weights.to_vec()))
+            .collect()
+    };
+    assert_eq!(morph(&base.0), [vec![1.0, 0.5], vec![1.0, 1.0]]);
+    assert_eq!(morph(&layered.0), [vec![1.0, 0.5], vec![1.0, 0.5]]);
+    assert_eq!(layered.1, base.1);
+    let warm = frame()?;
+    assert!(std::sync::Arc::ptr_eq(&layered.0, &warm.0));
+    assert_eq!(warm.1, layered.1);
+    Ok(())
+}
+
+#[test]
+fn particle_birth_tracks_preserve_birth_poses_and_reuse_gpu_keys() -> TestResult {
+    use particle_trails_ui::ParticleBirthTrackDemo;
+    use xrack_renderer_femtovg::{RenderDevice, SceneDrawStats};
+    use xrack_runtime::Point3D;
+
+    const PATH: &str = "examples/puzzle3d/particle_trails.xr";
+    let source = std::fs::read_to_string(PATH)?;
+    let preview = xrack_compiler::prepare_preview(&source, PATH, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, PATH, None)?;
+    let dynamic = program.create("ParticleBirthTrackDemo")?;
+    let mut app = ParticleBirthTrackDemo::new();
+    let keys = VecModel::from(app.get_keys());
+    app.bind_model_keys(keys.clone());
+    let dynamic_keys = dynamic.record_model("keys")?;
+    dynamic.set("keys", Value::RecordList(dynamic_keys.clone()))?;
+    let weak = app.as_weak();
+    let mut generated = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut renderer = Renderer::with_device(device.clone())?;
+    let mut other = Renderer::with_device(device)?;
+    let mut frame = |time: f64, start: f64, ribbons: i64, mesh: &str| -> TestResult<_> {
+        let mut app = weak.upgrade().ok_or("missing particle birth demo")?;
+        app.set_time(time);
+        app.set_start(start);
+        app.set_ribbons(ribbons);
+        app.set_particle_mesh(mesh.into());
+        for (name, value) in [
+            ("time", Value::Float(time)),
+            ("start", Value::Float(start)),
+            ("ribbons", Value::Int(ribbons)),
+            ("particle-mesh", Value::String(mesh.into())),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let png = generated.render(&mut renderer)?.to_vec();
+        let other_png = interpreted.render(&mut other)?.to_vec();
+        let (aot_view, _) = inspect(&generated)?;
+        let (interpreter_view, _) = inspect(&interpreted)?;
+        assert_eq!(
+            aot_view.properties.get("particle-emitters"),
+            interpreter_view.properties.get("particle-emitters")
+        );
+        assert!(png == other_png, "{time}, {start}, {ribbons}, {mesh}");
+        Ok((xrack_assets::decode_png(&png)?, renderer.scene_draw_stats()))
+    };
+    let pink = |pixel: &[u8]| pixel[0] > 170 && pixel[2] > 125 && pixel[1] < 145;
+    let at = |image: &xrack_assets::Raster, x: f64, y: f64| {
+        let cx = (312.0 + x * 284.0 / 6.0).round() as i32;
+        let cy = (142.0 - y * 284.0 / 6.0).round() as i32;
+        assert!(
+            ((cy - 2)..=(cy + 2)).any(|py| {
+                ((cx - 2)..=(cx + 2)).any(|px| {
+                    let index = (py as usize * image.size[0] as usize + px as usize) * 4;
+                    pink(&image.rgba[index..index + 4])
+                })
+            }),
+            "missing sprite born near {x}, {y}"
+        );
+    };
+    let (first, uploaded): (_, SceneDrawStats) = frame(0.75, 0.0, 0, "")?;
+    assert_eq!(uploaded.particle_track_uploads, 1);
+    at(&first, -3.0, 0.375);
+    at(&first, -1.5, 0.125);
+    let (later, reused) = frame(1.75, 0.0, 0, "")?;
+    assert_eq!(
+        reused.particle_track_uploads,
+        uploaded.particle_track_uploads
+    );
+    at(&later, -3.0, 0.875);
+    at(&later, -1.5, 0.625);
+    let rise = 0.125 * 0.5_f64.sqrt();
+    at(&later, 1.5 + rise, rise);
+    let (offset, _) = frame(0.95, 0.2, 0, "")?;
+    let view_bytes = 624 * 284 * 4;
+    assert_eq!(first.rgba[..view_bytes], offset.rgba[..view_bytes]);
+    assert_eq!(first.rgba, frame(0.75, 0.0, 0, "")?.0.rgba);
+
+    let (_, trails) = frame(1.75, 0.0, 8, "")?;
+    assert!(trails.particle_trail_segments > reused.particle_trail_segments);
+    let (_, models) = frame(1.75, 0.0, 0, "primitive:box")?;
+    assert!(models.particle_model_instances > trails.particle_model_instances);
+    assert!(models.particle_shadow_draws > trails.particle_shadow_draws);
+    assert_eq!(
+        models.particle_track_uploads,
+        uploaded.particle_track_uploads
+    );
+
+    let mut app = weak.upgrade().ok_or("missing birth track demo")?;
+    app.set_loop_births(true);
+    dynamic.set("loop-births", Value::Bool(true))?;
+    let (looped, loop_stats) = frame(2.75, 0.0, 0, "")?;
+    at(&looped, -1.5, 0.125);
+    assert_eq!(
+        loop_stats.particle_track_uploads,
+        uploaded.particle_track_uploads
+    );
+    let (_, loop_models) = frame(2.75, 0.0, 0, "primitive:box")?;
+    assert!(loop_models.particle_model_instances > loop_stats.particle_model_instances);
+    assert!(loop_models.particle_shadow_draws > loop_stats.particle_shadow_draws);
+    app.set_loop_births(false);
+    dynamic.set("loop-births", Value::Bool(false))?;
+
+    let mut key = keys.row(2).ok_or("missing final key")?;
+    key.position = Point3D::new(4.0, 0.0, 0.7);
+    assert!(keys.set_row(2, key.clone()));
+    let edited = dynamic_keys
+        .model()
+        .row(2)
+        .and_then(|record| record.with_field(&["position".into()], Value::Point3D(key.position)))
+        .ok_or("missing interpreted key position")?;
+    assert!(dynamic_keys.model().set_row(2, edited.clone()));
+    let (changed, changed_stats) = frame(1.75, 0.0, 0, "")?;
+    assert_eq!(
+        changed_stats.particle_track_uploads,
+        uploaded.particle_track_uploads + 1
+    );
+    at(&changed, 2.0 + rise, rise);
+    at(&changed, -3.0, 0.875);
+
+    key.time = 0.5;
+    assert!(keys.set_row(2, key));
+    let unordered = edited
+        .with_field(&["time".into()], Value::Float(0.5))
+        .ok_or("missing interpreted key time")?;
+    assert!(dynamic_keys.model().set_row(2, unordered));
+    let (invalid, invalid_stats) = frame(1.75, 0.0, 0, "")?;
+    assert_eq!(
+        changed_stats.particle_track_uploads,
+        invalid_stats.particle_track_uploads
+    );
+    assert!(!invalid.rgba[..view_bytes].chunks_exact(4).any(pink));
+    Ok(())
+}
+
+#[test]
+fn particle_birth_animation_bakes_ancestors_and_preserves_exact_step_keys() -> TestResult {
+    use animation_blend_ui::ParticleClipDemo;
+    use xrack_renderer_femtovg::{RenderDevice, SceneDrawStats};
+    use xrack_runtime::scene3d::ParticleEmissionTrack;
+
+    const NAME: &str = "examples/puzzle3d/animation_blend.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ParticleClipDemo")?;
+    let app = ParticleClipDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut renderer = Renderer::with_device(device.clone())?;
+    let mut other = Renderer::with_device(device)?;
+    let mut render = |clip: &str, node: &str, time: f64, rate: f64| -> TestResult<_> {
+        let mut app = weak.upgrade().ok_or("missing animation emission demo")?;
+        app.set_clip(clip.into());
+        app.set_node_selector(node.into());
+        app.set_time(time);
+        app.set_sample_rate(rate);
+        for (name, value) in [
+            ("clip", Value::String(clip.into())),
+            ("node-selector", Value::String(node.into())),
+            ("time", Value::Float(time)),
+            ("sample-rate", Value::Float(rate)),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let a = aot.render(&mut renderer)?.to_vec();
+        let b = interpreted.render(&mut other)?;
+        assert!(a == b, "{clip}, {node}, {time}, {rate}");
+        let (view, _) = inspect(&interpreted)?;
+        let Some(Value::SceneParticleEmitters(emitters)) = view.properties.get("particle-emitters")
+        else {
+            return Err("missing particle bindings".into());
+        };
+        let track = emitters
+            .first()
+            .map(|emitter| emitter.emission_track.clone());
+        Ok((
+            xrack_assets::decode_png(&a)?,
+            track,
+            renderer.scene_draw_stats(),
+        ))
+    };
+    let at = |image: &xrack_assets::Raster, x: f64, y: f64| {
+        let cx = (312.0 + x * 284.0 / 6.0).round() as i32;
+        let cy = (142.0 - y * 284.0 / 6.0).round() as i32;
+        ((cy - 2)..=(cy + 2)).any(|py| {
+            ((cx - 2)..=(cx + 2)).any(|px| {
+                let index = (py as usize * image.size[0] as usize + px as usize) * 4;
+                let pixel = &image.rgba[index..index + 4];
+                pixel[0] > 170 && pixel[2] > 125 && pixel[1] < 145
+            })
+        })
+    };
+    let (slide, first_track, first_stats): (_, Option<ParticleEmissionTrack>, SceneDrawStats) =
+        render("Slide", "#1", 0.75, 60.0)?;
+    let first_track = first_track.ok_or("missing Slide track")?;
+    assert_eq!(
+        first_track.keys().first().ok_or("empty Slide track")?[0],
+        -3.0
+    );
+    assert_eq!(
+        first_track.keys().last().ok_or("empty Slide track")?[0],
+        3.0
+    );
+    assert!(at(&slide, -2.345, 0.1875));
+    assert!(at(&slide, 0.405, 0.0625));
+    let (moved, again, carried) = render("Slide", "#1", 1.1, 60.0)?;
+    assert!(at(&moved, -2.17, 0.275));
+    assert!(at(&moved, 3.33, 0.025));
+    assert!(std::ptr::eq(
+        first_track.keys(),
+        again.ok_or("missing retained track")?.keys()
+    ));
+    assert_eq!(
+        first_stats.particle_track_uploads,
+        carried.particle_track_uploads
+    );
+    let (rewound, _, _) = render("Slide", "#1", 0.75, 60.0)?;
+    assert_eq!(slide.rgba, rewound.rgba);
+
+    let (step, stepped, _) = render("Step", "/#0/#1", 0.75, 1.0)?;
+    let step_keys = stepped.ok_or("missing Step track")?;
+    let [initial, before, after] = step_keys.keys() else {
+        return Err("expected initial pose and both sides of the step".into());
+    };
+    assert_eq!(
+        (initial[3], before[3], after[3]),
+        (0.0, 1.0_f32.next_down(), 1.0)
+    );
+    assert_eq!((before[0], after[0]), (-3.0, 3.0));
+    assert!(at(&step, -2.595, 0.0625));
+    assert!(!at(&step, 0.405, 0.0625));
+    let (after_step, _, _) = render("Step", "#1", 1.1, 1.0)?;
+    assert!(at(&after_step, 3.33, 0.025));
+
+    let (turned, _, _) = render("Turn", "#1", 0.75, 60.0)?;
+    let cosine = 0.5_f64.sqrt();
+    assert!(at(
+        &turned,
+        -3.0 + (0.28 + 0.25 * (0.5 - 0.25)) * cosine,
+        (0.28 + 0.25 * (0.5 + 0.25)) * cosine,
+    ));
+    let (_, sibling, _) = render("Turn", "#2", 0.75, 60.0)?;
+    assert_eq!(
+        sibling.ok_or("missing static sibling track")?.keys().len(),
+        1
+    );
+    assert!(render("missing", "#1", 1.1, 60.0)?.1.is_none());
+    assert!(render("Step", "#999", 1.1, 60.0)?.1.is_none());
+
+    let (_, clamped_track, clamped_stats) = render("Slide", "#1", 1.75, 60.0)?;
+    let mut app = weak.upgrade().ok_or("missing animation emission demo")?;
+    app.set_loop_births(true);
+    dynamic.set("loop-births", Value::Bool(true))?;
+    let (looped, wrap_track, wrap_stats) = render("Slide", "#1", 1.75, 60.0)?;
+    assert!(at(&looped, -1.845, 0.4375));
+    assert!(at(&looped, 0.905, 0.3125));
+    assert!(at(&looped, -2.345, 0.1875));
+    assert!(at(&looped, 0.405, 0.0625));
+    assert!(std::ptr::eq(
+        clamped_track.ok_or("missing clamped track")?.keys(),
+        wrap_track.ok_or("missing looped track")?.keys(),
+    ));
+    assert_eq!(
+        clamped_stats.particle_track_uploads,
+        wrap_stats.particle_track_uploads
+    );
+    let (back, _, back_stats) = render("Slide", "#1", 0.75, 60.0)?;
+    assert_eq!(
+        wrap_stats.particle_track_uploads,
+        back_stats.particle_track_uploads
+    );
+    assert!(at(&back, -2.345, 0.1875));
+    let (again, _, _) = render("Slide", "#1", 1.75, 60.0)?;
+    assert_eq!(looped.rgba, again.rgba);
+
+    // Three births per cycle exercise the fractional phase and its carry.
+    app.set_rate(3.0);
+    dynamic.set("rate", Value::Float(3.0))?;
+    let (boundary, _, _) = render("Slide", "#1", 1.1, 60.0)?;
+    assert!(at(&boundary, -2.67, 0.025));
+    assert!(!at(&boundary, 3.33, 0.025));
+    let (step_loop, _, _) = render("Step", "#1", 1.1, 1.0)?;
+    assert!(at(&step_loop, -2.67, 0.025));
+    assert!(!at(&step_loop, 3.33, 0.025));
+
+    app.set_rate(0.0);
+    app.set_scheduled(true);
+    dynamic.set("rate", Value::Float(0.0))?;
+    dynamic.set("scheduled", Value::Bool(true))?;
+    let (early, _, before_bursts) = render("Slide", "#1", 0.125, 60.0)?;
+    assert!(!at(&early, -1.22, 0.0));
+    let (overlap, _, sprites) = render("Slide", "#1", 0.7, 60.0)?;
+    assert!(at(&overlap, -0.995, 0.1125));
+    assert!(at(&overlap, 0.38, 0.05));
+    assert_eq!(sprites.particle_draws - before_bursts.particle_draws, 1);
+    assert_eq!(
+        sprites.particle_instances - before_bursts.particle_instances,
+        2
+    );
+    let (crossed, _, crossed_stats) = render("Slide", "#1", 1.1, 60.0)?;
+    assert!(at(&crossed, 1.955, 0.0875));
+    assert!(at(&crossed, -2.67, 0.025));
+    assert!(!at(&crossed, 3.33, 0.025));
+    assert_eq!(
+        crossed_stats.particle_instances - sprites.particle_instances,
+        4
+    );
+    assert_eq!(overlap.rgba, render("Slide", "#1", 0.7, 60.0)?.0.rgba);
+    app.set_loop_births(false);
+    dynamic.set("loop-births", Value::Bool(false))?;
+    let (clamped, _, _) = render("Slide", "#1", 1.1, 60.0)?;
+    assert!(at(&clamped, 3.33, 0.025));
+    assert!(!at(&clamped, -2.67, 0.025));
+
+    // Mutating a shared list also has to invalidate its prepared schedule.
+    let authored = app.model_scheduled_bursts();
+    let Value::RecordList(interpreted_bursts) = dynamic.get("scheduled-bursts")? else {
+        return Err("missing interpreted schedule".into());
+    };
+    let event = authored.row(0).ok_or("missing scheduled burst")?;
+    let interpreted_event = interpreted_bursts
+        .model()
+        .row(0)
+        .ok_or("missing interpreted burst")?;
+    let (.., before_batch_split) = render("Slide", "#1", 0.85, 60.0)?;
+    for _ in 0..18 {
+        authored.push(event.clone());
+        interpreted_bursts.model().push(interpreted_event.clone());
+    }
+    let (_, _, batches) = render("Slide", "#1", 0.85, 60.0)?;
+    assert_eq!(
+        batches.particle_draws - before_batch_split.particle_draws,
+        2
+    );
+    assert_eq!(
+        batches.particle_instances - before_batch_split.particle_instances,
+        21
+    );
+    Ok(())
+}
+
+#[test]
+fn gltf_parent_places_sprite_trails_and_model_particles_in_both_backends() -> TestResult {
+    use animation_blend_ui::AnimationBlendDemo;
+    use xrack_renderer_femtovg::{RenderDevice, SceneDrawStats};
+    use xrack_runtime::Point3D;
+
+    const NAME: &str = "examples/puzzle3d/animation_blend.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("AnimationBlendDemo")?;
+    let app = AnimationBlendDemo::new();
+    let weak = app.as_weak();
+    let mut aot = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut renderer = Renderer::with_device(device.clone())?;
+    let mut interpreter_renderer = Renderer::with_device(device)?;
+    let camera = SceneCamera::new(0.0, 0.0, 9.0, [580.0, 244.0]).ok_or("missing camera")?;
+    #[derive(Clone, Copy, Debug)]
+    struct Settings {
+        node: &'static str,
+        blend: f64,
+        motion_target: &'static str,
+        time: f64,
+        trail: i64,
+        model: &'static str,
+        field: &'static str,
+        group: &'static str,
+        field_node: &'static str,
+    }
+    let defaults = Settings {
+        node: "#1",
+        blend: 0.0,
+        motion_target: "Turn",
+        time: 0.8,
+        trail: 0,
+        model: "",
+        field: "",
+        group: "sparks",
+        field_node: "#1",
+    };
+    let mut render = |settings: Settings| -> TestResult<(Vec<u8>, Point3D, SceneDrawStats)> {
+        let mut app = weak.upgrade().ok_or("missing animation demo")?;
+        app.set_sparks(true);
+        app.set_spark_node(settings.node.into());
+        app.set_blend(settings.blend);
+        app.set_motion_to(settings.motion_target.into());
+        app.set_spark_time(settings.time);
+        app.set_spark_trail(settings.trail);
+        app.set_spark_model(settings.model.into());
+        app.set_field_active(!settings.field.is_empty());
+        app.set_field_kind(settings.field.into());
+        app.set_field_group(settings.group.into());
+        app.set_field_node(settings.field_node.into());
+        for (name, value) in [
+            ("sparks", Value::Bool(true)),
+            ("spark-node", Value::String(settings.node.into())),
+            ("blend", Value::Float(settings.blend)),
+            ("motion-to", Value::String(settings.motion_target.into())),
+            ("spark-time", Value::Float(settings.time)),
+            ("spark-trail", Value::Int(settings.trail)),
+            ("spark-model", Value::String(settings.model.into())),
+            ("field-active", Value::Bool(!settings.field.is_empty())),
+            ("field-kind", Value::String(settings.field.into())),
+            ("field-group", Value::String(settings.group.into())),
+            ("field-node", Value::String(settings.field_node.into())),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let png = aot.render(&mut renderer)?.to_vec();
+        let dynamic_png = interpreted.render(&mut interpreter_renderer)?.to_vec();
+        let (generated_view, _) = inspect(&aot)?;
+        let (view, _) = inspect(&interpreted)?;
+        assert_eq!(
+            generated_view.properties.get("particle-emitters"),
+            view.properties.get("particle-emitters"),
+            "{settings:?}",
+        );
+        assert_eq!(
+            generated_view.properties.get("particle-affectors"),
+            view.properties.get("particle-affectors"),
+            "{settings:?}",
+        );
+        assert!(png == dynamic_png, "{settings:?}");
+        let Some(Value::SceneObjects(scene)) = view.properties.get("model") else {
+            return Err("missing scene model".into());
+        };
+        let Some(Value::SceneParticleEmitters(emitters)) = view.properties.get("particle-emitters")
+        else {
+            return Err("missing particle emitters".into());
+        };
+        let stats = renderer.scene_draw_stats();
+        if settings.node == "#999" {
+            assert!(emitters.is_empty());
+            return Ok((png, Point3D::default(), stats));
+        }
+        let [emitter] = emitters.as_ref() else {
+            return Err("expected one attached emitter".into());
+        };
+        let rows = emitter
+            .motion
+            .as_ref()
+            .and_then(|motion| motion.placement)
+            .ok_or("missing resolved particle parent")?;
+        let [x, y, z] = [
+            0.65 + settings.time * 0.85,
+            0.58 + settings.time * 0.2,
+            0.85,
+        ];
+        let local = Point3D::new(x, y, z);
+        let center = if settings.node.is_empty() {
+            scene
+                .map_position("movement", "", local)
+                .ok_or("missing object parent")?
+        } else {
+            let node = scene.scene_node("movement", settings.node);
+            assert!(node.valid());
+            Point3D::new(
+                node.origin.x + x * node.axis_x.x + y * node.axis_y.x + z * node.axis_z.x,
+                node.origin.y + x * node.axis_x.y + y * node.axis_y.y + z * node.axis_z.y,
+                node.origin.z + x * node.axis_x.z + y * node.axis_y.z + z * node.axis_z.z,
+            )
+        };
+        for (row, expected) in rows.into_iter().zip([center.x, center.y, center.z]) {
+            let actual = row
+                .into_iter()
+                .map(f64::from)
+                .zip([x, y, z, 1.0])
+                .map(|(coordinate, factor)| coordinate * factor)
+                .sum::<f64>();
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        Ok((png, center, stats))
+    };
+    let assert_sprite_at = |png: &[u8], point| -> TestResult {
+        let screen = camera.project(point);
+        assert!(screen.valid && screen.inside);
+        let image = xrack_assets::decode_png(png)?;
+        let x = screen.point.x.0.round() as u32;
+        let y = screen.point.y.0.round() as u32;
+        let mut found = false;
+        for y in y.saturating_sub(2)..=(y + 2).min(image.size[1] - 1) {
+            for x in x.saturating_sub(2)..=(x + 2).min(image.size[0] - 1) {
+                let pixel = 4 * (y * image.size[0] + x) as usize;
+                let rgb = &image.rgba[pixel..pixel + 3];
+                found |= rgb[0] > 170 && rgb[2] > 125 && rgb[1] < 145;
+            }
+        }
+        assert!(found, "expected magenta sprite near {screen:?}");
+        Ok(())
+    };
+
+    let (original, original_center, initial) = render(defaults)?;
+    assert_sprite_at(&original, original_center)?;
+    let (turned, turned_center, turned_stats) = render(Settings {
+        blend: 1.0,
+        ..defaults
+    })?;
+    assert_sprite_at(&turned, turned_center)?;
+    assert!((turned_center.y - original_center.y).abs() > 0.5);
+    assert!(turned_stats.particle_instances > initial.particle_instances);
+    let (_, _, trail) = render(Settings {
+        blend: 1.0,
+        trail: 5,
+        ..defaults
+    })?;
+    assert!(trail.particle_trail_segments > turned_stats.particle_trail_segments);
+    let (_, _, model) = render(Settings {
+        blend: 1.0,
+        model: "primitive:box",
+        ..defaults
+    })?;
+    assert!(model.particle_model_instances > trail.particle_model_instances);
+    assert!(model.particle_shadow_draws > trail.particle_shadow_draws);
+    let (row, row_center, _) = render(Settings {
+        node: "",
+        blend: 1.0,
+        ..defaults
+    })?;
+    assert_sprite_at(&row, row_center)?;
+    assert!((row_center.y - turned_center.y).abs() > 0.5);
+    let (_, _, missing) = render(Settings {
+        node: "#999",
+        ..defaults
+    })?;
+    let (_, _, missing_again) = render(Settings {
+        node: "#999",
+        time: 1.4,
+        ..defaults
+    })?;
+    assert_eq!(missing.particle_instances, missing_again.particle_instances);
+    assert_eq!(
+        missing.particle_trail_segments,
+        missing_again.particle_trail_segments
+    );
+    assert_eq!(
+        missing.particle_model_instances,
+        missing_again.particle_model_instances
+    );
+    assert_eq!(
+        missing.particle_shadow_draws,
+        missing_again.particle_shadow_draws
+    );
+    let (rewound, _, _) = render(defaults)?;
+    assert_eq!(original, rewound);
+
+    let viewport = |png: &[u8]| -> TestResult<Vec<u8>> {
+        let image = xrack_assets::decode_png(png)?;
+        Ok(image.rgba[..(image.size[0] * 244 * 4) as usize].to_vec())
+    };
+    let (unmatched, _, unused) = render(Settings {
+        field: "gravity",
+        group: "dust",
+        ..defaults
+    })?;
+    assert_eq!(viewport(&original)?, viewport(&unmatched)?);
+    assert_eq!(unused.particle_affector_uploads, 0);
+    let (affected, center, applied) = render(Settings {
+        field: "gravity",
+        ..defaults
+    })?;
+    assert_sprite_at(&affected, Point3D::new(center.x + 0.64, center.y, center.z))?;
+    assert!(applied.particle_affector_uploads > 0);
+    let (_, _, advanced) = render(Settings {
+        field: "gravity",
+        time: 0.9,
+        ..defaults
+    })?;
+    assert_eq!(
+        advanced.particle_affector_uploads,
+        applied.particle_affector_uploads
+    );
+    let (rotated, center, _) = render(Settings {
+        blend: 1.0,
+        field: "gravity",
+        ..defaults
+    })?;
+    assert_sprite_at(&rotated, Point3D::new(center.x, center.y + 0.64, center.z))?;
+    let (missing_field, _, _) = render(Settings {
+        blend: 1.0,
+        field: "gravity",
+        field_node: "#999",
+        ..defaults
+    })?;
+    assert_eq!(viewport(&turned)?, viewport(&missing_field)?);
+
+    // The point rotator uses position relative to the local pivot.
+    let (orbiting, _, _) = render(Settings {
+        blend: 1.0,
+        field: "point-rotator",
+        ..defaults
+    })?;
+    let (sine, cosine) = 64.0_f64.to_radians().sin_cos();
+    let x = 0.3 + 1.03 * cosine - 0.24 * sine;
+    let y = 0.5 + 1.03 * sine + 0.24 * cosine;
+    assert_sprite_at(&orbiting, Point3D::new(-5.5 - y, x, 0.85))?;
+    let (attracted, _, _) = render(Settings {
+        blend: 1.0,
+        field: "attractor",
+        ..defaults
+    })?;
+    assert_sprite_at(
+        &attracted,
+        Point3D::new(
+            -5.5 - (0.74 * 0.2 + 0.5 * 0.8),
+            1.33 * 0.2 + 0.3 * 0.8,
+            0.85,
+        ),
+    )?;
+    // Curve stretches X by two, so the local repeller reaches twice as far on that axis.
+    let (repelled, center, _) = render(Settings {
+        blend: 1.0,
+        motion_target: "Curve",
+        field: "repeller",
+        ..defaults
+    })?;
+    let distance = 1.03_f64.hypot(0.24);
+    assert_sprite_at(
+        &repelled,
+        Point3D::new(
+            center.x + 4.0 * 1.03 / distance,
+            center.y + 2.0 * 0.24 / distance,
+            center.z,
+        ),
+    )?;
+    let (_, _, model_field) = render(Settings {
+        blend: 1.0,
+        field: "point-rotator",
+        model: "primitive:box",
+        ..defaults
+    })?;
+    assert!(model_field.particle_model_instances > model.particle_model_instances);
+    assert!(model_field.particle_shadow_draws > model.particle_shadow_draws);
     Ok(())
 }
 
@@ -9596,6 +10463,155 @@ fn gpu_sprites_scrub_batch_and_share_opaque_depth_in_both_backends() -> TestResu
 }
 
 #[test]
+fn particle_birth_variation_uses_independent_lifetimes_and_shared_renderer_paths() -> TestResult {
+    use sprite_particles_ui::ParticleBirthVariationsDemo;
+    use xrack_renderer_femtovg::RenderDevice;
+
+    const NAME: &str = "examples/puzzle3d/sprite_particles.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ParticleBirthVariationsDemo")?;
+    let app = ParticleBirthVariationsDemo::new();
+    let weak = app.as_weak();
+    let mut generated = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut gpu = Renderer::with_device(device.clone())?;
+    let mut other = Renderer::with_device(device)?;
+    let mut app = weak.upgrade().ok_or("missing particle variation demo")?;
+    let mut frame = |app: &mut ParticleBirthVariationsDemo, time: f64| -> TestResult<_> {
+        app.set_time(time);
+        for (key, value) in [
+            ("time", Value::Float(time)),
+            ("seed", Value::Int(app.get_seed())),
+            ("population", Value::Int(app.get_population())),
+            ("lifetime-spread", Value::Float(app.get_lifetime_spread())),
+            ("size-spread", Value::Float(app.get_size_spread())),
+            ("end-spread", Value::Float(app.get_end_spread())),
+            ("spin-spread", Value::Float(app.get_spin_spread())),
+            ("trail", Value::Bool(app.get_trail())),
+            ("textured", Value::Bool(app.get_textured())),
+            ("model-particles", Value::Bool(app.get_model_particles())),
+            ("variant", Value::Bool(app.get_variant())),
+        ] {
+            dynamic.set(key, value)?;
+        }
+        let png = generated.render(&mut gpu)?.to_vec();
+        assert_eq!(png, interpreted.render(&mut other)?);
+        assert_eq!(gpu.scene_draw_stats(), other.scene_draw_stats());
+        Ok((xrack_assets::decode_png(&png)?, gpu.scene_draw_stats()))
+    };
+    let pixel = |image: &xrack_assets::Raster, x: usize, y: usize| {
+        let width = image.size[0] as usize;
+        let offset = (y * width + x) * 4;
+        [
+            image.rgba[offset],
+            image.rgba[offset + 1],
+            image.rgba[offset + 2],
+        ]
+    };
+    let pixels = |image: &xrack_assets::Raster, start, end| {
+        let test = |pixel: [u8; 3]| {
+            pixel[0] > 90 && pixel[2] > 55 && u16::from(pixel[0]) > 2 * u16::from(pixel[1])
+        };
+        let mut count = 0;
+        let mut rows = 0;
+        for y in 50..250 {
+            for x in start..end {
+                if test(pixel(image, x, y)) {
+                    count += 1;
+                    rows += y;
+                }
+            }
+        }
+        (count, rows / count.max(1))
+    };
+    let right = |image: &xrack_assets::Raster| pixels(image, 330, 570);
+
+    app.set_textured(false);
+    app.set_population(1);
+    let (start, _) = frame(&mut app, 0.0)?;
+    assert!(right(&start).0 > pixels(&start, 55, 300).0 * 2);
+    let (shrunk, _) = frame(&mut app, 0.6)?;
+    assert!(right(&shrunk).0 * 2 < right(&start).0);
+    app.set_end_spread(0.0);
+    let (constant_end, _) = frame(&mut app, 0.6)?;
+    assert!(right(&constant_end).0 > right(&shrunk).0);
+    app.set_end_spread(0.33);
+
+    // Seeds 5 and 2 generate actual lives of about 0.74s and 1.59s.
+    let (dead, candidates) = frame(&mut app, 0.9)?;
+    assert_eq!(right(&dead).0, 0);
+    assert!(pixels(&dead, 55, 300).0 > 0);
+    app.set_seed(2);
+    let (surviving, _) = frame(&mut app, 1.2)?;
+    assert!(right(&surviving).0 > 0);
+    assert_eq!(pixels(&surviving, 55, 300).0, 0);
+    let (ended, still_candidates) = frame(&mut app, 1.7)?;
+    assert_eq!(right(&ended).0, 0);
+    assert!(still_candidates.particle_instances > candidates.particle_instances);
+    let (_, retired) = frame(&mut app, 1.8)?;
+    assert_eq!(
+        retired.particle_instances,
+        still_candidates.particle_instances
+    );
+    assert_eq!(surviving.rgba, frame(&mut app, 1.2)?.0.rgba);
+
+    app.set_textured(true);
+    app.set_seed(5);
+    app.set_spin_spread(0.0);
+    let (individual_sequence, _) = frame(&mut app, 0.64)?;
+    let matching = |start: usize, color: fn(u8, u8, u8) -> bool| {
+        (138..162).any(|y| {
+            (start..start + 24).any(|x| {
+                let [r, g, b] = pixel(&individual_sequence, x, y);
+                color(r, g, b)
+            })
+        })
+    };
+    assert!(matching(375, |r, g, b| r > 190 && g > 140 && b < 110));
+    assert!(matching(225, |r, g, b| r < 90
+        && g > 80
+        && b > 135
+        && b.saturating_sub(g) > 35));
+    app.set_spin_spread(120.0);
+    app.set_seed(2);
+    let (rotated, _) = frame(&mut app, 0.48)?;
+    app.set_spin_spread(0.0);
+    let (unrotated, _) = frame(&mut app, 0.48)?;
+    assert_ne!(rotated.rgba, unrotated.rgba);
+
+    app.set_seed(5);
+    app.set_textured(false);
+    app.set_trail(true);
+    let (trail, stats) = frame(&mut app, 0.77)?;
+    let (fading_trail, later) = frame(&mut app, 0.85)?;
+    assert!(right(&trail).0 > 0 && right(&fading_trail).0 > 0);
+    assert!(right(&trail).1.abs_diff(right(&fading_trail).1) <= 2);
+    assert_ne!(trail.rgba, fading_trail.rgba);
+    assert!(later.particle_trail_segments > stats.particle_trail_segments);
+    assert_eq!(right(&frame(&mut app, 1.01)?.0).0, 0);
+
+    app.set_trail(false);
+    app.set_model_particles(true);
+    app.set_seed(2);
+    let (still_mesh, before_spin) = frame(&mut app, 0.56)?;
+    app.set_spin_spread(115.0);
+    let (rotated_mesh, after_spin) = frame(&mut app, 0.56)?;
+    assert_ne!(still_mesh.rgba, rotated_mesh.rgba);
+    assert!(after_spin.particle_model_instances > before_spin.particle_model_instances);
+    assert!(after_spin.particle_shadow_draws > before_spin.particle_shadow_draws);
+    frame(&mut app, 0.21)?;
+    assert_eq!(rotated_mesh.rgba, frame(&mut app, 0.56)?.0.rgba);
+    Ok(())
+}
+
+#[test]
 fn sprite_sheets_animate_share_textures_and_preserve_both_backends() -> TestResult {
     use sprite_particles_ui::SpriteParticlesDemo;
 
@@ -10510,6 +11526,339 @@ fn particle_affectors_follow_age_layers_and_row_order_in_both_backends() -> Test
     assert!(measure(&randomized, blue)[0] > center[0] * 10);
     render(base)?;
     assert_eq!(render(variation)?.0.rgba, randomized.rgba);
+    Ok(())
+}
+
+#[test]
+fn particle_waves_and_size_use_the_same_timeline_in_both_backends() -> TestResult {
+    use particle_affectors_ui::ParticleWavesDemo;
+    use xrack_renderer_femtovg::RenderDevice;
+
+    const NAME: &str = "examples/puzzle3d/particle_affectors.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ParticleWavesDemo")?;
+    let app = ParticleWavesDemo::new();
+    let weak = app.as_weak();
+    let mut generated = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut gpu = Renderer::with_device(device.clone())?;
+    let mut other = Renderer::with_device(device)?;
+    let mut app = weak.upgrade().ok_or("missing particle waves demo")?;
+    let mut frame = |app: &mut ParticleWavesDemo, time: f64| -> TestResult<_> {
+        app.set_time(time);
+        for (name, value) in [
+            ("time", Value::Float(time)),
+            ("wander", Value::Bool(app.get_wander())),
+            ("pulse", Value::Bool(app.get_pulse())),
+            ("attached", Value::Bool(app.get_attached())),
+            ("trail", Value::Bool(app.get_trail())),
+            ("model-particles", Value::Bool(app.get_model_particles())),
+            ("jitter", Value::Float(app.get_jitter())),
+            ("population", Value::Int(app.get_population())),
+            ("seed", Value::Int(app.get_seed())),
+            ("fade-out", Value::Float(app.get_fade_out())),
+            ("scale-mode", Value::String(app.get_scale_mode())),
+            ("scale-easing", Value::String(app.get_scale_easing())),
+        ] {
+            dynamic.set(name, value)?;
+        }
+        let png = generated.render(&mut gpu)?.to_vec();
+        assert_eq!(png, interpreted.render(&mut other)?);
+        assert_eq!(gpu.scene_draw_stats(), other.scene_draw_stats());
+        Ok((xrack_assets::decode_png(&png)?, gpu.scene_draw_stats()))
+    };
+    let measure = |image: &xrack_assets::Raster| -> TestResult<(usize, usize, usize, usize)> {
+        let mut left = 624;
+        let mut right = 0;
+        let mut top = 300;
+        let mut bottom = 0;
+        let mut area = 0;
+        for (index, pixel) in image.rgba[..624 * 300 * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+        {
+            if pixel[0] > 170 && pixel[2] > 125 && pixel[1] < 145 {
+                let x = index % 624;
+                let y = index / 624;
+                left = left.min(x);
+                right = right.max(x);
+                top = top.min(y);
+                bottom = bottom.max(y);
+                area += 1;
+            }
+        }
+        if left > right || top > bottom {
+            return Err("no colored particles".into());
+        }
+        Ok((
+            (left + right) / 2,
+            (top + bottom) / 2,
+            right - left + 1,
+            area,
+        ))
+    };
+
+    app.set_pulse(false);
+    app.set_jitter(0.0);
+    app.set_population(1);
+    let early = measure(&frame(&mut app, 0.0)?.0)?;
+    let (wave, stats) = frame(&mut app, 0.5)?;
+    let offset = measure(&wave)?;
+    assert!(early.0.abs_diff(311) <= 1 && early.1.abs_diff(149) <= 1);
+    assert!(offset.0.abs_diff(371) <= 1 && offset.1.abs_diff(149) <= 1);
+    let (faded_scene, faded_stats) = frame(&mut app, 1.75)?;
+    let faded_x = measure(&faded_scene)?.0;
+    assert!((295..=300).contains(&faded_x));
+    assert_eq!(
+        stats.particle_affector_uploads,
+        faded_stats.particle_affector_uploads
+    );
+    assert_eq!(wave.rgba, frame(&mut app, 0.5)?.0.rgba);
+    app.set_fade_out(0.0);
+    assert!(measure(&frame(&mut app, 1.75)?.0)?.0 < faded_x - 20);
+
+    app.set_attached(true);
+    let local = measure(&frame(&mut app, 0.5)?.0)?;
+    assert!(local.0.abs_diff(311) <= 1 && local.1.abs_diff(29) <= 1);
+    app.set_attached(false);
+    app.set_jitter(0.75);
+    app.set_population(48);
+    let seed_a = frame(&mut app, 0.5)?.0;
+    assert!(measure(&seed_a)?.2 > offset.2 * 3);
+    app.set_seed(137);
+    let seed_b = frame(&mut app, 0.5)?.0;
+    assert_ne!(seed_a.rgba, seed_b.rgba);
+    frame(&mut app, 0.64)?;
+    assert_eq!(seed_b.rgba, frame(&mut app, 0.5)?.0.rgba);
+
+    app.set_wander(false);
+    app.set_pulse(true);
+    app.set_population(1);
+    let mut areas = Vec::new();
+    for mode in [
+        "step",
+        "smooth-step",
+        "linear",
+        "triangle",
+        "sine",
+        "abs-sine",
+    ] {
+        app.set_scale_mode(mode.into());
+        areas.push(measure(&frame(&mut app, 0.25)?.0)?.3);
+    }
+    assert!(
+        areas[..5].windows(2).all(|pair| pair[0] < pair[1]),
+        "{areas:?}"
+    );
+    assert_eq!(areas[4], areas[5]);
+    app.set_scale_mode("linear".into());
+    let linear = measure(&frame(&mut app, 0.5)?.0)?.2;
+    app.set_scale_easing("ease-in".into());
+    assert!(measure(&frame(&mut app, 0.5)?.0)?.2 < linear);
+    app.set_scale_mode("step".into());
+    let (sprite, _) = frame(&mut app, 0.65)?;
+    assert!(measure(&sprite)?.2 > linear);
+    app.set_trail(true);
+    app.set_wander(true);
+    let (trail, ribbon) = frame(&mut app, 0.65)?;
+    assert_ne!(trail.rgba, sprite.rgba);
+    assert!(ribbon.particle_trail_segments > 0);
+    app.set_trail(false);
+    app.set_model_particles(true);
+    let (_, model) = frame(&mut app, 0.65)?;
+    assert!(model.particle_model_instances > 0 && model.particle_shadow_draws > 0);
+    let (view, _) = inspect(&generated)?;
+    let (
+        Some(Value::SceneParticleEmitters(emitters)),
+        Some(Value::SceneParticleAffectors(affectors)),
+    ) = (
+        view.properties.get("particle-emitters"),
+        view.properties.get("particle-affectors"),
+    )
+    else {
+        return Err("missing prepared wave inputs".into());
+    };
+    let emitter = emitters.first().ok_or("missing model emitter")?;
+    let sample = emitter
+        .samples(0.65, 16)
+        .next()
+        .ok_or("missing live sample")?;
+    let [min, max] = emitter
+        .shadow_bounds(&sample, affectors.iter())
+        .ok_or("missing model shadow bounds")?;
+    assert!(min[0] < -2.8 && max[0] > 2.8, "{min:?} through {max:?}");
+    Ok(())
+}
+
+#[test]
+fn tracked_click_bursts_keep_world_pose_and_retained_row_seeds_in_both_backends() -> TestResult {
+    use particle_trails_ui::ParticleImpactDemo;
+    use xrack_renderer_femtovg::RenderDevice;
+
+    const NAME: &str = "examples/puzzle3d/particle_trails.xr";
+    let text = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&text, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("ParticleImpactDemo")?;
+    let app = ParticleImpactDemo::new();
+    let weak = app.as_weak();
+    let mut generated = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let device = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut gpu = Renderer::with_device(device.clone())?;
+    let mut other = Renderer::with_device(device)?;
+    let mut app = weak.upgrade().ok_or("missing impact demo")?;
+    app.set_count(3);
+    app.set_spread(false);
+    dynamic.set("count", Value::Int(3))?;
+    dynamic.set("spread", Value::Bool(false))?;
+    let mut frame = |app: &mut ParticleImpactDemo,
+                     clock: f64,
+                     click: Option<Point>|
+     -> TestResult<_> {
+        app.set_time(clock);
+        dynamic.set("time", Value::Float(clock))?;
+        if let Some(point) = click {
+            generated.render(&mut gpu)?;
+            interpreted.render(&mut other)?;
+            let contact = PointerContact {
+                id: 1,
+                primary: true,
+                event: xrack_runtime::PointerEvent {
+                    button: xrack_runtime::PointerButton::Primary,
+                    ..Default::default()
+                },
+            };
+            for (scene, renderer) in [(&mut generated, &mut gpu), (&mut interpreted, &mut other)] {
+                assert!(scene.press_contact(contact, point, false));
+                scene.render(renderer)?;
+                assert!(scene.finish_contact(contact, point, true, false));
+            }
+        }
+        let before = gpu.scene_draw_stats();
+        let png = generated.render(&mut gpu)?.to_vec();
+        assert_eq!(png, interpreted.render(&mut other)?);
+        assert_eq!(
+            dynamic.get("impact-count")?,
+            Value::Int(app.get_impact_count())
+        );
+        Ok((
+            xrack_assets::decode_png(&png)?,
+            before,
+            gpu.scene_draw_stats(),
+        ))
+    };
+    let magenta = |pixel: &[u8]| pixel[0] > 170 && pixel[2] > 125 && pixel[1] < 145;
+    let at = |image: &xrack_assets::Raster, x: usize, y: usize| {
+        ((y - 2)..=(y + 2)).any(|py| {
+            ((x - 2)..=(x + 2)).any(|px| {
+                let index = (py * image.size[0] as usize + px) * 4;
+                magenta(&image.rgba[index..index + 4])
+            })
+        })
+    };
+    let (_, before, missed) = frame(&mut app, 0.2, Some(Point { x: 30.0, y: 142.0 }))?;
+    assert_eq!(app.get_impact_count(), 0);
+    assert_eq!(before.particle_instances, missed.particle_instances);
+    let (first, before, added) = frame(&mut app, 0.2, Some(Point { x: 163.0, y: 142.0 }))?;
+    assert_eq!(
+        app.model_impacts().len(),
+        1,
+        "the release should record a world hit"
+    );
+    assert_eq!(app.get_impact_count(), 1);
+    assert_eq!(added.particle_instances - before.particle_instances, 1);
+    assert!(at(&first, 163, 142));
+    app.set_upward(false);
+    dynamic.set("upward", Value::Bool(false))?;
+    frame(&mut app, 0.4, Some(Point { x: 439.0, y: 142.0 }))?;
+    assert_eq!(app.get_impact_count(), 2);
+    let (both, before, after) = frame(&mut app, 0.8, None)?;
+    assert!(at(&both, 163, 99) && at(&both, 163, 114) && at(&both, 163, 128));
+    assert!(at(&both, 439, 142) && at(&both, 453, 142) && at(&both, 467, 142));
+    assert_eq!(after.particle_draws - before.particle_draws, 1);
+    assert_eq!(after.particle_instances - before.particle_instances, 6);
+
+    app.set_parent_name("missing-anchor".into());
+    dynamic.set("parent-name", Value::String("missing-anchor".into()))?;
+    assert_eq!(both.rgba, frame(&mut app, 0.8, None)?.0.rgba);
+    app.set_parent_name(String::new());
+    dynamic.set("parent-name", Value::String(String::new()))?;
+    app.set_track(true);
+    app.set_rate(2.0);
+    dynamic.set("track", Value::Bool(true))?;
+    dynamic.set("rate", Value::Float(2.0))?;
+    let (mixed, before, after) = frame(&mut app, 0.81, None)?;
+    assert!(at(&mixed, 163, 99) && at(&mixed, 467, 142));
+    assert!(at(&mixed, 334, 251));
+    assert_eq!(after.particle_draws - before.particle_draws, 2);
+    assert_eq!(
+        after.particle_track_uploads - before.particle_track_uploads,
+        1
+    );
+
+    app.set_track(false);
+    app.set_rate(0.0);
+    app.set_spread(true);
+    dynamic.set("track", Value::Bool(false))?;
+    dynamic.set("rate", Value::Float(0.0))?;
+    dynamic.set("spread", Value::Bool(true))?;
+    let spread = frame(&mut app, 0.8, None)?.0;
+    let Value::RecordList(events) = dynamic.get("impacts")? else {
+        return Err("missing impact event model".into());
+    };
+    assert!(app.model_impacts().remove(0).is_some());
+    assert!(events.model().remove(0).is_some());
+    let retained = frame(&mut app, 0.8, None)?.0;
+    for (before, after) in spread.rgba[..624 * 284 * 4]
+        .chunks_exact(624 * 4)
+        .zip(retained.rgba.chunks_exact(624 * 4))
+    {
+        assert_eq!(
+            &before[312 * 4..],
+            &after[312 * 4..],
+            "pruning changed the retained event"
+        );
+    }
+    let (_, before, future) = frame(&mut app, 0.1, None)?;
+    assert_eq!(before.particle_instances, future.particle_instances);
+    assert_eq!(retained.rgba, frame(&mut app, 0.8, None)?.0.rgba);
+
+    app.set_ribbons(true);
+    dynamic.set("ribbons", Value::Bool(true))?;
+    let (_, before, trails) = frame(&mut app, 0.85, None)?;
+    assert!(trails.particle_trail_segments > before.particle_trail_segments);
+    app.set_model_particles(true);
+    dynamic.set("model-particles", Value::Bool(true))?;
+    let (_, before, model) = frame(&mut app, 0.85, None)?;
+    assert!(model.particle_model_instances > before.particle_model_instances);
+    let (view, _) = inspect(&generated)?;
+    let Some(Value::SceneParticleEmitters(emitters)) = view.properties.get("particle-emitters")
+    else {
+        return Err("missing positioned caster".into());
+    };
+    let emitter = emitters.first().ok_or("missing emitter")?;
+    let sample = emitter
+        .samples(0.85, 16)
+        .next()
+        .ok_or("missing impact sample")?;
+    let [min, max] = emitter
+        .shadow_bounds(&sample, std::iter::empty())
+        .ok_or("missing caster bounds")?;
+    assert!(min[0] > 2.3 && max[0] > 3.5, "{min:?} through {max:?}");
     Ok(())
 }
 
@@ -19207,6 +20556,111 @@ fn exercise_posed_culling(
         );
         assert_eq!(frame(false, morph, 1.0)?.0, moved);
     }
+    Ok(())
+}
+
+#[test]
+fn viewport_world_queries_share_the_view_lod_and_visibility_in_both_backends() -> TestResult {
+    use lod_ui::LodDemo;
+    use xrack_runtime::Hit3D;
+
+    const NAME: &str = "examples/puzzle3d/lod.xr";
+    let source = std::fs::read_to_string(NAME)?;
+    let preview = xrack_compiler::prepare_preview(&source, NAME, Default::default())?;
+    let (program, _) =
+        xrack_interpreter::Program::from_module_with_file_resources(&preview.module, NAME, None)?;
+    let dynamic = program.create("LodDemo")?;
+    let app = LodDemo::new();
+    assert!(!app.get_view_ray().valid);
+    assert!(!app.get_nearest().valid);
+    assert_eq!(dynamic.get("view-ray")?, Value::Hit3D(Hit3D::default()));
+    assert_eq!(dynamic.get("nearest")?, Value::Hit3D(Hit3D::default()));
+    let weak = app.as_weak();
+    let mut generated = PreviewScene::new(Box::new(app));
+    let mut interpreted = PreviewScene::new(Box::new(dynamic.clone()));
+    let mut app = weak.upgrade().ok_or("missing viewport query example")?;
+    let device = pollster::block_on(xrack_renderer_femtovg::RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let mut renderer = Renderer::with_device(device)?;
+    let mut frame =
+        |app: &mut LodDemo, layers: i64, max: f64, visible_distance: f64| -> TestResult<_> {
+            app.set_probe_layers(layers);
+            app.set_probe_max(max);
+            app.set_visible_distance(visible_distance);
+            dynamic.set("probe-layers", Value::Int(layers))?;
+            dynamic.set("probe-max", Value::Float(max))?;
+            dynamic.set("visible-distance", Value::Float(visible_distance))?;
+            let image = generated.render(&mut renderer)?.to_vec();
+            assert_eq!(image, interpreted.render(&mut renderer)?);
+            let ray = app.get_view_ray();
+            let nearest = app.get_nearest();
+            for (name, value) in [
+                ("view-ray", ray.clone()),
+                ("view-ray-row", app.get_view_ray_row()),
+                ("view-ray-instance", app.get_view_ray_instance()),
+                ("nearest", nearest.clone()),
+                ("nearest-row", app.get_nearest_row()),
+            ] {
+                assert_eq!(dynamic.get(name)?, Value::Hit3D(value), "{name}");
+            }
+            let all = app.get_view_rays();
+            let subset = app.get_view_ray_subset();
+            for (name, value) in [("view-rays", &all), ("view-ray-subset", &subset)] {
+                let Value::Hit3DList(hits) = dynamic.get(name)? else {
+                    return Err("world ray returned an unexpected list type".into());
+                };
+                assert_eq!(hits.into_snapshot(), *value, "{name}");
+            }
+            assert_eq!(app.get_view_ray_row(), ray);
+            assert_eq!(app.get_nearest_row(), nearest);
+            Ok((ray, nearest, all, subset, app.get_view_ray_instance()))
+        };
+    app.set_distance(40.0);
+    dynamic.set("distance", Value::Float(40.0))?;
+    let (ray, nearest, all, subset, _) = frame(&mut app, 1, 20.0, -1.0)?;
+    assert!(ray.valid && nearest.valid);
+    assert_eq!(ray.row_index, 1);
+    assert!((ray.position.z - 0.5).abs() < 0.00001);
+    assert!((ray.distance - 9.5).abs() < 0.00001);
+    assert!((nearest.position.z - ray.position.z).abs() < 0.00001);
+    assert!((nearest.distance - 9.5).abs() < 0.00001);
+    assert_eq!(all, vec![ray.clone()]);
+    assert_eq!(subset, vec![ray]);
+    assert!((app.get_world_hit().position.z - 1.0).abs() < 0.00001);
+    for (layers, max, visible_distance) in [(2, 20.0, -1.0), (1, 9.0, -1.0), (1, 20.0, 12.0)] {
+        let (ray, nearest, all, subset, _) = frame(&mut app, layers, max, visible_distance)?;
+        assert!(!ray.valid && !nearest.valid);
+        assert!(all.is_empty() && subset.is_empty());
+    }
+    app.set_probe_rows(vec![9, -1]);
+    dynamic.set("probe-rows", Value::IntList(vec![9, -1]))?;
+    let (_, _, all, subset, _) = frame(&mut app, 1, 20.0, -1.0)?;
+    assert_eq!(all.len(), 1);
+    assert!(subset.is_empty());
+
+    app.set_clip_far(12.0);
+    dynamic.set("clip-far", Value::Float(12.0))?;
+    let (ray, nearest, _, _, _) = frame(&mut app, 1, 20.0, -1.0)?;
+    assert!(!app.get_camera_hit().valid);
+    assert!(ray.valid && nearest.valid);
+    app.set_clip_far(100.0);
+    dynamic.set("clip-far", Value::Float(100.0))?;
+
+    app.set_full_detail(true);
+    dynamic.set("full-detail", Value::Bool(true))?;
+    let (primary, nearest, _, _, _) = frame(&mut app, 1, 20.0, -1.0)?;
+    assert!((primary.position.z - 1.0).abs() < 0.00001);
+    assert!((nearest.position.z - 1.0).abs() < 0.00001);
+
+    app.set_instanced(true);
+    app.set_automatic(true);
+    dynamic.set("instanced", Value::Bool(true))?;
+    dynamic.set("automatic", Value::Bool(true))?;
+    let (ray, _, _, _, instance) = frame(&mut app, 1, 20.0, -1.0)?;
+    assert!(ray.valid && ray.instance_index == 0);
+    assert_eq!(instance, ray);
     Ok(())
 }
 

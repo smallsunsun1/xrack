@@ -875,6 +875,7 @@ struct Application<C> {
 
 impl<C: Component> Application<C> {
     fn new(component: C, tasks: Rc<LocalExecutor>) -> Self {
+        xrack_scene_import::install_mesh_importer();
         let scene = component.render_shared();
         Self {
             component,
@@ -8306,6 +8307,7 @@ impl<C: Component> HostedWindow for Application<C> {
     }
 
     fn tick(&mut self, now: Instant) {
+        xrack_runtime::poll_mesh_loaders();
         let _scope = self.tasks.enter();
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
@@ -8451,6 +8453,7 @@ impl<C: Component> HostedWindow for Application<C> {
         [
             deadline,
             window_deadline,
+            xrack_runtime::mesh_loader_deadline(now),
             self.state
                 .as_ref()
                 .is_some_and(|state| state.renderer.viewport_gpu_timing_pending())

@@ -37,7 +37,7 @@ bazel run //:xrackc -- --emit mlir examples/counter/counter.xr -o .tools/ir/coun
 
 在仓库中用 `bazel build //crates/xrack-preview` 构建预览宿主，或安装平台 VSIX。打开 `.xr` 文件后运行 **XRack: Open Live Preview**。宿主会读取当前编辑缓冲区和打开的导入文件，执行校验及优化，再由解释器创建组件。可点击按钮，也可点击文本框后输入或粘贴。预览支持 PNG、SVG、九宫格图像和 GIF 播放。后续编辑复用宿主和 GPU 渲染器，语法错误时保留上一个可交互的画面。使用解释器尚未覆盖的控件、资源或操作时，扩展使用生成 Rust 的预览路径。
 
-在解释器预览中编辑同一文件、同一组件时，交互已写入的兼容公开可写属性会带到新画面，例如 3D 相机角度和机关开关。未写入的属性重新按源码绑定求值。切换文件或组件会使用新场景的初始值。
+在解释器预览中编辑同一文件、同一组件时，交互已写入的兼容公开可写属性会带到新画面，例如 3D 相机角度和机关开关。原地修改过的公开可写列表字面量也会保留内容和行标识，例如用 `Model.append` 记录的 3D 粒子爆发。其余属性按新源码绑定求值。切换文件或组件会使用新场景的初始值。
 
 预览 `SoundEffect` 或 `MediaPlayer` 时，从源码用 `bazel build --config=media //crates/xrack-preview` 构建宿主。平台 VSIX 已内置媒体后端。打开 [SoundEffect 示例](../examples/sound_effect/sound_effect.xr)，等待音效加载后点击按钮，或聚焦预览面板并按 F2。
 

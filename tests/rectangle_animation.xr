@@ -52,6 +52,37 @@ export component RectangleAnimation inherits Window {
     }
 }
 
+export component InitialShadowBatch inherits Window {
+    width: 520px;
+    height: 115px;
+    background: #e7e9ee;
+    in property <color> shadow-tint: #10172666;
+
+    for index in 8 : Rectangle {
+        x: 23.125px + index * 63px;
+        y: 23.375px;
+        width: 54px;
+        height: 57px;
+        background: #263854;
+        opacity: 0.68;
+        border-radius: 7px;
+        border-bottom-left-radius: 13px;
+        border-top-right-radius: 2px;
+        drop-shadow-color: root.shadow-tint;
+        drop-shadow-blur: index == 7 ? 20px : 7.35px + index * 0.07px;
+        drop-shadow-offset-x: -2.375px;
+        drop-shadow-offset-y: 5px;
+
+        Rectangle {
+            x: 8px;
+            y: 7px;
+            width: 18px;
+            height: 6px;
+            background: #659be7;
+        }
+    }
+}
+
 export component LayerMotion inherits Window {
     width: 96px;
     height: 72px;
@@ -63,6 +94,7 @@ export component LayerMotion inherits Window {
     in property <bool> cache-layer: false;
     in property <bool> shadowed: false;
     in property <color> shadow-tint: #10172666;
+    in property <length> shadow-blur: 12px;
 
     Rectangle {
         x: root.offset;
@@ -74,7 +106,7 @@ export component LayerMotion inherits Window {
         cache-rendering-hint: root.cache-layer;
         border-radius: 5px;
         drop-shadow-color: root.shadowed ? root.shadow-tint : #00000000;
-        drop-shadow-blur: 12px;
+        drop-shadow-blur: root.shadow-blur;
         drop-shadow-offset-y: 2px;
 
         Text {

@@ -33,6 +33,7 @@ pub mod scene3d;
 mod scene_animation;
 mod scene_authored_mesh;
 mod scene_bounds;
+pub use scene_bounds::SceneBounds3D as Bounds3D;
 mod scene_camera;
 mod scene_cast;
 #[doc(hidden)]
@@ -48,8 +49,10 @@ mod scene_material;
 mod scene_morph;
 mod scene_parametric;
 mod scene_particle_affectors;
+mod scene_particle_bursts;
 mod scene_particle_mesh;
 mod scene_particle_motion;
+mod scene_particle_track;
 mod scene_particles;
 mod scene_pick;
 mod scene_primitives;
@@ -101,6 +104,12 @@ mod input_mask;
 mod input_pattern;
 mod list_sections;
 mod loader;
+mod mesh_loader;
+mod mesh_nodes;
+pub use mesh_loader::{
+    MeshLoader3D, mesh_loader_deadline, poll_mesh_loaders, register_mesh_importer,
+};
+pub use mesh_nodes::MeshNode3D;
 mod repeat;
 mod row_heights;
 mod scale_rotate;
@@ -1762,6 +1771,8 @@ pub enum Value {
     Instance3D(Instance3D),
     InstanceTable3D(InstanceTable3D),
     MeshAsset3D(MeshAsset3D),
+    MeshNode3D(MeshNode3D),
+    Bounds3D(Bounds3D),
     WalkResult3D(WalkResult3D),
     PhysicsWorld3D(PhysicsWorld3D),
     Vector2D(Vector2D),
@@ -1899,6 +1910,8 @@ value_from!(ProjectedPoint3D, ProjectedPoint3D);
 value_from!(Instance3D, Instance3D);
 value_from!(InstanceTable3D, InstanceTable3D);
 value_from!(MeshAsset3D, MeshAsset3D);
+value_from!(MeshNode3D, MeshNode3D);
+value_from!(Bounds3D, Bounds3D);
 value_from!(WalkResult3D, WalkResult3D);
 value_from!(PhysicsWorld3D, PhysicsWorld3D);
 value_from!(Arc<scene3d::SceneModel>, SceneObjects);
@@ -2734,6 +2747,8 @@ impl Node {
                 | "camera-yaw"
                 | "camera-pitch"
                 | "camera-distance"
+                | "camera-fit"
+                | "camera-fit-margin"
                 | "selected-object"
                 | "environment"
                 | "environment-sky"

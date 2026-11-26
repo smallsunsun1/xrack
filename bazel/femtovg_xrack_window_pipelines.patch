@@ -1,0 +1,81 @@
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -1,6 +1,6 @@
+ use std::cell::{Cell, OnceCell, RefCell};
+ use std::collections::HashMap;
+-use std::rc::Rc;
++use std::rc::{Rc, Weak};
+ 
+ use fnv::FnvHashMap;
+ use rgb::bytemuck;
+@@ -548,8 +548,17 @@
+     }
+ }
+ 
++thread_local! {
++    // The registry observes the caches without keeping a device or a closed
++    // window alive. A renderer's GPU commands and textures remain per canvas.
++    static DEVICE_RESOURCES: RefCell<Vec<Weak<SharedGpuResources>>> = const { RefCell::new(Vec::new()) };
++}
++
+ #[derive(Debug)]
+ struct SharedGpuResources {
++    instance: Option<wgpu::Instance>,
++    device: wgpu::Device,
++    queue: wgpu::Queue,
+     shader_module: wgpu::ShaderModule,
+     stencil_shader: OnceCell<wgpu::ShaderModule>,
+     opacity_tiles_shader: OnceCell<wgpu::ShaderModule>,
+@@ -622,6 +631,9 @@
+         let draw_layouts = [false, true].map(|mask| DrawLayout::new(device, &viewport_bind_group_layout, mask));
+ 
+         Self {
++            instance: None,
++            device: device.clone(),
++            queue: queue.clone(),
+             shader_module,
+             stencil_shader: OnceCell::new(),
+             opacity_tiles_shader: OnceCell::new(),
+@@ -843,6 +855,41 @@
+     /// Creates a new renderer for the device.
+     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+         let shared = Rc::new(SharedGpuResources::new(&device, &queue));
++        Self::with_shared_resources(device, queue, shared)
++    }
++
++    /// Creates a renderer reusing live pipeline resources for this device
++    /// and queue on the current thread.
++    #[doc(hidden)]
++    pub fn new_with_device_cache(
++        instance: &wgpu::Instance,
++        device: wgpu::Device,
++        queue: wgpu::Queue,
++    ) -> Self {
++        let cached = DEVICE_RESOURCES.with_borrow_mut(|resources| {
++            let mut cached = None;
++            resources.retain(|entry| {
++                let Some(shared) = entry.upgrade() else {
++                    return false;
++                };
++                // Native wgpu device and queue IDs are local to an instance.
++                if shared.instance.as_ref() == Some(instance)
++                    && shared.device == device
++                    && shared.queue == queue
++                {
++                    cached = Some(shared);
++                }
++                true
++            });
++            cached
++        });
++        let shared = cached.unwrap_or_else(|| {
++            let mut shared = SharedGpuResources::new(&device, &queue);
++            shared.instance = Some(instance.clone());
++            let shared = Rc::new(shared);
++            DEVICE_RESOURCES.with_borrow_mut(|resources| resources.push(Rc::downgrade(&shared)));
++            shared
++        });
+         Self::with_shared_resources(device, queue, shared)
+     }
+ 

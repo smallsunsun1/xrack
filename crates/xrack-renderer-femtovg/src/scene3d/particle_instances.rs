@@ -1,12 +1,16 @@
 //! GPU generation of the regular mesh instance stream from particle ages.
 use std::num::NonZeroU64;
 
-use super::INSTANCE_STRIDE;
+use super::{
+    INSTANCE_STRIDE,
+    particle_tracks::{TRACK_BINDING, particles_shader},
+};
 
 pub(super) struct ModelInputs<'a> {
     pub emitters: &'a wgpu::Buffer,
     pub motion: Option<&'a wgpu::Buffer>,
     pub surface: Option<&'a wgpu::Buffer>,
+    pub track: Option<&'a wgpu::Buffer>,
     pub affectors: Option<&'a wgpu::Buffer>,
     pub settings: &'a wgpu::Buffer,
     pub tint: Option<(&'a wgpu::TextureView, &'a wgpu::Sampler)>,
@@ -15,8 +19,8 @@ pub(super) struct ModelInputs<'a> {
 
 #[derive(Default)]
 pub(super) struct ModelInstanceGenerator {
-    shader: Option<wgpu::ShaderModule>,
-    pipelines: [Option<wgpu::ComputePipeline>; 12],
+    shaders: [Option<wgpu::ShaderModule>; 2],
+    pipelines: [[Option<wgpu::ComputePipeline>; 12]; 2],
     instances: Vec<wgpu::Buffer>,
 }
 
@@ -32,7 +36,8 @@ impl ModelInstanceGenerator {
         let limits = device.limits();
         if limits.max_compute_invocations_per_workgroup < 64
             || limits.max_compute_workgroup_size_x < 64
-            || limits.max_storage_buffers_per_shader_stage < 1 + u32::from(input.surface.is_some())
+            || limits.max_storage_buffers_per_shader_stage
+                < 1 + u32::from(input.surface.is_some()) + u32::from(input.track.is_some())
             || storage > limits.max_storage_buffer_binding_size
             || storage > limits.max_buffer_size
         {
@@ -55,12 +60,11 @@ impl ModelInstanceGenerator {
         if allocation.size() < storage {
             *allocation = make_buffer();
         }
-        let shader = self.shader.get_or_insert_with(|| {
-            let source = concat!(
-                include_str!("particles.wgsl"),
-                "\n",
-                include_str!("particle_instances.wgsl")
-            );
+        let track_variant = usize::from(input.track.is_some());
+        let shader = self.shaders[track_variant].get_or_insert_with(|| {
+            let mut source = particles_shader(input.track.is_some()).into_owned();
+            source.push_str("\n");
+            source.push_str(include_str!("particle_instances.wgsl"));
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("XRack model particle compute"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -88,7 +92,7 @@ impl ModelInstanceGenerator {
             "compute_mesh_affected",
             "compute_mesh_affected_tinted",
         ];
-        let pipeline = self.pipelines[variant].get_or_insert_with(|| {
+        let pipeline = self.pipelines[track_variant][variant].get_or_insert_with(|| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("XRack model particle transforms"),
                 layout: None,
@@ -117,7 +121,12 @@ impl ModelInstanceGenerator {
                 resource: input.settings.as_entire_binding(),
             },
         ]);
-        for (binding, buffer) in [(4, input.motion), (5, input.surface), (6, input.affectors)] {
+        for (binding, buffer) in [
+            (4, input.motion),
+            (5, input.surface),
+            (6, input.affectors),
+            (TRACK_BINDING, input.track),
+        ] {
             if let Some(buffer) = buffer {
                 entries.push(wgpu::BindGroupEntry {
                     binding,

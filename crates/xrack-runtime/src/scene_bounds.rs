@@ -2,6 +2,52 @@
 use nalgebra::Vector3;
 use std::ops::Range;
 
+/// A finite axis-aligned box in scene units. The default represents an empty box.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SceneBounds3D(Option<[crate::Point3D; 2]>);
+
+impl SceneBounds3D {
+    pub fn new(min: crate::Point3D, max: crate::Point3D) -> Self {
+        let ordered = [(min.x, max.x), (min.y, max.y), (min.z, max.z)]
+            .into_iter()
+            .all(|(a, b)| a.is_finite() && b.is_finite() && a <= b && (b - a).is_finite());
+        Self(ordered.then_some([min, max]))
+    }
+
+    pub fn valid(self) -> bool {
+        self.0.is_some()
+    }
+
+    pub fn min(self) -> crate::Point3D {
+        self.0.map(|[min, _]| min).unwrap_or_default()
+    }
+
+    pub fn max(self) -> crate::Point3D {
+        self.0.map(|[_, max]| max).unwrap_or_default()
+    }
+
+    pub fn center(self) -> crate::Point3D {
+        let [min, max] = self.0.unwrap_or_default();
+        crate::Point3D::new(
+            min.x.midpoint(max.x),
+            min.y.midpoint(max.y),
+            min.z.midpoint(max.z),
+        )
+    }
+
+    pub fn size(self) -> crate::Vector3D {
+        let [min, max] = self.0.unwrap_or_default();
+        crate::Vector3D::new(max.x - min.x, max.y - min.y, max.z - min.z)
+    }
+
+    pub(crate) fn from_spatial(bounds: Option<Bounds3D>) -> Self {
+        bounds.map_or_else(Self::default, |bounds| {
+            let point = |[x, y, z]: [f32; 3]| crate::Point3D::new(x.into(), y.into(), z.into());
+            Self::new(point(bounds.min), point(bounds.max))
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Bounds3D {
     pub min: [f32; 3],

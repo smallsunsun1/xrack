@@ -1,6 +1,8 @@
+struct ParticleBurst { time: float, count: int }
+
 struct SpatialEmitter {
     position: point3d, color: color, size: float, lifetime: float,
-    burst-count: int, fade-out: float, seed: int,
+    bursts: [ParticleBurst], fade-out: float, seed: int,
     emitter-shape: string, emitter-extents: vector3d, emitter-fill: bool, emitter-roll: float,
     velocity: vector3d, velocity-spread: vector3d, velocity-mode: string, velocity-cone-angle: float,
     velocity-target: point3d,
@@ -27,7 +29,7 @@ export component ParticleEmittersDemo inherits Window {
 
     property <SpatialEmitter> defaults: SpatialEmitter {
         position: Point3D.new(-2.45, 0, 0), color: #50dbffff, size: 0.069, lifetime: 4,
-        burst-count: root.population, fade-out: 0, seed: 37,
+        bursts: [ParticleBurst { time: 0, count: root.population }], fade-out: 0, seed: 37,
         emitter-shape: "point", emitter-extents: Vector3D.new(0, 0, 0),
         emitter-fill: true, emitter-roll: 0, velocity-mode: "vector", velocity-cone-angle: 0,
         velocity: Vector3D.new(0, 0, 0), velocity-spread: Vector3D.new(0, 0, 0),
@@ -35,7 +37,7 @@ export component ParticleEmittersDemo inherits Window {
     };
     property <[SpatialEmitter]> emitters: [
         SpatialEmitter {
-            position: Point3D.new(-0.35, -0.7, 0), color: #bbcade, size: 0.10, burst-count: 1,
+            position: Point3D.new(-0.35, -0.7, 0), color: #bbcade, size: 0.10, bursts: [ParticleBurst { time: 0, count: 1 }],
             ..root.defaults
         },
         SpatialEmitter {
@@ -49,7 +51,7 @@ export component ParticleEmittersDemo inherits Window {
             velocity-mode: root.direction, velocity-cone-angle: root.angle, seed: 48, ..root.defaults
         },
         SpatialEmitter {
-            position: Point3D.new(2.2, 1.15, 0), color: #bbcade, size: 0.10, burst-count: 1,
+            position: Point3D.new(2.2, 1.15, 0), color: #bbcade, size: 0.10, bursts: [ParticleBurst { time: 0, count: 1 }],
             ..root.defaults
         },
     ];

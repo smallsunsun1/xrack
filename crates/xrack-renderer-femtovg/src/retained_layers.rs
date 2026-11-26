@@ -2,7 +2,7 @@ use super::{
     Canvas, Color, LayoutNode, Node, Paint, PaintFrame, Palette, Path, Point, Rect, Renderer,
     WGPURenderer, append_rect, canvas_transform, has_device_scale, image, shadow, vector_masks,
 };
-use femtovg::{Atlas, FillRule, ImageFlags, ImageId, ImageInfo, PixelFormat};
+use femtovg::{Atlas, FillRule, ImageFlags, ImageId, ImageInfo, PixelFormat, RenderTarget};
 use std::{
     cell::{Cell, OnceCell},
     collections::{BTreeMap, HashMap, HashSet},
@@ -560,6 +560,51 @@ struct CapturedTexture {
 }
 
 impl CapturedTexture {
+    fn allocate(
+        device: &wgpu::Device,
+        physical: Rect,
+        scale: f32,
+        format: wgpu::TextureFormat,
+        budget: u64,
+    ) -> Option<Self> {
+        let Rect { width, height, .. } = physical;
+        let limit = device.limits().max_texture_dimension_2d as f32;
+        if !(width > 0.0 && width <= limit && height > 0.0 && height <= limit) {
+            return None;
+        }
+        let (width, height) = (width as u32, height as u32);
+        let texel_bytes = match format {
+            wgpu::TextureFormat::Rgba16Float => 8,
+            wgpu::TextureFormat::R16Float => 2,
+            _ => 4,
+        };
+        let bytes = u64::from(width) * u64::from(height) * texel_bytes;
+        if bytes > budget {
+            return None;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("XRack retained layer"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        Some(Self {
+            texture,
+            bounds: logical_bounds(physical, scale),
+            bytes,
+        })
+    }
+
     fn register(&self, canvas: &mut Canvas<WGPURenderer>, flags: ImageFlags) -> Option<Raster> {
         let info = ImageInfo::new(
             ImageFlags::PREMULTIPLIED | flags,
@@ -617,8 +662,9 @@ impl OpacityTilePlacement {
     }
 }
 
-pub(super) struct OpacityRectangle {
+struct OpacityRectangle {
     tile: OpacityTilePlacement,
+    rectangle: crate::rectangle::Solid,
     clip: Rect,
     opacity: f32,
 }
@@ -714,6 +760,11 @@ struct OpacityDemand {
     groups: u64,
     pixels: u64,
     edge: u32,
+}
+
+pub(super) struct RectangleOpacityAtlasPlan {
+    edge: u32,
+    pub(super) covers_batch: bool,
 }
 
 impl OpacityDemand {
@@ -813,6 +864,8 @@ pub(super) struct RetainedLayers {
     window_opacity_atlas: Option<WindowOpacityAtlas>,
     opacity_atlas_stats: OpacityAtlasStats,
     opacity_atlas_disabled: bool,
+    #[cfg(xrack_femtovg_glyph_samples)]
+    direct_rounded_fills_disabled: bool,
     opacity_tile_sharing: bool,
     hinted_layer_sharing: bool,
     opacity_demand: OpacityDemand,
@@ -841,6 +894,8 @@ impl Default for RetainedLayers {
             window_opacity_atlas: None,
             opacity_atlas_stats: OpacityAtlasStats::default(),
             opacity_atlas_disabled: false,
+            #[cfg(xrack_femtovg_glyph_samples)]
+            direct_rounded_fills_disabled: false,
             opacity_tile_sharing: true,
             hinted_layer_sharing: true,
             opacity_demand: Default::default(),
@@ -1188,9 +1243,37 @@ impl Renderer {
         self.retained_layers.opacity_atlas_disabled = !enabled;
     }
 
+    /// Compares direct fractional rounded fills with the retained painter.
+    #[doc(hidden)]
+    pub fn set_direct_rounded_fills_enabled(&mut self, enabled: bool) {
+        #[cfg(xrack_femtovg_glyph_samples)]
+        {
+            self.retained_layers.direct_rounded_fills_disabled = !enabled;
+        }
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        let _ = enabled;
+    }
+
+    pub(super) fn direct_rounded_fills_enabled(&self) -> bool {
+        #[cfg(xrack_femtovg_glyph_samples)]
+        {
+            !self.retained_layers.direct_rounded_fills_disabled
+        }
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        false
+    }
+
     #[doc(hidden)]
     pub fn opacity_atlas_stats(&self) -> OpacityAtlasStats {
         self.retained_layers.opacity_atlas_stats
+    }
+
+    #[doc(hidden)]
+    pub fn opacity_atlas_extent(&self) -> Option<u32> {
+        self.retained_layers
+            .opacity_atlas
+            .as_ref()
+            .map(|atlas| atlas.texture.width())
     }
 
     #[doc(hidden)]
@@ -1250,29 +1333,41 @@ impl Renderer {
         let Some((offscreen, _)) = self.retained_layers.capture.as_mut() else {
             return Ok(None);
         };
-        let Some(main) = texture.register(&mut self.canvas, tile.sampling()) else {
+        let flags = tile.sampling();
+        let Some(capture) = texture.register(offscreen, flags) else {
             return Ok(None);
         };
-        let Some(capture) = texture.register(offscreen, tile.sampling()) else {
-            self.canvas.delete_image(main.image);
+        let Some(main) = self.cache_shadow_mask(tile.key, &texture, capture.image, flags) else {
             return Ok(None);
         };
-        let image = if for_capture {
-            capture.image
-        } else {
-            main.image
+        let image = if for_capture { capture.image } else { main };
+        Ok(Some(shadow.masked_draw(image, tile)))
+    }
+
+    fn cache_shadow_mask(
+        &mut self,
+        key: shadow::ShadowMaskKey,
+        texture: &CapturedTexture,
+        capture: ImageId,
+        flags: ImageFlags,
+    ) -> Option<ImageId> {
+        let Some(main) = texture.register(&mut self.canvas, flags) else {
+            if let Some((canvas, _)) = self.retained_layers.capture.as_mut() {
+                canvas.delete_image(capture);
+            }
+            return None;
         };
         self.retained_layers.shadow_masks.insert(
-            tile.key,
+            key,
             ShadowMask {
                 main,
-                capture: capture.image,
-                last_frame,
+                capture,
+                last_frame: self.retained_layers.frame_number,
             },
         );
         self.retained_layers.new_shadow_masks += 1;
         self.retained_layers.shadow_mask_stats.rasterized += 1;
-        Ok(Some(shadow.masked_draw(image, tile)))
+        Some(main.image)
     }
 
     fn make_shadow_mask_room(&mut self) -> bool {
@@ -2040,17 +2135,25 @@ impl Renderer {
         node: &Node,
         layout: &LayoutNode,
         frame: PaintFrame<'_>,
-    ) {
+    ) -> Result<(), String> {
         if cfg!(any(target_os = "ios", target_os = "android"))
             || self.retained_layers.opacity_atlas_disabled
             || self.retained_layers.opacity_atlas.is_some()
             || self.retained_layers.previous_opacity_demand.groups >= 2
             || layout.children.len() < 2
         {
-            return;
+            return Ok(());
         }
         let limit = self.opacity_atlas_limit();
         let mut demand = OpacityDemand::default();
+        let mask_slots =
+            if self.retained_layers.shadow_masks.is_empty() && self.can_retain_layer(frame.scale) {
+                MAX_SHADOW_MASKS.min(self.retained_capture_slots())
+            } else {
+                0
+            };
+        let mut mask_keys = HashSet::new();
+        let mut masks = Vec::new();
         for (_, child, item) in layout.children_in_paint_order(node) {
             let opacity = child.opacity();
             if !item.visible
@@ -2082,11 +2185,98 @@ impl Renderer {
                 continue;
             }
             demand.record(device.width as u32, device.height as u32);
+            if masks.len() < mask_slots
+                && let Some((source, _)) = shadow
+                && let Some(tile) = source.initial_batch_tile(frame.scale, item.clip)
+                && mask_keys.insert(tile.key)
+            {
+                masks.push((source, tile));
+            }
         }
         if demand.groups >= 2 {
             // Allocate for these siblings before recording the first capture.
             self.create_opacity_atlas(demand.atlas_edge(0, 0, limit));
+            if masks.len() > MAX_NEW_SHADOW_MASKS {
+                self.capture_initial_shadow_masks(masks, frame.scale)?;
+            }
         }
+        Ok(())
+    }
+
+    fn capture_initial_shadow_masks(
+        &mut self,
+        masks: Vec<(shadow::OuterShadow, shadow::ShadowTile)>,
+        scale: f32,
+    ) -> Result<(), String> {
+        let Some(atlas) = &self.retained_layers.opacity_atlas else {
+            return Ok(());
+        };
+        let output = atlas.texture.clone();
+        let mut budget = self
+            .retained_layers
+            .budget
+            .saturating_sub(self.retained_layers.resident_bytes());
+        let mut captures = Vec::with_capacity(masks.len());
+        for (source, tile) in masks {
+            let Some(texture) = CapturedTexture::allocate(
+                &self.device,
+                tile.source_pixels,
+                scale,
+                wgpu::TextureFormat::Rgba8Unorm,
+                budget,
+            ) else {
+                continue;
+            };
+            budget -= texture.bytes;
+            captures.push((source, tile, texture));
+        }
+        if captures.is_empty() {
+            return Ok(());
+        }
+        let Some(registered) = self.with_capture_canvas(|renderer| {
+            let canvas = &mut renderer.canvas;
+            canvas.set_size(output.width(), output.height(), scale);
+            let mut registered = Vec::with_capacity(captures.len());
+            // Submit small chunks before the opacity atlas starts to sample
+            // them. The GPU filters a chunk while the next one is recorded.
+            for chunk in captures.chunks(MAX_NEW_SHADOW_MASKS) {
+                let start = registered.len();
+                for (source, tile, texture) in chunk {
+                    // A FemtoVG image target stores rows bottom-up.
+                    let flags = tile.sampling() | ImageFlags::FLIP_Y;
+                    let Some(raster) = texture.register(canvas, flags) else {
+                        continue;
+                    };
+                    canvas.set_render_target(RenderTarget::Image(raster.image));
+                    canvas.reset();
+                    canvas.clear_rect(
+                        0,
+                        0,
+                        texture.texture.width(),
+                        texture.texture.height(),
+                        Color::rgba(0, 0, 0, 0),
+                    );
+                    canvas.scale(scale, scale);
+                    source.draw_mask_into_image(canvas, *tile, scale, raster.image);
+                    registered.push((tile.key, texture, raster.image, flags));
+                }
+                if registered.len() != start {
+                    // The screen attachment receives no draws. Reuse the
+                    // upcoming atlas as the output for this flush.
+                    canvas.set_render_target(RenderTarget::Screen);
+                    xrack_runtime::update_profile::submit_gpu();
+                    renderer.queue.submit(canvas.flush_to_output(&output));
+                }
+            }
+            Ok(registered)
+        })?
+        else {
+            return Ok(());
+        };
+        for (key, texture, image, flags) in registered {
+            let _ = self.cache_shadow_mask(key, texture, image, flags);
+        }
+        Ok(())
     }
 
     pub(super) fn paint_transient_opacity(
@@ -2212,14 +2402,11 @@ impl Renderer {
         Ok(true)
     }
 
-    pub(super) fn prepare_opacity_atlas_for_rectangles(
-        &mut self,
+    pub(super) fn plan_opacity_atlas_for_rectangles(
+        &self,
         bounds: impl Iterator<Item = Rect>,
         scale: f32,
-    ) -> bool {
-        if !self.can_capture_transient_rectangles(scale) {
-            return false;
-        }
+    ) -> Option<RectangleOpacityAtlasPlan> {
         let limit = self.opacity_atlas_limit();
         let mut demand = OpacityDemand::default();
         for bounds in bounds {
@@ -2229,23 +2416,20 @@ impl Renderer {
                 demand.record(width, height);
             }
         }
-        let edge = demand.atlas_edge(0, 0, limit);
-        if demand.groups >= 2
-            && self
-                .retained_layers
-                .opacity_atlas
-                .as_ref()
-                .is_none_or(|atlas| !atlas.cleared && atlas.texture.width() < edge)
-        {
-            self.create_opacity_atlas(edge);
+        if demand.groups < 2 {
+            return None;
         }
-        demand.groups >= 2
-            && demand.pixels <= u64::from(edge) * u64::from(edge)
-            && self
-                .retained_layers
-                .opacity_atlas
-                .as_ref()
-                .is_some_and(|atlas| !atlas.cleared && atlas.texture.width() >= edge)
+        let edge = demand.atlas_edge(0, 0, limit);
+        let pixels = u64::from(edge) * u64::from(edge);
+        let atlas = self.retained_layers.opacity_atlas.as_ref();
+        let available = atlas.is_none_or(|atlas| !atlas.cleared);
+        Some(RectangleOpacityAtlasPlan {
+            edge,
+            covers_batch: demand.pixels <= pixels
+                && available
+                && (atlas.is_some_and(|atlas| atlas.texture.width() >= edge)
+                    || pixels * 4 <= self.opacity_atlas_replacement_budget()),
+        })
     }
 
     pub(super) fn can_capture_transient_rectangles(&self, scale: f32) -> bool {
@@ -2256,49 +2440,111 @@ impl Renderer {
             && !self.retained_layers.vectors.opacity_passthrough
     }
 
-    pub(super) fn capture_transient_rectangle(
+    fn reserve_transient_rectangle(
         &mut self,
-        clip: Rect,
+        rectangle: crate::rectangle::Solid,
         scale: f32,
-        opacity: f32,
-        draw: impl FnOnce(&mut Canvas<WGPURenderer>),
-    ) -> Result<Option<OpacityRectangle>, String> {
-        if !self.can_capture_transient_rectangles(scale) {
-            return Ok(None);
-        }
+    ) -> Option<OpacityRectangle> {
+        let (clip, opacity) = rectangle.opacity_capture();
         let device = device_bounds(clip, scale);
         let [width, height] = [device.width as u32, device.height as u32];
         let Some(atlas) = self.retained_layers.opacity_atlas.as_mut() else {
-            return Ok(None);
+            return None;
         };
         let edge = atlas.texture.width();
         if !opacity_tile_fits(width, height, edge) {
-            return Ok(None);
+            return None;
         }
         self.retained_layers.opacity_demand.record(width, height);
         let Some((x, y)) = atlas.slots.add_rect(width as usize, height as usize) else {
-            return Ok(None);
+            return None;
         };
         let raster = logical_bounds(device, scale);
         let tile =
             OpacityTilePlacement::new(atlas.image, edge, scale, raster, [x as u32, y as u32]);
         atlas.last_frame = self.retained_layers.frame_number;
-        if !self.record_opacity_tile(tile, raster, |renderer| {
-            draw(&mut renderer.canvas);
-            Ok(())
-        })? {
-            return Ok(None);
-        }
-        Ok(Some(OpacityRectangle {
+        Some(OpacityRectangle {
             tile,
+            rectangle,
             clip,
             opacity,
-        }))
+        })
     }
 
-    pub(super) fn draw_transient_rectangles(&mut self, rectangles: &mut Vec<OpacityRectangle>) {
+    pub(super) fn draw_transient_rectangles(
+        &mut self,
+        rectangles: &mut Vec<crate::rectangle::Solid>,
+        scale: f32,
+        plan: Option<&RectangleOpacityAtlasPlan>,
+    ) -> Result<(), String> {
         if rectangles.is_empty() {
-            return;
+            return Ok(());
+        }
+        #[cfg(xrack_femtovg_glyph_samples)]
+        if self.direct_rounded_fills_enabled() && rectangles.len() > 1 {
+            let as_array = |bounds: Rect| [bounds.x, bounds.y, bounds.width, bounds.height];
+            let paths = rectangles.iter().map(|&rectangle| {
+                let (path, color) = rectangle.unfaded_path();
+                let (clip, opacity) = rectangle.opacity_capture();
+                let raster = logical_bounds(device_bounds(clip, scale), scale);
+                femtovg::renderer::DirectOpacityPath {
+                    path,
+                    color,
+                    clip: as_array(clip),
+                    raster: as_array(raster),
+                    opacity,
+                }
+            });
+            if let Some(uploaded) = self.canvas.draw_direct_opacity_paths(paths) {
+                xrack_runtime::update_profile::geometry_upload(uploaded);
+                rectangles.clear();
+                return Ok(());
+            }
+        }
+        if let Some(plan) = plan
+            && self
+                .retained_layers
+                .opacity_atlas
+                .as_ref()
+                .is_none_or(|atlas| !atlas.cleared && atlas.texture.width() < plan.edge)
+        {
+            self.create_opacity_atlas(plan.edge);
+        }
+        let mut tiles = Vec::new();
+        for rectangle in rectangles.drain(..) {
+            if let Some(tile) = self.reserve_transient_rectangle(rectangle, scale) {
+                tiles.push(tile);
+                continue;
+            }
+            self.draw_transient_rectangle_tiles(&mut tiles)?;
+            rectangle.draw(&mut self.canvas);
+        }
+        self.draw_transient_rectangle_tiles(&mut tiles)
+    }
+
+    fn draw_transient_rectangle_tiles(
+        &mut self,
+        rectangles: &mut Vec<OpacityRectangle>,
+    ) -> Result<(), String> {
+        let Some(first) = rectangles.first().map(|rectangle| rectangle.tile) else {
+            return Ok(());
+        };
+        if !self.record_opacity_tiles(first, |renderer| {
+            for rectangle in rectangles.iter() {
+                let tile = rectangle.tile;
+                renderer.position_capture_tile(tile);
+                let clip = tile.raster;
+                renderer
+                    .canvas
+                    .scissor(clip.x, clip.y, clip.width, clip.height);
+                rectangle.rectangle.draw_unfaded(&mut renderer.canvas);
+            }
+            Ok(())
+        })? {
+            for rectangle in rectangles.drain(..) {
+                rectangle.rectangle.draw(&mut self.canvas);
+            }
+            return Ok(());
         }
         #[cfg(xrack_femtovg_glyph_samples)]
         if rectangles.len() > 1 {
@@ -2332,19 +2578,38 @@ impl Renderer {
                     }
                     self.retained_layers.opacity_atlas_stats.groups += tiles.len() as u64;
                     rectangles.clear();
-                    return;
+                    return Ok(());
                 }
             }
         }
         for rectangle in rectangles.drain(..) {
             self.draw_opacity_tile(rectangle.tile, rectangle.clip, rectangle.opacity, false);
         }
+        Ok(())
     }
 
     fn record_opacity_tile(
         &mut self,
         tile: OpacityTilePlacement,
         capture_clip: Rect,
+        draw: impl FnOnce(&mut Self) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        self.record_opacity_tiles(tile, |renderer| {
+            renderer.position_capture_tile(tile);
+            renderer.paint_group(capture_clip, 1.0, draw)
+        })
+    }
+
+    fn position_capture_tile(&mut self, tile: OpacityTilePlacement) {
+        self.canvas.reset();
+        self.canvas.scale(tile.scale, tile.scale);
+        self.canvas
+            .translate(tile.offset.x - tile.raster.x, tile.offset.y - tile.raster.y);
+    }
+
+    fn record_opacity_tiles(
+        &mut self,
+        tile: OpacityTilePlacement,
         draw: impl FnOnce(&mut Self) -> Result<(), String>,
     ) -> Result<bool, String> {
         let Some(atlas) = self.retained_layers.opacity_atlas.as_mut() else {
@@ -2359,17 +2624,13 @@ impl Renderer {
                 renderer.canvas.set_size(tile.edge, tile.edge, tile.scale);
                 renderer.images.begin_frame();
             }
-            renderer.canvas.reset();
             if clear {
+                renderer.canvas.reset();
                 renderer
                     .canvas
                     .clear_rect(0, 0, tile.edge, tile.edge, Color::rgba(0, 0, 0, 0));
             }
-            renderer.canvas.scale(tile.scale, tile.scale);
-            renderer
-                .canvas
-                .translate(tile.offset.x - tile.raster.x, tile.offset.y - tile.raster.y);
-            renderer.paint_group(capture_clip, 1.0, draw)
+            draw(renderer)
         });
         match recorded {
             Err(error) => {
@@ -2420,8 +2681,7 @@ impl Renderer {
         self.retained_layers.opacity_atlas_stats.groups += 1;
     }
 
-    fn create_opacity_atlas(&mut self, edge: u32) {
-        let bytes = u64::from(edge) * u64::from(edge) * 4;
+    fn opacity_atlas_replacement_budget(&self) -> u64 {
         let previous = self
             .retained_layers
             .opacity_atlas
@@ -2430,7 +2690,12 @@ impl Renderer {
                 u64::from(atlas.texture.width()) * u64::from(atlas.texture.height()) * 4
             });
         let used = self.retained_layers.resident_bytes() - previous;
-        if bytes > self.retained_layers.budget.saturating_sub(used) {
+        self.retained_layers.budget.saturating_sub(used)
+    }
+
+    fn create_opacity_atlas(&mut self, edge: u32) {
+        let bytes = u64::from(edge) * u64::from(edge) * 4;
+        if bytes > self.opacity_atlas_replacement_budget() {
             return;
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -2487,6 +2752,8 @@ impl Renderer {
         }
         let (canvas, images) = self.retained_layers.capture.as_mut()?;
         atlas.pending = false;
+        #[cfg(xrack_femtovg_glyph_samples)]
+        canvas.batch_opacity_atlas_fills();
         let commands = canvas.flush_to_output(&atlas.texture);
         images.end_frame(canvas);
         self.retained_layers.opacity_atlas_stats.submissions += 1;
@@ -2577,55 +2844,30 @@ impl Renderer {
         format: wgpu::TextureFormat,
         draw: impl FnOnce(&mut Self) -> Result<(), String>,
     ) -> Result<Option<CapturedTexture>, String> {
-        if self.retained_layers.layers.len()
-            + self.retained_layers.opacity.len()
-            + self.retained_layers.shadow_masks.len()
-            + self.retained_layers.window_clip_masks.len()
-            >= MAX_LAYERS
-        {
+        if self.retained_capture_slots() == 0 {
             return Ok(None);
         }
-        let Rect { width, height, .. } = physical;
-        let limit = self.device.limits().max_texture_dimension_2d as f32;
-        if !(width > 0.0 && width <= limit && height > 0.0 && height <= limit) {
+        let budget = self
+            .retained_layers
+            .budget
+            .saturating_sub(self.retained_layers.resident_bytes());
+        let Some(texture) =
+            CapturedTexture::allocate(&self.device, physical, scale, format, budget)
+        else {
             return Ok(None);
-        }
-        let bounds = logical_bounds(physical, scale);
-        let width = width as u32;
-        let height = height as u32;
-        let texel_bytes = match format {
-            wgpu::TextureFormat::Rgba16Float => 8,
-            wgpu::TextureFormat::R16Float => 2,
-            _ => 4,
         };
-        let bytes = u64::from(width) * u64::from(height) * texel_bytes;
-        let used = self.retained_layers.resident_bytes();
-        if bytes > self.retained_layers.budget.saturating_sub(used) {
-            return Ok(None);
-        }
         self.submit_opacity_atlas();
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("XRack retained layer"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let rendered = self.paint_capture_target(&texture, bounds, scale, draw)?;
-        Ok(rendered.map(|()| CapturedTexture {
-            texture,
-            bounds,
-            bytes,
-        }))
+        let rendered = self.paint_capture_target(&texture.texture, texture.bounds, scale, draw)?;
+        Ok(rendered.map(|()| texture))
+    }
+
+    fn retained_capture_slots(&self) -> usize {
+        MAX_LAYERS.saturating_sub(
+            self.retained_layers.layers.len()
+                + self.retained_layers.opacity.len()
+                + self.retained_layers.shadow_masks.len()
+                + self.retained_layers.window_clip_masks.len(),
+        )
     }
 
     pub(super) fn capture_scene_item(

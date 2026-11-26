@@ -1,3 +1,5 @@
+struct ParticleBurst { time: float, count: int }
+
 struct CompositeInput { capture: string, attachment: string }
 struct CaptureOverride {
     enabled: bool, base-color: color, unlit: bool, alpha-mode: string, vertex-colors: bool,
@@ -20,7 +22,7 @@ struct CaptureState {
     target-blend: TargetBlend,
 }
 struct CompositeEmitter {
-    position: point3d, size: float, color: color, lifetime: float, burst-count: int,
+    position: point3d, size: float, color: color, lifetime: float, bursts: [ParticleBurst],
     particle-model: string, particle-blend-mode: string, layers: int,
 }
 struct CompositeFeed {
@@ -253,10 +255,10 @@ export component CaptureCompositeDemo inherits Window {
         particle-time: 0.2;
         particle-emitters: [
             CompositeEmitter { position: Point3D.new(1.2, 1.25, 2), size: 0.49, color: #e67fac80,
-                lifetime: 2, burst-count: root.particle-fixture ? 1 : 0, layers: 1,
+                lifetime: 2, bursts: [ParticleBurst { time: 0, count: root.particle-fixture ? 1 : 0 }], layers: 1,
                 particle-model: "primitive:box", particle-blend-mode: "source-over" },
             CompositeEmitter { position: Point3D.new(2.18, 1.25, 2), size: 0.49, color: #fac37780,
-                lifetime: 2, burst-count: root.particle-fixture ? 1 : 0, layers: 1,
+                lifetime: 2, bursts: [ParticleBurst { time: 0, count: root.particle-fixture ? 1 : 0 }], layers: 1,
                 particle-model: "", particle-blend-mode: "source-over" },
         ];
         scene-color-capture: root.show-paired-capture

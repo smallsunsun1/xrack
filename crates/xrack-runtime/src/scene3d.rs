@@ -1,10 +1,12 @@
 //! Scene geometry, camera projection, and ray queries shared by 3D hosts.
+pub use crate::mesh_nodes::MeshNodeCatalog;
 pub use crate::procedural_sky::SkySettings;
 pub use crate::scene_animation::{
     AnimatedMesh, MAX_ANIMATION_KEYS, MAX_ANIMATION_NODES, MAX_MESH_INSTANCES, MeshAnimationBlend,
-    MeshAnimationClip, MeshAnimationNode, MeshAnimationProperty, MeshAnimationTrack, MeshAsset,
-    MeshCamera, MeshCameraProjection, MeshInstances, MeshInterpolation, MeshLight, MeshLods,
-    MeshNodeTransform, MeshPlayback, MorphAnimationTrack,
+    MeshAnimationClip, MeshAnimationLayer, MeshAnimationNode, MeshAnimationProperty,
+    MeshAnimationTrack, MeshAsset, MeshCamera, MeshCameraProjection, MeshInstances,
+    MeshInterpolation, MeshLight, MeshLods, MeshNodeTransform, MeshPlayback, MorphAnimationTrack,
+    prepare_animation_layers,
 };
 pub use crate::scene_camera::{
     CAMERA_MATRIX_FIELDS, Point3D, ProjectedPoint3D, SceneCamera, SceneCameraSettings,
@@ -60,8 +62,12 @@ pub use crate::scene_particle_affectors::{
     MAX_PARTICLE_AFFECTORS, ParticleAffector, ParticleAffectorDefinition, model_particle_affectors,
     record_particle_affectors,
 };
+pub use crate::scene_particle_bursts::{ParticleBurstDefinition, ParticleBurstSchedule};
 pub use crate::scene_particle_mesh::ParticleMeshSurface;
 pub use crate::scene_particle_motion::ParticleMotion;
+pub use crate::scene_particle_track::{
+    ParticleEmissionAnimation, ParticleEmissionTrack, ParticleLoopClock,
+};
 pub use crate::scene_particles::{
     MAX_PARTICLE_EMITTERS, MAX_PARTICLE_TEXTURE_BYTES, MAX_PARTICLES, ParticleBlend,
     ParticleEmitter, ParticleEmitterDefinition, ParticleSample, ParticleSprite, model_particles,
@@ -191,6 +197,7 @@ pub struct MeshGeometry {
     skin: Option<Arc<SkinGeometry>>,
     morph: Option<Arc<MorphGeometry>>,
     heightfield: Option<Arc<MeshHeightField>>,
+    node_catalog: Option<Arc<MeshNodeCatalog>>,
     pick_tree: OnceLock<Arc<PickTree>>,
     primitive: Option<Primitive>,
 }
@@ -516,7 +523,7 @@ impl CaptureMaterial {
 }
 
 /// Import-time preparation for a mesh file. Both options default to false.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MeshImportOptions {
     pub automatic_lod: bool,
     pub lightmap_uv: bool,
@@ -541,20 +548,57 @@ impl MeshImportOptions {
 /// An immutable mesh supplied by a host at runtime. Clones share the prepared
 /// geometry and textures. The default is empty.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct MeshAsset3D(Option<MeshAsset>);
+pub struct MeshAsset3D {
+    asset: Option<MeshAsset>,
+    bounds: crate::Bounds3D,
+}
 
 impl MeshAsset3D {
     #[doc(hidden)]
     pub fn new(asset: MeshAsset) -> Self {
-        Self(Some(asset))
+        let bounds = crate::scene_hierarchy::rest_mesh_bounds(&asset);
+        Self {
+            asset: Some(asset),
+            bounds,
+        }
     }
 
     pub fn is_loaded(&self) -> bool {
-        self.0.is_some()
+        self.asset.is_some()
     }
 
-    pub(crate) fn asset(&self) -> Option<&MeshAsset> {
-        self.0.as_ref()
+    /// The primary mesh in its initial pose, before placement in a scene.
+    pub fn bounds(&self) -> crate::Bounds3D {
+        self.bounds
+    }
+
+    pub fn node(&self, selector: &str) -> crate::MeshNode3D {
+        self.asset
+            .as_ref()
+            .map_or_else(crate::MeshNode3D::default, |asset| asset.node(selector))
+    }
+
+    pub fn node_at(&self, source: i64) -> crate::MeshNode3D {
+        self.asset
+            .as_ref()
+            .map_or_else(crate::MeshNode3D::default, |asset| asset.node_at(source))
+    }
+
+    pub fn node_indices(&self, kind: &str) -> crate::VecModel<i64> {
+        self.asset
+            .as_ref()
+            .map_or_else(crate::VecModel::default, |asset| asset.node_indices(kind))
+    }
+
+    pub fn mesh_nodes(&self, kind: &str) -> Vec<crate::MeshNode3D> {
+        self.asset
+            .as_ref()
+            .map_or_else(Vec::new, |asset| asset.mesh_nodes(kind))
+    }
+
+    #[doc(hidden)]
+    pub fn asset(&self) -> Option<&MeshAsset> {
+        self.asset.as_ref()
     }
 }
 
@@ -838,6 +882,7 @@ impl Mesh3D {
             skin: None,
             morph: None,
             heightfield: None,
+            node_catalog: None,
             pick_tree: OnceLock::new(),
             primitive: None,
         });
@@ -1557,6 +1602,30 @@ impl Mesh3D {
                     )
                 }))
             }
+            _ => None,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_node_catalog(mut self, catalog: Arc<MeshNodeCatalog>) -> Self {
+        if let Self::Imported(data) = &mut self {
+            Arc::make_mut(&mut Arc::make_mut(data).geometry).node_catalog = Some(catalog);
+        }
+        self
+    }
+
+    #[doc(hidden)]
+    pub(crate) fn shared_node_catalog(&self) -> Option<Arc<MeshNodeCatalog>> {
+        match self {
+            Self::Imported(data) => data.node_catalog.clone(),
+            _ => None,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn node_catalog(&self) -> Option<&MeshNodeCatalog> {
+        match self {
+            Self::Imported(data) => data.node_catalog.as_deref(),
             _ => None,
         }
     }
@@ -3097,7 +3166,7 @@ pub fn ray_hit_subset(
     })
 }
 
-fn world_query(
+pub(crate) fn world_query(
     origin: Point3D,
     direction: Vector3D,
     max_distance: f64,
@@ -3143,16 +3212,29 @@ fn nearest_point(
     object_id: Option<&str>,
 ) -> Hit3D {
     let layers = layers.map_or(MAIN_LAYER, |mask| mask as u64);
-    if layers == 0 || radius < 0.0 || !(radius as f32).is_finite() || origin.narrow().is_none() {
+    if layers == 0 {
+        return Hit3D::default();
+    }
+    nearest_point_in(model.query_geometry(), origin, radius, |object| {
+        object.layers & layers != 0 && object_id.is_none_or(|id| id == object.id)
+    })
+}
+
+pub(crate) fn nearest_point_in(
+    geometry: &SceneGeometry,
+    origin: Point3D,
+    radius: f64,
+    includes: impl Fn(&SceneObject) -> bool,
+) -> Hit3D {
+    if radius < 0.0 || !(radius as f32).is_finite() || origin.narrow().is_none() {
         return Hit3D::default();
     }
     let point = Vector3::new(origin.x, origin.y, origin.z);
     let mut best: Option<(usize, ClosestSurface)> = None;
-    model.visit_nearest(point, radius * radius, |index, limit| {
-        let object = &model[index];
+    geometry.visit_nearest(point, radius * radius, |index, limit| {
+        let object = &geometry[index];
         if object.pickable
-            && object.layers & layers != 0
-            && object_id.is_none_or(|id| id == object.id)
+            && includes(object)
             && let Some(found) = object.closest_surface(point, limit)
             && (found.distance_squared < limit || best.is_none_or(|(previous, _)| index < previous))
         {
@@ -3163,7 +3245,7 @@ fn nearest_point(
         }
     });
     best.map_or_else(Hit3D::default, |(index, hit)| {
-        model[index]
+        geometry[index]
             .describe_surface(
                 hit.position,
                 SurfaceHit {

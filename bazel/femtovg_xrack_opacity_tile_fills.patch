@@ -1,0 +1,389 @@
+diff --git a/src/renderer.rs b/src/renderer.rs
+--- a/src/renderer.rs
++++ b/src/renderer.rs
+@@ -46,6 +46,24 @@
+         self.firsts.clear();
+         for command in commands {
+             self.firsts.push(3 * self.triangles.len() as u32);
++            if matches!(&command.cmd_type, CommandType::Triangles { params } if params.atlas_fills) {
++                for drawable in &command.drawables {
++                    if let Some((start, count)) = drawable.fill_verts {
++                        let hub = start as u32;
++                        let end = (start + count) as u32;
++                        self.triangles.extend((hub + 1..end.saturating_sub(1)).map(|rim| [hub, rim, rim + 1]));
++                    }
++                    if let Some((start, count)) = drawable.stroke_verts {
++                        for index in 0..count.saturating_sub(2) {
++                            let a = (start + index) as u32;
++                            self.triangles.push(
++                                if index % 2 == 0 { [a, a + 1, a + 2] } else { [a + 1, a, a + 2] },
++                            );
++                        }
++                    }
++                }
++                continue;
++            }
+             if matches!(
+                 command.cmd_type,
+                 CommandType::ConvexFill { .. } | CommandType::ConcaveFill { .. } | CommandType::FinishBlur { .. }
+@@ -209,6 +227,7 @@
+     // Whether the persistent stencil clip (Canvas::clip_path) applies to this
+     // command's fragments. Set centrally when the command is appended.
+     pub(crate) clip_active: bool,
++    pub(crate) batchable_atlas_fill: bool,
+     pub(crate) drawables: Vec<Drawable>,
+     pub(crate) triangles_verts: Option<(usize, usize)>,
+     pub(crate) image: Option<ImageId>,
+@@ -231,6 +250,7 @@
+         Self {
+             cmd_type: flavor,
+             clip_active: false,
++            batchable_atlas_fill: false,
+             drawables: Vec::new(),
+             triangles_verts: None,
+             image: None,
+diff --git a/src/renderer/params.rs b/src/renderer/params.rs
+--- a/src/renderer/params.rs
++++ b/src/renderer/params.rs
+@@ -40,6 +40,8 @@
+     pub(crate) gradient_premultiplied: bool,
+     /// The WGPU command carries atlas tile instances in the vertex stream.
+     pub(crate) opacity_tiles: bool,
++    /// The WGPU command carries a batch of independent, shaded convex fills.
++    pub(crate) atlas_fills: bool,
+ }
+ 
+ /// Where both backends' uniform arrays keep [`Params::gradient_premultiplied`]:
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -21,7 +21,9 @@
+ 
+ pub use wgpu;
+ 
++mod atlas_fills;
+ mod opacity_tiles;
++use atlas_fills::FILL_VERTEX_SLOTS;
+ pub use opacity_tiles::OpacityTile;
+ use opacity_tiles::TILE_VERTICES;
+ 
+@@ -544,6 +546,7 @@
+ struct SharedGpuResources {
+     shader_module: wgpu::ShaderModule,
+     opacity_tiles_shader: OnceCell<wgpu::ShaderModule>,
++    atlas_fills_shader: OnceCell<wgpu::ShaderModule>,
+     empty_texture_view: wgpu::TextureView,
+     sampler_cache: SamplerCache,
+     viewport_layout: wgpu::BindGroupLayout,
+@@ -613,6 +616,7 @@
+         Self {
+             shader_module,
+             opacity_tiles_shader: OnceCell::new(),
++            atlas_fills_shader: OnceCell::new(),
+             empty_texture_view: empty_texture.create_view(&Default::default()),
+             sampler_cache: Rc::new(RefCell::new(HashMap::new())),
+             viewport_layout: viewport_bind_group_layout,
+@@ -622,7 +626,15 @@
+         }
+     }
+ 
+-    fn shader_for(&self, device: &wgpu::Device, opacity_tiles: bool) -> &wgpu::ShaderModule {
++    fn shader_for(&self, device: &wgpu::Device, opacity_tiles: bool, atlas_fills: bool) -> &wgpu::ShaderModule {
++        if atlas_fills {
++            return self.atlas_fills_shader.get_or_init(|| {
++                device.create_shader_module(wgpu::ShaderModuleDescriptor {
++                    label: Some("femtovg atlas fill batch"),
++                    source: wgpu::ShaderSource::Wgsl(include_str!("wgpu/atlas_fills.wgsl").into()),
++                })
++            });
++        }
+         if !opacity_tiles {
+             return &self.shader_module;
+         }
+@@ -1472,6 +1484,14 @@
+                         params2,
+                         images,
+                         params1,
++                    );
++                }
++                super::CommandType::Triangles { ref params } if params.atlas_fills => {
++                    let end = self.fan_indices.firsts.get(index + 1).copied()
++                        .unwrap_or(self.fan_indices.indices().len() as u32);
++                    atlas_fills(
++                        &command, fans..end, &mut pipeline_and_bindgroup_mapper,
++                        &mut render_pass_builder, params, images,
+                     );
+                 }
+                 super::CommandType::Triangles { ref params } => {
+@@ -2303,6 +2323,22 @@
+     pass.restore_target(previous_render_target);
+ }
+ 
++fn atlas_fills(
++    command: &super::Command,
++    indices: std::ops::Range<u32>,
++    mapper: &mut CommandToPipelineAndBindGroupMapper,
++    builder: &mut RenderPassBuilder<'_>,
++    params: &Params,
++    images: &mut ImageStore<Image>,
++) {
++    let Some((start, count)) = command.triangles_verts else { return; };
++    mapper.update_renderpass(
++        builder, blend_state(command).into(), wgpu::PrimitiveTopology::TriangleList,
++        clip_guard(command.clip_active), Some(wgpu::Face::Back), params, images, None, GlyphTexture::None,
++    );
++    builder.draw_atlas_fills(start, count, indices);
++}
++
+ fn triangles(
+     command: &super::Command,
+     pipeline_and_bindgroup_mapper: &mut CommandToPipelineAndBindGroupMapper,
+@@ -2985,6 +3021,7 @@
+     /// A winding draw with no sampled coverage and no color output.
+     stencil_only: bool,
+     opacity_tiles: bool,
++    atlas_fills: bool,
+ }
+ 
+ impl PipelineState {
+@@ -3034,6 +3071,7 @@
+             clip_mask: false,
+             stencil_only: false,
+             opacity_tiles: false,
++            atlas_fills: false,
+         }
+     }
+ 
+@@ -3055,22 +3093,29 @@
+             clip_mask,
+             stencil_only,
+             opacity_tiles,
++            atlas_fills,
+         } = self;
+-        let vertex_entry_point = match (*opacity_tiles, *render_to_texture) {
+-            (true, false) => "opacity_vertex",
+-            (true, true) => "opacity_vertex_texture",
+-            (false, true) => "vs_main_texture",
+-            (false, false) => "vs_main",
++        let vertex_entry_point = match (*atlas_fills, *opacity_tiles, *render_to_texture) {
++            (true, _, false) => "atlas_vertex",
++            (true, _, true) => "atlas_vertex_texture",
++            (false, true, false) => "opacity_vertex",
++            (false, true, true) => "opacity_vertex_texture",
++            (false, false, true) => "vs_main_texture",
++            (false, false, false) => "vs_main",
+         };
+-        let fragment_entry_point = match (*opacity_tiles, *stencil_only, *clip_shape, *clip_mask) {
+-            (true, _, _, _) => "opacity_fragment",
+-            (false, true, false, false) => "fs_stencil",
+-            (false, _, false, false) => "fs_main",
+-            (false, _, true, false) => "fs_main_clip",
+-            (false, _, false, true) => "fs_main_mask",
+-            (false, _, true, true) => "fs_main_clip_mask",
++        let fragment_entry_point = match (*atlas_fills, *opacity_tiles, *stencil_only, *clip_shape, *clip_mask) {
++            (true, _, _, _, _) => "atlas_fragment",
++            (false, true, _, _, _) => "opacity_fragment",
++            (false, false, true, false, false) => "fs_stencil",
++            (false, false, _, false, false) => "fs_main",
++            (false, false, _, true, false) => "fs_main_clip",
++            (false, false, _, false, true) => "fs_main_mask",
++            (false, false, _, true, true) => "fs_main_clip_mask",
+         };
+ 
++        const ATLAS_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
++            0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
++        ];
+         const TILE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+             0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+         ];
+@@ -3081,7 +3126,13 @@
+             vertex: wgpu::VertexState {
+                 module: shader_module,
+                 entry_point: Some(vertex_entry_point),
+-                buffers: &[Some(if *opacity_tiles {
++                buffers: &[Some(if *atlas_fills {
++                    wgpu::VertexBufferLayout {
++                        array_stride: (FILL_VERTEX_SLOTS * size_of::<Vertex>()) as u64,
++                        step_mode: wgpu::VertexStepMode::Vertex,
++                        attributes: &ATLAS_ATTRIBUTES,
++                    }
++                } else if *opacity_tiles {
+                     wgpu::VertexBufferLayout {
+                         array_stride: (TILE_VERTICES * size_of::<Vertex>()) as u64,
+                         step_mode: wgpu::VertexStepMode::Instance,
+@@ -3944,6 +3995,16 @@
+         self.rpass.as_mut().unwrap().draw(vertices, 0..1);
+     }
+ 
++    fn draw_atlas_fills(&mut self, start: usize, count: usize, indices: std::ops::Range<u32>) {
++        self.ensure_pass();
++        let stride = size_of::<Vertex>();
++        let bytes = (start * stride) as u64..((start + count) * stride) as u64;
++        let pass = self.rpass.as_mut().unwrap();
++        pass.set_vertex_buffer(0, self.vertex_buffer.slice(bytes));
++        pass.draw_indexed(indices, 0, 0..1);
++        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
++    }
++
+     fn draw_opacity_tiles(&mut self, start: usize, count: usize) {
+         self.ensure_pass();
+         let stride = size_of::<Vertex>();
+@@ -4132,6 +4193,7 @@
+         pipeline_state.clip_shape = params.clip.is_some();
+         pipeline_state.clip_mask = params.clip_mask.is_some();
+         pipeline_state.opacity_tiles = params.opacity_tiles;
++        pipeline_state.atlas_fills = params.atlas_fills;
+         pipeline_state.stencil_only = matches!(params.shader_type, ShaderType::Stencil)
+             && params.stroke_thr == -1.0
+             && !pipeline_state.clip_shape
+@@ -4143,7 +4205,7 @@
+             let mut pipeline_cache = self.shared.pipelines.borrow_mut();
+             let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
+                 let layout = &self.shared.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline;
+-                let shader = self.shared.shader_for(&self.device, pipeline_state.opacity_tiles);
++                let shader = self.shared.shader_for(&self.device, pipeline_state.opacity_tiles, pipeline_state.atlas_fills);
+                 let pipeline = pipeline_state.materialize(&self.device, layout, shader);
+                 CachedPipeline {
+                     pipeline,
+diff --git a/src/renderer/wgpu/atlas_fills.rs b/src/renderer/wgpu/atlas_fills.rs
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/wgpu/atlas_fills.rs
+@@ -0,0 +1,95 @@
++use super::WGPURenderer;
++use crate::{
++    Canvas, Color, CompositeOperationState, Paint, Path,
++    renderer::{Command, CommandType, Drawable, Params, ShaderType, Vertex},
++};
++
++// XYUV, premultiplied tint, inverse scissor, and scissor extent/scale.
++pub(super) const FILL_VERTEX_SLOTS: usize = 4;
++
++fn batch_params(command: &Command) -> Option<Params> {
++    let CommandType::ConvexFill { params } = command.cmd_type else {
++        return None;
++    };
++    (command.batchable_atlas_fill
++        && command.composite_operation == CompositeOperationState::default()
++        && !command.clip_active
++        && params.shader_type == ShaderType::FillColor
++        && params.clip.is_none()
++        && params.clip_mask.is_none()
++        && params.scissor_radius == 0.0
++        && params.scissor_mat[1] == 0.0
++        && params.scissor_mat[4] == 0.0
++        && params.stroke_mult == 1.0
++        && params.stroke_thr == -1.0)
++        .then_some(params)
++}
++
++impl Canvas<WGPURenderer> {
++    /// Records a solid atlas fill, which may be combined with adjacent
++    /// compatible fills when submitting the atlas.
++    #[doc(hidden)]
++    pub fn fill_opacity_atlas_path(&mut self, path: &Path, color: Color) {
++        let start = self.commands.len();
++        self.fill_path(path, &Paint::color(color));
++        if self.commands.len() == start + 1 {
++            self.commands[start].batchable_atlas_fill = true;
++        }
++    }
++
++    /// Batches consecutive atlas fills, using the expanded geometry and
++    /// scissor parameters recorded by the ordinary painter.
++    #[doc(hidden)]
++    pub fn batch_opacity_atlas_fills(&mut self) {
++        if !self.commands.iter().any(|command| command.batchable_atlas_fill) {
++            return;
++        }
++        let mut commands = std::mem::take(&mut self.commands).into_iter().peekable();
++        while let Some(command) = commands.next() {
++            let Some(params) = batch_params(&command) else {
++                self.commands.push(command);
++                continue;
++            };
++            if commands.peek().and_then(batch_params).is_none() {
++                self.commands.push(command);
++                continue;
++            }
++            let first = self.verts.len();
++            let mut drawables = Vec::new();
++            let mut current = Some((command, params));
++            while let Some((command, params)) = current.take() {
++                let tint = params.inner_col;
++                let scissor = params.scissor_mat;
++                let extra = [
++                    Vertex::new(tint[0], tint[1], tint[2], tint[3]),
++                    Vertex::new(scissor[0], scissor[5], scissor[8], scissor[9]),
++                    Vertex::new(params.scissor_ext[0], params.scissor_ext[1], params.scissor_scale[0], params.scissor_scale[1]),
++                ];
++                let mut copy = |(start, count): (usize, usize)| {
++                    let from = (self.verts.len() - first) / FILL_VERTEX_SLOTS;
++                    self.verts.reserve(count * FILL_VERTEX_SLOTS);
++                    for index in start..start + count {
++                        let vertex = self.verts[index];
++                        self.verts.push(vertex);
++                        self.verts.extend_from_slice(&extra);
++                    }
++                    (from, count)
++                };
++                for drawable in command.drawables {
++                    drawables.push(Drawable {
++                        fill_verts: drawable.fill_verts.map(&mut copy),
++                        stroke_verts: drawable.stroke_verts.map(&mut copy),
++                    });
++                }
++                let next = commands.peek().and_then(batch_params);
++                current = next.and_then(|params| commands.next().map(|command| (command, params)));
++            }
++            let mut batch = Command::new(CommandType::Triangles {
++                params: Params { atlas_fills: true, ..Params::default() },
++            });
++            batch.triangles_verts = Some((first, self.verts.len() - first));
++            batch.drawables = drawables;
++            self.commands.push(batch);
++        }
++    }
++}
+diff --git a/src/renderer/wgpu/atlas_fills.wgsl b/src/renderer/wgpu/atlas_fills.wgsl
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/wgpu/atlas_fills.wgsl
+@@ -0,0 +1,37 @@
++struct ViewSize {
++    x: f32,
++    y: f32,
++    pad: vec2f,
++}
++
++@group(0) @binding(0) var<uniform> view_size: ViewSize;
++
++struct AtlasVertex {
++    @builtin(position) position: vec4f,
++    @location(0) device_point: vec2f,
++    @location(1) uv: vec2f,
++    @location(2) @interpolate(flat) color: vec4f,
++    @location(3) @interpolate(flat) scissor_mat: vec4f,
++    @location(4) @interpolate(flat) scissor: vec4f,
++}
++
++@vertex fn atlas_vertex(@location(0) point: vec2f, @location(1) uv: vec2f,
++    @location(2) color: vec4f, @location(3) scissor_mat: vec4f, @location(4) scissor: vec4f) -> AtlasVertex {
++    let p = vec4f(2.0 * point.x / view_size.x - 1.0, 1.0 - 2.0 * point.y / view_size.y, 0.0, 1.0);
++    return AtlasVertex(p, point, uv, color, scissor_mat, scissor);
++}
++
++@vertex fn atlas_vertex_texture(@location(0) point: vec2f, @location(1) uv: vec2f,
++    @location(2) color: vec4f, @location(3) scissor_mat: vec4f, @location(4) scissor: vec4f) -> AtlasVertex {
++    let p = vec4f(2.0 * point.x / view_size.x - 1.0, 2.0 * point.y / view_size.y - 1.0, 0.0, 1.0);
++    return AtlasVertex(p, point, uv, color, scissor_mat, scissor);
++}
++
++@fragment fn atlas_fragment(input: AtlasVertex) -> @location(0) vec4f {
++    let side = min(1.0, 1.0 - abs(input.uv.x * 2.0 - 1.0));
++    let stroke = side * min(1.0, input.uv.y);
++    let point = input.device_point * input.scissor_mat.xy + input.scissor_mat.zw;
++    let distance = abs(point) - input.scissor.xy;
++    let fringe = clamp(vec2f(0.5) - distance * input.scissor.zw, vec2f(0.0), vec2f(1.0));
++    return input.color * (stroke * (fringe.x * fringe.y));
++}

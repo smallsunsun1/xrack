@@ -1,0 +1,104 @@
+struct ImportedActor {
+    id: string, mesh: string, mesh-asset: meshasset3d,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component DeclarativeMeshDemo inherits Window {
+    title: "XRack · 声明式导入";
+    width: 540px; height: 360px; background: #192638;
+    in-out property <string> path: "";
+    in-out property <bool> active: true;
+    in-out property <int> revision: 0;
+    in-out property <float> turn: 0;
+    in-out property <bool> auto-frame: true;
+    in-out property <length> viewport-width: 540px;
+    in-out property <point2d> pointer: Point2D.new(270px, 122px);
+    out property <string> clicked-object: "";
+    out property <string> status: importer.status;
+    out property <string> error: importer.error;
+    out property <meshasset3d> loaded: importer.asset;
+    out property <bounds3d> asset-bounds: importer.bounds;
+    out property <bounds3d> world-bounds: Scene3D.bounds(root.world);
+    property <bounds3d> empty-bounds;
+
+    importer := MeshLoader3D {
+        source: root.path; active: root.active; revision: root.revision;
+    }
+    property <[ImportedActor]> world: [
+        ImportedActor {
+            id: "object", mesh: "primitive:box", mesh-asset: root.loaded,
+            x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+            yaw: root.turn, pitch: 0, roll: 0, color: #fff,
+        },
+    ];
+    out property <hit3d> hit: Scene3D.ray-hit(
+        root.world, Point3D.new(0, 0.6, 5), Vector3D.new(0, 0, -1), 10);
+    out property <projectedpoint3d> projected-center: view.project(root.world-bounds.center);
+    out property <point3d> round-trip: view.unproject(
+        root.projected-center.point, root.projected-center.depth, Point3D.new(0, 0, 0));
+    out property <hit3d> view-hit: view.hit(root.pointer);
+    out property <[hit3d]> view-hits: view.hit-all(root.pointer);
+    out property <hit3d> view-row-hit: view.hit-row(root.pointer, 0);
+    out property <[hit3d]> view-row-hits: view.hit-subset(root.pointer, [0]);
+    out property <[int]> frame-rows: view.pick-in-rect(
+        Point2D.new(0px, 0px), Point2D.new(root.viewport-width, 244px));
+
+    view := SceneView3D {
+        width: root.viewport-width; height: 244px; model: root.world;
+        camera-yaw: 0; camera-pitch: 0; camera-distance: 6;
+        camera-fit: root.auto-frame ? root.world-bounds : root.empty-bounds;
+        scene-background: #101827; cache-rendering: true;
+    }
+    pick-surface := TouchArea {
+        width: root.viewport-width; height: 244px;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.inside {
+                root.pointer = Point2D.new(event.x, event.y);
+                root.clicked-object = view.pick(root.pointer);
+            }
+        }
+    }
+    chooser := FileDialog {
+        mode: FileDialogMode.open-file;
+        title: "打开 3D 网格";
+        name-filters: ["3D 网格 (*.obj *.gltf *.glb *.png)"];
+        accepted(selection) => { root.path = chooser.selected-file; }
+    }
+    open-model := Button {
+        x: 14px; y: 252px; width: 110px; height: 34px;
+        text: "打开文件…"; enabled: !chooser.pending;
+        clicked => { chooser.open(); }
+    }
+    demo-obj := Button {
+        x: 136px; y: 252px; width: 96px; height: 34px; text: "OBJ";
+        clicked => { root.path = "models/concave-panel.obj"; }
+    }
+    demo-gltf := Button {
+        x: 244px; y: 252px; width: 96px; height: 34px; text: "GLB";
+        clicked => { root.path = "models/amber.glb"; }
+    }
+    reload-model := Button {
+        x: 352px; y: 252px; width: 83px; height: 34px; text: "重载";
+        enabled: root.path != "";
+        clicked => { root.revision = root.revision + 1; }
+    }
+    clear-model := Button {
+        x: 447px; y: 252px; width: 79px; height: 34px; text: "清除";
+        enabled: root.path != ""; clicked => { root.path = ""; }
+    }
+    Label {
+        x: 14px; y: 293px; width: 392px; height: 26px;
+        text: root.status == "loading" ? "正在准备网格…" :
+            root.status == "ready" ? "已加载" + "  " + root.path + (root.clicked-object == "" ? "" : " · " + root.clicked-object) :
+            root.status == "error" ? root.error : "选择文件查看模型";
+    }
+    CheckBox {
+        x: 412px; y: 290px; width: 114px; height: 30px;
+        text: "自动构图"; checked <=> root.auto-frame;
+    }
+    Slider {
+        x: 14px; y: 324px; width: 512px; height: 28px;
+        minimum: -180; maximum: 180; value <=> root.turn;
+    }
+}

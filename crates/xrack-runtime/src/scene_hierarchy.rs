@@ -9,11 +9,13 @@ use nalgebra::{Matrix3, Matrix4, Quaternion, Rotation3, UnitQuaternion, Vector3}
 use rapier3d::prelude::Pose as RigidPose;
 
 use crate::{
-    Color, Instance3D, Node, PhysicsWorld3D, Point2D, Point3D, Quaternion3D, RecordList,
-    RecordValue, Value, VecModel, Vector3D,
+    Color, Instance3D, MeshNode3D, Node, PhysicsWorld3D, Point2D, Point3D, Quaternion3D,
+    RecordList, RecordValue, Value, VecModel, Vector3D,
+    mesh_nodes::MeshNodeCatalog,
     scene_animation::{
-        AnimatedMesh, MeshAnimationBlend, MeshInstanceSpace, MeshPlacement, MeshPlayback,
-        MeshSampleOptions,
+        AnimatedMesh, MeshAnimationBlend, MeshAnimationLayer, MeshInstanceSpace, MeshPlacement,
+        MeshPlayback, MeshPose, MeshSampleOptions, SampledMesh, matrix_orientation,
+        prepare_animation_layers,
     },
     scene_authored_mesh::{SceneMeshIndices, SceneMeshInputs, SceneMeshSubset, SceneMeshVertex},
     scene_bounds::Bounds3D,
@@ -43,6 +45,15 @@ pub(crate) struct SceneTransform {
 }
 
 impl SceneTransform {
+    fn identity() -> Self {
+        Self {
+            linear: Matrix3::identity(),
+            origin: Vector3::zeros(),
+            inverse: Matrix3::identity(),
+            reflected: false,
+        }
+    }
+
     pub(crate) fn local(
         position: [f32; 3],
         scale: [f32; 3],
@@ -309,6 +320,7 @@ pub fn prepare_collision_shapes<T: 'static>(
 pub struct SceneNodeDefinition<'a> {
     pub id: String,
     pub parent: String,
+    pub parent_node: String,
     pub physics_body: &'a str,
     pub mesh: &'a str,
     pub mesh_asset: Option<&'a crate::MeshAsset3D>,
@@ -367,6 +379,7 @@ pub struct SceneNodeDefinition<'a> {
 pub struct SceneNode {
     id: String,
     parent: String,
+    parent_node: Option<Box<str>>,
     local: SceneTransform,
     rotation: Rotation3<f32>,
     physics: Option<Arc<BodyAttachment>>,
@@ -377,6 +390,7 @@ pub struct SceneNode {
     camera_up: Option<Vector3D>,
     visible: bool,
     mesh: Option<MeshAsset>,
+    node_catalog: Option<Arc<MeshNodeCatalog>>,
     collision_shapes: Option<Arc<[SceneCollisionShape]>>,
     animation: MeshAnimationBlend,
     morph_weights: Arc<[(String, f64)]>,
@@ -472,17 +486,16 @@ impl SceneNodeDefinition<'_> {
                     }
                 }
                 _ if let Some(asset) = self.mesh_asset.and_then(crate::MeshAsset3D::asset) => {
-                    Some(asset.clone().select_material_variant(self.material_variant))
+                    Some(asset.clone())
                 }
                 _ if self.mesh.is_empty() => None,
-                _ => Some(
-                    MeshAsset::resolve(self.mesh, imported)?
-                        .select_material_variant(self.material_variant),
-                ),
+                _ => Some(MeshAsset::resolve(self.mesh, imported)?),
             }
         } else {
             None
         };
+        let node_catalog = mesh.as_ref().and_then(MeshAsset::shared_node_catalog);
+        let mesh = mesh.map(|asset| asset.select_material_variant(self.material_variant));
         let owns_mesh = self.instance_of.is_empty();
         let appearance = if owns_mesh {
             crate::scene_material::SceneAppearance::new(self.material, self.material_slots)
@@ -510,7 +523,9 @@ impl SceneNodeDefinition<'_> {
         Some(SceneNode {
             id: self.id,
             parent: self.parent,
+            parent_node: (!self.parent_node.is_empty()).then(|| self.parent_node.into_boxed_str()),
             mesh,
+            node_catalog,
             collision_shapes: self.collision_shapes,
             instance_of: self.instance_of,
             instance_root: self.instance_root,
@@ -591,7 +606,9 @@ fn lod_bias(value: f64) -> f64 {
 #[derive(Debug, Default)]
 struct SceneMeshCache {
     styles: HashMap<(usize, usize, bool), Mesh3D>,
-    poses: HashMap<(u32, usize), Vec<MeshPlacement>>,
+    poses: HashMap<(u32, usize), SampledMesh>,
+    // Cache local poses for the glTF assets referenced by child rows.
+    socket_poses: HashMap<(u32, usize), Arc<MeshPose>>,
 }
 
 fn styled_mesh(
@@ -681,6 +698,7 @@ impl SceneNode {
         objects: Option<&mut Vec<SceneObject>>,
         lights: Option<&mut Option<Vec<SceneLight>>>,
         cameras: Option<&mut ImportedCameras>,
+        node_frame: Option<&mut Option<Box<AssetNodeFrame>>>,
         cache: &mut SceneMeshCache,
     ) {
         if self.instance_template {
@@ -688,7 +706,18 @@ impl SceneNode {
         }
         let mounts_attachments = self.mounts_asset_attachments();
         if let Some(asset) = self.mesh.take() {
+            let nodes = node_frame.and_then(|frame| {
+                let catalog = self.node_catalog.take()?;
+                let transform = mount?.world;
+                *frame = Some(Box::new(AssetNodeFrame {
+                    catalog,
+                    transform,
+                    pose: AssetNodePose::Rest,
+                }));
+                frame.as_deref_mut()
+            });
             let attachments = ImportAttachments {
+                nodes,
                 rotation: world.rotation,
                 lights: lights
                     .filter(|_| {
@@ -792,7 +821,11 @@ impl SceneNode {
         let renderables = objects
             .as_ref()
             .is_some_and(|objects| objects.len() < MAX_NODES);
-        if !renderables && attachments.lights.is_none() && attachments.cameras.is_none() {
+        if !renderables
+            && attachments.lights.is_none()
+            && attachments.cameras.is_none()
+            && attachments.nodes.is_none()
+        {
             return;
         }
         let world = mount.world;
@@ -853,6 +886,13 @@ impl SceneNode {
                 } else {
                     None
                 };
+                let retain_pose = attachments.nodes.is_some()
+                    || (self.prototype_row.is_some() && self.node_catalog.is_some());
+                let key = (
+                    self.prototype_row.unwrap_or(self.row),
+                    Arc::as_ptr(&rig) as usize,
+                );
+                let pose = cache.socket_poses.get(&key);
                 let sample = |lights, cameras| {
                     let weights: Vec<_> = self
                         .morph_weights
@@ -865,6 +905,8 @@ impl SceneNode {
                         &self.animation,
                         MeshSampleOptions {
                             renderables,
+                            retain_pose,
+                            pose,
                             overrides: &overrides,
                             lights,
                             cameras,
@@ -878,23 +920,22 @@ impl SceneNode {
                     .lights
                     .as_ref()
                     .is_some_and(|lights| lights.len() < MAX_SCENE_LIGHTS);
-                let sampled;
-                let placements = if let Some(row) = self.prototype_row {
-                    cache
-                        .poses
-                        .entry((row, Arc::as_ptr(&rig) as usize))
-                        .or_insert_with(|| sample(None, None))
-                        .as_slice()
+                let local_sample;
+                let sampled: &SampledMesh = if self.prototype_row.is_some() {
+                    cache.poses.entry(key).or_insert_with(|| sample(None, None))
                 } else {
-                    sampled = sample(
+                    local_sample = sample(
                         collect_lights.then_some(&mut positioned_lights),
                         attachments
                             .cameras
                             .is_some()
                             .then_some(&mut positioned_cameras),
                     );
-                    &sampled
+                    &local_sample
                 };
+                if let Some((frame, matrices)) = attachments.nodes.zip(sampled.pose.as_ref()) {
+                    frame.pose = AssetNodePose::Animated(matrices.clone());
+                }
                 if let Some((lights, rotation)) = attachments.lights.zip(attachments.rotation) {
                     let remaining = MAX_SCENE_LIGHTS.saturating_sub(lights.len());
                     lights.extend(
@@ -931,7 +972,7 @@ impl SceneNode {
                 let Some(objects) = objects else {
                     return;
                 };
-                for placement in placements {
+                for placement in &sampled.placements {
                     if objects.len() == MAX_NODES {
                         break;
                     }
@@ -1013,15 +1054,28 @@ pub(crate) fn multiply_instance_tint(color: Color, tint: [f32; 4]) -> Color {
     Color(u32::from_be_bytes(rgba))
 }
 
+pub(crate) fn rest_mesh_bounds(asset: &MeshAsset) -> crate::Bounds3D {
+    match asset {
+        MeshAsset::Lods(lods) => rest_mesh_bounds(lods.primary()),
+        MeshAsset::Variants(variants) => rest_mesh_bounds(variants.primary()),
+        MeshAsset::Static(mesh) => {
+            let (min, max) = mesh.bounds();
+            crate::Bounds3D::from_spatial(Some(Bounds3D { min, max }))
+        }
+        MeshAsset::Animated(_) => crate::Bounds3D::from_spatial(
+            rest_mesh_objects(asset)
+                .iter()
+                .map(SceneObject::world_bounds)
+                .filter(|bounds| bounds.is_finite())
+                .reduce(Bounds3D::union),
+        ),
+    }
+}
+
 /// Primary geometry in the authored glTF rest pose, using the same node and
 /// deformation transforms as a model drawn without an animation clip.
 pub(crate) fn rest_mesh_objects(asset: &MeshAsset) -> Vec<SceneObject> {
-    let identity = SceneTransform {
-        linear: Matrix3::identity(),
-        origin: Vector3::zeros(),
-        inverse: Matrix3::identity(),
-        reflected: false,
-    };
+    let identity = SceneTransform::identity();
     let object = |mesh, transform| {
         SceneObject::from_transform(String::new(), mesh, transform, Color(0xffffffff))
     };
@@ -1034,12 +1088,15 @@ pub(crate) fn rest_mesh_objects(asset: &MeshAsset) -> Vec<SceneObject> {
                 &MeshAnimationBlend::default(),
                 MeshSampleOptions {
                     renderables: true,
+                    retain_pose: false,
+                    pose: None,
                     overrides: &[],
                     lights: None,
                     cameras: None,
                     instance_space: None,
                 },
             )
+            .placements
             .into_iter()
             .filter_map(|placement| placed_mesh(rig, &placement, identity, object))
             .collect(),
@@ -1050,6 +1107,7 @@ type ImportedCameras = BTreeMap<String, Option<CameraNode>>;
 
 #[derive(Default)]
 struct ImportAttachments<'a> {
+    nodes: Option<&'a mut AssetNodeFrame>,
     rotation: Option<UnitQuaternion<f32>>,
     lights: Option<&'a mut Vec<SceneLight>>,
     cameras: Option<&'a mut ImportedCameras>,
@@ -1061,6 +1119,7 @@ struct ImportAttachments<'a> {
 pub struct SceneGeometry {
     objects: Arc<[SceneObject]>,
     visibility: OnceLock<Option<VisibilityIndex>>,
+    bounds: Mutex<VecDeque<(u64, crate::Bounds3D)>>,
     instance_addresses: OnceLock<HashMap<[i64; 3], usize>>,
     shared_layers: u64,
     trigger_layers: OnceLock<u64>,
@@ -1098,6 +1157,7 @@ impl SceneGeometry {
         Arc::new(Self {
             objects: objects.into(),
             visibility: OnceLock::new(),
+            bounds: Mutex::default(),
             instance_addresses: OnceLock::new(),
             shared_layers,
             trigger_layers: OnceLock::new(),
@@ -1197,6 +1257,27 @@ impl SceneGeometry {
             let mut max = span.max;
             for index in 0..self.len() {
                 max = visit(index, max);
+            }
+        }
+    }
+
+    pub(crate) fn visit_nearest(
+        &self,
+        point: Vector3<f64>,
+        mut limit: f64,
+        mut visit: impl FnMut(usize, f64) -> f64,
+    ) {
+        if self.is_empty() {
+            return;
+        }
+        if let Some(bounds) = self
+            .visibility
+            .get_or_init(|| VisibilityIndex::new(&self.objects))
+        {
+            bounds.visit_nearest(point, limit, visit);
+        } else {
+            for index in 0..self.len() {
+                limit = visit(index, limit);
             }
         }
     }
@@ -1637,6 +1718,77 @@ impl PartialEq for SceneModel {
     }
 }
 
+#[derive(Debug)]
+enum AssetNodePose {
+    Rest,
+    Animated(Arc<MeshPose>),
+}
+
+#[derive(Debug)]
+struct AssetNodeFrame {
+    catalog: Arc<MeshNodeCatalog>,
+    transform: SceneTransform,
+    pose: AssetNodePose,
+}
+
+impl PartialEq for AssetNodeFrame {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.catalog, &other.catalog)
+            && self.transform == other.transform
+            && match (&self.pose, &other.pose) {
+                (AssetNodePose::Rest, AssetNodePose::Rest) => true,
+                (AssetNodePose::Animated(a), AssetNodePose::Animated(b)) => {
+                    Arc::ptr_eq(a, b) || a.matrices == b.matrices
+                }
+                _ => false,
+            }
+    }
+}
+
+impl AssetNodeFrame {
+    fn node_matrix(&self, ordinal: usize) -> Option<Matrix4<f32>> {
+        match &self.pose {
+            AssetNodePose::Rest => Some(self.catalog.entries().get(ordinal)?.rest_matrix()),
+            // Import uses the same traversal for the catalog and the animation rig.
+            AssetNodePose::Animated(pose) => pose.matrices.get(ordinal).copied().flatten(),
+        }
+    }
+
+    fn world_axes(&self, ordinal: usize) -> Option<(Vector3<f32>, Matrix3<f32>)> {
+        let matrix = self.node_matrix(ordinal)?;
+        let origin =
+            self.transform.origin + self.transform.linear * matrix.fixed_view::<3, 1>(0, 3);
+        let linear = self.transform.linear * matrix.fixed_view::<3, 3>(0, 0);
+        origin
+            .iter()
+            .chain(linear.iter())
+            .all(|value| value.is_finite())
+            .then_some((origin, linear))
+    }
+
+    fn pose_node(&self, mut node: MeshNode3D) -> Option<MeshNode3D> {
+        let ordinal = self.catalog.ordinal(node.source_index)?;
+        let (origin, linear) = self.world_axes(ordinal)?;
+        let axis = |i| {
+            let column: Vector3<f32> = linear.column(i).into_owned();
+            Vector3D::new(
+                f64::from(column.x),
+                f64::from(column.y),
+                f64::from(column.z),
+            )
+        };
+        node.origin = Point3D::new(
+            f64::from(origin.x),
+            f64::from(origin.y),
+            f64::from(origin.z),
+        );
+        node.axis_x = axis(0);
+        node.axis_y = axis(1);
+        node.axis_z = axis(2);
+        Some(node)
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) struct NodeFrame {
     pub origin: Vector3<f32>,
@@ -1646,6 +1798,7 @@ pub(crate) struct NodeFrame {
     rotation_parent: String,
     visible: bool,
     subtree: [u16; 2],
+    asset: Option<Box<AssetNodeFrame>>,
 }
 
 impl Default for SceneModel {
@@ -1786,34 +1939,36 @@ impl SceneModel {
         }
     }
 
-    pub(crate) fn visit_nearest(
-        &self,
-        point: Vector3<f64>,
-        mut limit: f64,
-        mut visit: impl FnMut(usize, f64) -> f64,
-    ) {
-        if self.is_empty() {
-            return;
-        }
-        if let Some(bounds) = self
-            .geometry
-            .visibility
-            .get_or_init(|| VisibilityIndex::new(self.objects()))
-        {
-            bounds.visit_nearest(point, limit, visit);
-        } else {
-            for index in 0..self.len() {
-                limit = visit(index, limit);
-            }
-        }
-    }
-
     pub(crate) fn query_geometry(&self) -> &SceneGeometry {
         &self.geometry
     }
 
     pub fn objects(&self) -> &Arc<[SceneObject]> {
         self.geometry.objects()
+    }
+
+    /// Bounds of the prepared scene pose, before camera-dependent LOD selection.
+    pub fn bounds(&self, layer_mask: Option<i64>) -> crate::Bounds3D {
+        let layers = layer_mask.map_or(super::scene3d::MAIN_LAYER, |mask| mask as u64);
+        let mut cached = self
+            .geometry
+            .bounds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, bounds)) = cached.iter().find(|(mask, _)| *mask == layers) {
+            return *bounds;
+        }
+        let result = crate::Bounds3D::from_spatial(
+            self.objects()
+                .iter()
+                .filter(|object| object.layers & layers != 0)
+                .map(SceneObject::world_bounds)
+                .filter(|bounds| bounds.is_finite())
+                .reduce(Bounds3D::union),
+        );
+        cached.truncate(3);
+        cached.push_front((layers, result));
+        result
     }
 
     pub fn imported_lights(&self) -> Option<Arc<[SceneLight]>> {
@@ -1987,6 +2142,28 @@ impl SceneModel {
             })
     }
 
+    /// Read a glTF node in the current world pose of the named scene row.
+    pub fn scene_node(&self, object: &str, selector: &str) -> MeshNode3D {
+        self.asset_node(object, |catalog| catalog.node(selector))
+    }
+
+    /// Read a glTF node by its original source index.
+    pub fn scene_node_at(&self, object: &str, source: i64) -> MeshNode3D {
+        self.asset_node(object, |catalog| catalog.node_at(source))
+    }
+
+    fn asset_node(
+        &self,
+        object: &str,
+        select: impl FnOnce(&MeshNodeCatalog) -> MeshNode3D,
+    ) -> MeshNode3D {
+        self.frames
+            .get(object)
+            .and_then(|frame| frame.asset.as_deref())
+            .and_then(|frame| frame.pose_node(select(&frame.catalog)))
+            .unwrap_or_default()
+    }
+
     /// Convert a point between authored nodes. An empty endpoint means world space.
     pub fn map_position(&self, from: &str, to: &str, point: Point3D) -> Option<Point3D> {
         let (source, destination) = self.mapping_endpoints(from, to)?;
@@ -2055,6 +2232,29 @@ impl SceneModel {
 
     pub(crate) fn node_frame(&self, id: &str) -> Option<&NodeFrame> {
         self.frames.get(id).filter(|frame| frame.visible)
+    }
+
+    pub(crate) fn particle_parent_rows(
+        &self,
+        parent: &str,
+        selector: &str,
+    ) -> Option<[[f32; 4]; 3]> {
+        let frame = self.node_frame(parent)?;
+        let (origin, linear) = if selector.is_empty() {
+            (frame.origin, frame.linear)
+        } else {
+            let asset = frame.asset.as_deref()?;
+            let ordinal = asset.catalog.selector_ordinal(selector)?;
+            asset.world_axes(ordinal)?
+        };
+        Some(std::array::from_fn(|row| {
+            [
+                linear[(row, 0)],
+                linear[(row, 1)],
+                linear[(row, 2)],
+                origin[row],
+            ]
+        }))
     }
 
     pub(crate) fn rotate_node_direction<'a>(
@@ -2248,6 +2448,7 @@ fn resolve_prototypes(nodes: &mut [SceneNode], renderables: bool) -> Vec<Option<
         }
         instance.appearance = prototype.appearance.clone();
         instance.animation = prototype.animation.clone();
+        instance.node_catalog = prototype.node_catalog.clone();
         instance.morph_weights = prototype.morph_weights.clone();
         instance.prototype_row = Some(prototype.row);
     }
@@ -2274,9 +2475,60 @@ fn rotation_ancestry(nodes: &[SceneNode], parents: &[Parent], renderables: bool)
     needed
 }
 
+#[derive(Clone, Copy)]
+struct SceneSocket {
+    transform: SceneTransform,
+    rotation: UnitQuaternion<f32>,
+}
+
+fn resolve_sockets(
+    nodes: &[SceneNode],
+    parents: &[Parent],
+    prototypes: &[Option<usize>],
+    cache: &mut SceneMeshCache,
+) -> HashMap<usize, Option<SceneSocket>> {
+    let mut sockets = HashMap::new();
+    let mut resolved = HashMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let Some(selector) = node.parent_node.as_deref() else {
+            continue;
+        };
+        let socket = (|| {
+            let Parent::Node(parent) = parents[index] else {
+                return None;
+            };
+            let source = prototypes.get(parent).copied().flatten().unwrap_or(parent);
+            let host = &nodes[source];
+            let catalog = host.node_catalog.as_ref()?;
+            let ordinal = catalog.selector_ordinal(selector)?;
+            *resolved.entry((source, ordinal)).or_insert_with(|| {
+                let asset = host.mesh.as_ref()?;
+                let matrix = if let Some(rig) = asset.animated_primary() {
+                    let key = (host.row, Arc::as_ptr(rig) as usize);
+                    let pose = cache.socket_poses.entry(key).or_insert_with(|| {
+                        Arc::new(rig.sample_pose(&host.animation, host.mounts_asset_attachments()))
+                    });
+                    *pose.matrices.get(ordinal)?.as_ref()?
+                } else {
+                    catalog.entries().get(ordinal)?.rest_matrix()
+                };
+                let transform = SceneTransform::identity().mesh_node(&matrix)?;
+                let rotation = matrix_orientation(matrix)?;
+                Some(SceneSocket {
+                    transform,
+                    rotation,
+                })
+            })
+        })();
+        sockets.insert(index, socket);
+    }
+    sockets
+}
+
 fn world_poses(
     nodes: &[SceneNode],
     parents: &[Parent],
+    sockets: &HashMap<usize, Option<SceneSocket>>,
     track_rotation: bool,
     renderables: bool,
 ) -> Vec<Pose> {
@@ -2318,8 +2570,14 @@ fn world_poses(
             }
         };
         for child in trail.drain(..).rev() {
-            inherited =
-                inherited.and_then(|world| world.child(&nodes[child], tracks_rotation(child)));
+            inherited = inherited.and_then(|mut world| {
+                if let Some(socket) = sockets.get(&child) {
+                    let socket = (*socket)?;
+                    world.transform = world.transform.child(socket.transform)?;
+                    world.rotation = world.rotation.map(|rotation| rotation * socket.rotation);
+                }
+                world.child(&nodes[child], tracks_rotation(child))
+            });
             poses[child] = inherited.map_or(Pose::Unavailable, Pose::Ready);
         }
     }
@@ -2448,7 +2706,8 @@ fn prepare_nodes(
         false
     });
     let has_instance_roots = nodes.iter().any(|node| !node.instance_root.is_empty());
-    let prototypes = if renderables || has_instance_roots {
+    let has_sockets = nodes.iter().any(|node| node.parent_node.is_some());
+    let prototypes = if renderables || has_instance_roots || has_sockets {
         resolve_prototypes(&mut nodes, renderables)
     } else {
         Vec::new()
@@ -2471,6 +2730,7 @@ fn prepare_nodes(
     if nodes.iter().all(|row| {
         row.id.is_empty()
             && row.parent.is_empty()
+            && row.parent_node.is_none()
             && row.instance_root.is_empty()
             && !matches!(row.mesh, Some(MeshAsset::Lods(_)))
     }) {
@@ -2483,6 +2743,7 @@ fn prepare_nodes(
                     (world, Some(MeshMount::at(world.transform))),
                     Some(&mut objects),
                     Some(&mut imported_lights),
+                    None,
                     None,
                     cache,
                 );
@@ -2503,12 +2764,24 @@ fn prepare_nodes(
     let ids = node_indices(&nodes);
     let parents: Vec<_> = nodes
         .iter()
-        .map(|node| scene_reference(node.transform_parent(), &ids))
+        .map(|node| {
+            if node.parent_node.is_some() && node.parent.is_empty() {
+                Parent::Invalid
+            } else {
+                scene_reference(node.transform_parent(), &ids)
+            }
+        })
         .collect();
+    let sockets = if has_sockets {
+        resolve_sockets(&nodes, &parents, &prototypes, cache)
+    } else {
+        HashMap::new()
+    };
     let subtrees = light_subtrees(&parents);
     let poses = world_poses(
         &nodes,
         &parents,
+        &sockets,
         track_cameras || track_imported || track_imported_cameras,
         renderables,
     );
@@ -2525,7 +2798,7 @@ fn prepare_nodes(
     } else {
         Vec::new()
     };
-    let frames: HashMap<_, _> = ids
+    let mut frames: HashMap<_, _> = ids
         .iter()
         .filter_map(|(&id, index)| {
             let index = (*index)?;
@@ -2539,7 +2812,14 @@ fn prepare_nodes(
                     origin: world.transform.origin,
                     linear: world.transform.linear,
                     inverse: world.transform.inverse,
-                    rotation: node.rotation,
+                    rotation: sockets
+                        .get(&index)
+                        .copied()
+                        .flatten()
+                        .filter(|_| !node.world_locked)
+                        .map_or(node.rotation, |socket| {
+                            socket.rotation.to_rotation_matrix() * node.rotation
+                        }),
                     rotation_parent: if node.world_locked {
                         String::new()
                     } else {
@@ -2547,6 +2827,7 @@ fn prepare_nodes(
                     },
                     visible: world.visible,
                     subtree: subtrees[index],
+                    asset: None,
                 },
             ))
         })
@@ -2641,11 +2922,17 @@ fn prepare_nodes(
                     .map(|mount| (node.clone(), mount, levels, automatic));
                 let start = objects.len();
                 let owns_cameras = camera_owners.get(index).copied().unwrap_or(false);
+                let node_frame = if node.node_catalog.is_some() {
+                    frames.get_mut(&node.id).map(|frame| &mut frame.asset)
+                } else {
+                    None
+                };
                 node.append_scene(
                     (world, mount),
                     renderables.then_some(&mut objects),
                     renderables.then_some(&mut imported_lights),
                     owns_cameras.then_some(&mut imported_cameras),
+                    node_frame,
                     cache,
                 );
                 let end = objects.len();
@@ -2715,9 +3002,9 @@ fn prepare_nodes(
 }
 
 impl Node {
-    /// Resolve rigid-body poses while collecting the view's reactive dependencies.
+    /// Resolve rigid-body poses and place particle emitters in the same scene snapshot.
     #[doc(hidden)]
-    pub fn prepare_scene_physics(&mut self, follow_authored_model: bool) {
+    pub fn prepare_scene_view(&mut self, follow_authored_model: bool) {
         if follow_authored_model
             && let (Some(Value::SceneObjects(model)), Some(Value::PhysicsWorld3D(world))) = (
                 self.properties.get("model"),
@@ -2727,6 +3014,8 @@ impl Node {
         {
             self.properties.insert("model", Value::SceneObjects(model));
         }
+        self.prepare_particle_attachments();
+        self.prepare_affector_attachments();
         self.prepare_physics_debug();
     }
 }
@@ -2833,6 +3122,7 @@ pub(crate) fn prepare_record_scene(
             SceneNodeDefinition {
                 id: string("id")?.to_owned(),
                 parent: string("parent").unwrap_or_default().to_owned(),
+                parent_node: string("parent-node").unwrap_or_default().to_owned(),
                 physics_body: string("physics-body").unwrap_or_default(),
                 mesh: string("mesh").unwrap_or_default(),
                 mesh_asset: match row.field("mesh-asset") {
@@ -2898,6 +3188,14 @@ pub(crate) fn prepare_record_scene(
                         looping: row.field("animation-to-loop") == Some(&Value::Bool(true)),
                     },
                     weight: number("animation-blend").unwrap_or(0.0),
+                    layers: match row.field("animation-layers") {
+                        Some(Value::RecordList(layers)) => prepare_animation_layers(
+                            mesh_inputs,
+                            layers.model(),
+                            MeshAnimationLayer::from_record,
+                        ),
+                        _ => Arc::from([]),
+                    },
                 },
                 morph_weights: &morph_weights,
                 position: [number("x")?, number("y")?, number("z")?],

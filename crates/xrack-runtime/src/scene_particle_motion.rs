@@ -25,7 +25,7 @@ enum VelocityMode {
 
 /// Emitter geometry and direction uniform data. All columns are vec4-aligned.
 #[doc(hidden)]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParticleMotion {
     pub shape: [[f32; 4]; 3],
     pub surface_weights: [f32; 4],
@@ -35,6 +35,7 @@ pub struct ParticleMotion {
     pub target: [f32; 4],
     pub target_spread: [f32; 4],
     pub modes: [u32; 4],
+    pub placement: Option<[[f32; 4]; 3]>,
 }
 
 impl ParticleMotion {
@@ -139,6 +140,7 @@ impl ParticleEmitterDefinition {
             target: pack(Vector3::from(target), 0.0),
             target_spread: pack(Vector3::from(spread), 0.0),
             modes: [shape as u32, u32::from(surface), motion as u32, 0],
+            placement: None,
         })
     }
 }

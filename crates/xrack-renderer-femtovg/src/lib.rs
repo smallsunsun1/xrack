@@ -64,6 +64,7 @@ use std::{
     io::{BufWriter, Write},
     path::Path as FilePath,
     rc::Rc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 pub use text::TextSystem;
@@ -331,6 +332,22 @@ pub struct Renderer {
     system_differentiate_without_color: bool,
 }
 
+fn canvas_renderer(
+    instance: &wgpu::Instance,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> WGPURenderer {
+    #[cfg(xrack_femtovg_glyph_samples)]
+    {
+        WGPURenderer::new_with_device_cache(instance, device.clone(), queue.clone())
+    }
+    #[cfg(not(xrack_femtovg_glyph_samples))]
+    {
+        let _ = instance;
+        WGPURenderer::new(device.clone(), queue.clone())
+    }
+}
+
 /// GPU resources that can back more than one independent renderer.
 #[derive(Clone)]
 pub struct RenderDevice {
@@ -338,6 +355,7 @@ pub struct RenderDevice {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    system_fonts: Arc<OnceLock<fontdb::Database>>,
 }
 
 impl RenderDevice {
@@ -438,6 +456,7 @@ impl RenderDevice {
             adapter,
             device,
             queue,
+            system_fonts: Arc::new(OnceLock::new()),
         })
     }
 
@@ -462,8 +481,13 @@ impl Renderer {
         Self::with_device_and_text(RenderDevice::request(instance, surface).await?, text)
     }
 
+    /// Creates a renderer using the system font snapshot of this device.
     pub fn with_device(gpu: RenderDevice) -> Result<Self, String> {
-        Self::with_device_and_text(gpu, TextSystem::system()?)
+        let database = gpu
+            .system_fonts
+            .get_or_init(TextSystem::discover_system_fonts);
+        let text = TextSystem::from_system_database(database.clone())?;
+        Self::with_device_and_text(gpu, text)
     }
 
     fn with_device_and_text(gpu: RenderDevice, text: TextSystem) -> Result<Self, String> {
@@ -472,10 +496,11 @@ impl Renderer {
             adapter,
             device,
             queue,
+            ..
         } = gpu;
         let scene3d = scene3d::SceneRenderer::new(&adapter, device.features());
         let canvas = Canvas::new_with_text_context(
-            WGPURenderer::new(device.clone(), queue.clone()),
+            canvas_renderer(&instance, &device, &queue),
             text.context().clone(),
         )
         .map_err(|e| e.to_string())?;
@@ -1376,6 +1401,10 @@ impl Renderer {
         target: &wgpu::Texture,
         transfer: Option<wgpu::CommandBuffer>,
     ) {
+        #[cfg(xrack_femtovg_glyph_samples)]
+        if std::mem::take(&mut self.rectangle_batches.plain_fills_pending) {
+            self.canvas.batch_opacity_atlas_fills();
+        }
         if self.rectangle_batches.eager_atlas_submission {
             self.submit_opacity_atlas();
         }
@@ -2999,7 +3028,7 @@ impl Renderer {
             if let Some((parent, parent_layout)) = prepare_opacity_for {
                 let opacity = node.opacity();
                 if 0.0 < opacity && opacity < 1.0 {
-                    self.prepare_opacity_atlas_for_children(parent, parent_layout, frame);
+                    self.prepare_opacity_atlas_for_children(parent, parent_layout, frame)?;
                     prepare_opacity_for = None;
                 }
             }

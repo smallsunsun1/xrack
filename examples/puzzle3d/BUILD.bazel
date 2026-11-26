@@ -3180,3 +3180,50 @@ rust_binary(
         "//crates/xrack-scene-import:xrack_scene_import",
     ],
 )
+
+exports_files(["declarative_mesh.xr"], visibility = ["//tests:__pkg__"])
+
+xr_ui_library(
+    name = "declarative_mesh_ui",
+    src = "declarative_mesh.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_declarative_mesh",
+    srcs = ["play_declarative_mesh.rs"],
+    data = WAVEFRONT_ASSETS + ["models/amber.glb"],
+    edition = "2024",
+    deps = [
+        ":declarative_mesh_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+MESH_NODE_ASSETS = [
+    "models/instance-picking.gltf",
+    "models/node-query.gltf",
+]
+
+exports_files(
+    ["mesh_nodes.xr", "models/node-query.gltf"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "mesh_nodes_ui",
+    src = "mesh_nodes.xr",
+    assets = MESH_NODE_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "play_mesh_nodes",
+    srcs = ["play_mesh_nodes.rs"],
+    data = MESH_NODE_ASSETS,
+    edition = "2024",
+    deps = [
+        ":mesh_nodes_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)

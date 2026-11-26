@@ -2699,6 +2699,7 @@ impl PreviewScene {
             .into_iter()
             .chain(self.image_playback.deadline())
             .chain(self.media.deadline(now))
+            .chain(xrack_runtime::mesh_loader_deadline(now))
             .chain(self.timers.deadline())
             .chain(
                 (self.window_status.minimized != Some(true) && self.timers.has_frame_animations())
@@ -2882,6 +2883,7 @@ impl PreviewScene {
     }
 
     fn prepare_snapshot(&mut self, renderer: &mut Renderer, animated: bool) {
+        xrack_runtime::poll_mesh_loaders();
         self.loader_redraw = false;
         let _scroll = self.scroll.enter();
         let _focus = self.focus.enter();

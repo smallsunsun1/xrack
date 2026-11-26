@@ -1,6 +1,8 @@
+struct ParticleBurst { time: float, count: int }
+
 struct MeshEmitter {
     position: point3d, color: color, size: float, lifetime: float,
-    burst-count: int, fade-out: float, seed: int,
+    bursts: [ParticleBurst], fade-out: float, seed: int,
     emitter-shape: string, emitter-mesh: string, emitter-mesh-scale: vector3d, emitter-roll: float,
     velocity-mode: string, velocity: vector3d, velocity-target: point3d,
 }
@@ -23,7 +25,7 @@ export component ParticleMeshEmittersDemo inherits Window {
 
     property <MeshEmitter> defaults: MeshEmitter {
         position: Point3D.new(0, 1.38, 0), color: #50dbffff, size: 0.055, lifetime: 4,
-        burst-count: root.population, fade-out: 0, seed: 37,
+        bursts: [ParticleBurst { time: 0, count: root.population }], fade-out: 0, seed: 37,
         emitter-shape: "mesh", emitter-mesh: root.mesh-key,
         emitter-mesh-scale: Vector3D.new(root.stretch, 1, 1), emitter-roll: root.turn,
         velocity-mode: "vector", velocity: Vector3D.new(0,0,0),

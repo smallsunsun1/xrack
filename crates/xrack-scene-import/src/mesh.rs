@@ -24,9 +24,10 @@ use xrack_assets::{
 use xrack_runtime::scene3d::{
     AnimatedMesh, MAX_ANIMATION_NODES, MAX_IMPORTED_VERTICES, MAX_MORPH_DELTAS, MAX_MORPH_TARGETS,
     Mesh3D, MeshAnimationNode, MeshAsset, MeshCamera, MeshCameraProjection, MeshInfluence,
-    MeshInstances, MeshLight, MeshNodeTransform, MeshPart, MeshTangent, MeshVertex,
-    TextureTransform,
+    MeshInstances, MeshLight, MeshNodeCatalog, MeshNodeTransform, MeshPart, MeshTangent,
+    MeshVertex, TextureTransform,
 };
+use xrack_runtime::{MeshNode3D, Point3D, Vector3D};
 use xrack_syntax::gltf_metadata::{
     EXTENDED_MATERIALS, GltfMetadata, LIGHTS_PUNCTUAL, MATERIALS_VARIANTS, MESH_GPU_INSTANCING,
     MaterialVariantMappings, TEXTURE_TRANSFORM, json_chunk,
@@ -153,7 +154,63 @@ pub(super) fn load_mesh(
             return Err("glTF buffer view is out of bounds".into());
         }
     }
+    let addresses = metadata.scene_node_addresses()?;
+    let source_nodes: Vec<_> = document.nodes().collect();
+    let mut transforms: Vec<Matrix4<f32>> = Vec::with_capacity(addresses.len());
+    let mut nodes = Vec::with_capacity(addresses.len());
+    for address in &addresses {
+        let node = source_nodes
+            .get(address.source)
+            .ok_or("invalid glTF node index")?;
+        let columns = node.transform().matrix();
+        let local = Matrix4::from_fn(|row, column| columns[column][row]);
+        let world = address
+            .parent
+            .map_or(local, |parent| transforms[parent] * local);
+        if !world.iter().copied().all(f32::is_finite) {
+            return Err(format!(
+                "non-finite world transform on glTF node #{}",
+                address.source
+            ));
+        }
+        transforms.push(world);
+        let source_index = i64::try_from(address.source)
+            .map_err(|_| "glTF node index exceeds the supported range")?;
+        let parent_index = address
+            .parent
+            .map_or(-1, |parent| addresses[parent].source as i64);
+        let vector = |column| {
+            Vector3D::new(
+                f64::from(world[(0, column)]),
+                f64::from(world[(1, column)]),
+                f64::from(world[(2, column)]),
+            )
+        };
+        let origin = vector(3);
+        nodes.push(MeshNode3D {
+            source_index,
+            parent_index,
+            name: address.name.to_owned(),
+            path: address.path.clone(),
+            origin: Point3D::new(origin.x, origin.y, origin.z),
+            axis_x: vector(0),
+            axis_y: vector(1),
+            axis_z: vector(2),
+            has_mesh: address.has_mesh,
+            has_camera: address.has_camera,
+            has_light: address.has_light,
+        });
+    }
     let hierarchy = ImportHierarchy {
+        nodes: addresses
+            .iter()
+            .zip(transforms)
+            .map(|(address, transform)| ImportedNode {
+                node: source_nodes[address.source].clone(),
+                parent: address.parent,
+                transform,
+            })
+            .collect(),
         lights: mesh_lights::attachments(&document)?,
         instances: mesh_instances::read(&document, &metadata, &buffers)?,
     };
@@ -179,6 +236,18 @@ pub(super) fn load_mesh(
         )
     };
     let primary = prepare(None, None)?;
+    let primary = if nodes.is_empty() {
+        primary
+    } else {
+        let catalog = MeshNodeCatalog::new(nodes);
+        match primary {
+            MeshAsset::Static(mesh) => MeshAsset::Static(mesh.with_node_catalog(catalog)),
+            MeshAsset::Animated(rig) => MeshAsset::Animated(Arc::new(
+                Arc::unwrap_or_clone(rig).with_node_catalog(catalog),
+            )),
+            asset => asset,
+        }
+    };
     let mut expanded_vertices = 0;
     let mut expanded_deltas = 0;
     let mut alternatives = Vec::with_capacity(variant_mappings.len());
@@ -203,7 +272,14 @@ pub(super) fn load_mesh(
     Ok((primary.with_material_variants(alternatives), inputs))
 }
 
-struct ImportHierarchy {
+struct ImportedNode<'a> {
+    node: gltf::Node<'a>,
+    parent: Option<usize>,
+    transform: Matrix4<f32>,
+}
+
+struct ImportHierarchy<'a> {
+    nodes: Vec<ImportedNode<'a>>,
     lights: BTreeMap<usize, xrack_runtime::scene3d::SceneLight>,
     instances: BTreeMap<usize, MeshInstances>,
 }
@@ -213,7 +289,7 @@ fn prepare_mesh(
     metadata: &GltfMetadata,
     buffers: &[Vec<u8>],
     materials: &mut Materials<'_>,
-    hierarchy: &ImportHierarchy,
+    hierarchy: &ImportHierarchy<'_>,
     variant: Option<&MaterialVariantMappings>,
     primary: Option<&MeshAsset>,
 ) -> Result<MeshAsset, String> {
@@ -237,36 +313,19 @@ fn prepare_mesh(
         return Ok(MeshAsset::Animated(Arc::new(mesh)));
     }
     let mut geometry = MeshGeometry::default();
-    let scene = document
-        .default_scene()
-        .or_else(|| document.scenes().next());
-    if let Some(scene) = scene {
-        let mut pending: Vec<_> = scene
-            .nodes()
-            .map(|node| (node, Matrix4::identity()))
-            .collect();
-        pending.reverse();
-        let mut visited = BTreeSet::new();
-        while let Some((node, parent)) = pending.pop() {
-            if !visited.insert(node.index()) {
-                return Err("invalid recursive or multiply parented glTF node".into());
-            }
-            let columns = node.transform().matrix();
-            let transform = parent * Matrix4::from_fn(|row, column| columns[column][row]);
-            if let Some(mesh) = node.mesh() {
+    if !hierarchy.nodes.is_empty() || document.scenes().next().is_some() {
+        for authored in &hierarchy.nodes {
+            if let Some(mesh) = authored.node.mesh() {
                 append_mesh(
                     document,
                     mesh,
                     buffers,
-                    &transform,
+                    &authored.transform,
                     &mut geometry,
                     materials,
                     variant,
                 )?;
             }
-            let start = pending.len();
-            pending.extend(node.children().map(|child| (child, transform)));
-            pending[start..].reverse();
         }
     } else {
         // Mesh-only assets can be exported without a scene or nodes.
@@ -301,7 +360,7 @@ fn animated_mesh(
     metadata: &GltfMetadata,
     buffers: &[Vec<u8>],
     materials: &mut Materials<'_>,
-    hierarchy: &ImportHierarchy,
+    hierarchy: &ImportHierarchy<'_>,
     variant: Option<&MaterialVariantMappings>,
     primary: Option<&AnimatedMesh>,
 ) -> Result<AnimatedMesh, String> {
@@ -312,22 +371,6 @@ fn animated_mesh(
         .filter_map(|(node, _, name)| Some((node, name?)))
         .collect();
 
-    let roots: Vec<_> = if let Some(scene) = document
-        .default_scene()
-        .or_else(|| document.scenes().next())
-    {
-        scene.nodes().collect()
-    } else {
-        let children: BTreeSet<_> = document
-            .nodes()
-            .flat_map(|node| node.children().map(|child| child.index()))
-            .collect();
-        document
-            .nodes()
-            .filter(|node| !children.contains(&node.index()))
-            .collect()
-    };
-    let mut pending: Vec<_> = roots.into_iter().rev().map(|node| (node, None)).collect();
     let mut nodes = Vec::new();
     let mut lights = Vec::new();
     let mut cameras = Vec::new();
@@ -338,11 +381,13 @@ fn animated_mesh(
     let mut geometry = Vec::new();
     let mut vertex_count = 0;
     let mut delta_count = 0;
-    while let Some((node, parent)) = pending.pop() {
-        let index = nodes.len();
-        if index == MAX_ANIMATION_NODES || indices.insert(node.index(), index).is_some() {
-            return Err("invalid or oversized animated glTF node graph".into());
-        }
+    if hierarchy.nodes.len() > MAX_ANIMATION_NODES {
+        return Err("oversized animated glTF node graph".into());
+    }
+    for (index, authored) in hierarchy.nodes.iter().enumerate() {
+        let node = &authored.node;
+        let parent = authored.parent;
+        indices.insert(node.index(), index);
         let skin = node.skin().map(|skin| {
             *skin_indices.entry(skin.index()).or_insert_with(|| {
                 let index = authored_skins.len();
@@ -452,9 +497,6 @@ fn animated_mesh(
             transform,
             instances: hierarchy.instances.get(&node.index()).cloned(),
         });
-        let start = pending.len();
-        pending.extend(node.children().map(|child| (child, Some(index))));
-        pending[start..].reverse();
     }
     let (materials, slots) = materials.finish();
     let materials: Arc<[_]> = materials.into();

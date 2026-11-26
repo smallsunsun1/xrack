@@ -7,7 +7,7 @@ use xrack_runtime::{
     Node, Value,
     scene3d::{
         CaptureMaterial, MAX_PARTICLE_EMITTERS, MAX_PARTICLES, Mesh3D, ParticleAffector,
-        ParticleBlend, ParticleEmitter, ParticleSample, SceneCamera,
+        ParticleBlend, ParticleEmitter, ParticleMotion, ParticleSample, SceneCamera,
     },
 };
 
@@ -17,15 +17,16 @@ use super::{
     particle_instances::{ModelInputs, ModelInstanceGenerator},
     particle_meshes::{MeshSurfaceBuffers, SurfaceBinding},
     particle_textures::{SpriteBinding, SpriteTextures},
+    particle_tracks::{EmissionTrackBuffers, TRACK_BINDING, particles_shader},
     pipeline::ColorOutput,
 };
 
 const VIEW_BYTES: usize = 128;
-// Every emitter occupies ten aligned vec4 slots in the shader.
-const EMITTER_BYTES: usize = 160;
-const MOTION_BYTES: usize = 160;
+// Every emitter occupies twelve aligned vec4 slots in the shader.
+const EMITTER_BYTES: usize = 192;
+const MOTION_BYTES: usize = 208;
 const TRAIL_BYTES: usize = 16;
-const MODEL_BYTES: usize = 48;
+const MODEL_BYTES: usize = 64;
 
 fn vertex_entry(
     mesh: bool,
@@ -124,29 +125,28 @@ impl<'a> ParticleDraw<'a> {
             if emitter.layers & camera.layer_mask() == 0 {
                 continue;
             }
-            let Some(sample) = emitter.sample(time, remaining) else {
-                continue;
-            };
-            if renderables != CaptureRenderables::All
-                && !emitter.model.as_ref().map_or_else(
-                    || renderables.includes(true),
-                    |model| {
-                        let fading = model_fading(emitter, &sample);
-                        model.meshes.iter().any(|mesh| {
-                            renderables.includes(false)
-                                && !fading
-                                && (mesh.has_opaque_parts()
-                                    || mesh.has_depth_writing_transmission())
-                                || renderables.includes(true)
-                                    && (fading || !mesh.blended_parts().is_empty())
-                        })
-                    },
-                )
-            {
-                continue;
+            for sample in emitter.samples(time, remaining) {
+                if renderables != CaptureRenderables::All
+                    && !emitter.model.as_ref().map_or_else(
+                        || renderables.includes(true),
+                        |model| {
+                            let fading = model_fading(emitter, &sample);
+                            model.meshes.iter().any(|mesh| {
+                                renderables.includes(false)
+                                    && !fading
+                                    && (mesh.has_opaque_parts()
+                                        || mesh.has_depth_writing_transmission())
+                                    || renderables.includes(true)
+                                        && (fading || !mesh.blended_parts().is_empty())
+                            })
+                        },
+                    )
+                {
+                    continue;
+                }
+                remaining -= sample.count;
+                active.push((DrawEmitter::Source(emitter), sample));
             }
-            remaining -= sample.count;
-            active.push((DrawEmitter::Source(emitter), sample));
             if remaining == 0 {
                 break;
             }
@@ -252,9 +252,9 @@ impl<'a> ParticleDraw<'a> {
 fn model_fading(emitter: &ParticleEmitter, sample: &ParticleSample) -> bool {
     emitter.color.0 as u8 != 255
         || emitter.color_table.is_some()
-        || emitter.fade[0] > sample.youngest_age()
+        || emitter.fade[0] > sample.youngest_age
         || (emitter.fade[1] > 0.0
-            && sample.oldest_age().next_up() >= emitter.lifetime as f32 - emitter.fade[1])
+            && sample.oldest_age().next_up() >= emitter.shortest_lifetime() - emitter.fade[1])
 }
 
 struct Material {
@@ -262,6 +262,7 @@ struct Material {
     color_table: Option<SpriteBinding>,
     blend: ParticleBlend,
     mesh: Option<SurfaceBinding>,
+    track: Option<wgpu::Buffer>,
     trail_segments: u32,
     model: Option<Arc<[Mesh3D]>>,
     fading: bool,
@@ -282,6 +283,7 @@ impl Material {
                 _ => false,
             }
             && self.mesh.as_ref().map(|mesh| mesh.key) == other.mesh.as_ref().map(|mesh| mesh.key)
+            && self.track == other.track
             && identity(&self.sprite) == identity(&other.sprite)
             && identity(&self.color_table) == identity(&other.color_table)
     }
@@ -294,7 +296,7 @@ struct Batch {
     model_settings: Vec<u8>,
     material: Material,
     instances: u32,
-    emitters: usize,
+    slots: usize,
     affected: bool,
     shadow_bounds: Option<[[f32; 3]; 2]>,
 }
@@ -309,6 +311,7 @@ impl Batch {
                 (model.rotation, 0.0),
                 (model.rotation_variation, 0.0),
                 (model.angular_velocity, shadow),
+                (model.angular_velocity_variation, 0.0),
             ] {
                 append_floats(&mut self.model_settings, [x, y, z, flags]);
             }
@@ -319,8 +322,13 @@ impl Batch {
                 [trail.duration, trail.end_scale, trail.fade, trail.eol_fade],
             );
         }
-        if let Some(motion) = &emitter.motion {
-            self.motion.resize(self.emitters * MOTION_BYTES, 0);
+        let default_motion = ParticleMotion::default();
+        let motion = emitter
+            .motion
+            .as_ref()
+            .or_else(|| sample.birth_frame.map(|_| &default_motion));
+        if let Some(motion) = motion {
+            self.motion.resize(self.slots * MOTION_BYTES, 0);
             append_floats(&mut self.motion, motion.shape.into_iter().flatten());
             for column in [
                 motion.surface_weights,
@@ -332,22 +340,40 @@ impl Batch {
             ] {
                 append_floats(&mut self.motion, column);
             }
-            for value in motion.modes {
+            let mut modes = motion.modes;
+            let rows = if let Some(clock) = sample.loop_clock {
+                modes[3] = 3;
+                clock.words()
+            } else if self.material.track.is_some() {
+                modes[3] = 2;
+                sample.birth_clock.map(|clock| [0, 0, 0, clock.to_bits()])
+            } else {
+                let placement = sample.birth_frame.or(motion.placement);
+                modes[3] = u32::from(placement.is_some());
+                placement
+                    .unwrap_or_default()
+                    .map(|row| row.map(f32::to_bits))
+            };
+            for value in modes.into_iter().chain(rows.into_iter().flatten()) {
                 self.motion.extend_from_slice(&value.to_ne_bytes());
             }
         } else if !self.motion.is_empty() {
-            self.motion.resize((self.emitters + 1) * MOTION_BYTES, 0);
+            self.motion.resize((self.slots + 1) * MOTION_BYTES, 0);
         }
-        self.emitters += 1;
+        self.slots += 1;
         let bytes = &mut self.bytes;
-        let [x, y, z] = emitter.position;
+        let [x, y, z] = if sample.birth_frame.is_some() {
+            [0.0; 3]
+        } else {
+            emitter.position
+        };
         append_floats(bytes, [x, y, z, 0.5 * emitter.size[0]]);
         let [x, y, z] = emitter.velocity;
         append_floats(bytes, [x, y, z, 0.5 * emitter.size[1]]);
         let [x, y, z] = emitter.velocity_spread;
         append_floats(bytes, [x, y, z, emitter.lifetime as f32]);
         let [x, y, z] = emitter.gravity;
-        append_floats(bytes, [x, y, z, sample.burst_age]);
+        append_floats(bytes, [x, y, z, 0.0]);
         let [r, g, b] = linear_rgb(emitter.color).map(|c| c as f32 * emitter.intensity);
         let opacity = (emitter.color.0 & 0xff) as f32 / 255.0;
         append_floats(bytes, [r, g, b, opacity]);
@@ -359,8 +385,8 @@ impl Batch {
         for value in [
             self.instances,
             sample.latest_id,
-            sample.burst_count,
-            emitter.seed,
+            0,
+            emitter.seed ^ sample.seed_salt,
         ] {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
@@ -394,6 +420,23 @@ impl Batch {
             bytes.resize(bytes.len() + 44, 0);
             bytes.extend_from_slice(&mask.to_ne_bytes());
         }
+        append_floats(
+            bytes,
+            [
+                emitter.lifetime_variation,
+                0.5 * emitter.size_variation,
+                emitter
+                    .end_size_variation
+                    .map_or(-1.0, |variation| 0.5 * variation),
+                0.0,
+            ],
+        );
+        let billboard = if emitter.model.is_none() {
+            emitter.billboard_rotation
+        } else {
+            [0.0; 4]
+        };
+        append_floats(bytes, billboard);
     }
 
     fn upload(mut self, device: &wgpu::Device) -> GpuParticleBatch {
@@ -545,10 +588,10 @@ impl Composite {
 
 #[derive(Default)]
 pub(super) struct ParticlePipelines {
-    shaders: [Option<wgpu::ShaderModule>; 6],
+    shaders: [[Option<wgpu::ShaderModule>; 6]; 2],
     variants: HashMap<
         (
-            [bool; 11],
+            [bool; 12],
             Composite,
             CapturePipelineState,
             super::wireframe::RasterMode,
@@ -559,6 +602,7 @@ pub(super) struct ParticlePipelines {
     sampler: Option<wgpu::Sampler>,
     textures: SpriteTextures,
     mesh_surfaces: MeshSurfaceBuffers,
+    tracks: EmissionTrackBuffers,
     affectors: AffectorBuffers,
     model_instances: ModelInstanceGenerator,
 }
@@ -597,14 +641,13 @@ impl ParticlePipelines {
         let mut models: Vec<Batch> = Vec::new();
         let matches =
             |affector: &ParticleAffector, emitter: &ParticleEmitter, sample: &ParticleSample| {
-                affector.layers & emitter.layers & camera.layer_mask() != 0
+                affector.matches_emitter(emitter, camera.layer_mask())
                     // The shader may fuse the multiply-add in the stream age.
                     && affector.position_age[3] <= sample.oldest_age().next_up()
             };
         let selected: Vec<_> = draw
             .affectors
             .iter()
-            .copied()
             .filter(|affector| {
                 draw.emitters
                     .iter()
@@ -631,8 +674,22 @@ impl ParticlePipelines {
                 .color_table
                 .as_ref()
                 .and_then(|image| self.textures.get(device, queue, image));
+            let track = if emitter.emission_track.is_empty() || sample.birth_frame.is_some() {
+                None
+            } else {
+                if device.limits().max_storage_buffers_per_shader_stage
+                    < 1 + u32::from(mesh.is_some())
+                {
+                    continue;
+                }
+                let Some(keys) = self.tracks.get(device, &emitter.emission_track) else {
+                    continue;
+                };
+                Some(keys)
+            };
             let material = Material {
                 sprite,
+                track,
                 color_table,
                 blend: emitter.blend,
                 mesh,
@@ -657,14 +714,14 @@ impl ParticlePipelines {
             // Ordinary blending retains emitter order. Weighted blending can
             // combine all emitters with the same texture bindings.
             let index = if accumulation {
-                batches
-                    .iter()
-                    .position(|batch| batch.material.matches(&material))
+                batches.iter().position(|batch| {
+                    batch.slots < MAX_PARTICLE_EMITTERS && batch.material.matches(&material)
+                })
             } else {
-                batches
-                    .len()
-                    .checked_sub(1)
-                    .filter(|&index| batches[index].material.matches(&material))
+                batches.len().checked_sub(1).filter(|&index| {
+                    batches[index].slots < MAX_PARTICLE_EMITTERS
+                        && batches[index].material.matches(&material)
+                })
             };
             let index = index.unwrap_or_else(|| {
                 batches.push(Batch {
@@ -674,7 +731,7 @@ impl ParticlePipelines {
                     model_settings: Vec::new(),
                     material,
                     instances: 0,
-                    emitters: 0,
+                    slots: 0,
                     affected: false,
                     shadow_bounds: None,
                 });
@@ -691,7 +748,7 @@ impl ParticlePipelines {
                 && let Some(bounds) = emitter.shadow_bounds(
                     &sample,
                     selected.iter().enumerate().filter_map(|(index, affector)| {
-                        (mask & (1 << index) != 0).then_some(affector)
+                        (mask & (1 << index) != 0).then_some(*affector)
                     }),
                 )
             {
@@ -709,7 +766,7 @@ impl ParticlePipelines {
             .chain(&oit)
             .chain(&models)
             .any(|batch| batch.affected);
-        let affectors = has_affectors.then(|| self.affectors.get(device, selected));
+        let affectors = has_affectors.then(|| self.affectors.get(device, &selected));
         let mut computed = Vec::with_capacity(models.len());
         for batch in models {
             let batch = batch.upload(device);
@@ -726,6 +783,7 @@ impl ParticlePipelines {
                 emitters: &batch.uniforms,
                 motion: batch.motion.as_ref(),
                 surface: batch.material.mesh.as_ref().map(|surface| &surface.buffer),
+                track: batch.material.track.as_ref(),
                 affectors: affectors.as_ref().filter(|_| batch.affected),
                 settings: &settings,
                 tint,
@@ -763,6 +821,10 @@ impl ParticlePipelines {
         self.mesh_surfaces.uploads
     }
 
+    pub fn track_uploads(&self) -> u64 {
+        self.tracks.uploads
+    }
+
     pub fn affector_uploads(&self) -> u64 {
         self.affectors.uploads
     }
@@ -791,26 +853,27 @@ impl ParticlePipelines {
         });
         let shader_slot =
             usize::from(wireframe) + linked_samples.map_or(0, |samples| 2 + 2 * samples.slot());
-        let shader = self.shaders[shader_slot].get_or_insert_with(|| {
-            let source = include_str!("particles.wgsl");
-            let source = if wireframe {
-                std::borrow::Cow::Owned(super::wireframe::particles(source))
-            } else {
-                std::borrow::Cow::Borrowed(source)
-            };
-            let source = if let Some(samples) = linked_samples {
-                std::borrow::Cow::Owned(super::linked_transparency::capture_shader(
-                    &source, samples,
-                ))
-            } else {
-                source
-            };
-            device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("XRack 3D sprites"),
-                source: wgpu::ShaderSource::Wgsl(source),
-            })
-        });
         for batch in batches {
+            let tracked = batch.material.track.is_some();
+            let shader = self.shaders[usize::from(tracked)][shader_slot].get_or_insert_with(|| {
+                let source = particles_shader(tracked);
+                let source = if wireframe {
+                    std::borrow::Cow::Owned(super::wireframe::particles(&source))
+                } else {
+                    source
+                };
+                let source = if let Some(samples) = linked_samples {
+                    std::borrow::Cow::Owned(super::linked_transparency::capture_shader(
+                        &source, samples,
+                    ))
+                } else {
+                    source
+                };
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("XRack 3D sprites"),
+                    source: wgpu::ShaderSource::Wgsl(source),
+                })
+            });
             let textured = batch.material.sprite.is_some();
             let tinted = batch.material.color_table.is_some();
             let spatial = batch.motion.is_some();
@@ -839,6 +902,7 @@ impl ParticlePipelines {
                     output.stenciled,
                     output.reverse_depth,
                     linked.is_some(),
+                    tracked,
                 ],
                 composite,
                 super::pipeline::fixed_state(output.pipeline_state),
@@ -929,7 +993,8 @@ impl ParticlePipelines {
                 4 + usize::from(spatial)
                     + usize::from(mesh)
                     + usize::from(affectors.is_some())
-                    + usize::from(trail),
+                    + usize::from(trail)
+                    + usize::from(tracked),
             );
             entries.push(wgpu::BindGroupEntry {
                 binding: 0,
@@ -945,6 +1010,12 @@ impl ParticlePipelines {
                 entries.push(wgpu::BindGroupEntry {
                     binding: 5,
                     resource: mesh.buffer.as_entire_binding(),
+                });
+            }
+            if let Some(keys) = &batch.material.track {
+                entries.push(wgpu::BindGroupEntry {
+                    binding: TRACK_BINDING,
+                    resource: keys.as_entire_binding(),
                 });
             }
             if let Some(affectors) = affectors {

@@ -771,8 +771,8 @@ pub(super) fn capture_node(view: &Node, layers: u64) -> Node {
                     Value::SceneParticleAffectors(
                         affectors
                             .iter()
-                            .copied()
                             .filter(|affector| affector.layers & reflected_layers & layers != 0)
+                            .cloned()
                             .collect(),
                     ),
                 );

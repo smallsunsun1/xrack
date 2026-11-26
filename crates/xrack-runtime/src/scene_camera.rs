@@ -1,5 +1,5 @@
 //! Camera projections shared by rendering, shadow cascades and viewport picking.
-use std::{cell::RefCell, collections::VecDeque};
+use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 use crate::scene_visibility::Frustum;
 use nalgebra::{Matrix4, UnitQuaternion, Vector3, Vector4};
@@ -7,11 +7,12 @@ use nalgebra::{Matrix4, UnitQuaternion, Vector3, Vector4};
 use crate::{
     Length, Node, Point2D, RecordValue, Value, VecModel, Vector3D,
     scene_bounds::Bounds3D,
-    scene_hierarchy::SceneModel,
+    scene_effect::SceneScissor,
+    scene_hierarchy::{SceneGeometry, SceneModel},
     scene_rotation::look_at_basis,
     scene3d::{
-        Hit3D, Ray3D, RayRows, SceneObject, SceneRay, SceneTextureHit, direction, trace_id,
-        trace_surfaces,
+        Hit3D, Ray3D, RayRows, SceneObject, SceneRay, SceneTextureHit, direction, nearest_point_in,
+        trace_id, trace_surfaces, world_query,
     },
 };
 
@@ -543,12 +544,26 @@ impl SceneCamera {
     pub fn for_view(node: &Node, viewport: [f64; 2]) -> Option<Self> {
         let camera_id = node.text("camera").unwrap_or_default();
         let camera = if camera_id.is_empty() {
-            Self::new(
-                node.number("camera-yaw").unwrap_or(25.0),
-                node.number("camera-pitch").unwrap_or(24.0),
-                node.number("camera-distance").unwrap_or(10.0),
-                viewport,
-            )
+            let yaw = node.number("camera-yaw").unwrap_or(25.0);
+            let pitch = node.number("camera-pitch").unwrap_or(24.0);
+            let fitted = match node.properties.get("camera-fit") {
+                Some(Value::Bounds3D(bounds)) => Self::fitted(
+                    *bounds,
+                    yaw,
+                    pitch,
+                    node.number("camera-fit-margin").unwrap_or(1.12),
+                    viewport,
+                ),
+                _ => None,
+            };
+            fitted.or_else(|| {
+                Self::new(
+                    yaw,
+                    pitch,
+                    node.number("camera-distance").unwrap_or(10.0),
+                    viewport,
+                )
+            })
         } else {
             match node.properties.get("model") {
                 Some(Value::SceneObjects(model)) => model.camera(camera_id, viewport),
@@ -633,6 +648,64 @@ impl SceneCamera {
             clip_offset: [0.0; 2],
             clip_viewport: None,
         })
+    }
+
+    /// Frame an axis-aligned box using the view's 45-degree orbit lens.
+    pub fn fitted(
+        bounds: crate::Bounds3D,
+        yaw: f64,
+        pitch: f64,
+        margin: f64,
+        viewport: [f64; 2],
+    ) -> Option<Self> {
+        if !bounds.valid() || !margin.is_finite() {
+            return None;
+        }
+        let mut camera = Self::new(yaw, pitch, 10.0, viewport)?;
+        let margin = margin.clamp(1.0, 10.0);
+        let center = bounds.center();
+        let target = Vector3::new(center.x, center.y, center.z);
+        let size = bounds.size();
+        let half = Vector3::new(size.x, size.y, size.z) * 0.5;
+        let forward = camera.forward.cast::<f64>();
+        let right = camera.right.cast::<f64>();
+        let up = camera.up.cast::<f64>();
+        let [focal_x, focal_y, _, _] = camera.lens;
+        let mut required: f64 = 0.0;
+        let mut depth_extent: f64 = 0.0;
+        for corner in 0..8 {
+            let offset = Vector3::from(std::array::from_fn(|axis| {
+                if corner & (1 << axis) == 0 {
+                    -half[axis]
+                } else {
+                    half[axis]
+                }
+            }));
+            let depth = forward.dot(&offset);
+            let horizontal = right.dot(&offset).abs() * f64::from(focal_x);
+            let vertical = up.dot(&offset).abs() * f64::from(focal_y);
+            required = required.max(margin * horizontal.max(vertical) - depth);
+            depth_extent = depth_extent.max(depth.abs());
+        }
+        let world_scale = target.amax().max(half.amax());
+        let gap = (half.amax() * 0.02)
+            .max(world_scale * f64::from(32.0 * f32::EPSILON))
+            .max(1.0e-6);
+        let distance = required.max(depth_extent) + gap;
+        let near = ((distance - depth_extent) * 0.6) as f32;
+        let far = ((distance + depth_extent) * 1.15) as f32;
+        let eye = (target - forward * distance).cast::<f32>();
+        if !eye.iter().copied().all(f32::is_finite)
+            || !far.is_finite()
+            || !(0.0 < near && near < far)
+        {
+            return None;
+        }
+        camera.eye = eye;
+        camera.settings.near = near;
+        camera.settings.far = far;
+        camera.depth_range = [near, far];
+        Some(camera)
     }
 
     pub(crate) fn from_node(node: &CameraNode, viewport: [f64; 2]) -> Option<Self> {
@@ -1295,6 +1368,217 @@ fn camera_frame(
     ))
 }
 
+/// The camera and model published by a laid-out SceneView3D.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct SceneViewQuery {
+    camera: Option<SceneCamera>,
+    model: Option<Arc<SceneModel>>,
+    scissor: Option<SceneScissor>,
+}
+
+impl PartialEq for SceneViewQuery {
+    fn eq(&self, other: &Self) -> bool {
+        self.camera == other.camera
+            && self.scissor == other.scissor
+            && match (&self.model, &other.model) {
+                (Some(model), Some(other)) => Arc::ptr_eq(model, other),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+impl SceneViewQuery {
+    pub(crate) fn for_view(node: &Node, viewport: [f64; 2]) -> Self {
+        let camera = SceneCamera::for_view(node, viewport);
+        if camera.is_none() {
+            return Self::default();
+        }
+        let model = match node.properties.get("model") {
+            Some(Value::SceneObjects(model)) => Some(model.clone()),
+            _ => None,
+        };
+        Self {
+            camera,
+            model,
+            scissor: SceneScissor::for_view(node),
+        }
+    }
+
+    pub fn project(&self, point: Point3D) -> ProjectedPoint3D {
+        let mut projected = self
+            .camera
+            .map_or_else(ProjectedPoint3D::default, |camera| camera.project(point));
+        projected.inside &= self.contains(projected.point);
+        projected
+    }
+
+    pub fn unproject(&self, point: Point2D, depth: f64, fallback: Point3D) -> Point3D {
+        self.camera
+            .and_then(|camera| camera.unproject(point, depth))
+            .unwrap_or(fallback)
+    }
+
+    pub fn pick(&self, point: Point2D) -> String {
+        self.trace(point, |ray, geometry| ray.id(geometry))
+            .unwrap_or_default()
+    }
+
+    pub fn hit(&self, point: Point2D) -> Hit3D {
+        self.first(point, &RayRows::All)
+    }
+
+    pub fn hit_all(&self, point: Point2D) -> VecModel<Hit3D> {
+        self.all(point, &RayRows::All)
+    }
+
+    pub fn hit_row(&self, point: Point2D, row: i64) -> Hit3D {
+        self.first(point, &RayRows::Row(row))
+    }
+
+    pub fn hit_subset(&self, point: Point2D, rows: &[i64]) -> VecModel<Hit3D> {
+        self.all(point, &RayRows::subset(rows))
+    }
+
+    pub fn hit_instance(&self, point: Point2D, row: i64, node: i64, index: i64) -> Hit3D {
+        RayRows::instance([row, node, index])
+            .map_or_else(Hit3D::default, |rows| self.first(point, &rows))
+    }
+
+    pub fn ray_hit(&self, origin: Point3D, direction: Vector3D, max: f64) -> Hit3D {
+        self.trace_world(origin, direction, max, |ray, geometry| {
+            ray.first(geometry, &RayRows::All)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn ray_hit_all(&self, origin: Point3D, direction: Vector3D, max: f64) -> VecModel<Hit3D> {
+        self.trace_world(origin, direction, max, |ray, geometry| {
+            ray.all(geometry, &RayRows::All)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn ray_hit_row(&self, origin: Point3D, direction: Vector3D, max: f64, row: i64) -> Hit3D {
+        self.trace_world(origin, direction, max, |ray, geometry| {
+            ray.first(geometry, &RayRows::Row(row))
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn ray_hit_subset(
+        &self,
+        origin: Point3D,
+        direction: Vector3D,
+        max: f64,
+        rows: &[i64],
+    ) -> VecModel<Hit3D> {
+        self.trace_world(origin, direction, max, |ray, geometry| {
+            ray.all(geometry, &RayRows::subset(rows))
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn ray_hit_instance(
+        &self,
+        origin: Point3D,
+        direction: Vector3D,
+        max: f64,
+        row: i64,
+        node: i64,
+        instance: i64,
+    ) -> Hit3D {
+        let Some(rows) = RayRows::instance([row, node, instance]) else {
+            return Hit3D::default();
+        };
+        self.trace_world(origin, direction, max, |ray, geometry| {
+            ray.first(geometry, &rows)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn closest_point(&self, origin: Point3D, radius: f64) -> Hit3D {
+        self.nearest(origin, radius, None)
+    }
+
+    pub fn closest_point_row(&self, origin: Point3D, radius: f64, row: i64) -> Hit3D {
+        u32::try_from(row).ok().map_or_else(Hit3D::default, |row| {
+            self.nearest(origin, radius, Some(row))
+        })
+    }
+
+    fn trace_world<T>(
+        &self,
+        origin: Point3D,
+        direction: Vector3D,
+        max: f64,
+        query: impl FnOnce(SceneRay, &SceneGeometry) -> T,
+    ) -> Option<T> {
+        let camera = self.camera.filter(|camera| camera.layer_mask() != 0)?;
+        let ray = world_query(origin, direction, max, Some(camera.layer_mask() as i64))?
+            .with_camera(camera.eye_position());
+        Some(query(ray, &self.model.as_ref()?.geometry(&camera)))
+    }
+
+    fn nearest(&self, origin: Point3D, radius: f64, row: Option<u32>) -> Hit3D {
+        let Some((camera, model)) = self.camera.zip(self.model.as_ref()) else {
+            return Hit3D::default();
+        };
+        let layers = camera.layer_mask();
+        if layers == 0 {
+            return Hit3D::default();
+        }
+        let eye = camera.eye_position();
+        nearest_point_in(&model.geometry(&camera), origin, radius, |object| {
+            object.layers & layers != 0
+                && row.is_none_or(|row| object.scene_row() == Some(row))
+                && object.visible_at_distance(eye)
+        })
+    }
+
+    pub fn pick_in_rect(&self, start: Point2D, end: Point2D) -> VecModel<i64> {
+        let Some(model) = &self.model else {
+            return VecModel::default();
+        };
+        let points = match self.scissor {
+            Some(scissor) => {
+                let Some(points) = scissor.intersect_selection([start, end]) else {
+                    return VecModel::default();
+                };
+                points
+            }
+            None => [start, end],
+        };
+        pick_rect_rows(model, self.camera, points)
+    }
+
+    fn contains(&self, point: Point2D) -> bool {
+        self.scissor
+            .is_none_or(|scissor| scissor.contains([point.x.0, point.y.0]))
+    }
+
+    fn trace<T>(
+        &self,
+        point: Point2D,
+        query: impl FnOnce(SceneRay, &SceneGeometry) -> T,
+    ) -> Option<T> {
+        let camera = self.camera.filter(|_| self.contains(point))?;
+        let ray = camera.scene_ray(point)?;
+        Some(query(ray, &self.model.as_ref()?.geometry(&camera)))
+    }
+
+    fn first(&self, point: Point2D, rows: &RayRows) -> Hit3D {
+        self.trace(point, |ray, geometry| ray.first(geometry, rows))
+            .unwrap_or_default()
+    }
+
+    fn all(&self, point: Point2D, rows: &RayRows) -> VecModel<Hit3D> {
+        self.trace(point, |ray, geometry| ray.all(geometry, rows))
+            .unwrap_or_default()
+    }
+}
+
 fn pick(geometry: &[SceneObject], camera: Option<SceneCamera>, point: Point2D) -> String {
     camera
         .and_then(|camera| camera.scene_ray(point))
@@ -1689,6 +1973,33 @@ pub fn unproject_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fitted_camera_contains_translated_bounds_in_portrait_and_landscape() {
+        let min = Point3D::new(3000.0, -100.0, -140.0);
+        let max = Point3D::new(3400.0, 100.0, 190.0);
+        let bounds = crate::Bounds3D::new(min, max);
+        for viewport in [[180.0, 620.0], [600.0, 200.0]] {
+            let camera =
+                SceneCamera::fitted(bounds, 31.0, -23.0, 1.15, viewport).expect("finite fit");
+            for x in [min.x, max.x] {
+                for y in [min.y, max.y] {
+                    for z in [min.z, max.z] {
+                        let p = camera.project(Point3D::new(x, y, z));
+                        assert!(p.inside && p.depth > 0.0, "{p:?}");
+                    }
+                }
+            }
+            let center = camera.project(bounds.center());
+            assert!(center.inside);
+            assert!((center.point.x.0 - viewport[0] * 0.5).abs() < 0.01);
+            assert!((center.point.y.0 - viewport[1] * 0.5).abs() < 0.01);
+        }
+        assert!(
+            SceneCamera::fitted(crate::Bounds3D::default(), 0.0, 0.0, 1.0, [100.0, 100.0])
+                .is_none()
+        );
+    }
 
     #[test]
     fn reverse_depth_keeps_distant_values_separate_and_preserves_infinite_matrix_rows() {

@@ -844,6 +844,7 @@ pub fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef
                         | "Timer"
                         | "FrameAnimation"
                         | "SoundEffect"
+                        | "MeshLoader3D"
                         | "SecondaryWindow"
                         | "DayCell"
                         | "SplitHandle"

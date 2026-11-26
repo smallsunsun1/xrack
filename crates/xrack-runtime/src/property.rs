@@ -1,7 +1,7 @@
 //! Lazy property bindings with dynamically tracked dependencies.
 use std::{
     cell::{Cell, OnceCell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{HashMap, hash_map::Entry},
     rc::{Rc, Weak},
 };
 
@@ -45,26 +45,38 @@ impl ReadWatch {
             return;
         }
         let mut sources = self.sources.borrow_mut();
-        if sources.contains_key(&Rc::as_ptr(node)) {
-            return;
-        }
         if sources.len() >= self.next_prune.get() {
             sources.retain(|_, source| source.strong_count() != 0);
             self.next_prune.set(sources.len().saturating_mul(2).max(64));
         }
-        // Clean bindings may use their cached value without reading their inputs again.
-        let mut pending = Vec::new();
-        let mut next = Some(node.clone());
-        while let Some(node) = next {
-            if let std::collections::hash_map::Entry::Vacant(source) =
-                sources.entry(Rc::as_ptr(&node))
-            {
+        let Entry::Vacant(entry) = sources.entry(Rc::as_ptr(node)) else {
+            return;
+        };
+        entry.insert(Rc::downgrade(node));
+        if node.dirty.get() {
+            return;
+        }
+        // Clean bindings may reuse their value without reading their inputs again.
+        let mut pending: Vec<_> = node
+            .sources
+            .borrow()
+            .active_nodes()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        while let Some(node) = pending.pop() {
+            if let Entry::Vacant(source) = sources.entry(Rc::as_ptr(&node)) {
                 source.insert(Rc::downgrade(&node));
                 if !node.dirty.get() {
-                    pending.extend(node.sources.borrow().nodes.iter().filter_map(Weak::upgrade));
+                    pending.extend(
+                        node.sources
+                            .borrow()
+                            .active_nodes()
+                            .iter()
+                            .filter_map(Weak::upgrade),
+                    );
                 }
             }
-            next = pending.pop();
         }
     }
 
@@ -167,30 +179,128 @@ pub(crate) fn input_path_is_current() -> bool {
     })
 }
 
+const SOURCE_INDEX_THRESHOLD: usize = 64;
+
+struct SourceIndex {
+    slots: HashMap<*const DependencyNode, usize>,
+    observed: usize,
+}
+
+enum SourceLink {
+    Recorded,
+    Install,
+    DiscardUnread,
+}
+
 #[derive(Default)]
 struct DependencySources {
     nodes: Vec<Weak<DependencyNode>>,
-    index: Option<Box<HashSet<*const DependencyNode>>>,
+    index: Option<Box<SourceIndex>>,
 }
 
 impl DependencySources {
-    fn insert(&mut self, node: &Rc<DependencyNode>) -> bool {
-        const INDEX_THRESHOLD: usize = 64;
+    fn begin_evaluation(&mut self) -> Option<Vec<Weak<DependencyNode>>> {
+        if let Some(index) = &mut self.index {
+            index.observed = 0;
+            None
+        } else {
+            Some(std::mem::take(&mut self.nodes))
+        }
+    }
+
+    // Reconciliation keeps the inputs read in this evaluation in a prefix.
+    // Retain existing reverse links for that prefix and discard the rest
+    // once the evaluation ends.
+    fn active_nodes(&self) -> &[Weak<DependencyNode>] {
+        &self.nodes[..self
+            .index
+            .as_ref()
+            .map_or(self.nodes.len(), |index| index.observed)]
+    }
+
+    fn observes(&self, source: *const DependencyNode) -> bool {
+        if let Some(index) = &self.index {
+            index
+                .slots
+                .get(&source)
+                .is_some_and(|slot| *slot < index.observed)
+        } else {
+            self.nodes.iter().any(|node| node.as_ptr() == source)
+        }
+    }
+
+    fn observe(&mut self, node: &Rc<DependencyNode>) -> SourceLink {
         let address = Rc::as_ptr(node);
-        let inserted = match &mut self.index {
-            Some(index) => index.insert(address),
-            None => !self.nodes.iter().any(|source| source.as_ptr() == address),
-        };
-        if !inserted {
-            return false;
+        if let Some(index) = &mut self.index {
+            let next = index.observed;
+            if self
+                .nodes
+                .get(next)
+                .is_some_and(|source| source.as_ptr() == address)
+            {
+                // Stable bindings usually read their inputs in the same order.
+                index.observed += 1;
+                return SourceLink::Recorded;
+            }
+            return match index.slots.entry(address) {
+                Entry::Occupied(mut entry) => {
+                    let slot = *entry.get();
+                    if slot >= next {
+                        *entry.get_mut() = next;
+                        self.nodes.swap(slot, next);
+                        index.slots.insert(self.nodes[slot].as_ptr(), slot);
+                        index.observed += 1;
+                    }
+                    SourceLink::Recorded
+                }
+                Entry::Vacant(entry) if next == self.nodes.len() => {
+                    entry.insert(next);
+                    self.nodes.push(Rc::downgrade(node));
+                    index.observed += 1;
+                    SourceLink::Install
+                }
+                // A new input can signal a branch switch. Drop the unread
+                // suffix once instead of moving an old input for every new one.
+                Entry::Vacant(_) => SourceLink::DiscardUnread,
+            };
         }
-        // The weak references also keep the addresses from being reused
-        // while the index contains them.
+        if self.nodes.iter().any(|source| source.as_ptr() == address) {
+            return SourceLink::Recorded;
+        }
+        // The weak references keep addresses from being reused while they
+        // are present in the index.
         self.nodes.push(Rc::downgrade(node));
-        if self.nodes.len() == INDEX_THRESHOLD && self.index.is_none() {
-            self.index = Some(Box::new(self.nodes.iter().map(Weak::as_ptr).collect()));
+        if self.nodes.len() == SOURCE_INDEX_THRESHOLD {
+            self.index = Some(Box::new(SourceIndex {
+                slots: self
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, source)| (source.as_ptr(), i))
+                    .collect(),
+                observed: self.nodes.len(),
+            }));
         }
-        true
+        SourceLink::Install
+    }
+
+    fn discard_unread(&mut self) -> Vec<Weak<DependencyNode>> {
+        let Some(index) = &mut self.index else {
+            return Vec::new();
+        };
+        if index.observed == self.nodes.len() {
+            return Vec::new();
+        }
+        let stale = self.nodes.split_off(index.observed);
+        if index.observed < SOURCE_INDEX_THRESHOLD {
+            self.index = None;
+            self.nodes.shrink_to_fit();
+        } else {
+            for source in &stale {
+                index.slots.remove(&source.as_ptr());
+            }
+        }
+        stale
     }
 }
 
@@ -215,15 +325,32 @@ impl DependencyNode {
             if Rc::ptr_eq(self, binding) {
                 return;
             }
-            if binding.sources.borrow_mut().insert(self) {
+            let link = binding.sources.borrow_mut().observe(self);
+            let install = match link {
+                SourceLink::Recorded => false,
+                SourceLink::Install => true,
+                SourceLink::DiscardUnread => {
+                    let unread = binding.sources.borrow_mut().discard_unread();
+                    binding.unlink_sources(unread);
+                    matches!(
+                        binding.sources.borrow_mut().observe(self),
+                        SourceLink::Install
+                    )
+                }
+            };
+            if install {
                 self.dependents.borrow_mut().push(Rc::downgrade(binding));
             }
         });
     }
 
     fn detach(&self) {
+        self.unlink_sources(self.sources.take().nodes);
+    }
+
+    fn unlink_sources(&self, sources: Vec<Weak<Self>>) {
         let address = self as *const Self;
-        for source in self.sources.take().nodes {
+        for source in sources {
             if let Some(source) = source.upgrade() {
                 source
                     .dependents
@@ -233,10 +360,19 @@ impl DependencyNode {
         }
     }
 
+    fn observes_source(&self, source: *const Self) -> bool {
+        // The unobserved suffix during reevaluation retains reverse links
+        // for reuse. It does not participate in the current binding.
+        !self.evaluating.get() || self.sources.borrow().observes(source)
+    }
+
     fn push_dependents(&self, pending: &mut Vec<Rc<Self>>) {
+        let source = std::ptr::from_ref(self);
         self.dependents.borrow_mut().retain(|weak| {
             if let Some(binding) = weak.upgrade() {
-                pending.push(binding);
+                if binding.observes_source(source) {
+                    pending.push(binding);
+                }
                 true
             } else {
                 false
@@ -272,13 +408,18 @@ impl DependencyNode {
     }
 
     fn evaluate<T>(self: &Rc<Self>, binding: impl FnOnce() -> T) -> T {
-        self.detach();
+        let detached = self.sources.borrow_mut().begin_evaluation();
+        let reconcile = detached.is_none();
+        if let Some(detached) = detached {
+            self.unlink_sources(detached);
+        }
         self.evaluating.set(true);
         self.dirty.set(false);
         let mut evaluation = Evaluation {
             node: self,
             previous: EVALUATING.with(|current| current.borrow_mut().binding.replace(self.clone())),
             completed: false,
+            reconcile,
         };
         let value = binding();
         evaluation.completed = true;
@@ -298,6 +439,7 @@ struct Evaluation<'a> {
     node: &'a DependencyNode,
     previous: Option<Rc<DependencyNode>>,
     completed: bool,
+    reconcile: bool,
 }
 
 impl Drop for Evaluation<'_> {
@@ -305,6 +447,10 @@ impl Drop for Evaluation<'_> {
         EVALUATING.with(|current| {
             current.borrow_mut().binding = self.previous.take();
         });
+        if self.reconcile {
+            let stale = self.node.sources.borrow_mut().discard_unread();
+            self.node.unlink_sources(stale);
+        }
         self.node.evaluating.set(false);
         if !self.completed && !self.node.dirty.replace(true) {
             self.node.notify();
@@ -325,15 +471,17 @@ impl ChangeSignal {
     }
 
     pub(crate) fn has_observers(&self) -> bool {
-        !self.0.dependents.borrow().is_empty()
-            || EVALUATING.with(|context| {
-                let address = Rc::as_ptr(&self.0);
-                context
-                    .borrow()
-                    .watches
-                    .iter()
-                    .any(|watch| watch.sources.borrow().contains_key(&address))
-            })
+        let address = Rc::as_ptr(&self.0);
+        self.0.dependents.borrow().iter().any(|weak| {
+            weak.upgrade()
+                .is_some_and(|binding| binding.observes_source(address))
+        }) || EVALUATING.with(|context| {
+            context
+                .borrow()
+                .watches
+                .iter()
+                .any(|watch| watch.sources.borrow().contains_key(&address))
+        })
     }
 
     pub fn track(&self) {
@@ -817,7 +965,7 @@ mod tests {
         {
             let dependencies = total.dependency.sources.borrow();
             assert_eq!(dependencies.nodes.len(), 129);
-            assert_eq!(dependencies.index.as_ref().unwrap().len(), 129);
+            assert_eq!(dependencies.index.as_ref().unwrap().slots.len(), 129);
         }
         inputs[127].set(7);
         assert!(total.is_dirty());
@@ -831,6 +979,112 @@ mod tests {
         inputs[0].set(4);
         assert!(total.is_dirty());
         assert_eq!(total.get(sum), 4);
+    }
+
+    #[test]
+    fn large_bindings_reconcile_reordered_reads_and_ignore_unread_writes() {
+        let inputs = (0..256_i64)
+            .map(|value| {
+                let input = Property::default();
+                input.set(value);
+                input
+            })
+            .collect::<Vec<_>>();
+        let use_even = Property::default();
+        let change_after_read = Cell::new(false);
+        let result = Property::<i64>::default();
+        let evaluate = || {
+            if !use_even.get(|| false) {
+                return inputs.iter().map(|input| input.get(|| 0)).sum();
+            }
+            // This source participated in the previous evaluation only.
+            inputs[1].set(999);
+            (0..inputs.len())
+                .step_by(2)
+                .rev()
+                .map(|index| {
+                    let value = inputs[index].get(|| 0);
+                    if index == 0 && change_after_read.replace(false) {
+                        inputs[index].set(value + 1);
+                    }
+                    value
+                })
+                .sum()
+        };
+        assert_eq!(result.get(evaluate), (0..256_i64).sum::<i64>());
+        use_even.set(true);
+        let even: i64 = (0..256_i64).step_by(2).sum();
+        assert_eq!(result.get(evaluate), even);
+        assert!(!result.is_dirty());
+        inputs[1].set(500);
+        assert!(!result.is_dirty());
+
+        inputs[2].set(22);
+        assert!(result.is_dirty());
+        change_after_read.set(true);
+        assert_eq!(result.get(evaluate), even + 20);
+        assert!(result.is_dirty());
+        assert_eq!(result.get(evaluate), even + 21);
+        assert!(!result.is_dirty());
+    }
+
+    #[test]
+    fn failed_indexed_evaluation_unlinks_inputs_that_were_not_read() {
+        let inputs = (0..128)
+            .map(|_| ChangeSignal::default())
+            .collect::<Vec<_>>();
+        let result = Property::<i64>::default();
+        assert_eq!(
+            result.get(|| {
+                for input in &inputs {
+                    input.track();
+                }
+                1
+            }),
+            1,
+        );
+        inputs[0].notify();
+        let rejected = result.try_get(|| {
+            inputs[0].track();
+            Err("interrupted binding")
+        });
+        assert_eq!(rejected, Err("interrupted binding"));
+        assert!(result.is_dirty());
+        assert!(inputs[0].has_observers());
+        assert!(!inputs[1].has_observers());
+        assert!(result.dependency.sources.borrow().index.is_none());
+        assert_eq!(result.get(|| 2), 2);
+    }
+
+    #[test]
+    fn indexed_binding_observes_new_inputs_after_a_branch_switch() {
+        let previous = (0..128)
+            .map(|_| ChangeSignal::default())
+            .collect::<Vec<_>>();
+        let current = (0..128)
+            .map(|_| ChangeSignal::default())
+            .collect::<Vec<_>>();
+        let switched = Property::default();
+        let result = Property::<bool>::default();
+        let evaluate = || {
+            let switched = switched.get(|| false);
+            for input in if switched { &current } else { &previous } {
+                input.track();
+            }
+            switched
+        };
+        assert!(!result.get(evaluate));
+        switched.set(true);
+        assert!(result.get(evaluate));
+        assert!(!previous[0].has_observers());
+        previous[127].notify();
+        assert!(!result.is_dirty());
+        current[127].notify();
+        assert!(result.is_dirty());
+        assert!(result.get(evaluate));
+        switched.set(false);
+        assert!(!result.get(evaluate));
+        assert!(!current[127].has_observers());
     }
 
     #[test]

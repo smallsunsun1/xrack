@@ -1,0 +1,360 @@
+diff --git a/src/renderer.rs b/src/renderer.rs
+--- a/src/renderer.rs
++++ b/src/renderer.rs
+@@ -14,7 +14,7 @@
+ #[cfg(feature = "wgpu")]
+ mod wgpu;
+ #[cfg(feature = "wgpu")]
+-pub use wgpu::{OpacityTile, SubmissionSlicing, WGPURenderOutput, WGPURenderer};
++pub use wgpu::{DirectOpacityPath, OpacityTile, SubmissionSlicing, WGPURenderOutput, WGPURenderer};
+ 
+ mod void;
+ pub use void::Void;
+diff --git a/src/renderer/params.rs b/src/renderer/params.rs
+--- a/src/renderer/params.rs
++++ b/src/renderer/params.rs
+@@ -42,6 +42,8 @@
+     pub(crate) opacity_tiles: bool,
+     /// The WGPU command carries a batch of independent, shaded convex fills.
+     pub(crate) atlas_fills: bool,
++    /// The atlas geometry is composited directly with intermediate RGBA8 rounding.
++    pub(crate) direct_opacity: bool,
+ }
+ 
+ /// Where both backends' uniform arrays keep [`Params::gradient_premultiplied`]:
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -22,6 +22,9 @@
+ pub use wgpu;
+ 
+ mod atlas_fills;
++mod direct_opacity;
++pub use direct_opacity::DirectOpacityPath;
++use direct_opacity::DIRECT_VERTEX_SLOTS;
+ mod opacity_tiles;
+ use atlas_fills::FILL_VERTEX_SLOTS;
+ pub use opacity_tiles::OpacityTile;
+@@ -547,6 +550,7 @@
+     shader_module: wgpu::ShaderModule,
+     opacity_tiles_shader: OnceCell<wgpu::ShaderModule>,
+     atlas_fills_shader: OnceCell<wgpu::ShaderModule>,
++    direct_opacity_shader: OnceCell<wgpu::ShaderModule>,
+     empty_texture_view: wgpu::TextureView,
+     sampler_cache: SamplerCache,
+     viewport_layout: wgpu::BindGroupLayout,
+@@ -617,6 +621,7 @@
+             shader_module,
+             opacity_tiles_shader: OnceCell::new(),
+             atlas_fills_shader: OnceCell::new(),
++            direct_opacity_shader: OnceCell::new(),
+             empty_texture_view: empty_texture.create_view(&Default::default()),
+             sampler_cache: Rc::new(RefCell::new(HashMap::new())),
+             viewport_layout: viewport_bind_group_layout,
+@@ -626,7 +631,17 @@
+         }
+     }
+ 
+-    fn shader_for(&self, device: &wgpu::Device, opacity_tiles: bool, atlas_fills: bool) -> &wgpu::ShaderModule {
++    fn shader_for(
++        &self, device: &wgpu::Device, opacity_tiles: bool, atlas_fills: bool, direct_opacity: bool,
++    ) -> &wgpu::ShaderModule {
++        if direct_opacity {
++            return self.direct_opacity_shader.get_or_init(|| {
++                device.create_shader_module(wgpu::ShaderModuleDescriptor {
++                    label: Some("femtovg direct opacity fills"),
++                    source: wgpu::ShaderSource::Wgsl(include_str!("wgpu/direct_opacity.wgsl").into()),
++                })
++            });
++        }
+         if atlas_fills {
+             return self.atlas_fills_shader.get_or_init(|| {
+                 device.create_shader_module(wgpu::ShaderModuleDescriptor {
+@@ -3022,6 +3037,7 @@
+     stencil_only: bool,
+     opacity_tiles: bool,
+     atlas_fills: bool,
++    direct_opacity: bool,
+ }
+ 
+ impl PipelineState {
+@@ -3072,6 +3088,7 @@
+             stencil_only: false,
+             opacity_tiles: false,
+             atlas_fills: false,
++            direct_opacity: false,
+         }
+     }
+ 
+@@ -3094,25 +3111,32 @@
+             stencil_only,
+             opacity_tiles,
+             atlas_fills,
++            direct_opacity,
+         } = self;
+-        let vertex_entry_point = match (*atlas_fills, *opacity_tiles, *render_to_texture) {
+-            (true, _, false) => "atlas_vertex",
+-            (true, _, true) => "atlas_vertex_texture",
+-            (false, true, false) => "opacity_vertex",
+-            (false, true, true) => "opacity_vertex_texture",
+-            (false, false, true) => "vs_main_texture",
+-            (false, false, false) => "vs_main",
++        let vertex_entry_point = match (*direct_opacity, *atlas_fills, *opacity_tiles, *render_to_texture) {
++            (true, _, _, _) => "direct_vertex",
++            (false, true, _, false) => "atlas_vertex",
++            (false, true, _, true) => "atlas_vertex_texture",
++            (false, false, true, false) => "opacity_vertex",
++            (false, false, true, true) => "opacity_vertex_texture",
++            (false, false, false, true) => "vs_main_texture",
++            (false, false, false, false) => "vs_main",
+         };
+-        let fragment_entry_point = match (*atlas_fills, *opacity_tiles, *stencil_only, *clip_shape, *clip_mask) {
+-            (true, _, _, _, _) => "atlas_fragment",
+-            (false, true, _, _, _) => "opacity_fragment",
+-            (false, false, true, false, false) => "fs_stencil",
+-            (false, false, _, false, false) => "fs_main",
+-            (false, false, _, true, false) => "fs_main_clip",
+-            (false, false, _, false, true) => "fs_main_mask",
+-            (false, false, _, true, true) => "fs_main_clip_mask",
++        let fragment_entry_point = match (*direct_opacity, *atlas_fills, *opacity_tiles, *stencil_only, *clip_shape, *clip_mask) {
++            (true, _, _, _, _, _) => "direct_fragment",
++            (false, true, _, _, _, _) => "atlas_fragment",
++            (false, false, true, _, _, _) => "opacity_fragment",
++            (false, false, false, true, false, false) => "fs_stencil",
++            (false, false, false, _, false, false) => "fs_main",
++            (false, false, false, _, true, false) => "fs_main_clip",
++            (false, false, false, _, false, true) => "fs_main_mask",
++            (false, false, false, _, true, true) => "fs_main_clip_mask",
+         };
+ 
++        const DIRECT_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
++            0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4,
++            4 => Float32x4, 5 => Float32x4
++        ];
+         const ATLAS_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+             0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+         ];
+@@ -3126,7 +3150,13 @@
+             vertex: wgpu::VertexState {
+                 module: shader_module,
+                 entry_point: Some(vertex_entry_point),
+-                buffers: &[Some(if *atlas_fills {
++                buffers: &[Some(if *direct_opacity {
++                    wgpu::VertexBufferLayout {
++                        array_stride: (DIRECT_VERTEX_SLOTS * size_of::<Vertex>()) as u64,
++                        step_mode: wgpu::VertexStepMode::Vertex,
++                        attributes: &DIRECT_ATTRIBUTES,
++                    }
++                } else if *atlas_fills {
+                     wgpu::VertexBufferLayout {
+                         array_stride: (FILL_VERTEX_SLOTS * size_of::<Vertex>()) as u64,
+                         step_mode: wgpu::VertexStepMode::Vertex,
+@@ -4194,6 +4224,7 @@
+         pipeline_state.clip_mask = params.clip_mask.is_some();
+         pipeline_state.opacity_tiles = params.opacity_tiles;
+         pipeline_state.atlas_fills = params.atlas_fills;
++        pipeline_state.direct_opacity = params.direct_opacity;
+         pipeline_state.stencil_only = matches!(params.shader_type, ShaderType::Stencil)
+             && params.stroke_thr == -1.0
+             && !pipeline_state.clip_shape
+@@ -4205,7 +4236,7 @@
+             let mut pipeline_cache = self.shared.pipelines.borrow_mut();
+             let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
+                 let layout = &self.shared.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline;
+-                let shader = self.shared.shader_for(&self.device, pipeline_state.opacity_tiles, pipeline_state.atlas_fills);
++                let shader = self.shared.shader_for(&self.device, pipeline_state.opacity_tiles, pipeline_state.atlas_fills, pipeline_state.direct_opacity);
+                 let pipeline = pipeline_state.materialize(&self.device, layout, shader);
+                 CachedPipeline {
+                     pipeline,
+diff --git a/src/renderer/wgpu/direct_opacity.rs b/src/renderer/wgpu/direct_opacity.rs
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/wgpu/direct_opacity.rs
+@@ -0,0 +1,137 @@
++use super::WGPURenderer;
++use crate::{
++    Canvas, Color, CompositeOperationState, FillRule, LineJoin, Paint, Path, Rect, RenderTarget,
++    Scissor, Transform2D, geometry::Bounds, paint::GlyphTexture,
++    renderer::{Command, CommandType, Drawable, Params, Vertex},
++};
++
++pub(super) const DIRECT_VERTEX_SLOTS: usize = 5;
++
++/// A single antialiased convex fill with isolated opacity.
++#[doc(hidden)]
++#[derive(Debug)]
++pub struct DirectOpacityPath {
++    /// Unfaded path in user coordinates.
++    pub path: Path,
++    /// Unfaded fill color.
++    pub color: Color,
++    /// Destination scissor in user coordinates as `[x, y, width, height]`.
++    pub clip: [f32; 4],
++    /// Device-aligned raster in user coordinates as `[x, y, width, height]`.
++    pub raster: [f32; 4],
++    /// Opacity applied after the RGBA8 capture's rounding.
++    pub opacity: f32,
++}
++
++impl Canvas<WGPURenderer> {
++    /// Batches adjacent independent convex fills under a plain device transform.
++    /// Returns the uploaded vertex bytes, or None to use the isolated painter.
++    #[doc(hidden)]
++    pub fn draw_direct_opacity_paths(
++        &mut self,
++        paths: impl IntoIterator<Item = DirectOpacityPath>,
++    ) -> Option<usize> {
++        let state = *self.state();
++        let Transform2D([sx, b, c, sy, tx, ty]) = state.transform;
++        let Transform2D([_, clip_b, clip_c, _, _, _]) = state.scissor.transform;
++        if b != 0.0 || c != 0.0 || sx != sy || sx < 1.0 || !sx.is_finite() || tx != 0.0 || ty != 0.0
++            || clip_b != 0.0 || clip_c != 0.0 || state.scissor.radius != 0.0
++            || state.clip_depth != 0 || self.shadow_enabled()
++            || state.composite_operation != CompositeOperationState::default()
++            || self.current_render_target != RenderTarget::Screen
++        {
++            return None;
++        }
++        self.reconcile_current_clip_plane();
++        if self.clip_active() {
++            return None;
++        }
++
++        let start = self.verts.len();
++        let mut drawables = Vec::new();
++        for item in paths {
++            let [x, y, w, h] = item.raster;
++            let (x0, y0) = state.transform.transform_point(x, y);
++            let (x1, y1) = state.transform.transform_point(x + w, y + h);
++            let raster = Rect::new(x0, y0, x1 - x0, y1 - y0);
++            // Very thin fills can select the ordinary coverage mask. The
++            // direct path requires a disjoint convex core and fringe.
++            if raster.w < 4.0 || raster.h < 4.0 {
++                self.verts.truncate(start);
++                return None;
++            }
++            if item.clip != item.raster {
++                let [x, y, w, h] = item.clip;
++                self.intersect_scissor(x, y, w, h);
++            }
++            let clip = self.draw_clip(|| Bounds { minx: x0, miny: y0, maxx: x1, maxy: y1 }, None);
++            self.state_mut().scissor = state.scissor;
++            let mut scissor = clip.scissor;
++            let mut bounds = raster;
++            if let Some(hard) = scissor.as_rect(self.width() as f32, self.height() as f32) {
++                let Some(intersection) = bounds.intersection(&hard) else { continue; };
++                bounds = intersection;
++                scissor = Scissor::default();
++            }
++
++            let mut capture = state.transform;
++            capture.premultiply(&Transform2D::translation(-x, -y));
++            let mut geometry = item.path.cache(&capture, self.tess_tol, self.dist_tol);
++            if self.fill_masks.enabled()
++                && (geometry.bounds.maxx - geometry.bounds.minx) * (geometry.bounds.maxy - geometry.bounds.miny) <= crate::clip::THIN_FILL_SPAN
++                && crate::clip::is_thin(geometry.mean_width(FillRule::NonZero))
++            {
++                self.verts.truncate(start);
++                return None;
++            }
++            geometry.expand_fill(self.fringe_width, LineJoin::Miter, 2.4, FillRule::NonZero);
++            if !geometry.is_convex() {
++                self.verts.truncate(start);
++                return None;
++            }
++            let params = Params::new(
++                &self.images, &state.transform, &Paint::color(item.color).flavor,
++                &GlyphTexture::None, &scissor, self.fringe_width, self.fringe_width, -1.0,
++            );
++            let rgb = params.inner_col;
++            let mat = params.scissor_mat;
++            let extra = [
++                Vertex::new(rgb[0], rgb[1], rgb[2], rgb[3]),
++                Vertex::new(mat[0], mat[5], mat[8], mat[9]),
++                Vertex::new(params.scissor_ext[0], params.scissor_ext[1], params.scissor_scale[0], params.scissor_scale[1]),
++                Vertex::new(bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h),
++            ];
++            let opacity = item.opacity * state.alpha;
++            let (offset_x, offset_y) = (capture.0[4], capture.0[5]);
++            let contour = &geometry.contours[0];
++            let mut push = |vertices: &[Vertex]| {
++                if vertices.is_empty() {
++                    return None;
++                }
++                let first = (self.verts.len() - start) / DIRECT_VERTEX_SLOTS;
++                self.verts.reserve(DIRECT_VERTEX_SLOTS * vertices.len());
++                for vertex in vertices {
++                    // Convex fill geometry always has v = 1. Reuse the
++                    // attribute for the constant opacity of this draw.
++                    self.verts.push(Vertex::new(vertex.x - offset_x, vertex.y - offset_y, vertex.u, opacity));
++                    self.verts.extend_from_slice(&extra);
++                }
++                Some((first, vertices.len()))
++            };
++            drawables.push(Drawable {
++                fill_verts: push(&contour.fill),
++                stroke_verts: push(&contour.stroke),
++            });
++        }
++        let count = self.verts.len() - start;
++        if count != 0 {
++            let mut command = Command::new(CommandType::Triangles {
++                params: Params { atlas_fills: true, direct_opacity: true, ..Params::default() },
++            });
++            command.triangles_verts = Some((start, count));
++            command.drawables = drawables;
++            self.append_cmd(command);
++        }
++        Some(count * size_of::<Vertex>())
++    }
++}
+diff --git a/src/renderer/wgpu/direct_opacity.wgsl b/src/renderer/wgpu/direct_opacity.wgsl
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/wgpu/direct_opacity.wgsl
+@@ -0,0 +1,45 @@
++struct ViewSize {
++    x: f32,
++    y: f32,
++    pad: vec2f,
++}
++
++@group(0) @binding(0) var<uniform> view_size: ViewSize;
++
++struct DirectVertex {
++    @builtin(position) position: vec4f,
++    @location(0) point: vec2f,
++    @location(1) fringe_u: f32,
++    @location(2) @interpolate(flat) color: vec4f,
++    @location(3) @interpolate(flat) scissor_mat: vec4f,
++    @location(4) @interpolate(flat) scissor: vec4f,
++    @location(5) @interpolate(flat) bounds: vec4f,
++    @location(6) @interpolate(flat) opacity: f32,
++}
++
++@vertex fn direct_vertex(@location(0) point: vec2f, @location(1) uv: vec2f,
++    @location(2) color: vec4f, @location(3) scissor_mat: vec4f, @location(4) scissor: vec4f,
++    @location(5) bounds: vec4f) -> DirectVertex {
++    let p = vec4f(2.0 * point.x / view_size.x - 1.0, 1.0 - 2.0 * point.y / view_size.y, 0.0, 1.0);
++    return DirectVertex(p, point, uv.x, color, scissor_mat, scissor, bounds, uv.y);
++}
++
++@fragment fn direct_fragment(input: DirectVertex) -> @location(0) vec4f {
++    if any(input.position.xy < input.bounds.xy) || any(input.position.xy >= input.bounds.zw) {
++        discard;
++    }
++    let stroke = min(1.0, 1.0 - abs(input.fringe_u * 2.0 - 1.0));
++    // The isolated path stores its premultiplied coverage in RGBA8 before
++    // the opacity and destination scissor are applied.
++    let encoded = clamp(input.color * stroke, vec4f(0.0), vec4f(1.0)) * 255.0;
++    let low = floor(encoded);
++    let fraction = encoded - low;
++    let odd = (vec4u(low) & vec4u(1u)) != vec4u(0u);
++    let up = select(vec4f(0.0), vec4f(1.0), fraction > vec4f(0.5));
++    let tie = select(vec4f(0.0), vec4f(1.0), odd);
++    let stored = (low + select(up, tie, fraction == vec4f(0.5))) / 255.0;
++    let point = input.point * input.scissor_mat.xy + input.scissor_mat.zw;
++    let distance = abs(point) - input.scissor.xy;
++    let fringe = clamp(vec2f(0.5) - distance * input.scissor.zw, vec2f(0.0), vec2f(1.0));
++    return (stored * input.opacity) * (fringe.x * fringe.y);
++}

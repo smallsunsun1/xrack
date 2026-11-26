@@ -32,6 +32,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "ColorPickerPopup",
         "CustomRender",
         "SceneView3D",
+        "MeshLoader3D",
         "ComboBox",
         "ComboContent",
         "ComboIndicator",
@@ -201,6 +202,208 @@ impl BuiltinSignature {
         }
         label
     }
+}
+
+pub struct SceneViewMethod {
+    pub signature: BuiltinSignature,
+    pub inputs: &'static [Type],
+    pub output: Type,
+}
+
+const fn scene_view_method(
+    name: &'static str,
+    parameters: &'static [&'static str],
+    inputs: &'static [Type],
+    result: &'static str,
+    output: Type,
+    documentation: &'static str,
+) -> SceneViewMethod {
+    SceneViewMethod {
+        signature: BuiltinSignature {
+            name,
+            parameters,
+            result: Some(result),
+            documentation,
+        },
+        inputs,
+        output,
+    }
+}
+
+pub const SCENE_VIEW_METHODS: &[SceneViewMethod] = &[
+    scene_view_method(
+        "project",
+        &["world: point3d"],
+        &[Type::Point3D],
+        "projectedpoint3d",
+        Type::ProjectedPoint3D,
+        "Projects a world point into this view's local logical pixels.",
+    ),
+    scene_view_method(
+        "unproject",
+        &["point: point2d", "depth: float", "fallback: point3d"],
+        &[Type::Point2D, Type::Float, Type::Point3D],
+        "point3d",
+        Type::Point3D,
+        "Maps a local point at a positive camera-space depth back to the scene.",
+    ),
+    scene_view_method(
+        "pick",
+        &["point: point2d"],
+        &[Type::Point2D],
+        "string",
+        Type::String,
+        "Returns the closest visible pickable object's ID.",
+    ),
+    scene_view_method(
+        "hit",
+        &["point: point2d"],
+        &[Type::Point2D],
+        "hit3d",
+        Type::Hit3D,
+        "Returns the closest geometric hit using this view's camera.",
+    ),
+    scene_view_method(
+        "hit-all",
+        &["point: point2d"],
+        &[Type::Point2D],
+        "[hit3d]",
+        Type::Hit3DList,
+        "Returns intersections in nearest-first order.",
+    ),
+    scene_view_method(
+        "hit-row",
+        &["point: point2d", "row: int"],
+        &[Type::Point2D, Type::Int],
+        "hit3d",
+        Type::Hit3D,
+        "Returns the nearest intersection on the given scene record row.",
+    ),
+    scene_view_method(
+        "hit-subset",
+        &["point: point2d", "rows: [int]"],
+        &[Type::Point2D, Type::IntList],
+        "[hit3d]",
+        Type::Hit3DList,
+        "Returns intersections on the selected scene record rows.",
+    ),
+    scene_view_method(
+        "hit-instance",
+        &[
+            "point: point2d",
+            "row: int",
+            "mesh-node: int",
+            "instance: int",
+        ],
+        &[Type::Point2D, Type::Int, Type::Int, Type::Int],
+        "hit3d",
+        Type::Hit3D,
+        "Tests an individual scene instance addressed by its hit indices.",
+    ),
+    scene_view_method(
+        "ray-hit",
+        &[
+            "origin: point3d",
+            "direction: vector3d",
+            "max-distance: float",
+        ],
+        &[Type::Point3D, Type::Vector3D, Type::Float],
+        "hit3d",
+        Type::Hit3D,
+        "Traces a world-space ray using the view's layers and selected mesh detail.",
+    ),
+    scene_view_method(
+        "ray-hit-all",
+        &[
+            "origin: point3d",
+            "direction: vector3d",
+            "max-distance: float",
+        ],
+        &[Type::Point3D, Type::Vector3D, Type::Float],
+        "[hit3d]",
+        Type::Hit3DList,
+        "Returns the view's world-ray intersections in nearest-first order.",
+    ),
+    scene_view_method(
+        "ray-hit-row",
+        &[
+            "origin: point3d",
+            "direction: vector3d",
+            "max-distance: float",
+            "row: int",
+        ],
+        &[Type::Point3D, Type::Vector3D, Type::Float, Type::Int],
+        "hit3d",
+        Type::Hit3D,
+        "Tests a single authored row using the view's selected mesh detail.",
+    ),
+    scene_view_method(
+        "ray-hit-subset",
+        &[
+            "origin: point3d",
+            "direction: vector3d",
+            "max-distance: float",
+            "rows: [int]",
+        ],
+        &[Type::Point3D, Type::Vector3D, Type::Float, Type::IntList],
+        "[hit3d]",
+        Type::Hit3DList,
+        "Traces a world-space ray against a list of authored rows.",
+    ),
+    scene_view_method(
+        "ray-hit-instance",
+        &[
+            "origin: point3d",
+            "direction: vector3d",
+            "max-distance: float",
+            "row: int",
+            "mesh-node: int",
+            "instance: int",
+        ],
+        &[
+            Type::Point3D,
+            Type::Vector3D,
+            Type::Float,
+            Type::Int,
+            Type::Int,
+            Type::Int,
+        ],
+        "hit3d",
+        Type::Hit3D,
+        "Traces a world-space ray against an addressed instance in this view.",
+    ),
+    scene_view_method(
+        "closest-point",
+        &["origin: point3d", "radius: float"],
+        &[Type::Point3D, Type::Float],
+        "hit3d",
+        Type::Hit3D,
+        "Finds the nearest pickable surface within a world-space radius using this view's scene selection.",
+    ),
+    scene_view_method(
+        "closest-point-row",
+        &["origin: point3d", "radius: float", "row: int"],
+        &[Type::Point3D, Type::Float, Type::Int],
+        "hit3d",
+        Type::Hit3D,
+        "Finds the nearest surface on the given scene row within a world-space radius.",
+    ),
+    scene_view_method(
+        "pick-in-rect",
+        &["start: point2d", "end: point2d"],
+        &[Type::Point2D, Type::Point2D],
+        "[int]",
+        Type::IntList,
+        "Returns scene record rows intersecting a rectangle in local logical pixels.",
+    ),
+];
+
+pub fn scene_view_methods(kind: &str) -> impl Iterator<Item = &'static BuiltinSignature> {
+    (kind == "SceneView3D")
+        .then_some(SCENE_VIEW_METHODS)
+        .into_iter()
+        .flatten()
+        .map(|method| &method.signature)
 }
 
 pub const DYNAMIC_CONTAINER_METHODS: &[BuiltinSignature] = &[
@@ -636,6 +839,10 @@ operations!(GeometryFunction {
     MapPoint => "map-point",
     MapVector => "map-vector",
     Prepare3D => "prepare-3d",
+    Bounds3D => "bounds-3d",
+    MeshNode3D => "mesh-node-3d",
+    SceneNode3D => "scene-node-3d",
+    MeshNodeIndices3D => "mesh-node-indices-3d",
     PrepareInstanceTable3D => "prepare-instance-table-3d",
     RandomInstanceTable3D => "random-instance-table-3d",
     TableInstance3D => "table-instance-3d",
@@ -704,6 +911,9 @@ impl GeometryFunction {
             Self::Point | Self::MapPoint => Type::Point2D,
             Self::Vector | Self::MapVector => Type::Vector2D,
             Self::Prepare3D => Type::SceneModel3D,
+            Self::Bounds3D => Type::Bounds3D,
+            Self::MeshNode3D | Self::SceneNode3D => Type::MeshNode3D,
+            Self::MeshNodeIndices3D => Type::IntList,
             Self::PrepareInstanceTable3D | Self::RandomInstanceTable3D => Type::InstanceTable3D,
             Self::TableInstance3D
             | Self::SceneInstance3D
@@ -764,6 +974,8 @@ impl GeometryFunction {
         matches!(
             self,
             Self::Prepare3D
+                | Self::Bounds3D
+                | Self::SceneNode3D
                 | Self::Pick3D
                 | Self::PickCamera3D
                 | Self::PickInRect3D
@@ -1624,6 +1836,16 @@ pub const SCENE_PHYSICS_JOINT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("max", Type::Float),
 ];
 
+pub const SCENE_ANIMATION_LAYER_FIELDS: &[(&str, Type)] = &[
+    ("clip", Type::String),
+    ("time", Type::Float),
+    ("looping", Type::Bool),
+    ("weight", Type::Float),
+    ("root-node", Type::String),
+    ("mode", Type::String),
+];
+pub const SCENE_ANIMATION_LAYER_MODES: &[&str] = &["override", "additive"];
+
 pub const SCENE_COLLISION_SHAPE_FIELDS: &[(&str, Type)] = &[
     ("shape", Type::String),
     ("mesh", Type::String),
@@ -1718,6 +1940,7 @@ pub const SCENE_OBJECT_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("animation-to-loop", Type::Bool),
     ("animation-blend", Type::Float),
     ("parent", Type::String),
+    ("parent-node", Type::String),
     ("visible", Type::Bool),
     ("lod-of", Type::String),
     ("lod-max-size", Type::Length),
@@ -2007,11 +2230,46 @@ pub const SCENE_EFFECT_COLOR_SPACES: &[(&str, &str)] = &[
     ("linear", "Read texture channels as linear data"),
 ];
 
+pub const SCENE_PARTICLE_EMISSION_ANIMATION_FIELDS: &[(&str, Type)] = &[
+    ("mesh", Type::String),
+    ("mesh-asset", Type::MeshAsset3D),
+    ("node", Type::String),
+    ("clip", Type::String),
+    ("sample-rate", Type::Float),
+    ("position", Type::Point3D),
+    ("orientation", Type::Quaternion3D),
+    ("scale", Type::Vector3D),
+];
+
+pub const SCENE_PARTICLE_EMISSION_KEY_FIELDS: &[(&str, Type)] = &[
+    ("time", Type::Float),
+    ("position", Type::Point3D),
+    ("orientation", Type::Quaternion3D),
+];
+
+pub const SCENE_PARTICLE_BURST_FIELDS: &[(&str, Type)] =
+    &[("time", Type::Float), ("count", Type::Int)];
+
+pub const SCENE_PARTICLE_BURST_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("duration", Type::Float),
+    ("count-variation", Type::Int),
+    ("enabled", Type::Bool),
+    ("position", Type::Point3D),
+    ("orientation", Type::Quaternion3D),
+    ("seed", Type::Int),
+];
+
 pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("emission-loop", Type::Bool),
+    ("particle-group", Type::String),
+    ("parent", Type::String),
+    ("parent-node", Type::String),
+    ("lifetime-variation", Type::Float),
+    ("size-variation", Type::Float),
+    ("end-size-variation", Type::Float),
     ("end-size", Type::Float),
     ("start-time", Type::Float),
     ("rate", Type::Float),
-    ("burst-count", Type::Int),
     ("velocity", Type::Vector3D),
     ("velocity-spread", Type::Vector3D),
     ("gravity", Type::Vector3D),
@@ -2053,6 +2311,7 @@ pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("particle-rotation", Type::Vector3D),
     ("particle-rotation-variation", Type::Vector3D),
     ("particle-angular-velocity", Type::Vector3D),
+    ("particle-angular-velocity-variation", Type::Vector3D),
     ("particle-casts-shadow", Type::Bool),
     ("particle-receives-shadow", Type::Bool),
     ("particle-casts-reflections", Type::Bool),
@@ -2060,6 +2319,9 @@ pub const SCENE_PARTICLE_OPTIONAL_FIELDS: &[(&str, Type)] = &[
 
 pub const SCENE_PARTICLE_AFFECTOR_FIELDS: &[(&str, Type)] = &[("affector-kind", Type::String)];
 pub const SCENE_PARTICLE_AFFECTOR_OPTIONAL_FIELDS: &[(&str, Type)] = &[
+    ("parent", Type::String),
+    ("parent-node", Type::String),
+    ("particle-group", Type::String),
     ("position", Type::Point3D),
     ("position-variation", Type::Vector3D),
     ("direction", Type::Vector3D),
@@ -2071,6 +2333,19 @@ pub const SCENE_PARTICLE_AFFECTOR_OPTIONAL_FIELDS: &[(&str, Type)] = &[
     ("outer-radius", Type::Float),
     ("strength", Type::Float),
     ("angular-speed", Type::Float),
+    ("global-amount", Type::Vector3D),
+    ("global-pace", Type::Vector3D),
+    ("global-pace-start", Type::Vector3D),
+    ("unique-amount", Type::Vector3D),
+    ("unique-pace", Type::Vector3D),
+    ("unique-amount-variation", Type::Float),
+    ("unique-pace-variation", Type::Float),
+    ("fade-in-duration", Type::Float),
+    ("fade-out-duration", Type::Float),
+    ("min-size", Type::Float),
+    ("max-size", Type::Float),
+    ("scale-mode", Type::String),
+    ("scale-easing", Type::String),
     ("seed", Type::Int),
     ("layers", Type::Int),
     ("enabled", Type::Bool),
@@ -2089,6 +2364,36 @@ pub const PARTICLE_AFFECTOR_KINDS: &[(&str, &str)] = &[
         "point-rotator",
         "Rotate particles around a shared world-space pivot",
     ),
+    (
+        "wander",
+        "Offset each particle with shared and seeded local waves",
+    ),
+    (
+        "scale",
+        "Multiply particle size by a repeating age-based curve",
+    ),
+];
+
+pub const PARTICLE_SCALE_MODES: &[(&str, &str)] = &[
+    ("linear", "Ramp from minimum to maximum each cycle"),
+    ("triangle", "Ramp up and down each cycle"),
+    ("sine", "Smooth sine wave across the size range"),
+    ("abs-sine", "Two smooth positive pulses per cycle"),
+    (
+        "step",
+        "Switch from minimum to maximum halfway through the cycle",
+    ),
+    (
+        "smooth-step",
+        "Smoothly interpolate between minimum and maximum",
+    ),
+];
+
+pub const PARTICLE_SCALE_EASINGS: &[(&str, &str)] = &[
+    ("linear", "Constant speed"),
+    ("ease-in", "Cubic acceleration"),
+    ("ease-out", "Cubic deceleration"),
+    ("ease-in-out", "Cubic acceleration and deceleration"),
 ];
 
 pub const PARTICLE_EMITTER_SHAPES: &[(&str, &str)] = &[
@@ -2207,6 +2512,21 @@ pub const REFLECTION_REFRESH_MODES: &[(&str, &str)] = &[
 ];
 
 pub const HEIGHTFIELD_EXTENSION: &str = "png";
+pub const MESH_LOADER_INPUTS: &[(&str, Type)] = &[
+    ("source", Type::String),
+    ("active", Type::Bool),
+    ("revision", Type::Int),
+    ("auto-lod", Type::Bool),
+    ("lightmap-uv", Type::Bool),
+];
+
+pub const MESH_LOADER_OUTPUTS: &[(&str, Type)] = &[
+    ("asset", Type::MeshAsset3D),
+    ("bounds", Type::Bounds3D),
+    ("status", Type::String),
+    ("error", Type::String),
+];
+
 pub const OBJ_EXTENSION: &str = "obj";
 pub const MESH_SOURCE_EXTENSIONS: &[&str] = &["glb", "gltf", OBJ_EXTENSION, HEIGHTFIELD_EXTENSION];
 
@@ -2509,6 +2829,10 @@ const fn geometry(
 ) -> Function {
     let (namespace, member, result) = match kind {
         GeometryFunction::Prepare3D => ("Scene3D", "prepare", "scenemodel3d"),
+        GeometryFunction::Bounds3D => ("Scene3D", "bounds", "bounds3d"),
+        GeometryFunction::MeshNode3D => ("Scene3D", "mesh-node", "meshnode3d"),
+        GeometryFunction::SceneNode3D => ("Scene3D", "scene-node", "meshnode3d"),
+        GeometryFunction::MeshNodeIndices3D => ("Scene3D", "mesh-node-indices", "[int]"),
         GeometryFunction::PrepareInstanceTable3D => {
             ("Scene3D", "instance-table", "instancetable3d")
         }
@@ -3850,6 +4174,36 @@ pub const FUNCTIONS: &[Function] = &[
             Parameter::with_type("time: float", &Type::Float),
         ],
         "Samples the shortest arc between keys in seconds. Values outside the interval use the nearest key. An invalid track or NaN time returns identity.",
+    ),
+    geometry(
+        GeometryFunction::MeshNode3D,
+        &[
+            Parameter::new("asset: meshasset3d | string"),
+            Parameter::new("selector: string | int"),
+        ],
+        "Looks up a glTF node by its unique name, absolute path, or original numeric index. The origin and axes use the asset's initial coordinate frame. Missing or ambiguous selectors return valid false.",
+    ),
+    geometry(
+        GeometryFunction::MeshNodeIndices3D,
+        &[
+            Parameter::new("asset: meshasset3d | string"),
+            Parameter::optional("kind?: string", &Type::String),
+        ],
+        "Lists original glTF node indices in traversal order. Filter by all, mesh, camera, or light. Pass an index to Scene3D.mesh-node.",
+    ),
+    geometry(
+        GeometryFunction::SceneNode3D,
+        &[
+            NAMED_VIEW[0],
+            Parameter::with_type("object: string", &Type::String),
+            Parameter::new("selector: string | int"),
+        ],
+        "Looks up a glTF node on a uniquely named, visible scene object. The origin and axes use the current world pose, including animation and resolved physics. Use a node name, absolute path, or original index.",
+    ),
+    geometry(
+        GeometryFunction::Bounds3D,
+        &[NAMED_VIEW[0], LAYER_MASK],
+        "Returns world-space bounds for the current prepared scene pose, before camera-dependent culling or LOD. The default layer mask is 1. Empty results have valid false.",
     ),
     geometry(
         GeometryFunction::Prepare3D,

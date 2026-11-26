@@ -595,6 +595,13 @@ impl<'a> Index<'a> {
             Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
             _ => return None,
         };
+        if kind == "MeshLoader3D"
+            && let Some((_, ty)) = builtins::MESH_LOADER_OUTPUTS
+                .iter()
+                .find(|(field, _)| *field == name)
+        {
+            return Some((ty.clone(), None));
+        }
         builtin_property(kind, name).map(|ty| (ty, None))
     }
 
@@ -1304,12 +1311,25 @@ pub(crate) fn complete_with_imports(
     {
         return paths;
     }
+    if let Some(groups) = imports::scene_particle_group_values(&source, &tokens, cursor) {
+        return groups;
+    }
+    if let Some(nodes) = imports::scene_particle_parent_values(&source, &tokens, cursor, workspace)
+    {
+        return nodes;
+    }
+    if let Some(nodes) = workspace.and_then(|workspace| {
+        imports::scene_parent_node_values(&source, &tokens, cursor, workspace)
+    }) {
+        return nodes;
+    }
+    if let Some(nodes) = imports::mesh_node_query_values(&source, &tokens, cursor, workspace) {
+        return nodes;
+    }
     if let Some(slots) = imports::scene_material_slot_values(&source, &tokens, cursor, workspace) {
         return slots;
     }
-    if let Some(clips) = workspace.and_then(|workspace| {
-        imports::scene_asset_selector_values(&source, &tokens, cursor, workspace)
-    }) {
+    if let Some(clips) = imports::scene_asset_selector_values(&source, &tokens, cursor, workspace) {
         return clips;
     }
     if let Some(cameras) = imports::scene_camera_values(&source, &tokens, cursor, workspace) {
@@ -2551,6 +2571,11 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 "read-only string · exclusive groups",
             );
         }
+        if kind == "MeshLoader3D" {
+            for (name, ty) in xrack_parser::builtins::MESH_LOADER_OUTPUTS {
+                items.add(name, PROPERTY, &format!("read-only {}", ty.name()));
+            }
+        }
         for property in ["pending", "selected-file", "selected-files"] {
             if let Some(ty) = xrack_ir::semantic::native_dialog_property(kind, property) {
                 items.add(property, PROPERTY, &format!("read-only {}", ty.name()));
@@ -2589,6 +2614,9 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 "read-only bool · valid for submission",
             );
             items.add("input-validity", PROPERTY, "read-only InputValidity");
+        }
+        for method in catalog::scene_view_methods(kind) {
+            items.add(method.name, FUNCTION, &method.signature());
         }
         let media_methods = catalog::media_methods(kind);
         if !media_methods.is_empty() {
@@ -2868,19 +2896,22 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         index.record(&record).iter().collect()
     };
     let mut fields = receiver.into_iter().rev().peekable();
+    let mut element = owner;
     while let Some(field) = fields.next() {
-        match members
+        let owner = element.take();
+        let ty = members
             .iter()
             .find(|member| member.name == field)
-            .and_then(|member| member.ty.as_ref())
-        {
-            Some(Type::Record(record)) => members = index.record(record).iter().collect(),
+            .and_then(|member| member.ty.clone())
+            .or_else(|| index.typed_member(owner?, field).map(|(ty, _)| ty));
+        match ty {
+            Some(Type::Record(record)) => members = index.record(&record).iter().collect(),
             Some(Type::Image) if fields.peek().is_none() => {
                 items.words("width height", FIELD, "read-only int");
                 return;
             }
             Some(ty) if !ty.builtin_fields().is_empty() => {
-                complete_builtin_fields(ty.clone(), fields, items);
+                complete_builtin_fields(ty, fields, items);
                 return;
             }
             _ => return,

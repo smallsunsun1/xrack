@@ -324,6 +324,39 @@ impl Solid {
         self.bounds.width > 0.0
     }
 
+    pub(super) fn opacity_capture(self) -> (Rect, f32) {
+        (self.bounds, self.opacity)
+    }
+
+    pub(super) fn unfaded_path(self) -> (Path, Color) {
+        let mut path = Path::new();
+        append_rect(&mut path, self.shape, self.radii);
+        (path, self.color)
+    }
+
+    pub(super) fn draw_unfaded(self, canvas: &mut Canvas<WGPURenderer>) {
+        let (path, color) = self.unfaded_path();
+        #[cfg(xrack_femtovg_glyph_samples)]
+        canvas.fill_opacity_atlas_path(&path, color);
+        #[cfg(not(xrack_femtovg_glyph_samples))]
+        canvas.fill_path(&path, &Paint::color(color));
+    }
+
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn draw_batchable_fill(self, canvas: &mut Canvas<WGPURenderer>) {
+        let (path, color) = self.unfaded_path();
+        let Rect {
+            x,
+            y,
+            width,
+            height,
+        } = self.bounds;
+        canvas.save();
+        canvas.intersect_scissor(x, y, width, height);
+        canvas.fill_opacity_atlas_path(&path, color);
+        canvas.restore();
+    }
+
     pub(super) fn draw(self, canvas: &mut Canvas<WGPURenderer>) {
         let mut path = Path::new();
         let Rect {
@@ -483,7 +516,7 @@ struct RoundedAtlas {
 }
 
 impl RoundedAtlas {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
+    fn new(instance: &wgpu::Instance, device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("XRack rounded rectangle atlas"),
             size: wgpu::Extent3d {
@@ -500,7 +533,7 @@ impl RoundedAtlas {
                 | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let producer = Canvas::new(WGPURenderer::new(device.clone(), queue.clone())).ok()?;
+        let producer = Canvas::new(crate::canvas_renderer(instance, device, queue)).ok()?;
         Some(Self {
             main_image: None,
             capture_image: None,
@@ -598,12 +631,16 @@ impl RoundedAtlas {
         }
     }
 
-    fn exceeds_fractional_capacity(rectangles: &[Solid], scale: f32) -> bool {
+    fn exceeds_fractional_capacity(
+        rectangles: &[Solid],
+        scale: f32,
+        include_unfaded: bool,
+    ) -> bool {
         let mut keys = HashSet::new();
         let mut pixels = 0usize;
         for &rect in rectangles
             .iter()
-            .filter(|rect| rect.fractional && rect.opacity < 1.0)
+            .filter(|rect| rect.fractional && (include_unfaded || rect.opacity < 1.0))
         {
             let key = Self::key(
                 rect,
@@ -921,6 +958,8 @@ pub(super) struct RectangleBatches {
     pub(super) eager_atlas_submission: bool,
     pub(super) reset_fractional_tiles_each_frame: bool,
     pub(super) capsule_warmup_disabled: bool,
+    #[cfg(xrack_femtovg_glyph_samples)]
+    pub(super) plain_fills_pending: bool,
     pub(super) draws: u64,
     pub(super) palette_uploads: u64,
     pub(super) rounded_draws: u64,
@@ -929,12 +968,12 @@ pub(super) struct RectangleBatches {
 impl RectangleBatches {
     fn window_atlas(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: (&wgpu::Instance, &wgpu::Device, &wgpu::Queue),
         scale: f32,
     ) -> Option<&mut RoundedAtlas> {
+        let (instance, device, queue) = gpu;
         if self.rounded.is_none() {
-            self.rounded = RoundedAtlas::new(device, queue);
+            self.rounded = RoundedAtlas::new(instance, device, queue);
         }
         let atlas = self.rounded.as_mut()?;
         if atlas.pending_scale.is_some_and(|pending| pending != scale) {
@@ -945,12 +984,12 @@ impl RectangleBatches {
 
     pub(super) fn window_panel(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: (&wgpu::Instance, &wgpu::Device, &wgpu::Queue),
         panel: RoundedPanel,
         scale: f32,
     ) -> Option<[WindowLayer; 9]> {
-        let atlas = self.window_atlas(device, queue, scale)?;
+        let (_, _, queue) = gpu;
+        let atlas = self.window_atlas(gpu, scale)?;
         let shape = panel.template;
         let rectangle = Solid {
             bounds: shape,
@@ -1024,8 +1063,7 @@ impl RectangleBatches {
 
     pub(super) fn window_capsule(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        gpu: (&wgpu::Instance, &wgpu::Device, &wgpu::Queue),
         bounds: Rect,
         tint: Color,
         scale: f32,
@@ -1046,7 +1084,8 @@ impl RectangleBatches {
         let middle = Rect::new(left, raster.y, right - left, raster.height);
         // Expanding or contracting a capsule only moves the caps. Keep the
         // cap's device-pixel phase and join each one inside the straight body.
-        let atlas = self.window_atlas(device, queue, scale)?;
+        let (_, _, queue) = gpu;
+        let atlas = self.window_atlas(gpu, scale)?;
         let texture = atlas.window_source();
         let mut cap = |x| {
             let shape = Rect::new(x, bounds.y, template_width, bounds.height);
@@ -1247,6 +1286,53 @@ impl RectangleBatches {
 }
 
 impl Renderer {
+    #[cfg(xrack_femtovg_glyph_samples)]
+    fn draw_instanced_rounded_fills(&mut self, rectangles: &[Solid], scale: f32) -> Option<usize> {
+        let first = rectangles.first()?;
+        let size = [first.shape.width, first.shape.height];
+        if rectangles.iter().any(|rect| {
+            (!rect.fractional && rect.bounds != rect.shape)
+                || [rect.shape.width, rect.shape.height] != size
+                || rect.radii != first.radii
+        }) {
+            return None;
+        }
+        // Fractional solids already require clearance from their layout clip.
+        // Their visible width can differ from the shape by a floating-point
+        // subtraction even when the intersection leaves both edges intact.
+        let mut path = Path::new();
+        append_rect(
+            &mut path,
+            Rect::new(0.0, 0.0, size[0], size[1]),
+            first.radii,
+        );
+        let isolated = |rect: &Solid| rect.opacity < 1.0 && rect.fractional;
+        let as_array = |rect: Rect| [rect.x, rect.y, rect.width, rect.height];
+        self.canvas.draw_mesh_fill_instances(
+            &path,
+            rectangles.iter().any(isolated),
+            rectangles.iter().map(|rect| {
+                let mut color = rect.color;
+                let opacity = if isolated(rect) {
+                    let raster = logical_bounds(device_bounds(rect.bounds, scale), scale);
+                    Some(femtovg::renderer::MeshFillOpacity {
+                        clip: as_array(rect.bounds),
+                        raster: as_array(raster),
+                        amount: rect.opacity,
+                    })
+                } else {
+                    color.a *= rect.opacity;
+                    None
+                };
+                femtovg::renderer::MeshFillInstance {
+                    origin: [rect.shape.x, rect.shape.y],
+                    color,
+                    opacity,
+                }
+            }),
+        )
+    }
+
     pub(super) fn draw_rounded_batch(
         &mut self,
         rectangles: &mut Vec<Solid>,
@@ -1258,9 +1344,37 @@ impl Renderer {
             }
             return Ok(());
         }
+        let capture = self.can_capture_transient_rectangles(scale);
+        let direct = capture && self.direct_rounded_fills_enabled();
+        let atlas_plan = if capture {
+            self.plan_opacity_atlas_for_rectangles(
+                rectangles
+                    .iter()
+                    .filter(|rect| rect.fractional && rect.opacity < 1.0)
+                    .map(|rect| rect.bounds),
+                scale,
+            )
+        } else {
+            None
+        };
+        // Keep existing hits when there are too many unique shapes to admit.
+        let planned_capture = atlas_plan.as_ref().is_some_and(|plan| plan.covers_batch);
+        let oversized = (direct || planned_capture)
+            && RoundedAtlas::exceeds_fractional_capacity(rectangles, scale, direct);
+        #[cfg(xrack_femtovg_glyph_samples)]
+        if direct
+            && oversized
+            && let Some(uploaded) = self.draw_instanced_rounded_fills(rectangles, scale)
+        {
+            xrack_runtime::update_profile::geometry_upload(uploaded);
+            rectangles.clear();
+            return Ok(());
+        }
+
         let capturing = self.using_capture_canvas();
         if self.rectangle_batches.rounded.is_none() {
-            self.rectangle_batches.rounded = RoundedAtlas::new(&self.device, &self.queue);
+            self.rectangle_batches.rounded =
+                RoundedAtlas::new(&self.instance, &self.device, &self.queue);
         }
         let image = self.rectangle_batches.rounded.as_mut().and_then(|atlas| {
             let image = atlas.image(&mut self.canvas, capturing)?;
@@ -1276,69 +1390,43 @@ impl Renderer {
             return Ok(());
         };
 
-        // When the whole set cannot fit in the retained fractional atlas,
-        // take its hits and send new captures to the existing transient atlas.
-        let prefer_transient = self.can_capture_transient_rectangles(scale)
-            && RoundedAtlas::exceeds_fractional_capacity(rectangles, scale)
-            && self.prepare_opacity_atlas_for_rectangles(
-                rectangles
-                    .iter()
-                    .filter(|rect| rect.fractional && rect.opacity < 1.0)
-                    .map(|rect| rect.bounds),
-                scale,
-            );
         let mut quads = Vec::with_capacity(rectangles.len());
-        let mut opacity_tiles = Vec::new();
-        let mut rectangles = rectangles.drain(..);
-        let mut prepared_opacity_atlas = prefer_transient;
-        while let Some(rectangle) = rectangles.next() {
+        let mut uncached = Vec::new();
+        for rectangle in rectangles.drain(..) {
+            let fading_fractional = rectangle.fractional && rectangle.opacity < 1.0;
+            let direct_fill = direct && rectangle.fractional && rectangle.opacity == 1.0;
+            let skip_admission = oversized && (direct_fill || fading_fractional && planned_capture);
             let quad = self.rectangle_batches.rounded.as_mut().and_then(|atlas| {
-                let admit = !(prefer_transient && rectangle.fractional && rectangle.opacity < 1.0);
                 atlas.quad_with_admission(
                     &self.queue,
                     rectangle,
                     scale,
                     RoundedTileClip::Shape,
-                    admit,
+                    !skip_admission,
                 )
             });
             if let Some(quad) = quad {
-                self.draw_transient_rectangles(&mut opacity_tiles);
+                self.draw_transient_rectangles(&mut uncached, scale, atlas_plan.as_ref())?;
                 quads.push(quad);
                 continue;
             }
             // Keep the cached quads and the isolated draws in paint order.
             self.rectangle_batches.rounded_draws +=
                 draw_quads(&mut self.canvas, image, std::mem::take(&mut quads));
-            if rectangle.fractional && rectangle.opacity < 1.0 {
-                if !prepared_opacity_atlas {
-                    let bounds = std::iter::once(rectangle)
-                        .chain(rectangles.as_slice().iter().copied())
-                        .filter(|rect| rect.fractional && rect.opacity < 1.0)
-                        .map(|rect| rect.bounds);
-                    self.prepare_opacity_atlas_for_rectangles(bounds, scale);
-                    prepared_opacity_atlas = true;
-                }
-                // Capture the unfaded fill. Opacity and the element scissor
-                // apply to the premultiplied pixels at composition time.
-                if let Some(tile) = self.capture_transient_rectangle(
-                    rectangle.bounds,
-                    scale,
-                    rectangle.opacity,
-                    |canvas| {
-                        let mut path = Path::new();
-                        append_rect(&mut path, rectangle.shape, rectangle.radii);
-                        canvas.fill_path(&path, &Paint::color(rectangle.color));
-                    },
-                )? {
-                    opacity_tiles.push(tile);
-                    continue;
-                }
+            if capture && fading_fractional {
+                uncached.push(rectangle);
+                continue;
             }
-            self.draw_transient_rectangles(&mut opacity_tiles);
+            self.draw_transient_rectangles(&mut uncached, scale, atlas_plan.as_ref())?;
+            #[cfg(xrack_femtovg_glyph_samples)]
+            if direct_fill {
+                rectangle.draw_batchable_fill(&mut self.canvas);
+                self.rectangle_batches.plain_fills_pending = true;
+                continue;
+            }
             rectangle.draw(&mut self.canvas);
         }
-        self.draw_transient_rectangles(&mut opacity_tiles);
+        self.draw_transient_rectangles(&mut uncached, scale, atlas_plan.as_ref())?;
         self.rectangle_batches.rounded_draws += draw_quads(&mut self.canvas, image, quads);
         if self.rectangle_batches.eager_atlas_submission
             && let Some(atlas) = self.rectangle_batches.rounded.as_mut()

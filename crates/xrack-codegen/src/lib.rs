@@ -427,6 +427,7 @@ fn project_scene_objects(
 ) -> TokenStream {
     let field = |name, default| scene_field(fields, name, "object", default);
     let parent = field("parent", quote!(::std::string::String::new()));
+    let parent_node = field("parent-node", quote!(::std::string::String::new()));
     let physics_body = field("physics-body", quote!(::std::string::String::new()));
     let look_at = field("camera-look-at", quote!(::std::string::String::new()));
     let optional_field = |name| {
@@ -528,6 +529,33 @@ fn project_scene_objects(
     let from = playback("animation", "animation-time", "animation-loop");
     let to = playback("animation-to", "animation-to-time", "animation-to-loop");
     let weight = field("animation-blend", quote!(0.0));
+    let animation_layers = fields.iter().find_map(|field| {
+        if field.name != "animation-layers" {
+            return None;
+        }
+        let Type::RecordList(name) = &field.ty else { return None };
+        records.get(name.as_ref())
+    }).map_or_else(|| quote!(::core::default::Default::default()), |schema| {
+        let time = scene_field(schema, "time", "layer", quote!(0.0));
+        let looping = scene_field(schema, "looping", "layer", quote!(false));
+        let weight = scene_field(schema, "weight", "layer", quote!(1.0));
+        let root = if schema.iter().any(|field| field.name == "root-node") {
+            quote!(layer.root_node.clone())
+        } else {
+            quote!(::std::string::String::new())
+        };
+        let mode = if schema.iter().any(|field| field.name == "mode") {
+            quote!(&layer.mode)
+        } else {
+            quote!("override")
+        };
+        quote!(::xrack_runtime::scene3d::prepare_animation_layers(mesh_inputs, &object.animation_layers, |layer| {
+            ::xrack_runtime::scene3d::MeshAnimationLayer::new(
+                ::xrack_runtime::scene3d::MeshPlayback { clip: layer.clip.clone(), time: #time, looping: #looping },
+                #root, #weight, #mode,
+            )
+        }))
+    });
     let weight_fields = fields
         .iter()
         .find(|field| !cameras_only && field.name == "morph-weights")
@@ -668,9 +696,10 @@ fn project_scene_objects(
                 instance_depth_sorting: #instance_depth_sorting,
                 instance_shadow_bounds: #instance_shadow_bounds,
                 instance_template: #instance_template,
-                animation: ::xrack_runtime::scene3d::MeshAnimationBlend { from: #from, to: #to, weight: #weight },
+                animation: ::xrack_runtime::scene3d::MeshAnimationBlend { from: #from, to: #to, weight: #weight, layers: #animation_layers },
                 morph_weights: &[#(#weight_fields),*],
                 parent: #parent,
+                parent_node: #parent_node,
                 physics_body: &(#physics_body),
                 visible: #visible,
                 camera: #camera,
@@ -745,13 +774,128 @@ fn physics_shape_fields(schema: &[Parameter]) -> [TokenStream; 4] {
     [position, size, quote!([#(#angles),*]), mesh]
 }
 
-fn project_particles(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
+fn project_particles(
+    model: &TokenStream,
+    fields: &[Parameter],
+    records: &BTreeMap<&str, Vec<Parameter>>,
+) -> TokenStream {
+    let track = fields
+        .iter()
+        .find_map(|field| {
+            if field.name != "emission-track" {
+                return None;
+            }
+            let Type::RecordList(name) = &field.ty else {
+                return None;
+            };
+            records.get(name.as_ref())
+        })
+        .map_or_else(
+            || quote!(::xrack_runtime::scene3d::ParticleEmissionTrack::default()),
+            |schema| {
+                let orientation = scene_field(
+                    schema,
+                    "orientation",
+                    "key",
+                    quote!(::xrack_runtime::Quaternion3D::IDENTITY),
+                );
+                quote!(__XR_SCENE_PROJECTIONS.with(|cache|
+            cache.particle_emission_track(&emitter.emission_track, |key|
+                ::core::option::Option::Some((key.time, key.position, #orientation))
+            )
+        )?)
+            },
+        );
+    let animation = scene_schema(fields, records, "emission-animation").map(|schema| {
+        let mesh = if schema.iter().any(|param| param.name == "mesh") {
+            quote!(__xr_scene_mesh(&animation.mesh))
+        } else {
+            quote!(::core::option::Option::None)
+        };
+        let asset = if schema.iter().any(|param| param.name == "mesh-asset") {
+            quote!(animation.mesh_asset.asset().cloned().or_else(|| #mesh))
+        } else {
+            mesh
+        };
+        let sample_rate = scene_field(schema, "sample-rate", "animation", quote!(60.0));
+        let position = scene_field(
+            schema,
+            "position",
+            "animation",
+            quote!(::xrack_runtime::Point3D::default()),
+        );
+        let orientation = scene_field(
+            schema,
+            "orientation",
+            "animation",
+            quote!(::xrack_runtime::Quaternion3D::IDENTITY),
+        );
+        let scale = scene_field(
+            schema,
+            "scale",
+            "animation",
+            quote!(::xrack_runtime::Vector3D::new(1.0, 1.0, 1.0)),
+        );
+        quote! {
+            let __emission_track = if __emission_track.is_empty() {
+                let animation = emitter.emission_animation;
+                let asset = (#asset)?;
+                __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_animation_track(
+                    &asset,
+                    ::xrack_runtime::scene3d::ParticleEmissionAnimation {
+                        node: animation.node, clip: animation.clip, sample_rate: #sample_rate,
+                        position: #position, orientation: #orientation, scale: #scale,
+                    },
+                ))?
+            } else {
+                __emission_track
+            };
+        }
+    });
+    let bursts = fields.iter().find_map(|field| {
+        let Type::RecordList(name) = &field.ty else {
+            return None;
+        };
+        if field.name != "bursts" {
+            return None;
+        }
+        let schema = records.get(name.as_ref())?;
+        let duration = scene_field(schema, "duration", "event", quote!(0.0));
+        let variation = scene_field(schema, "count-variation", "event", quote!(0));
+        let enabled = scene_field(schema, "enabled", "event", quote!(true));
+        let optional = |name| {
+            if schema.iter().any(|field| field.name == name) {
+                let field = ident(name);
+                quote!(::core::option::Option::Some(event.#field))
+            } else {
+                quote!(::core::option::Option::None)
+            }
+        };
+        let position = optional("position");
+        let seed = optional("seed");
+        let orientation = scene_field(
+            schema,
+            "orientation",
+            "event",
+            quote!(::xrack_runtime::Quaternion3D::IDENTITY),
+        );
+        Some(quote! {
+            bursts: __XR_SCENE_PROJECTIONS.with(|cache| cache.particle_burst_schedule(
+                &emitter.bursts, |event| ::core::option::Option::Some(
+                    ::xrack_runtime::scene3d::ParticleBurstDefinition {
+                        time: event.time, count: event.count, duration: #duration,
+                        count_variation: #variation, enabled: #enabled,
+                        position: #position, orientation: #orientation, seed: #seed,
+                    }),
+            ))?,
+        })
+    });
     let options = xrack_syntax::builtins::SCENE_PARTICLE_OPTIONAL_FIELDS
         .iter()
         .filter(|(name, _)| fields.iter().any(|field| field.name == *name))
         .map(|(name, _)| {
             let field = ident(name);
-            if matches!(*name, "end-size" | "sprite-frame") {
+            if matches!(*name, "end-size" | "end-size-variation" | "sprite-frame") {
                 quote!(#field: ::core::option::Option::Some(emitter.#field))
             } else {
                 quote!(#field: emitter.#field)
@@ -759,9 +903,13 @@ fn project_particles(model: &TokenStream, fields: &[Parameter]) -> TokenStream {
         });
     quote! {
         ::xrack_runtime::scene3d::model_particles(&(#model), |emitter| {
+            let __emission_track = #track;
+            #animation
             ::xrack_runtime::scene3d::ParticleEmitterDefinition {
                 position: emitter.position, color: emitter.color, size: emitter.size,
                 lifetime: emitter.lifetime,
+                emission_track: __emission_track,
+                #bursts
                 #(#options,)*
                 ..::core::default::Default::default()
             }.prepare(|key, scale| {
@@ -1291,6 +1439,8 @@ fn ty(t: &Type) -> TokenStream {
         Type::Instance3D => quote!(::xrack_runtime::Instance3D),
         Type::InstanceTable3D => quote!(::xrack_runtime::InstanceTable3D),
         Type::MeshAsset3D => quote!(::xrack_runtime::MeshAsset3D),
+        Type::MeshNode3D => quote!(::xrack_runtime::MeshNode3D),
+        Type::Bounds3D => quote!(::xrack_runtime::Bounds3D),
         Type::WalkResult3D => quote!(::xrack_runtime::WalkResult3D),
         Type::PhysicsWorld3D => quote!(::xrack_runtime::PhysicsWorld3D),
         Type::SceneModel3D => quote!(::std::sync::Arc<::xrack_runtime::scene3d::SceneModel>),
@@ -1736,6 +1886,10 @@ fn visual_field(value: usize) -> Ident {
 
 fn dynamic_children(owner: &str) -> Ident {
     format_ident!("__dynamic_children_{}", rust_key(owner))
+}
+
+fn mesh_loader_slot(owner: &str) -> Ident {
+    format_ident!("__mesh_loader_{}", rust_key(owner))
 }
 
 fn external_loader_slot(owner: &str) -> Ident {
@@ -2473,6 +2627,7 @@ struct Generator<'a> {
     animated_images: Vec<OperationRef<'a>>,
     media_players: Vec<OperationRef<'a>>,
     native_dialogs: Vec<OperationRef<'a>>,
+    mesh_loaders: Vec<OperationRef<'a>>,
     focus_targets: BTreeSet<&'a str>,
     button_press_targets: BTreeSet<&'a str>,
     button_checked_targets: BTreeSet<&'a str>,
@@ -2498,6 +2653,7 @@ struct Generator<'a> {
     view_empty_state_owners: BTreeMap<&'a str, &'a str>,
     source_scroll_targets: BTreeSet<&'a str>,
     geometry_targets: BTreeSet<&'a str>,
+    scene_view_targets: BTreeSet<&'a str>,
     bound_viewports: Vec<OperationRef<'a>>,
     scroll_observers: BTreeSet<&'a str>,
     secondary_windows: Vec<OperationRef<'a>>,
@@ -2701,6 +2857,9 @@ impl<'a> Generator<'a> {
                 if matches!(op.attr("kind"), Ok("Timer" | "FrameAnimation")) {
                     self.timers.push(op);
                 }
+                if op.attr("kind") == Ok("MeshLoader3D") {
+                    self.mesh_loaders.push(op);
+                }
                 if native_dialog(op) {
                     self.native_dialogs.push(op);
                 }
@@ -2788,6 +2947,11 @@ impl<'a> Generator<'a> {
                 }
                 "xr.scroll_target" => {
                     self.viewport_targets.insert(child.attr("target")?);
+                }
+                "xr.scene_view_query" => {
+                    let owner = child.attr("owner")?;
+                    self.geometry_targets.insert(owner);
+                    self.scene_view_targets.insert(owner);
                 }
                 "xr.geometry_read" => {
                     self.geometry_targets.insert(child.attr("owner")?);
@@ -2893,6 +3057,11 @@ impl<'a> Generator<'a> {
                             "xr.table_selection_command" => {
                                 self.list_selection_command_targets
                                     .insert(effect.attr("owner")?);
+                            }
+                            "xr.scene_view_query" => {
+                                let owner = effect.attr("owner")?;
+                                self.geometry_targets.insert(owner);
+                                self.scene_view_targets.insert(owner);
                             }
                             "xr.geometry_read" => {
                                 self.geometry_targets.insert(effect.attr("owner")?);
@@ -3500,6 +3669,9 @@ impl<'a> Generator<'a> {
             | "xr.hit3d_field"
             | "xr.physics_contact3d_field"
             | "xr.physics_hit3d_field"
+            | "xr.bounds3d_field"
+            | "xr.mesh_asset3d_field"
+            | "xr.mesh_node3d_field"
             | "xr.projected_point3d_field"
             | "xr.instance3d_field"
             | "xr.instance_table3d_field"
@@ -3516,6 +3688,10 @@ impl<'a> Generator<'a> {
                     && value == "object-id"
                 {
                     quote!((#record).#field.clone())
+                } else if op.name() == "xr.mesh_node3d_field" && value == "valid" {
+                    quote!((#record).valid())
+                } else if op.name() == "xr.mesh_node3d_field" && matches!(value, "name" | "path") {
+                    quote!((#record).#field.clone())
                 } else if op.name() == "xr.instance_table3d_field" {
                     if value == "loaded" {
                         quote!((#record).is_loaded())
@@ -3526,7 +3702,10 @@ impl<'a> Generator<'a> {
                     quote!((#record).contacts())
                 } else if matches!(
                     op.name(),
-                    "xr.quaternion3d_field" | "xr.rotation_track3d_field"
+                    "xr.quaternion3d_field"
+                        | "xr.rotation_track3d_field"
+                        | "xr.bounds3d_field"
+                        | "xr.mesh_asset3d_field"
                 ) {
                     quote!((#record).#field())
                 } else {
@@ -3623,6 +3802,11 @@ impl<'a> Generator<'a> {
             "xr.action_group_read" => {
                 let getter = action_group_method(owner(op), "current");
                 quote!(#receiver.#getter())
+            }
+            "xr.mesh_loader_read" => {
+                let slot = mesh_loader_slot(owner(op));
+                let read = ident(value);
+                quote!(#receiver.__state.#slot.#read())
             }
             "xr.native_dialog_read" => match value {
                 "pending" => {
@@ -3852,6 +4036,19 @@ impl<'a> Generator<'a> {
                 let handle = viewport_handle(owner(op));
                 let getter = ident(value);
                 quote!(#receiver.__state.#handle.#getter())
+            }
+            "xr.scene_view_query" => {
+                let handle = geometry_handle(owner(op));
+                let kind = ident(value);
+                let mut operands = (0..op.operand_count())
+                    .map(arg)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if matches!(value, "hit-subset" | "ray-hit-subset")
+                    && let Some(rows) = operands.last_mut()
+                {
+                    *rows = quote!(&(#rows).snapshot());
+                }
+                quote!(#receiver.__state.#handle.scene_view().#kind(#(#operands),*))
             }
             "xr.geometry_read" => {
                 let handle = geometry_handle(owner(op));
@@ -4220,6 +4417,46 @@ impl<'a> Generator<'a> {
                         ))
                     }
                     (QuaternionSample, [track, time]) => quote!((#track).sample(#time)),
+                    (MeshNode3D | MeshNodeIndices3D, [asset, selector @ ..]) => {
+                        let static_key = value_type(self.operand(op, 0)?)? == Type::String;
+                        let (method, input) = if kind == MeshNodeIndices3D {
+                            let value = selector
+                                .first()
+                                .map_or_else(|| quote!("all"), |value| quote!(&(#value)));
+                            (quote!(node_indices), value)
+                        } else {
+                            let value = selector.first().ok_or("missing node selector")?;
+                            if value_type(self.operand(op, 1)?)? == Type::Int {
+                                (quote!(node_at), quote!(#value))
+                            } else {
+                                (quote!(node), quote!(&(#value)))
+                            }
+                        };
+                        if static_key {
+                            quote!({
+                                let __key = #asset;
+                                let __selector = #input;
+                                __xr_scene_mesh(&__key).map_or_else(::core::default::Default::default, |asset| {
+                                    asset.#method(__selector)
+                                })
+                            })
+                        } else {
+                            quote!((#asset).#method(#input))
+                        }
+                    }
+                    (SceneNode3D, [model, object, selector]) => {
+                        let scene = query_model(model, false)?;
+                        if value_type(self.operand(op, 2)?)? == Type::Int {
+                            quote!((#scene).scene_node_at(&(#object), #selector))
+                        } else {
+                            quote!((#scene).scene_node(&(#object), &(#selector)))
+                        }
+                    }
+                    (Bounds3D, [model, layers @ ..]) => {
+                        let scene = query_model(model, false)?;
+                        let layers = optional_layers(layers);
+                        quote!((#scene).bounds(#layers))
+                    }
                     (Prepare3D, [model]) => query_model(model, false)?,
                     (Prepare3D, [model, world]) => {
                         let scene = query_model(model, false)?;
@@ -10189,7 +10426,8 @@ impl<'a> Generator<'a> {
                 }
                 (Ok("SceneView3D"), "particle-emitters") => {
                     let ty = operand_type(binding).ok_or("missing particle emitter model type")?;
-                    let emitters = project_particles(&value, self.scene_record_fields(&ty));
+                    let emitters =
+                        project_particles(&value, self.scene_record_fields(&ty), self.records);
                     quote!(::xrack_runtime::Value::SceneParticleEmitters(#emitters))
                 }
                 (Ok("SceneView3D"), "particle-affectors") => {
@@ -10245,14 +10483,18 @@ impl<'a> Generator<'a> {
             }
         }
         if element.attr("kind") == Ok("SceneView3D")
-            && children(element, "xr.bind")
-                .any(|binding| binding.attribute("name") == Some("physics-world"))
+            && children(element, "xr.bind").any(|binding| {
+                matches!(
+                    binding.attribute("name"),
+                    Some("physics-world" | "particle-emitters" | "particle-affectors")
+                )
+            })
         {
             let follow_authored_model = children(element, "xr.bind")
                 .find(|binding| binding.attribute("name") == Some("model"))
                 .and_then(operand_type)
                 .is_some_and(|ty| matches!(ty, Type::RecordList(_)));
-            out.extend(quote!(#name.prepare_scene_physics(#follow_authored_model);));
+            out.extend(quote!(#name.prepare_scene_view(#follow_authored_model);));
         }
         if let Some(link) = children(element, "xr.row_link").next() {
             let property = link.attr("name")?;
@@ -10305,7 +10547,8 @@ impl<'a> Generator<'a> {
         }
         if element.attribute("kind") == Some("MediaPlayer") {
             let slot = media_slot(key);
-            let source = xrack_resources::visual::media_source_file(element, self.entry_file);
+            let source =
+                xrack_resources::visual::runtime_asset_source_file(element, self.entry_file);
             let source = source.as_ref();
             out.extend(quote!(self.__state.#slot.populate(&mut #name, #source);));
         }
@@ -10339,7 +10582,7 @@ impl<'a> Generator<'a> {
             element_children(element).filter(|child| child.attr("kind") == Ok("SoundEffect"))
         {
             let slot = media_slot(element_key(effect)?);
-            let file = xrack_resources::visual::media_source_file(effect, self.entry_file);
+            let file = xrack_resources::visual::runtime_asset_source_file(effect, self.entry_file);
             let file = file.as_ref();
             let source =
                 self.binding_value_or(effect, "source", quote!(::std::string::String::new()))?;
@@ -14225,7 +14468,12 @@ impl<'a> Generator<'a> {
         for &target in &self.geometry_targets {
             let handle = geometry_handle(target);
             fields.extend(quote!(#handle: ::xrack_runtime::GeometryHandle,));
-            defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+            if self.scene_view_targets.contains(target) {
+                defaults
+                    .extend(quote!(#handle: ::xrack_runtime::GeometryHandle::for_scene_view(),));
+            } else {
+                defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+            }
         }
         for &element in &self.bound_viewports {
             let owner = element_key(element)?;
@@ -15760,6 +16008,26 @@ impl<'a> Generator<'a> {
         };
         self.declare_check_groups(&groups, &mut fields, &mut defaults, &mut methods)?;
         let mut render = TokenStream::new();
+        for &loader in &self.mesh_loaders {
+            let slot = mesh_loader_slot(element_key(loader)?);
+            fields.extend(quote!(#slot: ::xrack_runtime::MeshLoader3D,));
+            defaults.extend(quote!(#slot: ::core::default::Default::default(),));
+            let declaration =
+                xrack_resources::visual::runtime_asset_source_file(loader, self.entry_file);
+            let declaration = declaration.as_ref();
+            let source =
+                self.binding_value_or(loader, "source", quote!(::std::string::String::new()))?;
+            let active = self.binding_value_or(loader, "active", quote!(true))?;
+            let revision = self.binding_value_or(loader, "revision", quote!(0))?;
+            let lod = self.binding_value_or(loader, "auto-lod", quote!(false))?;
+            let lightmap = self.binding_value_or(loader, "lightmap-uv", quote!(false))?;
+            render.extend(quote! {
+                self.__state.#slot.configure(
+                    #declaration, &(#source), #active, #revision,
+                    ::xrack_runtime::scene3d::MeshImportOptions { automatic_lod: #lod, lightmap_uv: #lightmap },
+                );
+            });
+        }
         let node = self.render(root, &self.visuals, &mut render, &mut 0)?;
         self.bind_button_groups(&groups, &node, &mut render)?;
         if self.with_fonts {
@@ -16737,6 +17005,8 @@ fn uses_scene_meshes(op: OperationRef<'_>) -> bool {
                             kind,
                             GeometryFunction::PrepareInstanceTable3D
                                 | GeometryFunction::QuaternionTrack
+                                | GeometryFunction::MeshNode3D
+                                | GeometryFunction::MeshNodeIndices3D
                         )
                 })
         || op.name() == "xr.physics_function"
@@ -16915,6 +17185,11 @@ impl MeshEmitter {
                         .iter()
                         .map(|mesh| self.mesh(mesh))
                         .collect::<Result<Vec<_>, _>>()?;
+                    let catalog = rig.node_catalog().map(|catalog| {
+                        let packed = Literal::byte_string(&catalog.packed());
+                        quote!(.and_then(|rig| ::xrack_runtime::scene3d::MeshNodeCatalog::from_packed(#packed)
+                            .map(|catalog| rig.with_node_catalog(catalog))))
+                    });
                     let nodes = rig.nodes().iter().map(embed_animation_node);
                     let clips = rig.clips().iter().map(embed_animation_clip);
                     let skins = rig.skins().iter().map(embed_mesh_skin);
@@ -16930,7 +17205,7 @@ impl MeshEmitter {
                                     ::std::vec![#(#skins),*],
                                     ::std::vec![#(#lights),*],
                                     ::std::vec![#(#cameras),*],
-                                ).ok().map(|rig| ::xrack_runtime::scene3d::MeshAsset::Animated(::std::sync::Arc::new(rig)))
+                                ).ok()#catalog.map(|rig| ::xrack_runtime::scene3d::MeshAsset::Animated(::std::sync::Arc::new(rig)))
                             });
                     });
                     self.rigs.insert(identity, name.clone());
@@ -17352,6 +17627,13 @@ fn embed_mesh_geometry(
         let packed: Vec<u8> = morph.packed_words().flat_map(u32::to_le_bytes).collect();
         let packed = Literal::byte_string(&packed);
         quote!((#prepared).and_then(|mesh| mesh.with_packed_morph(#count, &[#(#names),*], #packed)))
+    } else {
+        prepared
+    };
+    let prepared = if let Some(catalog) = mesh.node_catalog() {
+        let packed = Literal::byte_string(&catalog.packed());
+        quote!((#prepared).and_then(|mesh| ::xrack_runtime::scene3d::MeshNodeCatalog::from_packed(#packed)
+            .map(|catalog| mesh.with_node_catalog(catalog))))
     } else {
         prepared
     };
@@ -18028,6 +18310,7 @@ fn generate_with_resources(
             animated_images: Vec::new(),
             media_players: Vec::new(),
             native_dialogs: Vec::new(),
+            mesh_loaders: Vec::new(),
             focus_targets: BTreeSet::new(),
             button_press_targets: BTreeSet::new(),
             button_checked_targets: BTreeSet::new(),
@@ -18053,6 +18336,7 @@ fn generate_with_resources(
             view_empty_state_owners: BTreeMap::new(),
             source_scroll_targets: BTreeSet::new(),
             geometry_targets: BTreeSet::new(),
+            scene_view_targets: BTreeSet::new(),
             bound_viewports: Vec::new(),
             scroll_observers: BTreeSet::new(),
             secondary_windows: Vec::new(),

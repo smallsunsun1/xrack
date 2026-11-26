@@ -10511,6 +10511,179 @@ fn stack_slide_rebases_on_the_presented_frame_and_preserves_keyboard_navigation(
 }
 
 #[test]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn renderers_share_live_pipelines_only_within_one_device() -> Result<(), Box<dyn std::error::Error>>
+{
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node};
+
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let gpu = pollster::block_on(RenderDevice::request(instance.clone(), None))?;
+    let pipelines = || {
+        instance
+            .generate_report()
+            .map(|report| report.hub.render_pipelines.num_kept_from_user)
+            .ok_or("missing GPU resource report")
+    };
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xffff_ffff).into());
+    let mut shape = Node::new("Path", None);
+    shape
+        .properties
+        .insert("commands", "M1 1 H22 V10 H10 V22 H1 Z".to_owned().into());
+    shape.properties.insert("width", Length(48.0).into());
+    shape.properties.insert("height", Length(48.0).into());
+    shape.properties.insert("viewbox-width", 24.0_f64.into());
+    shape.properties.insert("viewbox-height", 24.0_f64.into());
+    shape.properties.insert("fill", Color(0x3856_8aff).into());
+    shape.properties.insert("stroke", Color(0x2020_20ff).into());
+    shape.properties.insert("stroke-width", Length(1.0).into());
+    scene.children.push(shape);
+    let mut label = Node::new("Label", None);
+    for (name, value) in [
+        ("x", 4.0),
+        ("y", 46.0),
+        ("width", 50.0),
+        ("height", 16.0),
+        ("font-size", 11.0),
+    ] {
+        label.properties.insert(name, Length(value).into());
+    }
+    label.properties.insert("text", "GPU".to_owned().into());
+    scene.children.push(label);
+
+    let mut first = Renderer::with_device(gpu.clone())?;
+    let expected = first.snapshot(&scene, 64, 64, 1.0, &input)?;
+    assert_eq!(expected.pixel(8, 8), Some([0x38, 0x56, 0x8a, 0xff]));
+    let label_start = 48 * 64 * 4;
+    assert!(
+        expected.rgba[label_start..]
+            .chunks_exact(4)
+            .any(|pixel| pixel != [255; 4])
+    );
+    let first_pipelines = pipelines()?;
+    assert!(first_pipelines > 0);
+
+    let mut second = Renderer::with_device(gpu)?;
+    scene.children[0]
+        .properties
+        .insert("fill", Color(0x347c_51ff).into());
+    let recolored = second.snapshot(&scene, 64, 64, 1.0, &input)?;
+    assert_eq!(recolored.pixel(8, 8), Some([0x34, 0x7c, 0x51, 0xff]));
+    assert_eq!(recolored.rgba[label_start..], expected.rgba[label_start..]);
+    assert_eq!(pipelines()?, first_pipelines);
+    drop(first);
+
+    let separate = pollster::block_on(RenderDevice::request(instance.clone(), None))?;
+    let mut separate = Renderer::with_device(separate)?;
+    let reference = separate.snapshot(&scene, 64, 64, 1.0, &input)?;
+    assert_same_pixels(&recolored, &reference);
+    assert!(pipelines()? > first_pipelines);
+    drop(separate);
+    // Separate wgpu instances may assign the same IDs to unrelated devices.
+    let independent =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let gpu = pollster::block_on(RenderDevice::request(independent, None))?;
+    let mut separate = Renderer::with_device(gpu)?;
+    let reference = separate.snapshot(&scene, 64, 64, 1.0, &input)?;
+    assert_same_pixels(&recolored, &reference);
+    assert_eq!(pipelines()?, first_pipelines);
+    drop(separate);
+    drop(second);
+    assert_eq!(pipelines()?, 0);
+    Ok(())
+}
+
+#[test]
+fn repeated_vector_contours_match_an_unshared_outline() -> Result<(), Box<dyn std::error::Error>> {
+    use xrack_runtime::{
+        Brush, Color, GradientStop, Length, LoadedVectorPath, Node, VectorSegment,
+    };
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    renderer.set_vector_mask_cache_enabled(false);
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0xffff_ffff).into());
+    let mut path = Node::new("Path", None);
+    for (property, value) in [
+        ("x", 7.25),
+        ("y", 6.75),
+        ("width", 48.0),
+        ("height", 40.0),
+        ("stroke-width", 2.0),
+    ] {
+        path.properties.insert(property, Length(value).into());
+    }
+    path.properties.insert("viewbox-width", 32.0_f64.into());
+    path.properties.insert("viewbox-height", 32.0_f64.into());
+    path.properties.insert("stroke", Color(0x1f40_98ad).into());
+    path.properties.insert(
+        "fill",
+        Brush::Linear {
+            angle_degrees: 35.0,
+            stops: [
+                GradientStop {
+                    color: Color(0x328a_47ad),
+                    offset: 0.0,
+                },
+                GradientStop {
+                    color: Color(0xeabd_678b),
+                    offset: 1.0,
+                },
+            ]
+            .into(),
+        }
+        .into(),
+    );
+    path.properties
+        .insert("commands", "outline".to_owned().into());
+    scene.children.push(path);
+
+    for closed in [true, false] {
+        let mut contour = vec![
+            VectorSegment::MoveTo([4.0, 3.0]),
+            VectorSegment::CubicTo([14.125, 1.0], [22.0, 2.25], [26.0, 9.0]),
+            VectorSegment::LineTo([17.0, 15.0]),
+            VectorSegment::CubicTo([31.25, 29.0], [8.0, 29.0], [4.0, 18.0]),
+        ];
+        if closed {
+            contour.push(VectorSegment::Close);
+        }
+        let repeated = contour.repeat(4);
+        let mut unshared = repeated.clone();
+        // A solitary point is discarded by the tessellator, but it makes
+        // the encoded stream aperiodic.
+        unshared.push(VectorSegment::MoveTo([30.0, 31.0]));
+        for scale in [1.0, 1.25, 2.0] {
+            let [width, height] = [72, 60].map(|extent| (extent as f32 * scale) as u32);
+            let render = |renderer: &mut Renderer, scene: &mut Node, segments| {
+                scene.children[0].set_loaded_vector_path(LoadedVectorPath::new(
+                    "outline".into(),
+                    [0.0, 0.0, 32.0, 32.0],
+                    segments,
+                ));
+                renderer.snapshot(scene, width, height, scale, &input)
+            };
+            let expected = render(&mut renderer, &mut scene, unshared.clone())?;
+            let actual = render(&mut renderer, &mut scene, repeated.clone())?;
+            assert!(expected.rgba.chunks_exact(4).any(|pixel| pixel != [255; 4]));
+            assert_same_pixels(&actual, &expected);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn retained_vector_paths_follow_paint_and_geometry_changes()
 -> Result<(), Box<dyn std::error::Error>> {
     use xrack_renderer_femtovg::RenderDevice;
@@ -10889,6 +11062,8 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
 
     let gradient = std::env::var_os("XRACK_VECTOR_BENCH_GRADIENT").is_some();
     let dynamic = std::env::var_os("XRACK_VECTOR_BENCH_DYNAMIC").is_some();
+    let cold = std::env::var_os("XRACK_VECTOR_BENCH_COLD").is_some();
+    let single_contour = std::env::var_os("XRACK_VECTOR_BENCH_SINGLE_CONTOUR").is_some();
     let viewport = Size::new(640.0, 480.0);
     let mut scene = Node::new("Window", None);
     for row in 0..12 {
@@ -10925,15 +11100,20 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format: if cold {
+            wgpu::TextureFormat::Bgra8Unorm
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        },
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
     let shape_counts: &[usize] = if dynamic { &[48] } else { &[1, 12, 48, 96] };
     // Explicit subpath starts keep the shape compatible with Qt Quick and Slint.
     let commands_for = |control| {
+        let copies = if single_contour { 1 } else { 8 };
         format!("M12 4 C{control} 1 23 7 20 12 C23 17 17 23 12 20 C7 23 1 17 4 12 C1 7 7 1 12 4 Z ")
-            .repeat(8)
+            .repeat(copies)
     };
     for &shapes in shape_counts {
         let commands: Vec<_> = (0..shapes)
@@ -10948,6 +11128,9 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
             ("paths", true, false),
             ("masks", true, true),
         ] {
+            if cold && !masks {
+                continue;
+            }
             renderer.set_vector_path_cache_enabled(retained);
             renderer.set_vector_mask_cache_enabled(masks);
             let before = renderer.vector_mask_stats();
@@ -11012,6 +11195,14 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
                     submission_index: None,
                     timeout: Some(Duration::from_secs(10)),
                 })?;
+                if cold {
+                    println!(
+                        "vector first frame shapes={shapes} gradient={gradient} dynamic={dynamic} submit={:.3}ms complete={:.3}ms",
+                        submitted.as_secs_f64() * 1000.0,
+                        start.elapsed().as_secs_f64() * 1000.0,
+                    );
+                    return Ok(());
+                }
                 if index >= warmup {
                     submit.push(submitted);
                     total.push(start.elapsed());
@@ -11026,7 +11217,7 @@ fn benchmark_vector_geometry() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             let after = renderer.vector_mask_stats();
-            if masks && !dynamic {
+            if masks && !dynamic && !single_contour {
                 assert_eq!(after.rasterized - before.rasterized, shapes as u64 * 2);
                 assert!(after.reused - before.reused > 10_000);
             }
@@ -11474,6 +11665,7 @@ fn uncached_fractional_rounded_rectangles_share_an_opacity_atlas()
 
     for scale in [1.0, 1.25, 2.0] {
         let mut renderer = Renderer::with_device(gpu.clone())?;
+        renderer.set_direct_rounded_fills_enabled(false);
         let mut isolated = Renderer::with_device(gpu.clone())?;
         isolated.set_opacity_atlas_enabled(false);
         let [width, height] = [160, 112].map(|pixels| (pixels as f32 * scale) as u32);
@@ -11489,6 +11681,12 @@ fn uncached_fractional_rounded_rectangles_share_an_opacity_atlas()
         assert!(renderer.rounded_rectangle_batch_draws() > 0);
         assert!(renderer.opacity_atlas_stats().groups > 32);
         assert_eq!(renderer.opacity_atlas_stats().submissions, 1);
+        let mut direct = Renderer::with_device(gpu.clone())?;
+        let output = direct.snapshot(&scene, width, height, scale, &input)?;
+        assert_eq!(output.layout, actual.layout);
+        assert!(direct.opacity_atlas_stats().groups < renderer.opacity_atlas_stats().groups);
+        compare_direct_opacity_pixels(&output.rgba, &actual.rgba, width, scale);
+
         for (index, (&actual, &expected)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
             assert!(
                 actual.abs_diff(expected) <= 1,
@@ -11517,7 +11715,9 @@ fn uncached_fractional_rounded_rectangles_share_an_opacity_atlas()
         }
     }
     let mut renderer = Renderer::with_device(gpu.clone())?;
-    let mut isolated = Renderer::with_device(gpu)?;
+    renderer.set_direct_rounded_fills_enabled(false);
+    let mut direct = Renderer::with_device(gpu.clone())?;
+    let mut isolated = Renderer::with_device(gpu.clone())?;
     isolated.set_opacity_atlas_enabled(false);
     let actual = renderer.snapshot(&scene, 724, 508, 2.0, &input)?;
     let expected = isolated.snapshot(&scene, 724, 508, 2.0, &input)?;
@@ -11536,6 +11736,116 @@ fn uncached_fractional_rounded_rectangles_share_an_opacity_atlas()
             .all(|(a, b)| a.abs_diff(*b) <= 1),
         "transient atlas output differs from isolated painting",
     );
+    let output = direct.snapshot(&scene, 724, 508, 2.0, &input)?;
+    assert_eq!(output.layout, actual.layout);
+    assert_eq!(direct.opacity_atlas_stats().groups, 0);
+    assert_eq!(direct.opacity_atlas_extent(), None);
+    compare_direct_opacity_pixels(&output.rgba, &actual.rgba, 724, 2.0);
+
+    // Distinct colors exceed the rounded atlas capacity and exercise direct
+    // batches with full group opacity and translucent source fills.
+    for (index, rectangle) in scene.children.iter_mut().enumerate() {
+        let color = Color(0x207e_c9ba + ((index as u32) << 24));
+        rectangle.properties.insert("opacity", 1.0.into());
+        rectangle.properties.insert("background", color.into());
+    }
+    for scale in [1.0, 1.25, 2.0] {
+        let mut direct = Renderer::with_device(gpu.clone())?;
+        let mut painter = Renderer::with_device(gpu.clone())?;
+        direct.set_cached_layer_compositing_enabled(false);
+        painter.set_cached_layer_compositing_enabled(false);
+        painter.set_rectangle_optimization_enabled(false);
+        let [width, height] = [362, 254].map(|pixels| (pixels as f32 * scale) as u32);
+        let output = direct.snapshot(&scene, width, height, scale, &input)?;
+        let expected = painter.snapshot(&scene, width, height, scale, &input)?;
+        assert_eq!(output.layout, expected.layout);
+        if scale == 2.0 {
+            assert_eq!(direct.rounded_tile_rasterizations(), 0);
+        }
+        compare_direct_opacity_pixels(&output.rgba, &expected.rgba, width, scale);
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn compare_direct_opacity_pixels(actual: &[u8], expected: &[u8], width: u32, scale: f32) {
+    assert_eq!(actual.len(), expected.len());
+    for (index, (&a, &b)) in actual.iter().zip(expected).enumerate() {
+        assert!(
+            a.abs_diff(b) <= 1,
+            "direct opacity at {scale}x, pixel ({}, {}), channel {}: {a} vs {b}",
+            index / 4 % width as usize,
+            index / 4 / width as usize,
+            index % 4,
+        );
+    }
+}
+
+#[test]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn instanced_rounded_fills_keep_overlapping_colors_in_paint_order()
+-> Result<(), Box<dyn std::error::Error>> {
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Length, Node};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let input = Interaction::default();
+    let mut scene = Node::new("Window", None);
+    scene
+        .properties
+        .insert("background", Color(0x3145_67ff).into());
+    for index in 0..160 {
+        let mut rect = Node::new("Rectangle", None);
+        let x = 6.0 + (index % 16) as f64 * 38.0 + ((index * 137 + 1) % 997) as f64 / 997.0;
+        let y = 8.0 + (index / 16) as f64 * 28.0 + ((index * 263 + 17) % 983) as f64 / 983.0;
+        for (name, value) in [
+            ("x", x),
+            ("y", y),
+            ("width", 49.375),
+            ("height", 30.25),
+            ("border-top-left-radius", 2.125),
+            ("border-top-right-radius", 5.0),
+            ("border-bottom-right-radius", 3.125),
+            ("border-bottom-left-radius", 1.5),
+        ] {
+            rect.properties.insert(name, Length(value).into());
+        }
+        let colors = [0x287e_80ba, 0x8de5_cda8, 0xfa45_75ff, 0x3476_ee69];
+        rect.properties
+            .insert("background", Color(colors[index % colors.len()]).into());
+        scene.children.push(rect);
+    }
+
+    for with_opacity in [false, true] {
+        if with_opacity {
+            let opacities = [0.63, 1.0, 0.46, 0.77];
+            for (index, rect) in scene.children.iter_mut().enumerate() {
+                rect.properties
+                    .insert("opacity", opacities[index % opacities.len()].into());
+            }
+        }
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let mut renderer = Renderer::with_device(gpu.clone())?;
+            let mut painter = Renderer::with_device(gpu.clone())?;
+            painter.set_rectangle_optimization_enabled(false);
+            let [width, height] = [647, 313].map(|pixels| (pixels as f32 * scale) as u32);
+            let mut output = None;
+            let profile = xrack_runtime::update_profile::measure(|| {
+                output = Some(renderer.snapshot(&scene, width, height, scale, &input));
+            })
+            .ok_or("missing profile of instanced fills")?;
+            let output = output.ok_or("missing instance frame")??;
+            let expected = painter.snapshot(&scene, width, height, scale, &input)?;
+            assert_eq!(output.layout, expected.layout);
+            let byte_limit = if with_opacity { 24 } else { 16 } * 1024;
+            assert!((1..byte_limit).contains(&profile.geometry_upload_bytes));
+            assert_eq!(renderer.rounded_tile_rasterizations(), 0);
+            compare_direct_opacity_pixels(&output.rgba, &expected.rgba, width, scale);
+        }
+    }
     Ok(())
 }
 
@@ -15491,6 +15801,56 @@ fn fractional_square_backgrounds_batch_without_reusing_pixel_phases() {
 }
 
 #[test]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn initial_shadow_masks_match_individual_captures() -> Result<(), Box<dyn std::error::Error>> {
+    use rectangle_animation_ui::InitialShadowBatch;
+    use xrack_renderer_femtovg::RenderDevice;
+    use xrack_runtime::{Color, Component};
+
+    let gpu = pollster::block_on(RenderDevice::request(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))?;
+    let program = interpret_example("tests/rectangle_animation.xr");
+    let instance = program.create("InitialShadowBatch")?;
+    let mut ui = InitialShadowBatch::new();
+    let input = Interaction::default();
+    for tint in [Color(0x1017_2666), Color(0x1017_26bb)] {
+        ui.set_shadow_tint(tint);
+        instance.set("shadow-tint", tint.into())?;
+        let scene = ui.render_shared();
+        let mut cached = Renderer::with_device(gpu.clone())?;
+        let mut interpreted = Renderer::with_device(gpu.clone())?;
+        let mut individual = Renderer::with_device(gpu.clone())?;
+        individual.set_opacity_atlas_enabled(false);
+        // Fill the cache through individual captures, then use the same
+        // atlas composition as the batched first frame.
+        for _ in 0..2 {
+            individual.snapshot(&scene, 1040, 230, 2.0, &input)?;
+        }
+        assert_eq!(individual.shadow_mask_stats().rasterized, 7);
+        individual.set_opacity_atlas_enabled(true);
+        let expected = individual.snapshot(&scene, 1040, 230, 2.0, &input)?;
+        let actual = cached.snapshot(&scene, 1040, 230, 2.0, &input)?;
+        let from_interpreter = interpreted.snapshot(&instance.render(), 1040, 230, 2.0, &input)?;
+        assert_eq!(cached.shadow_mask_stats().rasterized, 7);
+        assert_eq!(interpreted.shadow_mask_stats().rasterized, 7);
+        assert_eq!(actual.layout, expected.layout);
+        assert_eq!(actual.layout, from_interpreter.layout);
+        assert_same_pixels(&actual, &from_interpreter);
+        // Filtering directly into an RGBA8 image avoids the layer's final
+        // composite, which can change the last bit of a rounded channel.
+        for (index, (a, b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
+            assert!(
+                a.abs_diff(*b) <= 1,
+                "tint={tint:?} channel {index}: {a} vs {b}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn shadow_masks_preserve_fractional_coverage_across_device_scales()
 -> Result<(), Box<dyn std::error::Error>> {
     use rectangle_animation_ui::LayerMotion;
@@ -15502,6 +15862,7 @@ fn shadow_masks_preserve_fractional_coverage_across_device_scales()
         None,
     ))?;
     let mut cached = Renderer::with_device(gpu.clone())?;
+    let mut interpreted = Renderer::with_device(gpu.clone())?;
     let mut direct = Renderer::with_device(gpu)?;
     direct.set_layer_budget(0);
     let input = Interaction::default();
@@ -15509,27 +15870,44 @@ fn shadow_masks_preserve_fractional_coverage_across_device_scales()
     ui.set_shadowed(true);
     ui.set_card_width(Length(49.35));
     ui.set_fade(0.83);
+    let program = interpret_example("tests/rectangle_animation.xr");
+    let instance = program.create("LayerMotion")?;
+    instance.set("shadowed", true.into())?;
+    instance.set("card-width", Length(49.35).into())?;
+    instance.set("fade", 0.83.into())?;
 
-    for (scale, alpha, new_masks) in [
-        (1.0_f32, 0xff, 4),
-        (1.4, 0x66, 4),
-        (2.0, 0xff, 4),
-        (2.0, 0x66, 1),
+    for (scale, blur, alpha, new_masks) in [
+        (1.0_f32, 12.0, 0xff, 4),
+        (1.4, 12.0, 0x66, 4),
+        (2.0, 12.0, 0xff, 4),
+        (2.0, 12.0, 0x66, 1),
+        (1.4, 10.75, 0x66, 1),
+        (2.0, 7.5, 0x66, 1),
+        (2.0, 7.5, 0x7f, 4),
+        (2.0, 6.75, 0x66, 4),
     ] {
-        ui.set_shadow_tint(Color(0x110d_3500 | alpha));
+        let tint = Color(0x110d_3500 | alpha);
+        ui.set_shadow_tint(tint);
+        ui.set_shadow_blur(Length(blur));
+        instance.set("shadow-tint", tint.into())?;
+        instance.set("shadow-blur", Length(blur).into())?;
         let width = (124.0 * scale).round() as u32;
         let height = (96.0 * scale).round() as u32;
         let before = cached.shadow_mask_stats().rasterized;
         for x in [22.0, 23.125, 24.25, 25.431] {
             ui.set_offset(Length(x));
+            instance.set("offset", Length(x).into())?;
             let scene = ui.render_shared();
             let actual = cached.snapshot(&scene, width, height, scale, &input)?;
+            let native = interpreted.snapshot(&instance.render(), width, height, scale, &input)?;
+            assert_eq!(actual.layout, native.layout);
+            assert_same_pixels(&actual, &native);
             let expected = direct.snapshot(&scene, width, height, scale, &input)?;
             assert_eq!(actual.layout, expected.layout);
             for (index, (a, b)) in actual.rgba.iter().zip(&expected.rgba).enumerate() {
                 assert!(
                     a.abs_diff(*b) <= 2,
-                    "scale={scale} x={x} pixel ({}, {}) channel {}: {a} vs {b}",
+                    "scale={scale} blur={blur} x={x} pixel ({}, {}) channel {}: {a} vs {b}",
                     index / 4 % width as usize,
                     index / 4 / width as usize,
                     index % 4,
@@ -15645,6 +16023,7 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
     }
     let shadow_mode = std::env::var("XRACK_CARD_BENCH_SHADOW").ok();
     let shadow = shadow_mode.is_some();
+    let animate_shadow = shadow && std::env::var_os("XRACK_CARD_BENCH_ANIMATE_SHADOW").is_some();
     let fading = shadow_mode.as_deref() != Some("opaque");
     let dynamic = std::env::var_os("XRACK_CARD_BENCH_DYNAMIC").is_some();
     let distinct_titles = std::env::var_os("XRACK_CARD_BENCH_DISTINCT_TITLES").is_some();
@@ -15912,6 +16291,11 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
             })
             .into(),
         );
+        if animate_shadow {
+            let blur = 7.35 + ((frame + index * 5) % 23) as f64 * 0.0275;
+            card.properties
+                .insert("drop-shadow-blur", Length(blur).into());
+        }
         if dynamic {
             let text = if distinct_titles {
                 format!("C{index:02} {frame:02}%")
@@ -16006,6 +16390,31 @@ fn benchmark_translucent_card_animation() -> Result<(), Box<dyn std::error::Erro
         view_formats: &[],
     });
     update(&mut scene, 0, false);
+    if animate_shadow {
+        let start = Instant::now();
+        let layout = Rc::new(renderer.layout_with_input(&scene, viewport, &input));
+        let prepared = start.elapsed();
+        renderer.draw_window_prepared(
+            &scene,
+            &layout,
+            &texture,
+            2.0,
+            &input,
+            &Default::default(),
+        )?;
+        let submitted = start.elapsed();
+        renderer.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(10)),
+        })?;
+        println!(
+            "card animation window first frame: layout={:.3}ms submit={:.3}ms total={:.3}ms masks={}",
+            prepared.as_secs_f64() * 1000.0,
+            (submitted - prepared).as_secs_f64() * 1000.0,
+            start.elapsed().as_secs_f64() * 1000.0,
+            renderer.shadow_mask_stats().rasterized,
+        );
+    }
     let start = Instant::now();
     let proof = renderer.snapshot(&scene, 1280, 960, 2.0, &input)?;
     if dense_grid {

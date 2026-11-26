@@ -906,6 +906,85 @@ Rust 应用可用 `xrack_scene_import::load_mesh_file(path, options)` 加载本�
 
 用 `bazel run //examples/puzzle3d:play_runtime_mesh` 打开系统文件选择器。这个示例会在后台导入，完成后通过弱句柄更新原窗口。导入失败会显示错误并保留上一个模型。也可在命令末尾加 `-- /path/to/model.obj` 指定启动模型。 [运行时加载示例](../examples/puzzle3d/runtime_mesh.xr)
 
+#### 声明式 MeshLoader3D
+
+在组件根部声明一个有 ID 的 `MeshLoader3D`，将 `source` 绑定到本地文件路径，再把只读的 `asset` 绑定到模型行的 `mesh-asset`。路径可由 `FileDialog.selected-file` 提供。相对路径以声明所在的 `.xr` 文件为基准。该控件不参与布局和绘制。
+
+```xr
+importer := MeshLoader3D {
+    source: root.path;
+    active: true;
+    auto-lod: false;
+    lightmap-uv: false;
+    revision: root.import-revision;
+}
+```
+
+`status` 的值为 `"empty"`、`"loading"`、`"ready"` 或 `"error"`，失败时可读 `error`。切换路径、修改导入选项或增加 `revision` 会发起新请求。等待时 `asset` 为空，可以显示模型行的占位网格。清空路径和关闭 `active` 都会释放当前资产。已被替换的请求不会修改当前结果。布局热重载时，相同声明 ID、路径、选项和 revision 可继续使用已经完成的资产。
+
+本地导入在后台执行，原生窗口在结果返回时更新。VS Code 支持为 `source` 字面量补全和跳转资源文件。可直接预览示例，或用 `bazel run //examples/puzzle3d:play_declarative_mesh` 打开原生窗口。 [声明式导入示例](../examples/puzzle3d/declarative_mesh.xr)
+
+#### 3D 包围盒与自动构图
+
+`MeshLoader3D.bounds` 和 `meshasset3d.bounds` 都返回 `bounds3d`。资产包围盒使用初始姿态，包含导入节点的层级变换、实例、初始蒙皮和形变。导入完成前 `valid` 为 false。有效结果提供 `min`、`max`、`center` 和 `size`。坐标和尺寸以模型单位计。
+
+`Scene3D.bounds(objects, layer-mask?)` 查询准备后的世界空间包围盒，包含当前姿态、声明的模型变换和进入准备场景的可见物体。它沿用同一份绘制几何，在相机裁剪和 LOD 选择之前计算。默认图层掩码为 1，查询全部图层可传 `-1`。当前场景的重复查询复用包围盒。需要跟随物理姿态时，可以把带物理世界的 `Scene3D.prepare` 结果同时传给视口和包围盒查询。
+
+在 `SceneView3D` 绑定 `camera-fit: Scene3D.bounds(root.world);`，绕视相机就会对准包围盒中心，根据画幅宽高比和当前绕视角度计算距离及近远裁剪面。 `camera-fit-margin` 默认 1.12，范围为 1 到 10。空包围盒沿用 `camera-distance`。显式选择具名相机时，使用该相机的投影。绘制和视口输入使用同一个构图结果。 [自动构图示例](../examples/puzzle3d/declarative_mesh.xr)
+
+#### 查询 glTF 节点
+
+`Scene3D.mesh-node(asset, selector)` 可以读取 glTF 节点。第一个参数可以是 `MeshLoader3D.asset`，也可以是 `@mesh-url` 返回的内嵌资产键。选择器支持唯一名称、完整路径、整数原始节点索引和 `"#2"` 这样的数字选择器。例如门叶名称是 `Door/Leaf` 时，路径可写成 `"/Workshop/Door~1Leaf/Pivot"`。路径段里的 `/` 和 `~` 分别写作 `~1` 和 `~0`，匿名节点使用 `#索引`。重名或找不到时，结果的 `valid` 为 false。
+
+`meshnode3d` 还提供 `source-index`、`parent-index`、`name`、`path`、`origin` 和 `axis-x/y/z`。原点和坐标轴在资产的初始坐标系内，包含节点的父子变换。三个布尔字段 `has-mesh`、`has-camera`、`has-light` 标记节点挂载的内容。 `Scene3D.mesh-node-indices(asset, kind?)` 按遍历顺序返回原始索引，可以按 `all`、`mesh`、`camera` 或 `light` 筛选。
+
+节点查询不会触发资源导入或 GPU 上传。静态 glTF 继续使用扁平化网格，节点层级独立保存。AOT 将节点数据紧凑嵌入。VS Code 会为直接引用的 glTF 文件补全节点名称和路径。Python 的 `MeshAsset3D.node`、`node_at` 和 `nodes` 提供对应查询。 [节点查询示例](../examples/puzzle3d/mesh_nodes.xr)
+
+`Scene3D.scene-node(objects, object, selector)` 读取场景中指定 glTF 节点的当前世界坐标。 `object` 是可见模型行的唯一 `id`，`selector` 与资产查询使用相同格式。原点与坐标轴包含当前动画混合、模型行的父级变换和枢轴。传入 `Scene3D.prepare(objects, world)` 时也会跟随插值后的物理位姿。查询复用场景准备时的节点矩阵，可用于读取无网格的挂点。找不到对象或节点、名称不唯一，或节点姿态无效时，`valid` 为 false。
+
+```xr
+property <scenemodel3d> scene: Scene3D.prepare(root.actors);
+property <meshnode3d> camera-mount: Scene3D.scene-node(root.scene, "dolly", "/Camera rig/Hero");
+```
+
+实例表生成的各份摆放继续通过 `Scene3D.instance` 按地址查询。Python 可通过 `SceneModel3D.node` 和 `node_at` 读取场景节点。 [动画挂点示例](../examples/puzzle3d/animation_blend.xr)
+
+#### 挂到 glTF 节点
+
+在子模型行设置 `parent` 和 `parent-node: string`，即可把它挂到父模型内部的 glTF 节点。使用唯一名称、完整路径或 `"#索引"`。子行的坐标、旋转、缩放和枢轴在挂点局部空间内，随动画混合及父行的物理位姿更新。场景准备共享每个动画资产的姿态，绘制、拾取和坐标映射使用解析后的子行变换。
+
+```xr
+BlendActor {
+    id: "badge", parent: "movement", parent-node: "#1",
+    mesh: "primitive:sphere", x: 0.60, z: 0.35,
+    scale-x: 0.24, scale-y: 0.24, scale-z: 0.24,
+    color: #f5e987, ..root.defaults
+}
+```
+
+空 `parent-node` 使用父行自身的变换。父行无效或不可见、名称有歧义，或挂点缺失时，子树不会绘制或被拾取。挂点从主资产层级取值，在相机 LOD 和 GPU 实例展开之前解析。相机与方向映射使用挂点的旋转分量。VS Code 可以从同一列表的具名父行补全节点，支持 `@mesh-url` 和源文件固定的 `MeshLoader3D.asset`。 [动画挂点示例](../examples/puzzle3d/animation_blend.xr)
+
+#### 直接查询 SceneView3D
+
+为视口指定 ID 后，可以用 `view.project(world)` 将世界坐标映射为视口内的逻辑像素与相机深度。用 `view.unproject(point, depth, fallback)` 还原世界坐标。两者读取完成布局的相机，适用于具名相机、自动构图、当前宽高比和取景留白。投影结果的 `inside` 也考虑视口自己的裁剪矩形。
+
+`view.pick(point)` 返回最近命中的对象 ID。 `view.hit(point)` 返回 `hit3d`，其中包含世界位置和行号。 `view.hit-all(point)` 返回按距离排序的命中列表。另有 `hit-row(point, row)`、`hit-subset(point, rows)`、`hit-instance(point, row, mesh-node, instance)`，以及返回行索引的 `pick-in-rect(start, end)`。拾取使用视口当前的图层掩码、裁剪面和 LOD。点和矩形的坐标相对于视口左上角。
+
+从游戏角色、工具或其他任意世界坐标发起查询时，可以调用以下方法。它们使用该视口布局完成后的模型姿态、图层掩码、LOD 和实例可见距离，结果中的行号仍指向主场景记录。射线起点、方向、距离和半径均在世界空间，视口像素裁剪和相机近远裁剪面不限制这组查询。
+
+| 方法 | 结果 |
+| --- | --- |
+| `view.ray-hit(origin, direction, max-distance)` | 返回最近的 `hit3d`。方向会归一化，距离以世界单位计。 |
+| `view.ray-hit-all(origin, direction, max-distance)` | 返回所有命中的 `[hit3d]`，按距离排序。同一行保留一次命中，导入的 GPU 实例按实例地址分别计入。 |
+| `view.ray-hit-row(origin, direction, max-distance, row)` | 只检测指定的主场景记录行。 |
+| `view.ray-hit-subset(origin, direction, max-distance, rows)` | 只检测 `rows: [int]` 中的行，返回按距离排序的命中列表。 |
+| `view.ray-hit-instance(origin, direction, max-distance, row, mesh-node, instance)` | 只检测特定实例。地址可使用命中的 `row-index`、`mesh-node-index` 与 `instance-index`。 |
+| `view.closest-point(origin, radius)`、`view.closest-point-row(origin, radius, row)` | 在半径内找最近的可拾取三角面，返回包含法线、UV 和距离的 `hit3d`。 |
+
+`Scene3D.ray-hit` 等世界查询始终使用主网格。拖动 [LOD 示例](../examples/puzzle3d/lod.xr) 的相机距离后点击「检测射线」，可以查看当前显示网格上的命中位置。
+
+首次布局前或视口隐藏时，投影和命中的 `valid` 为 false，ID 与列表为空，反投影返回 fallback。尺寸、相机或模型变化时会刷新查询数据。可在示例里点击导入模型查看对象 ID。 [示例](../examples/puzzle3d/declarative_mesh.xr)
+
 #### 逐像素顺序无关透明
 
 使用 `SceneView3D.oit-method: string` 显式选择透明合成方式。`"sorted"` 按子网格排序，`"weighted"` 使用加权合成，`"linked-list"` 记录每个像素中通过深度测试的透明片元，按深度排序后做 source-over 合成。省略此属性时沿用 `order-independent-transparency` 的设置。可在相交网格、精灵和模型粒子混合时切换比较。
@@ -1288,6 +1367,22 @@ struct Sampler {
 同一资产的两个片段可以交叉过渡。用 `animation-to: string` 选择目标，`animation-to-time: float` 和 `animation-to-loop: bool` 控制它自己的时间和循环。`animation-blend: float` 默认为 0，限制在 0 到 1，0、1 分别取原片段和目标片段。把权重从 0 动画到 1 即可切换动作。缺少的轨道使用该节点的初始值，因此空选择器也可用于过渡到初始姿态。两个时间都先按各自轨道的插值规则采样，再混合节点的局部姿态。旋转沿四元数最短路径插值，手动 `morph-weights` 在混合后应用。
 
 蒙皮、拾取、阴影和 glTF 内置相机与灯光共用混合姿态。权重在端点时只采样对应片段。过渡时 GPU 复用顶点数据。VS Code 在 `animation` 和 `animation-to` 字符串里提供片段名和原文件索引补全。 [动画过渡示例](../examples/puzzle3d/animation_blend.xr)
+
+#### glTF 动画层
+
+场景行可用 `animation-layers: [BlendLayer]` 在基础片段或交叉过渡上叠加多个片段。每层需要 `clip: string`，接受唯一名称或 `"#索引"`。可选字段是 `time: float`、`looping: bool`、`weight: float`、`root-node: string` 和 `mode: string`。默认从 0 秒开始、不循环、权重为 1，使用 `"override"` 模式并作用于整个主资产。填入唯一节点名称、完整路径或 `"#索引"` 可只影响该节点及其子树。
+
+```xr
+struct BlendLayer { clip: string, time: float, weight: float, root-node: string, mode: string }
+// 场景行的字段
+animation-layers: [
+    BlendLayer { clip: "Turn", time: 1, weight: root.layer-weight, root-node: "#1", mode: "override" },
+],
+```
+
+层按列表顺序应用，仅处理片段包含的通道。`"override"` 将当前值向片段采样值混合，权重为 1 时采用目标值。`"additive"` 叠加采样值相对初始姿态的差值，旋转用加权的局部四元数增量。两种模式都作用于节点变换、蒙皮关节和 morph 权重，手动 `morph-weights` 在动画之后生效。权重限制在 0 到 1，零权重、无效模式、找不到或不唯一的片段和节点选择器会跳过。每行处理列表的前 16 层。
+
+动画层继续复用场景投影、挂点姿态和 GPU 网格。编辑共享的层列表会使相关场景更新。VS Code 可为行内层记录补全片段、遮罩根节点和模式。 [动画混合示例](../examples/puzzle3d/animation_blend.xr)
 
 节点的平移、旋转和缩放支持 glTF 的 `STEP`、`LINEAR` 和 `CUBICSPLINE` 插值。不同帧复用同一份网格和材质，绘制、投影及拾取使用当帧的节点变换，拾取返回外层记录的 ID。 [glTF 动画示例](../examples/puzzle3d/README.md#gltf-节点动画) 可以暂停并切换片段。使用 Bazel 时，含动画的 `.glb` 或 `.gltf` 及外置资源与静态模型一样加入 `assets`。
 
@@ -2426,17 +2521,46 @@ glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换
 
 #### 3D 粒子
 
-`particle-emitters` 接受使用自定义记录名的发射器列表。`particle-time` 是秒为单位的播放位置，默认 0，可以绑定 `Timer`、滑块或业务状态。发射器参数、种子和时间一致时会得到同一帧粒子，可以暂停、倒回和直接跳到目标时间。重设某个发射器的 `start-time` 会重启它的时间线。需要重叠的爆发时，为每次爆发保留一条独立记录。
+`particle-emitters` 接受使用自定义记录名的发射器列表。`particle-time` 是秒为单位的播放位置，默认 0，可以绑定 `Timer`、滑块或业务状态。发射器参数、种子和时间一致时会得到同一帧粒子，可以暂停、倒回和直接跳到目标时间。重设某个发射器的 `start-time` 会重启它的时间线。
 
 | 记录字段 | 类型和含义 |
 | --- | --- |
 | `position`, `color`, `size`, `lifetime` | 必填。世界坐标 `point3d`、含透明度的 `color`、世界单位直径和秒为单位的寿命。后两项为 `float`。 |
-| `rate`, `burst-count`, `start-time` | 连续发射的每秒速率 `float`、起始时一次发射的数量 `int`、起始秒数 `float`，默认都是 0。连续发射的首个粒子在起始后一个发射间隔出现。 |
+| `rate`, `start-time` | 连续发射的每秒速率和起始秒数，均为 `float`，默认 0。连续发射的首个粒子在起始后一个发射间隔出现。 |
+| `bursts` | 同一发射器中的定时爆发列表，默认为空。连续发射和多个爆发可以同时运行。 |
 | `velocity`, `velocity-spread`, `gravity` | 三个 `vector3d`，默认为零向量。分量为世界坐标方向的初速度、随机速度幅度和加速度。 |
 | `end-size`, `fade-in`, `fade-out` | 三个 `float`，分别为末尾直径、淡入秒数、淡出秒数，默认是初始直径、0 和 0.25。 |
 | `intensity`, `seed`, `layers`, `enabled` | 发光倍数 `float` 默认 1，限制在 0 到 64。随机种子和层掩码为 `int`，默认 0 和 1。启用状态为 `bool`，默认启用。 |
 
-粒子使用面向相机的精灵，在 GPU 上按时间和种子算出位置、大小和淡出。CPU 每帧提交发射器参数。每个视口最多处理 16 个发射器、8192 个存活粒子，单个发射器最多 4096 个并优先保留较新的粒子。
+每颗粒子可在出生时固定自己的寿命和尺寸。 `lifetime-variation: float` 以秒为单位，在标称寿命两侧取样。 `size-variation: float` 在初始尺寸两侧取样。声明 `end-size-variation: float` 可单独指定末尾尺寸的变动幅度。省略这一字段时，末尾尺寸沿用初始尺寸的随机偏移。初末尺寸相同且共用偏移时，每颗粒子的尺寸在自身寿命内保持恒定。三个字段默认不增加变化量。寿命限制在 1 微秒至 1 亿秒，尺寸限制在 0 至 1 亿世界单位。
+
+随机值来自出生 ID 和发射器种子。连续发射、瞬时爆发和持续爆发都可使用这些字段。GPU 按每颗粒子的实际寿命计算淡出、缺省序列帧周期和拖尾冻结时间。CPU 取最大可能寿命计算候选区间。开启寿命扰动后，已过期但仍处于候选区间的粒子会占用候选预算，GPU 会跳过它们的可见绘制。
+
+每条 `bursts` 记录必填 `time: float` 和 `count: int`。时间以相对 `start-time` 的秒数计。省略 `duration: float` 或设为 0 时，全部粒子在 `time` 一起发射。持续时间为正且至少发射两颗粒子时，第一颗在 `time` 出生，最后一颗在 `time + duration` 出生，中间按等间隔分布。单颗粒子在 `time` 出生。可选 `count-variation: int` 默认 0，按发射器种子为每条记录计算确定性的数量偏移。`enabled: bool` 默认启用。每个发射器最多可声明 128 条记录。起始即发射可以写成 `bursts: [Burst { time: 0, count: 24 }]`。 [定时爆发示例](../examples/puzzle3d/animation_blend.xr)
+
+爆发记录可通过 `position: point3d` 指定固定的世界坐标，并可用 `orientation: quaternion3d` 设置出生朝向，默认单位旋转。这条记录在自身姿态下解释发射形状、速度、重力和目标点，同一次持续爆发的所有粒子使用同一姿态。其余连续发射和未指定位置的爆发继续沿用各自的挂点或出生轨道。挂点移动或消失后，已记录的位置仍然固定在世界坐标中。
+
+交互中可在回调读取 `view.hit(point)` 的世界命中位置，再用 `Model.append` 把时间、数量、持续时间和位置写入绑定给发射器的模型。每条事件默认以模型中的稳定行标识取样。移动事件或移除其他事件时，保留事件的粒子轨迹可重复。也可以声明 `seed: int` 明确指定事件种子，便于以相同数据重建发射。运行 `bazel run //examples/puzzle3d:play_particle_trails -- --impacts`，可点击墙面添加爆发并拖动时间轴回放。示例也通过 `burst-at(point)` 回调接受视口内的逻辑像素坐标。 [点击发射示例](../examples/puzzle3d/particle_trails.xr)
+
+发射器可以添加 `parent: string` 指定视口模型中的具名可见行，再用 `parent-node: string` 选择资产中的 glTF 挂点。选择器支持唯一名称、完整路径和 `"#索引"`。空选择器使用父行自身。挂点消失、被隐藏或重名时，对应发射器暂停绘制。同一视口内的行内发射器记录支持父行和 glTF 挂点补全。父行名称可跳到场景记录声明。
+
+绑定后，出生点、发射形状、目标、速度和重力使用挂点的局部空间。GPU 按当前挂点位姿将整条轨迹变换到世界空间，再应用世界空间的影响器。已有粒子和拖尾一同跟随挂点，可以确定性地回拨时间。粒子尺寸和模型自身的旋转仍由发射器独立设置。挂点随 glTF 动画混合、层叠和物理位姿更新，主视口、捕获和模型粒子阴影复用同一份场景姿态。 [动画挂点粒子示例](../examples/puzzle3d/animation_blend.xr)
+
+发射器还可声明 `emission-track: [EmissionKey]`，以每颗粒子的出生时间读取世界位姿。关键帧必填 `time: float` 和 `position: point3d`，可以加 `orientation: quaternion3d`，省略时使用单位旋转。时间以相对 `start-time` 的秒数计，非负且严格递增。位置线性插值，朝向沿最短四元数弧插值，超出范围时使用端点。
+
+连续粒子和爆发粒子都按各自的发射时刻采样。关键帧旋转应用到局部发射偏移、速度和重力，已经发出的粒子沿世界空间轨迹继续运动。直接跳到某个时间或回拨可以重建同一帧。非空轨道提供完整的出生位姿，空列表沿用发射器原有的位置和挂点。每个轨道最多含 4096 个关键帧。无效轨道会停用对应发射器。
+
+设置发射器的 `emission-loop: true` 可让手写轨道或 glTF 烘焙轨道循环。周期为最后一个关键帧的相对时间，周期整点从首个姿态重新采样。播放跨过周期整点时，发射时钟和已有粒子的年龄继续推进，已发射粒子沿各自的轨迹运动。切换循环开关会按新规则重建当前帧。零时长轨道保持静止。每条爆发在发射器的时间线上执行一次。循环开关和时间回拨都复用原有 GPU 关键帧。
+
+关键帧在 GPU 上传后可跨帧和同轨道的发射器复用，仅推进时间时不会再上传。精灵、拖尾和模型粒子都使用该轨道。运行 `bazel run //examples/puzzle3d:play_particle_trails -- --birth-track` 可拖动时间轴，观察移动的白色发射器在不同位置留下粒子。 [出生轨道示例](../examples/puzzle3d/particle_trails.xr)
+
+出生轨道也可从 glTF 动画生成。为 `emission-animation` 声明一个记录，填写 `mesh: string`（例如 `@mesh-url("models/animated-panel.glb")`）或 `mesh-asset: meshasset3d`，再用 `clip: string` 选择片段，`node: string` 选择节点。两者接受唯一名称或 `"#索引"`，节点还接受完整路径。运行时优先使用已加载的 `mesh-asset`。非空的手写 `emission-track` 优先于动画来源。
+
+记录可选 `position: point3d`、`orientation: quaternion3d` 和 `scale: vector3d`，分别指定模型在世界中的平移、旋转和缩放。祖先缩放计入挂点位置，出生朝向来自层级旋转。动画从片段 0 秒开始，相对于发射器的 `start-time` 播放，默认在片段结束后使用末帧。`sample-rate: float` 控制采样密度，默认每秒 60 次，范围 1–240。烘焙保留祖先链上的原始关键时刻和阶跃瞬间，其他位置在采样点之间插值。接近 4096 帧预算时优先保留原始关键点。无效资产、片段或节点会停用该发射器。
+
+渲染帧复用准备好的轨道。VS Code 可在行内 `emission-animation` 记录里补全 glTF 片段和节点。运行 `bazel run //examples/puzzle3d:play_animation_blend -- --birth-animation` 可切换平移、阶跃与转向片段，拖动时间轴查看出生位置。 [glTF 动画发射示例](../examples/puzzle3d/animation_blend.xr)
+
+粒子使用面向相机的精灵，在 GPU 上按时间和种子算出位置、大小和淡出。CPU 每帧提交发射器参数和当前存活的发射批次。使用相同材质和资源的批次可合并到一次 GPU 绘制。每个视口最多处理 16 个发射器、8192 个粒子候选槽，单个发射器最多 4096 个并优先保留较新的出生记录。
 
 精灵接受不透明几何的深度遮挡，并参与 HDR、泛光和 MSAA。开启 `order-independent-transparency` 时，精灵与半透明网格一起参与加权合成。普通模式下先绘制透明网格，再按发射器顺序混合精灵。粒子属于视口效果，拾取、碰撞、阴影和反射探针继续使用场景模型。 [粒子示例](../examples/puzzle3d/particles.xr)
 
@@ -2481,8 +2605,29 @@ glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换
 | `"repeller"` | 以 `position` 为中心径向推开粒子。`radius: float` 内施加全量位移 `strength: float`，到 `outer-radius: float` 平滑衰减至零。默认内半径为 0，外半径和位移强度为 1，单位为世界单位。 |
 | `"gravity"` | 沿单位 `direction: vector3d` 添加匀加速位移。`strength` 默认 1，单位为世界单位每秒平方，可为负数。默认方向为 −Y。 |
 | `"point-rotator"` | 围绕经过 `position`、指向 `direction` 的轴旋转。`angular-speed: float` 默认 10 度每秒，可为负数。默认轴为 +Y。 |
+| `"wander"` | 在出生轨迹上叠加公共和每粒子波形，适合烟尘、萤火和漂浮物。 |
+| `"scale"` | 按粒子年龄周期性地将精灵直径、拖尾宽度或模型尺寸乘以倍率。 |
 
 `position` 默认在世界原点。`start-age: float` 是从粒子出生算起的启用秒数，默认 0。`layers: int` 默认为 −1，会与发射器和视口的图层取交集。`enabled: bool` 默认开启。`seed: int` 默认 0，用于固定吸引扰动，回拨时间可以得到同样的粒子位置。编辑影响器会用新参数重算存活粒子在当前时间的位置。只改变时间时复用影响器参数的 GPU 缓冲。 [粒子影响器示例](../examples/puzzle3d/particle_affectors.xr)
+
+影响器也可以用 `parent` 和 `parent-node` 绑定场景行或 glTF 挂点。绑定后，方向、目标、扰动范围、排斥半径和旋转轴都在挂点局部空间计算。GPU 将位移变换回世界空间，再继续应用列表里的下一项影响器。父级有缩放时，局部排斥球可以在世界空间呈现为椭球。父行或挂点不可用，或局部坐标无法反解时，该影响器暂停生效。模型粒子的阴影以变换后的保守包围盒拟合。
+
+发射器和影响器都可声明 `particle-group: string`。空的影响器组名接收所有兼容图层的粒子。填写组名后，只影响同组发射器，仍须通过双方与视口的图层掩码。分组和年龄筛选在 CPU 生成发射器掩码时完成，GPU 跳过不匹配的影响器。仅时间变化时，已投影的影响器参数继续复用 GPU 缓冲。VS Code 为行内影响器补全父行、glTF 节点以及同视口里已声明的粒子组。 [挂点力场示例](../examples/puzzle3d/animation_blend.xr)
+
+游动用 `global-amount`、`global-pace` 和 `global-pace-start` 指定公共振幅、每秒周期数和初始相位（弧度）。`unique-amount`、`unique-pace` 分别为每颗粒子的波形提供独立参数，可用 `unique-amount-variation` 和 `unique-pace-variation` 在标称值的两侧随机变化，范围均为 0–1。五个向量字段均为 `vector3d`，默认零向量。振幅或频率为零的轴不产生对应波形。粒子身份和种子决定每个随机值，时间回拨会复现。`fade-in-duration` 和 `fade-out-duration` 是秒为单位的线性包络，分别从 `start-age` 淡入、在粒子寿命结束前淡出，默认 0。有挂点时，游动沿挂点的局部轴施加位移。
+
+缩放读取 `min-size`、`max-size` 和 `duration`，单位分别为倍率、倍率与秒。倍率范围为 0–64，默认 1。周期默认 1 秒，从 `start-age` 开始计算。多个缩放影响器的倍率相乘，结果上限为 4096。用 `scale-mode` 选择波形。
+
+| `scale-mode` | 一个周期内的行为 |
+| --- | --- |
+| `"linear"` | 默认。从最小值增长到最大值，再复位。 |
+| `"triangle"` | 前半周期增长，后半周期回落。 |
+| `"sine"` | 从区间中值出发，按正弦波经过最大值和最小值。 |
+| `"abs-sine"` | 按绝对值正弦波产生两次平滑脉冲。 |
+| `"step"` | 半周期前使用最小值，之后使用最大值。 |
+| `"smooth-step"` | 从最小值平滑过渡到最大值，再复位。 |
+
+对 `"linear"` 与 `"triangle"`，可用 `scale-easing` 选择 `"linear"`、`"ease-in"`、`"ease-out"` 或 `"ease-in-out"`。渲染器在 GPU 计算波形。仅拖动时间轴时共用影响器参数缓冲；模型粒子的阴影范围计入游动位移与缩放。可运行 `bazel run //examples/puzzle3d:play_particle_affectors -- --waves`。 [游动与缩放示例](../examples/puzzle3d/particle_affectors.xr)
 
 发射器可用 `trail-segments: int` 绘制面向视口的粒子拖尾。默认 0 使用普通精灵，1–16 指定条带段数。GPU 以 `trail-duration: float` 秒为历史窗口，默认 0.25。在窗口内按时间取样各个轨迹点，并在段间插值颜色和透明度。条带包含粒子受影响器作用后的轨迹，回拨时间可重建同一形状。尚未移动的粒子会随位移逐渐展开拖尾。
 
@@ -2497,6 +2642,7 @@ glTF 碰撞体读取静止姿态的主几何，包含资源内部的节点变换
 发射器可用 `particle-model: string` 绘制模型粒子。接受 `@mesh-url("models/shape.glb")` 或上表中的任意内置图元。模型几何取 glTF 初始姿态，沿用模型材质、贴图、深度测试和光照，并接收场景阴影。粒子颜色与模型颜色相乘，`size` 和 `end-size` 是模型缩放倍率。粒子使用同一套发射位置、速度、影响器、颜色表和时间回拨。
 
 `particle-rotation: vector3d` 分别指定 X、Y、Z 轴的初始角度，默认 0 度，按 X、Y、Z 顺序应用。`particle-rotation-variation: vector3d` 为各轴增加按种子固定的对称随机角度，`particle-angular-velocity: vector3d` 为每秒转过的角度。两者默认零向量。
+`particle-angular-velocity-variation: vector3d` 给各轴的每秒旋转角度添加对称随机扰动。精灵读取初始角度、角度扰动、角速度和角速度扰动的 Z 分量，绕面向相机的轴旋转。模型使用三轴，拖尾沿轨迹展开。改时间或回拨会复现每次出生时确定的参数。运行 `bazel run //examples/puzzle3d:play_sprite_particles -- --variation`，可对照固定发射和启用出生变体的发射。 [出生变体示例](../examples/puzzle3d/sprite_particles.xr)
 
 同一模型及颜色表的粒子可以合批。GPU 批量写入常规 3D 实例变换，几何和贴图保留在 GPU 上。带透明材质或正在淡出的模型粒子会启用视口的加权透明。 [模型粒子示例](../examples/puzzle3d/particle_models.xr)
 

@@ -1224,6 +1224,75 @@ fn particle_affectors_complete_list_and_typed_record_kinds() {
 }
 
 #[test]
+fn particle_wave_modes_complete_and_report_field_types() {
+    for (field, prefix, expected) in [
+        ("affector-kind", "wan", "wander"),
+        ("affector-kind", "sca", "scale"),
+        ("scale-mode", "abs", "abs-sine"),
+        ("scale-easing", "ease-in-", "ease-in-out"),
+    ] {
+        let source = format!(
+            "struct Field {{ {field}: string }} component App inherits Window {{
+                property <Field> effect: Field {{ {field}: \"{prefix}|\"; }};
+            }}"
+        );
+        assert!(
+            complete_at(&source)
+                .iter()
+                .any(|item| item["label"] == expected)
+        );
+    }
+    let source = r#"
+        struct Field { affector-kind: string, global-pace: float }
+        component App inherits Window {
+            property <[Field]> fields: [];
+            SceneView3D { particle-affectors: root.fields; }
+        }
+    "#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.values().flatten().any(|item| {
+        item["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("global-pace") && text.contains("vector3d"))
+    }));
+}
+
+#[test]
+fn particle_birth_variations_complete_and_require_typed_fields() {
+    let items = complete_at(
+        r#"
+        struct Emitter {
+            lifetime-variation: float, size-variation: float, end-size-variation: float,
+            particle-angular-velocity-variation: vector3d,
+        }
+        component App inherits Window {
+            property <Emitter> sample: Emitter { particle-angular-velocity-var| };
+        }
+    "#,
+    );
+    assert!(items.iter().any(
+        |item| item["label"] == "particle-angular-velocity-variation"
+            && item["detail"] == "vector3d"
+    ));
+    let source = r#"
+        struct Emitter {
+            position: point3d, color: color, size: float, lifetime: float,
+            lifetime-variation: string,
+        }
+        component App inherits Window {
+            property <[Emitter]> rows: [];
+            SceneView3D { particle-emitters: root.rows; }
+        }
+    "#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.values().flatten().any(|issue| {
+        issue["message"].as_str().is_some_and(|message| {
+            message.contains("lifetime-variation") && message.contains("float")
+        })
+    }));
+}
+
+#[test]
 fn particle_blend_values_complete_in_emitter_records() {
     let items = complete_at(
         r#"struct Emitter { particle-blend-mode: string }
@@ -9833,4 +9902,586 @@ fn capture_material_data_completes_attachment_and_format() {
         }"#,
     );
     assert!(high_precision.iter().any(|item| item["label"] == "r32f"));
+}
+
+#[test]
+fn declarative_mesh_loader_completes_fields_and_paths_and_validates_read_only_outputs() {
+    let source = "component App inherits Window { asset := MeshLoader3D { ";
+    let items = completion::complete(source, 0, source.len(), None);
+    for name in ["source", "active", "revision", "auto-lod", "lightmap-uv"] {
+        assert!(
+            items.iter().any(|item| item["label"] == name),
+            "{name}: {items:?}"
+        );
+    }
+
+    let source = "component App inherits Window { importer := MeshLoader3D {} out property <meshasset3d> model: importer.";
+    let items = completion::complete(source, 0, source.len(), None);
+    for name in ["asset", "status", "error"] {
+        assert!(
+            items.iter().any(|item| item["label"] == name),
+            "{name}: {items:?}"
+        );
+    }
+
+    let invalid = r#"component App inherits Window {
+        importer := MeshLoader3D {}
+        button := Button { clicked => { importer.status = "ready"; } }
+    }"#;
+    let diagnostic = &analysis::analyze(URI, invalid, None).diagnostics[URI][0]["message"];
+    assert!(
+        diagnostic.as_str().unwrap().contains("read-only"),
+        "{diagnostic:?}"
+    );
+    let invalid = r#"component App inherits Window { Rectangle { nested := MeshLoader3D {} } }"#;
+    let diagnostic = &analysis::analyze(URI, invalid, None).diagnostics[URI][0]["message"];
+    assert!(
+        diagnostic.as_str().unwrap().contains("component root"),
+        "{diagnostic:?}"
+    );
+
+    let root = workspace_fixture("mesh-loader-source");
+    let uri = workspace_file_uri(&root.join("app.xr"));
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    let obj = root.join("mesh.obj");
+    std::fs::write(&obj, b"").unwrap();
+    let incomplete = r#"component App inherits Window { loader := MeshLoader3D { source: "mes"#;
+    let items = completion::complete(incomplete, 0, incomplete.len(), Some(&workspace));
+    assert!(items.iter().any(|item| item["label"] == "mesh.obj"));
+    let complete =
+        r#"component App inherits Window { loader := MeshLoader3D { source: "mesh.obj"; } }"#;
+    assert!(
+        analysis::analyze(&uri, complete, Some(&workspace))
+            .diagnostics
+            .is_empty()
+    );
+    assert_eq!(
+        completion::document_links(complete, &workspace)[0]["target"],
+        workspace.uri(&obj).unwrap()
+    );
+}
+
+#[test]
+fn scene_bounds_completes_fields_loader_output_and_camera_fit() {
+    let type_completion = complete_at("component App inherits Window { property <boun|> box; }");
+    assert!(
+        type_completion
+            .iter()
+            .any(|item| item["label"] == "bounds3d")
+    );
+
+    let members = complete_at(
+        "component App inherits Window { loader := MeshLoader3D {} out property <point3d> center: loader.bounds.|; }",
+    );
+    for name in ["valid", "min", "max", "center", "size"] {
+        assert!(
+            members.iter().any(|item| item["label"] == name),
+            "{members:?}"
+        );
+    }
+    let members = complete_at(
+        "component App inherits Window { property <meshasset3d> file; out property <bounds3d> result: root.file.bo|; }",
+    );
+    assert!(members.iter().any(|item| item["label"] == "bounds"));
+    let fields = complete_at("component App inherits Window { SceneView3D { camera-fi| } }");
+    for name in ["camera-fit", "camera-fit-margin"] {
+        assert!(
+            fields.iter().any(|item| item["label"] == name),
+            "{fields:?}"
+        );
+    }
+    let function =
+        complete_at("component App inherits Window { property <bounds3d> box: Scene3D.bou|; }");
+    assert!(
+        function.iter().any(|item| item["label"] == "bounds"),
+        "{function:?}"
+    );
+
+    let invalid = r#"component App inherits Window { SceneView3D { camera-fit: "box"; } }"#;
+    let diagnostics = analysis::analyze(URI, invalid, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            item["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("bounds3d"))
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn scene_view_queries_complete_and_report_argument_types() {
+    let items = complete_at(
+        "component App inherits Window { view := SceneView3D {} out property <hit3d> result: view.|; }",
+    );
+    for method in [
+        "project",
+        "unproject",
+        "pick",
+        "hit",
+        "hit-all",
+        "hit-row",
+        "hit-subset",
+        "hit-instance",
+        "ray-hit",
+        "ray-hit-all",
+        "ray-hit-row",
+        "ray-hit-subset",
+        "ray-hit-instance",
+        "closest-point",
+        "closest-point-row",
+        "pick-in-rect",
+    ] {
+        assert!(
+            items.iter().any(|item| item["label"] == method),
+            "{method}: {items:?}"
+        );
+    }
+    let source = r#"component App inherits Window {
+        view := SceneView3D {}
+        out property <point3d> result: view.unproject(Point2D.new(0px, 0px), 2, Point3D.new(0, 0, 0));
+    }"#;
+    assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
+    let position = analysis::Source::new(source)
+        .coordinates(source.find("unproject(").unwrap() + "unproject(".len());
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":URI,"version":1,"text":source}
+        }}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/signatureHelp","params":{
+            "textDocument":{"uri":URI},"position":{"line":position.0,"character":position.1}
+        }}),
+    ]);
+    let result = &messages.iter().find(|result| result["id"] == 2).unwrap()["result"];
+    assert_eq!(
+        result["signatures"][0]["label"],
+        "unproject(point: point2d, depth: float, fallback: point3d) -> point3d"
+    );
+    let wrong = source.replace("Point2D.new(0px, 0px)", r#""bad""#);
+    let diagnostics = analysis::analyze(URI, &wrong, None).diagnostics;
+    assert!(
+        diagnostics.values().flatten().any(|item| {
+            item["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("point2d"))
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn viewport_world_query_signatures_reject_pixel_coordinates() {
+    let source = r#"component App inherits Window {
+        view := SceneView3D {}
+        out property <hit3d> hit: view.ray-hit(Point3D.new(0, 1, 2), Vector3D.new(0, -1, 0), 10);
+    }"#;
+    assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
+    let position = analysis::Source::new(source)
+        .coordinates(source.find("ray-hit(").unwrap() + "ray-hit(".len());
+    let responses = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":URI,"version":1,"text":source}
+        }}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/signatureHelp","params":{
+            "textDocument":{"uri":URI},"position":{"line":position.0,"character":position.1}
+        }}),
+    ]);
+    let signatures = &responses
+        .iter()
+        .find(|response| response["id"] == 2)
+        .unwrap()["result"]["signatures"];
+    assert_eq!(
+        signatures[0]["label"],
+        "ray-hit(origin: point3d, direction: vector3d, max-distance: float) -> hit3d"
+    );
+    let wrong = source.replace("Vector3D.new(0, -1, 0)", "Point2D.new(0px, 0px)");
+    let diagnostics = analysis::analyze(URI, &wrong, None).diagnostics;
+    assert!(diagnostics.values().flatten().any(|item| {
+        item["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("vector3d"))
+    }));
+}
+
+#[test]
+fn mesh_node_completion_uses_selected_scene_paths_and_literal_loader_sources() {
+    let root = workspace_fixture("gltf-node-selector");
+    let path = root.join("fixture.gltf");
+    std::fs::write(
+        &path,
+        r#"{
+        "scene":1,
+        "scenes":[{"nodes":[5]}, {"nodes":[0]}],
+        "animations":[{"name":"Turn"}, {"name":"Slide"}],
+        "nodes":[
+            {"name":"Room","children":[1,3]},
+            {"name":"Door/Leaf","children":[2]},
+            {"name":"Pivot"},
+            {"name":"Cabinet","children":[4]},
+            {"name":"Pivot"},
+            {"name":"Unused"}
+        ]
+    }"#,
+    )
+    .unwrap();
+    let uri = workspace_file_uri(&root.join("app.xr"));
+    let workspace = completion::Workspace::new(&uri, std::iter::empty()).unwrap();
+    for asset in [
+        r#"@mesh-url("fixture.gltf")"#,
+        "importer.asset",
+        "root.mesh-key",
+    ] {
+        let source = format!(
+            r#"component App inherits Window {{
+            property <meshnode3d> queried: Scene3D.mesh-node({asset}, "/Room|");
+            property <string> mesh-key: @mesh-url("fixture.gltf");
+            importer := MeshLoader3D {{ source: "fixture.gltf"; }}
+        }}"#
+        );
+        let index = source.find('|').unwrap();
+        let mut text = source;
+        text.remove(index);
+        let point = analysis::Source::new(&text).coordinates(index);
+        let items = completion::complete(&text, point.0, point.1, Some(&workspace));
+        for label in ["/Room/Door~1Leaf/Pivot", "/Room/Cabinet/Pivot"] {
+            assert!(
+                items.iter().any(|item| item["label"] == label),
+                "{asset}: {items:?}"
+            );
+        }
+        assert!(!items.iter().any(|item| item["label"] == "/Unused"));
+    }
+    let mount = r#"component App inherits Window {
+        property <[Actor]> rows: [
+            Actor { id: "badge", parent: "carrier", parent-node: "/Room|" },
+            Actor { id: "carrier", mesh: @mesh-url("fixture.gltf") },
+        ];
+    }"#;
+    let index = mount.find('|').unwrap();
+    let mount = mount.replace('|', "");
+    let point = analysis::Source::new(&mount).coordinates(index);
+    let items = completion::complete(&mount, point.0, point.1, Some(&workspace));
+    for label in ["/Room/Door~1Leaf/Pivot", "/Room/Cabinet/Pivot"] {
+        assert!(items.iter().any(|item| item["label"] == label), "{items:?}");
+    }
+    let with_loader = mount
+        .replace(
+            "property <[Actor]> rows:",
+            "importer := MeshLoader3D { source: \"fixture.gltf\"; } property <[Actor]> rows:",
+        )
+        .replace(
+            r#"mesh: @mesh-url("fixture.gltf")"#,
+            "mesh-asset: importer.asset",
+        );
+    let cursor = with_loader.find("parent-node: \"/Room").unwrap() + "parent-node: \"/Room".len();
+    let point_with_loader = analysis::Source::new(&with_loader).coordinates(cursor);
+    let items = completion::complete(
+        &with_loader,
+        point_with_loader.0,
+        point_with_loader.1,
+        Some(&workspace),
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "/Room/Cabinet/Pivot")
+    );
+    let duplicate = mount.replace(
+        r#"Actor { id: "carrier", mesh: @mesh-url("fixture.gltf") },"#,
+        r#"Actor { id: "carrier", mesh: @mesh-url("fixture.gltf") }, Actor { id: "carrier" },"#,
+    );
+    let items = completion::complete(&duplicate, point.0, point.1, Some(&workspace));
+    assert!(
+        !items
+            .iter()
+            .any(|item| item["label"] == "/Room/Cabinet/Pivot")
+    );
+    for (selector, expected) in [
+        ("clip: \"Tu|\"", "Turn"),
+        ("root-node: \"/Room|\"", "/Room/Cabinet/Pivot"),
+        ("mode: \"add|\"", "additive"),
+    ] {
+        let load = format!(
+            r#"component App inherits Window {{
+                property <[Actor]> rows: [Actor {{
+                    mesh: @mesh-url("fixture.gltf"),
+                    animation-layers: [Layer {{ {selector} }}],
+                }}];
+            }}"#
+        );
+        let offset = load.find('|').unwrap();
+        let load = load.replace('|', "");
+        let (line, column) = analysis::Source::new(&load).coordinates(offset);
+        let items = completion::complete(&load, line, column, Some(&workspace));
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{selector}: {items:?}"
+        );
+    }
+    let particle = r#"component App inherits Window {
+        property <[Actor]> rows: [
+            Actor { id: "carrier", mesh: @mesh-url("fixture.gltf") },
+            Actor { id: "cart", mesh: "" },
+            Actor { id: "cart", mesh: "" },
+        ];
+        property <scenemodel3d> prepared: Scene3D.prepare(root.rows);
+        SceneView3D {
+            model: root.prepared;
+            particle-emitters: [Emitter { parent: "carrier", parent-node: "/Room|" }];
+        }
+    }"#;
+    let offset = particle.find('|').unwrap();
+    let text = particle.replace('|', "");
+    let (line, column) = analysis::Source::new(&text).coordinates(offset);
+    let items = completion::complete(&text, line, column, Some(&workspace));
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "/Room/Cabinet/Pivot"),
+        "{items:?}"
+    );
+    let parent = particle
+        .replace("parent: \"carrier\"", "parent: \"ca|\"")
+        .replace("/Room|", "");
+    let items = complete_at(&parent);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["label"], "carrier");
+    let uri = "file:///particles.xr";
+    assert_eq!(
+        request_at(
+            "textDocument/definition",
+            uri,
+            &parent.replace("ca|", "ca|rrier"),
+            None
+        ),
+        location_at(
+            uri,
+            &parent
+                .replace("ca|", "carrier")
+                .replacen("id: \"carrier", "id: \"|carrier", 1),
+            "carrier"
+        )
+    );
+    let mounted_field = particle.replace(
+        r#"particle-emitters: [Emitter { parent: "carrier", parent-node: "/Room|" }];"#,
+        r#"particle-emitters: [Emitter { particle-group: "sparks" }, Emitter { particle-group: "dust" }];
+           particle-affectors: [Field { parent: "carrier", parent-node: "/Room|", particle-group: "" }];"#,
+    );
+    let offset = mounted_field.find('|').unwrap();
+    let text = mounted_field.replace('|', "");
+    let (line, column) = analysis::Source::new(&text).coordinates(offset);
+    let items = completion::complete(&text, line, column, Some(&workspace));
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "/Room/Cabinet/Pivot"),
+        "{items:?}"
+    );
+    let group = text.replace(r#"particle-group: """#, r#"particle-group: "sp|""#);
+    let items = complete_at(&group);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["label"], "sparks");
+    for (selector, expected) in [
+        ("clip: \"Tu|\"", "Turn"),
+        ("node: \"/Room|\"", "/Room/Cabinet/Pivot"),
+    ] {
+        let emitter = format!(
+            r#"component App inherits Window {{
+              SceneView3D {{
+                particle-emitters: [Emitter {{
+                   emission-animation: Source {{ mesh: @mesh-url("fixture.gltf"), {selector} }},
+                }}];
+              }}
+            }}"#
+        );
+        let offset = emitter.find('|').unwrap();
+        let emitter = emitter.replace('|', "");
+        let (line, column) = analysis::Source::new(&emitter).coordinates(offset);
+        let items = completion::complete(&emitter, line, column, Some(&workspace));
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{selector}: {items:?}"
+        );
+    }
+    let kinds = complete_at(
+        "component App inherits Window { property <[int]> ids: Scene3D.mesh-node-indices(\"\", \"li|\"); }",
+    );
+    assert!(kinds.iter().any(|item| item["label"] == "light"));
+}
+
+#[test]
+fn scene_node_completion_and_selector_diagnostics_follow_builtin_signature() {
+    let prefix = "component App inherits Window { property <meshnode3d> mount: Scene3D.";
+    let items = complete_at(&(prefix.to_owned() + "scene-no|"));
+    assert!(items.iter().any(|item| item["label"] == "scene-node"));
+    let call = prefix.to_owned() + "scene-node(";
+    let help = completion::signature_help(&call, (0, call.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "Scene3D.scene-node(objects: [record] | scenemodel3d, object: string, selector: string | int) -> meshnode3d"
+    );
+    let source = r#"
+        export component App inherits Window {
+            property <scenemodel3d> model;
+            property <meshnode3d> mount: Scene3D.scene-node(root.model, "rig", true);
+        }
+    "#;
+    let result = analysis::analyze(URI, source, None);
+    assert!(result.diagnostics.values().flatten().any(|diagnostic| {
+        diagnostic["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("expected a node name, path or integer index"))
+    }));
+}
+
+#[test]
+fn scene_animation_layer_diagnostics_check_the_nested_record_schema() {
+    let source = r#"
+        struct Layer { clip: int, mode: string }
+        struct Actor {
+            id: string, mesh: string, animation-layers: [Layer],
+            x: float, y: float, z: float, yaw: float, pitch: float, roll: float,
+            scale-x: float, scale-y: float, scale-z: float, color: color,
+        }
+        export component App inherits Window {
+            property <[Actor]> rows: [];
+            property <scenemodel3d> scene: Scene3D.prepare(root.rows);
+        }
+    "#;
+    let diagnostics = analysis::analyze(URI, source, None).diagnostics;
+    assert!(diagnostics.values().flatten().any(|issue| {
+        issue["message"].as_str().is_some_and(|message| {
+            message.contains("animation-layers field `clip` requires type string")
+        })
+    }));
+}
+
+#[test]
+fn particle_emission_loop_uses_boolean_binding_and_completion() {
+    let editable = r#"
+        struct Emitter { position: point3d, color: color, lifetime: float, size: float, emission-loop: bool }
+        export component App inherits Window {
+            SceneView3D {
+                particle-emitters: [Emitter {
+                    position: Point3D.new(0, 0, 0), color: #fff, size: 1, lifetime: 2,
+                    emission-l|,
+                }];
+            }
+        }
+    "#;
+    let items = complete_at(editable);
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "emission-loop" && item["detail"] == "bool"),
+        "{items:?}"
+    );
+    let invalid = editable
+        .replace("emission-loop: bool", "emission-loop: int")
+        .replace("emission-l|", "emission-loop: 1");
+    let result = analysis::analyze(URI, &invalid, None);
+    assert!(result.diagnostics.values().flatten().any(|issue| {
+        issue["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("requires a bool field named `emission-loop`"))
+    }));
+}
+
+#[test]
+fn particle_emission_track_validates_its_nested_keys_and_completes_fields() {
+    let source = r#"
+        struct BirthKey { time: string, position: point3d, orientation: quaternion3d }
+        struct Emitter { emission-track: [BirthKey], position: point3d, color: color, lifetime: float, size: float }
+        export component App inherits Window {
+            property <[Emitter]> emitters: [];
+            SceneView3D { particle-emitters: root.emitters; }
+        }
+    "#;
+    let result = analysis::analyze(URI, source, None);
+    assert!(result.diagnostics.values().flatten().any(|issue| {
+        issue["message"].as_str().is_some_and(|message| {
+            message.contains("emission-track requires a float field named `time`")
+        })
+    }));
+    let editable = r#"
+        struct BirthKey { time: float, position: point3d, orientation: quaternion3d }
+        struct Emitter { emission-track: [BirthKey], position: point3d, color: color, lifetime: float, size: float }
+        export component App inherits Window {
+            SceneView3D {
+                particle-emitters: [Emitter {
+                    emission-track: [BirthKey { time: 0, position: Point3D.new(0, 0, 0), ori| }],
+                    position: Point3D.new(0, 0, 0), color: #fff, size: 1, lifetime: 2,
+                }];
+            }
+        }
+    "#;
+    let items = complete_at(editable);
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "orientation" && item["detail"] == "quaternion3d"),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn positioned_particle_bursts_complete_rotation_and_require_a_world_position() {
+    let source = r#"
+        struct Burst { time: float, count: int, position: point3d, orientation: quaternion3d, seed: int }
+        struct Emitter { bursts: [Burst], position: point3d, color: color, lifetime: float, size: float }
+        component App inherits Window {
+            property <[Emitter]> emitters: [];
+            SceneView3D { particle-emitters: root.emitters; }
+            property <Burst> sample: Burst { time: 0, count: 1, ori| };
+        }
+    "#;
+    let items = complete_at(source);
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "orientation" && item["detail"] == "quaternion3d")
+    );
+    let invalid = source
+        .replace(", position: point3d, orientation:", ", orientation:")
+        .replace("ori|", "orientation: Quaternion3D.identity(), seed: 0");
+    let diagnostics = analysis::analyze(URI, &invalid, None).diagnostics;
+    assert!(diagnostics.values().flatten().any(|item| {
+        item["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("burst orientation requires a world position"))
+    }));
+}
+
+#[test]
+fn particle_bursts_validate_event_types_and_complete_record_fields() {
+    let editable = r#"
+        struct Burst { time: float, count: int, duration: float }
+        struct Emitter { bursts: [Burst], position: point3d, color: color, lifetime: float, size: float }
+        export component App inherits Window {
+            SceneView3D {
+                particle-emitters: [Emitter {
+                    bursts: [Burst { time: 0.25, count: 2, dur| }],
+                    position: Point3D.new(0, 0, 0), color: #fff, size: 1, lifetime: 2,
+                }];
+            }
+        }
+    "#;
+    let items = complete_at(editable);
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "duration" && item["detail"] == "float"),
+        "{items:?}"
+    );
+    let source = editable
+        .replace("count: int", "count: bool")
+        .replace("count: 2, dur|", "count: true, duration: 0.25");
+    let result = analysis::analyze(URI, &source, None);
+    assert!(result.diagnostics.values().flatten().any(|issue| {
+        issue["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("bursts requires a int field named `count`"))
+    }));
 }

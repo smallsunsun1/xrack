@@ -373,7 +373,10 @@ fn standalone_mlir_resolves_media_sources_and_subtitles_without_locations() {
                 .find(|op| op.attribute("id") == Some(id))
                 .unwrap();
             assert_eq!(player.attribute("kind"), Some("MediaPlayer"));
-            assert_eq!(player.exported_media_source_file(), Some(declaration));
+            assert_eq!(
+                player.exported_runtime_asset_source_file(),
+                Some(declaration)
+            );
             assert!(Path::new(player.source_file().unwrap()).ends_with("src/players/player.xr"));
         }
         let rust = xrack_compiler::generate_rust(&module, file.to_str().unwrap(), None)

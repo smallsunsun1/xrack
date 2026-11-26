@@ -34,6 +34,8 @@ def XR_Quaternion3D : XR_Type<"Quaternion3D", "quaternion3d">;
 def XR_RotationTrack3D : XR_Type<"RotationTrack3D", "rotationtrack3d">;
 def XR_Hit3D : XR_Type<"Hit3D", "hit3d">;
 def XR_Instance3D : XR_Type<"Instance3D", "instance3d">;
+def XR_Bounds3D : XR_Type<"Bounds3D", "bounds3d">;
+def XR_MeshNode3D : XR_Type<"MeshNode3D", "meshnode3d">;
 def XR_MeshAsset3D : XR_Type<"MeshAsset3D", "meshasset3d">;
 def XR_InstanceTable3D : XR_Type<"InstanceTable3D", "instancetable3d">;
 def XR_Hit3DList : XR_Type<"Hit3DList", "hit3dlist">;
@@ -113,7 +115,7 @@ def XR_DateList : XR_Type<"DateList", "datelist">;
 def XR_Time : XR_Type<"Time", "time">;
 def XR_Font : XR_Type<"Font", "font">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
-def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_InstanceTable3D, XR_MeshAsset3D, XR_Hit3DList, XR_PhysicsContact3D, XR_PhysicsHit3D, XR_PhysicsContact3DList, XR_PhysicsHit3DList, XR_ProjectedPoint3D, XR_WalkResult3D, XR_PhysicsWorld3D, XR_SceneModel3D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
+def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Point2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_InstanceTable3D, XR_MeshAsset3D, XR_MeshNode3D, XR_Bounds3D, XR_Hit3DList, XR_PhysicsContact3D, XR_PhysicsHit3D, XR_PhysicsContact3DList, XR_PhysicsHit3DList, XR_ProjectedPoint3D, XR_WalkResult3D, XR_PhysicsWorld3D, XR_SceneModel3D, XR_Vector2D, XR_Transform2D, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers, XR_WheelEvent,
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
@@ -557,6 +559,9 @@ def XR_WindowReadOp : XR_ExpressionOp<"window_read", (ins), XR_Bool, [Pure]> {
 }
 def XR_CheckGroupReadOp : XR_ExpressionOp<"check_group_read", (ins StrAttr:$owner), XR_CheckState>;
 def XR_ActionGroupReadOp : XR_ExpressionOp<"action_group_read", (ins StrAttr:$owner), XR_String>;
+def XR_MeshLoaderReadOp : XR_ExpressionOp<"mesh_loader_read", (ins StrAttr:$owner),
+    AnyTypeOf<[XR_MeshAsset3D, XR_Bounds3D, XR_String]>, [MemoryEffects<[MemRead]>]>;
+
 def XR_NativeDialogReadOp : XR_ExpressionOp<"native_dialog_read", (ins StrAttr:$owner),
                                            AnyTypeOf<[XR_Bool, XR_String, XR_StringList]>>;
 def XR_FocusReadOp : XR_ExpressionOp<"focus_read", (ins StrAttr:$owner), XR_Bool, [Pure]> {
@@ -565,6 +570,13 @@ def XR_FocusReadOp : XR_ExpressionOp<"focus_read", (ins StrAttr:$owner), XR_Bool
 def XR_TextSelectionReadOp : XR_ExpressionOp<"text_selection_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Int, XR_String]>>;
 def XR_TextCommandAvailableOp : XR_ExpressionOp<"text_command_available", (ins StrAttr:$owner), XR_Bool>;
 def XR_ControlReadOp : XR_ExpressionOp<"control_read", (ins StrAttr:$owner), XR_Value, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_SceneViewQueryOp : XR_ExpressionOp<"scene_view_query",
+    (ins Variadic<AnyTypeOf<[XR_Point2D, XR_Point3D, XR_Vector3D, XR_Float, XR_Int, XR_IntList]>>:$inputs,
+         StrAttr:$owner),
+    AnyTypeOf<[XR_ProjectedPoint3D, XR_Point3D, XR_String, XR_Hit3D, XR_Hit3DList, XR_IntList]>,
+    [MemoryEffects<[MemRead]>]> {
   let hasVerifier = 1;
 }
 def XR_GeometryReadOp : XR_ExpressionOp<"geometry_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Length, XR_Bool]>, [Pure]> {
@@ -610,9 +622,9 @@ def XR_CastOp : XR_ExpressionOp<"cast", (ins XR_Int:$input), XR_Float>;
 def XR_MathOperand : AnyTypeOf<[XR_Int, XR_Float, XR_Length, XR_Percent]>;
 def XR_MathFunctionOp : XR_ExpressionOp<"math_function", (ins Variadic<XR_MathOperand>:$inputs),
     AnyTypeOf<[XR_MathOperand, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
-def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_Hit3DList, XR_ProjectedPoint3D, XR_WalkResult3D]>;
+def XR_GeometryValue : AnyTypeOf<[XR_Point2D, XR_Vector2D, XR_Transform2D, XR_Point3D, XR_Vector3D, XR_Quaternion3D, XR_RotationTrack3D, XR_Hit3D, XR_Instance3D, XR_Hit3DList, XR_ProjectedPoint3D, XR_WalkResult3D, XR_Bounds3D, XR_MeshNode3D]>;
 def XR_GeometryFunctionOp : XR_ExpressionOp<"geometry_function",
-    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_Record, XR_RecordList, XR_SceneModel3D, XR_InstanceTable3D, XR_PhysicsWorld3D, XR_String, XR_Int, XR_IntList]>>:$inputs),
+    (ins Variadic<AnyTypeOf<[XR_GeometryValue, XR_Float, XR_Length, XR_Record, XR_RecordList, XR_SceneModel3D, XR_InstanceTable3D, XR_PhysicsWorld3D, XR_MeshAsset3D, XR_String, XR_Int, XR_IntList]>>:$inputs),
     AnyTypeOf<[XR_GeometryValue, XR_SceneModel3D, XR_InstanceTable3D, XR_String, XR_IntList]>,
     [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> { let hasVerifier = 1; }
 def XR_PhysicsFunctionOp : XR_ExpressionOp<"physics_function",
@@ -651,6 +663,18 @@ def XR_WalkResult3DOp : XR_ExpressionOp<"walk_result3d",
     (ins XR_Point3D:$position, XR_Hit3DList:$crossings), XR_WalkResult3D, [Pure]>;
 def XR_WalkResult3DFieldOp : XR_ExpressionOp<"walk_result3d_field",
     (ins XR_WalkResult3D:$input), AnyTypeOf<[XR_Point3D, XR_Hit3DList, XR_Hit3D, XR_Bool]>, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_Bounds3DFieldOp : XR_ExpressionOp<"bounds3d_field", (ins XR_Bounds3D:$input),
+    AnyTypeOf<[XR_Point3D, XR_Vector3D, XR_Bool]>, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_MeshNode3DFieldOp : XR_ExpressionOp<"mesh_node3d_field", (ins XR_MeshNode3D:$input),
+    AnyTypeOf<[XR_Point3D, XR_Vector3D, XR_Bool, XR_String, XR_Int]>, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_MeshAsset3DFieldOp : XR_ExpressionOp<"mesh_asset3d_field", (ins XR_MeshAsset3D:$input),
+    AnyTypeOf<[XR_Bounds3D, XR_Bool]>, [Pure]> {
   let hasVerifier = 1;
 }
 def XR_ProjectedPoint3DFieldOp : XR_ExpressionOp<"projected_point3d_field",

@@ -54,6 +54,7 @@ struct ScrollInteraction {
 struct Geometry {
     values: [Property<Length>; 10],
     ready: Property<bool>,
+    scene_view: Option<Box<Property<crate::scene_camera::SceneViewQuery>>>,
     scroll_target_id: OnceCell<u64>,
     scroll_thumb: [Property<f64>; 2],
     scroll_interaction: OnceCell<ScrollInteraction>,
@@ -79,6 +80,28 @@ impl fmt::Debug for GeometryHandle {
 }
 
 impl GeometryHandle {
+    pub fn for_scene_view() -> Self {
+        Self(Rc::new(Geometry {
+            scene_view: Some(Box::default()),
+            ..Geometry::default()
+        }))
+    }
+
+    pub fn publish_scene_view(&self, node: &crate::Node, viewport: [f64; 2]) {
+        if let Some(query) = &self.0.scene_view {
+            query.set_if_changed(crate::scene_camera::SceneViewQuery::for_view(
+                node, viewport,
+            ));
+        }
+    }
+
+    pub fn scene_view(&self) -> crate::scene_camera::SceneViewQuery {
+        self.0
+            .scene_view
+            .as_ref()
+            .map_or_else(Default::default, |query| query.get(Default::default))
+    }
+
     pub fn identity(&self) -> usize {
         Rc::as_ptr(&self.0) as usize
     }
@@ -187,6 +210,9 @@ impl GeometryHandle {
     }
 
     pub fn clear(&self) {
+        if let Some(query) = &self.0.scene_view {
+            query.set_if_changed(Default::default());
+        }
         self.publish_scroll_interaction(false, false, false);
         self.publish_scroll_thumb(0.0, 0.0);
         self.publish([0.0; 4], [0.0; 4], false);

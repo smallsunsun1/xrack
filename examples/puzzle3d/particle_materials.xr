@@ -1,6 +1,8 @@
+struct ParticleBurst { time: float, count: int }
+
 struct MaterialEmitter {
     position: point3d, color: color, size: float, lifetime: float,
-    burst-count: int, fade-out: float, velocity: vector3d, velocity-spread: vector3d,
+    bursts: [ParticleBurst], fade-out: float, velocity: vector3d, velocity-spread: vector3d,
     sprite: image, color-table: image, particle-blend-mode: string, enabled: bool, seed: int,
 }
 
@@ -32,7 +34,7 @@ export component ParticleMaterialsDemo inherits Window {
         MaterialEmitter {
             position: Point3D.new(-1.8, 0, 0), size: 1.45, lifetime: 4,
             color: root.use-table ? #ffffffb0 : #c0603080, fade-out: 0,
-            burst-count: 1, velocity: Vector3D.new(0, 0, 0), velocity-spread: Vector3D.new(0, 0, 0),
+            bursts: [ParticleBurst { time: 0, count: 1 }], velocity: Vector3D.new(0, 0, 0), velocity-spread: Vector3D.new(0, 0, 0),
             sprite: root.use-sprite ? root.ring-map : root.empty-image,
             color-table: root.use-table ? root.color-map : root.empty-image,
             particle-blend-mode: root.blend-mode, enabled: true, seed: 11,
@@ -40,7 +42,7 @@ export component ParticleMaterialsDemo inherits Window {
         MaterialEmitter {
             position: Point3D.new(1.0, -0.7, 0.6), size: 0.34, lifetime: 4,
             color: #ffffff90, fade-out: 0.4,
-            burst-count: 82, velocity: Vector3D.new(0.34, 0.65, 0), velocity-spread: Vector3D.new(1.45, 1.35, 0.7),
+            bursts: [ParticleBurst { time: 0, count: 82 }], velocity: Vector3D.new(0.34, 0.65, 0), velocity-spread: Vector3D.new(1.45, 1.35, 0.7),
             sprite: root.ring-map, color-table: root.use-table ? root.color-map : root.empty-image,
             particle-blend-mode: "source-over", enabled: root.companion, seed: 35,
         },

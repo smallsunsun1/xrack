@@ -1740,6 +1740,10 @@ impl TextSystem {
     }
 
     pub fn system() -> Result<Self, String> {
+        Self::from_system_database(Self::discover_system_fonts())
+    }
+
+    pub(super) fn discover_system_fonts() -> Database {
         let mut db = Database::new();
         db.load_system_fonts();
         // fontdb's Apple system font discovery targets macOS.
@@ -1750,6 +1754,10 @@ impl TextSystem {
             db.load_fonts_dir("/system/fonts");
             db.set_sans_serif_family("Roboto");
         }
+        db
+    }
+
+    pub(super) fn from_system_database(db: Database) -> Result<Self, String> {
         let mut selected = Vec::new();
         if let Some(id) = db.query(&Query {
             families: &[Family::SansSerif],

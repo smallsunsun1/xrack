@@ -29,6 +29,7 @@ rust_library(
         "src/scene3d/motion.wgsl",
         "src/scene3d/occlusion.wgsl",
         "src/scene3d/particles.wgsl",
+        "src/scene3d/particle_birth_track.wgsl",
         "src/scene3d/particle_instances.wgsl",
         "src/scene3d/physics_debug.wgsl",
         "src/scene3d/probe_debug.wgsl",

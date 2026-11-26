@@ -104,7 +104,7 @@ struct SceneAnalysis {
                       "scissor-rect", "depth-prepass", "debug-wireframe", "shadow-debug-cascades", "shadow-debug-light-volumes", "shadow-debug-casters",
                       "shadow-debug-receivers", "shadow-debug-intersections", "shadow-freeze-camera",
                       "shadow-bias", "shadow-cascades", "shadow-distance", "shadow-cascade-blend",
-                      "shadow-split-balance", "camera", "camera-yaw", "camera-pitch", "camera-distance",
+                      "shadow-split-balance", "camera", "camera-yaw", "camera-pitch", "camera-distance", "camera-fit", "camera-fit-margin",
                       "selected-object", "environment", "environment-sky", "reflection-probes", "environment-yaw", "environment-intensity",
                       "environment-pitch", "environment-roll", "environment-horizon",
                       "environment-skybox", "frustum-culling", "scene-exposure", "multisampling", "supersampling",

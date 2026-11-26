@@ -356,8 +356,8 @@ pub fn export_mlir_to(
             .map_err(CompilerError::Resources)?
     };
     let module = module
-        .map_media_source_files(|op| {
-            let source = Path::new(xrack_resources::visual::media_declaration_file(
+        .map_runtime_asset_source_files(|op| {
+            let source = Path::new(xrack_resources::visual::asset_declaration_file(
                 op, filename,
             ));
             let name = source.file_name().ok_or_else(|| {

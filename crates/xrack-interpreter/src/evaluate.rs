@@ -44,6 +44,7 @@ pub(crate) struct State {
     repeats: RefCell<BTreeMap<String, Rc<RepeatState>>>,
     loaders: RefCell<BTreeMap<String, Rc<xrack_runtime::LoaderSlot>>>,
     external_loaders: RefCell<BTreeMap<String, Rc<xrack_runtime::ExternalLoader>>>,
+    mesh_loaders: RefCell<BTreeMap<String, xrack_runtime::MeshLoader3D>>,
     dynamic_children: RefCell<BTreeMap<String, Rc<xrack_runtime::DynamicChildren>>>,
     splits: RefCell<BTreeMap<String, Rc<xrack_runtime::SplitState>>>,
     stacks: RefCell<BTreeMap<String, Rc<xrack_runtime::StackState>>>,
@@ -283,6 +284,7 @@ impl Program {
                 repeats: RefCell::default(),
                 loaders: RefCell::default(),
                 external_loaders: RefCell::default(),
+                mesh_loaders: RefCell::default(),
                 dynamic_children: RefCell::default(),
                 splits: RefCell::default(),
                 stacks: RefCell::default(),
@@ -2136,6 +2138,9 @@ impl Instance {
             CachedVisual(group, value) => self.cached_visual(*group, value),
             Read(member) => self.read(member),
             GeometryRead(target, metric) => self.geometry_read(target, *metric),
+            SceneViewQuery(target, method, inputs) => {
+                self.scene_view_query(target, method, &self.arguments(inputs, args)?)
+            }
             ViewportRead(target, metric) => Ok(metric.read(&self.viewport(target)?)),
             Dynamic(target, names, values) => self.dynamic_expression(target, names, values, args),
             LoaderExternalStatus(target, source) => {
@@ -2670,6 +2675,16 @@ impl Instance {
                 )))
             }
             ActionGroupRead(target) => self.action_group_value(target),
+            MeshLoaderRead(target, field) => {
+                let loader = self.mesh_loader(target);
+                Ok(match field.as_str() {
+                    "asset" => loader.asset().into(),
+                    "bounds" => loader.bounds().into(),
+                    "status" => loader.status().into(),
+                    "error" => loader.error().into(),
+                    _ => return Err(evaluation("invalid MeshLoader3D output")),
+                })
+            }
             NativeDialogRead(target, field) => self.native_dialog_read(target, *field),
             WindowRead(metric) => Ok(self.0.window.get(*metric).into()),
             HoverRead(target, read) => {
@@ -3027,9 +3042,47 @@ impl Instance {
         Ok(value)
     }
 
+    fn mesh_loader(&self, key: &str) -> xrack_runtime::MeshLoader3D {
+        self.0
+            .mesh_loaders
+            .borrow_mut()
+            .entry(key.into())
+            .or_default()
+            .clone()
+    }
+
+    fn configure_mesh_loader(&self, element: &Element) -> Result<()> {
+        let source = match self.binding_value(element, "source")? {
+            Some(Value::String(source)) => source,
+            _ => String::new(),
+        };
+        let active = self.binding_value(element, "active")? != Some(Value::Bool(false));
+        let revision = match self.binding_value(element, "revision")? {
+            Some(Value::Int(revision)) => revision,
+            _ => 0,
+        };
+        let automatic_lod = self.binding_value(element, "auto-lod")? == Some(Value::Bool(true));
+        let lightmap_uv = self.binding_value(element, "lightmap-uv")? == Some(Value::Bool(true));
+        self.mesh_loader(&element.key).configure(
+            element.media_source_file.as_deref().unwrap_or_default(),
+            &source,
+            active,
+            revision,
+            xrack_runtime::scene3d::MeshImportOptions {
+                automatic_lod,
+                lightmap_uv,
+            },
+        );
+        Ok(())
+    }
+
     pub(crate) fn render_scene(&self) -> Result<Rc<Node>> {
         self.0.scene.try_get(|| {
-            let mut node = self.render_element(&self.definition().root)?;
+            let root = &self.definition().root;
+            for loader in &root.mesh_loaders {
+                self.configure_mesh_loader(loader)?;
+            }
+            let mut node = self.render_element(root)?;
             self.bind_button_groups(&mut node)?;
             node.set_loaded_fonts(self.0.program.fonts.clone());
             Ok(Rc::new(node))
@@ -3193,7 +3246,7 @@ impl Instance {
             .ok_or_else(|| evaluation(format!("unknown timer {key}")))
     }
 
-    fn explicit_root_values(&self) -> impl Iterator<Item = (&Member, &ValueType, Value)> {
+    fn reload_root_values(&self) -> impl Iterator<Item = (&Member, &ValueType, Value)> {
         self.definition()
             .properties
             .iter()
@@ -3201,9 +3254,51 @@ impl Instance {
                 member.owner == "root" && property.public && property.writable
             })
             .filter_map(|(member, property)| {
-                let value = self.0.values.get(member)?.explicit_value()?;
+                let binding = self.0.values.get(member)?;
+                let value = binding.explicit_value().or_else(|| {
+                    // Model commands mutate the owned list without overriding its property.
+                    // An edited literal is state. Computed lists and aliases retain their bindings.
+                    let PropertySource::Initial(initial) = &property.source else {
+                        return None;
+                    };
+                    let value = binding.cached_value()?;
+                    let revision = match (initial.as_ref(), &value) {
+                        (Expression::RecordArray(..), Value::RecordList(rows)) => {
+                            rows.model().edit_stamp().1
+                        }
+                        (Expression::Array(_), Value::StringModel(rows)) => rows.edit_stamp().1,
+                        (Expression::IntArray(_), Value::IntModel(rows)) => rows.edit_stamp().1,
+                        (Expression::DateArray(_), Value::DateModel(rows)) => rows.edit_stamp().1,
+                        (Expression::Hit3DArray(_), Value::Hit3DList(rows)) => rows.edit_stamp().1,
+                        (
+                            Expression::PhysicsContact3DArray(_),
+                            Value::PhysicsContact3DList(rows),
+                        ) => rows.edit_stamp().1,
+                        (Expression::PhysicsHit3DArray(_), Value::PhysicsHit3DList(rows)) => {
+                            rows.edit_stamp().1
+                        }
+                        _ => return None,
+                    };
+                    (revision != 0).then_some(value)
+                })?;
                 Some((member, &property.ty, value))
             })
+    }
+
+    fn restore_mesh_loaders(&self, previous: &Instance) {
+        let current = previous.0.mesh_loaders.borrow();
+        let restored = self
+            .definition()
+            .root
+            .mesh_loaders
+            .iter()
+            .filter_map(|loader| {
+                current
+                    .get(&loader.key)?
+                    .copy_completed()
+                    .map(|slot| (loader.key.clone(), slot))
+            });
+        self.0.mesh_loaders.borrow_mut().extend(restored);
     }
 
     /// Restore the interactions of the same component in the editor preview.
@@ -3214,7 +3309,7 @@ impl Instance {
             return Ok(());
         }
         let properties = &self.definition().properties;
-        for (member, previous_type, value) in previous.explicit_root_values() {
+        for (member, previous_type, value) in previous.reload_root_values() {
             if let Some(property) = properties.get(member)
                 && property.public
                 && property.writable
@@ -3231,6 +3326,7 @@ impl Instance {
                 self.write(member, value)?;
             }
         }
+        self.restore_mesh_loaders(previous);
         Ok(())
     }
 
@@ -3254,7 +3350,7 @@ impl Instance {
                 self.0.name
             )));
         }
-        for (member, _, value) in self.explicit_root_values() {
+        for (member, _, value) in self.reload_root_values() {
             next.set(&member.name, value)?;
         }
         // Remember explicit starts and stops, including completion of a named
@@ -3282,6 +3378,7 @@ impl Instance {
                 slot.set(value);
             }
         }
+        next.restore_mesh_loaders(self);
         Ok(next)
     }
 
@@ -3580,6 +3677,8 @@ impl Instance {
                     name,
                     Value::SceneParticleEmitters(xrack_runtime::scene3d::record_particles(
                         &model,
+                        &self.program().scene_projections,
+                        |key| self.program().scene_assets.meshes.get(key).cloned(),
                         |key, scale| {
                             let program = self.program();
                             program
@@ -3670,7 +3769,7 @@ impl Instance {
             }
         }
         if node.kind == "SceneView3D" {
-            node.prepare_scene_physics(follow_authored_model);
+            node.prepare_scene_view(follow_authored_model);
         }
         for (&name, field) in &element.row_links {
             let value = self
@@ -6597,6 +6696,8 @@ impl ValueType {
                 | (Self::Instance3D, Value::Instance3D(_))
                 | (Self::InstanceTable3D, Value::InstanceTable3D(_))
                 | (Self::MeshAsset3D, Value::MeshAsset3D(_))
+                | (Self::MeshNode3D, Value::MeshNode3D(_))
+                | (Self::Bounds3D, Value::Bounds3D(_))
                 | (Self::WalkResult3D, Value::WalkResult3D(_))
                 | (Self::PhysicsWorld3D, Value::PhysicsWorld3D(_))
                 | (Self::SceneModel3D, Value::SceneObjects(_))
@@ -7589,6 +7690,49 @@ fn geometry_function(
         (QuaternionRotate, [Value::Quaternion3D(rotation), Value::Vector3D(vector)]) => {
             rotation.rotate(*vector).into()
         }
+        (MeshNode3D | MeshNodeIndices3D, [asset, args @ ..]) => {
+            let asset = match asset {
+                Value::String(key) => program.scene_assets.meshes.get(key),
+                Value::MeshAsset3D(asset) => asset.asset(),
+                _ => return Err(evaluation("invalid mesh asset query")),
+            };
+            match (kind, args) {
+                (MeshNode3D, [Value::String(selector)]) => asset
+                    .map_or_else(xrack_runtime::MeshNode3D::default, |asset| {
+                        asset.node(selector)
+                    })
+                    .into(),
+                (MeshNode3D, [Value::Int(index)]) => asset
+                    .map_or_else(xrack_runtime::MeshNode3D::default, |asset| {
+                        asset.node_at(*index)
+                    })
+                    .into(),
+                (MeshNodeIndices3D, []) => Value::IntModel(
+                    asset.map_or_else(xrack_runtime::VecModel::default, |asset| {
+                        asset.node_indices("all")
+                    }),
+                ),
+                (MeshNodeIndices3D, [Value::String(kind)]) => Value::IntModel(
+                    asset.map_or_else(xrack_runtime::VecModel::default, |asset| {
+                        asset.node_indices(kind)
+                    }),
+                ),
+                _ => return Err(evaluation("invalid mesh node selector")),
+            }
+        }
+        (SceneNode3D, [model, Value::String(object), Value::String(selector)]) => {
+            query_model(model, true)?
+                .scene_node(object, selector)
+                .into()
+        }
+        (SceneNode3D, [model, Value::String(object), Value::Int(index)]) => {
+            query_model(model, true)?
+                .scene_node_at(object, *index)
+                .into()
+        }
+        (Bounds3D, [model, layers @ ..]) => query_model(model, true)?
+            .bounds(optional_layers(layers)?)
+            .into(),
         (Prepare3D, [Value::RecordList(records)]) => {
             Value::SceneObjects(program.prepare_scene(records, true))
         }

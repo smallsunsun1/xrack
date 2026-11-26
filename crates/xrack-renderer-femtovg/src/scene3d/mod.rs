@@ -30,6 +30,7 @@ mod particle_affectors;
 mod particle_instances;
 mod particle_meshes;
 mod particle_textures;
+mod particle_tracks;
 mod particles;
 mod physics_debug;
 mod pipeline;
@@ -200,6 +201,8 @@ pub struct SceneDrawStats {
     pub particle_texture_uploads: u64,
     /// Model surface sampling tables uploaded for mesh emitters.
     pub particle_mesh_uploads: u64,
+    /// Immutable world-space emission tracks transferred to GPU storage.
+    pub particle_track_uploads: u64,
     /// Fields uploaded when the visible affector list changes.
     pub particle_affector_uploads: u64,
     /// Submitted intervals in instanced ribbon trails.
@@ -2613,6 +2616,7 @@ impl SceneRenderer {
                     .sum::<u64>();
                 self.stats.particle_texture_uploads = self.particles.texture_uploads();
                 self.stats.particle_mesh_uploads = self.particles.mesh_uploads();
+                self.stats.particle_track_uploads = self.particles.track_uploads();
                 self.stats.particle_affector_uploads = self.particles.affector_uploads();
                 self.stats.particle_trail_segments += batches
                     .direct

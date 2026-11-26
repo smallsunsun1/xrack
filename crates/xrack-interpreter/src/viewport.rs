@@ -82,7 +82,14 @@ impl Handles {
             .geometry_targets
             .iter()
             .filter(|key| keys.contains(key.as_str()))
-            .map(|key| (key.clone(), GeometryHandle::default()))
+            .map(|key| {
+                let handle = if definition.scene_view_targets.contains(key) {
+                    GeometryHandle::for_scene_view()
+                } else {
+                    GeometryHandle::default()
+                };
+                (key.clone(), handle)
+            })
             .collect();
         let viewports = definition
             .viewport_targets
@@ -172,6 +179,98 @@ impl Instance {
             "pressed" => handle.scroll_pressed().into(),
             "hovered" => handle.scroll_hovered().into(),
             _ => unreachable!("verified scroll metric"),
+        })
+    }
+
+    pub(crate) fn scene_view_query(
+        &self,
+        key: &str,
+        method: &str,
+        inputs: &[Value],
+    ) -> Result<Value> {
+        let view = self.geometry_value(key, GeometryHandle::scene_view)?;
+        Ok(match (method, inputs) {
+            ("project", [Value::Point3D(point)]) => view.project(*point).into(),
+            (
+                "unproject",
+                [
+                    Value::Point2D(point),
+                    Value::Float(depth),
+                    Value::Point3D(fallback),
+                ],
+            ) => view.unproject(*point, *depth, *fallback).into(),
+            ("pick", [Value::Point2D(point)]) => view.pick(*point).into(),
+            ("hit", [Value::Point2D(point)]) => view.hit(*point).into(),
+            ("hit-all", [Value::Point2D(point)]) => Value::Hit3DList(view.hit_all(*point)),
+            ("hit-row", [Value::Point2D(point), Value::Int(row)]) => {
+                view.hit_row(*point, *row).into()
+            }
+            ("hit-subset", [Value::Point2D(point), Value::IntList(rows)]) => {
+                Value::Hit3DList(view.hit_subset(*point, rows))
+            }
+            ("hit-subset", [Value::Point2D(point), Value::IntModel(rows)]) => {
+                Value::Hit3DList(view.hit_subset(*point, &rows.snapshot()))
+            }
+            (
+                "hit-instance",
+                [
+                    Value::Point2D(point),
+                    Value::Int(row),
+                    Value::Int(node),
+                    Value::Int(index),
+                ],
+            ) => view.hit_instance(*point, *row, *node, *index).into(),
+            ("closest-point", [Value::Point3D(origin), Value::Float(radius)]) => {
+                view.closest_point(*origin, *radius).into()
+            }
+            (
+                "closest-point-row",
+                [
+                    Value::Point3D(origin),
+                    Value::Float(radius),
+                    Value::Int(row),
+                ],
+            ) => view.closest_point_row(*origin, *radius, *row).into(),
+            (
+                method,
+                [
+                    Value::Point3D(origin),
+                    Value::Vector3D(direction),
+                    Value::Float(max),
+                    selection @ ..,
+                ],
+            ) => match (method, selection) {
+                ("ray-hit", []) => view.ray_hit(*origin, *direction, *max).into(),
+                ("ray-hit-all", []) => {
+                    Value::Hit3DList(view.ray_hit_all(*origin, *direction, *max))
+                }
+                ("ray-hit-row", [Value::Int(row)]) => {
+                    view.ray_hit_row(*origin, *direction, *max, *row).into()
+                }
+                ("ray-hit-subset", [Value::IntList(rows)]) => {
+                    Value::Hit3DList(view.ray_hit_subset(*origin, *direction, *max, rows))
+                }
+                ("ray-hit-subset", [Value::IntModel(rows)]) => Value::Hit3DList(
+                    view.ray_hit_subset(*origin, *direction, *max, &rows.snapshot()),
+                ),
+                ("ray-hit-instance", [Value::Int(row), Value::Int(node), Value::Int(index)]) => {
+                    view.ray_hit_instance(*origin, *direction, *max, *row, *node, *index)
+                        .into()
+                }
+                _ => {
+                    return Err(Error::Invalid(format!(
+                        "incorrect SceneView3D query {method}"
+                    )));
+                }
+            },
+            ("pick-in-rect", [Value::Point2D(start), Value::Point2D(end)]) => {
+                Value::IntModel(view.pick_in_rect(*start, *end))
+            }
+            _ => {
+                return Err(Error::Invalid(format!(
+                    "incorrect SceneView3D query {method}"
+                )));
+            }
         })
     }
 

@@ -16,6 +16,7 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-scene-import:xrack_scene_import",
         "//crates/xrack-assets:xrack_assets",
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",

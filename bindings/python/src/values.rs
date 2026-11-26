@@ -248,10 +248,132 @@ impl InstanceTable3D {
     }
 }
 
+owned_value!(Bounds3D, rt::Bounds3D);
+
+#[pymethods]
+impl Bounds3D {
+    #[new]
+    fn new() -> Self {
+        Self(rt::Bounds3D::default())
+    }
+
+    #[getter]
+    fn valid(&self) -> bool {
+        self.0.valid()
+    }
+
+    #[getter]
+    fn min(&self) -> Point3D {
+        self.0.min().into()
+    }
+
+    #[getter]
+    fn max(&self) -> Point3D {
+        self.0.max().into()
+    }
+
+    #[getter]
+    fn center(&self) -> Point3D {
+        self.0.center().into()
+    }
+
+    #[getter]
+    fn size(&self) -> Vector3D {
+        self.0.size().into()
+    }
+}
+
+owned_value!(MeshNode3D, rt::MeshNode3D);
+
+#[pymethods]
+impl MeshNode3D {
+    #[new]
+    fn new() -> Self {
+        Self(rt::MeshNode3D::default())
+    }
+
+    #[getter]
+    fn valid(&self) -> bool {
+        self.0.valid()
+    }
+
+    #[getter]
+    fn source_index(&self) -> i64 {
+        self.0.source_index
+    }
+
+    #[getter]
+    fn parent_index(&self) -> i64 {
+        self.0.parent_index
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.0.name.clone()
+    }
+
+    #[getter]
+    fn path(&self) -> String {
+        self.0.path.clone()
+    }
+
+    #[getter]
+    fn origin(&self) -> Point3D {
+        self.0.origin.into()
+    }
+
+    #[getter]
+    fn axis_x(&self) -> Vector3D {
+        self.0.axis_x.into()
+    }
+
+    #[getter]
+    fn axis_y(&self) -> Vector3D {
+        self.0.axis_y.into()
+    }
+
+    #[getter]
+    fn axis_z(&self) -> Vector3D {
+        self.0.axis_z.into()
+    }
+
+    #[getter]
+    fn has_mesh(&self) -> bool {
+        self.0.has_mesh
+    }
+
+    #[getter]
+    fn has_camera(&self) -> bool {
+        self.0.has_camera
+    }
+
+    #[getter]
+    fn has_light(&self) -> bool {
+        self.0.has_light
+    }
+}
+
 owned_value!(MeshAsset3D, rt::MeshAsset3D);
 
 #[pymethods]
 impl MeshAsset3D {
+    fn node(&self, selector: &str) -> MeshNode3D {
+        self.0.node(selector).into()
+    }
+
+    fn node_at(&self, source_index: i64) -> MeshNode3D {
+        self.0.node_at(source_index).into()
+    }
+
+    #[pyo3(signature = (kind = "all"))]
+    fn nodes(&self, kind: &str) -> Vec<MeshNode3D> {
+        self.0
+            .mesh_nodes(kind)
+            .into_iter()
+            .map(MeshNode3D)
+            .collect()
+    }
+
     #[new]
     fn new() -> Self {
         Self(rt::MeshAsset3D::default())
@@ -260,6 +382,11 @@ impl MeshAsset3D {
     #[getter]
     fn loaded(&self) -> bool {
         self.0.is_loaded()
+    }
+
+    #[getter]
+    fn bounds(&self) -> Bounds3D {
+        self.0.bounds().into()
     }
 }
 
@@ -426,6 +553,19 @@ owned_value!(SceneModel3D, std::sync::Arc<rt::scene3d::SceneModel>);
 
 #[pymethods]
 impl SceneModel3D {
+    fn node(&self, object: &str, selector: &str) -> MeshNode3D {
+        self.0.scene_node(object, selector).into()
+    }
+
+    fn node_at(&self, object: &str, source_index: i64) -> MeshNode3D {
+        self.0.scene_node_at(object, source_index).into()
+    }
+
+    #[pyo3(signature = (layer_mask = None))]
+    fn bounds(&self, layer_mask: Option<i64>) -> Bounds3D {
+        self.0.bounds(layer_mask).into()
+    }
+
     #[new]
     fn new() -> Self {
         Self(Default::default())
@@ -2110,6 +2250,8 @@ bridge_values! {
         Instance3D => Instance3D,
         InstanceTable3D => InstanceTable3D,
         MeshAsset3D => MeshAsset3D,
+        MeshNode3D => MeshNode3D,
+        Bounds3D => Bounds3D,
         ProjectedPoint3D => ProjectedPoint3D,
         WalkResult3D => WalkResult3D,
         PhysicsWorld3D => PhysicsWorld3D,

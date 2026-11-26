@@ -166,6 +166,18 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
             Default(Value::WalkResult3D(runtime::WalkResult3D::default()))
         }
         Type::RotationTrack3D => rotation_track(spelling)?,
+        Type::Bounds3D => {
+            if !spelling.is_empty() {
+                return Err("invalid 3D bounds literal".into());
+            }
+            Default(Value::Bounds3D(runtime::Bounds3D::default()))
+        }
+        Type::MeshNode3D => {
+            if !spelling.is_empty() {
+                return Err("invalid mesh node literal".into());
+            }
+            Default(Value::MeshNode3D(runtime::MeshNode3D::default()))
+        }
         Type::MeshAsset3D => {
             if !spelling.is_empty() {
                 return Err("invalid mesh asset literal".into());

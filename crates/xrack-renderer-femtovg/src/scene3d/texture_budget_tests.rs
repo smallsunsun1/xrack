@@ -170,6 +170,7 @@ fn a_sixteen_texture_device_uses_only_the_current_material_budget()
         adapter,
         device,
         queue,
+        system_fonts: Default::default(),
     })?;
     let input = Interaction::default();
     let simple = renderer.snapshot(&scene(false), 64, 64, 1.0, &input)?;

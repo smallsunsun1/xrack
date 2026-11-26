@@ -286,8 +286,7 @@ impl<'a> WindowLayers<'a> {
                 && let Some(panel) = RoundedPanel::from_node(node, layout, frame.scale)
                 && crate::pixel_aligned(visible, frame.scale)
                 && let Some(parts) = renderer.rectangle_batches.window_panel(
-                    &renderer.device,
-                    &renderer.queue,
+                    (&renderer.instance, &renderer.device, &renderer.queue),
                     panel,
                     frame.scale,
                 )
@@ -792,8 +791,7 @@ impl<'a> DisplayList<'a> {
                     mask,
                 } => {
                     let parts = renderer.rectangle_batches.window_capsule(
-                        &renderer.device,
-                        &renderer.queue,
+                        (&renderer.instance, &renderer.device, &renderer.queue),
                         bounds,
                         tint,
                         frame.scale,

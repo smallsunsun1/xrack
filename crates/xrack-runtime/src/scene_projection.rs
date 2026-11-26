@@ -3,14 +3,16 @@ use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 use crate::{
     Quaternion3D, RecordList, RotationTrack3D, Value, VecModel,
-    scene_animation::MeshAsset,
+    scene_animation::{AnimatedMesh, MeshAsset},
     scene_authored_mesh::SceneMeshInputs,
     scene_camera::{CameraMatrixCache, SceneCameraSettings},
     scene_hierarchy::{
         SceneModel, SceneNode, prepare_model, prepare_record_scene, rest_mesh_objects,
     },
     scene_instance_table::{InstanceTable3D, InstanceTableRow},
+    scene_particle_bursts::{ParticleBurstDefinition, ParticleBurstSchedule},
     scene_particle_mesh::{ParticleMeshSurface, ParticleSurfaceCache},
+    scene_particle_track::{ParticleEmissionAnimation, ParticleEmissionTrack},
     scene3d::{MAX_IMPORTED_VERTICES, Mesh3D, MeshImage},
 };
 
@@ -36,6 +38,9 @@ pub struct SceneProjectionCache {
     camera_matrices: CameraMatrixCache,
     instance_tables: ModelProjectionCache<InstanceTable3D>,
     rotation_tracks: ModelProjectionCache<RotationTrack3D>,
+    emission_tracks: ModelProjectionCache<Option<ParticleEmissionTrack>>,
+    particle_bursts: ModelProjectionCache<Option<ParticleBurstSchedule>>,
+    animation_tracks: RefCell<VecDeque<AnimationTrackProjection>>,
     particle_surfaces: ParticleSurfaceCache,
     particle_models: RefCell<VecDeque<CachedParticleModel>>,
 }
@@ -85,6 +90,12 @@ impl<V: Clone> ModelProjectionCache<V> {
     }
 }
 
+struct AnimationTrackProjection {
+    rig: Arc<AnimatedMesh>,
+    settings: ParticleEmissionAnimation,
+    track: Option<ParticleEmissionTrack>,
+}
+
 struct CachedParticleModel {
     key: String,
     meshes: Option<Arc<[Mesh3D]>>,
@@ -97,6 +108,9 @@ impl SceneProjectionCache {
             camera_matrices: CameraMatrixCache::new(),
             instance_tables: ModelProjectionCache::new(),
             rotation_tracks: ModelProjectionCache::new(),
+            emission_tracks: ModelProjectionCache::new(),
+            particle_bursts: ModelProjectionCache::new(),
+            animation_tracks: RefCell::new(VecDeque::new()),
             particle_surfaces: ParticleSurfaceCache::new(),
             particle_models: RefCell::new(VecDeque::new()),
         }
@@ -141,6 +155,73 @@ impl SceneProjectionCache {
             };
             Some((*time, *orientation))
         })
+    }
+
+    pub fn particle_burst_schedule<T>(
+        &self,
+        rows: &VecModel<T>,
+        project: impl FnMut(&T) -> Option<ParticleBurstDefinition>,
+    ) -> Option<ParticleBurstSchedule> {
+        self.particle_bursts
+            .get(rows, || ParticleBurstSchedule::from_model(rows, project))
+    }
+
+    pub(crate) fn record_particle_bursts(
+        &self,
+        rows: &RecordList,
+    ) -> Option<ParticleBurstSchedule> {
+        self.particle_burst_schedule(rows.model(), ParticleBurstDefinition::from_record)
+    }
+
+    pub fn particle_emission_track<T>(
+        &self,
+        rows: &VecModel<T>,
+        project: impl FnMut(&T) -> Option<(f64, crate::Point3D, Quaternion3D)>,
+    ) -> Option<ParticleEmissionTrack> {
+        self.emission_tracks
+            .get(rows, || ParticleEmissionTrack::from_model(rows, project))
+    }
+
+    pub fn record_emission_track(&self, rows: &RecordList) -> Option<ParticleEmissionTrack> {
+        self.particle_emission_track(rows.model(), |row| {
+            let (Value::Float(time), Value::Point3D(position)) =
+                (row.field("time")?, row.field("position")?)
+            else {
+                return None;
+            };
+            let rotation = match row.field("orientation") {
+                Some(Value::Quaternion3D(value)) => *value,
+                None => Quaternion3D::IDENTITY,
+                _ => return None,
+            };
+            Some((*time, *position, rotation))
+        })
+    }
+
+    pub fn particle_animation_track(
+        &self,
+        asset: &MeshAsset,
+        settings: ParticleEmissionAnimation,
+    ) -> Option<ParticleEmissionTrack> {
+        let rig = asset.animated_primary()?;
+        let mut tracks = self.animation_tracks.borrow_mut();
+        if let Some(index) = tracks
+            .iter()
+            .position(|entry| Arc::ptr_eq(rig, &entry.rig) && entry.settings == settings)
+            && let Some(entry) = tracks.remove(index)
+        {
+            let track = entry.track.clone();
+            tracks.push_front(entry);
+            return track;
+        }
+        let track = rig.emission_track(&settings);
+        tracks.truncate(CAPACITY - 1);
+        tracks.push_front(AnimationTrackProjection {
+            rig: rig.clone(),
+            settings,
+            track: track.clone(),
+        });
+        track
     }
 
     pub fn particle_surface(

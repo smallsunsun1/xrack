@@ -1,3 +1,5 @@
+struct ParticleBurst { time: float, count: int }
+
 struct PrimitiveStyle {
     enabled: bool, base-color: color, base-color-map: string,
     alpha-mode: string, alpha-cutoff: float, roughness: float,
@@ -12,7 +14,7 @@ struct PrimitiveActor {
 }
 struct PrimitiveEmitter {
     position: point3d, color: color, size: float, lifetime: float,
-    burst-count: int, emitter-shape: string, emitter-mesh: string, emitter-mesh-scale: vector3d,
+    bursts: [ParticleBurst], emitter-shape: string, emitter-mesh: string, emitter-mesh-scale: vector3d,
     particle-model: string, fade-out: float,
 }
 
@@ -85,7 +87,7 @@ export component PrimitiveMeshesDemo inherits Window {
     property <[PrimitiveEmitter]> sparks: root.particles ? [
         PrimitiveEmitter {
             position: Point3D.new(2.45, -1.03, 0.22), color: #ffd68d,
-            size: 0.11, lifetime: 4, burst-count: 24, fade-out: 0,
+            size: 0.11, lifetime: 4, bursts: [ParticleBurst { time: 0, count: 24 }], fade-out: 0,
             emitter-shape: "mesh", emitter-mesh: "primitive:cone",
             emitter-mesh-scale: Vector3D.new(2.02, 2.48, 2.02),
             particle-model: "primitive:cylinder",

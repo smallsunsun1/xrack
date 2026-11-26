@@ -130,6 +130,31 @@ macro_rules! builtin_value_fields {
                 "data-z" => data_z: Float,
                 "data-w" => data_w: Float,
             }
+            Bounds3D, "bounds3d_field" {
+                "valid" => valid: Bool,
+                "min" => min: Point3D,
+                "max" => max: Point3D,
+                "center" => center: Point3D,
+                "size" => size: Vector3D,
+            }
+            MeshNode3D, "mesh_node3d_field" {
+                "valid" => valid: Bool,
+                "source-index" => source_index: Int,
+                "parent-index" => parent_index: Int,
+                "name" => name: String,
+                "path" => path: String,
+                "origin" => origin: Point3D,
+                "axis-x" => axis_x: Vector3D,
+                "axis-y" => axis_y: Vector3D,
+                "axis-z" => axis_z: Vector3D,
+                "has-mesh" => has_mesh: Bool,
+                "has-camera" => has_camera: Bool,
+                "has-light" => has_light: Bool,
+            }
+            MeshAsset3D, "mesh_asset3d_field" {
+                "loaded" => is_loaded: Bool,
+                "bounds" => bounds: Bounds3D,
+            }
             ProjectedPoint3D, "projected_point3d_field" {
                 "point" => point: Point2D,
                 "depth" => depth: Float,

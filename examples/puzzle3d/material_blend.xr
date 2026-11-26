@@ -1,3 +1,5 @@
+struct ParticleBurst { time: float, count: int }
+
 struct BlendMaterial {
     base-color: color, unlit: bool, alpha-mode: string, alpha-cutoff: float, blend-mode: string,
 }
@@ -8,7 +10,7 @@ struct BlendActor {
 }
 struct BlendEmitter {
     position: point3d, color: color, size: float, lifetime: float,
-    burst-count: int, particle-model: string,
+    bursts: [ParticleBurst], particle-model: string,
 }
 
 export component MaterialBlendDemo inherits Window {
@@ -47,7 +49,7 @@ export component MaterialBlendDemo inherits Window {
     property <[BlendEmitter]> no-sprites: [];
     property <[BlendEmitter]> sprites: root.particles ? [
         BlendEmitter { position: Point3D.new(2.6, 0.4, 0.4), color: #aac7ff70,
-                     size: 0.65, lifetime: 2, burst-count: 1, particle-model: "primitive:box" }
+                     size: 0.65, lifetime: 2, bursts: [ParticleBurst { time: 0, count: 1 }], particle-model: "primitive:box" }
     ] : root.no-sprites;
     out property <string> picked: Scene3D.pick-camera(
         root.model, "eye", Point2D.new(600px, 300px), Point2D.new(300px, 150px));

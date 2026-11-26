@@ -61,3 +61,11 @@ fn load(path: &Path, options: MeshImportOptions) -> Result<MeshFile, String> {
         inputs,
     })
 }
+
+/// Enable declarative mesh imports on a native or headless application host.
+#[doc(hidden)]
+pub fn install_mesh_importer() {
+    xrack_runtime::register_mesh_importer(|path, options| {
+        load_mesh_file(path, options).map(|file| file.asset)
+    });
+}

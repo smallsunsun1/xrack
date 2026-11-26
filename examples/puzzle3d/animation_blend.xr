@@ -1,18 +1,37 @@
+struct ParticleBurst { time: float, count: int }
+
+export struct BlendLayer {
+    clip: string, time: float, looping: bool, weight: float, root-node: string, mode: string,
+}
+
 struct BlendActor {
-    id: string, mesh: string,
+    id: string, parent: string, parent-node: string, mesh: string,
     x: float, y: float, z: float,
     scale-x: float, scale-y: float, scale-z: float,
     yaw: float, pitch: float, roll: float,
     color: color,
     animation: string, animation-time: float, animation-loop: bool,
     animation-to: string, animation-to-time: float, animation-to-loop: bool,
-    animation-blend: float,
+    animation-blend: float, animation-layers: [BlendLayer],
+}
+
+struct MountedSpark {
+    parent: string, parent-node: string, particle-group: string, position: point3d, velocity: vector3d,
+    color: color, lifetime: float, size: float, bursts: [ParticleBurst], enabled: bool,
+    fade-out: float, trail-segments: int, trail-duration: float,
+    particle-model: string, particle-casts-shadow: bool,
+}
+
+struct MountedField {
+    affector-kind: string, parent: string, parent-node: string, particle-group: string,
+    position: point3d, direction: vector3d, strength: float, duration: float,
+    angular-speed: float, radius: float, outer-radius: float, enabled: bool,
 }
 
 export component AnimationBlendDemo inherits Window {
-    title: "XRack · 动画过渡";
+    title: "XRack · 动画混合";
     width: 580px;
-    height: 348px;
+    height: 418px;
     resizable: false;
     background: #141d29;
 
@@ -22,37 +41,79 @@ export component AnimationBlendDemo inherits Window {
     in-out property <bool> from-loop: false;
     in-out property <bool> to-loop: false;
     in-out property <string> motion-to: "Turn";
+    in-out property <string> badge-node: "#1";
+    in-out property <float> layer-weight: 0;
+    in-out property <bool> sparks: false;
+    in-out property <string> spark-node: "#1";
+    in-out property <float> spark-time: 0.8;
+    in-out property <int> spark-trail: 6;
+    in-out property <string> spark-model: "";
+    in-out property <bool> field-active: false;
+    in-out property <string> field-kind: "gravity";
+    in-out property <string> field-node: "#1";
+    in-out property <string> field-group: "sparks";
+    in-out property <[BlendLayer]> movement-layers: [
+        BlendLayer { clip: "Turn", time: 1, looping: false, weight: root.layer-weight, root-node: "#1", mode: "override" },
+    ];
     property <point2d> viewport-size: Point2D.new(580px, 244px);
     property <BlendActor> defaults: BlendActor {
-        id: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
+        id: "", parent: "", parent-node: "", mesh: "primitive:box", x: 0, y: 0, z: 0,
         scale-x: 1, scale-y: 1, scale-z: 1,
         yaw: 0, pitch: 0, roll: 0, color: #ffffff,
         animation: "", animation-time: root.from-time, animation-loop: root.from-loop,
         animation-to: "", animation-to-time: root.to-time, animation-to-loop: root.to-loop,
-        animation-blend: root.blend,
+        animation-blend: root.blend, animation-layers: [],
     };
-    property <[BlendActor]> scene: [
+    property <[BlendActor]> actors: [
+        BlendActor { id: "mount", mesh: "", x: 0.5, y: 0.25, scale-x: 2, ..root.defaults },
         BlendActor {
             id: "movement", mesh: @mesh-url("models/animated-panel.glb"), x: -5.5,
-            color: #e2a959, animation: "Slide", animation-to: root.motion-to, ..root.defaults
+            color: #e2a959, animation: "Slide", animation-to: root.motion-to,
+            animation-layers: root.movement-layers, ..root.defaults
         },
         BlendActor {
             id: "skin", mesh: @mesh-url("models/skinned-panel.glb"), x: -1.6,
-            color: #69c5a7, animation: "Bend", ..root.defaults
+            color: #69c5a7, animation: "Bend", animation-layers: [
+                BlendLayer {
+                    clip: "Bend", time: root.to-time, looping: false, weight: root.layer-weight,
+                    root-node: "#1", mode: "additive",
+                },
+            ], ..root.defaults
         },
         BlendActor {
             id: "morph", mesh: @mesh-url("models/morph-panel.glb"), x: 3.15,
-            color: #8da8ed, animation: "Morph", animation-to: "StepMorph", ..root.defaults
+            color: #8da8ed, animation: "Morph", animation-to: "StepMorph", animation-layers: [
+                BlendLayer {
+                    clip: "StepMorph", time: root.to-time, looping: false, weight: root.layer-weight,
+                    root-node: "#1", mode: "override",
+                },
+            ], ..root.defaults
         },
         BlendActor {
-            id: "dolly", mesh: @mesh-url("models/camera-rig.gltf"),
+            id: "dolly", parent: "mount", x: 0.5, mesh: @mesh-url("models/camera-rig.gltf"),
             animation-to: "Dolly", ..root.defaults
         },
         BlendActor {
             id: "backdrop", x: 0, z: -0.85, scale-x: 15, scale-y: 5.4, scale-z: 0.12,
             color: #575e70, ..root.defaults
         },
+        BlendActor {
+            id: "badge", parent: "movement", parent-node: root.badge-node,
+            mesh: "primitive:sphere", x: 0.60, z: 0.35,
+            scale-x: 0.24, scale-y: 0.24, scale-z: 0.24,
+            color: #f5e987, ..root.defaults
+        },
     ];
+    property <scenemodel3d> scene: Scene3D.prepare(root.actors);
+    out property <meshnode3d> dolly-node: Scene3D.scene-node(root.scene, "dolly", "/Camera rig/Hero");
+    out property <meshnode3d> moving-node: Scene3D.scene-node(root.scene, "movement", 1);
+    out property <point3d> badge-center: Scene3D.map-position(
+        root.actors, "badge", "", Point3D.new(0, 0, 0), Point3D.new(100, 100, 100));
+    out property <vector3d> badge-right: Scene3D.map-direction(
+        root.scene, "badge", "", Vector3D.new(1, 0, 0), Vector3D.new(0, 0, 0));
+    out property <hit3d> badge-hit: Scene3D.ray-hit(root.scene,
+        Point3D.new(root.badge-center.x, root.badge-center.y, root.badge-center.z + 2),
+        Vector3D.new(0, 0, -1), 3);
     out property <projectedpoint3d> dolly: Scene3D.project-camera(root.scene, "dolly/Hero",
         root.viewport-size, Point3D.new(0, 0, 0));
     in-out property <point2d> cursor: Point2D.new(180px, 122px);
@@ -62,13 +123,39 @@ export component AnimationBlendDemo inherits Window {
     SceneView3D {
         width: 580px; height: 244px;
         model: root.scene;
+        particle-time: root.spark-time;
+        particle-emitters: [
+            MountedSpark {
+                parent: "movement", parent-node: root.spark-node, particle-group: "sparks",
+                position: Point3D.new(0.65, 0.58, 0.85),
+                velocity: Vector3D.new(0.85, 0.2, 0),
+                color: #ff42ea, lifetime: 2, size: 0.30, bursts: [ParticleBurst { time: 0, count: 1 }],
+                enabled: root.sparks, fade-out: 0, trail-segments: root.spark-trail,
+                trail-duration: 0.38, particle-model: root.spark-model,
+                particle-casts-shadow: true,
+            },
+        ];
+        particle-affectors: [
+            MountedField {
+                affector-kind: root.field-kind, particle-group: root.field-group,
+                parent: "movement", parent-node: root.field-node,
+                position: Point3D.new(0.3, 0.5, 0.85),
+                direction: root.field-kind == "point-rotator" ? Vector3D.new(0, 0, 1) : Vector3D.new(1, 0, 0),
+                strength: 2, duration: 1, angular-speed: 80, radius: 1.1, outer-radius: 2,
+                enabled: root.field-active,
+            },
+        ];
         camera-yaw: 0; camera-pitch: 0; camera-distance: 9;
         light-yaw: -37; light-elevation: 28;
         shadows: true; shadow-map-size: 512; shadow-bias: 0.006;
         scene-background: #26364a;
     }
+    Label {
+        x: 14px; y: 388px; width: 552px; height: 22px;
+        text: "相机挂点  " + root.dolly-node.name + "  世界 x = " + root.dolly-node.origin.x;
+    }
     VerticalLayout {
-        x: 14px; y: 246px; width: 552px; height: 94px; spacing: 6px;
+        x: 14px; y: 246px; width: 552px; height: 138px; spacing: 6px;
         HorizontalLayout {
             height: 42px; spacing: 8px;
             from := Button { text: "原片段"; width: 80px; clicked => { root.blend = 0; } }
@@ -82,5 +169,130 @@ export component AnimationBlendDemo inherits Window {
             Text { text: "目标时间"; color: #edf3ff; }
             to-slider := Slider { minimum: 0; maximum: 1; width: 188px; value <=> root.to-time; }
         }
+        HorizontalLayout {
+            height: 42px; spacing: 10px;
+            Text { text: "叠加权重"; width: 80px; color: #edf3ff; }
+            layer-slider := Slider { minimum: 0; maximum: 1; value <=> root.layer-weight; }
+            field-toggle := Button {
+                text: root.field-active ? "关闭力场" : "挂点力场";
+                width: 102px;
+                clicked => { root.field-active = !root.field-active; }
+            }
+            sparks-toggle := Button {
+                text: root.sparks ? "关闭粒子" : "挂点粒子";
+                width: 112px;
+                clicked => { root.sparks = !root.sparks; }
+            }
+        }
+    }
+}
+
+struct GltfBirthMotion {
+    mesh: string, mesh-asset: meshasset3d, clip: string, node: string,
+    position: point3d, orientation: quaternion3d, scale: vector3d, sample-rate: float,
+}
+
+struct ClipBurst { time: float, count: int, duration: float }
+
+struct ClipSpark {
+    position: point3d, color: color, lifetime: float, size: float,
+    velocity: vector3d, rate: float, bursts: [ClipBurst], fade-out: float,
+    emission-animation: GltfBirthMotion, emission-loop: bool,
+}
+
+struct ClipStage {
+    id: string, mesh: string, mesh-asset: meshasset3d,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+    animation: string, animation-time: float, animation-loop: bool, camera-kind: string, camera-height: float,
+}
+
+export component ParticleClipDemo inherits Window {
+    title: "XRack · glTF 动画发射";
+    width: 624px; height: 428px; background: #182333;
+    in-out property <float> time: 1.65;
+    in-out property <string> clip: "Slide";
+    in-out property <string> node-selector: "#1";
+    in-out property <float> sample-rate: 60;
+    in-out property <float> rate: 2;
+    in-out property <bool> playing: false;
+    in-out property <bool> loop-births: false;
+    in-out property <bool> scheduled: false;
+    in-out property <[ClipBurst]> scheduled-bursts: [
+        ClipBurst { time: 0.25, count: 1, duration: 0 },
+        ClipBurst { time: 0.5, count: 3, duration: 0.5 },
+    ];
+    in-out property <meshasset3d> runtime-asset;
+    property <string> compiled-mesh: @mesh-url("models/animated-panel.glb");
+    property <meshasset3d> empty-asset;
+
+    clock := FrameAnimation {
+        running <=> root.playing;
+        triggered(delta, elapsed, frame) => {
+            root.time = root.time + delta;
+            if root.time > 2.8 { root.time = 0; }
+        }
+    }
+    property <ClipStage> base: ClipStage {
+        id: "", mesh: "", mesh-asset: root.empty-asset, x: 0, y: 0, z: 0,
+        scale-x: 1, scale-y: 1, scale-z: 1, yaw: 0, pitch: 0, roll: 0, color: #fff,
+        animation: "", animation-time: 0, animation-loop: false, camera-kind: "", camera-height: 6,
+    };
+    SceneView3D {
+        width: 624px; height: 284px;
+        camera: "eye"; particle-time: root.time; scene-background: #101a2c;
+        model: [
+            ClipStage { id: "eye", camera-kind: "orthographic", z: 10, ..root.base },
+            ClipStage {
+                id: "panel", mesh: root.compiled-mesh, mesh-asset: root.runtime-asset,
+                x: -3, scale-x: 3, animation: root.clip, animation-time: root.time,
+                animation-loop: root.loop-births,
+                color: #487cba, ..root.base
+            },
+        ];
+        particle-emitters: [
+            ClipSpark {
+                position: Point3D.new(0.28, 0, 0.9), size: 0.20, lifetime: 4, color: #ff42ea,
+                velocity: Vector3D.new(0.5, 0.25, 0), rate: root.rate, fade-out: 0,
+                bursts: root.scheduled ? root.scheduled-bursts : [ClipBurst { time: 0, count: 1, duration: 0 }],
+                emission-loop: root.loop-births,
+                emission-animation: GltfBirthMotion {
+                    mesh: root.compiled-mesh, mesh-asset: root.runtime-asset,
+                    node: root.node-selector, clip: root.clip, sample-rate: root.sample-rate,
+                    position: Point3D.new(-3, 0, 0), orientation: Quaternion3D.identity(),
+                    scale: Vector3D.new(3, 1, 1),
+                },
+            },
+        ];
+    }
+    Label { x: 18px; y: 294px; width: 62px; height: 34px; text: "时间"; }
+    clip-time := Slider {
+        x: 82px; y: 294px; width: 522px; height: 34px;
+        minimum: 0; maximum: 2.8; value <=> root.time;
+    }
+    playback := Button {
+        x: 18px; y: 344px; width: 100px; height: 34px;
+        text: root.playing ? "暂停" : "播放";
+        clicked => { root.playing = !root.playing; }
+    }
+    slide-key := Button {
+        x: 130px; y: 344px; width: 100px; height: 34px; text: "平移";
+        clicked => { root.clip = "Slide"; }
+    }
+    step-key := Button {
+        x: 242px; y: 344px; width: 100px; height: 34px; text: "阶跃";
+        clicked => { root.clip = "Step"; }
+    }
+    turn-key := Button {
+        x: 354px; y: 344px; width: 100px; height: 34px; text: "转向";
+        clicked => { root.clip = "Turn"; }
+    }
+    loop-choice := CheckBox {
+        x: 466px; y: 344px; width: 138px; height: 34px;
+        text: "循环出生"; checked <=> root.loop-births;
+    }
+    burst-choice := CheckBox {
+        x: 18px; y: 380px; width: 250px; height: 34px;
+        text: "定时爆发（0.25s / 0.5–1s）"; checked <=> root.scheduled;
     }
 }

@@ -1,0 +1,67 @@
+struct NodeMarkerActor {
+    id: string, parent: string, parent-node: string, mesh: string, mesh-asset: meshasset3d, visible: bool,
+    x: float, y: float, z: float, scale-x: float, scale-y: float, scale-z: float,
+    yaw: float, pitch: float, roll: float, color: color,
+}
+
+export component MeshNodeDemo inherits Window {
+    title: "XRack · glTF 节点查询";
+    width: 565px; height: 345px; background: #182638;
+    in-out property <string> path: "models/node-query.gltf";
+    in-out property <string> selector: "/Workshop/Door~1Leaf/Pivot";
+    in-out property <string> kind: "all";
+    out property <string> status: importer.status;
+    out property <meshnode3d> selected: Scene3D.mesh-node(importer.asset, root.selector);
+    out property <meshnode3d> compiled: Scene3D.mesh-node(@mesh-url("models/node-query.gltf"), root.selector);
+    out property <meshnode3d> posed: Scene3D.scene-node(root.world, "asset", root.selector);
+    out property <meshnode3d> compiled-rig: Scene3D.mesh-node(@mesh-url("models/instance-picking.gltf"), "Rear table");
+    out property <[int]> indices: Scene3D.mesh-node-indices(importer.asset, root.kind);
+    out property <[int]> compiled-meshes: Scene3D.mesh-node-indices(@mesh-url("models/node-query.gltf"), "mesh");
+
+    importer := MeshLoader3D { source: root.path; }
+    property <meshasset3d> no-mesh;
+    property <NodeMarkerActor> base: NodeMarkerActor {
+        id: "asset", parent: "", parent-node: "", mesh: "", mesh-asset: importer.asset, visible: true,
+        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+        yaw: 0, pitch: 0, roll: 0, color: #fff,
+    };
+    property <[NodeMarkerActor]> world: [
+        root.base,
+        NodeMarkerActor {
+            id: "marker", parent: "asset", parent-node: root.selector,
+            mesh: "primitive:sphere", mesh-asset: root.no-mesh, visible: root.selected.valid,
+            scale-x: 0.10, scale-y: 0.10, scale-z: 0.10, color: #ffc367, ..root.base
+        },
+    ];
+    SceneView3D {
+        width: 565px; height: 222px; model: root.world;
+        camera-yaw: 0; camera-pitch: 0; camera-fit: Scene3D.bounds(root.world);
+        scene-background: #101927; cache-rendering: true;
+    }
+    Label {
+        x: 12px; y: 229px; width: 540px; height: 27px;
+        text: root.status == "loading" ? "正在导入…" : root.selected.valid
+            ? "#" + root.selected.source-index + "  " + root.selected.path + "  |  x = " + root.selected.origin.x
+            : "名称不唯一或节点不存在";
+    }
+    first-node := Button {
+        x: 12px; y: 266px; width: 125px; height: 34px; text: "门轴路径";
+        clicked => { root.path = "models/node-query.gltf"; root.selector = "/Workshop/Door~1Leaf/Pivot"; }
+    }
+    second-node := Button {
+        x: 145px; y: 266px; width: 125px; height: 34px; text: "柜轴路径";
+        clicked => { root.path = "models/node-query.gltf"; root.selector = "/Workshop/Cabinet/Pivot"; }
+    }
+    ambiguous := Button {
+        x: 278px; y: 266px; width: 125px; height: 34px; text: "同名 Pivot";
+        clicked => { root.path = "models/node-query.gltf"; root.selector = "Pivot"; }
+    }
+    instance-node := Button {
+        x: 411px; y: 266px; width: 140px; height: 34px; text: "实例节点";
+        clicked => { root.path = "models/instance-picking.gltf"; root.selector = "Rear table"; }
+    }
+    Label {
+        x: 12px; y: 307px; width: 540px; height: 28px;
+        text: "节点数  " + Model.count(root.indices) + "  ·  黄色标记表示查询节点的原点";
+    }
+}

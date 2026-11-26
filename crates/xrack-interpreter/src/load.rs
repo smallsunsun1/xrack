@@ -40,6 +40,7 @@ pub(crate) fn program(
     scene_assets: xrack_resources::SceneAssets,
     entry_file: &str,
 ) -> Result<Program> {
+    xrack_resources::install_mesh_importer();
     xrack_resources::require_scene_assets(module, &scene_assets).map_err(Error::Invalid)?;
     let records = Rc::new(
         module
@@ -208,6 +209,8 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::Instance3D => ValueType::Instance3D,
         Type::InstanceTable3D => ValueType::InstanceTable3D,
         Type::MeshAsset3D => ValueType::MeshAsset3D,
+        Type::MeshNode3D => ValueType::MeshNode3D,
+        Type::Bounds3D => ValueType::Bounds3D,
         Type::WalkResult3D => ValueType::WalkResult3D,
         Type::PhysicsWorld3D => ValueType::PhysicsWorld3D,
         Type::SceneModel3D => ValueType::SceneModel3D,
@@ -335,6 +338,7 @@ struct Loader<'m> {
     selectors: Vec<StateSelector>,
     analysis: ComponentAnalysis<'m>,
     geometry_targets: BTreeSet<String>,
+    scene_view_targets: BTreeSet<String>,
     viewport_targets: BTreeSet<String>,
     source_scroll_targets: BTreeSet<String>,
     key_scroll_targets: BTreeSet<String>,
@@ -433,6 +437,7 @@ impl<'m> Loader<'m> {
             button_groups,
             selectors: loader.selectors,
             geometry_targets: loader.geometry_targets,
+            scene_view_targets: loader.scene_view_targets,
             viewport_targets: loader.viewport_targets,
             source_scroll_targets: loader.source_scroll_targets,
             key_scroll_targets: loader.key_scroll_targets,
@@ -1114,6 +1119,7 @@ impl<'m> Loader<'m> {
         let mut sound_effects = Vec::new();
         let mut commands = Vec::new();
         let mut native_dialogs = Vec::new();
+        let mut mesh_loaders = Vec::new();
         let mut secondary_windows = Vec::new();
         let mut split_handle = None;
         let mut section_header = None;
@@ -1192,6 +1198,9 @@ impl<'m> Loader<'m> {
                     ) =>
                 {
                     native_dialogs.push(self.element(child)?);
+                }
+                "xr.element" if child.attribute("kind") == Some("MeshLoader3D") => {
+                    mesh_loaders.push(self.element(child)?);
                 }
                 "xr.element" if child.attribute("kind") == Some("SecondaryWindow") => {
                     secondary_windows.push(self.element(child)?);
@@ -1416,11 +1425,14 @@ impl<'m> Loader<'m> {
             key: key.into(),
             #[cfg(all(feature = "live-reload", unix))]
             source: crate::live_inspect::Source::from_operation(op),
-            media_source_file: matches!(visual, Visual::Builtin("MediaPlayer" | "SoundEffect"))
-                .then(|| {
-                    xrack_resources::visual::media_source_file(op, &self.assets.entry_file)
-                        .into_owned()
-                }),
+            media_source_file: matches!(
+                visual,
+                Visual::Builtin("MediaPlayer" | "SoundEffect" | "MeshLoader3D")
+            )
+            .then(|| {
+                xrack_resources::visual::runtime_asset_source_file(op, &self.assets.entry_file)
+                    .into_owned()
+            }),
             id: id.into(),
             repeat,
             delegate: op.attribute("delegate").is_some(),
@@ -1479,6 +1491,7 @@ impl<'m> Loader<'m> {
             sound_effects,
             commands,
             native_dialogs,
+            mesh_loaders,
             secondary_windows,
         })
     }
@@ -1673,6 +1686,12 @@ impl<'m> Loader<'m> {
         let expression = match op.name() {
             "xr.literal" => Expression::Literal(literal(op, &ty, spelling()?)?),
             "xr.read" => Expression::Read(member(op, "value")?),
+            "xr.scene_view_query" => {
+                let target = attribute(op, "owner")?.to_owned();
+                self.geometry_targets.insert(target.clone());
+                self.scene_view_targets.insert(target.clone());
+                Expression::SceneViewQuery(target, spelling()?.into(), arguments(self)?)
+            }
             "xr.geometry_read" => {
                 let target = attribute(op, "owner")?.to_owned();
                 let metric = match spelling()? {
@@ -1696,6 +1715,9 @@ impl<'m> Loader<'m> {
                 Expression::Read(Member::new(attribute(op, "owner")?, "check-state"))
             }
             "xr.action_group_read" => Expression::ActionGroupRead(attribute(op, "owner")?.into()),
+            "xr.mesh_loader_read" => {
+                Expression::MeshLoaderRead(attribute(op, "owner")?.into(), spelling()?.into())
+            }
             "xr.native_dialog_read" => {
                 let name = spelling()?;
                 let field = native_dialog::Read::parse(name).ok_or_else(|| {
@@ -2250,6 +2272,9 @@ impl<'m> Loader<'m> {
             | "xr.hit3d_field"
             | "xr.physics_contact3d_field"
             | "xr.physics_hit3d_field"
+            | "xr.bounds3d_field"
+            | "xr.mesh_asset3d_field"
+            | "xr.mesh_node3d_field"
             | "xr.projected_point3d_field"
             | "xr.instance3d_field"
             | "xr.instance_table3d_field"
@@ -2405,6 +2430,8 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         Instance3D,
         InstanceTable3D,
         MeshAsset3D,
+        MeshNode3D,
+        Bounds3D,
         WalkResult3D,
         PhysicsWorld3D,
         Vector2D,
@@ -2486,7 +2513,13 @@ fn static_name(value: &str, names: &'static [&'static str]) -> Option<&'static s
 
 fn property_name(op: Op<'_>) -> Result<&'static str> {
     let name = attribute(op, "name")?;
-    static_name(name, PROPERTIES).ok_or_else(|| unsupported(op, &format!("visual property {name}")))
+    static_name(name, PROPERTIES)
+        .or_else(|| {
+            xrack_syntax::builtins::MESH_LOADER_INPUTS
+                .iter()
+                .find_map(|(field, _)| (*field == name).then_some(*field))
+        })
+        .ok_or_else(|| unsupported(op, &format!("visual property {name}")))
 }
 
 const PROPERTIES: &[&str] = &[
@@ -2780,6 +2813,8 @@ const PROPERTIES: &[&str] = &[
     "camera-yaw",
     "camera-pitch",
     "camera-distance",
+    "camera-fit",
+    "camera-fit-margin",
     "light-yaw",
     "light-elevation",
     "lights",

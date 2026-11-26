@@ -283,6 +283,62 @@ mod local_layout_tests {
     }
 
     #[test]
+    fn scroll_projection_reuses_owned_descendant_storage() {
+        let mut view = Node::new("ScrollView", None);
+        view.children = vec![Node::new("Rectangle", None); 2];
+        let view = view.into_shared();
+        let mut cache = RowLayoutCache::default();
+        let mut child = entry(0, 2);
+        child.layout.children = vec![entry(0, 1).layout];
+        let inputs = child.inputs;
+        let bounds = Rect::new(10.25, 20.5, 16.0, 16.0);
+        let second = Rect::new(10.25, 40.5, 16.0, 16.0);
+        let clip = Rect::new(10.0, 26.0, 20.0, 12.0);
+        let expected = [bounds, second].map(|rect| clone_in_view(&child.layout, rect, clip, None));
+        let geometry = cache.scroll_geometry(&[], &view).unwrap();
+        geometry.store_child(0, inputs, child.layout.clone(), false);
+        geometry.store_child(1, inputs, child.layout, false);
+
+        let mut previous = entry(0, 3).layout;
+        let mut stale = expected[0].clone();
+        stale.children[0].bounds.y = -20.0;
+        stale.children[0].enabled = false;
+        previous.children = vec![stale, expected[1].clone()];
+        let old_buffer = previous.children.as_ptr();
+        let old_descendants = previous.children[0].children.as_ptr();
+        cache.use_recycled_layout(Some(previous));
+
+        let resized = Rect::new(second.x, second.y, 20.0, second.height);
+        let (geometry, reuse) = cache.scroll_geometry_for_projection(&[], &view, 2).unwrap();
+        assert!(
+            geometry
+                .project_children(
+                    [bounds, resized].into_iter(),
+                    clip,
+                    inputs,
+                    None,
+                    reuse,
+                    |_, _, _| {}
+                )
+                .is_none()
+        );
+        let (geometry, reuse) = cache.scroll_geometry_for_projection(&[], &view, 2).unwrap();
+        let projected = geometry
+            .project_children(
+                [bounds, second].into_iter(),
+                clip,
+                inputs,
+                None,
+                reuse,
+                |_, _, _| {},
+            )
+            .unwrap();
+        assert_eq!(projected.as_ptr(), old_buffer);
+        assert_eq!(projected[0].children.as_ptr(), old_descendants);
+        assert_eq!(projected, expected);
+    }
+
+    #[test]
     fn direct_and_nested_paths_keep_separate_cache_entries() {
         let mut layouts = LocalLayouts::default();
         assert!(layouts.insert(&[2], entry(1, 4)).is_none());
@@ -525,12 +581,16 @@ impl ScrollGeometry {
         clip: Rect,
         inputs: RowInputs,
         ancestors: Option<&Rc<ClipChain>>,
+        reuse: Option<&mut Vec<LayoutNode>>,
         mut prepare: impl FnMut(usize, Rect, &mut ScrollChild),
     ) -> Option<Vec<LayoutNode>> {
         if self.cached != rects.len() || self.children.len() != rects.len() {
             return None;
         }
-        let mut projected = Vec::with_capacity(rects.len());
+        let count = rects.len();
+        let mut fresh = Vec::new();
+        let projected = reuse.unwrap_or(&mut fresh);
+        projected.reserve(count.saturating_sub(projected.len()));
         for (slot, bounds) in rects.enumerate() {
             let inputs = RowInputs {
                 size: Size::new(bounds.width, bounds.height),
@@ -540,9 +600,17 @@ impl ScrollGeometry {
             if local.deferred_text {
                 prepare(slot, bounds, local);
             }
-            projected.push(clone_in_view(&local.layout, bounds, clip, ancestors));
+            if let Some(previous) = projected.get_mut(slot) {
+                let children = take_child_storage(previous, local.layout.children.len());
+                *previous = clone_in_view_reusing(&local.layout, bounds, clip, ancestors, children);
+            } else {
+                projected.push(clone_in_view(&local.layout, bounds, clip, ancestors));
+            }
         }
-        Some(projected)
+        projected.truncate(count);
+        // Until every child matches, the old slots still belong to the
+        // recycling tree and remain available to ordinary placement.
+        Some(std::mem::take(projected))
     }
 }
 
@@ -726,13 +794,9 @@ impl RowLayoutCache {
         self.stats.subtree_reuses += 1;
         // Each field is refreshed from the cached template. The old
         // slot provides the child storage when the shape fits.
-        let old_children = self.recycled_layout.as_mut().and_then(|recycled| {
-            let slot = path
-                .iter()
-                .try_fold(recycled, |parent, &index| parent.child_at_mut(index))?;
-            (slot.children.capacity() == row.layout.children.len())
-                .then(|| std::mem::take(&mut slot.children))
-        });
+        let old_children =
+            recycled_children(&mut self.recycled_layout, path, row.layout.children.len())
+                .map(std::mem::take);
         Some((&row.layout, old_children))
     }
 
@@ -834,6 +898,21 @@ impl RowLayoutCache {
         self.local_nodes = total;
         self.local_visited +=
             usize::from(previous.is_none_or(|entry| entry.last_frame != self.local_frame));
+    }
+
+    pub(super) fn scroll_geometry_for_projection(
+        &mut self,
+        path: &[usize],
+        view: &Node,
+        count: usize,
+    ) -> Option<(&mut ScrollGeometry, Option<&mut Vec<LayoutNode>>)> {
+        if self.recycled_layout.is_none() {
+            return Some((self.scroll_geometry(path, view)?, None));
+        }
+        self.scroll_geometry(path, view)?;
+        let reuse = recycled_children(&mut self.recycled_layout, path, count);
+        let geometry = self.scroll_views.get_mut(path)?.geometry.as_mut()?;
+        Some((geometry, reuse))
     }
 
     pub(super) fn scroll_geometry(
@@ -1102,6 +1181,21 @@ pub(super) fn cacheable(node: &Node) -> bool {
         && node.children.iter().all(cacheable)
 }
 
+fn recycled_children<'a>(
+    layout: &'a mut Option<LayoutNode>,
+    path: &[usize],
+    count: usize,
+) -> Option<&'a mut Vec<LayoutNode>> {
+    let slot = path.iter().try_fold(layout.as_mut()?, |parent, &index| {
+        parent.child_at_mut(index)
+    })?;
+    (slot.children.capacity() == count).then_some(&mut slot.children)
+}
+
+fn take_child_storage(node: &mut LayoutNode, count: usize) -> Option<Vec<LayoutNode>> {
+    (node.children.capacity() == count).then(|| std::mem::take(&mut node.children))
+}
+
 pub(super) fn clone_in_view(
     layout: &LayoutNode,
     bounds: Rect,
@@ -1156,8 +1250,7 @@ pub(super) fn clone_in_view_reusing(
                 {
                     target.clone_placement_from(template, bounds, clip_at_child, ancestors);
                     if !target.children.is_empty() || !template.children.is_empty() {
-                        let reuse = (target.children.capacity() == template.children.len())
-                            .then(|| std::mem::take(&mut target.children));
+                        let reuse = take_child_storage(target, template.children.len());
                         target.children =
                             translate_children(template, x, y, clip, ancestors, reuse);
                     }

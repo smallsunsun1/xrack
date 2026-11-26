@@ -774,7 +774,7 @@ impl CaptureRect {
 }
 
 /// A viewport-local scissor in logical pixels, measured from the top left.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct SceneScissor([f64; 4]);
 
 impl SceneScissor {
@@ -801,6 +801,22 @@ impl SceneScissor {
     pub fn contains(self, [x, y]: [f64; 2]) -> bool {
         let [left, top, right, bottom] = self.0;
         x >= left && x < right && y >= top && y < bottom
+    }
+
+    pub(crate) fn intersect_selection(
+        self,
+        [a, b]: [crate::Point2D; 2],
+    ) -> Option<[crate::Point2D; 2]> {
+        if ![a.x.0, a.y.0, b.x.0, b.y.0].into_iter().all(f64::is_finite) {
+            return None;
+        }
+        let [left, top, right, bottom] = self.0;
+        let low = [a.x.0.min(b.x.0).max(left), a.y.0.min(b.y.0).max(top)];
+        let high = [a.x.0.max(b.x.0).min(right), a.y.0.max(b.y.0).min(bottom)];
+        if low[0] >= high[0] || low[1] >= high[1] {
+            return None;
+        }
+        Some([low, high].map(|[x, y]| crate::Point2D::new(crate::Length(x), crate::Length(y))))
     }
 
     /// Normalize against the camera's drawable content, including letterbox offsets.

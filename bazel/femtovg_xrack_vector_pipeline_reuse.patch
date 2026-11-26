@@ -1,0 +1,145 @@
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -551,6 +551,7 @@
+ #[derive(Debug)]
+ struct SharedGpuResources {
+     shader_module: wgpu::ShaderModule,
++    stencil_shader: OnceCell<wgpu::ShaderModule>,
+     opacity_tiles_shader: OnceCell<wgpu::ShaderModule>,
+     atlas_fills_shader: OnceCell<wgpu::ShaderModule>,
+     direct_opacity_shader: OnceCell<wgpu::ShaderModule>,
+@@ -622,6 +623,7 @@
+ 
+         Self {
+             shader_module,
++            stencil_shader: OnceCell::new(),
+             opacity_tiles_shader: OnceCell::new(),
+             atlas_fills_shader: OnceCell::new(),
+             direct_opacity_shader: OnceCell::new(),
+@@ -635,8 +637,21 @@
+     }
+ 
+     fn shader_for(
+-        &self, device: &wgpu::Device, opacity_tiles: bool, atlas_fills: bool, direct_opacity: bool,
++        &self,
++        device: &wgpu::Device,
++        opacity_tiles: bool,
++        atlas_fills: bool,
++        direct_opacity: bool,
++        stencil_only: bool,
+     ) -> &wgpu::ShaderModule {
++        if stencil_only {
++            return self.stencil_shader.get_or_init(|| {
++                device.create_shader_module(wgpu::ShaderModuleDescriptor {
++                    label: Some("femtovg stencil"),
++                    source: wgpu::ShaderSource::Wgsl(include_str!("wgpu/stencil.wgsl").into()),
++                })
++            });
++        }
+         if direct_opacity {
+             return self.direct_opacity_shader.get_or_init(|| {
+                 device.create_shader_module(wgpu::ShaderModuleDescriptor {
+@@ -2482,8 +2497,14 @@
+ 
+     render_pass_builder.draw_stroke_strips(command);
+ 
+-    // clear stencil buffer
+-
++    // Clear the stroke counters. With no shape or mask clip, the clear can
++    // use the stencil shader because antialiasing never discards at -1.
++    let clear =
++        if params1.stroke_thr == -1.0 && params1.clip.is_none() && params1.clip_mask.is_none() {
++            Params::stencil()
++        } else {
++            params1
++        };
+     pipeline_and_bindgroup_mapper.update_renderpass(
+         render_pass_builder,
+         None,
+@@ -2509,7 +2530,7 @@
+             stencil_reference: 0,
+         },
+         Some(wgpu::Face::Back),
+-        &params1,
++        &clear,
+         images,
+         command.image,
+         command.glyph_texture,
+@@ -3057,7 +3078,7 @@
+         cull_mode: Option<wgpu::Face>,
+         has_stencil_buffer: bool,
+     ) -> Self {
+-        let (stencil_state, color_target_state) = match &stencil_test {
++        let (mut stencil_state, color_target_state) = match &stencil_test {
+             StencilTest::Enabled { stencil_state, .. } => (
+                 stencil_state.clone(),
+                 wgpu::ColorTargetState {
+@@ -3084,6 +3105,10 @@
+                 },
+             ),
+         };
++        // All stencil attachments use Stencil8. Canonicalize the unused high
++        // bits so equivalent tests share a render pipeline.
++        stencil_state.read_mask &= 0xff;
++        stencil_state.write_mask &= 0xff;
+         Self {
+             render_to_texture,
+             color_target_state,
+@@ -4296,8 +4321,11 @@
+             let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
+                 let layout = &self.shared.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline;
+                 let shader = self.shared.shader_for(
+-                    &self.device, pipeline_state.opacity_tiles,
+-                    pipeline_state.atlas_fills || pipeline_state.instanced_fill, pipeline_state.direct_opacity,
++                    &self.device,
++                    pipeline_state.opacity_tiles,
++                    pipeline_state.atlas_fills || pipeline_state.instanced_fill,
++                    pipeline_state.direct_opacity,
++                    pipeline_state.stencil_only,
+                 );
+                 let pipeline = pipeline_state.materialize(&self.device, layout, shader);
+                 CachedPipeline {
+diff --git a/src/renderer/wgpu/shader.wgsl b/src/renderer/wgpu/shader.wgsl
+--- a/src/renderer/wgpu/shader.wgsl
++++ b/src/renderer/wgpu/shader.wgsl
+@@ -124,12 +124,6 @@
+ @binding(5)
+ var clip_mask_texture: texture_2d<f32>;
+ 
+-// Winding with no sampled clip cannot discard a fragment. Color writes are disabled.
+-@fragment
+-fn fs_stencil() -> @location(0) vec4<f32> {
+-    return vec4<f32>(0.0);
+-}
+-
+ @fragment
+ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
+     return shade(vertex, 1.0);
+diff --git a/src/renderer/wgpu/stencil.wgsl b/src/renderer/wgpu/stencil.wgsl
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/wgpu/stencil.wgsl
+@@ -0,0 +1,22 @@
++struct ViewSize {
++    x: f32,
++    y: f32,
++    pad: vec2<f32>,
++}
++
++@group(0) @binding(0) var<uniform> view_size: ViewSize;
++
++@vertex
++fn vs_main(@location(0) point: vec2<f32>) -> @builtin(position) vec4<f32> {
++    return vec4<f32>(2.0 * point.x / view_size.x - 1.0, 1.0 - 2.0 * point.y / view_size.y, 0.0, 1.0);
++}
++
++@vertex
++fn vs_main_texture(@location(0) point: vec2<f32>) -> @builtin(position) vec4<f32> {
++    return vec4<f32>(2.0 * point.x / view_size.x - 1.0, 2.0 * point.y / view_size.y - 1.0, 0.0, 1.0);
++}
++
++@fragment
++fn fs_stencil() -> @location(0) vec4<f32> {
++    return vec4<f32>(0.0);
++}

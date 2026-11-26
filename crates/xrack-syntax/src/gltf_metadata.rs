@@ -43,6 +43,9 @@ pub struct GltfMetadata {
     #[serde(default)]
     nodes: Vec<GltfNode>,
     #[serde(default)]
+    scenes: Vec<GltfScene>,
+    scene: Option<usize>,
+    #[serde(default)]
     accessors: Vec<GltfAccessor>,
     #[serde(default)]
     cameras: Vec<GltfCamera>,
@@ -59,9 +62,30 @@ pub struct GltfMetadata {
 #[derive(Deserialize)]
 struct GltfNode {
     camera: Option<usize>,
+    mesh: Option<usize>,
+    #[serde(default)]
+    children: Vec<usize>,
     name: Option<String>,
     #[serde(default)]
     extensions: GltfNodeExtensions,
+}
+
+#[derive(Deserialize)]
+struct GltfScene {
+    #[serde(default)]
+    nodes: Vec<usize>,
+}
+
+/// The original node address and a path in the selected scene.
+pub struct GltfSceneNode<'a> {
+    pub source: usize,
+    /// Index of the parent in the returned traversal.
+    pub parent: Option<usize>,
+    pub name: &'a str,
+    pub path: String,
+    pub has_mesh: bool,
+    pub has_camera: bool,
+    pub has_light: bool,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +97,13 @@ struct GltfAccessor {
 struct GltfNodeExtensions {
     #[serde(rename = "EXT_mesh_gpu_instancing")]
     instances: Option<GltfInstances>,
+    #[serde(rename = "KHR_lights_punctual")]
+    punctual: Option<GltfNodeLight>,
+}
+
+#[derive(Deserialize)]
+struct GltfNodeLight {
+    light: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -321,6 +352,84 @@ impl GltfMetadata {
 
     /// Imported camera selectors use the original glTF node index. A unique
     /// name may be used alongside that stable selector.
+    /// Visit only the default scene, the first scene, or the parentless nodes
+    /// of an asset without a scene. Parents precede their children.
+    pub fn scene_node_addresses(&self) -> Result<Vec<GltfSceneNode<'_>>, &'static str> {
+        let roots = if self.scenes.is_empty() {
+            let mut children = vec![false; self.nodes.len()];
+            for node in &self.nodes {
+                for &child in &node.children {
+                    *children.get_mut(child).ok_or("invalid glTF child index")? = true;
+                }
+            }
+            (0..self.nodes.len())
+                .filter(|&index| !children[index])
+                .collect()
+        } else {
+            self.scenes
+                .get(self.scene.unwrap_or(0))
+                .ok_or("invalid glTF default scene")?
+                .nodes
+                .clone()
+        };
+        let unscened = self.scenes.is_empty();
+        let mut pending: Vec<(usize, Option<usize>)> =
+            roots.into_iter().rev().map(|root| (root, None)).collect();
+        let mut seen = vec![false; self.nodes.len()];
+        let mut addresses: Vec<GltfSceneNode<'_>> = Vec::new();
+        let mut path_bytes = 0usize;
+        while let Some((source, parent)) = pending.pop() {
+            let node = self.nodes.get(source).ok_or("invalid glTF node index")?;
+            if std::mem::replace(&mut seen[source], true) {
+                return Err("invalid recursive or multiply parented glTF node");
+            }
+            let name = node.name.as_deref().unwrap_or_default();
+            // Bound the expanded paths while preserving numeric selectors for
+            // every node, including unusually deep or heavily named scenes.
+            let prefix = parent.map_or(Some(""), |parent| {
+                let path = addresses.get(parent).map(|parent| parent.path.as_str())?;
+                (!path.is_empty()).then_some(path)
+            });
+            let mut path = String::new();
+            if let Some(prefix) = prefix.filter(|prefix| prefix.len() + name.len() <= 4096) {
+                let segment = if name.is_empty() {
+                    format!("#{source}")
+                } else {
+                    name.replace('~', "~0").replace('/', "~1")
+                };
+                let length = prefix.len() + 1 + segment.len();
+                if length <= 4096 && path_bytes + length <= 16 * 1024 * 1024 {
+                    path = format!("{prefix}/{segment}");
+                    path_bytes += length;
+                }
+            }
+            let ordinal = addresses.len();
+            addresses.push(GltfSceneNode {
+                source,
+                parent,
+                name,
+                path,
+                has_mesh: node.mesh.is_some(),
+                has_camera: node.camera.is_some(),
+                has_light: node
+                    .extensions
+                    .punctual
+                    .as_ref()
+                    .is_some_and(|light| light.light.is_some()),
+            });
+            pending.extend(
+                node.children
+                    .iter()
+                    .rev()
+                    .map(|&child| (child, Some(ordinal))),
+            );
+        }
+        if unscened && seen.into_iter().any(|seen| !seen) {
+            return Err("invalid recursive glTF node graph");
+        }
+        Ok(addresses)
+    }
+
     pub fn camera_nodes(&self) -> Vec<(usize, &'_ str, Option<&'_ str>)> {
         let candidates: Vec<_> = self
             .nodes

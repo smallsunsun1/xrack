@@ -139,6 +139,8 @@ fn value_variant(ty: &Type) -> Result<Ident, String> {
         Type::Instance3D => "Instance3D",
         Type::InstanceTable3D => "InstanceTable3D",
         Type::MeshAsset3D => "MeshAsset3D",
+        Type::MeshNode3D => "MeshNode3D",
+        Type::Bounds3D => "Bounds3D",
         Type::WalkResult3D => "WalkResult3D",
         Type::PhysicsWorld3D => "PhysicsWorld3D",
         Type::SceneModel3D => "SceneObjects",

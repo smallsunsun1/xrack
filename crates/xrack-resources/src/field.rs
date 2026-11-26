@@ -37,6 +37,15 @@ impl BuiltinField {
 }
 
 macro_rules! read_member {
+    (Bounds3D, $input:ident, $member:ident) => {
+        $input.$member()
+    };
+    (MeshNode3D, $input:ident, valid) => {
+        $input.valid()
+    };
+    (MeshAsset3D, $input:ident, $member:ident) => {
+        $input.$member()
+    };
     (RotationTrack3D, $input:ident, $member:ident) => {
         $input.$member()
     };

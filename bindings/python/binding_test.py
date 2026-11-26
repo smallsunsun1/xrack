@@ -95,6 +95,8 @@ class BindingTest(unittest.TestCase):
         source = """
             export component App inherits Window {
                 in property <meshasset3d> loaded;
+                out property <bounds3d> bounds: root.loaded.bounds;
+                out property <meshnode3d> absent: Scene3D.mesh-node(root.loaded, 0);
             }
         """
         with tempfile.TemporaryDirectory() as directory:
@@ -109,10 +111,90 @@ class BindingTest(unittest.TestCase):
             self.assertTrue(prepared.loaded)
             ui.set("loaded", prepared)
             self.assertEqual(ui.get("loaded"), prepared)
+            self.assertTrue(prepared.bounds.valid)
+            self.assertEqual(prepared.bounds.min, xrack.Point3D(0, 0, 0))
+            self.assertEqual(prepared.bounds.max, xrack.Point3D(1, 1, 0))
+            self.assertEqual(ui.get("bounds"), prepared.bounds)
+            self.assertFalse(xrack.Bounds3D().valid)
+            self.assertFalse(prepared.node_at(0).valid)
+            self.assertEqual(ui.get("absent"), xrack.MeshNode3D())
+            self.assertEqual(xrack.SceneModel3D().node("missing", "Pivot"), xrack.MeshNode3D())
+            self.assertFalse(xrack.SceneModel3D().node_at("missing", 0).valid)
+            self.assertEqual(prepared.nodes("mesh"), [])
             with self.assertRaises(TypeError):
                 ui.set("loaded", str(mesh))
             with self.assertRaises(ValueError):
                 xrack.load_mesh_file(root / "missing.obj")
+
+    def test_scene_node_uses_the_resolved_physics_pose(self) -> None:
+        source = """
+            struct Shape { shape: string, size: vector3d }
+            struct Body { id: string, body-kind: string, position: point3d, shapes: [Shape] }
+            struct Actor {
+                id: string, mesh: string, physics-body: string, parent: string, parent-node: string,
+                x: float, y: float, z: float,
+                scale-x: float, scale-y: float, scale-z: float,
+                yaw: float, pitch: float, roll: float, color: color,
+            }
+            export component App inherits Window {
+                property <physicsworld3d> world: Physics3D.new(Vector3D.new(0, 0, 0), 0.04);
+                property <[Actor]> actors: [
+                    Actor {
+                        id: "rig", mesh: @mesh-url("rig.gltf"), physics-body: "body",
+                        parent: "", parent-node: "",
+                        x: 0, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+                        yaw: 0, pitch: 0, roll: 0, color: #ffffff,
+                    },
+                    Actor {
+                        id: "attachment", parent: "rig", parent-node: "/Anchor",
+                        mesh: "primitive:box", physics-body: "",
+                        x: 2, y: 0, z: 0, scale-x: 1, scale-y: 1, scale-z: 1,
+                        yaw: 0, pitch: 0, roll: 0, color: #ffffff,
+                    },
+                ];
+                out property <scenemodel3d> scene: Scene3D.prepare(root.actors, root.world);
+                out property <meshnode3d> mount: Scene3D.scene-node(root.scene, "rig", "/Anchor");
+                callback install();
+                install() => {
+                    Physics3D.sync-bodies(root.world, [
+                        Body {
+                            id: "body", body-kind: "fixed", position: Point3D.new(4, -3, 1),
+                            shapes: [Shape { shape: "box", size: Vector3D.new(1, 1, 1) }],
+                        },
+                    ]);
+                }
+            }
+        """
+        camera = """
+            {
+                "asset": {"version": "2.0"},
+                "scene": 0,
+                "scenes": [{"nodes": [0]}],
+                "nodes": [{"name": "Anchor", "camera": 0, "translation": [1, 2, 3]}],
+                "cameras": [
+                    {"type": "perspective", "perspective": {"yfov": 1.0, "znear": 0.1}}
+                ]
+            }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main = root / "app.xr"
+            main.write_text(source, encoding="utf-8")
+            (root / "rig.gltf").write_text(camera, encoding="utf-8")
+            ui = xrack.load_file(main).create("App")
+            before: xrack.SceneModel3D = ui.get("scene")
+            self.assertEqual(before.node_at("rig", 0).origin, xrack.Point3D(1, 2, 3))
+            ui.invoke("install")
+            after: xrack.SceneModel3D = ui.get("scene")
+            node = after.node("rig", "/Anchor")
+            self.assertTrue(node.valid and node.has_camera and not node.has_mesh)
+            self.assertEqual(node.origin, xrack.Point3D(5, -1, 4))
+            self.assertEqual(ui.get("mount"), node)
+            self.assertEqual(
+                after.map_position("attachment", "", xrack.Point3D(0, 0, 0)),
+                xrack.Point3D(7, -1, 4),
+            )
+            self.assertEqual(before.node_at("rig", 0).origin, xrack.Point3D(1, 2, 3))
 
     def test_ui_methods_reject_worker_threads(self) -> None:
         errors: list[str] = []

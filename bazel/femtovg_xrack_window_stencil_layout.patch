@@ -1,0 +1,133 @@
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -567,6 +567,7 @@
+     empty_texture_view: wgpu::TextureView,
+     sampler_cache: SamplerCache,
+     viewport_layout: wgpu::BindGroupLayout,
++    stencil_pipeline_layout: wgpu::PipelineLayout,
+     draw_layouts: [DrawLayout; 2],
+     pipelines: RefCell<HashMap<PipelineState, CachedPipeline>>,
+     epoch: Cell<u64>,
+@@ -628,6 +629,11 @@
+             }],
+         });
+ 
++        let stencil_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
++            label: Some("femtovg stencil pipeline layout"),
++            bind_group_layouts: &[Some(&viewport_bind_group_layout)],
++            immediate_size: 0,
++        });
+         let draw_layouts = [false, true].map(|mask| DrawLayout::new(device, &viewport_bind_group_layout, mask));
+ 
+         Self {
+@@ -642,6 +648,7 @@
+             empty_texture_view: empty_texture.create_view(&Default::default()),
+             sampler_cache: Rc::new(RefCell::new(HashMap::new())),
+             viewport_layout: viewport_bind_group_layout,
++            stencil_pipeline_layout,
+             draw_layouts,
+             pipelines: Default::default(),
+             epoch: Cell::new(0),
+@@ -4303,42 +4310,6 @@
+             render_pass_builder.current_stencil_reference = Some(stencil_reference);
+         }
+ 
+-        let bind_group_state = BindGroupState {
+-            image,
+-            glyph_texture,
+-            clip_mask: params.clip_mask.map(|mask| mask.image),
+-        };
+-
+-        let bind_group_changed = self.current_bind_group_state.as_ref() != Some(&bind_group_state);
+-        if bind_group_changed {
+-            let bind_group = self.bind_groups.entry(bind_group_state.clone()).or_insert_with(|| {
+-                bind_group_state.materialize(
+-                    &self.device,
+-                    images,
+-                    &self.shared.draw_layouts[usize::from(bind_group_state.clip_mask.is_some())].bind_group,
+-                    &self.shared.empty_texture_view,
+-                    &self.shared.sampler_cache,
+-                    &self.uniform_buffer,
+-                )
+-            });
+-            self.current_bind_group = Some(bind_group.clone());
+-            self.current_bind_group_state = Some(bind_group_state);
+-        }
+-
+-        let uniforms = UniformArray::from(params);
+-        if self.current_uniforms.as_ref() != Some(&uniforms) {
+-            render_pass_builder
+-                .frame
+-                .stage_uniforms(bytemuck::cast_slice(uniforms.as_slice()));
+-            self.current_uniforms = Some(uniforms);
+-        }
+-        // The current command's slot is the last one staged.
+-        let offset = render_pass_builder.frame.current_uniform_offset();
+-        if bind_group_changed || render_pass_builder.current_bound_offset != Some(offset) {
+-            render_pass.set_bind_group(1, self.current_bind_group.as_ref().unwrap(), &[offset]);
+-            render_pass_builder.current_bound_offset = Some(offset);
+-        }
+-
+         let mut pipeline_state = PipelineState::new(
+             color_blend,
+             stencil_test,
+@@ -4362,11 +4333,57 @@
+             && !pipeline_state.clip_mask
+             && pipeline_state.color_target_state.write_mask.is_empty();
+ 
++        if pipeline_state.stencil_only {
++            // The stencil shaders bind only the viewport. Rebind the paint
++            // inputs when a draw switches back to a layout that uses them.
++            render_pass_builder.current_bound_offset = None;
++        } else {
++            let bind_group_state = BindGroupState {
++                image,
++                glyph_texture,
++                clip_mask: params.clip_mask.map(|mask| mask.image),
++            };
++
++            let bind_group_changed = self.current_bind_group_state.as_ref() != Some(&bind_group_state);
++            if bind_group_changed {
++                let bind_group = self.bind_groups.entry(bind_group_state.clone()).or_insert_with(|| {
++                    bind_group_state.materialize(
++                        &self.device,
++                        images,
++                        &self.shared.draw_layouts[usize::from(bind_group_state.clip_mask.is_some())].bind_group,
++                        &self.shared.empty_texture_view,
++                        &self.shared.sampler_cache,
++                        &self.uniform_buffer,
++                    )
++                });
++                self.current_bind_group = Some(bind_group.clone());
++                self.current_bind_group_state = Some(bind_group_state);
++            }
++
++            let uniforms = UniformArray::from(params);
++            if self.current_uniforms.as_ref() != Some(&uniforms) {
++                render_pass_builder
++                    .frame
++                    .stage_uniforms(bytemuck::cast_slice(uniforms.as_slice()));
++                self.current_uniforms = Some(uniforms);
++            }
++            // The current command's slot is the last one staged.
++            let offset = render_pass_builder.frame.current_uniform_offset();
++            if bind_group_changed || render_pass_builder.current_bound_offset != Some(offset) {
++                render_pass.set_bind_group(1, self.current_bind_group.as_ref().unwrap(), &[offset]);
++                render_pass_builder.current_bound_offset = Some(offset);
++            }
++        }
++
+         // An unchanged pipeline was looked up, and stamped with this flush, when it was bound.
+         if render_pass_builder.current_pipeline_state.as_ref() != Some(&pipeline_state) {
+             let mut pipeline_cache = self.shared.pipelines.borrow_mut();
+             let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
+-                let layout = &self.shared.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline;
++                let layout = if pipeline_state.stencil_only {
++                    &self.shared.stencil_pipeline_layout
++                } else {
++                    &self.shared.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline
++                };
+                 let shader = self.shared.shader_for(
+                     &self.device,
+                     pipeline_state.opacity_tiles,

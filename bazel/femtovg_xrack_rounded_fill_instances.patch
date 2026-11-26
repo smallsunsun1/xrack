@@ -1,0 +1,584 @@
+diff --git a/src/renderer.rs b/src/renderer.rs
+--- a/src/renderer.rs
++++ b/src/renderer.rs
+@@ -14,7 +14,7 @@
+ #[cfg(feature = "wgpu")]
+ mod wgpu;
+ #[cfg(feature = "wgpu")]
+-pub use wgpu::{DirectOpacityPath, OpacityTile, SubmissionSlicing, WGPURenderOutput, WGPURenderer};
++pub use wgpu::{DirectOpacityPath, MeshFillInstance, MeshFillOpacity, OpacityTile, SubmissionSlicing, WGPURenderOutput, WGPURenderer};
+ 
+ mod void;
+ pub use void::Void;
+diff --git a/src/renderer/params.rs b/src/renderer/params.rs
+--- a/src/renderer/params.rs
++++ b/src/renderer/params.rs
+@@ -44,6 +44,8 @@
+     pub(crate) atlas_fills: bool,
+     /// The atlas geometry is composited directly with intermediate RGBA8 rounding.
+     pub(crate) direct_opacity: bool,
++    /// Number of shared mesh vertices followed by the instances' attributes.
++    pub(crate) instanced_fill_vertices: u32,
+ }
+ 
+ /// Where both backends' uniform arrays keep [`Params::gradient_premultiplied`]:
+diff --git a/src/renderer/wgpu.rs b/src/renderer/wgpu.rs
+--- a/src/renderer/wgpu.rs
++++ b/src/renderer/wgpu.rs
+@@ -25,6 +25,9 @@
+ mod direct_opacity;
+ pub use direct_opacity::DirectOpacityPath;
+ use direct_opacity::DIRECT_VERTEX_SLOTS;
++mod mesh_instances;
++pub use mesh_instances::{MeshFillInstance, MeshFillOpacity};
++use mesh_instances::{INSTANCE_SLOTS, ISOLATED_INSTANCE_SLOTS};
+ mod opacity_tiles;
+ use atlas_fills::FILL_VERTEX_SLOTS;
+ pub use opacity_tiles::OpacityTile;
+@@ -2381,7 +2384,10 @@
+         command.image,
+         command.glyph_texture,
+     );
+-    if opacity_tiles {
++    if params.instanced_fill_vertices != 0 {
++        let stride = if params.direct_opacity { ISOLATED_INSTANCE_SLOTS } else { INSTANCE_SLOTS };
++        render_pass_builder.draw_mesh_fill_instances(start, count, params.instanced_fill_vertices as usize, stride);
++    } else if opacity_tiles {
+         render_pass_builder.draw_opacity_tiles(start, count);
+     } else {
+         render_pass_builder.draw(start as u32..(start + count) as u32);
+@@ -3038,6 +3044,7 @@
+     opacity_tiles: bool,
+     atlas_fills: bool,
+     direct_opacity: bool,
++    instanced_fill: bool,
+ }
+ 
+ impl PipelineState {
+@@ -3089,6 +3096,7 @@
+             opacity_tiles: false,
+             atlas_fills: false,
+             direct_opacity: false,
++            instanced_fill: false,
+         }
+     }
+ 
+@@ -3112,25 +3120,42 @@
+             opacity_tiles,
+             atlas_fills,
+             direct_opacity,
++            instanced_fill,
+         } = self;
+-        let vertex_entry_point = match (*direct_opacity, *atlas_fills, *opacity_tiles, *render_to_texture) {
+-            (true, _, _, _) => "direct_vertex",
+-            (false, true, _, false) => "atlas_vertex",
+-            (false, true, _, true) => "atlas_vertex_texture",
+-            (false, false, true, false) => "opacity_vertex",
+-            (false, false, true, true) => "opacity_vertex_texture",
+-            (false, false, false, true) => "vs_main_texture",
+-            (false, false, false, false) => "vs_main",
++        let vertex_entry_point = if *instanced_fill {
++            if *direct_opacity {
++                "mesh_opacity_vertex"
++            } else {
++                "mesh_vertex"
++            }
++        } else {
++            match (*direct_opacity, *atlas_fills, *opacity_tiles, *render_to_texture) {
++                (true, _, _, _) => "direct_vertex",
++                (false, true, _, false) => "atlas_vertex",
++                (false, true, _, true) => "atlas_vertex_texture",
++                (false, false, true, false) => "opacity_vertex",
++                (false, false, true, true) => "opacity_vertex_texture",
++                (false, false, false, true) => "vs_main_texture",
++                (false, false, false, false) => "vs_main",
++            }
+         };
+-        let fragment_entry_point = match (*direct_opacity, *atlas_fills, *opacity_tiles, *stencil_only, *clip_shape, *clip_mask) {
+-            (true, _, _, _, _, _) => "direct_fragment",
+-            (false, true, _, _, _, _) => "atlas_fragment",
+-            (false, false, true, _, _, _) => "opacity_fragment",
+-            (false, false, false, true, false, false) => "fs_stencil",
+-            (false, false, false, _, false, false) => "fs_main",
+-            (false, false, false, _, true, false) => "fs_main_clip",
+-            (false, false, false, _, false, true) => "fs_main_mask",
+-            (false, false, false, _, true, true) => "fs_main_clip_mask",
++        let fragment_entry_point = if *instanced_fill {
++            if *direct_opacity {
++                "mesh_opacity_fragment"
++            } else {
++                "mesh_fragment"
++            }
++        } else {
++            match (*direct_opacity, *atlas_fills, *opacity_tiles, *stencil_only, *clip_shape, *clip_mask) {
++                (true, _, _, _, _, _) => "direct_fragment",
++                (false, true, _, _, _, _) => "atlas_fragment",
++                (false, false, true, _, _, _) => "opacity_fragment",
++                (false, false, false, true, false, false) => "fs_stencil",
++                (false, false, false, _, false, false) => "fs_main",
++                (false, false, false, _, true, false) => "fs_main_clip",
++                (false, false, false, _, false, true) => "fs_main_mask",
++                (false, false, false, _, true, true) => "fs_main_clip_mask",
++            }
+         };
+ 
+         const DIRECT_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+@@ -3144,37 +3169,56 @@
+             0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+         ];
+         const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
++        const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
++            2 => Float32x4, 3 => Float32x4
++        ];
++        let vertex_layout = if *direct_opacity && !*instanced_fill {
++            wgpu::VertexBufferLayout {
++                array_stride: (DIRECT_VERTEX_SLOTS * size_of::<Vertex>()) as u64,
++                step_mode: wgpu::VertexStepMode::Vertex,
++                attributes: &DIRECT_ATTRIBUTES,
++            }
++        } else if *atlas_fills {
++            wgpu::VertexBufferLayout {
++                array_stride: (FILL_VERTEX_SLOTS * size_of::<Vertex>()) as u64,
++                step_mode: wgpu::VertexStepMode::Vertex,
++                attributes: &ATLAS_ATTRIBUTES,
++            }
++        } else if *opacity_tiles {
++            wgpu::VertexBufferLayout {
++                array_stride: (TILE_VERTICES * size_of::<Vertex>()) as u64,
++                step_mode: wgpu::VertexStepMode::Instance,
++                attributes: &TILE_ATTRIBUTES,
++            }
++        } else {
++            wgpu::VertexBufferLayout {
++                array_stride: size_of::<Vertex>() as u64,
++                step_mode: wgpu::VertexStepMode::Vertex,
++                attributes: &VERTEX_ATTRIBUTES,
++            }
++        };
++        const ISOLATED_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
++            2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4
++        ];
++        let (slots, attributes) = if *direct_opacity {
++            (ISOLATED_INSTANCE_SLOTS, &ISOLATED_INSTANCE_ATTRIBUTES[..])
++        } else {
++            (INSTANCE_SLOTS, &INSTANCE_ATTRIBUTES[..])
++        };
++        let instances = instanced_fill.then_some(wgpu::VertexBufferLayout {
++            array_stride: (slots * size_of::<Vertex>()) as u64,
++            step_mode: wgpu::VertexStepMode::Instance,
++            attributes,
++        });
++        let buffer_count = 1 + usize::from(instances.is_some());
++        let buffers = [Some(vertex_layout), instances];
+         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+             label: None,
+             layout: Some(pipeline_layout),
+             vertex: wgpu::VertexState {
+                 module: shader_module,
+                 entry_point: Some(vertex_entry_point),
+-                buffers: &[Some(if *direct_opacity {
+-                    wgpu::VertexBufferLayout {
+-                        array_stride: (DIRECT_VERTEX_SLOTS * size_of::<Vertex>()) as u64,
+-                        step_mode: wgpu::VertexStepMode::Vertex,
+-                        attributes: &DIRECT_ATTRIBUTES,
+-                    }
+-                } else if *atlas_fills {
+-                    wgpu::VertexBufferLayout {
+-                        array_stride: (FILL_VERTEX_SLOTS * size_of::<Vertex>()) as u64,
+-                        step_mode: wgpu::VertexStepMode::Vertex,
+-                        attributes: &ATLAS_ATTRIBUTES,
+-                    }
+-                } else if *opacity_tiles {
+-                    wgpu::VertexBufferLayout {
+-                        array_stride: (TILE_VERTICES * size_of::<Vertex>()) as u64,
+-                        step_mode: wgpu::VertexStepMode::Instance,
+-                        attributes: &TILE_ATTRIBUTES,
+-                    }
+-                } else {
+-                    wgpu::VertexBufferLayout {
+-                        array_stride: size_of::<Vertex>() as u64,
+-                        step_mode: wgpu::VertexStepMode::Vertex,
+-                        attributes: &VERTEX_ATTRIBUTES,
+-                    }
+-                })],
++                buffers: &buffers[..buffer_count],
+                 compilation_options: Default::default(),
+             },
+             fragment: Some(wgpu::FragmentState {
+@@ -4035,6 +4079,20 @@
+         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+     }
+ 
++    fn draw_mesh_fill_instances(&mut self, start: usize, count: usize, mesh_vertices: usize, instance_stride: usize) {
++        self.ensure_pass();
++        let stride = size_of::<Vertex>();
++        let mesh_begin = (start * stride) as u64;
++        let instance_begin = ((start + mesh_vertices) * stride) as u64;
++        let instance_end = ((start + count) * stride) as u64;
++        let instances = (count - mesh_vertices) / instance_stride;
++        let pass = self.rpass.as_mut().unwrap();
++        pass.set_vertex_buffer(0, self.vertex_buffer.slice(mesh_begin..instance_begin));
++        pass.set_vertex_buffer(1, self.vertex_buffer.slice(instance_begin..instance_end));
++        pass.draw(0..mesh_vertices as u32, 0..instances as u32);
++        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
++    }
++
+     fn draw_opacity_tiles(&mut self, start: usize, count: usize) {
+         self.ensure_pass();
+         let stride = size_of::<Vertex>();
+@@ -4225,6 +4283,7 @@
+         pipeline_state.opacity_tiles = params.opacity_tiles;
+         pipeline_state.atlas_fills = params.atlas_fills;
+         pipeline_state.direct_opacity = params.direct_opacity;
++        pipeline_state.instanced_fill = params.instanced_fill_vertices != 0;
+         pipeline_state.stencil_only = matches!(params.shader_type, ShaderType::Stencil)
+             && params.stroke_thr == -1.0
+             && !pipeline_state.clip_shape
+@@ -4236,7 +4295,10 @@
+             let mut pipeline_cache = self.shared.pipelines.borrow_mut();
+             let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
+                 let layout = &self.shared.draw_layouts[usize::from(pipeline_state.clip_mask)].pipeline;
+-                let shader = self.shared.shader_for(&self.device, pipeline_state.opacity_tiles, pipeline_state.atlas_fills, pipeline_state.direct_opacity);
++                let shader = self.shared.shader_for(
++                    &self.device, pipeline_state.opacity_tiles,
++                    pipeline_state.atlas_fills || pipeline_state.instanced_fill, pipeline_state.direct_opacity,
++                );
+                 let pipeline = pipeline_state.materialize(&self.device, layout, shader);
+                 CachedPipeline {
+                     pipeline,
+diff --git a/src/renderer/wgpu/atlas_fills.wgsl b/src/renderer/wgpu/atlas_fills.wgsl
+--- a/src/renderer/wgpu/atlas_fills.wgsl
++++ b/src/renderer/wgpu/atlas_fills.wgsl
+@@ -35,3 +35,21 @@
+     let fringe = clamp(vec2f(0.5) - distance * input.scissor.zw, vec2f(0.0), vec2f(1.0));
+     return input.color * (stroke * (fringe.x * fringe.y));
+ }
++
++struct MeshFragment {
++    @builtin(position) position: vec4f,
++    @location(0) uv: vec2f,
++    @location(1) @interpolate(flat) color: vec4f,
++}
++
++@vertex fn mesh_vertex(@location(0) point: vec2f, @location(1) uv: vec2f,
++    @location(2) instance: vec4f, @location(3) color: vec4f) -> MeshFragment {
++    let xy = point + instance.xy;
++    let p = vec4f(2.0 * xy.x / view_size.x - 1.0, 1.0 - 2.0 * xy.y / view_size.y, 0.0, 1.0);
++    return MeshFragment(p, uv, color);
++}
++
++@fragment fn mesh_fragment(input: MeshFragment) -> @location(0) vec4f {
++    let side = min(1.0, 1.0 - abs(input.uv.x * 2.0 - 1.0));
++    return input.color * (side * min(1.0, input.uv.y));
++}
+diff --git a/src/renderer/wgpu/direct_opacity.rs b/src/renderer/wgpu/direct_opacity.rs
+--- a/src/renderer/wgpu/direct_opacity.rs
++++ b/src/renderer/wgpu/direct_opacity.rs
+@@ -24,6 +24,40 @@
+ }
+ 
+ impl Canvas<WGPURenderer> {
++    pub(super) fn isolated_fill_vertices(
++        &mut self,
++        color: Color,
++        clip: Option<[f32; 4]>,
++        raster: Bounds,
++    ) -> Option<[Vertex; 4]> {
++        let transform = self.state().transform;
++        let parent = self.state().scissor;
++        if let Some([x, y, width, height]) = clip {
++            self.intersect_scissor(x, y, width, height);
++        }
++        let mut scissor = self.draw_clip(|| raster, None).scissor;
++        self.state_mut().scissor = parent;
++        let mut bounds = Rect::new(
++            raster.minx, raster.miny, raster.maxx - raster.minx, raster.maxy - raster.miny,
++        );
++        if let Some(hard) = scissor.as_rect(self.width() as f32, self.height() as f32) {
++            bounds = bounds.intersection(&hard)?;
++            scissor = Scissor::default();
++        }
++        let params = Params::new(
++            &self.images, &transform, &Paint::color(color).flavor,
++            &GlyphTexture::None, &scissor, self.fringe_width, self.fringe_width, -1.0,
++        );
++        let [r, g, b, a] = params.inner_col;
++        let mat = params.scissor_mat;
++        Some([
++            Vertex::new(r, g, b, a),
++            Vertex::new(mat[0], mat[5], mat[8], mat[9]),
++            Vertex::new(params.scissor_ext[0], params.scissor_ext[1], params.scissor_scale[0], params.scissor_scale[1]),
++            Vertex::new(bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h),
++        ])
++    }
++
+     /// Batches adjacent independent convex fills under a plain device transform.
+     /// Returns the uploaded vertex bytes, or None to use the isolated painter.
+     #[doc(hidden)]
+@@ -60,19 +94,11 @@
+                 self.verts.truncate(start);
+                 return None;
+             }
+-            if item.clip != item.raster {
+-                let [x, y, w, h] = item.clip;
+-                self.intersect_scissor(x, y, w, h);
+-            }
+-            let clip = self.draw_clip(|| Bounds { minx: x0, miny: y0, maxx: x1, maxy: y1 }, None);
+-            self.state_mut().scissor = state.scissor;
+-            let mut scissor = clip.scissor;
+-            let mut bounds = raster;
+-            if let Some(hard) = scissor.as_rect(self.width() as f32, self.height() as f32) {
+-                let Some(intersection) = bounds.intersection(&hard) else { continue; };
+-                bounds = intersection;
+-                scissor = Scissor::default();
+-            }
++            let clip = (item.clip != item.raster).then_some(item.clip);
++            let bounds = Bounds { minx: x0, miny: y0, maxx: x1, maxy: y1 };
++            let Some(extra) = self.isolated_fill_vertices(item.color, clip, bounds) else {
++                continue;
++            };
+ 
+             let mut capture = state.transform;
+             capture.premultiply(&Transform2D::translation(-x, -y));
+@@ -89,18 +115,6 @@
+                 self.verts.truncate(start);
+                 return None;
+             }
+-            let params = Params::new(
+-                &self.images, &state.transform, &Paint::color(item.color).flavor,
+-                &GlyphTexture::None, &scissor, self.fringe_width, self.fringe_width, -1.0,
+-            );
+-            let rgb = params.inner_col;
+-            let mat = params.scissor_mat;
+-            let extra = [
+-                Vertex::new(rgb[0], rgb[1], rgb[2], rgb[3]),
+-                Vertex::new(mat[0], mat[5], mat[8], mat[9]),
+-                Vertex::new(params.scissor_ext[0], params.scissor_ext[1], params.scissor_scale[0], params.scissor_scale[1]),
+-                Vertex::new(bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h),
+-            ];
+             let opacity = item.opacity * state.alpha;
+             let (offset_x, offset_y) = (capture.0[4], capture.0[5]);
+             let contour = &geometry.contours[0];
+diff --git a/src/renderer/wgpu/direct_opacity.wgsl b/src/renderer/wgpu/direct_opacity.wgsl
+--- a/src/renderer/wgpu/direct_opacity.wgsl
++++ b/src/renderer/wgpu/direct_opacity.wgsl
+@@ -25,6 +25,17 @@
+ }
+ 
+ @fragment fn direct_fragment(input: DirectVertex) -> @location(0) vec4f {
++    return isolated_color(input);
++}
++
++@fragment fn mesh_opacity_fragment(input: DirectVertex) -> @location(0) vec4f {
++    if input.opacity < 0.0 {
++        return input.color * min(1.0, 1.0 - abs(input.fringe_u * 2.0 - 1.0));
++    }
++    return isolated_color(input);
++}
++
++fn isolated_color(input: DirectVertex) -> vec4f {
+     if any(input.position.xy < input.bounds.xy) || any(input.position.xy >= input.bounds.zw) {
+         discard;
+     }
+@@ -43,3 +54,12 @@
+     let fringe = clamp(vec2f(0.5) - distance * input.scissor.zw, vec2f(0.0), vec2f(1.0));
+     return (stored * input.opacity) * (fringe.x * fringe.y);
+ }
++
++@vertex fn mesh_opacity_vertex(@location(0) mesh_point: vec2f, @location(1) uv: vec2f,
++    @location(2) instance: vec4f, @location(3) color: vec4f,
++    @location(4) scissor_mat: vec4f, @location(5) scissor: vec4f,
++    @location(6) bounds: vec4f) -> DirectVertex {
++    let point = mesh_point + instance.xy;
++    let p = vec4f(2.0 * point.x / view_size.x - 1.0, 1.0 - 2.0 * point.y / view_size.y, 0.0, 1.0);
++    return DirectVertex(p, point, uv.x, color, scissor_mat, scissor, bounds, instance.z);
++}
+diff --git a/src/renderer/wgpu/mesh_instances.rs b/src/renderer/wgpu/mesh_instances.rs
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/wgpu/mesh_instances.rs
+@@ -0,0 +1,184 @@
++use super::WGPURenderer;
++use crate::{
++    Canvas, Color, CompositeOperationState, FillRule, LineJoin, Path, RenderTarget, Transform2D,
++    geometry::Bounds,
++    renderer::{Command, CommandType, Params, Vertex},
++};
++
++pub(super) const INSTANCE_SLOTS: usize = 2;
++pub(super) const ISOLATED_INSTANCE_SLOTS: usize = 5;
++
++/// An instance of a convex fill sharing a path defined at the origin.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug)]
++pub struct MeshFillInstance {
++    /// Translation in canvas coordinates.
++    pub origin: [f32; 2],
++    /// Straight fill color.
++    pub color: Color,
++    /// Isolated opacity, if the fill is captured before composition.
++    pub opacity: Option<MeshFillOpacity>,
++}
++
++/// The capture bounds and opacity of a shared fill.
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug)]
++pub struct MeshFillOpacity {
++    /// Visible element clip in canvas coordinates.
++    pub clip: [f32; 4],
++    /// Pixel-aligned capture rectangle in canvas coordinates.
++    pub raster: [f32; 4],
++    /// Opacity applied after rounding the captured color.
++    pub amount: f32,
++}
++
++impl Canvas<WGPURenderer> {
++    /// Draws a shared, antialiased convex mesh in instance order. The ordinary
++    /// painter is required for intersecting clips or thin coverage masks.
++    #[doc(hidden)]
++    pub fn draw_mesh_fill_instances(
++        &mut self,
++        path: &Path,
++        isolated: bool,
++        instances: impl ExactSizeIterator<Item = MeshFillInstance>,
++    ) -> Option<usize> {
++        let state = *self.state();
++        let Transform2D([sx, b, c, sy, tx, ty]) = state.transform;
++        let Transform2D([a, clip_b, clip_c, d, clip_x, clip_y]) = state.scissor.transform;
++        if b != 0.0
++            || c != 0.0
++            || sx != sy
++            || !sx.is_finite()
++            || sx < 1.0
++            || tx != 0.0
++            || ty != 0.0
++            || clip_b != 0.0
++            || clip_c != 0.0
++            || state.scissor.radius != 0.0
++            || state.clip_depth != 0
++            || self.shadow_enabled()
++            || state.composite_operation != CompositeOperationState::default()
++            || self.current_render_target != RenderTarget::Screen
++        {
++            return None;
++        }
++        self.reconcile_current_clip_plane();
++        if self.clip_active() {
++            return None;
++        }
++
++        let mut limits = [0.0, 0.0, self.width() as f32, self.height() as f32];
++        if let Some([half_w, half_h]) = state.scissor.extent {
++            let (half_w, half_h) = (half_w * a.abs(), half_h * d.abs());
++            if half_w < 0.0
++                || half_h < 0.0
++                || ![half_w, half_h, clip_x, clip_y]
++                    .into_iter()
++                    .all(f32::is_finite)
++            {
++                return None;
++            }
++            limits[0] = limits[0].max(clip_x - half_w);
++            limits[1] = limits[1].max(clip_y - half_h);
++            limits[2] = limits[2].min(clip_x + half_w);
++            limits[3] = limits[3].min(clip_y + half_h);
++        }
++        let mut mesh = path.cache(&state.transform, self.tess_tol, self.dist_tol);
++        let bounds = mesh.bounds;
++        if self.fill_masks.enabled()
++            && (bounds.maxx - bounds.minx) * (bounds.maxy - bounds.miny) <= crate::THIN_FILL_SPAN
++            && crate::clip::is_thin(mesh.mean_width(FillRule::NonZero))
++        {
++            return None;
++        }
++        mesh.expand_fill(self.fringe_width, LineJoin::Miter, 2.4, FillRule::NonZero);
++        if !mesh.is_convex() {
++            return None;
++        }
++        let contour = &mesh.contours[0];
++        let (hub, rim) = contour.fill.split_first()?;
++        let start = self.verts.len();
++        for side in rim.windows(2) {
++            self.verts.extend_from_slice(&[*hub, side[0], side[1]]);
++        }
++        for (index, strip) in contour.stroke.windows(3).enumerate() {
++            let flip = index % 2;
++            self.verts
++                .extend_from_slice(&[strip[flip], strip[1 - flip], strip[2]]);
++        }
++        let mesh_vertices = self.verts.len() - start;
++        if mesh_vertices == 0 {
++            return None;
++        }
++        let stride = if isolated {
++            ISOLATED_INSTANCE_SLOTS
++        } else {
++            INSTANCE_SLOTS
++        };
++        self.verts.reserve(instances.len() * stride);
++        for instance in instances {
++            let [dx, dy] = instance.origin.map(|v| v * sx);
++            // The shape's own scissor is elided by the path painter when it
++            // holds the outline. Require a fringe of clearance from its
++            // parent scissor before using that unclipped outline here.
++            let fringe = self.fringe_width;
++            if !dx.is_finite()
++                || !dy.is_finite()
++                || bounds.minx + dx - fringe < limits[0]
++                || bounds.miny + dy - fringe < limits[1]
++                || bounds.maxx + dx + fringe > limits[2]
++                || bounds.maxy + dy + fringe > limits[3]
++            {
++                self.verts.truncate(start);
++                return None;
++            }
++            if let Some(opacity) = instance.opacity {
++                if !isolated {
++                    self.verts.truncate(start);
++                    return None;
++                }
++                let [x, y, w, h] = opacity.raster;
++                let (minx, miny) = state.transform.transform_point(x, y);
++                let (maxx, maxy) = state.transform.transform_point(x + w, y + h);
++                let raster = Bounds {
++                    minx,
++                    miny,
++                    maxx,
++                    maxy,
++                };
++                let clip = (opacity.clip != opacity.raster).then_some(opacity.clip);
++                let Some(style) = self.isolated_fill_vertices(instance.color, clip, raster) else {
++                    continue;
++                };
++                self.verts
++                    .push(Vertex::new(dx, dy, opacity.amount * state.alpha, 0.0));
++                self.verts.extend_from_slice(&style);
++            } else {
++                let mut color = instance.color;
++                color.a *= state.alpha;
++                let [r, g, b, a] = color.premultiplied().to_array();
++                self.verts
++                    .extend_from_slice(&[Vertex::new(dx, dy, -1.0, 0.0), Vertex::new(r, g, b, a)]);
++                if isolated {
++                    self.verts
++                        .extend_from_slice(&[Vertex::new(0.0, 0.0, 0.0, 0.0); 3]);
++                }
++            }
++        }
++        let count = self.verts.len() - start;
++        if count == mesh_vertices {
++            self.verts.truncate(start);
++            return Some(0);
++        }
++        let mut command = Command::new(CommandType::Triangles {
++            params: Params {
++                instanced_fill_vertices: mesh_vertices as u32,
++                direct_opacity: isolated,
++                ..Params::default()
++            },
++        });
++        command.triangles_verts = Some((start, count));
++        self.append_cmd(command);
++        Some(count * size_of::<Vertex>())
++    }
++}
